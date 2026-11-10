@@ -11,7 +11,7 @@ The part's hardware reference page is
 
 | | |
 |---|---|
-| **Card kind** | `cirrus_54m30`, `PCI_ATTACH_BUILTIN` (only where a machine's slot table names it) |
+| **Card kind** | `cirrus_54m30`, `PCI_ATTACH_PCI`: soldered on the Network Server, where its slot table names it, and a card for any PCI socket besides. With no FCode, Open Firmware builds its generic `pci1013,a0` node and the Mac OS leaves it alone; Windows NT's `cirrus.sys` drives it (`tnt-pci-scsi-card` seats one in an 8500) |
 | **PCI ID** | `1013:00A0`, class `$030000`, revision `$00` |
 | **BARs** | BAR0: 16 MB prefetchable memory, the display-memory aperture. BAR1: 512-byte I/O, the relocatable VGA range |
 | **Fixed decode** | the legacy VGA block `$3B0`-`$3DF` in I/O space, a strapped claim rather than a BAR |

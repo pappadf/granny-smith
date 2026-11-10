@@ -512,6 +512,9 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     mesh_attach_bus(st->mesh, cfg->scsi);
     mesh_set_irq_callback(st->mesh, gos_mesh_irq, cfg);
     mesh_set_dbdma_kick(st->mesh, gos_mesh_dbdma_kick, cfg);
+    // The SCSI bus of every card in a PCI socket that brings one; the slot
+    // walk above seated the cards.
+    machine_card_scsi_buses(cfg, cp);
     dbdma_port_t mesh_port = {
         .out = mesh_port_out,
         .in = mesh_port_in,

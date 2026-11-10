@@ -1,9 +1,10 @@
 # Printing
 
-Two printers are available to the emulated Mac: an **ImageWriter**
-dot-matrix printer on a serial port, and a **LaserWriter** on the
-AppleTalk network. Whatever the Mac prints arrives in your browser as a
-PDF.
+Three printers are available to the emulated Mac: an **ImageWriter**
+dot-matrix printer on a serial port, and on the AppleTalk network an
+**AppleTalk ImageWriter** and a **LaserWriter**. The network printers are
+always there; the serial one is yours to add, and all three can be used
+side by side. Whatever the Mac prints arrives in your browser as a PDF.
 
 ## 1. The ImageWriter
 
@@ -36,12 +37,17 @@ shortcut):
 ```
 machine.imagewriter.model = "imagewriter"        the original ImageWriter (or "imagewriter2")
 machine.imagewriter.paper = "a4"                 letter, a4, legal, fanfold-letter, fanfold-15in
-machine.imagewriter.connection = "localtalk"     an ImageWriter II with the LocalTalk Option card
+machine.imagewriter.connection = "serial-b"      "serial-a" (modem port), "serial-b" (printer port) or "none"
 ```
 
-Connected over LocalTalk, it appears in the Chooser under **AppleTalk
-ImageWriter** as **Virtual ImageWriter**. Other connections are
-`"serial-a"` (modem port), `"serial-b"` (printer port) and `"none"`.
+### 1.4 The AppleTalk ImageWriter
+
+Like the LaserWriter, an ImageWriter II with the LocalTalk Option card is
+on the AppleTalk network with no setup, whatever is on the serial ports. In
+the Chooser, select **AppleTalk ImageWriter**, then **Virtual
+ImageWriter**. Its settings are under **System → appletalk → imagewriter**
+(`appletalk.imagewriter`, the same settings as §1.3 except the model and
+connection; `localtalk_name` renames it).
 
 ## 2. The LaserWriter
 

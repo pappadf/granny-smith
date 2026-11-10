@@ -302,11 +302,14 @@ uint8_t lisa_profile_porta_read(lisa_profile_t *pf, bool handshake) {
     if (!pf || !pf->image)
         return 0xFF;
 
-    if (!handshake) {
-        // No-handshake register: the host samples the current state byte.
-        uint8_t v = (pf->phase == PH_HS) ? pf->state_byte : 0xFF;
-        return v;
-    }
+    // During a handshake the controller drives the state byte onto the port-A
+    // pins, and both VIA registers read those pins.  The boot ROM and the OS
+    // sample it through the no-handshake register; MacWorks XL's boot block
+    // reads it through the handshaked one (issue #210).
+    if (pf->phase == PH_HS)
+        return pf->state_byte;
+    if (!handshake)
+        return 0xFF; // no-handshake register outside a handshake: bus idle
 
     // Handshaked register: clock out the next data byte.
     if ((pf->phase == PH_READ || pf->phase == PH_RD_STATUS) && pf->buf_idx < pf->buf_len) {
@@ -322,8 +325,10 @@ void lisa_profile_porta_write(lisa_profile_t *pf, uint8_t value, bool handshake)
     if (!pf || !pf->image)
         return;
 
-    if (!handshake) {
-        // No-handshake register: the host's handshake reply ($55 = proceed).
+    if (!handshake || pf->phase == PH_HS) {
+        // The host's handshake reply ($55 = proceed).  The boot ROM and the OS
+        // write it through the no-handshake register; MacWorks XL's boot block
+        // writes it through the handshaked one, which drives the same pins.
         pf->reply = value;
         return;
     }

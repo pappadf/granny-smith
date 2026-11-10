@@ -7,17 +7,19 @@
 -- the powermac-nt-hal wiki gives a person: at `0 >`,
 --
 --   load fd:,\setup.of       once per machine: little-endian mode, reset
---   load fd:,\bootdisk.of    the disk-patched veneer, the ARC environment
---                            on /options, /chosen bootpath at the disk, go
+--   load fd:,\bootdisk.of    powermac-nt-hal's ARC firmware (arcfw), the
+--                            ARC environment on /options, /chosen bootpath
+--                            at the disk, go
 --
 -- each followed by `load-base loadsize eval`.  No CD: an installed system
 -- needs none.
 --
 -- THE RUNGS:
 --
---   B1  the 2.26NT firmware reaches `0 >` on ttya
+--   B1  the 2.26NT firmware reaches `0 >` on ttya (ans-nt-stock-boot: the same
+--       rungs on the production 1.1.22 ROM)
 --   B2  setup.of switches to little-endian and the machine comes back
---   B3  bootdisk.of starts the veneer, OSLOADER loads the kernel, and NT
+--   B3  bootdisk.of starts arcfw, OSLOADER loads the kernel, and NT
 --       runs on the HAL: the ADB driver connects NT's keyboard and mouse
 --       classes, and the boot volume is D: with the system in D:\WINNT
 --   B4  the logon screen ("Press Ctrl + Alt + Delete to log on"), drawn by
@@ -31,7 +33,7 @@
 -- class as a secure attention sequence, and the session that follows --
 -- a user's profile created, Explorer started -- runs on this machine.
 --
--- BUDGET.  Most of it is the firmware reading the veneer off the floppy a
+-- BUDGET.  Most of it is the firmware reading arcfw off the floppy a
 -- block at a time and NT's first boot of a fresh profile.  Every wait is
 -- capped, and fails at a named rung.
 
@@ -41,70 +43,12 @@ dofile("../lib/nt.lua")
 
 local nt_rom = "../../data/roms/ans500-ans700-2.26nt-962f6c13-50348b3d0126096b.rom"
 local nt_disk = "../../data/systems/winnt_4_0_ppc_ans_512mb.img"
-local nt_floppy = "../../data/systems/ans_nt_boot_floppy_daea7d6.img"
-
-local K_CONTROL = "0x36"
-local K_OPTION = "0x3A"
-local K_FWD_DELETE = "0x75"
-
-local function nt_installed_boot()
-    -- B1
-    local fw = nt_power_on(nt_rom)
-
-    -- The disk at id 0 on the second fast/wide controller, where bootdisk.of
-    -- points /chosen bootpath (/bandit/53c825@12/sd@0,0).  The golden image
-    -- is never written: NT's writes (the page file, the profile, the event
-    -- logs) go to the row's scratch delta.
-    machine.scsi2.attach_hd(nt_disk, 0)
-    machine.floppy.drive[0].insert(nt_floppy)
-    assert(machine.scsi2.device[0].type == "hd", "the installed NT disk is not at id 0 on the second controller")
-    assert(machine.floppy.drive[0].present, "the boot floppy is not in the drive")
-
-    -- B2
-    nt_setup_of()
-
-    -- B3 — marks from the HAL's and the driver's own serial trace.
-    -- (sent() escapes backslashes, so the matches avoid them.)
-    local boot = nt_load_eval("bootdisk", ".of", 20000000)
-    boot = F"${boot}${nt_ldr(\"\", \"system path -> 'D:\", 400000000000, \"B3\")}"
-    assert(gs.contains(boot, "starting the installed Windows NT"), "B3: bootdisk.of did not run")
-    assert(gs.contains(boot, "Open Firmware ARC Interface"), "B3: the veneer did not start")
-    assert(gs.contains(boot, "adbport: keyboard class connected"), "B3: NT's keyboard class never connected to the ADB driver")
-    assert(gs.contains(boot, "adbport: mouse class connected"), "B3: NT's mouse class never connected to the ADB driver")
-    assert(gs.contains(boot, "Partition2' -> D:"), "B3: NT did not boot from the installed volume")
-    echo("B3: the installed NT is running on the HAL, booted from D:")
-
-    -- B4
-    nt_screen("nt-logon.png", 400000000000)
-    echo("B4: the logon screen is up")
-
-    -- B5 — the secure attention sequence, held the way a person holds it,
-    -- every transition in an auto-poll of its own.
-    machine.adb.keyboard.down(K_CONTROL)
-    scheduler.run(3000000)
-    machine.adb.keyboard.down(K_OPTION)
-    scheduler.run(3000000)
-    machine.adb.keyboard.down(K_FWD_DELETE)
-    scheduler.run(3000000)
-    machine.adb.keyboard.up(K_FWD_DELETE)
-    scheduler.run(3000000)
-    machine.adb.keyboard.up(K_OPTION)
-    scheduler.run(3000000)
-    machine.adb.keyboard.up(K_CONTROL)
-    scheduler.run(3000000)
-    nt_screen("nt-logon-information.png", 40000000000)
-    nt_key(K_RETURN)
-    nt_screen("nt-desktop.png", 400000000000)
-    echo("B5: Ctrl+Alt+Del from the ADB keyboard; Administrator is logged on to the desktop")
-    mac.report_perf("ans-nt-installed-boot/desktop", scheduler.instr_count)
-
-    echo("ans-nt-installed-boot: an installed Windows NT 4.0 cold-boots through the powermac-nt-hal floppy's bootdisk.of to its logon screen, and Administrator logs on from the ADB keyboard (rung B5)")
-end
+local nt_floppy = "../../data/systems/ans_nt_boot_floppy_1741579.img"
 
 if mac.have_media(nt_rom) and mac.have_media(nt_disk) and mac.have_media(nt_floppy) then
-    nt_installed_boot()
+    nt_installed_boot_rungs(nt_rom, nt_disk, nt_floppy, "ans-nt-installed-boot", "nt-logon.png", "nt-logon-information.png", "nt-desktop.png")
 else
-    mac.skip_test("ans-nt-installed-boot (the 2.26NT ROM, the installed NT disk or the boot floppy is not in tests/data -- gs-test-data 9b20396 or later; run scripts/fetch-test-data.sh)")
+    mac.skip_test("ans-nt-installed-boot (the 2.26NT ROM, the installed NT disk or the boot floppy is not in tests/data -- gs-test-data 30b6b8e or later; run scripts/fetch-test-data.sh)")
 end
 
 quit()

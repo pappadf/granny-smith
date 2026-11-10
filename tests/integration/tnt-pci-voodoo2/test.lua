@@ -42,7 +42,7 @@ function cfg_rd(reg) -- global: used by an included file
 end
 
 -- --- The kind is registered and seatable with no machine edit. --------------
-assert(gs.str(catalog.pci_cards) == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1, voodoo2, voodoo2_webgpu, ati_rage_pro, rage128, rage128_webgpu, qd3d]", "the card must be registered")
+assert(gs.str(catalog.pci_cards) == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1, voodoo2, voodoo2_webgpu, ati_rage_pro, rage128, rage128_webgpu, qd3d, sym53c825]", "the card must be registered")
 
 -- The 8 MB board: the row's pinned values were captured on it.
 machine.boot{model = "pm7500", ram = 32768, rom = vars.ROM, pci_card = "voodoo2", pci_option = "memory=8m"}
@@ -230,7 +230,10 @@ assert(machine.pci.slot[1].card.regs.fb_size == 0x400000, "...same 4 MB framebuf
 -- The card advertises one option, Rendering, whose WebGPU value is offered
 -- only where a WebGPU device exists: headless has none, so Software alone.
 -- The board memory stays unadvertised.
-local v2 = catalog.profile("pm7500").cards[2]
+local v2 = nil
+for _, c in ipairs(gs.list(catalog.profile("pm7500").cards)) do
+    if c.id == "voodoo2" then v2 = c end
+end
 assert(#v2.options == 1 and v2.options[1].id == "raster", "the card advertises Rendering, and only it")
 assert(#v2.options[1].values == 1 and v2.options[1].values[1].label == "Software", "without a WebGPU device, Software alone")
 
@@ -239,10 +242,12 @@ assert(#v2.options[1].values == 1 and v2.options[1].values[1].label == "Software
 -- checkpoint may name it) but OFFERED only where a WebGPU device exists:
 -- the tree lists the exact card alone: the WebGPU kind is its Rendering
 -- value, never a card of its own.
-assert(catalog.profile("pm7500").cards[2].id == "voodoo2", "the exact card is offered")
-assert(catalog.profile("pm7500").cards[3].id == "rage128", "the other offered card is the Rage 128")
-assert(catalog.profile("pm7500").cards[4].id == "qd3d", "...as is the QuickDraw 3D Accelerator")
-assert(#catalog.profile("pm7500").cards == 4, "...and the WebGPU variant is not a card of its own")
+assert(catalog.profile("pm7500").cards[2].id == "cirrus_54m30", "the Cirrus 54M30 is a socket card too")
+assert(catalog.profile("pm7500").cards[3].id == "voodoo2", "the exact card is offered")
+assert(catalog.profile("pm7500").cards[4].id == "rage128", "the other offered card is the Rage 128")
+assert(catalog.profile("pm7500").cards[5].id == "qd3d", "...as is the QuickDraw 3D Accelerator")
+assert(catalog.profile("pm7500").cards[6].id == "sym53c825", "...and the Symbios SCSI card")
+assert(#catalog.profile("pm7500").cards == 6, "...and the WebGPU variant is not a card of its own")
 -- Named anyway, it comes up: the same card, whose rasteriser falls back
 -- to the thread backend at creation — honestly — and draws exactly.
 machine.boot{model = "pm7500", ram = 32768, rom = vars.ROM, pci_card = "voodoo2_webgpu"}

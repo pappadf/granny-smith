@@ -59,7 +59,7 @@ assert(catalog.proms.offer(F"${vars.WORK_DIR}/prom-store/1002-4758-c6e8"), "and 
 assert(catalog.proms.identify(F"${vars.WORK_DIR}/prom-store/1002-4758-c6e8").card_id == "mach64_gx", "identity survives the copy and the rename")
 
 -- --- The card kind reaches the configuration layer from one declaration. ----
-assert(gs.str(catalog.pci_cards) == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1, voodoo2, voodoo2_webgpu, ati_rage_pro, rage128, rage128_webgpu, qd3d]", "the card must be registered")
+assert(gs.str(catalog.pci_cards) == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1, voodoo2, voodoo2_webgpu, ati_rage_pro, rage128, rage128_webgpu, qd3d, sym53c825]", "the card must be registered")
 
 machine.boot{model = "pm9500", ram = 32768, rom = vars.ROM, pci_card = "mach64_gx"}
 

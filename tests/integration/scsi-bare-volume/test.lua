@@ -21,6 +21,15 @@ local scsi_identify_ok
 --   pm6100-753      the Power Mac 6100 (PDM family): the ROM runs the 68k
 --                   driver under its emulator, as it does Apple's
 --   pm7500-753      the Power Mac 7500 (TNT family)
+--   pm6100-xpt-lock the 6100 again, with the bit Mac OS 9.0's driver loader
+--                   sets in the ROM SCSI Manager's globals (issue #250) set
+--                   mid-boot: the driver's SCSIAction path still boots to the
+--                   Finder, where the original polled API would get
+--                   scSequenceErr on every call
+--
+-- Every boot row also checks which SCSI API the driver chose: SCSI Manager
+-- 4.3's SCSIAction on the ROMs that implement _SCSIAtomic (840AV, 6100,
+-- 7500), the original polled calls everywhere else.
 --
 -- One machine from every family that boots Mac OS from SCSI.  The Lisa/MacXL
 -- (ProFile, no SCSI) and the Network Servers (no Mac OS) are out of scope.
@@ -74,6 +83,39 @@ local function image_index(path)
         i = i + 1
     end
     error(F"no attached image ${path}")
+end
+
+-- A 68k-world address as the debug readers want it: the PowerPC machines'
+-- plain peeks are physical, so translate through the CPU's MMU there.
+local function mac_addr(a)
+    if gs.ok(function() return machine.cpu.msr end) then
+        return machine.cpu.mmu.translate(a).phys
+    end
+    return a
+end
+
+local function mac_rd32(a)
+    return machine.memory.peek.l(mac_addr(a))
+end
+
+local function mac_rd8(a)
+    return machine.memory.peek.b(mac_addr(a))
+end
+
+-- GSDisk's private storage for the copy driving SCSI `id`: unit table entry
+-- 32 + id -> DCE handle -> DCE -> dCtlStorage (DCE + 20).
+local function gsdisk_storage(id)
+    local ut = debug.mac.globals.read("UTableBase")
+    local dce = mac_rd32(mac_rd32(ut + (32 + id) * 4))
+    return mac_rd32(dce + 20)
+end
+
+-- The driver took SCSI Manager 4.3's SCSIAction path (psUse43, storage + 40
+-- in gsdisk_drvr.s) exactly when the model's ROM implements _SCSIAtomic.
+local function assert_gsdisk_api(label, model)
+    local want = model == "q840av" or model == "pm6100" or model == "pm7500"
+    local use43 = mac_rd8(gsdisk_storage(0) + 40) ~= 0
+    assert(use43 == want, F"${label}: GSDisk SCSIAction path is ${use43}, want ${want}")
 end
 
 -- The facts every boot row asserts once the Finder is up: the Start
@@ -134,6 +176,7 @@ local function boot_desktop(label, model, rom, ram, vol, golden, warm)
     -- (desktop database, volume info) — through the driver into the delta.
     assert(files.images[i].reads > 0, F"${label}: nothing read from the disk")
     assert(files.images[i].writes > 0, F"${label}: nothing written to the disk")
+    assert_gsdisk_api(label, model)
     check_desktop(golden)
     mac.report_perf(F"scsi-bare-volume/${label}", scheduler.instr_count)
 end
@@ -167,6 +210,42 @@ local function row_pm6100_753()
     boot_desktop("pm6100-753", "pm6100", ROM_PDM, 24576, vol753, "goldens/pm6100-7.5.3-640x480x8-bare-finder.png", 1500000000)
 end
 
+-- Mac OS 9.0's SCSI driver loader ('citt' 46 in its System file), loading a
+-- driver for a device other than the boot disk (the 6100's empty internal
+-- CD-ROM), ORs bit 1 into byte $48 of the XPT globals (SCSIGlobals + $1B4)
+-- and never clears it.  The 6100 ROM's original-API emulation uses that bit
+-- as its call-in-progress lock, so from then on every SCSIGet returns
+-- scSequenceErr (issue #250).  Set it the same way once the driver is in (at
+-- 300M; System 7.5.3 replaces the ROM's XPT a little later) and boot on: the
+-- SCSIAction path never touches the lock.
+local function row_pm6100_xpt_lock()
+    machine.boot{model = "pm6100", ram = 24576, rom = ROM_PDM}
+    machine.rtc.time = "2026-04-26T21:30:00"
+    assert(machine.scsi.attach_hd(vol753, 0), "pm6100-xpt-lock: attach_hd failed")
+    machine.rtc.pram.boot_device = 0
+    scheduler.run(300000000)
+    assert(mac_rd32(debug.mac.globals.read("UTableBase") + 32 * 4) ~= 0, "pm6100-xpt-lock: GSDisk not installed yet")
+    local flags = mac_rd32(debug.mac.globals.read("SCSIGlobals") + 0x1B4) + 0x48
+    machine.memory.poke.b(mac_addr(flags), mac_rd8(flags) | 2)
+    scheduler.run(1200000000)
+    mac.wait_stable(1600000000)
+    assert_desktop("pm6100-xpt-lock")
+    assert(debug.mac.globals.read("DSErrCode") == 0, F"pm6100-xpt-lock: a system error (DSErrCode ${debug.mac.globals.read(\"DSErrCode\")})")
+    assert_gsdisk_api("pm6100-xpt-lock", "pm6100")
+    check_desktop("goldens/pm6100-7.5.3-640x480x8-bare-finder.png")
+end
+
+-- The golden's menu-title positions depend on the System heap's contents,
+-- and so on the size of the injected driver.  The 7.5.3 MBDF calls
+-- _StringWidth on the Apple menu title through a pointer into the
+-- unlocked MenuInfo.  On this boot that call runs the System heap out of
+-- master pointers.  The new master-pointer block moves the MenuInfo, and
+-- the title is then measured from the stale copy, which by then holds a
+-- free master-pointer link (low byte $38, '8': 8 px, not the apple's
+-- 11 px).  The titles to its right sit 3 px further left than they would
+-- without the move.  That is the guest's own bug and real hardware does
+-- the same with the same heap, so a GSDisk change that grows or shrinks
+-- the System heap can move them again.
 local function row_pm7500_753()
     boot_desktop("pm7500-753", "pm7500", ROM_TNT, 16384, vol753, "goldens/pm7500-7.5.3-640x480x8-bare-finder.png", 1500000000)
 end
@@ -290,6 +369,7 @@ if mac.have_media(vol753) and mac.have_media(vol701) then
         end
     end
     mac.row("pm6100-753", row_pm6100_753)
+    mac.row("pm6100-xpt-lock", row_pm6100_xpt_lock)
     mac.row("pm7500-753", row_pm7500_753)
     mac.row("two-volumes", row_two_volumes)
     if mac.row_on("plus-608-fd") then

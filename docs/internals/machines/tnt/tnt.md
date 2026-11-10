@@ -166,13 +166,26 @@ The board model is the chipset skeleton plus the DMA architecture:
   sends a device address through the bus's 16/32-bit path, so a codec
   command through the AWACS codec-control register reaches it whole.
   A port may supply a `stop` hook, called when software clears RUN, to
-  drop what the device buffered for the abandoned program.  A channel
-  whose device port is not attached yet
+  drop what the device buffered for the abandoned program.  FLUSH on an
+  executing INPUT command writes its result word even when nothing has
+  arrived (xferStatus ACTIVE|FLUSH, full residual): the Mac OS 9 serial
+  driver flushes its receive channel and polls that word, and froze the
+  beige G3's startup without it (#212).  A channel whose device port is
+  not attached yet
   stalls its data commands honestly — except audio-out (channel 8),
   which carries an interim instant-consume sink until the AWACS
   datapath: Open Firmware plays its boot beep through channel 8 and
   polls for completion, so a stalling channel would hang the boot in
-  firmware.  A channel's interrupt command asserts a LEVEL on Grand
+  firmware.  Audio-in (channel 9) is attached to the DAVbus record
+  path, which delivers silence at the codec rate: Mac OS 8.6 and 9 stop
+  recording at startup by setting S0 and polling `channelStatus` until
+  the program's conditional branch reaches STOP, so a stalled channel 9
+  froze the splash screen (#211).  The codec status word reports
+  revision 2 (AWACS): with revision 0, Mac OS 9's GC AWACs plug-in
+  declined the part, the "GC AWACs Input" driver's open failed, and its
+  failure path kept using freed globals, which corrupted the system
+  heap and stopped 9.0.4 (v2 ROM, 64 MB) on the splash with a bus
+  error.  A channel's interrupt command asserts a LEVEL on Grand
   Central source n that the host's Clear write acknowledges (see "The
   interrupt fabric").  (Reference:
   [dbdma.md](../../../reference/machines/tnt/dbdma.md) §2 for the channel
@@ -607,6 +620,12 @@ and `machine.scsi2` is channel 1 (bays 4-6, plus the 700's two rear
 drives). This is the first machine here where a SCSI id does not identify a
 device on its own, and `scsi_init_named` exists for it.
 
+The bays say where a drive physically sits, not which IDs a channel has:
+either channel takes a drive at any ID 0-6 (7 is the 53C825A's own). An ID
+with no bay of its own on that channel is a free address, as ID 0 on
+channel 1 already was for the Windows NT boot disk, and OS/2 PPC's disk at
+ID 6 on channel 0 is another.
+
 ## Where Open Firmware puts a built-in device's BARs
 
 Each Bandit forwards 16 MB of PCI memory one-to-one at its base + 16 MB —
@@ -869,6 +888,8 @@ boots twice.
 | `ans-aix-installed-boot` | extended, gs-test-data | an installed AIX 4.1.5 disk (gs-test-data `systems/aix_4_1_5_lp240s_234mb.img`) cold-booted through Open Firmware's default `disk2:aix` to the login prompt on the graphics console, then a root logon from the ADB keyboard |
 | `ans-nt-install` | extended, fixture-gated | Windows NT 4.0 PowerPC installed end to end on the 2.26NT ROM from the [powermac-nt-hal](https://github.com/pappadf/powermac-nt-hal) boot floppy — `setup.of`, `boot.of`, text-mode Setup, NT's restart through Cuda, `bootdisk.of`, GUI Setup — to the installed system's logon screen (rungs N1-N12; without a `product-id.txt` fixture it stops at GUI Setup's Registration page, N10). `NT_EXPORT=<path>` keeps the installed disk |
 | `ans-nt-installed-boot` | extended, gs-test-data | the disk `ans-nt-install` produces (gs-test-data `systems/winnt_4_0_ppc_ans_512mb.img`), cold-booted on the 2.26NT ROM through the boot floppy's `setup.of` and `bootdisk.of` to the logon screen, then Ctrl+Alt+Del and a logon as Administrator from the ADB keyboard to the desktop (rungs B1-B5). Needs gs-test-data 9b20396 or later and skips before it |
+| `ans-nt-stock-boot` | extended, gs-test-data | the same boot on the **production 1.1.22 ROM**, the one every Network Server shipped with: since powermac-nt-hal 1741579 (6 November 2026) the floppy's firmware is an XCOFF the ROM's own `xcoff-loader` starts, walks FAT and ISO 9660 itself and reads the disk raw, so the 2.26NT ROM is no longer required. Rungs B1-B5 as above (shared in `lib/nt.script`), 6.9 G instructions to the desktop against 8.3 G on 2.26NT. Needs gs-test-data 30b6b8e or later |
+| `tnt-pci-scsi-card` | matrix | a Power Macintosh 8500 with a Symbios 53C825A SCSI card in A1 (and its own SCSI bus, `pci_1`) and a Cirrus 54M30 in B1: System 7.6 boots from MESH to a desktop identical to the plain 8500's, the card bus takes drives and survives a checkpoint, a device on `pci_1` without the card is refused, and Open Firmware builds `/bandit/pci1000,3` and `/bandit/pci1013,a0` for the two |
 
 Note the probe words: this machine has `probe-scsi0`, `probe-scsi1` and
 `probe-scsi2`, one per controller. `probe-scsi` and `probe-scsi-all` do not

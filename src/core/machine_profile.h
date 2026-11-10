@@ -180,7 +180,15 @@ typedef enum media_bus {
     // device.  A hard disk is the ATA device itself; a CD-ROM is an ATAPI
     // drive, carried by the machine's ATAPI back end at SCSI id = unit.
     MEDIA_BUS_ATA,
+    // The SCSI bus a PCI slot card brings with it (a 53C825A in a socket):
+    // unit = slot * CARD_SCSI_IDS + SCSI id, so one media bus names every
+    // card's bus.  The storage id is "pci_<slot>" (machine_storage_bus).
+    MEDIA_BUS_CARD,
 } media_bus_t;
+
+// SCSI ids per card bus, and the most PCI slots a card bus can sit in.
+#define CARD_SCSI_IDS   8
+#define CARD_SCSI_SLOTS 16
 
 // One medium to attach: the OPEN image handle plus the attachment
 // coordinates (media_attach).
@@ -604,6 +612,11 @@ int machine_floppy_count(const struct config *cfg);
 // configuration's CD-ROM drives on it; a restore brings its drives back from
 // the bus's own block.
 struct scsi *machine_scsi_bus_init(struct config *cfg, checkpoint_t *cp, const char *bus_id);
+// Build the SCSI bus of every card in a PCI socket that brings one (a
+// 53C825A): "pci_<slot>", a checkpoint part of its own, handed to its card.
+// Called by a PCI family after its slot walk, in the same place on a boot
+// and a restore so the parts line up.
+void machine_card_scsi_buses(struct config *cfg, checkpoint_t *cp);
 
 // === Machine-level attach and eject (system.c) =============================
 // Open `path` as the medium `bay` takes (a hard disk, or with `cdrom` a CD)

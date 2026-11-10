@@ -137,6 +137,39 @@ static const config_option_decl_t k_imagewriter_option_serial_a = {
     .default_value = "none",
 };
 
+static const config_value_decl_t k_video_rom_values[] = {
+    {.id = "real", .label = "Real video ROM"},
+    {.id = "generic", .label = "Generic video ROM"},
+    {.id = NULL},
+};
+static const config_value_decl_t k_video_rom_values_generic[] = {
+    {.id = "generic", .label = "Generic video ROM"},
+    {.id = NULL},
+};
+
+#define VIDEO_ROM_DETAIL                                                                                               \
+    "The built-in video's declaration ROM: the real one (when its ROM file is loaded) or the emulator's generic one."
+
+// The built-in video's declaration ROM, on a machine whose built-in video
+// is a NuBus pseudo-slot card that runs either ROM (the SE/30): the real one,
+// offered (and the default) only while its .vrom is, or the generic one
+// (#346).  Slot cards make the same choice by their two entries.
+static const config_option_decl_t k_video_rom_option = {
+    .id = "video_rom",
+    .label = "Video ROM",
+    .detail = VIDEO_ROM_DETAIL,
+    .values = k_video_rom_values,
+    .default_value = "real",
+};
+// The same without the real ROM offered: generic only.
+static const config_option_decl_t k_video_rom_option_generic = {
+    .id = "video_rom",
+    .label = "Video ROM",
+    .detail = VIDEO_ROM_DETAIL,
+    .values = k_video_rom_values_generic,
+    .default_value = "generic",
+};
+
 static const config_value_decl_t k_addressing_values[] = {
     {.id = "24", .label = "24-bit"},
     {.id = "32", .label = "32-bit"},
@@ -190,8 +223,12 @@ static const config_option_decl_t *addressing_option(const hw_profile_t *p) {
     return NULL;
 }
 
-// The family's declared options plus AppleTalk, the ImageWriter and the
-// addressing mode, in
+static const nubus_slot_decl_t *builtin_video_slot(const hw_profile_t *p);
+static bool builtin_video_has_substitute(const hw_profile_t *p);
+static bool builtin_video_rom_offered(const hw_profile_t *p);
+
+// The family's declared options plus AppleTalk, the ImageWriter, the
+// addressing mode and the built-in video's ROM, in
 // display order (memory is separate: its values are computed).  Writes up
 // to `max` and returns the count.
 static int scalar_options(const hw_profile_t *p, const config_option_decl_t **out, int max) {
@@ -205,6 +242,8 @@ static int scalar_options(const hw_profile_t *p, const config_option_decl_t **ou
     const config_option_decl_t *a = addressing_option(p);
     if (a && n < max)
         out[n++] = a;
+    if (builtin_video_has_substitute(p) && n < max)
+        out[n++] = builtin_video_rom_offered(p) ? &k_video_rom_option : &k_video_rom_option_generic;
     return n;
 }
 
@@ -293,12 +332,80 @@ static const char *floppy_default_type(const floppy_slot_t *s) {
 // Storage
 // ============================================================================
 
+// The bus a card in PCI socket `slot` brings, as a storage bus: "pci_<slot>",
+// a narrow SCSI bus (the card is ID 7), hard disks and CD-ROM drives.  Built
+// on first use, one per slot number; whether the configuration actually
+// seats a card with a bus there is check_card_buses' business.
+static const storage_bus_decl_t *card_bus_decl(int slot) {
+    static storage_bus_decl_t decls[CARD_SCSI_SLOTS];
+    static char ids[CARD_SCSI_SLOTS][8], labels[CARD_SCSI_SLOTS][32];
+    if (slot <= 0 || slot >= CARD_SCSI_SLOTS)
+        return NULL;
+    storage_bus_decl_t *b = &decls[slot];
+    if (!b->id) {
+        snprintf(ids[slot], sizeof ids[slot], "pci_%d", slot);
+        snprintf(labels[slot], sizeof labels[slot], "SCSI card in PCI slot %d", slot);
+        *b = (storage_bus_decl_t){.id = ids[slot],
+                                  .label = labels[slot],
+                                  .kind = STORAGE_KIND_SCSI,
+                                  .media_bus = MEDIA_BUS_CARD,
+                                  .media_unit_base = slot * CARD_SCSI_IDS, // one media bus for every card
+                                  .units = 0x7Fu, // IDs 0-6
+                                  .reserved = 0x80u, // ID 7 is the card
+                                  .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD};
+    }
+    return b;
+}
+
+// "pci_<slot>" for a PCI socket the model has, else NULL.
+static const storage_bus_decl_t *card_bus(const hw_profile_t *p, const char *id) {
+    int slot = 0, len = 0;
+    if (!id || sscanf(id, "pci_%d%n", &slot, &len) != 1 || id[len] != '\0')
+        return NULL;
+    for (const pci_slot_decl_t *d = p->pci_slots; d && d->slot; d++)
+        if (d->slot == slot && d->kind == PCI_SLOT_SOCKET)
+            return card_bus_decl(slot);
+    return NULL;
+}
+
 const storage_bus_decl_t *machine_storage_bus(const hw_profile_t *p, const char *id) {
     for (const storage_bus_decl_t *b = p->storage; id && b && b->id; b++) {
         if (strcmp(b->id, id) == 0)
             return b;
     }
-    return NULL;
+    // A bus a card in one of the model's PCI sockets brings.
+    return card_bus(p, id);
+}
+
+static value_t bad(const char *fmt, ...) __attribute__((format(printf, 1, 2))); // defined below
+
+// Every storage device on a card's bus needs a card there that brings one:
+// "pci_1" is the SCSI bus of the 53C825A in PCI slot 1, and nothing without it.
+static value_t check_card_buses(const hw_profile_t *p, const machine_build_opts_t *o, int n_storage,
+                                const machine_storage_dev_t *storage) {
+    for (int i = 0; i < n_storage; i++) {
+        const storage_bus_decl_t *b = card_bus(p, storage[i].bus);
+        if (!b)
+            continue;
+        int slot = b->media_unit_base / CARD_SCSI_IDS;
+        const char *card = NULL;
+        for (int k = 0; k < o->n_slots; k++)
+            if (o->slots[k].slot == slot && !o->slots[k].empty && o->slots[k].card[0])
+                card = o->slots[k].card;
+        for (const pci_slot_decl_t *d = p->pci_slots; !card && d && d->slot; d++) {
+            bool emptied = false;
+            for (int k = 0; k < o->n_slots; k++)
+                emptied |= o->slots[k].slot == slot && o->slots[k].empty;
+            if (d->slot == slot && !emptied)
+                card = d->default_card; // the socket's factory card
+        }
+        const pci_card_kind_t *k = card ? pci_card_find(card) : NULL;
+        if (!k || !k->attach_scsi_bus)
+            return bad(
+                "storage: \"%s\" needs a SCSI card in PCI slot %d (pci_card=sym53c825 or slots=\"%d=sym53c825\")",
+                b->label, slot, slot);
+    }
+    return val_none();
 }
 
 bool machine_storage_media_bay(const hw_profile_t *p, const char *bus_id, int unit, media_bay_t *out) {
@@ -451,9 +558,13 @@ static value_t blank_disks_value(const storage_bus_decl_t *b) {
     return vl_finish(&l);
 }
 
-static value_t storage_bus_value(const storage_bus_decl_t *b) {
+static value_t storage_bus_value(const storage_bus_decl_t *b, bool card) {
     value_map_builder_t *m = val_map_new();
     val_map_put(m, "id", val_str(b->id));
+    // A card's bus exists only while a card that brings one is in the slot
+    // of the same id (catalog cards' scsi_bus): a frontend shows it then.
+    if (card)
+        val_map_put(m, "card_slot", val_str(b->id));
     val_map_put(m, "label", val_str(b->label));
     if (b->detail)
         val_map_put(m, "detail", val_str(b->detail));
@@ -656,6 +767,33 @@ static card_status_t nubus_status(const nubus_card_kind_t *k) {
     return k->substitute ? CARD_SUBSTITUTE : CARD_UNAVAILABLE;
 }
 
+// A NuBus card that runs either Apple's declaration ROM or the emulator's
+// generated one is two entries, as in v0.8.0 (#346): "<card> (real video
+// ROM)", the card's own id, listed only while its ROM is offered; and
+// "<card> (generic video ROM)", id + GENERIC_SUFFIX, always.  A document
+// naming the generic one seats the card with rom=substitute.
+#define GENERIC_SUFFIX "_generic"
+#define GENERIC_LABEL  " (generic video ROM)"
+#define REAL_LABEL     " (real video ROM)"
+
+static bool nubus_has_generic(const nubus_card_kind_t *k) {
+    return k && k->requires_vrom && k->substitute;
+}
+
+// The card kind `id` is the generic variant of, or NULL.
+static const nubus_card_kind_t *nubus_generic_base(const char *id) {
+    size_t n = id ? strlen(id) : 0, sn = sizeof GENERIC_SUFFIX - 1;
+    if (n <= sn || strcmp(id + n - sn, GENERIC_SUFFIX) != 0)
+        return NULL;
+    char base[64];
+    if (n - sn >= sizeof base)
+        return NULL;
+    memcpy(base, id, n - sn);
+    base[n - sn] = '\0';
+    const nubus_card_kind_t *k = nubus_card_find(base);
+    return nubus_has_generic(k) ? k : NULL;
+}
+
 static card_status_t pci_status(const pci_card_kind_t *k) {
     if (!k->requires_prom || prom_card_resolvable(pci_card_rom_id(k), NULL))
         return CARD_OK;
@@ -681,7 +819,38 @@ static value_t monitor_ids_value(const char *const *ids, int n) {
     return vl_finish(&l);
 }
 
-// Every card kind that fits at least one socket of the model, once.
+// One NuBus card entry of the tree.  `variant_of` names the card a generic
+// variant runs (it needs no ROM file and drives the generated ROM's
+// monitors); NULL for the card itself.  Takes `fits`.
+static value_t nubus_card_entry(const nubus_card_kind_t *k, const char *id, const char *label, const char *variant_of,
+                                value_t fits) {
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "id", val_str(id));
+    val_map_put(b, "label", val_str(label));
+    val_map_put(b, "class", val_str(nubus_class(k)));
+    val_map_put(b, "fits", fits);
+    if (variant_of)
+        val_map_put(b, "variant_of", val_str(variant_of));
+    if (k->requires_vrom && !variant_of) {
+        value_map_builder_t *r = val_map_new();
+        val_map_put(r, "kind", val_str("vrom"));
+        val_map_put(r, "substitute", val_bool(k->substitute));
+        val_map_put(b, "rom", val_map_finish(r));
+    } else {
+        val_map_put(b, "rom", val_none());
+    }
+    put_status(b, variant_of ? CARD_OK : nubus_status(k), false);
+    const nubus_monitor_t *t = nubus_kind_monitors(k, variant_of != NULL);
+    const char *mons[MONITORS_MAX];
+    int nm = table_monitors(t, mons, MONITORS_MAX);
+    val_map_put(b, "monitors", monitor_ids_value(mons, nm));
+    val_map_put(b, "modes", card_modes_value(t));
+    val_map_put(b, "options", val_list(NULL, 0));
+    return val_map_finish(b);
+}
+
+// Every card kind that fits at least one socket of the model, once (a card
+// with both ROMs once per ROM).
 static value_t cards_value(const hw_profile_t *p, const socket_t *socks, int ns) {
     vlist_t cards = {0};
     for (const nubus_card_kind_t *const *k = nubus_card_registry(); *k; k++) {
@@ -701,26 +870,22 @@ static value_t cards_value(const hw_profile_t *p, const socket_t *socks, int ns)
             value_free(&tmp);
             continue;
         }
-        value_map_builder_t *b = val_map_new();
-        val_map_put(b, "id", val_str((*k)->id));
-        val_map_put(b, "label", val_str((*k)->display_name));
-        val_map_put(b, "class", val_str(nubus_class(*k)));
-        val_map_put(b, "fits", vl_finish(&fits));
-        if ((*k)->requires_vrom) {
-            value_map_builder_t *r = val_map_new();
-            val_map_put(r, "kind", val_str("vrom"));
-            val_map_put(r, "substitute", val_bool((*k)->substitute));
-            val_map_put(b, "rom", val_map_finish(r));
-        } else {
-            val_map_put(b, "rom", val_none());
+        value_t fits_v = vl_finish(&fits);
+        if (!nubus_has_generic(*k)) {
+            vl_push(&cards, nubus_card_entry(*k, (*k)->id, (*k)->display_name, NULL, fits_v));
+            continue;
         }
-        put_status(b, nubus_status(*k), false);
-        const char *mons[MONITORS_MAX];
-        int nm = table_monitors((*k)->monitors, mons, MONITORS_MAX);
-        val_map_put(b, "monitors", monitor_ids_value(mons, nm));
-        val_map_put(b, "modes", card_modes_value((*k)->monitors));
-        val_map_put(b, "options", val_list(NULL, 0));
-        vl_push(&cards, val_map_finish(b));
+        // A card that runs either ROM is listed once per ROM (#346): on its
+        // real declaration ROM only while that is offered, on the generic
+        // (generated) one always
+        char id[64], label[128];
+        if (nubus_status(*k) == CARD_OK) {
+            snprintf(label, sizeof label, "%s" REAL_LABEL, (*k)->display_name);
+            vl_push(&cards, nubus_card_entry(*k, (*k)->id, label, NULL, value_dup(&fits_v)));
+        }
+        snprintf(id, sizeof id, "%s" GENERIC_SUFFIX, (*k)->id);
+        snprintf(label, sizeof label, "%s" GENERIC_LABEL, (*k)->display_name);
+        vl_push(&cards, nubus_card_entry(*k, id, label, (*k)->id, fits_v));
     }
     for (const pci_card_kind_t *const *k = pci_card_registry(); *k; k++) {
         if ((*k)->variant_of)
@@ -748,6 +913,9 @@ static value_t cards_value(const hw_profile_t *p, const socket_t *socks, int ns)
         val_map_put(b, "label", val_str((*k)->display_name));
         val_map_put(b, "class", val_str(pci_class(*k)));
         val_map_put(b, "fits", vl_finish(&fits));
+        // The card brings a SCSI bus of its own: storage bus "<its slot id>".
+        if ((*k)->attach_scsi_bus)
+            val_map_put(b, "scsi_bus", val_bool(true));
         if ((*k)->requires_prom) {
             value_map_builder_t *r = val_map_new();
             val_map_put(r, "kind", val_str("prom"));
@@ -813,6 +981,19 @@ static const nubus_slot_decl_t *builtin_video_slot(const hw_profile_t *p) {
             return d;
     }
     return NULL;
+}
+
+// Does the machine's built-in video run a declaration ROM it has a
+// substitute for (the SE/30's), so its ROM is a choice?
+static bool builtin_video_has_substitute(const hw_profile_t *p) {
+    const nubus_slot_decl_t *d = builtin_video_slot(p);
+    return d && nubus_has_generic(nubus_card_find(d->builtin_card_id));
+}
+
+// Is the built-in video's real declaration ROM offered now?
+static bool builtin_video_rom_offered(const hw_profile_t *p) {
+    const nubus_slot_decl_t *d = builtin_video_slot(p);
+    return d && vrom_card_resolvable(d->builtin_card_id, NULL);
 }
 
 // The catalogue ids the built-in port takes, "none" left out.
@@ -951,7 +1132,8 @@ static value_t monitors_value(const hw_profile_t *p, const socket_t *socks, int 
 typedef struct {
     bool pci;
     int slot;
-    char card[32];
+    char card[32]; // the card kind (a generic variant names its card here)
+    bool generic; // the card's substitute-ROM variant: rom=substitute
     int n_options;
     slot_option_t options[SLOT_OPTIONS_MAX];
 } doc_card_t;
@@ -1006,7 +1188,7 @@ static bool doc_card_is_display(const doc_card_t *c) {
         return k && strcmp(pci_class(k), "display") == 0;
     }
     const nubus_card_kind_t *k = nubus_card_find(c->card);
-    return k && k->monitors;
+    return k && nubus_kind_monitors(k, c->generic);
 }
 
 // The monitors a card offers (catalogue ids).
@@ -1017,7 +1199,7 @@ static int card_monitors(const doc_card_t *c, const char **out, int max) {
         t = k ? k->monitors : NULL;
     } else {
         const nubus_card_kind_t *k = nubus_card_find(c->card);
-        t = k ? k->monitors : NULL;
+        t = nubus_kind_monitors(k, c->generic);
     }
     return table_monitors(t, out, max);
 }
@@ -1057,6 +1239,9 @@ static void doc_defaults(const hw_profile_t *p, doc_t *d) {
         doc_card_t *c = &d->cards[d->n_cards++];
         *c = (doc_card_t){.pci = socks[i].pci, .slot = socks[i].slot};
         copy_str(c->card, sizeof c->card, socks[i].default_card);
+        // A display card whose real ROM is not offered: its generic entry
+        const nubus_card_kind_t *nk = socks[i].pci ? NULL : nubus_card_find(socks[i].default_card);
+        c->generic = nubus_has_generic(nk) && nubus_status(nk) != CARD_OK;
     }
     d->cards_given = true;
     // Displays: one monitor, on the built-in video if there is one, else on
@@ -1124,7 +1309,9 @@ static value_t doc_value(const hw_profile_t *p, const doc_t *d) {
         char id[16];
         machine_slot_id(d->cards[i].pci, d->cards[i].slot, id, sizeof id);
         val_map_put(c, "slot", val_str(id));
-        val_map_put(c, "card", val_str(d->cards[i].card));
+        char card[64];
+        snprintf(card, sizeof card, "%s%s", d->cards[i].card, d->cards[i].generic ? GENERIC_SUFFIX : "");
+        val_map_put(c, "card", val_str(card));
         value_map_builder_t *co = val_map_new();
         for (int k = 0; k < d->cards[i].n_options; k++)
             val_map_put(co, d->cards[i].options[k].key, val_str(d->cards[i].options[k].value));
@@ -1183,7 +1370,11 @@ void machine_config_put_tree(const hw_profile_t *p, value_map_builder_t *b) {
 
     vlist_t buses = {0};
     for (const storage_bus_decl_t *s = p->storage; s && s->id; s++)
-        vl_push(&buses, storage_bus_value(s));
+        vl_push(&buses, storage_bus_value(s, false));
+    // Then the bus each PCI socket's card may bring.
+    for (const pci_slot_decl_t *d = p->pci_slots; d && d->slot; d++)
+        if (d->kind == PCI_SLOT_SOCKET && card_bus_decl(d->slot))
+            vl_push(&buses, storage_bus_value(card_bus_decl(d->slot), true));
     val_map_put(b, "storage", vl_finish(&buses));
 
     socket_t socks[SOCKETS_MAX];
@@ -1266,6 +1457,10 @@ static value_t read_options(const hw_profile_t *p, const value_t *m, doc_t *d) {
                 at = j;
         if (at < 0)
             return bad("options: model '%s' has no option '%s'", p->id, k);
+        // A document asking for the real video ROM while it is not offered
+        // boots the generic one, as the card itself always did
+        if (strcmp(k, "video_rom") == 0 && strcmp(s, "real") == 0 && !option_has_value(decl[at], s))
+            s = "generic";
         if (!option_has_value(decl[at], s))
             return bad("options.%s: \"%s\" is not one of its values", k, s);
         copy_str(d->options[at].value, sizeof d->options[at].value, s);
@@ -1512,7 +1707,8 @@ static value_t read_cards(const hw_profile_t *p, const value_t *l, doc_t *d) {
                 return bad("cards[%zu]: \"%s\" is already occupied", i, socks[at].label);
         // The card: one of either bus's registry, fitting this slot.
         const char *card_label = NULL;
-        bool fits = false;
+        const char *kind_id = card; // the registry id (a generic variant's card)
+        bool fits = false, generic = false;
         const pci_card_kind_t *pk = NULL;
         if (socks[at].pci) {
             pk = pci_card_find(card);
@@ -1526,12 +1722,17 @@ static value_t read_cards(const hw_profile_t *p, const value_t *l, doc_t *d) {
             }
         } else {
             const nubus_card_kind_t *nk = nubus_card_find(card);
+            if (!nk && (nk = nubus_generic_base(card)) != NULL)
+                generic = true; // the card on its generated ROM
+            else if (nubus_has_generic(nk) && nubus_status(nk) != CARD_OK)
+                generic = true; // its real ROM is not offered: the generic one, as always
             const nubus_slot_decl_t *sd = NULL;
             for (const nubus_slot_decl_t *x = p->nubus_slots; x && x->slot; x++)
                 if (x->slot == socks[at].slot)
                     sd = x;
             if (nk) {
                 card_label = nk->display_name;
+                kind_id = nk->id;
                 fits = sd && nubus_card_fits_socket(sd, nk);
             }
         }
@@ -1547,8 +1748,8 @@ static value_t read_cards(const hw_profile_t *p, const value_t *l, doc_t *d) {
         if (!fits)
             return bad("cards[%zu]: \"%s\" does not fit \"%s\"", i, card_label, socks[at].label);
         doc_card_t *c = &d->cards[d->n_cards++];
-        *c = (doc_card_t){.pci = socks[at].pci, .slot = socks[at].slot};
-        if (!copy_str(c->card, sizeof c->card, card))
+        *c = (doc_card_t){.pci = socks[at].pci, .slot = socks[at].slot, .generic = generic};
+        if (!copy_str(c->card, sizeof c->card, kind_id))
             return bad("cards[%zu]: card id '%s' is too long", i, card);
         const value_t *opts = value_map_get(e, "options");
         if (opts && opts->kind != VK_NONE) {
@@ -1697,13 +1898,13 @@ static void displays_from_cards(const hw_profile_t *p, doc_t *d) {
 // ============================================================================
 
 // The NuBus card row a display's monitor and mode select, and the depth.
-static const nubus_monitor_t *nubus_row(const nubus_card_kind_t *k, const char *monitor, const char *mode, int *depth) {
+static const nubus_monitor_t *nubus_row(const nubus_monitor_t *t, const char *monitor, const char *mode, int *depth) {
     unsigned w = 0, h = 0;
     int dd = 0;
     bool want_mode = mode && *mode;
     if (want_mode && sscanf(mode, "%ux%ux%d", &w, &h, &dd) != 3)
         return NULL;
-    for (const nubus_monitor_t *m = k ? k->monitors : NULL; m && m->id; m++) {
+    for (const nubus_monitor_t *m = t; m && m->id; m++) {
         if (!m->monitor || strcmp(m->monitor, monitor) != 0)
             continue;
         if (!want_mode) {
@@ -1729,6 +1930,8 @@ static value_t card_slot_spec(const doc_card_t *c, const doc_display_t *disp, ch
     // the bus decides that as it seats the card.)
     const char *card = c->card;
     int n = snprintf(buf, len, "%d=%s", c->slot, card);
+    if (c->generic)
+        n += snprintf(buf + n, len - (size_t)n, ",rom=substitute"); // the generic variant
     for (int i = 0; i < c->n_options; i++)
         n += snprintf(buf + n, len - (size_t)n, ",%s=%s", c->options[i].key, c->options[i].value);
     if (disp && disp->mode[0]) {
@@ -1736,7 +1939,7 @@ static value_t card_slot_spec(const doc_card_t *c, const doc_display_t *disp, ch
             return bad("displays: a PCI display card takes no startup mode yet");
         int depth = 0;
         const nubus_card_kind_t *k = nubus_card_find(card);
-        const nubus_monitor_t *row = nubus_row(k, disp->monitor, disp->mode, &depth);
+        const nubus_monitor_t *row = nubus_row(nubus_kind_monitors(k, c->generic), disp->monitor, disp->mode, &depth);
         if (!row)
             return bad("displays.%s: mode \"%s\" is not one of %s's modes on that monitor", disp->device, disp->mode,
                        k ? k->display_name : card);
@@ -1864,7 +2067,8 @@ static value_t apply_displays(const hw_profile_t *p, const doc_t *d, machine_bui
         } else {
             const nubus_card_kind_t *k = nubus_card_find(e->card);
             int depth = 0;
-            const nubus_monitor_t *row = on ? nubus_row(k, x->monitor, x->mode[0] ? x->mode : NULL, &depth) : NULL;
+            const nubus_monitor_t *t = nubus_kind_monitors(k, e->substitute);
+            const nubus_monitor_t *row = on ? nubus_row(t, x->monitor, x->mode[0] ? x->mode : NULL, &depth) : NULL;
             copy_str(e->monitor, sizeof e->monitor, row ? row->id : MONITOR_NONE);
             e->sense = row ? row->sense_code : MACHINE_SENSE_NONE;
         }
@@ -2133,6 +2337,24 @@ value_t machine_config_resolve(const hw_profile_t *p, const value_t *config, con
         legacy_displays(p, legacy, out);
     }
     if (legacy->video_sense >= 0 && (err = override_sense(p, legacy->video_sense, out), val_is_error(&err)))
+        goto done;
+
+    // The built-in video on its generic ROM: its pseudo-slot's entry says so
+    for (int i = 0; i < d->n_options; i++) {
+        if (strcmp(d->options[i].id, "video_rom") != 0 || strcmp(d->options[i].value, "generic") != 0)
+            continue;
+        const nubus_slot_decl_t *bv = builtin_video_slot(p);
+        slot_opts_t *e = bv ? entry_for(out, bv->slot) : NULL;
+        if (!e) {
+            err = bad("options.video_rom: the built-in video has no slot entry");
+            goto done;
+        }
+        e->rom[0] = '\0'; // the substitute, never a file
+        e->substitute = true;
+    }
+
+    // A card's bus needs that card (storage was read before the cards).
+    if ((err = check_card_buses(p, out, d->n_storage, d->storage), val_is_error(&err)))
         goto done;
 
     // Everything else straight across.

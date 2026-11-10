@@ -1,7 +1,8 @@
 # Integration test: the AppleTalk ImageWriter (the LocalTalk Option card)
 #
 # Boots System 6.0.8 on a Plus with the virtual ImageWriter II connected to
-# LocalTalk (`machine.imagewriter.connection = "localtalk"`): the card
+# LocalTalk -- the AppleTalk ImageWriter, `appletalk.imagewriter`, on
+# the network on every machine with AppleTalk, with no setup: the card
 # publishes "Virtual ImageWriter:ImageWriter@*", the Chooser's AppleTalk
 # ImageWriter lists it, and the Finder's Print Directory goes over PAP --
 # the same ImageWriter byte stream a serial cable carries, in SendData

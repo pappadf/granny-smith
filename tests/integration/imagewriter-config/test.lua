@@ -14,6 +14,8 @@ assert(machine.imagewriter.model == "imagewriter2", "not an ImageWriter II")
 assert(machine.imagewriter.connection == "serial-a", "not on the modem port beside AppleTalk")
 assert(machine.scc.a.device == "imagewriter2", "the modem port has no printer")
 assert(machine.scc.b.device == nil, "the printer port is not left to AppleTalk")
+-- A serial printer and the AppleTalk ImageWriter are two printers, both there
+assert(appletalk.imagewriter.connection == "localtalk", "the serial printer displaced the AppleTalk ImageWriter")
 
 -- AppleTalk inactive: the printer port
 machine.boot{model = "plus", rom = PLUS, config = "{\"options\":{\"imagewriter\":\"imagewriter\",\"appletalk\":\"inactive\"}}"}
@@ -24,6 +26,9 @@ assert(machine.scc.b.device == "imagewriter", "the printer port has no printer")
 -- No option: unplugged
 machine.boot{model = "plus", rom = PLUS}
 assert(machine.imagewriter.connection == "none", "a printer was plugged in unasked")
+-- ...while the AppleTalk ImageWriter is on the network regardless (#345)
+assert(appletalk.imagewriter.connection == "localtalk", "no AppleTalk ImageWriter by default")
+assert(appletalk.nbp["Virtual ImageWriter"].type == "ImageWriter", "the AppleTalk ImageWriter is not published")
 
 -- The Lisa: Serial A
 machine.boot{model = "lisa", ram = 2048, rom = LISA, config = "{\"options\":{\"imagewriter\":\"imagewriter2\"}}"}

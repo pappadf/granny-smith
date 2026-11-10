@@ -71,6 +71,9 @@ export interface StorageBus {
   // The blank hard disks its drives take: the files.* method that creates
   // one (with `arg`), and the new file's name stem and extension.
   blank_disks: BlankDisk[];
+  // A PCI card's bus: it exists only while the slot of this id holds a card
+  // that brings one (Card.scsi_bus).  Absent on the board's own buses.
+  card_slot?: string;
 }
 
 export interface BlankDisk {
@@ -100,10 +103,14 @@ export interface Card {
   rom: { kind: string; substitute: boolean } | null;
   status: 'ok' | 'substitute' | 'unavailable';
   reason?: string;
+  // A NuBus card's substitute-ROM variant (`<card>_generic`) names its card.
+  variant_of?: string;
   monitors: string[];
   // Startup video modes per monitor ("WxHxD" ids, labels from the core).
   modes: Record<string, Choice[]>;
   options: ConfigOption[];
+  // The card brings a SCSI bus of its own, the storage bus named for its slot.
+  scsi_bus: boolean;
 }
 
 export interface BuiltinDisplay {
@@ -244,6 +251,7 @@ function normalise(r: Partial<MachineProfile>): MachineProfile {
       blank_disks: b.blank_disks ?? [],
       startup: b.startup === true,
       external_connector: b.external_connector === true,
+      card_slot: b.card_slot ?? undefined,
     })),
     slots: (r.slots ?? []).map((s) => ({ ...s, excludes: s.excludes ?? [] })),
     cards: (r.cards ?? []).map((c) => ({
@@ -254,6 +262,7 @@ function normalise(r: Partial<MachineProfile>): MachineProfile {
       options: c.options ?? [],
       rom: c.rom ?? null,
       status: c.status ?? 'ok',
+      scsi_bus: c.scsi_bus === true,
     })),
     displays: {
       builtin: r.displays?.builtin

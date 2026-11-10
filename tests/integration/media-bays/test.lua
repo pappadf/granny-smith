@@ -31,7 +31,7 @@ assert(machine.scsi2.device[4].type == "hd", "the disk is on machine.scsi2")
 -- not overwritten.
 assert(gs.try(function() return machine.attach_hd(F"${vars.WORK_DIR}/hd2.img") end, "refused") == "refused", "occupied hard disk refused")
 assert(gs.try(function() return machine.attach_hd(F"${vars.WORK_DIR}/hd2.img", 1) end, "refused") == "refused", "a second default hard disk does not exist")
-assert(gs.try(function() return machine.attach_media("scsi2", 3, "hd", F"${vars.WORK_DIR}/hd2.img") end, "refused") == "refused", "unit 3 is not on bus 1")
+assert(gs.try(function() return machine.attach_media("scsi2", 8, "hd", F"${vars.WORK_DIR}/hd2.img") end, "refused") == "refused", "no ID 8 on the emulated bus")
 assert(gs.try(function() return machine.attach_media("scsi", 7, "hd", F"${vars.WORK_DIR}/hd2.img") end, "refused") == "refused", "the initiator's ID")
 assert(gs.try(function() return machine.attach_media("bogus", 1, "hd", F"${vars.WORK_DIR}/hd2.img") end, "refused") == "refused", "no such bus")
 assert(gs.try(function() return machine.attach_cdrom(F"${vars.WORK_DIR}/cd.iso") end, "refused") == "refused", "occupied CD-ROM drive refused")
@@ -40,6 +40,14 @@ assert(gs.try(function() return machine.attach_cdrom(F"${vars.WORK_DIR}/cd.iso")
 machine.eject_media("scsi2", 4)
 assert(gs.try(function() return machine.eject_media("scsi2", 4) end, "empty") == "empty", "nothing left to eject")
 assert(gs.try(function() return machine.eject_media("bogus", 0) end, "bad") == "bad", "unknown bus refused")
+
+-- A bay is where a drive sits, not which IDs exist: any ID but the
+-- initiator's on either bus, past the bays wired to it (OS/2 PPC's disk
+-- loader wants its disk at ID 6 on bus 0, whose bays are 0-3).
+local o = machine.attach_media("scsi", 6, "hd", F"${vars.WORK_DIR}/hd2.img")
+assert(o.bus == "scsi" and o.id == 6, "ID 6 on bus 0")
+assert(machine.scsi.device[6].type == "hd", "the disk is on machine.scsi")
+machine.eject_media("scsi", 6)
 
 -- The Plus's external CD-ROM drive is at ID 3, its hard disk at ID 0.
 machine.boot{model = "plus", rom = F"${vars.TEST_DATA}/roms/plus-v3-4d1f8172.rom"}

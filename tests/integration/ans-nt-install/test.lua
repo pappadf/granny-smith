@@ -5,21 +5,22 @@
 -- for it; powermac-nt-hal (github.com/pappadf/powermac-nt-hal) is that HAL,
 -- and its boot floppy carries everything NT needs that the CD lacks: the
 -- HAL itself as HALSHINR.DLL, an ADB keyboard/mouse driver that also serves
--- the floppy to Setup from RAM, the Cirrus 54M30 display entry, Microsoft's
--- ARC veneer with its patches baked in, and three Open Firmware scripts.
+-- the floppy to Setup from RAM, that project's own ARC firmware (arcfw, in
+-- place of Microsoft's veneer since 5 November 2026; nothing of Microsoft's
+-- is on the floppy), and three Open Firmware scripts.
 -- This row installs NT the way that project's wiki tells a person to, and
 -- nothing else: three commands typed at `0 >`, and every Setup screen
 -- answered with a key.
 --
 --   load fd:,\setup.of     once per machine: little-endian mode, then reset
---   load fd:,\boot.of      the veneer off the floppy, SETUPLDR off the CD
+--   load fd:,\boot.of      arcfw off the floppy, SETUPLDR off the CD
 --   load fd:,\bootdisk.of  after text-mode Setup restarts: NT off the disk
 --
 -- (each followed by `load-base loadsize eval`).
 --
 -- WHAT IT EXERCISES IN THE EMULATOR.  More of the Network Server than any
 -- other row: the 604 in little-endian mode and Bandit's byte-lane reversal
--- (NT runs little-endian from the veneer onward), both 53C825A SCRIPTS
+-- (NT runs little-endian from the firmware onward), both 53C825A SCRIPTS
 -- engines under a driver that is not Apple's, SWIM3 reads from Open
 -- Firmware, Cuda's ADB auto-poll feeding NT's own keyboard stack, Cuda's
 -- RESET SYSTEM (NT's restart), and the 54M30 in VGA text mode, in linear
@@ -31,7 +32,7 @@
 --
 --   N1  the 2.26NT firmware reaches `0 >` on ttya
 --   N2  setup.of switches to little-endian and the machine comes back
---   N3  boot.of loads the veneer, reads the OEM disk into RAM, SETUPLDR runs
+--   N3  boot.of loads arcfw, reads the OEM disk into RAM, SETUPLDR runs
 --   N4  Setup offers "Apple Network Server 500/700" off the floppy
 --   N5  the ADB driver and the 54M30 display are taken from the floppy
 --   N6  NT's kernel starts under the HAL and text-mode Setup's Welcome shows
@@ -50,8 +51,10 @@
 --   roms/ans500-ans700-2.26nt-962f6c13-50348b3d0126096b.rom
 --                                  the Network Server's Windows NT
 --                                  Open Firmware 2.26NT
---   systems/ans_nt_boot_floppy_daea7d6.img
---                                  `make floppy` in powermac-nt-hal
+--   systems/ans_nt_boot_floppy_d8b30a2.img
+--                                  `make floppy` in powermac-nt-hal: its own
+--                                  ARC firmware, HAL and ADB driver, nothing
+--                                  of Microsoft's (the 5 November 2026 build)
 --
 -- and, not redistributable, from $GS_EXTRA_MEDIA_DIR/windows-nt-ppc-ans/
 -- (the runner hands it to the script as $EXTRA_MEDIA):
@@ -68,7 +71,7 @@
 -- The disk image is attached, not copied: the guest's writes land in the
 -- row's private delta under WORK_DIR, and the image on disk stays blank.
 --
--- PACING.  SETUPLDR draws through the veneer onto ttya, so its screens are
+-- PACING.  SETUPLDR draws through the ARC firmware onto ttya, so its screens are
 -- waited for by their text.  From the kernel on Setup draws only on the
 -- 54M30, so every key waits for the golden of the screen it answers
 -- (REGEN=1 captures them, settling on the visible region and tolerating a
@@ -86,7 +89,7 @@ dofile("../lib/ans.lua")
 dofile("../lib/nt.lua")
 
 local nt_rom = "../../data/roms/ans500-ans700-2.26nt-962f6c13-50348b3d0126096b.rom"
-local nt_floppy = "../../data/systems/ans_nt_boot_floppy_daea7d6.img"
+local nt_floppy = "../../data/systems/ans_nt_boot_floppy_1741579.img"
 local nt_root = F"${vars.EXTRA_MEDIA}/windows-nt-ppc-ans"
 local nt_cd = F"${nt_root}/nt4-ppc.iso"
 local nt_disk = F"${nt_root}/nt-disk-blank.img"
@@ -116,15 +119,17 @@ local function nt_install()
     -- load-base, reset-all.  It resets the machine itself.
     nt_setup_of()
 
-    -- N3 — boot.of: the veneer off the floppy by read-blocks, all 2880
-    -- blocks of the floppy into RAM behind it (NT has no SWIM3 driver, so
-    -- the OEM files reach Setup from there), /chosen bootpath at the CD, go.
+    -- N3 — boot.of: powermac-nt-hal's ARC firmware (arcfw) off the floppy by
+    -- read-blocks, all 2880 blocks of the floppy into RAM behind it (NT has
+    -- no SWIM3 driver, so the OEM files reach Setup from there), the ARC
+    -- environment on /options, /chosen bootpath at the CD, go.  arcfw loads
+    -- SETUPLDR off the CD itself (an ISO 9660 walk of the raw device).
     local go = nt_load_eval("boot", ".of", 20000000)
     local ldr = F"${go}${nt_ldr(\"\", \"computer type\", 60000000000, \"N3\")}"
     assert(gs.contains(ldr, "B40 blocks of the OEM disk are in RAM"), "N3: the OEM disk was not read into RAM")
-    assert(gs.contains(ldr, "Open Firmware ARC Interface"), "N3: the veneer did not start")
-    assert(gs.contains(ldr, "SETUPLDR'"), "N3: the veneer did not boot SETUPLDR off the CD")
-    echo("N3: veneer, OEM disk and SETUPLDR up; Setup asks for the computer type")
+    assert(gs.contains(ldr, "Arcfw 0.1"), "N3: arcfw did not start")
+    assert(gs.contains(ldr, "SETUPLDR"), "N3: arcfw did not boot SETUPLDR off the CD")
+    echo("N3: arcfw, OEM disk and SETUPLDR up; Setup asks for the computer type")
 
     -- N4 — "Other" (where the menu opens), the support disk, and the one
     -- computer type on it.
@@ -136,16 +141,22 @@ local function nt_install()
     -- N5 — the ADB driver, offered under [SCSI] because that is the only OEM
     -- class SETUPLDR loads arbitrary drivers for.  Without it NT has no
     -- keyboard ("Setup did not find a keyboard", several screens on).  Then
-    -- the display: the 54M30 entry, with the floppy's patched cirrus.sys.
+    -- the display: the CD's own Cirrus entry, two above the highlighted
+    -- "Other" (the floppy carries no display driver since the HAL translates
+    -- the legacy VGA window).  An arrow key on an ARC console is the single
+    -- CSI byte 0x9B and the letter -- NT's loaders do not take ESC [ A -- and
+    -- the highlighted row is confirmed by the cursor position SETUPLDR draws
+    -- it at (row 12 is the Cirrus entry, 13 FirePower, 14 Other).
     s = nt_ldr("S", "Select the SCSI Adapter", 2000000000, "N5")
     s = nt_ldr("\r", "Manufacturer-supplied hardware support disk", 2000000000, "N5")
     s = nt_ldr("\r", "and the OEM disk (powermac-nt-hal)", 4000000000, "N5")
     s = nt_ldr("\r", "Setup will load support for the following mass storage", 8000000000, "N5")
     assert(gs.contains(s, "Symbios Logic C810"), "N5: the 53C825A's driver is not in the list")
     s = nt_ldr("\r", "type of video adapter", 20000000000, "N5")
-    s = nt_ldr("\r", "Manufacturer-supplied hardware support disk", 2000000000, "N5")
-    s = nt_ldr("\r", "Cirrus Logic 54M30 (Apple Network Server 500/700)", 4000000000, "N5")
-    echo("N5: ADB keyboard/mouse/OEM-disk driver and 54M30 display taken off the floppy")
+    s = nt_ldr("\x9bA", "13;12H", 2000000000, "N5")
+    s = nt_ldr("\x9bA", "12;12H", 2000000000, "N5")
+    assert(gs.contains(s, "Motorola Power Stack (cirrus 54xx)"), "N5: the CD's Cirrus entry is not where it was")
+    echo("N5: ADB keyboard/mouse/OEM-disk driver off the floppy; the CD's own Cirrus display driver")
 
     -- N6 — the kernel, under our HAL: the ADB driver connects NT's keyboard
     -- class, drive letters are assigned, and Setup's Welcome is on screen.
@@ -154,41 +165,41 @@ local function nt_install()
     echo("N6: NT's kernel is up on the HAL and text-mode Setup shows its Welcome")
 
     -- N7 — every key from here is on the ADB keyboard.
-    nt_key(vars.K_RETURN)
+    nt_key(K_RETURN)
     nt_screen("nt-02-mass-storage.png", 20000000000)
-    nt_key(vars.K_RETURN)
+    nt_key(K_RETURN)
     nt_screen("nt-03-licence.png", 20000000000)
-    nt_keys(vars.K_PGDN, 18)
+    nt_keys(K_PGDN, 18)
     nt_screen("nt-04-licence-end.png", 10000000000)
-    nt_key(vars.K_F8)
-    -- Computer: Apple Network Server 500/700, Display: Cirrus Logic 54M30.
+    nt_key(K_F8)
+    -- Computer: Apple Network Server 500/700, Display: Motorola Power Stack (cirrus 54xx).
     nt_screen("nt-05-hardware.png", 20000000000)
-    nt_key(vars.K_RETURN)
+    nt_key(K_RETURN)
     -- C: the 32 MB ARC system partition, D: the 478 MB volume.
     nt_screen("nt-06-partitions.png", 40000000000)
-    nt_keys(vars.K_DOWN, 2)
+    nt_keys(K_DOWN, 2)
     nt_screen("nt-07-partition-d.png", 10000000000)
-    nt_key(vars.K_RETURN)
+    nt_key(K_RETURN)
     -- "Leave the current file system intact": FAT, which the firmware reads.
     nt_screen("nt-08-file-system.png", 20000000000)
-    nt_key(vars.K_RETURN)
+    nt_key(K_RETURN)
     nt_screen("nt-09-directory.png", 20000000000)
-    nt_key(vars.K_RETURN)
+    nt_key(K_RETURN)
     nt_screen("nt-10-examine.png", 40000000000)
-    nt_key(vars.K_ESCAPE)
+    nt_key(K_ESCAPE)
     echo("N7: licence, hardware, D:, FAT and \\WINNT accepted; copying")
 
     -- N8 — the copy, including the OEM files off the RAM floppy, and the end.
     nt_screen("nt-11-text-mode-complete.png", 400000000000)
     local junk = machine.scc.a.sent()
-    nt_key(vars.K_RETURN)
+    nt_key(K_RETURN)
     local rst = nt_prompt(60000000000)
     assert(gs.contains(rst, "HalReturnToFirmware"), "N8: NT did not restart through the HAL")
-    assert(gs.contains(rst, "OpenFirmware2.26"), "N8: the firmware did not come back after NT's restart")
+    assert(nt_firmware_banner(rst), "N8: the firmware did not come back after NT's restart")
     echo("N8: text-mode Setup completed; NT restarted the machine through Cuda")
 
-    -- N9 — the installed system: bootdisk.of (the disk-patched veneer, the
-    -- ARC environment on /options, /chosen bootpath at the disk).
+    -- N9 — the installed system: bootdisk.of (arcfw again, the ARC
+    -- environment on /options, /chosen bootpath at the disk).
     local gui = nt_load_eval("bootdisk", ".of", 20000000)
     gui = F"${gui}${nt_ldr(\"\", \"system path -> 'D:\", 400000000000, \"N9\")}"
     assert(gs.contains(gui, "Partition2' -> D:"), "N9: NT did not boot from the installed volume")
@@ -197,13 +208,13 @@ local function nt_install()
 
     -- N10 — the wizard.  Name "gs"; typed only where an edit control has
     -- focus, since a bare letter elsewhere is a dialog accelerator.
-    nt_key(vars.K_RETURN)
+    nt_key(K_RETURN)
     nt_screen("nt-13-setup-options.png", 40000000000)
-    nt_key(vars.K_RETURN)
+    nt_key(K_RETURN)
     nt_screen("nt-14-name.png", 40000000000)
     nt_key("0x05")
     nt_key("0x01")
-    nt_key(vars.K_RETURN)
+    nt_key(K_RETURN)
     nt_screen("nt-15-registration.png", 40000000000)
     echo("N10: GUI Setup's wizard driven to the Registration page")
     if nt_have_pid == 0 then
@@ -216,42 +227,42 @@ local function nt_install()
     -- write), and the network page to "participate", whose adapter search
     -- finds nothing and leaves Next disabled.
     nt_type_pid()
-    nt_key(vars.K_RETURN)
+    nt_key(K_RETURN)
     nt_screen("nt-16-computer-name.png", 40000000000)
     nt_key("0x00")
     nt_key("0x2D")
     nt_key("0x01")
-    nt_key(vars.K_RETURN)
+    nt_key(K_RETURN)
     nt_screen("nt-17-administrator.png", 40000000000)
-    nt_key(vars.K_RETURN)
+    nt_key(K_RETURN)
     nt_screen("nt-18-repair-disk.png", 40000000000)
-    nt_key(vars.K_DOWN)
+    nt_key(K_DOWN)
     scheduler.run(100000000)
-    nt_key(vars.K_RETURN)
+    nt_key(K_RETURN)
     nt_screen("nt-19-components.png", 40000000000)
-    nt_key(vars.K_RETURN)
+    nt_key(K_RETURN)
     nt_screen("nt-20-networking.png", 40000000000)
-    nt_key(vars.K_RETURN)
+    nt_key(K_RETURN)
     nt_screen("nt-21-participate.png", 40000000000)
-    nt_key(vars.K_UP)
+    nt_key(K_UP)
     scheduler.run(100000000)
-    nt_key(vars.K_RETURN)
+    nt_key(K_RETURN)
     nt_screen("nt-22-finish.png", 40000000000)
-    nt_key(vars.K_RETURN)
+    nt_key(K_RETURN)
     nt_screen("nt-23-date-time.png", 200000000000)
-    nt_key(vars.K_RETURN)
+    nt_key(K_RETURN)
     -- "The system found the following video adapter: cirrus compatible
     -- display adapter", 256 colours at 640x480.
     nt_screen("nt-24-detected-display.png", 200000000000)
-    nt_key(vars.K_RETURN)
+    nt_key(K_RETURN)
     nt_screen("nt-25-display.png", 40000000000)
-    nt_key(vars.K_RETURN)
+    nt_key(K_RETURN)
     nt_screen("nt-26-installed.png", 800000000000)
     echo("N11: Windows NT 4.00 has been installed successfully")
 
     -- N12 — NT's restart, and the finished system from cold.
     junk = machine.scc.a.sent()
-    nt_key(vars.K_RETURN)
+    nt_key(K_RETURN)
     rst = nt_prompt(200000000000)
     assert(gs.contains(rst, "HalReturnToFirmware"), "N12: NT did not restart through the HAL")
     local final = nt_load_eval("bootdisk", ".of", 20000000)

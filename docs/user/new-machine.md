@@ -55,11 +55,15 @@ whether the monitor is plugged into it (**connected** / **no monitor**).
 
 NuBus cards: Macintosh Display Card 8•24, 24AC and 8•24 GC. PCI cards:
 the Apple Accelerated PCI Graphics Card and the 3dfx Voodoo2. In the card
-list, a card marked **Substitute ROM** runs on Granny Smith's own
-declaration ROM because you have not loaded Apple's; once added, load the
-card's ROM with **Load ROM...** to use the original. A card marked **ROM
+list, a card marked **ROM
 needed** cannot be added until its ROM is loaded: choose it, and the form
 says which ROM it needs and offers **Load ROM...**.
+
+A NuBus display card is listed once per declaration ROM it can run:
+**… (generic video ROM)**, on Granny Smith's own ROM, always; and **… (real
+video ROM)**, on Apple's, once you have loaded that ROM. On the SE/30 the
+same choice is the **Video ROM** option (§1): **Real video ROM** (once its
+ROM is loaded) or **Generic video ROM**.
 
 ## 4. Floppy drives
 

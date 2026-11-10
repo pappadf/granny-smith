@@ -8,8 +8,10 @@
 # THE MEDIA IS IN gs-test-data, not local/: the 2.26NT ROM
 # (roms/ans500-ans700-2.26nt-962f6c13-50348b3d0126096b.rom), the installed
 # disk (systems/winnt_4_0_ppc_ans_512mb.img.7z) and the floppy it was
-# installed from (systems/ans_nt_boot_floppy_daea7d6.img.7z), all from
-# gs-test-data 9b20396 onward.  At an older pin the row SKIPS.
+# installed from (systems/ans_nt_boot_floppy_daea7d6.img.7z, for the disk)
+# and the floppy the row boots with now (systems/ans_nt_boot_floppy_1741579.img.7z,
+# nothing of Microsoft's on it, the same XCOFF firmware for either ROM), from
+# gs-test-data 30b6b8e onward.  At an older pin the row SKIPS.
 #
 # TEST_ROM is the production ROM only because the runner insists on a ROM
 # that exists at every pin: the row boots the 2.26NT ROM itself, and skips
