@@ -1,0 +1,31 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- M7b integration: `rtc` object class.
+-- Both the legacy `set-time` command and the new `rtc.time` attribute
+-- read/write the same state — flipping one and reading via the other
+-- is the strongest test of view-vs-state separation. PRAM access goes
+-- through the `rtc.pram` child object (peek / poke / snapshot / ...).
+
+scheduler.run(50000)
+
+-- Read-only views.
+local _ = machine.rtc
+local _ = machine.rtc.read_only
+
+-- Set the time via the typed setter, assert the round-trip. There's
+-- no `run` between set and read so emulation-time is frozen and the
+-- value lands exactly as written.
+machine.rtc.time = 0
+assert(machine.rtc.time == 0)
+machine.rtc.time = 1000000
+assert(machine.rtc.time == 1000000)
+
+-- PRAM read of a known address. Mac PRAM is initialised by the boot
+-- code, so the contents depend on how far through boot we are. We
+-- write a sentinel and assert the read returns the same value.
+machine.rtc.pram.poke(0x80, gs.bytes(0xAB, 1))
+assert(machine.rtc.pram.peek(0x80) == 0xAB)
+
+-- Read the full PRAM snapshot — output is VK_BYTES.
+machine.rtc.pram.snapshot()
+
+quit()

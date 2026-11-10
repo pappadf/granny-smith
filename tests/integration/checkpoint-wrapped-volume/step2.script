@@ -1,5 +1,0 @@
-# Restore the consolidated checkpoint and report the disk's size as the
-# guest sees it (the wrapper included).
-assert checkpoint.load("${$TEST_RESULTS_DIR}/state.gs") "checkpoint restored"
-echo "SIZE=${files.images[0].raw_size}"
-quit

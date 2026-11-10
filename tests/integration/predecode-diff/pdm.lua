@@ -1,0 +1,25 @@
+-- Converted from pdm.script by scripts/script-to-lua.py
+-- Power Macintosh 6100 ROM boot (PowerPC 601): three checkpoints up to the
+-- SCSI-scan wall the ROM ladder parks at.
+predecode.enabled = $PD
+predecode.elide = $ELIDE
+-- The translation tier (run.sh's jit config); eager, so it translates
+-- from the first entries on
+jit.enabled = $JIT
+jit.threshold = 1
+jit.cooldown = 16
+jit.budget = 100
+machine.boot{model = "pm6100", ram = 24576, rom = vars.ROM}
+-- Pinned after the boot, which reseeds the RTC from the host clock.
+machine.rtc.time = 3000000000
+scheduler.run(20000000)
+echo(F"cp1 instr=${scheduler.instr_count} pc=${machine.cpu.pc:08x} msr=${machine.cpu.msr:08x}")
+assert(checkpoint.save(F"${vars.OUT}-1.gs"), "save 1 failed")
+scheduler.run(80000000)
+echo(F"cp2 instr=${scheduler.instr_count} pc=${machine.cpu.pc:08x} msr=${machine.cpu.msr:08x}")
+assert(checkpoint.save(F"${vars.OUT}-2.gs"), "save 2 failed")
+scheduler.run(100000000)
+echo(F"cp3 instr=${scheduler.instr_count} pc=${machine.cpu.pc:08x} msr=${machine.cpu.msr:08x}")
+assert(checkpoint.save(F"${vars.OUT}-3.gs"), "save 3 failed")
+echo(F"stats jit_compiles=${jit.compiles} jit_calls=${jit.calls} jit_deopts=${jit.deopts} blocks=${predecode.blocks} allocs=${predecode.allocs} decodes=${predecode.decodes} inval=${predecode.invalidations} demotions=${predecode.demotions} suppressed=${predecode.suppressed_writes}")
+quit()

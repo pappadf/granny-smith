@@ -20,10 +20,10 @@ n=0
 # boot_case <name> <model> <rom> <config JSON> <expected message | OK>
 boot_case() {
     local name=$1 model=$2 rom=$3 config=$4 want=$5
-    local script="$WORK_DIR/$name.script" out="$WORK_DIR/$name.out"
+    local script="$WORK_DIR/$name.lua" out="$WORK_DIR/$name.out"
     local escaped=${config//\\/\\\\}
     escaped=${escaped//\"/\\\"}
-    printf 'machine.boot model="%s" rom="%s" config="%s"\necho "BOOTED ${machine.id}"\nquit\n' \
+    printf 'machine.boot{model = "%s", rom = "%s", config = "%s"}\necho(F"BOOTED ${machine.id}")\nquit()\n' \
         "$model" "$rom" "$escaped" > "$script"
     "$HEADLESS_BIN" rom="$IICI" script="$script" --speed=turbo > "$out" 2>&1 || true
     n=$((n + 1))
@@ -115,9 +115,9 @@ boot_case ok-shared q900 "$Q900" \
 boot_case ok-empty iici "$IICI" '{"storage":[],"cards":[],"startup":null}' OK
 
 # V10's twin: the variables are in the new machine's NVRAM before it runs.
-script="$WORK_DIR/v10-set.script"
-printf 'machine.boot model="pmg3dt" rom="%s" config="{\\"nvram\\":{\\"boot-command\\":\\"0 bootr\\",\\"use-nvramrc?\\":true,\\"load-base\\":\\"600000\\"}}"\n' "$G3" > "$script"
-printf '%s\n' 'echo "NV ${machine.nvram.getenv("boot-command")}|${machine.nvram.getenv("use-nvramrc?")}|${machine.nvram.getenv("load-base")}"' quit >> "$script"
+script="$WORK_DIR/v10-set.lua"
+printf 'machine.boot{model = "pmg3dt", rom = "%s", config = "{\\"nvram\\":{\\"boot-command\\":\\"0 bootr\\",\\"use-nvramrc?\\":true,\\"load-base\\":\\"600000\\"}}"}\n' "$G3" > "$script"
+printf '%s\n' 'echo(F"NV ${machine.nvram.getenv(\"boot-command\")}|${machine.nvram.getenv(\"use-nvramrc?\")}|${machine.nvram.getenv(\"load-base\")}")' 'quit()' >> "$script"
 "$HEADLESS_BIN" rom="$IICI" script="$script" --speed=turbo > "$WORK_DIR/v10-set.out" 2>&1 || true
 n=$((n + 1))
 if ! grep -qx 'NV 0 bootr|true|600000' "$WORK_DIR/v10-set.out"; then
@@ -127,8 +127,8 @@ if ! grep -qx 'NV 0 bootr|true|600000' "$WORK_DIR/v10-set.out"; then
 fi
 
 # V8, which needs a legacy argument beside the document.
-script="$WORK_DIR/v8.script"
-printf 'machine.boot model="iici" rom="%s" video_card="mdc_8_24" config="{\\"cards\\":[]}"\nquit\n' "$IICI" > "$script"
+script="$WORK_DIR/v8.lua"
+printf 'machine.boot{model = "iici", rom = "%s", video_card = "mdc_8_24", config = "{\\"cards\\":[]}"}\nquit()\n' "$IICI" > "$script"
 "$HEADLESS_BIN" rom="$IICI" script="$script" --speed=turbo > "$WORK_DIR/v8.out" 2>&1 || true
 n=$((n + 1))
 if ! grep -qF "machine.boot: config's cards and the legacy card arguments" "$WORK_DIR/v8.out"; then

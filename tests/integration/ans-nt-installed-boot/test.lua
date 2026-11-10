@@ -1,0 +1,54 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- Cold boot of an installed Windows NT 4.0 for PowerPC on an Apple Network
+-- Server 500.  See config.mk for what the media is and where it comes from.
+--
+-- The disk is the one ans-nt-install leaves behind (text-mode and GUI Setup
+-- both complete, Administrator with no password), and the boot is the one
+-- the powermac-nt-hal wiki gives a person: at `0 >`,
+--
+--   load fd:,\setup.of       once per machine: little-endian mode, reset
+--   load fd:,\bootdisk.of    powermac-nt-hal's ARC firmware (arcfw), the
+--                            ARC environment on /options, /chosen bootpath
+--                            at the disk, go
+--
+-- each followed by `load-base loadsize eval`.  No CD: an installed system
+-- needs none.
+--
+-- THE RUNGS:
+--
+--   B1  the 2.26NT firmware reaches `0 >` on ttya (ans-nt-stock-boot: the same
+--       rungs on the production 1.1.22 ROM)
+--   B2  setup.of switches to little-endian and the machine comes back
+--   B3  bootdisk.of starts arcfw, OSLOADER loads the kernel, and NT
+--       runs on the HAL: the ADB driver connects NT's keyboard and mouse
+--       classes, and the boot volume is D: with the system in D:\WINNT
+--   B4  the logon screen ("Press Ctrl + Alt + Delete to log on"), drawn by
+--       win32k and cirrus.dll through the 54M30's BitBLT engine
+--   B5  Ctrl+Alt+Del on the ADB keyboard brings up the Logon Information
+--       dialog; Return with the empty password logs Administrator on, and
+--       the desktop comes up with its "Welcome to Windows NT" dialog
+--
+-- What B5 proves beyond B4: a chord of three held keys went through Cuda's
+-- auto-poll, the HAL's ADB transport and adbport.sys into NT's keyboard
+-- class as a secure attention sequence, and the session that follows --
+-- a user's profile created, Explorer started -- runs on this machine.
+--
+-- BUDGET.  Most of it is the firmware reading arcfw off the floppy a
+-- block at a time and NT's first boot of a fresh profile.  Every wait is
+-- capped, and fails at a named rung.
+
+local mac = dofile("../lib/mac.lua")
+dofile("../lib/ans.lua")
+dofile("../lib/nt.lua")
+
+local nt_rom = "../../data/roms/ans500-ans700-2.26nt-962f6c13-50348b3d0126096b.rom"
+local nt_disk = "../../data/systems/winnt_4_0_ppc_ans_512mb.img"
+local nt_floppy = "../../data/systems/ans_nt_boot_floppy_1741579.img"
+
+if mac.have_media(nt_rom) and mac.have_media(nt_disk) and mac.have_media(nt_floppy) then
+    nt_installed_boot_rungs(nt_rom, nt_disk, nt_floppy, "ans-nt-installed-boot", "nt-logon.png", "nt-logon-information.png", "nt-desktop.png")
+else
+    mac.skip_test("ans-nt-installed-boot (the 2.26NT ROM, the installed NT disk or the boot floppy is not in tests/data -- gs-test-data 30b6b8e or later; run scripts/fetch-test-data.sh)")
+end
+
+quit()

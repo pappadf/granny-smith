@@ -1,0 +1,6 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- Placeholder — this test uses TEST_RUNNER (run.sh), which drives the
+-- guard probes via --script-stdin and matches the refusal output. The
+-- standard single-script pattern can't express expected errors: a VK_ERROR
+-- result sets the script's exit code and would fail the run.
+quit()

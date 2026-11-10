@@ -1,2 +1,0 @@
-# Integration test: a failed restore changes nothing (see config.mk).
-# This test uses a custom runner (run.sh) - this file exists for auto-discovery

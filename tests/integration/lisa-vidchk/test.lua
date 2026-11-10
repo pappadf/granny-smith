@@ -1,0 +1,36 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- The boot ROM's video self-test (VIDCHK, docs/reference/machines/lisa/
+-- video.md §4.3) on both Lisa ROMs, at three memory sizes, at 1x.
+--
+-- VIDCHK polls the Status Register's retrace bit with a $0DF4-pass
+-- BTST/BEQ/DBF loop, "about 20 ms" on the real machine, and sets the CPU
+-- video error (code 42) when it times out.  Each run stops at the first of
+-- the test's two exits: the error (BSET #2,D7) or the pass (the serial
+-- number read that follows).  The memory test before it runs longer with
+-- more RAM, so the three sizes start VIDCHK at three different points in
+-- the frame.  Turbo runs the CPU at its authentic cycles per instruction
+-- (1x).  Accelerated, the loop is shortened by the speed setting and the
+-- test can time out, as on a real Lisa run faster; the emulator does not
+-- second-guess it, so a Lisa is accelerated only once the boot ROM is done.
+
+-- The ROM, the address of VIDCHK's error exit and of its pass exit.
+local function vidchk(model, rom, ram, mode, fail_pc, pass_pc)
+    machine.boot{model = model, ram = ram, rom = rom}
+    scheduler.mode = mode
+    debug.breakpoints.add(fail_pc)
+    debug.breakpoints.add(pass_pc)
+    scheduler.run(20000000)
+    local pc = machine.cpu.pc
+    echo(F"${model} ${ram} KB ${mode}: VIDCHK left at ${pc:08x}")
+    assert(pc ~= fail_pc, F"${model} ${ram} KB ${mode}: VIDCHK timed out (CPU error 42)")
+    assert(pc == pass_pc, F"${model} ${ram} KB ${mode}: VIDCHK did not finish (pc ${pc:08x})")
+    debug.breakpoints.clear()
+end
+
+for _, ram in ipairs({512, 1024, 2048}) do
+    vidchk("lisa", "../../data/roms/lisa2-revh-098917b2.rom", ram, "turbo", 0xFE0BD4, 0xFE0BE0)
+    vidchk("macxl", "../../data/roms/macxl-3a-094c82f0.rom", ram, "turbo", 0xFE0BE8, 0xFE0BF4)
+end
+
+echo("lisa-vidchk: VIDCHK passes on both ROMs at every size")
+quit()

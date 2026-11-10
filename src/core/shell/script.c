@@ -13,6 +13,8 @@
 // strings (argument mode); every other value slot is expression mode.
 
 #include "script.h"
+
+#include "gs_lua.h"
 #include "value_format.h"
 #include "job/job.h"
 
@@ -1182,6 +1184,17 @@ static char *slurp_script_file(const char *path) {
 // terminating signal (SIG_NONE on success) with a one-line diagnostic
 // in `*err` (malloc'd, the caller frees it) on SIG_ERROR.
 static exec_sig_t include_exec_file(const char *path, char **err) {
+    // A Lua file runs on the Lua state (gs_lua.h): `include "x.lua"`, a
+    // `script=x.lua` and shell.script_run("x.lua") all arrive here.
+    size_t plen = strlen(path);
+    if (plen > 4 && strcmp(path + plen - 4, ".lua") == 0) {
+        int rc = gs_lua_run_file(path);
+        if (rc < 0) {
+            *err = format_msg("'%s' failed", path);
+            return SIG_ERROR;
+        }
+        return rc > 0 ? SIG_QUIT : SIG_NONE;
+    }
     if (g_include_depth >= INCLUDE_MAX_DEPTH) {
         *err = format_msg("include depth limit (%d) exceeded at '%s'", INCLUDE_MAX_DEPTH, path);
         return SIG_ERROR;

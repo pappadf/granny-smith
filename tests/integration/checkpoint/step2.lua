@@ -1,0 +1,29 @@
+-- Converted from step2.script by scripts/script-to-lua.py
+-- Checkpoint step 2: boot the SCSI HD, then restore step 1's
+-- floppy-booted checkpoint over that live machine — the restore has to
+-- replace a differently-shaped device set, not fill in a blank one.
+
+local mac = dofile("../lib/mac.lua")
+
+-- Boot the HD far enough to have a real System running off it (its own
+-- drivers, volume, desktop) before the restore replaces everything.
+mac.wait_stable(600000000)
+assert(machine.scsi.device[0].image ~= nil, "step2: HD not attached")
+
+assert(checkpoint.load("checkpoint.gs"), "step2: checkpoint load failed")
+scheduler.run(20000000)
+mac.wait_stable(400000000)
+
+-- The restored screen is step 1's floppy desktop, not the HD's.
+mac.check(F"${vars.TEST_DIR}/desktop.png")
+
+-- ...and the restored machine is live, not a frozen image: drive the
+-- Apple menu to "About the Finder" through the quadrature-mouse path and
+-- match the dialog. The About box also states what this media really is
+-- (Finder 6.1.5 / System 6.0.5 — the file is named System_6_0_8.dsk but
+-- reports 6.0.5, so the golden is the honest record of the version).
+mac.about_box_quad()
+mac.check(F"${vars.TEST_DIR}/about-after-restore.png")
+
+machine.screen.save(F"${mac.RESULTS_DIR}/screenshot-step2.png")
+quit()

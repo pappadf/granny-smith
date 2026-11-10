@@ -1,0 +1,72 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- machine.restart on a machine with two SCSI buses.
+--
+-- What the row is for: a Network Server's rear bays are on `machine.scsi2`,
+-- and nothing else in the repository has a second bus.  A power cycle tears
+-- nothing down, so both channels' media must be the same open instances on
+-- the same buses afterwards.
+--
+-- No instructions are run.  The contract under test is the power cycle, not
+-- the boot, and the ROM ladder rows already own the boot.
+
+local function restarts(model, ram_kb)
+    machine.boot{model = model, ram = ram_kb, rom = vars.ROM}
+
+    -- One medium per channel, so a power cycle that confused the two would
+    -- show up as the wrong device rather than as silence.  Channel 0's is in
+    -- bay 1: bay 0 is the CD bay, which takes only the CD-ROM drive.
+    assert(files.hd_create(F"${vars.WORK_DIR}/${model}-bay1.img", "80M"), "could not create the channel 0 disk")
+    assert(files.hd_create(F"${vars.WORK_DIR}/${model}-bay4.img", "80M"), "could not create the channel 1 disk")
+    machine.scsi.attach_hd(F"${vars.WORK_DIR}/${model}-bay1.img", 1)
+    machine.scsi2.attach_hd(F"${vars.WORK_DIR}/${model}-bay4.img", 4)
+    assert(machine.scsi.device[1].type == "hd", F"${model}: channel 0 bay 1 not mounted")
+    assert(machine.scsi2.device[4].type == "hd", F"${model}: channel 1 bay 4 not mounted")
+
+    -- Everything that must survive the power cycle.
+    local ch0_stem = machine.scsi.device[1].image.path
+    local ch0_file = machine.scsi.device[1].image.filename
+    local ch1_stem = machine.scsi2.device[4].image.path
+    local ch1_file = machine.scsi2.device[4].image.filename
+
+    machine.restart()
+
+    assert(machine.id == model, F"${model}: same model")
+    assert(machine.ram == ram_kb, F"${model}: same RAM")
+    assert(machine.pci.slot[8].card.name == "53C825A #0", F"${model}: fast/wide channel 0 gone")
+    assert(machine.pci.slot[9].card.name == "53C825A #1", F"${model}: fast/wide channel 1 gone")
+
+    -- Both media still attached, on the SAME buses, as the SAME open
+    -- instances: nothing was torn down, so nothing was reopened.
+    assert(machine.scsi.device[1].image.present, F"${model}: channel 0 medium gone")
+    assert(machine.scsi.device[1].image.filename == ch0_file, F"${model}: channel 0 is a different medium")
+    assert(machine.scsi.device[1].image.path == ch0_stem, F"${model}: channel 0 was reopened")
+    assert(machine.scsi2.device[4].image.present, F"${model}: channel 1 medium gone")
+    assert(machine.scsi2.device[4].image.filename == ch1_file, F"${model}: channel 1 is a different medium")
+    assert(machine.scsi2.device[4].image.path == ch1_stem, F"${model}: channel 1 was reopened")
+    -- And they did not swap buses on the way through.
+    assert(not gs.ok(function() return machine.scsi.device[4].type end), F"${model}: channel 1's drive landed on channel 0")
+    assert(not gs.ok(function() return machine.scsi2.device[1].type end), F"${model}: channel 0's drive landed on channel 1")
+
+    echo(F"ans-machine-restart ${model}: both fast/wide channels kept their media across the power cycle")
+end
+
+-- The fail-safe red button (Network Server Hardware Developer Notes §2.7):
+-- "resets parameter RAM but not NVRAM".  A machine reset: nothing is torn
+-- down, so the media stay the same open instances.
+local function red_button(model, ram_kb)
+    machine.boot{model = model, ram = ram_kb, rom = vars.ROM}
+    local pram_default = machine.rtc.pram.peek(0x20)
+    machine.rtc.pram.poke(0x20, gs.bytes(0x5A, 1))
+    machine.nvram.poke(0x1F00, gs.bytes(0xA5, 1))
+    assert(machine.rtc.pram.peek(0x20) == 0x5A, F"${model}: PRAM poke did not land")
+    machine.board.reset_button()
+    assert(machine.rtc.pram.peek(0x20) == pram_default, F"${model}: the red button did not reset parameter RAM")
+    assert(machine.nvram.peek(0x1F00) == 0xA5, F"${model}: the red button cleared NVRAM")
+    assert(machine.cpu.pc == 0xFFF00100, F"${model}: the red button did not reset the CPU")
+    echo(F"ans-machine-restart ${model}: the red button reset PRAM and kept NVRAM")
+end
+
+restarts("ans500", 32768)
+restarts("ans700", 49152)
+red_button("ans500", 32768)
+quit()
