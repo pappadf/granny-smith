@@ -84,6 +84,8 @@ machine, so a test can pick its host freely. Naming grammar:
 | `system_7_6_170mb_24ac.img` | Mac OS 7.6, 170 MB HD160SC, minimum system + 24AC drivers |
 | `system_7_6_170mb_24ac_qd3d.dmg` | a UDIF (`files.convert`), opened as-is: as above plus QuickDraw 3D 1.6 and the QuickDraw 3D Accelerator Card's driver and RAVE plug-in; a `QD3D Lab` folder holds alternate QD3D builds, MacsBug, RAVE tools and test apps (`tnt-qd3d`) |
 | `system_7_1_77mb_av.img` | System 7.1 + System Enabler 088, 77 MB, full AV install (A•ROSE, PlainTalk, QuickTime) on built-in CIVIC video |
+| `system_7_1_20mb_24ac_cd_32bit_penguin_sarge.dmg` | ULMO (xz) UDIF: `system_7_1_20mb_24ac_cd_32bit.img` plus Penguin 19 and Debian sarge's Linux 2.2.25 kernel in `:Linux:`, with Penguin's saved settings in `Startup Items`, so the machine boots Linux unattended (hold Command to stay in Mac OS); pairs with `debian_3_1_512mb_iici.dmg` at SCSI ID 1 (`iici-debian-sarge`) |
+| `system_7_1_20mb_24ac_cd_32bit_penguin_bookworm.dmg` | the same with Linux 6.1 and its initrd (Penguin's SIZE raised to 40 MB); pairs with `debian_12_2gb_q950_xfce.dmg` (`q950-debian-bookworm`) |
 
 Trait tokens in prepared-image names are a closed vocabulary: `mode32`,
 `24ac`, `824gc`, `32bit`, **`cd` — CD-ROM driver support installed in the
@@ -91,7 +93,13 @@ System Folder** (not "cdev"), and **`av` — a Quadra 840AV /
 Centris 660AV install carrying System Enabler 088**, which the AV machines
 cannot boot without (its `gbly` gates on machine IDs 72 and 54, so a stock
 volume will not start them at all), and **`qd3d` — QuickDraw 3D and the
-QuickDraw 3D Accelerator Card software installed**.
+QuickDraw 3D Accelerator Card software installed**, and **`penguin_<distro>` — Penguin 19
+and a Linux kernel in `:Linux:`, set to auto-boot the named Debian disk**.
+
+The Debian disks themselves follow the same `<os>_<ver>_<size>_<traits>`
+shape: `debian_3_1_512mb_iici.dmg` (sarge, ext2, IIci with an 8•24) and
+`debian_12_2gb_q950_xfce.dmg` (Debian 12-era m68k with XFCE, ext4, Quadra 950),
+each an Apple partition map whose second partition is the root filesystem.
 
 ## Data revision pinning
 

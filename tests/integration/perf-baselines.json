@@ -176,6 +176,10 @@
       "instr": 459723082,
       "tolerance": 0.2
     },
+    "iici-debian-sarge/x11": {
+      "instr": 1577270261,
+      "tolerance": 0.2
+    },
     "iicx-gsvrom/gsvrom-24ac": {
       "instr": 55312311,
       "tolerance": 0.2
@@ -226,6 +230,10 @@
     },
     "pm8100-24ac-sysinfo/bench": {
       "instr": 9091033600,
+      "tolerance": 0.2
+    },
+    "q950-debian-bookworm/desktop": {
+      "instr": 20779565525,
       "tolerance": 0.2
     },
     "quadra-dual-card/dual": {
