@@ -32,25 +32,10 @@
 // Streams may be concatenated, with zero padding in multiples of four.
 
 #include "codec_internal.h"
+#include "lzma_internal.h"
 
 #include <stdlib.h>
 #include <string.h>
-
-#define LZMA_STATES        12 // the literal/match history machine
-#define LZMA_POS_STATES    16 // 1 << pb at most
-#define LZMA_PROB_INIT     1024 // half of 1 << 11
-#define LZMA_PROB_BITS     11 // probabilities are 11-bit fractions
-#define LZMA_MOVE_BITS     5 // adaptation speed
-#define LZMA_TOP           (1u << 24) // the range is renormalised below this
-#define LZMA_MATCH_MIN     2 // shortest match
-#define LZMA_END_POS_MODEL 14 // distance slots below this use modelled extra bits
-#define LZMA_FULL_DIST     128 // distances below this need no direct bits
-#define LZMA_ALIGN_BITS    4 // low distance bits with their own model
-#define LZMA_LIT_STATES    7 // states below this were last a literal
-
-#define LZMA2_MAX_LCLP 4 // LZMA2 limits lc + lp
-
-typedef uint16_t lzma_prob_t;
 
 // ============================================================================
 // Range decoder
@@ -147,40 +132,9 @@ static uint32_t rc_tree_reverse(lzma_rc_t *rc, lzma_prob_t *probs, int n) {
 // The LZMA model
 // ============================================================================
 
-// A length coder: 0..7 (low, per position state), 8..15 (mid, per position
-// state) or 16..271 (high), plus LZMA_MATCH_MIN.
-typedef struct {
-    lzma_prob_t choice, choice2;
-    lzma_prob_t low[LZMA_POS_STATES][1 << 3];
-    lzma_prob_t mid[LZMA_POS_STATES][1 << 3];
-    lzma_prob_t high[1 << 8];
-} lzma_len_t;
-
-typedef struct {
-    unsigned lc, lp, pb; // literal context bits, literal position bits, position bits
-    lzma_prob_t *lit; // 0x300 probabilities per literal context
-    size_t lit_n; // probabilities allocated in `lit`
-    lzma_prob_t is_match[LZMA_STATES][LZMA_POS_STATES];
-    lzma_prob_t is_rep[LZMA_STATES];
-    lzma_prob_t is_rep_g0[LZMA_STATES];
-    lzma_prob_t is_rep_g1[LZMA_STATES];
-    lzma_prob_t is_rep_g2[LZMA_STATES];
-    lzma_prob_t is_rep0_long[LZMA_STATES][LZMA_POS_STATES];
-    lzma_prob_t dist_slot[4][1 << 6]; // by length: 2, 3, 4, 5+
-    lzma_prob_t dist_special[LZMA_FULL_DIST - LZMA_END_POS_MODEL + 1];
-    lzma_prob_t dist_align[1 << LZMA_ALIGN_BITS];
-    lzma_len_t match_len, rep_len;
-    unsigned state;
-    uint32_t rep[4];
-
-    uint8_t *dst;
-    size_t cap, pos; // the output (and dictionary) and bytes in it
-    size_t dict_start; // the position of the last dictionary reset
-} lzma_t;
-
 // Decode properties byte `d` (lc + 9 * (lp + 5 * pb)) into the model,
 // allocating its literal coders.
-static int lzma_set_props(lzma_t *z, unsigned d, unsigned max_lclp) {
+int codec_lzma_set_props(lzma_t *z, unsigned d, unsigned max_lclp) {
     if (d >= 9 * 5 * 5)
         return CODEC_ERR_DATA;
     unsigned lc = d % 9, lp = (d / 9) % 5, pb = d / 45;
@@ -207,7 +161,7 @@ static void probs_init(lzma_prob_t *p, size_t n) {
 }
 
 // Reset every probability, the state and the repeat distances.
-static void lzma_reset_state(lzma_t *z) {
+void codec_lzma_reset_state(lzma_t *z) {
     probs_init(z->lit, (size_t)0x300 << (z->lc + z->lp));
     probs_init(&z->is_match[0][0], sizeof(z->is_match) / sizeof(lzma_prob_t));
     probs_init(z->is_rep, LZMA_STATES);
@@ -408,14 +362,14 @@ static int64_t lzma2_run(lzma_t *z, const uint8_t *src, size_t len, size_t *used
         if (reset >= 2) {
             if (at >= len)
                 return CODEC_ERR_TRUNCATED;
-            int rc = lzma_set_props(z, src[at++], LZMA2_MAX_LCLP);
+            int rc = codec_lzma_set_props(z, src[at++], LZMA2_MAX_LCLP);
             if (rc)
                 return rc;
             need_props = false;
         } else if (need_props)
             return CODEC_ERR_DATA;
         if (reset >= 1)
-            lzma_reset_state(z);
+            codec_lzma_reset_state(z);
         if (packed > len - at)
             return CODEC_ERR_TRUNCATED;
         if (unpacked > z->cap - z->pos)
@@ -436,9 +390,7 @@ static int64_t lzma2_run(lzma_t *z, const uint8_t *src, size_t len, size_t *used
 // .xz
 // ============================================================================
 
-#define XZ_HEADER_SIZE  12 // stream header and footer
-#define XZ_FILTER_LZMA2 0x21
-static const uint8_t xz_magic[6] = {0xFD, '7', 'z', 'X', 'Z', 0x00};
+const uint8_t codec_xz_magic[6] = {0xFD, '7', 'z', 'X', 'Z', 0x00};
 
 // A variable-length integer (7 bits a byte, low first) at src[*at..end).
 static int xz_varint(const uint8_t *src, size_t end, size_t *at, uint64_t *v) {
@@ -556,7 +508,7 @@ static int64_t xz_stream(lzma_t *z, const uint8_t *src, size_t len, size_t *at) 
     size_t p = *at;
     if (len - p < XZ_HEADER_SIZE)
         return CODEC_ERR_TRUNCATED;
-    if (memcmp(src + p, xz_magic, sizeof(xz_magic)) != 0)
+    if (memcmp(src + p, codec_xz_magic, sizeof(codec_xz_magic)) != 0)
         return CODEC_ERR_DATA;
     const uint8_t *flags = src + p + 6;
     if (codec_crc32(0, flags, 2) != codec_le32(src + p + 8))
@@ -605,7 +557,7 @@ int64_t codec_xz_decompress(const uint8_t *src, size_t len, uint8_t *dst, size_t
             pad++;
         if (pad == len && ((pad - at) & 3) == 0)
             break;
-        if (((pad - at) & 3) != 0 || len - pad < sizeof(xz_magic) || memcmp(src + pad, xz_magic, 6) != 0) {
+        if (((pad - at) & 3) != 0 || len - pad < sizeof(codec_xz_magic) || memcmp(src + pad, codec_xz_magic, 6) != 0) {
             rc = CODEC_ERR_DATA; // something other than a stream follows
             break;
         }
@@ -637,9 +589,9 @@ int64_t codec_lzma_alone_decompress(const uint8_t *src, size_t len, uint8_t *dst
         return CODEC_ERR_NOMEM;
     z->dst = dst;
     z->cap = cap;
-    int rc = lzma_set_props(z, src[0], 8 + 4);
+    int rc = codec_lzma_set_props(z, src[0], 8 + 4);
     if (rc == 0) {
-        lzma_reset_state(z);
+        codec_lzma_reset_state(z);
         lzma_rc_t r;
         rc = rc_init(&r, src + LZMA_ALONE_HEADER, len - LZMA_ALONE_HEADER);
         if (rc == 0)

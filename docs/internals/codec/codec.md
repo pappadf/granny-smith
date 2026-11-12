@@ -5,8 +5,10 @@ tree compresses, decompresses and checksums data: a C99 library with one
 public header, [`codec.h`](../../../src/codec/include/codec.h), and no
 dependency beyond libc. Its sources are `lib/inflate.c` and `lib/deflate.c`
 (DEFLATE / zlib), `lib/adc.c`, `lib/bzip2.c`, `lib/lzfse.c` (with LZVN),
-`lib/lzma.c` (LZMA, LZMA2, xz, `.lzma`), `lib/checksum.c` and `lib/codec.c`
-(dispatch by id); `lib/codec_internal.h` is private to them.
+`lib/lzma.c` (LZMA, LZMA2, xz, `.lzma`), `lib/lzma_enc.c` (the xz
+encoder), `lib/checksum.c` and `lib/codec.c` (dispatch by id);
+`lib/codec_internal.h` and `lib/lzma_internal.h` (the LZMA model the
+decoder and encoder share) are private to them.
 
 ## 1. Responsibilities & design
 
@@ -19,7 +21,7 @@ each algorithm has one implementation:
 | UDIF chunks (`src/core/storage/image_udif.c`) | ADC, zlib, bzip2, LZFSE, xz, by chunk type |
 | NDIF chunks (`image_ndif.c`) | ADC |
 | QCOW2 clusters (`image_qcow2.c`) | raw DEFLATE |
-| the UDIF writer (`udif_writer.c`) | the zlib encoder, CRC-32 (and its zero-run form) |
+| the UDIF writer (`udif_writer.c`) | the zlib encoder (or, opted into, the xz encoder), CRC-32 (and its zero-run form) |
 | the PNG reader and writer (`src/core/debug/debug.c`), the ImageWriter's page store (`iw_page.c`) and the PDF writer (`pdf_writer.c`) | zlib, both ways |
 | MOOF, AFP's append logs, BMAC, the Rage 128 CCE, the PCI option-ROM identity | CRC-32 |
 
@@ -100,6 +102,17 @@ against the buffers it addresses, and a malformed stream is an error.
   the stream footer — and concatenated streams with zero padding decode as
   one.
 - **ADC.** Literal runs and short/long back-references, byte-aligned.
+- **xz encoding.** The decoder's model run backwards through a range
+  encoder, over a heuristic parse: hash chains over 3-byte prefixes (as
+  deep as the level asks), the four repeat distances tried at every
+  position and preferred unless a new match is clearly longer, one byte of
+  lazy matching, short repeats for a byte equal to the one at the last
+  distance, and short matches far back dropped as not worth their distance
+  bits. The output is one stream, one block, LZMA2 (lc 3, lp 0, pb 2):
+  chunks close at 64 KiB coded or 2 MiB decoded, a chunk that does not
+  shrink goes out stored with the model reset after it, and the CRC-64
+  check, index and footer follow. xz-utils and Python's `lzma` read what it
+  writes, and the UDIF interop workflow has hdiutil open its `.dmg`s.
 
 ## 4. Object-model / shell surface
 
@@ -140,6 +153,10 @@ None: the library holds no state between calls.
   has) would let peeler unwrap `.bz2` and `.xz` files, and `.tar.bz2` /
   `.tar.xz`, as it does gzip.
 - QCOW2's zstd clusters are refused: there is no zstd decoder.
+- The xz encoder's parse is heuristic: about 5% larger than `xz -6`, on a
+  par with `xz -0`. A price-based (optimal) parse would close most of it.
+  On data that is mostly incompressible it comes out a fraction of a
+  percent larger than deflate, which stores such bytes verbatim.
 - Speed, measured on one x86-64 core: LZFSE 150–800 MB/s, zlib 190–300,
   xz 27–130, bzip2 18–32 decoded. The inflater emits a byte at a time, and
   the bzip2 decoder finds each Huffman code by walking the code lengths; a

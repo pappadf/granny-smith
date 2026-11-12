@@ -17,7 +17,9 @@
 //   - one whole-disk 'mish' block table, starting at sector 0;
 //   - chunks of chunk_sectors sectors (default 128 = 64 KB), each ZERO
 //     (all zero; consecutive ones merge into a single entry), ZLIB (a
-//     complete zlib stream) or RAW (when deflate does not make it smaller);
+//     complete zlib stream) -- or, when the caller asks for xz, LZMA (a
+//     complete xz stream, hdiutil's ULMO) -- or RAW (when compression does
+//     not make it smaller);
 //   - the table's CRC-32 over the decoded bytes, the trailer's over the
 //     data fork, and the master checksum over the table checksums;
 //   - a length that is not a whole number of sectors is zero-padded to the
@@ -39,9 +41,23 @@ typedef struct udif_writer udif_writer_t;
 #define UDIF_WRITER_CHUNK_SECTORS 128u // 64 KB
 #define UDIF_ORIGIN_MAX           4096u // bytes of gs-origin udif_info reports, terminator included
 
+// The codec a writer compresses its chunks with.  zlib is the default:
+// it decodes several times faster, which matters for an image read in
+// place, and every UDIF reader opens it.  xz is 15-20% smaller, encodes
+// at about zlib level 9's speed, and opens in hdiutil on macOS 10.15 and
+// later (and here).
+typedef enum {
+    UDIF_CODEC_ZLIB = 0, // ZLIB chunks (UDZO)
+    UDIF_CODEC_XZ, // LZMA chunks, each an xz stream (ULMO)
+} udif_codec_t;
+
+// "zlib" or "xz" (NULL or empty: zlib) as a codec; -1 for any other name.
+int udif_codec_parse(const char *name, udif_codec_t *out);
+
 typedef struct {
     uint32_t chunk_sectors; // power of two in 8..2048; 0 = UDIF_WRITER_CHUNK_SECTORS
-    int level; // 0 = ZERO + RAW only (no deflate); 1..9 deflate effort; < 0 = default (1)
+    udif_codec_t codec; // what compressed chunks are coded with
+    int level; // 0 = ZERO + RAW only (no compression); 1..9 effort; < 0 = the codec's default (zlib 1, xz 6)
     const char *source_name; // recorded as gs-source (may be NULL)
     const char *origin; // recorded as gs-origin: where the bytes came from, as the caller says (may be NULL)
 } udif_writer_opts_t;

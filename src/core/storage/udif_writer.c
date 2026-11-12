@@ -71,12 +71,14 @@ struct udif_writer {
     uint32_t chunk_sectors;
     size_t chunk_bytes;
     int level;
+    udif_codec_t codec;
 
     uint8_t *partial; // one chunk being gathered
     size_t partial_len;
-    uint8_t *zbuf; // deflate output
+    uint8_t *zbuf; // compressed output
     size_t zcap;
-    codec_deflate_state_t *ds;
+    codec_deflate_state_t *ds; // the zlib encoder (UDIF_CODEC_ZLIB)
+    codec_xz_state_t *xs; // the xz encoder (UDIF_CODEC_XZ)
 
     wext_t *ext;
     size_t n_ext, cap_ext;
@@ -127,8 +129,12 @@ udif_writer_t *udif_writer_open(const char *path, const udif_writer_opts_t *opts
             snprintf(err, errcap, "chunk of %u sectors: must be a power of two in 8..2048", o.chunk_sectors);
         return NULL;
     }
+    if (o.codec != UDIF_CODEC_ZLIB && o.codec != UDIF_CODEC_XZ) {
+        set_err(err, errcap, "unknown codec%s (%s)", "", EINVAL);
+        return NULL;
+    }
     if (o.level < 0)
-        o.level = 1;
+        o.level = o.codec == UDIF_CODEC_XZ ? 6 : 1;
     if (o.level > 9)
         o.level = 9;
     if (!path || !*path) {
@@ -160,11 +166,14 @@ udif_writer_t *udif_writer_open(const char *path, const udif_writer_opts_t *opts
     w->chunk_sectors = o.chunk_sectors;
     w->chunk_bytes = (size_t)o.chunk_sectors * UDIF_SECTOR_SIZE;
     w->level = o.level;
+    w->codec = o.codec;
+    bool xz = o.level > 0 && o.codec == UDIF_CODEC_XZ, zlib = o.level > 0 && o.codec == UDIF_CODEC_ZLIB;
     w->partial = malloc(w->chunk_bytes);
-    w->zcap = codec_deflate_bound(w->chunk_bytes);
+    w->zcap = xz ? codec_xz_bound(w->chunk_bytes) : codec_deflate_bound(w->chunk_bytes);
     w->zbuf = malloc(w->zcap);
-    w->ds = o.level > 0 ? codec_deflate_state_new(w->chunk_bytes) : NULL;
-    if (!w->f || !w->path || !w->partial || !w->zbuf || (o.level > 0 && !w->ds) ||
+    w->ds = zlib ? codec_deflate_state_new(w->chunk_bytes) : NULL;
+    w->xs = xz ? codec_xz_state_new(w->chunk_bytes) : NULL;
+    if (!w->f || !w->path || !w->partial || !w->zbuf || (zlib && !w->ds) || (xz && !w->xs) ||
         (o.origin && *o.origin && !w->origin)) {
         if (!w->f)
             close(fd);
@@ -236,7 +245,14 @@ static int emit_chunk(udif_writer_t *w, const uint8_t *p, size_t n) {
     const uint8_t *out = p;
     size_t out_len = n;
     uint32_t type = UDIF_CHUNK_RAW;
-    if (w->level > 0) {
+    if (w->level > 0 && w->codec == UDIF_CODEC_XZ) {
+        int64_t z = codec_xz_compress(w->xs, p, n, w->zbuf, w->zcap, w->level);
+        if (z > 0 && (size_t)z < n) {
+            out = w->zbuf;
+            out_len = (size_t)z;
+            type = UDIF_CHUNK_LZMA;
+        }
+    } else if (w->level > 0) {
         long z = codec_zlib_deflate(w->ds, p, n, w->zbuf, w->zcap, w->level);
         if (z > 0 && (size_t)z < n) {
             out = w->zbuf;
@@ -346,6 +362,7 @@ static void writer_free(udif_writer_t *w) {
     free(w->partial);
     free(w->zbuf);
     codec_deflate_state_free(w->ds);
+    codec_xz_state_free(w->xs);
     free(w->ext);
     free(w);
 }
@@ -641,6 +658,16 @@ int udif_writer_finish(udif_writer_t *w, udif_writer_stats_t *stats) {
         return rc;
     }
     writer_free(w);
+    return 0;
+}
+
+int udif_codec_parse(const char *name, udif_codec_t *out) {
+    if (!name || !*name || strcmp(name, "zlib") == 0)
+        *out = UDIF_CODEC_ZLIB;
+    else if (strcmp(name, "xz") == 0)
+        *out = UDIF_CODEC_XZ;
+    else
+        return -1;
     return 0;
 }
 

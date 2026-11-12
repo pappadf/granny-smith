@@ -41,7 +41,8 @@ static const class_desc_t floppy_controller_class;
 
 // The I/O-job export (io_leaf.h).  Weak: a unit suite of the controller
 // alone links no I/O leaves and exports here and now.
-value_t io_leaf_export_image(struct image *img, const char *dest, const char *what) __attribute__((weak));
+value_t io_leaf_export_image(struct image *img, const char *dest, const char *codec, const char *what)
+    __attribute__((weak));
 
 LOG_USE_CATEGORY_NAME("floppy");
 
@@ -1683,18 +1684,20 @@ static DEF_METHOD(floppy_disk_method_eject) {
     return val_none();
 }
 
-// `export(path)` — write this disk as it is now (source + delta, and the
-// sector tags for a DiskCopy destination) to a NEW file; the name picks the
-// format (image_export_to).  Never overwrites, never touches the source.
+// `export(path, [codec])` — write this disk as it is now (source + delta,
+// and the sector tags for a DiskCopy destination) to a NEW file; the name
+// picks the format (image_export_to), and a .dmg is compressed with `codec`
+// (zlib or xz).  Never overwrites, never touches the source.
 static DEF_METHOD(floppy_disk_method_export) {
     unsigned slot = 0;
     floppy_t *floppy = floppy_drive_floppy(self, &slot);
     image_t *img = floppy ? floppy_drive_image(floppy, slot) : NULL;
     if (!img)
         return val_err("disk.export: no disk inserted");
+    const char *codec = argc > 1 && argv[1].kind == VK_STRING ? argv[1].s : NULL;
     if (io_leaf_export_image)
-        return io_leaf_export_image(img, argv[0].s, "disk.export");
-    if (image_export_to(img, argv[0].s) != 0)
+        return io_leaf_export_image(img, argv[0].s, codec, "disk.export");
+    if (image_export_to_codec(img, argv[0].s, codec) != 0)
         return val_err("disk.export: failed to write '%s' (refuses to overwrite an existing file)", argv[0].s);
     return val_bool(true);
 }
@@ -1704,6 +1707,11 @@ static const arg_decl_t floppy_disk_export_args[] = {
      .kind = VK_STRING,
      .presentation_flags = VFLAG_PATH,
      .doc = "New file: .dc42/.diskcopy/.image = DiskCopy 4.2 with tags, .dmg = UDIF, else raw"},
+    {.name = "codec",
+     .kind = VK_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "A .dmg's compression: zlib (UDZO) or xz (ULMO: 15-20% smaller, decodes ~4x slower)",
+     .default_doc = "zlib"},
 };
 
 static const member_t floppy_disk_members[] = {
@@ -1740,7 +1748,7 @@ static const member_t floppy_disk_members[] = {
      .doc = "Save the disk as it is now to a new image file (Save As)",
      .method = {.ui_flags = MM_MUTATE | MM_IO,
                 .args = floppy_disk_export_args,
-                .nargs = 1,
+                .nargs = 2,
                 .result = VK_BOOL,
                 .fn = floppy_disk_method_export}                               },
 };

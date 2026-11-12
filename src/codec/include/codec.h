@@ -17,7 +17,7 @@
 //   bzip2      decode (one or more concatenated streams)
 //   LZFSE      decode, including its LZVN and raw blocks
 //   LZMA       decode: the xz container (LZMA2 inside), and the legacy
-//              .lzma ("LZMA alone") format
+//              .lzma ("LZMA alone") format; encode: xz
 //
 // Every one-shot decoder has the same shape: it reads `len` bytes of `src`,
 // writes at most `cap` bytes to `dst`, and returns the count written or a
@@ -182,6 +182,31 @@ int64_t codec_lzfse_decompress(const uint8_t *src, size_t len, uint8_t *dst, siz
 // reserved check types are skipped.  Other filters (BCJ, delta) are
 // CODEC_ERR_UNSUPPORTED.
 int64_t codec_xz_decompress(const uint8_t *src, size_t len, uint8_t *dst, size_t cap);
+
+// === LZMA: encode ===
+
+// Bytes of output buffer that always suffice for `len` bytes of input.
+size_t codec_xz_bound(size_t len);
+
+// Reusable encoder state (hash chains, the model) for inputs of at most
+// `max_len` bytes, so a caller compressing many chunks allocates once.
+typedef struct codec_xz_state codec_xz_state_t;
+codec_xz_state_t *codec_xz_state_new(size_t max_len);
+void codec_xz_state_free(codec_xz_state_t *st);
+
+// Compress `in` into one complete xz stream in `out` (`cap` bytes, at least
+// codec_xz_bound(len) to be sure): one block, LZMA2 (lc 3, lp 0, pb 2) with
+// a dictionary just covering the input, a CRC-64 check -- what
+// codec_xz_decompress, xz-utils and Apple's libcompression read.  `level`
+// 1..9 trades speed for size (hash-chain depth, lazy matching).  `st` may
+// be NULL (allocated for the call) and must otherwise have been made for at
+// least `len` bytes.  Returns the bytes written, CODEC_ERR_OVERFLOW when
+// `cap` is too small, or CODEC_ERR_NOMEM.
+//
+// The parse is heuristic (hash chains, the repeat distances, one byte of
+// lazy matching), not xz-utils' optimal one: its output is a little larger
+// than `xz` writes at the same effort.
+int64_t codec_xz_compress(codec_xz_state_t *st, const uint8_t *in, size_t len, uint8_t *out, size_t cap, int level);
 
 // Decode a legacy .lzma stream ("LZMA alone": a 13-byte header of
 // properties, dictionary size and decoded size, then raw LZMA).  An unknown

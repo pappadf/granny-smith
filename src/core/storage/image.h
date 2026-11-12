@@ -254,6 +254,12 @@ int image_create_blank_profile(const char *filename, uint32_t block_count);
 // failure.
 int image_export_to(image_t *image, const char *dest_path);
 
+// image_export_to with a codec for a .dmg destination: "zlib" (UDZO, the
+// default; NULL or "" mean it too) or "xz" (ULMO, 15-20% smaller, slower to
+// read; udif_writer.h).  A codec other than zlib for any other destination
+// fails the export.
+int image_export_to_codec(image_t *image, const char *dest_path, const char *codec);
+
 // The same export in three steps, so the write can run off the emulator
 // thread (an I/O job, io_leaf.h): begin on the emulator thread (refuses an
 // existing destination; snapshots the read side and write-locks the
@@ -261,6 +267,9 @@ int image_export_to(image_t *image, const char *dest_path);
 // file is removed on failure), end on the emulator thread.
 typedef struct image_export image_export_t;
 image_export_t *image_export_begin(image_t *image, const char *dest_path, char *err, size_t err_cap);
+// Between begin and run: the codec of a .dmg export (as image_export_to_codec
+// takes it).  0, or -1 with the reason in `err`.
+int image_export_set_codec(image_export_t *e, const char *codec, char *err, size_t err_cap);
 int image_export_run(image_export_t *e, char *err, size_t err_cap);
 void image_export_end(image_export_t *e);
 

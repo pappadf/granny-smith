@@ -187,13 +187,18 @@ TEST(deflate_picks_the_smallest_block_form) {
 
 // ---- writer -> reader --------------------------------------------------------
 
+// The codec write_image compresses with (a test that wants xz sets it, and
+// sets it back).
+static udif_codec_t s_codec = UDIF_CODEC_ZLIB;
+
 // Write `len` bytes of `content` to `path` in appends of `step` bytes
-// (0: random sizes), with chunks of `chunk_sectors`.
+// (0: random sizes), with chunks of `chunk_sectors`, in s_codec.
 static void write_image(const char *path, const uint8_t *content, size_t len, size_t step, uint32_t chunk_sectors,
                         int level, udif_writer_stats_t *st) {
     unlink(path);
     char err[200] = {0};
-    udif_writer_opts_t o = {.chunk_sectors = chunk_sectors, .level = level, .source_name = "Disk <1> & co.img"};
+    udif_writer_opts_t o = {
+        .chunk_sectors = chunk_sectors, .codec = s_codec, .level = level, .source_name = "Disk <1> & co.img"};
     udif_writer_t *w = udif_writer_open(path, &o, err, sizeof(err));
     ASSERT_TRUE(w != NULL);
     g_rng = 12345;
@@ -466,12 +471,14 @@ TEST(chunk_bound_applies_to_foreign_images) {
 // decode to (zero-padded to a sector), and a MANIFEST of the names.  Every
 // sample also passes check_image here.  Without the variable it does nothing.
 static void emit_sample(const char *dir, FILE *manifest, const char *name, const uint8_t *in, size_t len,
-                        uint32_t chunk_sectors, int level) {
+                        uint32_t chunk_sectors, int level, udif_codec_t codec) {
     char dmg[512], img[512];
     snprintf(dmg, sizeof(dmg), "%s/%s.dmg", dir, name);
     snprintf(img, sizeof(img), "%s/%s.img", dir, name);
     udif_writer_stats_t st;
+    s_codec = codec;
     write_image(dmg, in, len, 1u << 20, chunk_sectors, level, &st);
+    s_codec = UDIF_CODEC_ZLIB;
     check_image(dmg, in, len, &st);
     size_t padded = (len + 511) / 512 * 512;
     FILE *f = fopen(img, "wb");
@@ -514,17 +521,22 @@ TEST(writer_emits_interop_samples) {
 
     size_t mixed_len = 8u << 20;
     uint8_t *mixed = make_content(mixed_len, 2024);
-    emit_sample(dir, m, "mixed-l1", mixed, mixed_len, 128, 1);
-    emit_sample(dir, m, "mixed-l9", mixed, mixed_len, 128, 9);
-    emit_sample(dir, m, "mixed-l0", mixed, mixed_len, 128, 0);
-    emit_sample(dir, m, "mixed-4k", mixed, mixed_len, 8, 1);
-    emit_sample(dir, m, "mixed-1m", mixed, mixed_len, 2048, 6);
-    emit_sample(dir, m, "odd-length", mixed, 1000123, 128, 1);
+    emit_sample(dir, m, "mixed-l1", mixed, mixed_len, 128, 1, UDIF_CODEC_ZLIB);
+    emit_sample(dir, m, "mixed-l9", mixed, mixed_len, 128, 9, UDIF_CODEC_ZLIB);
+    emit_sample(dir, m, "mixed-l0", mixed, mixed_len, 128, 0, UDIF_CODEC_ZLIB);
+    emit_sample(dir, m, "mixed-4k", mixed, mixed_len, 8, 1, UDIF_CODEC_ZLIB);
+    emit_sample(dir, m, "mixed-1m", mixed, mixed_len, 2048, 6, UDIF_CODEC_ZLIB);
+    emit_sample(dir, m, "odd-length", mixed, 1000123, 128, 1, UDIF_CODEC_ZLIB);
+    emit_sample(dir, m, "mixed-xz", mixed, mixed_len, 128, -1, UDIF_CODEC_XZ);
+    emit_sample(dir, m, "mixed-1m-xz", mixed, mixed_len, 2048, 9, UDIF_CODEC_XZ);
     free(mixed);
 
     size_t text_len = 4u << 20;
     uint8_t *text = make_text(text_len, 7);
-    emit_sample(dir, m, "text-l6", text, text_len, 128, 6);
+    emit_sample(dir, m, "text-l6", text, text_len, 128, 6, UDIF_CODEC_ZLIB);
+    // xz (ULMO) samples: hdiutil opens them (macOS 10.15 and later); 7-Zip
+    // and dmg2img do not, and check-udif-interop.sh skips them there.
+    emit_sample(dir, m, "text-xz", text, text_len, 128, -1, UDIF_CODEC_XZ);
     free(text);
 
     // A blank disk, as files.hd_create makes one, and the zeros it is.
@@ -582,6 +594,56 @@ static bool has_chunk_type(source_t *host, uint32_t type) {
     udif_map_free(map);
     free(xml);
     return found;
+}
+
+// The xz codec writes LZMA chunks (hdiutil's ULMO) that read back in place
+// and verify, at the default and the extreme levels and every chunk size;
+// it is smaller than zlib on the same content, and level 0 still writes
+// zero runs and raw chunks only.
+TEST(writer_xz_round_trips) {
+    sandbox();
+    size_t len = 3u << 20;
+    uint8_t *in = make_content(len, 77);
+    s_codec = UDIF_CODEC_XZ;
+    const uint32_t chunks[] = {8, 128, 2048};
+    const int levels[] = {-1, 1, 9};
+    for (size_t c = 0; c < 3; c++) {
+        udif_writer_stats_t st;
+        const char *p = sb_path("xz.dmg");
+        write_image(p, in, len, 65536, chunks[c], levels[c], &st);
+        check_image(p, in, len, &st);
+        source_t *host = source_host(p, NULL);
+        ASSERT_TRUE(has_chunk_type(host, UDIF_CHUNK_LZMA));
+        ASSERT_TRUE(!has_chunk_type(host, UDIF_CHUNK_ZLIB));
+        source_release(host);
+    }
+    // Smaller than zlib on disk-like content.  (On content that is mostly
+    // incompressible, as `in` is, the two are within a fraction of a
+    // percent: deflate stores such bytes, LZMA codes them at a hair over
+    // eight bits.)
+    size_t text_len = 2u << 20;
+    uint8_t *text = make_text(text_len, 5);
+    udif_writer_stats_t sx, sz;
+    write_image(sb_path("x.dmg"), text, text_len, 65536, 128, -1, &sx);
+    check_image(sb_path("x.dmg"), text, text_len, &sx);
+    s_codec = UDIF_CODEC_ZLIB;
+    write_image(sb_path("z.dmg"), text, text_len, 65536, 128, -1, &sz);
+    ASSERT_TRUE(sx.stored_bytes < sz.stored_bytes - sz.stored_bytes / 10);
+    free(text);
+    // Level 0: no compression, whatever the codec.
+    s_codec = UDIF_CODEC_XZ;
+    udif_writer_stats_t s0;
+    write_image(sb_path("x0.dmg"), in, len, 65536, 128, 0, &s0);
+    source_t *host = source_host(sb_path("x0.dmg"), NULL);
+    ASSERT_TRUE(!has_chunk_type(host, UDIF_CHUNK_LZMA));
+    source_release(host);
+    s_codec = UDIF_CODEC_ZLIB;
+    // The codec names the object model takes.
+    udif_codec_t k;
+    ASSERT_TRUE(udif_codec_parse("xz", &k) == 0 && k == UDIF_CODEC_XZ);
+    ASSERT_TRUE(udif_codec_parse(NULL, &k) == 0 && k == UDIF_CODEC_ZLIB);
+    ASSERT_TRUE(udif_codec_parse("bzip2", &k) == -1);
+    free(in);
 }
 
 // With GS_UDIF_FOREIGN_DIR set, read back the images hdiutil made from the
@@ -668,6 +730,7 @@ int main(void) {
     RUN(corrupt_chunk_fails_only_its_range);
     RUN(chunk_bound_applies_to_foreign_images);
     RUN(writer_emits_interop_samples);
+    RUN(writer_xz_round_trips);
     RUN(foreign_images_decode);
     sandbox_remove();
     return 0;
