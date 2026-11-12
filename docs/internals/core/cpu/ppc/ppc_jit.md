@@ -100,7 +100,14 @@ generated function each.  A reached word keeps its chunk (`owner[]`) from
 one translation to the next; code reached for the first time goes into
 new chunks, whole blocks in address order, at most `jit.chunk_cap`
 instructions each (when a region's 255 chunks, `JIT_MAX_CHUNKS`, run out, everything is
-assigned afresh).  Each chunk records a signature of what it was
+assigned afresh).  A chunk holds the words of **steady** pages or of
+**churny** ones, never both: a page is churny once its blocks were
+invalidated before two translations in a row (`JIT_CHURNY_ON`), and steady
+again after as many translations have found it untouched.  A function is
+regenerated when any word of its chunk changes, so a chunk shared with
+code that keeps changing would be regenerated with it; a chunk that has
+come to hold both kinds gives up the churny pages' words, which are
+assigned again as new (§3.2, the DR emulator).  Each chunk records a signature of what it was
 translated from (its words, leaders and mappings), and a translation
 regenerates only the chunks whose signature changed: new code costs a new
 small function, not the retranslation of what was there.  A chunk whose
@@ -366,6 +373,36 @@ while they live they run about 1.8× the predecoded tier.  (A 10 % budget
 did not help, and `--no-liftoff` showed V8's tier-up was not the cause.)
 DR blocks also end in `bl dispatcher`: about 2.3 M exits per 100 M
 instructions.
+
+**What that loss was.**  `jit.churn_ok = 1` translates the cache (no page
+turns volatile, no word unstable; for experiments), and with it the
+PM8500 desktop ran 34-51 MIPS in Node against 91-109 with the cache left
+to the predecoded tier, at a 97-99.5 % share and 470-1,330 instructions per
+entry, also in windows with no compile at all.  A profile of the same
+400 M instructions showed where: the emulator's *runtime* (`69010000`-
+`69018000`, never written), 0.41 s translated in the stock run, cost
+3.67 s, and every function had been generated 2.2 times in 9 s.  The
+runtime and the cache are one megabyte, so one region; new code of both
+was assigned to the same chunks in address order, the cache's changes
+changed those chunks' signatures, and the runtime's functions were
+regenerated with every translation of the region (100 times in 600 M
+instructions) and so never left the engine's baseline tier, which runs
+slower than the predecoded loop (PM6100 desktop: `--liftoff-only` 58-66
+MIPS, predecoded 87).  Not the cost of the stores (the helpers called
+from translated code were about 5 %).  With steady and churny pages in
+separate chunks (§2.1) the runtime's functions are not regenerated at all
+and the same run is 37-87 MIPS (median 56): better, still under the stock
+tier, because the cache's own functions are regenerated whole (a region
+translation regenerated 30 K words) and live in the baseline tier.  So
+the cache stays with the predecoded tier by default.  What the cache does,
+measured on that desktop: 15.6 stores per 1000 instructions land in it,
+99.4 % of them data (83 two-word inline caches of indirect 68K jumps,
+each right after a `bl` into the runtime); executed words change 9,750
+times per 100 M instructions on average, in a cycle of about 300 M (the
+flush): 20-29 K in the first 100 M, about 4.5 K in the next, 100-270 in
+the last; a generation's code is not at the last one's addresses.  The
+cache is also kept out by the unstable-word rule, not only the volatile
+one: every word is rewritten each generation, and unstable is for good.
 
 ### 3.3 Translation
 
@@ -662,7 +699,9 @@ Safari 18.2, Node 20).
 ## 5. Testing
 
 The predecode differential (`tests/integration/predecode-diff`) runs each
-PowerPC row a third time with the tier on, eagerly (`jit.threshold = 1`,
+PowerPC row (the 6100 and 7500 ROM boots, and `dr`: the 8500 booting
+System 7.6 on the DR emulator, whose cache is written while it runs) a
+third time with the tier on, eagerly (`jit.threshold = 1`,
 `jit.cooldown = 16`, `jit.budget = 100`), when the build has it (`jit.available`), and
 compares the checkpoints with the switch core's.  Build the Node wasm
 build (`make -f Makefile.headless TARGET=node`) and run the test with it;
@@ -721,6 +760,7 @@ Open Firmware (`pm7500-of`, 58 -> 50 MIPS): a few seconds at power-on.
 | `quiet` | entries after a code write before its region is retranslated (64) |
 | `supervisor` | 1 = also translate supervisor code running with data translation on, once the supervisor-translated SoA exists (the default: the Mac OS X boot is about 15 % faster with it than user-only, §3.3) |
 | `chunk_cap` | the most instructions one function translates (1024; 64..65536) |
+| `churn_ok` | experiments: 1 = code that keeps changing is translated like any other (no volatile pages, no unstable words, §3.2); setting it drops every translation (0) |
 | `async` | 1 = compile through `WebAssembly.compile` off the call path (§2.2; the default except under Node) |
 | `regs` | 0 = guest GPRs in locals per block, 1 = per function; setting it drops every translation |
 | `trace` | debugging: 1 every entry and exit; 2 a histogram of exit pcs, 3 prints it with the untranslated exits summed by opcode; 4 writes every module to the working directory; 5 the bytes per instruction, and per instruction by what they are for; 6 every region translation and what it regenerated, and every word promoted to a leader with the word before it and how the loop arrived; 7 where translation time goes; 8 every block invalidation; 9 every code-page write; 10 why `ppc_jit_code_store` declined; 11 collects per-word and per-writer statistics of the writes reaching translated pages (invalidating or not, value changed or not, CPU / translated code / DMA, and a timeline of invalidations), 12 prints them (and the hook's calls per code page); 13 appends a snapshot of every translated page to `jitsnap.bin`; 14 counts `ppc_jit_fp`'s calls by opcode, 15 prints them; 17 checks every inline FP arithmetic word translated from then on against the C kernel, printing mismatches, 18 prints the totals |

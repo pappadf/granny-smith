@@ -69,6 +69,9 @@ static uint32_t g_cooldown = 64; // entries between two compiles of a region (0:
 static uint32_t g_quiet = 64; // entries after which a region with invalidated blocks is retranslated
 static uint32_t g_supervisor = 1; // jit.supervisor: translate supervisor code that runs with data translation on
 static uint32_t g_chunk_cap = 1024; // instructions per translated function (a region may have several)
+// jit.churn_ok (experiments): 1 = code that keeps changing is translated like any other -- no page turns
+// volatile, no word unstable.  Off, it is left to the predecoded tier (§3.2).
+static uint32_t g_churn_ok;
 static uint32_t g_budget_pct = 3; // jit.budget: the share of time translating may take
 #define JIT_BUDGET_START_MS 50.0
 static uint32_t g_trace; // jit.trace: print every entry and exit (debugging)
@@ -4092,9 +4095,14 @@ typedef int32_t (*jit_fn_t)(ppc_t *p, int32_t budget, int32_t entry, int32_t fol
 #define JIT_VOLATILE_LOOKUPS 2000000ull // a volatile page is tried again after this many lookups, doubling
 #define JIT_SPLIT_COMPILES   16u // translations of its region before a chunk is retranslated for new leaders, doubling
 #define JIT_UNSTABLE_WRITES  4 // a word stored into this often between translations is not translated
-#define JIT_POOR_RUN         8 // a run that consumes fewer slots is poor ...
-#define JIT_POOR_MAX         32 // ... and an entry with this many more poor than good is left alone
-#define NONE8                0xFFu
+// A page whose blocks were invalidated before two translations in a row is
+// churny, and stays so until as many translations as JIT_CHURNY_ON / 1 have
+// found it untouched.  Its code keeps its own chunks (compile_region).
+#define JIT_CHURNY_STEP 16
+#define JIT_CHURNY_ON   32
+#define JIT_POOR_RUN    8 // a run that consumes fewer slots is poor ...
+#define JIT_POOR_MAX    32 // ... and an entry with this many more poor than good is left alone
+#define NONE8           0xFFu
 
 // A member page of a region: what was translated and from where
 typedef struct jit_slot {
@@ -4106,6 +4114,8 @@ typedef struct jit_slot {
     uint8_t owner[JIT_PAGE_INSNS]; // per word: the chunk that translated it (NONE8)
     uint32_t hits; // stores that invalidated its blocks since the region's last translation
     uint32_t churn; // translations after which it had been invalidated again
+    uint8_t changes; // how often its code changed lately: up at a translation that found it invalidated, down otherwise
+    bool churny; // its code keeps changing: its words share no chunk with a steady page's (JIT_CHURNY_*)
     bool volatile_; // written too often: not translated for now (the predecoded tier runs it)
     uint32_t vol_count; // times it turned volatile
     uint64_t vol_until; // when it is tried again (g_st.lookups)
@@ -4435,7 +4445,17 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         jit_slot_t *s = R->slot[k];
         if (!s || s->volatile_)
             continue;
-        if (s->hits && ++s->churn >= JIT_CHURN_MAX) {
+        // How steadily its code changes: a page invalidated before
+        // translation after translation is churny (its chunks, below)
+        if (s->hits)
+            s->changes = s->changes > 255 - JIT_CHURNY_STEP ? 255 : (uint8_t)(s->changes + JIT_CHURNY_STEP);
+        else if (s->changes)
+            s->changes--;
+        if (s->changes >= JIT_CHURNY_ON)
+            s->churny = true;
+        else if (!s->changes)
+            s->churny = false;
+        if (!g_churn_ok && s->hits && ++s->churn >= JIT_CHURN_MAX) {
             s->volatile_ = true;
             s->vol_until = g_st.lookups + (JIT_VOLATILE_LOOKUPS << (s->vol_count < 12 ? s->vol_count : 12));
             s->vol_count++;
@@ -4476,7 +4496,7 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         s->classified = true;
         memset(s->poor, 0, sizeof s->poor); // the code may differ now
         for (uint32_t i = 0; i < JIT_PAGE_INSNS; i++) { // written often: for good (no flapping)
-            s->unstable[i] |= s->writes[i] >= JIT_UNSTABLE_WRITES;
+            s->unstable[i] |= !g_churn_ok && s->writes[i] >= JIT_UNSTABLE_WRITES;
             s->writes[i] >>= 1;
         }
         memset(leader[n], 0, JIT_PAGE_INSNS);
@@ -4530,7 +4550,7 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
                 walked[u][i] = 1;
                 break;
             }
-            if (s->unstable[i]) {
+            if (s->unstable[i] && !g_churn_ok) {
                 walked[u][i] = 1;
                 PUSH(s->lpage + 4 * i + 4); // (code: it runs; the predecoded loop comes back after it)
                 break;
@@ -4568,26 +4588,48 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
     // for the first time goes into new chunks, whole blocks in address
     // order, up to the cap each.  When the chunks run out, everything is
     // assigned afresh.
+    //
+    // A chunk holds the words of steady pages or of churny ones, never
+    // both: a function is regenerated when any word of its chunk changes,
+    // so one shared with code that keeps changing (the DR emulator's
+    // translation cache, in the megabyte of its own runtime) would be
+    // regenerated with it, over and over, and never leave the engine's
+    // baseline tier.  A chunk that has come to hold both gives up the
+    // churny pages' words; they are assigned again, as new.
     uint32_t total[JIT_MAX_CHUNKS];
     bool used[JIT_MAX_CHUNKS];
+    uint8_t kinds[JIT_MAX_CHUNKS]; // per chunk: 1 = steady words, 2 = churny words (3: both)
     for (int fresh = 0; fresh < 2; fresh++) {
         memset(total, 0, sizeof total);
         memset(used, 0, sizeof used);
+        memset(kinds, 0, sizeof kinds);
         for (uint32_t u = 0; u < n; u++) {
             jit_slot_t *s = R->slot[slot_page[u]];
             for (uint32_t i = 0; i < JIT_PAGE_INSNS; i++) {
                 if (!reached[u][i] || fresh)
                     s->owner[i] = NONE8;
-                else if (s->owner[i] != NONE8) {
-                    used[s->owner[i]] = true;
-                    total[s->owner[i]]++;
-                }
+                else if (s->owner[i] != NONE8)
+                    kinds[s->owner[i]] |= s->churny ? 2 : 1;
             }
         }
-        uint32_t c = NONE8;
+        for (uint32_t u = 0; u < n; u++) {
+            jit_slot_t *s = R->slot[slot_page[u]];
+            for (uint32_t i = 0; i < JIT_PAGE_INSNS; i++) {
+                if (s->owner[i] == NONE8)
+                    continue;
+                if (s->churny && kinds[s->owner[i]] == 3) {
+                    s->owner[i] = NONE8; // out of the mixed chunk
+                    continue;
+                }
+                used[s->owner[i]] = true;
+                total[s->owner[i]]++;
+            }
+        }
+        uint32_t cur[2] = {NONE8, NONE8}; // the chunk being filled, per kind of page
         bool out = false;
         for (uint32_t u = 0; u < n && !out; u++) {
             jit_slot_t *s = R->slot[slot_page[u]];
+            uint32_t kind = s->churny ? 1 : 0;
             for (uint32_t i = 0; i < JIT_PAGE_INSNS; i++) {
                 if (!reached[u][i] || s->owner[i] != NONE8)
                     continue;
@@ -4599,6 +4641,7 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
                     total[s->owner[i]]++;
                     continue;
                 }
+                uint32_t c = cur[kind];
                 if (c == NONE8 || (leader[u][i] && total[c] >= g_chunk_cap)) {
                     for (c = 0; c < JIT_MAX_CHUNKS &&
                                 (used[c] || (c < R->nchunks && (R->chunk[c].fn || R->chunk[c].fn_dead) && !fresh));
@@ -4609,6 +4652,7 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
                         break;
                     }
                     used[c] = true;
+                    cur[kind] = c;
                 }
                 s->owner[i] = (uint8_t)c;
                 total[c]++;
@@ -5851,7 +5895,8 @@ enum {
     JA_DIRECT,
     JA_ASYNC,
     JA_BUDGET,
-    JA_REGS
+    JA_REGS,
+    JA_CHURN_OK
 };
 
 static value_t jit_attr_get(struct object *self, const member_t *m) {
@@ -5873,6 +5918,8 @@ static value_t jit_attr_get(struct object *self, const member_t *m) {
         return val_uint(4, g_trace);
     case JA_BUDGET:
         return val_uint(4, g_budget_pct);
+    case JA_CHURN_OK:
+        return val_uint(4, g_churn_ok);
 #ifdef __EMSCRIPTEN__
     case JA_AVAILABLE:
         return val_uint(1, 1);
@@ -5960,6 +6007,12 @@ static value_t jit_attr_set(struct object *self, const member_t *m, value_t in) 
         ppc_jit_reset();
 #endif
         return val_none();
+    case JA_CHURN_OK:
+        g_churn_ok = in.u ? 1 : 0;
+#ifdef __EMSCRIPTEN__
+        ppc_jit_reset(); // (pages already volatile, words already unstable: start over)
+#endif
+        return val_none();
     case JA_DIRECT:
 #ifdef __EMSCRIPTEN__
         g_direct = in.u ? 1 : 0;
@@ -6030,6 +6083,9 @@ static const member_t jit_members[] = {
     JIT_ATTR("compiles", JA_COMPILES, "region translations", NULL),
     JIT_ATTR("functions", JA_FUNCTIONS, "functions generated (a region translates into chunks of chunk_cap)", NULL),
     JIT_ATTR("chunk_cap", JA_CHUNK_CAP, "the most instructions one generated function translates", jit_attr_set),
+    JIT_ATTR("churn_ok", JA_CHURN_OK,
+             "1 = also translate code that keeps changing (experiments; 0: it is left to the predecoded tier)",
+             jit_attr_set),
     JIT_ATTR("trace", JA_TRACE, "1 = print every entry into and exit from translated code (debugging)", jit_attr_set),
     JIT_ATTR("bytes", JA_BYTES, "bytes of WebAssembly generated", NULL),
     JIT_ATTR("calls", JA_CALLS, "entries into translated code", NULL),
