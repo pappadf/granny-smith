@@ -37,8 +37,9 @@ static void sandbox(void) {
 
 // Remove the sandbox and everything the tests left in it.
 static void sandbox_remove(void) {
-    const char *names[] = {"rt.dmg",  "l0.dmg",   "g0.dmg",  "g1.dmg",      "g2.dmg",     "g3.dmg",       "empty.dmg",
-                           "bad.dmg", "bad2.dmg", "big.dmg", "foreign.dmg", "origin.dmg", "no-origin.dmg"};
+    const char *names[] = {"rt.dmg",        "l0.dmg",  "g0.dmg",   "g1.dmg",  "g2.dmg",      "g3.dmg",
+                           "empty.dmg",     "bad.dmg", "bad2.dmg", "big.dmg", "foreign.dmg", "origin.dmg",
+                           "no-origin.dmg", "xz.dmg",  "x.dmg",    "x0.dmg",  "z.dmg"};
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
         unlink(sb_path(names[i]));
     rmdir(SANDBOX);
