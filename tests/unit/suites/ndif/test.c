@@ -7,7 +7,7 @@
 // so the tests are self-contained (no external image fixtures); the byte
 // layout matches real Disk Copy 6.3.3 images and Aaru's NDIF Structs.cs.
 
-#include "adc.h"
+#include "codec.h"
 #include "image_chunkmap.h"
 #include "image_ndif.h"
 #include "resource_fork.h"
@@ -36,7 +36,7 @@ TEST(adc_literal_run) {
     // 0x82 = 0x80 | 2 -> literal run of length 3, then 3 literal bytes.
     uint8_t in[] = {0x82, 'A', 'B', 'C'};
     uint8_t out[8] = {0};
-    long n = adc_decompress(in, sizeof(in), out, sizeof(out));
+    long n = codec_adc_decompress(in, sizeof(in), out, sizeof(out));
     ASSERT_EQ_INT(3, (int)n);
     ASSERT_EQ_INT(0, memcmp(out, "ABC", 3));
 }
@@ -46,7 +46,7 @@ TEST(adc_short_match_rle) {
     // (overlapping copy = RLE) producing "AAAA".
     uint8_t in[] = {0x80, 'A', 0x00, 0x00};
     uint8_t out[8] = {0};
-    long n = adc_decompress(in, sizeof(in), out, sizeof(out));
+    long n = codec_adc_decompress(in, sizeof(in), out, sizeof(out));
     ASSERT_EQ_INT(4, (int)n);
     ASSERT_EQ_INT(0, memcmp(out, "AAAA", 4));
 }
@@ -56,7 +56,7 @@ TEST(adc_long_match) {
     // "ABCDABCD".
     uint8_t in[] = {0x83, 'A', 'B', 'C', 'D', 0x40, 0x00, 0x03};
     uint8_t out[16] = {0};
-    long n = adc_decompress(in, sizeof(in), out, sizeof(out));
+    long n = codec_adc_decompress(in, sizeof(in), out, sizeof(out));
     ASSERT_EQ_INT(8, (int)n);
     ASSERT_EQ_INT(0, memcmp(out, "ABCDABCD", 8));
 }
@@ -66,7 +66,7 @@ TEST(adc_backref_before_start_is_error) {
     // start -> must fail rather than read out of bounds.
     uint8_t in[] = {0x00, 0x00};
     uint8_t out[8] = {0};
-    long n = adc_decompress(in, sizeof(in), out, sizeof(out));
+    long n = codec_adc_decompress(in, sizeof(in), out, sizeof(out));
     ASSERT_EQ_INT(-1, (int)n);
 }
 
@@ -74,7 +74,7 @@ TEST(adc_respects_out_cap) {
     // A long RLE run clamped by a small output buffer stops at out_cap.
     uint8_t in[] = {0x80, 'Z', 0x7F, 0x00, 0x00}; // literal Z + long match len 67
     uint8_t out[5] = {0};
-    long n = adc_decompress(in, sizeof(in), out, sizeof(out));
+    long n = codec_adc_decompress(in, sizeof(in), out, sizeof(out));
     ASSERT_EQ_INT(5, (int)n);
     ASSERT_EQ_INT(0, memcmp(out, "ZZZZZ", 5));
 }

@@ -157,7 +157,7 @@ peel_buf_t peel_gz(const uint8_t *src, size_t len, peel_err_t **err) {
         pos += h.header_len;
         // Inflate this member into the output, tracking what it consumed.
         gz_mem_t m = {src + pos, len - pos, 0};
-        peel_inflater_t *z = peel_inflater_new(gz_mem_pull, &m);
+        codec_inflater_t *z = codec_inflater_new(gz_mem_pull, &m);
         if (!z)
             decode_abort(&ctx, "gzip: out of memory");
         size_t start = out.len;
@@ -165,23 +165,23 @@ peel_buf_t peel_gz(const uint8_t *src, size_t len, peel_err_t **err) {
         for (;;) {
             uint8_t chunk[65536];
             size_t n = 0;
-            int rc = peel_inflater_run(z, chunk, sizeof(chunk), &n);
+            int rc = codec_inflater_run(z, chunk, sizeof(chunk), &n);
             if (rc < 0) {
-                peel_inflater_free(z);
+                codec_inflater_free(z);
                 decode_abort(&ctx, "gzip: corrupt deflate stream");
             }
             if (out.len + n > PEEL_MAX_FORK) {
-                peel_inflater_free(z);
+                codec_inflater_free(z);
                 decode_abort(&ctx, "gzip: decodes to over the %u MiB limit", (unsigned)(PEEL_MAX_FORK >> 20));
             }
             grow_append(&out, chunk, n, &ctx);
-            crc = peel_crc32(crc, chunk, n);
+            crc = codec_crc32(crc, chunk, n);
             if (rc == 1)
                 break;
         }
-        peel_inflater_align(z);
-        size_t used = (size_t)peel_inflater_consumed(z);
-        peel_inflater_free(z);
+        codec_inflater_align(z);
+        size_t used = (size_t)codec_inflater_consumed(z);
+        codec_inflater_free(z);
         pos += used;
         if (len - pos < 8)
             decode_abort(&ctx, "gzip: truncated trailer");
@@ -315,7 +315,7 @@ typedef struct {
     uint64_t size;
     uint64_t member; // where the current member's deflate stream starts
     uint64_t pos; // next compressed byte to pull
-    peel_inflater_t *z;
+    codec_inflater_t *z;
     uint32_t crc, count;
     bool done;
 } gz_producer_t;
@@ -335,9 +335,9 @@ static int64_t gz_pull(void *ctx, uint8_t *buf, size_t cap) {
 
 // Finish a member: check its trailer; start the next one if there is one.
 static int gz_next_member(gz_producer_t *g) {
-    peel_inflater_align(g->z);
-    uint64_t end = g->member + peel_inflater_consumed(g->z);
-    peel_inflater_free(g->z);
+    codec_inflater_align(g->z);
+    uint64_t end = g->member + codec_inflater_consumed(g->z);
+    codec_inflater_free(g->z);
     g->z = NULL;
     uint8_t tr[8];
     if (g->size - end < 8 || peel_source_read_exact(g->src, end, tr, 8) != 0)
@@ -354,7 +354,7 @@ static int gz_next_member(gz_producer_t *g) {
     }
     g->member = g->pos = end + h.header_len;
     g->crc = g->count = 0;
-    g->z = peel_inflater_new(gz_pull, g);
+    g->z = codec_inflater_new(gz_pull, g);
     return g->z ? 0 : -1;
 }
 
@@ -363,12 +363,12 @@ static int gz_run(peel_producer_t *p, uint8_t *out, size_t cap, size_t *n) {
     *n = 0;
     while (!g->done && *n < cap) {
         size_t k = 0;
-        int rc = peel_inflater_run(g->z, out + *n, cap - *n, &k);
+        int rc = codec_inflater_run(g->z, out + *n, cap - *n, &k);
         if (rc < 0) {
             snprintf(p->err, sizeof(p->err), "gzip: corrupt deflate stream");
             return -5;
         }
-        g->crc = peel_crc32(g->crc, out + *n, k);
+        g->crc = codec_crc32(g->crc, out + *n, k);
         g->count += (uint32_t)k;
         *n += k;
         if (rc == 1 && gz_next_member(g) != 0) {
@@ -381,7 +381,7 @@ static int gz_run(peel_producer_t *p, uint8_t *out, size_t cap, size_t *n) {
 
 static void gz_producer_free(peel_producer_t *p) {
     gz_producer_t *g = (gz_producer_t *)p;
-    peel_inflater_free(g->z);
+    codec_inflater_free(g->z);
     peel_source_release(g->src);
     free(g);
 }
@@ -401,7 +401,7 @@ static peel_producer_t *gz_producer(peel_archive_t *a, int i, int fork, peel_err
     g->src = peel_source_retain(a->src);
     g->size = peel_source_size(a->src);
     g->member = g->pos = gp->first_member_data;
-    g->z = peel_inflater_new(gz_pull, g);
+    g->z = codec_inflater_new(gz_pull, g);
     if (!g->z) {
         gz_producer_free(&g->base);
         *err = make_err("gzip: out of memory");
@@ -433,8 +433,8 @@ static int bgzf_load(bgzf_src_t *s, size_t b) {
     gz_header_t h;
     if (gz_parse_header(s->cbuf, blk->csize, &h) != 0 || h.header_len + 8 > blk->csize)
         return -5;
-    int64_t n = peel_inflate(s->cbuf + h.header_len, blk->csize - h.header_len - 8, s->buf, sizeof(s->buf));
-    if (n != (int64_t)blk->usize || peel_crc32(0, s->buf, blk->usize) != le32(s->cbuf + blk->csize - 8))
+    int64_t n = codec_inflate(s->cbuf + h.header_len, blk->csize - h.header_len - 8, s->buf, sizeof(s->buf));
+    if (n != (int64_t)blk->usize || codec_crc32(0, s->buf, blk->usize) != le32(s->cbuf + blk->csize - 8))
         return -5;
     s->cur = b;
     return 0;

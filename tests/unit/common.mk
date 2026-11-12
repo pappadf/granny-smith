@@ -70,18 +70,19 @@ endif
 CORE_DIR     := $(EMU_ROOT)/core
 MACHINES_DIR := $(EMU_ROOT)/machines
 PEELER_DIR   := $(EMU_ROOT)/peeler
+CODEC_DIR    := $(EMU_ROOT)/codec
 include $(WORKSPACE_ROOT)/src/sources.mk
 
 # The byte-source layer (src/core/storage/source.h) that storage.c and
 # image.c read through -- sources, the chunk cache, the format registry and
-# the NDIF/UDIF/QCOW2/MOOF adapters -- and the peeler library it is built on.  A suite
-# linking storage.c or image.c sets USE_SOURCE_LAYER := 1 before including
-# this file.
+# the NDIF/UDIF/QCOW2/MOOF adapters -- and the peeler and codec libraries
+# it is built on.  A suite linking storage.c or image.c sets
+# USE_SOURCE_LAYER := 1 before including this file.
 SOURCE_LAYER_SRCS := $(addprefix $(CORE_DIR)/storage/,source.c source_cache.c chunk_cache.c format_registry.c \
-                       image_chunkmap.c image_ndif.c image_qcow2.c image_udif.c image_moof.c image_scratch.c adc.c \
-                       inflate.c deflate.c udif_writer.c resource_fork.c \
+                       image_chunkmap.c image_ndif.c image_qcow2.c image_udif.c image_moof.c image_scratch.c \
+                       udif_writer.c resource_fork.c \
                        rsrc_dcmp.c macroman.c storage_util.c) \
-                     $(CORE_DIR)/crc32.c $(PEELER_SRC)
+                     $(PEELER_SRC) $(CODEC_SRC)
 
 INCLUDE_FLAGS ?= -I$(UNIT_ROOT)/support \
                  $(CORE_INCLUDES) \

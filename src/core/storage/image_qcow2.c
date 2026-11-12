@@ -7,7 +7,7 @@
 #include "image_qcow2.h"
 #include "common.h"
 
-#include "peeler.h"
+#include "codec.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -138,7 +138,7 @@ int qcow2_decode_cluster(const uint8_t *src, size_t src_len, uint32_t cluster_bi
     uint8_t *out = dst_len == cluster ? dst : malloc(cluster);
     if (!out)
         return -ENOMEM;
-    int64_t n = peel_inflate(src, src_len, out, cluster);
+    int64_t n = codec_inflate(src, src_len, out, cluster);
     int rc = n == (int64_t)cluster ? 0 : -EINVAL;
     if (out != dst) {
         if (rc == 0)

@@ -510,7 +510,7 @@ static peel_buf_t zip_decode(peel_archive_t *a, int i, int fork, peel_err_t **er
         if (n >= 0)
             memcpy(out, packed, (size_t)m->usize);
     } else {
-        n = peel_inflate(packed, (size_t)m->csize, out, (size_t)m->usize);
+        n = codec_inflate(packed, (size_t)m->csize, out, (size_t)m->usize);
     }
     free(packed);
     if (n != (int64_t)m->usize) {
@@ -518,7 +518,7 @@ static peel_buf_t zip_decode(peel_archive_t *a, int i, int fork, peel_err_t **er
         *err = make_err("ZIP: '%s' does not decode to its stated size", a->entries[i].path);
         return (peel_buf_t){0};
     }
-    if (peel_crc32(0, out, (size_t)m->usize) != m->crc) {
+    if (codec_crc32(0, out, (size_t)m->usize) != m->crc) {
         free(out);
         *err = make_err("ZIP: '%s' CRC mismatch", a->entries[i].path);
         return (peel_buf_t){0};
@@ -532,11 +532,11 @@ typedef struct {
     peel_producer_t base;
     peel_source_t *src; // retained archive source
     uint64_t pos, end; // compressed range still to pull
-    peel_inflater_t *z;
+    codec_inflater_t *z;
     uint32_t crc, want_crc;
 } zip_producer_t;
 
-// peel_pull_fn over the member's compressed range.
+// codec_pull_fn over the member's compressed range.
 static int64_t zip_pull(void *ctx, uint8_t *buf, size_t cap) {
     zip_producer_t *zp = ctx;
     uint64_t left = zp->end - zp->pos;
@@ -552,12 +552,12 @@ static int64_t zip_pull(void *ctx, uint8_t *buf, size_t cap) {
 
 static int zip_run(peel_producer_t *p, uint8_t *out, size_t cap, size_t *n) {
     zip_producer_t *zp = (zip_producer_t *)p;
-    int rc = peel_inflater_run(zp->z, out, cap, n);
+    int rc = codec_inflater_run(zp->z, out, cap, n);
     if (rc < 0) {
         snprintf(p->err, sizeof(p->err), "ZIP: corrupt deflate stream");
         return -5;
     }
-    zp->crc = peel_crc32(zp->crc, out, *n);
+    zp->crc = codec_crc32(zp->crc, out, *n);
     if (rc == 1 && zp->crc != zp->want_crc) {
         snprintf(p->err, sizeof(p->err), "ZIP: CRC mismatch");
         return -5;
@@ -567,7 +567,7 @@ static int zip_run(peel_producer_t *p, uint8_t *out, size_t cap, size_t *n) {
 
 static void zip_producer_free(peel_producer_t *p) {
     zip_producer_t *zp = (zip_producer_t *)p;
-    peel_inflater_free(zp->z);
+    codec_inflater_free(zp->z);
     peel_source_release(zp->src);
     free(zp);
 }
@@ -590,7 +590,7 @@ static peel_producer_t *zip_producer(peel_archive_t *a, int i, int fork, peel_er
     zp->pos = start;
     zp->end = start + m->csize;
     zp->want_crc = m->crc;
-    zp->z = peel_inflater_new(zip_pull, zp);
+    zp->z = codec_inflater_new(zip_pull, zp);
     if (!zp->z) {
         zip_producer_free(&zp->base);
         *err = make_err("ZIP: out of memory");

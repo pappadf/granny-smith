@@ -7,9 +7,8 @@
 
 #include "udif_writer.h"
 
+#include "codec.h"
 #include "common.h"
-#include "crc32.h"
-#include "deflate.h"
 #include "image_udif.h"
 #include "storage_util.h"
 
@@ -72,12 +71,14 @@ struct udif_writer {
     uint32_t chunk_sectors;
     size_t chunk_bytes;
     int level;
+    udif_codec_t codec;
 
     uint8_t *partial; // one chunk being gathered
     size_t partial_len;
-    uint8_t *zbuf; // deflate output
+    uint8_t *zbuf; // compressed output
     size_t zcap;
-    deflate_state_t *ds;
+    codec_deflate_state_t *ds; // the zlib encoder (UDIF_CODEC_ZLIB)
+    codec_xz_state_t *xs; // the xz encoder (UDIF_CODEC_XZ)
 
     wext_t *ext;
     size_t n_ext, cap_ext;
@@ -128,8 +129,12 @@ udif_writer_t *udif_writer_open(const char *path, const udif_writer_opts_t *opts
             snprintf(err, errcap, "chunk of %u sectors: must be a power of two in 8..2048", o.chunk_sectors);
         return NULL;
     }
+    if (o.codec != UDIF_CODEC_ZLIB && o.codec != UDIF_CODEC_XZ) {
+        set_err(err, errcap, "unknown codec%s (%s)", "", EINVAL);
+        return NULL;
+    }
     if (o.level < 0)
-        o.level = 1;
+        o.level = o.codec == UDIF_CODEC_XZ ? 6 : 1;
     if (o.level > 9)
         o.level = 9;
     if (!path || !*path) {
@@ -161,11 +166,14 @@ udif_writer_t *udif_writer_open(const char *path, const udif_writer_opts_t *opts
     w->chunk_sectors = o.chunk_sectors;
     w->chunk_bytes = (size_t)o.chunk_sectors * UDIF_SECTOR_SIZE;
     w->level = o.level;
+    w->codec = o.codec;
+    bool xz = o.level > 0 && o.codec == UDIF_CODEC_XZ, zlib = o.level > 0 && o.codec == UDIF_CODEC_ZLIB;
     w->partial = malloc(w->chunk_bytes);
-    w->zcap = deflate_bound(w->chunk_bytes);
+    w->zcap = xz ? codec_xz_bound(w->chunk_bytes) : codec_deflate_bound(w->chunk_bytes);
     w->zbuf = malloc(w->zcap);
-    w->ds = o.level > 0 ? deflate_state_new(w->chunk_bytes) : NULL;
-    if (!w->f || !w->path || !w->partial || !w->zbuf || (o.level > 0 && !w->ds) ||
+    w->ds = zlib ? codec_deflate_state_new(w->chunk_bytes) : NULL;
+    w->xs = xz ? codec_xz_state_new(w->chunk_bytes) : NULL;
+    if (!w->f || !w->path || !w->partial || !w->zbuf || (zlib && !w->ds) || (xz && !w->xs) ||
         (o.origin && *o.origin && !w->origin)) {
         if (!w->f)
             close(fd);
@@ -194,7 +202,7 @@ static int add_zero(udif_writer_t *w, uint64_t sectors) {
     if (w->sectors == 0)
         w->table_name = table_name_for(NULL, 0);
     w->zero_bytes += sectors * UDIF_SECTOR_SIZE;
-    w->crc_dec = gs_crc32_zeros(w->crc_dec, sectors * UDIF_SECTOR_SIZE);
+    w->crc_dec = codec_crc32_zeros(w->crc_dec, sectors * UDIF_SECTOR_SIZE);
     if (w->n_ext && w->ext[w->n_ext - 1].type == UDIF_CHUNK_ZERO) {
         w->ext[w->n_ext - 1].count += sectors;
     } else {
@@ -233,12 +241,19 @@ static int emit_chunk(udif_writer_t *w, const uint8_t *p, size_t n) {
         w->table_name = table_name_for(p, n);
     if (all_zero(p, n))
         return add_zero(w, secs);
-    w->crc_dec = gs_crc32(w->crc_dec, p, n);
+    w->crc_dec = codec_crc32(w->crc_dec, p, n);
     const uint8_t *out = p;
     size_t out_len = n;
     uint32_t type = UDIF_CHUNK_RAW;
-    if (w->level > 0) {
-        long z = deflate_zlib(w->ds, p, n, w->zbuf, w->zcap, w->level);
+    if (w->level > 0 && w->codec == UDIF_CODEC_XZ) {
+        int64_t z = codec_xz_compress(w->xs, p, n, w->zbuf, w->zcap, w->level);
+        if (z > 0 && (size_t)z < n) {
+            out = w->zbuf;
+            out_len = (size_t)z;
+            type = UDIF_CHUNK_LZMA;
+        }
+    } else if (w->level > 0) {
+        long z = codec_zlib_deflate(w->ds, p, n, w->zbuf, w->zcap, w->level);
         if (z > 0 && (size_t)z < n) {
             out = w->zbuf;
             out_len = (size_t)z;
@@ -248,7 +263,7 @@ static int emit_chunk(udif_writer_t *w, const uint8_t *p, size_t n) {
     int rc = write_out(w, out, out_len);
     if (rc)
         return rc;
-    w->crc_data = gs_crc32(w->crc_data, out, out_len);
+    w->crc_data = codec_crc32(w->crc_data, out, out_len);
     rc = push_extent(w, (wext_t){type, w->sectors, secs, w->data_len, out_len});
     if (rc)
         return rc;
@@ -346,7 +361,8 @@ static void writer_free(udif_writer_t *w) {
     free(w->origin);
     free(w->partial);
     free(w->zbuf);
-    deflate_state_free(w->ds);
+    codec_deflate_state_free(w->ds);
+    codec_xz_state_free(w->xs);
     free(w->ext);
     free(w);
 }
@@ -617,7 +633,7 @@ int udif_writer_finish(udif_writer_t *w, udif_writer_stats_t *stats) {
         put32(ck, w->crc_dec);
         put32(k + KOLY_MASTER_TYPE, UDIF_CHECKSUM_CRC32);
         put32(k + KOLY_MASTER_BITS, 32);
-        put32(k + KOLY_MASTER_CK, gs_crc32(0, ck, 4));
+        put32(k + KOLY_MASTER_CK, codec_crc32(0, ck, 4));
         // A partition image, as hdiutil marks its own one-table images
         // (-layout NONE): a device image (1) must carry a partition map
         // hdiutil can read block-table IDs from, and is refused without one.
@@ -642,6 +658,16 @@ int udif_writer_finish(udif_writer_t *w, udif_writer_stats_t *stats) {
         return rc;
     }
     writer_free(w);
+    return 0;
+}
+
+int udif_codec_parse(const char *name, udif_codec_t *out) {
+    if (!name || !*name || strcmp(name, "zlib") == 0)
+        *out = UDIF_CODEC_ZLIB;
+    else if (strcmp(name, "xz") == 0)
+        *out = UDIF_CODEC_XZ;
+    else
+        return -1;
     return 0;
 }
 
@@ -738,7 +764,7 @@ int udif_verify(source_t *data, udif_writer_stats_t *stats, char *err, size_t er
                 tr.data_fork_length - at < UDIF_VERIFY_WINDOW ? (size_t)(tr.data_fork_length - at) : UDIF_VERIFY_WINDOW;
             if (source_read_exact(data, tr.data_fork_offset + at, win.buf, n) != 0)
                 FAIL(-EIO, "cannot read the data fork at %llu", (unsigned long long)at);
-            crc = gs_crc32(crc, win.buf, n);
+            crc = codec_crc32(crc, win.buf, n);
             at += n;
         }
         if (crc != tr.checksum)
@@ -755,7 +781,7 @@ int udif_verify(source_t *data, udif_writer_stats_t *stats, char *err, size_t er
             if (c->type == UDIF_CHUNK_ZERO || c->type == UDIF_CHUNK_IGNORE) {
                 st.zero_bytes += bytes;
                 if (c->type == UDIF_CHUNK_ZERO)
-                    crc = gs_crc32_zeros(crc, bytes);
+                    crc = codec_crc32_zeros(crc, bytes);
                 continue;
             }
             if (bytes > (256u << 20) || c->length > (256u << 20))
@@ -782,7 +808,7 @@ int udif_verify(source_t *data, udif_writer_stats_t *stats, char *err, size_t er
             if (drc != 0)
                 FAIL(drc == -ENOTSUP ? -ENOTSUP : -EILSEQ, "chunk at sector %llu (type %#x) does not decode",
                      (unsigned long long)(tbl->base_sector + c->sector), c->type);
-            crc = gs_crc32(crc, outb, (size_t)bytes);
+            crc = codec_crc32(crc, outb, (size_t)bytes);
         }
         if (tbl->checksum_type == UDIF_CHECKSUM_CRC32 && crc != tbl->checksum)
             FAIL(-EILSEQ, "block table '%s': checksum %08x, the table says %08x", tbl->name, crc, tbl->checksum);

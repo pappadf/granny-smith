@@ -7,7 +7,7 @@
 #include "image_ndif.h"
 #include "common.h"
 
-#include "adc.h"
+#include "codec.h"
 #include "resource_fork.h"
 
 #include <errno.h>
@@ -174,7 +174,7 @@ int ndif_decode_chunk(const ndif_chunk_t *chunk, const uint8_t *src, size_t src_
     case NDIF_CHUNK_ADC: {
         if (!src)
             return -EINVAL;
-        long got = adc_decompress(src, src_len, dst, need);
+        int64_t got = codec_adc_decompress(src, src_len, dst, need);
         if (got < 0)
             return -EINVAL;
         // A well-formed chunk decodes to exactly `need` bytes; zero-pad any

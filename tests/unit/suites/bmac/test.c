@@ -11,7 +11,7 @@
 
 #include "bmac.h"
 #include "checkpoint.h"
-#include "crc32.h"
+#include "codec.h"
 #include "dbdma.h"
 #include "test_assert.h"
 
@@ -358,7 +358,7 @@ TEST(test_receive_ends_descriptor_with_trailer) {
     ASSERT_EQ_INT(s_dma_irqs[RX], 1);
     ASSERT_TRUE(memcmp(s_mem + 0x2000, f, (size_t)n) == 0);
     ASSERT_EQ_INT(s_mem[0x2000 + n], 0); // the pad
-    uint32_t fcs = gs_crc32(0, s_mem + 0x2000, 60);
+    uint32_t fcs = codec_crc32(0, s_mem + 0x2000, 60);
     for (int i = 0; i < 4; i++)
         ASSERT_EQ_INT(s_mem[0x2000 + 60 + i], (uint8_t)(fcs >> (8 * i)));
     // Trailer: big-endian frame length including the FCS, no abort bit.

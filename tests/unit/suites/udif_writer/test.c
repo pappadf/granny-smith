@@ -2,15 +2,14 @@
 // Copyright (c) pappadf
 
 // Unit tests for the compressing half of the UDIF support: the deflate
-// encoder (deflate.c), the CRC of a zero run (crc32.c), the streaming UDIF
-// writer and verifier (udif_writer.c), and reading what it writes in place
-// through the chunk-mapped source (image_chunkmap.c).
+// encoder and the CRC of a zero run (the codec library, src/codec), the
+// streaming UDIF writer and verifier (udif_writer.c), and reading what it
+// writes in place through the chunk-mapped source (image_chunkmap.c) -- and,
+// given images hdiutil converted from those, reading them back too.
 
-#include "crc32.h"
-#include "deflate.h"
+#include "codec.h"
 #include "image_chunkmap.h"
 #include "image_udif.h"
-#include "inflate.h"
 #include "source.h"
 #include "test_assert.h"
 #include "udif_writer.h"
@@ -38,8 +37,9 @@ static void sandbox(void) {
 
 // Remove the sandbox and everything the tests left in it.
 static void sandbox_remove(void) {
-    const char *names[] = {"rt.dmg",  "l0.dmg",   "g0.dmg",  "g1.dmg",      "g2.dmg",     "g3.dmg",       "empty.dmg",
-                           "bad.dmg", "bad2.dmg", "big.dmg", "foreign.dmg", "origin.dmg", "no-origin.dmg"};
+    const char *names[] = {"rt.dmg",        "l0.dmg",  "g0.dmg",   "g1.dmg",  "g2.dmg",      "g3.dmg",
+                           "empty.dmg",     "bad.dmg", "bad2.dmg", "big.dmg", "foreign.dmg", "origin.dmg",
+                           "no-origin.dmg", "xz.dmg",  "x.dmg",    "x0.dmg",  "z.dmg"};
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
         unlink(sb_path(names[i]));
     rmdir(SANDBOX);
@@ -82,13 +82,13 @@ TEST(deflate_round_trips_at_every_level) {
     const int levels[] = {0, 1, 6, 9};
     for (size_t s = 0; s < sizeof(sizes) / sizeof(sizes[0]); s++) {
         uint8_t *in = make_content(sizes[s], 7 + s);
-        size_t cap = deflate_bound(sizes[s]);
+        size_t cap = codec_deflate_bound(sizes[s]);
         uint8_t *z = malloc(cap);
         uint8_t *out = malloc(sizes[s] + 1);
         for (size_t l = 0; l < sizeof(levels) / sizeof(levels[0]); l++) {
-            long n = deflate_zlib(NULL, in, sizes[s], z, cap, levels[l]);
+            long n = codec_zlib_deflate(NULL, in, sizes[s], z, cap, levels[l]);
             ASSERT_TRUE(n > 0 && (size_t)n <= cap);
-            long got = inflate_zlib(z, (size_t)n, out, sizes[s] + 1);
+            int64_t got = codec_zlib_inflate(z, (size_t)n, out, sizes[s] + 1);
             ASSERT_EQ_INT((int)sizes[s], (int)got);
             ASSERT_TRUE(memcmp(in, out, sizes[s]) == 0);
         }
@@ -102,41 +102,41 @@ TEST(deflate_compresses_text_and_reuses_state) {
     uint8_t buf[65536];
     for (size_t i = 0; i < sizeof(buf); i++)
         buf[i] = (uint8_t) "Macintosh "[i % 10];
-    deflate_state_t *st = deflate_state_new(sizeof(buf));
+    codec_deflate_state_t *st = codec_deflate_state_new(sizeof(buf));
     uint8_t z[80000], out[65536];
     for (int round = 0; round < 3; round++) {
-        long n = deflate_zlib(st, buf, sizeof(buf), z, sizeof(z), 1);
+        long n = codec_zlib_deflate(st, buf, sizeof(buf), z, sizeof(z), 1);
         ASSERT_TRUE(n > 0 && n < 4096);
-        ASSERT_EQ_INT((int)sizeof(buf), (int)inflate_zlib(z, (size_t)n, out, sizeof(out)));
+        ASSERT_EQ_INT((int)sizeof(buf), (int)codec_zlib_inflate(z, (size_t)n, out, sizeof(out)));
         ASSERT_TRUE(memcmp(buf, out, sizeof(buf)) == 0);
     }
-    deflate_state_free(st);
+    codec_deflate_state_free(st);
     // Too small an output buffer is an error, not an overrun.
-    ASSERT_EQ_INT(-1, (int)deflate_zlib(NULL, buf, sizeof(buf), z, 8, 0));
+    ASSERT_EQ_INT(-1, (int)codec_zlib_deflate(NULL, buf, sizeof(buf), z, 8, 0));
 }
 
 TEST(adler32_known_vector) {
-    ASSERT_EQ_INT((int)0x11E60398u, (int)gs_adler32(1, (const uint8_t *)"Wikipedia", 9));
+    ASSERT_EQ_INT((int)0x11E60398u, (int)codec_adler32(1, (const uint8_t *)"Wikipedia", 9));
 }
 
 TEST(crc32_zeros_matches_the_table) {
     static uint8_t zeros[300000];
     const uint64_t lens[] = {0, 1, 2, 3, 511, 512, 65536, 299999};
     for (size_t i = 0; i < sizeof(lens) / sizeof(lens[0]); i++) {
-        ASSERT_EQ_INT((int)gs_crc32(0, zeros, (size_t)lens[i]), (int)gs_crc32_zeros(0, lens[i]));
-        uint32_t seed = gs_crc32(0, "abc", 3);
-        ASSERT_EQ_INT((int)gs_crc32(seed, zeros, (size_t)lens[i]), (int)gs_crc32_zeros(seed, lens[i]));
+        ASSERT_EQ_INT((int)codec_crc32(0, zeros, (size_t)lens[i]), (int)codec_crc32_zeros(0, lens[i]));
+        uint32_t seed = codec_crc32(0, "abc", 3);
+        ASSERT_EQ_INT((int)codec_crc32(seed, zeros, (size_t)lens[i]), (int)codec_crc32_zeros(seed, lens[i]));
     }
 }
 
 // Round-trip `n` bytes at `level`; the first block's type (BTYPE).
 static int round_trip_btype(const uint8_t *in, size_t n, int level) {
-    size_t cap = deflate_bound(n);
+    size_t cap = codec_deflate_bound(n);
     uint8_t *z = malloc(cap), *out = malloc(n + 1);
     ASSERT_TRUE(z != NULL && out != NULL);
-    long zn = deflate_zlib(NULL, in, n, z, cap, level);
+    long zn = codec_zlib_deflate(NULL, in, n, z, cap, level);
     ASSERT_TRUE(zn > 2);
-    ASSERT_EQ_INT((int)n, (int)inflate_zlib(z, (size_t)zn, out, n + 1));
+    ASSERT_EQ_INT((int)n, (int)codec_zlib_inflate(z, (size_t)zn, out, n + 1));
     ASSERT_TRUE(memcmp(in, out, n) == 0);
     int btype = (z[2] >> 1) & 3;
     free(z);
@@ -188,13 +188,18 @@ TEST(deflate_picks_the_smallest_block_form) {
 
 // ---- writer -> reader --------------------------------------------------------
 
+// The codec write_image compresses with (a test that wants xz sets it, and
+// sets it back).
+static udif_codec_t s_codec = UDIF_CODEC_ZLIB;
+
 // Write `len` bytes of `content` to `path` in appends of `step` bytes
-// (0: random sizes), with chunks of `chunk_sectors`.
+// (0: random sizes), with chunks of `chunk_sectors`, in s_codec.
 static void write_image(const char *path, const uint8_t *content, size_t len, size_t step, uint32_t chunk_sectors,
                         int level, udif_writer_stats_t *st) {
     unlink(path);
     char err[200] = {0};
-    udif_writer_opts_t o = {.chunk_sectors = chunk_sectors, .level = level, .source_name = "Disk <1> & co.img"};
+    udif_writer_opts_t o = {
+        .chunk_sectors = chunk_sectors, .codec = s_codec, .level = level, .source_name = "Disk <1> & co.img"};
     udif_writer_t *w = udif_writer_open(path, &o, err, sizeof(err));
     ASSERT_TRUE(w != NULL);
     g_rng = 12345;
@@ -228,7 +233,7 @@ static void check_image(const char *path, const uint8_t *content, size_t len, co
     ASSERT_TRUE(memcmp(got, content, len) == 0);
     for (size_t i = len; i < padded; i++)
         ASSERT_TRUE(got[i] == 0);
-    ASSERT_EQ_INT((int)gs_crc32(0, got, padded), (int)st->crc);
+    ASSERT_EQ_INT((int)codec_crc32(0, got, padded), (int)st->crc);
     free(got);
     udif_writer_stats_t vs;
     char msg[200] = {0};
@@ -323,7 +328,7 @@ TEST(empty_2gib_is_a_few_kb) {
     udif_writer_stats_t vs;
     ASSERT_EQ_INT(0, udif_verify(host, &vs, NULL, 0));
     ASSERT_EQ_INT(1, (int)vs.extents);
-    ASSERT_EQ_INT((int)gs_crc32_zeros(0, size), (int)vs.crc);
+    ASSERT_EQ_INT((int)codec_crc32_zeros(0, size), (int)vs.crc);
     source_release(s);
     source_release(host);
 }
@@ -467,12 +472,14 @@ TEST(chunk_bound_applies_to_foreign_images) {
 // decode to (zero-padded to a sector), and a MANIFEST of the names.  Every
 // sample also passes check_image here.  Without the variable it does nothing.
 static void emit_sample(const char *dir, FILE *manifest, const char *name, const uint8_t *in, size_t len,
-                        uint32_t chunk_sectors, int level) {
+                        uint32_t chunk_sectors, int level, udif_codec_t codec) {
     char dmg[512], img[512];
     snprintf(dmg, sizeof(dmg), "%s/%s.dmg", dir, name);
     snprintf(img, sizeof(img), "%s/%s.img", dir, name);
     udif_writer_stats_t st;
+    s_codec = codec;
     write_image(dmg, in, len, 1u << 20, chunk_sectors, level, &st);
+    s_codec = UDIF_CODEC_ZLIB;
     check_image(dmg, in, len, &st);
     size_t padded = (len + 511) / 512 * 512;
     FILE *f = fopen(img, "wb");
@@ -515,17 +522,22 @@ TEST(writer_emits_interop_samples) {
 
     size_t mixed_len = 8u << 20;
     uint8_t *mixed = make_content(mixed_len, 2024);
-    emit_sample(dir, m, "mixed-l1", mixed, mixed_len, 128, 1);
-    emit_sample(dir, m, "mixed-l9", mixed, mixed_len, 128, 9);
-    emit_sample(dir, m, "mixed-l0", mixed, mixed_len, 128, 0);
-    emit_sample(dir, m, "mixed-4k", mixed, mixed_len, 8, 1);
-    emit_sample(dir, m, "mixed-1m", mixed, mixed_len, 2048, 6);
-    emit_sample(dir, m, "odd-length", mixed, 1000123, 128, 1);
+    emit_sample(dir, m, "mixed-l1", mixed, mixed_len, 128, 1, UDIF_CODEC_ZLIB);
+    emit_sample(dir, m, "mixed-l9", mixed, mixed_len, 128, 9, UDIF_CODEC_ZLIB);
+    emit_sample(dir, m, "mixed-l0", mixed, mixed_len, 128, 0, UDIF_CODEC_ZLIB);
+    emit_sample(dir, m, "mixed-4k", mixed, mixed_len, 8, 1, UDIF_CODEC_ZLIB);
+    emit_sample(dir, m, "mixed-1m", mixed, mixed_len, 2048, 6, UDIF_CODEC_ZLIB);
+    emit_sample(dir, m, "odd-length", mixed, 1000123, 128, 1, UDIF_CODEC_ZLIB);
+    emit_sample(dir, m, "mixed-xz", mixed, mixed_len, 128, -1, UDIF_CODEC_XZ);
+    emit_sample(dir, m, "mixed-1m-xz", mixed, mixed_len, 2048, 9, UDIF_CODEC_XZ);
     free(mixed);
 
     size_t text_len = 4u << 20;
     uint8_t *text = make_text(text_len, 7);
-    emit_sample(dir, m, "text-l6", text, text_len, 128, 6);
+    emit_sample(dir, m, "text-l6", text, text_len, 128, 6, UDIF_CODEC_ZLIB);
+    // xz (ULMO) samples: hdiutil opens them (macOS 10.15 and later); 7-Zip
+    // and dmg2img do not, and check-udif-interop.sh skips them there.
+    emit_sample(dir, m, "text-xz", text, text_len, 128, -1, UDIF_CODEC_XZ);
     free(text);
 
     // A blank disk, as files.hd_create makes one, and the zeros it is.
@@ -543,6 +555,167 @@ TEST(writer_emits_interop_samples) {
     ASSERT_EQ_INT(0, rc);
 }
 
+// ---- foreign images ------------------------------------------------------
+
+// The chunk type an hdiutil format name (the suffix after the last '-' in
+// the image's name) is made of.
+static uint32_t format_chunk_type(const char *name) {
+    static const struct {
+        const char *fmt;
+        uint32_t type;
+    } k[] = {
+        {"UDCO", UDIF_CHUNK_ADC  },
+        {"UDZO", UDIF_CHUNK_ZLIB },
+        {"UDBZ", UDIF_CHUNK_BZ2  },
+        {"ULFO", UDIF_CHUNK_LZFSE},
+        {"ULMO", UDIF_CHUNK_LZMA }
+    };
+    const char *dash = strrchr(name, '-');
+    for (size_t i = 0; dash && i < sizeof(k) / sizeof(k[0]); i++)
+        if (strncmp(dash + 1, k[i].fmt, 4) == 0)
+            return k[i].type;
+    return 0;
+}
+
+// Whether the image at `host` has a chunk of `type` in its block map.
+static bool has_chunk_type(source_t *host, uint32_t type) {
+    uint64_t size = source_size(host);
+    uint8_t t[UDIF_TRAILER_SIZE];
+    ASSERT_EQ_INT(0, source_read_exact(host, size - UDIF_TRAILER_SIZE, t, sizeof(t)));
+    udif_trailer_t tr;
+    ASSERT_EQ_INT(0, udif_parse_trailer(t, sizeof(t), &tr));
+    uint8_t *xml = malloc((size_t)tr.xml_length);
+    ASSERT_EQ_INT(0, source_read_exact(host, tr.xml_offset, xml, (size_t)tr.xml_length));
+    udif_map_t *map = NULL;
+    ASSERT_EQ_INT(0, udif_parse_blkx(xml, (size_t)tr.xml_length, &map));
+    bool found = false;
+    for (size_t i = 0; i < map->n_tables; i++)
+        for (size_t c = 0; c < map->tables[i].n_chunks; c++)
+            found |= map->tables[i].chunks[c].type == type;
+    udif_map_free(map);
+    free(xml);
+    return found;
+}
+
+// The xz codec writes LZMA chunks (hdiutil's ULMO) that read back in place
+// and verify, at the default and the extreme levels and every chunk size;
+// it is smaller than zlib on the same content, and level 0 still writes
+// zero runs and raw chunks only.
+TEST(writer_xz_round_trips) {
+    sandbox();
+    size_t len = 3u << 20;
+    uint8_t *in = make_content(len, 77);
+    s_codec = UDIF_CODEC_XZ;
+    const uint32_t chunks[] = {8, 128, 2048};
+    const int levels[] = {-1, 1, 9};
+    for (size_t c = 0; c < 3; c++) {
+        udif_writer_stats_t st;
+        const char *p = sb_path("xz.dmg");
+        write_image(p, in, len, 65536, chunks[c], levels[c], &st);
+        check_image(p, in, len, &st);
+        source_t *host = source_host(p, NULL);
+        ASSERT_TRUE(has_chunk_type(host, UDIF_CHUNK_LZMA));
+        ASSERT_TRUE(!has_chunk_type(host, UDIF_CHUNK_ZLIB));
+        source_release(host);
+    }
+    // Smaller than zlib on disk-like content.  (On content that is mostly
+    // incompressible, as `in` is, the two are within a fraction of a
+    // percent: deflate stores such bytes, LZMA codes them at a hair over
+    // eight bits.)
+    size_t text_len = 2u << 20;
+    uint8_t *text = make_text(text_len, 5);
+    udif_writer_stats_t sx, sz;
+    write_image(sb_path("x.dmg"), text, text_len, 65536, 128, -1, &sx);
+    check_image(sb_path("x.dmg"), text, text_len, &sx);
+    s_codec = UDIF_CODEC_ZLIB;
+    write_image(sb_path("z.dmg"), text, text_len, 65536, 128, -1, &sz);
+    ASSERT_TRUE(sx.stored_bytes < sz.stored_bytes - sz.stored_bytes / 10);
+    free(text);
+    // Level 0: no compression, whatever the codec.
+    s_codec = UDIF_CODEC_XZ;
+    udif_writer_stats_t s0;
+    write_image(sb_path("x0.dmg"), in, len, 65536, 128, 0, &s0);
+    source_t *host = source_host(sb_path("x0.dmg"), NULL);
+    ASSERT_TRUE(!has_chunk_type(host, UDIF_CHUNK_LZMA));
+    source_release(host);
+    s_codec = UDIF_CODEC_ZLIB;
+    // The codec names the object model takes.
+    udif_codec_t k;
+    ASSERT_TRUE(udif_codec_parse("xz", &k) == 0 && k == UDIF_CODEC_XZ);
+    ASSERT_TRUE(udif_codec_parse(NULL, &k) == 0 && k == UDIF_CODEC_ZLIB);
+    ASSERT_TRUE(udif_codec_parse("bzip2", &k) == -1);
+    free(in);
+}
+
+// With GS_UDIF_FOREIGN_DIR set, read back the images hdiutil made from the
+// interop samples (scripts/make-udif-foreign.sh, the macOS job of
+// .github/workflows/udif-interop.yml): its MANIFEST names each image and
+// the disk it must decode to.  Every image must carry a chunk of its
+// format's codec, verify (every chunk decoded, every checksum hdiutil wrote
+// matched) and read back, in place, as the disk.  Without the variable it
+// does nothing.
+TEST(foreign_images_decode) {
+    const char *dir = getenv("GS_UDIF_FOREIGN_DIR");
+    if (!dir || !*dir)
+        return;
+    char path[1024], dmg[256], img[256];
+    snprintf(path, sizeof(path), "%s/MANIFEST", dir);
+    FILE *m = fopen(path, "r");
+    ASSERT_TRUE(m != NULL);
+    int n_images = 0;
+    while (fscanf(m, "%255s %255s", dmg, img) == 2) {
+        fprintf(stderr, "       %s\n", dmg);
+        snprintf(path, sizeof(path), "%s/%s", dir, img);
+        FILE *f = fopen(path, "rb");
+        ASSERT_TRUE(f != NULL);
+        ASSERT_EQ_INT(0, fseek(f, 0, SEEK_END));
+        size_t len = (size_t)ftell(f);
+        rewind(f);
+        uint8_t *want = malloc(len ? len : 1);
+        ASSERT_TRUE(fread(want, 1, len, f) == len);
+        fclose(f);
+
+        snprintf(path, sizeof(path), "%s/%s", dir, dmg);
+        source_t *host = source_host(path, NULL);
+        ASSERT_TRUE(host != NULL);
+        // A blank disk is all zero runs, whatever its format.
+        uint32_t type = format_chunk_type(dmg);
+        bool blank = true;
+        for (size_t i = 0; i < len && blank; i++)
+            blank = want[i] == 0;
+        ASSERT_TRUE(type != 0);
+        ASSERT_TRUE(blank || has_chunk_type(host, type));
+
+        udif_writer_stats_t vs;
+        char msg[200] = {0};
+        int vrc = udif_verify(host, &vs, msg, sizeof(msg));
+        if (vrc)
+            fprintf(stderr, "       udif_verify: %s\n", msg);
+        ASSERT_EQ_INT(0, vrc);
+        ASSERT_TRUE(vs.bytes_in == len);
+        // hdiutil's chunks may be larger than the in-place bound: open
+        // with the converter's.
+        int err = 0;
+        source_t *s = udif_source_open_bounded(host, 64u << 20, &err);
+        ASSERT_TRUE(s != NULL);
+        ASSERT_TRUE(source_size(s) == len);
+        uint8_t *got = malloc(len ? len : 1);
+        for (size_t at = 0; at < len;) {
+            size_t n = len - at < 70001 ? len - at : 70001;
+            ASSERT_EQ_INT(0, source_read_exact(s, at, got + at, n));
+            at += n;
+        }
+        ASSERT_TRUE(memcmp(got, want, len) == 0);
+        free(got);
+        free(want);
+        source_release(s);
+        source_release(host);
+        n_images++;
+    }
+    fclose(m);
+    ASSERT_TRUE(n_images > 0);
+}
+
 int main(void) {
     RUN(deflate_round_trips_at_every_level);
     RUN(deflate_compresses_text_and_reuses_state);
@@ -558,6 +731,8 @@ int main(void) {
     RUN(corrupt_chunk_fails_only_its_range);
     RUN(chunk_bound_applies_to_foreign_images);
     RUN(writer_emits_interop_samples);
+    RUN(writer_xz_round_trips);
+    RUN(foreign_images_decode);
     sandbox_remove();
     return 0;
 }

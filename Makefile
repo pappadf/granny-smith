@@ -52,9 +52,10 @@ CORE_DIR      := src/core
 MACHINES_DIR  := src/machines
 PLATFORM_DIR  := src/platform/wasm
 PEELER_DIR    := src/peeler
+CODEC_DIR     := src/codec
 
 # -- Sources --
-# CORE_SRC, PEELER_SRC, CORE_INCLUDES and PEELER_INCLUDES are shared with
+# CORE_SRC, PEELER_SRC, CODEC_SRC and the *_INCLUDES rosters are shared with
 # Makefile.headless.
 
 include src/sources.mk
@@ -69,7 +70,7 @@ PLATFORM_SRC := $(wildcard $(PLATFORM_DIR)/*.c)
 # headless-only (Makefile.headless).
 CORE_SRC := $(filter-out $(CORE_DIR)/network/laserwriter_transport_direct.c,$(CORE_SRC))
 
-SRC := $(CORE_SRC) $(PLATFORM_SRC) $(PEELER_SRC)
+SRC := $(CORE_SRC) $(PLATFORM_SRC) $(PEELER_SRC) $(CODEC_SRC)
 
 # Object and dependency files (mirror source tree under OBJ_DIR)
 OBJ := $(patsubst %.c,$(OBJ_DIR)/%.o,$(SRC))

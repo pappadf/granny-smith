@@ -6,7 +6,7 @@
 // pixel, because the point of exact positioning is that a column lands where
 // the arithmetic says.
 
-#include "inflate.h"
+#include "codec.h"
 #include "iw_interp.h"
 #include "pdf_writer.h"
 #include "test_assert.h"
@@ -136,7 +136,7 @@ TEST(test_pdf_structure) {
     ASSERT_TRUE(st && len_at);
     long zlen = strtol((const char *)len_at + 21, NULL, 10);
     uint8_t out[8];
-    ASSERT_EQ_INT(inflate_zlib(st + 7, (size_t)zlen, out, sizeof(out)), 8);
+    ASSERT_EQ_INT(codec_zlib_inflate(st + 7, (size_t)zlen, out, sizeof(out)), 8);
     ASSERT_TRUE(memcmp(out, bits, 8) == 0);
     free(a);
     free(b);

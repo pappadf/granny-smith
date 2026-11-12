@@ -194,6 +194,10 @@ int image_export_to(image_t *img, const char *path) {
     (void)img, (void)path;
     return -1;
 }
+int image_export_to_codec(image_t *img, const char *path, const char *codec) {
+    (void)img, (void)path, (void)codec;
+    return -1;
+}
 int drive_catalog_count(void) {
     return 0;
 }

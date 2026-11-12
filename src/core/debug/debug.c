@@ -13,18 +13,16 @@
 
 #include "addr_format.h"
 #include "alias.h"
+#include "codec.h"
 #include "common.h"
 #include "cpu.h"
 #include "cpu_internal.h"
-#include "crc32.h"
 #include "debug_data.h"
 #include "debug_mac.h"
-#include "deflate.h"
 #include "display.h"
 #include "expr.h"
 #include "fpu.h"
 #include "gs_assert.h"
-#include "inflate.h"
 #include "log.h"
 #include "log_categories.h"
 #include "memory.h"
@@ -1274,7 +1272,7 @@ static int write_png_chunk(FILE *fp, const char *type, const uint8_t *data, uint
     }
 
     // CRC over type + data
-    uint32_t crc = gs_crc32(gs_crc32(0, header + 4, 4), data, len > 0 && data ? len : 0);
+    uint32_t crc = codec_crc32(codec_crc32(0, header + 4, 4), data, len > 0 && data ? len : 0);
 
     // Write CRC (big-endian)
     uint8_t crc_buf[4];
@@ -1289,9 +1287,9 @@ static int write_png_chunk(FILE *fp, const char *type, const uint8_t *data, uint
 // screenshots have always been encoded at).  Returns a malloc'd buffer, or
 // NULL on OOM.
 static uint8_t *zlib_compress(const uint8_t *src, size_t len, size_t *out_len) {
-    size_t cap = deflate_bound(len);
+    size_t cap = codec_deflate_bound(len);
     uint8_t *out = malloc(cap);
-    long n = out ? deflate_zlib(NULL, src, len, out, cap, 6) : -1;
+    long n = out ? codec_zlib_deflate(NULL, src, len, out, cap, 6) : -1;
     if (n < 0) {
         free(out);
         return NULL;
@@ -1495,7 +1493,7 @@ static int load_png_to_rgba(const char *filename, int expected_width, int expect
     // At most 8-bit RGBA plus a filter byte per row, at dimensions already
     // checked against the screen.
     size_t raw_max = (size_t)height * (1 + (size_t)width * 4);
-    uint8_t *raw_data = inflate_zlib_alloc(idat_data, idat_len, raw_max, &raw_size);
+    uint8_t *raw_data = codec_zlib_inflate_alloc(idat_data, idat_len, raw_max, &raw_size);
     free(idat_data);
     if (!raw_data) {
         out_printf("Error: Failed to decompress PNG..\n");

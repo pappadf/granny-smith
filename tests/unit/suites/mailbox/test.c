@@ -1067,6 +1067,10 @@ int image_export_run(image_export_t *e, char *err, size_t err_cap) {
 void image_export_end(image_export_t *e) {
     (void)e;
 }
+int image_export_set_codec(image_export_t *e, const char *codec, char *err, size_t err_cap) {
+    (void)e, (void)codec, (void)err, (void)err_cap;
+    return 0;
+}
 
 TEST(cancelling_a_request_cancels_the_io_job_answering_it) {
     fresh();

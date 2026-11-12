@@ -12,7 +12,7 @@
 
 #include "pdf_writer.h"
 
-#include "deflate.h"
+#include "codec.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -181,9 +181,9 @@ static bool add_image_page(pdf_writer_t *w, double width_pt, double height_pt, u
     if (!w || w->out.failed)
         return false;
     // Compress the samples; stored uncompressed if the encoder fails
-    size_t cap = deflate_bound(len);
+    size_t cap = codec_deflate_bound(len);
     uint8_t *z = malloc(cap ? cap : 1);
-    long zlen = z ? deflate_zlib(NULL, data, len, z, cap, 6) : -1;
+    long zlen = z ? codec_zlib_deflate(NULL, data, len, z, cap, 6) : -1;
 
     uint32_t img = new_object(w);
     uint32_t content = new_object(w);
