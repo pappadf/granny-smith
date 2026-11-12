@@ -13,12 +13,12 @@
 //
 // Resource-fork parsing uses the C API in src/core/storage/resource_fork.h
 // (rfork_parse + rfork_lookup); compressed resources are auto-inflated
-// via rsrc_dcmp.  COFF binaries are detected by their 0x0150 magic and
+// via the codec library's dcmp.  COFF binaries are detected by their 0x0150 magic and
 // dispatched into coff_dump.c.
 
 #include "dump.h"
 
-#include "rsrc_dcmp.h"
+#include "codec.h"
 
 #include "annotate_disasm.h"
 #include "code_segment.h"
@@ -223,7 +223,7 @@ static int dump_resources(rfork_t *rf, const char *dst_dir) {
             // carries the dcmp magic did not inflate — the dcmp variant is
             // unsupported.  Say so: silently writing the compressed payload
             // (and disassembling it) produces confident-looking garbage.
-            if ((attrs & 0x01) && sz >= 4 && rsrc_dcmp_is_compressed(bytes, sz)) {
+            if ((attrs & 0x01) && sz >= 4 && codec_dcmp_is_compressed(bytes, sz)) {
                 fprintf(stderr,
                         "dump: warning: %.4s %d is compressed with an unsupported dcmp; "
                         "emitting the raw payload (disassembly will be meaningless)\n",

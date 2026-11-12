@@ -18,8 +18,8 @@
 #include "resource_fork.h"
 #include "common.h"
 
+#include "codec.h"
 #include "macroman.h"
-#include "rsrc_dcmp.h"
 #include "storage_util.h"
 
 #include <errno.h>
@@ -72,7 +72,7 @@ struct rfork {
 };
 
 // Most a fork may hold inflated at once.  Resources used to be inflated at
-// parse time, every one, each up to RSRC_DCMP_MAX_SIZE -- a fork whose map
+// parse time, every one, each up to CODEC_DCMP_MAX_SIZE -- a fork whose map
 // declares thousands of small compressed resources asked for that many
 // times 16 MiB before anyone read one.  Inflation is on
 // first lookup now, and a lookup past this budget gets the raw bytes, as if
@@ -278,11 +278,12 @@ static void inflate_on_lookup(rfork_t *rf, rfork_type_t *t, size_t r) {
         return;
     t->resources[r].inflate_tried = true;
     if (!(t->resources[r].attrs & RFORK_ATTR_COMPRESSED) ||
-        !rsrc_dcmp_is_compressed(t->resources[r].bytes, t->resources[r].size))
+        !codec_dcmp_is_compressed(t->resources[r].bytes, t->resources[r].size))
         return;
     size_t inflated_size = 0;
-    const char *derr = NULL; // expected for any dcmp we don't implement; not worth a warning per resource
-    uint8_t *inflated = rsrc_dcmp_decompress(t->resources[r].bytes, t->resources[r].size, &inflated_size, &derr);
+    int derr = 0; // expected for any dcmp we don't implement; not worth a warning per resource
+    uint8_t *inflated = codec_decode_alloc(CODEC_DCMP, t->resources[r].bytes, t->resources[r].size, CODEC_DCMP_MAX_SIZE,
+                                           &inflated_size, &derr);
     if (!inflated)
         return;
     if (inflated_size > RFORK_INFLATE_BUDGET - rf->inflated_total) {

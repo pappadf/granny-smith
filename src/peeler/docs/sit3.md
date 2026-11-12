@@ -863,15 +863,17 @@ method-3 decoder.
 ## 9  Implementation Notes
 
 This section is non-normative; it captures practical advice that helped
-the reference implementation in `sit3.c` come out correct and fast, but
+the reference implementation (now the codec library's
+`src/codec/lib/sit_huffman.c`) come out correct and fast, but
 is not a requirement of the format.
 
 ### 9.1  Single-Pass Bit Reader
 
 A bit reader that buffers one byte at a time and counts a "next bit
 index within that byte" variable is the simplest design and matches the
-spec's "MSB within byte" rule directly.  The `sit3.c` implementation
-uses exactly this shape:
+spec's "MSB within byte" rule directly.  The original `sit3.c`
+implementation used exactly this shape (the codec library's decoder now
+reads through its shared 64-bit MSB-first accumulator instead):
 
 ```c
 typedef struct {
@@ -898,7 +900,7 @@ slightly trickier end-of-stream handling.
 
 ### 9.2  Indexed vs Pointered Tree Nodes
 
-Both approaches work; `sit3.c` uses indexed nodes (children are `int16_t`
+Both approaches work; `sit_huffman.c` uses indexed nodes (children are `int16_t`
 indices into a fixed-size array) because it avoids the need for
 `malloc`/`free` of individual nodes and makes the entire decoder
 zero-allocation after the initial output buffer.  A pointer-based
@@ -919,7 +921,7 @@ if (root_is_leaf) {
 }
 ```
 
-The `sit3.c` implementation does this.
+The `sit_huffman.c` implementation does this.
 
 ### 9.4  CRC Verification Placement
 

@@ -15,7 +15,8 @@
 //      bytes to printable ASCII.  (hqx.md § 4)
 //
 //   3. Run-length encoding (RLE90) — 0x90 marker byte compresses
-//      repeated-byte sequences.  (hqx.md § 5)
+//      repeated-byte sequences.  (hqx.md § 5)  The codec library's
+//      CODEC_RLE90 with BinHex's rules, pulling from layer 2.
 //
 // After decoding all three layers, a binary stream remains containing a
 // variable-length header, data fork, and resource fork, each followed
@@ -29,9 +30,6 @@
 
 // hqx.md § 3.1 — mandatory identification string that precedes the payload.
 #define HQX_PREAMBLE "(This file must be converted with BinHex"
-
-// hqx.md § 5.1 — the marker byte for run-length encoding.
-#define RLE_MARKER 0x90
 
 // hqx.md § 6.3 — maximum filename length in the header.
 #define HQX_NAME_MAX 63
@@ -62,10 +60,12 @@ typedef struct {
     unsigned accum;
     unsigned accum_bits;
 
-    // hqx.md § 5.2 — RLE expander state.
-    bool rle_marker_seen;
-    uint8_t rle_prev;
-    int rle_pending;
+    // hqx.md § 5 — the RLE expander (owned by ctx: ctx->dec), and what it
+    // has produced but not yet been read.
+    uint8_t out[4096];
+    size_t out_pos, out_len;
+    bool out_end;
+    char err[96]; // why layer 2 failed, for the RLE expander's pull error
 
     // Abort context for error reporting
     decode_ctx_t *ctx;
@@ -130,6 +130,8 @@ static size_t hqx_find_start_colon(const uint8_t *src, size_t len, size_t from) 
 
 // Initialise a decoder from the source buffer positioned at the start of
 // the encoded payload (just past the opening colon).
+static int64_t hqx_pull(void *ctx, uint8_t *buf, size_t cap);
+
 static void hqx_decoder_init(hqx_decoder_t *dec, const uint8_t *src, size_t len, size_t payload_start,
                              decode_ctx_t *ctx) {
     memset(dec, 0, sizeof(*dec));
@@ -143,6 +145,13 @@ static void hqx_decoder_init(hqx_decoder_t *dec, const uint8_t *src, size_t len,
     for (unsigned i = 0; i < 64; i++) {
         dec->rev[(unsigned char)hqx_alphabet[i]] = (uint8_t)i;
     }
+
+    codec_dec_opts_t o = {.pull = hqx_pull, .pull_ctx = dec, .out_len = CODEC_LEN_UNKNOWN, .flags = CODEC_RLE90_BINHEX};
+    int rc = 0;
+    codec_dec_free(ctx->dec);
+    ctx->dec = codec_dec_new(CODEC_RLE90, &o, &rc);
+    if (!ctx->dec)
+        decode_abort(ctx, "BinHex: %s", codec_strerror(rc));
 }
 
 // hqx.md § 3.4 — fetch the next encoded character, skipping whitespace.
@@ -165,7 +174,8 @@ static int hqx_next_char(hqx_decoder_t *dec) {
 
 // hqx.md § 10.2 / § 4.2 — decode one raw byte from the 6-bit stream.
 // Accumulates 6-bit values until 8 bits are available, then extracts one byte.
-// Returns 0..255 on success, or -1 on EOF.
+// Returns 0..255 on success, -1 on EOF, or -2 for an invalid character
+// (dec->err says which).
 static int hqx_raw_byte(hqx_decoder_t *dec) {
     // Feed 6-bit symbols until we have at least 8 bits
     while (dec->accum_bits < 8) {
@@ -176,7 +186,8 @@ static int hqx_raw_byte(hqx_decoder_t *dec) {
         uint8_t val = dec->rev[(unsigned char)ch];
         if (val > 63) {
             // hqx.md § 9 — invalid encoding character is a fatal error
-            decode_abort(dec->ctx, "BinHex: invalid character '%c' (0x%02X)", ch, ch);
+            snprintf(dec->err, sizeof(dec->err), "BinHex: invalid character '%c' (0x%02X)", ch, ch);
+            return -2;
         }
         dec->accum = (dec->accum << 6) | val;
         dec->accum_bits += 6;
@@ -185,50 +196,43 @@ static int hqx_raw_byte(hqx_decoder_t *dec) {
     return (int)((dec->accum >> dec->accum_bits) & 0xFF);
 }
 
-// hqx.md § 10.3 / § 5.2 — produce the next decompressed byte after
-// RLE expansion.  Returns 0..255, or -1 on EOF.
+// Layer 2 as the RLE expander's input (a codec_pull_fn): up to `cap` raw
+// bytes, 0 at the terminating colon, or CODEC_ERR_DATA -- once the bytes
+// before an invalid character have been handed over.
+static int64_t hqx_pull(void *ctx, uint8_t *buf, size_t cap) {
+    hqx_decoder_t *dec = ctx;
+    size_t n = 0;
+    if (dec->err[0])
+        return CODEC_ERR_DATA;
+    while (n < cap) {
+        int b = hqx_raw_byte(dec);
+        if (b == -2)
+            return n ? (int64_t)n : CODEC_ERR_DATA;
+        if (b < 0)
+            break;
+        buf[n++] = (uint8_t)b;
+    }
+    return (int64_t)n;
+}
+
+// hqx.md § 10.3 / § 5.2 — produce the next decompressed byte after RLE
+// expansion.  Returns 0..255, or -1 on EOF.
 static int hqx_decoded_byte(hqx_decoder_t *dec) {
-    // Step 1: drain any pending repeat copies
-    if (dec->rle_pending > 0) {
-        dec->rle_pending--;
-        return dec->rle_prev;
-    }
-
-    for (;;) {
-        int raw = hqx_raw_byte(dec);
-        if (raw < 0) {
+    while (dec->out_pos == dec->out_len) {
+        if (dec->out_end)
             return -1;
+        size_t n = 0;
+        int rc = codec_dec_run(dec->ctx->dec, dec->out, sizeof(dec->out), &n);
+        if (rc < 0) {
+            if (dec->err[0])
+                decode_abort(dec->ctx, "%s", dec->err);
+            decode_abort(dec->ctx, "BinHex: %s", codec_dec_message(dec->ctx->dec));
         }
-
-        if (dec->rle_marker_seen) {
-            dec->rle_marker_seen = false;
-            if (raw == 0x00) {
-                // hqx.md § 5.3 — literal 0x90 escape: emit 0x90 and set
-                // prev so subsequent markers can repeat it.
-                dec->rle_prev = RLE_MARKER;
-                return RLE_MARKER;
-            }
-            if (raw == 0x01) {
-                // hqx.md § 5.3 — a count of 1 is illegal
-                decode_abort(dec->ctx, "BinHex: illegal RLE count of 1");
-            }
-            // hqx.md § 5.2 step 3 — repeat prev byte `raw` times total.
-            // One copy was already emitted before the marker; emit one more
-            // now and queue the remainder.
-            dec->rle_pending = raw - 2;
-            return dec->rle_prev;
-        }
-
-        if ((uint8_t)raw == RLE_MARKER) {
-            // hqx.md § 5.2 step 4 — marker produces no output; loop for count
-            dec->rle_marker_seen = true;
-            continue;
-        }
-
-        // hqx.md § 5.2 step 5 — normal byte
-        dec->rle_prev = (uint8_t)raw;
-        return raw;
+        dec->out_pos = 0;
+        dec->out_len = n;
+        dec->out_end = rc == 1;
     }
+    return dec->out[dec->out_pos++];
 }
 
 // Read exactly `n` decoded bytes into `buf`.
@@ -279,7 +283,7 @@ static hqx_header_t hqx_parse_header(hqx_decoder_t *dec) {
 
     // hqx.md § 7.2 — verify header CRC using the self-checking property:
     // CRC over (content + stored CRC) should yield zero.
-    uint16_t crc = crc16_ccitt(buf, total_len);
+    uint16_t crc = codec_crc16_xmodem(0, buf, total_len);
     if (crc != 0) {
         // hqx.md § 9 — header CRC mismatch
         decode_abort(dec->ctx, "BinHex: header CRC mismatch");
@@ -358,8 +362,8 @@ static peel_buf_t hqx_read_fork(hqx_decoder_t *dec, uint32_t fork_len, const cha
     hqx_read_bytes(dec, crc_bytes, 2);
 
     // Compute CRC over fork content then over the stored CRC bytes
-    uint16_t crc = crc16_ccitt(gbuf.data, gbuf.len);
-    crc = crc16_ccitt_update(crc, crc_bytes, 2);
+    uint16_t crc = codec_crc16_xmodem(0, gbuf.data, gbuf.len);
+    crc = codec_crc16_xmodem(crc, crc_bytes, 2);
     if (crc != 0) {
         grow_free(&gbuf);
         decode_abort(dec->ctx, "BinHex: %s fork CRC mismatch", fork_name);

@@ -1,31 +1,34 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// sit15.c — StuffIt method 15 ("Arsenic") decompressor.
-//
-// Format spec: sit15.md
-//
-// This is an internal helper called by sit.c for entries compressed with
-// method 15.  It is not part of the public API.
+// sit_arsenic.c
+// StuffIt method 15, "Arsenic" (see codec.h).  Format notes:
+// src/peeler/docs/sit15.md.
 //
 // The Arsenic format is a block-based pipeline (sit15.md § 2 "Compression
 // Pipeline Overview"):
 //   Arithmetic decode → Zero-RLE expand → MTF invert → Inverse BWT
 //     → Randomization de-scramble → Final RLE expand
+// A block is decoded whole, then emitted a byte at a time into the ring.
+// A fault anywhere -- the input running out, a model or an index out of
+// range -- sets the decoder's error, which every loop checks, and the
+// stream fails with it.  The container states the decoded size.
 
-#include "internal.h"
+#include "codec_internal.h"
+
+#include <stdlib.h>
 
 // ============================================================================
 // Bitstream Reader — sit15.md §3.1 "Byte-to-Bit Extraction"
 // ============================================================================
 //
-// MSB-first: peeler's shared peel_msb_t (internal.h).
+// MSB-first: the framework's msb_* reader.
 
-// Forward declaration of the error-abort function (needs the full state).
+// Forward declaration of the error function (needs the full state).
 typedef struct arsenic_state arsenic_state;
-static void arsenic_abort(arsenic_state *s, const char *fmt, ...);
+static void arsenic_abort(arsenic_state *s, const char *msg);
 
-// Read exactly n bits (1 ≤ n ≤ 25).  Aborts via longjmp on underflow.
+// Read exactly n bits (1 ≤ n ≤ 25).  Past the end: zero, and the error set.
 static uint32_t bs_read(arsenic_state *s, int n);
 
 // Read n bits that may exceed 25, by splitting into two reads.
@@ -152,12 +155,13 @@ static const uint16_t rand_tbl[256] = {
 // sit15.md §11.3 "Demand-Driven Block Decoding" — blocks decoded lazily
 //   when out_pos ≥ blk_len; buffers reused without reallocation.
 struct arsenic_state {
-    // Error recovery (§10)
-    decode_ctx_t *ctx;
+    // Error recovery (§10): the first fault's message, NULL while none
+    const char *err;
     bool eos; // end-of-stream seen in a block footer
+    bool started; // the stream header has been read
 
     // Bitstream (§3)
-    peel_msb_t bits;
+    codec_in_t *in;
 
     // Arithmetic decoder (§4.2)
     ac_state ac;
@@ -196,15 +200,11 @@ struct arsenic_state {
 // Error Handling
 // ============================================================================
 
-// Abort decompression with a printf-style error message.
-// sit15.md §10 "Error Conditions" — all fatal conditions funnel here.
-// sit15.md §11.1 "Error Recovery" — longjmp unwinds to the setjmp site.
-static void arsenic_abort(arsenic_state *s, const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(s->ctx->errmsg, sizeof(s->ctx->errmsg), fmt, ap);
-    va_end(ap);
-    longjmp(s->ctx->jmp, 1);
+// Record a fault (the first one stays).  sit15.md §10 "Error Conditions" —
+// all fatal conditions funnel here; the decoding loops then stop.
+static void arsenic_abort(arsenic_state *s, const char *msg) {
+    if (!s->err)
+        s->err = msg;
 }
 
 // ============================================================================
@@ -216,9 +216,11 @@ static void arsenic_abort(arsenic_state *s, const char *fmt, ...) {
 //   the 26-bit AC bootstrap) into two reads.
 static uint32_t bs_read(arsenic_state *s, int n) {
     // A short stream is an error here, not zeros.
-    if (!peel_msb_avail(&s->bits, n))
+    if (!msb_avail(s->in, n)) {
         arsenic_abort(s, "sit15: bitstream exhaustion");
-    return peel_msb_get(&s->bits, n);
+        return 0;
+    }
+    return msb_get(s->in, n);
 }
 
 // sit15.md §3.1 "Byte-to-Bit Extraction" — Read-long: splits reads
@@ -240,12 +242,18 @@ static uint32_t bs_read_long(arsenic_state *s, int n) {
 // sit15.md §4.3 "Decoding One Symbol" — scale the range, find the
 // symbol via cumulative frequency, narrow interval, renormalize.
 static int ac_decode_sym(arsenic_state *s, prob_model *m) {
-    if (m->total == 0)
+    if (s->err)
+        return 0;
+    if (m->total == 0) {
         arsenic_abort(s, "sit15: model total frequency is zero");
+        return 0;
+    }
 
     int scale = s->ac.range / m->total;
-    if (scale == 0)
+    if (scale == 0) {
         arsenic_abort(s, "sit15: arithmetic decoder scale is zero");
+        return 0;
+    }
 
     int target = s->ac.code / scale;
 
@@ -282,11 +290,11 @@ static int ac_decode_sym(arsenic_state *s, prob_model *m) {
 // Decode an n-bit integer from a binary model (LSB-first assembly).
 // sit15.md §3.2 "Arithmetic-Coded Multi-Bit Fields" and §4.4
 // "Decoding a Multi-Bit Field".
-static int ac_decode_field(arsenic_state *s, prob_model *m, int n) {
-    int val = 0;
+static uint32_t ac_decode_field(arsenic_state *s, prob_model *m, int n) {
+    uint32_t val = 0; // n <= 32: the stream CRC is a 32-bit field
     for (int i = 0; i < n; i++) {
         if (ac_decode_sym(s, m))
-            val |= 1 << i;
+            val |= 1u << i;
     }
     return val;
 }
@@ -330,8 +338,10 @@ static void build_lf_map(uint32_t *map, const uint8_t *buf, int len) {
 static uint8_t emit_bwt_byte(arsenic_state *s) {
     // Follow one step of the LF-mapping chain.
     s->bwt_idx = (int)s->lf_map[s->bwt_idx];
-    if (s->bwt_idx < 0 || s->bwt_idx >= s->blk_len)
+    if (s->bwt_idx < 0 || s->bwt_idx >= s->blk_len) {
         arsenic_abort(s, "sit15: BWT index out of bounds");
+        return 0;
+    }
     uint8_t b = s->blk_buf[s->bwt_idx];
 
     // §9.2  Randomization de-scramble.
@@ -374,10 +384,12 @@ static int consume_zero_run(arsenic_state *s, int first_tok, int *out_sel) {
 
     for (int bit_pos = 0;; bit_pos++) {
         total += (uint64_t)(tok + 1) << bit_pos;
-        if (total > (uint64_t)s->blk_cap)
+        if (total > (uint64_t)s->blk_cap) {
             arsenic_abort(s, "sit15: zero run longer than the block");
+            return 0;
+        }
         tok = ac_decode_sym(s, &s->m_sel);
-        if (tok >= 2)
+        if (tok >= 2 || s->err)
             break;
     }
 
@@ -397,20 +409,24 @@ static void decode_block(arsenic_state *s) {
 
     // §5.2.1  Block header (via primary model).
     s->randomized = ac_decode_sym(s, &s->m_primary) != 0;
-    s->bwt_origin = ac_decode_field(s, &s->m_primary, s->block_exp + 9);
+    s->bwt_origin = (int)ac_decode_field(s, &s->m_primary, s->block_exp + 9);
     s->blk_len = 0;
 
     // §6.1–6.3  Main selector loop — fills blk_buf with MTF-decoded bytes.
     int sel = ac_decode_sym(s, &s->m_sel);
-    while (sel != 10) {
+    while (sel != 10 && !s->err) {
 
         // Zero-run tokens (sel 0 or 1): decode via positional accumulator.
         if (sel < 2) {
             int trailing;
             int run_len = consume_zero_run(s, sel, &trailing);
+            if (s->err)
+                return;
 
-            if (s->blk_len + run_len > s->blk_cap)
+            if (s->blk_len + run_len > s->blk_cap) {
                 arsenic_abort(s, "sit15: block buffer overflow (zero run)");
+                return;
+            }
 
             uint8_t fill = mtf_decode(&mtf, 0);
             memset(s->blk_buf + s->blk_len, fill, (size_t)run_len);
@@ -424,8 +440,10 @@ static void decode_block(arsenic_state *s) {
         // Literal / group-coded symbol (sel 2 … 9).
         int mtf_idx = (sel == 2) ? 1 : ac_decode_sym(s, &s->m_grp[sel - 3]);
 
-        if (s->blk_len >= s->blk_cap)
+        if (s->blk_len >= s->blk_cap) {
             arsenic_abort(s, "sit15: block buffer overflow");
+            return;
+        }
         s->blk_buf[s->blk_len++] = mtf_decode(&mtf, mtf_idx);
 
         sel = ac_decode_sym(s, &s->m_sel);
@@ -433,8 +451,12 @@ static void decode_block(arsenic_state *s) {
 
     // Validate BWT primary index (§10).
     // sit15.md §10 "Error Conditions" — primary index must be < block length.
-    if (s->blk_len > 0 && s->bwt_origin >= s->blk_len)
+    if (s->err)
+        return;
+    if (s->blk_len > 0 && s->bwt_origin >= s->blk_len) {
         arsenic_abort(s, "sit15: BWT primary index >= block length");
+        return;
+    }
 
     // §5.2.3  Reset per-block models, then read footer via primary model.
     model_reset(&s->m_sel);
@@ -483,9 +505,17 @@ static uint8_t produce_byte(arsenic_state *s) {
 
         // 2.  Fetch the next block when the current one is exhausted.
         if (s->out_pos >= s->blk_len) {
-            if (s->eos)
+            if (s->eos) {
                 arsenic_abort(s, "sit15: unexpected end of stream");
+                return 0;
+            }
             decode_block(s);
+            if (s->err)
+                return 0;
+            if (s->blk_len == 0) {
+                arsenic_abort(s, "sit15: empty block"); // (the walk below would start nowhere)
+                return 0;
+            }
         }
 
         uint8_t b = emit_bwt_byte(s);
@@ -531,106 +561,74 @@ static bool parse_header(arsenic_state *s) {
         arsenic_abort(s, "sit15: invalid signature (expected 'A')");
     if (ac_decode_field(s, &s->m_primary, 8) != 's')
         arsenic_abort(s, "sit15: invalid signature (expected 's')");
+    if (s->err)
+        return false;
 
     // Block-size exponent B (4-bit field) → block_size = 1 << (B+9).
-    s->block_exp = ac_decode_field(s, &s->m_primary, 4);
+    s->block_exp = (int)ac_decode_field(s, &s->m_primary, 4);
     unsigned bsz = 1u << (unsigned)(s->block_exp + 9);
-    if (bsz > (unsigned)INT32_MAX)
+    if (bsz > (unsigned)INT32_MAX) {
         arsenic_abort(s, "sit15: block size overflow");
+        return false;
+    }
     s->blk_cap = (int)bsz;
 
     // Initial end-of-stream flag.
     s->eos = ac_decode_sym(s, &s->m_primary) != 0;
 
-    // Allocate block buffers, owned by the decode context until freed, so an
-    // abort anywhere after this frees them.
-    s->blk_buf = dctx_malloc(s->ctx, (size_t)s->blk_cap);
-    s->lf_map = dctx_malloc(s->ctx, (size_t)s->blk_cap * sizeof(uint32_t));
-
-    return true;
+    // The block buffers, freed with the decoder.
+    s->blk_buf = malloc((size_t)s->blk_cap);
+    s->lf_map = malloc((size_t)s->blk_cap * sizeof(uint32_t));
+    if (!s->blk_buf || !s->lf_map) {
+        arsenic_abort(s, "sit15: out of memory");
+        return false;
+    }
+    return !s->err;
 }
 
 // ============================================================================
-// Entry Points (Internal)
+// The decoder
 // ============================================================================
 
-// A method-15 stream: produce_byte already carries all of its state from
-// byte to byte; this keeps the decode context -- which owns the state and
-// its block buffers -- off the stack, so the stream can stop after any
-// byte and continue on the next run().  Every run() re-arms the context:
-// an abort frees everything and ends the stream with its message.
-typedef struct {
-    peel_producer_t base;
-    decode_ctx_t dctx;
-    arsenic_state *s;
-    size_t produced, total;
-    bool failed;
-} s15_stream_t;
+#define ARSENIC_BURST 1 // produce_byte emits one byte at a time
 
-static int s15_run(peel_producer_t *p, uint8_t *out, size_t cap, size_t *n) {
-    s15_stream_t *m = (s15_stream_t *)p;
-    *n = 0;
-    if (m->failed)
-        return -5;
-    // The handler reads only the stream, never a local assigned below.
-    if (setjmp(m->dctx.jmp) != 0) {
-        dctx_cleanup(&m->dctx); // the state and its block buffers
-        m->s = NULL;
-        m->failed = true;
-        snprintf(p->err, sizeof(p->err), "%s", m->dctx.errmsg);
-        return -5;
+static int arsenic_fill(codec_dec_t *d) {
+    arsenic_state *s = d->st;
+    codec_ring_t *r = &d->ring;
+    if (codec_left(d) == 0)
+        return CODEC_END;
+    if (!s->started) {
+        s->started = true;
+        if (!parse_header(s))
+            return codec_fail(d, s->err && strstr(s->err, "memory") ? CODEC_ERR_NOMEM : CODEC_ERR_DATA,
+                              s->err ? s->err : "sit15: bad stream header");
     }
-    size_t want = m->total - m->produced < cap ? m->total - m->produced : cap;
-    for (size_t i = 0; i < want; i++) {
-        out[i] = produce_byte(m->s);
-        m->produced++;
+    while (codec_left(d) > 0) {
+        if (ring_room(r) < ARSENIC_BURST)
+            return CODEC_MORE;
+        uint8_t b = produce_byte(s);
+        if (s->err)
+            return codec_fail(d, strstr(s->err, "exhaustion") ? CODEC_ERR_TRUNCATED : CODEC_ERR_DATA, s->err);
+        ring_put(r, b);
     }
-    *n = want;
-    return m->produced == m->total ? 1 : 0;
+    return CODEC_END;
 }
 
-static void s15_free(peel_producer_t *p) {
-    s15_stream_t *m = (s15_stream_t *)p;
-    dctx_cleanup(&m->dctx);
-    free(m);
+static int arsenic_init(codec_dec_t *d) {
+    arsenic_state *s = calloc(1, sizeof(*s));
+    if (!s)
+        return CODEC_ERR_NOMEM;
+    s->in = &d->in;
+    d->st = s;
+    return codec_ring_alloc(d, 0, ARSENIC_BURST);
 }
 
-peel_producer_t *sit15_producer(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err) {
-    *err = NULL;
-    s15_stream_t *m = calloc(1, sizeof(*m));
-    if (!m) {
-        *err = make_err("sit15: out of memory");
-        return NULL;
-    }
-    m->base.run = s15_run;
-    m->base.free = s15_free;
-    m->total = uncomp_len;
-    dctx_init(&m->dctx);
-    if (uncomp_len == 0)
-        return &m->base;
-    if (setjmp(m->dctx.jmp) != 0) {
-        *err = make_err("%s", m->dctx.errmsg);
-        s15_free(&m->base);
-        return NULL;
-    }
-    // The decoder state is large: on the heap, owned by the context.
-    m->s = dctx_calloc(&m->dctx, 1, sizeof *m->s);
-    m->s->ctx = &m->dctx;
-    peel_msb_init(&m->s->bits, src, len);
-    // The Arsenic stream header: signature, block size, initial EOS.
-    parse_header(m->s);
-    return &m->base;
+static void arsenic_free(codec_dec_t *d) {
+    arsenic_state *s = d->st;
+    free(s->blk_buf);
+    free(s->lf_map);
+    free(s);
+    d->st = NULL;
 }
 
-// Decompress method-15 (Arsenic) compressed data into a freshly allocated buffer.
-// Called by sit.c for entries using compression method 15.
-//
-// sit15.md § "Appendix A: Complete Decompression Walkthrough"
-//   1. Parse stream header, bootstrap arithmetic decoder.
-//   2. Decode blocks (selector loop → MTF → inverse BWT).
-//   3. Expand via randomization + final RLE.
-//   4. Return the output buffer.
-peel_buf_t peel_sit15(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err) {
-    peel_producer_t *p = sit15_producer(src, len, uncomp_len, err);
-    return p ? peel_producer_drain(p, uncomp_len, NULL, err) : (peel_buf_t){0};
-}
+const codec_dec_ops_t codec_sit_arsenic_dec = {arsenic_init, arsenic_fill, arsenic_free, true};

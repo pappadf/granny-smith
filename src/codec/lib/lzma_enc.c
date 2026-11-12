@@ -42,13 +42,13 @@
 #define ENC_PROPS       (3 + 9 * (0 + 5 * 2)) // lc 3, lp 0, pb 2
 #define ENC_CHECK_CRC64 0x04 // the xz check type written
 
-struct codec_xz_state {
+typedef struct xenc {
     size_t max_len;
     int32_t *head; // ENC_HASH_SIZE: newest position per hash
     int32_t *prev; // max_len: the previous position with the same hash
     uint8_t *pack; // one chunk's coded bytes
     lzma_t m; // the model (m.dst is the input being encoded)
-};
+} xenc_t;
 
 // ============================================================================
 // Range encoder
@@ -298,7 +298,7 @@ static inline uint32_t common(const uint8_t *a, const uint8_t *b, uint32_t max) 
 }
 
 // Enter positions [*next, upto] into the hash chains.
-static void mf_insert_upto(codec_xz_state_t *st, size_t *next, size_t upto, size_t len) {
+static void mf_insert_upto(xenc_t *st, size_t *next, size_t upto, size_t len) {
     for (; *next <= upto && *next + 3 <= len; (*next)++) {
         uint32_t h = enc_hash(st->m.dst + *next);
         st->prev[*next] = st->head[h];
@@ -312,7 +312,7 @@ static void mf_insert_upto(codec_xz_state_t *st, size_t *next, size_t upto, size
 // (pos itself not yet entered), searched `depth` deep and stopping at
 // `nice` bytes.  Returns its length (0 below 3); *dist gets its distance,
 // 0-based.
-static uint32_t mf_find(const codec_xz_state_t *st, size_t pos, size_t len, int depth, uint32_t nice, uint32_t *dist) {
+static uint32_t mf_find(const xenc_t *st, size_t pos, size_t len, int depth, uint32_t nice, uint32_t *dist) {
     if (pos + 3 > len)
         return 0;
     const uint8_t *in = st->m.dst;
@@ -426,14 +426,16 @@ static uint8_t dict_byte(size_t len) {
     return 40;
 }
 
-size_t codec_xz_bound(size_t len) {
+static size_t xenc_bound(size_t len) {
     // Stream header and footer, block header, check, index; per chunk a
     // header of up to six bytes, every chunk holding at least ~60 KiB.
     return len + 6 * (len / 32768 + 2) + 128;
 }
 
-codec_xz_state_t *codec_xz_state_new(size_t max_len) {
-    codec_xz_state_t *st = calloc(1, sizeof(*st));
+static void xenc_delete(xenc_t *st);
+
+static xenc_t *xenc_new(size_t max_len) {
+    xenc_t *st = calloc(1, sizeof(*st));
     if (!st)
         return NULL;
     st->max_len = max_len;
@@ -441,13 +443,13 @@ codec_xz_state_t *codec_xz_state_new(size_t max_len) {
     st->prev = malloc((max_len ? max_len : 1) * sizeof(int32_t));
     st->pack = malloc(ENC_CHUNK_PACK + ENC_SYMBOL_MAX * 2);
     if (!st->head || !st->prev || !st->pack || codec_lzma_set_props(&st->m, ENC_PROPS, LZMA2_MAX_LCLP) != 0) {
-        codec_xz_state_free(st);
+        xenc_delete(st);
         return NULL;
     }
     return st;
 }
 
-void codec_xz_state_free(codec_xz_state_t *st) {
+static void xenc_delete(xenc_t *st) {
     if (!st)
         return;
     free(st->head);
@@ -458,7 +460,7 @@ void codec_xz_state_free(codec_xz_state_t *st) {
 }
 
 // The LZMA2 stream for in[0..len) into out[*at..cap).
-static bool lzma2_encode(codec_xz_state_t *st, size_t len, enc_params_t prm, uint8_t *out, size_t cap, size_t *at) {
+static bool lzma2_encode(xenc_t *st, size_t len, enc_params_t prm, uint8_t *out, size_t cap, size_t *at) {
     lzma_t *m = &st->m;
     const uint8_t *in = m->dst;
     for (size_t i = 0; i < ENC_HASH_SIZE; i++)
@@ -553,12 +555,12 @@ static bool lzma2_encode(codec_xz_state_t *st, size_t len, enc_params_t prm, uin
     return put(out, cap, at, &end, 1);
 }
 
-int64_t codec_xz_compress(codec_xz_state_t *st, const uint8_t *in, size_t len, uint8_t *out, size_t cap, int level) {
+static int64_t xz_compress(xenc_t *st, const uint8_t *in, size_t len, uint8_t *out, size_t cap, int level) {
     if ((!in && len) || !out)
         return CODEC_ERR_ARG;
-    codec_xz_state_t *own = NULL;
+    xenc_t *own = NULL;
     if (!st || st->max_len < len) {
-        own = st = codec_xz_state_new(len);
+        own = st = xenc_new(len);
         if (!st)
             return CODEC_ERR_NOMEM;
     }
@@ -614,6 +616,26 @@ int64_t codec_xz_compress(codec_xz_state_t *st, const uint8_t *in, size_t len, u
     ok = ok && put(out, cap, &at, sf, sizeof(sf));
 
     st->m.dst = NULL;
-    codec_xz_state_free(own);
+    xenc_delete(own);
     return ok ? (int64_t)at : CODEC_ERR_OVERFLOW;
 }
+
+// ============================================================================
+// The encoder
+// ============================================================================
+
+static int xenc_init(codec_enc_t *e, size_t max_len) {
+    e->st = xenc_new(max_len);
+    return e->st ? 0 : CODEC_ERR_NOMEM;
+}
+
+static int64_t xenc_run(codec_enc_t *e, const uint8_t *in, size_t len, uint8_t *out, size_t cap) {
+    return xz_compress(e->st, in, len, out, cap, e->level);
+}
+
+static void xenc_free(codec_enc_t *e) {
+    xenc_delete(e->st);
+    e->st = NULL;
+}
+
+const codec_enc_ops_t codec_xz_enc = {xenc_init, xenc_run, xenc_free, xenc_bound, 6};

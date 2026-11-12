@@ -51,6 +51,7 @@ void dctx_init(decode_ctx_t *ctx) {
     ctx->cap_owned = DCTX_INLINE_OWNED;
     ctx->n_owned = 0;
     ctx->errmsg[0] = '\0';
+    ctx->dec = NULL;
 }
 
 // The registry grows: Compact Pro keeps every fork of an archive registered
@@ -139,6 +140,8 @@ void *dctx_release(decode_ctx_t *ctx, void *p) {
 }
 
 void dctx_cleanup(decode_ctx_t *ctx) {
+    codec_dec_free(ctx->dec);
+    ctx->dec = NULL;
     for (int i = 0; i < ctx->n_owned; i++)
         free(ctx->owned[i]);
     if (ctx->owned != ctx->inline_owned)

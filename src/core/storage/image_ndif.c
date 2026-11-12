@@ -174,13 +174,20 @@ int ndif_decode_chunk(const ndif_chunk_t *chunk, const uint8_t *src, size_t src_
     case NDIF_CHUNK_ADC: {
         if (!src)
             return -EINVAL;
-        int64_t got = codec_adc_decompress(src, src_len, dst, need);
-        if (got < 0)
+        // A well-formed chunk decodes to exactly `need` bytes; one whose
+        // input runs out first keeps what it decoded, zero-padded, so
+        // callers always get a full sector run.  Anything else is corrupt.
+        codec_dec_opts_t o = {.src = src, .len = src_len, .out_len = need};
+        codec_dec_t *d = codec_dec_new(CODEC_ADC, &o, NULL);
+        if (!d)
+            return -ENOMEM;
+        size_t got = 0;
+        int rc = codec_dec_run(d, dst, need, &got);
+        codec_dec_free(d);
+        if (rc != 1 && rc != CODEC_ERR_TRUNCATED)
             return -EINVAL;
-        // A well-formed chunk decodes to exactly `need` bytes; zero-pad any
-        // short tail defensively so callers always get a full sector run.
-        if ((size_t)got < need)
-            memset(dst + got, 0, need - (size_t)got);
+        if (got < need)
+            memset(dst + got, 0, need - got);
         return 0;
     }
     default:

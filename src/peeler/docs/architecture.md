@@ -411,9 +411,11 @@ if (src_len < 128) {
 
 ### 7.3  setjmp/longjmp for Deep Errors
 
-Some decompressors (StuffIt method 15's arithmetic coder, LZW decoders)
-detect errors deep inside nested call stacks.  Propagating error codes
-through every return is tedious.  For these cases, use `setjmp`/`longjmp`:
+Some container decoders (BinHex's three layers, MacBinary, gzip's whole
+buffer form) detect errors deep inside nested call stacks.  Propagating
+error codes through every return is tedious.  For these cases, use
+`setjmp`/`longjmp`.  (The compression methods themselves are the codec
+library's, `src/codec`, and report errors by return value.)
 
 ```c
 typedef struct {
@@ -429,14 +431,14 @@ static void decode_abort(decode_ctx_t *ctx, const char *fmt, ...) {
     longjmp(ctx->jmp, 1);
 }
 
-peel_buf_t peel_sit15(const uint8_t *src, size_t len,
+peel_buf_t peel_hqx(const uint8_t *src, size_t len,
                                      peel_err_t **err) {
     decode_ctx_t ctx = {0};
     if (setjmp(ctx.jmp)) {
-        *err = make_err("SIT15: %s", ctx.errmsg);
+        *err = make_err("%s", ctx.errmsg);
         return (peel_buf_t){0};
     }
-    // ... deep decompression code can call decode_abort(&ctx, ...) ...
+    // ... deep decoding code can call decode_abort(&ctx, ...) ...
 }
 ```
 
@@ -600,13 +602,15 @@ include/peeler.h             Public API (types + all function declarations)
 lib/
   peeler.c                   peel(), detection, helpers
   err.c                      Error object creation and formatting
+  codec_producer.c           Forks decoded through the codec library
   formats/
     hqx.c                    BinHex 4.0 decoder
     bin.c                    MacBinary decoder
     sit.c                    StuffIt classic + SIT5 peeler
-    sit13.c                  SIT method 13 decompressor (helper)
-    sit15.c                  SIT method 15 decompressor (helper)
     cpt.c                    Compact Pro peeler
+    zip.c, gz.c, tar.c       Zip, gzip, tar
+codec/ (src/codec in-tree)   Every compression method: StuffIt 1/2/3/13/15,
+                             Compact Pro LZH + RLE, BinHex RLE, DEFLATE
 cmd/
   main.c                     CLI entry point (`peeler` binary)
 test/

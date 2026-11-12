@@ -10,7 +10,8 @@
 // bytes are read only when a member is opened.
 //
 // Stored members (method 0) are views of the archive; deflated ones
-// (method 8) decode through the resumable inflater, as far as reads reach.
+// (method 8) decode through the codec library's CODEC_DEFLATE (src/codec), as
+// far as reads reach.
 // Zip64 sizes and offsets, and a self-extractor stub (or anything else)
 // prepended to the archive, are handled.  Encrypted members are listed but
 // refuse to open.
@@ -510,7 +511,7 @@ static peel_buf_t zip_decode(peel_archive_t *a, int i, int fork, peel_err_t **er
         if (n >= 0)
             memcpy(out, packed, (size_t)m->usize);
     } else {
-        n = codec_inflate(packed, (size_t)m->csize, out, (size_t)m->usize);
+        n = codec_decode(CODEC_DEFLATE, packed, (size_t)m->csize, out, (size_t)m->usize);
     }
     free(packed);
     if (n != (int64_t)m->usize) {
@@ -532,7 +533,7 @@ typedef struct {
     peel_producer_t base;
     peel_source_t *src; // retained archive source
     uint64_t pos, end; // compressed range still to pull
-    codec_inflater_t *z;
+    codec_dec_t *z;
     uint32_t crc, want_crc;
 } zip_producer_t;
 
@@ -552,9 +553,9 @@ static int64_t zip_pull(void *ctx, uint8_t *buf, size_t cap) {
 
 static int zip_run(peel_producer_t *p, uint8_t *out, size_t cap, size_t *n) {
     zip_producer_t *zp = (zip_producer_t *)p;
-    int rc = codec_inflater_run(zp->z, out, cap, n);
+    int rc = codec_dec_run(zp->z, out, cap, n);
     if (rc < 0) {
-        snprintf(p->err, sizeof(p->err), "ZIP: corrupt deflate stream");
+        snprintf(p->err, sizeof(p->err), "ZIP: %s", codec_dec_message(zp->z));
         return -5;
     }
     zp->crc = codec_crc32(zp->crc, out, *n);
@@ -567,7 +568,7 @@ static int zip_run(peel_producer_t *p, uint8_t *out, size_t cap, size_t *n) {
 
 static void zip_producer_free(peel_producer_t *p) {
     zip_producer_t *zp = (zip_producer_t *)p;
-    codec_inflater_free(zp->z);
+    codec_dec_free(zp->z);
     peel_source_release(zp->src);
     free(zp);
 }
@@ -590,7 +591,8 @@ static peel_producer_t *zip_producer(peel_archive_t *a, int i, int fork, peel_er
     zp->pos = start;
     zp->end = start + m->csize;
     zp->want_crc = m->crc;
-    zp->z = codec_inflater_new(zip_pull, zp);
+    codec_dec_opts_t o = {.pull = zip_pull, .pull_ctx = zp, .out_len = CODEC_LEN_UNKNOWN};
+    zp->z = codec_dec_new(CODEC_DEFLATE, &o, NULL);
     if (!zp->z) {
         zip_producer_free(&zp->base);
         *err = make_err("ZIP: out of memory");

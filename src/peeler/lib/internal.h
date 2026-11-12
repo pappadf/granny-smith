@@ -32,8 +32,8 @@ peel_err_t *make_err(const char *fmt, ...)
 // setjmp/longjmp Abort Context — architecture.md § "setjmp/longjmp"
 // ============================================================================
 
-// Jump-target context for deep-error abort in decompressors -- and the owner
-// of everything a decoder allocates while it is armed.
+// Jump-target context for deep-error abort in container decoders -- and the
+// owner of everything a decoder allocates while it is armed.
 //
 // A decoder allocates through dctx_* and registers each block here.  Both of
 // its exits call dctx_cleanup, which frees whatever is still registered: the
@@ -56,6 +56,7 @@ typedef struct {
     void **owned; // inline_owned, or a heap array once that fills
     int n_owned, cap_owned;
     void *inline_owned[DCTX_INLINE_OWNED];
+    codec_dec_t *dec; // a codec decoder the decode drives, freed with the rest (or NULL)
 } decode_ctx_t;
 
 // Arm a context: no owned blocks.  Call before setjmp.
@@ -164,202 +165,6 @@ static inline void wr32be(uint8_t *p, uint32_t v) {
 }
 
 // ============================================================================
-// CRC Routines
-// ============================================================================
-
-// CRC-16/CCITT (polynomial 0x1021, init 0) over a complete buffer.
-uint16_t crc16_ccitt(const uint8_t *data, size_t len);
-
-// Update a running CRC-16/CCITT with additional data.
-uint16_t crc16_ccitt_update(uint16_t crc, const uint8_t *data, size_t len);
-
-// ============================================================================
-// Bit readers
-// ============================================================================
-//
-// Every bit reader in peeler, one per bit order.  The order is the file
-// format's, not a choice: StuffIt methods 3 and 15 and Compact Pro pack bits
-// most significant first; StuffIt method 13 and method 2 (LZW) least
-// significant first.  Each format had its own reader, with three different
-// behaviours at the end of the input; now both readers behave one way --
-// bits past the end read as zeros -- and a format that must refuse a short
-// stream asks peel_*_avail first.
-//
-// Both refill on demand, pulling only the bytes a read needs, so
-// peel_msb_pulled is exactly the input bytes consumed so far: Compact Pro's
-// end-of-block padding is computed from it.
-
-// MSB-first: bytes enter the top of a 32-bit window; a read takes its top
-// bits.  At most 25 bits per read.
-typedef struct {
-    const uint8_t *src;
-    size_t len;
-    size_t pos; // next byte to pull into the window
-    uint32_t window; // valid bits left-aligned
-    int fill; // valid bits in window
-} peel_msb_t;
-
-static inline void peel_msb_init(peel_msb_t *r, const uint8_t *src, size_t len) {
-    r->src = src;
-    r->len = len;
-    r->pos = 0;
-    r->window = 0;
-    r->fill = 0;
-}
-
-static inline void peel_msb_refill(peel_msb_t *r, int need) {
-    while (r->fill < need && r->pos < r->len) {
-        r->window |= (uint32_t)r->src[r->pos++] << (24 - r->fill);
-        r->fill += 8;
-    }
-}
-
-// True if at least n bits (n <= 25) remain.
-static inline bool peel_msb_avail(peel_msb_t *r, int n) {
-    peel_msb_refill(r, n);
-    return r->fill >= n;
-}
-
-// The next n bits (0..25); past the end, zeros -- and the reader is then
-// empty.
-static inline uint32_t peel_msb_get(peel_msb_t *r, int n) {
-    if (n <= 0)
-        return 0;
-    peel_msb_refill(r, n);
-    uint32_t v = r->window >> (32 - n);
-    if (r->fill < n) {
-        r->window = 0;
-        r->fill = 0;
-        return v;
-    }
-    r->window <<= n;
-    r->fill -= n;
-    return v;
-}
-
-// Discard the rest of the current byte.
-static inline void peel_msb_align(peel_msb_t *r) {
-    int discard = r->fill & 7;
-    r->window <<= discard;
-    r->fill -= discard;
-}
-
-static inline void peel_msb_skip(peel_msb_t *r, int n) {
-    for (; n > 0; n -= 25)
-        (void)peel_msb_get(r, n < 25 ? n : 25);
-}
-
-// Input bytes pulled into the window so far.
-static inline size_t peel_msb_pulled(const peel_msb_t *r) {
-    return r->pos;
-}
-
-// LSB-first: bytes enter above the bits already held; a read takes the low
-// bits.  At most 24 bits per read.
-typedef struct {
-    const uint8_t *src;
-    size_t len;
-    size_t pos; // next byte to pull
-    uint32_t acc; // valid bits at the bottom
-    int fill; // valid bits in acc
-} peel_lsb_t;
-
-static inline void peel_lsb_init(peel_lsb_t *r, const uint8_t *src, size_t len) {
-    r->src = src;
-    r->len = len;
-    r->pos = 0;
-    r->acc = 0;
-    r->fill = 0;
-}
-
-// The next n bits (0..24); past the end, zeros -- and the reader is then
-// empty.
-static inline uint32_t peel_lsb_get(peel_lsb_t *r, int n) {
-    if (n <= 0)
-        return 0;
-    while (r->fill < n && r->pos < r->len) {
-        r->acc |= (uint32_t)r->src[r->pos++] << r->fill;
-        r->fill += 8;
-    }
-    uint32_t v = r->acc & ((1u << n) - 1);
-    if (r->fill < n) {
-        r->acc = 0;
-        r->fill = 0;
-        return v;
-    }
-    r->acc >>= n;
-    r->fill -= n;
-    return v;
-}
-
-static inline void peel_lsb_skip(peel_lsb_t *r, size_t n) {
-    for (; n > 24; n -= 24)
-        (void)peel_lsb_get(r, 24);
-    (void)peel_lsb_get(r, (int)n);
-}
-
-// Bits consumed so far.
-static inline uint64_t peel_lsb_consumed(const peel_lsb_t *r) {
-    return (uint64_t)r->pos * 8 - (uint64_t)r->fill;
-}
-
-// True once every input bit has been consumed.
-static inline bool peel_lsb_at_end(const peel_lsb_t *r) {
-    return peel_lsb_consumed(r) >= (uint64_t)r->len * 8;
-}
-
-// ============================================================================
-// Canonical Huffman trees (sit13, cpt)
-// ============================================================================
-//
-// One pool-allocated decode tree for the two formats that build canonical
-// Huffman codes; each had its own, and only Compact Pro's bounded its pool.
-// A pool holds one or more trees (sit13 keeps four in one).  Formats keep
-// their own bit readers and walk a tree with peel_huff_child / peel_huff_sym.
-
-#define PEEL_HUFF_POOL_CAP 2048
-#define PEEL_HUFF_NOSYM    ((int16_t) - 1)
-
-typedef struct {
-    int16_t ch[2]; // child node indices, or -1
-    int16_t sym; // leaf symbol, or PEEL_HUFF_NOSYM for an inner node
-} peel_hnode_t;
-
-typedef struct {
-    peel_hnode_t node[PEEL_HUFF_POOL_CAP];
-    int used;
-} peel_hpool_t;
-
-// Empty the pool.
-void peel_hpool_reset(peel_hpool_t *p);
-
-// A new, empty tree root in `p`: its index, or -1 if the pool is full.
-int peel_huff_root(peel_hpool_t *p);
-
-// Place `sym` at the `len`-bit code `code` (MSB first) under `root`.  0, or
-// -1 if the pool is full or len is outside 1..31.
-int peel_huff_insert(peel_hpool_t *p, int root, uint32_t code, int len, int sym);
-
-// Build a canonical code for lengths[0..nsym) into a new tree in `p`, and
-// return its root, or -1 (pool full, or a length that is neither 0 --
-// absent -- nor within [min_len, max_len]).  Codes go in ascending length, then ascending
-// symbol, over every length from min_len to max_len; only lengths >= 1 are
-// placed in the tree.  With min_len 1 that is the usual construction
-// (Compact Pro).  StuffIt 13 uses min_len -1: its absent symbols (-1 and 0)
-// still consume a code value each, which shifts every longer code.
-int peel_huff_build(peel_hpool_t *p, const int8_t *lengths, int nsym, int min_len, int max_len);
-
-// One step down from `node` on `bit`: the child's index, or -1.
-static inline int peel_huff_child(const peel_hpool_t *p, int node, int bit) {
-    return p->node[node].ch[bit & 1];
-}
-
-// The symbol at `node` if it is a leaf, else PEEL_HUFF_NOSYM.
-static inline int peel_huff_sym(const peel_hpool_t *p, int node) {
-    return p->node[node].sym;
-}
-
-// ============================================================================
 // Growable Buffer
 // ============================================================================
 
@@ -440,14 +245,6 @@ void peel_reader_free(peel_reader_t *r);
 const uint8_t *peel_reader_at(peel_reader_t *r, uint64_t off, size_t n);
 
 // ============================================================================
-// Compression and checksums
-// ============================================================================
-//
-// DEFLATE (the resumable codec_inflater_*, one-shot codec_inflate) and
-// CRC-32 (codec_crc32) come from the codec library, src/codec, which the
-// emulator shares: see codec.h.
-
-// ============================================================================
 // Structure-first archives (archive.c) -- the format vtable
 // ============================================================================
 
@@ -471,6 +268,18 @@ typedef struct peel_producer {
 // The buffer APIs (peel_sit3, peel_cpt, ...) are this over the same
 // producers the decode-through sources drive, so both decode one way.
 peel_buf_t peel_producer_drain(peel_producer_t *p, uint64_t len, const char *what, peel_err_t **err);
+
+// Every compressed fork decodes through the codec library (src/codec,
+// codec.h): a producer over `len` packed bytes at `src` (borrowed: they must
+// outlive it), through `stages` codecs in order -- each pulling the one
+// before, so Compact Pro's fork is {CODEC_CPT_LZH, CODEC_CPT_RLE} -- the
+// last making the fork's `out_len` bytes (with `flags`).  `cut`: a stream
+// that decodes past out_len is cut there rather than refused (StuffIt's
+// forks, whose decoders always stopped at the fork's size).  Messages are
+// "<what>: <the codec's>".  NULL + *err if a decoder cannot be created.
+// (codec_producer.c)
+peel_producer_t *peel_codec_producer(const codec_id_t *stages, int nstages, uint32_t flags, const uint8_t *src,
+                                     size_t len, uint64_t out_len, bool cut, const char *what, peel_err_t **err);
 
 typedef struct peel_fmt peel_fmt_t;
 
@@ -509,18 +318,6 @@ struct peel_fmt {
     int (*prepare)(peel_archive_t *a, int i, int fork, peel_err_t **err);
     void (*close)(peel_archive_t *a); // free priv
 };
-
-// StuffIt's method decoders as producers of a fork's `uncomp_len` bytes
-// from `src` (borrowed: it must outlive the producer).  NULL + *err when
-// the stream's header is bad.  sit.c checks the fork CRC over their output.
-peel_producer_t *sit3_producer(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err);
-peel_producer_t *sit13_producer(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err);
-peel_producer_t *sit15_producer(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err);
-
-// The same, drained into an owned buffer (the buffer API's shape).
-peel_buf_t peel_sit3(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err);
-peel_buf_t peel_sit13(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err);
-peel_buf_t peel_sit15(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err);
 
 // Every format's vtable.
 extern const peel_fmt_t peel_fmt_hqx, peel_fmt_bin, peel_fmt_gz, peel_fmt_sit, peel_fmt_cpt, peel_fmt_zip, peel_fmt_tar;

@@ -2,11 +2,47 @@
 // Copyright (c) pappadf
 
 // codec.c
-// Decoding by codec id, codec names and result-code text (see codec.h).
+// The framework (see codec_internal.h): the codec registry, input, the
+// output ring, running a decoder and draining its ring, one-shot decoding
+// and encoding, and the result-code text.
 
 #include "codec_internal.h"
 
-#include <string.h>
+#include <stdlib.h>
+
+// ============================================================================
+// Registry
+// ============================================================================
+
+typedef struct {
+    const char *name;
+    const codec_dec_ops_t *dec;
+    const codec_enc_ops_t *enc;
+} codec_entry_t;
+
+static const codec_entry_t k_codecs[CODEC_COUNT] = {
+    [CODEC_COPY] = {"copy",        &codec_copy_dec,        NULL            },
+    [CODEC_DEFLATE] = {"deflate",     &codec_deflate_dec,     NULL            },
+    [CODEC_ZLIB] = {"zlib",        &codec_zlib_dec,        &codec_zlib_enc },
+    [CODEC_ADC] = {"adc",         &codec_adc_dec,         NULL            },
+    [CODEC_BZIP2] = {"bzip2",       &codec_bzip2_dec,       NULL            },
+    [CODEC_LZFSE] = {"lzfse",       &codec_lzfse_dec,       NULL            },
+    [CODEC_XZ] = {"xz",          &codec_xz_dec,          &codec_xz_enc   },
+    [CODEC_LZMA_ALONE] = {"lzma",        &codec_lzma_alone_dec,  NULL            },
+    [CODEC_RLE90] = {"rle90",       &codec_rle90_dec,       NULL            },
+    [CODEC_SIT_LZW] = {"sit-lzw",     &codec_sit_lzw_dec,     NULL            },
+    [CODEC_SIT_HUFFMAN] = {"sit-huffman", &codec_sit_huffman_dec, NULL            },
+    [CODEC_SIT13] = {"sit13",       &codec_sit13_dec,       NULL            },
+    [CODEC_SIT_ARSENIC] = {"sit-arsenic", &codec_sit_arsenic_dec, NULL            },
+    [CODEC_CPT_RLE] = {"cpt-rle",     &codec_cpt_rle_dec,     NULL            },
+    [CODEC_CPT_LZH] = {"cpt-lzh",     &codec_cpt_lzh_dec,     NULL            },
+    [CODEC_DCMP] = {"dcmp",        &codec_dcmp_dec,        NULL            },
+    [CODEC_GSRLE] = {"gsrle",       &codec_gsrle_dec,       &codec_gsrle_enc},
+};
+
+const char *codec_name(codec_id_t id) {
+    return (unsigned)id < CODEC_COUNT ? k_codecs[id].name : "?";
+}
 
 const char *codec_strerror(int64_t rc) {
     if (rc >= 0)
@@ -31,44 +67,497 @@ const char *codec_strerror(int64_t rc) {
     }
 }
 
-// A stored payload: exactly the bytes, refusing more than fit.
-static int64_t copy_decode(const uint8_t *src, size_t len, uint8_t *dst, size_t cap) {
-    if (len > cap)
-        return CODEC_ERR_OVERFLOW;
-    if (len && (!src || !dst))
-        return CODEC_ERR_ARG;
-    if (len)
-        memcpy(dst, src, len);
-    return (int64_t)len;
-}
+// ============================================================================
+// Input
+// ============================================================================
 
-int64_t codec_decode(codec_id_t id, const uint8_t *src, size_t len, uint8_t *dst, size_t cap) {
-    switch (id) {
-    case CODEC_COPY:
-        return copy_decode(src, len, dst, cap);
-    case CODEC_DEFLATE:
-        return codec_inflate(src, len, dst, cap);
-    case CODEC_ZLIB:
-        return codec_zlib_inflate(src, len, dst, cap);
-    case CODEC_ADC:
-        return codec_adc_decompress(src, len, dst, cap);
-    case CODEC_BZIP2:
-        return codec_bzip2_decompress(src, len, dst, cap);
-    case CODEC_LZFSE:
-        return codec_lzfse_decompress(src, len, dst, cap);
-    case CODEC_XZ:
-        return codec_xz_decompress(src, len, dst, cap);
-    case CODEC_LZMA_ALONE:
-        return codec_lzma_alone_decompress(src, len, dst, cap);
-    default:
-        return CODEC_ERR_ARG;
+bool codec_in_refill(codec_in_t *in) {
+    if (in->pos < in->len)
+        return true;
+    if (in->eof || !in->pull)
+        return false;
+    for (;;) {
+        int64_t n = in->pull(in->pull_ctx, in->buf, CODEC_IN_CHUNK);
+        if (n < 0) {
+            in->err = (int)n;
+            in->eof = true;
+            return false;
+        }
+        if (n == 0) {
+            in->eof = true;
+            return false;
+        }
+        in->base += in->len;
+        in->p = in->buf;
+        in->pos = 0;
+        in->len = (size_t)n;
+        return true;
     }
 }
 
-const char *codec_name(codec_id_t id) {
-    static const char *const names[CODEC_COUNT] = {
-        [CODEC_COPY] = "copy",   [CODEC_DEFLATE] = "deflate", [CODEC_ZLIB] = "zlib", [CODEC_ADC] = "adc",
-        [CODEC_BZIP2] = "bzip2", [CODEC_LZFSE] = "lzfse",     [CODEC_XZ] = "xz",     [CODEC_LZMA_ALONE] = "lzma",
-    };
-    return (unsigned)id < CODEC_COUNT ? names[id] : "?";
+size_t codec_in_read(codec_in_t *in, uint8_t *dst, size_t n) {
+    size_t got = 0;
+    while (got < n) {
+        if (in->pos == in->len && !codec_in_refill(in))
+            break;
+        size_t k = in->len - in->pos < n - got ? in->len - in->pos : n - got;
+        memcpy(dst + got, in->p + in->pos, k);
+        in->pos += k;
+        got += k;
+    }
+    return got;
 }
+
+size_t lsb_read(codec_in_t *in, uint8_t *dst, size_t n) {
+    size_t got = 0;
+    while (got < n && in->nbits > 0) {
+        int b = lsb_byte(in);
+        if (b < 0)
+            return got;
+        dst[got++] = (uint8_t)b;
+    }
+    if (got < n && in->nbits == 0) {
+        in->bits = 0; // the look-ahead bits are about to be read directly
+        got += codec_in_read(in, dst + got, n - got);
+    }
+    return got;
+}
+
+// ============================================================================
+// Output ring
+// ============================================================================
+
+void ring_write(codec_ring_t *r, const uint8_t *src, size_t n) {
+    while (n) {
+        size_t k = r->size - r->w < n ? r->size - r->w : n;
+        memcpy(r->buf + r->w, src, k);
+        r->w += k;
+        if (r->w == r->size)
+            r->w = 0;
+        r->total += k;
+        src += k;
+        n -= k;
+    }
+}
+
+void ring_fill(codec_ring_t *r, uint8_t b, size_t n) {
+    while (n) {
+        size_t k = r->size - r->w < n ? r->size - r->w : n;
+        memset(r->buf + r->w, b, k);
+        r->w += k;
+        if (r->w == r->size)
+            r->w = 0;
+        r->total += k;
+        n -= k;
+    }
+}
+
+void ring_copy_zero(codec_ring_t *r, size_t dist, size_t len) {
+    if (dist <= r->total) {
+        ring_copy(r, dist, len);
+        return;
+    }
+    // The first dist - total bytes come from before the start: zeros (the
+    // ring may be smaller than the format's window, so its own content
+    // there is not to be read).
+    size_t zeros = (size_t)(dist - r->total) < len ? (size_t)(dist - r->total) : len;
+    ring_fill(r, 0, zeros);
+    // The rest: from the stream's first byte on, `dist` behind each.
+    for (size_t i = zeros; i < len; i++)
+        ring_put(r, ring_back(r, dist));
+}
+
+// ============================================================================
+// Huffman trees
+// ============================================================================
+
+void codec_htree_reset(codec_htree_t *p) {
+    p->used = 0;
+}
+
+int codec_htree_node(codec_htree_t *p) {
+    if (p->used >= CODEC_HTREE_CAP)
+        return -1;
+    int idx = p->used++;
+    p->node[idx].ch[0] = -1;
+    p->node[idx].ch[1] = -1;
+    p->node[idx].sym = CODEC_HTREE_NOSYM;
+    return idx;
+}
+
+int codec_htree_insert(codec_htree_t *p, int root, uint32_t code, int len, int sym) {
+    if (len < 1 || len > 31)
+        return -1;
+    int cur = root;
+    for (int bit = len - 1; bit >= 0; bit--) {
+        int b = (int)((code >> bit) & 1);
+        if (p->node[cur].ch[b] < 0) {
+            int n = codec_htree_node(p);
+            if (n < 0)
+                return -1;
+            p->node[cur].ch[b] = (int16_t)n;
+        }
+        cur = p->node[cur].ch[b];
+    }
+    p->node[cur].sym = (int16_t)sym;
+    return 0;
+}
+
+int codec_htree_build(codec_htree_t *p, const int8_t *lengths, int nsym, int min_len, int max_len) {
+    // 0 is "absent" in every format; anything else must be in range.
+    for (int s = 0; s < nsym; s++)
+        if (lengths[s] != 0 && (lengths[s] < min_len || lengths[s] > max_len))
+            return -1;
+    int root = codec_htree_node(p);
+    if (root < 0)
+        return -1;
+    uint32_t code = 0;
+    for (int len = min_len; len <= max_len; len++, code <<= 1) {
+        for (int s = 0; s < nsym; s++) {
+            if (lengths[s] != len)
+                continue;
+            if (len > 0 && codec_htree_insert(p, root, code, len, s) < 0)
+                return -1;
+            code++;
+        }
+    }
+    return root;
+}
+
+int codec_ring_alloc(codec_dec_t *d, size_t window, size_t burst) {
+    size_t size = window + 2 * burst;
+    if (size < 65536)
+        size = 65536; // fewer, longer fills
+    // A stream of known length needs no more history than that length
+    // (one-shot decoding of a small chunk allocates no large window).
+    if (d->out_len < size && d->out_len + burst < size)
+        size = (size_t)d->out_len + burst;
+    free(d->ring.buf);
+    // Zero-filled: a window some formats define as starting at zeros.
+    d->ring = (codec_ring_t){.buf = calloc(1, size), .size = size};
+    return d->ring.buf ? 0 : CODEC_ERR_NOMEM;
+}
+
+int codec_fail(codec_dec_t *d, int rc, const char *msg) {
+    if (!d->msg[0]) {
+        size_t n = strlen(msg) < sizeof(d->msg) - 1 ? strlen(msg) : sizeof(d->msg) - 1;
+        memcpy(d->msg, msg, n);
+        d->msg[n] = '\0';
+    }
+    return rc;
+}
+
+// ============================================================================
+// Decoders
+// ============================================================================
+
+codec_dec_t *codec_dec_new(codec_id_t id, const codec_dec_opts_t *o, int *err) {
+    int e = 0;
+    if (!err)
+        err = &e;
+    *err = CODEC_ERR_ARG;
+    if ((unsigned)id >= CODEC_COUNT || !k_codecs[id].dec || !o || (!o->pull && !o->src && o->len))
+        return NULL;
+    const codec_dec_ops_t *ops = k_codecs[id].dec;
+    if (ops->sized && o->out_len == CODEC_LEN_UNKNOWN)
+        return NULL;
+    codec_dec_t *d = calloc(1, sizeof(*d));
+    if (!d) {
+        *err = CODEC_ERR_NOMEM;
+        return NULL;
+    }
+    d->ops = ops;
+    d->id = id;
+    d->out_len = o->out_len;
+    d->flags = o->flags;
+    if (o->pull) {
+        d->in.pull = o->pull;
+        d->in.pull_ctx = o->pull_ctx;
+        d->in.buf = malloc(CODEC_IN_CHUNK);
+        d->in.p = d->in.buf;
+        if (!d->in.buf) {
+            free(d);
+            *err = CODEC_ERR_NOMEM;
+            return NULL;
+        }
+    } else {
+        d->in.p = o->src;
+        d->in.len = o->len;
+        d->in.eof = true;
+    }
+    int rc = ops->init(d);
+    if (rc == 0 && !d->ring.buf)
+        rc = codec_ring_alloc(d, 0, 1);
+    if (rc != 0) {
+        codec_dec_free(d);
+        *err = rc;
+        return NULL;
+    }
+    *err = 0;
+    return d;
+}
+
+void codec_dec_free(codec_dec_t *d) {
+    if (!d)
+        return;
+    if (d->st)
+        d->ops->free(d);
+    free(d->ring.buf);
+    free(d->in.buf);
+    free(d);
+}
+
+uint64_t codec_dec_total_out(const codec_dec_t *d) {
+    return d->ring.drained;
+}
+
+uint64_t codec_dec_consumed(const codec_dec_t *d) {
+    return codec_in_consumed(&d->in);
+}
+
+const char *codec_dec_message(const codec_dec_t *d) {
+    if (!d)
+        return "no decoder";
+    if (d->msg[0] || d->status >= 0)
+        return d->msg;
+    return codec_strerror(d->status);
+}
+
+// Copy undrained ring bytes to out[*n..cap).
+static void drain(codec_dec_t *d, uint8_t *out, size_t cap, size_t *n) {
+    codec_ring_t *r = &d->ring;
+    while (*n < cap && r->drained < r->total) {
+        size_t pending = (size_t)(r->total - r->drained);
+        size_t at = r->w >= pending ? r->w - pending : r->w + r->size - pending;
+        size_t k = r->size - at < pending ? r->size - at : pending;
+        if (k > cap - *n)
+            k = cap - *n;
+        memcpy(out + *n, r->buf + at, k);
+        *n += k;
+        r->drained += k;
+    }
+}
+
+int codec_dec_run(codec_dec_t *d, uint8_t *out, size_t cap, size_t *n) {
+    size_t got = 0;
+    if (n)
+        *n = 0;
+    if (!d || (!out && cap))
+        return CODEC_ERR_ARG;
+    for (;;) {
+        drain(d, out, cap, &got);
+        if (d->ring.drained < d->ring.total) {
+            if (n)
+                *n = got;
+            return 0; // the caller's buffer is full
+        }
+        if (d->status != 0)
+            break; // ended or failed, and everything before it is out
+        if (got == cap && cap) {
+            if (n)
+                *n = got;
+            return 0;
+        }
+        uint64_t in0 = codec_in_consumed(&d->in), out0 = d->ring.total;
+        (void)out0;
+        int rc = d->ops->fill(d);
+        if (d->in.err) {
+            // The input could not be read: that, not what the decoder made
+            // of its sudden end, is the cause.
+            d->msg[0] = '\0';
+            rc = codec_fail(d, d->in.err, "cannot read the compressed input");
+        }
+        if (rc >= 0 && d->out_len != CODEC_LEN_UNKNOWN && d->ring.total > d->out_len) {
+            // Past the stated size.  A stream with no end of its own ends
+            // there (its last string or match is cut); any other has
+            // decoded too much: deliver up to the size, then fail.
+            size_t excess = (size_t)(d->ring.total - d->out_len); // at most one fill, so < size
+            d->ring.total -= excess;
+            d->ring.w = (d->ring.w + d->ring.size - excess) % d->ring.size;
+            rc = d->ops->sized ? CODEC_END
+                               : codec_fail(d, CODEC_ERR_OVERFLOW, "the stream decodes to more than its stated size");
+        }
+        if (rc == CODEC_END && d->ops->sized && d->ring.total != d->out_len)
+            rc = codec_fail(d, CODEC_ERR_TRUNCATED, "the stream ends short of its stated size");
+        if (rc == CODEC_MORE && d->ring.total == out0 && codec_in_consumed(&d->in) == in0 && !codec_in_overrun(&d->in))
+            rc = codec_fail(d, CODEC_ERR_DATA, "the decoder made no progress"); // a guard, not a format rule
+        if (rc != CODEC_MORE)
+            d->status = rc;
+    }
+    if (n)
+        *n = got;
+    return d->status;
+}
+
+int64_t codec_dec_pull(void *ctx, uint8_t *buf, size_t cap) {
+    size_t n = 0;
+    int rc = codec_dec_run((codec_dec_t *)ctx, buf, cap, &n);
+    if (rc < 0 && n == 0)
+        return rc;
+    return (int64_t)n;
+}
+
+int64_t codec_decode_flags(codec_id_t id, uint32_t flags, const uint8_t *src, size_t len, uint8_t *dst, size_t cap) {
+    if ((!src && len) || (!dst && cap))
+        return CODEC_ERR_ARG;
+    codec_dec_opts_t o = {.src = src, .len = len, .out_len = cap, .flags = flags};
+    int err = 0;
+    codec_dec_t *d = codec_dec_new(id, &o, &err);
+    if (!d)
+        return err;
+    size_t n = 0;
+    int rc = codec_dec_run(d, dst, cap, &n);
+    if (rc == 0) {
+        // Output full: the stream must end right here, not go on.
+        uint8_t probe;
+        size_t extra = 0;
+        rc = codec_dec_run(d, &probe, 1, &extra);
+        if (extra)
+            rc = CODEC_ERR_OVERFLOW;
+    }
+    codec_dec_free(d);
+    return rc == CODEC_END ? (int64_t)n : rc;
+}
+
+int64_t codec_decode(codec_id_t id, const uint8_t *src, size_t len, uint8_t *dst, size_t cap) {
+    return codec_decode_flags(id, 0, src, len, dst, cap);
+}
+
+uint8_t *codec_decode_alloc(codec_id_t id, const uint8_t *src, size_t len, size_t max, size_t *out_len, int *err) {
+    int e = 0;
+    if (!err)
+        err = &e;
+    if (!out_len || (!src && len)) {
+        *err = CODEC_ERR_ARG;
+        return NULL;
+    }
+    codec_dec_opts_t o = {.src = src, .len = len, .out_len = max};
+    codec_dec_t *d = codec_dec_new(id, &o, err);
+    if (!d)
+        return NULL;
+    size_t cap = max < 65536 ? max : 65536, n = 0;
+    uint8_t *buf = malloc(cap ? cap : 1);
+    int rc = buf ? 0 : CODEC_ERR_NOMEM;
+    while (rc == 0) {
+        if (n == cap) {
+            if (cap >= max) {
+                // Full at the limit: the stream must end here.
+                uint8_t probe;
+                size_t extra = 0;
+                rc = codec_dec_run(d, &probe, 1, &extra);
+                if (extra)
+                    rc = CODEC_ERR_OVERFLOW;
+                break;
+            }
+            size_t ncap = cap > max / 2 ? max : cap * 2;
+            uint8_t *nb = realloc(buf, ncap);
+            if (!nb) {
+                rc = CODEC_ERR_NOMEM;
+                break;
+            }
+            buf = nb;
+            cap = ncap;
+        }
+        size_t k = 0;
+        rc = codec_dec_run(d, buf + n, cap - n, &k);
+        n += k;
+    }
+    codec_dec_free(d);
+    if (rc != CODEC_END) {
+        free(buf);
+        *err = rc < 0 ? rc : CODEC_ERR_DATA;
+        return NULL;
+    }
+    *out_len = n;
+    *err = 0;
+    return buf;
+}
+
+// ============================================================================
+// Encoders
+// ============================================================================
+
+codec_enc_t *codec_enc_new(codec_id_t id, size_t max_len, int level, int *err) {
+    int e = 0;
+    if (!err)
+        err = &e;
+    *err = CODEC_ERR_ARG;
+    if ((unsigned)id >= CODEC_COUNT || !k_codecs[id].enc)
+        return NULL;
+    codec_enc_t *enc = calloc(1, sizeof(*enc));
+    if (!enc) {
+        *err = CODEC_ERR_NOMEM;
+        return NULL;
+    }
+    enc->ops = k_codecs[id].enc;
+    enc->max_len = max_len;
+    enc->level = level < 0 ? enc->ops->default_level : level > 9 ? 9 : level;
+    int rc = enc->ops->init(enc, max_len);
+    if (rc != 0) {
+        codec_enc_free(enc);
+        *err = rc;
+        return NULL;
+    }
+    *err = 0;
+    return enc;
+}
+
+size_t codec_enc_bound(codec_id_t id, size_t len) {
+    if ((unsigned)id >= CODEC_COUNT || !k_codecs[id].enc)
+        return 0;
+    return k_codecs[id].enc->bound(len);
+}
+
+int64_t codec_enc_run(codec_enc_t *e, const uint8_t *in, size_t len, uint8_t *out, size_t cap) {
+    if (!e || (!in && len) || !out || len > e->max_len)
+        return CODEC_ERR_ARG;
+    return e->ops->run(e, in, len, out, cap);
+}
+
+void codec_enc_free(codec_enc_t *e) {
+    if (!e)
+        return;
+    if (e->st)
+        e->ops->free(e);
+    free(e);
+}
+
+int64_t codec_encode(codec_id_t id, int level, const uint8_t *in, size_t len, uint8_t *out, size_t cap) {
+    int err = 0;
+    codec_enc_t *e = codec_enc_new(id, len, level, &err);
+    if (!e)
+        return err;
+    int64_t rc = codec_enc_run(e, in, len, out, cap);
+    codec_enc_free(e);
+    return rc;
+}
+
+// ============================================================================
+// CODEC_COPY: the bytes as they are
+// ============================================================================
+
+static int copy_init(codec_dec_t *d) {
+    d->st = NULL;
+    return codec_ring_alloc(d, 0, 65536);
+}
+
+static int copy_fill(codec_dec_t *d) {
+    codec_ring_t *r = &d->ring;
+    while (ring_room(r) > 0) {
+        if (d->in.pos == d->in.len && !codec_in_refill(&d->in))
+            return CODEC_END;
+        size_t k = d->in.len - d->in.pos;
+        size_t room = ring_room(r);
+        if (k > room)
+            k = room;
+        ring_write(r, d->in.p + d->in.pos, k);
+        d->in.pos += k;
+    }
+    return CODEC_MORE;
+}
+
+static void copy_free(codec_dec_t *d) {
+    (void)d;
+}
+
+const codec_dec_ops_t codec_copy_dec = {copy_init, copy_fill, copy_free, false};

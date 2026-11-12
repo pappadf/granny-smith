@@ -8,8 +8,7 @@
 // test is that it must fail on the unfixed code -- a crash counts -- and each
 // was verified to by reverting its fix alone.
 
-#include "formats/sit13.c" // for its meta-code tables; see Makefile
-#include "formats/sit15.c" // for the Arsenic encoder below; see Makefile
+#include "internal.h"
 
 #include "test_assert.h"
 
@@ -29,344 +28,6 @@ static void put32(uint8_t *p, uint32_t v) {
     p[1] = (uint8_t)(v >> 16);
     p[2] = (uint8_t)(v >> 8);
     p[3] = (uint8_t)v;
-}
-
-// ============================================================================
-// An Arsenic (StuffIt method 15) arithmetic *encoder*
-// ============================================================================
-//
-// The inverse of sit15.c's ac_decode_sym, driving the decoder's own
-// prob_model/model_setup/model_bump, so the two cannot drift apart.
-//
-// The coded value V is a binary fraction.  The decoder reads its first
-// AC_PREC (26) bits as `code`, but its range is AC_ONE (2^25), so a valid
-// stream's first bit is always 0; the encoder emits that bit up front and
-// then V's expansion.  `low` is the 25-bit window of V not yet emitted; an
-// addition that carries past the window ripples into bits already emitted.
-
-typedef struct {
-    uint8_t *bits; // one bit per byte, MSB-first stream order
-    size_t n, cap;
-    uint64_t low;
-    int range;
-} ac_enc;
-
-static void enc_bit(ac_enc *e, int b) {
-    if (e->n == e->cap) {
-        e->cap = e->cap ? e->cap * 2 : 256;
-        e->bits = realloc(e->bits, e->cap);
-        ASSERT_TRUE(e->bits != NULL);
-    }
-    e->bits[e->n++] = (uint8_t)b;
-}
-
-static void enc_init(ac_enc *e) {
-    memset(e, 0, sizeof(*e));
-    e->range = AC_ONE;
-    enc_bit(e, 0);
-}
-
-static void enc_carry(ac_enc *e) {
-    size_t i = e->n;
-    while (i > 0 && e->bits[i - 1] == 1)
-        e->bits[--i] = 0;
-    ASSERT_TRUE(i > 0); // V < 1, so a carry never escapes the stream
-    e->bits[i - 1] = 1;
-}
-
-static void enc_sym(ac_enc *e, prob_model *m, int sym) {
-    int k = sym - m->base_sym;
-    ASSERT_TRUE(k >= 0 && k < m->nsyms);
-    int cum = 0;
-    for (int i = 0; i < k; i++)
-        cum += m->freq[i];
-    int hi = cum + m->freq[k];
-    int scale = e->range / m->total;
-    ASSERT_TRUE(scale > 0);
-
-    e->low += (uint64_t)scale * (uint64_t)cum;
-    if (e->low >= (uint64_t)AC_ONE) {
-        enc_carry(e);
-        e->low -= (uint64_t)AC_ONE;
-    }
-    if (hi == m->total)
-        e->range -= scale * cum;
-    else
-        e->range = m->freq[k] * scale;
-
-    while (e->range <= AC_HALF) {
-        enc_bit(e, (int)((e->low >> (AC_PREC - 2)) & 1));
-        e->low = (e->low << 1) & ((uint64_t)AC_ONE - 1);
-        e->range <<= 1;
-    }
-    model_bump(m, k);
-}
-
-static void enc_field(ac_enc *e, prob_model *m, int n, int value) {
-    for (int i = 0; i < n; i++)
-        enc_sym(e, m, (value >> i) & 1); // LSB first, as ac_decode_field
-}
-
-// Flush: V = the emitted bits followed by `low` exactly, which lies inside the
-// final interval; then zero padding so the decoder's renormalisation reads
-// never run dry.  Returns a malloc'd byte stream.
-static uint8_t *enc_finish(ac_enc *e, size_t *out_len) {
-    for (int i = AC_PREC - 2; i >= 0; i--)
-        enc_bit(e, (int)((e->low >> i) & 1));
-    for (int i = 0; i < 256; i++)
-        enc_bit(e, 0);
-    size_t nbytes = (e->n + 7) / 8;
-    uint8_t *out = calloc(nbytes, 1);
-    ASSERT_TRUE(out != NULL);
-    for (size_t i = 0; i < e->n; i++)
-        if (e->bits[i])
-            out[i / 8] |= (uint8_t)(0x80 >> (i % 8));
-    free(e->bits);
-    e->bits = NULL;
-    *out_len = nbytes;
-    return out;
-}
-
-// The models a stream is decoded against, set up exactly as the decoder does.
-typedef struct {
-    prob_model primary, sel, grp[7];
-} arsenic_models;
-
-static void models_for_header(arsenic_models *mm) {
-    model_setup(&mm->primary, 0, 1, 1, 256);
-}
-
-static void models_for_block(arsenic_models *mm) {
-    model_setup(&mm->sel, 0, 10, 8, 1024);
-    for (int g = 0; g < 7; g++)
-        model_setup(&mm->grp[g], grp_lo[g], grp_hi[g], grp_step[g], 1024);
-}
-
-// Header: signature "As", block exponent B, initial eos = 0.
-static void enc_header(ac_enc *e, arsenic_models *mm, int block_exp) {
-    models_for_header(mm);
-    enc_field(e, &mm->primary, 8, 'A');
-    enc_field(e, &mm->primary, 8, 's');
-    enc_field(e, &mm->primary, 4, block_exp);
-    enc_sym(e, &mm->primary, 0);
-}
-
-// Block header: not randomised, BWT origin 0.
-static void enc_block_header(ac_enc *e, arsenic_models *mm, int block_exp) {
-    models_for_block(mm);
-    enc_sym(e, &mm->primary, 0);
-    enc_field(e, &mm->primary, block_exp + 9, 0);
-}
-
-// Block footer: end of stream, then the 32-bit CRC field (value unchecked).
-static void enc_block_footer_eos(ac_enc *e, arsenic_models *mm) {
-    enc_sym(e, &mm->primary, 1);
-    enc_field(e, &mm->primary, 32, 0);
-}
-
-// A zero run of length n, as the selector tokens that encode it: bijective
-// base 2, least significant digit first, digit d written as token d - 1.
-static void enc_zero_run(ac_enc *e, arsenic_models *mm, unsigned n) {
-    ASSERT_TRUE(n > 0);
-    while (n > 0) {
-        unsigned d = (n % 2 == 0) ? 2 : 1;
-        enc_sym(e, &mm->sel, (int)d - 1);
-        n = (n - d) / 2;
-    }
-}
-
-// A one-block stream whose block is a single zero run of length n.
-static uint8_t *make_zero_run_stream(unsigned n, size_t *len) {
-    ac_enc e;
-    arsenic_models mm;
-    enc_init(&e);
-    enc_header(&e, &mm, 0);
-    enc_block_header(&e, &mm, 0);
-    enc_zero_run(&e, &mm, n);
-    enc_sym(&e, &mm.sel, 10);
-    enc_block_footer_eos(&e, &mm);
-    return enc_finish(&e, len);
-}
-
-// ============================================================================
-// sit15
-// ============================================================================
-
-// The encoder is right, or nothing built on it means anything: a block holding
-// one literal must decode to that literal.  Selector 2 is MTF index 1, which
-// on a fresh table is the byte 0x01.
-TEST(test_sit15_encoder_round_trip) {
-    ac_enc e;
-    arsenic_models mm;
-    enc_init(&e);
-    enc_header(&e, &mm, 0);
-    enc_block_header(&e, &mm, 0);
-    enc_sym(&e, &mm.sel, 2);
-    enc_sym(&e, &mm.sel, 10);
-    enc_block_footer_eos(&e, &mm);
-    size_t len;
-    uint8_t *in = enc_finish(&e, &len);
-
-    peel_err_t *err = NULL;
-    peel_buf_t out = peel_sit15(in, len, 1, &err);
-    if (err)
-        fprintf(stderr, "  sit15: %s\n", peel_err_msg(err));
-    ASSERT_TRUE(err == NULL);
-    ASSERT_EQ_INT(1, (int)out.size);
-    ASSERT_EQ_INT(0x01, out.data[0]);
-    peel_free(&out);
-    free(in);
-}
-
-// consume_zero_run accumulated (tok + 1) << bit_pos into a plain int with no
-// bound on bit_pos.  Thirty-two zero-run tokens of value 0 sum to 2^0 + ... +
-// 2^30 = 2^31 - 1, and the 32nd adds 1 << 31 -- signed overflow, in practice
-// INT_MIN -- leaving the total at exactly -1.  The caller's
-// `blk_len + run_len > blk_cap` check is false for a negative length, and
-// memset(buf, fill, (size_t)-1) follows.  The input must now be rejected.
-TEST(test_sit15_zero_run_cannot_overflow) {
-    ac_enc e;
-    arsenic_models mm;
-    enc_init(&e);
-    enc_header(&e, &mm, 0);
-    enc_block_header(&e, &mm, 0);
-    for (int i = 0; i < 32; i++)
-        enc_sym(&e, &mm.sel, 0);
-    enc_sym(&e, &mm.sel, 10);
-    enc_block_footer_eos(&e, &mm);
-    size_t len;
-    uint8_t *in = enc_finish(&e, &len);
-
-    peel_err_t *err = NULL;
-    peel_buf_t out = peel_sit15(in, len, 1, &err);
-    ASSERT_TRUE(err != NULL);
-    ASSERT_TRUE(out.data == NULL);
-    peel_err_free(err);
-    free(in);
-}
-
-// The zero-run bound is exact: a legitimate run may fill the block (512 bytes
-// at block exponent 0) and must decode; one byte more must not.  Only 4 output
-// bytes are requested: the whole block is decoded before the first byte is
-// emitted, so that is enough to exercise the bound, and the final RLE stage (4
-// identical bytes then a count) means 512 upstream zeros do not yield 512
-// output bytes anyway.  Guards an off-by-one in the bound itself -- `>=`
-// instead of `>` fails the first half.
-TEST(test_sit15_zero_run_bound_is_exact) {
-    size_t len;
-    uint8_t *in = make_zero_run_stream(512, &len);
-    peel_err_t *err = NULL;
-    peel_buf_t out = peel_sit15(in, len, 4, &err);
-    if (err)
-        fprintf(stderr, "  sit15: %s\n", peel_err_msg(err));
-    ASSERT_TRUE(err == NULL);
-    ASSERT_EQ_INT(4, (int)out.size);
-    for (size_t i = 0; i < out.size; i++)
-        ASSERT_EQ_INT(0, out.data[i]); // MTF index 0 on a fresh table is 0x00
-    peel_free(&out);
-    free(in);
-
-    in = make_zero_run_stream(513, &len);
-    out = peel_sit15(in, len, 4, &err);
-    ASSERT_TRUE(err != NULL);
-    peel_err_free(err);
-    free(in);
-}
-
-// ============================================================================
-// sit13 (StuffIt method 13) -- a bit writer over the decoder's own meta code
-// ============================================================================
-//
-// The stream is read LSB-first (peel_lsb_get), and a Huffman code is walked
-// from its most significant bit down (peel_huff_insert), so a code goes out
-// MSB-first, one bit at a time, into an LSB-first stream.
-
-typedef struct {
-    uint8_t buf[4096];
-    size_t nbits;
-} m13_writer;
-
-static void m13w_bits(m13_writer *w, uint32_t v, int n) { // LSB-first field
-    ASSERT_TRUE(n >= 0 && n <= 32);
-    for (int i = 0; i < n; i++) {
-        ASSERT_TRUE(w->nbits < sizeof(w->buf) * 8);
-        if ((v >> i) & 1)
-            w->buf[w->nbits / 8] |= (uint8_t)(1u << (w->nbits % 8));
-        w->nbits++;
-    }
-}
-
-static void m13w_meta(m13_writer *w, int sym) { // one meta-code symbol
-    for (int b = m13_meta_lens[sym] - 1; b >= 0; b--)
-        m13w_bits(w, (m13_meta_words[sym] >> b) & 1, 1);
-}
-
-// Dynamic-mode header byte: SET = 0, shared second tree, K = 0.
-static void m13w_dynamic_header(m13_writer *w) {
-    m13w_bits(w, 0x08, 8);
-}
-
-// A length of -1 is legal: a decrement from the reset value 0 gives it, and
-// m13_build_canonical counts it as absent, like 0.  Real DropStuff 6 streams
-// open their distance-tree list with exactly that -- the fix for the -2 case
-// (below) first refused it, and the real corpus caught it.  Here the distance
-// list is a decrement then nine repeats of -1, and the stream must still
-// decode.
-TEST(test_sit13_minus_one_is_an_absent_symbol) {
-    m13_writer w = {0};
-    m13w_dynamic_header(&w);
-    m13w_meta(&w, 31); // first tree as in the round trip: 'A' = 0, 'B' = 1
-    m13w_meta(&w, 36);
-    m13w_bits(&w, 53, 6);
-    m13w_meta(&w, 0);
-    m13w_meta(&w, 34);
-    m13w_bits(&w, 0, 1);
-    m13w_meta(&w, 31);
-    for (int i = 0; i < 3; i++) {
-        m13w_meta(&w, 36);
-        m13w_bits(&w, 63, 6);
-    }
-    m13w_meta(&w, 36);
-    m13w_bits(&w, 20, 6);
-    m13w_meta(&w, 33); // distance list: L = -1 ...
-    m13w_meta(&w, 35);
-    m13w_bits(&w, 6, 3); // ... and nine more -1       -> 10
-    m13w_bits(&w, 0, 1); // "A"
-    m13w_bits(&w, 0, 32);
-
-    peel_err_t *err = NULL;
-    peel_buf_t out = peel_sit13(w.buf, (w.nbits + 7) / 8, 1, &err);
-    if (err)
-        fprintf(stderr, "  sit13: %s\n", peel_err_msg(err));
-    ASSERT_TRUE(err == NULL);
-    ASSERT_EQ_INT('A', out.data[0]);
-    peel_free(&out);
-}
-
-// A length list that decrements to -2.  m13_build_canonical assigns codes by
-// walking lengths upward from -1; it never meets a -2, so it never finishes
-// (natively the shift in its loop is UB long before that).  Two decrements emit
-// -1 then -2; four long repeats and one of 23 fill the remaining 319 entries
-// exactly, so the list itself is well-formed in size.
-TEST(test_sit13_negative_length_is_rejected) {
-    m13_writer w = {0};
-    m13w_dynamic_header(&w);
-    m13w_meta(&w, 33); // L = -1
-    m13w_meta(&w, 33); // L = -2
-    for (int i = 0; i < 4; i++) {
-        m13w_meta(&w, 36);
-        m13w_bits(&w, 63, 6);
-    }
-    m13w_meta(&w, 36);
-    m13w_bits(&w, 12, 6); // 2 + 296 + 23 = 321
-    m13w_bits(&w, 0, 32);
-    m13w_bits(&w, 0, 32);
-
-    peel_err_t *err = NULL;
-    peel_buf_t out = peel_sit13(w.buf, (w.nbits + 7) / 8, 16, &err);
-    ASSERT_TRUE(err != NULL);
-    ASSERT_TRUE(out.data == NULL);
-    peel_err_free(err);
 }
 
 // ============================================================================
@@ -446,7 +107,7 @@ static uint8_t *make_cpt_data_fork(const uint8_t *fork, uint32_t fork_len, uint3
     return a;
 }
 
-// An MSB-first bit writer, as peel_msb_t reads (bytes enter the accumulator's
+// An MSB-first bit writer, as the codec's msb_* reader reads (bytes enter the accumulator's
 // high end), for Compact Pro LZH streams.
 typedef struct {
     uint8_t buf[4096];
@@ -912,76 +573,6 @@ TEST(test_sit5_zero_length_skip_marker_cannot_loop) {
     free(a);
 }
 
-// A real dynamic-mode stream, so the length decoder is proven on legitimate
-// input and not only on hostile input: a two-symbol literal code, 'A' = 0 and
-// 'B' = 1, every other symbol absent, the second tree shared, a 10-symbol
-// distance tree that is never walked.  The lists use each command kind the
-// fix touched -- set (0, 31), conditional repeat (34), short and long repeat
-// (35, 36) -- and each must land exactly on its list's end.
-TEST(test_sit13_dynamic_round_trip) {
-    m13_writer w = {0};
-    m13w_dynamic_header(&w); // shared second tree, K = 0: 10 distance symbols
-    // First tree, 321 entries: 0 x 65, then 1 for 'A' (65) and 'B' (66), then 0 x 254.
-    m13w_meta(&w, 31); //   1 zero                               -> 1
-    m13w_meta(&w, 36);
-    m13w_bits(&w, 53, 6); // 64 zeros                              -> 65
-    m13w_meta(&w, 0); // L = 1 for 'A'                          -> 66
-    m13w_meta(&w, 34);
-    m13w_bits(&w, 0, 1); // one more L = 1 for 'B'                  -> 67
-    m13w_meta(&w, 31); // L = 0                                   -> 68
-    for (int i = 0; i < 3; i++) {
-        m13w_meta(&w, 36);
-        m13w_bits(&w, 63, 6); // 3 x 74 zeros                      -> 290
-    }
-    m13w_meta(&w, 36);
-    m13w_bits(&w, 20, 6); // 31 zeros                             -> 321
-    // Distance tree, 10 entries, all absent.
-    m13w_meta(&w, 31); //  1                                       -> 1
-    m13w_meta(&w, 35);
-    m13w_bits(&w, 6, 3); // 9                                      -> 10
-    // "ABBA"
-    m13w_bits(&w, 0, 1);
-    m13w_bits(&w, 1, 1);
-    m13w_bits(&w, 1, 1);
-    m13w_bits(&w, 0, 1);
-    m13w_bits(&w, 0, 32);
-
-    peel_err_t *err = NULL;
-    peel_buf_t out = peel_sit13(w.buf, (w.nbits + 7) / 8, 4, &err);
-    if (err)
-        fprintf(stderr, "  sit13: %s\n", peel_err_msg(err));
-    ASSERT_TRUE(err == NULL);
-    ASSERT_EQ_INT(4, (int)out.size);
-    ASSERT_TRUE(memcmp(out.data, "ABBA", 4) == 0);
-    peel_free(&out);
-}
-
-// m13_decode_lengths bounded its loop by nsym but not the repeat commands
-// inside it.  Command 36 emits r + 10 entries plus one more, r a 6-bit field --
-// up to 74 -- so from index 320 of the 321-entry lengths array it writes 73
-// bytes past the end of a stack array.  Four full repeats and one of 24 reach
-// index 320 exactly; a fifth full one overruns.
-TEST(test_sit13_length_repeat_cannot_overrun) {
-    m13_writer w = {0};
-    m13w_dynamic_header(&w);
-    for (int i = 0; i < 4; i++) { // 4 x 74 = 296
-        m13w_meta(&w, 36);
-        m13w_bits(&w, 63, 6);
-    }
-    m13w_meta(&w, 36); // + 24 = 320
-    m13w_bits(&w, 13, 6);
-    m13w_meta(&w, 36); // + 74 from 320: 73 past the end
-    m13w_bits(&w, 63, 6);
-    m13w_bits(&w, 0, 32); // padding
-    m13w_bits(&w, 0, 32);
-
-    peel_err_t *err = NULL;
-    peel_buf_t out = peel_sit13(w.buf, (w.nbits + 7) / 8, 16, &err);
-    ASSERT_TRUE(err != NULL);
-    ASSERT_TRUE(out.data == NULL);
-    peel_err_free(err);
-}
-
 // ============================================================================
 // BinHex 4.0
 // ============================================================================
@@ -991,7 +582,7 @@ static const char hqx_alpha[] = "!\"#$%&'()*+,-012345689@ABCDEFGHIJKLMNPQRSTUVXY
 
 // A BinHex 4.0 text file (hqx.md §6): the binary stream -- header, data fork,
 // resource fork, each followed by its CRC-16/CCITT (peeler's own
-// crc16_ccitt) -- 6-bit encoded between colons after the preamble line.  No
+// CRC-16/XMODEM) -- 6-bit encoded between colons after the preamble line.  No
 // byte of the fixtures is 0x90, so no RLE escaping is needed.  `bad_rsrc_crc`
 // corrupts only the resource fork's CRC.
 static char *make_hqx_core(const char *name, const char *data, const char *rsrc, bool bad_rsrc_crc,
@@ -1011,13 +602,13 @@ static char *make_hqx_core(const char *name, const char *data, const char *rsrc,
     n += 4;
     put32(bin + n, (uint32_t)rl);
     n += 4;
-    put16(bin + n, crc16_ccitt(bin, n));
+    put16(bin + n, codec_crc16_xmodem(0, bin, n));
     n += 2;
     memcpy(bin + n, data, dl);
-    put16(bin + n + dl, crc16_ccitt(bin + n, dl));
+    put16(bin + n + dl, codec_crc16_xmodem(0, bin + n, dl));
     n += dl + 2;
     memcpy(bin + n, rsrc, rl);
-    put16(bin + n + rl, (uint16_t)(crc16_ccitt(bin + n, rl) ^ (bad_rsrc_crc ? 0x5555 : 0)));
+    put16(bin + n + rl, (uint16_t)(codec_crc16_xmodem(0, bin + n, rl) ^ (bad_rsrc_crc ? 0x5555 : 0)));
     n += rl + 2;
 
     char *txt = calloc(1024, 1);
@@ -1075,87 +666,12 @@ TEST(test_hqx_resource_fork_failure_frees_the_data_fork) {
     free(txt);
 }
 
-// sit3.c's entry point, declared (not in a header) where sit.c declares it.
-peel_buf_t peel_sit3(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err);
-
-// sit3 allocated its output, then aborted on a truncated tree -- one set bit
-// starts a leaf, whose 8-bit symbol is not there -- and leaked it.
-TEST(test_sit3_abort_frees_its_output) {
-    static const uint8_t one_byte[] = {0xFF};
-    peel_err_t *err = NULL;
-    peel_buf_t out = peel_sit3(one_byte, 1, 64, &err);
-    ASSERT_TRUE(err != NULL);
-    ASSERT_TRUE(out.data == NULL);
-    peel_err_free(err);
-}
-
-// ---- Characterisation: the decoders the corpus does not reach -------------
+// ---- Characterisation: LZW, which the corpus does not reach ---------------
 //
-// No archive in the real corpus uses StuffIt method 3 or method 2 (LZW)
-// (measured), so these pin their behaviour down before their bit readers
-// are replaced by peeler's shared ones: each decodes a stream built here
-// bit by bit, including the edges -- a tree read across byte boundaries,
-// codes widening 9 -> 10 -> 11 bits, a clear code mid-block, running out of
-// input.
-
-// An MSB-first bit writer.
-typedef struct {
-    uint8_t buf[512];
-    size_t bit;
-} msb_writer;
-static void msb_put(msb_writer *w, uint32_t v, int n) {
-    for (int i = n - 1; i >= 0; i--, w->bit++)
-        if ((v >> i) & 1)
-            w->buf[w->bit / 8] |= (uint8_t)(0x80u >> (w->bit % 8));
-}
-
-// Method 3: a three-leaf tree -- 'a' = 0, 'b' = 10, 'c' = 11 -- serialised
-// pre-order (0 = internal, 1 + 8 bits = leaf), then the message.  The tree
-// alone is 29 bits, so everything after it straddles byte boundaries.
-TEST(test_sit3_decodes_a_tree_and_message) {
-    static msb_writer w;
-    memset(&w, 0, sizeof(w));
-    msb_put(&w, 0, 1); // root: internal
-    msb_put(&w, 1, 1); // zero child: leaf 'a'
-    msb_put(&w, 'a', 8);
-    msb_put(&w, 0, 1); // one child: internal
-    msb_put(&w, 1, 1); //   leaf 'b'
-    msb_put(&w, 'b', 8);
-    msb_put(&w, 1, 1); //   leaf 'c'
-    msb_put(&w, 'c', 8);
-    static const char msg[] = "abcacbbaccab";
-    for (const char *p = msg; *p; p++) {
-        if (*p == 'a')
-            msb_put(&w, 0, 1);
-        if (*p == 'b')
-            msb_put(&w, 2, 2);
-        if (*p == 'c')
-            msb_put(&w, 3, 2);
-    }
-    size_t len = (w.bit + 7) / 8;
-    size_t n = sizeof(msg) - 1;
-    peel_err_t *err = NULL;
-    peel_buf_t out = peel_sit3(w.buf, len, n, &err);
-    ASSERT_TRUE(err == NULL);
-    ASSERT_EQ_INT((int)n, (int)out.size);
-    ASSERT_TRUE(memcmp(out.data, msg, n) == 0);
-    peel_free(&out);
-
-    // One symbol more than the stream holds: the reader runs out, and
-    // method 3 aborts rather than inventing bits.
-    out = peel_sit3(w.buf, len, n + 8, &err);
-    ASSERT_TRUE(err != NULL && out.data == NULL);
-    peel_err_free(err);
-
-    // A single-leaf tree codes its symbol as no bits at all.
-    memset(&w, 0, sizeof(w));
-    msb_put(&w, 1, 1);
-    msb_put(&w, 'z', 8);
-    err = NULL;
-    out = peel_sit3(w.buf, (w.bit + 7) / 8, 5, &err);
-    ASSERT_TRUE(err == NULL && out.size == 5 && memcmp(out.data, "zzzzz", 5) == 0);
-    peel_free(&out);
-}
+// No archive in the real corpus uses StuffIt method 2 (measured), so this
+// pins it down through a whole archive: codes widening 9 -> 10 -> 11 bits,
+// a clear code mid-block.  (The method decoders themselves are tested in
+// the codec suite.)
 
 // Method 2, beyond 9-bit literals: literal codes only, each always valid
 // and each after the first adding a dictionary entry, so the width widens
@@ -1532,49 +1048,6 @@ TEST(test_peel_passes_unrecognised_input_through) {
     }
 }
 
-// ---- The shared canonical-Huffman pool --------------------------------------
-
-// Walk `bits` (MSB first) from `root`: the symbol reached, or -1.
-static int huff_walk(const peel_hpool_t *p, int root, const char *bits) {
-    int node = root;
-    for (; *bits && node >= 0; bits++)
-        node = peel_huff_child(p, node, *bits == '1');
-    return node < 0 ? -1 : peel_huff_sym(p, node);
-}
-
-// Canonical assignment: ascending length, then ascending symbol.  Lengths
-// {2, 1, 2}: symbol 1 is "0", symbol 0 "10", symbol 2 "11".  An absent
-// symbol (0) gets no code.
-TEST(test_huff_canonical_codes) {
-    static peel_hpool_t pool;
-    peel_hpool_reset(&pool);
-    const int8_t lens[4] = {2, 1, 2, 0};
-    int root = peel_huff_build(&pool, lens, 4, 1, 15);
-    ASSERT_TRUE(root >= 0);
-    ASSERT_EQ_INT(1, huff_walk(&pool, root, "0"));
-    ASSERT_EQ_INT(0, huff_walk(&pool, root, "10"));
-    ASSERT_EQ_INT(2, huff_walk(&pool, root, "11"));
-    // A length outside the format's range is refused, not skipped.
-    const int8_t bad[2] = {1, 16};
-    ASSERT_EQ_INT(-1, peel_huff_build(&pool, bad, 2, 1, 15));
-}
-
-// The pool is bounded: trees that do not fit are refused.  sit13 kept its four
-// trees in a 2048-node pool it never bounds-checked; it now shares this one.
-// Under ASan an overrun here is a failure.
-TEST(test_huff_pool_is_bounded) {
-    static peel_hpool_t pool;
-    peel_hpool_reset(&pool);
-    // 256 symbols at length 8: a full tree, 511 nodes.  The fifth does not fit.
-    static int8_t lens[256];
-    memset(lens, 8, sizeof(lens));
-    int built = 0;
-    while (peel_huff_build(&pool, lens, 256, 1, 15) >= 0)
-        built++;
-    ASSERT_EQ_INT(4, built);
-    ASSERT_TRUE(pool.used <= PEEL_HUFF_POOL_CAP);
-}
-
 // ============================================================================
 // Forks decode through, a buffer at a time
 // ============================================================================
@@ -1731,45 +1204,6 @@ static void drive_by_bytes(peel_producer_t *p, const uint8_t *want, size_t n) {
     free(got);
 }
 
-// Method 13 stops wherever the buffer fills and resumes there.
-TEST(test_sit13_producer_resumes_byte_by_byte) {
-    m13_writer w = {0};
-    m13w_dynamic_header(&w); // the "ABBA" trees of test_sit13_dynamic_round_trip
-    m13w_meta(&w, 31);
-    m13w_meta(&w, 36);
-    m13w_bits(&w, 53, 6);
-    m13w_meta(&w, 0);
-    m13w_meta(&w, 34);
-    m13w_bits(&w, 0, 1);
-    m13w_meta(&w, 31);
-    for (int i = 0; i < 3; i++) {
-        m13w_meta(&w, 36);
-        m13w_bits(&w, 63, 6);
-    }
-    m13w_meta(&w, 36);
-    m13w_bits(&w, 20, 6);
-    m13w_meta(&w, 31);
-    m13w_meta(&w, 35);
-    m13w_bits(&w, 6, 3);
-    size_t n = 20000;
-    uint8_t *want = malloc(n);
-    for (size_t i = 0; i < n; i++) {
-        int bit = (int)((i * 2654435761u) >> 13) & 1;
-        want[i] = bit ? 'B' : 'A';
-        m13w_bits(&w, (uint32_t)bit, 1);
-    }
-    m13w_bits(&w, 0, 32);
-    peel_err_t *err = NULL;
-    peel_buf_t whole = peel_sit13(w.buf, (w.nbits + 7) / 8, n, &err);
-    ASSERT_TRUE(err == NULL && whole.size == n);
-    ASSERT_TRUE(memcmp(whole.data, want, n) == 0);
-    peel_free(&whole);
-    peel_producer_t *p = sit13_producer(w.buf, (w.nbits + 7) / 8, n, &err);
-    ASSERT_TRUE(p != NULL);
-    drive_by_bytes(p, want, n);
-    free(want);
-}
-
 // Compact Pro (LZH under RLE) stops wherever the buffer fills and resumes
 // there, mid-match included.
 TEST(test_cpt_producer_resumes_byte_by_byte) {
@@ -1809,13 +1243,6 @@ TEST(test_cpt_producer_resumes_byte_by_byte) {
 void zipgz_tests(void);
 
 int main(void) {
-    RUN(test_sit15_encoder_round_trip);
-    RUN(test_sit15_zero_run_cannot_overflow);
-    RUN(test_sit15_zero_run_bound_is_exact);
-    RUN(test_sit13_dynamic_round_trip);
-    RUN(test_sit13_length_repeat_cannot_overrun);
-    RUN(test_sit13_minus_one_is_an_absent_symbol);
-    RUN(test_sit13_negative_length_is_rejected);
     RUN(test_cpt_lzh_round_trip);
     RUN(test_cpt_lzh_offset_zero_is_a_full_window_back);
     RUN(test_cpt_short_fork_is_rejected);
@@ -1832,7 +1259,6 @@ int main(void) {
     RUN(test_sit5_zero_length_skip_marker_cannot_loop);
     RUN(test_hqx_round_trip);
     RUN(test_hqx_resource_fork_failure_frees_the_data_fork);
-    RUN(test_sit3_abort_frees_its_output);
     RUN(test_sit5_fork_over_the_cap_is_refused);
     RUN(test_cpt_fork_over_the_cap_is_refused);
     RUN(test_hqx_fork_over_the_cap_is_refused);
@@ -1846,13 +1272,9 @@ int main(void) {
     RUN(test_sit_classic_short_entry_count_lists_what_is_there);
     RUN(test_sit5_deep_folder_paths_resolve);
     RUN(test_peel_passes_unrecognised_input_through);
-    RUN(test_sit3_decodes_a_tree_and_message);
     RUN(test_sit5_lzw_widening_and_clear);
-    RUN(test_huff_canonical_codes);
-    RUN(test_huff_pool_is_bounded);
     RUN(test_sit_fork_decodes_progressively);
     RUN(test_sit_fork_crc_is_checked_when_complete);
-    RUN(test_sit13_producer_resumes_byte_by_byte);
     RUN(test_cpt_producer_resumes_byte_by_byte);
     zipgz_tests();
     fprintf(stderr, "All peeler tests passed\n");

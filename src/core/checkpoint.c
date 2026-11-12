@@ -11,6 +11,7 @@
 //   v3 (GSCHKPT3) — one raw (uncompressed) payload, no per-block metadata; used for quick checkpoints
 
 #include "checkpoint.h"
+#include "codec.h"
 #include "out.h"
 
 #include "build_id.h"
@@ -110,156 +111,57 @@ static bool g_quick_in_flight = false;
 static uint32_t g_quick_skipped = 0;
 
 // === RLE Compression ===
-// Format: sequence of chunks, each either:
-//   LIT chunk: marker=0x00, uint32_t count, <count raw bytes>
-//   RUN chunk: marker=0x01, uint32_t count, uint8_t value
+// The codec library's CODEC_GSRLE (src/codec/lib/gsrle.c): chunks of
+//   LIT: marker=0x00, uint32_t count, <count raw bytes>
+//   RUN: marker=0x01, uint32_t count, uint8_t value
 
-// RLE-encode data into output buffer. Returns compressed size, 0 on overflow.
-// If out is NULL, performs a dry run and returns the exact compressed size needed.
-static size_t rle_encode(const uint8_t *in, size_t in_size, uint8_t *out, size_t out_cap) {
-    size_t op = 0;
-    size_t i = 0;
+// The compressed bytes of a v2 block, pulled from the file for the decoder:
+// at most `left` more.
+typedef struct {
+    FILE *f;
+    uint64_t left;
+} rle_pull_t;
 
-    while (i < in_size) {
-        // check for a run of 4+ identical bytes
-        size_t rs = i;
-        uint8_t val = in[i];
-        while (i < in_size && in[i] == val && (i - rs) < 0xFFFFFFFFu)
-            i++;
-        size_t run_len = i - rs;
-
-        if (run_len >= 4) {
-            // emit RUN chunk: marker(1) + count(4) + value(1) = 6 bytes
-            if (out) {
-                if (op + 6 > out_cap)
-                    return 0;
-                out[op] = 0x01;
-                uint32_t c = (uint32_t)run_len;
-                memcpy(out + op + 1, &c, 4);
-                out[op + 5] = val;
-            }
-            op += 6;
-        } else {
-            // collect literal bytes until the next run of 4+
-            i = rs;
-            size_t ls = i;
-            while (i < in_size) {
-                if (i + 3 < in_size && in[i] == in[i + 1] && in[i] == in[i + 2] && in[i] == in[i + 3])
-                    break;
-                i++;
-                if ((i - ls) >= 0xFFFFFFFFu)
-                    break;
-            }
-            size_t lit_len = i - ls;
-            // emit LIT chunk: marker(1) + count(4) + data(lit_len)
-            if (out) {
-                if (op + 5 + lit_len > out_cap)
-                    return 0;
-                out[op] = 0x00;
-                uint32_t c = (uint32_t)lit_len;
-                memcpy(out + op + 1, &c, 4);
-                memcpy(out + op + 5, in + ls, lit_len);
-            }
-            op += 5 + lit_len;
-        }
-    }
-    return op;
+static int64_t rle_pull(void *ctx, uint8_t *buf, size_t cap) {
+    rle_pull_t *p = ctx;
+    size_t n = p->left < cap ? (size_t)p->left : cap;
+    if (n == 0)
+        return 0;
+    size_t got = fread(buf, 1, n, p->f);
+    if (got == 0)
+        return CODEC_ERR_TRUNCATED;
+    p->left -= got;
+    return (int64_t)got;
 }
 
-// RLE-decode compressed data into output buffer. Returns true on success.
-static bool rle_decode(const uint8_t *in, size_t in_size, uint8_t *out, size_t out_size) {
-    size_t ip = 0, op = 0;
-
-    while (ip < in_size && op < out_size) {
-        uint8_t marker = in[ip++];
-        if (in_size - ip < 4)
-            return false;
-        uint32_t count;
-        memcpy(&count, in + ip, 4);
-        ip += 4;
-
-        // Every bound below is `count > remaining`, never `cursor + count >
-        // size`.  `count` is a uint32_t taken straight from the file and
-        // size_t is 32 bits on the shipping wasm build, so the sum form wraps:
-        // with op = 16 and count = 0xFFFFFFF8 it evaluates to 8, which passes
-        // a 64-byte bound and admits a four-gigabyte memcpy.  The subtraction
-        // form cannot wrap because op <= out_size and ip <= in_size are loop
-        // invariants.  (Not reproducible on a 64-bit host, where the sum is
-        // computed in 64 bits and is correct -- see tests/unit/suites/checkpoint.)
-        if (marker == 0x01) {
-            // RUN: fill count bytes with next byte value
-            if (ip >= in_size)
-                return false;
-            uint8_t val = in[ip++];
-            if (count > out_size - op)
-                return false;
-            memset(out + op, val, count);
-            op += count;
-        } else if (marker == 0x00) {
-            // LIT: copy count raw bytes
-            if (count > in_size - ip)
-                return false;
-            if (count > out_size - op)
-                return false;
-            memcpy(out + op, in + ip, count);
-            ip += count;
-            op += count;
-        } else {
-            return false;
-        }
-    }
-    return (op == out_size);
-}
-
-// RLE-decode `comp_size` bytes read from `f` straight into `out`: the same
-// stream rle_decode reads, without a compressed copy in memory.  Bytes left
-// over once `out` is full are skipped, as rle_decode ignores them, so the
-// stream stays aligned on the next block.  Returns true on success.
+// RLE-decode `comp_size` bytes read from `f` straight into `out`, without a
+// compressed copy in memory.  Bytes left over once `out` is full are
+// skipped, so the stream stays aligned on the next block.  Returns true on
+// success.
 static bool rle_decode_stream(FILE *f, uint64_t comp_size, uint8_t *out, size_t out_size) {
-    uint64_t left = comp_size; // compressed bytes not yet consumed
+    rle_pull_t p = {f, comp_size};
+    codec_dec_opts_t o = {.pull = rle_pull, .pull_ctx = &p, .out_len = out_size};
+    codec_dec_t *d = codec_dec_new(CODEC_GSRLE, &o, NULL);
+    if (!d)
+        return false;
     size_t op = 0;
-    size_t beat = 0; // output position of the last heartbeat
-    while (left > 0 && op < out_size) {
-        // Chunk header: marker(1) + count(4); bounds in the subtraction
-        // form, as in rle_decode
-        uint8_t hdr[5];
-        if (left < sizeof hdr || fread(hdr, 1, sizeof hdr, f) != sizeof hdr)
-            return false;
-        left -= sizeof hdr;
-        uint32_t count;
-        memcpy(&count, hdr + 1, 4);
-        if (count > out_size - op)
-            return false;
-        if (hdr[0] == 0x01) {
-            // RUN: fill count bytes with the next byte value
-            int val = left > 0 ? fgetc(f) : EOF;
-            if (val == EOF)
-                return false;
-            left--;
-            memset(out + op, val, count);
-        } else if (hdr[0] == 0x00) {
-            // LIT: count raw bytes, read in place
-            if (count > left || fread(out + op, 1, count, f) != count)
-                return false;
-            left -= count;
-        } else {
-            return false;
-        }
-        op += count;
+    int rc = 0;
+    while (rc == 0) {
         // A large block takes seconds to read: keep proving we are alive
-        if (op - beat >= RLE_PIECE_BYTES) {
-            checkpoint_busy_heartbeat();
-            beat = op;
-        }
+        size_t step = out_size - op < RLE_PIECE_BYTES ? out_size - op : RLE_PIECE_BYTES, n = 0;
+        rc = codec_dec_run(d, out + op, step, &n);
+        op += n;
+        checkpoint_busy_heartbeat();
     }
-    if (op != out_size)
+    codec_dec_free(d);
+    if (rc != 1 || op != out_size)
         return false;
     // Skip trailing compressed bytes in bounded steps (fseek takes a long)
-    while (left > 0) {
-        long step = left > (uint64_t)RLE_PIECE_BYTES ? (long)RLE_PIECE_BYTES : (long)left;
+    while (p.left > 0) {
+        long step = p.left > (uint64_t)RLE_PIECE_BYTES ? (long)RLE_PIECE_BYTES : (long)p.left;
         if (fseek(f, step, SEEK_CUR) != 0)
             return false;
-        left -= (uint64_t)step;
+        p.left -= (uint64_t)step;
     }
     return true;
 }
@@ -715,22 +617,31 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
         // RLE_PIECE_BYTES piece at a time.  No chunk crosses a piece
         // boundary, so the pieces concatenate into one valid stream.
         const uint8_t *in = (const uint8_t *)data;
-        // First pass: the exact compressed size (dry runs with NULL output),
-        // and the largest piece's, which sizes the one encode buffer
-        size_t comp_size = 0, piece_max = 0;
-        for (size_t off = 0; off < size; off += RLE_PIECE_BYTES) {
-            size_t n = size - off < RLE_PIECE_BYTES ? size - off : RLE_PIECE_BYTES;
-            size_t c = rle_encode(in + off, n, NULL, 0);
-            comp_size += c;
-            if (c > piece_max)
-                piece_max = c;
-            checkpoint_busy_heartbeat(); // a 768 MB RAM block takes seconds
-        }
-        uint8_t *comp_buf = (uint8_t *)malloc(piece_max);
+        int cerr = 0;
+        codec_enc_t *enc = codec_enc_new(CODEC_GSRLE, RLE_PIECE_BYTES, -1, &cerr);
+        size_t piece_max = codec_enc_bound(CODEC_GSRLE, size < RLE_PIECE_BYTES ? size : RLE_PIECE_BYTES);
+        uint8_t *comp_buf = enc ? (uint8_t *)malloc(piece_max) : NULL;
         if (!comp_buf) {
             LOG(0, "Error: Out of memory for RLE compression (%zu bytes)", piece_max);
+            codec_enc_free(enc);
             checkpoint->error = true;
             return;
+        }
+        // First pass: the exact compressed size, which the header states
+        // before the data
+        uint64_t comp_size = 0;
+        for (size_t off = 0; off < size; off += RLE_PIECE_BYTES) {
+            size_t n = size - off < RLE_PIECE_BYTES ? size - off : RLE_PIECE_BYTES;
+            int64_t c = codec_enc_run(enc, in + off, n, comp_buf, piece_max);
+            if (c < 0) {
+                LOG(0, "Error: RLE compression failed: %s", codec_strerror(c));
+                free(comp_buf);
+                codec_enc_free(enc);
+                checkpoint->error = true;
+                return;
+            }
+            comp_size += (uint64_t)c;
+            checkpoint_busy_heartbeat(); // a 768 MB RAM block takes seconds
         }
 
         // Write flag + compressed size, then each piece's compressed data
@@ -738,28 +649,31 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
         w = fwrite(&flag, 1, 1, checkpoint->file);
         if (w != 1) {
             free(comp_buf);
+            codec_enc_free(enc);
             checkpoint->error = true;
             return;
         }
-        uint64_t cs = (uint64_t)comp_size;
-        w = fwrite(&cs, 1, sizeof(cs), checkpoint->file);
-        if (w != sizeof(cs)) {
+        w = fwrite(&comp_size, 1, sizeof(comp_size), checkpoint->file);
+        if (w != sizeof(comp_size)) {
             free(comp_buf);
+            codec_enc_free(enc);
             checkpoint->error = true;
             return;
         }
         for (size_t off = 0; off < size; off += RLE_PIECE_BYTES) {
             size_t n = size - off < RLE_PIECE_BYTES ? size - off : RLE_PIECE_BYTES;
-            size_t c = rle_encode(in + off, n, comp_buf, piece_max);
+            size_t c = (size_t)codec_enc_run(enc, in + off, n, comp_buf, piece_max);
             w = fwrite(comp_buf, 1, c, checkpoint->file);
             if (w != c) {
                 LOG(0, "Error: Failed to write %zu RLE bytes to checkpoint (wrote %zu)", c, w);
                 free(comp_buf);
+                codec_enc_free(enc);
                 checkpoint->error = true;
                 return;
             }
             checkpoint_busy_heartbeat();
         }
+        codec_enc_free(enc);
         free(comp_buf);
     }
 }
@@ -880,7 +794,8 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
             memcpy(cp->buf, comp_buf, (size_t)uncompressed_size);
         } else {
             // RLE-compressed data: decode
-            if (!rle_decode(comp_buf, (size_t)compressed_size, cp->buf, (size_t)uncompressed_size)) {
+            if (codec_decode(CODEC_GSRLE, comp_buf, (size_t)compressed_size, cp->buf, (size_t)uncompressed_size) !=
+                (int64_t)uncompressed_size) {
                 LOG(0, "Error: v3 RLE decompression failed for %s", filename);
                 free(comp_buf);
                 free(cp->buf);

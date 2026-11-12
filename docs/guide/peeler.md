@@ -25,10 +25,13 @@ A *wrapper* holds exactly one file; an *archive* holds a tree. Nesting
 is handled by the caller opening an entry's fork as a new source, so a
 `.sit.hqx`, a `.dsk.gz` or a zip of zips each unpack layer by layer.
 
-peeler decodes its DEFLATE members (zip, gzip) and takes its CRC-32 from
-the codec library, [`src/codec/`](../../src/codec/)
-([`codec.md`](../internals/codec/codec.md)), which the emulator shares; it
-depends on nothing else.
+peeler parses containers; every compression method it meets -- StuffIt's
+methods 1, 2, 3, 13 and 15, Compact Pro's LZH and RLE, BinHex's RLE,
+DEFLATE in zip and gzip -- and every checksum (CRC-16, CRC-32) is the
+codec library's, [`src/codec/`](../../src/codec/)
+([`codec.md`](../internals/codec/codec.md)), which the emulator shares.
+Each compressed fork decodes through one adapter, `lib/codec_producer.c`,
+as far as reads reach. peeler depends on nothing else.
 
 The library originated as a standalone project at
 <https://github.com/pappadf/peeler>. It now lives in-tree under
@@ -232,7 +235,8 @@ git add -A && git commit -m "Sync from granny-smith"
   peeler.
 - `tests/unit/suites/peeler` runs under AddressSanitizer, UBSan and
   LeakSanitizer, and again on wasm32. `zipgz.c` holds the zip, gzip, tar
-  and inflate tests (the inflater is the codec library's): an in-test DEFLATE encoder (stored, fixed and dynamic
+  and inflate tests (DEFLATE is the codec library's; the StuffIt methods'
+  own tests are in the codec suite, `stuffit.c`): an in-test DEFLATE encoder (stored, fixed and dynamic
   blocks) drives round trips, resumption at every output boundary, and
   refusal of truncated, over-subscribed and out-of-window streams; a
   counting source checks the partial-access contract (a 50 MB zip opens
