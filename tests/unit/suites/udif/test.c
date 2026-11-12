@@ -83,7 +83,7 @@ TEST(inflate_stored_block) {
     size_t slen = 0;
     uint8_t *stream = zlib_stored(payload, sizeof(payload), &slen);
     uint8_t out[64] = {0};
-    long n = codec_zlib_inflate(stream, slen, out, sizeof(out));
+    long n = codec_decode(CODEC_ZLIB, stream, slen, out, sizeof(out));
     ASSERT_EQ_INT((int)sizeof(payload), (int)n);
     ASSERT_EQ_INT(0, memcmp(out, payload, sizeof(payload)));
     free(stream);
@@ -96,7 +96,7 @@ TEST(inflate_fixed_huffman) {
                                      0x0D, 0x0E, 0x51, 0x08, 0x70, 0x8C, 0xF4, 0xF1, 0x77, 0x74, 0x51,
                                      0x70, 0xA7, 0xA5, 0x34, 0x00, 0x40, 0x00, 0x21, 0x99};
     uint8_t out[256] = {0};
-    long n = codec_zlib_inflate(stream, sizeof(stream), out, sizeof(out));
+    long n = codec_decode(CODEC_ZLIB, stream, sizeof(stream), out, sizeof(out));
     ASSERT_EQ_INT(124, (int)n);
     ASSERT_EQ_INT(0, memcmp(out, "GRANNY SMITH UDIF TEST PAYLOAD GRANNY SMITH UDIF TEST PAYLOAD ", 62));
 }
@@ -121,7 +121,7 @@ TEST(inflate_dynamic_huffman) {
         0x7C, 0x7E, 0x7A, 0xDB, 0x37, 0x44, 0x07, 0xD3, 0xF2, 0x3F, 0x00, 0x75, 0xF8, 0x92, 0xFB, 0x31, 0x5F, 0xAA,
         0x68, 0xE2, 0xE0, 0xED, 0xA8, 0x2A, 0x64, 0xC9, 0xA2, 0x0F, 0x63, 0x23, 0x9E, 0xA7};
     uint8_t out[1024] = {0};
-    long n = codec_zlib_inflate(stream, sizeof(stream), out, sizeof(out));
+    long n = codec_decode(CODEC_ZLIB, stream, sizeof(stream), out, sizeof(out));
     ASSERT_EQ_INT(600, (int)n);
     ASSERT_EQ_INT((int)0xDAF73B30u, (int)codec_crc32(0, out, 600));
 }
@@ -131,13 +131,13 @@ TEST(inflate_alloc_form_matches) {
     size_t slen = 0;
     uint8_t *stream = zlib_stored(payload, sizeof(payload), &slen);
     size_t out_len = 0;
-    uint8_t *out = codec_zlib_inflate_alloc(stream, slen, sizeof(payload), &out_len);
+    uint8_t *out = codec_decode_alloc(CODEC_ZLIB, stream, slen, sizeof(payload), &out_len, NULL);
     ASSERT_TRUE(out != NULL);
     ASSERT_EQ_INT((int)sizeof(payload), (int)out_len);
     ASSERT_EQ_INT(0, memcmp(out, payload, sizeof(payload)));
     free(out);
     // One byte under what the stream decodes to: refused, not truncated.
-    ASSERT_TRUE(codec_zlib_inflate_alloc(stream, slen, sizeof(payload) - 1, &out_len) == NULL);
+    ASSERT_TRUE(codec_decode_alloc(CODEC_ZLIB, stream, slen, sizeof(payload) - 1, &out_len, NULL) == NULL);
     free(stream);
 }
 
@@ -173,8 +173,8 @@ TEST(inflate_alloc_stops_at_its_ceiling) {
     size_t slen = 0;
     uint8_t *stream = zlib_stored_run('x', 200000, &slen);
     size_t out_len = 0;
-    ASSERT_TRUE(codec_zlib_inflate_alloc(stream, slen, 100000, &out_len) == NULL);
-    uint8_t *out = codec_zlib_inflate_alloc(stream, slen, 200000, &out_len);
+    ASSERT_TRUE(codec_decode_alloc(CODEC_ZLIB, stream, slen, 100000, &out_len, NULL) == NULL);
+    uint8_t *out = codec_decode_alloc(CODEC_ZLIB, stream, slen, 200000, &out_len, NULL);
     ASSERT_TRUE(out != NULL);
     ASSERT_EQ_INT(200000, (int)out_len);
     ASSERT_TRUE(out[0] == 'x' && out[199999] == 'x');
@@ -192,22 +192,22 @@ TEST(inflate_rejects_bad_headers) {
     uint8_t bad_cm[64];
     memcpy(bad_cm, stream, slen);
     bad_cm[0] = 0x79;
-    ASSERT_EQ_INT(CODEC_ERR_DATA, (int)codec_zlib_inflate(bad_cm, slen, out, sizeof(out)));
+    ASSERT_EQ_INT(CODEC_ERR_DATA, (int)codec_decode(CODEC_ZLIB, bad_cm, slen, out, sizeof(out)));
 
     // The two header bytes must form a multiple of 31.
     uint8_t bad_check[64];
     memcpy(bad_check, stream, slen);
     bad_check[1] = 0x02;
-    ASSERT_EQ_INT(CODEC_ERR_DATA, (int)codec_zlib_inflate(bad_check, slen, out, sizeof(out)));
+    ASSERT_EQ_INT(CODEC_ERR_DATA, (int)codec_decode(CODEC_ZLIB, bad_check, slen, out, sizeof(out)));
 
     // A preset dictionary (FDICT) is never used by these images.
     uint8_t fdict[64];
     memcpy(fdict, stream, slen);
     fdict[1] = 0x3D; // FDICT set, still a multiple of 31
-    ASSERT_EQ_INT(CODEC_ERR_DATA, (int)codec_zlib_inflate(fdict, slen, out, sizeof(out)));
+    ASSERT_EQ_INT(CODEC_ERR_DATA, (int)codec_decode(CODEC_ZLIB, fdict, slen, out, sizeof(out)));
 
     // Truncated mid-block.
-    ASSERT_EQ_INT(CODEC_ERR_TRUNCATED, (int)codec_zlib_inflate(stream, 5, out, sizeof(out)));
+    ASSERT_EQ_INT(CODEC_ERR_TRUNCATED, (int)codec_decode(CODEC_ZLIB, stream, 5, out, sizeof(out)));
     free(stream);
 }
 
@@ -216,13 +216,13 @@ TEST(inflate_checks_the_adler32_trailer) {
     size_t slen = 0;
     uint8_t *stream = zlib_stored(payload, sizeof(payload), &slen);
     uint8_t out[64];
-    ASSERT_EQ_INT((int)sizeof(payload), (int)codec_zlib_inflate(stream, slen, out, sizeof(out)));
+    ASSERT_EQ_INT((int)sizeof(payload), (int)codec_decode(CODEC_ZLIB, stream, slen, out, sizeof(out)));
     // A trailer that does not match the data is a checksum error...
     stream[slen - 1] ^= 1;
-    ASSERT_EQ_INT(CODEC_ERR_CHECKSUM, (int)codec_zlib_inflate(stream, slen, out, sizeof(out)));
+    ASSERT_EQ_INT(CODEC_ERR_CHECKSUM, (int)codec_decode(CODEC_ZLIB, stream, slen, out, sizeof(out)));
     // ...but a stream that stops after its final block, as some writers'
     // do, is accepted.
-    ASSERT_EQ_INT((int)sizeof(payload), (int)codec_zlib_inflate(stream, slen - 4, out, sizeof(out)));
+    ASSERT_EQ_INT((int)sizeof(payload), (int)codec_decode(CODEC_ZLIB, stream, slen - 4, out, sizeof(out)));
     free(stream);
 }
 
@@ -234,7 +234,7 @@ TEST(inflate_overflow_is_an_error_not_a_clamp) {
     size_t slen = 0;
     uint8_t *stream = zlib_stored(payload, sizeof(payload), &slen);
     uint8_t out[16];
-    ASSERT_EQ_INT(CODEC_ERR_OVERFLOW, (int)codec_zlib_inflate(stream, slen, out, sizeof(out)));
+    ASSERT_EQ_INT(CODEC_ERR_OVERFLOW, (int)codec_decode(CODEC_ZLIB, stream, slen, out, sizeof(out)));
     free(stream);
 }
 

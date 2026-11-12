@@ -78,7 +78,7 @@ static bool bin_validate(const uint8_t *hdr) {
     }
 
     // bin.md § 6.2 — CRC-16/XMODEM over bytes 0–123, stored at 124–125
-    uint16_t crc_calc = crc16_ccitt(hdr, 124);
+    uint16_t crc_calc = codec_crc16_xmodem(0, hdr, 124);
     uint16_t crc_stored = rd16be(hdr + 124);
     if (crc_calc != crc_stored) {
         // bin.md § 6.2 — MacBinary I fallback: accept if byte 82 is 0

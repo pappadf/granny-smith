@@ -13,12 +13,14 @@
 // Both layouts are parsed by this file and exposed through a single
 // peel_sit() entry point that returns a peel_file_list_t.
 //
-// Supported compression methods (sit.md § 6 "Compression Methods"):
-//   0  = raw copy                    (sit.md § 7 "Method 0: None")
-//   1  = RLE90 escape-based RLE      (sit.md § 8 "Method 1: RLE90")
-//   2  = LZW (14-bit max, LE bits)   (sit.md § 9 "Method 2: LZW")
-//   13 = LZSS+Huffman (sit13.c)      (sit.md § 10 "Method 13")
-//   15 = Arsenic/BWT (sit15.c)       (sit.md § 11 "Method 15")
+// Supported compression methods (sit.md § 6 "Compression Methods"), each a
+// codec of the codec library (src/codec, codec.h):
+//   0  = raw copy                    CODEC_COPY        (sit.md § 7)
+//   1  = RLE90 escape-based RLE      CODEC_RLE90       (sit.md § 8)
+//   2  = LZW (14-bit max, LE bits)   CODEC_SIT_LZW     (sit.md § 9)
+//   3  = static Huffman              CODEC_SIT_HUFFMAN (sit3.md)
+//   13 = LZSS+Huffman                CODEC_SIT13       (sit.md § 10, sit13.md)
+//   15 = Arsenic/BWT                 CODEC_SIT_ARSENIC (sit.md § 11, sit15.md)
 
 // Ensure strnlen is declared under strict C99 mode.
 #define _POSIX_C_SOURCE 200809L
@@ -47,12 +49,6 @@
 
 // sit.md § 5.3 "Entry Header" — SIT5 entry magic value.
 #define SIT5_ENTRY_MAGIC 0xA5A5A5A5
-
-// sit.md § 9.2 "Parameters" — LZW constants.
-#define LZW_MAX_BITS   14
-#define LZW_TABLE_CAP  (1 << LZW_MAX_BITS)
-#define LZW_CLEAR_CODE 256
-#define LZW_FIRST_NEW  257
 
 // Number of known classic SIT signatures.
 #define SIT_NUM_SIGS 9
@@ -94,27 +90,6 @@ typedef struct {
     int cap;
 } sit_entry_list_t;
 
-// LZW decoder state.
-// sit.md § 9.3 "Dictionary Structure" — struct-of-arrays layout.
-typedef struct {
-    peel_lsb_t bits; // Compressed bytestream, LE bit packing
-
-    uint16_t prev_code[LZW_TABLE_CAP]; // Back-link to parent code
-    uint8_t suffix[LZW_TABLE_CAP]; // Byte appended at this entry
-    uint8_t head[LZW_TABLE_CAP]; // First byte of the chain
-    uint16_t chain_len[LZW_TABLE_CAP]; // Length of expanded string
-
-    int tbl_next; // Next free dictionary slot
-    int code_bits; // Current code width
-    int prev; // Previous code (-1 = none)
-    int block_count; // Codes emitted since last clear
-    bool bad; // A code no encoder could have written was read
-
-    uint8_t stage[LZW_TABLE_CAP]; // Staging buffer for reversed expansion
-    size_t stage_rd; // Read position in staging buffer
-    size_t stage_len; // Valid bytes in staging buffer
-} lzw_state_t;
-
 // SIT5 directory map entry for path construction.
 // sit.md § 5.7 "Iteration Rules"
 typedef struct {
@@ -130,47 +105,6 @@ typedef struct {
     int count;
     int cap;
 } sit5_dir_map_t;
-
-// ============================================================================
-// Static Helpers — CRC-16
-// ============================================================================
-
-// sit.md § 3 "CRC-16 Integrity Check" — reflected CRC-16, poly 0x8005
-// (CRC-16/IBM), NOT CCITT.  Table generated with reflected polynomial 0xA001.
-// sit.md § "Appendix A: CRC-16 Lookup Table"
-static const uint16_t sit_crc_table[256] = {
-    0x0000, 0xC0C1, 0xC181, 0x0140, 0xC301, 0x03C0, 0x0280, 0xC241, 0xC601, 0x06C0, 0x0780, 0xC741, 0x0500, 0xC5C1,
-    0xC481, 0x0440, 0xCC01, 0x0CC0, 0x0D80, 0xCD41, 0x0F00, 0xCFC1, 0xCE81, 0x0E40, 0x0A00, 0xCAC1, 0xCB81, 0x0B40,
-    0xC901, 0x09C0, 0x0880, 0xC841, 0xD801, 0x18C0, 0x1980, 0xD941, 0x1B00, 0xDBC1, 0xDA81, 0x1A40, 0x1E00, 0xDEC1,
-    0xDF81, 0x1F40, 0xDD01, 0x1DC0, 0x1C80, 0xDC41, 0x1400, 0xD4C1, 0xD581, 0x1540, 0xD701, 0x17C0, 0x1680, 0xD641,
-    0xD201, 0x12C0, 0x1380, 0xD341, 0x1100, 0xD1C1, 0xD081, 0x1040, 0xF001, 0x30C0, 0x3180, 0xF141, 0x3300, 0xF3C1,
-    0xF281, 0x3240, 0x3600, 0xF6C1, 0xF781, 0x3740, 0xF501, 0x35C0, 0x3480, 0xF441, 0x3C00, 0xFCC1, 0xFD81, 0x3D40,
-    0xFF01, 0x3FC0, 0x3E80, 0xFE41, 0xFA01, 0x3AC0, 0x3B80, 0xFB41, 0x3900, 0xF9C1, 0xF881, 0x3840, 0x2800, 0xE8C1,
-    0xE981, 0x2940, 0xEB01, 0x2BC0, 0x2A80, 0xEA41, 0xEE01, 0x2EC0, 0x2F80, 0xEF41, 0x2D00, 0xEDC1, 0xEC81, 0x2C40,
-    0xE401, 0x24C0, 0x2580, 0xE541, 0x2700, 0xE7C1, 0xE681, 0x2640, 0x2200, 0xE2C1, 0xE381, 0x2340, 0xE101, 0x21C0,
-    0x2080, 0xE041, 0xA001, 0x60C0, 0x6180, 0xA141, 0x6300, 0xA3C1, 0xA281, 0x6240, 0x6600, 0xA6C1, 0xA781, 0x6740,
-    0xA501, 0x65C0, 0x6480, 0xA441, 0x6C00, 0xACC1, 0xAD81, 0x6D40, 0xAF01, 0x6FC0, 0x6E80, 0xAE41, 0xAA01, 0x6AC0,
-    0x6B80, 0xAB41, 0x6900, 0xA9C1, 0xA881, 0x6840, 0x7800, 0xB8C1, 0xB981, 0x7940, 0xBB01, 0x7BC0, 0x7A80, 0xBA41,
-    0xBE01, 0x7EC0, 0x7F80, 0xBF41, 0x7D00, 0xBDC1, 0xBC81, 0x7C40, 0xB401, 0x74C0, 0x7580, 0xB541, 0x7700, 0xB7C1,
-    0xB681, 0x7640, 0x7200, 0xB2C1, 0xB381, 0x7340, 0xB101, 0x71C0, 0x7080, 0xB041, 0x5000, 0x90C1, 0x9181, 0x5140,
-    0x9301, 0x53C0, 0x5280, 0x9241, 0x9601, 0x56C0, 0x5780, 0x9741, 0x5500, 0x95C1, 0x9481, 0x5440, 0x9C01, 0x5CC0,
-    0x5D80, 0x9D41, 0x5F00, 0x9FC1, 0x9E81, 0x5E40, 0x5A00, 0x9AC1, 0x9B81, 0x5B40, 0x9901, 0x59C0, 0x5880, 0x9841,
-    0x8801, 0x48C0, 0x4980, 0x8941, 0x4B00, 0x8BC1, 0x8A81, 0x4A40, 0x4E00, 0x8EC1, 0x8F81, 0x4F40, 0x8D01, 0x4DC0,
-    0x4C80, 0x8C41, 0x4400, 0x84C1, 0x8581, 0x4540, 0x8701, 0x47C0, 0x4680, 0x8641, 0x8201, 0x42C0, 0x4380, 0x8341,
-    0x4100, 0x81C1, 0x8081, 0x4040,
-};
-
-// sit.md § 3.3 "Byte-at-a-Time Update" — feed bytes into running CRC.
-static uint16_t sit_crc_update(uint16_t crc, const uint8_t *buf, size_t len) {
-    for (size_t i = 0; i < len; ++i)
-        crc = sit_crc_table[(crc ^ buf[i]) & 0xFF] ^ (crc >> 8);
-    return crc;
-}
-
-// Compute a complete CRC-16 over a buffer (initial value 0).
-static inline uint16_t sit_crc(const uint8_t *buf, size_t len) {
-    return sit_crc_update(0, buf, len);
-}
 
 // ============================================================================
 // Static Helpers — Entry List
@@ -257,165 +191,6 @@ static void build_path(char *dst, size_t cap, const char *dir, const char *name)
 }
 
 // ============================================================================
-// Static Helpers — LZW Decoder
-// ============================================================================
-
-// sit.md § 9.3 "Dictionary Structure" — initialize the LZW decoder with
-// root entries 0–255, code width 9, first free slot at 257.
-static lzw_state_t *lzw_create(const uint8_t *src, size_t src_bytes) {
-    lzw_state_t *z = calloc(1, sizeof(*z));
-    if (!z)
-        return NULL;
-    peel_lsb_init(&z->bits, src, src_bytes);
-    z->code_bits = 9;
-    z->tbl_next = LZW_FIRST_NEW;
-    z->prev = -1;
-    // Initialize root entries (single-byte identity codes)
-    for (int i = 0; i < 256; ++i) {
-        z->prev_code[i] = UINT16_MAX;
-        z->suffix[i] = (uint8_t)i;
-        z->head[i] = (uint8_t)i;
-        z->chain_len[i] = 1;
-    }
-    return z;
-}
-
-// sit.md § 9.4 "Bit Packing" — read one code from the LE bitstream, through
-// peeler's shared LSB-first reader.  Returns -1 once every input bit has
-// been read; a code that runs past the end reads its missing bits as zero.
-static int lzw_next_code(lzw_state_t *z) {
-    if (peel_lsb_at_end(&z->bits))
-        return -1;
-    int code = (int)peel_lsb_get(&z->bits, z->code_bits);
-    z->block_count++;
-    return code;
-}
-
-// sit.md § 9.5 "Decoding Loop" — expand a code into the staging buffer
-// by walking the dictionary chain backward.
-static void lzw_expand(lzw_state_t *z, int code) {
-    int len = z->chain_len[code];
-    if (len > (int)sizeof(z->stage))
-        len = (int)sizeof(z->stage);
-    int pos = len;
-    int cur = code;
-    // Walk backward through chain, storing bytes in reverse
-    while (cur != (int)UINT16_MAX && pos > 0) {
-        z->stage[--pos] = z->suffix[cur];
-        cur = z->prev_code[cur];
-    }
-    // Shift left if we stopped short (shouldn't normally happen)
-    if (pos > 0) {
-        memmove(z->stage, z->stage + pos, (size_t)(len - pos));
-        len -= pos;
-    }
-    z->stage_rd = 0;
-    z->stage_len = (size_t)len;
-}
-
-// sit.md § 9.7 "Code Width Expansion" — add a new dictionary entry and
-// widen code width at power-of-two boundaries.
-static void lzw_add_entry(lzw_state_t *z, int prev_val, uint8_t first_byte) {
-    if (z->tbl_next >= LZW_TABLE_CAP)
-        return;
-    int idx = z->tbl_next;
-    z->prev_code[idx] = (uint16_t)prev_val;
-    z->suffix[idx] = first_byte;
-    z->head[idx] = z->head[prev_val];
-    z->chain_len[idx] = z->chain_len[prev_val] + 1;
-    z->tbl_next++;
-    // Widen code when table size reaches a power of two (max 14 bits)
-    if (z->tbl_next < LZW_TABLE_CAP && (z->tbl_next & (z->tbl_next - 1)) == 0 && z->code_bits < LZW_MAX_BITS)
-        z->code_bits++;
-}
-
-// sit.md § 9.5 "Decoding Loop" — produce up to `want` decompressed bytes.
-// Returns number of bytes produced (0 = EOF).
-static size_t lzw_decode(lzw_state_t *z, uint8_t *dst, size_t want) {
-    size_t got = 0;
-    while (got < want) {
-        // Drain staging buffer first
-        if (z->stage_rd < z->stage_len) {
-            size_t n = z->stage_len - z->stage_rd;
-            if (n > want - got)
-                n = want - got;
-            memcpy(dst + got, z->stage + z->stage_rd, n);
-            z->stage_rd += n;
-            got += n;
-            continue;
-        }
-        int code = lzw_next_code(z);
-        if (code < 0)
-            break;
-        // sit.md § 9.6 "Clear Code and Block Alignment" — clear code 256
-        // resets dictionary and skips remaining 8-code block
-        if (code == LZW_CLEAR_CODE) {
-            if (z->block_count & 7)
-                peel_lsb_skip(&z->bits, (size_t)(z->code_bits * (8 - (z->block_count & 7))));
-            z->tbl_next = LZW_FIRST_NEW;
-            z->code_bits = 9;
-            z->prev = -1;
-            z->block_count = 0;
-            continue;
-        }
-        // First code after reset: single byte, no dict entry added.  The
-        // dictionary is empty, so anything but a literal is corrupt (and
-        // would leave prev naming a stale or never-built entry).
-        if (z->prev < 0) {
-            if (code >= 256) {
-                z->bad = true;
-                break;
-            }
-            dst[got++] = (uint8_t)code;
-            z->prev = code;
-            continue;
-        }
-        // Only the next free slot may be referenced before it exists (KwKwK)
-        if (code > z->tbl_next) {
-            z->bad = true;
-            break;
-        }
-        // sit.md § 9.8 "The KwKwK Case" — determine first byte of expansion
-        uint8_t first_ch;
-        if (code < z->tbl_next)
-            first_ch = z->head[code];
-        else
-            first_ch = z->head[z->prev];
-        // Add new dictionary entry: prev + first_ch
-        lzw_add_entry(z, z->prev, first_ch);
-        // Expand current code (or synthesize KwKwK)
-        if (code < z->tbl_next) {
-            lzw_expand(z, code);
-        } else {
-            // KwKwK: expand prev chain, then append first_ch
-            int len = (int)z->chain_len[z->prev] + 1;
-            if (len > (int)sizeof(z->stage))
-                len = (int)sizeof(z->stage);
-            int pos = len;
-            z->stage[--pos] = first_ch;
-            int cur = z->prev;
-            while (cur != (int)UINT16_MAX && pos > 0) {
-                z->stage[--pos] = z->suffix[cur];
-                cur = z->prev_code[cur];
-            }
-            if (pos > 0) {
-                memmove(z->stage, z->stage + pos, (size_t)(len - pos));
-                len -= pos;
-            }
-            z->stage_rd = 0;
-            z->stage_len = (size_t)len;
-        }
-        z->prev = code;
-    }
-    return got;
-}
-
-// Free an LZW decoder.
-static void lzw_destroy(lzw_state_t *z) {
-    free(z);
-}
-
-// ============================================================================
 // Static Helpers — Fork Decompression (a producer per fork)
 // ============================================================================
 
@@ -431,11 +206,7 @@ typedef struct {
     peel_source_t *src; // the archive, retained; NULL when fi.data is given
     uint8_t *packed; // owned, once read
     const uint8_t *data; // the packed bytes
-    peel_producer_t *inner; // methods 3, 13, 15
-    lzw_state_t *lzw; // method 2
-    size_t rle_pos; // method 1: next packed byte
-    uint8_t rle_last; // method 1: the byte a run repeats
-    uint32_t rle_pending; // method 1: repeats still to emit
+    peel_producer_t *inner; // the method's decoder (peel_codec_producer)
     uint32_t produced;
     uint16_t crc;
     bool started, failed;
@@ -448,9 +219,45 @@ static int sit_prod_fail(sit_prod_t *p, const char *msg) {
     return -5;
 }
 
+// The codec for a method, or -1 (sit.md § 12 "Unsupported Methods").
+static int sit_method_codec(int method) {
+    switch (method) {
+    case 0:
+        return CODEC_COPY;
+    case 1:
+        return CODEC_RLE90; // sit.md § 8.2 "State" -- last_byte starts at 0
+    case 2:
+        return CODEC_SIT_LZW;
+    case 3:
+        return CODEC_SIT_HUFFMAN;
+    case 13:
+        return CODEC_SIT13;
+    case 15:
+        return CODEC_SIT_ARSENIC;
+    default:
+        return -1;
+    }
+}
+
 // First run: read the packed bytes and set the method's decoder up.
 static int sit_prod_start(sit_prod_t *p) {
     p->started = true;
+    int id = sit_method_codec(p->fi.method);
+    if (id < 0) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "SIT: unsupported compression method %d", p->fi.method);
+        return sit_prod_fail(p, msg);
+    }
+    size_t len = p->fi.packed_len;
+    if (id == CODEC_COPY) {
+        // sit.md § 7 "Method 0: None" -- a copy (a view, when it is whole).
+        if (p->fi.packed_len < p->fi.raw_len) {
+            char msg[96];
+            snprintf(msg, sizeof(msg), "SIT: method 0 packed (%u) < raw (%u)", p->fi.packed_len, p->fi.raw_len);
+            return sit_prod_fail(p, msg);
+        }
+        len = p->fi.raw_len;
+    }
     if (p->src) {
         if (p->fi.packed_len > PEEL_MAX_INPUT)
             return sit_prod_fail(p, "SIT: fork data over the input limit");
@@ -462,76 +269,14 @@ static int sit_prod_start(sit_prod_t *p) {
         p->data = p->packed;
     }
     peel_err_t *err = NULL;
-    switch (p->fi.method) {
-    case 0:
-        // sit.md § 7 "Method 0: None" — a copy (a view, when it is whole).
-        if (p->fi.packed_len < p->fi.raw_len) {
-            char msg[96];
-            snprintf(msg, sizeof(msg), "SIT: method 0 packed (%u) < raw (%u)", p->fi.packed_len, p->fi.raw_len);
-            return sit_prod_fail(p, msg);
-        }
-        return 0;
-    case 1:
-        return 0; // sit.md § 8.2 "State" — last_byte starts at 0
-    case 2:
-        // sit.md § 9 "Method 2: LZW" — 14-bit max, LE bit packing
-        p->lzw = lzw_create(p->data, p->fi.packed_len);
-        return p->lzw ? 0 : sit_prod_fail(p, "SIT: out of memory creating LZW decoder");
-    case 3: // sit.md § 10.A "Method 3" — sit3.c (static Huffman)
-        p->inner = sit3_producer(p->data, p->fi.packed_len, p->fi.raw_len, &err);
-        break;
-    case 13: // sit.md § 10 "Method 13" — sit13.c
-        p->inner = sit13_producer(p->data, p->fi.packed_len, p->fi.raw_len, &err);
-        break;
-    case 15: // sit.md § 11 "Method 15" — sit15.c
-        p->inner = sit15_producer(p->data, p->fi.packed_len, p->fi.raw_len, &err);
-        break;
-    default: {
-        // sit.md § 12 "Unsupported Methods" — fatal error
-        char msg[64];
-        snprintf(msg, sizeof(msg), "SIT: unsupported compression method %d", p->fi.method);
-        return sit_prod_fail(p, msg);
-    }
-    }
+    codec_id_t stage = (codec_id_t)id;
+    p->inner = peel_codec_producer(&stage, 1, 0, p->data, len, p->fi.raw_len, true, "SIT", &err);
     if (!p->inner) {
         int rc = sit_prod_fail(p, peel_err_msg(err));
         peel_err_free(err);
         return rc;
     }
     return 0;
-}
-
-// sit.md § 8 "Method 1: RLE90" — escape-based run-length encoding, up to
-// `cap` bytes.  Returns the count; the packed bytes running out first is
-// the caller's to notice.
-static size_t sit_rle90(sit_prod_t *p, uint8_t *out, size_t cap) {
-    size_t n = 0;
-    while (n < cap) {
-        if (p->rle_pending) {
-            size_t k = p->rle_pending < cap - n ? p->rle_pending : cap - n;
-            memset(out + n, p->rle_last, k);
-            n += k;
-            p->rle_pending -= (uint32_t)k;
-            continue;
-        }
-        if (p->rle_pos >= p->fi.packed_len)
-            break;
-        uint8_t b = p->data[p->rle_pos++];
-        if (b != 0x90) {
-            out[n++] = b; // a literal byte
-            p->rle_last = b;
-            continue;
-        }
-        // sit.md § 8.3 "Algorithm" — escape marker 0x90
-        if (p->rle_pos >= p->fi.packed_len)
-            break;
-        uint8_t count = p->data[p->rle_pos++];
-        if (count == 0)
-            out[n++] = 0x90; // a literal 0x90 (last_byte unchanged)
-        else
-            p->rle_pending = (uint32_t)count - 1; // count 1: no more copies
-    }
-    return n;
 }
 
 static int sit_prod_run(peel_producer_t *pp, uint8_t *out, size_t cap, size_t *n) {
@@ -543,34 +288,17 @@ static int sit_prod_run(peel_producer_t *pp, uint8_t *out, size_t cap, size_t *n
         return -5;
     size_t want = p->fi.raw_len - p->produced < cap ? p->fi.raw_len - p->produced : cap;
     size_t got = 0;
-    int rc = 0;
-    switch (p->fi.method) {
-    case 0:
-        memcpy(out, p->data + p->produced, want);
-        got = want;
-        break;
-    case 1:
-        got = sit_rle90(p, out, want);
-        break;
-    case 2:
-        got = lzw_decode(p->lzw, out, want);
-        if (p->lzw->bad)
-            return sit_prod_fail(p, "SIT: corrupt LZW code");
-        break;
-    default:
-        rc = p->inner->run(p->inner, out, want, &got);
-        if (rc < 0)
-            return sit_prod_fail(p, p->inner->err);
-        break;
-    }
-    if (want && !got && rc == 0)
+    int rc = want ? p->inner->run(p->inner, out, want, &got) : 1;
+    if (rc < 0)
+        return sit_prod_fail(p, p->inner->err);
+    if (rc == 1 && p->produced + got < p->fi.raw_len)
         return sit_prod_fail(p, "SIT: fork data ends before its declared length");
-    p->crc = sit_crc_update(p->crc, out, got);
+    p->crc = codec_crc16_arc(p->crc, out, got);
     p->produced += (uint32_t)got;
     *n = got;
     if (p->produced < p->fi.raw_len)
         return 0;
-    // sit.md § 6.3 "CRC Verification Rule" — over the decompressed fork;
+    // sit.md § 6.3 "CRC Verification Rule" -- over the decompressed fork;
     // method 15 checks its own stream instead.
     if (p->fi.method != 15 && p->crc != p->fi.crc) {
         char msg[96];
@@ -584,7 +312,6 @@ static void sit_prod_free(peel_producer_t *pp) {
     sit_prod_t *p = (sit_prod_t *)pp;
     if (p->inner)
         p->inner->free(p->inner);
-    lzw_destroy(p->lzw);
     free(p->packed);
     peel_source_release(p->src);
     free(p);
@@ -901,7 +628,7 @@ static bool parse_sit5_walk(peel_reader_t *rd, uint64_t archive_off, sit_entry_l
             }
             memcpy(tmp, h1, h1_len);
             tmp[32] = tmp[33] = 0;
-            uint16_t computed = sit_crc(tmp, h1_len);
+            uint16_t computed = codec_crc16_arc(0, tmp, h1_len);
             uint16_t stored = rd16be(h1 + 32);
             free(tmp);
             if (computed != stored) {

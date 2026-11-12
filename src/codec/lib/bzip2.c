@@ -28,17 +28,29 @@
 // Undoing the stages in reverse: Huffman -> run lengths and move-to-front
 // -> the inverse Burrows-Wheeler transform (from the origin pointer) -> the
 // initial run-length coding, where four equal bytes are followed by a count
-// of further copies (0..255).
+// of further copies (0..255).  A block is decoded whole into `tt` (no
+// output yet), then emitted into the ring as far as it has room, so a block
+// is resumable on the output side.
 //
-// The block's decoded symbols are held as 32-bit words: the low byte is the
-// symbol and, once the transform's links are built, the upper 24 bits the
-// index of the next entry to visit (a block is at most 900 000 bytes, so an
-// index fits).
+// `tt` holds one 32-bit word per block byte: the low byte is the symbol
+// and, once the transform's links are built, the upper 24 bits the index of
+// the next entry to visit (a block is at most 900 000 bytes).  The walk
+// over those links is the decoder's bottleneck on large blocks: each step
+// is a load from megabytes of table that depends on the one before.
+// (Walking from both ends at once, to overlap the misses, needs a second
+// table of reverse links, whose traffic costs more than it saves.)
+//
+// Huffman symbols decode through a 10-bit lookup table per table (codes up
+// to 10 bits, nearly all of them), falling back to a walk over the code
+// lengths for the rest.
 
 #include "codec_internal.h"
 
 #include <stdlib.h>
-#include <string.h>
+
+// ============================================================================
+// Constants
+// ============================================================================
 
 #define BZ_BLOCK_MAGIC_HI 0x314159u // first half of the block magic
 #define BZ_BLOCK_MAGIC_LO 0x265359u // second half
@@ -53,66 +65,19 @@
 #define BZ_MAX_SELECTORS 18002 // enough for 900 000 symbols; more are read and ignored
 #define BZ_RUNA          0
 #define BZ_RUNB          1
+#define BZ_FAST_BITS     10 // the lookup table's width
+#define BZ_BURST         (4 + 255) // the most one step of the run-length decoding emits
 
 // ============================================================================
-// Bit input (MSB first)
+// Types
 // ============================================================================
 
+// A canonical code: a lookup table on the next BZ_FAST_BITS bits (entry:
+// symbol << 5 | length, 0 for a longer code), and, for those, the codes of
+// length l being first[l] .. first[l]+count[l]-1 with their symbols in
+// `sorted` from offset[l], in symbol order.
 typedef struct {
-    const uint8_t *p;
-    size_t len, pos; // input and the next byte to load
-    uint64_t acc; // loaded bits, the oldest highest
-    int n; // valid bits in acc
-    int fake; // zero bytes loaded past the end (for peeking near the end)
-} bz_bits_t;
-
-// Load bytes until at least `need` bits are buffered; past the end of the
-// input zeros are loaded and counted, so a peek never fails.
-static void bz_fill(bz_bits_t *b, int need) {
-    while (b->n < need) {
-        uint8_t byte = 0;
-        if (b->pos < b->len)
-            byte = b->p[b->pos++];
-        else
-            b->fake++;
-        b->acc = (b->acc << 8) | byte;
-        b->n += 8;
-    }
-}
-
-// True when more bits were consumed than the input holds.
-static bool bz_overrun(const bz_bits_t *b) {
-    return b->n < b->fake * 8;
-}
-
-// The next `k` (1..32) bits, consumed.  Bits past the end read as zero and
-// mark the stream overrun.
-static uint32_t bz_get(bz_bits_t *b, int k) {
-    bz_fill(b, k);
-    b->n -= k;
-    return (uint32_t)(b->acc >> b->n) & (uint32_t)((1ull << k) - 1);
-}
-
-// The next `k` (1..32) bits, not consumed.
-static uint32_t bz_peek(bz_bits_t *b, int k) {
-    bz_fill(b, k);
-    return (uint32_t)(b->acc >> (b->n - k)) & (uint32_t)((1ull << k) - 1);
-}
-
-// Skip to the next byte boundary and report the byte offset reached.
-static size_t bz_byte_pos(bz_bits_t *b) {
-    b->n -= b->n & 7;
-    return b->pos + (size_t)b->fake - (size_t)(b->n / 8); // loaded less unconsumed
-}
-
-// ============================================================================
-// Huffman tables
-// ============================================================================
-
-// A canonical code, decoded by comparing the next bits against each
-// length's code range: codes of length l are first[l] .. first[l]+count[l]-1,
-// and their symbols sit in `sorted` from index offset[l], in symbol order.
-typedef struct {
+    uint16_t fast[1 << BZ_FAST_BITS];
     uint32_t first[BZ_MAX_CODE_LEN + 1];
     uint16_t count[BZ_MAX_CODE_LEN + 1];
     uint16_t offset[BZ_MAX_CODE_LEN + 1];
@@ -120,10 +85,35 @@ typedef struct {
     int min_len, max_len;
 } bz_huff_t;
 
+typedef enum { B_STREAM, B_BLOCK, B_EMIT, B_DONE } bz_state_t;
+
+typedef struct {
+    bz_state_t state;
+    uint32_t block_max; // the level's block size
+    uint32_t *tt; // block symbols, then their links
+    uint32_t combined; // the stream CRC so far
+    uint32_t streams; // streams begun
+    // The block being emitted.
+    uint32_t want_crc; // the block's stored CRC
+    uint32_t n, k; // its length and bytes visited
+    uint32_t pos; // the transform's next entry
+    int last, same; // the previous byte and how many in a row (run-length decoding)
+    uint32_t crc; // over its emitted bytes
+    uint64_t crc_at; // ring.total the block CRC covers
+    uint8_t sel[BZ_MAX_SELECTORS]; // table index per 50-symbol group
+    uint8_t lens[BZ_MAX_GROUPS][BZ_MAX_ALPHA];
+    bz_huff_t huff[BZ_MAX_GROUPS];
+} bz_t;
+
+// ============================================================================
+// Huffman tables
+// ============================================================================
+
 // Build the decoder for `n` symbols with lengths `lens` (each 1..20).
-// CODEC_ERR_DATA when the lengths over-subscribe the code space.
-static int bz_huff_build(bz_huff_t *h, const uint8_t *lens, int n) {
+// -1 when the lengths over-subscribe the code space.
+static int huff_build(bz_huff_t *h, const uint8_t *lens, int n) {
     memset(h->count, 0, sizeof(h->count));
+    memset(h->fast, 0, sizeof(h->fast));
     h->min_len = BZ_MAX_CODE_LEN;
     h->max_len = 1;
     for (int i = 0; i < n; i++) {
@@ -141,24 +131,38 @@ static int bz_huff_build(bz_huff_t *h, const uint8_t *lens, int n) {
         code += h->count[l];
         idx = (uint16_t)(idx + h->count[l]);
         if (code > (1u << l))
-            return CODEC_ERR_DATA; // more codes of this length than fit
+            return -1; // more codes of this length than fit
         code <<= 1;
     }
-    // Symbols in canonical order: by length, then by symbol value.
+    // Symbols in canonical order (by length, then value); the short codes
+    // into the lookup table, each over every index it prefixes.
     uint16_t fill[BZ_MAX_CODE_LEN + 1];
     memcpy(fill, h->offset, sizeof(fill));
     for (int i = 0; i < n; i++)
         h->sorted[fill[lens[i]]++] = (uint16_t)i;
+    for (int l = 1; l <= BZ_FAST_BITS; l++)
+        for (int j = 0; j < h->count[l]; j++) {
+            uint32_t c = h->first[l] + (uint32_t)j, sym = h->sorted[h->offset[l] + j];
+            uint32_t lo = c << (BZ_FAST_BITS - l), hi = lo + (1u << (BZ_FAST_BITS - l));
+            for (uint32_t f = lo; f < hi; f++)
+                h->fast[f] = (uint16_t)(sym << 5 | (uint32_t)l);
+        }
     return 0;
 }
 
-// Decode one symbol; -1 when the bits match no code (an incomplete table).
-static int bz_huff_decode(const bz_huff_t *h, bz_bits_t *b) {
-    uint32_t bits = bz_peek(b, h->max_len);
-    for (int l = h->min_len; l <= h->max_len; l++) {
-        uint32_t c = bits >> (h->max_len - l); // the next l bits
+// Decode one symbol (the accumulator holds >= 20 bits); -1 for bits that
+// match no code (an incomplete table).
+static inline int huff_decode(const bz_huff_t *h, codec_in_t *in) {
+    uint32_t e = h->fast[msb_peek(in, BZ_FAST_BITS)];
+    if (e) {
+        msb_drop(in, (int)(e & 31));
+        return (int)(e >> 5);
+    }
+    uint32_t bits = msb_peek(in, BZ_MAX_CODE_LEN);
+    for (int l = BZ_FAST_BITS + 1; l <= h->max_len; l++) {
+        uint32_t c = bits >> (BZ_MAX_CODE_LEN - l); // the next l bits
         if (c - h->first[l] < h->count[l]) {
-            bz_get(b, l);
+            msb_drop(in, l);
             return h->sorted[h->offset[l] + (c - h->first[l])];
         }
     }
@@ -169,62 +173,54 @@ static int bz_huff_decode(const bz_huff_t *h, bz_bits_t *b) {
 // Blocks
 // ============================================================================
 
-// Per-stream working state (the block buffer is sized by the level).
-typedef struct {
-    bz_bits_t bits;
-    uint32_t *tt; // block symbols, then their transform links
-    uint32_t block_max; // the level's block size
-    uint8_t *dst;
-    size_t cap, out; // the output buffer and bytes written to it
-    uint8_t sel[BZ_MAX_SELECTORS]; // table index per 50-symbol group
-    uint8_t lens[BZ_MAX_GROUPS][BZ_MAX_ALPHA];
-    bz_huff_t huff[BZ_MAX_GROUPS];
-} bz_t;
-
-// Read the symbol map, tables and symbols of one block into s->tt.  Returns
-// the block's length or a negative code; *orig gets the origin pointer.
-static int64_t bz_read_block(bz_t *s, uint32_t *orig) {
-    bz_bits_t *b = &s->bits;
-    if (bz_get(b, 1))
-        return CODEC_ERR_UNSUPPORTED; // randomised block (bzip2 < 0.9.5)
-    *orig = bz_get(b, 24);
+// Read the symbol map, tables and symbols of one block into tt, and link
+// it for the transform.  0 or CODEC_ERR_*.
+static int read_block(codec_dec_t *d, bz_t *s) {
+    codec_in_t *in = &d->in;
+    msb_fill(in);
+    s->want_crc = msb_get(in, 32);
+    if (msb_get(in, 1))
+        return codec_fail(d, CODEC_ERR_UNSUPPORTED, "bzip2: randomised block (bzip2 before 0.9.5)");
+    uint32_t orig = msb_get(in, 24);
 
     // The bytes that occur, in order: the move-to-front list starts as them.
     uint8_t mtf[256];
     int n_used = 0;
-    uint32_t ranges = bz_get(b, 16);
+    msb_fill(in);
+    uint32_t ranges = msb_get(in, 16);
     for (int r = 0; r < 16; r++) {
         if (!(ranges & (0x8000u >> r)))
             continue;
-        uint32_t bytes = bz_get(b, 16);
+        msb_fill(in);
+        uint32_t bytes = msb_get(in, 16);
         for (int j = 0; j < 16; j++)
             if (bytes & (0x8000u >> j))
                 mtf[n_used++] = (uint8_t)(r * 16 + j);
     }
     if (n_used == 0)
-        return CODEC_ERR_DATA;
+        return codec_fail(d, CODEC_ERR_DATA, "bzip2: empty symbol map");
     int alpha = n_used + 2; // RUNA, RUNB, n_used - 1 indices, end of block
     int eob = alpha - 1;
 
-    int n_groups = (int)bz_get(b, 3);
-    if (n_groups < BZ_MIN_GROUPS || n_groups > BZ_MAX_GROUPS)
-        return CODEC_ERR_DATA;
-    uint32_t n_sel = bz_get(b, 15);
-    if (n_sel == 0)
-        return CODEC_ERR_DATA;
+    msb_fill(in);
+    int n_groups = (int)msb_get(in, 3);
+    uint32_t n_sel = msb_get(in, 15);
+    if (n_groups < BZ_MIN_GROUPS || n_groups > BZ_MAX_GROUPS || n_sel == 0)
+        return codec_fail(d, CODEC_ERR_DATA, "bzip2: bad table counts");
 
     // Selectors: unary move-to-front indices over the table numbers.
     uint8_t order[BZ_MAX_GROUPS];
     for (int g = 0; g < n_groups; g++)
         order[g] = (uint8_t)g;
     for (uint32_t i = 0; i < n_sel; i++) {
+        msb_fill(in);
         int j = 0;
-        while (bz_get(b, 1)) {
+        while (msb_get(in, 1)) {
             if (++j >= n_groups)
-                return CODEC_ERR_DATA;
+                return codec_fail(d, CODEC_ERR_DATA, "bzip2: bad selector");
         }
-        if (bz_overrun(b))
-            return CODEC_ERR_TRUNCATED;
+        if (codec_in_overrun(in))
+            return codec_fail(d, CODEC_ERR_TRUNCATED, "bzip2: truncated stream");
         uint8_t g = order[j];
         memmove(order + 1, order, (size_t)j);
         order[0] = g;
@@ -236,54 +232,60 @@ static int64_t bz_read_block(bz_t *s, uint32_t *orig) {
 
     // Code lengths, delta-coded from a 5-bit start.
     for (int g = 0; g < n_groups; g++) {
-        int cur = (int)bz_get(b, 5);
+        msb_fill(in);
+        int cur = (int)msb_get(in, 5);
         for (int i = 0; i < alpha; i++) {
             for (;;) {
                 if (cur < 1 || cur > BZ_MAX_CODE_LEN)
-                    return CODEC_ERR_DATA;
-                if (!bz_get(b, 1))
+                    return codec_fail(d, CODEC_ERR_DATA, "bzip2: bad code length");
+                if (in->nbits < 2)
+                    msb_fill(in);
+                if (!msb_get(in, 1))
                     break;
-                cur += bz_get(b, 1) ? -1 : 1;
+                cur += msb_get(in, 1) ? -1 : 1;
             }
             s->lens[g][i] = (uint8_t)cur;
         }
-        if (bz_overrun(b))
-            return CODEC_ERR_TRUNCATED;
-        int rc = bz_huff_build(&s->huff[g], s->lens[g], alpha);
-        if (rc)
-            return rc;
+        if (codec_in_overrun(in))
+            return codec_fail(d, CODEC_ERR_TRUNCATED, "bzip2: truncated stream");
+        if (huff_build(&s->huff[g], s->lens[g], alpha) != 0)
+            return codec_fail(d, CODEC_ERR_DATA, "bzip2: over-subscribed code");
     }
 
     // Symbols: runs of the front byte, move-to-front indices, end of block.
-    uint32_t n = 0; // block bytes so far
+    uint32_t *tt = s->tt, n = 0, block_max = s->block_max;
     uint32_t group = 0, left = 0; // current selector and symbols it has left
     uint32_t run = 0, weight = 1; // pending run length and next digit's weight
+    uint32_t counts[256] = {0}; // occurrences of each byte, for the transform
+    const bz_huff_t *h = NULL;
     for (;;) {
         if (left == 0) {
             if (group >= n_sel)
-                return CODEC_ERR_DATA; // more symbols than selectors cover
+                return codec_fail(d, CODEC_ERR_DATA, "bzip2: more symbols than selectors");
+            h = &s->huff[s->sel[group++]];
             left = BZ_GROUP_SIZE;
-            group++;
         }
         left--;
-        int sym = bz_huff_decode(&s->huff[s->sel[group - 1]], b);
+        if (in->nbits < BZ_MAX_CODE_LEN)
+            msb_fill(in);
+        int sym = huff_decode(h, in);
         if (sym < 0)
-            return CODEC_ERR_DATA;
-        if (bz_overrun(b))
-            return CODEC_ERR_TRUNCATED;
-        if (sym == BZ_RUNA || sym == BZ_RUNB) {
+            return codec_fail(d, CODEC_ERR_DATA, "bzip2: bad Huffman code");
+        if (sym <= BZ_RUNB) {
             // Bijective base 2: RUNA adds the digit weight, RUNB twice it.
-            run += weight << (sym == BZ_RUNB);
+            run += weight << sym;
             weight <<= 1;
-            if (run > s->block_max)
-                return CODEC_ERR_DATA;
+            if (run > block_max)
+                return codec_fail(d, CODEC_ERR_DATA, "bzip2: run past the block size");
             continue;
         }
         if (run) {
-            if (run > s->block_max - n)
-                return CODEC_ERR_DATA;
+            if (run > block_max - n)
+                return codec_fail(d, CODEC_ERR_DATA, "bzip2: block larger than its level");
+            uint8_t v = mtf[0];
+            counts[v] += run;
             for (uint32_t k = 0; k < run; k++)
-                s->tt[n++] = mtf[0];
+                tt[n++] = v;
             run = 0;
             weight = 1;
         }
@@ -294,48 +296,73 @@ static int64_t bz_read_block(bz_t *s, uint32_t *orig) {
         uint8_t v = mtf[idx];
         memmove(mtf + 1, mtf, (size_t)idx);
         mtf[0] = v;
-        if (n >= s->block_max)
-            return CODEC_ERR_DATA;
-        s->tt[n++] = v;
+        if (n >= block_max)
+            return codec_fail(d, CODEC_ERR_DATA, "bzip2: block larger than its level");
+        counts[v]++;
+        tt[n++] = v;
     }
-    if (n == 0 || *orig >= n)
-        return CODEC_ERR_DATA;
-    return n;
-}
+    if (codec_in_overrun(in))
+        return codec_fail(d, CODEC_ERR_TRUNCATED, "bzip2: truncated stream");
+    if (n == 0 || orig >= n)
+        return codec_fail(d, CODEC_ERR_DATA, "bzip2: bad origin pointer");
 
-// Undo the transform and the initial run-length coding of an n-byte block,
-// appending to the output.  Returns the block's CRC or a negative code (as
-// int64_t, so every 32-bit CRC is representable).
-static int64_t bz_emit_block(bz_t *s, uint32_t n, uint32_t orig) {
     // Each byte's position in the sorted first column, by counting sort;
     // link it to its position in the block.
-    uint32_t start[256] = {0};
-    for (uint32_t i = 0; i < n; i++)
-        start[s->tt[i] & 0xff]++;
-    uint32_t sum = 0;
+    uint32_t start[256], sum = 0;
     for (int c = 0; c < 256; c++) {
-        uint32_t k = start[c];
         start[c] = sum;
-        sum += k;
+        sum += counts[c];
     }
     for (uint32_t i = 0; i < n; i++) {
-        uint8_t c = (uint8_t)(s->tt[i] & 0xff);
-        s->tt[start[c]++] |= i << 8;
+        uint8_t c = (uint8_t)tt[i];
+        tt[start[c]++] |= i << 8;
     }
+    s->n = n;
+    s->k = 0;
+    s->pos = tt[orig] >> 8;
+    s->last = -1;
+    s->same = 0;
+    s->crc = 0;
+    s->crc_at = d->ring.total;
+    s->state = B_EMIT;
+    return 0;
+}
 
-    size_t at = s->out; // where this block's output begins
-    uint32_t pos = s->tt[orig] >> 8;
-    int last = -1, same = 0; // the previous byte and how many in a row
-    for (uint32_t k = 0; k < n; k++) {
-        uint32_t e = s->tt[pos];
-        uint8_t c = (uint8_t)(e & 0xff);
+// Fold the bytes emitted since the last call into the block CRC.
+static void crc_update(codec_dec_t *d, bz_t *s) {
+    codec_ring_t *r = &d->ring;
+    while (s->crc_at < r->total) {
+        size_t pending = (size_t)(r->total - s->crc_at);
+        size_t at = r->w >= pending ? r->w - pending : r->w + r->size - pending;
+        size_t k = r->size - at < pending ? r->size - at : pending;
+        s->crc = codec_crc32_msb(s->crc, r->buf + at, k);
+        s->crc_at += k;
+    }
+}
+
+// Emit the block's bytes while the ring has room: the transform's walk and
+// the run-length decoding, in locals.  True when the block is finished.
+static bool emit_block(codec_dec_t *d, bz_t *s) {
+    codec_ring_t *r = &d->ring;
+    const uint32_t *tt = s->tt;
+    uint32_t k = s->k, n = s->n, pos = s->pos;
+    int last = s->last, same = s->same;
+    uint8_t *buf = r->buf;
+    size_t w = r->w, size = r->size;
+    uint64_t total = r->total, stop = r->drained + size - BZ_BURST;
+    while (k < n && total <= stop) {
+        uint32_t e = tt[pos];
+        uint8_t c = (uint8_t)e;
         pos = e >> 8;
+        k++;
         if (same == 4) {
             // A count byte: that many more copies of the run's byte.
-            if (c > s->cap - s->out)
-                return CODEC_ERR_OVERFLOW;
-            memset(s->dst + s->out, last, c);
-            s->out += c;
+            for (uint32_t i = 0; i < c; i++) {
+                buf[w] = (uint8_t)last;
+                if (++w == size)
+                    w = 0;
+            }
+            total += c;
             same = 0;
             last = -1;
             continue;
@@ -346,78 +373,116 @@ static int64_t bz_emit_block(bz_t *s, uint32_t n, uint32_t orig) {
             last = c;
             same = 1;
         }
-        if (s->out >= s->cap)
-            return CODEC_ERR_OVERFLOW;
-        s->dst[s->out++] = c;
+        buf[w] = c;
+        if (++w == size)
+            w = 0;
+        total++;
     }
-    return codec_crc32_msb(0, s->dst + at, s->out - at);
+    r->w = w;
+    r->total = total;
+    s->k = k;
+    s->pos = pos;
+    s->last = last;
+    s->same = same;
+    return k == n;
 }
 
-// Decode one stream starting at src[0]; *used gets the bytes it occupied.
-static int64_t bz_stream(bz_t *s, const uint8_t *src, size_t len, size_t *used) {
-    if (len < 4 || src[0] != 'B' || src[1] != 'Z' || src[2] != 'h' || src[3] < '1' || src[3] > '9')
-        return CODEC_ERR_DATA;
-    uint32_t block_max = (uint32_t)(src[3] - '0') * 100000u;
-    if (block_max > s->block_max) {
-        free(s->tt);
-        s->tt = malloc((size_t)block_max * sizeof(uint32_t));
-        if (!s->tt) {
-            s->block_max = 0;
-            return CODEC_ERR_NOMEM;
-        }
-    }
-    s->block_max = block_max;
-    s->bits = (bz_bits_t){.p = src, .len = len, .pos = 4};
-    bz_bits_t *b = &s->bits;
+// ============================================================================
+// The decoder
+// ============================================================================
 
-    uint32_t combined = 0; // the stream CRC: rotate, then fold in each block's
+static int bz_fill(codec_dec_t *d) {
+    bz_t *s = d->st;
+    codec_in_t *in = &d->in;
     for (;;) {
-        uint32_t hi = bz_get(b, 24), lo = bz_get(b, 24);
-        if (bz_overrun(b))
-            return CODEC_ERR_TRUNCATED;
-        if (hi == BZ_EOS_MAGIC_HI && lo == BZ_EOS_MAGIC_LO) {
-            uint32_t want = bz_get(b, 32);
-            if (bz_overrun(b))
-                return CODEC_ERR_TRUNCATED;
-            if (want != combined)
-                return CODEC_ERR_CHECKSUM;
-            *used = bz_byte_pos(b);
-            return 0;
+        switch (s->state) {
+        case B_STREAM: {
+            // "BZh" and the level.
+            int b[4];
+            for (int i = 0; i < 4; i++)
+                b[i] = msb_byte(in);
+            if (b[0] != 'B' || b[1] != 'Z' || b[2] != 'h' || b[3] < '1' || b[3] > '9') {
+                if (s->streams > 0) {
+                    s->state = B_DONE; // bytes after the last stream that start none: ignored, as bzip2 does
+                    return CODEC_END;
+                }
+                return codec_fail(d, b[0] < 0 || b[3] < 0 ? CODEC_ERR_TRUNCATED : CODEC_ERR_DATA,
+                                  "bzip2: bad stream header");
+            }
+            s->streams++;
+            uint32_t block_max = (uint32_t)(b[3] - '0') * 100000u;
+            if (block_max > s->block_max) {
+                free(s->tt);
+                s->tt = malloc((size_t)block_max * sizeof(uint32_t));
+                if (!s->tt) {
+                    s->block_max = 0;
+                    return codec_fail(d, CODEC_ERR_NOMEM, "bzip2: out of memory");
+                }
+            }
+            s->block_max = block_max;
+            s->combined = 0;
+            s->state = B_BLOCK;
+            break;
         }
-        if (hi != BZ_BLOCK_MAGIC_HI || lo != BZ_BLOCK_MAGIC_LO)
-            return CODEC_ERR_DATA;
-        uint32_t want = bz_get(b, 32);
-        uint32_t orig = 0;
-        int64_t n = bz_read_block(s, &orig);
-        if (n < 0)
-            return n;
-        int64_t crc = bz_emit_block(s, (uint32_t)n, orig);
-        if (crc < 0)
-            return crc;
-        if ((uint32_t)crc != want)
-            return CODEC_ERR_CHECKSUM;
-        combined = ((combined << 1) | (combined >> 31)) ^ (uint32_t)crc;
+        case B_BLOCK: {
+            msb_fill(in);
+            uint32_t hi = msb_get(in, 24), lo = msb_get(in, 24);
+            if (codec_in_overrun(in))
+                return codec_fail(d, CODEC_ERR_TRUNCATED, "bzip2: truncated stream");
+            if (hi == BZ_EOS_MAGIC_HI && lo == BZ_EOS_MAGIC_LO) {
+                uint32_t want = msb_get(in, 32);
+                if (codec_in_overrun(in))
+                    return codec_fail(d, CODEC_ERR_TRUNCATED, "bzip2: truncated stream");
+                if (want != s->combined)
+                    return codec_fail(d, CODEC_ERR_CHECKSUM, "bzip2: stream CRC mismatch");
+                msb_align(in);
+                // Another stream may follow (bzip2 -c a b > ab).
+                if (in->nbits / 8 <= (int)in->over && in->pos == in->len && !codec_in_refill(in)) {
+                    s->state = B_DONE;
+                    return CODEC_END;
+                }
+                s->state = B_STREAM;
+                break;
+            }
+            if (hi != BZ_BLOCK_MAGIC_HI || lo != BZ_BLOCK_MAGIC_LO)
+                return codec_fail(d, CODEC_ERR_DATA, "bzip2: bad block magic");
+            int rc = read_block(d, s);
+            if (rc)
+                return rc;
+            break;
+        }
+        case B_EMIT:
+            if (ring_room(&d->ring) < BZ_BURST)
+                return CODEC_MORE;
+            if (!emit_block(d, s)) {
+                crc_update(d, s);
+                return CODEC_MORE;
+            }
+            crc_update(d, s);
+            if (s->crc != s->want_crc)
+                return codec_fail(d, CODEC_ERR_CHECKSUM, "bzip2: block CRC mismatch");
+            s->combined = ((s->combined << 1) | (s->combined >> 31)) ^ s->crc;
+            s->state = B_BLOCK;
+            break;
+        case B_DONE:
+            return CODEC_END;
+        }
     }
 }
 
-int64_t codec_bzip2_decompress(const uint8_t *src, size_t len, uint8_t *dst, size_t cap) {
-    if (!src || (!dst && cap))
-        return CODEC_ERR_ARG;
+static int bz_init(codec_dec_t *d) {
     bz_t *s = calloc(1, sizeof(*s));
     if (!s)
         return CODEC_ERR_NOMEM;
-    s->dst = dst;
-    s->cap = cap;
-    int64_t rc = 0;
-    size_t at = 0;
-    // One stream, then any concatenated after it (bzip2 -c a b > ab).
-    do {
-        size_t used = 0;
-        rc = bz_stream(s, src + at, len - at, &used);
-        at += used;
-    } while (rc == 0 && len - at >= 4 && memcmp(src + at, "BZh", 3) == 0);
-    free(s->tt);
-    int64_t out = (int64_t)s->out;
-    free(s);
-    return rc < 0 ? rc : out;
+    d->st = s;
+    return codec_ring_alloc(d, 0, BZ_BURST);
 }
+
+static void bz_free(codec_dec_t *d) {
+    bz_t *s = d->st;
+    free(s->tt);
+    free(s);
+    d->st = NULL;
+}
+
+const codec_dec_ops_t codec_bzip2_dec = {bz_init, bz_fill, bz_free, false};

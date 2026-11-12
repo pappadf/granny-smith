@@ -82,13 +82,13 @@ TEST(deflate_round_trips_at_every_level) {
     const int levels[] = {0, 1, 6, 9};
     for (size_t s = 0; s < sizeof(sizes) / sizeof(sizes[0]); s++) {
         uint8_t *in = make_content(sizes[s], 7 + s);
-        size_t cap = codec_deflate_bound(sizes[s]);
+        size_t cap = codec_enc_bound(CODEC_ZLIB, sizes[s]);
         uint8_t *z = malloc(cap);
         uint8_t *out = malloc(sizes[s] + 1);
         for (size_t l = 0; l < sizeof(levels) / sizeof(levels[0]); l++) {
-            long n = codec_zlib_deflate(NULL, in, sizes[s], z, cap, levels[l]);
+            long n = codec_encode(CODEC_ZLIB, levels[l], in, sizes[s], z, cap);
             ASSERT_TRUE(n > 0 && (size_t)n <= cap);
-            int64_t got = codec_zlib_inflate(z, (size_t)n, out, sizes[s] + 1);
+            int64_t got = codec_decode(CODEC_ZLIB, z, (size_t)n, out, sizes[s] + 1);
             ASSERT_EQ_INT((int)sizes[s], (int)got);
             ASSERT_TRUE(memcmp(in, out, sizes[s]) == 0);
         }
@@ -102,17 +102,17 @@ TEST(deflate_compresses_text_and_reuses_state) {
     uint8_t buf[65536];
     for (size_t i = 0; i < sizeof(buf); i++)
         buf[i] = (uint8_t) "Macintosh "[i % 10];
-    codec_deflate_state_t *st = codec_deflate_state_new(sizeof(buf));
+    codec_enc_t *st = codec_enc_new(CODEC_ZLIB, sizeof(buf), 1, NULL);
     uint8_t z[80000], out[65536];
     for (int round = 0; round < 3; round++) {
-        long n = codec_zlib_deflate(st, buf, sizeof(buf), z, sizeof(z), 1);
+        int64_t n = codec_enc_run(st, buf, sizeof(buf), z, sizeof(z));
         ASSERT_TRUE(n > 0 && n < 4096);
-        ASSERT_EQ_INT((int)sizeof(buf), (int)codec_zlib_inflate(z, (size_t)n, out, sizeof(out)));
+        ASSERT_EQ_INT((int)sizeof(buf), (int)codec_decode(CODEC_ZLIB, z, (size_t)n, out, sizeof(out)));
         ASSERT_TRUE(memcmp(buf, out, sizeof(buf)) == 0);
     }
-    codec_deflate_state_free(st);
+    codec_enc_free(st);
     // Too small an output buffer is an error, not an overrun.
-    ASSERT_EQ_INT(-1, (int)codec_zlib_deflate(NULL, buf, sizeof(buf), z, 8, 0));
+    ASSERT_EQ_INT(CODEC_ERR_OVERFLOW, (int)codec_encode(CODEC_ZLIB, 0, buf, sizeof(buf), z, 8));
 }
 
 TEST(adler32_known_vector) {
@@ -131,12 +131,12 @@ TEST(crc32_zeros_matches_the_table) {
 
 // Round-trip `n` bytes at `level`; the first block's type (BTYPE).
 static int round_trip_btype(const uint8_t *in, size_t n, int level) {
-    size_t cap = codec_deflate_bound(n);
+    size_t cap = codec_enc_bound(CODEC_ZLIB, n);
     uint8_t *z = malloc(cap), *out = malloc(n + 1);
     ASSERT_TRUE(z != NULL && out != NULL);
-    long zn = codec_zlib_deflate(NULL, in, n, z, cap, level);
+    long zn = codec_encode(CODEC_ZLIB, level, in, n, z, cap);
     ASSERT_TRUE(zn > 2);
-    ASSERT_EQ_INT((int)n, (int)codec_zlib_inflate(z, (size_t)zn, out, n + 1));
+    ASSERT_EQ_INT((int)n, (int)codec_decode(CODEC_ZLIB, z, (size_t)zn, out, n + 1));
     ASSERT_TRUE(memcmp(in, out, n) == 0);
     int btype = (z[2] >> 1) & 3;
     free(z);

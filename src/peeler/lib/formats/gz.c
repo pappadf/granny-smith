@@ -6,7 +6,7 @@
 // A gzip file is one or more members, each a small header, a DEFLATE stream
 // and an 8-byte trailer (CRC-32, size mod 2^32).  Opening reads the header
 // for the name and the tail for a size hint; the payload decodes through
-// the resumable inflater as reads reach it, member after member.  Only the
+// the codec library's CODEC_DEFLATE (src/codec) as reads reach it, member after member.  Only the
 // last member's trailer is at the tail (and it holds the size mod 2^32), so
 // that hint is exact for a single-member file under 4 GiB and wrong for any
 // other.  The entry lists it, as `gzip -l` does; the fork's source earns its
@@ -121,20 +121,6 @@ static bool gz_detect_probe(const peel_probe_t *p) {
 // Whole-buffer decode (peel_gz, and decode() for the buffer API)
 // ============================================================================
 
-// The rest of a buffer, pulled by the inflater.
-typedef struct {
-    const uint8_t *s;
-    size_t len, pos;
-} gz_mem_t;
-
-static int64_t gz_mem_pull(void *ctx, uint8_t *buf, size_t cap) {
-    gz_mem_t *m = ctx;
-    size_t n = m->len - m->pos < cap ? m->len - m->pos : cap;
-    memcpy(buf, m->s + m->pos, n);
-    m->pos += n;
-    return (int64_t)n;
-}
-
 peel_buf_t peel_gz(const uint8_t *src, size_t len, peel_err_t **err) {
     *err = NULL;
     grow_buf_t out;
@@ -156,8 +142,8 @@ peel_buf_t peel_gz(const uint8_t *src, size_t len, peel_err_t **err) {
         }
         pos += h.header_len;
         // Inflate this member into the output, tracking what it consumed.
-        gz_mem_t m = {src + pos, len - pos, 0};
-        codec_inflater_t *z = codec_inflater_new(gz_mem_pull, &m);
+        codec_dec_opts_t o = {.src = src + pos, .len = len - pos, .out_len = CODEC_LEN_UNKNOWN};
+        codec_dec_t *z = ctx.dec = codec_dec_new(CODEC_DEFLATE, &o, NULL); // ctx frees it on an abort
         if (!z)
             decode_abort(&ctx, "gzip: out of memory");
         size_t start = out.len;
@@ -165,13 +151,10 @@ peel_buf_t peel_gz(const uint8_t *src, size_t len, peel_err_t **err) {
         for (;;) {
             uint8_t chunk[65536];
             size_t n = 0;
-            int rc = codec_inflater_run(z, chunk, sizeof(chunk), &n);
-            if (rc < 0) {
-                codec_inflater_free(z);
-                decode_abort(&ctx, "gzip: corrupt deflate stream");
-            }
+            int rc = codec_dec_run(z, chunk, sizeof(chunk), &n);
+            if (rc < 0)
+                decode_abort(&ctx, "gzip: %s", codec_dec_message(z));
             if (out.len + n > PEEL_MAX_FORK) {
-                codec_inflater_free(z);
                 decode_abort(&ctx, "gzip: decodes to over the %u MiB limit", (unsigned)(PEEL_MAX_FORK >> 20));
             }
             grow_append(&out, chunk, n, &ctx);
@@ -179,9 +162,9 @@ peel_buf_t peel_gz(const uint8_t *src, size_t len, peel_err_t **err) {
             if (rc == 1)
                 break;
         }
-        codec_inflater_align(z);
-        size_t used = (size_t)codec_inflater_consumed(z);
-        codec_inflater_free(z);
+        size_t used = (size_t)codec_dec_consumed(z); // exact once the stream has ended
+        codec_dec_free(z);
+        ctx.dec = NULL;
         pos += used;
         if (len - pos < 8)
             decode_abort(&ctx, "gzip: truncated trailer");
@@ -315,7 +298,7 @@ typedef struct {
     uint64_t size;
     uint64_t member; // where the current member's deflate stream starts
     uint64_t pos; // next compressed byte to pull
-    codec_inflater_t *z;
+    codec_dec_t *z;
     uint32_t crc, count;
     bool done;
 } gz_producer_t;
@@ -333,11 +316,16 @@ static int64_t gz_pull(void *ctx, uint8_t *buf, size_t cap) {
     return (int64_t)n;
 }
 
+// A DEFLATE decoder for the member at g->pos.
+static codec_dec_t *gz_inflater(gz_producer_t *g) {
+    codec_dec_opts_t o = {.pull = gz_pull, .pull_ctx = g, .out_len = CODEC_LEN_UNKNOWN};
+    return codec_dec_new(CODEC_DEFLATE, &o, NULL);
+}
+
 // Finish a member: check its trailer; start the next one if there is one.
 static int gz_next_member(gz_producer_t *g) {
-    codec_inflater_align(g->z);
-    uint64_t end = g->member + codec_inflater_consumed(g->z);
-    codec_inflater_free(g->z);
+    uint64_t end = g->member + codec_dec_consumed(g->z); // exact once the stream has ended
+    codec_dec_free(g->z);
     g->z = NULL;
     uint8_t tr[8];
     if (g->size - end < 8 || peel_source_read_exact(g->src, end, tr, 8) != 0)
@@ -354,7 +342,7 @@ static int gz_next_member(gz_producer_t *g) {
     }
     g->member = g->pos = end + h.header_len;
     g->crc = g->count = 0;
-    g->z = codec_inflater_new(gz_pull, g);
+    g->z = gz_inflater(g);
     return g->z ? 0 : -1;
 }
 
@@ -363,9 +351,9 @@ static int gz_run(peel_producer_t *p, uint8_t *out, size_t cap, size_t *n) {
     *n = 0;
     while (!g->done && *n < cap) {
         size_t k = 0;
-        int rc = codec_inflater_run(g->z, out + *n, cap - *n, &k);
+        int rc = codec_dec_run(g->z, out + *n, cap - *n, &k);
         if (rc < 0) {
-            snprintf(p->err, sizeof(p->err), "gzip: corrupt deflate stream");
+            snprintf(p->err, sizeof(p->err), "gzip: %s", codec_dec_message(g->z));
             return -5;
         }
         g->crc = codec_crc32(g->crc, out + *n, k);
@@ -381,7 +369,7 @@ static int gz_run(peel_producer_t *p, uint8_t *out, size_t cap, size_t *n) {
 
 static void gz_producer_free(peel_producer_t *p) {
     gz_producer_t *g = (gz_producer_t *)p;
-    codec_inflater_free(g->z);
+    codec_dec_free(g->z);
     peel_source_release(g->src);
     free(g);
 }
@@ -401,7 +389,7 @@ static peel_producer_t *gz_producer(peel_archive_t *a, int i, int fork, peel_err
     g->src = peel_source_retain(a->src);
     g->size = peel_source_size(a->src);
     g->member = g->pos = gp->first_member_data;
-    g->z = codec_inflater_new(gz_pull, g);
+    g->z = gz_inflater(g);
     if (!g->z) {
         gz_producer_free(&g->base);
         *err = make_err("gzip: out of memory");
@@ -433,7 +421,8 @@ static int bgzf_load(bgzf_src_t *s, size_t b) {
     gz_header_t h;
     if (gz_parse_header(s->cbuf, blk->csize, &h) != 0 || h.header_len + 8 > blk->csize)
         return -5;
-    int64_t n = codec_inflate(s->cbuf + h.header_len, blk->csize - h.header_len - 8, s->buf, sizeof(s->buf));
+    int64_t n =
+        codec_decode(CODEC_DEFLATE, s->cbuf + h.header_len, blk->csize - h.header_len - 8, s->buf, sizeof(s->buf));
     if (n != (int64_t)blk->usize || codec_crc32(0, s->buf, blk->usize) != le32(s->cbuf + blk->csize - 8))
         return -5;
     s->cur = b;

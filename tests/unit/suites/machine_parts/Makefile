@@ -10,6 +10,7 @@ TEST_HARNESS := none
 STUBS        := machine_object assert
 EXTRA_SRCS   := ../../../../src/core/job/seam.c \
                 ../../../../src/core/checkpoint.c \
+                $(wildcard ../../../../src/codec/lib/*.c) \
                 ../../../../src/core/machine_parts.c \
                 ../../../../src/core/io/io_worker.c \
                 ../../../../src/core/object/object.c \

@@ -1283,13 +1283,13 @@ static int write_png_chunk(FILE *fp, const char *type, const uint8_t *data, uint
     return 0;
 }
 
-// Deflate `src` into a complete zlib stream (deflate.h; level 6, the depth
+// Deflate `src` into a complete zlib stream (codec.h; level 6, the depth
 // screenshots have always been encoded at).  Returns a malloc'd buffer, or
 // NULL on OOM.
 static uint8_t *zlib_compress(const uint8_t *src, size_t len, size_t *out_len) {
-    size_t cap = codec_deflate_bound(len);
+    size_t cap = codec_enc_bound(CODEC_ZLIB, len);
     uint8_t *out = malloc(cap);
-    long n = out ? codec_zlib_deflate(NULL, src, len, out, cap, 6) : -1;
+    int64_t n = out ? codec_encode(CODEC_ZLIB, 6, src, len, out, cap) : -1;
     if (n < 0) {
         free(out);
         return NULL;
@@ -1493,7 +1493,7 @@ static int load_png_to_rgba(const char *filename, int expected_width, int expect
     // At most 8-bit RGBA plus a filter byte per row, at dimensions already
     // checked against the screen.
     size_t raw_max = (size_t)height * (1 + (size_t)width * 4);
-    uint8_t *raw_data = codec_zlib_inflate_alloc(idat_data, idat_len, raw_max, &raw_size);
+    uint8_t *raw_data = codec_decode_alloc(CODEC_ZLIB, idat_data, idat_len, raw_max, &raw_size, NULL);
     free(idat_data);
     if (!raw_data) {
         out_printf("Error: Failed to decompress PNG..\n");

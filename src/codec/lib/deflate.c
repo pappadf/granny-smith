@@ -2,7 +2,8 @@
 // Copyright (c) pappadf
 
 // deflate.c
-// LZ77 + Huffman DEFLATE in a zlib wrapper.  See codec.h.
+// zlib (RFC 1950) encoder: LZ77 + Huffman DEFLATE in a zlib wrapper.  See
+// codec.h (CODEC_ZLIB, codec_enc_*).
 //
 // One LZ77 pass (hash chains over a 32 KB window, greedy matches) turns the
 // input into tokens -- literals and (length, distance) pairs -- and the
@@ -42,19 +43,21 @@ typedef struct {
     uint16_t dist; // 0 for a literal, else 1..32768 (32768 stored as 0x8000)
 } token_t;
 
-struct codec_deflate_state {
+typedef struct {
     size_t max_len;
     int32_t *head; // DEFLATE_HASH_SIZE: newest position per hash
     int32_t *prev; // max_len: the previous position with the same hash
     token_t *tok; // max_len: tokens of the current input
-};
+} zenc_t;
 
-size_t codec_deflate_bound(size_t len) {
+static size_t zenc_bound(size_t len) {
     return len + len / 4 + 5 * (len / DEFLATE_STORED + 1) + 64;
 }
 
-codec_deflate_state_t *codec_deflate_state_new(size_t max_len) {
-    codec_deflate_state_t *st = calloc(1, sizeof(*st));
+static void zenc_delete(zenc_t *st);
+
+static zenc_t *zenc_new(size_t max_len) {
+    zenc_t *st = calloc(1, sizeof(*st));
     if (!st)
         return NULL;
     st->max_len = max_len;
@@ -62,13 +65,13 @@ codec_deflate_state_t *codec_deflate_state_new(size_t max_len) {
     st->prev = malloc((max_len ? max_len : 1) * sizeof(int32_t));
     st->tok = malloc((max_len ? max_len : 1) * sizeof(token_t));
     if (!st->head || !st->prev || !st->tok) {
-        codec_deflate_state_free(st);
+        zenc_delete(st);
         return NULL;
     }
     return st;
 }
 
-void codec_deflate_state_free(codec_deflate_state_t *st) {
+static void zenc_delete(zenc_t *st) {
     if (!st)
         return;
     free(st->head);
@@ -137,7 +140,7 @@ static int chain_for(int level) {
 }
 
 // Tokenise all of `src` into st->tok; the token count.
-static size_t tokenise(codec_deflate_state_t *st, const uint8_t *src, size_t len, int max_chain) {
+static size_t tokenise(zenc_t *st, const uint8_t *src, size_t len, int max_chain) {
     int32_t *head = st->head, *prev = st->prev;
     token_t *tok = st->tok;
     size_t nt = 0;
@@ -513,12 +516,12 @@ static size_t token_bytes(const token_t *t) {
     return t->dist ? t->len : 1;
 }
 
-long codec_zlib_deflate(codec_deflate_state_t *st, const uint8_t *in, size_t len, uint8_t *out, size_t cap, int level) {
+static long zlib_deflate(zenc_t *st, const uint8_t *in, size_t len, uint8_t *out, size_t cap, int level) {
     if (cap < 6)
         return -1;
-    codec_deflate_state_t *own = NULL;
+    zenc_t *own = NULL;
     if (level > 0 && (!st || st->max_len < len)) {
-        own = codec_deflate_state_new(len);
+        own = zenc_new(len);
         if (!own)
             return -1;
         st = own;
@@ -546,7 +549,7 @@ long codec_zlib_deflate(codec_deflate_state_t *st, const uint8_t *in, size_t len
         }
         align_byte(&w);
     }
-    codec_deflate_state_free(own);
+    zenc_delete(own);
     if (w.pos + 4 > cap)
         return -1;
     uint32_t adler = codec_adler32(1, in, len);
@@ -556,3 +559,24 @@ long codec_zlib_deflate(codec_deflate_state_t *st, const uint8_t *in, size_t len
     out[w.pos++] = (uint8_t)adler;
     return (long)w.pos;
 }
+
+// ============================================================================
+// The encoder
+// ============================================================================
+
+static int zenc_init(codec_enc_t *e, size_t max_len) {
+    e->st = zenc_new(max_len);
+    return e->st ? 0 : CODEC_ERR_NOMEM;
+}
+
+static int64_t zenc_run(codec_enc_t *e, const uint8_t *in, size_t len, uint8_t *out, size_t cap) {
+    long n = zlib_deflate(e->st, in, len, out, cap, e->level);
+    return n < 0 ? CODEC_ERR_OVERFLOW : (int64_t)n;
+}
+
+static void zenc_free(codec_enc_t *e) {
+    zenc_delete(e->st);
+    e->st = NULL;
+}
+
+const codec_enc_ops_t codec_zlib_enc = {zenc_init, zenc_run, zenc_free, zenc_bound, 1};

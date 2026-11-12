@@ -65,7 +65,7 @@ static bool write_blob(const char *path, const uint8_t *data, size_t len) {
     if (!fp) {
         return false;
     }
-    bool ok = (fwrite(data, 1, len, fp) == len);
+    bool ok = len == 0 || fwrite(data, 1, len, fp) == len; // an empty fork may have no buffer
     fclose(fp);
     return ok;
 }

@@ -39,14 +39,12 @@ LIB_SRCS  = lib/err.c      \
             lib/source.c   \
             lib/reader.c   \
             lib/archive.c  \
+            lib/codec_producer.c \
             lib/peeler.c
 
 FMT_SRCS  = lib/formats/hqx.c   \
             lib/formats/bin.c    \
             lib/formats/sit.c    \
-            lib/formats/sit3.c   \
-            lib/formats/sit13.c  \
-            lib/formats/sit15.c  \
             lib/formats/cpt.c    \
             lib/formats/zip.c    \
             lib/formats/gz.c     \
@@ -54,7 +52,7 @@ FMT_SRCS  = lib/formats/hqx.c   \
 
 CMD_SRCS  = cmd/main.c
 
-# The codec library peeler inflates through (and takes its CRC-32 from):
+# The codec library every compressed fork decodes through (and the CRCs):
 # src/codec in a granny-smith tree, ./codec in the standalone repository.
 CODEC_DIR ?= $(if $(wildcard codec/include/codec.h),codec,../codec)
 CODEC_SRCS = $(sort $(wildcard $(CODEC_DIR)/lib/*.c))

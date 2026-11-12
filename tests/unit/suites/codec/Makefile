@@ -11,9 +11,10 @@
 #   make run CC=emcc EXEC_WRAPPER=node TARGET_EXT=.js
 
 TEST_NAME     := codec
-TEST_SRCS     := test.c
+TEST_SRCS     := test.c stuffit.c
 TEST_HARNESS  := none
-EXTRA_SRCS    := $(wildcard ../../../../src/codec/lib/*.c)
+# stuffit.c #includes sit13.c and sit_arsenic.c (see there).
+EXTRA_SRCS    := $(filter-out %/sit13.c %/sit_arsenic.c,$(wildcard ../../../../src/codec/lib/*.c))
 INCLUDE_FLAGS  = -I$(UNIT_ROOT)/support $(CODEC_INCLUDES)
 # Native builds run under ASan + UBSan, and UB aborts rather than printing
 # and carrying on: an overrun of a few bytes lands in allocator padding and
