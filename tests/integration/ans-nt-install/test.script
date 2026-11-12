@@ -50,10 +50,11 @@
 #   roms/ans500-ans700-2.26nt-962f6c13-50348b3d0126096b.rom
 #                                  the Network Server's Windows NT
 #                                  Open Firmware 2.26NT
-#   systems/ans_nt_boot_floppy_d8b30a2.img
+#   systems/ans_nt_boot_floppy_5663262.img
 #                                  `make floppy` in powermac-nt-hal: its own
 #                                  ARC firmware, HAL and ADB driver, nothing
-#                                  of Microsoft's (the 5 November 2026 build)
+#                                  of Microsoft's (the 12 November 2026 build,
+#                                  with cat7's I/O-flush and SR15 fixes)
 #
 # and, not redistributable, from $GS_EXTRA_MEDIA_DIR/windows-nt-ppc-ans/
 # (the runner hands it to the script as $EXTRA_MEDIA):
@@ -88,7 +89,7 @@ include "../lib/ans.script"
 include "../lib/nt.script"
 
 let nt_rom = "../../data/roms/ans500-ans700-2.26nt-962f6c13-50348b3d0126096b.rom"
-let nt_floppy = "../../data/systems/ans_nt_boot_floppy_1741579.img"
+let nt_floppy = "../../data/systems/ans_nt_boot_floppy_5663262.img"
 let nt_root = "${$EXTRA_MEDIA}/windows-nt-ppc-ans"
 let nt_cd = "${$nt_root}/nt4-ppc.iso"
 let nt_disk = "${$nt_root}/nt-disk-blank.img"

@@ -771,14 +771,15 @@ window in `display_t`, which this repository does not have.
 
 Open Firmware and AIX both arrive knowing what the part is, so for a long
 time a flat byte array per register block was enough. A driver that has to
-*find* the chip needs four registers that do not behave like storage, and
-Windows NT's `cirrus.sys` reads all four before it will claim the adapter:
+*find* the chip needs three registers that do not behave like storage, and
+Windows NT's `cirrus.sys` reads them, and `SR15`, before it will claim the
+adapter:
 
 | | behaviour | why a driver cares |
 |---|---|---|
 | `SR06` | writing `$12` unlocks the extensions and reads back `$12`; anything else locks them and reads back `$0F` | the round trip *is* the presence test |
 | `CR27` | read-only `$A0`: bits 7:2 the device (CL-GD5430, agreeing with the `$00A0` PCI ID), 1:0 the revision | the chip ID, and which mode tables apply |
-| `SR15` | bits 3:0 report the fitted DRAM — `2` is 1 MB | the driver sizes its mode list from this instead of probing, and rejects every mode that will not fit |
+| `SR15` | plain storage, reset `0`: "Scratch Pad 3" (TRM §9.11), where a PC's video BIOS records the memory size in bits 3:0 (`2` = 1 MB) | the driver sizes its mode list from it and rejects every mode that will not fit, so with no PC BIOS it reads `0` and finds no modes — the OS has to write it (powermac-nt-hal's mode-set does). The model once answered `2` regardless, which hid that |
 | `$3CC` | reads back what `$3C2` (Miscellaneous Output) was given | bit 0 says whether the CRTC pair is at `$3D4/$3D5` or `$3B4/$3B5` |
 
 The monochrome CRTC pair `$3B4/$3B5` is folded onto the colour one whatever
