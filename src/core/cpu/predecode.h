@@ -37,13 +37,15 @@ enum {
 
 // Which core owns a block: sets the entry granularity and how many
 // preceding entries an invalidation has to reset (the longest 68020
-// instruction is 11 words; a PowerPC instruction is one word).
+// instruction is 11 words, and a 68K entry's elision depends on its
+// successor; a PowerPC entry is decoded from its own word alone, so a
+// store resets only the entries it covers).
 typedef enum pd_arch { PD_ARCH_68K = 0, PD_ARCH_PPC = 1 } pd_arch_t;
 
 #define PD_ENTRIES_68K         2048 // one per 16-bit word of the page
 #define PD_ENTRIES_PPC         1024 // one per instruction word of the page
 #define PD_INVALIDATE_BACK_68K 11
-#define PD_INVALIDATE_BACK_PPC 1
+#define PD_INVALIDATE_BACK_PPC 0
 
 // A decoded page.  The raw shadow keeps the guest words each entry was
 // decoded from: the 68000 core latches `ir` from it, and debug builds

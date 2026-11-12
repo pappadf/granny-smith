@@ -1,0 +1,24 @@
+# Power Macintosh 8500 (PowerPC 604) booting System 7.6 from disk: the DR
+# (dynamic recompilation) 68K emulator, which writes PowerPC code into its
+# translation cache, patches it and rewrites data words next to it while
+# it runs.  Two checkpoints after the emulator has taken over the boot
+# (from about 1.6 G scheduler slots).
+predecode.enabled = $PD
+predecode.elide = $ELIDE
+# The translation tier (run.sh's jit config); eager, so it translates
+# from the first entries on
+jit.enabled = $JIT
+jit.threshold = 1
+jit.cooldown = 16
+jit.budget = 100
+machine.boot model="pm8500" ram=32768 rom="${$ROM}"
+machine.rtc.time = "2026-04-26T21:30:36"
+machine.scsi.attach_hd "${$HD}" 0
+scheduler.run 1700000000
+echo "cp1 instr=${scheduler.instr_count} pc=${machine.cpu.pc:08x} msr=${machine.cpu.msr:08x}"
+assert checkpoint.save("${$OUT}-1.gs") "save 1 failed"
+scheduler.run 400000000
+echo "cp2 instr=${scheduler.instr_count} pc=${machine.cpu.pc:08x} msr=${machine.cpu.msr:08x}"
+assert checkpoint.save("${$OUT}-2.gs") "save 2 failed"
+echo "stats jit_compiles=${jit.compiles} jit_calls=${jit.calls} jit_deopts=${jit.deopts} jit_invals=${jit.block_invals} blocks=${predecode.blocks} allocs=${predecode.allocs} decodes=${predecode.decodes} inval=${predecode.invalidations} demotions=${predecode.demotions} suppressed=${predecode.suppressed_writes} generic=${predecode.generic_steps}"
+quit

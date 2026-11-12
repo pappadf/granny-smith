@@ -11,7 +11,9 @@
 # Rows: plus (68000, System 6.0.8 floppy), iicx (68030 + PMMU, System 6 HD
 # with Marathon), pdm (PowerPC 601, the 6100 ROM boot to the SCSI-scan wall),
 # tnt (PowerPC 601, the 7500 ROM boot through Open Firmware and POST — the
-# row whose ROM first ran an instruction off the end of a page), av (68040,
+# row whose ROM first ran an instruction off the end of a page), dr (PowerPC 604, the 8500
+# booting System 7.6 from disk: the DR 68K emulator's translation cache,
+# PowerPC code written, patched and run in the same pages), av (68040,
 # the Quadra 840AV's System 7.1 boot — the row whose ROM overlay at zero
 # first ran a host page through two guest addresses).
 

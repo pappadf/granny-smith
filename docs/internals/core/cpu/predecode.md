@@ -1119,7 +1119,15 @@ covering `[off, off + len)`, extended **backwards**:
 | Arch | Look-back | Why |
 |---|---|---|
 | 68K | 11 entries (`PD_INVALIDATE_BACK_68K`) | an instruction may start up to 10 words before the changed word (the longest 68020+ instruction is 11 words), and an entry's elision decision depends on its successor's words |
-| PowerPC | 1 entry (`PD_INVALIDATE_BACK_PPC`) | |
+| PowerPC | none (`PD_INVALIDATE_BACK_PPC` = 0) | an entry is decoded from its own word alone (`ppc_pd_decode`), so only the entries the store covers are reset |
+
+The PowerPC look-back was one entry until it was measured: the DR 68K
+emulator keeps two data words (an inline cache of the last target of an
+indirect 68K jump) right after a `bl` into its runtime and rewrites them
+constantly, and every such store un-decoded the `bl`.  On the PM8500 at the
+System 7.6 desktop that was 778,841 re-decodes per 100 M instructions;
+without the look-back 10,255, and the native predecoded tier runs 4-6 %
+faster there.
 
 It counts `invalidations` if anything was reset, then feeds the thrash
 detector (§3.13).  The block itself stays in place even if the executor is
@@ -1336,7 +1344,7 @@ the memory map:
 | `tests/unit/suites/memory_codepage` | the memory half: marks and every refill site, the reverse alias scan, the refused-write record |
 | every CPU unit suite with `CPU_TEST_PREDECODE=1` (`CPU_TEST_ELIDE=<level>`) | the 68000 single-step vectors (236,266), the 030/040 suites, the `m68k_vectors` and `ppc_vectors` conformance replays (m68k-test / powerpc-test vectors with unlisted state randomized), the PowerPC, PowerPC FPU and PowerPC MMU suites.  `m68k_vectors` runs every vector through **both** executors and fails on any difference.  These suites set `thrash_ratio = 0`: every vector rewrites its own page and retires about one instruction, which the thrash rule would otherwise demote to the generic tier, leaving the T0/T1 handlers untested |
 | CI | runs the unit suites twice: with `CPU_TEST_PREDECODE` unset (the switch cores; the harness and the PowerPC suites enable predecode only for `=1`) and with it 1 (the predecoded cores).  `m68k_vectors` compares the two 68K executors in both runs |
-| `tests/integration/predecode-diff` (matrix tier) | the differential definition of "same guest timeline": boot each machine with predecode off and on (at each elision level), checkpoint at fixed instruction counts chosen to land mid-boot, and compare guest state block by block (`scripts/cmp-checkpoints.py`, which masks host pointers and storage bookkeeping).  Rows: Plus (68000), IIcx (68030 + PMMU), 840AV (68040, the ROM-overlay alias), 6100 (601), 7500 (601).  With the JIT available (the Node wasm build) each PowerPC row runs a third time with the translation tier on (`ppc/ppc_jit.md` §5) |
+| `tests/integration/predecode-diff` (matrix tier) | the differential definition of "same guest timeline": boot each machine with predecode off and on (at each elision level), checkpoint at fixed instruction counts chosen to land mid-boot, and compare guest state block by block (`scripts/cmp-checkpoints.py`, which masks host pointers and storage bookkeeping).  Rows: Plus (68000), IIcx (68030 + PMMU), 840AV (68040, the ROM-overlay alias), 6100 (601), 7500 (601), and `dr`: the 8500 (604) booting System 7.6 from disk, the DR 68K emulator writing, patching and running PowerPC code in its translation cache.  With the JIT available (the Node wasm build) each PowerPC row runs a third time with the translation tier on (`ppc/ppc_jit.md` §5) |
 | `tests/integration/perf-pdm`, the floors on `suite-pdm` / `tnt-hd-boot` / `ans-aix-boot` | throughput floors |
 | `tests/e2e/web2-specs/perf-predecode.spec.ts` | the in-browser A/B (`PERFBENCH` lines, sanity asserts only).  The SE/30 row boots System 7.5.3 to the Finder and measures it idle (`settleFinder`: `ApplZone != SysZone`, then 150 M instructions); the IIcx row runs Marathon on an 8•24 GC.  A media-free SE/30 row was dropped: it measured the ROM's SCSI scan busy-waiting on the 5380, half slow path, where both executors tie |
 | `tests/e2e/web2-specs/perf-headbase.spec.ts` | the browser A/B of a branch against a base build: PowerPC rows pm6100, pm6100desk and pm8500 (no G3: the 750 naps during the boot).  Its predecode probes are wrapped so a base without them still runs.  The ROM-only pm6100 row measures the ROM's wait for a boot disk; pm6100desk is the like-for-like row for pm8500 |

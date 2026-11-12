@@ -557,9 +557,10 @@ void predecode_invalidate_host(const uint8_t *host, uint32_t len) {
         end = MEM_PAGE_SIZE;
     uint32_t first, last;
     if (blk->arch == PD_ARCH_PPC) {
+        // An entry is decoded from its own word alone: no look-back.
+        _Static_assert(PD_INVALIDATE_BACK_PPC == 0, "a PowerPC look-back needs its subtraction back here");
         first = off >> 2;
         last = (end - 1) >> 2;
-        first = first >= PD_INVALIDATE_BACK_PPC ? first - PD_INVALIDATE_BACK_PPC : 0;
     } else {
         // An entry's decision depends on its own words and, through the
         // elision pass, on its successor's: reset the longest instruction's
