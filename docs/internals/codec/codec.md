@@ -136,16 +136,27 @@ None: the library holds no state between calls.
   or overrun, and in bzip2 and xz must be caught by their checksums unless
   it lands in bits the decoder never reads. It also
   covers concatenated streams, the unsupported paths and the checksums'
-  published check values.
+  published check values, and the xz encoder: every data set round-trips
+  at levels 1, 6 and 9 (through a reused state and a state of its own),
+  refuses a buffer one byte short, and a 5 MiB input crosses every LZMA2
+  limit (64 KiB coded, 2 MiB decoded, a stored chunk and the model reset
+  after it). xz-utils and Python's `lzma` were checked to read its output
+  when it was written; the suite itself depends on neither.
 - `tests/unit/suites/udif` decodes every compressed chunk type and reads a
   whole in-memory image with a chunk of every type through the image layer.
-- `tests/unit/suites/udif_writer` covers the encoder (every level, the
-  block-form choice, length-limited codes), Adler-32 and the zero-run CRC.
+- `tests/unit/suites/udif_writer` covers the DEFLATE encoder (every level,
+  the block-form choice, length-limited codes), Adler-32 and the zero-run
+  CRC, and xz images (`writer_xz_round_trips`: every chunk size, the
+  default and extreme levels, LZMA chunks only, smaller than zlib on text,
+  level 0 uncompressed). The `image-udif-boot` integration row exports a
+  booted disk with `codec="xz"` and checks it decodes to the zlib export's
+  bytes.
   `tests/unit/suites/peeler` covers the resumable inflater.
 - The UDIF interop workflow ([`udif-interop.yml`](../../../.github/workflows/udif-interop.yml))
-  has hdiutil convert the writer's samples to UDCO, UDZO, UDBZ, ULFO and
-  ULMO on macOS, and the `udif_writer` suite (`GS_UDIF_FOREIGN_DIR`) reads
-  each back through the image layer on Linux, comparing every byte.
+  has hdiutil open the writer's samples, xz ones included, and convert
+  some to UDCO, UDZO, UDBZ, ULFO and ULMO on macOS; the `udif_writer` suite
+  (`GS_UDIF_FOREIGN_DIR`) reads each conversion back through the image
+  layer on Linux, verifying hdiutil's checksums and comparing every byte.
 
 ## 7. Known debts
 

@@ -1515,7 +1515,7 @@ static const arg_decl_t files_udif_open_args[] = {
     {.name = "codec",
                                                       .kind = VK_STRING,
                                                       .validation_flags = OBJ_ARG_OPTIONAL,
-                                                      .doc = "zlib (UDZO) or xz (ULMO: 15-20% smaller, decodes ~4x slower)",
+                                                      .doc = "zlib (UDZO) or xz (ULMO: 14-16% smaller on system disks, decodes ~4x slower)",
                                                       .default_doc = "zlib"            },
 };
 static const arg_decl_t files_udif_append_args[] = {
@@ -1556,7 +1556,7 @@ static const arg_decl_t files_convert_args[] = {
     {.name = "codec",
                                                     .kind = VK_STRING,
                                                     .validation_flags = OBJ_ARG_OPTIONAL,
-                                                    .doc = "zlib (UDZO) or xz (ULMO: 15-20% smaller, decodes ~4x slower)",
+                                                    .doc = "zlib (UDZO) or xz (ULMO: 14-16% smaller on system disks, decodes ~4x slower)",
                                                     .default_doc = "zlib"            },
 };
 

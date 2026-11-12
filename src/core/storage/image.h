@@ -255,7 +255,7 @@ int image_create_blank_profile(const char *filename, uint32_t block_count);
 int image_export_to(image_t *image, const char *dest_path);
 
 // image_export_to with a codec for a .dmg destination: "zlib" (UDZO, the
-// default; NULL or "" mean it too) or "xz" (ULMO, 15-20% smaller, slower to
+// default; NULL or "" mean it too) or "xz" (ULMO, 14-16% smaller, slower to
 // read; udif_writer.h).  A codec other than zlib for any other destination
 // fails the export.
 int image_export_to_codec(image_t *image, const char *dest_path, const char *codec);

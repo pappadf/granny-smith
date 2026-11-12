@@ -1960,7 +1960,7 @@ static const arg_decl_t scsi_image_export_args[] = {
     {.name = "codec",
      .kind = VK_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "A .dmg's compression: zlib (UDZO) or xz (ULMO: 15-20% smaller, decodes ~4x slower)",
+     .doc = "A .dmg's compression: zlib (UDZO) or xz (ULMO: 14-16% smaller on system disks, decodes ~4x slower)",
      .default_doc = "zlib"                                                  },
 };
 

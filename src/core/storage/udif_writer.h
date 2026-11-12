@@ -43,7 +43,7 @@ typedef struct udif_writer udif_writer_t;
 
 // The codec a writer compresses its chunks with.  zlib is the default:
 // it decodes several times faster, which matters for an image read in
-// place, and every UDIF reader opens it.  xz is 15-20% smaller, encodes
+// place, and every UDIF reader opens it.  xz is 14-16% smaller, encodes
 // at about zlib level 9's speed, and opens in hdiutil on macOS 10.15 and
 // later (and here).
 typedef enum {
