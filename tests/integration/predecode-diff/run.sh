@@ -15,13 +15,14 @@ cd "$TEST_RESULTS_DIR"
 fail=0
 
 # run <row> <config-name> <PD> <ELIDE> <rom> <script> [extra --var args]
-# (JIT=1 in the environment: the translation tier on, translating eagerly)
+# (JIT=1 in the environment: the translation tier on, translating eagerly;
+# INLINE=<n>: its jit.inline)
 run_one() {
     local row="$1" cfg="$2" pd="$3" elide="$4" rom="$5" script="$6"
     shift 6
     local out="$TEST_RESULTS_DIR/$row-$cfg"
     # --var values are strings; the switches are spliced in as literals.
-    sed "s/\$PD\b/$pd/; s/\$ELIDE\b/$elide/; s/\$JIT\b/${JIT:-0}/" "$SCRIPT_DIR/$script" > "$out.script"
+    sed "s/\$PD\b/$pd/; s/\$ELIDE\b/$elide/; s/\$JIT\b/${JIT:-0}/; s/\$INLINE\b/${INLINE:-0}/" "$SCRIPT_DIR/$script" > "$out.script"
     # shellcheck disable=SC2086 — TEST_VAR_ARGS is intentionally word-split
     GS_STORAGE_CACHE="$STORAGE_CACHE/$row-$cfg" "$HEADLESS_BIN" \
         rom="$rom" script="$out.script" \
@@ -68,6 +69,10 @@ row() {
     if [ "$JIT_OK" = 1 ] && grep -q '\$JIT' "$SCRIPT_DIR/$script"; then
         JIT=1 run_one "$name" jit 1 0 "$rom" "$script" "$@" || { fail=1; return; }
         compare "$name" jit "$n"
+        # ... and with blocks that run through unconditional branches
+        # (jit.inline: copies of code in other blocks, stopped by stores)
+        JIT=1 INLINE=8 run_one "$name" jit-inline 1 0 "$rom" "$script" "$@" || { fail=1; return; }
+        compare "$name" jit-inline "$n"
     fi
 }
 

@@ -554,6 +554,51 @@ the chunk's maps (`jt_ref_t refs[]`); anything else goes to the chain stub.
 Blocks lay out in address order inside one loop; a block falls into the
 next when it starts right after it.
 
+**Blocks that run through a branch** (`jit.inline`, off by default).  A
+block ends at its first branch, and code shaped like an interpreter is
+mostly branches: on the PM6100 at the System 7.6 desktop, where 99.8 % of
+the instructions run translated, blocks average 2.5 instructions, half of
+them end in an unconditional `b` (the 68K emulator's dispatch table is
+two-instruction stubs, an operation and a `b` to the handler), a quarter
+because the next word leads another block, 16 % in a conditional branch
+and 10 % in `blr`/`bctr`.  At that length the block's fixed cost (the
+guard, the registers in and out, the way on) is most of it, and the tier
+ran no faster than the predecoded loop (86 against 87 MIPS).
+
+With `jit.inline = n`, a block that ends in an unconditional direct `b`
+goes on with a **copy** of the code at the branch's target, up to that
+code's next branch, and again from there: up to *n* stretches and 64
+instructions (`JIT_INL_LEN`).  The words copied are words some chunk of
+the region translates (reached, and not left to the predecoded loop); the
+block the target leads stays, for everything else that goes there.  The
+branch itself costs nothing in the generated code but, on another page in
+instruction-translation mode, the fetch-mapping check of §3.6.  The
+block's guard takes the slots and folds of all its stretches at once; a
+deopt tail gives back what was not used and finds the instruction's
+address from its position (one compare per stretch and per branch, in the
+tail only).
+
+What it gives, Node, medians of 9 windows of 100 M instructions:
+
+| | `inline` 0 | 4 | 8 | 16 |
+|---|---:|---:|---:|---:|
+| PM6100 desktop (interpretive emulator) | 86-95 | 136-141 | 148-160 | 149-153 |
+| PM8500 desktop (DR emulator; three alternated pairs at 8) | 103-111 | | 107-117 | |
+| Mac OS X scenario, cold / warm ms (3 runs) | 1902 / 1227 | | 1862 / 1201 | |
+
+The guest timeline is the same (the differential's `jit-inline` runs, §5;
+the scenario's instruction counts).
+
+What was measured and left out, because Mac OS X paid more for the
+compiles than it got back (cold / warm ms, against 1775 / 1190 and 1902 /
+1227 in their batches): running through a call as well (`bl`: the
+callee's first block copied at every call site) and on into the block
+that follows one ending without a branch, 2170 / 1312 together, and
+1919 / 1450 for the second alone, although the PM6100 liked them (152
+against 144 MIPS); a conditional branch's fall-through staying in its
+block (up to four per block: the PM6100 unchanged at 88-91, blocks 17 %
+longer, Mac OS X 2331 / 1503 on top of the above).
+
 ### 3.4 Budget and folding
 
 The predecoded loop's rule: every instruction takes a budget slot, except
@@ -563,7 +608,12 @@ A block of n instructions ending in a branch costs n - 1 slots and one
 fold.  Its guard requires `budget > n` (and a fold left): at least two
 slots remain when the branch retires, so it always folds, and a block
 never takes the sprint's last slot.  An indirect branch that turns out to
-branch to itself trades the fold back for a slot at run time.  So the
+branch to itself trades the fold back for a slot at run time.  A block
+of several stretches (`jit.inline`) has a branch at the end of each: n
+instructions with k branches cost n - k slots and k folds, its guard
+requires `budget > n` and k folds, and whatever leaves it early (a deopt,
+the fetch check of a branch it runs through) gives back the slots and
+folds of what did not run.  So the
 slots a translated block consumes are exactly the predecoded loop's,
 events land on the same instructions, and the tail of every sprint (less
 than one block) runs predecoded.
@@ -653,7 +703,18 @@ chunk regenerated after a write is `guarded`: its blocks test their flag
 and a stale block leaves at its start, as every block did before.  The
 flag test was a byte load and a compare per block of 2.5-4 instructions;
 on Quake III's demo (9 invalidations in 80 s) emitting none measured
-about +3 % (291 / 293 against 278 / 284 MIPS while running).  A write that
+about +3 % (291 / 293 against 278 / 284 MIPS while running).
+
+A block of several stretches (`jit.inline`) holds copies of words that
+belong to other blocks, of its chunk or another.  Each member page
+records which of its words were copied and into which chunks (`copied[]`,
+`deps[]`); a store into such a word stops those chunks, as a dead chunk
+is stopped, and marks them for regeneration whatever their own words (the
+page's bits are cleared with them, so a stale bit costs a regeneration at
+most); a page that turns volatile, whose stores no longer reach the tier,
+does the same first.  No copies are made in a guarded chunk (its blocks
+are invalidated one by one, each by the stores into its own words) nor
+from or into a churny page.  A write that
 lands while the chunk's function is on the stack is the function's own
 `ppc_jit_code_store`, after which it leaves; a write during an
 asynchronous compile makes the function land dead.  A pool reset resets the tier
@@ -728,7 +789,7 @@ Safari 18.2, Node 20).
 The predecode differential (`tests/integration/predecode-diff`) runs each
 PowerPC row (the 6100 and 7500 ROM boots, and `dr`: the 8500 booting
 System 7.6 on the DR emulator, whose cache is written while it runs) a
-third time with the tier on, eagerly (`jit.threshold = 1`,
+third time with the tier on, and a fourth with `jit.inline = 8`, eagerly (`jit.threshold = 1`,
 `jit.cooldown = 16`, `jit.budget = 100`), when the build has it (`jit.available`), and
 compares the checkpoints with the switch core's.  Build the Node wasm
 build (`make -f Makefile.headless TARGET=node`) and run the test with it;
@@ -787,6 +848,7 @@ Open Firmware (`pm7500-of`, 58 -> 50 MIPS): a few seconds at power-on.
 | `quiet` | entries after a code write before its region is retranslated (64) |
 | `supervisor` | 1 = also translate supervisor code running with data translation on, once the supervisor-translated SoA exists (the default: the Mac OS X boot is about 15 % faster with it than user-only, §3.3) |
 | `chunk_cap` | the most instructions one function translates (1024; 64..65536) |
+| `inline` | the most stretches of code a block runs through, past unconditional direct branches (§3.3); 0 or 1 ends every block at its first branch (0; 0..16).  Setting it drops every translation |
 | `churn_ok` | experiments: 1 = code that keeps changing is translated like any other (no volatile pages, no unstable words, §3.2); setting it drops every translation (0) |
 | `async` | 1 = compile through `WebAssembly.compile` off the call path (§2.2; the default except under Node) |
 | `regs` | 0 = guest GPRs in locals per block, 1 = per function; setting it drops every translation |

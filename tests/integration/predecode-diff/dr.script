@@ -6,7 +6,9 @@
 predecode.enabled = $PD
 predecode.elide = $ELIDE
 # The translation tier (run.sh's jit config); eager, so it translates
-# from the first entries on
+# from the first entries on (and, in the jit-inline config, with blocks that
+# run through unconditional branches)
+jit.inline = $INLINE
 jit.enabled = $JIT
 jit.threshold = 1
 jit.cooldown = 16

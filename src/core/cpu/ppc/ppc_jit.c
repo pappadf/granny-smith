@@ -72,6 +72,12 @@ static uint32_t g_chunk_cap = 1024; // instructions per translated function (a r
 // jit.churn_ok (experiments): 1 = code that keeps changing is translated like any other -- no page turns
 // volatile, no word unstable.  Off, it is left to the predecoded tier (§3.2).
 static uint32_t g_churn_ok;
+// jit.inline: the most stretches of code one block runs through.  A block that ends in an
+// unconditional direct branch (b, not bl) goes on with a copy of the code at the branch's target, up
+// to that code's next branch, and so on (§3.3).  0, 1: every branch ends its block.
+static uint32_t g_inl;
+#define JIT_INL_SEGS 16 // the most jit.inline takes
+#define JIT_INL_LEN  64 // the most instructions of a block that runs through a branch
 static uint32_t g_budget_pct = 3; // jit.budget: the share of time translating may take
 #define JIT_BUDGET_START_MS 50.0
 static uint32_t g_trace; // jit.trace: print every entry and exit (debugging)
@@ -653,6 +659,9 @@ typedef struct jt_page {
     uint32_t host_adjust; // the fetch mapping the page was translated under
     const uint16_t *ids; // the words' classification (jit_classify)
     const pd_entry_t *ents;
+    const uint8_t *reached; // per word: the reachability walk reached it
+    const uint8_t *owner; // per word: the chunk that translates it (NONE8)
+    bool churny; // its code keeps changing (no copies of it, jit.inline)
 } jt_page_t;
 
 // Per region page, read by the translated code: the page's map and its
@@ -671,6 +680,8 @@ static struct {
     const jt_ref_t *refs; // the region's refs (indirect branches)
     uint8_t *bvalid; // the region's per-block valid flags
     bool guarded; // blocks test their valid flag: a chunk that was invalidated before (§3.7)
+    struct jit_region *R; // the region and the chunk being translated (jit.inline's dependencies)
+    uint32_t ci;
     bool is601; // mtxer keeps only the 601's implemented XER bits; no time base
     uint32_t msr_mask; // the MSR bits mtmsr writes (ppc_msr_mask)
     bool shared; // the module's memory is shared (pthreads build)
@@ -689,8 +700,16 @@ static uint32_t g_nblocks, g_cur_block, g_depth;
 static uint32_t g_cur_page; // index in U.pages
 static uint32_t g_cur_addr; // the instruction being emitted
 static uint32_t g_left_slots; // budget slots of the block from this instruction on
-static uint32_t g_block_addr; // the block's first instruction
-static bool g_block_branch; // the block ends in a branch (it took a fold)
+static uint32_t g_left_folds; // the block's folds (branches) after this instruction
+static uint32_t g_gb_slots, g_gb_folds; // what a branch leaving the block here gives back (emit_giveback)
+static uint32_t g_cur_ord; // its position in the block
+static bool g_inline_next; // it is a direct branch the block runs through: the code at its target follows
+// A block's stretches of consecutive words (one, or more with jit.inline)
+typedef struct jt_seg {
+    uint16_t page, start, len;
+} jt_seg_t;
+static jt_seg_t *g_segs;
+static uint32_t g_nsegs, g_segs_cap;
 
 // Depth of $loop, $chain and $out from the current point (blocks
 // b+1..n-1 are open)
@@ -704,6 +723,7 @@ static uint32_t depth_out(void) {
     return depth_loop() + 2;
 }
 static uint32_t g_deopt_depth; // g_depth inside the block's $deopt
+static uint32_t g_tail_n; // the instructions of the block whose deopt tail is being emitted
 
 // The GPRs a block names live in their locals from the block's start (it
 // loads them after its guard) to every way out of it, where they are
@@ -770,6 +790,8 @@ static uint16_t block_at(uint32_t target, int *slot_out) {
 // The fetch-TLB check of a crossing into the page of `target` (in
 // instruction-translation mode): leaves to `target` unless the TLB maps
 // its page, for this privilege, to the host page that was translated.
+static void emit_giveback(void);
+static void jit_note_dep(uint32_t u, uint32_t i); // (after the tier's types)
 static void emit_fetch_check(uint32_t target, uint32_t host_adjust) {
     if (!U.it)
         return; // real mode: identity, bound to the memory map's generation
@@ -787,6 +809,7 @@ static void emit_fetch_check(uint32_t target, uint32_t host_adjust) {
     op(W_IF);
     put(BT_VOID);
     g_depth++;
+    emit_giveback();
     exit_const(target);
     op(W_END);
     g_depth--;
@@ -934,6 +957,23 @@ static void emit_chain_stub(void) {
 }
 
 // Go to the guest address in L_NPC: perhaps another chunk's (the chain stub)
+// A branch that leaves a block before its end gives back the slots and
+// folds the block's guard took for the instructions after it
+static void emit_giveback(void) {
+    if (g_gb_slots) {
+        lget(L_BUDGET);
+        iconst(g_gb_slots);
+        op(W_ADD);
+        lset(L_BUDGET);
+    }
+    if (g_gb_folds) {
+        lget(L_FOLDS);
+        iconst(g_gb_folds);
+        op(W_ADD);
+        lset(L_FOLDS);
+    }
+}
+
 static void emit_chain(void) {
     emit_flush();
     op(W_BR);
@@ -945,6 +985,9 @@ static void emit_chain(void) {
 static void emit_goto(uint32_t target) {
     int k = -1;
     uint16_t b = block_at(target, &k);
+    if (b != NONE16 && (uint32_t)k != g_cur_page)
+        emit_fetch_check(target, U.pages[k].host_adjust); // (leaving there gives back too)
+    emit_giveback();
     if (b == NONE16) {
         if (!(target & 3)) {
             iconst(target); // perhaps another chunk's, of this region or another
@@ -954,8 +997,6 @@ static void emit_goto(uint32_t target) {
             exit_const(target);
         return;
     }
-    if ((uint32_t)k != g_cur_page)
-        emit_fetch_check(target, U.pages[k].host_adjust);
     emit_flush();
     if (g_direct && b > g_cur_block) {
         // blocks b+1..n-1's labels are open, innermost first: block b's
@@ -973,6 +1014,7 @@ static void emit_goto(uint32_t target) {
 // Go to the guest address in L_NPC (blr, bctr): look it up in the region's
 // refs and maps, re-checking the fetch mapping; otherwise leave
 static void emit_goto_npc(void) {
+    emit_giveback();
     op(W_BLOCK); // $miss
     put(BT_VOID);
     g_depth++;
@@ -1053,7 +1095,7 @@ static void emit_goto_npc(void) {
 // state before this instruction.
 static void emit_deopt(void) {
     // the block's deopt tail does it, from the instruction's index
-    iconst((g_cur_addr - g_block_addr) >> 2);
+    iconst(g_cur_ord);
     lset(L_IDX);
     op(W_BR);
     uleb(g_depth - g_deopt_depth);
@@ -1061,28 +1103,64 @@ static void emit_deopt(void) {
 
 // The block's deopt tail, after its $deopt: L_IDX is the index of the
 // instruction it leaves at
-static void emit_deopt_tail(uint32_t slots) {
+static void emit_deopt_tail(uint32_t slots, uint32_t nbr, const uint16_t *brpos, const jt_seg_t *seg, uint32_t nseg) {
+    // The instructions before L_IDX ran: each took a slot but the
+    // branches among them, which took a fold each.  Give back the rest.
     lget(L_BUDGET);
     iconst(slots);
     lget(L_IDX);
     op(W_SUB);
     op(W_ADD);
     lset(L_BUDGET);
-    if (g_block_branch) {
+    if (nbr) {
         lget(L_FOLDS);
-        iconst(1);
+        iconst(nbr);
         op(W_ADD);
         lset(L_FOLDS);
+    }
+    for (uint32_t j = 0; j < nbr; j++) {
+        if (brpos[j] + 1u >= g_tail_n)
+            continue; // the block's last instruction: nothing leaves after it
+        lget(L_IDX);
+        iconst(brpos[j]);
+        op(W_GT_U);
+        op(W_IF); // that branch ran: its fold is spent, and it took no slot
+        put(BT_VOID);
+        lget(L_BUDGET);
+        iconst(1);
+        op(W_ADD);
+        lset(L_BUDGET);
+        lget(L_FOLDS);
+        iconst(1);
+        op(W_SUB);
+        lset(L_FOLDS);
+        op(W_END);
     }
     iconst(addr_of(&g_ppc_jit_exit));
     iconst(PPC_JIT_EXIT_DEOPT);
     mem(W_STORE, 2, 0);
+    // The address of instruction L_IDX: its stretch's, the last one that
+    // starts at or before it
     lget(L_IDX);
     iconst(2);
     op(W_SHL);
-    iconst(g_block_addr);
+    iconst(U.pages[seg[0].page].lpage + 4u * seg[0].start);
     op(W_ADD);
     lset(L_NPC);
+    for (uint32_t j = 1, ord = seg[0].len; j < nseg; ord += seg[j].len, j++) {
+        lget(L_IDX);
+        iconst(ord);
+        op(W_GE_U);
+        op(W_IF);
+        put(BT_VOID);
+        lget(L_IDX);
+        iconst(2);
+        op(W_SHL);
+        iconst(U.pages[seg[j].page].lpage + 4u * seg[j].start - 4u * ord);
+        op(W_ADD);
+        lset(L_NPC);
+        op(W_END);
+    }
     emit_flush();
     op(W_BR);
     uleb(depth_out());
@@ -1298,9 +1376,9 @@ static void emit_exit_after(void) {
     iconst(g_left_slots - 1);
     op(W_ADD);
     lset(L_BUDGET);
-    if (g_block_branch) {
+    if (g_left_folds) {
         lget(L_FOLDS);
-        iconst(1);
+        iconst(g_left_folds);
         op(W_ADD);
         lset(L_FOLDS);
     }
@@ -1338,7 +1416,7 @@ static void emit_store(uint32_t size, bool helper, int upd_reg) {
             op(W_END);
         }
         lget(L_T2);
-        iconst(((g_cur_addr - g_block_addr) >> 2) - 1);
+        iconst(g_cur_ord - 1);
         op(W_ADD);
         lset(L_IDX);
         op(W_BR);
@@ -1604,7 +1682,7 @@ static void emit_stfd(void) {
     op(W_IF);
     put(BT_VOID);
     g_depth++;
-    iconst(((g_cur_addr - g_block_addr) >> 2) + 1u);
+    iconst(g_cur_ord + 1u);
     lset(L_IDX);
     op(W_BR);
     uleb(g_depth - g_deopt_depth);
@@ -2791,6 +2869,15 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
             iconst(ipc + 4);
             lset(L_LR);
         }
+        if (g_inline_next) {
+            // The block goes on with the code at the target (jit.inline):
+            // nothing to do but check the fetch mapping of another page
+            uint32_t t = branch_target(id, iw, ipc);
+            int k = U.slot[(t - U.lbase) >> MEM_PAGE_SHIFT];
+            if ((uint32_t)k != g_cur_page)
+                emit_fetch_check(t, U.pages[k].host_adjust);
+            return;
+        }
         emit_goto(branch_target(id, iw, ipc));
         return;
     case PPD_BDNZ_IN:
@@ -3639,8 +3726,11 @@ typedef struct jt_block {
     uint16_t page; // index in U.pages
     uint16_t start; // first instruction
     uint16_t n; // instructions
-    uint8_t branch; // ends in a branch
+    uint8_t nbr; // branches among them (each takes a fold, not a slot)
+    uint8_t nseg; // its stretches (g_segs from seg0)
+    uint32_t seg0;
 } jt_block_t;
+
 static jt_block_t *g_blocks;
 static uint32_t g_blocks_cap;
 static pd_entry_t *g_ents; // classified entries, per unit word
@@ -3662,6 +3752,7 @@ static uint32_t translate(void) {
         g_blocks = realloc(g_blocks, g_blocks_cap * sizeof *g_blocks);
     }
     uint32_t nb = 0;
+    g_nsegs = 0;
     for (uint32_t k = 0; k < U.n; k++) {
         jt_page_t *pg = &U.pages[k];
         if (!pg->map)
@@ -3687,8 +3778,7 @@ static uint32_t translate(void) {
                 continue; // the predecoded loop runs it: no block
             if (nb >= NONE16)
                 break;
-            uint32_t n = 0;
-            bool br = false;
+            uint32_t n = 0, nbr = 0;
             for (uint32_t j = i; j < JIT_PAGE_INSNS; j++) {
                 uint32_t x = k * JIT_PAGE_INSNS + j;
                 if (j > i && pg->leader[j])
@@ -3697,14 +3787,63 @@ static uint32_t translate(void) {
                     break;
                 n++;
                 if (is_branch_id(g_ids[x])) {
-                    br = true;
+                    nbr++;
                     break;
                 }
             }
             pg->map[i] = (uint16_t)nb;
             for (uint32_t j = i; j < i + n; j++)
                 pg->cov[j] = (uint16_t)nb;
-            g_blocks[nb++] = (jt_block_t){(uint16_t)k, (uint16_t)i, (uint16_t)n, br};
+            if (g_nsegs + JIT_INL_SEGS + 1 > g_segs_cap) {
+                g_segs_cap = g_segs_cap ? 2 * g_segs_cap : 4096;
+                g_segs = realloc(g_segs, g_segs_cap * sizeof *g_segs);
+            }
+            uint32_t seg0 = g_nsegs, nseg = 1;
+            g_segs[g_nsegs++] = (jt_seg_t){(uint16_t)k, (uint16_t)i, (uint16_t)n};
+            // jit.inline: a block ending in an unconditional direct branch
+            // goes on with a copy of the code at its target -- words some
+            // chunk of the region translates, up to their next branch -- and
+            // again from there.  The pages those words are on remember this
+            // chunk (jit_note_dep): a store into one of them stops it.  Not
+            // in a guarded chunk, whose blocks are invalidated one by one,
+            // each by the stores into its own words; not from or into a
+            // churny page.  Not through a call, nor on into the block that
+            // follows one that ends without a branch: both were measured,
+            // and cost Mac OS X more to compile than they gave (§3.3).
+            uint32_t lk = k, lj = i + n - 1; // the block's last instruction
+            while (!U.guarded && !pg->churny && n && nseg < g_inl) {
+                uint16_t lid = U.pages[lk].ids[lj];
+                if (lid != PPD_B_IN && lid != PPD_B_OUT)
+                    break;
+                uint32_t t = branch_target(lid, U.pages[lk].words[lj], U.pages[lk].lpage + 4 * lj);
+                uint32_t o = t - U.lbase;
+                if ((t & 3) || o >= (JIT_REGION_PAGES << MEM_PAGE_SHIFT) || U.slot[o >> MEM_PAGE_SHIFT] < 0)
+                    break;
+                uint32_t tk = (uint32_t)U.slot[o >> MEM_PAGE_SHIFT], ti = (o & MEM_PAGE_MASK) >> 2;
+                const jt_page_t *tp = &U.pages[tk];
+                if (tp->churny)
+                    break;
+                uint32_t len = 0;
+                for (uint32_t j = ti; j < JIT_PAGE_INSNS && n + len < JIT_INL_LEN; j++) {
+                    if (!tp->reached[j] || tp->owner[j] == 0xFFu /* NONE8 */ ||
+                        !translatable(tp->ids[j], tp->words[j], tp->lpage + 4 * j))
+                        break;
+                    len++;
+                    if (is_branch_id(tp->ids[j])) {
+                        nbr++;
+                        break;
+                    }
+                }
+                if (!len)
+                    break;
+                for (uint32_t j = ti; j < ti + len; j++)
+                    jit_note_dep(tk, j);
+                g_segs[g_nsegs++] = (jt_seg_t){(uint16_t)tk, (uint16_t)ti, (uint16_t)len};
+                nseg++;
+                n += len;
+                lk = tk, lj = ti + len - 1;
+            }
+            g_blocks[nb++] = (jt_block_t){(uint16_t)k, (uint16_t)i, (uint16_t)n, (uint8_t)nbr, (uint8_t)nseg, seg0};
         }
     }
     g_nblocks = nb;
@@ -3713,10 +3852,14 @@ static uint32_t translate(void) {
     g_fn_mask = g_fn_defs = 0;
     if (g_fn_regs)
         for (uint32_t bi = 0; bi < nb; bi++)
-            for (uint32_t i = 0; i < g_blocks[bi].n; i++) {
-                uint32_t x = g_blocks[bi].page * JIT_PAGE_INSNS + g_blocks[bi].start + i;
-                g_fn_mask |= entry_regs(g_ids[x], &g_ents[x]);
-                g_fn_defs |= entry_defs(g_ids[x], &g_ents[x]);
+            for (uint32_t sj = 0; sj < g_blocks[bi].nseg; sj++) {
+                const jt_seg_t *sg = &g_segs[g_blocks[bi].seg0 + sj];
+                for (uint32_t i = 0; i < sg->len; i++) {
+                    g_fn_mask |=
+                        entry_regs(U.pages[sg->page].ids[sg->start + i], &U.pages[sg->page].ents[sg->start + i]);
+                    g_fn_defs |=
+                        entry_defs(U.pages[sg->page].ids[sg->start + i], &U.pages[sg->page].ents[sg->start + i]);
+                }
             }
 
     g_len = 0;
@@ -3876,7 +4019,29 @@ static uint32_t translate(void) {
         jt_page_t *pg = &U.pages[bl->page];
         g_cur_page = bl->page;
         uint32_t addr0 = pg->lpage + 4u * bl->start;
-        uint32_t slots = bl->n - (bl->branch ? 1u : 0u);
+        uint32_t slots = bl->n - bl->nbr;
+        // Its instructions in order, through its stretches: page and word
+        const jt_seg_t *seg = &g_segs[bl->seg0];
+        // (a block with no branch may be a whole page long)
+        static uint16_t opage[JIT_PAGE_INSNS + JIT_INL_LEN], oword[JIT_PAGE_INSNS + JIT_INL_LEN];
+        static bool
+            oinl[JIT_PAGE_INSNS + JIT_INL_LEN]; // the last of a stretch another follows: a branch it runs through
+        {
+            uint32_t o = 0;
+            for (uint32_t sj = 0; sj < bl->nseg; sj++)
+                for (uint32_t i = 0; i < seg[sj].len; i++, o++) {
+                    opage[o] = seg[sj].page;
+                    oword[o] = (uint16_t)(seg[sj].start + i);
+                    oinl[o] = i + 1 == seg[sj].len && sj + 1 < bl->nseg;
+                }
+        }
+#define OID(i_)  (U.pages[opage[i_]].ids[oword[i_]])
+#define OENT(i_) (&U.pages[opage[i_]].ents[oword[i_]])
+        uint16_t brpos[JIT_INL_SEGS + 1]; // its branches' positions (one per stretch)
+        uint32_t nbr = 0;
+        for (uint32_t i = 0; i < bl->n; i++)
+            if (is_branch_id(OID(i)))
+                brpos[nbr++] = (uint16_t)i;
         // Guard: still valid, the budget leaves a slot to spare, a fold
         // left for the branch; otherwise leave at the block's start
         g_block_mask = g_block_defs = 0; // (nothing loaded yet: nothing to store)
@@ -3890,9 +4055,10 @@ static uint32_t translate(void) {
         op(W_LE_U);
         if (U.guarded)
             op(W_OR);
-        if (bl->branch) {
+        if (nbr) {
             lget(L_FOLDS);
-            op(W_EQZ);
+            iconst(nbr);
+            op(W_LT_U);
             op(W_OR);
         }
         op(W_IF);
@@ -3905,23 +4071,21 @@ static uint32_t translate(void) {
         iconst(slots);
         op(W_SUB);
         lset(L_BUDGET);
-        if (bl->branch) {
+        if (nbr) {
             lget(L_FOLDS);
-            iconst(1);
+            iconst(nbr);
             op(W_SUB);
             lset(L_FOLDS);
         }
-        g_block_branch = bl->branch;
         g_jb[JB_GUARD] += g_len - len0, len0 = g_len;
         // The block's registers into their locals
         bool access = false; // a load or store: it may deopt
         for (uint32_t i = 0; i < bl->n; i++) {
-            uint32_t x = bl->page * JIT_PAGE_INSNS + bl->start + i;
             if (!g_fn_regs) {
-                g_block_mask |= entry_regs(g_ids[x], &g_ents[x]);
-                g_block_defs |= entry_defs(g_ids[x], &g_ents[x]);
+                g_block_mask |= entry_regs(OID(i), OENT(i));
+                g_block_defs |= entry_defs(OID(i), OENT(i));
             }
-            uint16_t id = g_ids[x];
+            uint16_t id = OID(i);
             access |= (id >= PPD_LWZ && id <= PPD_STHU) || (id >= JX_LWZX && id <= JX_STBUX) || id == JX_LMW ||
                       id == JX_STMW || id == PPD_ISYNC || id == JX_MTMSR || id == JX_LWARX || id == JX_STWCX ||
                       (id >= JX_LFS && id <= JX_FCMP) || id == JX_DCBZ;
@@ -3943,18 +4107,31 @@ static uint32_t translate(void) {
             put(BT_VOID); // $deopt
             g_depth = g_deopt_depth = 2;
         }
-        g_block_addr = addr0;
         for (uint32_t i = 0; i < bl->n; i++) {
-            uint32_t x = bl->page * JIT_PAGE_INSNS + bl->start + i;
-            g_cur_addr = addr0 + 4 * i;
-            g_left_slots = slots - i; // (only non-branches deopt: i < slots)
-            emit_insn(g_ids[x], &g_ents[x], pg->words[bl->start + i], g_cur_addr);
+            g_cur_page = opage[i];
+            g_cur_ord = i;
+            g_inline_next = oinl[i];
+            g_cur_addr = U.pages[opage[i]].lpage + 4u * oword[i];
+            // What the guard took for the instructions from here on: a slot
+            // each, a fold for a branch
+            uint32_t before = 0; // branches before this instruction
+            while (before < nbr && brpos[before] < i)
+                before++;
+            bool is_br = before < nbr && brpos[before] == i;
+            g_left_slots = slots - (i - before);
+            g_left_folds = nbr - before - (is_br ? 1u : 0u);
+            g_gb_slots = is_br ? g_left_slots : 0;
+            g_gb_folds = is_br ? g_left_folds : 0;
+            emit_insn(OID(i), OENT(i), U.pages[opage[i]].words[oword[i]], g_cur_addr);
         }
+        g_gb_slots = g_gb_folds = 0;
+        g_inline_next = false;
         g_jb[JB_BODY] += g_len - len0, len0 = g_len;
         // Fall into the next block when it starts right here; otherwise
         // go there (a block of the region, or leave)
-        uint32_t next = addr0 + 4u * bl->n;
-        bool here = b + 1 < nb && g_blocks[b + 1].page == bl->page && g_blocks[b + 1].start == bl->start + bl->n;
+        const jt_seg_t *ls = &seg[bl->nseg - 1]; // (the last stretch: where it runs off)
+        uint32_t next = U.pages[ls->page].lpage + 4u * (ls->start + ls->len);
+        bool here = b + 1 < nb && g_blocks[b + 1].page == ls->page && g_blocks[b + 1].start == ls->start + ls->len;
         if (!here)
             emit_goto(next);
         else if (access) {
@@ -3965,13 +4142,16 @@ static uint32_t translate(void) {
         if (access) {
             op(W_END); // $deopt
             g_depth = 1;
-            emit_deopt_tail(slots);
+            g_tail_n = bl->n;
+            emit_deopt_tail(slots, nbr, brpos, seg, bl->nseg);
             op(W_END); // $end
             g_depth = 0;
         }
         g_jb[JB_DEOPT] += g_len - len0, len0 = g_len;
         if (here)
             emit_flush(); // and fall into the next block
+#undef OID
+#undef OENT
         g_jb[JB_WAYOUT] += g_len - len0;
     }
     uint32_t len_end = g_len;
@@ -4127,6 +4307,13 @@ typedef struct jit_slot {
     uint8_t poor[JIT_PAGE_INSNS]; // per entry word: recent runs that ended early (JIT_POOR_MAX: not entered)
     uint16_t last_hit; // the last word whose write invalidated a block (jit.trace)
     uint16_t cov[JIT_PAGE_INSNS]; // per word: its block in that chunk (NONE16)
+    // jit.inline: the words of this page that blocks hold copies of, beyond
+    // the block each belongs to, and the chunks those blocks are in.  A store
+    // into such a word stops those chunks (all of the page's: the bits are
+    // cleared with them, so a stale one costs a regeneration at most)
+    uint8_t copied[JIT_PAGE_INSNS / 8];
+    uint8_t deps[(JIT_MAX_CHUNKS + 8) / 8];
+    bool has_deps;
     struct jit_region *region;
     struct jit_slot *next_host; // the host-page chain
 } jit_slot_t;
@@ -4148,6 +4335,7 @@ typedef struct jit_chunk {
     bool empty; // translated to no block
     uint32_t pending; // the token of its translation being compiled asynchronously (0: none)
     uint32_t last_regen; // the region's translation count at the last one
+    bool dep_killed; // stopped for a store into a word it holds a copy of (jit.inline), not into its own blocks
 } jit_chunk_t;
 
 typedef struct jit_region {
@@ -4163,6 +4351,42 @@ typedef struct jit_region {
     bool want; // entry points or members were added since the last compile
     struct jit_region *next;
 } jit_region_t;
+
+// jit.inline: the chunk being translated holds a copy of word `i` of the
+// unit's page `u`
+static void jit_note_dep(uint32_t u, uint32_t i) {
+    for (uint32_t k = 0; k < JIT_REGION_PAGES; k++)
+        if (U.slot[k] == (int16_t)u) {
+            jit_slot_t *s = U.R->slot[k];
+            s->copied[i >> 3] |= (uint8_t)(1u << (i & 7));
+            s->deps[U.ci >> 3] |= (uint8_t)(1u << (U.ci & 7));
+            s->has_deps = true;
+            return;
+        }
+}
+
+// Stop the chunks that hold copies of the page's words: they are generated
+// again whatever their own words.  True when any was stopped.
+static bool jit_kill_deps(jit_region_t *R, jit_slot_t *s) {
+    bool any = false;
+    for (uint32_t d = 0; d < JIT_MAX_CHUNKS; d++) {
+        if (!((s->deps[d >> 3] >> (d & 7)) & 1u))
+            continue;
+        jit_chunk_t *dc = &R->chunk[d];
+        if (!dc->dead) {
+            dc->dead = dc->dep_killed = true;
+            if (dc->fn)
+                dc->fn_dead = dc->fn, dc->fn = 0;
+        }
+        dc->sig = dc->sigw = 0;
+        R->stale++;
+        any = true;
+    }
+    memset(s->deps, 0, sizeof s->deps);
+    memset(s->copied, 0, sizeof s->copied);
+    s->has_deps = false;
+    return any;
+}
 
 #define JIT_HASH 256
 static jit_region_t *g_regions[JIT_HASH];
@@ -4460,6 +4684,8 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
             s->vol_until = g_st.lookups + (JIT_VOLATILE_LOOKUPS << (s->vol_count < 12 ? s->vol_count : 12));
             s->vol_count++;
             memset(s->extra, 0, sizeof s->extra); // (its stores no longer reach the tier: the entries go stale)
+            if (s->has_deps)
+                jit_kill_deps(R, s); // (... and so would the copies of its words)
             if (g_trace)
                 printf("jit: volatile %08x (last write at word %u: %08x)\n", s->lpage, s->last_hit,
                        LOAD_BE32(s->host + 4 * s->last_hit));
@@ -4779,8 +5005,8 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         ch->pending = 0; // (a compile in flight is dropped when it lands)
         // Written since its translation: from now on its blocks test their
         // valid flags, so a write stops only the block it hits (§3.7)
-        ch->guarded = ch->guarded || ch->dead;
-        ch->dead = false;
+        ch->guarded = ch->guarded || (ch->dead && !ch->dep_killed);
+        ch->dead = ch->dep_killed = false;
         ch->nb = 0;
         ch->sig = sig;
         memset(ch->refs, 0, sizeof ch->refs);
@@ -4800,8 +5026,9 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
                 ch->maps[k] = malloc(JIT_PAGE_INSNS * sizeof(uint16_t));
             if (own && !ch->maps[k])
                 return;
-            pages[u] = (jt_page_t){s->lpage, s->words,       cleader[u], own ? ch->maps[k] : NULL,
-                                   ccov[u],  s->host_adjust, s->ids,     s->ents};
+            pages[u] = (jt_page_t){s->lpage,   s->words,       cleader[u], own ? ch->maps[k] : NULL,
+                                   ccov[u],    s->host_adjust, s->ids,     s->ents,
+                                   reached[u], s->owner,       s->churny};
         }
         if (words + 1 > ch->bcap) { // at most one block per word
             free(ch->bvalid);
@@ -4816,6 +5043,8 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         U.refs = ch->refs;
         U.bvalid = ch->bvalid;
         U.guarded = ch->guarded;
+        U.R = R;
+        U.ci = ci;
         g_prof[3] += emscripten_get_now() - tp, tp = emscripten_get_now();
         uint32_t nb = translate();
         g_prof[4] += emscripten_get_now() - tp, tp = emscripten_get_now();
@@ -5823,6 +6052,8 @@ void ppc_jit_code_written(const uint8_t *host, uint32_t len) {
                        R->nchunks,
                        (c != NONE8 && b != NONE16 && c < R->nchunks && R->chunk[c].bvalid) ? R->chunk[c].bvalid[b] : -1,
                        s->volatile_);
+            if (s->has_deps && ((s->copied[w >> 3] >> (w & 7)) & 1u) && jit_kill_deps(R, s))
+                hit = true; // (blocks elsewhere hold copies of this word: jit.inline)
             if (c == NONE8 || b == NONE16 || c >= R->nchunks || !R->chunk[c].bvalid)
                 continue;
             if (R->chunk[c].bvalid[b]) {
@@ -5902,7 +6133,8 @@ enum {
     JA_ASYNC,
     JA_BUDGET,
     JA_REGS,
-    JA_CHURN_OK
+    JA_CHURN_OK,
+    JA_INLINE
 };
 
 static value_t jit_attr_get(struct object *self, const member_t *m) {
@@ -5926,6 +6158,8 @@ static value_t jit_attr_get(struct object *self, const member_t *m) {
         return val_uint(4, g_budget_pct);
     case JA_CHURN_OK:
         return val_uint(4, g_churn_ok);
+    case JA_INLINE:
+        return val_uint(4, g_inl);
 #ifdef __EMSCRIPTEN__
     case JA_AVAILABLE:
         return val_uint(1, 1);
@@ -6013,6 +6247,14 @@ static value_t jit_attr_set(struct object *self, const member_t *m, value_t in) 
         ppc_jit_reset();
 #endif
         return val_none();
+    case JA_INLINE:
+        if (in.u > JIT_INL_SEGS)
+            return val_err("inline is the number of stretches a block may have, 0..16");
+        g_inl = (uint32_t)in.u;
+#ifdef __EMSCRIPTEN__
+        ppc_jit_reset();
+#endif
+        return val_none();
     case JA_CHURN_OK:
         g_churn_ok = in.u ? 1 : 0;
 #ifdef __EMSCRIPTEN__
@@ -6089,6 +6331,10 @@ static const member_t jit_members[] = {
     JIT_ATTR("compiles", JA_COMPILES, "region translations", NULL),
     JIT_ATTR("functions", JA_FUNCTIONS, "functions generated (a region translates into chunks of chunk_cap)", NULL),
     JIT_ATTR("chunk_cap", JA_CHUNK_CAP, "the most instructions one generated function translates", jit_attr_set),
+    JIT_ATTR("inline", JA_INLINE,
+             "the most stretches of code a block runs through: past an unconditional direct branch, with a copy "
+             "of the code at its target (0, 1: every branch ends its block)",
+             jit_attr_set),
     JIT_ATTR("churn_ok", JA_CHURN_OK,
              "1 = also translate code that keeps changing (experiments; 0: it is left to the predecoded tier)",
              jit_attr_set),
