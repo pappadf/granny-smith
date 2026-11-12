@@ -390,10 +390,37 @@ instructions) and so never left the engine's baseline tier, which runs
 slower than the predecoded loop (PM6100 desktop: `--liftoff-only` 58-66
 MIPS, predecoded 87).  Not the cost of the stores (the helpers called
 from translated code were about 5 %).  With steady and churny pages in
-separate chunks (§2.1) the runtime's functions are not regenerated at all
-and the same run is 37-87 MIPS (median 56): better, still under the stock
-tier, because the cache's own functions are regenerated whole (a region
-translation regenerated 30 K words) and live in the baseline tier.  So
+separate chunks (§2.1) the runtime's functions are not regenerated at
+all.
+
+The second cause was the cache's own translations: **blocks of one
+instruction** (55,564 instructions in 52,646 blocks, 119 bytes each).  A
+member page remembered every word that had ever been a run-time entry
+point (`extra[]`), through any number of rewrites of the page, so after a
+few generations of the cache every word of it led a block.  A store now
+clears the entry count of the words it writes (an entry point belongs to
+the code that was there), and a page that turns volatile clears them all:
+3.0 instructions per block, 83 bytes each, and five times fewer block
+invalidations.  With both, `jit.churn_ok = 1` runs the PM8500 desktop at
+the stock tier's speed: with the Energy Saver message in front, medians
+of 9 windows 106-116 MIPS over four runs against 103-110 stock; at the
+idle Finder 115 against 118 (105 with `jit.budget = 100`).  The translated
+share is 71-97 % instead of 47 %, and entries into translated code fall
+from 2.2 M to 0.6-1.2 M per 100 M instructions.
+
+What did not matter, measured on that configuration: the engine's
+baseline tier (`--wasm-tiering-budget=1000`, tier-up at once: medians 112
+and 104 against 106 and 108), `--no-liftoff` (slower: the optimizing
+compile takes about 0.2 ms per guest instruction, 200 ms for a
+1024-instruction function, and 71 s of it ran in the background over one
+run before the block fix), smaller chunks (`jit.chunk_cap = 128`: each
+module costs about 3 ms on the emulator thread whatever its size, 0.9 s
+per translation of the cache), and the translation budget (3 % against
+100 %).  Translated cache code is simply about as fast as the predecoded
+loop running it, as on the PM6100's interpretive emulator (99.8 %
+translated, no gain): its blocks are three instructions long, and the
+per-block cost (guard, register loads and stores, the way out) is what
+there is left to remove.  So
 the cache stays with the predecoded tier by default.  What the cache does,
 measured on that desktop: 15.6 stores per 1000 instructions land in it,
 99.4 % of them data (83 two-word inline caches of indirect 68K jumps,

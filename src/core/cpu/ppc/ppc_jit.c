@@ -4459,6 +4459,7 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
             s->volatile_ = true;
             s->vol_until = g_st.lookups + (JIT_VOLATILE_LOOKUPS << (s->vol_count < 12 ? s->vol_count : 12));
             s->vol_count++;
+            memset(s->extra, 0, sizeof s->extra); // (its stores no longer reach the tier: the entries go stale)
             if (g_trace)
                 printf("jit: volatile %08x (last write at word %u: %08x)\n", s->lpage, s->last_hit,
                        LOAD_BE32(s->host + 4 * s->last_hit));
@@ -5808,6 +5809,11 @@ void ppc_jit_code_written(const uint8_t *host, uint32_t len) {
             uint16_t b = s->cov[w];
             if (s->writes[w] < 255)
                 s->writes[w]++;
+            // An entry point belongs to the code that was there: kept, the
+            // words of a page that is rewritten again and again (the DR
+            // emulator's cache) all end up entry points, and its code
+            // translates into blocks of one instruction
+            s->extra[w] = 0;
             if (g_trace == 11)
                 wa_note(s->lpage + 4 * w, (R->key & 1u) != 0, s->host + 4 * w,
                         c != NONE8 && b != NONE16 && c < R->nchunks && R->chunk[c].bvalid && R->chunk[c].bvalid[b],
