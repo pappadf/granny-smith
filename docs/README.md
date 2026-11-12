@@ -14,6 +14,7 @@ lives under [`user/`](user/).
 | `guide/` | internals (C) | how to build, test and contribute |
 | `internals/core/` | internals (C) | Granny Smith design, mirrors `src/core/` |
 | `internals/machines/` | internals (C) | machine and chip models, mirrors `src/machines/` |
+| `internals/codec/` | internals (C) | the codec library (compression and checksums), mirrors `src/codec/` |
 | `user/` | end-user (D) | how to use the emulator; no source checkout needed |
 | `reference/hardware/` | reference (A) | cross-machine chips and buses |
 | `reference/machines/` | reference (A/B) | one subtree per machine family: family doc, machine docs, device docs |

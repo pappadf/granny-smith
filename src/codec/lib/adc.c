@@ -2,7 +2,8 @@
 // Copyright (c) pappadf
 
 // adc.c
-// Apple Data Compression (ADC) decompressor — see adc.h.
+// Apple Data Compression (ADC) decompressor -- see codec.h.  Reverse-
+// engineered; matches dmg2img's adc.c and Aaru.
 //
 // The stream is a sequence of tokens.  The top two bits of each tag byte
 // select the token type:
@@ -12,9 +13,11 @@
 // For matches the copy source is (out_pos - offset - 1) and the copy is done
 // one byte at a time so overlapping runs (RLE) work.
 
-#include "adc.h"
+#include "codec_internal.h"
 
-long adc_decompress(const uint8_t *in, size_t in_len, uint8_t *out, size_t out_cap) {
+int64_t codec_adc_decompress(const uint8_t *in, size_t in_len, uint8_t *out, size_t out_cap) {
+    if ((!in && in_len) || (!out && out_cap))
+        return CODEC_ERR_ARG;
     size_t ip = 0;
     size_t op = 0;
 
@@ -39,7 +42,7 @@ long adc_decompress(const uint8_t *in, size_t in_len, uint8_t *out, size_t out_c
             size_t off = ((size_t)in[ip + 1] << 8) | (size_t)in[ip + 2];
             ip += 3;
             if (off + 1 > op)
-                return -1; // reference before start of output
+                return CODEC_ERR_DATA; // reference before start of output
             size_t src = op - off - 1;
             for (size_t k = 0; k < len && op < out_cap; k++)
                 out[op++] = out[src++];
@@ -51,11 +54,11 @@ long adc_decompress(const uint8_t *in, size_t in_len, uint8_t *out, size_t out_c
             size_t off = ((size_t)(tag & 0x03) << 8) | (size_t)in[ip + 1];
             ip += 2;
             if (off + 1 > op)
-                return -1;
+                return CODEC_ERR_DATA;
             size_t src = op - off - 1;
             for (size_t k = 0; k < len && op < out_cap; k++)
                 out[op++] = out[src++];
         }
     }
-    return (long)op;
+    return (int64_t)op;
 }

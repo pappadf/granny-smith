@@ -19,7 +19,7 @@
 #include "mailbox/mailbox.h"
 
 #include "archive.h"
-#include "crc32.h"
+#include "codec.h"
 #include "image.h"
 #include "image_apm.h"
 #include "image_chunkmap.h"
@@ -1163,7 +1163,7 @@ static int work_convert(io_leaf_t *j) {
             snprintf(j->err, sizeof j->err, "read of '%s' at %llu failed", j->a, (unsigned long long)at);
             break;
         }
-        crc = gs_crc32(crc, buf, n);
+        crc = codec_crc32(crc, buf, n);
         if (raw) {
             if (fwrite(buf, 1, n, raw) != n) {
                 rc = -EIO;
@@ -1204,7 +1204,7 @@ static int work_convert(io_leaf_t *j) {
     char msg[200] = {0};
     rc = out ? udif_verify(out, &vs, msg, sizeof msg) : -EIO;
     source_release(out);
-    uint32_t want = gs_crc32_zeros(crc, u->st.sectors * UDIF_SECTOR_SIZE - total);
+    uint32_t want = codec_crc32_zeros(crc, u->st.sectors * UDIF_SECTOR_SIZE - total);
     if (rc == 0 && (vs.crc != u->st.crc || vs.crc != want))
         rc = -EILSEQ, snprintf(msg, sizeof msg, "decoded checksum %08x, the source's is %08x", vs.crc, want);
     if (rc) {

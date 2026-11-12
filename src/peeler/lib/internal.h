@@ -8,6 +8,7 @@
 #ifndef PEELER_INTERNAL_H
 #define PEELER_INTERNAL_H
 
+#include "codec.h"
 #include "peeler.h"
 
 #include <setjmp.h>
@@ -439,36 +440,12 @@ void peel_reader_free(peel_reader_t *r);
 const uint8_t *peel_reader_at(peel_reader_t *r, uint64_t off, size_t n);
 
 // ============================================================================
-// CRC-32 (zip, gzip)
+// Compression and checksums
 // ============================================================================
-
-// CRC-32 (IEEE 802.3, reflected, as zip and gzip use it), running.
-uint32_t peel_crc32(uint32_t crc, const uint8_t *data, size_t len);
-
-// ============================================================================
-// Inflate (inflate.c) -- resumable on the output side
-// ============================================================================
-
-// Supplies compressed input: up to `cap` bytes into `buf`.  Returns the byte
-// count, 0 at the end of the input, or a negative code.
-typedef int64_t (*peel_pull_fn)(void *ctx, uint8_t *buf, size_t cap);
-
-typedef struct peel_inflater peel_inflater_t;
-
-peel_inflater_t *peel_inflater_new(peel_pull_fn pull, void *ctx);
-void peel_inflater_free(peel_inflater_t *z);
-
-// Produce up to `cap` bytes into `out` (*out_n set).  Returns 1 once the
-// final block has ended, 0 when more output remains, -1 on a truncated or
-// malformed stream.
-int peel_inflater_run(peel_inflater_t *z, uint8_t *out, size_t cap, size_t *out_n);
-
-// Bytes produced so far, and compressed bytes consumed so far.
-uint64_t peel_inflater_total_out(const peel_inflater_t *z);
-uint64_t peel_inflater_consumed(const peel_inflater_t *z);
-
-// After the final block: drop the bits up to the next byte boundary.
-void peel_inflater_align(peel_inflater_t *z);
+//
+// DEFLATE (the resumable codec_inflater_*, one-shot codec_inflate) and
+// CRC-32 (codec_crc32) come from the codec library, src/codec, which the
+// emulator shares: see codec.h.
 
 // ============================================================================
 // Structure-first archives (archive.c) -- the format vtable

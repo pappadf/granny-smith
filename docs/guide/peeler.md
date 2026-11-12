@@ -25,6 +25,11 @@ A *wrapper* holds exactly one file; an *archive* holds a tree. Nesting
 is handled by the caller opening an entry's fork as a new source, so a
 `.sit.hqx`, a `.dsk.gz` or a zip of zips each unpack layer by layer.
 
+peeler decodes its DEFLATE members (zip, gzip) and takes its CRC-32 from
+the codec library, [`src/codec/`](../../src/codec/)
+([`codec.md`](../internals/codec/codec.md)), which the emulator shares; it
+depends on nothing else.
+
 The library originated as a standalone project at
 <https://github.com/pappadf/peeler>. It now lives in-tree under
 [`src/peeler/`](../../src/peeler/), and the in-tree copy is canonical:
@@ -191,9 +196,11 @@ extension is consulted anywhere; see
 
 `src/sources.mk` compiles every `src/peeler/lib/*.c` and
 `src/peeler/lib/formats/*.c` into both the WASM module and the headless
-binary, with `-Isrc/peeler/include -Isrc/peeler/lib`. peeler also keeps
-its own `Makefile` (`make -C src/peeler`, `make -C src/peeler test`) so
-it builds and tests on its own. It follows the repository's
+binary, with `-Isrc/peeler/include -Isrc/peeler/lib` and the codec
+library's `-Isrc/codec/include`. peeler also keeps its own `Makefile`
+(`make -C src/peeler`, `make -C src/peeler test`) so it builds and tests
+on its own; it compiles the codec library's sources from `CODEC_DIR`
+(`../codec` in this tree, `./codec` in the standalone repository). It follows the repository's
 `.clang-format` like any other source.
 
 ## Updating upstream
@@ -204,8 +211,9 @@ out:
 
 ```bash
 # from a granny-smith checkout, into a checkout of https://github.com/pappadf/peeler
-rsync -a --delete --exclude .git --exclude .github --exclude build \
+rsync -a --delete --exclude .git --exclude .github --exclude build --exclude codec \
     src/peeler/ /path/to/peeler/
+rsync -a --delete src/codec/ /path/to/peeler/codec/
 cd /path/to/peeler && make && make test
 git add -A && git commit -m "Sync from granny-smith"
 ```
@@ -224,7 +232,7 @@ git add -A && git commit -m "Sync from granny-smith"
   peeler.
 - `tests/unit/suites/peeler` runs under AddressSanitizer, UBSan and
   LeakSanitizer, and again on wasm32. `zipgz.c` holds the zip, gzip, tar
-  and inflate tests: an in-test DEFLATE encoder (stored, fixed and dynamic
+  and inflate tests (the inflater is the codec library's): an in-test DEFLATE encoder (stored, fixed and dynamic
   blocks) drives round trips, resumption at every output boundary, and
   refusal of truncated, over-subscribed and out-of-window streams; a
   counting source checks the partial-access contract (a 50 MB zip opens

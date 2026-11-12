@@ -420,7 +420,7 @@ source_t *udif_source_open_bounded(source_t *data, size_t max_chunk, int *err) {
                 r.kind = RUN_RAW;
                 if (c->length < r.out_len)
                     rc = -EINVAL;
-            } else if (c->type == UDIF_CHUNK_ADC || c->type == UDIF_CHUNK_ZLIB) {
+            } else if (udif_chunk_codec(c->type) >= 0) {
                 r.kind = RUN_UDIF;
                 if (r.out_len > max_chunk || c->length > NDIF_MAX_CHUNK_BYTES) {
                     LOG(0, "UDIF '%s': a chunk decodes to %llu KB, more than the %zu KB read in place",
@@ -429,7 +429,7 @@ source_t *udif_source_open_bounded(source_t *data, size_t max_chunk, int *err) {
                 }
             } else {
                 LOG(1, "UDIF '%s': chunk codec %#x not supported", source_key(data), c->type);
-                rc = -ENOTSUP; // bzip2 / LZFSE / LZMA
+                rc = -ENOTSUP; // a type no UDIF writer is known to use
             }
             if (rc == 0 && r.kind != RUN_ZERO && (r.in_off > dsize || r.in_len > dsize - r.in_off))
                 rc = -EINVAL;

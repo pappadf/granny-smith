@@ -38,7 +38,6 @@ LIB_SRCS  = lib/err.c      \
             lib/util.c     \
             lib/source.c   \
             lib/reader.c   \
-            lib/inflate.c  \
             lib/archive.c  \
             lib/peeler.c
 
@@ -55,14 +54,21 @@ FMT_SRCS  = lib/formats/hqx.c   \
 
 CMD_SRCS  = cmd/main.c
 
-LIB_OBJS  = $(patsubst %.c,$(BUILD)/%.o,$(LIB_SRCS) $(FMT_SRCS))
+# The codec library peeler inflates through (and takes its CRC-32 from):
+# src/codec in a granny-smith tree, ./codec in the standalone repository.
+CODEC_DIR ?= $(if $(wildcard codec/include/codec.h),codec,../codec)
+CODEC_SRCS = $(sort $(wildcard $(CODEC_DIR)/lib/*.c))
+CODEC_OBJS = $(patsubst $(CODEC_DIR)/lib/%.c,$(BUILD)/codec/%.o,$(CODEC_SRCS))
+
+LIB_OBJS  = $(patsubst %.c,$(BUILD)/%.o,$(LIB_SRCS) $(FMT_SRCS)) $(CODEC_OBJS)
 CMD_OBJS  = $(patsubst %.c,$(BUILD)/%.o,$(CMD_SRCS))
 
 LIB_OUT   = $(BUILD)/libpeeler.a
 CLI_OUT   = $(BUILD)/peeler
 
-# Include paths: public header for CLI, private lib dir for format sources
-LIB_CFLAGS = -Iinclude -Ilib
+# Include paths: public header for CLI, private lib dir for format sources,
+# and the codec library's header
+LIB_CFLAGS = -Iinclude -Ilib -I$(CODEC_DIR)/include
 CMD_CFLAGS = -Iinclude
 
 # ============================================================================
@@ -89,6 +95,11 @@ $(BUILD)/lib/%.o: lib/%.c
 $(BUILD)/lib/formats/%.o: lib/formats/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(LIB_CFLAGS) -c -o $@ $<
+
+# Codec library object files
+$(BUILD)/codec/%.o: $(CODEC_DIR)/lib/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I$(CODEC_DIR)/include -c -o $@ $<
 
 # ============================================================================
 # CLI

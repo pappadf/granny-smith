@@ -6,8 +6,7 @@
 
 #include "iw_page.h"
 
-#include "deflate.h"
-#include "inflate.h"
+#include "codec.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -198,13 +197,13 @@ bool iw_page_serialise(const iw_page_t *p, uint8_t **out, size_t *out_len) {
     be32(hdr + 1, p->dots);
     bool ok = put(&buf, &len, &cap, hdr, sizeof(hdr));
     size_t plane_len = (size_t)p->stride * p->h;
-    uint8_t *z = malloc(deflate_bound(plane_len));
+    uint8_t *z = malloc(codec_deflate_bound(plane_len));
     ok = ok && z;
     // Each allocated plane: index, compressed length, zlib stream
     for (int i = 0; ok && i < 4; i++) {
         if (!p->plane[i])
             continue;
-        long zl = deflate_zlib(NULL, p->plane[i], plane_len, z, deflate_bound(plane_len), 6);
+        long zl = codec_zlib_deflate(NULL, p->plane[i], plane_len, z, codec_deflate_bound(plane_len), 6);
         if (zl < 0) {
             ok = false;
             break;
@@ -242,7 +241,7 @@ bool iw_page_deserialise(iw_page_t *p, const uint8_t *data, size_t len) {
             iw_page_clear(p);
             return false;
         }
-        long got = inflate_zlib(data + off, zl, p->plane[i], plane_len);
+        int64_t got = codec_zlib_inflate(data + off, zl, p->plane[i], plane_len);
         if (got != (long)plane_len) {
             iw_page_clear(p);
             return false;

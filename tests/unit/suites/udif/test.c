@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// Unit tests for the UDIF (.dmg) decoder: the shared zlib/DEFLATE
-// decompressor (src/core/storage/inflate.c) and the 'koly' trailer + 'mish'
-// block-map parser and chunk decoder (src/core/storage/image_udif.c).
+// Unit tests for the UDIF (.dmg) decoder: the zlib wrapper of the shared
+// DEFLATE decoder (src/codec/lib/inflate.c), the 'koly' trailer + 'mish'
+// block-map parser and chunk decoder (src/core/storage/image_udif.c), and a
+// whole image with a chunk of every type read through the image layer
+// (image_chunkmap.c).  The bzip2, LZFSE and xz chunks are the codec suite's
+// vectors (../codec/vectors.h, from independent encoders).
 //
 // The trailer, property list and 'mish' tables are built by hand here so the
 // tests need no external image fixture, and the byte offsets are restated
@@ -11,10 +14,14 @@
 // Toast-mastered UDZO CD image and Jonathan Levin's "Demystifying the DMG
 // File Format".
 
-#include "crc32.h"
+#include "codec.h"
+#include "image_chunkmap.h"
 #include "image_udif.h"
-#include "inflate.h"
+#include "source.h"
 #include "test_assert.h"
+
+#include "../codec/vec_gen.h"
+#include "../codec/vectors.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -66,7 +73,7 @@ static uint8_t *zlib_stored(const uint8_t *payload, uint16_t len, size_t *out_le
     s[5] = (uint8_t)~len;
     s[6] = (uint8_t)(~len >> 8);
     memcpy(s + 7, payload, len);
-    memset(s + 7 + len, 0, 4); // adler32 trailer (unverified)
+    w_u32(s + 7 + len, codec_adler32(1, payload, len)); // the Adler-32 trailer
     *out_len = (size_t)len + 11;
     return s;
 }
@@ -76,7 +83,7 @@ TEST(inflate_stored_block) {
     size_t slen = 0;
     uint8_t *stream = zlib_stored(payload, sizeof(payload), &slen);
     uint8_t out[64] = {0};
-    long n = inflate_zlib(stream, slen, out, sizeof(out));
+    long n = codec_zlib_inflate(stream, slen, out, sizeof(out));
     ASSERT_EQ_INT((int)sizeof(payload), (int)n);
     ASSERT_EQ_INT(0, memcmp(out, payload, sizeof(payload)));
     free(stream);
@@ -89,7 +96,7 @@ TEST(inflate_fixed_huffman) {
                                      0x0D, 0x0E, 0x51, 0x08, 0x70, 0x8C, 0xF4, 0xF1, 0x77, 0x74, 0x51,
                                      0x70, 0xA7, 0xA5, 0x34, 0x00, 0x40, 0x00, 0x21, 0x99};
     uint8_t out[256] = {0};
-    long n = inflate_zlib(stream, sizeof(stream), out, sizeof(out));
+    long n = codec_zlib_inflate(stream, sizeof(stream), out, sizeof(out));
     ASSERT_EQ_INT(124, (int)n);
     ASSERT_EQ_INT(0, memcmp(out, "GRANNY SMITH UDIF TEST PAYLOAD GRANNY SMITH UDIF TEST PAYLOAD ", 62));
 }
@@ -114,9 +121,9 @@ TEST(inflate_dynamic_huffman) {
         0x7C, 0x7E, 0x7A, 0xDB, 0x37, 0x44, 0x07, 0xD3, 0xF2, 0x3F, 0x00, 0x75, 0xF8, 0x92, 0xFB, 0x31, 0x5F, 0xAA,
         0x68, 0xE2, 0xE0, 0xED, 0xA8, 0x2A, 0x64, 0xC9, 0xA2, 0x0F, 0x63, 0x23, 0x9E, 0xA7};
     uint8_t out[1024] = {0};
-    long n = inflate_zlib(stream, sizeof(stream), out, sizeof(out));
+    long n = codec_zlib_inflate(stream, sizeof(stream), out, sizeof(out));
     ASSERT_EQ_INT(600, (int)n);
-    ASSERT_EQ_INT((int)0xDAF73B30u, (int)gs_crc32(0, out, 600));
+    ASSERT_EQ_INT((int)0xDAF73B30u, (int)codec_crc32(0, out, 600));
 }
 
 TEST(inflate_alloc_form_matches) {
@@ -124,13 +131,13 @@ TEST(inflate_alloc_form_matches) {
     size_t slen = 0;
     uint8_t *stream = zlib_stored(payload, sizeof(payload), &slen);
     size_t out_len = 0;
-    uint8_t *out = inflate_zlib_alloc(stream, slen, sizeof(payload), &out_len);
+    uint8_t *out = codec_zlib_inflate_alloc(stream, slen, sizeof(payload), &out_len);
     ASSERT_TRUE(out != NULL);
     ASSERT_EQ_INT((int)sizeof(payload), (int)out_len);
     ASSERT_EQ_INT(0, memcmp(out, payload, sizeof(payload)));
     free(out);
     // One byte under what the stream decodes to: refused, not truncated.
-    ASSERT_TRUE(inflate_zlib_alloc(stream, slen, sizeof(payload) - 1, &out_len) == NULL);
+    ASSERT_TRUE(codec_zlib_inflate_alloc(stream, slen, sizeof(payload) - 1, &out_len) == NULL);
     free(stream);
 }
 
@@ -152,7 +159,10 @@ static uint8_t *zlib_stored_run(uint8_t byte, size_t len, size_t *out_len) {
         memset(s + o, byte, n);
         o += n;
     }
-    memset(s + o, 0, 4);
+    uint32_t adler = 1;
+    for (size_t k = 0; k < len; k++)
+        adler = codec_adler32(adler, &byte, 1);
+    w_u32(s + o, adler);
     *out_len = o + 4;
     return s;
 }
@@ -163,8 +173,8 @@ TEST(inflate_alloc_stops_at_its_ceiling) {
     size_t slen = 0;
     uint8_t *stream = zlib_stored_run('x', 200000, &slen);
     size_t out_len = 0;
-    ASSERT_TRUE(inflate_zlib_alloc(stream, slen, 100000, &out_len) == NULL);
-    uint8_t *out = inflate_zlib_alloc(stream, slen, 200000, &out_len);
+    ASSERT_TRUE(codec_zlib_inflate_alloc(stream, slen, 100000, &out_len) == NULL);
+    uint8_t *out = codec_zlib_inflate_alloc(stream, slen, 200000, &out_len);
     ASSERT_TRUE(out != NULL);
     ASSERT_EQ_INT(200000, (int)out_len);
     ASSERT_TRUE(out[0] == 'x' && out[199999] == 'x');
@@ -182,22 +192,37 @@ TEST(inflate_rejects_bad_headers) {
     uint8_t bad_cm[64];
     memcpy(bad_cm, stream, slen);
     bad_cm[0] = 0x79;
-    ASSERT_EQ_INT(-1, (int)inflate_zlib(bad_cm, slen, out, sizeof(out)));
+    ASSERT_EQ_INT(CODEC_ERR_DATA, (int)codec_zlib_inflate(bad_cm, slen, out, sizeof(out)));
 
     // The two header bytes must form a multiple of 31.
     uint8_t bad_check[64];
     memcpy(bad_check, stream, slen);
     bad_check[1] = 0x02;
-    ASSERT_EQ_INT(-1, (int)inflate_zlib(bad_check, slen, out, sizeof(out)));
+    ASSERT_EQ_INT(CODEC_ERR_DATA, (int)codec_zlib_inflate(bad_check, slen, out, sizeof(out)));
 
     // A preset dictionary (FDICT) is never used by these images.
     uint8_t fdict[64];
     memcpy(fdict, stream, slen);
     fdict[1] = 0x3D; // FDICT set, still a multiple of 31
-    ASSERT_EQ_INT(-1, (int)inflate_zlib(fdict, slen, out, sizeof(out)));
+    ASSERT_EQ_INT(CODEC_ERR_DATA, (int)codec_zlib_inflate(fdict, slen, out, sizeof(out)));
 
     // Truncated mid-block.
-    ASSERT_EQ_INT(-1, (int)inflate_zlib(stream, 5, out, sizeof(out)));
+    ASSERT_EQ_INT(CODEC_ERR_TRUNCATED, (int)codec_zlib_inflate(stream, 5, out, sizeof(out)));
+    free(stream);
+}
+
+TEST(inflate_checks_the_adler32_trailer) {
+    const uint8_t payload[] = "checked";
+    size_t slen = 0;
+    uint8_t *stream = zlib_stored(payload, sizeof(payload), &slen);
+    uint8_t out[64];
+    ASSERT_EQ_INT((int)sizeof(payload), (int)codec_zlib_inflate(stream, slen, out, sizeof(out)));
+    // A trailer that does not match the data is a checksum error...
+    stream[slen - 1] ^= 1;
+    ASSERT_EQ_INT(CODEC_ERR_CHECKSUM, (int)codec_zlib_inflate(stream, slen, out, sizeof(out)));
+    // ...but a stream that stops after its final block, as some writers'
+    // do, is accepted.
+    ASSERT_EQ_INT((int)sizeof(payload), (int)codec_zlib_inflate(stream, slen - 4, out, sizeof(out)));
     free(stream);
 }
 
@@ -209,12 +234,12 @@ TEST(inflate_overflow_is_an_error_not_a_clamp) {
     size_t slen = 0;
     uint8_t *stream = zlib_stored(payload, sizeof(payload), &slen);
     uint8_t out[16];
-    ASSERT_EQ_INT(-1, (int)inflate_zlib(stream, slen, out, sizeof(out)));
+    ASSERT_EQ_INT(CODEC_ERR_OVERFLOW, (int)codec_zlib_inflate(stream, slen, out, sizeof(out)));
     free(stream);
 }
 
 TEST(crc32_known_vector) {
-    ASSERT_EQ_INT((int)0xCBF43926u, (int)gs_crc32(0, (const uint8_t *)"123456789", 9));
+    ASSERT_EQ_INT((int)0xCBF43926u, (int)codec_crc32(0, (const uint8_t *)"123456789", 9));
 }
 
 // ---- 'koly' trailer --------------------------------------------------------
@@ -549,22 +574,187 @@ TEST(udif_decode_adc_chunk) {
     ASSERT_EQ_INT(0, memcmp(dst, expect, sizeof(expect)));
 }
 
-TEST(udif_decode_rejects_unimplemented_codecs) {
-    uint8_t src[16] = {0};
-    uint8_t dst[512];
-    // Real codecs we do not implement must say so, not zero-fill silently.
-    const uint32_t codecs[] = {UDIF_CHUNK_BZ2, UDIF_CHUNK_LZFSE, UDIF_CHUNK_LZMA};
-    for (size_t i = 0; i < sizeof(codecs) / sizeof(codecs[0]); i++) {
-        udif_chunk_t c = {.type = codecs[i], .sector = 0, .count = 1, .offset = 0, .length = sizeof(src)};
-        ASSERT_EQ_INT(-ENOTSUP, udif_decode_chunk(&c, src, sizeof(src), dst, sizeof(dst)));
+// The vector of a data set in a given encoding (../codec/vectors.h).
+static const vector_t *find_vector(const char *name) {
+    for (size_t i = 0; i < sizeof(k_vectors) / sizeof(k_vectors[0]); i++)
+        if (strcmp(k_vectors[i].name, name) == 0)
+            return &k_vectors[i];
+    fprintf(stderr, "[FAIL] no vector %s\n", name);
+    exit(1);
+}
+
+// Every compressed chunk type decodes through its codec; a stream that
+// decodes to other than the chunk's sectors, or that is corrupt, is
+// malformed (-EINVAL); a codec feature not implemented is -ENOTSUP.
+TEST(udif_decode_compressed_chunks) {
+    static const struct {
+        uint32_t type;
+        const char *vector;
+    } cases[] = {
+        {UDIF_CHUNK_ZLIB,  "sectors/zlib" },
+        {UDIF_CHUNK_BZ2,   "sectors/bz9"  },
+        {UDIF_CHUNK_LZFSE, "sectors/lzfse"},
+        {UDIF_CHUNK_LZMA,  "sectors/xz"   },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        const vector_t *v = find_vector(cases[i].vector);
+        uint8_t *want = vec_gen(v->kind, v->len, v->seed);
+        uint8_t *dst = malloc(v->len + 512);
+        udif_chunk_t c = {.type = cases[i].type, .count = v->len / 512, .length = v->enc_len};
+        ASSERT_EQ_INT(0, udif_decode_chunk(&c, v->enc, v->enc_len, dst, v->len));
+        ASSERT_EQ_INT(0, memcmp(dst, want, v->len));
+        // A sector more, or one fewer, than the stream holds.
+        c.count++;
+        ASSERT_EQ_INT(-EINVAL, udif_decode_chunk(&c, v->enc, v->enc_len, dst, v->len + 512));
+        c.count -= 2;
+        ASSERT_EQ_INT(-EINVAL, udif_decode_chunk(&c, v->enc, v->enc_len, dst, v->len));
+        // Garbage in place of the stream.
+        c.count++;
+        uint8_t junk[64];
+        memset(junk, 0x5A, sizeof(junk));
+        ASSERT_EQ_INT(-EINVAL, udif_decode_chunk(&c, junk, sizeof(junk), dst, v->len));
+        free(dst);
+        free(want);
     }
+    // The UDIF codes map to their codecs, and nothing else does.
+    ASSERT_EQ_INT(CODEC_ADC, udif_chunk_codec(UDIF_CHUNK_ADC));
+    ASSERT_EQ_INT(CODEC_XZ, udif_chunk_codec(UDIF_CHUNK_LZMA));
+    ASSERT_EQ_INT(-1, udif_chunk_codec(UDIF_CHUNK_RAW));
+    ASSERT_EQ_INT(-1, udif_chunk_codec(0x80000009u));
+
+    // A randomised bzip2 block (the bit after the block magic and CRC).
+    const vector_t *v = find_vector("sectors/bz9");
+    uint8_t *b = malloc(v->enc_len), *dst = malloc(v->len);
+    memcpy(b, v->enc, v->enc_len);
+    b[14] |= 0x80;
+    udif_chunk_t c = {.type = UDIF_CHUNK_BZ2, .count = v->len / 512, .length = v->enc_len};
+    ASSERT_EQ_INT(-ENOTSUP, udif_decode_chunk(&c, b, v->enc_len, dst, v->len));
+    free(dst);
+    free(b);
+
     // An unknown type code is malformed rather than merely unsupported.
+    uint8_t src[16] = {0}, out[512];
     udif_chunk_t bogus = {.type = 0x12345678u, .sector = 0, .count = 1, .offset = 0, .length = sizeof(src)};
-    ASSERT_EQ_INT(-EINVAL, udif_decode_chunk(&bogus, src, sizeof(src), dst, sizeof(dst)));
+    ASSERT_EQ_INT(-EINVAL, udif_decode_chunk(&bogus, src, sizeof(src), out, sizeof(out)));
 
     // A destination smaller than the chunk's sector run is a caller error.
     udif_chunk_t zero = {.type = UDIF_CHUNK_ZERO, .sector = 0, .count = 4, .offset = 0, .length = 0};
-    ASSERT_EQ_INT(-EINVAL, udif_decode_chunk(&zero, NULL, 0, dst, sizeof(dst)));
+    ASSERT_EQ_INT(-EINVAL, udif_decode_chunk(&zero, NULL, 0, out, sizeof(out)));
+}
+
+// A whole image in memory -- data fork, property list, trailer -- with a
+// chunk of every type, read back through the image layer.
+TEST(udif_image_with_every_chunk_type_reads_back) {
+    // The chunks in disk order: their encoded bytes and decoded data.
+    typedef struct {
+        uint32_t type;
+        const uint8_t *enc;
+        size_t enc_len;
+        uint8_t *data; // the decoded sectors
+        size_t len;
+    } part_t;
+    part_t parts[12];
+    size_t np = 0;
+    // Four sectors of zeros, then two stored.
+    parts[np++] = (part_t){UDIF_CHUNK_ZERO, NULL, 0, calloc(1, 2048), 2048};
+    uint8_t *raw = malloc(1024);
+    for (int i = 0; i < 1024; i++)
+        raw[i] = (uint8_t)(i * 13 + 5);
+    parts[np++] = (part_t){UDIF_CHUNK_RAW, raw, 1024, NULL, 1024};
+    // One ADC sector: four 128-byte literal runs.
+    uint8_t adc[4 * 129];
+    uint8_t *adc_data = malloc(512);
+    for (int r = 0; r < 4; r++) {
+        adc[r * 129] = 0x80 | 127;
+        for (int i = 0; i < 128; i++)
+            adc[r * 129 + 1 + i] = adc_data[r * 128 + i] = (uint8_t)(r * 31 + i * 3);
+    }
+    parts[np++] = (part_t){UDIF_CHUNK_ADC, adc, sizeof(adc), adc_data, 512};
+    // The rest from independent encoders: 8 and 128 sectors each.
+    static const struct {
+        uint32_t type;
+        const char *vector;
+    } coded[] = {
+        {UDIF_CHUNK_ZLIB,  "sectors/zlib"    },
+        {UDIF_CHUNK_BZ2,   "sectors128/bz9"  },
+        {UDIF_CHUNK_BZ2,   "sectors/bz9"     },
+        {UDIF_CHUNK_LZFSE, "sectors/lzfse"   },
+        {UDIF_CHUNK_LZFSE, "sectors128/lzfse"},
+        {UDIF_CHUNK_LZMA,  "sectors/xz"      },
+        {UDIF_CHUNK_LZMA,  "sectors128/xz"   }
+    };
+    for (size_t i = 0; i < sizeof(coded) / sizeof(coded[0]); i++) {
+        const vector_t *v = find_vector(coded[i].vector);
+        parts[np++] = (part_t){coded[i].type, v->enc, v->enc_len, vec_gen(v->kind, v->len, v->seed), v->len};
+    }
+
+    // The data fork, the expected disk, and the block table.
+    size_t fork_len = 0, disk_len = 0;
+    for (size_t i = 0; i < np; i++) {
+        fork_len += parts[i].enc_len;
+        disk_len += parts[i].len;
+    }
+    uint8_t *disk = malloc(disk_len);
+    test_chunk_t chunks[12];
+    size_t at = 0, fork_at = 0;
+    for (size_t i = 0; i < np; i++) {
+        memcpy(disk + at, parts[i].data ? parts[i].data : parts[i].enc, parts[i].len);
+        chunks[i] = (test_chunk_t){parts[i].type, at / 512, parts[i].len / 512, fork_at, parts[i].enc_len};
+        at += parts[i].len;
+        fork_at += parts[i].enc_len;
+    }
+    size_t mish_len = 0;
+    uint8_t *mish = build_mish(0, disk_len / 512, codec_crc32(0, disk, disk_len), chunks, np, &mish_len);
+    char *b64 = base64_encode(mish, mish_len);
+    char *xml = build_plist("whole disk (Apple_HFS : 0)", b64);
+    size_t xml_len = strlen(xml);
+
+    // fork | plist | trailer
+    size_t img_len = fork_len + xml_len + UDIF_TRAILER_SIZE;
+    uint8_t *img = malloc(img_len);
+    fork_at = 0;
+    for (size_t i = 0; i < np; i++) {
+        if (parts[i].enc_len)
+            memcpy(img + fork_at, parts[i].enc, parts[i].enc_len);
+        fork_at += parts[i].enc_len;
+    }
+    memcpy(img + fork_len, xml, xml_len);
+    uint8_t *t = img + fork_len + xml_len;
+    build_trailer(t);
+    w_u64(t + KOLY_DATA_LENGTH, fork_len);
+    w_u32(t + 0x58, codec_crc32(0, img, fork_len));
+    w_u64(t + KOLY_XML_OFFSET, fork_len);
+    w_u64(t + KOLY_XML_LENGTH, xml_len);
+    w_u64(t + KOLY_SECTORS, disk_len / 512);
+
+    source_t *host = source_memory(img, img_len, true, "every-chunk.dmg");
+    ASSERT_TRUE(host != NULL);
+    int err = 0;
+    source_t *s = udif_source_open(host, &err);
+    if (!s)
+        fprintf(stderr, "       udif_source_open: %d\n", err);
+    ASSERT_TRUE(s != NULL);
+    ASSERT_TRUE(source_size(s) == disk_len);
+    // Read it all, then in odd pieces that straddle chunk boundaries.
+    uint8_t *back = malloc(disk_len);
+    ASSERT_EQ_INT(0, source_read_exact(s, 0, back, disk_len));
+    ASSERT_EQ_INT(0, memcmp(back, disk, disk_len));
+    for (size_t off = 0; off < disk_len; off += 7777) {
+        size_t n = disk_len - off < 3000 ? disk_len - off : 3000;
+        ASSERT_EQ_INT(0, source_read_exact(s, off, back, n));
+        ASSERT_EQ_INT(0, memcmp(back, disk + off, n));
+    }
+    free(back);
+    source_release(s);
+    source_release(host);
+
+    for (size_t i = 0; i < np; i++)
+        free(parts[i].data);
+    free(raw);
+    free(disk);
+    free(xml);
+    free(b64);
+    free(mish);
 }
 
 int main(void) {
@@ -574,6 +764,7 @@ int main(void) {
     RUN(inflate_alloc_form_matches);
     RUN(inflate_alloc_stops_at_its_ceiling);
     RUN(inflate_rejects_bad_headers);
+    RUN(inflate_checks_the_adler32_trailer);
     RUN(inflate_overflow_is_an_error_not_a_clamp);
     RUN(crc32_known_vector);
     RUN(udif_detect_and_parse_trailer);
@@ -584,7 +775,8 @@ int main(void) {
     RUN(udif_decode_zero_ignore_raw);
     RUN(udif_decode_zlib_chunk);
     RUN(udif_decode_adc_chunk);
-    RUN(udif_decode_rejects_unimplemented_codecs);
+    RUN(udif_decode_compressed_chunks);
+    RUN(udif_image_with_every_chunk_type_reads_back);
     fprintf(stderr, "All udif tests passed.\n");
     return 0;
 }

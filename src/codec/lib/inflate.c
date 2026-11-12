@@ -2,21 +2,25 @@
 // Copyright (c) pappadf
 
 // inflate.c
-// DEFLATE decompressor (RFC 1951), resumable on the output side.
+// DEFLATE decompressor (RFC 1951), resumable on the output side, and the
+// zlib (RFC 1950) wrapper over it.  See codec.h.
 //
-// Peeler owns the one inflate in the tree: zip and gzip members decode
-// through it, and the emulator's UDIF zlib chunks and PNG reader call it too.
-// A member of a zip is read on demand, a little at a time, so the decoder
-// must stop when the caller's buffer is full and pick up exactly there on
-// the next call -- mid-block, even mid-match.  Input is pulled through a
-// callback as needed; running out of input is a truncated stream (the whole
-// compressed range is always available locally), so only the output side
-// has to be resumable.
+// The one inflate in the tree: peeler's zip and gzip members decode through
+// it, and so do the emulator's UDIF zlib chunks, QCOW2 clusters and PNG
+// reader.  A member of a zip is read on demand, a little at a time, so the
+// decoder must stop when the caller's buffer is full and pick up exactly
+// there on the next call -- mid-block, even mid-match.  Input is pulled
+// through a callback as needed; running out of input is a truncated stream
+// (the whole compressed range is always available locally), so only the
+// output side has to be resumable.
 //
 // Symbols are decoded through a 9-bit lookup table, with a canonical walk
 // for the rarer longer codes.
 
-#include "internal.h"
+#include "codec_internal.h"
+
+#include <stdlib.h>
+#include <string.h>
 
 // ============================================================================
 // Constants
@@ -26,16 +30,16 @@
 #define INF_FAST_BITS 9 // primary lookup table width
 #define INF_IN_CHUNK  16384 // compressed bytes pulled per refill
 
-// RFC 1951 § 3.2.5 length and distance code tables.
-static const uint16_t len_base[29] = {3,  4,  5,  6,  7,  8,  9,  10, 11,  13,  15,  17,  19,  23, 27,
-                                      31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
-static const uint8_t len_extra[29] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2,
-                                      2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
-static const uint16_t dist_base[30] = {1,    2,    3,    4,    5,    7,    9,    13,    17,    25,
-                                       33,   49,   65,   97,   129,  193,  257,  385,   513,   769,
-                                       1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577};
-static const uint8_t dist_extra[30] = {0, 0, 0, 0, 1, 1, 2, 2,  3,  3,  4,  4,  5,  5,  6,
-                                       6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
+// RFC 1951 § 3.2.5 length and distance code tables, shared with deflate.c.
+const uint16_t codec_deflate_len_base[29] = {3,  4,  5,  6,  7,  8,  9,  10, 11,  13,  15,  17,  19,  23, 27,
+                                             31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
+const uint8_t codec_deflate_len_extra[29] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2,
+                                             2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
+const uint16_t codec_deflate_dist_base[30] = {1,    2,    3,    4,    5,    7,    9,    13,    17,    25,
+                                              33,   49,   65,   97,   129,  193,  257,  385,   513,   769,
+                                              1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577};
+const uint8_t codec_deflate_dist_extra[30] = {0, 0, 0, 0, 1, 1, 2, 2,  3,  3,  4,  4,  5,  5,  6,
+                                              6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
 
 // ============================================================================
 // Types
@@ -52,8 +56,8 @@ typedef struct {
 
 typedef enum { ST_HEADER, ST_STORED, ST_HUFF, ST_DONE } inf_state_t;
 
-struct peel_inflater {
-    peel_pull_fn pull;
+struct codec_inflater {
+    codec_pull_fn pull;
     void *pull_ctx;
     uint8_t in[INF_IN_CHUNK];
     size_t in_pos, in_len;
@@ -78,7 +82,7 @@ struct peel_inflater {
 // ============================================================================
 
 // Top the bit buffer up to at least `need` bits (need <= 57) if input remains.
-static int inf_refill(peel_inflater_t *z, int need) {
+static int inf_refill(codec_inflater_t *z, int need) {
     while (z->bitcnt < need) {
         if (z->in_pos == z->in_len) {
             if (z->in_eof)
@@ -101,7 +105,7 @@ static int inf_refill(peel_inflater_t *z, int need) {
 }
 
 // Take `n` bits (0..25).  -1 when the input ran out (a truncated stream).
-static int64_t inf_bits(peel_inflater_t *z, int n) {
+static int64_t inf_bits(codec_inflater_t *z, int n) {
     if (n == 0)
         return 0;
     if (z->bitcnt < n) {
@@ -169,7 +173,7 @@ static int inf_build(inf_huff_t *h, const uint8_t *lengths, int n) {
 }
 
 // Decode one symbol.  -1 on a truncated or malformed stream.
-static int inf_decode(peel_inflater_t *z, const inf_huff_t *h) {
+static int inf_decode(codec_inflater_t *z, const inf_huff_t *h) {
     if (z->bitcnt < 15) {
         int rc = inf_refill(z, 15);
         if (rc < 0)
@@ -208,7 +212,7 @@ static int inf_decode(peel_inflater_t *z, const inf_huff_t *h) {
 // ============================================================================
 
 // The fixed codes of RFC 1951 § 3.2.6.
-static void inf_fixed(peel_inflater_t *z) {
+static void inf_fixed(codec_inflater_t *z) {
     uint8_t ll[288], dl[30];
     for (int i = 0; i < 288; i++)
         ll[i] = (uint8_t)((i < 144) ? 8 : (i < 256) ? 9 : (i < 280) ? 7 : 8);
@@ -219,7 +223,7 @@ static void inf_fixed(peel_inflater_t *z) {
 }
 
 // Read a dynamic block's code definitions (RFC 1951 § 3.2.7).  0 / -1.
-static int inf_dynamic(peel_inflater_t *z) {
+static int inf_dynamic(codec_inflater_t *z) {
     static const uint8_t order[19] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15};
     int64_t hlit = inf_bits(z, 5), hdist = inf_bits(z, 5), hclen = inf_bits(z, 4);
     if (hlit < 0 || hdist < 0 || hclen < 0)
@@ -277,7 +281,7 @@ static int inf_dynamic(peel_inflater_t *z) {
 }
 
 // Start the next block.  0 / -1.
-static int inf_header(peel_inflater_t *z) {
+static int inf_header(codec_inflater_t *z) {
     int64_t bfinal = inf_bits(z, 1), btype = inf_bits(z, 2);
     if (bfinal < 0 || btype < 0)
         return -1;
@@ -308,14 +312,14 @@ static int inf_header(peel_inflater_t *z) {
 // ============================================================================
 
 // Emit one byte to both the caller's buffer and the window.
-static inline void inf_put(peel_inflater_t *z, uint8_t *out, size_t *n, uint8_t b) {
+static inline void inf_put(codec_inflater_t *z, uint8_t *out, size_t *n, uint8_t b) {
     out[(*n)++] = b;
     z->window[z->total_out & (INF_WINDOW - 1)] = b;
     z->total_out++;
 }
 
 // Continue a pending match into out[*n..cap).
-static void inf_copy(peel_inflater_t *z, uint8_t *out, size_t *n, size_t cap) {
+static void inf_copy(codec_inflater_t *z, uint8_t *out, size_t *n, size_t cap) {
     while (z->copy_len > 0 && *n < cap) {
         uint8_t b = z->window[(z->total_out - z->copy_dist) & (INF_WINDOW - 1)];
         inf_put(z, out, n, b);
@@ -324,11 +328,11 @@ static void inf_copy(peel_inflater_t *z, uint8_t *out, size_t *n, size_t cap) {
 }
 
 // ============================================================================
-// Public (internal.h)
+// Public (codec.h)
 // ============================================================================
 
-peel_inflater_t *peel_inflater_new(peel_pull_fn pull, void *ctx) {
-    peel_inflater_t *z = calloc(1, sizeof(*z));
+codec_inflater_t *codec_inflater_new(codec_pull_fn pull, void *ctx) {
+    codec_inflater_t *z = calloc(1, sizeof(*z));
     if (!z)
         return NULL;
     z->pull = pull;
@@ -337,28 +341,28 @@ peel_inflater_t *peel_inflater_new(peel_pull_fn pull, void *ctx) {
     return z;
 }
 
-void peel_inflater_free(peel_inflater_t *z) {
+void codec_inflater_free(codec_inflater_t *z) {
     free(z);
 }
 
-uint64_t peel_inflater_total_out(const peel_inflater_t *z) {
+uint64_t codec_inflater_total_out(const codec_inflater_t *z) {
     return z->total_out;
 }
 
 // Compressed bytes consumed: pulled, less what is still buffered.
-uint64_t peel_inflater_consumed(const peel_inflater_t *z) {
+uint64_t codec_inflater_consumed(const codec_inflater_t *z) {
     return z->in_total - (z->in_len - z->in_pos) - (uint64_t)(z->bitcnt / 8);
 }
 
 // Discard the partial byte after the final block (a gzip trailer follows on
 // a byte boundary) and hand back the whole bytes still buffered, by count.
-void peel_inflater_align(peel_inflater_t *z) {
+void codec_inflater_align(codec_inflater_t *z) {
     int drop = z->bitcnt & 7;
     z->bitbuf >>= drop;
     z->bitcnt -= drop;
 }
 
-int peel_inflater_run(peel_inflater_t *z, uint8_t *out, size_t cap, size_t *out_n) {
+int codec_inflater_run(codec_inflater_t *z, uint8_t *out, size_t cap, size_t *out_n) {
     size_t n = 0;
     *out_n = 0;
     while (n < cap) {
@@ -402,17 +406,17 @@ int peel_inflater_run(peel_inflater_t *z, uint8_t *out, size_t cap, size_t *out_
             sym -= 257;
             if (sym >= 29)
                 goto bad;
-            int64_t le = inf_bits(z, len_extra[sym]);
+            int64_t le = inf_bits(z, codec_deflate_len_extra[sym]);
             int dsym = inf_decode(z, &z->dist);
             if (le < 0 || dsym < 0 || dsym >= 30)
                 goto bad;
-            int64_t de = inf_bits(z, dist_extra[dsym]);
+            int64_t de = inf_bits(z, codec_deflate_dist_extra[dsym]);
             if (de < 0)
                 goto bad;
-            uint32_t dist = dist_base[dsym] + (uint32_t)de;
+            uint32_t dist = codec_deflate_dist_base[dsym] + (uint32_t)de;
             if (dist > z->total_out || dist > INF_WINDOW)
                 goto bad; // reaches before the start of the stream
-            z->copy_len = len_base[sym] + (uint32_t)le;
+            z->copy_len = codec_deflate_len_base[sym] + (uint32_t)le;
             z->copy_dist = dist;
             break;
         }
@@ -426,7 +430,7 @@ bad:
 }
 
 // ============================================================================
-// Whole-buffer entry points (peeler.h)
+// Whole-buffer entry points (codec.h)
 // ============================================================================
 
 typedef struct {
@@ -434,7 +438,7 @@ typedef struct {
     size_t len, pos;
 } mem_pull_t;
 
-// peel_pull_fn over a memory buffer.
+// codec_pull_fn over a memory buffer.
 static int64_t mem_pull(void *ctx, uint8_t *buf, size_t cap) {
     mem_pull_t *m = ctx;
     size_t n = m->len - m->pos < cap ? m->len - m->pos : cap;
@@ -443,71 +447,78 @@ static int64_t mem_pull(void *ctx, uint8_t *buf, size_t cap) {
     return (int64_t)n;
 }
 
-int64_t peel_inflate(const uint8_t *src, size_t len, uint8_t *dst, size_t dst_cap) {
+// Inflate the raw stream at src[0..len) into dst; *used gets the compressed
+// bytes consumed (the final block's partial byte included).
+static int64_t inflate_mem(const uint8_t *src, size_t len, uint8_t *dst, size_t cap, uint64_t *used) {
+    if ((!src && len) || (!dst && cap))
+        return CODEC_ERR_ARG;
     mem_pull_t m = {src, len, 0};
-    peel_inflater_t *z = peel_inflater_new(mem_pull, &m);
+    codec_inflater_t *z = codec_inflater_new(mem_pull, &m);
     if (!z)
-        return -12;
+        return CODEC_ERR_NOMEM;
     size_t n = 0;
-    int rc = peel_inflater_run(z, dst, dst_cap, &n);
+    int64_t rc = codec_inflater_run(z, dst, cap, &n);
     if (rc == 0) {
         // Output full: the stream must end right here, not overrun.
         uint8_t probe;
         size_t extra = 0;
-        rc = peel_inflater_run(z, &probe, 1, &extra);
+        rc = codec_inflater_run(z, &probe, 1, &extra);
         if (extra)
-            rc = -1;
+            rc = CODEC_ERR_OVERFLOW;
     }
-    peel_inflater_free(z);
-    return rc == 1 ? (int64_t)n : -22;
+    if (used)
+        *used = codec_inflater_consumed(z);
+    codec_inflater_free(z);
+    if (rc == 1)
+        return (int64_t)n;
+    return rc == CODEC_ERR_OVERFLOW ? CODEC_ERR_OVERFLOW : CODEC_ERR_DATA;
 }
 
-// Adler-32 over a buffer (RFC 1950 § 8).
-static uint32_t adler32(const uint8_t *p, size_t n) {
-    uint32_t a = 1, b = 0;
-    while (n) {
-        size_t k = n < 5552 ? n : 5552;
-        n -= k;
-        while (k--) {
-            a += *p++;
-            b += a;
-        }
-        a %= 65521;
-        b %= 65521;
-    }
-    return b << 16 | a;
+int64_t codec_inflate(const uint8_t *src, size_t len, uint8_t *dst, size_t cap) {
+    return inflate_mem(src, len, dst, cap, NULL);
 }
 
-int64_t peel_zlib_inflate(const uint8_t *src, size_t len, uint8_t *dst, size_t dst_cap) {
+int64_t codec_zlib_inflate(const uint8_t *src, size_t len, uint8_t *dst, size_t cap) {
+    if (!src)
+        return CODEC_ERR_ARG;
     if (len < 6)
-        return -22;
+        return CODEC_ERR_TRUNCATED; // zlib header + at least one block
     // RFC 1950 § 2.2: CM 8, header a multiple of 31, no preset dictionary.
     uint8_t cmf = src[0], flg = src[1];
     if ((cmf & 0x0F) != 8 || (((uint32_t)cmf << 8) | flg) % 31u != 0 || (flg & 0x20))
-        return -22;
-    mem_pull_t m = {src + 2, len - 2, 0};
-    peel_inflater_t *z = peel_inflater_new(mem_pull, &m);
-    if (!z)
-        return -12;
-    size_t n = 0;
-    int rc = peel_inflater_run(z, dst, dst_cap, &n);
-    if (rc == 0) {
-        uint8_t probe;
-        size_t extra = 0;
-        rc = peel_inflater_run(z, &probe, 1, &extra);
-        if (extra)
-            rc = -1;
-    }
-    uint64_t used = rc == 1 ? peel_inflater_consumed(z) : 0;
-    peel_inflater_free(z);
-    if (rc != 1)
-        return -22;
+        return CODEC_ERR_DATA;
+    uint64_t used = 0;
+    int64_t n = inflate_mem(src + 2, len - 2, dst, cap, &used);
+    if (n < 0)
+        return n;
     // The Adler-32 trailer, when present, must match.  Some writers omit it
     // (UDIF chunks always carry it); a stream that ends early is accepted.
     if (2 + used + 4 <= len) {
-        uint32_t want = rd32be(src + 2 + used);
-        if (want != adler32(dst, n))
-            return -22;
+        uint32_t want = codec_be32(src + 2 + used);
+        if (want != codec_adler32(1, dst, (size_t)n))
+            return CODEC_ERR_CHECKSUM;
     }
-    return (int64_t)n;
+    return n;
+}
+
+uint8_t *codec_zlib_inflate_alloc(const uint8_t *src, size_t len, size_t out_max, size_t *out_len) {
+    if (!src || !out_len || out_max == 0)
+        return NULL;
+    // Unknown size: try a buffer, and double it (up to out_max) while the
+    // stream does not fit.  A PNG's stream is small; this rarely loops.
+    size_t cap = out_max < (1u << 16) ? out_max : (1u << 16);
+    for (;;) {
+        uint8_t *buf = malloc(cap);
+        if (!buf)
+            return NULL;
+        int64_t n = codec_zlib_inflate(src, len, buf, cap);
+        if (n >= 0) {
+            *out_len = (size_t)n;
+            return buf;
+        }
+        free(buf);
+        if (n != CODEC_ERR_OVERFLOW || cap >= out_max)
+            return NULL; // malformed, or larger than the caller allows
+        cap = cap > out_max / 2 ? out_max : cap * 2;
+    }
 }
