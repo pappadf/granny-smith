@@ -229,8 +229,6 @@ static inline uint16_t ppd_cls_spr(const ppc_cls_t *c, uint32_t iw, bool to_spr,
 #define OP_SYNC   return PPD_NOP
 #undef OP_EIEIO
 #define OP_EIEIO  return PPD_NOP
-#undef OP_ICBI
-#define OP_ICBI   return PPD_NOP
 #undef OP_DCBT
 #define OP_DCBT   return PPD_NOP
 #undef OP_DCBTST

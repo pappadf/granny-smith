@@ -387,15 +387,20 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 // --- storage control (no cache model) ---
 #define OP_SYNC       OP((void)0)
 #define OP_EIEIO      OP((void)0)
-#define OP_ICBI       OP((void)0)
+// icbi translates and checks protection like a load (604UM §3.8.1), so an
+// unmapped EA is a DSI; the 601, with one unified cache, skips even the
+// translation (601UM "icbi").  There is no instruction cache to invalidate.
+#define OP_ICBI       OP(if (ppc_is_604(p)) { EA_X(); if (ppc_dxlate_cacheop(p, ea, false)) break; })
 #define OP_DCBT       OP((void)0)
 #define OP_DCBTST     OP((void)0)
 // The data cache is not modelled, except for the lines dcbz holds over
 // devices (memory.h, mem_lines_t): dcbst writes one out and keeps it, dcbf
-// writes it out and releases it, dcbi drops it.
-#define OP_DCBST      OP(if (g_mem_lines) { EA_X(); memory_line_clean(ea); })
-#define OP_DCBF       OP(if (g_mem_lines) { EA_X(); memory_line_flush(ea); })
-#define OP_DCBI       OP(PRIV(); if (g_mem_lines) { EA_X(); memory_line_drop(ea); }) // supervisor-only
+// writes it out and releases it, dcbi drops it.  Each is translated and
+// checked first, dcbst/dcbf as loads and dcbi as a store (ppc_mmu.c,
+// ppc_dxlate_cacheop): an unmapped EA is a DSI, as on the hardware.
+#define OP_DCBST      OP(EA_X(); if (ppc_dxlate_cacheop(p, ea, false)) break; if (g_mem_lines) memory_line_clean(ea))
+#define OP_DCBF       OP(EA_X(); if (ppc_dxlate_cacheop(p, ea, false)) break; if (g_mem_lines) memory_line_flush(ea))
+#define OP_DCBI       OP(PRIV(); EA_X(); if (ppc_dxlate_cacheop(p, ea, true)) break; if (g_mem_lines) memory_line_drop(ea)) // supervisor-only
 #define OP_DCBZ       OP(EA_X(); ea &= ~31u; uint32_t xa = ea; int r_ = ppc_dxlate_dcbz(p, iw, &xa); if (r_ == 1 || r_ == 2) break; if (r_ == 3) { memory_line_hold(&p->dlines, xa, ea); break; } for (int i_ = 0; i_ < 8; i_++) WRITE(32, xa + 4u * (uint32_t)i_, 0)) // really zeroes the block (§3.8); W/I + T=1 rules in ppc_mmu.c, a device's block held as a line
 
 // --- D-form loads/stores ---
