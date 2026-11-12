@@ -1,10 +1,10 @@
 # The peeler archive library, tested as an untrusted parser.  See test.c.
 #
-# No emulator harness and no stubs, and only peeler's own headers on the
-# include path: peeler is a self-contained library -- nothing in
-# src/peeler/lib includes anything from src/core -- and linking a harness or
-# compiling against the core headers would only hide an accidental dependency
-# if one were ever added.
+# No emulator harness and no stubs, and only peeler's own headers and the
+# codec library's on the include path: peeler depends on nothing but the
+# codec library (src/codec) -- nothing in src/peeler/lib includes anything
+# from src/core -- and linking a harness or compiling against the core
+# headers would only hide an accidental dependency if one were ever added.
 #
 # test.c #includes formats/sit15.c so that its arithmetic *encoder* can drive
 # the decoder's own model code (model_setup/model_bump), and formats/sit13.c
@@ -19,7 +19,8 @@
 TEST_NAME     := peeler
 TEST_SRCS     := test.c zipgz.c
 TEST_HARNESS  := none
-EXTRA_SRCS    := $(filter-out %/sit13.c %/sit15.c,$(sort $(wildcard ../../../../src/peeler/lib/*.c ../../../../src/peeler/lib/formats/*.c)))
+EXTRA_SRCS    := $(filter-out %/sit13.c %/sit15.c,$(sort $(wildcard ../../../../src/peeler/lib/*.c ../../../../src/peeler/lib/formats/*.c))) \
+                 $(wildcard ../../../../src/codec/lib/*.c)
 INCLUDE_FLAGS  = -I$(UNIT_ROOT)/support $(PEELER_INCLUDES)
 # Native builds run under ASan + UBSan, and UB aborts rather than printing and
 # carrying on.  Several peeler defects are small heap overruns (two bytes past

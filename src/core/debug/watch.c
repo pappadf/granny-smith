@@ -63,7 +63,7 @@ typedef struct {
 } watch_t;
 
 static watch_t g_watch;
-static uint32_t g_interval_s = 60; // log.status_every
+static uint32_t g_interval_s; // log.status_every (0: off; opt-in, like perf_every)
 static uint32_t g_perf_s; // log.perf_every (0: off)
 
 // The tick's parts since the last perf line (watch_note_phase)
@@ -175,20 +175,32 @@ static void format_screen(char *buf, size_t size) {
         snprintf(buf + k, size - (size_t)k, " (GPU overlay)");
         return;
     }
-    // Sample an 8x8 grid of rows and bytes: all equal is a flat screen
-    uint32_t row_bytes = d->stride;
-    uint8_t first = d->bits[0];
+    // Sample an 8x8 grid of pixels: all equal is a flat screen.  Whole
+    // pixels, not bytes: at 16 and 32 bpp a pixel is several bytes, and
+    // comparing only the first of each read every XRGB screen as uniform
+    // (the X byte is 0 in every pixel).  Below 8 bpp the byte holding the
+    // pixel stands in for it.
+    uint32_t bpp = display_bpp(d->format);
+    uint32_t px_bytes = bpp >= 8 ? bpp / 8 : 1;
+    const uint8_t *first = d->bits;
     bool flat = true;
     for (uint32_t gy = 0; gy < 8 && flat; gy++) {
         const uint8_t *row = d->bits + (size_t)(d->height * gy / 8) * d->stride;
-        for (uint32_t gx = 0; gx < 8; gx++)
-            if (row[row_bytes * gx / 8] != first) {
+        for (uint32_t gx = 0; gx < 8; gx++) {
+            uint32_t x = d->width * gx / 8;
+            const uint8_t *px = row + (size_t)x * bpp / 8;
+            if (memcmp(px, first, px_bytes) != 0) {
                 flat = false;
                 break;
             }
+        }
     }
-    if (flat)
-        snprintf(buf + k, size - (size_t)k, " (uniform, every sampled byte %02x)", first);
+    if (flat) {
+        char hex[2 * 4 + 1] = "";
+        for (uint32_t i = 0; i < px_bytes && i < 4; i++)
+            snprintf(hex + 2 * i, sizeof hex - 2 * i, "%02x", first[i]);
+        snprintf(buf + k, size - (size_t)k, " (uniform, every sampled pixel %s)", hex);
+    }
 }
 
 // One status line: what the machine is doing, and what changed since the

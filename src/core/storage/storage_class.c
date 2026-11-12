@@ -19,7 +19,7 @@
 #include "mailbox/mailbox.h"
 
 #include "archive.h"
-#include "crc32.h"
+#include "codec.h"
 #include "image.h"
 #include "image_apm.h"
 #include "image_chunkmap.h"
@@ -950,7 +950,8 @@ static char *g_udif_path[FILES_UDIF_HANDLES];
 typedef struct {
     int handle;
     uint32_t chunk_kb;
-    int level;
+    int level; // < 0: the codec's default
+    udif_codec_t codec;
     char *source_name;
     char *origin;
     uint64_t len;
@@ -1012,8 +1013,11 @@ static int work_udif_open(io_leaf_t *j) {
         return -EBUSY;
     }
     mkdir_parents(j->a);
-    udif_writer_opts_t o = {
-        .chunk_sectors = u->chunk_kb * 2, .level = u->level, .source_name = u->source_name, .origin = u->origin};
+    udif_writer_opts_t o = {.chunk_sectors = u->chunk_kb * 2,
+                            .codec = u->codec,
+                            .level = u->level,
+                            .source_name = u->source_name,
+                            .origin = u->origin};
     g_udif[h] = udif_writer_open(j->a, &o, j->err, sizeof j->err);
     if (!g_udif[h])
         return -EIO;
@@ -1141,6 +1145,7 @@ static int work_convert(io_leaf_t *j) {
     } else if (!rc) {
         const char *base = strrchr(j->a, '/');
         udif_writer_opts_t o = {.chunk_sectors = u->chunk_kb * 2,
+                                .codec = u->codec,
                                 .level = u->level,
                                 .source_name = u->source_name ? u->source_name
                                                : base         ? base + 1
@@ -1163,7 +1168,7 @@ static int work_convert(io_leaf_t *j) {
             snprintf(j->err, sizeof j->err, "read of '%s' at %llu failed", j->a, (unsigned long long)at);
             break;
         }
-        crc = gs_crc32(crc, buf, n);
+        crc = codec_crc32(crc, buf, n);
         if (raw) {
             if (fwrite(buf, 1, n, raw) != n) {
                 rc = -EIO;
@@ -1204,7 +1209,7 @@ static int work_convert(io_leaf_t *j) {
     char msg[200] = {0};
     rc = out ? udif_verify(out, &vs, msg, sizeof msg) : -EIO;
     source_release(out);
-    uint32_t want = gs_crc32_zeros(crc, u->st.sectors * UDIF_SECTOR_SIZE - total);
+    uint32_t want = codec_crc32_zeros(crc, u->st.sectors * UDIF_SECTOR_SIZE - total);
     if (rc == 0 && (vs.crc != u->st.crc || vs.crc != want))
         rc = -EILSEQ, snprintf(msg, sizeof msg, "decoded checksum %08x, the source's is %08x", vs.crc, want);
     if (rc) {
@@ -1330,21 +1335,39 @@ static DEF_METHOD(files_method_xfer_read_disk) {
     return io_leaf_dispatch(j, "files.xfer_read_disk");
 }
 
-// `files.udif_open(path, [chunk_kb], [level], [source_name], [origin])` --
-// start writing a UDIF at `path` (which must not exist); answers a handle.
-// `origin` is recorded as is (gs-origin) and reported by files.udif_info.
+// The optional `level` argument: 0..9, or (absent) the codec's default.
+static bool opt_level(int argc, const value_t *argv, int at, int *level) {
+    int64_t v = argc > at ? opt_int(&argv[at], INT64_MIN) : INT64_MIN;
+    *level = v == INT64_MIN ? -1 : (int)v;
+    return v == INT64_MIN || (v >= 0 && v <= 9);
+}
+
+// The optional `codec` argument: "zlib" (the default) or "xz".
+static bool opt_codec(int argc, const value_t *argv, int at, udif_codec_t *codec) {
+    const char *name = argc > at && argv[at].kind == VK_STRING ? argv[at].s : NULL;
+    return udif_codec_parse(name, codec) == 0;
+}
+
+// `files.udif_open(path, [chunk_kb], [level], [source_name], [origin],
+// [codec])` -- start writing a UDIF at `path` (which must not exist);
+// answers a handle.  `origin` is recorded as is (gs-origin) and reported by
+// files.udif_info.
 static DEF_METHOD(files_method_udif_open) {
     int64_t kb = argc > 1 ? opt_int(&argv[1], 64) : 64;
-    int64_t level = argc > 2 ? opt_int(&argv[2], 1) : 1;
+    int level;
+    udif_codec_t codec;
     if (!chunk_kb_ok(kb))
         return val_err("files.udif_open: chunk_kb %lld must be a power of two in 4..1024", (long long)kb);
-    if (level < 0 || level > 9)
-        return val_err("files.udif_open: level %lld out of range (0..9)", (long long)level);
+    if (!opt_level(argc, argv, 2, &level))
+        return val_err("files.udif_open: level out of range (0..9)");
+    if (!opt_codec(argc, argv, 5, &codec))
+        return val_err("files.udif_open: codec '%s' is neither zlib nor xz", argv[5].s);
     udif_job_t *u = calloc(1, sizeof *u);
     if (u) {
         u->handle = -1;
         u->chunk_kb = (uint32_t)kb;
-        u->level = (int)level;
+        u->level = level;
+        u->codec = codec;
         if (argc > 3 && argv[3].kind == VK_STRING && argv[3].s && *argv[3].s)
             u->source_name = gs_strdup(argv[3].s);
         if (argc > 4 && argv[4].kind == VK_STRING && argv[4].s && *argv[4].s)
@@ -1385,26 +1408,31 @@ static DEF_METHOD(files_method_udif_abort) {
 }
 
 // `files.convert(src, dst, [chunk_kb], [level], [format], [source_name],
-// [origin])` -- write the decoded disk of any image the core reads as a UDIF
-// (format "udif", the default) or a flat raw image ("raw"), checking the
-// result decodes to the same bytes.  A UDIF records `source_name` (default:
-// src's own name) and `origin` (as files.udif_open does).
+// [origin], [codec])` -- write the decoded disk of any image the core reads
+// as a UDIF (format "udif", the default) or a flat raw image ("raw"),
+// checking the result decodes to the same bytes.  A UDIF records
+// `source_name` (default: src's own name) and `origin` (as files.udif_open
+// does), and compresses with `codec`: zlib (UDZO, the default) or xz (ULMO).
 static DEF_METHOD(files_method_convert) {
     int64_t kb = argc > 2 ? opt_int(&argv[2], 64) : 64;
-    int64_t level = argc > 3 ? opt_int(&argv[3], 1) : 1;
+    int level;
+    udif_codec_t codec;
     const char *fmt = argc > 4 && argv[4].kind == VK_STRING && argv[4].s && *argv[4].s ? argv[4].s : "udif";
     if (!chunk_kb_ok(kb))
         return val_err("files.convert: chunk_kb %lld must be a power of two in 4..1024", (long long)kb);
-    if (level < 0 || level > 9)
-        return val_err("files.convert: level %lld out of range (0..9)", (long long)level);
+    if (!opt_level(argc, argv, 3, &level))
+        return val_err("files.convert: level out of range (0..9)");
     if (strcmp(fmt, "udif") != 0 && strcmp(fmt, "raw") != 0)
         return val_err("files.convert: format '%s' is neither udif nor raw", fmt);
+    if (!opt_codec(argc, argv, 7, &codec))
+        return val_err("files.convert: codec '%s' is neither zlib nor xz", argv[7].s);
     if (destination_attached(argv[1].s))
         return val_err("files.convert: '%s' is attached to a device (E_BUSY)", argv[1].s);
     udif_job_t *u = calloc(1, sizeof *u);
     if (u) {
         u->chunk_kb = (uint32_t)kb;
-        u->level = (int)level;
+        u->level = level;
+        u->codec = codec;
         u->raw = strcmp(fmt, "raw") == 0;
         if (argc > 5 && argv[5].kind == VK_STRING && argv[5].s && *argv[5].s)
             u->source_name = gs_strdup(argv[5].s);
@@ -1468,22 +1496,27 @@ static const arg_decl_t files_udif_open_args[] = {
                                                       .kind = VK_NONE,
                                                       .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_POLY,
                                                       .doc = "Chunk size in KB, a power of two in 4..1024",
-                                                      .default_doc = "64"  },
+                                                      .default_doc = "64"              },
     {.name = "level",
                                                       .kind = VK_NONE,
                                                       .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_POLY,
-                                                      .doc = "Deflate effort 1..9; 0 stores zero runs and raw chunks only",
-                                                      .default_doc = "1"   },
+                                                      .doc = "Compression effort 1..9; 0 stores zero runs and raw chunks only",
+                                                      .default_doc = "1 (zlib), 6 (xz)"},
     {.name = "source_name",
                                                       .kind = VK_STRING,
                                                       .validation_flags = OBJ_ARG_OPTIONAL,
                                                       .doc = "The original file name, recorded in the image",
-                                                      .default_doc = "none"},
+                                                      .default_doc = "none"            },
     {.name = "origin",
                                                       .kind = VK_STRING,
                                                       .validation_flags = OBJ_ARG_OPTIONAL,
                                                       .doc = "Where the bytes came from (e.g. a URL), recorded in the image as is",
-                                                      .default_doc = "none"},
+                                                      .default_doc = "none"            },
+    {.name = "codec",
+                                                      .kind = VK_STRING,
+                                                      .validation_flags = OBJ_ARG_OPTIONAL,
+                                                      .doc = "zlib (UDZO) or xz (ULMO: 14-16% smaller on system disks, decodes ~4x slower)",
+                                                      .default_doc = "zlib"            },
 };
 static const arg_decl_t files_udif_append_args[] = {
     {.name = "handle", .kind = VK_INT,  .doc = "What udif_open answered"                                         },
@@ -1499,27 +1532,32 @@ static const arg_decl_t files_convert_args[] = {
                                                     .kind = VK_NONE,
                                                     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_POLY,
                                                     .doc = "Chunk size in KB, a power of two in 4..1024",
-                                                    .default_doc = "64"            },
+                                                    .default_doc = "64"              },
     {.name = "level",
                                                     .kind = VK_NONE,
                                                     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_POLY,
-                                                    .doc = "Deflate effort 1..9; 0 stores zero runs and raw chunks only",
-                                                    .default_doc = "1"             },
+                                                    .doc = "Compression effort 1..9; 0 stores zero runs and raw chunks only",
+                                                    .default_doc = "1 (zlib), 6 (xz)"},
     {.name = "format",
                                                     .kind = VK_STRING,
                                                     .validation_flags = OBJ_ARG_OPTIONAL,
                                                     .doc = "udif, or raw for a flat image",
-                                                    .default_doc = "udif"          },
+                                                    .default_doc = "udif"            },
     {.name = "source_name",
                                                     .kind = VK_STRING,
                                                     .validation_flags = OBJ_ARG_OPTIONAL,
                                                     .doc = "The original file name, recorded in a UDIF",
-                                                    .default_doc = "src's own name"},
+                                                    .default_doc = "src's own name"  },
     {.name = "origin",
                                                     .kind = VK_STRING,
                                                     .validation_flags = OBJ_ARG_OPTIONAL,
                                                     .doc = "Where the image came from (e.g. a URL), recorded in a UDIF as is",
-                                                    .default_doc = "none"          },
+                                                    .default_doc = "none"            },
+    {.name = "codec",
+                                                    .kind = VK_STRING,
+                                                    .validation_flags = OBJ_ARG_OPTIONAL,
+                                                    .doc = "zlib (UDZO) or xz (ULMO: 14-16% smaller on system disks, decodes ~4x slower)",
+                                                    .default_doc = "zlib"            },
 };
 
 static const arg_decl_t files_export_raw_args[] = {
@@ -1634,7 +1672,7 @@ static const member_t files_members[] = {
      .flags = M_CAT_INTERNAL,
      .doc = "Start writing a UDIF (.dmg) image from decoded bytes; answers a handle for udif_append",
      .method =
-         {.ui_flags = MM_IO, .args = files_udif_open_args, .nargs = 5, .result = VK_INT, .fn = files_method_udif_open}},
+         {.ui_flags = MM_IO, .args = files_udif_open_args, .nargs = 6, .result = VK_INT, .fn = files_method_udif_open}},
     {.kind = MK_METHOD,
      .name = "udif_append",
      .flags = M_CAT_INTERNAL,
@@ -1667,12 +1705,12 @@ static const member_t files_members[] = {
     {.kind = MK_METHOD,
      .name = "convert",
      .examples = EXAMPLES("files.convert \"/opfs/images/hd/system.img\" \"/opfs/images/hd/system.dmg\"",
-     "files.convert \"/opfs/images/hd/system.dmg\" \"/opfs/raw/system.img\" format=raw"),
+     "files.convert \"/opfs/images/hd/system.dmg\" \"/opfs/raw/system.img\" format=raw", "files.convert \"/opfs/raw/system.img\" \"/opfs/images/hd/system-small.dmg\" codec=xz"),
      .doc = "Write a disk image as a compact UDIF (.dmg), or as a flat raw image, and check it decodes the same",
      .method = {.result_doc = "{sectors, bytes_in, stored_bytes, zero_bytes, extents, crc}",
                 .ui_flags = MM_IO,
                 .args = files_convert_args,
-                .nargs = 7,
+                .nargs = 8,
                 .result = VK_MAP,
                 .fn = files_method_convert}},
     {.kind = MK_METHOD,

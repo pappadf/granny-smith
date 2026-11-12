@@ -11,7 +11,7 @@
 #include "bmac.h"
 
 #include "checkpoint.h"
-#include "crc32.h"
+#include "codec.h"
 #include "log.h"
 
 #include <stddef.h>
@@ -210,7 +210,7 @@ bool bmac_receive(bmac_t *b, const uint8_t *frame, int len) {
         n = ETH_MIN;
     }
     if (b->reg[R(BMAC_RXCFG)] & RXCFG_CRC_IN_BUF) {
-        uint32_t fcs = gs_crc32(0, q, (size_t)n);
+        uint32_t fcs = codec_crc32(0, q, (size_t)n);
         for (int i = 0; i < 4; i++)
             q[n++] = (uint8_t)(fcs >> (8 * i));
     }

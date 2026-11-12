@@ -5,6 +5,11 @@ name: UDIF interop
 # udif_writer unit suite (each beside the disk it must decode to) and checks
 # them with 7z and dmg2img; a macOS job checks the same files with hdiutil
 # (scripts/check-udif-interop.sh).
+#
+# The other way round, the images hdiutil makes must open here: the macOS
+# job also converts some samples into every compressed format hdiutil writes
+# -- ADC, zlib, bzip2, LZFSE, LZMA (scripts/make-udif-foreign.sh) -- and a
+# Linux job reads each back through the image layer, byte for byte.
 
 on:
   push:
@@ -12,20 +17,24 @@ on:
       - main
     paths:
       - 'src/core/storage/udif_writer.*'
-      - 'src/core/storage/deflate.*'
-      - 'src/core/crc32.*'
+      - 'src/core/storage/image_udif.*'
+      - 'src/core/storage/image_chunkmap.*'
+      - 'src/codec/**'
       - 'tests/unit/suites/udif_writer/**'
       - 'scripts/check-udif-interop.sh'
+      - 'scripts/make-udif-foreign.sh'
       - '.github/workflows/udif-interop.yml'
   pull_request:
     branches:
       - main
     paths:
       - 'src/core/storage/udif_writer.*'
-      - 'src/core/storage/deflate.*'
-      - 'src/core/crc32.*'
+      - 'src/core/storage/image_udif.*'
+      - 'src/core/storage/image_chunkmap.*'
+      - 'src/codec/**'
       - 'tests/unit/suites/udif_writer/**'
       - 'scripts/check-udif-interop.sh'
+      - 'scripts/make-udif-foreign.sh'
       - '.github/workflows/udif-interop.yml'
   workflow_dispatch:
 
@@ -80,3 +89,29 @@ jobs:
 
       - name: Check them with hdiutil
         run: scripts/check-udif-interop.sh udif-samples
+
+      - name: Convert some to every compressed format
+        run: scripts/make-udif-foreign.sh udif-samples udif-foreign
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: udif-foreign
+          path: udif-foreign
+          retention-days: 3
+
+  foreign:
+    needs: hdiutil
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: udif-foreign
+          path: udif-foreign
+
+      - name: Read them back through the image layer
+        run: GS_UDIF_FOREIGN_DIR="$PWD/udif-foreign" make -C tests/unit/suites/udif_writer run WERROR=1

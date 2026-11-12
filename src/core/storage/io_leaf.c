@@ -148,13 +148,17 @@ static void cleanup_export_image(io_leaf_t *j) {
     image_export_end((image_export_t *)j->ud);
 }
 
-value_t io_leaf_export_image(struct image *img, const char *dest, const char *what) {
+value_t io_leaf_export_image(struct image *img, const char *dest, const char *codec, const char *what) {
     if (io_leaf_destination_attached(dest))
         return val_err("%s: '%s' is attached to a device (E_BUSY)", what, dest);
     char err[256];
     image_export_t *e = image_export_begin(img, dest, err, sizeof err);
     if (!e)
         return val_err("%s: %s", what, err[0] ? err : "cannot export");
+    if (image_export_set_codec(e, codec, err, sizeof err) != 0) {
+        image_export_end(e);
+        return val_err("%s: %s", what, err);
+    }
     io_leaf_t *j = io_leaf_new(dest, NULL);
     if (!j) {
         image_export_end(e);

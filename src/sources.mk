@@ -12,15 +12,25 @@
 # so the link order does not depend on the filesystem's directory order.
 CORE_SRC := $(sort $(shell find $(CORE_DIR) $(MACHINES_DIR) -name '*.c'))
 
+# The codec library: every compressor, decompressor and checksum in the
+# tree (DEFLATE, ADC, bzip2, LZFSE, LZMA/xz, CRC-32/64, Adler-32).  It
+# depends on nothing; peeler and the core both build on it.
+CODEC_SRC := $(sort $(wildcard $(CODEC_DIR)/lib/*.c))
+
+CODEC_INCLUDES := -I$(CODEC_DIR)/include
+
 # The archive library, whose tree also holds its command-line tool and
 # tests (built by src/peeler/Makefile and the peeler_corpus unit suite).
+# Its decoders inflate through the codec library, so its include list
+# carries the codec's.
 PEELER_SRC := $(sort $(wildcard $(PEELER_DIR)/lib/*.c $(PEELER_DIR)/lib/formats/*.c))
 
-PEELER_INCLUDES := -I$(PEELER_DIR)/include -I$(PEELER_DIR)/lib
+PEELER_INCLUDES := -I$(PEELER_DIR)/include -I$(PEELER_DIR)/lib $(CODEC_INCLUDES)
 
 # Core and machine header directories.  Order matters in one place: card.h
 # exists under both nubus/ and pci/, and nubus/ must come first.
-CORE_INCLUDES := -I$(CORE_DIR) \
+CORE_INCLUDES := $(CODEC_INCLUDES) \
+                 -I$(CORE_DIR) \
                  -I$(CORE_DIR)/cpu \
                  -I$(CORE_DIR)/cpu/dsp3210 \
                  -I$(CORE_DIR)/cpu/ppc \

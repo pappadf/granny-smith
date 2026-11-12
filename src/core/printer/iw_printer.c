@@ -18,7 +18,7 @@
 #include "appletalk.h"
 #include "byteq.h"
 #include "checkpoint.h"
-#include "crc32.h"
+#include "codec.h"
 #include "iw_interp.h"
 #include "log.h"
 #include "machine_profile.h"
@@ -379,7 +379,7 @@ static void job_end(iw_printer_t *p) {
     j->jobs++;
     j->pages += pages;
     j->last_job_pages = pages;
-    j->last_pdf_crc = gs_crc32(0, pdf, pdf_len);
+    j->last_pdf_crc = codec_crc32(0, pdf, pdf_len);
     j->last_pdf_len = (uint32_t)pdf_len;
     snprintf(j->last_outcome, sizeof(j->last_outcome), "%s",
              p->interp.st.placeholder_used ? "ok (placeholder font)" : "ok");

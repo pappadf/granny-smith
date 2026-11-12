@@ -8,8 +8,7 @@
 #include "image_udif.h"
 #include "common.h"
 
-#include "adc.h"
-#include "inflate.h"
+#include "codec.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -341,6 +340,23 @@ void udif_map_free(udif_map_t *m) {
     free(m);
 }
 
+int udif_chunk_codec(uint32_t type) {
+    switch (type) {
+    case UDIF_CHUNK_ADC:
+        return CODEC_ADC;
+    case UDIF_CHUNK_ZLIB:
+        return CODEC_ZLIB;
+    case UDIF_CHUNK_BZ2:
+        return CODEC_BZIP2;
+    case UDIF_CHUNK_LZFSE:
+        return CODEC_LZFSE;
+    case UDIF_CHUNK_LZMA:
+        return CODEC_XZ;
+    default:
+        return -1;
+    }
+}
+
 int udif_decode_chunk(const udif_chunk_t *chunk, const uint8_t *src, size_t src_len, uint8_t *dst, size_t dst_len) {
     if (!chunk || !dst)
         return -EINVAL;
@@ -358,25 +374,18 @@ int udif_decode_chunk(const udif_chunk_t *chunk, const uint8_t *src, size_t src_
             return -EINVAL;
         memcpy(dst, src, need);
         return 0;
-    case UDIF_CHUNK_ADC: {
-        if (!src)
-            return -EINVAL;
-        long got = adc_decompress(src, src_len, dst, need);
-        // The chunk's sector count states the exact decoded size, so a short
-        // or long result means the stream and the map disagree.
-        return (got == (long)need) ? 0 : -EINVAL;
-    }
-    case UDIF_CHUNK_ZLIB: {
-        if (!src)
-            return -EINVAL;
-        long got = inflate_zlib(src, src_len, dst, need);
-        return (got == (long)need) ? 0 : -EINVAL;
-    }
-    case UDIF_CHUNK_BZ2:
-    case UDIF_CHUNK_LZFSE:
-    case UDIF_CHUNK_LZMA:
-        return -ENOTSUP; // real codecs we simply do not implement
     default:
-        return -EINVAL;
+        break;
     }
+    int codec = udif_chunk_codec(chunk->type);
+    if (codec < 0 || !src)
+        return -EINVAL;
+    int64_t got = codec_decode((codec_id_t)codec, src, src_len, dst, need);
+    if (got == CODEC_ERR_UNSUPPORTED)
+        return -ENOTSUP;
+    if (got == CODEC_ERR_NOMEM)
+        return -ENOMEM;
+    // The chunk's sector count states the exact decoded size, so a short or
+    // long result means the stream and the map disagree.
+    return got == (int64_t)need ? 0 : -EINVAL;
 }

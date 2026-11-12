@@ -45,4 +45,16 @@ assert files.convert($exported, $decoded, 64, 1, "raw") "decoding the export fai
 assert files.path_compare($decoded, $flat) == -1 "the exported .dmg is not base + delta"
 # ...and it is the modified disk, not the base.
 assert files.path_compare($flat, $raw) != -1 "the export did not carry the boot's writes"
+
+# The same disk exported with the xz codec (LZMA chunks, hdiutil's ULMO):
+# it verifies, decodes to the same bytes, and is smaller.
+let exported_xz = "${$WORK_DIR}/exported-xz.dmg"
+assert machine.scsi.device[0].image.export($exported_xz, codec="xz") "export as xz .dmg failed"
+assert files.verify($exported_xz) "the xz .dmg does not verify"
+let decoded_xz = "${$WORK_DIR}/exported-xz-decoded.img"
+assert files.convert($exported_xz, $decoded_xz, format="raw") "decoding the xz export failed"
+assert files.path_compare($decoded_xz, $flat) == -1 "the xz .dmg is not base + delta"
+assert files.path_size($exported_xz) < files.path_size($exported) "the xz .dmg is not smaller"
+# A codec for a destination that is not a .dmg is refused.
+assert try(machine.scsi.device[0].image.export("${$WORK_DIR}/flat-xz.img", codec="xz"), false) == false "xz for a raw export was not refused"
 quit

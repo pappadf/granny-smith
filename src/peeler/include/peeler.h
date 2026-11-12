@@ -348,16 +348,6 @@ peel_file_list_t peel_tar(const uint8_t *src, size_t len, peel_err_t **err);
 // gzip (.gz) — peel wrapper, return the decompressed member(s).
 peel_buf_t peel_gz(const uint8_t *src, size_t len, peel_err_t **err);
 
-// === Inflate (RFC 1951) ===
-//
-// Decompress a raw DEFLATE stream (`src`, `len`) into `dst` (`dst_cap`
-// bytes).  Returns the number of bytes produced or a negative code.  Also
-// used by the emulator for UDIF's zlib chunks.
-int64_t peel_inflate(const uint8_t *src, size_t len, uint8_t *dst, size_t dst_cap);
-
-// A zlib stream (RFC 1950: 2-byte header, deflate, Adler-32) into `dst`.
-int64_t peel_zlib_inflate(const uint8_t *src, size_t len, uint8_t *dst, size_t dst_cap);
-
 #ifdef __cplusplus
 }
 #endif

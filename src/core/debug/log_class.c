@@ -288,7 +288,7 @@ static const collection_desc_t log_categories = {
 };
 
 // `log.status_every` — seconds between two status lines on the console
-// (watch.h); 0 turns the line off.
+// (watch.h); 0, the default, turns the line off.
 static DEF_GETTER(log_attr_status_every_get) {
     return val_uint(4, watch_get_interval());
 }
@@ -343,7 +343,7 @@ static const member_t log_members[] = {
      .method = {.ui_flags = MM_MUTATE, .args = log_set_args, .nargs = 6, .result = VK_NONE, .fn = log_method_set}},
     {.kind = MK_ATTR,
      .name = "status_every",
-     .doc = "Seconds between two status lines on the console (what the machine is doing); 0: off",
+     .doc = "Seconds between two status lines on the console (what the machine is doing); 0 (default): off",
      .attr = {.type = VK_UINT, .width = 4, .get = log_attr_status_every_get, .set = log_attr_status_every_set}   },
     {.kind = MK_ATTR,
      .name = "perf_every",

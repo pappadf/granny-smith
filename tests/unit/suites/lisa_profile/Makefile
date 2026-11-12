@@ -19,10 +19,8 @@ EXTRA_SRCS   := ../../../../src/machines/lisa/lisa_profile.c \
                 ../../../../src/core/storage/storage.c \
                 ../../../../src/peeler/lib/appledouble.c \
                 ../../../../src/core/storage/image_ndif.c \
-                ../../../../src/core/crc32.c \
+                $(wildcard ../../../../src/codec/lib/*.c) \
                 ../../../../src/core/storage/image_udif.c \
-                ../../../../src/core/storage/inflate.c \
-                ../../../../src/core/storage/adc.c \
                 ../../../../src/core/storage/resource_fork.c \
                 ../../../../src/core/storage/macroman.c \
                 ../../../../src/core/storage/rsrc_dcmp.c \

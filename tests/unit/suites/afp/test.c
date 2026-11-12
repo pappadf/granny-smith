@@ -21,7 +21,7 @@
 #include "afp_meta.h"
 #include "afp_server.h"
 #include "appletalk.h"
-#include "crc32.h"
+#include "codec.h"
 #include "test_assert.h"
 
 #include <dirent.h>
@@ -3636,7 +3636,7 @@ static void append_bytes(const char *path, const void *bytes, size_t n) {
 // One well-formed record: op, length, payload, CRC-32 over the three.
 static void append_record(const char *path, uint8_t op, const uint8_t *payload, uint16_t len) {
     uint8_t head[3] = {op, (uint8_t)(len >> 8), (uint8_t)len};
-    uint32_t crc = gs_crc32(gs_crc32(0, head, 3), payload, len);
+    uint32_t crc = codec_crc32(codec_crc32(0, head, 3), payload, len);
     uint8_t tail[4] = {(uint8_t)(crc >> 24), (uint8_t)(crc >> 16), (uint8_t)(crc >> 8), (uint8_t)crc};
     append_bytes(path, head, 3);
     append_bytes(path, payload, len);

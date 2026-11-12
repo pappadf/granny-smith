@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // deflate.c
-// LZ77 + Huffman DEFLATE in a zlib wrapper.  See deflate.h.
+// LZ77 + Huffman DEFLATE in a zlib wrapper.  See codec.h.
 //
 // One LZ77 pass (hash chains over a 32 KB window, greedy matches) turns the
 // input into tokens -- literals and (length, distance) pairs -- and the
@@ -13,9 +13,7 @@
 // are length-limited (15 bits, 7 for the code-length code) and always
 // complete, so strict decoders (zlib's) accept them.
 
-#include "deflate.h"
-
-#include "inflate.h"
+#include "codec_internal.h"
 
 #include <stdbool.h>
 #include <stdlib.h>
@@ -44,19 +42,19 @@ typedef struct {
     uint16_t dist; // 0 for a literal, else 1..32768 (32768 stored as 0x8000)
 } token_t;
 
-struct deflate_state {
+struct codec_deflate_state {
     size_t max_len;
     int32_t *head; // DEFLATE_HASH_SIZE: newest position per hash
     int32_t *prev; // max_len: the previous position with the same hash
     token_t *tok; // max_len: tokens of the current input
 };
 
-size_t deflate_bound(size_t len) {
+size_t codec_deflate_bound(size_t len) {
     return len + len / 4 + 5 * (len / DEFLATE_STORED + 1) + 64;
 }
 
-deflate_state_t *deflate_state_new(size_t max_len) {
-    deflate_state_t *st = calloc(1, sizeof(*st));
+codec_deflate_state_t *codec_deflate_state_new(size_t max_len) {
+    codec_deflate_state_t *st = calloc(1, sizeof(*st));
     if (!st)
         return NULL;
     st->max_len = max_len;
@@ -64,35 +62,19 @@ deflate_state_t *deflate_state_new(size_t max_len) {
     st->prev = malloc((max_len ? max_len : 1) * sizeof(int32_t));
     st->tok = malloc((max_len ? max_len : 1) * sizeof(token_t));
     if (!st->head || !st->prev || !st->tok) {
-        deflate_state_free(st);
+        codec_deflate_state_free(st);
         return NULL;
     }
     return st;
 }
 
-void deflate_state_free(deflate_state_t *st) {
+void codec_deflate_state_free(codec_deflate_state_t *st) {
     if (!st)
         return;
     free(st->head);
     free(st->prev);
     free(st->tok);
     free(st);
-}
-
-uint32_t gs_adler32(uint32_t adler, const uint8_t *data, size_t len) {
-    uint32_t a = adler & 0xffff, b = adler >> 16;
-    while (len > 0) {
-        // 5552 is the most bytes that can be summed before b can overflow.
-        size_t n = len < 5552 ? len : 5552;
-        len -= n;
-        while (n--) {
-            a += *data++;
-            b += a;
-        }
-        a %= 65521;
-        b %= 65521;
-    }
-    return (b << 16) | a;
 }
 
 // ============================================================================
@@ -155,7 +137,7 @@ static int chain_for(int level) {
 }
 
 // Tokenise all of `src` into st->tok; the token count.
-static size_t tokenise(deflate_state_t *st, const uint8_t *src, size_t len, int max_chain) {
+static size_t tokenise(codec_deflate_state_t *st, const uint8_t *src, size_t len, int max_chain) {
     int32_t *head = st->head, *prev = st->prev;
     token_t *tok = st->tok;
     size_t nt = 0;
@@ -212,7 +194,7 @@ static size_t tokenise(deflate_state_t *st, const uint8_t *src, size_t len, int 
 // The length symbol (257..285) and extra bits of a match length.
 static int len_code(unsigned len) {
     int lc = 28;
-    while (lc > 0 && len < deflate_len_base[lc])
+    while (lc > 0 && len < codec_deflate_len_base[lc])
         lc--;
     return lc;
 }
@@ -220,7 +202,7 @@ static int len_code(unsigned len) {
 // The distance code (0..29) of a match distance.
 static int dist_code(unsigned dist) {
     int dc = 29;
-    while (dc > 0 && dist < deflate_dist_base[dc])
+    while (dc > 0 && dist < codec_deflate_dist_base[dc])
         dc--;
     return dc;
 }
@@ -395,7 +377,7 @@ static uint64_t data_bits(const token_t *t, size_t n, const uint8_t *ll, const u
             bits += ll[t[i].len];
         } else {
             int lc = len_code(t[i].len), dc = dist_code(t[i].dist);
-            bits += ll[257 + lc] + deflate_len_extra[lc] + dl[dc] + deflate_dist_extra[dc];
+            bits += ll[257 + lc] + codec_deflate_len_extra[lc] + dl[dc] + codec_deflate_dist_extra[dc];
         }
     }
     return bits;
@@ -410,9 +392,9 @@ static void write_tokens(deflate_bw_t *w, const token_t *t, size_t n, const uint
         }
         int lc = len_code(t[i].len), dc = dist_code(t[i].dist);
         put_code(w, lcode[257 + lc], ll[257 + lc]);
-        put_bits(w, (uint32_t)(t[i].len - deflate_len_base[lc]), deflate_len_extra[lc]);
+        put_bits(w, (uint32_t)(t[i].len - codec_deflate_len_base[lc]), codec_deflate_len_extra[lc]);
         put_code(w, dcode[dc], dl[dc]);
-        put_bits(w, (uint32_t)(t[i].dist - deflate_dist_base[dc]), deflate_dist_extra[dc]);
+        put_bits(w, (uint32_t)(t[i].dist - codec_deflate_dist_base[dc]), codec_deflate_dist_extra[dc]);
     }
     put_code(w, lcode[256], ll[256]);
 }
@@ -531,12 +513,12 @@ static size_t token_bytes(const token_t *t) {
     return t->dist ? t->len : 1;
 }
 
-long deflate_zlib(deflate_state_t *st, const uint8_t *in, size_t len, uint8_t *out, size_t cap, int level) {
+long codec_zlib_deflate(codec_deflate_state_t *st, const uint8_t *in, size_t len, uint8_t *out, size_t cap, int level) {
     if (cap < 6)
         return -1;
-    deflate_state_t *own = NULL;
+    codec_deflate_state_t *own = NULL;
     if (level > 0 && (!st || st->max_len < len)) {
-        own = deflate_state_new(len);
+        own = codec_deflate_state_new(len);
         if (!own)
             return -1;
         st = own;
@@ -564,10 +546,10 @@ long deflate_zlib(deflate_state_t *st, const uint8_t *in, size_t len, uint8_t *o
         }
         align_byte(&w);
     }
-    deflate_state_free(own);
+    codec_deflate_state_free(own);
     if (w.pos + 4 > cap)
         return -1;
-    uint32_t adler = gs_adler32(1, in, len);
+    uint32_t adler = codec_adler32(1, in, len);
     out[w.pos++] = (uint8_t)(adler >> 24);
     out[w.pos++] = (uint8_t)(adler >> 16);
     out[w.pos++] = (uint8_t)(adler >> 8);

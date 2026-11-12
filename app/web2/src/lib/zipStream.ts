@@ -30,7 +30,7 @@ export function decompressor(
   return new DecompressionStream(format) as unknown as ReadableWritablePair<Uint8Array, Uint8Array>;
 }
 
-// --- CRC-32 (the zip / UDIF / gs_crc32 polynomial) ---------------------------
+// --- CRC-32 (the zip / UDIF / codec_crc32 polynomial) ---------------------------
 
 let crcTable: Uint32Array | null = null;
 function table(): Uint32Array {
@@ -44,7 +44,7 @@ function table(): Uint32Array {
   return crcTable;
 }
 
-// Fold `data` into a running CRC (start from 0), as gs_crc32 does.
+// Fold `data` into a running CRC (start from 0), as codec_crc32 does.
 export function crc32(crc: number, data: Uint8Array): number {
   const t = table();
   let c = ~crc >>> 0;

@@ -48,6 +48,7 @@
 // Register truth: Cirrus Logic, "Alpine VGA Family CL-GD543X/4X Technical
 // Reference Manual", 4th ed. (Feb 1995), §4.14-§4.20.
 
+#include "card.h"
 #include "checkpoint.h"
 #include "display.h"
 #include "display_class.h"
@@ -1511,6 +1512,18 @@ static void c54m30_attach_objects(pci_device_t *dev, struct object *card_node) {
     pci_card_set_framebuffer_object(dev, fb);
 }
 
+// The monitor a socketed card can drive.  Without one the configuration
+// could not plug a monitor into the card at all: the screen stayed on the
+// Mac's own video, which an operating system driving the 54M30 (OS/2 Warp
+// for the PowerPC on an 8500, Windows NT) never draws on.  The mode is the
+// guest's, programmed through the VGA CRTC; this row only says what is
+// connected.  A VGA monitor, as on the Network Server's own port.
+static const int c54m30_depths[] = {8, 16, 0};
+static const struct nubus_monitor c54m30_monitors[] = {
+    {.id = "vga", .monitor = "vga", .width = 640, .height = 480, .depths = c54m30_depths, .sense_code = 6},
+    {.id = NULL},
+};
+
 // A PCI device like any other: soldered down on the Network Server logic
 // board, where the slot table names it, and offered on every PCI socket
 // besides.  In a socket it is a PC card in a Mac: with no FCode PROM, Open
@@ -1524,4 +1537,5 @@ const pci_card_kind_t cirrus_54m30_kind = {
     .card_class = "display",
     .factory = c54m30_factory,
     .attach_objects = c54m30_attach_objects,
+    .monitors = c54m30_monitors,
 };
