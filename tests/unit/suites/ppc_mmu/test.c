@@ -879,7 +879,7 @@ static void test_604_cache_ops(void) {
     static const uint32_t loads[] = {XO_DCBST, XO_DCBF, XO_ICBI};
     for (unsigned i = 0; i < sizeof loads / sizeof loads[0]; i++) {
         cacheop_setup604();
-        cacheop_ok(loads[i], 0x00002000u);                         // inside the BAT
+        cacheop_ok(loads[i], 0x00002000u); // inside the BAT
         cacheop_dsi(loads[i], 0x00AF2000u, PPC_DSISR_NOTFOUND); // above it: a load's DSI
     }
     cacheop_setup604();
