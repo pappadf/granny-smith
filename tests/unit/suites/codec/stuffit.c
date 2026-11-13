@@ -4,7 +4,7 @@
 // StuffIt's methods 3, 13 and 15, tested against encoders built on the
 // decoders' own tables and models (moved here from the peeler suite with
 // the decoders themselves).  This file #includes sit13.c, for its meta-code
-// tables, and sit_arsenic.c, so that its arithmetic *encoder* drives the
+// tables, and sit15.c, so that its arithmetic *encoder* drives the
 // decoder's own model code (model_setup / model_bump): encoder and decoder
 // agree by construction.  The Makefile leaves both out of EXTRA_SRCS, or
 // their external symbols would be defined twice.  Every input is built here
@@ -12,7 +12,7 @@
 // provokes; a memory-safety test must fail on the unfixed code.
 
 #include "../../../../src/codec/lib/sit13.c"
-#include "../../../../src/codec/lib/sit_arsenic.c"
+#include "../../../../src/codec/lib/sit15.c"
 
 #include "test_assert.h"
 
@@ -47,7 +47,7 @@ static dec_buf_t decode_sized(codec_id_t id, const uint8_t *src, size_t len, siz
 // An Arsenic (StuffIt method 15) arithmetic *encoder*
 // ============================================================================
 //
-// The inverse of sit_arsenic.c's ac_decode_sym, driving the decoder's own
+// The inverse of sit15.c's ac_decode_sym, driving the decoder's own
 // prob_model/model_setup/model_bump, so the two cannot drift apart.
 //
 // The coded value V is a binary fraction.  The decoder reads its first
@@ -220,7 +220,7 @@ TEST(test_sit15_encoder_round_trip) {
     uint8_t *in = enc_finish(&e, &len);
 
     int64_t err = 0;
-    dec_buf_t out = decode_sized(CODEC_SIT_ARSENIC, in, len, 1, &err);
+    dec_buf_t out = decode_sized(CODEC_SIT15, in, len, 1, &err);
     if (err)
         fprintf(stderr, "  sit15: %s\n", codec_strerror(err));
     ASSERT_TRUE(err == 0);
@@ -250,7 +250,7 @@ TEST(test_sit15_zero_run_cannot_overflow) {
     uint8_t *in = enc_finish(&e, &len);
 
     int64_t err = 0;
-    dec_buf_t out = decode_sized(CODEC_SIT_ARSENIC, in, len, 1, &err);
+    dec_buf_t out = decode_sized(CODEC_SIT15, in, len, 1, &err);
     ASSERT_TRUE(err != 0);
     ASSERT_TRUE(out.data == NULL);
     free(in);
@@ -267,7 +267,7 @@ TEST(test_sit15_zero_run_bound_is_exact) {
     size_t len;
     uint8_t *in = make_zero_run_stream(512, &len);
     int64_t err = 0;
-    dec_buf_t out = decode_sized(CODEC_SIT_ARSENIC, in, len, 4, &err);
+    dec_buf_t out = decode_sized(CODEC_SIT15, in, len, 4, &err);
     if (err)
         fprintf(stderr, "  sit15: %s\n", codec_strerror(err));
     ASSERT_TRUE(err == 0);
@@ -278,7 +278,7 @@ TEST(test_sit15_zero_run_bound_is_exact) {
     free(in);
 
     in = make_zero_run_stream(513, &len);
-    out = decode_sized(CODEC_SIT_ARSENIC, in, len, 4, &err);
+    out = decode_sized(CODEC_SIT15, in, len, 4, &err);
     ASSERT_TRUE(err != 0);
     free(in);
 }
@@ -452,7 +452,7 @@ TEST(test_sit13_length_repeat_cannot_overrun) {
 TEST(test_sit3_abort_frees_its_output) {
     static const uint8_t one_byte[] = {0xFF};
     int64_t err = 0;
-    dec_buf_t out = decode_sized(CODEC_SIT_HUFFMAN, one_byte, 1, 64, &err);
+    dec_buf_t out = decode_sized(CODEC_SIT3, one_byte, 1, 64, &err);
     ASSERT_TRUE(err != 0);
     ASSERT_TRUE(out.data == NULL);
 }
@@ -500,7 +500,7 @@ TEST(test_sit3_decodes_a_tree_and_message) {
     size_t len = (w.bit + 7) / 8;
     size_t n = sizeof(msg) - 1;
     int64_t err = 0;
-    dec_buf_t out = decode_sized(CODEC_SIT_HUFFMAN, w.buf, len, n, &err);
+    dec_buf_t out = decode_sized(CODEC_SIT3, w.buf, len, n, &err);
     ASSERT_TRUE(err == 0);
     ASSERT_EQ_INT((int)n, (int)out.size);
     ASSERT_TRUE(memcmp(out.data, msg, n) == 0);
@@ -508,7 +508,7 @@ TEST(test_sit3_decodes_a_tree_and_message) {
 
     // One symbol more than the stream holds: the reader runs out, and
     // method 3 aborts rather than inventing bits.
-    out = decode_sized(CODEC_SIT_HUFFMAN, w.buf, len, n + 8, &err);
+    out = decode_sized(CODEC_SIT3, w.buf, len, n + 8, &err);
     ASSERT_TRUE(err != 0 && out.data == NULL);
 
     // A single-leaf tree codes its symbol as no bits at all.
@@ -516,7 +516,7 @@ TEST(test_sit3_decodes_a_tree_and_message) {
     msb_put(&w, 1, 1);
     msb_put(&w, 'z', 8);
     err = 0;
-    out = decode_sized(CODEC_SIT_HUFFMAN, w.buf, (w.bit + 7) / 8, 5, &err);
+    out = decode_sized(CODEC_SIT3, w.buf, (w.bit + 7) / 8, 5, &err);
     ASSERT_TRUE(err == 0 && out.size == 5 && memcmp(out.data, "zzzzz", 5) == 0);
     free(out.data);
 }

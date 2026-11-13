@@ -420,7 +420,7 @@ static int start_coded(codec_dec_t *d, lzfse_t *z) {
 static int run_lmd(codec_dec_t *d, lzfse_t *z) {
     codec_ring_t *r = &d->ring;
     while (z->matches_left > 0) {
-        if (ring_room(r) < LZFSE_BURST)
+        if (!codec_room_for(d, LZFSE_BURST))
             return CODEC_MORE;
         int32_t L = fse_decode_value(&z->ls, z->l_t, &z->in);
         int32_t M = fse_decode_value(&z->ms, z->m_t, &z->in);
@@ -452,7 +452,7 @@ static int run_lzvn(codec_dec_t *d, lzfse_t *z) {
     const uint8_t *p = z->vn;
     size_t len = z->vn_len;
     for (;;) {
-        if (ring_room(r) < LZFSE_BURST)
+        if (!codec_room_for(d, LZFSE_BURST))
             return CODEC_MORE;
         size_t at = z->vn_at, dist = z->vn_dist;
         if (at >= len)
@@ -616,23 +616,23 @@ static int lzfse_fill(codec_dec_t *d) {
 }
 
 static int lzfse_init(codec_dec_t *d) {
-    lzfse_t *z = calloc(1, sizeof(*z));
-    if (!z)
-        return CODEC_ERR_NOMEM;
-    d->st = z;
+    lzfse_t *z = d->st;
     z->blk = malloc(65536);
     if (!z->blk)
         return CODEC_ERR_NOMEM;
     z->blk_cap = 65536;
-    return codec_ring_alloc(d, LZFSE_WINDOW, LZFSE_BURST);
+    return 0;
 }
 
 static void lzfse_free(codec_dec_t *d) {
     lzfse_t *z = d->st;
     free(z->blk);
     free(z->lits);
-    free(z);
-    d->st = NULL;
 }
 
-const codec_dec_ops_t codec_lzfse_dec = {lzfse_init, lzfse_fill, lzfse_free, false};
+const codec_dec_ops_t codec_lzfse_dec = {.state_size = sizeof(lzfse_t),
+                                         .window = LZFSE_WINDOW,
+                                         .burst = LZFSE_BURST,
+                                         .init = lzfse_init,
+                                         .fill = lzfse_fill,
+                                         .free = lzfse_free};

@@ -34,9 +34,7 @@
 static int adc_fill(codec_dec_t *d) {
     codec_in_t *in = &d->in;
     codec_ring_t *r = &d->ring;
-    while (codec_left(d) > 0) {
-        if (ring_room(r) < ADC_BURST)
-            return CODEC_MORE;
+    while (codec_room_for(d, ADC_BURST)) {
         int tag = codec_in_byte(in);
         if (tag < 0)
             return codec_fail(d, CODEC_ERR_TRUNCATED, "adc: the stream ends short of its size");
@@ -75,16 +73,7 @@ static int adc_fill(codec_dec_t *d) {
             len = (size_t)codec_left(d);
         ring_copy(r, off + 1, len);
     }
-    return CODEC_END;
+    return CODEC_MORE; // the ring full, or the size reached (codec.c ends the stream)
 }
 
-static int adc_init(codec_dec_t *d) {
-    d->st = NULL;
-    return codec_ring_alloc(d, ADC_WINDOW, ADC_BURST);
-}
-
-static void adc_free(codec_dec_t *d) {
-    (void)d;
-}
-
-const codec_dec_ops_t codec_adc_dec = {adc_init, adc_fill, adc_free, true};
+const codec_dec_ops_t codec_adc_dec = {.window = ADC_WINDOW, .burst = ADC_BURST, .sized = true, .fill = adc_fill};

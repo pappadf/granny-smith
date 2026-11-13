@@ -882,15 +882,15 @@ TEST(sit_lzw_strings_and_clear) {
     lsb_put(&w, 256, 9); // clear: the 5th code of its group of 8 ...
     lsb_put(&w, 0, 9 * 3); // ... so 3 codes of padding
     lsb_put(&w, 'z', 9);
-    expect_decode(CODEC_SIT_LZW, w.buf, (w.bit + 7) / 8, 8, "abababaz", 8);
+    expect_decode(CODEC_SIT2, w.buf, (w.bit + 7) / 8, 8, "abababaz", 8);
     // A string code before any string, or past the dictionary, is corrupt.
     memset(&w, 0, sizeof(w));
     lsb_put(&w, 300, 9);
-    ASSERT_EQ_INT(CODEC_ERR_DATA, decode_fails(CODEC_SIT_LZW, w.buf, 4, 10));
+    ASSERT_EQ_INT(CODEC_ERR_DATA, decode_fails(CODEC_SIT2, w.buf, 4, 10));
     memset(&w, 0, sizeof(w));
     lsb_put(&w, 'a', 9);
     lsb_put(&w, 400, 9);
-    ASSERT_EQ_INT(CODEC_ERR_DATA, decode_fails(CODEC_SIT_LZW, w.buf, 4, 10));
+    ASSERT_EQ_INT(CODEC_ERR_DATA, decode_fails(CODEC_SIT2, w.buf, 4, 10));
 }
 
 // The checkpoint run lengths: chunks, and the size they must keep to.

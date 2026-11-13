@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// sit_arsenic.c
+// sit15.c
 // StuffIt method 15, "Arsenic" (see codec.h).  Format notes:
 // src/peeler/docs/sit15.md.
 //
@@ -26,7 +26,7 @@
 
 // Forward declaration of the error function (needs the full state).
 typedef struct arsenic_state arsenic_state;
-static void arsenic_abort(arsenic_state *s, const char *msg);
+static void arsenic_abort(arsenic_state *s, int rc, const char *msg);
 
 // Read exactly n bits (1 ≤ n ≤ 25).  Past the end: zero, and the error set.
 static uint32_t bs_read(arsenic_state *s, int n);
@@ -155,8 +155,10 @@ static const uint16_t rand_tbl[256] = {
 // sit15.md §11.3 "Demand-Driven Block Decoding" — blocks decoded lazily
 //   when out_pos ≥ blk_len; buffers reused without reallocation.
 struct arsenic_state {
-    // Error recovery (§10): the first fault's message, NULL while none
-    const char *err;
+    // Error recovery (§10): the first fault's CODEC_ERR_* code, 0 while
+    // none (its message is the decoder's)
+    int rc;
+    codec_dec_t *dec;
     bool eos; // end-of-stream seen in a block footer
     bool started; // the stream header has been read
 
@@ -200,11 +202,12 @@ struct arsenic_state {
 // Error Handling
 // ============================================================================
 
-// Record a fault (the first one stays).  sit15.md §10 "Error Conditions" —
-// all fatal conditions funnel here; the decoding loops then stop.
-static void arsenic_abort(arsenic_state *s, const char *msg) {
-    if (!s->err)
-        s->err = msg;
+// Record a fault, as every codec does (codec_fail; the first one stays).
+// sit15.md §10 "Error Conditions" -- all fatal conditions funnel here, deep
+// in the arithmetic decoder; the decoding loops check s->rc and stop.
+static void arsenic_abort(arsenic_state *s, int rc, const char *msg) {
+    if (!s->rc)
+        s->rc = codec_fail(s->dec, rc, msg);
 }
 
 // ============================================================================
@@ -217,7 +220,7 @@ static void arsenic_abort(arsenic_state *s, const char *msg) {
 static uint32_t bs_read(arsenic_state *s, int n) {
     // A short stream is an error here, not zeros.
     if (!msb_avail(s->in, n)) {
-        arsenic_abort(s, "sit15: bitstream exhaustion");
+        arsenic_abort(s, CODEC_ERR_TRUNCATED, "sit15: bitstream exhaustion");
         return 0;
     }
     return msb_get(s->in, n);
@@ -242,16 +245,16 @@ static uint32_t bs_read_long(arsenic_state *s, int n) {
 // sit15.md §4.3 "Decoding One Symbol" — scale the range, find the
 // symbol via cumulative frequency, narrow interval, renormalize.
 static int ac_decode_sym(arsenic_state *s, prob_model *m) {
-    if (s->err)
+    if (s->rc)
         return 0;
     if (m->total == 0) {
-        arsenic_abort(s, "sit15: model total frequency is zero");
+        arsenic_abort(s, CODEC_ERR_DATA, "sit15: model total frequency is zero");
         return 0;
     }
 
     int scale = s->ac.range / m->total;
     if (scale == 0) {
-        arsenic_abort(s, "sit15: arithmetic decoder scale is zero");
+        arsenic_abort(s, CODEC_ERR_DATA, "sit15: arithmetic decoder scale is zero");
         return 0;
     }
 
@@ -339,7 +342,7 @@ static uint8_t emit_bwt_byte(arsenic_state *s) {
     // Follow one step of the LF-mapping chain.
     s->bwt_idx = (int)s->lf_map[s->bwt_idx];
     if (s->bwt_idx < 0 || s->bwt_idx >= s->blk_len) {
-        arsenic_abort(s, "sit15: BWT index out of bounds");
+        arsenic_abort(s, CODEC_ERR_DATA, "sit15: BWT index out of bounds");
         return 0;
     }
     uint8_t b = s->blk_buf[s->bwt_idx];
@@ -385,11 +388,11 @@ static int consume_zero_run(arsenic_state *s, int first_tok, int *out_sel) {
     for (int bit_pos = 0;; bit_pos++) {
         total += (uint64_t)(tok + 1) << bit_pos;
         if (total > (uint64_t)s->blk_cap) {
-            arsenic_abort(s, "sit15: zero run longer than the block");
+            arsenic_abort(s, CODEC_ERR_DATA, "sit15: zero run longer than the block");
             return 0;
         }
         tok = ac_decode_sym(s, &s->m_sel);
-        if (tok >= 2 || s->err)
+        if (tok >= 2 || s->rc)
             break;
     }
 
@@ -414,17 +417,17 @@ static void decode_block(arsenic_state *s) {
 
     // §6.1–6.3  Main selector loop — fills blk_buf with MTF-decoded bytes.
     int sel = ac_decode_sym(s, &s->m_sel);
-    while (sel != 10 && !s->err) {
+    while (sel != 10 && !s->rc) {
 
         // Zero-run tokens (sel 0 or 1): decode via positional accumulator.
         if (sel < 2) {
-            int trailing;
+            int trailing = 10; // (set unless the run failed, which returns first)
             int run_len = consume_zero_run(s, sel, &trailing);
-            if (s->err)
+            if (s->rc)
                 return;
 
             if (s->blk_len + run_len > s->blk_cap) {
-                arsenic_abort(s, "sit15: block buffer overflow (zero run)");
+                arsenic_abort(s, CODEC_ERR_DATA, "sit15: block buffer overflow (zero run)");
                 return;
             }
 
@@ -441,7 +444,7 @@ static void decode_block(arsenic_state *s) {
         int mtf_idx = (sel == 2) ? 1 : ac_decode_sym(s, &s->m_grp[sel - 3]);
 
         if (s->blk_len >= s->blk_cap) {
-            arsenic_abort(s, "sit15: block buffer overflow");
+            arsenic_abort(s, CODEC_ERR_DATA, "sit15: block buffer overflow");
             return;
         }
         s->blk_buf[s->blk_len++] = mtf_decode(&mtf, mtf_idx);
@@ -451,10 +454,10 @@ static void decode_block(arsenic_state *s) {
 
     // Validate BWT primary index (§10).
     // sit15.md §10 "Error Conditions" — primary index must be < block length.
-    if (s->err)
+    if (s->rc)
         return;
     if (s->blk_len > 0 && s->bwt_origin >= s->blk_len) {
-        arsenic_abort(s, "sit15: BWT primary index >= block length");
+        arsenic_abort(s, CODEC_ERR_DATA, "sit15: BWT primary index >= block length");
         return;
     }
 
@@ -506,14 +509,14 @@ static uint8_t produce_byte(arsenic_state *s) {
         // 2.  Fetch the next block when the current one is exhausted.
         if (s->out_pos >= s->blk_len) {
             if (s->eos) {
-                arsenic_abort(s, "sit15: unexpected end of stream");
+                arsenic_abort(s, CODEC_ERR_DATA, "sit15: unexpected end of stream");
                 return 0;
             }
             decode_block(s);
-            if (s->err)
+            if (s->rc)
                 return 0;
             if (s->blk_len == 0) {
-                arsenic_abort(s, "sit15: empty block"); // (the walk below would start nowhere)
+                arsenic_abort(s, CODEC_ERR_DATA, "sit15: empty block"); // (the walk below would start nowhere)
                 return 0;
             }
         }
@@ -558,17 +561,17 @@ static bool parse_header(arsenic_state *s) {
 
     // Signature "As" (each byte is an 8-bit arithmetic-coded field).
     if (ac_decode_field(s, &s->m_primary, 8) != 'A')
-        arsenic_abort(s, "sit15: invalid signature (expected 'A')");
+        arsenic_abort(s, CODEC_ERR_DATA, "sit15: invalid signature (expected 'A')");
     if (ac_decode_field(s, &s->m_primary, 8) != 's')
-        arsenic_abort(s, "sit15: invalid signature (expected 's')");
-    if (s->err)
+        arsenic_abort(s, CODEC_ERR_DATA, "sit15: invalid signature (expected 's')");
+    if (s->rc)
         return false;
 
     // Block-size exponent B (4-bit field) → block_size = 1 << (B+9).
     s->block_exp = (int)ac_decode_field(s, &s->m_primary, 4);
     unsigned bsz = 1u << (unsigned)(s->block_exp + 9);
     if (bsz > (unsigned)INT32_MAX) {
-        arsenic_abort(s, "sit15: block size overflow");
+        arsenic_abort(s, CODEC_ERR_DATA, "sit15: block size overflow");
         return false;
     }
     s->blk_cap = (int)bsz;
@@ -580,10 +583,10 @@ static bool parse_header(arsenic_state *s) {
     s->blk_buf = malloc((size_t)s->blk_cap);
     s->lf_map = malloc((size_t)s->blk_cap * sizeof(uint32_t));
     if (!s->blk_buf || !s->lf_map) {
-        arsenic_abort(s, "sit15: out of memory");
+        arsenic_abort(s, CODEC_ERR_NOMEM, "sit15: out of memory");
         return false;
     }
-    return !s->err;
+    return !s->rc;
 }
 
 // ============================================================================
@@ -595,40 +598,36 @@ static bool parse_header(arsenic_state *s) {
 static int arsenic_fill(codec_dec_t *d) {
     arsenic_state *s = d->st;
     codec_ring_t *r = &d->ring;
-    if (codec_left(d) == 0)
-        return CODEC_END;
     if (!s->started) {
         s->started = true;
         if (!parse_header(s))
-            return codec_fail(d, s->err && strstr(s->err, "memory") ? CODEC_ERR_NOMEM : CODEC_ERR_DATA,
-                              s->err ? s->err : "sit15: bad stream header");
+            return s->rc ? s->rc : codec_fail(d, CODEC_ERR_DATA, "sit15: bad stream header");
     }
-    while (codec_left(d) > 0) {
-        if (ring_room(r) < ARSENIC_BURST)
-            return CODEC_MORE;
+    while (codec_room_for(d, ARSENIC_BURST)) {
         uint8_t b = produce_byte(s);
-        if (s->err)
-            return codec_fail(d, strstr(s->err, "exhaustion") ? CODEC_ERR_TRUNCATED : CODEC_ERR_DATA, s->err);
+        if (s->rc)
+            return s->rc;
         ring_put(r, b);
     }
-    return CODEC_END;
+    return CODEC_MORE; // the ring full, or the size reached (codec.c ends the stream)
 }
 
 static int arsenic_init(codec_dec_t *d) {
-    arsenic_state *s = calloc(1, sizeof(*s));
-    if (!s)
-        return CODEC_ERR_NOMEM;
+    arsenic_state *s = d->st;
     s->in = &d->in;
-    d->st = s;
-    return codec_ring_alloc(d, 0, ARSENIC_BURST);
+    s->dec = d;
+    return 0;
 }
 
 static void arsenic_free(codec_dec_t *d) {
     arsenic_state *s = d->st;
     free(s->blk_buf);
     free(s->lf_map);
-    free(s);
-    d->st = NULL;
 }
 
-const codec_dec_ops_t codec_sit_arsenic_dec = {arsenic_init, arsenic_fill, arsenic_free, true};
+const codec_dec_ops_t codec_sit15_dec = {.state_size = sizeof(arsenic_state),
+                                         .burst = ARSENIC_BURST,
+                                         .sized = true,
+                                         .init = arsenic_init,
+                                         .fill = arsenic_fill,
+                                         .free = arsenic_free};

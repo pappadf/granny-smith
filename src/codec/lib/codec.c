@@ -22,25 +22,25 @@ typedef struct {
 } codec_entry_t;
 
 static const codec_entry_t k_codecs[CODEC_COUNT] = {
-    [CODEC_COPY] = {"copy",         &codec_copy_dec,        NULL            },
-    [CODEC_DEFLATE] = {"deflate",      &codec_deflate_dec,     NULL            },
-    [CODEC_ZLIB] = {"zlib",         &codec_zlib_dec,        &codec_zlib_enc },
-    [CODEC_GZIP] = {"gzip",         &codec_gzip_dec,        NULL            },
-    [CODEC_ADC] = {"adc",          &codec_adc_dec,         NULL            },
-    [CODEC_BZIP2] = {"bzip2",        &codec_bzip2_dec,       NULL            },
-    [CODEC_LZFSE] = {"lzfse",        &codec_lzfse_dec,       NULL            },
-    [CODEC_XZ] = {"xz",           &codec_xz_dec,          &codec_xz_enc   },
-    [CODEC_LZMA_ALONE] = {"lzma",         &codec_lzma_alone_dec,  NULL            },
-    [CODEC_RLE90] = {"rle90",        &codec_rle90_dec,       NULL            },
-    [CODEC_RLE90_BINHEX] = {"rle90-binhex", &codec_rle90_dec,       NULL            },
-    [CODEC_SIT_LZW] = {"sit-lzw",      &codec_sit_lzw_dec,     NULL            },
-    [CODEC_SIT_HUFFMAN] = {"sit-huffman",  &codec_sit_huffman_dec, NULL            },
-    [CODEC_SIT13] = {"sit13",        &codec_sit13_dec,       NULL            },
-    [CODEC_SIT_ARSENIC] = {"sit-arsenic",  &codec_sit_arsenic_dec, NULL            },
-    [CODEC_CPT_RLE] = {"cpt-rle",      &codec_cpt_rle_dec,     NULL            },
-    [CODEC_CPT_LZH] = {"cpt-lzh",      &codec_cpt_lzh_dec,     NULL            },
-    [CODEC_DCMP] = {"dcmp",         &codec_dcmp_dec,        NULL            },
-    [CODEC_GSRLE] = {"gsrle",        &codec_gsrle_dec,       &codec_gsrle_enc},
+    [CODEC_COPY] = {"copy",         &codec_copy_dec,       NULL            },
+    [CODEC_DEFLATE] = {"deflate",      &codec_deflate_dec,    NULL            },
+    [CODEC_ZLIB] = {"zlib",         &codec_zlib_dec,       &codec_zlib_enc },
+    [CODEC_GZIP] = {"gzip",         &codec_gzip_dec,       NULL            },
+    [CODEC_ADC] = {"adc",          &codec_adc_dec,        NULL            },
+    [CODEC_BZIP2] = {"bzip2",        &codec_bzip2_dec,      NULL            },
+    [CODEC_LZFSE] = {"lzfse",        &codec_lzfse_dec,      NULL            },
+    [CODEC_XZ] = {"xz",           &codec_xz_dec,         &codec_xz_enc   },
+    [CODEC_LZMA_ALONE] = {"lzma",         &codec_lzma_alone_dec, NULL            },
+    [CODEC_RLE90] = {"rle90",        &codec_rle90_dec,      NULL            },
+    [CODEC_RLE90_BINHEX] = {"rle90-binhex", &codec_rle90_dec,      NULL            },
+    [CODEC_SIT2] = {"sit2",         &codec_sit2_dec,       NULL            },
+    [CODEC_SIT3] = {"sit3",         &codec_sit3_dec,       NULL            },
+    [CODEC_SIT13] = {"sit13",        &codec_sit13_dec,      NULL            },
+    [CODEC_SIT15] = {"sit15",        &codec_sit15_dec,      NULL            },
+    [CODEC_CPT_RLE] = {"cpt-rle",      &codec_cpt_rle_dec,    NULL            },
+    [CODEC_CPT_LZH] = {"cpt-lzh",      &codec_cpt_lzh_dec,    NULL            },
+    [CODEC_DCMP] = {"dcmp",         &codec_dcmp_dec,       NULL            },
+    [CODEC_GSRLE] = {"gsrle",        &codec_gsrle_dec,      &codec_gsrle_enc},
 };
 
 const char *codec_name(codec_id_t id) {
@@ -295,9 +295,15 @@ codec_dec_t *codec_dec_new(codec_id_t id, const codec_dec_opts_t *o, int *err) {
         d->in.len = o->in.len;
         d->in.eof = true;
     }
-    int rc = ops->init(d);
+    int rc = 0;
+    if (ops->state_size && !(d->st = calloc(1, ops->state_size)))
+        rc = CODEC_ERR_NOMEM;
+    if (rc == 0 && ops->burst)
+        rc = codec_ring_alloc(d, ops->window, ops->burst);
+    if (rc == 0 && ops->init)
+        rc = ops->init(d);
     if (rc == 0 && !d->ring.buf)
-        rc = codec_ring_alloc(d, 0, 1);
+        rc = codec_ring_alloc(d, 0, 1); // until the codec sizes its own
     if (rc != 0) {
         codec_dec_free(d);
         *err = rc;
@@ -311,8 +317,9 @@ codec_dec_t *codec_dec_new(codec_id_t id, const codec_dec_opts_t *o, int *err) {
 void codec_dec_free(codec_dec_t *d) {
     if (!d)
         return;
-    if (d->st)
+    if (d->st && d->ops->free)
         d->ops->free(d);
+    free(d->st);
     free(d->ring.buf);
     free(d->in.buf);
     if (d->in_close)
@@ -344,12 +351,11 @@ int codec_dec_input_error(const codec_dec_t *d) {
 static void drain(codec_dec_t *d, uint8_t *out, size_t cap, size_t *n) {
     codec_ring_t *r = &d->ring;
     while (*n < cap && r->drained < r->total) {
-        size_t pending = (size_t)(r->total - r->drained);
-        size_t at = r->w >= pending ? r->w - pending : r->w + r->size - pending;
-        size_t k = r->size - at < pending ? r->size - at : pending;
+        const uint8_t *p;
+        size_t k = ring_span(r, r->drained, &p);
         if (k > cap - *n)
             k = cap - *n;
-        memcpy(out + *n, r->buf + at, k);
+        memcpy(out + *n, p, k);
         if (d->check == CODEC_CHECK_CRC32)
             d->check_sum = codec_crc32(d->check_sum, out + *n, k);
         else if (d->check == CODEC_CHECK_CRC16_ARC)
@@ -390,7 +396,9 @@ int codec_dec_run(codec_dec_t *d, uint8_t *out, size_t cap, size_t *n) {
             return 0;
         }
         uint64_t in0 = codec_in_consumed(&d->in), out0 = d->ring.total;
-        int rc = d->ops->fill(d);
+        // An exact stream ends at its size, whatever its codec would decode
+        // next: every fill stops there (codec_room_for).
+        int rc = d->exact && d->ring.total >= d->out_len ? CODEC_END : d->ops->fill(d);
         if (d->in.err) {
             // The input could not be read: that, not what the decoder made
             // of its sudden end, is the cause.  A decoder read through
@@ -411,6 +419,8 @@ int codec_dec_run(codec_dec_t *d, uint8_t *out, size_t cap, size_t *n) {
             rc = d->exact ? CODEC_END
                           : codec_fail(d, CODEC_ERR_OVERFLOW, "the stream decodes to more than its stated size");
         }
+        if (rc == CODEC_MORE && d->exact && d->ring.total == d->out_len)
+            rc = CODEC_END; // the size reached in this fill: the stream ends with it
         if (rc == CODEC_END && d->exact && d->ring.total != d->out_len)
             rc = codec_fail(d, CODEC_ERR_TRUNCATED, "the stream ends short of its stated size");
         if (rc == CODEC_MORE && d->ring.total == out0 && codec_in_consumed(&d->in) == in0 && !codec_in_overrun(&d->in))
@@ -610,14 +620,9 @@ int64_t codec_encode(codec_id_t id, int level, const uint8_t *in, size_t len, ui
 // CODEC_COPY: the bytes as they are
 // ============================================================================
 
-static int copy_init(codec_dec_t *d) {
-    d->st = NULL;
-    return codec_ring_alloc(d, 0, 65536);
-}
-
 static int copy_fill(codec_dec_t *d) {
     codec_ring_t *r = &d->ring;
-    while (ring_room(r) > 0) {
+    while (codec_room_for(d, 1)) {
         if (d->in.pos == d->in.len && !codec_in_refill(&d->in))
             return CODEC_END;
         size_t k = d->in.len - d->in.pos;
@@ -630,8 +635,4 @@ static int copy_fill(codec_dec_t *d) {
     return CODEC_MORE;
 }
 
-static void copy_free(codec_dec_t *d) {
-    (void)d;
-}
-
-const codec_dec_ops_t codec_copy_dec = {copy_init, copy_fill, copy_free, false};
+const codec_dec_ops_t codec_copy_dec = {.burst = 65536, .fill = copy_fill};

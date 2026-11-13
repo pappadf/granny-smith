@@ -33,10 +33,10 @@
 //   CODEC_LZMA_ALONE      x             legacy .lzma
 //   CODEC_RLE90           x             0x90-escape run lengths (StuffIt method 1)
 //   CODEC_RLE90_BINHEX    x             the same, in BinHex's dialect
-//   CODEC_SIT_LZW         x             StuffIt method 2 (LZW, 14-bit)
-//   CODEC_SIT_HUFFMAN     x             StuffIt method 3 (static Huffman)
+//   CODEC_SIT2            x             StuffIt method 2 (LZW, 14-bit)
+//   CODEC_SIT3            x             StuffIt method 3 (static Huffman)
 //   CODEC_SIT13           x             StuffIt method 13 (LZSS + Huffman)
-//   CODEC_SIT_ARSENIC     x             StuffIt method 15 (Arsenic: BWT + arithmetic)
+//   CODEC_SIT15           x             StuffIt method 15 (Arsenic: BWT + arithmetic)
 //   CODEC_CPT_RLE         x             Compact Pro's run lengths
 //   CODEC_CPT_LZH         x             Compact Pro's LZSS + Huffman
 //   CODEC_DCMP            x             System 7 compressed resource (dcmp 0, 2, 3)
@@ -84,10 +84,10 @@ typedef enum {
     CODEC_LZMA_ALONE,
     CODEC_RLE90,
     CODEC_RLE90_BINHEX,
-    CODEC_SIT_LZW,
-    CODEC_SIT_HUFFMAN,
+    CODEC_SIT2,
+    CODEC_SIT3,
     CODEC_SIT13,
-    CODEC_SIT_ARSENIC,
+    CODEC_SIT15,
     CODEC_CPT_RLE,
     CODEC_CPT_LZH,
     CODEC_DCMP,

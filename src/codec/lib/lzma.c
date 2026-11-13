@@ -267,7 +267,7 @@ static int lzma_symbols(codec_dec_t *d, xz_t *x) {
             return codec_fail(d, CODEC_ERR_TRUNCATED, "lzma: truncated stream");
         if (r->total == x->chunk_end && !x->marker)
             return CODEC_END;
-        if (ring_room(r) < LZMA_BURST)
+        if (!codec_room_for(d, LZMA_BURST))
             return CODEC_MORE;
         uint64_t rel = r->total - x->dict_start; // position since the dictionary reset
         unsigned ps = (unsigned)rel & pb_mask;
@@ -394,16 +394,13 @@ static int dict_ring(codec_dec_t *d, xz_t *x, uint64_t dict) {
 
 // Fold the bytes decoded since the last call into the block check.
 static void check_update(codec_dec_t *d, xz_t *x) {
-    codec_ring_t *r = &d->ring;
-    while (x->check_at < r->total) {
-        size_t pending = (size_t)(r->total - x->check_at);
-        size_t at = r->w >= pending ? r->w - pending : r->w + r->size - pending;
-        size_t k = r->size - at < pending ? r->size - at : pending;
+    const uint8_t *p;
+    for (size_t n; x->check_at < d->ring.total; x->check_at += n) {
+        n = ring_span(&d->ring, x->check_at, &p);
         if (x->check == 1)
-            x->crc32 = codec_crc32(x->crc32, r->buf + at, k);
+            x->crc32 = codec_crc32(x->crc32, p, n);
         else if (x->check == 4)
-            x->crc64 = codec_crc64(x->crc64, r->buf + at, k);
-        x->check_at += k;
+            x->crc64 = codec_crc64(x->crc64, p, n);
     }
 }
 
@@ -735,18 +732,11 @@ more:
 }
 
 static void xz_free(codec_dec_t *d) {
-    xz_t *x = d->st;
-    free(x->m.lit);
-    free(x);
-    d->st = NULL;
+    free(((xz_t *)d->st)->m.lit);
 }
 
 static int xz_init(codec_dec_t *d) {
-    xz_t *x = calloc(1, sizeof(*x));
-    if (!x)
-        return CODEC_ERR_NOMEM;
-    d->st = x;
-    x->state = X_STREAM;
+    ((xz_t *)d->st)->state = X_STREAM;
     return 0; // the ring comes with the first block's dictionary
 }
 
@@ -788,5 +778,8 @@ static int alone_init(codec_dec_t *d) {
     return rc;
 }
 
-const codec_dec_ops_t codec_xz_dec = {xz_init, xz_fill, xz_free, false};
-const codec_dec_ops_t codec_lzma_alone_dec = {alone_init, alone_fill, xz_free, false};
+// The ring is sized from the stream's dictionary (dict_ring), so neither
+// declares one.
+const codec_dec_ops_t codec_xz_dec = {.state_size = sizeof(xz_t), .init = xz_init, .fill = xz_fill, .free = xz_free};
+const codec_dec_ops_t codec_lzma_alone_dec = {
+    .state_size = sizeof(xz_t), .init = alone_init, .fill = alone_fill, .free = xz_free};

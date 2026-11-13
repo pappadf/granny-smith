@@ -30,7 +30,7 @@ static int rle90_fill(codec_dec_t *d) {
     codec_in_t *in = &d->in;
     codec_ring_t *r = &d->ring;
     bool binhex = d->id == CODEC_RLE90_BINHEX;
-    while (ring_room(r) >= RLE90_BURST) {
+    while (codec_room_for(d, RLE90_BURST)) {
         int b = codec_in_byte(in);
         if (b < 0)
             return CODEC_END;
@@ -55,16 +55,5 @@ static int rle90_fill(codec_dec_t *d) {
     return CODEC_MORE;
 }
 
-static int rle90_init(codec_dec_t *d) {
-    d->st = calloc(1, sizeof(rle90_t)); // prev starts at 0
-    if (!d->st)
-        return CODEC_ERR_NOMEM;
-    return codec_ring_alloc(d, 0, RLE90_BURST);
-}
-
-static void rle90_free(codec_dec_t *d) {
-    free(d->st);
-    d->st = NULL;
-}
-
-const codec_dec_ops_t codec_rle90_dec = {rle90_init, rle90_fill, rle90_free, false};
+// prev starts at 0 (sit.md § 8.2).
+const codec_dec_ops_t codec_rle90_dec = {.state_size = sizeof(rle90_t), .burst = RLE90_BURST, .fill = rle90_fill};

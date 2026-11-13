@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// sit_lzw.c
+// sit2.c
 // StuffIt method 2: LZW (see codec.h).  Format notes:
 // src/peeler/docs/sit.md § 9.
 //
@@ -88,11 +88,9 @@ static int lzw_fill(codec_dec_t *d) {
     lzw_t *z = d->st;
     codec_in_t *in = &d->in;
     codec_ring_t *r = &d->ring;
-    while (codec_left(d) > 0) {
-        if (ring_room(r) < LZW_BURST + 1)
-            return CODEC_MORE;
+    while (codec_room_for(d, LZW_BURST + 1)) {
         if (!lsb_avail(in, 1))
-            return codec_fail(d, CODEC_ERR_TRUNCATED, "sit-lzw: the stream ends short of its size");
+            return codec_fail(d, CODEC_ERR_TRUNCATED, "sit2: the stream ends short of its size");
         int code = (int)lsb_get(in, z->code_bits); // a code past the end reads its missing bits as zero
         z->block_count++;
         if (code == LZW_CLEAR_CODE) {
@@ -106,14 +104,14 @@ static int lzw_fill(codec_dec_t *d) {
         if (z->prev < 0) {
             // The first code after a clear: a byte (the dictionary is empty).
             if (code >= 256)
-                return codec_fail(d, CODEC_ERR_DATA, "sit-lzw: a string code before any string");
+                return codec_fail(d, CODEC_ERR_DATA, "sit2: a string code before any string");
             ring_put(r, (uint8_t)code);
             z->prev = code;
             continue;
         }
         // Only the next free entry may be named before it exists (KwKwK).
         if (code > z->tbl_next)
-            return codec_fail(d, CODEC_ERR_DATA, "sit-lzw: a code past the dictionary");
+            return codec_fail(d, CODEC_ERR_DATA, "sit2: a code past the dictionary");
         bool kwkwk = code == z->tbl_next;
         uint8_t first = kwkwk ? z->head[z->prev] : z->head[code];
         int prev = z->prev;
@@ -124,14 +122,11 @@ static int lzw_fill(codec_dec_t *d) {
             lzw_emit(r, z, prev, first);
         z->prev = code;
     }
-    return CODEC_END;
+    return CODEC_MORE; // the ring full, or the size reached (codec.c ends the stream)
 }
 
 static int lzw_init(codec_dec_t *d) {
-    lzw_t *z = calloc(1, sizeof(*z));
-    if (!z)
-        return CODEC_ERR_NOMEM;
-    d->st = z;
+    lzw_t *z = d->st;
     for (int i = 0; i < 256; i++) {
         z->prev_code[i] = UINT16_MAX;
         z->suffix[i] = (uint8_t)i;
@@ -139,12 +134,8 @@ static int lzw_init(codec_dec_t *d) {
         z->chain_len[i] = 1;
     }
     lzw_clear(z);
-    return codec_ring_alloc(d, 0, LZW_BURST + 1);
+    return 0;
 }
 
-static void lzw_free(codec_dec_t *d) {
-    free(d->st);
-    d->st = NULL;
-}
-
-const codec_dec_ops_t codec_sit_lzw_dec = {lzw_init, lzw_fill, lzw_free, true};
+const codec_dec_ops_t codec_sit2_dec = {
+    .state_size = sizeof(lzw_t), .burst = LZW_BURST + 1, .sized = true, .init = lzw_init, .fill = lzw_fill};

@@ -17,10 +17,10 @@
 // codec of the codec library (src/codec, codec.h):
 //   0  = raw copy                    CODEC_COPY        (sit.md § 7)
 //   1  = RLE90 escape-based RLE      CODEC_RLE90       (sit.md § 8)
-//   2  = LZW (14-bit max, LE bits)   CODEC_SIT_LZW     (sit.md § 9)
-//   3  = static Huffman              CODEC_SIT_HUFFMAN (sit3.md)
+//   2  = LZW (14-bit max, LE bits)   CODEC_SIT2     (sit.md § 9)
+//   3  = static Huffman              CODEC_SIT3 (sit3.md)
 //   13 = LZSS+Huffman                CODEC_SIT13       (sit.md § 10, sit13.md)
-//   15 = Arsenic/BWT                 CODEC_SIT_ARSENIC (sit.md § 11, sit15.md)
+//   15 = Arsenic/BWT                 CODEC_SIT15 (sit.md § 11, sit15.md)
 
 // Ensure strnlen is declared under strict C99 mode.
 #define _POSIX_C_SOURCE 200809L
@@ -201,13 +201,13 @@ static int sit_method_codec(int method) {
     case 1:
         return CODEC_RLE90; // sit.md § 8.2 "State" -- last_byte starts at 0
     case 2:
-        return CODEC_SIT_LZW;
+        return CODEC_SIT2;
     case 3:
-        return CODEC_SIT_HUFFMAN;
+        return CODEC_SIT3;
     case 13:
         return CODEC_SIT13;
     case 15:
-        return CODEC_SIT_ARSENIC;
+        return CODEC_SIT15;
     default:
         return -1;
     }

@@ -142,11 +142,11 @@ The framework they are written on is `lib/codec_internal.h`:
 | File | |
 |---|---|
 | `lib/codec.c` | the registry, the input and ring helpers, the Huffman pool, `codec_dec_run` and the one-shot and encoder wrappers, `CODEC_COPY` |
-| `lib/inflate.c`, `lib/deflate.c` | DEFLATE, zlib and gzip decoding; DEFLATE and zlib encoding |
+| `lib/deflate.c`, `lib/deflate_enc.c` | DEFLATE, zlib and gzip decoding; DEFLATE and zlib encoding |
 | `lib/bzip2.c`, `lib/lzfse.c`, `lib/adc.c` | bzip2, LZFSE (with LZVN), ADC |
 | `lib/lzma.c`, `lib/lzma_enc.c`, `lib/lzma_internal.h` | LZMA, LZMA2, xz and `.lzma`; the xz encoder; the model they share |
 | `lib/rle90.c` | 0x90 run lengths, StuffIt's and BinHex's dialects (`CODEC_RLE90_BINHEX`) |
-| `lib/sit_lzw.c`, `lib/sit_huffman.c`, `lib/sit13.c`, `lib/sit_arsenic.c` | StuffIt methods 2, 3, 13 and 15 |
+| `lib/sit2.c`, `lib/sit3.c`, `lib/sit13.c`, `lib/sit15.c` | StuffIt methods 2, 3, 13 and 15 |
 | `lib/cpt.c` | Compact Pro's LZH and RLE |
 | `lib/dcmp.c`, `lib/dcmp3_tables.h` | System 7 compressed resources |
 | `lib/gsrle.c` | the checkpoint file's run lengths |

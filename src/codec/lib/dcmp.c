@@ -1154,21 +1154,11 @@ static int dcmp_fill(codec_dec_t *d) {
     return s->out_pos == s->out_size ? CODEC_END : CODEC_MORE;
 }
 
-static int dcmp_init(codec_dec_t *d) {
-    d->st = calloc(1, sizeof(dcmp_t));
-    if (!d->st)
-        return CODEC_ERR_NOMEM;
-    return codec_ring_alloc(d, 0, DCMP_BURST);
-}
-
 static void dcmp_free(codec_dec_t *d) {
     dcmp_t *s = d->st;
-    if (s) {
-        free(s->in_buf);
-        free(s->out);
-    }
-    free(s);
-    d->st = NULL;
+    free(s->in_buf);
+    free(s->out);
 }
 
-const codec_dec_ops_t codec_dcmp_dec = {dcmp_init, dcmp_fill, dcmp_free, false};
+const codec_dec_ops_t codec_dcmp_dec = {
+    .state_size = sizeof(dcmp_t), .burst = DCMP_BURST, .fill = dcmp_fill, .free = dcmp_free};
