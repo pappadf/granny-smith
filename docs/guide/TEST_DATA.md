@@ -159,7 +159,7 @@ prepared 7.1 HD images.
 
 | Path | Contents |
 |---|---|
-| `tests/data/apps/` | MacTest diagnostics, Marathon, MusicWorks, Norton System Info, Quake (the Voodoo2 rows) |
+| `tests/data/apps/` | MacTest diagnostics, Marathon, MusicWorks, Norton System Info, Quake (the Voodoo2 rows), Virtual Wings on Mac OS 7.6 with QuickDraw 3D (`virtual_wings_qd3d.dmg`, a UDIF opened as-is: `tnt-qd3d`'s `qd3d-virtual-wings`) |
 | `tests/data/Lisa/` | Lisa Office System 3.1, Xenix 3.0, MacWorks XL 3.0 (floppies + installed ProFile images) |
 | `tests/data/aux/aux_3.0.1/` | A/UX 3.0.1 retail ISO and an installed 160 MB HD image |
 | `tests/data/cdroms/` | CD-ROM images |

@@ -171,8 +171,12 @@ turn (thread, sw, and null, which leaves only the background), and checks that n
 write, that the interrupt rises once the frame has run, and every pixel the card writes back. The other rows run Apple's unmodified driver and plug-in on a pm8500 with
 Mac OS 7.6 and QuickDraw 3D 1.6 from `system_7_6_170mb_24ac_qd3d.dmg`: the driver's bring-up (position
 register, object-cache free list), RaveEngineInfo listing "Apple PCI Hardware", Gerbils! rendering through
-the card, TextureEyes' textured square, the QuickDraw 3D Viewer drawing the Teapot model, and Gerbils at
-thousands of colours (the 16-bpp path). Goldens are
+the card, TextureEyes' textured square, the QuickDraw 3D Viewer drawing the Teapot model, Gerbils at
+thousands of colours (the 16-bpp path), and — from `apps/virtual_wings_qd3d.dmg` on the 21" monitor — Virtual Wings'
+cockpit view. That row shows the card, not QuickDraw 3D's software engine, draws it: the card has drawn nothing
+before the cockpit opens, then completes frames of over 200 scanlines from loaded texture maps, and the view matches
+a golden of textured, hazy terrain (with the game's acceleration switched off, the card draws no frame and the
+software engine's flat-shaded view differs from the golden in nearly half its pixels). Goldens are
 regenerated with `TEST_VARS="REGEN=1"`.
 
 `tests/e2e/web2-specs/qd3d-thread.spec.ts` checks the browser build: the renderer comes up on its Web
