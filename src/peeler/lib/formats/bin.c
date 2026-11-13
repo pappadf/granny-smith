@@ -127,87 +127,65 @@ static bin_header_t bin_parse_header(const uint8_t *hdr) {
 
 // Decode a MacBinary file into a peel_file_t with both forks and metadata.
 // This is the shared implementation for both peel_bin and peel_bin_file.
-// bin.md § 14.1 — decoding steps for a MacBinary II file record.
-static peel_file_t bin_decode(const uint8_t *src, size_t len, decode_ctx_t *ctx) {
+// bin.md § 14.1 — decoding steps for a MacBinary II file record.  0, or -1
+// with *err set (and nothing allocated).
+static int bin_decode(const uint8_t *src, size_t len, peel_file_t *file, peel_err_t **err) {
+    memset(file, 0, sizeof(*file));
     // bin.md § 14.1 step 1 — need at least 128 bytes for the header
     if (len < MB_BLOCK) {
-        decode_abort(ctx, "MacBinary: input too short (%zu bytes)", len);
+        *err = make_err("MacBinary: input too short (%zu bytes)", len);
+        return -1;
     }
-
     // bin.md § 14.1 step 2 — validate header
     if (!bin_validate(src)) {
-        decode_abort(ctx, "MacBinary: invalid header");
+        *err = make_err("MacBinary: invalid header");
+        return -1;
     }
-
-    // Parse header metadata
     bin_header_t hdr = bin_parse_header(src);
-
     // bin.md § 6.3 — bounds-check fork lengths, against the same limit as
-    // every other format (this used to be its own, 2 GiB).
+    // every other format.
     if (hdr.data_len > PEEL_MAX_FORK || hdr.rsrc_len > PEEL_MAX_FORK) {
-        decode_abort(ctx, "MacBinary: fork length exceeds maximum");
+        *err = make_err("MacBinary: fork length exceeds maximum");
+        return -1;
     }
-
     // bin.md § 14.1 step 3 — advance past header and optional secondary header
     size_t pos = MB_BLOCK;
-    if (hdr.sec_hdr_len > 0) {
-        // bin.md § 9.2 — skip secondary header + alignment padding
-        pos += hdr.sec_hdr_len + pad128(hdr.sec_hdr_len);
+    if (hdr.sec_hdr_len > 0)
+        pos += hdr.sec_hdr_len + pad128(hdr.sec_hdr_len); // bin.md § 9.2
+    // bin.md § 14.1 steps 4 and 5 — the forks, each padded to 128 bytes
+    // (bin.md § 10.1); both checked before either is copied.
+    size_t data_off = pos, rsrc_off = data_off + hdr.data_len + pad128(hdr.data_len);
+    if (!peel_extent_fits(data_off, hdr.data_len, len)) {
+        *err = make_err("MacBinary: data fork truncated");
+        return -1;
     }
-
-    // bin.md § 14.1 step 4 — read the data fork
-    if (pos + hdr.data_len > len) {
-        decode_abort(ctx, "MacBinary: data fork truncated");
+    if (!peel_extent_fits(rsrc_off, hdr.rsrc_len, len)) {
+        *err = make_err("MacBinary: resource fork truncated");
+        return -1;
     }
-
-    // Forks are owned by ctx until the caller has the whole file, so an abort
-    // below frees whatever was copied -- no hand-written cleanup per path.
-    peel_buf_t data_fork = {0};
-    if (hdr.data_len > 0) {
-        data_fork.data = dctx_malloc(ctx, hdr.data_len);
-        memcpy(data_fork.data, src + pos, hdr.data_len);
-        data_fork.size = hdr.data_len;
-        data_fork.owned = true;
+    uint8_t *data = hdr.data_len ? malloc(hdr.data_len) : NULL;
+    uint8_t *rsrc = hdr.rsrc_len ? malloc(hdr.rsrc_len) : NULL;
+    if ((hdr.data_len && !data) || (hdr.rsrc_len && !rsrc)) {
+        free(data);
+        free(rsrc);
+        *err = make_err("MacBinary: out of memory");
+        return -1;
     }
-
-    // bin.md § 10.1 — skip data fork + padding to reach resource fork
-    pos += hdr.data_len + pad128(hdr.data_len);
-
-    // bin.md § 14.1 step 5 — read the resource fork
-    if (pos + hdr.rsrc_len > len) {
-        decode_abort(ctx, "MacBinary: resource fork truncated");
+    if (data) {
+        memcpy(data, src + data_off, hdr.data_len);
+        file->data_fork = (peel_buf_t){.data = data, .size = hdr.data_len, .owned = true};
     }
-
-    peel_buf_t rsrc_fork = {0};
-    if (hdr.rsrc_len > 0) {
-        rsrc_fork.data = dctx_malloc(ctx, hdr.rsrc_len);
-        memcpy(rsrc_fork.data, src + pos, hdr.rsrc_len);
-        rsrc_fork.size = hdr.rsrc_len;
-        rsrc_fork.owned = true;
-    }
-
-    // Assemble the result file
-    peel_file_t file;
-    memset(&file, 0, sizeof(file));
-
-    // Copy filename into metadata
-    size_t nl = hdr.name_len;
-    if (nl > sizeof(file.meta.name) - 1) {
-        nl = sizeof(file.meta.name) - 1;
+    if (rsrc) {
+        memcpy(rsrc, src + rsrc_off, hdr.rsrc_len);
+        file->resource_fork = (peel_buf_t){.data = rsrc, .size = hdr.rsrc_len, .owned = true};
     }
     size_t np = 0; // one sanitised component (peel_append_segment)
-    peel_append_segment(file.meta.name, sizeof(file.meta.name), &np, (const uint8_t *)hdr.name, nl);
-
-    file.meta.mac_type = hdr.mac_type;
-    file.meta.mac_creator = hdr.mac_creator;
-
+    peel_append_segment(file->meta.name, sizeof(file->meta.name), &np, (const uint8_t *)hdr.name, hdr.name_len);
+    file->meta.mac_type = hdr.mac_type;
+    file->meta.mac_creator = hdr.mac_creator;
     // bin.md § 14.1 step 8 / § 8.1 — sanitize Finder flags
-    file.meta.finder_flags = hdr.finder_flags & (uint16_t)~FINDER_CLEAR_MASK;
-
-    file.data_fork = data_fork;
-    file.resource_fork = rsrc_fork;
-
-    return file;
+    file->meta.finder_flags = hdr.finder_flags & (uint16_t)~FINDER_CLEAR_MASK;
+    return 0;
 }
 
 // ============================================================================
@@ -232,20 +210,9 @@ bool bin_detect(const uint8_t *src, size_t len) {
 // pattern for .sea.bin self-extracting archives).
 peel_buf_t peel_bin(const uint8_t *src, size_t len, peel_err_t **err) {
     *err = NULL;
-
-    // Use setjmp/longjmp for deep-error abort throughout the decode pipeline
-    decode_ctx_t ctx;
-    dctx_init(&ctx);
-    if (setjmp(ctx.jmp) != 0) {
-        dctx_cleanup(&ctx);
-        *err = make_err("%s", ctx.errmsg);
+    peel_file_t file;
+    if (bin_decode(src, len, &file, err) != 0)
         return (peel_buf_t){0};
-    }
-
-    peel_file_t file = bin_decode(src, len, &ctx);
-    dctx_release(&ctx, file.data_fork.data);
-    dctx_release(&ctx, file.resource_fork.data);
-    dctx_cleanup(&ctx);
 
     // bin.md § 10.3 — apply fork selection heuristic.  Whether the data
     // fork is a StuffIt archive is sit.c's own detector's call: this file
@@ -269,19 +236,8 @@ peel_buf_t peel_bin(const uint8_t *src, size_t len, peel_err_t **err) {
 // Decode a MacBinary file and return both forks plus metadata.
 peel_file_t peel_bin_file(const uint8_t *src, size_t len, peel_err_t **err) {
     *err = NULL;
-
-    decode_ctx_t ctx;
-    dctx_init(&ctx);
-    if (setjmp(ctx.jmp) != 0) {
-        dctx_cleanup(&ctx);
-        *err = make_err("%s", ctx.errmsg);
-        return (peel_file_t){0};
-    }
-
-    peel_file_t file = bin_decode(src, len, &ctx);
-    dctx_release(&ctx, file.data_fork.data);
-    dctx_release(&ctx, file.resource_fork.data);
-    dctx_cleanup(&ctx);
+    peel_file_t file;
+    bin_decode(src, len, &file, err);
     return file;
 }
 

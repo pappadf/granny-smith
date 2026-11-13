@@ -32,6 +32,7 @@ static const codec_entry_t k_codecs[CODEC_COUNT] = {
     [CODEC_XZ] = {"xz",           &codec_xz_dec,         &codec_xz_enc   },
     [CODEC_LZMA_ALONE] = {"lzma",         &codec_lzma_alone_dec, NULL            },
     [CODEC_RLE90] = {"rle90",        &codec_rle90_dec,      NULL            },
+    [CODEC_BINHEX] = {"binhex",       &codec_binhex_dec,     NULL            },
     [CODEC_RLE90_BINHEX] = {"rle90-binhex", &codec_rle90_dec,      NULL            },
     [CODEC_SIT2] = {"sit2",         &codec_sit2_dec,       NULL            },
     [CODEC_SIT3] = {"sit3",         &codec_sit3_dec,       NULL            },
@@ -275,7 +276,13 @@ codec_dec_t *codec_dec_new(codec_id_t id, const codec_dec_opts_t *o, int *err) {
     bool exact = ops->sized || o->exact;
     if (exact && o->out_len == CODEC_LEN_UNKNOWN)
         return NULL;
-    if (o->check != CODEC_CHECK_NONE && o->check != CODEC_CHECK_CRC32 && o->check != CODEC_CHECK_CRC16_ARC)
+    if (o->check < CODEC_CHECK_NONE || o->check > CODEC_CHECK_CRC16_XMODEM)
+        return NULL;
+    if (o->check_stored != 0 && (o->check_stored != 2 && o->check_stored != 4))
+        return NULL;
+    if (o->check_stored && (o->check == CODEC_CHECK_NONE || o->out_len == CODEC_LEN_UNKNOWN))
+        return NULL;
+    if (o->out_len != CODEC_LEN_UNKNOWN && o->out_len > UINT64_MAX - 8 - o->skip)
         return NULL;
     codec_dec_t *d = calloc(1, sizeof(*d));
     if (!d) {
@@ -284,7 +291,12 @@ codec_dec_t *codec_dec_new(codec_id_t id, const codec_dec_opts_t *o, int *err) {
     }
     d->ops = ops;
     d->id = id;
-    d->out_len = o->out_len;
+    // Inside, the stream is the skipped bytes, the output and any stated
+    // checksum after it: out_len counts all of them.
+    d->skip = o->skip;
+    d->deliver = o->out_len;
+    d->stored = o->check_stored;
+    d->out_len = o->out_len == CODEC_LEN_UNKNOWN ? CODEC_LEN_UNKNOWN : o->skip + o->out_len + (uint64_t)o->check_stored;
     d->exact = exact;
     d->check = o->check;
     d->check_value = o->check_value;
@@ -336,7 +348,8 @@ void codec_dec_free(codec_dec_t *d) {
 }
 
 uint64_t codec_dec_total_out(const codec_dec_t *d) {
-    return d->ring.drained;
+    uint64_t n = d->ring.drained > d->skip ? d->ring.drained - d->skip : 0;
+    return n < d->deliver ? n : d->deliver;
 }
 
 uint64_t codec_dec_consumed(const codec_dec_t *d) {
@@ -355,20 +368,39 @@ int codec_dec_input_error(const codec_dec_t *d) {
     return d && d->status == CODEC_ERR_INPUT ? d->in.err : 0;
 }
 
-// Copy undrained ring bytes to out[*n..cap).
+// Hand undrained ring bytes on: those before the output (opts.skip) are
+// dropped, the output's go to out[*n..cap) and into the checksum, and a
+// stated checksum after it (opts.check_stored) is kept for the end.
 static void drain(codec_dec_t *d, uint8_t *out, size_t cap, size_t *n) {
     codec_ring_t *r = &d->ring;
-    while (*n < cap && r->drained < r->total) {
+    uint64_t end = d->deliver == CODEC_LEN_UNKNOWN ? UINT64_MAX : d->skip + d->deliver;
+    while (r->drained < r->total) {
         const uint8_t *p;
         size_t k = ring_span(r, r->drained, &p);
-        if (k > cap - *n)
-            k = cap - *n;
-        memcpy(out + *n, p, k);
-        if (d->check == CODEC_CHECK_CRC32)
-            d->check_sum = codec_crc32(d->check_sum, out + *n, k);
-        else if (d->check == CODEC_CHECK_CRC16_ARC)
-            d->check_sum = codec_crc16_arc((uint16_t)d->check_sum, out + *n, k);
-        *n += k;
+        uint64_t at = r->drained;
+        if (at < d->skip) {
+            if (k > d->skip - at)
+                k = (size_t)(d->skip - at);
+        } else if (at < end) {
+            if (*n == cap)
+                break; // the caller's buffer is full
+            if (k > end - at)
+                k = (size_t)(end - at);
+            if (k > cap - *n)
+                k = cap - *n;
+            memcpy(out + *n, p, k);
+            if (d->check == CODEC_CHECK_CRC32)
+                d->check_sum = codec_crc32(d->check_sum, p, k);
+            else if (d->check == CODEC_CHECK_CRC16_ARC)
+                d->check_sum = codec_crc16_arc((uint16_t)d->check_sum, p, k);
+            else if (d->check == CODEC_CHECK_CRC16_XMODEM)
+                d->check_sum = codec_crc16_xmodem((uint16_t)d->check_sum, p, k);
+            *n += k;
+        } else {
+            // The stated checksum (exact streams end with it: nothing follows).
+            for (size_t i = 0; i < k && at + i - end < (uint64_t)d->stored; i++)
+                d->stored_bytes[at + i - end] = p[i];
+        }
         r->drained += k;
     }
 }
@@ -389,6 +421,10 @@ int codec_dec_run(codec_dec_t *d, uint8_t *out, size_t cap, size_t *n) {
         if (d->status == CODEC_END && d->check != CODEC_CHECK_NONE) {
             // Everything is out: the stated checksum, over all of it.
             uint32_t want = d->check_value, sum = d->check_sum;
+            if (d->stored == 2)
+                want = codec_be16(d->stored_bytes);
+            else if (d->stored == 4)
+                want = codec_be32(d->stored_bytes);
             d->check = CODEC_CHECK_NONE;
             if (sum != want) {
                 snprintf(d->msg, sizeof(d->msg), "%s: the decoded bytes' checksum is 0x%X, not the stated 0x%X",

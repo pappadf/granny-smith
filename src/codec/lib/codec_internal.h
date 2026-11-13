@@ -422,8 +422,12 @@ struct codec_dec {
     uint64_t out_len; // CODEC_LEN_UNKNOWN, or the decoded size (a limit)
     int status; // 0 running, CODEC_END, or CODEC_ERR_*
     bool exact; // ends at out_len (codec_dec_opts_t.exact, or a codec with no end of its own)
-    codec_check_t check; // over the drained bytes, at the end
+    codec_check_t check; // over the delivered bytes, at the end
     uint32_t check_value, check_sum;
+    uint64_t skip; // decoded bytes before the output (dropped)
+    uint64_t deliver; // the output's own size, after skip (CODEC_LEN_UNKNOWN: to the end)
+    int stored; // bytes of stated checksum after the output (0: check_value)
+    uint8_t stored_bytes[4];
     void (*in_close)(void *ctx); // codec_input_t.close
     char msg[96]; // why it failed
     void *st; // the codec's own state
@@ -457,9 +461,9 @@ static inline bool codec_room_for(const codec_dec_t *d, size_t burst) {
 }
 
 extern const codec_dec_ops_t codec_copy_dec, codec_deflate_dec, codec_zlib_dec, codec_gzip_dec, codec_adc_dec,
-    codec_bzip2_dec, codec_lzfse_dec, codec_xz_dec, codec_lzma_alone_dec, codec_rle90_dec, codec_sit2_dec,
-    codec_sit3_dec, codec_sit13_dec, codec_sit15_dec, codec_cpt_rle_dec, codec_cpt_lzh_dec, codec_dcmp_dec,
-    codec_gsrle_dec;
+    codec_bzip2_dec, codec_lzfse_dec, codec_xz_dec, codec_lzma_alone_dec, codec_rle90_dec, codec_binhex_dec,
+    codec_sit2_dec, codec_sit3_dec, codec_sit13_dec, codec_sit15_dec, codec_cpt_rle_dec, codec_cpt_lzh_dec,
+    codec_dcmp_dec, codec_gsrle_dec;
 
 // ============================================================================
 // Encoders

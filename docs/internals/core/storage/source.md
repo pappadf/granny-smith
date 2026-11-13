@@ -20,7 +20,7 @@ host file roms.zip                              source (random)
   └─ zip namespace                              list members
        └─ open("System 7.sit")                  source (random: stored, or stream: deflated)
             └─ sit namespace                    list entries
-                 └─ open("Disk Tools.img")      source (whole: decoded on first read)
+                 └─ open("Disk Tools.img")      source (earned: decoded as far as read)
                       └─ DC42 view              source
                            └─ disk namespace    partition1
                                 └─ open("System") source
@@ -79,11 +79,11 @@ from serving a stale base while the guest writes to its delta.
 
 The tier is advisory but honest; callers make policy from it. A view has its
 parent's tier. A stored archive member is `RANDOM`; an NDIF/UDIF chunk map
-and a BGZF gzip are `INDEXED`; a deflated zip member, a plain gzip and a
-compressed StuffIt or Compact Pro fork are `EARNED` -- decoded a buffer at a
-time as reads reach them, into a sink that keeps what was decoded -- and
-`RANDOM` once the sink holds all of it; a BinHex fork is `WHOLE` (decoded in
-full on first read: its files are small). A decode-through wrapper is
+and a BGZF gzip are `INDEXED`; a deflated zip member, a plain gzip, a
+compressed StuffIt or Compact Pro fork and a BinHex fork are `EARNED` --
+decoded a buffer at a time as reads reach them, into a sink that keeps what
+was decoded -- and `RANDOM` once the sink holds all of it. A decode-through
+wrapper is
 `EARNED`. `vfs_is_expandable` probes what is cheap to read now (`INDEXED`
 or better) as it is, and decodes a compressed member of at most 64 MB to
 probe it (one pass into the sink serves both its head and its tail), so a

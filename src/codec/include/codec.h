@@ -33,6 +33,7 @@
 //   CODEC_LZMA_ALONE      x             legacy .lzma
 //   CODEC_RLE90           x             0x90-escape run lengths (StuffIt method 1)
 //   CODEC_RLE90_BINHEX    x             the same, in BinHex's dialect
+//   CODEC_BINHEX          x             BinHex 4.0's 6-bit text (RLE90_BINHEX stacks on it)
 //   CODEC_SIT2            x             StuffIt method 2 (LZW, 14-bit)
 //   CODEC_SIT3            x             StuffIt method 3 (static Huffman)
 //   CODEC_SIT13           x             StuffIt method 13 (LZSS + Huffman)
@@ -84,6 +85,7 @@ typedef enum {
     CODEC_LZMA_ALONE,
     CODEC_RLE90,
     CODEC_RLE90_BINHEX,
+    CODEC_BINHEX,
     CODEC_SIT2,
     CODEC_SIT3,
     CODEC_SIT13,
@@ -133,11 +135,13 @@ static inline int codec_dcmp_is_compressed(const uint8_t *p, size_t len) {
 }
 
 // A checksum over the decoded bytes that the container states (zip's
-// CRC-32, StuffIt's CRC-16), verified once the stream has ended.
+// CRC-32, StuffIt's and BinHex's CRC-16s), verified once the stream has
+// ended.
 typedef enum {
     CODEC_CHECK_NONE = 0,
     CODEC_CHECK_CRC32, // codec_crc32
     CODEC_CHECK_CRC16_ARC, // codec_crc16_arc
+    CODEC_CHECK_CRC16_XMODEM, // codec_crc16_xmodem
 } codec_check_t;
 
 typedef struct {
@@ -152,8 +156,16 @@ typedef struct {
     // CODEC_LEN_UNKNOWN: no limit.
     uint64_t out_len;
     int exact;
-    codec_check_t check; // verified at the end: CODEC_ERR_CHECKSUM
+    // A part of a longer stream (a BinHex fork): the first `skip` decoded
+    // bytes are dropped, unseen; out_len (and exact) count from there.
+    uint64_t skip;
+    // Verified at the end: CODEC_ERR_CHECKSUM.  The stated value is
+    // check_value, or -- with check_stored 2 or 4 -- the bytes the stream
+    // decodes to right after the output, big-endian (BinHex's CRC follows
+    // each fork); those are read, not output, and need out_len.
+    codec_check_t check;
     uint32_t check_value;
+    int check_stored;
 } codec_dec_opts_t;
 
 typedef struct codec_dec codec_dec_t;

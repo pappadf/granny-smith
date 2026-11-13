@@ -77,11 +77,11 @@ peel_source_release(src);
   far as reads require (tier `EARNED`: what has been decoded stays in the
   sink, so backward reads are free). Every decoder is resumable -- deflate,
   StuffIt's RLE90, LZW, Huffman (3), LZSS+Huffman (13) and Arsenic (15),
-  Compact Pro's LZH and RLE -- stopping wherever the caller's buffer fills,
-  so a reader never re-decodes from the start and never waits for more of
-  a fork than it asked for. The fork CRC is checked once the fork is
-  complete. BinHex alone decodes a fork whole (tier `WHOLE`): its files are
-  small. The buffer API drains the same decoders, so both decode one way. A plain gzip stream
+  Compact Pro's LZH and RLE, BinHex's text and RLE -- stopping wherever the
+  caller's buffer fills, so a reader never re-decodes from the start and
+  never waits for more of a fork than it asked for. The fork CRC is checked
+  once the fork is complete (a BinHex fork's from the two bytes after it,
+  its decoder skipping the header and any fork before). The buffer API drains the same decoders, so both decode one way. A plain gzip stream
   states no reliable size -- its tail ISIZE names only the last member,
   modulo 4 GiB -- so the listing shows that as a hint (as `gzip -l` does)
   and the fork's source earns its true size with one decoding pass; the

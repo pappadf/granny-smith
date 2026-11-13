@@ -893,6 +893,76 @@ TEST(sit_lzw_strings_and_clear) {
     ASSERT_EQ_INT(CODEC_ERR_DATA, decode_fails(CODEC_SIT2, w.buf, 4, 10));
 }
 
+// BinHex's 6-bit text: whitespace ignored, the closing colon ends it, a
+// character outside the alphabet is corrupt.
+static const char k_hqx_alpha[] = "!\"#$%&'()*+,-012345689@ABCDEFGHIJKLMNPQRSTUVXYZ[`abcdefhijklmpqr";
+
+static size_t hqx_text(const uint8_t *b, size_t n, char *out) {
+    size_t k = 0;
+    uint32_t acc = 0;
+    int bits = 0;
+    for (size_t i = 0; i < n; i++) {
+        acc = acc << 8 | b[i];
+        bits += 8;
+        while (bits >= 6) {
+            bits -= 6;
+            out[k++] = k_hqx_alpha[(acc >> bits) & 63];
+            if (k % 9 == 0)
+                out[k++] = '\n'; // line breaks carry nothing
+        }
+    }
+    if (bits)
+        out[k++] = k_hqx_alpha[(acc << (6 - bits)) & 63];
+    return k;
+}
+
+TEST(binhex_text) {
+    static const uint8_t bin[] = {0x00, 0xFF, 0x90, 'M', 'a', 'c', 0x7F, 0x80, 0x01};
+    char text[64];
+    size_t k = hqx_text(bin, sizeof(bin), text);
+    memcpy(text + k, ":junk after the colon", 21);
+    expect_decode(CODEC_BINHEX, (const uint8_t *)text, k + 21, CODEC_LEN_UNKNOWN, (const char *)bin, sizeof(bin));
+    text[3] = '~'; // not in the alphabet
+    ASSERT_EQ_INT(CODEC_ERR_DATA, decode_fails(CODEC_BINHEX, (const uint8_t *)text, k, CODEC_LEN_UNKNOWN));
+}
+
+// opts.skip and a checksum stored after the output in the stream itself:
+// a part of a longer stream, checked as BinHex checks a fork.
+TEST(skip_and_stored_checksum) {
+    uint8_t s[16] = {'h', 'e', 'a', 'd', 'e', 'r', 'D', 'A', 'T', 'A', 0, 0, 'r', 'e', 's', 't'};
+    uint16_t crc = codec_crc16_xmodem(0, "DATA", 4);
+    s[10] = (uint8_t)(crc >> 8), s[11] = (uint8_t)crc;
+    for (int bad = 0; bad < 2; bad++) {
+        s[11] ^= (uint8_t)bad;
+        codec_dec_opts_t o = {
+            .in = {.src = s, .len = sizeof(s)},
+            .out_len = 4,
+            .exact = 1,
+            .skip = 6,
+            .check = CODEC_CHECK_CRC16_XMODEM,
+            .check_stored = 2
+        };
+        codec_dec_t *d = codec_dec_new(CODEC_COPY, &o, NULL);
+        ASSERT_TRUE(d != NULL);
+        uint8_t out[16];
+        int rc;
+        ASSERT_EQ_INT(4, (int)run_in_steps(d, out, 4, 1, &rc));
+        ASSERT_TRUE(memcmp(out, "DATA", 4) == 0);
+        ASSERT_EQ_INT(bad ? CODEC_ERR_CHECKSUM : 1, rc);
+        ASSERT_EQ_INT(4, (int)codec_dec_total_out(d));
+        codec_dec_free(d);
+        s[11] ^= (uint8_t)bad;
+    }
+    // A stored checksum needs the output's size.
+    codec_dec_opts_t o = {
+        .in = {.src = s, .len = sizeof(s)},
+        .out_len = CODEC_LEN_UNKNOWN,
+        .check = CODEC_CHECK_CRC16_XMODEM,
+        .check_stored = 2
+    };
+    ASSERT_TRUE(codec_dec_new(CODEC_COPY, &o, NULL) == NULL);
+}
+
 // The checkpoint run lengths: chunks, and the size they must keep to.
 TEST(gsrle_chunks) {
     static const uint8_t s[] = {0x01, 4, 0, 0, 0, 'r', 0x00, 3, 0, 0, 0, 'l', 'i', 't', 0x01, 0, 0, 0, 0, 'x'};
@@ -972,6 +1042,8 @@ int main(void) {
     RUN(cpt_rle_escapes);
     RUN(sit_lzw_strings_and_clear);
     RUN(gsrle_chunks);
+    RUN(binhex_text);
+    RUN(skip_and_stored_checksum);
     RUN(checksums_match_check_values);
     RUN(dispatch_names_and_errors);
     stuffit_tests();
