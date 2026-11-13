@@ -40,15 +40,22 @@
 #                    golden-matched.
 #   qd3d-thousands   Gerbils at thousands of colours: the card's 16-bpp
 #                    (x1555) output path, and Control's 16-bpp DAC lookup.
+#   qd3d-virtual-wings  Virtual Wings 1.0, a 1997 flight simulator, from
+#                    apps/virtual_wings_qd3d.dmg (the same system with the
+#                    game installed, registered and set to "Use 3D
+#                    acceleration hardware"): its cockpit view is drawn by
+#                    the card -- textured, hazy terrain -- not by QuickDraw
+#                    3D's software engine.
 #
-# The image rows share one boot: qd3d-boot checkpoints the open QD3D Lab
-# window.
+# The QD3D Lab rows share one boot: qd3d-boot checkpoints the open QD3D Lab
+# window.  qd3d-virtual-wings boots its own disk.
 # Run on its own with make -C tests/integration test-tnt-qd3d.
 
 include "../lib/mac.script"
 
 let hd = "../../data/systems/system_7_6_170mb_24ac_qd3d.dmg"
 let lab = "${$RESULTS_DIR}/qd3d-lab.gscp"
+let vw = "../../data/apps/virtual_wings_qd3d.dmg"
 
 # Low-memory CurApName ($910, a Pascal string) holds `name`.
 def current_app_is(name) {
@@ -421,6 +428,44 @@ def row_qd3d_thousands() {
     frames_flow("Gerbils! at thousands")
 }
 
+# ---- qd3d-virtual-wings -----------------------------------------------------
+# Virtual Wings needs at least 832 x 624, so the 8500's built-in video drives
+# the 21" display (1152 x 870, thousands of colours); the game draws in an
+# 832 x 624 window in the middle.  The clock is set to the early afternoon:
+# the game takes its time of day from the Mac's.  The disk boots with the
+# game's folder open; the Energy Saver note is dismissed, the game launched,
+# and its Cockpit button opens the 3D view over the instrument panel.
+#
+# That the CARD draws it, not QuickDraw 3D's software engine, is shown three
+# ways: nothing reaches the card until the cockpit opens; then its frames
+# keep completing, each an 832-wide strip of over 200 scanlines with
+# hundreds of objects, from texture maps loaded into the card; and the view
+# matches its golden -- textured, hazy terrain, which the software engine
+# (flat-shaded polygons under the same setting) does not draw.  The golden
+# leaves out the instrument panel below the view, whose clock runs.
+def row_qd3d_virtual_wings() {
+    machine.boot model="pm8500" ram=65536 monitor="twopage" rom="${$ROM}" pci_card="qd3d"
+    machine.rtc.time = "2026-11-03T13:00:00"
+    machine.scsi.attach_hd "${$vw}" 0
+    wait_desktop(4000000000)
+    assert debug.mac.globals.read("DSErrCode") == 0 "system error ${debug.mac.globals.read("DSErrCode"):04x} during startup"
+    machine.adb.keyboard.press "Return"
+    scheduler.run 60000000
+    double_click(82, 135)
+    scheduler.run 1500000000
+    assert current_app_is("Virtual Wings") "Virtual Wings is not the current application"
+    assert machine.pci.slot[1].card.renderer.frames == 0 "the card drew ${machine.pci.slot[1].card.renderer.frames} frames before the cockpit opened"
+    click(942, 185)
+    scheduler.run 1500000000
+    assert debug.mac.globals.read("DSErrCode") == 0 "system error ${debug.mac.globals.read("DSErrCode"):04x} in Virtual Wings"
+    assert machine.pci.slot[1].card.renderer.frames > 100 "the cockpit view is not drawn by the card (${machine.pci.slot[1].card.renderer.frames} frames)"
+    assert machine.pci.slot[1].card.renderer.lines > 200 "the card's last frame had ${machine.pci.slot[1].card.renderer.lines} scanlines, not the 3D view"
+    assert machine.pci.slot[1].card.renderer.objects > 100 "the card's last frame held ${machine.pci.slot[1].card.renderer.objects} objects, not the scenery"
+    assert machine.pci.slot[1].card.renderer.read(0x80) != 0 "no texture map was loaded into the card"
+    frames_flow("Virtual Wings")
+    check_ex("goldens/qd3d-virtual-wings.png", 340, 0, 870, 1152)
+}
+
 # ---- row dispatch -----------------------------------------------------------
 
 if row_on("qd3d-device") {
@@ -446,6 +491,13 @@ if !have_media($hd) {
     }
     if row_on("qd3d-thousands") {
         row_end("qd3d-thousands", try(row_qd3d_thousands(), "FAILED"))
+    }
+}
+if row_on("qd3d-virtual-wings") {
+    if !have_media($vw) {
+        echo "skip: qd3d-virtual-wings (virtual_wings_qd3d.dmg not fetched)"
+    } else {
+        row_end("qd3d-virtual-wings", try(row_qd3d_virtual_wings(), "FAILED"))
     }
 }
 suite_done()
