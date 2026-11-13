@@ -307,7 +307,7 @@ static size_t enc_round_trip(codec_id_t id, codec_enc_t *e, int level, const uin
                     enc[7] == 0x04); // one stream, its check CRC-64
     if (id == CODEC_GSRLE) {
         // No end of its own: the size comes from the container.
-        codec_dec_opts_t o = {.src = enc, .len = (size_t)z, .out_len = len};
+        codec_dec_opts_t o = {.in.src = enc, .in.len = (size_t)z, .out_len = len};
         codec_dec_t *d = codec_dec_new(id, &o, NULL);
         size_t n = 0;
         ASSERT_EQ_INT(1, codec_dec_run(d, back, len, &n));
@@ -441,11 +441,11 @@ TEST(vectors_stream_at_every_buffer_size) {
                 pull_src_t ps = {v->enc, v->enc_len, 0, pulls[p]};
                 codec_dec_opts_t o = {.out_len = CODEC_LEN_UNKNOWN};
                 if (pulls[p]) {
-                    o.pull = pull_from;
-                    o.pull_ctx = &ps;
+                    o.in.pull = pull_from;
+                    o.in.ctx = &ps;
                 } else {
-                    o.src = v->enc;
-                    o.len = v->enc_len;
+                    o.in.src = v->enc;
+                    o.in.len = v->enc_len;
                 }
                 int err = 0;
                 codec_dec_t *d = codec_dec_new((codec_id_t)v->codec, &o, &err);
@@ -483,12 +483,12 @@ TEST(deflate_reports_exact_consumption) {
     memset(b + v->enc_len, 0xEE, 13); // a trailer the stream must not claim
     for (int p = 0; p < 2; p++) {
         pull_src_t ps = {b, n, 0, 65536};
-        codec_dec_opts_t o = {.src = b, .len = n, .out_len = CODEC_LEN_UNKNOWN};
+        codec_dec_opts_t o = {.in.src = b, .in.len = n, .out_len = CODEC_LEN_UNKNOWN};
         if (p) {
-            o.src = NULL;
-            o.len = 0;
-            o.pull = pull_from;
-            o.pull_ctx = &ps;
+            o.in.src = NULL;
+            o.in.len = 0;
+            o.in.pull = pull_from;
+            o.in.ctx = &ps;
         }
         codec_dec_t *d = codec_dec_new(CODEC_DEFLATE, &o, NULL);
         size_t k = 0;
@@ -501,7 +501,8 @@ TEST(deflate_reports_exact_consumption) {
     free(b);
 }
 
-// A pull error reaches the caller as itself, after the bytes before it.
+// A pull error reaches the caller as CODEC_ERR_INPUT, its own code kept,
+// after the bytes before it.
 static int64_t pull_fails(void *ctx, uint8_t *buf, size_t cap) {
     pull_src_t *s = ctx;
     if (s->pos >= s->len / 2)
@@ -512,12 +513,13 @@ static int64_t pull_fails(void *ctx, uint8_t *buf, size_t cap) {
 TEST(pull_errors_are_reported) {
     const vector_t *v = find("text/zlib");
     pull_src_t ps = {v->enc, v->enc_len, 0, 512};
-    codec_dec_opts_t o = {.pull = pull_fails, .pull_ctx = &ps, .out_len = CODEC_LEN_UNKNOWN};
+    codec_dec_opts_t o = {.in.pull = pull_fails, .in.ctx = &ps, .out_len = CODEC_LEN_UNKNOWN};
     codec_dec_t *d = codec_dec_new(CODEC_ZLIB, &o, NULL);
     uint8_t *out = malloc(v->len + 8);
     int rc;
     size_t got = run_in_steps(d, out, v->len, 4096, &rc);
-    ASSERT_EQ_INT(-42, rc);
+    ASSERT_EQ_INT(CODEC_ERR_INPUT, rc); // the source's own code is kept
+    ASSERT_EQ_INT(-42, codec_dec_input_error(d));
     ASSERT_TRUE(got < v->len);
     uint8_t *want = vec_gen(v->kind, v->len, v->seed);
     ASSERT_TRUE(memcmp(out, want, got) == 0); // what came out before it is right
@@ -539,9 +541,9 @@ TEST(decoders_chain) {
     uint8_t *outer = malloc(cap2);
     int64_t n2 = codec_encode(CODEC_ZLIB, 1, inner, (size_t)n1, outer, cap2);
     ASSERT_TRUE(n2 > 0);
-    codec_dec_opts_t o1 = {.src = outer, .len = (size_t)n2, .out_len = CODEC_LEN_UNKNOWN};
+    codec_dec_opts_t o1 = {.in.src = outer, .in.len = (size_t)n2, .out_len = CODEC_LEN_UNKNOWN};
     codec_dec_t *d1 = codec_dec_new(CODEC_ZLIB, &o1, NULL);
-    codec_dec_opts_t o2 = {.pull = codec_dec_pull, .pull_ctx = d1, .out_len = CODEC_LEN_UNKNOWN};
+    codec_dec_opts_t o2 = {.in.pull = codec_dec_pull, .in.ctx = d1, .out_len = CODEC_LEN_UNKNOWN};
     codec_dec_t *d2 = codec_dec_new(CODEC_ZLIB, &o2, NULL);
     uint8_t *back = malloc(50000 + 8);
     int rc;
@@ -568,7 +570,7 @@ TEST(stacked_decoder_owns_its_input) {
     uint8_t *outer = malloc(cap2);
     int64_t n2 = codec_encode(CODEC_ZLIB, 6, inner, (size_t)n1, outer, cap2);
     ASSERT_TRUE(n1 > 0 && n2 > 0);
-    codec_dec_opts_t o = {.src = outer, .len = (size_t)n2, .out_len = CODEC_LEN_UNKNOWN};
+    codec_dec_opts_t o = {.in.src = outer, .in.len = (size_t)n2, .out_len = CODEC_LEN_UNKNOWN};
     codec_dec_opts_t top = {.out_len = 30000, .check = CODEC_CHECK_CRC32, .check_value = codec_crc32(0, data, 30000)};
     codec_dec_t *d = codec_dec_stack(codec_dec_new(CODEC_ZLIB, &o, NULL), CODEC_ZLIB, &top, NULL);
     ASSERT_TRUE(d != NULL);
@@ -609,7 +611,7 @@ static void count_close(void *ctx) {
 TEST(pull_close_owns_the_input) {
     const vector_t *v = find("text3k/deflate");
     pull_src_t ps = {v->enc, v->enc_len, 0, 100};
-    codec_dec_opts_t o = {.pull = pull_from, .pull_ctx = &ps, .pull_close = count_close, .out_len = CODEC_LEN_UNKNOWN};
+    codec_dec_opts_t o = {.in.pull = pull_from, .in.ctx = &ps, .in.close = count_close, .out_len = CODEC_LEN_UNKNOWN};
     g_closed = 0;
     codec_dec_t *d = codec_dec_new(CODEC_DEFLATE, &o, NULL);
     ASSERT_TRUE(d != NULL);
@@ -630,8 +632,8 @@ TEST(stated_checksums_are_verified) {
     for (int k = 0; k < 2; k++) {
         uint32_t good = kinds[k] == CODEC_CHECK_CRC32 ? codec_crc32(0, want, v->len) : codec_crc16_arc(0, want, v->len);
         for (int bad = 0; bad < 2; bad++) {
-            codec_dec_opts_t o = {.src = v->enc,
-                                  .len = v->enc_len,
+            codec_dec_opts_t o = {.in.src = v->enc,
+                                  .in.len = v->enc_len,
                                   .out_len = CODEC_LEN_UNKNOWN,
                                   .check = kinds[k],
                                   .check_value = good ^ (uint32_t)bad};
@@ -654,7 +656,7 @@ TEST(stated_checksums_are_verified) {
 // output past it is dropped, a stream short of it is truncated.
 TEST(exact_size_overrides_the_stream) {
     static const uint8_t s[] = {'a', 0x90, 10, 'b'}; // RLE90: "a" x 10, "b"
-    codec_dec_opts_t o = {.src = s, .len = sizeof(s), .out_len = 5, .exact = 1};
+    codec_dec_opts_t o = {.in.src = s, .in.len = sizeof(s), .out_len = 5, .exact = 1};
     codec_dec_t *d = codec_dec_new(CODEC_RLE90, &o, NULL);
     uint8_t out[32];
     int rc;
@@ -732,7 +734,7 @@ TEST(gzip_members) {
             memcpy(b + n, "junk!", 5); // ignored, as gzip -d ignores it
             uint8_t *out = malloc(2 * v->len + 8);
             pull_src_t ps = {b, n + 5, 0, 977};
-            codec_dec_opts_t o = {.pull = pull_from, .pull_ctx = &ps, .out_len = CODEC_LEN_UNKNOWN};
+            codec_dec_opts_t o = {.in.pull = pull_from, .in.ctx = &ps, .out_len = CODEC_LEN_UNKNOWN};
             codec_dec_t *d = codec_dec_new(CODEC_GZIP, &o, NULL);
             int rc;
             size_t got = run_in_steps(d, out, 2 * v->len, v->len > 40000 ? 4093 : 7, &rc);
@@ -770,10 +772,10 @@ TEST(gzip_members) {
 
 // Decode a hand-built stream, sized `want_len` (or CODEC_LEN_UNKNOWN), and
 // compare; through buffers of 1 byte and of all of it.
-static void expect_decode(codec_id_t id, uint32_t flags, const uint8_t *src, size_t len, uint64_t out_len,
-                          const char *want, size_t want_len) {
+static void expect_decode(codec_id_t id, const uint8_t *src, size_t len, uint64_t out_len, const char *want,
+                          size_t want_len) {
     for (int one = 0; one < 2; one++) {
-        codec_dec_opts_t o = {.src = src, .len = len, .out_len = out_len, .flags = flags};
+        codec_dec_opts_t o = {.in.src = src, .in.len = len, .out_len = out_len};
         int err = 0;
         codec_dec_t *d = codec_dec_new(id, &o, &err);
         ASSERT_TRUE(d != NULL);
@@ -790,8 +792,8 @@ static void expect_decode(codec_id_t id, uint32_t flags, const uint8_t *src, siz
 }
 
 // The result of decoding a stream that must fail.
-static int decode_fails(codec_id_t id, uint32_t flags, const uint8_t *src, size_t len, uint64_t out_len) {
-    codec_dec_opts_t o = {.src = src, .len = len, .out_len = out_len, .flags = flags};
+static int decode_fails(codec_id_t id, const uint8_t *src, size_t len, uint64_t out_len) {
+    codec_dec_opts_t o = {.in.src = src, .in.len = len, .out_len = out_len};
     codec_dec_t *d = codec_dec_new(id, &o, NULL);
     ASSERT_TRUE(d != NULL);
     uint8_t out[600];
@@ -809,25 +811,25 @@ TEST(rle90_both_dialects) {
     static const uint8_t s[] = {'a', 0x90, 4, 0x90, 0, 'b', 0x90, 1, 'c'};
     // StuffIt: after an escaped 0x90 a run repeats the byte before it; a
     // count of 1 adds nothing.
-    expect_decode(CODEC_RLE90, 0, s, sizeof(s), CODEC_LEN_UNKNOWN,
+    expect_decode(CODEC_RLE90, s, sizeof(s), CODEC_LEN_UNKNOWN,
                   "aaaa\x90"
                   "bc",
                   7);
-    ASSERT_EQ_INT(CODEC_ERR_DATA, decode_fails(CODEC_RLE90, CODEC_RLE90_BINHEX, s, sizeof(s), CODEC_LEN_UNKNOWN));
+    ASSERT_EQ_INT(CODEC_ERR_DATA, decode_fails(CODEC_RLE90_BINHEX, s, sizeof(s), CODEC_LEN_UNKNOWN));
     // BinHex: an escaped 0x90 is what a run repeats.
     static const uint8_t h[] = {'x', 0x90, 0, 0x90, 3};
-    expect_decode(CODEC_RLE90, CODEC_RLE90_BINHEX, h, sizeof(h), CODEC_LEN_UNKNOWN, "x\x90\x90\x90", 4);
-    expect_decode(CODEC_RLE90, 0, h, sizeof(h), CODEC_LEN_UNKNOWN, "x\x90xx", 4);
+    expect_decode(CODEC_RLE90_BINHEX, h, sizeof(h), CODEC_LEN_UNKNOWN, "x\x90\x90\x90", 4);
+    expect_decode(CODEC_RLE90, h, sizeof(h), CODEC_LEN_UNKNOWN, "x\x90xx", 4);
     // A stream that ends inside an escape is truncated.
     static const uint8_t t[] = {'a', 0x90};
-    ASSERT_EQ_INT(CODEC_ERR_TRUNCATED, decode_fails(CODEC_RLE90, 0, t, sizeof(t), CODEC_LEN_UNKNOWN));
+    ASSERT_EQ_INT(CODEC_ERR_TRUNCATED, decode_fails(CODEC_RLE90, t, sizeof(t), CODEC_LEN_UNKNOWN));
     // The longest run fills a ring's worth one escape at a time.
     uint8_t big[2 + 2 * 300];
     big[0] = 'z';
     for (int i = 0; i < 300; i++)
         big[1 + 2 * i] = 0x90, big[2 + 2 * i] = 0xFF;
     uint8_t *out = malloc(1 + 300 * 254 + 8);
-    codec_dec_opts_t o = {.src = big, .len = 1 + 600, .out_len = CODEC_LEN_UNKNOWN};
+    codec_dec_opts_t o = {.in.src = big, .in.len = 1 + 600, .out_len = CODEC_LEN_UNKNOWN};
     codec_dec_t *d = codec_dec_new(CODEC_RLE90, &o, NULL);
     int rc;
     ASSERT_EQ_INT(1 + 300 * 254, (int)run_in_steps(d, out, 1 + 300 * 254, 1000, &rc));
@@ -845,14 +847,14 @@ TEST(cpt_rle_escapes) {
     // 0x81 then 0x82.
     static const uint8_t s[] = {'a', 0x81, 0x82, 5, 0x81, 0x81, 'q', 0x81, 0x82, 0, 'z'};
     static const char want[] = "aaaaa\x81\x81q\x81\x82z";
-    expect_decode(CODEC_CPT_RLE, 0, s, sizeof(s), sizeof(want) - 1, want, sizeof(want) - 1);
+    expect_decode(CODEC_CPT_RLE, s, sizeof(s), sizeof(want) - 1, want, sizeof(want) - 1);
     // Sized: it ends at the size, mid-run included ...
-    expect_decode(CODEC_CPT_RLE, 0, s, sizeof(s), 3, "aaa", 3);
+    expect_decode(CODEC_CPT_RLE, s, sizeof(s), 3, "aaa", 3);
     // ... and input that runs out short of it is truncated.
-    ASSERT_EQ_INT(CODEC_ERR_TRUNCATED, decode_fails(CODEC_CPT_RLE, 0, s, sizeof(s), 100));
+    ASSERT_EQ_INT(CODEC_ERR_TRUNCATED, decode_fails(CODEC_CPT_RLE, s, sizeof(s), 100));
     // A sized codec needs its size.
     int err = 0;
-    codec_dec_opts_t o = {.src = s, .len = sizeof(s), .out_len = CODEC_LEN_UNKNOWN};
+    codec_dec_opts_t o = {.in.src = s, .in.len = sizeof(s), .out_len = CODEC_LEN_UNKNOWN};
     ASSERT_TRUE(codec_dec_new(CODEC_CPT_RLE, &o, &err) == NULL && err == CODEC_ERR_ARG);
 }
 
@@ -880,25 +882,25 @@ TEST(sit_lzw_strings_and_clear) {
     lsb_put(&w, 256, 9); // clear: the 5th code of its group of 8 ...
     lsb_put(&w, 0, 9 * 3); // ... so 3 codes of padding
     lsb_put(&w, 'z', 9);
-    expect_decode(CODEC_SIT_LZW, 0, w.buf, (w.bit + 7) / 8, 8, "abababaz", 8);
+    expect_decode(CODEC_SIT_LZW, w.buf, (w.bit + 7) / 8, 8, "abababaz", 8);
     // A string code before any string, or past the dictionary, is corrupt.
     memset(&w, 0, sizeof(w));
     lsb_put(&w, 300, 9);
-    ASSERT_EQ_INT(CODEC_ERR_DATA, decode_fails(CODEC_SIT_LZW, 0, w.buf, 4, 10));
+    ASSERT_EQ_INT(CODEC_ERR_DATA, decode_fails(CODEC_SIT_LZW, w.buf, 4, 10));
     memset(&w, 0, sizeof(w));
     lsb_put(&w, 'a', 9);
     lsb_put(&w, 400, 9);
-    ASSERT_EQ_INT(CODEC_ERR_DATA, decode_fails(CODEC_SIT_LZW, 0, w.buf, 4, 10));
+    ASSERT_EQ_INT(CODEC_ERR_DATA, decode_fails(CODEC_SIT_LZW, w.buf, 4, 10));
 }
 
 // The checkpoint run lengths: chunks, and the size they must keep to.
 TEST(gsrle_chunks) {
     static const uint8_t s[] = {0x01, 4, 0, 0, 0, 'r', 0x00, 3, 0, 0, 0, 'l', 'i', 't', 0x01, 0, 0, 0, 0, 'x'};
-    expect_decode(CODEC_GSRLE, 0, s, sizeof(s), 7, "rrrrlit", 7);
-    ASSERT_EQ_INT(CODEC_ERR_DATA, decode_fails(CODEC_GSRLE, 0, s, sizeof(s), 6)); // a chunk past the size
-    ASSERT_EQ_INT(CODEC_ERR_TRUNCATED, decode_fails(CODEC_GSRLE, 0, s, 9, 7)); // a literal cut short
+    expect_decode(CODEC_GSRLE, s, sizeof(s), 7, "rrrrlit", 7);
+    ASSERT_EQ_INT(CODEC_ERR_DATA, decode_fails(CODEC_GSRLE, s, sizeof(s), 6)); // a chunk past the size
+    ASSERT_EQ_INT(CODEC_ERR_TRUNCATED, decode_fails(CODEC_GSRLE, s, 9, 7)); // a literal cut short
     static const uint8_t bad[] = {0x02, 1, 0, 0, 0};
-    ASSERT_EQ_INT(CODEC_ERR_DATA, decode_fails(CODEC_GSRLE, 0, bad, sizeof(bad), 1));
+    ASSERT_EQ_INT(CODEC_ERR_DATA, decode_fails(CODEC_GSRLE, bad, sizeof(bad), 1));
 }
 
 // ---- checksums -----------------------------------------------------------
@@ -937,7 +939,7 @@ TEST(dispatch_names_and_errors) {
     ASSERT_TRUE(memcmp(out, "abc", 3) == 0);
     ASSERT_EQ_INT(CODEC_ERR_OVERFLOW, (int)codec_decode(CODEC_COPY, (const uint8_t *)"abc", 3, out, 2));
     // Every code has its own text.
-    for (int rc = CODEC_ERR_ARG; rc <= CODEC_ERR_DATA; rc++)
+    for (int rc = CODEC_ERR_INPUT; rc <= CODEC_ERR_DATA; rc++)
         for (int other = rc + 1; other <= CODEC_ERR_DATA; other++)
             ASSERT_TRUE(strcmp(codec_strerror(rc), codec_strerror(other)) != 0);
     // NULL input is an argument error for every decoder.

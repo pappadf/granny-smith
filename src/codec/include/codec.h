@@ -31,7 +31,8 @@
 //   CODEC_LZFSE           x             LZFSE with LZVN and stored blocks (ULFO)
 //   CODEC_XZ              x       x     xz, LZMA2 inside (ULMO)
 //   CODEC_LZMA_ALONE      x             legacy .lzma
-//   CODEC_RLE90           x             0x90-escape run lengths (StuffIt 1, BinHex)
+//   CODEC_RLE90           x             0x90-escape run lengths (StuffIt method 1)
+//   CODEC_RLE90_BINHEX    x             the same, in BinHex's dialect
 //   CODEC_SIT_LZW         x             StuffIt method 2 (LZW, 14-bit)
 //   CODEC_SIT_HUFFMAN     x             StuffIt method 3 (static Huffman)
 //   CODEC_SIT13           x             StuffIt method 13 (LZSS + Huffman)
@@ -64,6 +65,7 @@ extern "C" {
 #define CODEC_ERR_UNSUPPORTED (-5) // a valid stream using a feature not implemented
 #define CODEC_ERR_CHECKSUM    (-6) // the stream's own checksum does not match
 #define CODEC_ERR_ARG         (-7) // invalid arguments (NULL buffer, unknown codec)
+#define CODEC_ERR_INPUT       (-8) // the pull callback failed (its own code: codec_dec_input_error)
 
 // A short static description of a CODEC_ERR_* code.
 const char *codec_strerror(int64_t rc);
@@ -81,6 +83,7 @@ typedef enum {
     CODEC_XZ,
     CODEC_LZMA_ALONE,
     CODEC_RLE90,
+    CODEC_RLE90_BINHEX,
     CODEC_SIT_LZW,
     CODEC_SIT_HUFFMAN,
     CODEC_SIT13,
@@ -100,12 +103,21 @@ const char *codec_name(codec_id_t id);
 #define CODEC_LEN_UNKNOWN UINT64_MAX
 
 // Supplies compressed input: up to `cap` bytes into `buf`.  Returns the byte
-// count, 0 at the end of the input, or a negative code.
+// count, 0 at the end of the input, or a negative code of the caller's own
+// (the decoder fails with CODEC_ERR_INPUT and keeps it).
 typedef int64_t (*codec_pull_fn)(void *ctx, uint8_t *buf, size_t cap);
 
-// CODEC_RLE90 flags.
-#define CODEC_RLE90_BINHEX                                                                                             \
-    0x1u // BinHex's rules: an escaped 0x90 is the byte repeated after it; a count of 1 is an error
+// A decoder's compressed input: `len` bytes at `src`, or, when `pull` is
+// set, pulled through it as the decoder needs them.  `close`, when set, is
+// called on ctx as the decoder is freed, so a decoder can own what it reads
+// (never when codec_dec_new fails: ctx is then still the caller's).
+typedef struct {
+    const uint8_t *src;
+    size_t len;
+    codec_pull_fn pull;
+    void *ctx;
+    void (*close)(void *ctx);
+} codec_input_t;
 
 // CODEC_DCMP: the signature every System 7 compressed resource starts with
 // (0xA89F, the _Unimplemented trap, then 'er'), and the largest decoded
@@ -129,28 +141,19 @@ typedef enum {
 } codec_check_t;
 
 typedef struct {
-    // The compressed input: `len` bytes at `src`, or, when `pull` is set,
-    // pulled through it as the decoder needs them.  `pull_close`, when set,
-    // is called on pull_ctx as the decoder is freed, so a decoder can own
-    // the source it reads (not when codec_dec_new fails: pull_ctx is then
-    // still the caller's).
-    const uint8_t *src;
-    size_t len;
-    codec_pull_fn pull;
-    void *pull_ctx;
-    void (*pull_close)(void *pull_ctx);
-    // The decoded size, when the container states it.  Streams with no end
-    // of their own (ADC, the StuffIt methods 2, 3, 13 and 15, Compact Pro's
-    // RLE, GSRLE) end there and require it; for the rest it is a limit, and
-    // decoding past it is CODEC_ERR_OVERFLOW.  CODEC_LEN_UNKNOWN: no limit.
+    codec_input_t in;
+    // The decoded size, when the container states it.  One rule, by `exact`:
+    //   exact  the stream is out_len bytes: output past it is dropped and
+    //          the stream ends there; one that ends short is TRUNCATED.
+    //          Streams with no end of their own (ADC, the StuffIt methods 2,
+    //          3, 13 and 15, Compact Pro's RLE, GSRLE) are always exact, and
+    //          need out_len; any other is exact when asked (StuffIt's forks).
+    //   limit  otherwise: decoding past out_len is CODEC_ERR_OVERFLOW.
+    // CODEC_LEN_UNKNOWN: no limit.
     uint64_t out_len;
-    // `exact`: the container's size wins for any codec -- output past
-    // out_len is dropped and the stream ends there, and one that ends short
-    // of it is CODEC_ERR_TRUNCATED (StuffIt's forks).  Requires out_len.
     int exact;
     codec_check_t check; // verified at the end: CODEC_ERR_CHECKSUM
     uint32_t check_value;
-    uint32_t flags; // codec-specific (CODEC_RLE90_BINHEX)
 } codec_dec_opts_t;
 
 typedef struct codec_dec codec_dec_t;
@@ -176,11 +179,25 @@ uint64_t codec_dec_consumed(const codec_dec_t *d);
 // "" while it has not.
 const char *codec_dec_message(const codec_dec_t *d);
 
+// The pull callback's own negative code, once the decoder has failed with
+// CODEC_ERR_INPUT; 0 otherwise.
+int codec_dec_input_error(const codec_dec_t *d);
+
+// Run the decoder to the end of its stream into `out`: the stream must end
+// within `cap` bytes.  Returns the count, or a CODEC_ERR_* code
+// (CODEC_ERR_OVERFLOW when it goes on past `cap`).  The decoder stays the
+// caller's, its message intact.
+int64_t codec_dec_read(codec_dec_t *d, uint8_t *out, size_t cap);
+
+// The same into a fresh buffer that grows as needed, up to `max` bytes:
+// the malloc'd output (*n set; at least one byte allocated), or NULL with
+// *err set.
+uint8_t *codec_dec_read_alloc(codec_dec_t *d, size_t max, size_t *n, int *err);
+
 void codec_dec_free(codec_dec_t *d);
 
 // A codec_pull_fn reading a decoder's output (ctx: the codec_dec_t).  A
-// decoder pulling another reports the inner one's message when the inner
-// one fails.
+// decoder pulling another fails with the inner one's code and message.
 int64_t codec_dec_pull(void *ctx, uint8_t *buf, size_t cap);
 
 // A decoder of `id` reading `inner`'s output and owning it (freed with it,
@@ -193,12 +210,10 @@ codec_dec_t *codec_dec_stack(codec_dec_t *inner, codec_id_t id, const codec_dec_
 // Returns the count written or a CODEC_ERR_* code.
 int64_t codec_decode(codec_id_t id, const uint8_t *src, size_t len, uint8_t *dst, size_t cap);
 
-// codec_decode with the decoder's flags.
-int64_t codec_decode_flags(codec_id_t id, uint32_t flags, const uint8_t *src, size_t len, uint8_t *dst, size_t cap);
-
 // One-shot into a fresh buffer, for a stream of unknown decoded size (a PNG,
 // a compressed resource): at most `max` bytes.  Returns the malloc'd output
-// (*out_len set), or NULL with *err set.
+// (*out_len set), or NULL with *err set.  (codec_dec_read and _alloc are
+// the same on a decoder of the caller's, which keeps its message.)
 uint8_t *codec_decode_alloc(codec_id_t id, const uint8_t *src, size_t len, size_t max, size_t *out_len, int *err);
 
 // === Encoding ===

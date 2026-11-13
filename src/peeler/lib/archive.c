@@ -226,42 +226,19 @@ peel_buf_t peel_decoder_drain(codec_dec_t *d, uint64_t len, const char *what, pe
         *err = make_err("out of memory allocating %llu bytes", (unsigned long long)len);
         return (peel_buf_t){0};
     }
-    char why[160] = "";
-    size_t got = 0;
-    int rc = 0, idle = 0;
-    while (rc == 0) {
-        uint8_t spill[1];
-        size_t n = 0;
-        // Past the declared length, a decoder that has not ended gets a
-        // one-byte buffer: any byte it puts there means the fork is long.
-        bool over = got == (size_t)len;
-        rc = codec_dec_run(d, over ? spill : out + got, over ? 1 : (size_t)len - got, &n);
-        if (rc < 0) {
-            snprintf(why, sizeof(why), "%s", *codec_dec_message(d) ? codec_dec_message(d) : codec_strerror(rc));
-            break;
-        }
-        if (over && n) {
-            snprintf(why, sizeof(why), "fork decodes to more than its %llu bytes", (unsigned long long)len);
-            rc = -5;
-            break;
-        }
-        got += n;
-        idle = n ? 0 : idle + 1;
-        if (rc == 0 && idle == PEEL_DECODER_MAX_IDLE) {
-            snprintf(why, sizeof(why), "decoder made no progress");
-            rc = -5;
-        }
-    }
-    if (rc == 1 && got != (size_t)len) {
-        snprintf(why, sizeof(why), "fork decoded to %zu of %llu bytes", got, (unsigned long long)len);
-        rc = -5;
-    }
-    codec_dec_free(d);
-    if (rc != 1) {
-        *err = make_err("%s%s%s", what, sep, why);
+    int64_t n = codec_dec_read(d, out, (size_t)len);
+    if (n != (int64_t)len) {
+        if (n >= 0)
+            *err = make_err("%s%sfork decoded to %lld of %llu bytes", what, sep, (long long)n, (unsigned long long)len);
+        else if (n == CODEC_ERR_OVERFLOW && !*codec_dec_message(d))
+            *err = make_err("%s%sfork decodes to more than its %llu bytes", what, sep, (unsigned long long)len);
+        else
+            *err = make_err("%s%s%s", what, sep, codec_dec_message(d));
+        codec_dec_free(d);
         free(out);
         return (peel_buf_t){0};
     }
+    codec_dec_free(d);
     if (len == 0) {
         free(out);
         return (peel_buf_t){0};
@@ -339,12 +316,11 @@ static int decode_fill(decode_src_t *d, uint64_t want) {
         return -5;
     }
     uint8_t chunk[65536];
-    int idle = 0;
     while (!d->committed && d->produced < want) {
+        // A run returns 0 only with the chunk full, so every pass progresses.
         size_t n = 0;
         int rc = codec_dec_run(d->dec, chunk, sizeof(chunk), &n);
-        idle = n ? 0 : idle + 1;
-        if (rc < 0 || (rc == 0 && idle == PEEL_DECODER_MAX_IDLE) || decode_put(d, chunk, n, rc == 1) != 0) {
+        if (rc < 0 || decode_put(d, chunk, n, rc == 1) != 0) {
             d->failed = true; // a corrupt fork, one that is not the size it declared, or the sink failed
             return -5;
         }

@@ -36,7 +36,7 @@ static void w_u32(uint8_t *p, uint32_t v) {
 // image_ndif.c does -- the bytes the input yields (all of them, or up to
 // cap), or a CODEC_ERR_* code.
 static long adc(const uint8_t *in, size_t len, uint8_t *out, size_t cap) {
-    codec_dec_opts_t o = {.src = in, .len = len, .out_len = cap};
+    codec_dec_opts_t o = {.in.src = in, .in.len = len, .out_len = cap};
     codec_dec_t *d = codec_dec_new(CODEC_ADC, &o, NULL);
     ASSERT_TRUE(d != NULL);
     size_t got = 0;

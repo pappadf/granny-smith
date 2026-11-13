@@ -617,7 +617,7 @@ TEST(test_sit13_resumes_byte_by_byte) {
     ASSERT_TRUE(err == 0 && whole.size == n);
     ASSERT_TRUE(memcmp(whole.data, want, n) == 0);
     free(whole.data);
-    codec_dec_opts_t o = {.src = w.buf, .len = (w.nbits + 7) / 8, .out_len = n};
+    codec_dec_opts_t o = {.in.src = w.buf, .in.len = (w.nbits + 7) / 8, .out_len = n};
     codec_dec_t *d = codec_dec_new(CODEC_SIT13, &o, NULL);
     ASSERT_TRUE(d != NULL);
     drive_by_bytes(d, want, n);

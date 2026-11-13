@@ -146,10 +146,10 @@ static void hqx_decoder_init(hqx_decoder_t *dec, const uint8_t *src, size_t len,
         dec->rev[(unsigned char)hqx_alphabet[i]] = (uint8_t)i;
     }
 
-    codec_dec_opts_t o = {.pull = hqx_pull, .pull_ctx = dec, .out_len = CODEC_LEN_UNKNOWN, .flags = CODEC_RLE90_BINHEX};
+    codec_dec_opts_t o = {.in.pull = hqx_pull, .in.ctx = dec, .out_len = CODEC_LEN_UNKNOWN};
     int rc = 0;
     codec_dec_free(ctx->dec);
-    ctx->dec = codec_dec_new(CODEC_RLE90, &o, &rc);
+    ctx->dec = codec_dec_new(CODEC_RLE90_BINHEX, &o, &rc);
     if (!ctx->dec)
         decode_abort(ctx, "BinHex: %s", codec_strerror(rc));
 }

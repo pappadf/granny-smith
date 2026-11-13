@@ -45,11 +45,11 @@ codec_dec_t *peel_fork_decoder(peel_source_t *src, uint64_t off, uint64_t len, c
     r->pos = off;
     r->end = len > UINT64_MAX - off ? UINT64_MAX : off + len;
     codec_dec_opts_t o = *opts;
-    o.src = NULL;
-    o.len = 0;
-    o.pull = range_pull;
-    o.pull_ctx = r;
-    o.pull_close = range_close;
+    o.in.src = NULL;
+    o.in.len = 0;
+    o.in.pull = range_pull;
+    o.in.ctx = r;
+    o.in.close = range_close;
     int rc = 0;
     codec_dec_t *d = codec_dec_new(id, &o, &rc);
     if (!d) {

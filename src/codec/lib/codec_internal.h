@@ -399,12 +399,11 @@ struct codec_dec {
     codec_in_t in;
     codec_ring_t ring;
     uint64_t out_len; // CODEC_LEN_UNKNOWN, or the decoded size (a limit)
-    uint32_t flags;
     int status; // 0 running, CODEC_END, or CODEC_ERR_*
-    bool exact; // ends at out_len whatever the codec (codec_dec_opts_t.exact)
+    bool exact; // ends at out_len (codec_dec_opts_t.exact, or a codec with no end of its own)
     codec_check_t check; // over the drained bytes, at the end
     uint32_t check_value, check_sum;
-    void (*pull_close)(void *pull_ctx);
+    void (*in_close)(void *ctx); // codec_input_t.close
     char msg[96]; // why it failed
     void *st; // the codec's own state
 };

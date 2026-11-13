@@ -177,7 +177,7 @@ int ndif_decode_chunk(const ndif_chunk_t *chunk, const uint8_t *src, size_t src_
         // A well-formed chunk decodes to exactly `need` bytes; one whose
         // input runs out first keeps what it decoded, zero-padded, so
         // callers always get a full sector run.  Anything else is corrupt.
-        codec_dec_opts_t o = {.src = src, .len = src_len, .out_len = need};
+        codec_dec_opts_t o = {.in.src = src, .in.len = src_len, .out_len = need};
         codec_dec_t *d = codec_dec_new(CODEC_ADC, &o, NULL);
         if (!d)
             return -ENOMEM;

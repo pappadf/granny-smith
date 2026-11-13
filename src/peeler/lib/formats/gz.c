@@ -124,49 +124,22 @@ static bool gz_detect_probe(const peel_probe_t *p) {
 
 peel_buf_t peel_gz(const uint8_t *src, size_t len, peel_err_t **err) {
     *err = NULL;
-    codec_dec_opts_t o = {.src = src, .len = len, .out_len = PEEL_MAX_FORK};
+    codec_dec_opts_t o = {.in.src = src, .in.len = len, .out_len = PEEL_MAX_FORK};
     codec_dec_t *d = codec_dec_new(CODEC_GZIP, &o, NULL);
     if (!d) {
         *err = make_err("gzip: out of memory");
         return (peel_buf_t){0};
     }
-    // Every member, into a buffer that grows; the limit is the decoder's.
-    size_t cap = len * 2 > 65536 ? len * 2 : 65536, n = 0;
-    if (cap > PEEL_MAX_FORK)
-        cap = (size_t)PEEL_MAX_FORK;
-    uint8_t *out = malloc(cap);
-    int rc = out ? 0 : CODEC_ERR_NOMEM;
-    while (rc == 0) {
-        if (n == cap && cap == (size_t)PEEL_MAX_FORK) {
-            // Full at the limit: the stream must end here.
-            uint8_t spill;
-            size_t k = 0;
-            rc = codec_dec_run(d, &spill, 1, &k);
-            if (k)
-                rc = CODEC_ERR_OVERFLOW;
-            break;
-        }
-        if (n == cap) {
-            size_t ncap = cap > (size_t)PEEL_MAX_FORK / 2 ? (size_t)PEEL_MAX_FORK : cap * 2;
-            uint8_t *nb = realloc(out, ncap);
-            if (!nb) {
-                rc = CODEC_ERR_NOMEM;
-                break;
-            }
-            out = nb;
-            cap = ncap;
-        }
-        size_t k = 0;
-        rc = codec_dec_run(d, out + n, cap - n, &k);
-        n += k;
-    }
-    if (rc != 1) {
+    // Every member, into a buffer that grows, up to the fork limit.
+    size_t n = 0;
+    int rc = 0;
+    uint8_t *out = codec_dec_read_alloc(d, (size_t)PEEL_MAX_FORK, &n, &rc);
+    if (!out) {
         if (rc == CODEC_ERR_OVERFLOW)
             *err = make_err("gzip: decodes to over the %u MiB limit", (unsigned)(PEEL_MAX_FORK >> 20));
         else
-            *err = make_err("%s", *codec_dec_message(d) ? codec_dec_message(d) : "gzip: out of memory");
+            *err = make_err("%s", *codec_dec_message(d) ? codec_dec_message(d) : codec_strerror(rc));
         codec_dec_free(d);
-        free(out);
         return (peel_buf_t){0};
     }
     codec_dec_free(d);

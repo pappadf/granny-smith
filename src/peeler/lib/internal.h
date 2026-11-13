@@ -256,10 +256,6 @@ const uint8_t *peel_reader_at(peel_reader_t *r, uint64_t off, size_t n);
 // codec_dec_opts_t.check, StuffIt's "the fork's size wins" is .exact,
 // Compact Pro's RLE over LZH is codec_dec_stack, gzip's members are
 // CODEC_GZIP -- so no format needs a stream type of its own.
-//
-// A run that ends neither the fork nor any bytes this many times in a row
-// is taken to be stuck: a corrupt stream, never an endless loop.
-#define PEEL_DECODER_MAX_IDLE 4096
 
 // A decoder over `len` packed bytes of `src` at `off`, pulled as it needs
 // them (the source is retained, and released with the decoder).  `opts`

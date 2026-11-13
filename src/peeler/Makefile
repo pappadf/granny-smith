@@ -64,6 +64,10 @@ CMD_OBJS  = $(patsubst %.c,$(BUILD)/%.o,$(CMD_SRCS))
 LIB_OUT   = $(BUILD)/libpeeler.a
 CLI_OUT   = $(BUILD)/peeler
 
+# Every object also writes its header dependencies (-MMD), so a changed
+# header -- the codec library's included -- rebuilds what includes it.
+DEPFLAGS  = -MMD -MP
+
 # Include paths: public header for CLI, private lib dir for format sources,
 # and the codec library's header
 LIB_CFLAGS = -Iinclude -Ilib -I$(CODEC_DIR)/include
@@ -87,17 +91,17 @@ $(LIB_OUT): $(LIB_OBJS)
 # Library object files
 $(BUILD)/lib/%.o: lib/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(LIB_CFLAGS) -c -o $@ $<
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(LIB_CFLAGS) -c -o $@ $<
 
 # Format decoder object files (same flags as library)
 $(BUILD)/lib/formats/%.o: lib/formats/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(LIB_CFLAGS) -c -o $@ $<
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(LIB_CFLAGS) -c -o $@ $<
 
 # Codec library object files
 $(BUILD)/codec/%.o: $(CODEC_DIR)/lib/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -I$(CODEC_DIR)/include -c -o $@ $<
+	$(CC) $(CFLAGS) $(DEPFLAGS) -I$(CODEC_DIR)/include -c -o $@ $<
 
 # ============================================================================
 # CLI
@@ -109,7 +113,9 @@ $(CLI_OUT): $(CMD_OBJS) $(LIB_OUT)
 
 $(BUILD)/cmd/%.o: cmd/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(CMD_CFLAGS) -c -o $@ $<
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(CMD_CFLAGS) -c -o $@ $<
+
+-include $(LIB_OBJS:.o=.d) $(CMD_OBJS:.o=.d)
 
 # ============================================================================
 # Tests
