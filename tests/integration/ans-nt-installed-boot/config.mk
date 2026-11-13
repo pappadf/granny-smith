@@ -1,7 +1,7 @@
 # Integration test: booting an installed Windows NT 4.0 on the Apple Network Server
 #
 # The disk ans-nt-install produces, from cold: the 2.26NT ROM, the
-# powermac-nt-hal boot floppy's setup.of and bootdisk.of, NT's kernel on
+# powermac-nt-hal boot floppy's bootdisk.of (nothing in NVRAM), NT's kernel on
 # that project's HAL, the logon screen, and a logon from the ADB keyboard.
 # See test.script for the rungs.
 #
@@ -11,9 +11,9 @@
 # ans-nt-install made from the daea7d6 floppy, with powermac-nt-hal
 # 5663262's HAL put in its place, since the HAL it was installed with sweeps
 # I/O buffers through KSEG0 above 8 MB and faults there as the hardware
-# would) and the floppy the row boots with (systems/ans_nt_boot_floppy_5663262.img.7z,
+# would) and the floppy the row boots with (systems/ans_nt_boot_floppy_9b7f7b7.img.7z,
 # nothing of Microsoft's on it, the same XCOFF firmware for either ROM), from
-# gs-test-data bc9af37 onward.  At an older pin the row SKIPS.
+# gs-test-data 065c46e onward.  At an older pin the row SKIPS.
 #
 # TEST_ROM is the production ROM only because the runner insists on a ROM
 # that exists at every pin: the row boots the 2.26NT ROM itself, and skips
