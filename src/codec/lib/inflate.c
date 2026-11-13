@@ -2,14 +2,19 @@
 // Copyright (c) pappadf
 
 // inflate.c
-// DEFLATE (RFC 1951) and zlib (RFC 1950) decoders.  See codec.h.
+// DEFLATE (RFC 1951), zlib (RFC 1950) and gzip (RFC 1952) decoders.  See
+// codec.h.
 //
 // A DEFLATE stream is a run of blocks, each stored (a byte count and the
 // bytes), or Huffman-coded with the fixed codes or with codes defined at
 // its start (code lengths, themselves Huffman-coded).  A coded block is
 // literals and (length, distance) back-references into the last 32 KiB,
 // ended by symbol 256.  A zlib stream wraps one DEFLATE stream in a 2-byte
-// header and the Adler-32 of the decoded bytes.
+// header and the Adler-32 of the decoded bytes.  A gzip stream is one or
+// more members, each a header (with optional extra field, name, comment and
+// header CRC), a DEFLATE stream, and the CRC-32 and size (mod 2^32) of its
+// bytes; whatever follows the last member that is not another one is
+// ignored, as gzip -d ignores it.
 //
 // Decoding a symbol is one table lookup on the next 10 bits (8 for
 // distances); a longer code continues in a subtable reached from its
@@ -67,15 +72,26 @@ static inline uint32_t mk_entry(uint32_t bits, uint32_t kind, uint32_t x, uint32
     return bits | kind << 5 | x << 8 | val << 16;
 }
 
-typedef enum { S_ZLIB_HEADER, S_BLOCK, S_STORED, S_HUFF, S_ZLIB_TRAILER, S_DONE } inf_state_t;
+#define GZ_FTEXT    0x01
+#define GZ_FHCRC    0x02
+#define GZ_FEXTRA   0x04
+#define GZ_FNAME    0x08
+#define GZ_FCOMMENT 0x10
+#define GZ_RESERVED 0xE0
+
+typedef enum { W_RAW, W_ZLIB, W_GZIP } inf_wrap_t;
+
+typedef enum { S_ZLIB_HEADER, S_GZ_HEADER, S_BLOCK, S_STORED, S_HUFF, S_TRAILER, S_GZ_NEXT, S_DONE } inf_state_t;
 
 typedef struct {
     inf_state_t state;
-    bool zlib; // a zlib stream: header and Adler-32 around the DEFLATE one
+    inf_wrap_t wrap; // the container around the DEFLATE stream
     bool last; // the current block is the final one
     uint32_t stored_left; // bytes left in a stored block
-    uint32_t adler; // over the bytes decoded so far (zlib)
-    uint64_t adler_at; // ring.total the Adler-32 covers
+    uint32_t sum; // Adler-32 (zlib) or CRC-32 (gzip) of the member's bytes so far
+    uint64_t sum_at; // ring.total the sum covers
+    uint64_t member_at; // ring.total where the current gzip member began
+    bool magic_read; // the next member's 1F 8B has been read already
     uint32_t lit[LIT_TABLE];
     uint32_t dist[DIST_TABLE];
 } inf_t;
@@ -363,7 +379,7 @@ static int huff_run(codec_dec_t *d, inf_t *z) {
         }
         if (kind != E_LEN) {
             if (kind == E_END)
-                z->state = z->last ? (z->zlib ? S_ZLIB_TRAILER : S_DONE) : S_BLOCK;
+                z->state = z->last ? (z->wrap != W_RAW ? S_TRAILER : S_DONE) : S_BLOCK;
             else
                 rc = codec_fail(d, CODEC_ERR_DATA, "deflate: invalid literal/length code");
             break;
@@ -410,16 +426,85 @@ static int huff_run(codec_dec_t *d, inf_t *z) {
     return rc;
 }
 
-// Fold the bytes decoded since the last call into the Adler-32.
-static void adler_update(codec_dec_t *d, inf_t *z) {
+// Fold the bytes decoded since the last call into the member's sum.
+static void sum_update(codec_dec_t *d, inf_t *z) {
     codec_ring_t *r = &d->ring;
-    while (z->adler_at < r->total) {
-        size_t pending = (size_t)(r->total - z->adler_at);
+    while (z->sum_at < r->total) {
+        size_t pending = (size_t)(r->total - z->sum_at);
         size_t at = r->w >= pending ? r->w - pending : r->w + r->size - pending;
         size_t k = r->size - at < pending ? r->size - at : pending;
-        z->adler = codec_adler32(z->adler, r->buf + at, k);
-        z->adler_at += k;
+        z->sum = z->wrap == W_ZLIB ? codec_adler32(z->sum, r->buf + at, k) : codec_crc32(z->sum, r->buf + at, k);
+        z->sum_at += k;
     }
+}
+
+// One header byte, folded into the header CRC.  -1 at the end.
+static int gz_byte(codec_in_t *in, uint32_t *crc) {
+    int b = lsb_byte(in);
+    if (b >= 0) {
+        uint8_t c = (uint8_t)b;
+        *crc = codec_crc32(*crc, &c, 1);
+    }
+    return b;
+}
+
+// RFC 1952 § 2.3: a member header.  0, or a CODEC_ERR_* code.
+static int gz_header(codec_dec_t *d, inf_t *z) {
+    codec_in_t *in = &d->in;
+    uint32_t crc = 0;
+    int h[10];
+    int i = 0;
+    if (z->magic_read) {
+        static const uint8_t magic[2] = {0x1F, 0x8B};
+        crc = codec_crc32(0, magic, 2);
+        h[i++] = 0x1F;
+        h[i++] = 0x8B;
+        z->magic_read = false;
+    }
+    for (; i < 10; i++)
+        if ((h[i] = gz_byte(in, &crc)) < 0)
+            return codec_fail(d, CODEC_ERR_TRUNCATED, "gzip: truncated header");
+    if (h[0] != 0x1F || h[1] != 0x8B)
+        return codec_fail(d, CODEC_ERR_DATA, "gzip: not a gzip stream");
+    if (h[2] != 8)
+        return codec_fail(d, CODEC_ERR_UNSUPPORTED, "gzip: compression method is not DEFLATE");
+    int flg = h[3];
+    if (flg & GZ_RESERVED)
+        return codec_fail(d, CODEC_ERR_DATA, "gzip: reserved header flags set");
+    if (flg & GZ_FEXTRA) {
+        int lo = gz_byte(in, &crc), hi = gz_byte(in, &crc);
+        if (hi < 0)
+            return codec_fail(d, CODEC_ERR_TRUNCATED, "gzip: truncated extra field");
+        for (int n = lo | hi << 8; n > 0; n--)
+            if (gz_byte(in, &crc) < 0)
+                return codec_fail(d, CODEC_ERR_TRUNCATED, "gzip: truncated extra field");
+    }
+    for (int f = GZ_FNAME; f <= GZ_FCOMMENT; f <<= 1) {
+        if (!(flg & f))
+            continue;
+        int b;
+        while ((b = gz_byte(in, &crc)) > 0) // zero-terminated
+            ;
+        if (b < 0)
+            return codec_fail(d, CODEC_ERR_TRUNCATED, "gzip: truncated name or comment");
+    }
+    if (flg & GZ_FHCRC) {
+        uint32_t want = crc & 0xFFFF, dummy = 0;
+        int lo = gz_byte(in, &dummy), hi = gz_byte(in, &dummy);
+        if (hi < 0)
+            return codec_fail(d, CODEC_ERR_TRUNCATED, "gzip: truncated header CRC");
+        if ((uint32_t)(lo | hi << 8) != want)
+            return codec_fail(d, CODEC_ERR_CHECKSUM, "gzip: header CRC mismatch");
+    }
+    return 0;
+}
+
+// A new gzip member's state: a fresh DEFLATE stream and sum.
+static void gz_member_start(codec_dec_t *d, inf_t *z) {
+    z->state = S_BLOCK;
+    z->last = false;
+    z->sum = 0;
+    z->sum_at = z->member_at = d->ring.total;
 }
 
 static int inf_fill(codec_dec_t *d) {
@@ -429,6 +514,27 @@ static int inf_fill(codec_dec_t *d) {
     int rc = 0;
     while (rc == 0 && z->state != S_DONE) {
         switch (z->state) {
+        case S_GZ_HEADER:
+            rc = gz_header(d, z);
+            gz_member_start(d, z);
+            break;
+        case S_GZ_NEXT: {
+            // Another member, or the end: what follows that is not a
+            // member's magic is ignored.
+            int b = lsb_byte(in);
+            if (b < 0) {
+                z->state = S_DONE;
+                break;
+            }
+            int b2 = b == 0x1F ? lsb_byte(in) : -1;
+            if (b2 != 0x8B) {
+                z->state = S_DONE;
+                break;
+            }
+            z->magic_read = true; // the header's first two bytes
+            z->state = S_GZ_HEADER;
+            break;
+        }
         case S_ZLIB_HEADER: {
             // RFC 1950 § 2.2: CM 8, header a multiple of 31, no preset dictionary.
             lsb_fill(in);
@@ -445,7 +551,7 @@ static int inf_fill(codec_dec_t *d) {
             break;
         case S_STORED: {
             if (z->stored_left == 0) {
-                z->state = z->last ? (z->zlib ? S_ZLIB_TRAILER : S_DONE) : S_BLOCK;
+                z->state = z->last ? (z->wrap != W_RAW ? S_TRAILER : S_DONE) : S_BLOCK;
                 break;
             }
             size_t room = ring_room(r);
@@ -471,18 +577,30 @@ static int inf_fill(codec_dec_t *d) {
             if (rc == 0 && z->state == S_HUFF)
                 goto more; // the ring is full
             break;
-        case S_ZLIB_TRAILER: {
-            // The Adler-32, when the stream carries it: some writers stop
-            // right after the final block.
-            adler_update(d, z);
+        case S_TRAILER: {
+            sum_update(d, z);
             lsb_align(in);
-            uint8_t t[4];
-            size_t got = lsb_read(in, t, 4);
-            if (got == 4 && codec_be32(t) != z->adler)
-                rc = codec_fail(d, CODEC_ERR_CHECKSUM, "zlib: Adler-32 mismatch");
-            else if (got != 0 && got != 4)
-                rc = codec_fail(d, CODEC_ERR_TRUNCATED, "zlib: truncated Adler-32");
-            z->state = S_DONE;
+            if (z->wrap == W_ZLIB) {
+                // The Adler-32, when the stream carries it: some writers
+                // stop right after the final block.
+                uint8_t t[4];
+                size_t got = lsb_read(in, t, 4);
+                if (got == 4 && codec_be32(t) != z->sum)
+                    rc = codec_fail(d, CODEC_ERR_CHECKSUM, "zlib: Adler-32 mismatch");
+                else if (got != 0 && got != 4)
+                    rc = codec_fail(d, CODEC_ERR_TRUNCATED, "zlib: truncated Adler-32");
+                z->state = S_DONE;
+                break;
+            }
+            // gzip: the member's CRC-32 and size mod 2^32.
+            uint8_t t[8];
+            if (lsb_read(in, t, 8) != 8)
+                rc = codec_fail(d, CODEC_ERR_TRUNCATED, "gzip: truncated trailer");
+            else if (codec_le32(t) != z->sum)
+                rc = codec_fail(d, CODEC_ERR_CHECKSUM, "gzip: CRC-32 mismatch");
+            else if (codec_le32(t + 4) != (uint32_t)(r->total - z->member_at))
+                rc = codec_fail(d, CODEC_ERR_CHECKSUM, "gzip: size mismatch");
+            z->state = S_GZ_NEXT;
             break;
         }
         case S_DONE:
@@ -491,31 +609,35 @@ static int inf_fill(codec_dec_t *d) {
     }
     if (rc < 0)
         return rc;
-    lsb_align(in); // a gzip trailer follows on a byte boundary
+    lsb_align(in); // a container's trailer follows on a byte boundary
     return CODEC_END;
 more:
-    if (z->zlib)
-        adler_update(d, z);
+    if (z->wrap != W_RAW)
+        sum_update(d, z);
     return CODEC_MORE;
 }
 
-static int inf_init_common(codec_dec_t *d, bool zlib) {
+static int inf_init_common(codec_dec_t *d, inf_wrap_t wrap) {
     inf_t *z = calloc(1, sizeof(*z));
     if (!z)
         return CODEC_ERR_NOMEM;
     d->st = z;
-    z->zlib = zlib;
-    z->state = zlib ? S_ZLIB_HEADER : S_BLOCK;
-    z->adler = 1;
+    z->wrap = wrap;
+    z->state = wrap == W_ZLIB ? S_ZLIB_HEADER : wrap == W_GZIP ? S_GZ_HEADER : S_BLOCK;
+    z->sum = wrap == W_ZLIB ? 1 : 0;
     return codec_ring_alloc(d, INF_WINDOW, INF_MATCH_MAX);
 }
 
 static int inf_init(codec_dec_t *d) {
-    return inf_init_common(d, false);
+    return inf_init_common(d, W_RAW);
 }
 
 static int zlib_init(codec_dec_t *d) {
-    return inf_init_common(d, true);
+    return inf_init_common(d, W_ZLIB);
+}
+
+static int gzip_init(codec_dec_t *d) {
+    return inf_init_common(d, W_GZIP);
 }
 
 static void inf_free(codec_dec_t *d) {
@@ -525,3 +647,4 @@ static void inf_free(codec_dec_t *d) {
 
 const codec_dec_ops_t codec_deflate_dec = {inf_init, inf_fill, inf_free, false};
 const codec_dec_ops_t codec_zlib_dec = {zlib_init, inf_fill, inf_free, false};
+const codec_dec_ops_t codec_gzip_dec = {gzip_init, inf_fill, inf_free, false};

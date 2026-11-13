@@ -39,7 +39,7 @@ LIB_SRCS  = lib/err.c      \
             lib/source.c   \
             lib/reader.c   \
             lib/archive.c  \
-            lib/codec_producer.c \
+            lib/fork_decoder.c \
             lib/peeler.c
 
 FMT_SRCS  = lib/formats/hqx.c   \

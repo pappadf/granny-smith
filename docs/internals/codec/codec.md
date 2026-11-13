@@ -13,7 +13,7 @@ containers.
 
 | Caller | Uses |
 |---|---|
-| peeler: StuffIt, Compact Pro, BinHex, zip and gzip (`src/peeler/lib/formats/`, through `lib/codec_producer.c`) | the StuffIt methods, Compact Pro's LZH and RLE, RLE90, DEFLATE, CRC-16 and CRC-32 |
+| peeler: StuffIt, Compact Pro, BinHex, zip and gzip (`src/peeler/lib/formats/`, each fork a decoder over its range of the archive, `lib/fork_decoder.c`) | the StuffIt methods, Compact Pro's LZH and RLE, RLE90, DEFLATE, gzip, CRC-16 and CRC-32 |
 | UDIF chunks (`src/core/storage/image_udif.c`) | ADC, zlib, bzip2, LZFSE, xz, by chunk type |
 | NDIF chunks (`image_ndif.c`) | ADC |
 | QCOW2 clusters (`image_qcow2.c`) | raw DEFLATE |
@@ -54,17 +54,32 @@ negative `CODEC_ERR_*` code (`DATA`, `TRUNCATED`, `OVERFLOW`, `NOMEM`,
 before the fault; `codec_dec_message()` says why in a few words.
 
 Input is `len` bytes in memory or pulled through a `codec_pull_fn` as the
-decoder needs it. `codec_dec_pull` is such a callback over another decoder,
-so streams chain: a Compact Pro fork is `CODEC_CPT_LZH` feeding
-`CODEC_CPT_RLE`. `codec_dec_consumed()` is exact once a stream has ended,
-which is how gzip finds its trailer and the next member.
+decoder needs it; `opts.pull_close`, when set, is called on the pull
+context as the decoder is freed, so a decoder can own what it reads (never
+when `codec_dec_new` fails: the context is then still the caller's).
+`codec_dec_pull` is such a callback over another decoder, and
+`codec_dec_stack(inner, id, &opts, &err)` builds the chain with the outer
+decoder owning the inner one: a Compact Pro fork is `CODEC_CPT_RLE` stacked
+on `CODEC_CPT_LZH`. When an inner decoder fails, the outer one reports the
+inner one's message. `codec_dec_consumed()` is exact once a stream has
+ended.
 
 `opts.out_len` is the decoded size where the container states it. A stream
-with no end of its own — ADC, RLE90, the StuffIt and Compact Pro methods,
-GSRLE — ends there and requires it (its final match or run is cut at the
-size, as the original decoders did; input that runs out first is
+with no end of its own — ADC, the StuffIt methods 2, 3, 13 and 15, Compact
+Pro's RLE, GSRLE — ends there and requires it (its final match or run is cut
+at the size, as the original decoders did; input that runs out first is
 `TRUNCATED`); for every other codec it is a limit, and decoding past it is
-`OVERFLOW`. The one-shot forms are built on the same decoders:
+`OVERFLOW`. `opts.exact` applies the first rule to any codec — the
+container's size wins — which is how a StuffIt fork decodes whatever its
+method (RLE90 and stored included). `opts.check` names a checksum the
+container states over the decoded bytes (`CODEC_CHECK_CRC32`, zip's;
+`CODEC_CHECK_CRC16_ARC`, StuffIt's), verified once every byte is out:
+`CHECKSUM` if it differs.
+
+The decoder is the one streaming type in the tree. A container's own
+checks and chains are its options rather than a wrapper type: peeler hands
+the decode-through sources a `codec_dec_t` for every streaming fork (its
+`peel_fmt_t.decoder`), and drains the same decoder for the buffer API. The one-shot forms are built on the same decoders:
 `codec_decode(id, src, len, dst, cap)` (the stream must end within `cap`
 bytes, so a buffer one byte short is `OVERFLOW`, never a silent clamp) and
 `codec_decode_alloc` for a stream of unknown size under a ceiling (a PNG, a
@@ -118,15 +133,16 @@ The framework they are written on is `lib/codec_internal.h`:
 
 | | |
 |---|---|
-| `codec_dec_t`, `codec_dec_opts_t` | a decoder for one stream (§1.1) |
+| `codec_dec_t`, `codec_dec_opts_t` | a decoder for one stream, and the one streaming type (§1.1) |
+| `codec_check_t` | a stated checksum over the decoded bytes, verified at the end |
 | `codec_enc_t` | an encoder, its state reused across inputs (§1.2) |
-| `codec_id_t` | `COPY`, `DEFLATE`, `ZLIB`, `ADC`, `BZIP2`, `LZFSE`, `XZ`, `LZMA_ALONE`, `RLE90`, `SIT_LZW`, `SIT_HUFFMAN`, `SIT13`, `SIT_ARSENIC`, `CPT_RLE`, `CPT_LZH`, `DCMP`, `GSRLE` |
+| `codec_id_t` | `COPY`, `DEFLATE`, `ZLIB`, `GZIP`, `ADC`, `BZIP2`, `LZFSE`, `XZ`, `LZMA_ALONE`, `RLE90`, `SIT_LZW`, `SIT_HUFFMAN`, `SIT13`, `SIT_ARSENIC`, `CPT_RLE`, `CPT_LZH`, `DCMP`, `GSRLE` |
 | `codec_crc32`, `codec_crc32_zeros`, `codec_crc32_msb`, `codec_crc64`, `codec_adler32`, `codec_crc16_xmodem`, `codec_crc16_arc` | CRC-32 (reflected; zero runs in O(log n)), CRC-32 MSB-first (bzip2), CRC-64/XZ, Adler-32, CRC-16/XMODEM (BinHex, MacBinary), CRC-16/ARC (StuffIt); constant tables, slice-by-8 for the CRC-32s, callable from any thread |
 
 | File | |
 |---|---|
 | `lib/codec.c` | the registry, the input and ring helpers, the Huffman pool, `codec_dec_run` and the one-shot and encoder wrappers, `CODEC_COPY` |
-| `lib/inflate.c`, `lib/deflate.c` | DEFLATE and zlib, decoding and encoding |
+| `lib/inflate.c`, `lib/deflate.c` | DEFLATE, zlib and gzip decoding; DEFLATE and zlib encoding |
 | `lib/bzip2.c`, `lib/lzfse.c`, `lib/adc.c` | bzip2, LZFSE (with LZVN), ADC |
 | `lib/lzma.c`, `lib/lzma_enc.c`, `lib/lzma_internal.h` | LZMA, LZMA2, xz and `.lzma`; the xz encoder; the model they share |
 | `lib/rle90.c` | 0x90 run lengths, StuffIt's and BinHex's dialects (`CODEC_RLE90_BINHEX`) |
@@ -145,8 +161,11 @@ The framework they are written on is `lib/codec_internal.h`:
   keeps the bit accumulator and the ring cursor in locals and copies
   matches in bulk. `CODEC_ZLIB` checks the RFC 1950 header and, when the
   stream carries one, the Adler-32 trailer (a stream that stops right after
-  its final block is accepted, as some writers omit the trailer). The
-  encoder is greedy LZ77 over hash chains (depth by level), each block
+  its final block is accepted, as some writers omit the trailer).
+  `CODEC_GZIP` reads every member — header with its optional extra field,
+  name, comment and header CRC, the DEFLATE stream, the CRC-32 and size
+  checked — and ignores what follows the last one that is not another
+  member, as `gzip -d` does. The encoder is greedy LZ77 over hash chains (depth by level), each block
   written as dynamic Huffman, fixed Huffman or stored, whichever is
   smallest; its dynamic codes are length-limited and complete.
 - **bzip2.** Per block: the symbol map, the selectors (move-to-front coded),

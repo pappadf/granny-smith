@@ -207,55 +207,61 @@ void peel_fork_key(peel_archive_t *a, int i, int fork, char *out, size_t cap) {
 }
 
 // ============================================================================
-// Draining a producer into a buffer
+// Draining a decoder into a buffer
 // ============================================================================
 
-peel_buf_t peel_producer_drain(peel_producer_t *p, uint64_t len, const char *what, peel_err_t **err) {
+peel_buf_t peel_decoder_drain(codec_dec_t *d, uint64_t len, const char *what, peel_err_t **err) {
     *err = NULL;
+    const char *sep = what ? ": " : "";
+    what = what ? what : "";
     if (len > PEEL_MAX_FORK) {
-        p->free(p);
-        *err = make_err("%s%sfork declares %llu bytes, over the %u MiB limit", what ? what : "", what ? ": " : "",
-                        (unsigned long long)len, (unsigned)(PEEL_MAX_FORK >> 20));
+        codec_dec_free(d);
+        *err = make_err("%s%sfork declares %llu bytes, over the %u MiB limit", what, sep, (unsigned long long)len,
+                        (unsigned)(PEEL_MAX_FORK >> 20));
         return (peel_buf_t){0};
     }
     uint8_t *out = malloc(len ? (size_t)len : 1);
     if (!out) {
-        p->free(p);
+        codec_dec_free(d);
         *err = make_err("out of memory allocating %llu bytes", (unsigned long long)len);
         return (peel_buf_t){0};
     }
+    char why[160] = "";
     size_t got = 0;
     int rc = 0, idle = 0;
     while (rc == 0) {
         uint8_t spill[1];
         size_t n = 0;
-        // Past the declared length, a producer that has not ended gets a
+        // Past the declared length, a decoder that has not ended gets a
         // one-byte buffer: any byte it puts there means the fork is long.
         bool over = got == (size_t)len;
-        rc = p->run(p, over ? spill : out + got, over ? 1 : (size_t)len - got, &n);
-        if (rc < 0 || (over && n)) {
-            if (rc >= 0)
-                snprintf(p->err, sizeof(p->err), "fork decodes to more than its %llu bytes", (unsigned long long)len);
+        rc = codec_dec_run(d, over ? spill : out + got, over ? 1 : (size_t)len - got, &n);
+        if (rc < 0) {
+            snprintf(why, sizeof(why), "%s", *codec_dec_message(d) ? codec_dec_message(d) : codec_strerror(rc));
+            break;
+        }
+        if (over && n) {
+            snprintf(why, sizeof(why), "fork decodes to more than its %llu bytes", (unsigned long long)len);
+            rc = -5;
             break;
         }
         got += n;
         idle = n ? 0 : idle + 1;
-        if (rc == 0 && idle == PEEL_PRODUCER_MAX_IDLE) {
-            snprintf(p->err, sizeof(p->err), "decoder made no progress");
+        if (rc == 0 && idle == PEEL_DECODER_MAX_IDLE) {
+            snprintf(why, sizeof(why), "decoder made no progress");
             rc = -5;
         }
     }
     if (rc == 1 && got != (size_t)len) {
-        snprintf(p->err, sizeof(p->err), "fork decoded to %zu of %llu bytes", got, (unsigned long long)len);
+        snprintf(why, sizeof(why), "fork decoded to %zu of %llu bytes", got, (unsigned long long)len);
         rc = -5;
     }
+    codec_dec_free(d);
     if (rc != 1) {
-        *err = what ? make_err("%s: %s", what, p->err) : make_err("%s", p->err);
-        p->free(p);
+        *err = make_err("%s%s%s", what, sep, why);
         free(out);
         return (peel_buf_t){0};
     }
-    p->free(p);
     if (len == 0) {
         free(out);
         return (peel_buf_t){0};
@@ -264,58 +270,16 @@ peel_buf_t peel_producer_drain(peel_producer_t *p, uint64_t len, const char *wha
 }
 
 // ============================================================================
-// Whole-fork producer: decode() once, then emit
-// ============================================================================
-
-typedef struct {
-    peel_producer_t base;
-    peel_archive_t *a;
-    int entry, fork;
-    peel_buf_t buf;
-    size_t pos;
-    bool decoded;
-} whole_producer_t;
-
-static int whole_run(peel_producer_t *pp, uint8_t *out, size_t cap, size_t *n) {
-    whole_producer_t *w = (whole_producer_t *)pp;
-    *n = 0;
-    if (!w->decoded) {
-        peel_err_t *err = NULL;
-        w->buf = w->a->fmt->decode(w->a, w->entry, w->fork, &err);
-        if (err) {
-            snprintf(pp->err, sizeof(pp->err), "%s", peel_err_msg(err));
-            peel_err_free(err);
-            return -5;
-        }
-        w->decoded = true;
-    }
-    size_t left = w->buf.size - w->pos;
-    size_t k = left < cap ? left : cap;
-    if (k)
-        memcpy(out, w->buf.data + w->pos, k);
-    w->pos += k;
-    *n = k;
-    if (w->pos == w->buf.size) {
-        peel_free(&w->buf); // everything handed to the sink
-        return 1;
-    }
-    return 0;
-}
-
-static void whole_free(peel_producer_t *pp) {
-    whole_producer_t *w = (whole_producer_t *)pp;
-    peel_free(&w->buf);
-    archive_unref(w->a);
-    free(w);
-}
-
-// ============================================================================
 // Decode-through source
 // ============================================================================
 
+// A fork's bytes, decoded into the archive's sink as far as reads reach:
+// by a streaming decoder, or -- for a format without one -- by decode()
+// once, on the first read.
 typedef struct {
-    peel_archive_t *a; // for the sink ops; retained
-    peel_producer_t *prod; // NULL once finished
+    peel_archive_t *a; // for the sink ops (and decode()); retained
+    codec_dec_t *dec; // NULL for a whole-decoded fork, and once finished
+    int entry, fork; // the fork, for decode()
     peel_source_t *sink; // created on first read
     char *key;
     uint64_t len; // declared unpacked length (a hint until committed when !exact)
@@ -326,7 +290,40 @@ typedef struct {
     bool failed;
 } decode_src_t;
 
-// Drive the producer until the sink holds `want` bytes or the fork ends.
+// Write `n` decoded bytes to the sink; the fork has ended when `done`.
+// 0, or -5 (the fork is longer or shorter than it declared, or the sink
+// failed).
+static int decode_put(decode_src_t *d, const uint8_t *buf, size_t n, bool done) {
+    if (d->exact && n > d->len - d->produced)
+        return -5; // longer than it declared
+    if (n && d->a->sink->write(d->sink, d->produced, buf, n) != (int64_t)n)
+        return -5;
+    d->produced += n;
+    if (done) {
+        if (!d->exact)
+            d->len = d->produced; // the size, earned
+        else if (d->produced != d->len)
+            return -5; // the fork ran dry before its declared length
+        d->a->sink->commit(d->sink);
+        d->committed = true;
+    }
+    return 0;
+}
+
+// A fork without a streaming decoder: decode() it whole, into the sink.
+static int decode_whole(decode_src_t *d) {
+    peel_err_t *err = NULL;
+    peel_buf_t b = d->a->fmt->decode(d->a, d->entry, d->fork, &err);
+    if (err) {
+        peel_err_free(err);
+        return -5;
+    }
+    int rc = decode_put(d, b.data, b.size, true);
+    peel_free(&b);
+    return rc;
+}
+
+// Drive the decoder until the sink holds `want` bytes or the fork ends.
 static int decode_fill(decode_src_t *d, uint64_t want) {
     if (d->failed)
         return -5;
@@ -337,35 +334,24 @@ static int decode_fill(decode_src_t *d, uint64_t want) {
             return -12;
         }
     }
+    if (!d->committed && !d->dec && decode_whole(d) != 0) {
+        d->failed = true;
+        return -5;
+    }
     uint8_t chunk[65536];
     int idle = 0;
     while (!d->committed && d->produced < want) {
         size_t n = 0;
-        int rc = d->prod->run(d->prod, chunk, sizeof(chunk), &n);
+        int rc = codec_dec_run(d->dec, chunk, sizeof(chunk), &n);
         idle = n ? 0 : idle + 1;
-        if (rc == 0 && idle == PEEL_PRODUCER_MAX_IDLE)
-            rc = -5; // a decoder that makes no progress
-        if (rc < 0 || (d->exact && d->produced + n > d->len)) {
-            d->failed = true; // a corrupt fork, or one longer than it declared
+        if (rc < 0 || (rc == 0 && idle == PEEL_DECODER_MAX_IDLE) || decode_put(d, chunk, n, rc == 1) != 0) {
+            d->failed = true; // a corrupt fork, one that is not the size it declared, or the sink failed
             return -5;
         }
-        if (n && d->a->sink->write(d->sink, d->produced, chunk, n) != (int64_t)n) {
-            d->failed = true;
-            return -5;
-        }
-        d->produced += n;
-        if (rc == 1) {
-            if (!d->exact)
-                d->len = d->produced; // the size, earned
-            else if (d->produced != d->len) {
-                d->failed = true; // the fork ran dry before its declared length
-                return -5;
-            }
-            d->a->sink->commit(d->sink);
-            d->committed = true;
-            d->prod->free(d->prod);
-            d->prod = NULL;
-        }
+    }
+    if (d->committed && d->dec) {
+        codec_dec_free(d->dec);
+        d->dec = NULL;
     }
     return 0;
 }
@@ -418,8 +404,7 @@ static void decode_close(peel_source_t *s) {
     decode_src_t *d = s->ctx;
     if (!d)
         return;
-    if (d->prod)
-        d->prod->free(d->prod);
+    codec_dec_free(d->dec);
     peel_source_release(d->sink);
     archive_unref(d->a);
     free(d->key);
@@ -428,37 +413,30 @@ static void decode_close(peel_source_t *s) {
 
 static const peel_source_ops_t decode_ops = {decode_read, decode_size, decode_key, decode_tier, decode_close, NULL};
 
-// Both constructors.
-static peel_source_t *decode_source_new(peel_archive_t *a, const char *key, uint64_t len, bool exact, peel_tier_t tier,
-                                        peel_producer_t *p) {
+// A decode-through source for fork `fork` of entry `i`: through `dec`
+// (owned), or decode() when it is NULL.  Retains `a`.
+static peel_source_t *decode_source_new(peel_archive_t *a, int i, int fork, const char *key, uint64_t len, bool exact,
+                                        peel_tier_t tier, codec_dec_t *dec) {
     decode_src_t *d = calloc(1, sizeof(*d));
     size_t kl = strlen(key);
     char *k = malloc(kl + 1);
     if (!d || !k) {
         free(d);
         free(k);
-        p->free(p);
+        codec_dec_free(dec);
         return NULL;
     }
     memcpy(k, key, kl + 1);
     a->refs++;
     d->a = a;
-    d->prod = p;
+    d->dec = dec;
+    d->entry = i;
+    d->fork = fork;
     d->key = k;
     d->len = len;
     d->exact = exact;
     d->tier = tier;
     return peel_source_new(&decode_ops, d, NULL);
-}
-
-peel_source_t *peel_decode_source(peel_archive_t *a, const char *key, uint64_t len, peel_tier_t tier,
-                                  peel_producer_t *p) {
-    return decode_source_new(a, key, len, true, tier, p);
-}
-
-peel_source_t *peel_decode_source_unsized(peel_archive_t *a, const char *key, uint64_t hint, peel_tier_t tier,
-                                          peel_producer_t *p) {
-    return decode_source_new(a, key, hint, false, tier, p);
 }
 
 // ============================================================================
@@ -490,27 +468,13 @@ peel_source_t *peel_open_fork(peel_archive_t *a, int i, int fork, peel_err_t **e
     // A stored fork is a window of the archive: nothing to decode.
     if (tier == PEEL_TIER_RANDOM && off != UINT64_MAX)
         return peel_source_view_keyed(a->src, off, len, key);
-    peel_producer_t *p = NULL;
-    if (a->fmt->producer) {
-        p = a->fmt->producer(a, i, fork, err);
-        if (!p && *err)
+    codec_dec_t *dec = NULL;
+    if (a->fmt->decoder) {
+        dec = a->fmt->decoder(a, i, fork, err);
+        if (!dec && *err)
             return NULL;
     }
-    if (!p) {
-        whole_producer_t *w = calloc(1, sizeof(*w));
-        if (!w) {
-            *err = make_err("out of memory opening a fork");
-            return NULL;
-        }
-        w->base.run = whole_run;
-        w->base.free = whole_free;
-        a->refs++;
-        w->a = a;
-        w->entry = i;
-        w->fork = fork;
-        p = &w->base;
-    }
-    peel_source_t *s = decode_source_new(a, key, len, exact, tier, p);
+    peel_source_t *s = decode_source_new(a, i, fork, key, len, exact, tier, dec);
     if (!s)
         *err = make_err("out of memory opening a fork");
     return s;

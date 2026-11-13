@@ -248,38 +248,32 @@ const uint8_t *peel_reader_at(peel_reader_t *r, uint64_t off, size_t n);
 // Structure-first archives (archive.c) -- the format vtable
 // ============================================================================
 
-// A producer emits a fork's decoded bytes in order: run() fills up to `cap`
-// bytes and returns 1 when the fork is complete, 0 when more remains, or a
-// negative code (with a message in `err`).  The decode-through source drives
-// it as reads reach past what the sink already holds.
-// A run() that ends neither the fork nor any bytes this many times in a
-// row is taken to be stuck: a corrupt stream, never an endless loop.
-#define PEEL_PRODUCER_MAX_IDLE 4096
+// A compressed fork streams through one type: the codec library's decoder
+// (codec.h, codec_dec_t).  Run with a buffer of any size it fills as far as
+// it can and stops there; the decode-through source drives it as reads reach
+// past what the sink already holds.  A container's own checks and chains are
+// the decoder's options -- zip's CRC-32 and StuffIt's CRC-16 are
+// codec_dec_opts_t.check, StuffIt's "the fork's size wins" is .exact,
+// Compact Pro's RLE over LZH is codec_dec_stack, gzip's members are
+// CODEC_GZIP -- so no format needs a stream type of its own.
+//
+// A run that ends neither the fork nor any bytes this many times in a row
+// is taken to be stuck: a corrupt stream, never an endless loop.
+#define PEEL_DECODER_MAX_IDLE 4096
 
-typedef struct peel_producer {
-    int (*run)(struct peel_producer *p, uint8_t *out, size_t cap, size_t *n);
-    void (*free)(struct peel_producer *p);
-    char err[256];
-} peel_producer_t;
+// A decoder over `len` packed bytes of `src` at `off`, pulled as it needs
+// them (the source is retained, and released with the decoder).  `opts`
+// gives the rest; its input fields are ignored.  NULL + *err ("<what>: ...")
+// if it cannot be created.  (fork_decoder.c)
+codec_dec_t *peel_fork_decoder(peel_source_t *src, uint64_t off, uint64_t len, codec_id_t id,
+                               const codec_dec_opts_t *opts, const char *what, peel_err_t **err);
 
-// Run a producer to the end into an owned buffer of exactly `len` bytes,
-// then free it (always).  A producer that fails, or ends short or long,
-// is an error: its own message, prefixed by `what` when that is given.
-// The buffer APIs (peel_sit3, peel_cpt, ...) are this over the same
-// producers the decode-through sources drive, so both decode one way.
-peel_buf_t peel_producer_drain(peel_producer_t *p, uint64_t len, const char *what, peel_err_t **err);
-
-// Every compressed fork decodes through the codec library (src/codec,
-// codec.h): a producer over `len` packed bytes at `src` (borrowed: they must
-// outlive it), through `stages` codecs in order -- each pulling the one
-// before, so Compact Pro's fork is {CODEC_CPT_LZH, CODEC_CPT_RLE} -- the
-// last making the fork's `out_len` bytes (with `flags`).  `cut`: a stream
-// that decodes past out_len is cut there rather than refused (StuffIt's
-// forks, whose decoders always stopped at the fork's size).  Messages are
-// "<what>: <the codec's>".  NULL + *err if a decoder cannot be created.
-// (codec_producer.c)
-peel_producer_t *peel_codec_producer(const codec_id_t *stages, int nstages, uint32_t flags, const uint8_t *src,
-                                     size_t len, uint64_t out_len, bool cut, const char *what, peel_err_t **err);
+// Run a decoder to the end into an owned buffer of exactly `len` bytes, then
+// free it (always).  A decoder that fails, or ends short or long, is an
+// error: its own message, prefixed by `what` when that is given.  The buffer
+// APIs are this over the same decoders the decode-through sources drive, so
+// both decode one way.
+peel_buf_t peel_decoder_drain(codec_dec_t *d, uint64_t len, const char *what, peel_err_t **err);
 
 typedef struct peel_fmt peel_fmt_t;
 
@@ -302,10 +296,10 @@ struct peel_fmt {
     // Decode a whole fork into an owned buffer.  Error messages are the
     // format's own, the ones the buffer API has always reported.
     peel_buf_t (*decode)(peel_archive_t *a, int i, int fork, peel_err_t **err);
-    // Optional: a streaming producer for a compressed fork (zip deflate,
-    // gzip).  Absent, or returning NULL with no error: the fork decodes
-    // whole through decode().
-    peel_producer_t *(*producer)(peel_archive_t *a, int i, int fork, peel_err_t **err);
+    // Optional: a streaming decoder for a compressed fork (StuffIt, Compact
+    // Pro, zip deflate, gzip).  Absent, or returning NULL with no error: the
+    // fork decodes whole through decode().
+    codec_dec_t *(*decoder)(peel_archive_t *a, int i, int fork, peel_err_t **err);
     // Optional: open a fork as a source of the format's own (BGZF's block
     // index).  NULL with no error: the generic view / decode-through paths.
     peel_source_t *(*open_fork)(peel_archive_t *a, int i, int fork, peel_err_t **err);
@@ -329,16 +323,6 @@ peel_entry_t *peel_archive_add(peel_archive_t *a);
 // Read exactly `len` bytes of the archive's source at `off` into a fresh
 // buffer (NULL + *err on failure, `what` naming it in the message).
 uint8_t *peel_archive_read(peel_archive_t *a, uint64_t off, uint64_t len, const char *what, peel_err_t **err);
-
-// A source serving a producer's output through the archive's sink.  Takes
-// ownership of `p`; retains `a`.
-peel_source_t *peel_decode_source(peel_archive_t *a, const char *key, uint64_t len, peel_tier_t tier,
-                                  peel_producer_t *p);
-
-// The same, for a fork whose length `hint` is not known to be exact: its
-// size() decodes the whole fork (into the sink) to learn the true length.
-peel_source_t *peel_decode_source_unsized(peel_archive_t *a, const char *key, uint64_t hint, peel_tier_t tier,
-                                          peel_producer_t *p);
 
 // Build the key of fork `fork` of entry `i`: "<archive key>/<path>[/rsrc]".
 void peel_fork_key(peel_archive_t *a, int i, int fork, char *out, size_t cap);

@@ -15,13 +15,17 @@
 // continuing from exactly there on the next run -- a reader decodes as far
 // as it reads and never more.  Input comes from memory or is pulled through
 // a callback as the decoder needs it.  codec_decode() is the one-shot form
-// over the same decoders.  Every encoder has one shape too (codec_enc_*):
-// a whole input to one complete stream, with state reused across calls.
+// over the same decoders, and a decoder is the one streaming type: a
+// container that checks or chains streams (zip's CRC, Compact Pro's two
+// stages, gzip's members) does it through the options below, not a type of
+// its own.  Every encoder has one shape too (codec_enc_*): a whole input to
+// one complete stream, with state reused across calls.
 //
 //   id                  decode  encode  stream
 //   CODEC_COPY            x             stored bytes
 //   CODEC_DEFLATE         x             raw DEFLATE (RFC 1951)
 //   CODEC_ZLIB            x       x     zlib (RFC 1950)
+//   CODEC_GZIP            x             gzip (RFC 1952), every member
 //   CODEC_ADC             x             Apple Data Compression (NDIF, UDCO)
 //   CODEC_BZIP2           x             bzip2 (UDBZ)
 //   CODEC_LZFSE           x             LZFSE with LZVN and stored blocks (ULFO)
@@ -70,6 +74,7 @@ typedef enum {
     CODEC_COPY = 0,
     CODEC_DEFLATE,
     CODEC_ZLIB,
+    CODEC_GZIP,
     CODEC_ADC,
     CODEC_BZIP2,
     CODEC_LZFSE,
@@ -115,18 +120,36 @@ static inline int codec_dcmp_is_compressed(const uint8_t *p, size_t len) {
            ((uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]) == CODEC_DCMP_MAGIC;
 }
 
+// A checksum over the decoded bytes that the container states (zip's
+// CRC-32, StuffIt's CRC-16), verified once the stream has ended.
+typedef enum {
+    CODEC_CHECK_NONE = 0,
+    CODEC_CHECK_CRC32, // codec_crc32
+    CODEC_CHECK_CRC16_ARC, // codec_crc16_arc
+} codec_check_t;
+
 typedef struct {
     // The compressed input: `len` bytes at `src`, or, when `pull` is set,
-    // pulled through it as the decoder needs them.
+    // pulled through it as the decoder needs them.  `pull_close`, when set,
+    // is called on pull_ctx as the decoder is freed, so a decoder can own
+    // the source it reads (not when codec_dec_new fails: pull_ctx is then
+    // still the caller's).
     const uint8_t *src;
     size_t len;
     codec_pull_fn pull;
     void *pull_ctx;
+    void (*pull_close)(void *pull_ctx);
     // The decoded size, when the container states it.  Streams with no end
-    // of their own (ADC, RLE90, the StuffIt and Compact Pro methods, GSRLE)
-    // end there and require it; for the rest it is a limit, and decoding
-    // past it is CODEC_ERR_OVERFLOW.  CODEC_LEN_UNKNOWN: no limit.
+    // of their own (ADC, the StuffIt methods 2, 3, 13 and 15, Compact Pro's
+    // RLE, GSRLE) end there and require it; for the rest it is a limit, and
+    // decoding past it is CODEC_ERR_OVERFLOW.  CODEC_LEN_UNKNOWN: no limit.
     uint64_t out_len;
+    // `exact`: the container's size wins for any codec -- output past
+    // out_len is dropped and the stream ends there, and one that ends short
+    // of it is CODEC_ERR_TRUNCATED (StuffIt's forks).  Requires out_len.
+    int exact;
+    codec_check_t check; // verified at the end: CODEC_ERR_CHECKSUM
+    uint32_t check_value;
     uint32_t flags; // codec-specific (CODEC_RLE90_BINHEX)
 } codec_dec_opts_t;
 
@@ -155,9 +178,15 @@ const char *codec_dec_message(const codec_dec_t *d);
 
 void codec_dec_free(codec_dec_t *d);
 
-// A codec_pull_fn reading a decoder's output (ctx: the codec_dec_t), for
-// chaining one stream into another (Compact Pro's LZH, then its RLE).
+// A codec_pull_fn reading a decoder's output (ctx: the codec_dec_t).  A
+// decoder pulling another reports the inner one's message when the inner
+// one fails.
 int64_t codec_dec_pull(void *ctx, uint8_t *buf, size_t cap);
+
+// A decoder of `id` reading `inner`'s output and owning it (freed with it,
+// or here if this fails): one stream chained into another, as Compact Pro's
+// RLE over its LZH.  `opts` gives the rest (its input fields are ignored).
+codec_dec_t *codec_dec_stack(codec_dec_t *inner, codec_id_t id, const codec_dec_opts_t *opts, int *err);
 
 // One-shot: decode `len` bytes of `src` into `dst`.  The stream must end
 // within `cap` bytes (a stream with no end of its own is `cap` bytes long).

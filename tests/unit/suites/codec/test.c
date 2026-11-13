@@ -556,6 +556,216 @@ TEST(decoders_chain) {
     free(data);
 }
 
+// codec_dec_stack: the same chain with the outer decoder owning the inner
+// one (LeakSanitizer sees it freed), and the inner one's fault reported in
+// its own words.
+TEST(stacked_decoder_owns_its_input) {
+    uint8_t *data = vec_gen(1, 30000, 11);
+    size_t cap1 = codec_enc_bound(CODEC_ZLIB, 30000);
+    uint8_t *inner = malloc(cap1);
+    int64_t n1 = codec_encode(CODEC_ZLIB, 6, data, 30000, inner, cap1);
+    size_t cap2 = codec_enc_bound(CODEC_ZLIB, (size_t)n1);
+    uint8_t *outer = malloc(cap2);
+    int64_t n2 = codec_encode(CODEC_ZLIB, 6, inner, (size_t)n1, outer, cap2);
+    ASSERT_TRUE(n1 > 0 && n2 > 0);
+    codec_dec_opts_t o = {.src = outer, .len = (size_t)n2, .out_len = CODEC_LEN_UNKNOWN};
+    codec_dec_opts_t top = {.out_len = 30000, .check = CODEC_CHECK_CRC32, .check_value = codec_crc32(0, data, 30000)};
+    codec_dec_t *d = codec_dec_stack(codec_dec_new(CODEC_ZLIB, &o, NULL), CODEC_ZLIB, &top, NULL);
+    ASSERT_TRUE(d != NULL);
+    uint8_t *back = malloc(30000 + 8);
+    int rc;
+    ASSERT_EQ_INT(30000, (int)run_in_steps(d, back, 30000, 777, &rc));
+    ASSERT_EQ_INT(1, rc);
+    ASSERT_TRUE(memcmp(back, data, 30000) == 0);
+    codec_dec_free(d); // frees the inner one too
+    // A corrupt inner stream: the outer one fails with the inner one's message.
+    outer[(size_t)n2 / 2] ^= 0x55;
+    outer[(size_t)n2 / 2 + 1] ^= 0x33;
+    d = codec_dec_stack(codec_dec_new(CODEC_ZLIB, &o, NULL), CODEC_ZLIB, &top, NULL);
+    run_in_steps(d, back, 30000, 4096, &rc);
+    ASSERT_TRUE(rc < 0);
+    ASSERT_TRUE(strncmp(codec_dec_message(d), "zlib:", 5) == 0 || strncmp(codec_dec_message(d), "deflate:", 8) == 0 ||
+                strstr(codec_dec_message(d), "checksum") != NULL);
+    codec_dec_free(d);
+    // Bad arguments still free the inner one (or there is none to free).
+    int err = 0;
+    ASSERT_TRUE(codec_dec_stack(codec_dec_new(CODEC_ZLIB, &o, NULL), (codec_id_t)99, &top, &err) == NULL);
+    ASSERT_EQ_INT(CODEC_ERR_ARG, err);
+    ASSERT_TRUE(codec_dec_stack(NULL, CODEC_ZLIB, &top, &err) == NULL);
+    free(back);
+    free(outer);
+    free(inner);
+    free(data);
+}
+
+// pull_close: called once as the decoder is freed, and never when
+// codec_dec_new fails (pull_ctx is then still the caller's).
+static int g_closed;
+static void count_close(void *ctx) {
+    (void)ctx;
+    g_closed++;
+}
+
+TEST(pull_close_owns_the_input) {
+    const vector_t *v = find("text3k/deflate");
+    pull_src_t ps = {v->enc, v->enc_len, 0, 100};
+    codec_dec_opts_t o = {.pull = pull_from, .pull_ctx = &ps, .pull_close = count_close, .out_len = CODEC_LEN_UNKNOWN};
+    g_closed = 0;
+    codec_dec_t *d = codec_dec_new(CODEC_DEFLATE, &o, NULL);
+    ASSERT_TRUE(d != NULL);
+    ASSERT_EQ_INT(0, g_closed);
+    codec_dec_free(d);
+    ASSERT_EQ_INT(1, g_closed);
+    o.out_len = CODEC_LEN_UNKNOWN;
+    ASSERT_TRUE(codec_dec_new(CODEC_SIT13, &o, NULL) == NULL); // needs out_len
+    ASSERT_EQ_INT(1, g_closed);
+}
+
+// A checksum the container states, over the decoded bytes: right, wrong,
+// and the decoded bytes all delivered before the verdict.
+TEST(stated_checksums_are_verified) {
+    const vector_t *v = find("text3k/deflate");
+    uint8_t *want = vec_gen(v->kind, v->len, v->seed), *out = malloc(v->len + 8);
+    static const codec_check_t kinds[] = {CODEC_CHECK_CRC32, CODEC_CHECK_CRC16_ARC};
+    for (int k = 0; k < 2; k++) {
+        uint32_t good = kinds[k] == CODEC_CHECK_CRC32 ? codec_crc32(0, want, v->len) : codec_crc16_arc(0, want, v->len);
+        for (int bad = 0; bad < 2; bad++) {
+            codec_dec_opts_t o = {.src = v->enc,
+                                  .len = v->enc_len,
+                                  .out_len = CODEC_LEN_UNKNOWN,
+                                  .check = kinds[k],
+                                  .check_value = good ^ (uint32_t)bad};
+            codec_dec_t *d = codec_dec_new(CODEC_DEFLATE, &o, NULL);
+            int rc;
+            size_t got = run_in_steps(d, out, v->len, 7, &rc);
+            ASSERT_EQ_INT((int)v->len, (int)got);
+            ASSERT_TRUE(memcmp(out, want, v->len) == 0);
+            ASSERT_EQ_INT(bad ? CODEC_ERR_CHECKSUM : 1, rc);
+            if (bad)
+                ASSERT_TRUE(strstr(codec_dec_message(d), "checksum") != NULL);
+            codec_dec_free(d);
+        }
+    }
+    free(out);
+    free(want);
+}
+
+// `exact`: the container's size wins for a codec with an end of its own --
+// output past it is dropped, a stream short of it is truncated.
+TEST(exact_size_overrides_the_stream) {
+    static const uint8_t s[] = {'a', 0x90, 10, 'b'}; // RLE90: "a" x 10, "b"
+    codec_dec_opts_t o = {.src = s, .len = sizeof(s), .out_len = 5, .exact = 1};
+    codec_dec_t *d = codec_dec_new(CODEC_RLE90, &o, NULL);
+    uint8_t out[32];
+    int rc;
+    ASSERT_EQ_INT(5, (int)run_in_steps(d, out, 5, 3, &rc));
+    ASSERT_EQ_INT(1, rc);
+    ASSERT_TRUE(memcmp(out, "aaaaa", 5) == 0);
+    codec_dec_free(d);
+    o.out_len = 20;
+    d = codec_dec_new(CODEC_RLE90, &o, NULL);
+    run_in_steps(d, out, 20, 3, &rc);
+    ASSERT_EQ_INT(CODEC_ERR_TRUNCATED, rc);
+    codec_dec_free(d);
+    // Without it, the same stream past a limit is an overflow.
+    o.exact = 0;
+    o.out_len = 5;
+    d = codec_dec_new(CODEC_RLE90, &o, NULL);
+    run_in_steps(d, out, 5, 3, &rc);
+    ASSERT_EQ_INT(CODEC_ERR_OVERFLOW, rc);
+    codec_dec_free(d);
+    o.out_len = CODEC_LEN_UNKNOWN;
+    o.exact = 1;
+    ASSERT_TRUE(codec_dec_new(CODEC_RLE90, &o, NULL) == NULL); // exact needs a size
+}
+
+// ---- gzip ------------------------------------------------------------------
+
+// A gzip member around a DEFLATE vector: header (with the optional fields
+// `flg` asks for), the stream, its CRC-32 and size.  Appended to *b.
+static void gz_member(uint8_t **b, size_t *n, const vector_t *v, int flg, uint32_t crc_xor) {
+    uint8_t *want = vec_gen(v->kind, v->len, v->seed);
+    uint8_t h[64];
+    size_t k = 0;
+    h[k++] = 0x1F, h[k++] = 0x8B, h[k++] = 8, h[k++] = (uint8_t)flg;
+    for (int i = 0; i < 6; i++)
+        h[k++] = (uint8_t)i; // mtime, xfl, os
+    if (flg & 0x04) { // FEXTRA: a 4-byte subfield
+        h[k++] = 4, h[k++] = 0, h[k++] = 'A', h[k++] = 'B', h[k++] = 0, h[k++] = 0;
+    }
+    if (flg & 0x08) // FNAME
+        memcpy(h + k, "name\0", 5), k += 5;
+    if (flg & 0x10) // FCOMMENT
+        memcpy(h + k, "note\0", 5), k += 5;
+    if (flg & 0x02) { // FHCRC: the low 16 bits of the header's CRC-32
+        uint32_t c = codec_crc32(0, h, k);
+        h[k++] = (uint8_t)c, h[k++] = (uint8_t)(c >> 8);
+    }
+    *b = realloc(*b, *n + k + v->enc_len + 8);
+    memcpy(*b + *n, h, k);
+    memcpy(*b + *n + k, v->enc, v->enc_len);
+    uint8_t *t = *b + *n + k + v->enc_len;
+    uint32_t crc = codec_crc32(0, want, v->len) ^ crc_xor, sz = (uint32_t)v->len;
+    for (int i = 0; i < 4; i++)
+        t[i] = (uint8_t)(crc >> (8 * i)), t[4 + i] = (uint8_t)(sz >> (8 * i));
+    *n += k + v->enc_len + 8;
+    free(want);
+}
+
+// Every DEFLATE vector as a gzip member, with each header form; members
+// back to back decode as their concatenation, streamed and pulled; what
+// follows that is not a member is ignored; a bad trailer, header CRC or
+// flag is refused.
+TEST(gzip_members) {
+    static const int flgs[] = {0, 0x08, 0x04 | 0x10 | 0x02, 0x1E};
+    for (size_t i = 0; i < N_VECTORS; i++) {
+        const vector_t *v = &k_vectors[i];
+        if (v->codec != CODEC_DEFLATE || v->enc_len > 300000)
+            continue;
+        uint8_t *want = vec_gen(v->kind, v->len, v->seed);
+        for (size_t f = 0; f < 4; f++) {
+            uint8_t *b = NULL;
+            size_t n = 0;
+            gz_member(&b, &n, v, flgs[f], 0);
+            gz_member(&b, &n, v, flgs[(f + 1) % 4], 0);
+            b = realloc(b, n + 5);
+            memcpy(b + n, "junk!", 5); // ignored, as gzip -d ignores it
+            uint8_t *out = malloc(2 * v->len + 8);
+            pull_src_t ps = {b, n + 5, 0, 977};
+            codec_dec_opts_t o = {.pull = pull_from, .pull_ctx = &ps, .out_len = CODEC_LEN_UNKNOWN};
+            codec_dec_t *d = codec_dec_new(CODEC_GZIP, &o, NULL);
+            int rc;
+            size_t got = run_in_steps(d, out, 2 * v->len, v->len > 40000 ? 4093 : 7, &rc);
+            if (rc != 1)
+                note(v, codec_dec_message(d));
+            ASSERT_EQ_INT(1, rc);
+            ASSERT_EQ_INT((int)(2 * v->len), (int)got);
+            ASSERT_TRUE(memcmp(out, want, v->len) == 0 && memcmp(out + v->len, want, v->len) == 0);
+            codec_dec_free(d);
+            ASSERT_EQ_INT((int)(2 * v->len), (int)codec_decode(CODEC_GZIP, b, n + 5, out, 2 * v->len));
+            free(out);
+            free(b);
+        }
+        free(want);
+    }
+    const vector_t *v = find("text3k/deflate");
+    uint8_t *b = NULL, out[4096];
+    size_t n = 0;
+    gz_member(&b, &n, v, 0, 1); // a CRC off by one
+    ASSERT_EQ_INT(CODEC_ERR_CHECKSUM, (int)codec_decode(CODEC_GZIP, b, n, out, sizeof(out)));
+    ASSERT_EQ_INT(CODEC_ERR_TRUNCATED, (int)codec_decode(CODEC_GZIP, b, n - 3, out, sizeof(out)));
+    b[3] = 0x20; // a reserved flag
+    ASSERT_EQ_INT(CODEC_ERR_DATA, (int)codec_decode(CODEC_GZIP, b, n, out, sizeof(out)));
+    free(b);
+    b = NULL, n = 0;
+    gz_member(&b, &n, v, 0x02, 0);
+    b[10] ^= 1; // the header CRC
+    ASSERT_EQ_INT(CODEC_ERR_CHECKSUM, (int)codec_decode(CODEC_GZIP, b, n, out, sizeof(out)));
+    b[0] = 0x1E; // not gzip at all
+    ASSERT_EQ_INT(CODEC_ERR_DATA, (int)codec_decode(CODEC_GZIP, b, n, out, sizeof(out)));
+    free(b);
+}
+
 // ---- the small classic codecs ------------------------------------------------
 
 // Decode a hand-built stream, sized `want_len` (or CODEC_LEN_UNKNOWN), and
@@ -751,6 +961,11 @@ int main(void) {
     RUN(deflate_reports_exact_consumption);
     RUN(pull_errors_are_reported);
     RUN(decoders_chain);
+    RUN(stacked_decoder_owns_its_input);
+    RUN(pull_close_owns_the_input);
+    RUN(stated_checksums_are_verified);
+    RUN(exact_size_overrides_the_stream);
+    RUN(gzip_members);
     RUN(rle90_both_dialects);
     RUN(cpt_rle_escapes);
     RUN(sit_lzw_strings_and_clear);

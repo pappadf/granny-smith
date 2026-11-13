@@ -335,65 +335,9 @@ static int cpt_open(peel_archive_t *a, const peel_probe_t *p, peel_err_t **err) 
     return 0;
 }
 
-// One fork as a stream: RLE (and LZH under it) over the packed range, a
-// buffer at a time.  The packed bytes are read on the first run(), not when
-// the fork is opened.
-typedef struct {
-    peel_producer_t base;
-    peel_source_t *src; // the archive, retained
-    uint64_t off;
-    uint32_t comp, uncomp;
-    bool lzh, started, failed;
-    uint8_t *packed; // owned, once read
-    peel_producer_t *inner; // the codec chain (peel_codec_producer)
-} cpt_prod_t;
-
-static int cpt_prod_fail(cpt_prod_t *p, const char *msg) {
-    snprintf(p->base.err, sizeof(p->base.err), "%s", msg);
-    p->failed = true;
-    return -5;
-}
-
-static int cpt_prod_run(peel_producer_t *pp, uint8_t *out, size_t cap, size_t *n) {
-    cpt_prod_t *p = (cpt_prod_t *)pp;
-    *n = 0;
-    if (p->failed)
-        return -5;
-    if (!p->started) {
-        p->started = true;
-        p->packed = malloc(p->comp ? p->comp : 1);
-        if (!p->packed)
-            return cpt_prod_fail(p, "out of memory reading fork data");
-        if (p->comp && peel_source_read_exact(p->src, p->off, p->packed, p->comp) != 0)
-            return cpt_prod_fail(p, "cannot read CPT fork data");
-        // The fork must decode to exactly its declared length (the per-file
-        // CRC is never verified): one that runs dry early is refused.
-        static const codec_id_t lzh_rle[2] = {CODEC_CPT_LZH, CODEC_CPT_RLE};
-        peel_err_t *err = NULL;
-        p->inner = p->lzh ? peel_codec_producer(lzh_rle, 2, 0, p->packed, p->comp, p->uncomp, false, NULL, &err)
-                          : peel_codec_producer(lzh_rle + 1, 1, 0, p->packed, p->comp, p->uncomp, false, NULL, &err);
-        if (!p->inner) {
-            cpt_prod_fail(p, peel_err_msg(err));
-            peel_err_free(err);
-            return -5;
-        }
-    }
-    int rc = p->inner->run(p->inner, out, cap, n);
-    return rc < 0 ? cpt_prod_fail(p, p->inner->err) : rc;
-}
-
-static void cpt_prod_free(peel_producer_t *pp) {
-    cpt_prod_t *p = (cpt_prod_t *)pp;
-    if (p->inner)
-        p->inner->free(p->inner);
-    free(p->packed);
-    peel_source_release(p->src);
-    free(p);
-}
-
-// The checks peel_cpt always made, in its words, then a producer for the
+// The checks peel_cpt always made, in its words, then a decoder for the
 // fork.  NULL + *err.
-static peel_producer_t *cpt_producer(peel_archive_t *a, int i, int fork, peel_err_t **err) {
+static codec_dec_t *cpt_decoder(peel_archive_t *a, int i, int fork, peel_err_t **err) {
     cpt_priv_t *priv = a->priv;
     const cp_entry_t *e = &priv->ar.entries[i];
     uint64_t len = peel_source_size(a->src);
@@ -420,29 +364,33 @@ static peel_producer_t *cpt_producer(peel_archive_t *a, int i, int fork, peel_er
         *err = make_err("CPT: fork declares %u bytes, over the %u MiB limit", uncomp, (unsigned)(PEEL_MAX_FORK >> 20));
         return NULL;
     }
-    cpt_prod_t *p = calloc(1, sizeof(*p));
-    if (!p) {
-        *err = make_err("CPT: out of memory");
+    // RLE over the packed range, or RLE over LZH over it.  The fork must
+    // decode to exactly its declared length (its CRC is never verified):
+    // one that runs dry early is refused.
+    uint64_t off = rsrc ? rsrc_offset : data_offset, comp = rsrc ? e->rsrc_comp : e->data_comp;
+    bool lzh = (e->flags & (rsrc ? CP_FLAG_RSRC_LZH : CP_FLAG_DATA_LZH)) != 0;
+    codec_dec_opts_t rle = {.out_len = uncomp};
+    if (!lzh)
+        return peel_fork_decoder(a->src, off, comp, CODEC_CPT_RLE, &rle, "CPT", err);
+    codec_dec_opts_t lz = {.out_len = CODEC_LEN_UNKNOWN};
+    codec_dec_t *inner = peel_fork_decoder(a->src, off, comp, CODEC_CPT_LZH, &lz, "CPT", err);
+    if (!inner)
         return NULL;
-    }
-    p->base.run = cpt_prod_run;
-    p->base.free = cpt_prod_free;
-    p->src = peel_source_retain(a->src);
-    p->off = rsrc ? rsrc_offset : data_offset;
-    p->comp = rsrc ? e->rsrc_comp : e->data_comp;
-    p->uncomp = uncomp;
-    p->lzh = (e->flags & (rsrc ? CP_FLAG_RSRC_LZH : CP_FLAG_DATA_LZH)) != 0;
-    return &p->base;
+    int rc = 0;
+    codec_dec_t *d = codec_dec_stack(inner, CODEC_CPT_RLE, &rle, &rc);
+    if (!d)
+        *err = make_err("CPT: %s", codec_strerror(rc));
+    return d;
 }
 
-// Decode one fork whole: the same producer, drained.
+// Decode one fork whole: the same decoder, drained.
 static peel_buf_t cpt_decode_fork(peel_archive_t *a, int i, int fork, peel_err_t **err) {
     cpt_priv_t *priv = a->priv;
     const cp_entry_t *e = &priv->ar.entries[i];
-    peel_producer_t *p = cpt_producer(a, i, fork, err);
-    if (!p)
+    codec_dec_t *d = cpt_decoder(a, i, fork, err);
+    if (!d)
         return (peel_buf_t){0};
-    return peel_producer_drain(p, fork == PEEL_FORK_RSRC ? e->rsrc_uncomp : e->data_uncomp, "CPT", err);
+    return peel_decoder_drain(d, fork == PEEL_FORK_RSRC ? e->rsrc_uncomp : e->data_uncomp, "CPT", err);
 }
 
 static void cpt_close(peel_archive_t *a) {
@@ -457,6 +405,6 @@ const peel_fmt_t peel_fmt_cpt = {
     .desc = {"cpt", false, cpt_detect_probe},
     .open = cpt_open,
     .decode = cpt_decode_fork,
-    .producer = cpt_producer,
+    .decoder = cpt_decoder,
     .close = cpt_close,
 };

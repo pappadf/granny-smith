@@ -602,7 +602,7 @@ include/peeler.h             Public API (types + all function declarations)
 lib/
   peeler.c                   peel(), detection, helpers
   err.c                      Error object creation and formatting
-  codec_producer.c           Forks decoded through the codec library
+  fork_decoder.c             A fork as a codec decoder over its archive range
   formats/
     hqx.c                    BinHex 4.0 decoder
     bin.c                    MacBinary decoder

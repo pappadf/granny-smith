@@ -401,6 +401,10 @@ struct codec_dec {
     uint64_t out_len; // CODEC_LEN_UNKNOWN, or the decoded size (a limit)
     uint32_t flags;
     int status; // 0 running, CODEC_END, or CODEC_ERR_*
+    bool exact; // ends at out_len whatever the codec (codec_dec_opts_t.exact)
+    codec_check_t check; // over the drained bytes, at the end
+    uint32_t check_value, check_sum;
+    void (*pull_close)(void *pull_ctx);
     char msg[96]; // why it failed
     void *st; // the codec's own state
 };
@@ -418,9 +422,10 @@ static inline uint64_t codec_left(const codec_dec_t *d) {
     return d->ring.total >= d->out_len ? 0 : d->out_len - d->ring.total;
 }
 
-extern const codec_dec_ops_t codec_copy_dec, codec_deflate_dec, codec_zlib_dec, codec_adc_dec, codec_bzip2_dec,
-    codec_lzfse_dec, codec_xz_dec, codec_lzma_alone_dec, codec_rle90_dec, codec_sit_lzw_dec, codec_sit_huffman_dec,
-    codec_sit13_dec, codec_sit_arsenic_dec, codec_cpt_rle_dec, codec_cpt_lzh_dec, codec_dcmp_dec, codec_gsrle_dec;
+extern const codec_dec_ops_t codec_copy_dec, codec_deflate_dec, codec_zlib_dec, codec_gzip_dec, codec_adc_dec,
+    codec_bzip2_dec, codec_lzfse_dec, codec_xz_dec, codec_lzma_alone_dec, codec_rle90_dec, codec_sit_lzw_dec,
+    codec_sit_huffman_dec, codec_sit13_dec, codec_sit_arsenic_dec, codec_cpt_rle_dec, codec_cpt_lzh_dec, codec_dcmp_dec,
+    codec_gsrle_dec;
 
 // ============================================================================
 // Encoders
