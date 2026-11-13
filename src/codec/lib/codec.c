@@ -252,6 +252,14 @@ int codec_fail(codec_dec_t *d, int rc, const char *msg) {
     return rc;
 }
 
+int codec_set_size(codec_dec_t *d, uint64_t n) {
+    if (d->out_len != CODEC_LEN_UNKNOWN && n > d->out_len)
+        return codec_fail(d, CODEC_ERR_OVERFLOW, "the stream states more than the size allowed");
+    d->out_len = n;
+    d->exact = true;
+    return 0;
+}
+
 // ============================================================================
 // Decoders
 // ============================================================================

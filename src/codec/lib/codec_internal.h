@@ -436,6 +436,11 @@ int codec_ring_alloc(codec_dec_t *d, size_t window, size_t burst);
 // Fail with `rc` and a message (the first one set stays).  Returns rc.
 int codec_fail(codec_dec_t *d, int rc, const char *msg);
 
+// The stream states its own decoded size (a compressed resource's header):
+// from here it is exact at `n` bytes.  0, or CODEC_ERR_OVERFLOW (and the
+// decoder failed) when the caller's limit is smaller.
+int codec_set_size(codec_dec_t *d, uint64_t n);
+
 // Bytes left to produce of a sized stream (0 once its last symbol has
 // reached or passed the size: codec.c cuts the excess).
 static inline uint64_t codec_left(const codec_dec_t *d) {
