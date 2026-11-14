@@ -285,6 +285,18 @@ static inline uint8_t ring_back(const codec_ring_t *r, size_t dist) {
     return r->buf[r->w >= dist ? r->w - dist : r->w + r->size - dist];
 }
 
+// The ring's bytes from position `from` (counted like total; at most `size`
+// back) up to the newest, as far as they run contiguously: *p, and their
+// count (0 at total).  Folding a checksum over the bytes written since
+// `from` takes at most two spans:
+//   for (const uint8_t *p; at < r->total; at += n) { n = ring_span(r, at, &p); sum = f(sum, p, n); }
+static inline size_t ring_span(const codec_ring_t *r, uint64_t from, const uint8_t **p) {
+    size_t pending = (size_t)(r->total - from);
+    size_t at = r->w >= pending ? r->w - pending : r->w + r->size - pending;
+    *p = r->buf + at;
+    return r->size - at < pending ? r->size - at : pending;
+}
+
 // Append `n` bytes (n <= room).
 void ring_write(codec_ring_t *r, const uint8_t *src, size_t n);
 
@@ -382,15 +394,24 @@ static inline int codec_htree_sym(const codec_htree_t *p, int node) {
 #define CODEC_MORE 0 // fill: the ring is (nearly) full, more remains
 #define CODEC_END  1 // fill: the stream has ended
 
+// A codec's decoder, declared: codec.c allocates its zeroed state
+// (state_size bytes at d->st) and its ring (window + burst, see
+// codec_ring_alloc) before init, and frees both after free.  A codec whose
+// window comes from its stream's header (LZMA's dictionary) declares
+// neither and sizes the ring itself once it knows.
 typedef struct codec_dec_ops {
-    // Allocate d->st and the ring (codec_ring_alloc).  0 or CODEC_ERR_*.
+    size_t state_size; // sizeof its state (0: none)
+    size_t window, burst; // its ring: history kept, and the most one symbol writes
+    bool sized; // the stream has no end of its own: opts.out_len is required, and it is exact
+    // Optional: set the zeroed state up.  0 or CODEC_ERR_*.
     int (*init)(codec_dec_t *d);
-    // Decode into the ring while it has room for one more symbol.
-    // CODEC_MORE, CODEC_END, or CODEC_ERR_* (codec_fail).  It is called
-    // only with the ring drained, and must produce output or consume input.
+    // Decode into the ring while it has room for one more symbol
+    // (codec_room_for).  CODEC_MORE, CODEC_END, or CODEC_ERR_* (codec_fail).
+    // It is called only with the ring drained, and must produce output or
+    // consume input.
     int (*fill)(codec_dec_t *d);
-    void (*free)(codec_dec_t *d); // free d->st's contents and d->st (not the ring)
-    bool sized; // the stream has no end of its own: opts.out_len is required
+    // Optional: free what the state points to (not the state, nor the ring).
+    void (*free)(codec_dec_t *d);
 } codec_dec_ops_t;
 
 struct codec_dec {
@@ -399,8 +420,15 @@ struct codec_dec {
     codec_in_t in;
     codec_ring_t ring;
     uint64_t out_len; // CODEC_LEN_UNKNOWN, or the decoded size (a limit)
-    uint32_t flags;
     int status; // 0 running, CODEC_END, or CODEC_ERR_*
+    bool exact; // ends at out_len (codec_dec_opts_t.exact, or a codec with no end of its own)
+    codec_check_t check; // over the delivered bytes, at the end
+    uint32_t check_value, check_sum;
+    uint64_t skip; // decoded bytes before the output (dropped)
+    uint64_t deliver; // the output's own size, after skip (CODEC_LEN_UNKNOWN: to the end)
+    int stored; // bytes of stated checksum after the output (0: check_value)
+    uint8_t stored_bytes[4];
+    void (*in_close)(void *ctx); // codec_input_t.close
     char msg[96]; // why it failed
     void *st; // the codec's own state
 };
@@ -412,15 +440,30 @@ int codec_ring_alloc(codec_dec_t *d, size_t window, size_t burst);
 // Fail with `rc` and a message (the first one set stays).  Returns rc.
 int codec_fail(codec_dec_t *d, int rc, const char *msg);
 
+// The stream states its own decoded size (a compressed resource's header):
+// from here it is exact at `n` bytes.  0, or CODEC_ERR_OVERFLOW (and the
+// decoder failed) when the caller's limit is smaller.
+int codec_set_size(codec_dec_t *d, uint64_t n);
+
 // Bytes left to produce of a sized stream (0 once its last symbol has
 // reached or passed the size: codec.c cuts the excess).
 static inline uint64_t codec_left(const codec_dec_t *d) {
     return d->ring.total >= d->out_len ? 0 : d->out_len - d->ring.total;
 }
 
-extern const codec_dec_ops_t codec_copy_dec, codec_deflate_dec, codec_zlib_dec, codec_adc_dec, codec_bzip2_dec,
-    codec_lzfse_dec, codec_xz_dec, codec_lzma_alone_dec, codec_rle90_dec, codec_sit_lzw_dec, codec_sit_huffman_dec,
-    codec_sit13_dec, codec_sit_arsenic_dec, codec_cpt_rle_dec, codec_cpt_lzh_dec, codec_dcmp_dec, codec_gsrle_dec;
+// Every fill's loop condition: room in the ring for one more symbol of up
+// to `burst` bytes, and -- for an exact stream -- its size not yet reached
+// (codec.c then ends it).  A stream whose size is only a limit decodes on
+// past it, so that an overrun is seen.
+//   while (codec_room_for(d, BURST)) { decode one symbol }  return CODEC_MORE;
+static inline bool codec_room_for(const codec_dec_t *d, size_t burst) {
+    return ring_room(&d->ring) >= burst && !(d->exact && d->ring.total >= d->out_len);
+}
+
+extern const codec_dec_ops_t codec_copy_dec, codec_deflate_dec, codec_zlib_dec, codec_gzip_dec, codec_adc_dec,
+    codec_bzip2_dec, codec_lzfse_dec, codec_xz_dec, codec_lzma_alone_dec, codec_rle90_dec, codec_binhex_dec,
+    codec_sit2_dec, codec_sit3_dec, codec_sit13_dec, codec_sit15_dec, codec_cpt_rle_dec, codec_cpt_lzh_dec,
+    codec_dcmp_dec, codec_gsrle_dec;
 
 // ============================================================================
 // Encoders
@@ -447,8 +490,8 @@ extern const codec_enc_ops_t codec_zlib_enc, codec_xz_enc, codec_gsrle_enc;
 // Shared tables
 // ============================================================================
 
-// RFC 1951 §3.2.5 length and distance code tables (inflate.c; the encoder
-// in deflate.c uses them too).
+// RFC 1951 §3.2.5 length and distance code tables (deflate.c; the encoder
+// in deflate_enc.c uses them too).
 extern const uint16_t codec_deflate_len_base[29];
 extern const uint8_t codec_deflate_len_extra[29];
 extern const uint16_t codec_deflate_dist_base[30];

@@ -11,7 +11,7 @@
 // The two formats differ in two corners.  After an escaped 0x90, StuffIt
 // repeats the byte before it, BinHex the 0x90 itself; and a count of 1 (no
 // more copies) is StuffIt's no-op but an error in BinHex
-// (CODEC_RLE90_BINHEX).  The stream ends with its input; the container
+// (CODEC_RLE90_BINHEX, its own id).  The stream ends with its input; the container
 // states the decoded size (out_len, a limit).
 
 #include "codec_internal.h"
@@ -29,8 +29,8 @@ static int rle90_fill(codec_dec_t *d) {
     rle90_t *s = d->st;
     codec_in_t *in = &d->in;
     codec_ring_t *r = &d->ring;
-    bool binhex = d->flags & CODEC_RLE90_BINHEX;
-    while (ring_room(r) >= RLE90_BURST) {
+    bool binhex = d->id == CODEC_RLE90_BINHEX;
+    while (codec_room_for(d, RLE90_BURST)) {
         int b = codec_in_byte(in);
         if (b < 0)
             return CODEC_END;
@@ -55,16 +55,5 @@ static int rle90_fill(codec_dec_t *d) {
     return CODEC_MORE;
 }
 
-static int rle90_init(codec_dec_t *d) {
-    d->st = calloc(1, sizeof(rle90_t)); // prev starts at 0
-    if (!d->st)
-        return CODEC_ERR_NOMEM;
-    return codec_ring_alloc(d, 0, RLE90_BURST);
-}
-
-static void rle90_free(codec_dec_t *d) {
-    free(d->st);
-    d->st = NULL;
-}
-
-const codec_dec_ops_t codec_rle90_dec = {rle90_init, rle90_fill, rle90_free, false};
+// prev starts at 0 (sit.md § 8.2).
+const codec_dec_ops_t codec_rle90_dec = {.state_size = sizeof(rle90_t), .burst = RLE90_BURST, .fill = rle90_fill};

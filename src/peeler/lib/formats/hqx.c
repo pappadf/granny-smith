@@ -9,18 +9,22 @@
 // three processing layers (hqx.md § 2.1 "The Big Picture"):
 //
 //   1. Text envelope — preamble string, colon delimiters, line breaks.
-//      (hqx.md § 3)
+//      (hqx.md § 3)  Found here.
 //
 //   2. 6-bit ASCII encoding — 64-character alphabet converting 8-bit
-//      bytes to printable ASCII.  (hqx.md § 4)
+//      bytes to printable ASCII.  (hqx.md § 4)  The codec library's
+//      CODEC_BINHEX, over the text after the opening colon.
 //
 //   3. Run-length encoding (RLE90) — 0x90 marker byte compresses
-//      repeated-byte sequences.  (hqx.md § 5)  The codec library's
-//      CODEC_RLE90 with BinHex's rules, pulling from layer 2.
+//      repeated-byte sequences.  (hqx.md § 5)  CODEC_RLE90_BINHEX,
+//      stacked on layer 2 (codec_dec_stack).
 //
-// After decoding all three layers, a binary stream remains containing a
-// variable-length header, data fork, and resource fork, each followed
-// by a CRC-16-CCITT checksum.  (hqx.md § 6)
+// The decoded stream is a variable-length header, the data fork, and the
+// resource fork, each followed by a CRC-16/XMODEM.  (hqx.md § 6)  The
+// header is read here; each fork is the same stacked decoder with the bytes
+// before it skipped and its CRC checked as the stream states it
+// (codec_dec_opts_t.skip, .check_stored), so a fork decodes as far as it is
+// read, like any other archive's.
 
 #include "internal.h"
 
@@ -42,38 +46,11 @@
 // Type Definitions (Private)
 // ============================================================================
 
-// hqx.md § 4.1 — the 64-character BinHex alphabet, index 0–63.
-static const char hqx_alphabet[] = "!\"#$%&'()*+,-012345689@ABCDEFGHIJKLMNPQRSTUVXYZ[`abcdefhijklmpqr";
-
-// State for the three-layer pull-based decoder pipeline.
-// hqx.md § 10.1 describes the layered architecture.
-typedef struct {
-    // Source input buffer (borrowed, not owned)
-    const uint8_t *src;
-    size_t src_len;
-    size_t src_pos;
-
-    // hqx.md § 4.1 / Appendix A.2 — reverse alphabet lookup table.
-    uint8_t rev[256];
-
-    // hqx.md § 10.2 — six-to-eight converter accumulator.
-    unsigned accum;
-    unsigned accum_bits;
-
-    // hqx.md § 5 — the RLE expander (owned by ctx: ctx->dec), and what it
-    // has produced but not yet been read.
-    uint8_t out[4096];
-    size_t out_pos, out_len;
-    bool out_end;
-    char err[96]; // why layer 2 failed, for the RLE expander's pull error
-
-    // Abort context for error reporting
-    decode_ctx_t *ctx;
-} hqx_decoder_t;
-
-// Parsed fields from the BinHex header.
+// Where everything is: the text's offset and the decoded header.
 // hqx.md § 6.3 — variable-length header structure.
 typedef struct {
+    uint64_t payload; // offset of the text after the opening colon
+    uint32_t header_len; // decoded bytes of header, its CRC included
     char name[HQX_NAME_MAX + 1];
     uint8_t name_len;
     uint32_t mac_type;
@@ -81,7 +58,7 @@ typedef struct {
     uint16_t finder_flags;
     uint32_t data_len;
     uint32_t rsrc_len;
-} hqx_header_t;
+} hqx_layout_t;
 
 // ============================================================================
 // Static Helpers — Text Envelope
@@ -125,306 +102,147 @@ static size_t hqx_find_start_colon(const uint8_t *src, size_t len, size_t from) 
 }
 
 // ============================================================================
-// Static Helpers — Decoder Pipeline
+// Static Helpers — The decoded stream
 // ============================================================================
 
-// Initialise a decoder from the source buffer positioned at the start of
-// the encoded payload (just past the opening colon).
-static int64_t hqx_pull(void *ctx, uint8_t *buf, size_t cap);
-
-static void hqx_decoder_init(hqx_decoder_t *dec, const uint8_t *src, size_t len, size_t payload_start,
-                             decode_ctx_t *ctx) {
-    memset(dec, 0, sizeof(*dec));
-    dec->src = src;
-    dec->src_len = len;
-    dec->src_pos = payload_start;
-    dec->ctx = ctx;
-
-    // hqx.md § Appendix A.2 — build reverse lookup table.
-    memset(dec->rev, 0xFF, sizeof(dec->rev));
-    for (unsigned i = 0; i < 64; i++) {
-        dec->rev[(unsigned char)hqx_alphabet[i]] = (uint8_t)i;
+// The decoded stream over its text (memory, or a range of a source): the
+// 6-bit layer with the run-length layer on it, `opts` the outer's.
+static codec_dec_t *hqx_stream(const uint8_t *text, size_t text_len, peel_source_t *src, uint64_t off, uint64_t len,
+                               const codec_dec_opts_t *opts, peel_err_t **err) {
+    codec_dec_t *inner;
+    if (src) {
+        codec_dec_opts_t o = {.out_len = CODEC_LEN_UNKNOWN};
+        inner = peel_fork_decoder(src, off, len, CODEC_BINHEX, &o, "BinHex", err);
+        if (!inner)
+            return NULL;
+    } else {
+        codec_dec_opts_t o = {
+            .in = {.src = text, .len = text_len},
+              .out_len = CODEC_LEN_UNKNOWN
+        };
+        inner = codec_dec_new(CODEC_BINHEX, &o, NULL);
     }
-
-    codec_dec_opts_t o = {.pull = hqx_pull, .pull_ctx = dec, .out_len = CODEC_LEN_UNKNOWN, .flags = CODEC_RLE90_BINHEX};
     int rc = 0;
-    codec_dec_free(ctx->dec);
-    ctx->dec = codec_dec_new(CODEC_RLE90, &o, &rc);
-    if (!ctx->dec)
-        decode_abort(ctx, "BinHex: %s", codec_strerror(rc));
+    codec_dec_t *d = codec_dec_stack(inner, CODEC_RLE90_BINHEX, opts, &rc);
+    if (!d && !*err)
+        *err = make_err("BinHex: %s", codec_strerror(rc));
+    return d;
 }
 
-// hqx.md § 3.4 — fetch the next encoded character, skipping whitespace.
-// Returns the character, or -1 at the terminating colon or EOF.
-static int hqx_next_char(hqx_decoder_t *dec) {
-    while (dec->src_pos < dec->src_len) {
-        uint8_t ch = dec->src[dec->src_pos++];
-        // hqx.md § 3.2 — terminating colon marks end of payload
-        if (ch == ':') {
-            return -1;
-        }
-        // hqx.md § 3.4 — skip whitespace: CR, LF, TAB, SP
-        if (ch == '\r' || ch == '\n' || ch == '\t' || ch == ' ') {
-            continue;
-        }
-        return (int)ch;
-    }
+// Exactly `n` decoded bytes into `buf`.  0, or -1 with *err set.
+static int hqx_read_exact(codec_dec_t *d, uint8_t *buf, size_t n, peel_err_t **err) {
+    size_t got = 0;
+    int rc = codec_dec_run(d, buf, n, &got);
+    if (got == n)
+        return 0;
+    if (rc < 0)
+        *err = make_err("BinHex: %s", codec_dec_message(d));
+    else
+        *err = make_err("BinHex: premature end of stream (needed %zu more bytes)", n - got);
     return -1;
 }
 
-// hqx.md § 10.2 / § 4.2 — decode one raw byte from the 6-bit stream.
-// Accumulates 6-bit values until 8 bits are available, then extracts one byte.
-// Returns 0..255 on success, -1 on EOF, or -2 for an invalid character
-// (dec->err says which).
-static int hqx_raw_byte(hqx_decoder_t *dec) {
-    // Feed 6-bit symbols until we have at least 8 bits
-    while (dec->accum_bits < 8) {
-        int ch = hqx_next_char(dec);
-        if (ch < 0) {
-            return -1;
-        }
-        uint8_t val = dec->rev[(unsigned char)ch];
-        if (val > 63) {
-            // hqx.md § 9 — invalid encoding character is a fatal error
-            snprintf(dec->err, sizeof(dec->err), "BinHex: invalid character '%c' (0x%02X)", ch, ch);
-            return -2;
-        }
-        dec->accum = (dec->accum << 6) | val;
-        dec->accum_bits += 6;
+// hqx.md §§ 3, 6.3 — find the payload in `text` and read the header from
+// it, verifying its CRC (hqx.md § 7).  0, or -1 with *err set.
+static int hqx_layout(const uint8_t *text, size_t len, hqx_layout_t *L, peel_err_t **err) {
+    memset(L, 0, sizeof(*L));
+    size_t after = hqx_find_preamble(text, len);
+    if (after == (size_t)-1) {
+        *err = make_err("BinHex: preamble not found");
+        return -1;
     }
-    dec->accum_bits -= 8;
-    return (int)((dec->accum >> dec->accum_bits) & 0xFF);
+    size_t start = hqx_find_start_colon(text, len, after);
+    if (start == (size_t)-1) {
+        *err = make_err("BinHex: no starting colon found");
+        return -1;
+    }
+    L->payload = start;
+    codec_dec_opts_t o = {.out_len = CODEC_LEN_UNKNOWN};
+    codec_dec_t *d = hqx_stream(text + start, len - start, NULL, 0, 0, &o, err);
+    if (!d)
+        return -1;
+    // First byte: the filename length, 1..63 (hqx.md § 9).  Then the name,
+    // a NUL, type, creator, flags, the two fork lengths (name_len + 19
+    // bytes) and the header's CRC.
+    uint8_t buf[1 + HQX_NAME_MAX + 19 + 2];
+    int rc = hqx_read_exact(d, buf, 1, err);
+    if (rc == 0 && (buf[0] == 0 || buf[0] > HQX_NAME_MAX)) {
+        *err = make_err("BinHex: invalid filename length %u", buf[0]);
+        rc = -1;
+    }
+    size_t n = buf[0], total = 1 + n + 19 + 2;
+    if (rc == 0)
+        rc = hqx_read_exact(d, buf + 1, total - 1, err);
+    codec_dec_free(d);
+    if (rc != 0)
+        return -1;
+    // hqx.md § 7.2 — the self-checking property: the CRC over the content
+    // and the stored CRC is zero.
+    if (codec_crc16_xmodem(0, buf, total) != 0) {
+        *err = make_err("BinHex: header CRC mismatch");
+        return -1;
+    }
+    L->header_len = (uint32_t)total;
+    L->name_len = (uint8_t)n;
+    memcpy(L->name, buf + 1, n);
+    L->name[n] = '\0';
+    // hqx.md § 6.3 — type at 2+n, creator at 6+n, flags at 10+n, data
+    // length at 12+n, resource length at 16+n.
+    L->mac_type = rd32be(buf + 2 + n);
+    L->mac_creator = rd32be(buf + 6 + n);
+    L->finder_flags = rd16be(buf + 10 + n);
+    L->data_len = rd32be(buf + 12 + n);
+    L->rsrc_len = rd32be(buf + 16 + n);
+    return 0;
 }
 
-// Layer 2 as the RLE expander's input (a codec_pull_fn): up to `cap` raw
-// bytes, 0 at the terminating colon, or CODEC_ERR_DATA -- once the bytes
-// before an invalid character have been handed over.
-static int64_t hqx_pull(void *ctx, uint8_t *buf, size_t cap) {
-    hqx_decoder_t *dec = ctx;
-    size_t n = 0;
-    if (dec->err[0])
-        return CODEC_ERR_DATA;
-    while (n < cap) {
-        int b = hqx_raw_byte(dec);
-        if (b == -2)
-            return n ? (int64_t)n : CODEC_ERR_DATA;
-        if (b < 0)
-            break;
-        buf[n++] = (uint8_t)b;
+// One fork's decoder: the decoded stream from after the header (and, for
+// the resource fork, the data fork and its CRC), exactly the fork's length,
+// its CRC the two bytes that follow it (hqx.md § 7.2).  Over the text in
+// memory, or over a source holding it.
+static codec_dec_t *hqx_fork_decoder(const hqx_layout_t *L, int fork, const uint8_t *text, size_t len,
+                                     peel_source_t *src, peel_err_t **err) {
+    uint32_t fork_len = fork == PEEL_FORK_RSRC ? L->rsrc_len : L->data_len;
+    if (fork_len > PEEL_MAX_FORK) {
+        *err = make_err("BinHex: %s fork declares %u bytes, over the %u MiB limit",
+                        fork == PEEL_FORK_RSRC ? "resource" : "data", fork_len, (unsigned)(PEEL_MAX_FORK >> 20));
+        return NULL;
     }
-    return (int64_t)n;
+    codec_dec_opts_t o = {.out_len = fork_len,
+                          .exact = 1,
+                          .skip = L->header_len + (fork == PEEL_FORK_RSRC ? (uint64_t)L->data_len + 2 : 0),
+                          .check = CODEC_CHECK_CRC16_XMODEM,
+                          .check_stored = 2};
+    if (src)
+        return hqx_stream(NULL, 0, src, L->payload, peel_source_size(src) - L->payload, &o, err);
+    return hqx_stream(text + L->payload, len - L->payload, NULL, 0, 0, &o, err);
 }
 
-// hqx.md § 10.3 / § 5.2 — produce the next decompressed byte after RLE
-// expansion.  Returns 0..255, or -1 on EOF.
-static int hqx_decoded_byte(hqx_decoder_t *dec) {
-    while (dec->out_pos == dec->out_len) {
-        if (dec->out_end)
-            return -1;
-        size_t n = 0;
-        int rc = codec_dec_run(dec->ctx->dec, dec->out, sizeof(dec->out), &n);
-        if (rc < 0) {
-            if (dec->err[0])
-                decode_abort(dec->ctx, "%s", dec->err);
-            decode_abort(dec->ctx, "BinHex: %s", codec_dec_message(dec->ctx->dec));
-        }
-        dec->out_pos = 0;
-        dec->out_len = n;
-        dec->out_end = rc == 1;
-    }
-    return dec->out[dec->out_pos++];
-}
-
-// Read exactly `n` decoded bytes into `buf`.
-// Aborts via ctx on premature end of stream.
-static void hqx_read_bytes(hqx_decoder_t *dec, uint8_t *buf, size_t n) {
-    for (size_t i = 0; i < n; i++) {
-        int b = hqx_decoded_byte(dec);
-        if (b < 0) {
-            // hqx.md § 9 — premature end of stream
-            decode_abort(dec->ctx,
-                         "BinHex: premature end of stream "
-                         "(needed %zu more bytes)",
-                         n - i);
-        }
-        buf[i] = (uint8_t)b;
-    }
-}
-
-// ============================================================================
-// Static Helpers — Header Parsing
-// ============================================================================
-
-// hqx.md § 6.3 — parse the variable-length header from the decoded stream.
-// Also verifies the header CRC (hqx.md § 7).
-static hqx_header_t hqx_parse_header(hqx_decoder_t *dec) {
-    hqx_header_t hdr;
-    memset(&hdr, 0, sizeof(hdr));
-
-    // First byte: filename length
-    uint8_t name_len_byte;
-    hqx_read_bytes(dec, &name_len_byte, 1);
-
-    // hqx.md § 9 — filename length must be 1..63
-    if (name_len_byte == 0 || name_len_byte > HQX_NAME_MAX) {
-        decode_abort(dec->ctx, "BinHex: invalid filename length %u", name_len_byte);
-    }
-    hdr.name_len = name_len_byte;
-
-    // hqx.md § 6.3 — remaining header fields after the name-length byte:
-    //   name_len bytes (name) + 1 (NUL) + 4 (type) + 4 (creator) +
-    //   2 (flags) + 4 (data_len) + 4 (rsrc_len) = name_len + 19 bytes,
-    //   followed by 2 bytes of header CRC.
-    size_t payload_len = (size_t)name_len_byte + 19;
-    size_t total_len = 1 + payload_len + 2; // name_len_byte + payload + CRC
-    uint8_t buf[256 + 22];
-    buf[0] = name_len_byte;
-    hqx_read_bytes(dec, buf + 1, payload_len + 2);
-
-    // hqx.md § 7.2 — verify header CRC using the self-checking property:
-    // CRC over (content + stored CRC) should yield zero.
-    uint16_t crc = codec_crc16_xmodem(0, buf, total_len);
-    if (crc != 0) {
-        // hqx.md § 9 — header CRC mismatch
-        decode_abort(dec->ctx, "BinHex: header CRC mismatch");
-    }
-
-    // Extract filename
-    size_t copy_len = hdr.name_len;
-    if (copy_len > HQX_NAME_MAX) {
-        copy_len = HQX_NAME_MAX;
-    }
-    memcpy(hdr.name, buf + 1, copy_len);
-    hdr.name[copy_len] = '\0';
-
-    // hqx.md § 6.3 — field offsets relative to start of header:
-    // type at offset 2+n, creator at 6+n, flags at 10+n,
-    // data_len at 12+n, rsrc_len at 16+n
-    size_t n = hdr.name_len;
-    const uint8_t *tp = buf + 2 + n; // type
-    const uint8_t *cp = buf + 6 + n; // creator
-    const uint8_t *fp = buf + 10 + n; // flags
-    const uint8_t *dl = buf + 12 + n; // data fork length
-    const uint8_t *rl = buf + 16 + n; // resource fork length
-
-    hdr.mac_type = rd32be(tp);
-    hdr.mac_creator = rd32be(cp);
-    hdr.finder_flags = rd16be(fp);
-    hdr.data_len = rd32be(dl);
-    hdr.rsrc_len = rd32be(rl);
-
-    return hdr;
-}
-
-// ============================================================================
-// Static Helpers — Fork Reading with CRC
-// ============================================================================
-
-// hqx.md § 6.4 / § 6.5 — read a fork of `fork_len` bytes from the decoded
-// stream, verify the trailing 2-byte CRC, and return the data.
-// hqx.md § 7.2 — uses the CRC placeholder rule for verification.
-static peel_buf_t hqx_read_fork(hqx_decoder_t *dec, uint32_t fork_len, const char *fork_name) {
-    if (fork_len == 0) {
-        // hqx.md § 6.6 — zero-length fork: still must read and verify CRC
-        uint8_t crc_bytes[2];
-        hqx_read_bytes(dec, crc_bytes, 2);
-        uint16_t stored_crc = rd16be(crc_bytes);
-        if (stored_crc != 0x0000) {
-            decode_abort(dec->ctx,
-                         "BinHex: %s fork CRC mismatch "
-                         "(empty fork, expected 0x0000)",
-                         fork_name);
-        }
+// Decode a fork whole through its decoder.  hqx.md § 6.6 — an empty fork
+// still has its CRC checked.
+static peel_buf_t hqx_read_fork(codec_dec_t *d, const hqx_layout_t *L, int fork, peel_err_t **err) {
+    const char *name = fork == PEEL_FORK_RSRC ? "resource" : "data";
+    size_t len = fork == PEEL_FORK_RSRC ? L->rsrc_len : L->data_len;
+    uint8_t *out = malloc(len ? len : 1);
+    int64_t n = out ? codec_dec_read(d, out, len) : CODEC_ERR_NOMEM;
+    if (n != (int64_t)len) {
+        if (n == CODEC_ERR_CHECKSUM)
+            *err = make_err("BinHex: %s fork CRC mismatch", name);
+        else if (n == CODEC_ERR_TRUNCATED)
+            *err = make_err("BinHex: premature end of stream in the %s fork", name);
+        else
+            *err =
+                make_err("BinHex: %s fork: %s", name, *codec_dec_message(d) ? codec_dec_message(d) : codec_strerror(n));
+        codec_dec_free(d);
+        free(out);
         return (peel_buf_t){0};
     }
-
-    if (fork_len > PEEL_MAX_FORK) {
-        decode_abort(dec->ctx, "BinHex: %s fork declares %u bytes, over the %u MiB limit", fork_name, fork_len,
-                     (unsigned)(PEEL_MAX_FORK >> 20));
+    codec_dec_free(d);
+    if (len == 0) {
+        free(out);
+        return (peel_buf_t){0};
     }
-
-    // Allocate and read fork content
-    grow_buf_t gbuf;
-    grow_init(&gbuf, fork_len, dec->ctx);
-
-    uint8_t chunk[4096];
-    uint32_t remaining = fork_len;
-    while (remaining > 0) {
-        size_t batch = remaining < sizeof(chunk) ? remaining : sizeof(chunk);
-        hqx_read_bytes(dec, chunk, batch);
-        grow_append(&gbuf, chunk, batch, dec->ctx);
-        remaining -= (uint32_t)batch;
-    }
-
-    // hqx.md § 7.2 — verify using self-checking property:
-    // CRC(content + stored_crc) should yield zero.
-    uint8_t crc_bytes[2];
-    hqx_read_bytes(dec, crc_bytes, 2);
-
-    // Compute CRC over fork content then over the stored CRC bytes
-    uint16_t crc = codec_crc16_xmodem(0, gbuf.data, gbuf.len);
-    crc = codec_crc16_xmodem(crc, crc_bytes, 2);
-    if (crc != 0) {
-        grow_free(&gbuf);
-        decode_abort(dec->ctx, "BinHex: %s fork CRC mismatch", fork_name);
-    }
-
-    return grow_finish(&gbuf);
-}
-
-// ============================================================================
-// Static Helpers — Full Decode Pipeline
-// ============================================================================
-
-// Decode a BinHex 4.0 file into a peel_file_t with both forks and metadata.
-// This is the shared implementation for both peel_hqx and peel_hqx_file.
-static peel_file_t hqx_decode(const uint8_t *src, size_t len, decode_ctx_t *ctx) {
-    // hqx.md § 3.1 — locate the preamble identification string
-    size_t after_preamble = hqx_find_preamble(src, len);
-    if (after_preamble == (size_t)-1) {
-        decode_abort(ctx, "BinHex: preamble not found");
-    }
-
-    // hqx.md § 3.2 — find the starting colon
-    size_t payload_start = hqx_find_start_colon(src, len, after_preamble);
-    if (payload_start == (size_t)-1) {
-        decode_abort(ctx, "BinHex: no starting colon found");
-    }
-
-    // Initialise the three-layer decoder pipeline
-    hqx_decoder_t dec;
-    hqx_decoder_init(&dec, src, len, payload_start, ctx);
-
-    // hqx.md § 6.3 — parse the header
-    hqx_header_t hdr = hqx_parse_header(&dec);
-
-    // hqx.md § 6.4 — read the data fork and verify its CRC
-    peel_buf_t data_fork = hqx_read_fork(&dec, hdr.data_len, "data");
-
-    // hqx.md § 6.5 — read the resource fork and verify its CRC
-    peel_buf_t rsrc_fork = hqx_read_fork(&dec, hdr.rsrc_len, "resource");
-
-    // Assemble the result
-    peel_file_t file;
-    memset(&file, 0, sizeof(file));
-
-    // Populate metadata from the parsed header
-    size_t nl = hdr.name_len;
-    if (nl > sizeof(file.meta.name) - 1) {
-        nl = sizeof(file.meta.name) - 1;
-    }
-    size_t np = 0; // one sanitised component (peel_append_segment)
-    peel_append_segment(file.meta.name, sizeof(file.meta.name), &np, (const uint8_t *)hdr.name, nl);
-    file.meta.mac_type = hdr.mac_type;
-    file.meta.mac_creator = hdr.mac_creator;
-
-    // hqx.md § 8.2 — clear Finder flag bits that should not persist on decode
-    file.meta.finder_flags = hdr.finder_flags & (uint16_t)~FINDER_CLEAR_MASK;
-
-    file.data_fork = data_fork;
-    file.resource_fork = rsrc_fork;
-
-    return file;
+    return (peel_buf_t){.data = out, .size = len, .owned = true};
 }
 
 // ============================================================================
@@ -440,49 +258,41 @@ bool hqx_detect(const uint8_t *src, size_t len) {
 // Operations (Public API) — Wrapper Peel
 // ============================================================================
 
-// Decode a BinHex 4.0 file and return the data fork as a flat buffer.
+// Decode a BinHex 4.0 file and return both forks plus metadata.
 // hqx.md § 2.1 — the full decoding pipeline is reversed: strip text
 // envelope, decode 6-bit ASCII, expand RLE, parse binary stream.
-peel_buf_t peel_hqx(const uint8_t *src, size_t len, peel_err_t **err) {
-    *err = NULL;
-
-    // Use setjmp/longjmp for deep-error abort throughout the decode pipeline.
-    // Both forks stay owned by ctx until the whole file has decoded, so a
-    // resource fork that fails frees the data fork already decoded -- which
-    // used to leak.
-    decode_ctx_t ctx;
-    dctx_init(&ctx);
-    if (setjmp(ctx.jmp) != 0) {
-        dctx_cleanup(&ctx);
-        *err = make_err("%s", ctx.errmsg);
-        return (peel_buf_t){0};
-    }
-
-    peel_file_t file = hqx_decode(src, len, &ctx);
-
-    // Return the data fork; the resource fork is freed with the rest.
-    dctx_release(&ctx, file.data_fork.data);
-    dctx_cleanup(&ctx);
-    return file.data_fork;
-}
-
-// Decode a BinHex 4.0 file and return both forks plus metadata.
 peel_file_t peel_hqx_file(const uint8_t *src, size_t len, peel_err_t **err) {
     *err = NULL;
-
-    decode_ctx_t ctx;
-    dctx_init(&ctx);
-    if (setjmp(ctx.jmp) != 0) {
-        dctx_cleanup(&ctx);
-        *err = make_err("%s", ctx.errmsg);
+    hqx_layout_t L;
+    if (hqx_layout(src, len, &L, err) != 0)
         return (peel_file_t){0};
+    peel_file_t file = {0};
+    for (int fork = PEEL_FORK_DATA; fork <= PEEL_FORK_RSRC; fork++) {
+        codec_dec_t *d = hqx_fork_decoder(&L, fork, src, len, NULL, err);
+        peel_buf_t b = d ? hqx_read_fork(d, &L, fork, err) : (peel_buf_t){0};
+        if (*err) {
+            peel_free(&file.data_fork);
+            return (peel_file_t){0};
+        }
+        if (fork == PEEL_FORK_RSRC)
+            file.resource_fork = b;
+        else
+            file.data_fork = b;
     }
-
-    peel_file_t file = hqx_decode(src, len, &ctx);
-    dctx_release(&ctx, file.data_fork.data);
-    dctx_release(&ctx, file.resource_fork.data);
-    dctx_cleanup(&ctx);
+    size_t np = 0; // one sanitised component (peel_append_segment)
+    peel_append_segment(file.meta.name, sizeof(file.meta.name), &np, (const uint8_t *)L.name, L.name_len);
+    file.meta.mac_type = L.mac_type;
+    file.meta.mac_creator = L.mac_creator;
+    // hqx.md § 8.2 — clear Finder flag bits that should not persist on decode
+    file.meta.finder_flags = L.finder_flags & (uint16_t)~FINDER_CLEAR_MASK;
     return file;
+}
+
+// Decode a BinHex 4.0 file and return the data fork as a flat buffer.
+peel_buf_t peel_hqx(const uint8_t *src, size_t len, peel_err_t **err) {
+    peel_file_t f = peel_hqx_file(src, len, err);
+    peel_free(&f.resource_fork);
+    return f.data_fork;
 }
 
 // ============================================================================
@@ -490,96 +300,61 @@ peel_file_t peel_hqx_file(const uint8_t *src, size_t len, peel_err_t **err) {
 // ============================================================================
 //
 // Listing decodes only the header, from the probe's head.  A fork is not a
-// contiguous range of the file (it is 6-bit text, run-length coded), so a
-// fork opens as a decode-through source whose first read decodes the whole
-// file -- small files, not worth more.  Both forks come out of that one
-// decode; the second is kept until it is asked for.
-
-typedef struct {
-    peel_file_t file; // forks decoded but not yet handed out
-    bool have[2];
-} hqx_priv_t;
+// contiguous range of the file (it is 6-bit text, run-length coded), so it
+// opens as a decode-through source over its decoder: a read decodes the
+// text as far as it reaches.
 
 static bool hqx_detect_probe(const peel_probe_t *p) {
     return hqx_detect(p->head, p->head_len);
 }
 
 static int hqx_open(peel_archive_t *a, const peel_probe_t *p, peel_err_t **err) {
-    decode_ctx_t ctx;
-    dctx_init(&ctx);
-    if (setjmp(ctx.jmp) != 0) {
-        dctx_cleanup(&ctx);
-        *err = make_err("%s", ctx.errmsg);
-        return -1;
-    }
-    size_t after = hqx_find_preamble(p->head, p->head_len);
-    if (after == (size_t)-1)
-        decode_abort(&ctx, "BinHex: preamble not found");
-    size_t start = hqx_find_start_colon(p->head, p->head_len, after);
-    if (start == (size_t)-1)
-        decode_abort(&ctx, "BinHex: no starting colon found");
-    hqx_decoder_t dec;
-    hqx_decoder_init(&dec, p->head, p->head_len, start, &ctx);
-    hqx_header_t hdr = hqx_parse_header(&dec);
-    dctx_cleanup(&ctx);
-
-    hqx_priv_t *priv = calloc(1, sizeof(*priv));
-    peel_entry_t *e = priv ? peel_archive_add(a) : NULL;
-    if (!e) {
-        free(priv);
+    hqx_layout_t *L = calloc(1, sizeof(*L));
+    if (!L) {
         *err = make_err("BinHex: out of memory");
         return -1;
     }
-    a->priv = priv;
+    if (hqx_layout(p->head, p->head_len, L, err) != 0) {
+        free(L);
+        return -1;
+    }
+    peel_entry_t *e = peel_archive_add(a);
+    if (!e) {
+        free(L);
+        *err = make_err("BinHex: out of memory");
+        return -1;
+    }
+    a->priv = L;
     size_t np = 0;
-    peel_append_segment(e->path, sizeof(e->path), &np, (const uint8_t *)hdr.name, hdr.name_len);
-    e->mac_type = hdr.mac_type;
-    e->mac_creator = hdr.mac_creator;
-    e->finder_flags = hdr.finder_flags & (uint16_t)~FINDER_CLEAR_MASK;
-    e->data_len = hdr.data_len;
-    e->rsrc_len = hdr.rsrc_len;
+    peel_append_segment(e->path, sizeof(e->path), &np, (const uint8_t *)L->name, L->name_len);
+    e->mac_type = L->mac_type;
+    e->mac_creator = L->mac_creator;
+    e->finder_flags = L->finder_flags & (uint16_t)~FINDER_CLEAR_MASK;
+    e->data_len = L->data_len;
+    e->rsrc_len = L->rsrc_len;
     e->data_packed = e->rsrc_packed = UINT64_MAX; // interleaved in the text
-    e->data_tier = e->rsrc_tier = PEEL_TIER_WHOLE;
+    e->data_tier = e->rsrc_tier = PEEL_TIER_EARNED;
     return 0;
 }
 
-static peel_buf_t hqx_decode_fork(peel_archive_t *a, int i, int fork, peel_err_t **err) {
+static codec_dec_t *hqx_decoder(peel_archive_t *a, int i, int fork, peel_err_t **err) {
     (void)i;
-    hqx_priv_t *priv = a->priv;
-    int k = fork == PEEL_FORK_RSRC ? 1 : 0;
-    if (!priv->have[k]) {
-        // Decode the whole file once; keep the other fork for later.
-        peel_buf_t text = peel_source_slurp(a->src, err);
-        if (*err)
-            return (peel_buf_t){0};
-        peel_file_t f = peel_hqx_file(text.data, text.size, err);
-        peel_free(&text);
-        if (*err)
-            return (peel_buf_t){0};
-        peel_free(&priv->file.data_fork);
-        peel_free(&priv->file.resource_fork);
-        priv->file = f;
-        priv->have[0] = priv->have[1] = true;
-    }
-    peel_buf_t *b = k ? &priv->file.resource_fork : &priv->file.data_fork;
-    peel_buf_t out = *b;
-    memset(b, 0, sizeof(*b));
-    priv->have[k] = false;
-    return out;
+    return hqx_fork_decoder(a->priv, fork, NULL, 0, a->src, err);
+}
+
+static peel_buf_t hqx_decode_fork(peel_archive_t *a, int i, int fork, peel_err_t **err) {
+    codec_dec_t *d = hqx_decoder(a, i, fork, err);
+    return d ? hqx_read_fork(d, a->priv, fork, err) : (peel_buf_t){0};
 }
 
 static void hqx_close(peel_archive_t *a) {
-    hqx_priv_t *priv = a->priv;
-    if (!priv)
-        return;
-    peel_free(&priv->file.data_fork);
-    peel_free(&priv->file.resource_fork);
-    free(priv);
+    free(a->priv);
 }
 
 const peel_fmt_t peel_fmt_hqx = {
     .desc = {"hqx", true, hqx_detect_probe},
     .open = hqx_open,
     .decode = hqx_decode_fork,
+    .decoder = hqx_decoder,
     .close = hqx_close,
 };

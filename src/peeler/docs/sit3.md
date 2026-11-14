@@ -864,7 +864,7 @@ method-3 decoder.
 
 This section is non-normative; it captures practical advice that helped
 the reference implementation (now the codec library's
-`src/codec/lib/sit_huffman.c`) come out correct and fast, but
+`src/codec/lib/sit3.c`) come out correct and fast, but
 is not a requirement of the format.
 
 ### 9.1  Single-Pass Bit Reader
@@ -900,7 +900,7 @@ slightly trickier end-of-stream handling.
 
 ### 9.2  Indexed vs Pointered Tree Nodes
 
-Both approaches work; `sit_huffman.c` uses indexed nodes (children are `int16_t`
+Both approaches work; `sit3.c` uses indexed nodes (children are `int16_t`
 indices into a fixed-size array) because it avoids the need for
 `malloc`/`free` of individual nodes and makes the entire decoder
 zero-allocation after the initial output buffer.  A pointer-based
@@ -921,7 +921,7 @@ if (root_is_leaf) {
 }
 ```
 
-The `sit_huffman.c` implementation does this.
+The `sit3.c` implementation does this.
 
 ### 9.4  CRC Verification Placement
 

@@ -6,7 +6,8 @@
 // A gzip file is one or more members, each a small header, a DEFLATE stream
 // and an 8-byte trailer (CRC-32, size mod 2^32).  Opening reads the header
 // for the name and the tail for a size hint; the payload decodes through
-// the codec library's CODEC_DEFLATE (src/codec) as reads reach it, member after member.  Only the
+// the codec library's CODEC_GZIP (src/codec) as reads reach it, member
+// after member, each member's trailer checked there.  Only the
 // last member's trailer is at the tail (and it holds the size mod 2^32), so
 // that hint is exact for a single-member file under 4 GiB and wrong for any
 // other.  The entry lists it, as `gzip -l` does; the fork's source earns its
@@ -123,59 +124,30 @@ static bool gz_detect_probe(const peel_probe_t *p) {
 
 peel_buf_t peel_gz(const uint8_t *src, size_t len, peel_err_t **err) {
     *err = NULL;
-    grow_buf_t out;
-    decode_ctx_t ctx;
-    dctx_init(&ctx);
-    if (setjmp(ctx.jmp) != 0) {
-        dctx_cleanup(&ctx);
-        *err = make_err("%s", ctx.errmsg);
+    codec_dec_opts_t o = {.in.src = src, .in.len = len, .out_len = PEEL_MAX_FORK};
+    codec_dec_t *d = codec_dec_new(CODEC_GZIP, &o, NULL);
+    if (!d) {
+        *err = make_err("gzip: out of memory");
         return (peel_buf_t){0};
     }
-    grow_init(&out, len * 2, &ctx);
-    size_t pos = 0;
-    while (pos < len) {
-        gz_header_t h;
-        if (gz_parse_header(src + pos, len - pos, &h) != 0) {
-            if (pos == 0)
-                decode_abort(&ctx, "gzip: bad header");
-            break; // trailing garbage after the last member is ignored, as gzip does
-        }
-        pos += h.header_len;
-        // Inflate this member into the output, tracking what it consumed.
-        codec_dec_opts_t o = {.src = src + pos, .len = len - pos, .out_len = CODEC_LEN_UNKNOWN};
-        codec_dec_t *z = ctx.dec = codec_dec_new(CODEC_DEFLATE, &o, NULL); // ctx frees it on an abort
-        if (!z)
-            decode_abort(&ctx, "gzip: out of memory");
-        size_t start = out.len;
-        uint32_t crc = 0;
-        for (;;) {
-            uint8_t chunk[65536];
-            size_t n = 0;
-            int rc = codec_dec_run(z, chunk, sizeof(chunk), &n);
-            if (rc < 0)
-                decode_abort(&ctx, "gzip: %s", codec_dec_message(z));
-            if (out.len + n > PEEL_MAX_FORK) {
-                decode_abort(&ctx, "gzip: decodes to over the %u MiB limit", (unsigned)(PEEL_MAX_FORK >> 20));
-            }
-            grow_append(&out, chunk, n, &ctx);
-            crc = codec_crc32(crc, chunk, n);
-            if (rc == 1)
-                break;
-        }
-        size_t used = (size_t)codec_dec_consumed(z); // exact once the stream has ended
-        codec_dec_free(z);
-        ctx.dec = NULL;
-        pos += used;
-        if (len - pos < 8)
-            decode_abort(&ctx, "gzip: truncated trailer");
-        if (le32(src + pos) != crc || le32(src + pos + 4) != (uint32_t)(out.len - start))
-            decode_abort(&ctx, "gzip: CRC or size mismatch");
-        pos += 8;
+    // Every member, into a buffer that grows, up to the fork limit.
+    size_t n = 0;
+    int rc = 0;
+    uint8_t *out = codec_dec_read_alloc(d, (size_t)PEEL_MAX_FORK, &n, &rc);
+    if (!out) {
+        if (rc == CODEC_ERR_OVERFLOW)
+            *err = make_err("gzip: decodes to over the %u MiB limit", (unsigned)(PEEL_MAX_FORK >> 20));
+        else
+            *err = make_err("%s", *codec_dec_message(d) ? codec_dec_message(d) : codec_strerror(rc));
+        codec_dec_free(d);
+        return (peel_buf_t){0};
     }
-    peel_buf_t b = grow_finish(&out);
-    dctx_release(&ctx, b.data);
-    dctx_cleanup(&ctx);
-    return b;
+    codec_dec_free(d);
+    if (n == 0) {
+        free(out);
+        return (peel_buf_t){0};
+    }
+    return (peel_buf_t){.data = out, .size = n, .owned = true};
 }
 
 // ============================================================================
@@ -191,7 +163,6 @@ typedef struct {
 } bgzf_block_t;
 
 typedef struct {
-    uint64_t first_member_data; // where the first deflate stream starts
     bgzf_block_t *blocks; // BGZF only
     size_t n_blocks;
 } gz_priv_t;
@@ -242,7 +213,6 @@ static int gz_open(peel_archive_t *a, const peel_probe_t *p, peel_err_t **err) {
         return -1;
     }
     a->priv = g;
-    g->first_member_data = h.header_len;
     // The name: the one the header stores, else the file's own less ".gz".
     size_t np = 0;
     if (h.name[0]) {
@@ -290,112 +260,16 @@ static peel_buf_t gz_decode(peel_archive_t *a, int i, int fork, peel_err_t **err
     return out;
 }
 
-// ---- Streaming producer: member after member ----
+// ---- Streaming decoder: member after member ----
 
-typedef struct {
-    peel_producer_t base;
-    peel_source_t *src;
-    uint64_t size;
-    uint64_t member; // where the current member's deflate stream starts
-    uint64_t pos; // next compressed byte to pull
-    codec_dec_t *z;
-    uint32_t crc, count;
-    bool done;
-} gz_producer_t;
-
-static int64_t gz_pull(void *ctx, uint8_t *buf, size_t cap) {
-    gz_producer_t *g = ctx;
-    uint64_t left = g->size - g->pos;
-    size_t n = left < cap ? (size_t)left : cap;
-    if (n == 0)
-        return 0;
-    int rc = peel_source_read_exact(g->src, g->pos, buf, n);
-    if (rc != 0)
-        return rc;
-    g->pos += n;
-    return (int64_t)n;
-}
-
-// A DEFLATE decoder for the member at g->pos.
-static codec_dec_t *gz_inflater(gz_producer_t *g) {
-    codec_dec_opts_t o = {.pull = gz_pull, .pull_ctx = g, .out_len = CODEC_LEN_UNKNOWN};
-    return codec_dec_new(CODEC_DEFLATE, &o, NULL);
-}
-
-// Finish a member: check its trailer; start the next one if there is one.
-static int gz_next_member(gz_producer_t *g) {
-    uint64_t end = g->member + codec_dec_consumed(g->z); // exact once the stream has ended
-    codec_dec_free(g->z);
-    g->z = NULL;
-    uint8_t tr[8];
-    if (g->size - end < 8 || peel_source_read_exact(g->src, end, tr, 8) != 0)
-        return -1;
-    if (le32(tr) != g->crc || le32(tr + 4) != g->count)
-        return -1;
-    end += 8;
-    uint8_t hdr[1024];
-    size_t n = g->size - end < sizeof(hdr) ? (size_t)(g->size - end) : sizeof(hdr);
-    gz_header_t h;
-    if (n < 18 || peel_source_read_exact(g->src, end, hdr, n) != 0 || gz_parse_header(hdr, n, &h) != 0) {
-        g->done = true; // the last member (trailing garbage is ignored)
-        return 0;
-    }
-    g->member = g->pos = end + h.header_len;
-    g->crc = g->count = 0;
-    g->z = gz_inflater(g);
-    return g->z ? 0 : -1;
-}
-
-static int gz_run(peel_producer_t *p, uint8_t *out, size_t cap, size_t *n) {
-    gz_producer_t *g = (gz_producer_t *)p;
-    *n = 0;
-    while (!g->done && *n < cap) {
-        size_t k = 0;
-        int rc = codec_dec_run(g->z, out + *n, cap - *n, &k);
-        if (rc < 0) {
-            snprintf(p->err, sizeof(p->err), "gzip: %s", codec_dec_message(g->z));
-            return -5;
-        }
-        g->crc = codec_crc32(g->crc, out + *n, k);
-        g->count += (uint32_t)k;
-        *n += k;
-        if (rc == 1 && gz_next_member(g) != 0) {
-            snprintf(p->err, sizeof(p->err), "gzip: CRC or size mismatch");
-            return -5;
-        }
-    }
-    return g->done ? 1 : 0;
-}
-
-static void gz_producer_free(peel_producer_t *p) {
-    gz_producer_t *g = (gz_producer_t *)p;
-    codec_dec_free(g->z);
-    peel_source_release(g->src);
-    free(g);
-}
-
-static peel_producer_t *gz_producer(peel_archive_t *a, int i, int fork, peel_err_t **err) {
+// The whole file through CODEC_GZIP, which checks every member's trailer.
+static codec_dec_t *gz_decoder(peel_archive_t *a, int i, int fork, peel_err_t **err) {
     (void)i;
     gz_priv_t *gp = a->priv;
     if (fork == PEEL_FORK_RSRC || gp->blocks)
         return NULL;
-    gz_producer_t *g = calloc(1, sizeof(*g));
-    if (!g) {
-        *err = make_err("gzip: out of memory");
-        return NULL;
-    }
-    g->base.run = gz_run;
-    g->base.free = gz_producer_free;
-    g->src = peel_source_retain(a->src);
-    g->size = peel_source_size(a->src);
-    g->member = g->pos = gp->first_member_data;
-    g->z = gz_inflater(g);
-    if (!g->z) {
-        gz_producer_free(&g->base);
-        *err = make_err("gzip: out of memory");
-        return NULL;
-    }
-    return &g->base;
+    codec_dec_opts_t o = {.out_len = CODEC_LEN_UNKNOWN};
+    return peel_fork_decoder(a->src, 0, peel_source_size(a->src), CODEC_GZIP, &o, "gzip", err);
 }
 
 // ---- BGZF: random access by block ----
@@ -421,9 +295,8 @@ static int bgzf_load(bgzf_src_t *s, size_t b) {
     gz_header_t h;
     if (gz_parse_header(s->cbuf, blk->csize, &h) != 0 || h.header_len + 8 > blk->csize)
         return -5;
-    int64_t n =
-        codec_decode(CODEC_DEFLATE, s->cbuf + h.header_len, blk->csize - h.header_len - 8, s->buf, sizeof(s->buf));
-    if (n != (int64_t)blk->usize || codec_crc32(0, s->buf, blk->usize) != le32(s->cbuf + blk->csize - 8))
+    // One member: CODEC_GZIP checks its CRC-32 and size.
+    if (codec_decode(CODEC_GZIP, s->cbuf, blk->csize, s->buf, sizeof(s->buf)) != (int64_t)blk->usize)
         return -5;
     s->cur = b;
     return 0;
@@ -533,7 +406,7 @@ const peel_fmt_t peel_fmt_gz = {
     .desc = {"gz", true, gz_detect_probe},
     .open = gz_open,
     .decode = gz_decode,
-    .producer = gz_producer,
+    .decoder = gz_decoder,
     .open_fork = gz_open_fork,
     .len_exact = gz_len_exact,
     .close = gz_close,

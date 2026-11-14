@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // Unit tests for the UDIF (.dmg) decoder: the zlib wrapper of the shared
-// DEFLATE decoder (src/codec/lib/inflate.c), the 'koly' trailer + 'mish'
+// DEFLATE decoder (src/codec/lib/deflate.c), the 'koly' trailer + 'mish'
 // block-map parser and chunk decoder (src/core/storage/image_udif.c), and a
 // whole image with a chunk of every type read through the image layer
 // (image_chunkmap.c).  The bzip2, LZFSE and xz chunks are the codec suite's

@@ -11,7 +11,6 @@
 #include "codec.h"
 #include "peeler.h"
 
-#include <setjmp.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,70 +24,6 @@
 peel_err_t *make_err(const char *fmt, ...)
 #ifdef __GNUC__
     __attribute__((format(printf, 1, 2)))
-#endif
-    ;
-
-// ============================================================================
-// setjmp/longjmp Abort Context — architecture.md § "setjmp/longjmp"
-// ============================================================================
-
-// Jump-target context for deep-error abort in container decoders -- and the
-// owner of everything a decoder allocates while it is armed.
-//
-// A decoder allocates through dctx_* and registers each block here.  Both of
-// its exits call dctx_cleanup, which frees whatever is still registered: the
-// abort handler, and the success path after releasing (dctx_release) what it
-// returns.
-// So an abort can never leak, however deep it fires or whatever was in
-// flight -- which every decoder that longjmp'd used to (sit15 its decoder
-// state and ~80 MiB of block buffers, sit3 its output, hqx a finished data
-// fork when the resource fork failed).
-//
-// It also removes a setjmp trap: a local assigned after setjmp has an
-// indeterminate value after longjmp unless it is volatile, so a handler that
-// frees `s` or `out` directly may free garbage.  The handler here reads only
-// the context, whose address has escaped into every callee.
-#define DCTX_INLINE_OWNED 16
-
-typedef struct {
-    jmp_buf jmp;
-    char errmsg[256];
-    void **owned; // inline_owned, or a heap array once that fills
-    int n_owned, cap_owned;
-    void *inline_owned[DCTX_INLINE_OWNED];
-    codec_dec_t *dec; // a codec decoder the decode drives, freed with the rest (or NULL)
-} decode_ctx_t;
-
-// Arm a context: no owned blocks.  Call before setjmp.
-void dctx_init(decode_ctx_t *ctx);
-
-// Allocate and register.  Abort through ctx on failure (so never NULL).
-void *dctx_malloc(decode_ctx_t *ctx, size_t size);
-void *dctx_calloc(decode_ctx_t *ctx, size_t n, size_t size);
-
-// Resize a registered block, keeping it registered.  Abort on failure.
-void *dctx_realloc(decode_ctx_t *ctx, void *p, size_t size);
-
-// A registered block was reallocated behind the context's back (a shrink
-// that must not abort on failure): follow it from `old` to `now`.
-void dctx_rebind(decode_ctx_t *ctx, void *old, void *now);
-
-// Free a registered block now.  NULL is a no-op.
-void dctx_free(decode_ctx_t *ctx, void *p);
-
-// Hand a registered block to the caller: it is no longer the context's to
-// free.  Returns p.  NULL is a no-op.
-void *dctx_release(decode_ctx_t *ctx, void *p);
-
-// Free every block still registered, and the registry itself.  Every exit
-// calls it: the abort handler, and the success path once it has released
-// what it returns.
-void dctx_cleanup(decode_ctx_t *ctx);
-
-// Format a message into ctx->errmsg and longjmp back to the setjmp site.
-void decode_abort(decode_ctx_t *ctx, const char *fmt, ...)
-#ifdef __GNUC__
-    __attribute__((noreturn, format(printf, 2, 3)))
 #endif
     ;
 
@@ -165,38 +100,6 @@ static inline void wr32be(uint8_t *p, uint32_t v) {
 }
 
 // ============================================================================
-// Growable Buffer
-// ============================================================================
-
-// A dynamically growing output buffer for building results incrementally.
-// Its storage is registered with the decode context it was created against,
-// so an abort frees it; grow_finish leaves it registered, and the decoder
-// releases it (dctx_release) once the whole decode has succeeded.
-typedef struct {
-    uint8_t *data; // Heap-allocated storage, owned by ctx
-    size_t len; // Number of valid bytes written
-    size_t cap; // Allocated capacity in bytes
-    decode_ctx_t *ctx;
-} grow_buf_t;
-
-// Initialise a growable buffer with the given initial capacity.
-// Aborts via ctx on allocation failure.
-void grow_init(grow_buf_t *g, size_t initial_cap, decode_ctx_t *ctx);
-
-// Append n bytes to the growable buffer, reallocating if needed.
-void grow_append(grow_buf_t *g, const uint8_t *src, size_t n, decode_ctx_t *ctx);
-
-// Append a single byte.
-void grow_push(grow_buf_t *g, uint8_t byte, decode_ctx_t *ctx);
-
-// Finalise the growable buffer into a peel_buf_t.  Zeroes g.  The data is
-// still owned by the context: release it when the decode has succeeded.
-peel_buf_t grow_finish(grow_buf_t *g);
-
-// Release a growable buffer without producing a peel_buf_t (for error paths).
-void grow_free(grow_buf_t *g);
-
-// ============================================================================
 // Per-Format Detect Functions
 // ============================================================================
 
@@ -248,38 +151,28 @@ const uint8_t *peel_reader_at(peel_reader_t *r, uint64_t off, size_t n);
 // Structure-first archives (archive.c) -- the format vtable
 // ============================================================================
 
-// A producer emits a fork's decoded bytes in order: run() fills up to `cap`
-// bytes and returns 1 when the fork is complete, 0 when more remains, or a
-// negative code (with a message in `err`).  The decode-through source drives
-// it as reads reach past what the sink already holds.
-// A run() that ends neither the fork nor any bytes this many times in a
-// row is taken to be stuck: a corrupt stream, never an endless loop.
-#define PEEL_PRODUCER_MAX_IDLE 4096
+// A compressed fork streams through one type: the codec library's decoder
+// (codec.h, codec_dec_t).  Run with a buffer of any size it fills as far as
+// it can and stops there; the decode-through source drives it as reads reach
+// past what the sink already holds.  A container's own checks and chains are
+// the decoder's options -- zip's CRC-32 and StuffIt's CRC-16 are
+// codec_dec_opts_t.check, StuffIt's "the fork's size wins" is .exact,
+// Compact Pro's RLE over LZH is codec_dec_stack, gzip's members are
+// CODEC_GZIP -- so no format needs a stream type of its own.
 
-typedef struct peel_producer {
-    int (*run)(struct peel_producer *p, uint8_t *out, size_t cap, size_t *n);
-    void (*free)(struct peel_producer *p);
-    char err[256];
-} peel_producer_t;
+// A decoder over `len` packed bytes of `src` at `off`, pulled as it needs
+// them (the source is retained, and released with the decoder).  `opts`
+// gives the rest; its input fields are ignored.  NULL + *err ("<what>: ...")
+// if it cannot be created.  (fork_decoder.c)
+codec_dec_t *peel_fork_decoder(peel_source_t *src, uint64_t off, uint64_t len, codec_id_t id,
+                               const codec_dec_opts_t *opts, const char *what, peel_err_t **err);
 
-// Run a producer to the end into an owned buffer of exactly `len` bytes,
-// then free it (always).  A producer that fails, or ends short or long,
-// is an error: its own message, prefixed by `what` when that is given.
-// The buffer APIs (peel_sit3, peel_cpt, ...) are this over the same
-// producers the decode-through sources drive, so both decode one way.
-peel_buf_t peel_producer_drain(peel_producer_t *p, uint64_t len, const char *what, peel_err_t **err);
-
-// Every compressed fork decodes through the codec library (src/codec,
-// codec.h): a producer over `len` packed bytes at `src` (borrowed: they must
-// outlive it), through `stages` codecs in order -- each pulling the one
-// before, so Compact Pro's fork is {CODEC_CPT_LZH, CODEC_CPT_RLE} -- the
-// last making the fork's `out_len` bytes (with `flags`).  `cut`: a stream
-// that decodes past out_len is cut there rather than refused (StuffIt's
-// forks, whose decoders always stopped at the fork's size).  Messages are
-// "<what>: <the codec's>".  NULL + *err if a decoder cannot be created.
-// (codec_producer.c)
-peel_producer_t *peel_codec_producer(const codec_id_t *stages, int nstages, uint32_t flags, const uint8_t *src,
-                                     size_t len, uint64_t out_len, bool cut, const char *what, peel_err_t **err);
+// Run a decoder to the end into an owned buffer of exactly `len` bytes, then
+// free it (always).  A decoder that fails, or ends short or long, is an
+// error: its own message, prefixed by `what` when that is given.  The buffer
+// APIs are this over the same decoders the decode-through sources drive, so
+// both decode one way.
+peel_buf_t peel_decoder_drain(codec_dec_t *d, uint64_t len, const char *what, peel_err_t **err);
 
 typedef struct peel_fmt peel_fmt_t;
 
@@ -302,10 +195,10 @@ struct peel_fmt {
     // Decode a whole fork into an owned buffer.  Error messages are the
     // format's own, the ones the buffer API has always reported.
     peel_buf_t (*decode)(peel_archive_t *a, int i, int fork, peel_err_t **err);
-    // Optional: a streaming producer for a compressed fork (zip deflate,
-    // gzip).  Absent, or returning NULL with no error: the fork decodes
-    // whole through decode().
-    peel_producer_t *(*producer)(peel_archive_t *a, int i, int fork, peel_err_t **err);
+    // Optional: a streaming decoder for a compressed fork (StuffIt, Compact
+    // Pro, zip deflate, gzip).  Absent, or returning NULL with no error: the
+    // fork decodes whole through decode().
+    codec_dec_t *(*decoder)(peel_archive_t *a, int i, int fork, peel_err_t **err);
     // Optional: open a fork as a source of the format's own (BGZF's block
     // index).  NULL with no error: the generic view / decode-through paths.
     peel_source_t *(*open_fork)(peel_archive_t *a, int i, int fork, peel_err_t **err);
@@ -329,16 +222,6 @@ peel_entry_t *peel_archive_add(peel_archive_t *a);
 // Read exactly `len` bytes of the archive's source at `off` into a fresh
 // buffer (NULL + *err on failure, `what` naming it in the message).
 uint8_t *peel_archive_read(peel_archive_t *a, uint64_t off, uint64_t len, const char *what, peel_err_t **err);
-
-// A source serving a producer's output through the archive's sink.  Takes
-// ownership of `p`; retains `a`.
-peel_source_t *peel_decode_source(peel_archive_t *a, const char *key, uint64_t len, peel_tier_t tier,
-                                  peel_producer_t *p);
-
-// The same, for a fork whose length `hint` is not known to be exact: its
-// size() decodes the whole fork (into the sink) to learn the true length.
-peel_source_t *peel_decode_source_unsized(peel_archive_t *a, const char *key, uint64_t hint, peel_tier_t tier,
-                                          peel_producer_t *p);
 
 // Build the key of fork `fork` of entry `i`: "<archive key>/<path>[/rsrc]".
 void peel_fork_key(peel_archive_t *a, int i, int fork, char *out, size_t cap);

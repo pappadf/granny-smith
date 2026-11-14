@@ -13,7 +13,7 @@ containers.
 
 | Caller | Uses |
 |---|---|
-| peeler: StuffIt, Compact Pro, BinHex, zip and gzip (`src/peeler/lib/formats/`, through `lib/codec_producer.c`) | the StuffIt methods, Compact Pro's LZH and RLE, RLE90, DEFLATE, CRC-16 and CRC-32 |
+| peeler: StuffIt, Compact Pro, BinHex, zip and gzip (`src/peeler/lib/formats/`, each fork a decoder over its range of the archive, `lib/fork_decoder.c`) | the StuffIt methods, Compact Pro's LZH and RLE, RLE90, DEFLATE, gzip, CRC-16 and CRC-32 |
 | UDIF chunks (`src/core/storage/image_udif.c`) | ADC, zlib, bzip2, LZFSE, xz, by chunk type |
 | NDIF chunks (`image_ndif.c`) | ADC |
 | QCOW2 clusters (`image_qcow2.c`) | raw DEFLATE |
@@ -48,31 +48,54 @@ and stops wherever the buffer fills — mid-match, mid-block, mid-run — and
 the next continues from exactly there. A reader therefore decodes as far as
 it reads and no further, which is how peeler's decode-through sources serve
 an archive member a read at a time. A run returns 1 once the stream has
-ended and every byte of it has been produced, 0 while more remains, or a
-negative `CODEC_ERR_*` code (`DATA`, `TRUNCATED`, `OVERFLOW`, `NOMEM`,
-`UNSUPPORTED`, `CHECKSUM`, `ARG`, or a pull callback's own) after the bytes
-before the fault; `codec_dec_message()` says why in a few words.
+ended and every byte of it has been produced, 0 while more remains (only
+ever with the buffer full), or a negative `CODEC_ERR_*` code after the
+bytes before the fault; `codec_dec_message()` says why in a few words.
+`codec_dec_read(d, out, cap)` and `codec_dec_read_alloc(d, max, ...)` run a
+decoder to the end of its stream (into a fixed buffer it must end within,
+or a growing one), leaving it and its message the caller's; `codec_decode`
+and `codec_decode_alloc` are the same over a decoder of their own.
 
-Input is `len` bytes in memory or pulled through a `codec_pull_fn` as the
-decoder needs it. `codec_dec_pull` is such a callback over another decoder,
-so streams chain: a Compact Pro fork is `CODEC_CPT_LZH` feeding
-`CODEC_CPT_RLE`. `codec_dec_consumed()` is exact once a stream has ended,
-which is how gzip finds its trailer and the next member.
+**Input** (`opts.in`, a `codec_input_t`) is `len` bytes in memory, or pulled
+through a `codec_pull_fn` as the decoder needs it; `in.close`, when set, is
+called as the decoder is freed, so a decoder can own what it reads (never
+when `codec_dec_new` fails: the context is then still the caller's). A pull
+callback's failure is `CODEC_ERR_INPUT`, its own code kept
+(`codec_dec_input_error`), so a source's error codes never read as codec
+ones. `codec_dec_stack(inner, id, &opts, &err)` chains one decoder into
+another, the outer owning the inner and failing with its code and message
+when it fails: a Compact Pro fork is `CODEC_CPT_RLE` stacked on
+`CODEC_CPT_LZH`, a BinHex file `CODEC_RLE90_BINHEX` on `CODEC_BINHEX`.
+`codec_dec_consumed()` is exact once a stream has ended.
 
-`opts.out_len` is the decoded size where the container states it. A stream
-with no end of its own — ADC, RLE90, the StuffIt and Compact Pro methods,
-GSRLE — ends there and requires it (its final match or run is cut at the
-size, as the original decoders did; input that runs out first is
-`TRUNCATED`); for every other codec it is a limit, and decoding past it is
-`OVERFLOW`. The one-shot forms are built on the same decoders:
-`codec_decode(id, src, len, dst, cap)` (the stream must end within `cap`
-bytes, so a buffer one byte short is `OVERFLOW`, never a silent clamp) and
-`codec_decode_alloc` for a stream of unknown size under a ceiling (a PNG, a
-compressed resource).
+**Size** follows one rule. `opts.out_len` is the decoded size where the
+container states it. When the stream is *exact*, it is that many bytes:
+output past it is dropped and the stream ends there (its last match or run
+cut, as the original decoders did), and one that ends short is `TRUNCATED`.
+A stream with no end of its own — ADC, the StuffIt methods 2, 3, 13 and
+15, Compact Pro's RLE, GSRLE — is always exact and needs `out_len`; any
+other is exact when `opts.exact` asks (a StuffIt fork, whatever its
+method); and a codec whose own header states the size (dcmp) makes itself
+exact at it. Otherwise `out_len` is a limit, and decoding past it is
+`OVERFLOW`.
 
-`codec_decode` reaches every decoder by `codec_id_t`, which is how a
-container maps its method field to a codec (`udif_chunk_codec()` for UDIF,
-`sit_method_codec()` for StuffIt).
+**Parts and checks.** `opts.skip` drops the first decoded bytes, unseen,
+so a decoder can be one part of a longer stream (a BinHex fork after its
+header). `opts.check` names a checksum the container states over the
+output — `CODEC_CHECK_CRC32` (zip), `CODEC_CHECK_CRC16_ARC` (StuffIt),
+`CODEC_CHECK_CRC16_XMODEM` (BinHex) — verified once every byte is out
+(`CHECKSUM` if it differs); the value is `opts.check_value`, or, with
+`opts.check_stored`, the 2 or 4 bytes the stream decodes to right after the
+output (BinHex's CRC after each fork).
+
+The decoder is the one streaming type in the tree. A container's checks,
+parts and chains are its options rather than a wrapper type: peeler hands
+the decode-through sources a `codec_dec_t` for every streaming fork (its
+`peel_fmt_t.decoder`), and drains the same decoder for the buffer API.
+Dialects are ids, never flags (`DEFLATE` / `ZLIB` / `GZIP`, `XZ` /
+`LZMA_ALONE`, `RLE90` / `RLE90_BINHEX`), and `codec_decode` reaches every
+decoder by id, which is how a container maps its method field to a codec
+(`udif_chunk_codec()` for UDIF, `sit_method_codec()` for StuffIt).
 
 ### 1.2 One encoder interface
 
@@ -89,24 +112,41 @@ zlib, xz and GSRLE encode.
 
 Inside the library each codec's source file follows the same layout: the
 format in its header comment; constants; types; bit and table helpers; the
-decoder (init, fill, free, and its `codec_dec_ops_t`); the encoder, if any.
-The framework they are written on is `lib/codec_internal.h`:
+decoder's fill (and init and free where it needs them) and its
+`codec_dec_ops_t`. `<family>.c` decodes and `<family>_enc.c` encodes
+(`deflate.c` / `deflate_enc.c`, `lzma.c` / `lzma_enc.c`, `gsrle.c` /
+`gsrle_enc.c`); StuffIt's codecs are named by method, as its documentation
+names them (`sit2.c` ... `sit15.c`, `CODEC_SIT2` ... `CODEC_SIT15`). The
+framework they are written on is `lib/codec_internal.h`:
 
-- **The output ring** (`codec_ring_t`) is both a decoder's output buffer and
-  its history — an LZ decoder's window. A decoder's `fill` decodes while the
-  ring has room for its *burst* (the most one symbol can write: 258 for
-  DEFLATE, a 32 KiB match for StuffIt 13, one byte for Arsenic), so it never
-  has to suspend inside a symbol; `codec.c` drains the ring into the
-  caller's buffers. Every decoder is resumable on the output side without
-  code of its own for it. `ring_copy` is the LZ77 copy (bulk where source
-  and destination do not overlap or wrap); `ring_copy_zero` serves the
-  formats whose window starts zero-filled (StuffIt 13, Compact Pro).
+- **A decoder is declared.** Its `codec_dec_ops_t` gives its state size,
+  its window and its burst (the most one symbol can write: 258 for
+  DEFLATE, a 32 KiB match for StuffIt 13, one byte for Arsenic); `codec.c`
+  allocates the zeroed state and the ring before `init` and frees both
+  after `free`, so most codecs have neither. A codec whose window comes
+  from its stream (LZMA's dictionary, a dcmp resource) sizes the ring
+  itself once it knows (`codec_ring_alloc`).
+- **One fill loop.** Every `fill` decodes `while (codec_room_for(d,
+  BURST))`: room in the ring for one more symbol and, for an exact stream,
+  its size not yet reached. It never suspends inside a symbol, and `codec.c`
+  drains the ring into the caller's buffers and ends an exact stream at its
+  size, so every decoder is resumable on the output side, and sized, without
+  code of its own for it. The ring is also the history — an LZ decoder's
+  window: `ring_copy` is the LZ77 copy (bulk where source and destination
+  do not overlap or wrap), `ring_copy_zero` serves the windows that start
+  zero-filled (StuffIt 13, Compact Pro), and `ring_span` walks what was
+  written for a checksum (bzip2's block CRC, zlib's Adler-32, gzip's and
+  xz's checks, `opts.check`).
 - **The input** (`codec_in_t`) holds memory or a pull buffer and one 64-bit
   bit accumulator, read LSB-first (`lsb_*`: DEFLATE, StuffIt's LZW and
   method 13) or MSB-first (`msb_*`: bzip2, StuffIt's methods 3 and 15,
-  Compact Pro's LZH), refilled eight bytes at a time. Bits past the end
-  read as zeros and are counted, so a decoder checks `codec_in_overrun()`
-  at symbol boundaries rather than after every bit.
+  Compact Pro's LZH, dcmp 3), refilled eight bytes at a time. Bits past the
+  end read as zeros and are counted, so a decoder checks
+  `codec_in_overrun()` at symbol boundaries rather than after every bit.
+  (LZFSE's payloads read backwards and LZMA's range coder are the two
+  readers of their own, as their formats are.)
+- **Errors** go through `codec_fail(d, rc, msg)`, the first one kept — the
+  Arsenic decoder too, deep in its arithmetic coder.
 - **Canonical Huffman trees** (`codec_htree_*`) in a bounded node pool, for
   the formats whose codes a lookup table would mishandle (StuffIt 13's
   absent symbols take code values, and its codes reach 31 bits) or are
@@ -118,22 +158,24 @@ The framework they are written on is `lib/codec_internal.h`:
 
 | | |
 |---|---|
-| `codec_dec_t`, `codec_dec_opts_t` | a decoder for one stream (§1.1) |
+| `codec_dec_t`, `codec_dec_opts_t` | a decoder for one stream, and the one streaming type (§1.1) |
+| `codec_input_t` | a decoder's input: memory, or a pull callback (owned when `close` is set) |
+| `codec_check_t` | a stated checksum over the decoded bytes, verified at the end |
 | `codec_enc_t` | an encoder, its state reused across inputs (§1.2) |
-| `codec_id_t` | `COPY`, `DEFLATE`, `ZLIB`, `ADC`, `BZIP2`, `LZFSE`, `XZ`, `LZMA_ALONE`, `RLE90`, `SIT_LZW`, `SIT_HUFFMAN`, `SIT13`, `SIT_ARSENIC`, `CPT_RLE`, `CPT_LZH`, `DCMP`, `GSRLE` |
+| `codec_id_t` | `COPY`, `DEFLATE`, `ZLIB`, `GZIP`, `ADC`, `BZIP2`, `LZFSE`, `XZ`, `LZMA_ALONE`, `RLE90`, `RLE90_BINHEX`, `BINHEX`, `SIT2`, `SIT3`, `SIT13`, `SIT15`, `CPT_RLE`, `CPT_LZH`, `DCMP`, `GSRLE` |
 | `codec_crc32`, `codec_crc32_zeros`, `codec_crc32_msb`, `codec_crc64`, `codec_adler32`, `codec_crc16_xmodem`, `codec_crc16_arc` | CRC-32 (reflected; zero runs in O(log n)), CRC-32 MSB-first (bzip2), CRC-64/XZ, Adler-32, CRC-16/XMODEM (BinHex, MacBinary), CRC-16/ARC (StuffIt); constant tables, slice-by-8 for the CRC-32s, callable from any thread |
 
 | File | |
 |---|---|
 | `lib/codec.c` | the registry, the input and ring helpers, the Huffman pool, `codec_dec_run` and the one-shot and encoder wrappers, `CODEC_COPY` |
-| `lib/inflate.c`, `lib/deflate.c` | DEFLATE and zlib, decoding and encoding |
+| `lib/deflate.c`, `lib/deflate_enc.c` | DEFLATE, zlib and gzip decoding; DEFLATE and zlib encoding |
 | `lib/bzip2.c`, `lib/lzfse.c`, `lib/adc.c` | bzip2, LZFSE (with LZVN), ADC |
 | `lib/lzma.c`, `lib/lzma_enc.c`, `lib/lzma_internal.h` | LZMA, LZMA2, xz and `.lzma`; the xz encoder; the model they share |
-| `lib/rle90.c` | 0x90 run lengths, StuffIt's and BinHex's dialects (`CODEC_RLE90_BINHEX`) |
-| `lib/sit_lzw.c`, `lib/sit_huffman.c`, `lib/sit13.c`, `lib/sit_arsenic.c` | StuffIt methods 2, 3, 13 and 15 |
+| `lib/rle90.c`, `lib/binhex.c` | 0x90 run lengths, StuffIt's and BinHex's dialects; BinHex's 6-bit text |
+| `lib/sit2.c`, `lib/sit3.c`, `lib/sit13.c`, `lib/sit15.c` | StuffIt methods 2, 3, 13 and 15 |
 | `lib/cpt.c` | Compact Pro's LZH and RLE |
 | `lib/dcmp.c`, `lib/dcmp3_tables.h` | System 7 compressed resources |
-| `lib/gsrle.c` | the checkpoint file's run lengths |
+| `lib/gsrle.c`, `lib/gsrle_enc.c` | the checkpoint file's run lengths, both ways |
 | `lib/checksum.c` | every checksum |
 
 ## 3. Behaviour/algorithms
@@ -145,8 +187,11 @@ The framework they are written on is `lib/codec_internal.h`:
   keeps the bit accumulator and the ring cursor in locals and copies
   matches in bulk. `CODEC_ZLIB` checks the RFC 1950 header and, when the
   stream carries one, the Adler-32 trailer (a stream that stops right after
-  its final block is accepted, as some writers omit the trailer). The
-  encoder is greedy LZ77 over hash chains (depth by level), each block
+  its final block is accepted, as some writers omit the trailer).
+  `CODEC_GZIP` reads every member — header with its optional extra field,
+  name, comment and header CRC, the DEFLATE stream, the CRC-32 and size
+  checked — and ignores what follows the last one that is not another
+  member, as `gzip -d` does. The encoder is greedy LZ77 over hash chains (depth by level), each block
   written as dynamic Huffman, fixed Huffman or stored, whichever is
   smallest; its dynamic codes are length-limited and complete.
 - **bzip2.** Per block: the symbol map, the selectors (move-to-front coded),
@@ -189,7 +234,11 @@ The framework they are written on is `lib/codec_internal.h`:
 - **RLE90.** A byte is itself; 0x90 escapes the next: 0 for a literal 0x90,
   N for the previous byte N − 1 more times. After an escaped 0x90 StuffIt
   repeats the byte before it and BinHex the 0x90 itself, and a count of 1
-  is StuffIt's no-op but an error in BinHex.
+  is StuffIt's no-op but an error in BinHex (two ids, `CODEC_RLE90` and
+  `CODEC_RLE90_BINHEX`).
+- **BinHex text.** After the payload's opening colon, a 64-character
+  alphabet carries 6 bits a character, line breaks and spaces ignored, to
+  the closing colon; BinHex's run lengths stack on it.
 - **StuffIt method 2 (LZW).** compress(1)-style, LSB-first, 9 to 14 bits; a
   clear code resets the dictionary and the rest of its group of eight codes
   is padding.
@@ -217,9 +266,11 @@ The framework they are written on is `lib/codec_internal.h`:
   bitmapped) or InstaCompOne (version 9, dcmp 3: LZ77 with static prefix
   codes, literals in runs, a distance code that widens as the output
   grows). Other decompressors are `UNSUPPORTED`, so callers keep the raw
-  bytes. A resource is at most 16 MiB (`CODEC_DCMP_MAX_SIZE`) and its
-  decoders address the whole output, so this decoder decodes the resource
-  on its first fill and hands it out from there.
+  bytes. A resource is at most 16 MiB (`CODEC_DCMP_MAX_SIZE`). Its header
+  states its size, which makes the stream exact at it, and its window is
+  the whole resource (dcmp 3 refers back anywhere in it), so all three
+  decompressors write straight into a ring that holds it, reading their
+  input as they go; dcmp 3 through the shared MSB-first reader.
 - **GSRLE.** Chunks of a marker, a 32-bit little-endian count and either
   that many literal bytes or one byte to repeat; the encoder makes a run of
   four or more equal bytes. A chunk past the stated size is an error.
@@ -274,8 +325,12 @@ file's blocks, but keeps nothing of its own in one.)
   and in bzip2 and xz must be caught by their checksums unless it lands in
   bits the decoder never reads. It also covers concatenated streams, the
   unsupported paths, exact consumption (a trailer after a DEFLATE stream),
-  pull errors, chained decoders, RLE90's two dialects, Compact Pro's RLE,
-  StuffIt's LZW, GSRLE, the checksums' published check values, and the
+  pull errors, chained and stacked decoders, `pull_close` ownership, stated
+  checksums (given, and stored in the stream), exact sizes, skipped
+  prefixes, gzip members (every DEFLATE vector, each header form,
+  multi-member, trailing bytes, bad trailers), RLE90's two dialects,
+  BinHex's text, Compact Pro's RLE, StuffIt's LZW, GSRLE, the checksums'
+  published check values, and the
   encoders: every data set round-trips through zlib, xz and GSRLE at levels
   1, 6 and 9 (through a reused encoder and one-shot) and refuses a buffer
   one byte short, and a 5 MiB input crosses every LZMA2 limit. `stuffit.c`
@@ -288,7 +343,9 @@ file's blocks, but keeps nothing of its own in one.)
   resuming at every output boundary, truncation, bad codes).
 - `tests/unit/suites/udif` decodes every compressed chunk type and reads a
   whole in-memory image with a chunk of every type through the image layer;
-  `ndif` covers ADC, `resfork` dcmp 0, 2 and 3 (and the 16 MiB bound),
+  `ndif` covers ADC, `resfork` dcmp 0 and 2 (and the 16 MiB bound; dcmp 3
+  was checked against the original decoder over 300,000 streams when it
+  moved onto the ring),
   `checkpoint` GSRLE across its 4 MiB pieces.
 - `tests/unit/suites/udif_writer` covers the DEFLATE encoder (every level,
   the block-form choice, length-limited codes), Adler-32 and the zero-run
@@ -311,9 +368,6 @@ file's blocks, but keeps nothing of its own in one.)
   par with `xz -0`. A price-based (optimal) parse would close most of it.
   The xz decoder runs at about half liblzma's speed on binary data and a
   fifth on text (§3.1).
-- dcmp decodes a resource whole before handing out its first byte (§3): fine
-  for resources, which are small, but not a streaming decoder in the sense
-  of the others.
 
 ## 8. See also
 

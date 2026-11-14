@@ -330,13 +330,10 @@ static int read_block(codec_dec_t *d, bz_t *s) {
 
 // Fold the bytes emitted since the last call into the block CRC.
 static void crc_update(codec_dec_t *d, bz_t *s) {
-    codec_ring_t *r = &d->ring;
-    while (s->crc_at < r->total) {
-        size_t pending = (size_t)(r->total - s->crc_at);
-        size_t at = r->w >= pending ? r->w - pending : r->w + r->size - pending;
-        size_t k = r->size - at < pending ? r->size - at : pending;
-        s->crc = codec_crc32_msb(s->crc, r->buf + at, k);
-        s->crc_at += k;
+    const uint8_t *p;
+    for (size_t n; s->crc_at < d->ring.total; s->crc_at += n) {
+        n = ring_span(&d->ring, s->crc_at, &p);
+        s->crc = codec_crc32_msb(s->crc, p, n);
     }
 }
 
@@ -452,7 +449,7 @@ static int bz_fill(codec_dec_t *d) {
             break;
         }
         case B_EMIT:
-            if (ring_room(&d->ring) < BZ_BURST)
+            if (!codec_room_for(d, BZ_BURST))
                 return CODEC_MORE;
             if (!emit_block(d, s)) {
                 crc_update(d, s);
@@ -470,19 +467,9 @@ static int bz_fill(codec_dec_t *d) {
     }
 }
 
-static int bz_init(codec_dec_t *d) {
-    bz_t *s = calloc(1, sizeof(*s));
-    if (!s)
-        return CODEC_ERR_NOMEM;
-    d->st = s;
-    return codec_ring_alloc(d, 0, BZ_BURST);
-}
-
 static void bz_free(codec_dec_t *d) {
-    bz_t *s = d->st;
-    free(s->tt);
-    free(s);
-    d->st = NULL;
+    free(((bz_t *)d->st)->tt);
 }
 
-const codec_dec_ops_t codec_bzip2_dec = {bz_init, bz_fill, bz_free, false};
+const codec_dec_ops_t codec_bzip2_dec = {
+    .state_size = sizeof(bz_t), .burst = BZ_BURST, .fill = bz_fill, .free = bz_free};

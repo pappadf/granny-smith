@@ -89,7 +89,7 @@ static int lzh_fill(codec_dec_t *d) {
     cp_lzh_t *z = d->st;
     codec_in_t *in = &d->in;
     codec_ring_t *r = &d->ring;
-    while (ring_room(r) >= CP_LZH_BURST) {
+    while (codec_room_for(d, CP_LZH_BURST)) {
         if (z->tables_ok && z->blk_cost >= CP_BLOCK_COST) {
             // The end of a block: to a byte boundary, then 2 or 3 bytes.
             msb_align(in);
@@ -134,19 +134,8 @@ static int lzh_fill(codec_dec_t *d) {
     return CODEC_MORE;
 }
 
-static int lzh_init(codec_dec_t *d) {
-    d->st = calloc(1, sizeof(cp_lzh_t));
-    if (!d->st)
-        return CODEC_ERR_NOMEM;
-    return codec_ring_alloc(d, CP_WIN_SIZE, CP_LZH_BURST);
-}
-
-static void cpt_free(codec_dec_t *d) {
-    free(d->st);
-    d->st = NULL;
-}
-
-const codec_dec_ops_t codec_cpt_lzh_dec = {lzh_init, lzh_fill, cpt_free, false};
+const codec_dec_ops_t codec_cpt_lzh_dec = {
+    .state_size = sizeof(cp_lzh_t), .window = CP_WIN_SIZE, .burst = CP_LZH_BURST, .fill = lzh_fill};
 
 // ============================================================================
 // RLE
@@ -165,9 +154,7 @@ static int rle_fill(codec_dec_t *d) {
     cp_rle_t *s = d->st;
     codec_in_t *in = &d->in;
     codec_ring_t *r = &d->ring;
-    while (codec_left(d) > 0) {
-        if (ring_room(r) < CP_RLE_BURST)
-            return CODEC_MORE;
+    while (codec_room_for(d, CP_RLE_BURST)) {
         if (s->run_left) {
             ring_fill(r, (uint8_t)s->prev, s->run_left);
             s->run_left = 0;
@@ -219,16 +206,13 @@ static int rle_fill(codec_dec_t *d) {
             s->literal_next = next;
         }
     }
-    return CODEC_END;
+    return CODEC_MORE; // the ring full, or the size reached (codec.c ends the stream)
 }
 
 static int rle_init(codec_dec_t *d) {
-    cp_rle_t *s = calloc(1, sizeof(*s));
-    if (!s)
-        return CODEC_ERR_NOMEM;
-    s->literal_next = -1;
-    d->st = s;
-    return codec_ring_alloc(d, 0, CP_RLE_BURST);
+    ((cp_rle_t *)d->st)->literal_next = -1;
+    return 0;
 }
 
-const codec_dec_ops_t codec_cpt_rle_dec = {rle_init, rle_fill, cpt_free, true};
+const codec_dec_ops_t codec_cpt_rle_dec = {
+    .state_size = sizeof(cp_rle_t), .burst = CP_RLE_BURST, .sized = true, .init = rle_init, .fill = rle_fill};

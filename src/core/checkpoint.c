@@ -140,7 +140,7 @@ static int64_t rle_pull(void *ctx, uint8_t *buf, size_t cap) {
 // success.
 static bool rle_decode_stream(FILE *f, uint64_t comp_size, uint8_t *out, size_t out_size) {
     rle_pull_t p = {f, comp_size};
-    codec_dec_opts_t o = {.pull = rle_pull, .pull_ctx = &p, .out_len = out_size};
+    codec_dec_opts_t o = {.in.pull = rle_pull, .in.ctx = &p, .out_len = out_size};
     codec_dec_t *d = codec_dec_new(CODEC_GSRLE, &o, NULL);
     if (!d)
         return false;

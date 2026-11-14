@@ -342,8 +342,6 @@ static int m13_fill(codec_dec_t *d) {
     m13_t *st = d->st;
     codec_in_t *in = &d->in;
     codec_ring_t *r = &d->ring;
-    if (codec_left(d) == 0)
-        return CODEC_END;
     if (!st->ready) {
         int rc = m13_setup(d, st);
         if (rc)
@@ -351,9 +349,7 @@ static int m13_fill(codec_dec_t *d) {
     }
     // Bits past the end of the input read as zeros: the output size bounds
     // the loop, and the fork CRC catches a short stream.
-    while (codec_left(d) > 0) {
-        if (ring_room(r) < M13_BURST)
-            return CODEC_MORE;
+    while (codec_room_for(d, M13_BURST)) {
         int sym = m13_huff_decode(&st->pool, st->root_active, in);
         if (sym < 0)
             return codec_fail(d, CODEC_ERR_DATA, "sit13: bad literal/length code");
@@ -380,20 +376,8 @@ static int m13_fill(codec_dec_t *d) {
         ring_copy_zero(r, dist, (size_t)mlen);
         st->root_active = st->root_second;
     }
-    return CODEC_END;
+    return CODEC_MORE; // the ring full, or the size reached (codec.c ends the stream)
 }
 
-static int m13_init(codec_dec_t *d) {
-    m13_t *st = calloc(1, sizeof(*st));
-    if (!st)
-        return CODEC_ERR_NOMEM;
-    d->st = st;
-    return codec_ring_alloc(d, M13_WIN_SIZE, M13_BURST);
-}
-
-static void m13_free(codec_dec_t *d) {
-    free(d->st);
-    d->st = NULL;
-}
-
-const codec_dec_ops_t codec_sit13_dec = {m13_init, m13_fill, m13_free, true};
+const codec_dec_ops_t codec_sit13_dec = {
+    .state_size = sizeof(m13_t), .window = M13_WIN_SIZE, .burst = M13_BURST, .sized = true, .fill = m13_fill};

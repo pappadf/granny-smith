@@ -2,581 +2,640 @@
 // Copyright (c) pappadf
 
 // deflate.c
-// zlib (RFC 1950) encoder: LZ77 + Huffman DEFLATE in a zlib wrapper.  See
-// codec.h (CODEC_ZLIB, codec_enc_*).
+// DEFLATE (RFC 1951), zlib (RFC 1950) and gzip (RFC 1952) decoders.  See
+// codec.h.
 //
-// One LZ77 pass (hash chains over a 32 KB window, greedy matches) turns the
-// input into tokens -- literals and (length, distance) pairs -- and the
-// tokens are cut into blocks.  Each block is written in whichever of the
-// three RFC 1951 forms is smallest: a dynamic-Huffman block (codes built from
-// the block's own symbol counts, RFC 1951 §3.2.7), a fixed-Huffman block
-// (the built-in codes, §3.2.6), or a stored block (§3.2.4).  Dynamic codes
-// are length-limited (15 bits, 7 for the code-length code) and always
-// complete, so strict decoders (zlib's) accept them.
+// A DEFLATE stream is a run of blocks, each stored (a byte count and the
+// bytes), or Huffman-coded with the fixed codes or with codes defined at
+// its start (code lengths, themselves Huffman-coded).  A coded block is
+// literals and (length, distance) back-references into the last 32 KiB,
+// ended by symbol 256.  A zlib stream wraps one DEFLATE stream in a 2-byte
+// header and the Adler-32 of the decoded bytes.  A gzip stream is one or
+// more members, each a header (with optional extra field, name, comment and
+// header CRC), a DEFLATE stream, and the CRC-32 and size (mod 2^32) of its
+// bytes; whatever follows the last member that is not another one is
+// ignored, as gzip -d ignores it.
+//
+// Decoding a symbol is one table lookup on the next 10 bits (8 for
+// distances); a longer code continues in a subtable reached from its
+// prefix's entry.  An entry carries what the symbol means -- a literal, a
+// length or distance base with its extra-bit count, the end of the block --
+// so the hot loop decodes a whole literal or match with two lookups and
+// one refill of the bit accumulator, all in locals.
 
 #include "codec_internal.h"
 
-#include <stdbool.h>
 #include <stdlib.h>
-#include <string.h>
-
-#define DEFLATE_WINDOW    32768
-#define DEFLATE_MIN_MATCH 3
-#define DEFLATE_MAX_MATCH 258
-#define DEFLATE_HASH_BITS 15
-#define DEFLATE_HASH_SIZE (1 << DEFLATE_HASH_BITS)
-#define DEFLATE_STORED    65535u // largest stored block
-
-// Tokens per block: enough for the codes to pay for their header, few
-// enough that they follow a change in the data.
-#define DEFLATE_BLOCK_TOKENS 32768u
-
-#define N_LITLEN 286 // literal/length symbols in use (286, 287 never occur)
-#define N_DIST   30
-#define N_CLEN   19
-#define MAX_BITS 15
-#define MAX_CLEN 7
-
-// One LZ77 token: a literal (dist 0, len the byte) or a match.
-typedef struct {
-    uint16_t len; // literal byte, or match length 3..258
-    uint16_t dist; // 0 for a literal, else 1..32768 (32768 stored as 0x8000)
-} token_t;
-
-typedef struct {
-    size_t max_len;
-    int32_t *head; // DEFLATE_HASH_SIZE: newest position per hash
-    int32_t *prev; // max_len: the previous position with the same hash
-    token_t *tok; // max_len: tokens of the current input
-} zenc_t;
-
-static size_t zenc_bound(size_t len) {
-    return len + len / 4 + 5 * (len / DEFLATE_STORED + 1) + 64;
-}
-
-static void zenc_delete(zenc_t *st);
-
-static zenc_t *zenc_new(size_t max_len) {
-    zenc_t *st = calloc(1, sizeof(*st));
-    if (!st)
-        return NULL;
-    st->max_len = max_len;
-    st->head = malloc(DEFLATE_HASH_SIZE * sizeof(int32_t));
-    st->prev = malloc((max_len ? max_len : 1) * sizeof(int32_t));
-    st->tok = malloc((max_len ? max_len : 1) * sizeof(token_t));
-    if (!st->head || !st->prev || !st->tok) {
-        zenc_delete(st);
-        return NULL;
-    }
-    return st;
-}
-
-static void zenc_delete(zenc_t *st) {
-    if (!st)
-        return;
-    free(st->head);
-    free(st->prev);
-    free(st->tok);
-    free(st);
-}
 
 // ============================================================================
-// Bit output
+// Constants
 // ============================================================================
 
-// LSB-first bit writer over a caller-sized buffer.  Writes past `cap` are
-// counted but dropped, so an overflow is seen at the end.
-typedef struct {
-    uint8_t *buf;
-    size_t cap;
-    size_t pos;
-    uint32_t acc; // pending bits, lowest bit written first
-    int nbits;
-} deflate_bw_t;
+#define INF_WINDOW    32768 // RFC 1951 § 2: back-references reach 32 KiB
+#define INF_MATCH_MAX 258 // the longest match: the most one symbol writes
+#define LIT_BITS      10 // literal/length primary table index width
+#define DIST_BITS     8 // distance primary table index width
+#define LIT_TABLE     (1024 + 286 * 32) // primary + subtables, at worst
+#define DIST_TABLE    (256 + 30 * 128)
 
-// Append the low `n` bits of `v`, least-significant bit first.
-static void put_bits(deflate_bw_t *w, uint32_t v, int n) {
-    if (n <= 0)
-        return;
-    w->acc |= (v & ((1u << n) - 1)) << w->nbits;
-    w->nbits += n;
-    while (w->nbits >= 8) {
-        if (w->pos < w->cap)
-            w->buf[w->pos] = (uint8_t)(w->acc & 0xff);
-        w->pos++;
-        w->acc >>= 8;
-        w->nbits -= 8;
-    }
+// RFC 1951 § 3.2.5 length and distance code tables, shared with deflate_enc.c.
+const uint16_t codec_deflate_len_base[29] = {3,  4,  5,  6,  7,  8,  9,  10, 11,  13,  15,  17,  19,  23, 27,
+                                             31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
+const uint8_t codec_deflate_len_extra[29] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2,
+                                             2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
+const uint16_t codec_deflate_dist_base[30] = {1,    2,    3,    4,    5,    7,    9,    13,    17,    25,
+                                              33,   49,   65,   97,   129,  193,  257,  385,   513,   769,
+                                              1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577};
+const uint8_t codec_deflate_dist_extra[30] = {0, 0, 0, 0, 1, 1, 2, 2,  3,  3,  4,  4,  5,  5,  6,
+                                              6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
+
+// ============================================================================
+// Types
+// ============================================================================
+
+// A table entry (uint32_t):
+//   bits 0-4    the bits it consumes (for a subtable link: the primary width)
+//   bits 5-7    its kind (E_*)
+//   bits 8-11   extra bits after it (a length or distance), or a subtable's width
+//   bits 16-31  its value: a literal, a length or distance base, or a subtable's offset
+#define E_LIT     0u
+#define E_LEN     1u // a length (literal/length table) or a distance (distance table)
+#define E_END     2u
+#define E_SUB     3u
+#define E_BAD     4u // a code no symbol has (an incomplete code)
+#define E_BITS(e) ((e) & 31u)
+#define E_KIND(e) (((e) >> 5) & 7u)
+#define E_X(e)    (((e) >> 8) & 15u)
+#define E_VAL(e)  ((e) >> 16)
+
+static inline uint32_t mk_entry(uint32_t bits, uint32_t kind, uint32_t x, uint32_t val) {
+    return bits | kind << 5 | x << 8 | val << 16;
 }
 
-// Append a Huffman code: the code's most-significant bit goes out first.
-static void put_code(deflate_bw_t *w, uint32_t code, int n) {
-    uint32_t reversed = 0;
+#define GZ_FTEXT    0x01
+#define GZ_FHCRC    0x02
+#define GZ_FEXTRA   0x04
+#define GZ_FNAME    0x08
+#define GZ_FCOMMENT 0x10
+#define GZ_RESERVED 0xE0
+
+typedef enum { W_RAW, W_ZLIB, W_GZIP } inf_wrap_t;
+
+typedef enum { S_ZLIB_HEADER, S_GZ_HEADER, S_BLOCK, S_STORED, S_HUFF, S_TRAILER, S_GZ_NEXT, S_DONE } inf_state_t;
+
+typedef struct {
+    inf_state_t state;
+    inf_wrap_t wrap; // the container around the DEFLATE stream
+    bool last; // the current block is the final one
+    uint32_t stored_left; // bytes left in a stored block
+    uint32_t sum; // Adler-32 (zlib) or CRC-32 (gzip) of the member's bytes so far
+    uint64_t sum_at; // ring.total the sum covers
+    uint64_t member_at; // ring.total where the current gzip member began
+    bool magic_read; // the next member's 1F 8B has been read already
+    uint32_t lit[LIT_TABLE];
+    uint32_t dist[DIST_TABLE];
+} inf_t;
+
+// ============================================================================
+// Huffman tables
+// ============================================================================
+
+// Reverse the low `n` bits of `v` (codes are defined MSB first but read
+// from an LSB-first stream).
+static uint32_t rev_bits(uint32_t v, int n) {
+    uint32_t r = 0;
+    while (n--) {
+        r = r << 1 | (v & 1);
+        v >>= 1;
+    }
+    return r;
+}
+
+// The alphabets a table can be for.
+typedef enum { T_LIT, T_DIST, T_RAW } table_kind_t;
+
+// What symbol `s` of a table means: a literal/length (T_LIT), a distance
+// (T_DIST), or just the symbol (T_RAW, the code-length alphabet: E_LIT).
+static uint32_t sym_entry(int s, table_kind_t kind, uint32_t bits) {
+    if (kind == T_RAW)
+        return mk_entry(bits, E_LIT, 0, (uint32_t)s);
+    if (kind == T_LIT) {
+        if (s < 256)
+            return mk_entry(bits, E_LIT, 0, (uint32_t)s);
+        if (s == 256)
+            return mk_entry(bits, E_END, 0, 0);
+        if (s - 257 < 29)
+            return mk_entry(bits, E_LEN, codec_deflate_len_extra[s - 257], codec_deflate_len_base[s - 257]);
+        return mk_entry(bits, E_BAD, 0, 0); // 286, 287: never valid
+    }
+    if (s < 30)
+        return mk_entry(bits, E_LEN, codec_deflate_dist_extra[s], codec_deflate_dist_base[s]);
+    return mk_entry(bits, E_BAD, 0, 0);
+}
+
+// Build a two-level table for `n` symbols with code lengths `len` (0:
+// unused), primary width `root`, into t[0 .. cap).  0, or -1 for an
+// over-subscribed set or one that does not fit.
+static int build_table(uint32_t *t, size_t cap, const uint8_t *len, int n, int root, table_kind_t lit) {
+    uint16_t count[16] = {0}, offs[16];
+    uint16_t sorted[288];
     for (int i = 0; i < n; i++)
-        reversed |= ((code >> i) & 1u) << (n - 1 - i);
-    put_bits(w, reversed, n);
-}
-
-static void align_byte(deflate_bw_t *w) {
-    if (w->nbits > 0)
-        put_bits(w, 0, 8 - w->nbits);
-}
-
-// ============================================================================
-// LZ77
-// ============================================================================
-
-// Hash three bytes into the match-chain head table.
-static uint32_t hash3(const uint8_t *p) {
-    return (((uint32_t)p[0] << 10) ^ ((uint32_t)p[1] << 5) ^ (uint32_t)p[2]) & (DEFLATE_HASH_SIZE - 1);
-}
-
-// Hash-chain depth per level.
-static int chain_for(int level) {
-    static const int depth[10] = {0, 4, 8, 16, 32, 48, 64, 128, 256, 1024};
-    if (level < 1)
-        return 0;
-    return depth[level > 9 ? 9 : level];
-}
-
-// Tokenise all of `src` into st->tok; the token count.
-static size_t tokenise(zenc_t *st, const uint8_t *src, size_t len, int max_chain) {
-    int32_t *head = st->head, *prev = st->prev;
-    token_t *tok = st->tok;
-    size_t nt = 0;
-    for (size_t i = 0; i < DEFLATE_HASH_SIZE; i++)
-        head[i] = -1;
-    size_t pos = 0;
-    while (pos < len) {
-        size_t best_len = 0, best_dist = 0;
-        if (pos + DEFLATE_MIN_MATCH <= len) {
-            uint32_t h = hash3(src + pos);
-            // Walk the chain of earlier positions with the same hash, newest
-            // first, keeping the longest match inside the 32K window.
-            int32_t cand = head[h];
-            for (int chain = max_chain; cand >= 0 && chain > 0; chain--) {
-                size_t dist = pos - (size_t)cand;
-                if (dist == 0 || dist > DEFLATE_WINDOW)
-                    break;
-                size_t max_len = len - pos;
-                if (max_len > DEFLATE_MAX_MATCH)
-                    max_len = DEFLATE_MAX_MATCH;
-                size_t l = 0;
-                while (l < max_len && src[(size_t)cand + l] == src[pos + l])
-                    l++;
-                if (l > best_len) {
-                    best_len = l;
-                    best_dist = dist;
-                    if (l >= DEFLATE_MAX_MATCH)
-                        break;
-                }
-                cand = prev[cand];
-            }
-            prev[pos] = head[h];
-            head[h] = (int32_t)pos;
-        }
-        if (best_len >= DEFLATE_MIN_MATCH) {
-            tok[nt++] = (token_t){(uint16_t)best_len, (uint16_t)best_dist};
-            // Index the bytes the match covered so later matches can find them.
-            for (size_t k = 1; k < best_len; k++) {
-                if (pos + k + DEFLATE_MIN_MATCH > len)
-                    break;
-                uint32_t h2 = hash3(src + pos + k);
-                prev[pos + k] = head[h2];
-                head[h2] = (int32_t)(pos + k);
-            }
-            pos += best_len;
-        } else {
-            tok[nt++] = (token_t){src[pos], 0};
-            pos++;
-        }
+        count[len[i]]++;
+    count[0] = 0;
+    int left = 1;
+    for (int l = 1; l < 16; l++) {
+        left = (left << 1) - count[l];
+        if (left < 0)
+            return -1; // over-subscribed (an incomplete code is legal)
     }
-    return nt;
-}
-
-// The length symbol (257..285) and extra bits of a match length.
-static int len_code(unsigned len) {
-    int lc = 28;
-    while (lc > 0 && len < codec_deflate_len_base[lc])
-        lc--;
-    return lc;
-}
-
-// The distance code (0..29) of a match distance.
-static int dist_code(unsigned dist) {
-    int dc = 29;
-    while (dc > 0 && dist < codec_deflate_dist_base[dc])
-        dc--;
-    return dc;
-}
-
-// ============================================================================
-// Huffman codes
-// ============================================================================
-
-// Fixed literal/length code lengths (RFC 1951 §3.2.6) and distance lengths.
-static uint8_t fixed_lit_len(unsigned sym) {
-    return sym < 144 ? 8 : sym < 256 ? 9 : sym < 280 ? 7 : 8;
-}
-
-// Code lengths for `n` symbols with frequencies `freq`, none longer than
-// `limit`, forming a complete prefix code.  Symbols with frequency 0 get
-// length 0.  The caller guarantees at least two symbols are used.
-static void build_lengths(const uint32_t *freq, int n, int limit, uint8_t *len) {
-    // Huffman by repeated merging of the two lightest nodes (n <= 286, so a
-    // simple O(n^2) selection is cheap next to the LZ77 pass).
-    int parent[2 * N_LITLEN];
-    uint64_t weight[2 * N_LITLEN];
-    bool live[2 * N_LITLEN];
-    int nodes = 0, leaf_of[N_LITLEN];
-    for (int i = 0; i < n; i++) {
-        len[i] = 0;
-        leaf_of[i] = -1;
-        if (freq[i]) {
-            leaf_of[i] = nodes;
-            weight[nodes] = freq[i];
-            live[nodes] = true;
-            parent[nodes] = -1;
-            nodes++;
-        }
-    }
-    int alive = nodes;
-    while (alive > 1) {
-        int a = -1, b = -1;
-        for (int i = 0; i < nodes; i++) {
-            if (!live[i])
-                continue;
-            if (a < 0 || weight[i] < weight[a]) {
-                b = a;
-                a = i;
-            } else if (b < 0 || weight[i] < weight[b]) {
-                b = i;
-            }
-        }
-        live[a] = live[b] = false;
-        weight[nodes] = weight[a] + weight[b];
-        live[nodes] = true;
-        parent[nodes] = -1;
-        parent[a] = parent[b] = nodes;
-        nodes++;
-        alive--;
-    }
-    // Depth of each leaf, clamped to the limit.
-    for (int i = 0; i < n; i++) {
-        if (leaf_of[i] < 0)
-            continue;
-        int d = 0;
-        for (int p = leaf_of[i]; parent[p] >= 0; p = parent[p])
-            d++;
-        len[i] = (uint8_t)(d > limit ? limit : d);
-    }
-    // Clamping can over-subscribe the code (Kraft sum > 1): lengthen the
-    // longest codes still under the limit until it fits, then shorten the
-    // longest ones while there is room, so the code ends exactly complete.
-    uint64_t full = 1ull << limit, kraft = 0;
+    offs[1] = 0;
+    for (int l = 1; l < 15; l++)
+        offs[l + 1] = (uint16_t)(offs[l] + count[l]);
     for (int i = 0; i < n; i++)
         if (len[i])
-            kraft += 1ull << (limit - len[i]);
-    while (kraft > full) {
-        int pick = -1;
-        for (int i = 0; i < n; i++)
-            if (len[i] && len[i] < limit &&
-                (pick < 0 || len[i] > len[pick] || (len[i] == len[pick] && freq[i] < freq[pick])))
-                pick = i;
-        kraft -= 1ull << (limit - len[pick] - 1);
-        len[pick]++;
-    }
-    while (kraft < full) {
-        int pick = -1;
-        for (int i = 0; i < n; i++)
-            if (len[i] > 1 && kraft + (1ull << (limit - len[i])) <= full &&
-                (pick < 0 || len[i] > len[pick] || (len[i] == len[pick] && freq[i] > freq[pick])))
-                pick = i;
-        if (pick < 0)
-            break; // cannot happen for >= 2 symbols; leave as is
-        kraft += 1ull << (limit - len[pick]);
-        len[pick]--;
-    }
-}
+            sorted[offs[len[i]]++] = (uint16_t)i;
 
-// Canonical codes from lengths (RFC 1951 §3.2.2).
-static void build_codes(const uint8_t *len, int n, uint16_t *code) {
-    uint16_t bl_count[MAX_BITS + 1] = {0}, next[MAX_BITS + 1] = {0};
-    for (int i = 0; i < n; i++)
-        bl_count[len[i]]++;
-    bl_count[0] = 0;
-    uint16_t c = 0;
-    for (int bits = 1; bits <= MAX_BITS; bits++) {
-        c = (uint16_t)((c + bl_count[bits - 1]) << 1);
-        next[bits] = c;
-    }
-    for (int i = 0; i < n; i++)
-        code[i] = len[i] ? next[len[i]]++ : 0;
-}
-
-// Make sure at least two symbols of a code are used (a one-symbol code is
-// incomplete, which strict decoders refuse).
-static void ensure_two(uint32_t *freq, int n) {
-    int used = 0;
-    for (int i = 0; i < n; i++)
-        used += freq[i] != 0;
-    for (int i = 0; i < n && used < 2; i++)
-        if (!freq[i]) {
-            freq[i] = 1;
-            used++;
-        }
-}
-
-// The code-length sequence for the literal and distance lengths, run-length
-// coded with symbols 16 (repeat previous 3-6), 17 (zeros 3-10) and 18
-// (zeros 11-138).  Each entry is symbol | extra << 8.
-static int rle_lengths(const uint8_t *lens, int n, uint16_t *out) {
-    int k = 0;
-    for (int i = 0; i < n;) {
-        uint8_t v = lens[i];
-        int run = 1;
-        while (i + run < n && lens[i + run] == v)
-            run++;
-        if (v == 0) {
-            int left = run;
-            while (left >= 11) {
-                int r = left > 138 ? 138 : left;
-                out[k++] = (uint16_t)(18 | (r - 11) << 8);
-                left -= r;
+    size_t size = (size_t)1 << root;
+    for (size_t i = 0; i < size; i++)
+        t[i] = mk_entry(0, E_BAD, 0, 0);
+    size_t next = size; // the next free subtable slot
+    uint32_t code = 0; // the canonical code of the next symbol
+    int idx = 0, sub_root = -1; // sorted index; the primary entry of the open subtable
+    size_t sub_off = 0;
+    int sub_bits = 0;
+    for (int l = 1; l <= 15; l++, code <<= 1) {
+        for (int k = 0; k < count[l]; k++, idx++, code++) {
+            uint32_t r = rev_bits(code, l);
+            if (l <= root) {
+                uint32_t e = sym_entry(sorted[idx], lit, (uint32_t)l);
+                for (size_t f = r; f < size; f += (size_t)1 << l)
+                    t[f] = e;
+                continue;
             }
-            if (left >= 3) {
-                out[k++] = (uint16_t)(17 | (left - 3) << 8);
-                left = 0;
+            int prefix = (int)(r & (size - 1));
+            if (prefix != sub_root) {
+                // A new subtable: wide enough for every code sharing this
+                // prefix, counted from the lengths still to come.
+                int w = l - root, room = 1 << w;
+                for (int ll = l; ll < 15; ll++) {
+                    room -= (ll == l ? count[l] - k : count[ll]);
+                    if (room <= 0)
+                        break;
+                    w++;
+                    room <<= 1;
+                }
+                if (next + ((size_t)1 << w) > cap)
+                    return -1;
+                sub_root = prefix;
+                sub_off = next;
+                sub_bits = w;
+                for (size_t i = 0; i < (size_t)1 << w; i++)
+                    t[next + i] = mk_entry(0, E_BAD, 0, 0);
+                next += (size_t)1 << w;
+                t[prefix] = mk_entry((uint32_t)root, E_SUB, (uint32_t)w, (uint32_t)sub_off);
             }
-            while (left-- > 0)
-                out[k++] = 0;
-        } else {
-            out[k++] = v;
-            int left = run - 1;
-            while (left >= 3) {
-                int r = left > 6 ? 6 : left;
-                out[k++] = (uint16_t)(16 | (r - 3) << 8);
-                left -= r;
-            }
-            while (left-- > 0)
-                out[k++] = v;
-        }
-        i += run;
-    }
-    return k;
-}
-
-static const uint8_t clen_order[N_CLEN] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15};
-
-// ============================================================================
-// Blocks
-// ============================================================================
-
-// Bits the tokens cost under code lengths `ll` / `dl` (data only).
-static uint64_t data_bits(const token_t *t, size_t n, const uint8_t *ll, const uint8_t *dl) {
-    uint64_t bits = ll[256];
-    for (size_t i = 0; i < n; i++) {
-        if (!t[i].dist) {
-            bits += ll[t[i].len];
-        } else {
-            int lc = len_code(t[i].len), dc = dist_code(t[i].dist);
-            bits += ll[257 + lc] + codec_deflate_len_extra[lc] + dl[dc] + codec_deflate_dist_extra[dc];
+            uint32_t e = sym_entry(sorted[idx], lit, (uint32_t)(l - root));
+            for (size_t f = r >> root; f < (size_t)1 << sub_bits; f += (size_t)1 << (l - root))
+                t[sub_off + f] = e;
         }
     }
-    return bits;
+    return 0;
 }
 
-static void write_tokens(deflate_bw_t *w, const token_t *t, size_t n, const uint8_t *ll, const uint16_t *lcode,
-                         const uint8_t *dl, const uint16_t *dcode) {
-    for (size_t i = 0; i < n; i++) {
-        if (!t[i].dist) {
-            put_code(w, lcode[t[i].len], ll[t[i].len]);
+// The fixed codes of RFC 1951 § 3.2.6.
+static void fixed_tables(inf_t *z) {
+    uint8_t ll[288], dl[30];
+    for (int i = 0; i < 288; i++)
+        ll[i] = (uint8_t)(i < 144 ? 8 : i < 256 ? 9 : i < 280 ? 7 : 8);
+    memset(dl, 5, sizeof(dl));
+    build_table(z->lit, LIT_TABLE, ll, 288, LIT_BITS, T_LIT);
+    build_table(z->dist, DIST_TABLE, dl, 30, DIST_BITS, T_DIST);
+}
+
+// Decode one symbol through table `t` (root width `root`); the accumulator
+// holds at least 15 bits.  Returns the entry, its bits consumed.
+static inline uint32_t table_decode(const uint32_t *t, int root, codec_in_t *in) {
+    uint32_t e = t[lsb_peek(in, root)];
+    if (E_KIND(e) == E_SUB) {
+        lsb_drop(in, root);
+        e = t[E_VAL(e) + lsb_peek(in, (int)E_X(e))];
+    }
+    lsb_drop(in, (int)E_BITS(e));
+    return e;
+}
+
+// A dynamic block's code definitions (RFC 1951 § 3.2.7).  0 or CODEC_ERR_*.
+static int dynamic_tables(codec_dec_t *d, inf_t *z) {
+    static const uint8_t order[19] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15};
+    codec_in_t *in = &d->in;
+    lsb_fill(in);
+    int hlit = (int)lsb_get(in, 5) + 257, hdist = (int)lsb_get(in, 5) + 1, hclen = (int)lsb_get(in, 4) + 4;
+    if (hlit > 286 || hdist > 30)
+        return codec_fail(d, CODEC_ERR_DATA, "deflate: bad code counts");
+    uint8_t cl[19] = {0};
+    for (int i = 0; i < hclen; i++)
+        cl[order[i]] = (uint8_t)lsb_get(in, 3);
+    uint32_t clt[128 + 19 * 16];
+    if (build_table(clt, sizeof(clt) / sizeof(clt[0]), cl, 19, 7, T_RAW) != 0)
+        return codec_fail(d, CODEC_ERR_DATA, "deflate: bad code-length code");
+    uint8_t lengths[286 + 30] = {0};
+    int n = 0, total = hlit + hdist;
+    while (n < total) {
+        lsb_fill(in);
+        uint32_t e = table_decode(clt, 7, in);
+        if (E_KIND(e) != E_LIT)
+            return codec_fail(d, CODEC_ERR_DATA, "deflate: bad code length");
+        int sym = (int)E_VAL(e);
+        if (sym < 16) {
+            lengths[n++] = (uint8_t)sym;
             continue;
         }
-        int lc = len_code(t[i].len), dc = dist_code(t[i].dist);
-        put_code(w, lcode[257 + lc], ll[257 + lc]);
-        put_bits(w, (uint32_t)(t[i].len - codec_deflate_len_base[lc]), codec_deflate_len_extra[lc]);
-        put_code(w, dcode[dc], dl[dc]);
-        put_bits(w, (uint32_t)(t[i].dist - codec_deflate_dist_base[dc]), codec_deflate_dist_extra[dc]);
+        int rep;
+        uint8_t val = 0;
+        if (sym == 16) {
+            if (n == 0)
+                return codec_fail(d, CODEC_ERR_DATA, "deflate: repeat with no length before it");
+            val = lengths[n - 1];
+            rep = 3 + (int)lsb_get(in, 2);
+        } else if (sym == 17)
+            rep = 3 + (int)lsb_get(in, 3);
+        else
+            rep = 11 + (int)lsb_get(in, 7);
+        if (n + rep > total)
+            return codec_fail(d, CODEC_ERR_DATA, "deflate: code lengths overrun");
+        memset(lengths + n, val, (size_t)rep);
+        n += rep;
     }
-    put_code(w, lcode[256], ll[256]);
+    if (codec_in_overrun(in))
+        return codec_fail(d, CODEC_ERR_TRUNCATED, "deflate: truncated block header");
+    if (lengths[256] == 0)
+        return codec_fail(d, CODEC_ERR_DATA, "deflate: no end-of-block code");
+    if (build_table(z->lit, LIT_TABLE, lengths, hlit, LIT_BITS, T_LIT) != 0 ||
+        build_table(z->dist, DIST_TABLE, lengths + hlit, hdist, DIST_BITS, T_DIST) != 0)
+        return codec_fail(d, CODEC_ERR_DATA, "deflate: over-subscribed code");
+    return 0;
 }
 
-// Stored blocks for [src, src+len); `last` marks the final one.
-static void write_stored(deflate_bw_t *w, const uint8_t *src, size_t len, bool last) {
-    size_t pos = 0;
-    do {
-        size_t n = len - pos < DEFLATE_STORED ? len - pos : DEFLATE_STORED;
-        bool fin = last && pos + n == len;
-        put_bits(w, fin ? 1 : 0, 1);
-        put_bits(w, 0, 2);
-        align_byte(w); // LEN starts on a byte boundary
-        put_bits(w, (uint32_t)n, 16);
-        put_bits(w, (uint32_t)~n & 0xffff, 16);
-        if (w->pos + n <= w->cap)
-            memcpy(w->buf + w->pos, src + pos, n);
-        w->pos += n;
-        pos += n;
-    } while (pos < len);
+// ============================================================================
+// The decoder
+// ============================================================================
+
+// Start the next block.  0 or CODEC_ERR_*.
+static int block_header(codec_dec_t *d, inf_t *z) {
+    codec_in_t *in = &d->in;
+    lsb_fill(in);
+    z->last = lsb_get(in, 1) != 0;
+    uint32_t type = lsb_get(in, 2);
+    if (codec_in_overrun(in))
+        return codec_fail(d, CODEC_ERR_TRUNCATED, "deflate: truncated stream");
+    if (type == 0) {
+        // Stored: to a byte boundary, then LEN and its complement.
+        lsb_align(in);
+        lsb_fill(in);
+        uint32_t len = lsb_get(in, 16), nlen = lsb_get(in, 16);
+        if (codec_in_overrun(in))
+            return codec_fail(d, CODEC_ERR_TRUNCATED, "deflate: truncated stored block");
+        if ((len ^ 0xFFFF) != nlen)
+            return codec_fail(d, CODEC_ERR_DATA, "deflate: stored block length check");
+        z->stored_left = len;
+        z->state = S_STORED;
+        return 0;
+    }
+    if (type == 1)
+        fixed_tables(z);
+    else if (type == 2) {
+        int rc = dynamic_tables(d, z);
+        if (rc)
+            return rc;
+    } else
+        return codec_fail(d, CODEC_ERR_DATA, "deflate: reserved block type");
+    z->state = S_HUFF;
+    return 0;
 }
 
-// One block of tokens `t` covering input [src, src+len), in its smallest form.
-static void write_block(deflate_bw_t *w, const token_t *t, size_t n, const uint8_t *src, size_t len, bool last) {
-    // Fixed codes.
-    uint8_t fll[288], fdl[N_DIST];
-    uint16_t flc[288], fdc[N_DIST];
-    for (int i = 0; i < 288; i++)
-        fll[i] = fixed_lit_len((unsigned)i);
-    for (int i = 0; i < N_DIST; i++)
-        fdl[i] = 5;
-    build_codes(fll, 288, flc);
-    build_codes(fdl, N_DIST, fdc);
-    uint64_t fixed_cost = 3 + data_bits(t, n, fll, fdl);
+// Decode a coded block's symbols while the ring has room for a match.
+// The accumulator and the ring's cursor live in locals here (stores to the
+// ring cannot alias them), written back on every way out.
+static int huff_run(codec_dec_t *d, inf_t *z) {
+    codec_in_t *in = &d->in;
+    codec_ring_t *r = &d->ring;
+    uint8_t *buf = r->buf;
+    const size_t size = r->size;
+    size_t w = r->w;
+    uint64_t total = r->total, stop = r->drained + size - INF_MATCH_MAX; // write while total <= stop
+    uint64_t bits = in->bits;
+    int nbits = in->nbits;
+    bool tail = false; // the input is nearly out: check every symbol for overrun
+    int rc = 0;
 
-    // Dynamic codes from this block's counts.
-    uint32_t lf[N_LITLEN] = {0}, df[N_DIST] = {0};
-    for (size_t i = 0; i < n; i++) {
-        if (!t[i].dist) {
-            lf[t[i].len]++;
-        } else {
-            lf[257 + len_code(t[i].len)]++;
-            df[dist_code(t[i].dist)]++;
+#define SYNC_OUT()                                                                                                     \
+    do {                                                                                                               \
+        in->bits = bits;                                                                                               \
+        in->nbits = nbits;                                                                                             \
+        r->w = w;                                                                                                      \
+        r->total = total;                                                                                              \
+    } while (0)
+#define SYNC_IN()                                                                                                      \
+    do {                                                                                                               \
+        bits = in->bits;                                                                                               \
+        nbits = in->nbits;                                                                                             \
+    } while (0)
+
+    while (total <= stop) {
+        // Refill: 8 bytes in one load where the input allows.
+        if (nbits <= 56) {
+            if (in->len - in->pos >= 8) {
+                uint64_t v = codec_le64(in->p + in->pos);
+                bits |= v << nbits;
+                int k = (63 - nbits) >> 3;
+                in->pos += (size_t)k;
+                nbits += k * 8;
+            } else {
+                SYNC_OUT();
+                lsb_fill(in);
+                SYNC_IN();
+                tail = in->over > 0;
+            }
         }
-    }
-    lf[256] = 1;
-    ensure_two(lf, N_LITLEN);
-    ensure_two(df, N_DIST);
-    uint8_t dll[N_LITLEN], ddl[N_DIST];
-    build_lengths(lf, N_LITLEN, MAX_BITS, dll);
-    build_lengths(df, N_DIST, MAX_BITS, ddl);
-    int hlit = N_LITLEN, hdist = N_DIST;
-    while (hlit > 257 && !dll[hlit - 1])
-        hlit--;
-    while (hdist > 1 && !ddl[hdist - 1])
-        hdist--;
-    uint8_t all[N_LITLEN + N_DIST];
-    memcpy(all, dll, (size_t)hlit);
-    memcpy(all + hlit, ddl, (size_t)hdist);
-    uint16_t rle[N_LITLEN + N_DIST];
-    int nrle = rle_lengths(all, hlit + hdist, rle);
-    uint32_t cf[N_CLEN] = {0};
-    for (int i = 0; i < nrle; i++)
-        cf[rle[i] & 0xff]++;
-    ensure_two(cf, N_CLEN);
-    uint8_t cl[N_CLEN];
-    uint16_t cc[N_CLEN];
-    build_lengths(cf, N_CLEN, MAX_CLEN, cl);
-    build_codes(cl, N_CLEN, cc);
-    int hclen = N_CLEN;
-    while (hclen > 4 && !cl[clen_order[hclen - 1]])
-        hclen--;
-    uint64_t header = 3 + 5 + 5 + 4 + 3ull * (uint64_t)hclen;
-    for (int i = 0; i < nrle; i++) {
-        int s = rle[i] & 0xff;
-        header += cl[s] + (s == 16 ? 2 : s == 17 ? 3 : s == 18 ? 7 : 0);
-    }
-    uint64_t dyn_cost = header + data_bits(t, n, dll, ddl);
-
-    // Stored: the header bits, the alignment, then 4 + len bytes per 64 KB.
-    uint64_t stored_cost = (uint64_t)(len / DEFLATE_STORED + 1) * (3 + 7 + 32) + 8ull * len;
-
-    if (stored_cost < dyn_cost && stored_cost < fixed_cost) {
-        write_stored(w, src, len, last);
-    } else if (fixed_cost <= dyn_cost) {
-        put_bits(w, last ? 1 : 0, 1);
-        put_bits(w, 1, 2); // BTYPE 01: fixed Huffman
-        write_tokens(w, t, n, fll, flc, fdl, fdc);
-    } else {
-        uint16_t dlc[N_LITLEN], ddc[N_DIST];
-        build_codes(dll, N_LITLEN, dlc);
-        build_codes(ddl, N_DIST, ddc);
-        put_bits(w, last ? 1 : 0, 1);
-        put_bits(w, 2, 2); // BTYPE 10: dynamic Huffman
-        put_bits(w, (uint32_t)(hlit - 257), 5);
-        put_bits(w, (uint32_t)(hdist - 1), 5);
-        put_bits(w, (uint32_t)(hclen - 4), 4);
-        for (int i = 0; i < hclen; i++)
-            put_bits(w, cl[clen_order[i]], 3);
-        for (int i = 0; i < nrle; i++) {
-            int s = rle[i] & 0xff, extra = rle[i] >> 8;
-            put_code(w, cc[s], cl[s]);
-            if (s == 16)
-                put_bits(w, (uint32_t)extra, 2);
-            else if (s == 17)
-                put_bits(w, (uint32_t)extra, 3);
-            else if (s == 18)
-                put_bits(w, (uint32_t)extra, 7);
+        uint32_t e = z->lit[bits & ((1u << LIT_BITS) - 1)];
+        if (E_KIND(e) == E_SUB) {
+            bits >>= LIT_BITS;
+            nbits -= LIT_BITS;
+            e = z->lit[E_VAL(e) + (bits & ((1u << E_X(e)) - 1))];
         }
-        write_tokens(w, t, n, dll, dlc, ddl, ddc);
+        bits >>= E_BITS(e);
+        nbits -= (int)E_BITS(e);
+        uint32_t kind = E_KIND(e);
+        if (tail && nbits < (int)in->over * 8) {
+            rc = codec_fail(d, CODEC_ERR_TRUNCATED, "deflate: truncated stream");
+            break;
+        }
+        if (kind == E_LIT) {
+            buf[w] = (uint8_t)E_VAL(e);
+            if (++w == size)
+                w = 0;
+            total++;
+            continue;
+        }
+        if (kind != E_LEN) {
+            if (kind == E_END)
+                z->state = z->last ? (z->wrap != W_RAW ? S_TRAILER : S_DONE) : S_BLOCK;
+            else
+                rc = codec_fail(d, CODEC_ERR_DATA, "deflate: invalid literal/length code");
+            break;
+        }
+        uint32_t len = E_VAL(e) + (uint32_t)(bits & ((1u << E_X(e)) - 1));
+        bits >>= E_X(e);
+        nbits -= (int)E_X(e);
+        // Distance: its code and extra bits fit what is left of the refill
+        // (15 + 5 used of >= 57; 15 + 13 more).
+        e = z->dist[bits & ((1u << DIST_BITS) - 1)];
+        if (E_KIND(e) == E_SUB) {
+            bits >>= DIST_BITS;
+            nbits -= DIST_BITS;
+            e = z->dist[E_VAL(e) + (bits & ((1u << E_X(e)) - 1))];
+        }
+        bits >>= E_BITS(e);
+        nbits -= (int)E_BITS(e);
+        if (E_KIND(e) != E_LEN) {
+            rc = codec_fail(d, CODEC_ERR_DATA, "deflate: invalid distance code");
+            break;
+        }
+        uint32_t dist = E_VAL(e) + (uint32_t)(bits & ((1u << E_X(e)) - 1));
+        bits >>= E_X(e);
+        nbits -= (int)E_X(e);
+        if (tail && nbits < (int)in->over * 8) {
+            rc = codec_fail(d, CODEC_ERR_TRUNCATED, "deflate: truncated stream");
+            break;
+        }
+        if (dist > total) {
+            rc = codec_fail(d, CODEC_ERR_DATA, "deflate: distance before the start of the stream");
+            break;
+        }
+        r->w = w;
+        r->total = total;
+        ring_copy(r, dist, len);
+        w = r->w;
+        total = r->total;
+    }
+    SYNC_OUT();
+#undef SYNC_OUT
+#undef SYNC_IN
+    if (rc == 0 && codec_in_overrun(in))
+        rc = codec_fail(d, CODEC_ERR_TRUNCATED, "deflate: truncated stream");
+    return rc;
+}
+
+// Fold the bytes decoded since the last call into the member's sum.
+static void sum_update(codec_dec_t *d, inf_t *z) {
+    const uint8_t *p;
+    for (size_t n; z->sum_at < d->ring.total; z->sum_at += n) {
+        n = ring_span(&d->ring, z->sum_at, &p);
+        z->sum = z->wrap == W_ZLIB ? codec_adler32(z->sum, p, n) : codec_crc32(z->sum, p, n);
     }
 }
 
-// Bytes of input token `t` covers.
-static size_t token_bytes(const token_t *t) {
-    return t->dist ? t->len : 1;
+// One header byte, folded into the header CRC.  -1 at the end.
+static int gz_byte(codec_in_t *in, uint32_t *crc) {
+    int b = lsb_byte(in);
+    if (b >= 0) {
+        uint8_t c = (uint8_t)b;
+        *crc = codec_crc32(*crc, &c, 1);
+    }
+    return b;
 }
 
-static long zlib_deflate(zenc_t *st, const uint8_t *in, size_t len, uint8_t *out, size_t cap, int level) {
-    if (cap < 6)
-        return -1;
-    zenc_t *own = NULL;
-    if (level > 0 && (!st || st->max_len < len)) {
-        own = zenc_new(len);
-        if (!own)
-            return -1;
-        st = own;
+// RFC 1952 § 2.3: a member header.  0, or a CODEC_ERR_* code.
+static int gz_header(codec_dec_t *d, inf_t *z) {
+    codec_in_t *in = &d->in;
+    uint32_t crc = 0;
+    int h[10];
+    int i = 0;
+    if (z->magic_read) {
+        static const uint8_t magic[2] = {0x1F, 0x8B};
+        crc = codec_crc32(0, magic, 2);
+        h[i++] = 0x1F;
+        h[i++] = 0x8B;
+        z->magic_read = false;
     }
-    deflate_bw_t w = {out, cap, 0, 0, 0};
-    // zlib header: CM=8 / CINFO=7 (32K window), FLEVEL=2, FCHECK making the
-    // 16-bit value a multiple of 31.
-    out[w.pos++] = 0x78;
-    out[w.pos++] = 0x9c;
-    if (level <= 0 || len == 0) {
-        write_stored(&w, in, len, true);
-    } else {
-        size_t nt = tokenise(st, in, len, chain_for(level));
-        size_t at = 0, from = 0;
-        while (at < nt || from == 0) {
-            size_t n = nt - at < DEFLATE_BLOCK_TOKENS ? nt - at : DEFLATE_BLOCK_TOKENS;
-            size_t bytes = 0;
-            for (size_t i = 0; i < n; i++)
-                bytes += token_bytes(&st->tok[at + i]);
-            write_block(&w, st->tok + at, n, in + from, bytes, at + n == nt);
-            at += n;
-            from += bytes;
-            if (at >= nt)
+    for (; i < 10; i++)
+        if ((h[i] = gz_byte(in, &crc)) < 0)
+            return codec_fail(d, CODEC_ERR_TRUNCATED, "gzip: truncated header");
+    if (h[0] != 0x1F || h[1] != 0x8B)
+        return codec_fail(d, CODEC_ERR_DATA, "gzip: not a gzip stream");
+    if (h[2] != 8)
+        return codec_fail(d, CODEC_ERR_UNSUPPORTED, "gzip: compression method is not DEFLATE");
+    int flg = h[3];
+    if (flg & GZ_RESERVED)
+        return codec_fail(d, CODEC_ERR_DATA, "gzip: reserved header flags set");
+    if (flg & GZ_FEXTRA) {
+        int lo = gz_byte(in, &crc), hi = gz_byte(in, &crc);
+        if (hi < 0)
+            return codec_fail(d, CODEC_ERR_TRUNCATED, "gzip: truncated extra field");
+        for (int n = lo | hi << 8; n > 0; n--)
+            if (gz_byte(in, &crc) < 0)
+                return codec_fail(d, CODEC_ERR_TRUNCATED, "gzip: truncated extra field");
+    }
+    for (int f = GZ_FNAME; f <= GZ_FCOMMENT; f <<= 1) {
+        if (!(flg & f))
+            continue;
+        int b;
+        while ((b = gz_byte(in, &crc)) > 0) // zero-terminated
+            ;
+        if (b < 0)
+            return codec_fail(d, CODEC_ERR_TRUNCATED, "gzip: truncated name or comment");
+    }
+    if (flg & GZ_FHCRC) {
+        uint32_t want = crc & 0xFFFF, dummy = 0;
+        int lo = gz_byte(in, &dummy), hi = gz_byte(in, &dummy);
+        if (hi < 0)
+            return codec_fail(d, CODEC_ERR_TRUNCATED, "gzip: truncated header CRC");
+        if ((uint32_t)(lo | hi << 8) != want)
+            return codec_fail(d, CODEC_ERR_CHECKSUM, "gzip: header CRC mismatch");
+    }
+    return 0;
+}
+
+// A new gzip member's state: a fresh DEFLATE stream and sum.
+static void gz_member_start(codec_dec_t *d, inf_t *z) {
+    z->state = S_BLOCK;
+    z->last = false;
+    z->sum = 0;
+    z->sum_at = z->member_at = d->ring.total;
+}
+
+static int inf_fill(codec_dec_t *d) {
+    inf_t *z = d->st;
+    codec_in_t *in = &d->in;
+    codec_ring_t *r = &d->ring;
+    int rc = 0;
+    while (rc == 0 && z->state != S_DONE) {
+        switch (z->state) {
+        case S_GZ_HEADER:
+            rc = gz_header(d, z);
+            gz_member_start(d, z);
+            break;
+        case S_GZ_NEXT: {
+            // Another member, or the end: what follows that is not a
+            // member's magic is ignored.
+            int b = lsb_byte(in);
+            if (b < 0) {
+                z->state = S_DONE;
                 break;
+            }
+            int b2 = b == 0x1F ? lsb_byte(in) : -1;
+            if (b2 != 0x8B) {
+                z->state = S_DONE;
+                break;
+            }
+            z->magic_read = true; // the header's first two bytes
+            z->state = S_GZ_HEADER;
+            break;
         }
-        align_byte(&w);
+        case S_ZLIB_HEADER: {
+            // RFC 1950 § 2.2: CM 8, header a multiple of 31, no preset dictionary.
+            lsb_fill(in);
+            uint32_t cmf = lsb_get(in, 8), flg = lsb_get(in, 8);
+            if (codec_in_overrun(in))
+                rc = codec_fail(d, CODEC_ERR_TRUNCATED, "zlib: truncated header");
+            else if ((cmf & 0x0F) != 8 || (cmf << 8 | flg) % 31 != 0 || (flg & 0x20))
+                rc = codec_fail(d, CODEC_ERR_DATA, "zlib: bad header");
+            z->state = S_BLOCK;
+            break;
+        }
+        case S_BLOCK:
+            rc = block_header(d, z);
+            break;
+        case S_STORED: {
+            if (z->stored_left == 0) {
+                z->state = z->last ? (z->wrap != W_RAW ? S_TRAILER : S_DONE) : S_BLOCK;
+                break;
+            }
+            size_t room = ring_room(r);
+            if (room == 0)
+                goto more;
+            // Straight into the ring, in up to two pieces.
+            size_t want = z->stored_left < room ? z->stored_left : room;
+            size_t k = r->size - r->w < want ? r->size - r->w : want;
+            size_t got = lsb_read(in, r->buf + r->w, k);
+            r->w += got;
+            if (r->w == r->size)
+                r->w = 0;
+            r->total += got;
+            z->stored_left -= (uint32_t)got;
+            if (got < k)
+                rc = codec_fail(d, CODEC_ERR_TRUNCATED, "deflate: truncated stored block");
+            break;
+        }
+        case S_HUFF:
+            if (!codec_room_for(d, INF_MATCH_MAX))
+                goto more;
+            rc = huff_run(d, z);
+            if (rc == 0 && z->state == S_HUFF)
+                goto more; // the ring is full
+            break;
+        case S_TRAILER: {
+            sum_update(d, z);
+            lsb_align(in);
+            if (z->wrap == W_ZLIB) {
+                // The Adler-32, when the stream carries it: some writers
+                // stop right after the final block.
+                uint8_t t[4];
+                size_t got = lsb_read(in, t, 4);
+                if (got == 4 && codec_be32(t) != z->sum)
+                    rc = codec_fail(d, CODEC_ERR_CHECKSUM, "zlib: Adler-32 mismatch");
+                else if (got != 0 && got != 4)
+                    rc = codec_fail(d, CODEC_ERR_TRUNCATED, "zlib: truncated Adler-32");
+                z->state = S_DONE;
+                break;
+            }
+            // gzip: the member's CRC-32 and size mod 2^32.
+            uint8_t t[8];
+            if (lsb_read(in, t, 8) != 8)
+                rc = codec_fail(d, CODEC_ERR_TRUNCATED, "gzip: truncated trailer");
+            else if (codec_le32(t) != z->sum)
+                rc = codec_fail(d, CODEC_ERR_CHECKSUM, "gzip: CRC-32 mismatch");
+            else if (codec_le32(t + 4) != (uint32_t)(r->total - z->member_at))
+                rc = codec_fail(d, CODEC_ERR_CHECKSUM, "gzip: size mismatch");
+            z->state = S_GZ_NEXT;
+            break;
+        }
+        case S_DONE:
+            break;
+        }
     }
-    zenc_delete(own);
-    if (w.pos + 4 > cap)
-        return -1;
-    uint32_t adler = codec_adler32(1, in, len);
-    out[w.pos++] = (uint8_t)(adler >> 24);
-    out[w.pos++] = (uint8_t)(adler >> 16);
-    out[w.pos++] = (uint8_t)(adler >> 8);
-    out[w.pos++] = (uint8_t)adler;
-    return (long)w.pos;
+    if (rc < 0)
+        return rc;
+    lsb_align(in); // a container's trailer follows on a byte boundary
+    return CODEC_END;
+more:
+    if (z->wrap != W_RAW)
+        sum_update(d, z);
+    return CODEC_MORE;
 }
 
-// ============================================================================
-// The encoder
-// ============================================================================
-
-static int zenc_init(codec_enc_t *e, size_t max_len) {
-    e->st = zenc_new(max_len);
-    return e->st ? 0 : CODEC_ERR_NOMEM;
+static int inf_init_common(codec_dec_t *d, inf_wrap_t wrap) {
+    inf_t *z = d->st;
+    z->wrap = wrap;
+    z->state = wrap == W_ZLIB ? S_ZLIB_HEADER : wrap == W_GZIP ? S_GZ_HEADER : S_BLOCK;
+    z->sum = wrap == W_ZLIB ? 1 : 0;
+    return 0;
 }
 
-static int64_t zenc_run(codec_enc_t *e, const uint8_t *in, size_t len, uint8_t *out, size_t cap) {
-    long n = zlib_deflate(e->st, in, len, out, cap, e->level);
-    return n < 0 ? CODEC_ERR_OVERFLOW : (int64_t)n;
+static int inf_init(codec_dec_t *d) {
+    return inf_init_common(d, W_RAW);
 }
 
-static void zenc_free(codec_enc_t *e) {
-    zenc_delete(e->st);
-    e->st = NULL;
+static int zlib_init(codec_dec_t *d) {
+    return inf_init_common(d, W_ZLIB);
 }
 
-const codec_enc_ops_t codec_zlib_enc = {zenc_init, zenc_run, zenc_free, zenc_bound, 1};
+static int gzip_init(codec_dec_t *d) {
+    return inf_init_common(d, W_GZIP);
+}
+
+#define INF_OPS(init_fn)                                                                                               \
+    {.state_size = sizeof(inf_t), .window = INF_WINDOW, .burst = INF_MATCH_MAX, .init = init_fn, .fill = inf_fill}
+const codec_dec_ops_t codec_deflate_dec = INF_OPS(inf_init);
+const codec_dec_ops_t codec_zlib_dec = INF_OPS(zlib_init);
+const codec_dec_ops_t codec_gzip_dec = INF_OPS(gzip_init);

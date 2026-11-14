@@ -545,7 +545,7 @@ TEST(test_inflate_resumes_at_every_output_boundary) {
     static const size_t caps[] = {1, 2, 3, 5, 7, 11, 64, 257, 258, 259, 1000, 4093};
     for (size_t c = 0; c < sizeof(caps) / sizeof(caps[0]); c++) {
         dz_mem_t m = {z, clen, 0};
-        codec_dec_opts_t o = {.pull = dz_pull, .pull_ctx = &m, .out_len = CODEC_LEN_UNKNOWN};
+        codec_dec_opts_t o = {.in.pull = dz_pull, .in.ctx = &m, .out_len = CODEC_LEN_UNKNOWN};
         codec_dec_t *inf = codec_dec_new(CODEC_DEFLATE, &o, NULL);
         ASSERT_TRUE(inf != NULL);
         uint8_t *out = malloc(n);

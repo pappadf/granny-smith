@@ -1184,29 +1184,29 @@ TEST(test_sit_fork_crc_is_checked_when_complete) {
     free(wrong);
 }
 
-// Drive a producer one byte at a time, then in odd sizes, and compare
+// Drive a fork's decoder one byte at a time, then in odd sizes, and compare
 // with what a full decode gives.
-static void drive_by_bytes(peel_producer_t *p, const uint8_t *want, size_t n) {
+static void drive_by_bytes(codec_dec_t *p, const uint8_t *want, size_t n) {
     uint8_t *got = malloc(n ? n : 1);
     size_t at = 0;
     int rc = 0;
     static const size_t caps[] = {1, 1, 1, 2, 3, 5, 7, 13, 100, 1};
     for (int k = 0; rc == 0; k++) {
         size_t step = caps[k % 10], cap = n - at < step ? n - at : step, m = 0;
-        rc = p->run(p, got + at, cap ? cap : 1, &m);
+        rc = codec_dec_run(p, got + at, cap ? cap : 1, &m);
         ASSERT_TRUE(rc >= 0);
         ASSERT_TRUE(m <= cap);
         at += m;
     }
     ASSERT_EQ_INT((int)n, (int)at);
     ASSERT_TRUE(memcmp(got, want, n) == 0);
-    p->free(p);
+    codec_dec_free(p);
     free(got);
 }
 
 // Compact Pro (LZH under RLE) stops wherever the buffer fills and resumes
 // there, mid-match included.
-TEST(test_cpt_producer_resumes_byte_by_byte) {
+TEST(test_cpt_decoder_resumes_byte_by_byte) {
     cpt_writer w = {0};
     cptw_tables(&w);
     size_t n = 0;
@@ -1231,7 +1231,7 @@ TEST(test_cpt_producer_resumes_byte_by_byte) {
     peel_archive_t *ar = peel_open(src, NULL, NULL, &err);
     ASSERT_TRUE(ar != NULL && err == NULL);
     ASSERT_EQ_INT(PEEL_TIER_EARNED, peel_entry(ar, 0)->data_tier);
-    peel_producer_t *p = ar->fmt->producer(ar, 0, PEEL_FORK_DATA, &err);
+    codec_dec_t *p = ar->fmt->decoder(ar, 0, PEEL_FORK_DATA, &err);
     ASSERT_TRUE(p != NULL);
     drive_by_bytes(p, want, n);
     peel_close(ar);
@@ -1275,7 +1275,7 @@ int main(void) {
     RUN(test_sit5_lzw_widening_and_clear);
     RUN(test_sit_fork_decodes_progressively);
     RUN(test_sit_fork_crc_is_checked_when_complete);
-    RUN(test_cpt_producer_resumes_byte_by_byte);
+    RUN(test_cpt_decoder_resumes_byte_by_byte);
     zipgz_tests();
     fprintf(stderr, "All peeler tests passed\n");
     return 0;
