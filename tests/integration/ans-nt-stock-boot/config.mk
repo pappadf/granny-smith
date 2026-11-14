@@ -2,15 +2,15 @@
 # with the production ROM (Open Firmware 1.1.22)
 #
 # The disk ans-nt-install produces, from cold, on the ROM every Network
-# Server shipped with: the powermac-nt-hal boot floppy's setup.of and
-# bootdisk.of, NT's kernel on that project's HAL, the logon screen, and a
+# Server shipped with: the powermac-nt-hal boot floppy's bootdisk.of
+# (nothing in NVRAM), NT's kernel on that project's HAL, the logon screen, and a
 # logon from the ADB keyboard.  ans-nt-installed-boot is the same on the
 # 2.26NT ROM; see test.script for why both exist.
 #
 # THE MEDIA IS IN gs-test-data: the installed disk
 # (systems/winnt_4_0_ppc_ans_512mb_hal5663262.img.7z, with powermac-nt-hal
-# 5663262's HAL) and the floppy (systems/ans_nt_boot_floppy_5663262.img.7z,
-# nothing of Microsoft's on it), from gs-test-data bc9af37 onward.  At an
+# 5663262's HAL) and the floppy (systems/ans_nt_boot_floppy_9b7f7b7.img.7z,
+# nothing of Microsoft's on it), from gs-test-data 065c46e onward.  At an
 # older pin the row SKIPS.
 
 TEST_NAME := ANS Windows NT installed boot, production ROM
