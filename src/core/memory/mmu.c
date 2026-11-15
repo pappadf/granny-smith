@@ -279,9 +279,11 @@ static const char *mmu_dt_name(uint32_t dt) {
 // `root_ptr` is the root pointer the search starts from (`root_name` names it
 // for the trace): the caller picks it, so a walk against a root other than the
 // live CRP/SRP never has to modify the MMU state.
+// max_levels bounds the search at that many descriptor fetches (PTEST's level
+// field, 1-7); 0 walks to the page descriptor.
 static mmu_walk_result_t mmu_table_walk_from(mmu_state_t *mmu, uint64_t root_ptr, const char *root_name,
                                              uint32_t logical_addr, bool write, bool supervisor, bool update_um,
-                                             mmu_trace_t *trace) {
+                                             mmu_trace_t *trace, int max_levels) {
     mmu_walk_result_t result = {0};
     result.valid = false;
     result.mmusr = 0;
@@ -576,6 +578,20 @@ static mmu_walk_result_t mmu_table_walk_from(mmu_state_t *mmu, uint64_t root_ptr
             limit_value = (desc_hi >> 16) & 0x7FFF;
         }
         long_desc = (dt == DESC_DT_TABLE8);
+
+        // A level-limited PTEST stops here: MC68030UM Table 9-3 (PTEST, level
+        // 1-7) -- the search ends after `level` descriptors, N reports how many
+        // were fetched, and W/S carry what the search accumulated so far.  The
+        // A-register output is then this table descriptor's address, which is
+        // how Penguin (MMU_V2's Get030_PTE) finds a page descriptor's parent.
+        if (max_levels > 0 && levels_walked >= max_levels) {
+            if (acc_wp)
+                result.mmusr |= MMUSR_W;
+            if (acc_s)
+                result.mmusr |= MMUSR_S;
+            result.mmusr |= (levels_walked & 7);
+            return result;
+        }
     }
 
     // Ran out of table levels without finding a page descriptor.
@@ -594,7 +610,7 @@ static inline mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logica
                                                bool update_um, mmu_trace_t *trace) {
     bool use_srp = TC_SRE(mmu->tc) && supervisor;
     return mmu_table_walk_from(mmu, use_srp ? mmu->srp : mmu->crp, use_srp ? "srp" : "crp", logical_addr, write,
-                               supervisor, update_um, trace);
+                               supervisor, update_um, trace, 0);
 }
 
 // ============================================================================
@@ -730,8 +746,18 @@ void mmu_host_regions_fill_pages(mmu_state_t *mmu, mmu_fill_page_fn fill, bool m
                     alias_bytes = r->size;
                 uint32_t alias_pages = alias_bytes >> MEM_PAGE_SHIFT;
                 uint32_t start24 = ((uint32_t)slot << 20) >> MEM_PAGE_SHIFT; // $00s00000
+                // Installed RAM wins.  The window only exists where nothing
+                // else decodes: with more than 9 MB in the low bank, $00s00000
+                // is RAM to the memory controller, which is how 32-bit Mac OS,
+                // A/UX and Linux use it.  (24-bit mode addresses 8 MB of RAM
+                // at most, so the window it needs is never under RAM.)  Laid
+                // over RAM, it handed a 16 MB IIci's $00C00000-$00CFFFFF to a
+                // display card in slot $C: Linux put process stacks there and
+                // they filled with the desktop pattern.
+                uint32_t ram_pages = mmu->physical_ram_size >> MEM_PAGE_SHIFT;
                 for (uint32_t p = 0; p < alias_pages && start24 + p < g_page_count; p++)
-                    fill(start24 + p, r->host + (p << MEM_PAGE_SHIFT), true);
+                    if (start24 + p >= ram_pages)
+                        fill(start24 + p, r->host + (p << MEM_PAGE_SHIFT), true);
             }
         }
     }
@@ -953,7 +979,16 @@ static bool mmu_handle_fault_internal(mmu_state_t *mmu, uint32_t logical_addr, b
     // Leaving mmu->mmusr stale (only mmu_test_address updated it) caused
     // the kernel to misclassify every fault as the previous PTEST's
     // condition and never reach the right page-allocator branch.
-    if (mmu)
+    //
+    // Only a walk that FAILS publishes: a fault handler reads the status of
+    // the access that faulted, and a successful walk -- any translation miss
+    // filled in an interrupt handler -- must not overwrite the status a
+    // kernel is between producing and reading.  Linux's bus_error030 does
+    // `PTESTR #1,(A3),#7; PMOVE MMUSR,(A0)`; an interrupt between the two
+    // replaced the PTEST's I with the interrupt's own successful walk, and
+    // the kernel reported a "weird read access" and killed the process.
+    bool walk_faults = !result.valid || (result.supervisor_only && !supervisor) || (result.write_protected && write);
+    if (mmu && walk_faults)
         mmu->mmusr = result.mmusr;
 
     if (!result.valid) {
@@ -1037,18 +1072,28 @@ bool mmu_pload(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool supervi
 // PTEST: test address translation without faulting
 uint16_t mmu_test_address(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool supervisor,
                           uint32_t *desc_addr_out) {
+    return mmu_ptest(mmu, logical_addr, write, supervisor, 0, desc_addr_out);
+}
+
+uint16_t mmu_ptest(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool supervisor, unsigned level,
+                   uint32_t *desc_addr_out) {
     if (desc_addr_out)
         *desc_addr_out = 0;
     if (!mmu)
         return MMUSR_I;
 
-    // Check transparent translation first
-    if (mmu->enabled && mmu_check_tt(mmu, logical_addr, write, supervisor)) {
+    // Transparent translation applies to the level-0 (ATC) form only.
+    // MC68030UM Table 9-3, T bit: "PTEST, Level 0 -- This bit is set if a
+    // match occurred in either (or both) of the transparent translation
+    // registers"; "PTEST, Level 1-7 -- This bit is set to zero": a table
+    // search ignores TT0/TT1.  Penguin relies on it: it opens TT1 over all of
+    // FC 1 so MOVES can read the tables, then PTESTs with FC 1 at level 7.
+    if (level == 0 && mmu->enabled && mmu_check_tt(mmu, logical_addr, write, supervisor)) {
         mmu->mmusr = MMUSR_T;
         return MMUSR_T;
     }
 
-    if (!mmu->enabled) {
+    if (!mmu->enabled && level == 0) {
         // MMU disabled: identity mapping, no faults
         mmu->mmusr = 0;
         return 0;
@@ -1058,8 +1103,12 @@ uint16_t mmu_test_address(mmu_state_t *mmu, uint32_t logical_addr, bool write, b
     // the instruction "alters neither the used or modified bits of the
     // translation tables nor the address translation cache", so update_um is
     // false -- the opposite default from the 68040, whose PTEST does update
-    // them (MC68040UM 3.7.3).
-    mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, write, supervisor, /*update_um=*/false, NULL);
+    // them (MC68040UM 3.7.3).  The level-0 form has no ATC model to search, so
+    // it walks the whole tree as the ATC would have been loaded from them.
+    bool use_srp = TC_SRE(mmu->tc) && supervisor;
+    mmu_walk_result_t result =
+        mmu_table_walk_from(mmu, use_srp ? mmu->srp : mmu->crp, use_srp ? "srp" : "crp", logical_addr, write,
+                            supervisor, /*update_um=*/false, NULL, (int)(level & 7u));
 
     mmu->mmusr = result.mmusr;
     if (desc_addr_out)
@@ -1192,7 +1241,7 @@ bool mmu_translate_with_crp(mmu_state_t *mmu, uint32_t logical_addr, uint64_t cr
     // User-mode walk from the supplied root.  The walk reads guest tables
     // via phys_to_host but does not touch the SoA arrays.
     mmu_walk_result_t result = mmu_table_walk_from(mmu, crp_root, "crp", logical_addr, false, /*supervisor=*/false,
-                                                   /*update_um=*/false, NULL);
+                                                   /*update_um=*/false, NULL, 0);
     if (!result.valid)
         return false;
     *pa_out = result.physical_addr;

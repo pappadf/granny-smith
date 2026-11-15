@@ -365,7 +365,7 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
         uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
         if (mmu) {
             uint32_t desc_addr = 0;
-            uint16_t status = mmu_test_address(mmu, ea, write, fc_supervisor, &desc_addr);
+            uint16_t status = mmu_ptest(mmu, ea, write, fc_supervisor, level, &desc_addr);
             mmu->mmusr = status;
             // A-reg output: per MC68030UM, when the A-reg field is specified,
             // the CPU writes the physical address of the last descriptor

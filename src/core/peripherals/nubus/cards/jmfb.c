@@ -283,7 +283,21 @@ static uint32_t io_peek32(void *dev, uint32_t addr) {
 static void io_write16(void *dev, uint32_t addr, uint16_t val);
 
 static void io_write8(void *dev, uint32_t addr, uint8_t val) {
-    // Same treatment as io_read8 — promote to a 16-bit write.
+    jmfb_priv_t *p = dev;
+    uint32_t off;
+    // A byte store anywhere in the CLUT address register's long slot loads
+    // the palette index.  Linux's macfb (mdc_setpalette, unchanged from 2.2
+    // to 6.x) writes the index as one byte at slot+$200200 -- the slot's
+    // high lane -- and the data bytes at slot+$200207; promoted to a
+    // high-half word, the index was dropped, every X palette entry landed
+    // at a stale index, and an X session on a Display Card 8*24 came up
+    // black on black.
+    if (classify(addr, p->slot_base, &off) == JMFB_BLK_CLUT && (off & ~3u) == CLUTAddrReg) {
+        p->regs.clut_idx = val;
+        p->regs.clut_phase = 0;
+        return;
+    }
+    // Otherwise the same treatment as io_read8 — promote to a 16-bit write.
     io_write16(dev, addr & ~1u, (uint16_t)((uint16_t)val | ((uint16_t)val << 8)));
 }
 
