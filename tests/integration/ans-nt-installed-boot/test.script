@@ -5,19 +5,20 @@
 # both complete, Administrator with no password), and the boot is the one
 # the powermac-nt-hal wiki gives a person: at `0 >`,
 #
-#   load fd:,\setup.of       once per machine: little-endian mode, reset
 #   load fd:,\bootdisk.of    powermac-nt-hal's ARC firmware (arcfw), the
 #                            ARC environment on /options, /chosen bootpath
 #                            at the disk, go
 #
-# each followed by `load-base loadsize eval`.  No CD: an installed system
-# needs none.
+# followed by `load-base loadsize eval`.  Nothing is configured first: the
+# firmware stays in its factory big-endian mode, nothing is stored in NVRAM,
+# and the floppy's stage0 switches the machine to little-endian itself.  No
+# CD: an installed system needs none.
 #
 # THE RUNGS:
 #
 #   B1  the 2.26NT firmware reaches `0 >` on ttya (ans-nt-stock-boot: the same
 #       rungs on the production 1.1.22 ROM)
-#   B2  setup.of switches to little-endian and the machine comes back
+#   B2  the firmware is big-endian and little-endian? is false, as shipped
 #   B3  bootdisk.of starts arcfw, OSLOADER loads the kernel, and NT
 #       runs on the HAL: the ADB driver connects NT's keyboard and mouse
 #       classes, and the boot volume is D: with the system in D:\WINNT
@@ -42,12 +43,12 @@ include "../lib/nt.script"
 
 let nt_rom = "../../data/roms/ans500-ans700-2.26nt-962f6c13-50348b3d0126096b.rom"
 let nt_disk = "../../data/systems/winnt_4_0_ppc_ans_512mb_hal5663262.img"
-let nt_floppy = "../../data/systems/ans_nt_boot_floppy_5663262.img"
+let nt_floppy = "../../data/systems/ans_nt_boot_floppy_9b7f7b7.img"
 
 if have_media($nt_rom) && have_media($nt_disk) && have_media($nt_floppy) {
     nt_installed_boot_rungs($nt_rom, $nt_disk, $nt_floppy, "ans-nt-installed-boot", "nt-logon.png", "nt-logon-information.png", "nt-desktop.png")
 } else {
-    skip_test("ans-nt-installed-boot (the 2.26NT ROM, the installed NT disk or the boot floppy is not in tests/data -- gs-test-data bc9af37 or later; run scripts/fetch-test-data.sh)")
+    skip_test("ans-nt-installed-boot (the 2.26NT ROM, the installed NT disk or the boot floppy is not in tests/data -- gs-test-data 065c46e or later; run scripts/fetch-test-data.sh)")
 }
 
 quit
