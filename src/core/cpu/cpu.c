@@ -519,6 +519,8 @@ void cpu_attach_mmu_node(cpu_t *cpu, const class_desc_t *cls, void *data) {
 void cpu_delete(cpu_t *cpu) {
     if (!cpu)
         return;
+    if (g_bus_fault_regfile == cpu->d)
+        g_bus_fault_regfile = NULL; // set per sprint by cpu_run_sprint
     if (cpu->mmu_object) {
         object_detach(cpu->mmu_object);
         object_delete(cpu->mmu_object);
@@ -743,8 +745,16 @@ cpu_debug_if_t cpu_debug_if(cpu_t *cpu) {
     return dif;
 }
 
-// Run the appropriate decoder for the CPU model
+// Run the appropriate decoder for the CPU model.
+//
+// The PMMU cores' register file is published to the memory slow paths here,
+// outside the decoders (exception_bus_error_retry restores from the copy they
+// take when a fault latches).  Storing cpu->d into a global inside a decoder
+// lets the register file escape there: the compiler then reloads every cached
+// register after each opaque call, which cost the decoders 2-5 % of their host
+// instructions per guest instruction (the bench gate's metric A).
 void cpu_run_sprint(cpu_t *restrict cpu, uint32_t *instructions) {
+    g_bus_fault_regfile = cpu->cpu_model == CPU_MODEL_68000 ? NULL : cpu->d; // d[8] then a[8]
     if (cpu->cpu_model == CPU_MODEL_68040)
         cpu_run_68040(cpu, instructions);
     else if (cpu->cpu_model == CPU_MODEL_68030)

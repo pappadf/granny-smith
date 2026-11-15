@@ -104,11 +104,14 @@ uint8_t g_m68k_fault_ccr;
 uint32_t *g_bus_fault_regfile = NULL; // see memory.h
 uint32_t g_bus_fault_regs[16];
 bool g_bus_fault_regs_valid = false;
+unsigned g_bus_fault_size = 0;
 
-// Copy the running 68K's register file as it stands at a latched MMU fault.
-static inline void bus_fault_snapshot_regs(void) {
+// Copy the running 68K's register file as it stands at a latched MMU fault,
+// with the faulting access's width.
+static inline void bus_fault_snapshot_regs(unsigned size) {
     if (g_bus_fault_regfile) {
         memcpy(g_bus_fault_regs, g_bus_fault_regfile, sizeof g_bus_fault_regs);
+        g_bus_fault_size = size;
         g_bus_fault_regs_valid = true;
     }
 }
@@ -1159,7 +1162,7 @@ static inline __attribute__((always_inline)) uint32_t read_slow_n(uint32_t addr,
             g_bus_error_address = addr;
             g_bus_error_rw = true; // read
             g_bus_error_fc = supervisor ? 5 : 1;
-            bus_fault_snapshot_regs();
+            bus_fault_snapshot_regs(size);
             memory_end_sprint(g_bus_error_instr_ptr); // force decoder loop exit
         }
         return fill; // unmapped physical reads $FF
@@ -1657,7 +1660,7 @@ static inline __attribute__((always_inline)) void write_slow_n(uint32_t addr, ui
             g_bus_error_address = addr;
             g_bus_error_rw = false; // write
             g_bus_error_fc = supervisor ? 5 : 1;
-            bus_fault_snapshot_regs();
+            bus_fault_snapshot_regs(size);
             memory_end_sprint(g_bus_error_instr_ptr); // force decoder loop exit
         }
         return;

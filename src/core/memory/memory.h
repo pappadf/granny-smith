@@ -328,13 +328,14 @@ extern bool g_bus_error_rw; // true=read, false=write
 extern uint32_t g_bus_error_fc; // FC of the faulting access (1=user-data, 5=super-data)
 extern bool g_bus_error_is_pmmu; // true=PMMU descriptor fault (retry), false=bus timeout (skip)
 extern bool g_bus_error_is_address; // 68000 only: odd-address word/long operand access (vector 3, I/N clear)
-// The 68K register file (d[8] then a[8]) of the CPU running the current
-// sprint, and a copy of it taken when the instruction's first MMU fault is
-// latched.  exception_bus_error_retry restores from the copy what the op body
-// overwrote with its garbage operand after the fault (see there).
+// The 68K register file (d[8] then a[8]) of the PMMU CPU running the current
+// sprint (set by cpu_run_sprint, NULL for the 68000), and a copy of it taken
+// when the instruction's first MMU fault is latched.  exception_bus_error_retry
+// restores from the copy what the op body changed after the fault (see there).
 extern uint32_t *g_bus_fault_regfile;
 extern uint32_t g_bus_fault_regs[16];
 extern bool g_bus_fault_regs_valid;
+extern unsigned g_bus_fault_size; // bytes of the access that faulted (with the copy)
 extern uint32_t *g_bus_error_instr_ptr; // points to decoder's instruction counter
 
 // The running sprint's state shared with the slow paths: the one channel

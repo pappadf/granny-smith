@@ -103,24 +103,17 @@ static __attribute__((noinline)) void PD_DECODE_NAME(cpu_t *restrict cpu, pd_blo
 #define PD_SP                PD_R(offsetof(cpu_t, a) + 28)
 
 // (An)+ and -(An) loads (calculate_ea semantics: the register moves before
-// the read; a faulting read puts it back, as read_ea_* does, so the PMMU
-// retry steps it once).
+// the read; a faulting read leaves it moved, as read_ea_* does today).
 #define PD_DEF_LD_INC_DEC(bits)                                                                                        \
     static inline UINT(bits) pd_ld_inc##bits(cpu_t *restrict cpu, uint8_t off) {                                       \
         uint32_t ea = PD_R(off);                                                                                       \
         PD_R(off) = ea + (bits) / 8;                                                                                   \
-        UINT(bits) v = READ##bits(ea);                                                                                 \
-        if (__builtin_expect(g_bus_error_pending, 0))                                                                  \
-            PD_R(off) = ea;                                                                                            \
-        return v;                                                                                                      \
+        return READ##bits(ea);                                                                                         \
     }                                                                                                                  \
     static inline UINT(bits) pd_ld_dec##bits(cpu_t *restrict cpu, uint8_t off) {                                       \
         uint32_t ea = PD_R(off) - (bits) / 8;                                                                          \
         PD_R(off) = ea;                                                                                                \
-        UINT(bits) v = READ##bits(ea);                                                                                 \
-        if (__builtin_expect(g_bus_error_pending, 0))                                                                  \
-            PD_R(off) = ea + (bits) / 8;                                                                               \
-        return v;                                                                                                      \
+        return READ##bits(ea);                                                                                         \
     }
 PD_DEF_LD_INC_DEC(8)
 PD_DEF_LD_INC_DEC(16)
@@ -986,7 +979,6 @@ void PD_RUN_NAME(cpu_t *restrict cpu, uint32_t *instructions) {
     // arrives with the supervisor pair selected whatever its SR says.
     cpu_select_soa(cpu->supervisor);
     g_bus_error_instr_ptr = instructions; // let memory slow paths force exit
-    g_bus_fault_regfile = cpu->d; // d[8] then a[8]: copied when an MMU fault latches
     cpu_check_interrupt(cpu);
     // The same-PC retry latch is decided here and in write_sr, never per
     // instruction (m68k_bus_error_latch_settle).

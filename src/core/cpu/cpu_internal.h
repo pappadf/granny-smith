@@ -456,9 +456,6 @@ static inline void cpu_dwrite32(cpu_t *restrict cpu, uint32_t addr, uint32_t x) 
 #endif
 
 // Read an 8-bit value from the effective address specified in the opcode.
-// A faulting read through (An)+ or -(An) leaves An where it was, as the
-// write_ea_* helpers do: a PMMU fault restarts the instruction (Format $B /
-// $7 retry), and the restart must step An once, not twice.
 // The read_ea_* helpers trust the caller's VALID_EA check (an unvalidated
 // mode would read a dummy address); validating again here would put a
 // second test on every operand read of the hot path.
@@ -470,13 +467,8 @@ static inline __attribute__((always_inline)) uint8_t read_ea_8(cpu_t *restrict c
         return cpu->d[opcode & 7];
     else if (mode == 1)
         return cpu->a[opcode & 7];
-    else {
-        uint32_t an = cpu->a[reg]; // (An)+ / -(An): put back if the read faults
-        uint8_t v = memory_read_uint8(calculate_ea(cpu, 1, mode, reg, increment));
-        if (__builtin_expect(g_bus_error_pending, 0) && (mode == 3 || mode == 4))
-            cpu->a[reg] = an;
-        return v;
-    }
+    else
+        return memory_read_uint8(calculate_ea(cpu, 1, mode, reg, increment));
 }
 
 // Read a 16-bit value from the effective address specified in the opcode
@@ -488,13 +480,8 @@ static inline __attribute__((always_inline)) uint16_t read_ea_16(cpu_t *restrict
         return cpu->d[opcode & 7];
     else if (mode == 1)
         return cpu->a[opcode & 7];
-    else {
-        uint32_t an = cpu->a[reg]; // (An)+ / -(An): put back if the read faults
-        uint16_t v = cpu_dread16(cpu, calculate_ea(cpu, 2, mode, reg, increment));
-        if (__builtin_expect(g_bus_error_pending, 0) && (mode == 3 || mode == 4))
-            cpu->a[reg] = an;
-        return v;
-    }
+    else
+        return cpu_dread16(cpu, calculate_ea(cpu, 2, mode, reg, increment));
 }
 
 // Read a 32-bit value from the effective address specified in the opcode
@@ -506,13 +493,8 @@ static inline __attribute__((always_inline)) uint32_t read_ea_32(cpu_t *restrict
         return cpu->d[opcode & 7];
     else if (mode == 1)
         return cpu->a[opcode & 7];
-    else {
-        uint32_t an = cpu->a[reg]; // (An)+ / -(An): put back if the read faults
-        uint32_t v = cpu_dread32(cpu, calculate_ea(cpu, 4, mode, reg, increment));
-        if (__builtin_expect(g_bus_error_pending, 0) && (mode == 3 || mode == 4))
-            cpu->a[reg] = an;
-        return v;
-    }
+    else
+        return cpu_dread32(cpu, calculate_ea(cpu, 4, mode, reg, increment));
 }
 
 // Write an 8-bit value to the effective address specified by mode and register
@@ -1014,17 +996,34 @@ static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *res
     //   - the destination of MOVEA/ADDA/SUBA, which ld.so and libc read in
     //     their own effective address or sum (SUBA.L 32(A5),A0 left A0 one
     //     off; MOVEA.L (0,A0,D2.L*4),A0 retried from A0 = $FFFFFFFF).
-    // Other address registers stay as the op body left them: an (An)+ or
-    // -(An) step is rolled back by the access helpers themselves.
+    //   - an address register the instruction stepped or moved before the
+    //     faulting access, recognised by its value in the copy against the
+    //     faulting address and the access width: the <ea> operand's (An)+
+    //     (An = addr + size) or -(An) (An = addr) on a data read.  (RTS/RTD,
+    //     LINK and UNLK commit SP/An only after their access succeeds.)
+    // All of it is done here, on the cold path: an "undo if the access
+    // faulted" test after every operand read cost the decoders 1-3 % of their
+    // host instructions (the bench gate's metric A).  The write_ea_* helpers
+    // still roll back their own destination step.
     if (g_bus_fault_regs_valid) {
         g_bus_fault_regs_valid = false;
-        memcpy(cpu->d, g_bus_fault_regs, 8 * sizeof(uint32_t));
+        const uint32_t *snap = g_bus_fault_regs; // d[8] then a[8], at the fault
+        memcpy(cpu->d, snap, 8 * sizeof(uint32_t));
         uint16_t op = memory_debug_read_uint16(faulting_pc);
         unsigned an = (op >> 9) & 7u;
         bool movea = (op & 0xE1C0u) == 0x2040u; // 0010/0011 rrr 001 <ea>: MOVEA.L / MOVEA.W
         bool adda_suba = (op & 0xB0C0u) == 0x90C0u; // 1101/1001 rrr s11 <ea>
         if (movea || adda_suba)
-            cpu->a[an] = g_bus_fault_regs[8 + an];
+            cpu->a[an] = snap[8 + an];
+        unsigned r = op & 7u;
+        if (rw && fault_addr - faulting_pc >= 22u) { // a data read through <ea>'s (An)+ / -(An)
+            unsigned mode = (op >> 3) & 7u;
+            uint32_t step = (g_bus_fault_size == 1 && r == 7) ? 2 : g_bus_fault_size;
+            if (mode == 3 && snap[8 + r] - fault_addr == step)
+                cpu->a[r] = fault_addr;
+            else if (mode == 4 && snap[8 + r] == fault_addr)
+                cpu->a[r] = fault_addr + step;
+        }
     }
     uint16_t saved_sr = cpu_get_sr(cpu);
     uint32_t saved_pc = faulting_pc; // retry: RTE restarts the instruction
