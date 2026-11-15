@@ -333,6 +333,17 @@ typedef struct tnt_fdring {
     uint32_t head, tail; // free-running; count = tail - head
 } tnt_fdring_t;
 
+// The MACE Ethernet's register state (tnt_mace.c).  Plain data,
+// checkpointed whole.
+typedef struct tnt_mace {
+    uint8_t ir, imr, xmtfs;
+    uint8_t biucc, fifocc, maccc, plscc, phycc, iac, utr;
+    uint8_t padr[6], ladrf[8];
+    uint8_t addr_idx; // IAC byte pointer into PADR / LADRF
+    uint32_t tx_bytes; // bytes of the frame in flight on channel 2
+    uint32_t tx_frames; // frames sent into the void (diagnostic)
+} tnt_mace_t;
+
 // === Family state ===========================================================
 typedef struct tnt_state {
     tnt_hammerhead_t hh;
@@ -363,6 +374,9 @@ typedef struct tnt_state {
     // re-bound after a restore (tnt_swim3_bind).
     swim3_t swim3;
     tnt_fdring_t fdring;
+    // The on-board MACE Ethernet at +$11000 (tnt_mace.c), Macintosh boards
+    // only; checkpointed in the tnt.io part after the floppy ring.
+    tnt_mace_t mace;
     tnt_scc_dma_ctx_t scc_dma_ctx[2]; // the ESCC DBDMA ports' contexts (rebuilt at init)
     // The Network Server's GBUS island (gbus.c / lcd.c).  Built only for
     // TNT_BOARD_SHINER; inert and unread on the Macintosh boards.
@@ -489,6 +503,17 @@ uint8_t tnt_swim3_read(config_t *cfg, uint32_t off); // off from +$15000
 // The same register without the read's side effects (an inspection).
 uint8_t tnt_swim3_peek(config_t *cfg, uint32_t off);
 void tnt_swim3_write(config_t *cfg, uint32_t off, uint8_t value);
+
+// === tnt_mace.c =============================================================
+// The MACE Ethernet: Grand Central +$11000 on $10 centres, interrupt 14,
+// transmit on DBDMA channel 2 and receive on channel 3, no wire behind it
+// (transmitted frames complete and vanish; nothing is received).  init
+// attaches the two channel ports (after dbdma_init).
+void tnt_mace_init(config_t *cfg);
+void tnt_mace_reset(config_t *cfg);
+uint8_t tnt_mace_read(config_t *cfg, uint32_t off); // off from +$11000
+uint8_t tnt_mace_peek(config_t *cfg, uint32_t off); // no read-to-clear
+void tnt_mace_write(config_t *cfg, uint32_t off, uint8_t value);
 // Island access for the +$18000 block (byte registers on $10 centres).
 
 // === control.c ==============================================================

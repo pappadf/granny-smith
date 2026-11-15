@@ -85,6 +85,10 @@ typedef struct mesh {
     void *irq_ctx;
     mesh_dbdma_kick_cb dbdma_kick;
     void *dbdma_ctx;
+    // Called (with dbdma_ctx) on every interrupt-register change: the
+    // interrupt bits are the channel's s-bits (mesh_dbdma_s_bits), so a
+    // channel held by a WAIT on them must re-evaluate.
+    mesh_dbdma_kick_cb dbdma_status_kick;
 } mesh_t;
 
 mesh_t *mesh_init(struct scheduler *sched, checkpoint_t *cp);
@@ -111,5 +115,13 @@ void mesh_reset(mesh_t *m);
 
 int mesh_port_in(void *ctx, uint8_t *buf, int len);
 int mesh_port_out(void *ctx, const uint8_t *buf, int len);
+
+// Channel-10 DBDMA s-bits (dbdma_port_t.s_bits): s7/s6/s5 are the
+// interrupt register's error/exception/command-done bits, inverted.
+uint8_t mesh_dbdma_s_bits(void *ctx);
+
+// Install the s-bit change hook (see mesh_t.dbdma_status_kick); uses the
+// context given to mesh_set_dbdma_kick.
+void mesh_set_dbdma_status_kick(mesh_t *m, mesh_dbdma_kick_cb cb);
 
 #endif // SCSI_MESH_H

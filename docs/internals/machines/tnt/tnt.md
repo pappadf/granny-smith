@@ -133,10 +133,18 @@ The board model is the chipset skeleton plus the DMA architecture:
   (`+$15000`, swim3.c) is the shared floppy controller on DBDMA channel 1;
   the internal MESH SCSI (`+$18000`, `scsi_mesh.c` — DATA OUT, programmed
   or DMA, ends in a phase mismatch when the target takes fewer bytes than
-  the count; absent on the Network Servers) and the external 53C94 chain
-  (`+$10000`) are
-  modelled, and the MACE aperture (`+$11000`) logs and reads open bus
-  until it is.  (Reference:
+  the count; message-out, command, status and message-in also run over
+  DMA, DMA data-out is paced by REQ, a STATUS/MSGIN phase mismatch also
+  raises CMDDONE, and channel 10's s-bits carry s7 no-error, s6
+  no-exception and s5 sequence-running for DBDMA conditions — Rhapsody
+  DR2's driver uses all of these; absent on the Network Servers) and the
+  external 53C94 chain (`+$10000`) are modelled.  The MACE Ethernet
+  (`+$11000`, `tnt_mace.c`; Mac boards only) has no wire behind it: a
+  frame on DBDMA channel 2 is dropped and completes as a good
+  transmission (XMTFS = XMTSV, XMTINT), and nothing is ever received —
+  enough for Rhapsody DR2, Open Firmware and MkLinux, whose drivers
+  transmit as soon as the interface comes up and hung on a stalled
+  channel.  (Reference:
   [grand-central.md](../../../reference/machines/tnt/grand-central.md)
   §2.1 for the window and its decode law, §2.2 for the interrupt block,
   §2.5 for the device apertures.)
@@ -158,7 +166,14 @@ The board model is the chipset skeleton plus the DMA architecture:
   refetched rather than cached (the operation-word commit rule; STOP
   parks *on* its descriptor so the overwrite-and-WAKE ring idiom works),
   and `resCount`/`xferStatus` write-back is guest-visible *before* the
-  channel interrupt.  Every completed command but STOP writes its result
+  channel interrupt.  The WAIT modifier is evaluated at command
+  *completion*, after the command has done its work and before its
+  branch, write-back and interrupt (CHRP I/O Device Reference
+  §15.4.5–§15.4.7): a held command is not re-run when the wait clears,
+  so a STORE_QUAD to MESH's sequence register issues the sequence once
+  (Rhapsody DR2 stores with a wait on "sequence running").  A device
+  kick raised from inside the channel's own command does not re-enter
+  the channel.  Every completed command but STOP writes its result
   word, interrupt or not — the active bit in `xferStatus` is the done
   flag drivers poll (MacTest Pro's codec control test runs a STORE_QUAD
   with no interrupt and waits for it).  STORE_QUAD/LOAD_QUAD are one bus
@@ -261,8 +276,13 @@ Four little-endian registers at `+$20` Events (edge-latched) / `+$24`
 Mask / `+$28` Clear / `+$2C` Levels (live), with **two clear modes**
 selected by Clear-write bit 31 (`ifMode1Clear`):
 
-- **Mode 0** (power-on; the MkLinux scheme): the CPU line is
-  combinational `(events | levels) & mask`; Events clear by explicit W1C.
+- **Mode 0** (power-on; the MkLinux scheme): the CPU line follows the
+  edge-latched Events, `events & mask`; Events clear by explicit W1C,
+  which drops the line even while the source's level stays up.  Rhapsody
+  DR2 acknowledges the 53C94's interrupt this way and services the chip
+  later from its driver thread; a line that also followed Levels
+  stormed (livelocked) there.  The source's next assertion is a new
+  edge.
 - **Mode 1** (the NanoKernel's scheme): the line is an **output latch**,
   and the scheme is **interrupt-on-CHANGE** (the AMIC INTMODE=1 law) —
   set by any change of an enabled level source (assertion OR
@@ -300,9 +320,9 @@ firmware beep played (Open Firmware polls), the 68k startup chime and
 every later sound — alert beeps, the Sound control panel, Quake — were
 silence.  With levels, all of them play (`tests/unit/suites/tnt_gc`
 `test_mode1_dbdma_level_ack`; `suite-tnt`'s disk-boot rows assert the
-chime on all three models).  For mode 0 (MkLinux/Linux) nothing changes:
-their handlers acknowledge by writing the event bits, which deasserts the
-level too.
+chime on all three models).  For mode 0 (MkLinux/Linux, Rhapsody)
+nothing changes: their handlers acknowledge by writing the event bits,
+which deasserts the level too.
 
 ### PCI slot topology
 
