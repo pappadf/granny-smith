@@ -10,7 +10,9 @@
 //
 //  1. The MkLinux initialisation sequence (mask 0 / clear-all / mask 0)
 //     and its events-driven acknowledge — clear MODE 0, where the CPU
-//     line is combinational ((events | levels) & mask).
+//     line follows the edge-latched Events (events & mask) and drops on
+//     their W1C even while a level stays up (Rhapsody DR2's dispatcher
+//     depends on it).
 //  2. The NanoKernel's $80000000 ifMode1Clear acknowledge — clear MODE 1,
 //     where the line is an output latch: set by enabled source edges (or
 //     unmask-of-pending), cleared by the acknowledge, re-asserted only
@@ -181,6 +183,21 @@ void tnt_swim3_write(config_t *cfg, uint32_t off, uint8_t value) {
     (void)value;
 }
 
+// --- MACE (machines/tnt/tnt_mace.c); the island dispatch references it ---
+uint8_t tnt_mace_read(config_t *cfg, uint32_t off) {
+    (void)cfg;
+    (void)off;
+    return 0;
+}
+uint8_t tnt_mace_peek(config_t *cfg, uint32_t off) {
+    return tnt_mace_read(cfg, off); // the stubs have no side effects to avoid
+}
+void tnt_mace_write(config_t *cfg, uint32_t off, uint8_t value) {
+    (void)cfg;
+    (void)off;
+    (void)value;
+}
+
 uint8_t tnt_lcd_read8(config_t *cfg, uint32_t offset) {
     (void)cfg;
     (void)offset;
@@ -302,8 +319,11 @@ static void reg_write(uint32_t off, uint32_t le_value) {
 // ============================================================================
 
 // The MkLinux bring-up and handler, verbatim: clear mode 0 stays in
-// effect (no bit-31 write), the line is combinational, and the handler's
-// events-driven acknowledge works.
+// effect (no bit-31 write), the line follows Events, and the handler's
+// events-driven acknowledge drops it -- also with the source's level
+// still up (Rhapsody DR2 acknowledges the 53C94's select-timeout this
+// way and services the chip later from its driver thread; a line that
+// followed the level livelocked it).
 TEST(test_mklinux_init_and_ack) {
     fixture();
     // gc_ints->mask = 0; clear = 0xffffffff; mask = 0;
@@ -317,16 +337,20 @@ TEST(test_mklinux_init_and_ack) {
     ASSERT_EQ_INT((int)(reg_read(R_EVENTS) >> TNT_INT_SCSI0) & 1, 1);
     ASSERT_EQ_INT((int)(reg_read(R_LEVELS) >> TNT_INT_SCSI0) & 1, 1);
     ASSERT_EQ_INT(s_line, 0);
-    // Unmasking makes the combinational line follow.
+    // Unmasking the latched event asserts the line.
     reg_write(R_MASK, 1u << TNT_INT_SCSI0);
     ASSERT_EQ_INT(s_line, 1);
     // The MkLinux handler: read events, write them back to clear.
     uint32_t ev = reg_read(R_EVENTS);
     reg_write(R_CLEAR, ev);
     ASSERT_EQ_INT((int)reg_read(R_EVENTS), 0);
-    ASSERT_EQ_INT(s_line, 1); // level still asserted: line stays (mode 0)
+    ASSERT_EQ_INT((int)(reg_read(R_LEVELS) >> TNT_INT_SCSI0) & 1, 1); // the level stands...
+    ASSERT_EQ_INT(s_line, 0); // ...but the acknowledged line drops (mode 0)
     tnt_gc_set_source(&s_cfg, TNT_INT_SCSI0, false);
     ASSERT_EQ_INT(s_line, 0);
+    // The source's next assertion is a new edge: it fires again.
+    tnt_gc_set_source(&s_cfg, TNT_INT_SCSI0, true);
+    ASSERT_EQ_INT(s_line, 1);
 }
 
 // Mode 0 with a pulse source: the edge latch alone holds the line until

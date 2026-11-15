@@ -140,13 +140,19 @@ void tnt_gc_recompute(config_t *cfg) {
     // fast/wide SCSI controllers and leaves their externals masked, and a
     // latch the mask could not reach held the line up for a source the
     // guest had deliberately turned off.
-    // Mode 0 (power-on; the MkLinux scheme): combinational
-    // ((events | levels) & mask), with Events cleared by explicit W1C.
+    // Mode 0 (power-on; the MkLinux and Rhapsody scheme): the line follows
+    // the edge-latched Events, gated by the mask, and drops when the guest
+    // clears them by explicit W1C -- even while a source's level is still
+    // up.  Rhapsody DR2's dispatcher reads Events, writes them back to Clear
+    // and only queues each source to its driver thread (the 53C94 handler
+    // neither masks the source nor touches the chip); a line that also
+    // followed live levels livelocked it on the 53C94's still-asserted
+    // select-timeout interrupt before the driver thread could ever run.
     bool line;
     if (gc->int_mode1)
         line = (gc->int_latch & gc->int_mask) != 0;
     else
-        line = ((gc->int_events | gc->int_levels) & gc->int_mask) != 0;
+        line = (gc->int_events & gc->int_mask) != 0;
     ppc_set_ext_irq(cfg->ppc, line);
 }
 
@@ -908,6 +914,14 @@ static uint8_t gc_access8(config_t *cfg, uint32_t offset, bool peek) {
     case OFF_SWIM3:
         // SWIM3: sixteen byte-wide registers on $10 centres (swim3.c).
         return peek ? tnt_swim3_peek(cfg, offset - OFF_SWIM3) : tnt_swim3_read(cfg, offset - OFF_SWIM3);
+    case OFF_MACE:
+        // MACE: thirty-two byte-wide registers on $10 centres (tnt_mace.c).
+        // Wired on the Macintosh boards only for now: the Network Servers
+        // carry the same cell, but their AIX/NT paths were validated
+        // against the open-bus aperture.
+        if (!tnt_board(cfg)->has_gbus)
+            return peek ? tnt_mace_peek(cfg, offset - OFF_MACE) : tnt_mace_read(cfg, offset - OFF_MACE);
+        break;
     case OFF_MESH:
         // Absent on the Network Servers (board delta #4): the aperture
         // decodes nothing, so it falls through to the open-bus log.
@@ -990,6 +1004,12 @@ void tnt_gc_write8(config_t *cfg, uint32_t offset, uint8_t value) {
     case OFF_SWIM3:
         tnt_swim3_write(cfg, offset - OFF_SWIM3, value);
         return;
+    case OFF_MACE:
+        if (!tnt_board(cfg)->has_gbus) {
+            tnt_mace_write(cfg, offset - OFF_MACE, value);
+            return;
+        }
+        break;
     case OFF_MESH:
         if (tnt_board(cfg)->has_mesh)
             mesh_write(tnt_st(cfg)->mesh, offset - OFF_MESH, value);

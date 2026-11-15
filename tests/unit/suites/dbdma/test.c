@@ -627,18 +627,26 @@ TEST(test_conditions) {
     ASSERT_EQ_INT((int)dbdma_reg_read(s_d, 0, DBDMA_REG_CMDPTRLO), 0x1030); // branched
     ASSERT_TRUE(status(0) & DBDMA_BT);
     control(0, (uint32_t)DBDMA_RUN << 16);
-    // Wait: WAIT_IFSET on s1 parks the command until the bit drops.
+    // Wait: WAIT_IFSET on s1 holds the command AT COMPLETION until the bit
+    // drops -- the command has done its work (the store landed), its
+    // completion processing has not (cmdptr stays on it), and resuming
+    // must not run it again (CHRP I/O Device Reference §15.4.5-§15.4.7;
+    // Rhapsody's MESH driver stores a sequence command with a wait on
+    // "sequence running").
     dbdma_reg_write(s_d, 0, DBDMA_REG_WAITSEL, 0x00020002);
     s_dev_sbits = 0x02;
     desc(0x4000, op(STORE_QUAD, NEVER, NEVER, IFSET, 4), 0x2000, 0x1234);
     desc(0x4010, op(STOP_CMD, NEVER, NEVER, NEVER, 0), 0, 0);
     poke32(0x2000, 0);
     start(0, 0x4000);
-    ASSERT_TRUE(status(0) & DBDMA_ACTIVE); // waiting, not executed
-    ASSERT_EQ_INT((int)peek32(0x2000), 0);
+    ASSERT_TRUE(status(0) & DBDMA_ACTIVE); // held by its wait
+    ASSERT_EQ_INT((int)peek32(0x2000), 0x1234); // the store ran first
+    ASSERT_EQ_INT((int)dbdma_reg_read(s_d, 0, DBDMA_REG_CMDPTRLO), 0x4000); // not yet complete
+    poke32(0x2000, 0); // a resumed wait must not repeat the store
     s_dev_sbits = 0; // condition clears; the device kicks
     dbdma_kick(s_d, 0);
-    ASSERT_EQ_INT((int)peek32(0x2000), 0x1234);
+    ASSERT_EQ_INT((int)peek32(0x2000), 0);
+    ASSERT_EQ_INT((int)dbdma_reg_read(s_d, 0, DBDMA_REG_CMDPTRLO), 0x4010); // completed, on the STOP
     control(0, (uint32_t)DBDMA_RUN << 16);
     // Interrupt: INTR_IFCLR on s2 — fires only while the bit is clear.
     dbdma_reg_write(s_d, 0, DBDMA_REG_INTRSEL, 0x00040004);
