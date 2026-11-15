@@ -55,7 +55,7 @@ struct nubus_card;
 #define JMFB_REG_VIDEO_BASE 0x08u // Framebuffer base (units of 32 bytes)
 #define JMFB_REG_ROW_WORDS  0x0Cu // Stride encoding (depth-dependent)
 
-#define JMFB_REG_SW_IC      0x3Cu // Interrupt/Control: SRST(b0), ENVERTI(b1)
+#define JMFB_REG_SW_IC      0x3Cu // Interrupt/Control: SRST(b0), VINT_DISABLE(b1, active-high)
 #define JMFB_REG_SW_CLR_INT 0x48u // Clear pending VBL interrupt
 #define JMFB_REG_SW_STATUS  0xC0u // Stopwatch status (VBL toggle)
 
