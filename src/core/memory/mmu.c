@@ -617,12 +617,6 @@ static inline mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logica
 // TLB Fill
 // ============================================================================
 
-// Fill the SoA arrays for a single page based on walk result and permissions.
-// The `supervisor` flag is the FC class used for the walk (true=super, false=user).
-// When TC.SRE=1 (separate supervisor/user roots), the super and user MMU tables
-// may map the same logical page to different physical pages, so we only
-// populate the SoA matching the walk's FC.  When SRE=0, a single walk
-// produces the mapping for both FCs so we populate both tables.
 // Fill the SoA entries for one translated page from a 68030 table walk.
 //
 // The mechanical half of this -- resolve the host pointer, bound the page
@@ -637,26 +631,22 @@ static inline mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logica
 //     (supervisor-only or user-only), so fill ONLY the SoA matching the walk's
 //     FC.  Filling both would leak the supervisor TT identity into the user
 //     SoA, where the same VA actually maps elsewhere via the (C)RP.
-//   Table walk, SRE=0: supervisor and user share the CRP, so fill both.
-//   Table walk, SRE=1: supervisor uses the SRP and user the CRP, which may map
-//     the same VA to different PAs -- fill only the matching SoA.
+//   Table walk: fill only the SoA matching the walk's FC, whatever TC.SRE
+//     says.  The ATC tags every entry with the function code of the access
+//     that created it (MC68030UM 9.5.1), so a translation a supervisor access
+//     loaded never satisfies a user access, even when SRE=0 has both use the
+//     CRP.  Filling the user SoA from a supervisor walk under SRE=0 broke
+//     A/UX 1.1: its kernel calls Mac ROM code that switches TC to the Mac OS
+//     single-root form, the kernel touches its vectors at logical 0 meanwhile,
+//     and the identity translation landed in the user SoA.  TC came back to
+//     SRE=1 with the flush-disable PMOVE, the entry survived, and the next
+//     user fetch from page 0 read kernel memory ($FFFF: an F-line trap, then
+//     "Memory fault - core dumped" in the installer).
 static void mmu_fill_soa_entry(mmu_state_t *mmu, uint32_t logical_page, uint32_t physical_page, bool supervisor_only,
                                bool write_protected, bool supervisor, bool tt_match) {
-    bool fill_super, fill_user;
-    if (tt_match) {
-        // TT registers are FC-specific: only the walk's own SoA
-        fill_super = supervisor;
-        fill_user = !supervisor;
-    } else if (!TC_SRE(mmu->tc)) {
-        // One root for both FCs: one walk fills both, but never a
-        // supervisor-only page into the user side
-        fill_super = true;
-        fill_user = !supervisor_only;
-    } else {
-        // Separate roots (SRE=1): only the walk's own FC
-        fill_super = supervisor;
-        fill_user = !supervisor && !supervisor_only;
-    }
+    (void)tt_match; // TT registers are FC-specific too: the same rule
+    bool fill_super = supervisor;
+    bool fill_user = !supervisor && !supervisor_only;
     mmu_fill_soa_page(mmu, logical_page, physical_page, fill_super, fill_user, !write_protected);
 }
 
