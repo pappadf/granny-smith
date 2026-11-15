@@ -132,6 +132,12 @@ in memory.c to keep their hands off the user arrays.
   cache does: the guest's stores fill it, and `dcbst`/`dcbf` (or an
   eviction) send it to the device as one burst; `dcbi` drops it
   ([memory.md](../memory/memory.md), "Cache lines held over devices").
+  With no cache to act on, `dcbst`, `dcbf`, `dcbi` and the 604's `icbi`
+  still translate their address and check protection, `dcbi` as a store
+  and the rest as loads (PEM Table 4-32, §5.3.3; 604UM §3.8), so an
+  unmapped address is a DSI as it is on the hardware; a direct-store
+  segment makes them no-ops.  The 601's `icbi` is a no-op without even
+  the translation (601UM, `icbi`).
 - **Caches**: the user and supervisor-translated SoA fills (tracked per
   256 MB segment, so invalidation is proportional to fills and a
   segment-register write drops only its own segment's -- Mac OS X switches

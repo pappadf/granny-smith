@@ -5,7 +5,6 @@ EXTRA_SRCS := $(wildcard ../../../../src/codec/lib/*.c) \
               ../../../../src/core/storage/image_ndif.c \
               ../../../../src/core/storage/resource_fork.c \
               ../../../../src/core/storage/storage_util.c \
-              ../../../../src/core/storage/macroman.c \
-              ../../../../src/core/storage/rsrc_dcmp.c
+              ../../../../src/core/storage/macroman.c
 USE_SOURCE_LAYER := 1
 include ../../common.mk

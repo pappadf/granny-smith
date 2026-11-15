@@ -48,8 +48,8 @@ static void put_header(uint8_t *f, uint32_t cluster_bits, uint64_t size, uint64_
 // `len` bytes of `in` as a raw DEFLATE stream (a zlib stream less its
 // 2-byte header and 4-byte Adler-32).  Returns the stream's length.
 static size_t raw_deflate(const uint8_t *in, size_t len, uint8_t *out, size_t cap) {
-    uint8_t *z = malloc(codec_deflate_bound(len));
-    long n = codec_zlib_deflate(NULL, in, len, z, codec_deflate_bound(len), 6);
+    uint8_t *z = malloc(codec_enc_bound(CODEC_ZLIB, len));
+    long n = codec_encode(CODEC_ZLIB, 6, in, len, z, codec_enc_bound(CODEC_ZLIB, len));
     ASSERT_TRUE(n > 6 && (size_t)n - 6 <= cap);
     memcpy(out, z + 2, (size_t)n - 6);
     free(z);

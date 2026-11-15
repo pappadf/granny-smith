@@ -4,32 +4,48 @@
 // codec.h
 // The one place compression, decompression and their checksums live.
 //
-// A small C99 library with no dependencies beyond libc.  Every part of the
-// tree that meets a compressed stream goes through it: peeler's zip and
-// gzip members, the disk-image decoders (UDIF, NDIF, QCOW2), the UDIF
-// writer, the PNG and PDF writers, the CRCs the image layer keeps.
+// A small C99 library with no dependency beyond libc.  Every part of the
+// tree that meets a compressed stream goes through it: peeler's archives
+// and wrappers (zip, gzip, StuffIt, Compact Pro, BinHex), the disk-image
+// decoders (UDIF, NDIF, QCOW2), System 7 compressed resources, the
+// checkpoint files, the UDIF writer, and the PNG and PDF writers.
 //
-//   checksums  CRC-32 (IEEE, reflected), its MSB-first form (bzip2),
-//              CRC-64 (ECMA-182, as xz uses it), Adler-32
-//   DEFLATE    decode (raw RFC 1951, zlib RFC 1950; resumable or one-shot)
-//              and encode (zlib)
-//   ADC        Apple Data Compression, decode
-//   bzip2      decode (one or more concatenated streams)
-//   LZFSE      decode, including its LZVN and raw blocks
-//   LZMA       decode: the xz container (LZMA2 inside), and the legacy
-//              .lzma ("LZMA alone") format; encode: xz
+// Every decoder has the same shape (codec_dec_*): created for one stream,
+// it is run with output buffers of any size and stops wherever one fills,
+// continuing from exactly there on the next run -- a reader decodes as far
+// as it reads and never more.  Input comes from memory or is pulled through
+// a callback as the decoder needs it.  codec_decode() is the one-shot form
+// over the same decoders, and a decoder is the one streaming type: a
+// container that checks or chains streams (zip's CRC, Compact Pro's two
+// stages, gzip's members) does it through the options below, not a type of
+// its own.  Every encoder has one shape too (codec_enc_*): a whole input to
+// one complete stream, with state reused across calls.
 //
-// Every one-shot decoder has the same shape: it reads `len` bytes of `src`,
-// writes at most `cap` bytes to `dst`, and returns the count written or a
-// negative CODEC_ERR_* code.  Expanding past `cap` is an error
-// (CODEC_ERR_OVERFLOW), never a silent clamp -- with one documented
-// exception, ADC, whose stream has no end marker.  codec_decode() reaches
-// them all by id, for callers that map a container's method field to a
-// codec (UDIF chunk types, NDIF chunk types).
+//   id                  decode  encode  stream
+//   CODEC_COPY            x             stored bytes
+//   CODEC_DEFLATE         x             raw DEFLATE (RFC 1951)
+//   CODEC_ZLIB            x       x     zlib (RFC 1950)
+//   CODEC_GZIP            x             gzip (RFC 1952), every member
+//   CODEC_ADC             x             Apple Data Compression (NDIF, UDCO)
+//   CODEC_BZIP2           x             bzip2 (UDBZ)
+//   CODEC_LZFSE           x             LZFSE with LZVN and stored blocks (ULFO)
+//   CODEC_XZ              x       x     xz, LZMA2 inside (ULMO)
+//   CODEC_LZMA_ALONE      x             legacy .lzma
+//   CODEC_RLE90           x             0x90-escape run lengths (StuffIt method 1)
+//   CODEC_RLE90_BINHEX    x             the same, in BinHex's dialect
+//   CODEC_BINHEX          x             BinHex 4.0's 6-bit text (RLE90_BINHEX stacks on it)
+//   CODEC_SIT2            x             StuffIt method 2 (LZW, 14-bit)
+//   CODEC_SIT3            x             StuffIt method 3 (static Huffman)
+//   CODEC_SIT13           x             StuffIt method 13 (LZSS + Huffman)
+//   CODEC_SIT15           x             StuffIt method 15 (Arsenic: BWT + arithmetic)
+//   CODEC_CPT_RLE         x             Compact Pro's run lengths
+//   CODEC_CPT_LZH         x             Compact Pro's LZSS + Huffman
+//   CODEC_DCMP            x             System 7 compressed resource (dcmp 0, 2, 3)
+//   CODEC_GSRLE           x       x     the checkpoint file's run lengths
 //
-// The decoders take untrusted input: every length, distance and table is
-// bounds-checked against the buffers, and a malformed stream is an error,
-// not undefined behaviour.
+// The decoders take untrusted input: every length, distance, table and
+// state is bounds-checked, and a malformed stream is an error, never
+// undefined behaviour or a read outside the buffers.
 
 #ifndef CODEC_H
 #define CODEC_H
@@ -45,14 +61,195 @@ extern "C" {
 
 #define CODEC_ERR_DATA        (-1) // malformed or corrupt stream
 #define CODEC_ERR_TRUNCATED   (-2) // the input ends before the stream does
-#define CODEC_ERR_OVERFLOW    (-3) // the stream decodes to more than `cap`
+#define CODEC_ERR_OVERFLOW    (-3) // the stream decodes to more than allowed
 #define CODEC_ERR_NOMEM       (-4) // out of memory
 #define CODEC_ERR_UNSUPPORTED (-5) // a valid stream using a feature not implemented
 #define CODEC_ERR_CHECKSUM    (-6) // the stream's own checksum does not match
 #define CODEC_ERR_ARG         (-7) // invalid arguments (NULL buffer, unknown codec)
+#define CODEC_ERR_INPUT       (-8) // the pull callback failed (its own code: codec_dec_input_error)
 
 // A short static description of a CODEC_ERR_* code.
 const char *codec_strerror(int64_t rc);
+
+// === Codecs ===
+
+typedef enum {
+    CODEC_COPY = 0,
+    CODEC_DEFLATE,
+    CODEC_ZLIB,
+    CODEC_GZIP,
+    CODEC_ADC,
+    CODEC_BZIP2,
+    CODEC_LZFSE,
+    CODEC_XZ,
+    CODEC_LZMA_ALONE,
+    CODEC_RLE90,
+    CODEC_RLE90_BINHEX,
+    CODEC_BINHEX,
+    CODEC_SIT2,
+    CODEC_SIT3,
+    CODEC_SIT13,
+    CODEC_SIT15,
+    CODEC_CPT_RLE,
+    CODEC_CPT_LZH,
+    CODEC_DCMP,
+    CODEC_GSRLE,
+    CODEC_COUNT
+} codec_id_t;
+
+// The codec's short name ("zlib", "bzip2", ...), or "?" for an unknown id.
+const char *codec_name(codec_id_t id);
+
+// === Decoding ===
+
+#define CODEC_LEN_UNKNOWN UINT64_MAX
+
+// Supplies compressed input: up to `cap` bytes into `buf`.  Returns the byte
+// count, 0 at the end of the input, or a negative code of the caller's own
+// (the decoder fails with CODEC_ERR_INPUT and keeps it).
+typedef int64_t (*codec_pull_fn)(void *ctx, uint8_t *buf, size_t cap);
+
+// A decoder's compressed input: `len` bytes at `src`, or, when `pull` is
+// set, pulled through it as the decoder needs them.  `close`, when set, is
+// called on ctx as the decoder is freed, so a decoder can own what it reads
+// (never when codec_dec_new fails: ctx is then still the caller's).
+typedef struct {
+    const uint8_t *src;
+    size_t len;
+    codec_pull_fn pull;
+    void *ctx;
+    void (*close)(void *ctx);
+} codec_input_t;
+
+// CODEC_DCMP: the signature every System 7 compressed resource starts with
+// (0xA89F, the _Unimplemented trap, then 'er'), and the largest decoded
+// size accepted (a resource fork's data offsets are 24 bits).
+#define CODEC_DCMP_MAGIC    0xA89F6572u
+#define CODEC_DCMP_MAX_SIZE (16u * 1024u * 1024u)
+
+// True when `len` bytes at `p` begin with the compressed-resource signature
+// (safe on any length, and on NULL).
+static inline int codec_dcmp_is_compressed(const uint8_t *p, size_t len) {
+    return p && len >= 4 &&
+           ((uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]) == CODEC_DCMP_MAGIC;
+}
+
+// A checksum over the decoded bytes that the container states (zip's
+// CRC-32, StuffIt's and BinHex's CRC-16s), verified once the stream has
+// ended.
+typedef enum {
+    CODEC_CHECK_NONE = 0,
+    CODEC_CHECK_CRC32, // codec_crc32
+    CODEC_CHECK_CRC16_ARC, // codec_crc16_arc
+    CODEC_CHECK_CRC16_XMODEM, // codec_crc16_xmodem
+} codec_check_t;
+
+typedef struct {
+    codec_input_t in;
+    // The decoded size, when the container states it.  One rule, by `exact`:
+    //   exact  the stream is out_len bytes: output past it is dropped and
+    //          the stream ends there; one that ends short is TRUNCATED.
+    //          Streams with no end of their own (ADC, the StuffIt methods 2,
+    //          3, 13 and 15, Compact Pro's RLE, GSRLE) are always exact, and
+    //          need out_len; any other is exact when asked (StuffIt's forks).
+    //   limit  otherwise: decoding past out_len is CODEC_ERR_OVERFLOW.
+    // CODEC_LEN_UNKNOWN: no limit.
+    uint64_t out_len;
+    int exact;
+    // A part of a longer stream (a BinHex fork): the first `skip` decoded
+    // bytes are dropped, unseen; out_len (and exact) count from there.
+    uint64_t skip;
+    // Verified at the end: CODEC_ERR_CHECKSUM.  The stated value is
+    // check_value, or -- with check_stored 2 or 4 -- the bytes the stream
+    // decodes to right after the output, big-endian (BinHex's CRC follows
+    // each fork); those are read, not output, and need out_len.
+    codec_check_t check;
+    uint32_t check_value;
+    int check_stored;
+} codec_dec_opts_t;
+
+typedef struct codec_dec codec_dec_t;
+
+// A decoder for one stream.  NULL with *err set (CODEC_ERR_*) on bad
+// arguments, a codec that needs out_len without one, or no memory; a bad
+// stream header is reported by the first run, not here.
+codec_dec_t *codec_dec_new(codec_id_t id, const codec_dec_opts_t *opts, int *err);
+
+// Produce up to `cap` bytes into `out` (*n set).  Returns 1 once the stream
+// has ended and all of it has been produced, 0 when more remains, or a
+// CODEC_ERR_* code (after the bytes before the fault have been produced).
+int codec_dec_run(codec_dec_t *d, uint8_t *out, size_t cap, size_t *n);
+
+// Bytes produced so far.
+uint64_t codec_dec_total_out(const codec_dec_t *d);
+
+// Compressed bytes the stream occupied: exact once it has ended (a gzip
+// trailer or the next member follows there).
+uint64_t codec_dec_consumed(const codec_dec_t *d);
+
+// Why the decoder failed, in a few words ("bzip2: block CRC mismatch"), or
+// "" while it has not.
+const char *codec_dec_message(const codec_dec_t *d);
+
+// The pull callback's own negative code, once the decoder has failed with
+// CODEC_ERR_INPUT; 0 otherwise.
+int codec_dec_input_error(const codec_dec_t *d);
+
+// Run the decoder to the end of its stream into `out`: the stream must end
+// within `cap` bytes.  Returns the count, or a CODEC_ERR_* code
+// (CODEC_ERR_OVERFLOW when it goes on past `cap`).  The decoder stays the
+// caller's, its message intact.
+int64_t codec_dec_read(codec_dec_t *d, uint8_t *out, size_t cap);
+
+// The same into a fresh buffer that grows as needed, up to `max` bytes:
+// the malloc'd output (*n set; at least one byte allocated), or NULL with
+// *err set.
+uint8_t *codec_dec_read_alloc(codec_dec_t *d, size_t max, size_t *n, int *err);
+
+void codec_dec_free(codec_dec_t *d);
+
+// A codec_pull_fn reading a decoder's output (ctx: the codec_dec_t).  A
+// decoder pulling another fails with the inner one's code and message.
+int64_t codec_dec_pull(void *ctx, uint8_t *buf, size_t cap);
+
+// A decoder of `id` reading `inner`'s output and owning it (freed with it,
+// or here if this fails): one stream chained into another, as Compact Pro's
+// RLE over its LZH.  `opts` gives the rest (its input fields are ignored).
+codec_dec_t *codec_dec_stack(codec_dec_t *inner, codec_id_t id, const codec_dec_opts_t *opts, int *err);
+
+// One-shot: decode `len` bytes of `src` into `dst`.  The stream must end
+// within `cap` bytes (a stream with no end of its own is `cap` bytes long).
+// Returns the count written or a CODEC_ERR_* code.
+int64_t codec_decode(codec_id_t id, const uint8_t *src, size_t len, uint8_t *dst, size_t cap);
+
+// One-shot into a fresh buffer, for a stream of unknown decoded size (a PNG,
+// a compressed resource): at most `max` bytes.  Returns the malloc'd output
+// (*out_len set), or NULL with *err set.  (codec_dec_read and _alloc are
+// the same on a decoder of the caller's, which keeps its message.)
+uint8_t *codec_decode_alloc(codec_id_t id, const uint8_t *src, size_t len, size_t max, size_t *out_len, int *err);
+
+// === Encoding ===
+
+typedef struct codec_enc codec_enc_t;
+
+// An encoder for inputs of at most `max_len` bytes, at `level` 1..9 (speed
+// to size; < 0: the codec's default).  Its state is reused by every run, so
+// a caller compressing many chunks allocates once.  NULL with *err set for
+// a codec that does not encode, or no memory.
+codec_enc_t *codec_enc_new(codec_id_t id, size_t max_len, int level, int *err);
+
+// Bytes of output that always suffice for `len` bytes of input.
+size_t codec_enc_bound(codec_id_t id, size_t len);
+
+// Compress `in` (at most max_len bytes) into one complete stream in `out`.
+// Returns the bytes written, CODEC_ERR_OVERFLOW when `cap` is too small, or
+// another CODEC_ERR_* code.
+int64_t codec_enc_run(codec_enc_t *e, const uint8_t *in, size_t len, uint8_t *out, size_t cap);
+
+void codec_enc_free(codec_enc_t *e);
+
+// One-shot: codec_enc_new, run, free.
+int64_t codec_encode(codec_id_t id, int level, const uint8_t *in, size_t len, uint8_t *out, size_t cap);
 
 // === Checksums ===
 
@@ -76,163 +273,13 @@ uint64_t codec_crc64(uint64_t crc, const void *data, size_t len);
 // Adler-32 (RFC 1950 §8), continuing from `adler` (start from 1).
 uint32_t codec_adler32(uint32_t adler, const void *data, size_t len);
 
-// === DEFLATE: decode ===
+// CRC-16/XMODEM (polynomial 0x1021, MSB first, initial 0, no final XOR), as
+// BinHex and MacBinary use it.  Chains: a result seeds the next call.
+uint16_t codec_crc16_xmodem(uint16_t crc, const void *data, size_t len);
 
-// Supplies compressed input: up to `cap` bytes into `buf`.  Returns the byte
-// count, 0 at the end of the input, or a negative code.
-typedef int64_t (*codec_pull_fn)(void *ctx, uint8_t *buf, size_t cap);
-
-// A resumable raw-DEFLATE decoder: it stops wherever the caller's buffer
-// fills and continues from exactly there on the next call (mid-block, even
-// mid-match), pulling input as it needs it.  zip and gzip members decode a
-// little at a time through it.
-typedef struct codec_inflater codec_inflater_t;
-
-// NULL when out of memory.
-codec_inflater_t *codec_inflater_new(codec_pull_fn pull, void *ctx);
-void codec_inflater_free(codec_inflater_t *z);
-
-// Produce up to `cap` bytes into `out` (*out_n set).  Returns 1 once the
-// final block has ended, 0 when more output remains, -1 on a truncated or
-// malformed stream.
-int codec_inflater_run(codec_inflater_t *z, uint8_t *out, size_t cap, size_t *out_n);
-
-// Bytes produced so far, and compressed bytes consumed so far.
-uint64_t codec_inflater_total_out(const codec_inflater_t *z);
-uint64_t codec_inflater_consumed(const codec_inflater_t *z);
-
-// After the final block: drop the bits up to the next byte boundary (a
-// gzip trailer follows on one).
-void codec_inflater_align(codec_inflater_t *z);
-
-// A raw DEFLATE stream (RFC 1951) into `dst`.  The stream must end within
-// `cap` bytes of output.
-int64_t codec_inflate(const uint8_t *src, size_t len, uint8_t *dst, size_t cap);
-
-// A zlib stream (RFC 1950: 2-byte header, DEFLATE, Adler-32) into `dst`.
-// The header is checked (CM 8, FCHECK, no preset dictionary); the Adler-32
-// trailer is checked when present -- a stream that stops right after its
-// final block is accepted, as some writers omit the trailer.
-int64_t codec_zlib_inflate(const uint8_t *src, size_t len, uint8_t *dst, size_t cap);
-
-// A zlib stream into a freshly allocated buffer, for callers that do not
-// know the decoded size up front (the PNG reader).  The output may not
-// exceed `out_max` bytes.  Returns malloc'd output and sets *out_len, or
-// NULL when the stream is malformed or larger than `out_max`.
-uint8_t *codec_zlib_inflate_alloc(const uint8_t *src, size_t len, size_t out_max, size_t *out_len);
-
-// === DEFLATE: encode ===
-
-// Bytes of output buffer that always suffice for `len` bytes of input, at
-// any level (fixed Huffman codes a byte in at most 9 bits; stored blocks add
-// 5 bytes per 65535).
-size_t codec_deflate_bound(size_t len);
-
-// Reusable encoder state for inputs of at most `max_len` bytes, so a caller
-// compressing many chunks allocates the hash chains once.
-typedef struct codec_deflate_state codec_deflate_state_t;
-codec_deflate_state_t *codec_deflate_state_new(size_t max_len);
-void codec_deflate_state_free(codec_deflate_state_t *st);
-
-// Compress `in` into a complete zlib stream in `out` (`cap` bytes, at least
-// codec_deflate_bound(len) to be sure).  `level` 0 emits stored blocks;
-// 1..9 pick the hash-chain depth (6 is what the PNG writer has always used).
-// `st` may be NULL (allocated for the call) and must otherwise have been
-// made for at least `len` bytes.  Returns the bytes written, or -1 when
-// `cap` is too small or memory runs out.
-//
-// The LZ77 pass is greedy over a 32 KB window; each block is written as
-// dynamic Huffman, fixed Huffman or stored, whichever is smallest.  The
-// dynamic codes are length-limited and complete, so strict decoders
-// (zlib's, and every tool that reads the images and screenshots) accept them.
-long codec_zlib_deflate(codec_deflate_state_t *st, const uint8_t *in, size_t len, uint8_t *out, size_t cap, int level);
-
-// === ADC (Apple Data Compression) ===
-
-// Decode an ADC stream: the byte-aligned LZ77 variant Disk Copy 6 uses for
-// NDIF chunks (0x83) and UDIF for UDCO chunks (0x80000004).  The stream has
-// no end marker, so decoding stops when the input is exhausted or `cap`
-// bytes are written, whichever comes first; callers compare the result with
-// the size they expect.  CODEC_ERR_DATA on a back-reference before the start
-// of the output.
-int64_t codec_adc_decompress(const uint8_t *src, size_t len, uint8_t *dst, size_t cap);
-
-// === bzip2 ===
-
-// Decode a bzip2 stream ("BZh1".."BZh9"), or several concatenated, as the
-// bzip2 tool writes them.  Every block CRC and each stream's combined CRC is
-// checked.  Blocks in the "randomised" form (written by bzip2 before 0.9.5
-// and by nothing since) are CODEC_ERR_UNSUPPORTED.
-int64_t codec_bzip2_decompress(const uint8_t *src, size_t len, uint8_t *dst, size_t cap);
-
-// === LZFSE ===
-
-// Decode an LZFSE stream: a sequence of blocks ending in "bvx$", each an
-// LZFSE block (v1 "bvx1" or the packed-header v2 "bvx2"), an LZVN block
-// ("bvxn") or stored bytes ("bvx-").  This is what Apple's libcompression
-// writes for COMPRESSION_LZFSE (UDIF ULFO chunks, 0x80000007).
-int64_t codec_lzfse_decompress(const uint8_t *src, size_t len, uint8_t *dst, size_t cap);
-
-// === LZMA ===
-
-// Decode an xz stream, or several concatenated with optional stream padding:
-// the .xz container with LZMA2 as its only filter, as Apple's
-// libcompression writes it for COMPRESSION_LZMA (UDIF ULMO chunks,
-// 0x80000008).  CRC-32 and CRC-64 checks are verified; SHA-256 and the
-// reserved check types are skipped.  Other filters (BCJ, delta) are
-// CODEC_ERR_UNSUPPORTED.
-int64_t codec_xz_decompress(const uint8_t *src, size_t len, uint8_t *dst, size_t cap);
-
-// === LZMA: encode ===
-
-// Bytes of output buffer that always suffice for `len` bytes of input.
-size_t codec_xz_bound(size_t len);
-
-// Reusable encoder state (hash chains, the model) for inputs of at most
-// `max_len` bytes, so a caller compressing many chunks allocates once.
-typedef struct codec_xz_state codec_xz_state_t;
-codec_xz_state_t *codec_xz_state_new(size_t max_len);
-void codec_xz_state_free(codec_xz_state_t *st);
-
-// Compress `in` into one complete xz stream in `out` (`cap` bytes, at least
-// codec_xz_bound(len) to be sure): one block, LZMA2 (lc 3, lp 0, pb 2) with
-// a dictionary just covering the input, a CRC-64 check -- what
-// codec_xz_decompress, xz-utils and Apple's libcompression read.  `level`
-// 1..9 trades speed for size (hash-chain depth, lazy matching).  `st` may
-// be NULL (allocated for the call) and must otherwise have been made for at
-// least `len` bytes.  Returns the bytes written, CODEC_ERR_OVERFLOW when
-// `cap` is too small, or CODEC_ERR_NOMEM.
-//
-// The parse is heuristic (hash chains, the repeat distances, one byte of
-// lazy matching), not xz-utils' optimal one: its output is a little larger
-// than `xz` writes at the same effort.
-int64_t codec_xz_compress(codec_xz_state_t *st, const uint8_t *in, size_t len, uint8_t *out, size_t cap, int level);
-
-// Decode a legacy .lzma stream ("LZMA alone": a 13-byte header of
-// properties, dictionary size and decoded size, then raw LZMA).  An unknown
-// decoded size (all ones) requires the end marker.
-int64_t codec_lzma_alone_decompress(const uint8_t *src, size_t len, uint8_t *dst, size_t cap);
-
-// === Dispatch by id ===
-
-typedef enum {
-    CODEC_COPY = 0, // stored: the bytes as they are
-    CODEC_DEFLATE, // raw DEFLATE (RFC 1951)
-    CODEC_ZLIB, // zlib (RFC 1950)
-    CODEC_ADC, // Apple Data Compression
-    CODEC_BZIP2, // bzip2
-    CODEC_LZFSE, // LZFSE (with LZVN and raw blocks)
-    CODEC_XZ, // xz (LZMA2)
-    CODEC_LZMA_ALONE, // legacy .lzma
-    CODEC_COUNT
-} codec_id_t;
-
-// Decode `len` bytes of `src` in codec `id` into `dst` (at most `cap`
-// bytes).  Returns the count written or a negative CODEC_ERR_* code.
-int64_t codec_decode(codec_id_t id, const uint8_t *src, size_t len, uint8_t *dst, size_t cap);
-
-// The codec's short name ("zlib", "bzip2", ...), or "?" for an unknown id.
-const char *codec_name(codec_id_t id);
+// CRC-16/ARC (reflected polynomial 0xA001, initial 0, no final XOR), as
+// StuffIt checks a fork with it.  Chains like codec_crc16_xmodem.
+uint16_t codec_crc16_arc(uint16_t crc, const void *data, size_t len);
 
 #ifdef __cplusplus
 }

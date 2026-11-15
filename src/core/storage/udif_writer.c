@@ -77,8 +77,7 @@ struct udif_writer {
     size_t partial_len;
     uint8_t *zbuf; // compressed output
     size_t zcap;
-    codec_deflate_state_t *ds; // the zlib encoder (UDIF_CODEC_ZLIB)
-    codec_xz_state_t *xs; // the xz encoder (UDIF_CODEC_XZ)
+    codec_enc_t *enc; // the chunk encoder (zlib or xz), when level > 0
 
     wext_t *ext;
     size_t n_ext, cap_ext;
@@ -167,13 +166,12 @@ udif_writer_t *udif_writer_open(const char *path, const udif_writer_opts_t *opts
     w->chunk_bytes = (size_t)o.chunk_sectors * UDIF_SECTOR_SIZE;
     w->level = o.level;
     w->codec = o.codec;
-    bool xz = o.level > 0 && o.codec == UDIF_CODEC_XZ, zlib = o.level > 0 && o.codec == UDIF_CODEC_ZLIB;
+    codec_id_t id = o.codec == UDIF_CODEC_XZ ? CODEC_XZ : CODEC_ZLIB;
     w->partial = malloc(w->chunk_bytes);
-    w->zcap = xz ? codec_xz_bound(w->chunk_bytes) : codec_deflate_bound(w->chunk_bytes);
+    w->zcap = codec_enc_bound(id, w->chunk_bytes);
     w->zbuf = malloc(w->zcap);
-    w->ds = zlib ? codec_deflate_state_new(w->chunk_bytes) : NULL;
-    w->xs = xz ? codec_xz_state_new(w->chunk_bytes) : NULL;
-    if (!w->f || !w->path || !w->partial || !w->zbuf || (zlib && !w->ds) || (xz && !w->xs) ||
+    w->enc = o.level > 0 ? codec_enc_new(id, w->chunk_bytes, o.level, NULL) : NULL;
+    if (!w->f || !w->path || !w->partial || !w->zbuf || (o.level > 0 && !w->enc) ||
         (o.origin && *o.origin && !w->origin)) {
         if (!w->f)
             close(fd);
@@ -245,19 +243,13 @@ static int emit_chunk(udif_writer_t *w, const uint8_t *p, size_t n) {
     const uint8_t *out = p;
     size_t out_len = n;
     uint32_t type = UDIF_CHUNK_RAW;
-    if (w->level > 0 && w->codec == UDIF_CODEC_XZ) {
-        int64_t z = codec_xz_compress(w->xs, p, n, w->zbuf, w->zcap, w->level);
+    if (w->enc) {
+        // Kept compressed only where that is smaller.
+        int64_t z = codec_enc_run(w->enc, p, n, w->zbuf, w->zcap);
         if (z > 0 && (size_t)z < n) {
             out = w->zbuf;
             out_len = (size_t)z;
-            type = UDIF_CHUNK_LZMA;
-        }
-    } else if (w->level > 0) {
-        long z = codec_zlib_deflate(w->ds, p, n, w->zbuf, w->zcap, w->level);
-        if (z > 0 && (size_t)z < n) {
-            out = w->zbuf;
-            out_len = (size_t)z;
-            type = UDIF_CHUNK_ZLIB;
+            type = w->codec == UDIF_CODEC_XZ ? UDIF_CHUNK_LZMA : UDIF_CHUNK_ZLIB;
         }
     }
     int rc = write_out(w, out, out_len);
@@ -361,8 +353,7 @@ static void writer_free(udif_writer_t *w) {
     free(w->origin);
     free(w->partial);
     free(w->zbuf);
-    codec_deflate_state_free(w->ds);
-    codec_xz_state_free(w->xs);
+    codec_enc_free(w->enc);
     free(w->ext);
     free(w);
 }

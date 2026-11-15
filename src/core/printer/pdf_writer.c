@@ -181,9 +181,9 @@ static bool add_image_page(pdf_writer_t *w, double width_pt, double height_pt, u
     if (!w || w->out.failed)
         return false;
     // Compress the samples; stored uncompressed if the encoder fails
-    size_t cap = codec_deflate_bound(len);
+    size_t cap = codec_enc_bound(CODEC_ZLIB, len);
     uint8_t *z = malloc(cap ? cap : 1);
-    long zlen = z ? codec_zlib_deflate(NULL, data, len, z, cap, 6) : -1;
+    int64_t zlen = z ? codec_encode(CODEC_ZLIB, 6, data, len, z, cap) : -1;
 
     uint32_t img = new_object(w);
     uint32_t content = new_object(w);
@@ -197,7 +197,7 @@ static bool add_image_page(pdf_writer_t *w, double width_pt, double height_pt, u
     buf_printf(&w->out, "<< /Type /XObject /Subtype /Image /Width %u /Height %u ", (unsigned)px_w, (unsigned)px_h);
     buf_printf(&w->out, "%s", dict);
     if (zlen >= 0)
-        buf_printf(&w->out, " /Filter /FlateDecode /Length %ld >>\nstream\n", zlen);
+        buf_printf(&w->out, " /Filter /FlateDecode /Length %ld >>\nstream\n", (long)zlen);
     else
         buf_printf(&w->out, " /Length %zu >>\nstream\n", len);
     if (zlen >= 0)

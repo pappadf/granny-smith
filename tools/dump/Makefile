@@ -22,7 +22,7 @@ TOOL_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 # Include paths.  Force-include the shared platform header
 # (src/platform/platform.h), with the headless clock -- a native program.
 INCLUDES := -I$(CORE_DIR) -I$(CORE_CPU_DIR) -I$(CORE_CPU_DIR)/ppc -I$(CORE_DBG_DIR) -I$(CORE_STORAGE_DIR) -I$(CORE_DIR)/object \
-            -I$(TOOL_DIR) -I../../src/platform -I../../src/platform/headless \
+            -I$(TOOL_DIR) -I../../src/codec/include -I../../src/platform -I../../src/platform/headless \
             -include ../../src/platform/platform.h
 
 # Tool-local sources.  Everything under tools/dump/.
@@ -36,7 +36,7 @@ LOCAL_SRCS := dump.c \
               stubs.c
 
 # Core sources compiled directly from src/ (not copied).  The dump tool
-# uses the same resource-fork parser and decompressors as the emulator —
+# uses the same resource-fork parser and decompressors (src/codec) as the emulator —
 # both halves of the boundary that just landed in PR #43.
 CORE_SRCS := $(CORE_CPU_DIR)/cpu_disasm.c \
              $(CORE_CPU_DIR)/ppc/ppc_disasm.c \
@@ -44,15 +44,17 @@ CORE_SRCS := $(CORE_CPU_DIR)/cpu_disasm.c \
              $(CORE_DBG_DIR)/mac_globals_data.c \
              $(CORE_STORAGE_DIR)/resource_fork.c \
              $(CORE_STORAGE_DIR)/storage_util.c \
-             $(CORE_STORAGE_DIR)/rsrc_dcmp.c \
              $(CORE_STORAGE_DIR)/macroman.c
+
+# The codec library (src/codec): compressed resources (dcmp) decode there.
+CODEC_SRCS := $(wildcard ../../src/codec/lib/*.c)
 
 .PHONY: all clean
 
 all: $(TOOL)
 
-$(TOOL): $(LOCAL_SRCS) $(CORE_SRCS)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $(LOCAL_SRCS) $(CORE_SRCS)
+$(TOOL): $(LOCAL_SRCS) $(CORE_SRCS) $(CODEC_SRCS)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $(LOCAL_SRCS) $(CORE_SRCS) $(CODEC_SRCS)
 
 clean:
 	rm -f $(TOOL)

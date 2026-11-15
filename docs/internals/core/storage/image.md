@@ -97,7 +97,7 @@ The disk images the web app stores, the blank disks `hd create` makes under a `.
 |---|---|
 | Layout | one segment, flattened; data fork, then the XML plist, then the 512-byte `koly` |
 | Block map | one whole-disk `mish` table from sector 0, named for what the disk starts with (`Apple_partition_scheme`, `Apple_HFS`, `ISO9660`, or `Unknown Partition`) |
-| Chunks | 128 sectors (64 KB) by default; each ZERO (consecutive ones merge — a blank 2 GB disk is one entry), ZLIB (a complete zlib stream, `codec_zlib_deflate`) — or LZMA (a complete xz stream, `codec_xz_compress`) when the caller asks for the xz codec — or RAW (when compression does not shrink it). Never IGNORE or ADC |
+| Chunks | 128 sectors (64 KB) by default; each ZERO (consecutive ones merge — a blank 2 GB disk is one entry), ZLIB (a complete zlib stream, `CODEC_ZLIB`) — or LZMA (a complete xz stream, `CODEC_XZ`) when the caller asks for the xz codec — or RAW (when compression does not shrink it). Never IGNORE or ADC |
 | Checksums | the table's CRC-32 over the decoded bytes (a zero run's in O(log n), `codec_crc32_zeros`), the trailer's over the data fork, the master checksum over the table checksums |
 | Plist keys | `gs-profile` (1), `gs-byte-length` (the true length when it is not a whole number of sectors; the tail is zero-padded), `gs-source` (the original file name), `gs-origin` (where the bytes came from, as the caller gave it — the page records a URL download's URL; opaque to the core, read back by `files.udif_info` as `origin`) |
 

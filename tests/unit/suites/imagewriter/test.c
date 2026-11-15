@@ -136,7 +136,7 @@ TEST(test_pdf_structure) {
     ASSERT_TRUE(st && len_at);
     long zlen = strtol((const char *)len_at + 21, NULL, 10);
     uint8_t out[8];
-    ASSERT_EQ_INT(codec_zlib_inflate(st + 7, (size_t)zlen, out, sizeof(out)), 8);
+    ASSERT_EQ_INT(codec_decode(CODEC_ZLIB, st + 7, (size_t)zlen, out, sizeof(out)), 8);
     ASSERT_TRUE(memcmp(out, bits, 8) == 0);
     free(a);
     free(b);

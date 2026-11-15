@@ -30,7 +30,6 @@ EXTRA_SRCS   := ../../../../src/core/job/seam.c \
                 $(wildcard ../../../../src/codec/lib/*.c) \
                 ../../../../src/core/storage/image_udif.c \
                 ../../../../src/core/storage/resource_fork.c \
-                ../../../../src/core/storage/rsrc_dcmp.c \
                 ../../../../src/core/storage/macroman.c \
                 ../../../../src/core/object/object.c \
         ../../../../src/core/object/parse.c \
