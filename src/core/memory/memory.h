@@ -337,6 +337,9 @@ extern uint32_t g_bus_fault_regs[16];
 extern bool g_bus_fault_regs_valid;
 extern unsigned g_bus_fault_size; // bytes of the access that faulted (with the copy)
 extern uint32_t *g_bus_error_instr_ptr; // points to decoder's instruction counter
+extern uint32_t *g_fault_dregs_src; // the running 68k core's D0-D7 (memory.c)
+extern uint32_t g_fault_dregs[8]; // D0-D7 at the first MMU fault of the instruction
+extern bool g_fault_dregs_valid;
 
 // The running sprint's state shared with the slow paths: the one channel
 // between the scheduler, which owns its contents -- it sets them up at each
