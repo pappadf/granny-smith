@@ -39,6 +39,7 @@ family-specific hardware lives under
 | [nubus/nubus.md](nubus/nubus.md) | the NuBus itself | content |
 | [nubus/cards/display-card-8-24.md](nubus/cards/display-card-8-24.md) | Display Card 8•24 | content |
 | [nubus/cards/display-card-24ac.md](nubus/cards/display-card-24ac.md) | Display Card 24AC | content |
+| [nubus/cards/mac-ii-video-card.md](nubus/cards/mac-ii-video-card.md) | Macintosh II Video Card ("Toby") | stub |
 
 ## pci/
 
