@@ -12,7 +12,9 @@
 
 | --- CPB equates -------------------------------------------------------------
 .equ GS_DRHW,          0x0019          | JMFB DrHW (Display_Video_Apple_MDC)
-.equ GS_FB_MINOR,      0xA00           | framebuffer offset in standard slot space
+.equ GS_FB_OFFSET,     0xA00           | framebuffer offset in standard slot space:
+                                        | vpBaseOffset, as in Apple's ROM -- the
+                                        | device base (MinorBaseOS) is 0
 .equ GS_NMODES,        4               | mode-list entries 0x80..0x83 (1/2/4/8 bpp)
 .equ GS_NPAGES,        1               | one framebuffer (mPageCnt); with
                                         | only one page the driver assembles
@@ -81,13 +83,14 @@
 
 | FbBase: out A1 = framebuffer base address (in from A4 = slot base).
 \pfx&FbBase:
-	lea	GS_FB_MINOR(a4),a1
+	lea	GS_FB_OFFSET(a4),a1
 	rts
 
 | BaseAddr: out D0.L = the csBaseAddr the driver reports (A5 = private
 | storage; runs in the CALLER's addressing mode — no hardware access).
 \pfx&BaseAddr:
 	move.l	pvBase(a5),d0
+	add.l	#GS_FB_OFFSET,d0        | device base + vpBaseOffset
 	rts
 
 | ReadSense: out D0.W = chosen functional sResource spID (0 = no usable
@@ -120,7 +123,7 @@
 	moveq	#0,d0
 	move.w	d1,d0
 	move.l	d0,JREG_ROWWORDS(a4)
-	move.l	#GS_FB_MINOR/32,d0
+	move.l	#GS_FB_OFFSET/32,d0
 	move.l	d0,JREG_VIDBASE(a4)     | base fixed at slot+0xA00
 	movem.l	(sp)+,d0-d2
 	rts
