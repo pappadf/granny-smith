@@ -470,8 +470,18 @@ TEST(mode_sense_and_read_capacity_agree_about_block_size) {
 
     // Page 3's bytes-per-physical-sector comes from the same source: these
     // images have no physical geometry distinct from their logical one.
-    ASSERT_TRUE(got >= 12 + 14);
-    uint32_t phys = ((uint32_t)ms[12 + 12] << 8) | ms[12 + 13];
+    // Page 1 (Read-Write Error Recovery) leads: HD SC Setup asks for it, and
+    // a short answer stops its pseudo-DMA loop before its count.
+    ASSERT_TRUE(got >= 12 + 12);
+    ASSERT_EQ_INT(ms[12] & 0x3F, 0x01);
+    ASSERT_EQ_INT(ms[13], 0x0A);
+
+    // Pages follow the block descriptor in ascending order; walk to page 3.
+    size_t p3 = 12;
+    while (p3 + 2 <= got && (ms[p3] & 0x3F) != 0x03)
+        p3 += 2u + ms[p3 + 1];
+    ASSERT_TRUE(p3 + 14 <= got);
+    uint32_t phys = ((uint32_t)ms[p3 + 12] << 8) | ms[p3 + 13];
     ASSERT_EQ_INT((int)phys, (int)odd_blk);
 
     scsi_delete(scsi);
