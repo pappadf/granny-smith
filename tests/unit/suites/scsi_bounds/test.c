@@ -538,14 +538,15 @@ TEST(mode_sense_changeable_mask_reports_nothing_changeable) {
     int pages = 0;
     while (i + 1 < end) {
         uint8_t len = chg[i + 1];
-        // The three pages this device emits: format, geometry, Apple ident.
-        ASSERT_TRUE(chg[i] == 0x03 || chg[i] == 0x04 || chg[i] == 0x30);
+        // The four pages this device emits: error recovery, format,
+        // geometry, Apple ident.
+        ASSERT_TRUE(chg[i] == 0x01 || chg[i] == 0x03 || chg[i] == 0x04 || chg[i] == 0x30);
         for (uint8_t k = 0; k < len; k++)
             ASSERT_EQ_INT(chg[i + 2 + k], 0); // body all zero: nothing changeable
         i += 2u + len;
         pages++;
     }
-    ASSERT_EQ_INT(pages, 3);
+    ASSERT_EQ_INT(pages, 4);
 
     // The block size is not changeable on a hard disk either -- its MODE SELECT
     // discards the block descriptor -- so no bit of that field is set.

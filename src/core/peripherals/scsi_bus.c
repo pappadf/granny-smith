@@ -1164,7 +1164,8 @@ void run_cmd(scsi_t *scsi) {
             static const char apple_id[] = "APPLE COMPUTER, INC.";
             const int apple_id_len = (int)sizeof(apple_id) - 1; // no NUL on the wire
 
-            uint8_t resp[96];
+            // All pages: 4 + 8 + 12 (page 1) + 24 + 24 + 22 (page $30) = 94.
+            uint8_t resp[128];
             memset(resp, 0, sizeof(resp));
             int total = 4 + 8; // mode parameter header + one block descriptor
             resp[3] = 8; // block descriptor length
