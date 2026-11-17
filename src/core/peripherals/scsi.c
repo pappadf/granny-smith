@@ -281,6 +281,48 @@ static void scsi_schedule_drq_service(scsi_t *scsi) {
     scheduler_new_cpu_event(s, &scsi_drq_service, scsi, 0, SCSI_DRQ_PULSE_CYCLES, 0);
 }
 
+// The target's turnaround from the last DATA IN byte to STATUS phase.  On the
+// hardware the 5380's phase-mismatch interrupt is asynchronous to the host: the
+// target changes phase some microseconds after the final ACK, so a host that
+// leaves DMA mode promptly never sees it, and a host that waits for it gets it.
+// 1600 CPU cycles is 100 us at 16 MHz (IIx, IIcx, SE/30), 40 us at 40 MHz (IIfx):
+// within a drive's command-completion time, and long after A/UX 3's pseudo-DMA
+// loop has cleared MR.DMA (see scsi_5380_entered_status).
+#define SCSI_STATUS_IRQ_CYCLES 1600
+
+// Deferred interrupt evaluation for the DATA IN -> STATUS transition.  A host
+// still in DMA mode when the target changes phase gets the Bus Phase Mismatch
+// interrupt (S8.5) on its own: the end-of-DMA latch scsi_5380_entered_status
+// set is A/UX 3's EOP decode for a host that has already left DMA mode, and the
+// Mac drives no EOP on a data-in completion.  A/UX 1.1's sash decodes BSR|CSR
+// against a table whose phase-mismatch row ($1060 under mask $B462) requires
+// BSR_EDMA clear; with it set, no row matches and the driver spins at IPL 2.
+// DRQ drops too: the 5380 raises it only for REQ in a matching phase, and the
+// status-ready row ($1040 under $FDC2) requires it clear -- with DRQ still up
+// from the data the table falls to its transitional row and sash reports
+// "Protocol Error Processing SCSI request".
+static void scsi_status_irq(void *source, uint64_t data) {
+    scsi_t *scsi = (scsi_t *)source;
+    (void)data;
+    if (!scsi->chip5380)
+        return;
+    // Only a real mismatch: MR.DMA still set with TCR still describing the data
+    // phase.  A host that has moved on -- cleared MR.DMA, or (A/UX 1.1's kernel)
+    // set TCR to STATUS and armed a DMA receive for the status byte -- sees a
+    // matching phase, gets no interrupt, and keeps its DRQ.  Dropping that DRQ
+    // stalled the kernel until its watchdog fired, and the REQUEST SENSE
+    // recovery that followed corrupted page-ins ("Illegal instruction",
+    // "Memory fault" in the installer).
+    if ((scsi->chip5380->reg.mr & MR_DMA) && scsi->bus.phase == scsi_status && !scsi_phase_match(scsi, false)) {
+        scsi->chip5380->end_of_dma = false;
+        if (scsi->chip5380->reg.bsr & BSR_DR) {
+            scsi->chip5380->reg.bsr &= ~BSR_DR;
+            scsi_update_drq(scsi);
+        }
+    }
+    scsi_update_irq(scsi);
+}
+
 void scsi_cancel_drq_service(scsi_t *scsi) {
     // A bus with no 5380 attached -- a Quadra, an AV, a PowerMac, a Network
     // Server -- has nothing here to update.
@@ -384,18 +426,26 @@ void scsi_5380_entered_status(scsi_t *scsi, bool from_data_in) {
     if (scsi->chip5380->reg.mr & MR_DMA)
         scsi->chip5380->end_of_dma = true;
 
-    // Coming out of data-in with DMA active, skip scsi_update_irq.  On real
-    // NCR 5380 hardware the target changes bus phase only AFTER the final ACK
-    // handshake completes — the phase-mismatch IRQ fires asynchronously, not
-    // during the register read that returns the last data byte.  A/UX's
-    // pseudo-DMA loop (scsiin) runs at IPL 0 and would service the IRQ
-    // immediately, causing a nested scsidintr that stamps SST_MORE.  Mac OS
-    // runs its pseudo-DMA at IPL >= 2, so the IRQ is masked and harmlessly
-    // deferred; skipping it has no effect.  The host clears MR_DMA next
-    // (write_mr), which fires scsi_update_irq with DMA off — the correct
-    // post-transfer notification.
-    if (from_data_in && (scsi->chip5380->reg.mr & MR_DMA))
+    // Coming out of data-in with DMA active, the interrupt is deferred, not
+    // raised now.  On real NCR 5380 hardware the target changes bus phase only
+    // AFTER the final ACK handshake completes, so the phase-mismatch IRQ fires
+    // asynchronously, not during the register read that returns the last data
+    // byte.  Raising it now breaks A/UX 3: its pseudo-DMA loop (scsiin) runs
+    // at IPL 0, would service the IRQ immediately and nest a scsidintr that
+    // stamps SST_MORE.  It clears MR_DMA (write_mr) well inside the target's
+    // turnaround, so the deferred evaluation finds DMA off and raises nothing.
+    // Dropping the interrupt altogether breaks A/UX 1.1's stand-alone shell
+    // (sash): its driver reads the data and then spins on BSR_INT for the
+    // phase change, timing out ("Disk c0d0s0 Error: SCSI timeout") and
+    // resetting the bus on every READ CAPACITY.  Without a scheduler (unit
+    // tests) the deferral degrades to the old skip.
+    if (from_data_in && (scsi->chip5380->reg.mr & MR_DMA)) {
+        if (scsi->sched) {
+            remove_event(scsi->sched, &scsi_status_irq, scsi);
+            scheduler_new_cpu_event(scsi->sched, &scsi_status_irq, scsi, 0, SCSI_STATUS_IRQ_CYCLES, 0);
+        }
         return;
+    }
 
     scsi_update_irq(scsi);
 }
@@ -1035,6 +1085,20 @@ void scsi_odr_auto_handshake_byte(scsi_t *scsi, uint8_t value) {
     if ((scsi->chip5380->reg.mr & MR_DMA) && !scsi->chip5380->dma_write_armed)
         return;
 
+    // ── GATE 2b: DMA transfers need a phase match ───────────────────────
+    // In DMA mode the 5380 moves a byte only while the bus phase matches TCR
+    // (BSR bit 3, "Phase Match"; design manual S6.4).  A/UX's blind primer
+    // (below) is written with TCR still describing COMMAND while the target
+    // has gone to DATA OUT, and the Start DMA Send of the CDB is still armed:
+    // the real chip drops it on the mismatch.  The settle in GATE 3 catches
+    // the primer only while it lands within SCSI_DATA_OUT_SETTLE_CYCLES of
+    // the command; an interrupt between the CDB and the primer -- A/UX 1.1
+    // takes clock ticks there -- pushed it past, and it went to disk as byte 0
+    // of the payload, shifting a whole block ("EXCESSIVE BAD BLKS" from fsck,
+    // a 1-byte shift in /bin/pr's indirect block).
+    if ((scsi->chip5380->reg.mr & MR_DMA) && !scsi_phase_match(scsi, false))
+        return;
+
     // ── GATE 3: the target has to be asking ─────────────────────────────
     // No REQ, no transfer.  A byte the initiator puts on the bus is only
     // taken when the target is requesting one; the 5380 cannot complete a
@@ -1221,6 +1285,8 @@ scsi_5380_t *scsi_5380_attach(scsi_t *bus, checkpoint_t *checkpoint) {
     // one.
     if (bus->sched)
         scheduler_new_event_type(bus->sched, "scsi", bus, "drq_service", &scsi_drq_service);
+    if (bus->sched)
+        scheduler_new_event_type(bus->sched, "scsi", bus, "status_irq", &scsi_status_irq);
 
     if (checkpoint) {
         // The chip's plain-data block, matching the single write in

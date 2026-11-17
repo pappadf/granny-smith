@@ -571,6 +571,7 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
     /* Set SoA active pointers based on current supervisor mode */                                                     \
     cpu_select_soa(cpu->supervisor);                                                                                   \
     g_bus_error_instr_ptr = instructions; /* let memory slow paths force exit */                                       \
+    g_fault_dregs_src = cpu->d; /* MMU faults snapshot D0-D7 for the retry */                                          \
     cpu_check_interrupt(cpu);                                                                                          \
     /* The same-PC retry latch: decided once per sprint (and in write_sr), */                                          \
     /* never per instruction -- see m68k_bus_error_latch_settle.           */                                          \

@@ -1028,6 +1028,20 @@ static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *res
     uint16_t saved_sr = cpu_get_sr(cpu);
     uint32_t saved_pc = faulting_pc; // retry: RTE restarts the instruction
 
+    // The instruction ran on past the fault with a fill value standing in for
+    // the faulted read, and its op body may have stored that into a data
+    // register.  "The restarted execution overwrites all results" only holds
+    // when that register is not also an input: A/UX 1.1's stdio computes a
+    // read size with MOVE.L $4019E4(,D0.L*4),D0, the table page faults, and
+    // the retry indexed with D0 = $FFFFFFFF (read(fd, buf, -12888): chown
+    // "unknown user id root").  The hardware never writes a destination whose
+    // operand read faulted, so D0-D7 go back to the values at the fault.  The
+    // address registers keep their per-op rollbacks (cpu_ops.h), which restore
+    // pre-instruction values and must not be undone here.
+    if (g_fault_dregs_valid && cpu->cpu_model < CPU_MODEL_68040 && cpu->cpu_model != CPU_MODEL_68000)
+        memcpy(cpu->d, g_fault_dregs, sizeof g_fault_dregs);
+    g_fault_dregs_valid = false;
+
     enter_exception_supervisor(cpu);
     uint16_t fc = (uint16_t)(g_bus_error_fc & 0x7);
 

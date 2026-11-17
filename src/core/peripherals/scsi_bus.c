@@ -1164,7 +1164,8 @@ void run_cmd(scsi_t *scsi) {
             static const char apple_id[] = "APPLE COMPUTER, INC.";
             const int apple_id_len = (int)sizeof(apple_id) - 1; // no NUL on the wire
 
-            uint8_t resp[96];
+            // All pages: 4 + 8 + 12 (page 1) + 24 + 24 + 22 (page $30) = 94.
+            uint8_t resp[128];
             memset(resp, 0, sizeof(resp));
             int total = 4 + 8; // mode parameter header + one block descriptor
             resp[3] = 8; // block descriptor length
@@ -1203,6 +1204,24 @@ void run_cmd(scsi_t *scsi) {
             // driver does exactly that and derives a sector size from the
             // leftovers of its previous INQUIRY (measured: 14384 bytes/sector
             // off "DPES-31080"), which makes every later block access wrong.
+            // Page 1 (Read-Write Error Recovery), SCSI-2 S8.3.3.6.  Apple's
+            // drives answer it and HD SC Setup asks for it (MODE SENSE page 1,
+            // allocation length 20) before it formats.  Without it the answer
+            // ended after the block descriptor, short of the count the host's
+            // pseudo-DMA loop reads -- which only completes on hardware whose
+            // DRQ outlives the data phase; the 5380's does not.
+            if (page_code == 0x01 || page_code == 0x3F) {
+                resp[total] = 0x01; // page code
+                resp[total + 1] = 0x0A; // page length: 10 bytes follow
+                // No changeable fields; the values are the drive's defaults:
+                // no automatic reallocation, no early recovery flags, and a
+                // retry count for each direction.
+                if (!changeable) {
+                    resp[total + 3] = 0x08; // read retry count
+                    resp[total + 8] = 0x08; // write retry count
+                }
+                total += 12;
+            }
             if (page_code == 0x03 || page_code == 0x3F) {
                 resp[total] = 0x03; // page code
                 resp[total + 1] = 0x16; // page length: 22 bytes follow
