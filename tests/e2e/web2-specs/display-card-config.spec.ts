@@ -68,9 +68,12 @@ test('New Machine dialog: pick the 24AC card by name and boot it', async ({ page
   await page.getByTestId('cfg-add-card').click();
   // One entry per declaration ROM (#346): every card on its generic ROM,
   // and the 8•24 and 24AC, whose vROMs are stored, on their real ones too
-  // (the 8•24 GC's is not, so it has no real entry); none is a file.
+  // (the 8•24 GC's is not, so it has no real entry), plus the Macintosh II
+  // Video Card, which has no substitute ROM and so only a real entry; none
+  // is a file.
   const card = page.locator('#cfg-add-card');
-  await expect(card.locator('option')).toHaveCount(5);
+  await expect(card.locator('option')).toHaveCount(6);
+  await expect(card.locator('option', { hasText: 'Macintosh II Video Card' })).toHaveCount(1);
   await expect(card.locator('option', { hasText: '24AC' })).toHaveCount(2);
   await expect(card.locator('option', { hasText: '24AC (real video ROM)' })).toHaveCount(1);
   await expect(card.locator('option', { hasText: 'GC (real video ROM)' })).toHaveCount(0);

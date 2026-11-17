@@ -42,3 +42,9 @@ the TFB chip through a Bt453 RAMDAC, with a 4 KB declaration ROM (342-0008).
 ## 6. Open questions
 
 > **TODO**
+
+## References
+
+- *Designing Cards and Drivers for the Macintosh Family*, Apple Computer
+  (Addison-Wesley): NuBus card and declaration ROM conventions.
+- *Inside Macintosh, Volume V*: the Slot Manager and video driver interface.
