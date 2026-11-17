@@ -297,10 +297,11 @@ static void scsi_schedule_drq_service(scsi_t *scsi) {
 // Mac drives no EOP on a data-in completion.  A/UX 1.1's sash decodes BSR|CSR
 // against a table whose phase-mismatch row ($1060 under mask $B462) requires
 // BSR_EDMA clear; with it set, no row matches and the driver spins at IPL 2.
-// DRQ drops too: the 5380 raises it only for REQ in a matching phase, and the
-// status-ready row ($1040 under $FDC2) requires it clear -- with DRQ still up
-// from the data the table falls to its transitional row and sash reports
-// "Protocol Error Processing SCSI request".
+// DRQ is left alone.  A host still in its pseudo-DMA loop when the target
+// sends fewer bytes than it asked for -- HD SC Setup's MODE SENSE for page 1,
+// which this drive answers with the header and block descriptor only -- polls
+// DRQ and reads out the rest of its count; dropping DRQ under it mid-loop made
+// HD SC Setup give up ("Unable to prepare the disk for initialization").
 static void scsi_status_irq(void *source, uint64_t data) {
     scsi_t *scsi = (scsi_t *)source;
     (void)data;
@@ -309,17 +310,12 @@ static void scsi_status_irq(void *source, uint64_t data) {
     // Only a real mismatch: MR.DMA still set with TCR still describing the data
     // phase.  A host that has moved on -- cleared MR.DMA, or (A/UX 1.1's kernel)
     // set TCR to STATUS and armed a DMA receive for the status byte -- sees a
-    // matching phase, gets no interrupt, and keeps its DRQ.  Dropping that DRQ
+    // matching phase and gets no interrupt.  Clearing the latch (and DRQ) there
     // stalled the kernel until its watchdog fired, and the REQUEST SENSE
     // recovery that followed corrupted page-ins ("Illegal instruction",
     // "Memory fault" in the installer).
-    if ((scsi->chip5380->reg.mr & MR_DMA) && scsi->bus.phase == scsi_status && !scsi_phase_match(scsi, false)) {
+    if ((scsi->chip5380->reg.mr & MR_DMA) && scsi->bus.phase == scsi_status && !scsi_phase_match(scsi, false))
         scsi->chip5380->end_of_dma = false;
-        if (scsi->chip5380->reg.bsr & BSR_DR) {
-            scsi->chip5380->reg.bsr &= ~BSR_DR;
-            scsi_update_drq(scsi);
-        }
-    }
     scsi_update_irq(scsi);
 }
 
@@ -967,13 +963,8 @@ static uint8_t reg_read(scsi_t *scsi, uint32_t addr, bool peek) {
     return 0;
 }
 
-// Register-level trace at level 6 (`log.set scsi 6`): every 5380 register
-// access with the bus phase it saw.  Pseudo-DMA data reads and writes come
-// through here too, so expect volume.
 static uint8_t read_uint8(void *s, uint32_t addr) {
-    uint8_t v = reg_read(s, addr, false);
-    LOG(6, "5380 rd +%03X = %02X phase=%d", addr & 0x3FFu, v, ((scsi_t *)s)->bus.phase);
-    return v;
+    return reg_read(s, addr, false);
 }
 static uint8_t peek_uint8(void *s, uint32_t addr) {
     return reg_read(s, addr, true);
@@ -1144,7 +1135,6 @@ void scsi_odr_auto_handshake_byte(scsi_t *scsi, uint8_t value) {
 // Write a byte to SCSI controller register
 static void write_uint8(void *s, uint32_t addr, uint8_t value) {
     scsi_t *scsi = (scsi_t *)s;
-    LOG(6, "5380 wr +%03X = %02X phase=%d", addr & 0x3FFu, value, scsi->bus.phase);
 
     if (scsi->loopback) {
         // Advance CDR pipeline: capture current bus state BEFORE this write
