@@ -58,7 +58,13 @@ typedef struct {
     const char *rev_level; // VendorInfo RevLevel string
     const char *vid_name; // functional sResource name
     uint16_t drhw; // sRsrcType DrHW
-    uint32_t fb_minor; // MinorBaseOS (std-slot framebuffer offset)
+    uint32_t fb_minor; // MinorBaseOS (std-slot device base)
+    // vpBaseOffset: the framebuffer's offset from that base.  Apple's 8*24 ROM
+    // declares MinorBaseOS 0 and vpBaseOffset $A00, and software that reads
+    // only the VPBlock (A/UX's console) depends on it: with the offset in
+    // MinorBaseOS instead, A/UX 1.1 drew its console $A00 bytes (32 rows at
+    // 1 bpp) above the framebuffer.
+    uint32_t fb_offset;
     // mPageCnt: how many framebuffers this personality's card has, as a
     // counting number (Designing Cards and Drivers 3ed, p.242).  The SE/30 has
     // two, selected by VIA1 PA6, and the hand-built fallback ROM has always
@@ -75,25 +81,27 @@ typedef struct {
 static const char gc_rev_level[] = "MDC 8\xA5"
                                    "24 GC 1.1";
 
+#define SE30_FB_OFFSET 0x8040u // primary buffer offset (vpBaseOffset)
+
 static const gsvrom_traits_t s_traits[4] = {
-    [GSVROM_JMFB] = {"GS Generic Display (8*24)",    0x0027, "1.0",        "Display_Video_Apple_MDC",    0x0019, 0xA00, 1},
-    [GSVROM_BOOGIE] = {"GS Generic Display (24AC)",    0x05FA, "1.0",        "Display_Video_Apple_Boogie", 0x002B, 0,     1},
+    [GSVROM_JMFB] = {"GS Generic Display (8*24)",    0x0027, "1.0",        "Display_Video_Apple_MDC",    0x0019, 0,     0xA00,          1},
+    [GSVROM_BOOGIE] = {"GS Generic Display (24AC)",    0x05FA, "1.0",        "Display_Video_Apple_Boogie", 0x002B, 0,     0,              1},
     [GSVROM_MDCGC] = {"GS Generic Display (8*24 GC)", 0x002C, gc_rev_level, "Display_Video_Apple_MDCGC",  0x001D, 0xA00,
-                     1                                                                                                   },
-    [GSVROM_SE30] = {"GS Generic Display (SE/30)",   0x000C, "1.0",        "Display_Video_Apple_SE30",   0x0009, 0,     2},
+                     0,                                                                                                                 1},
+    [GSVROM_SE30] = {"GS Generic Display (SE/30)",   0x000C, "1.0",        "Display_Video_Apple_SE30",   0x0009, 0,     SE30_FB_OFFSET,
+                     2                                                                                                                   },
 };
 
 // GC address-space constants (ops_mdcgc.s equivalents).
-#define GC_FB_OFFSET   0x11400u // framebuffer offset within card DRAM
-#define GC_DRAM_SIZE   0x200000u // 2 MB card DRAM
-#define GC_ROW_BYTES   1024u // fixed row pitch at every indexed depth
-#define GC_DEFER_SPID  0xA0u // the 32-bit (super-slot) sResource family
-#define SE30_FB_OFFSET 0x8040u // primary buffer offset (vpBaseOffset)
+#define GC_FB_OFFSET  0x11400u // framebuffer offset within card DRAM
+#define GC_DRAM_SIZE  0x200000u // 2 MB card DRAM
+#define GC_ROW_BYTES  1024u // fixed row pitch at every indexed depth
+#define GC_DEFER_SPID 0xA0u // the 32-bit (super-slot) sResource family
 
 // Fill one declrom_vidmode_t for `bpp` under this personality's rules.
 static declrom_vidmode_t make_mode(gsvrom_personality_t p, const nubus_monitor_t *m, int bpp) {
     declrom_vidmode_t v = {
-        .base_offset = (p == GSVROM_SE30) ? SE30_FB_OFFSET : 0,
+        .base_offset = s_traits[p].fb_offset,
         .row_bytes = (p == GSVROM_MDCGC) ? GC_ROW_BYTES : (uint16_t)(m->width * (uint32_t)bpp / 8),
         .width = (uint16_t)m->width,
         .height = (uint16_t)m->height,
@@ -119,7 +127,7 @@ static declrom_vidmode_t make_mode(gsvrom_personality_t p, const nubus_monitor_t
 static uint32_t window_length(gsvrom_personality_t p, const nubus_monitor_t *m) {
     switch (p) {
     case GSVROM_JMFB:
-        return m->width * m->height; // 8 bpp max
+        return s_traits[p].fb_offset + m->width * m->height; // through the 8 bpp FB end
     case GSVROM_BOOGIE:
         return m->width * m->height * 4; // 32 bpp max
     case GSVROM_MDCGC:
