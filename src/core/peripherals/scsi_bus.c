@@ -1203,6 +1203,24 @@ void run_cmd(scsi_t *scsi) {
             // driver does exactly that and derives a sector size from the
             // leftovers of its previous INQUIRY (measured: 14384 bytes/sector
             // off "DPES-31080"), which makes every later block access wrong.
+            // Page 1 (Read-Write Error Recovery), SCSI-2 S8.3.3.6.  Apple's
+            // drives answer it and HD SC Setup asks for it (MODE SENSE page 1,
+            // allocation length 20) before it formats.  Without it the answer
+            // ended after the block descriptor, short of the count the host's
+            // pseudo-DMA loop reads -- which only completes on hardware whose
+            // DRQ outlives the data phase; the 5380's does not.
+            if (page_code == 0x01 || page_code == 0x3F) {
+                resp[total] = 0x01; // page code
+                resp[total + 1] = 0x0A; // page length: 10 bytes follow
+                // No changeable fields; the values are the drive's defaults:
+                // no automatic reallocation, no early recovery flags, and a
+                // retry count for each direction.
+                if (!changeable) {
+                    resp[total + 3] = 0x08; // read retry count
+                    resp[total + 8] = 0x08; // write retry count
+                }
+                total += 12;
+            }
             if (page_code == 0x03 || page_code == 0x3F) {
                 resp[total] = 0x03; // page code
                 resp[total + 1] = 0x16; // page length: 22 bytes follow
