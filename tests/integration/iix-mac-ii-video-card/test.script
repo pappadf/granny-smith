@@ -1,0 +1,54 @@
+# Integration test: IIx + Apple Macintosh II Video Card ("Toby", 630-0153)
+# running Apple's declaration ROM, mac-ii-video-card-reva-729755f8.vrom
+# (part 342-0008-A).
+#
+# Slot $9 (base $F9000000), from Apple's TFBDepVideoEqu.a:
+#   $F9000000  VRAM, 512 KB
+#   $F9080003  TFB registers, one byte per long word (index = (a >> 2) & $F)
+#   $F9090018  Bt453 palette data (write), $F909001C address
+#   $F90A0003  ClrVInt (clear + enable), $F90A0007 DisableVInt
+#   $F90D0003  RdVSync (bit 0)
+#   $F9FFC000  declaration ROM, byte lane 0, ending at the slot top
+# The card's data bus is inverted: the driver writes ~value to every register.
+
+include "../lib/mac.script"
+
+# =====================================================================
+# Part A - register decode, no OS.
+# =====================================================================
+machine.boot model="iix" ram=8192 slots="9=mac_ii_video_card" rom="${$ROM}"
+assert machine.nubus.slot[9].card.id == "mac_ii_video_card" "the card is not seated"
+assert machine.nubus.slot[9].card.declrom.crc == 0x729755F8 "not Apple's 342-0008 ROM"
+# The Format Block's last byte, ByteLanes $E1, sits on lane 0 of the slot's
+# last long word.
+assert machine.memory.peek.b(0xF9FFFFFC) == 0xE1 "ByteLanes not at the slot top on lane 0"
+
+# VRAM is plain memory to the CPU: both inversions cancel.  PrimaryInit and
+# the driver size it this way (TFBTestPos, 265 KB - 4).
+machine.memory.poke.l 0xF9041FFC 0x4D414332
+assert machine.memory.peek.l(0xF9041FFC) == 0x4D414332 "512 KB of VRAM: the test pattern did not stick"
+
+# The driver's 8 bpp DepthTbl row, each byte complemented onto lane 3; the
+# page base (registers 2/3) is 32 bytes = 8 long words.
+let row = [0x00, 0x47, 0x00, 0x08, 0xF0, 0xE5, 0x77, 0x46, 0x05, 0x1E, 0x1E, 0x16, 0x86, 0x96, 0x2D, 0xF9]
+for i in 0..16 {
+    machine.memory.poke.b (0xF9080003 + $i * 4) (($row[$i]) ^ 0xFF)
+}
+assert machine.screen.width == 640 "width != 640"
+assert machine.screen.height == 480 "height != 480"
+assert machine.nubus.slot[9].card.framebuffer.depth == 8 "DepthTbl 8 bpp row did not select 8 bpp"
+
+# =====================================================================
+# Part B - System 7.0.1 to an 8 bpp colour Finder, matched as RGB: the
+# palette as Apple's driver loads it (entry i addressed at the complemented,
+# left-aligned index; R, G, B complemented) must colour pixel value i.  The
+# rainbow Apple menu shows it.  video_mode= seeds the
+# slot's sPRAMRec (BoardID $0005, savedMode $83, sRsrcVideo8 $80), as the
+# Monitors control panel would.
+# =====================================================================
+machine.boot model="iix" ram=8192 slots="9=mac_ii_video_card" video_mode="13in_rgb_8bpp" rom="${$ROM}"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
+wait_match("finder-640x480-8bpp.png", 600000000, 20000000)
+assert machine.nubus.slot[9].card.framebuffer.depth == 8 "the Finder is not at 8 bpp"
+
+quit

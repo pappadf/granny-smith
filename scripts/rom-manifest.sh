@@ -112,6 +112,7 @@ NOTES = {
   "824gc-v1.1-revb-d722b053.vrom":   "8•24 GC vROM v1.1 (16-Sep-91). Apple part 341-0266, the Rev B ROM — the ONLY 8•24 GC ROM with 16 bpp modes; catalog default.",
   "824gc-v1.0-reva-9e9857e8.vrom":   "8•24 GC vROM v1.0 (shipping). Apple part 341-0812-02, Rev A — no 16 bpp modes.",
   "824gc-v1.0a16-4740028d.vrom":     "8•24 GC vROM 1.00a16 alpha (codename “Dolphin”).",
+  "mac-ii-video-card-reva-729755f8.vrom": "Apple Macintosh II Video Card (630-0153, “Toby”), the card the Macintosh II shipped with. Apple part 342-0008-A: a 4 KB chip on byte lane 0, stored as the Slot Manager reads it. The common `342-0008-a.bin` dump is the same bytes complemented and in reverse order.",
   "mach64-gx-104-437584e0.prom":     "Apple Accelerated PCI Graphics Card (ATI Mach64 GX, “Spinnaker”) — the display card the Power Macintosh 9500 shipped with. ROM 113-32900-104, the shipping revision: real Apple part numbers in its ATY,Rom#/Mem#/Card# properties, and byte-identical to the separately archived -004 dump. Catalog default.",
   "mach64-gx-101-8c68216e.prom":     "Same card, ROM 113-32900-101 — an earlier programming whose part-number strings are all “000-00000-000”. Kept as a distinct dump; not the default.",
   "rage128-xclaimvr128-108-d0c84d42.prom": "ATI Xclaim VR 128 (Rage 128 GL, PCI $5245), retail Mac card — ROM 113-57406-108, card 109-57400-00 (the Rage Orion's board family), FCode 1.69, node `ATY,Rage128v`, with the `.Display_Rage128` ndrv. Catalog default.",
@@ -133,6 +134,7 @@ ALIASES = [
   ("Apple-341-0266.vrom",    "824gc-v1.1-revb-d722b053.vrom"),
   ("341-0812-02_1.0.vrom",   "824gc-v1.0-reva-9e9857e8.vrom"),
   ("Dolphin_1.0A16.vrom",    "824gc-v1.0a16-4740028d.vrom"),
+  ("342-0008-a.bin",         "mac-ii-video-card-reva-729755f8.vrom"),
 ]
 
 rows, pending = [], None

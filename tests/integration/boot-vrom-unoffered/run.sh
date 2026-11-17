@@ -13,13 +13,14 @@ ROM="$TEST_TMPDIR/rom/iix-iicx-se30-97221136.rom"
 VROM="$TEST_TMPDIR/vrom/display-card-24ac-d8daab87.vrom"
 
 cat > "$TEST_TMPDIR/test.script" << EOF
-# Nothing offered: a card with both ROMs is listed only on its generic one,
+# Nothing offered: a card with both ROMs is listed only on its generic one, a
+# card with only Apple's ROM (the Mac II Video Card) is listed as unavailable,
 # and the default document seats that (#346).
 let ids = ""
 for c in catalog.profile("iicx").cards {
     \$ids = "\${\$ids} \${\$c.id}"
 }
-assert "\$ids" == " mdc_8_24_generic display_card_24ac_generic 824gc_generic" "only the generic entries without ROMs: \$ids"
+assert "\$ids" == " mdc_8_24_generic display_card_24ac_generic 824gc_generic mac_ii_video_card" "only the generic entries without ROMs: \$ids"
 assert catalog.default_config("iicx").cards[0].card == "mdc_8_24_generic" "the default card is not the generic 8•24"
 assert catalog.default_config("se30").options.video_rom == "generic" "the SE/30 defaults to a real video ROM it does not have"
 assert machine.boot(model="iicx", rom="$ROM", config="{\"cards\":[{\"slot\":\"nubus_9\",\"card\":\"mdc_8_24\"}]}") "a document naming the real 8•24 without its ROM boots"

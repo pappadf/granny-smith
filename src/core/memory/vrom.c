@@ -38,6 +38,7 @@ LOG_USE_CATEGORY_NAME("vrom");
 // the 8•24 GC v1.0 / alpha) and 64 KB (the 8•24 GC v1.1).  Facts of these
 // cards' chips, private to the identifier -- a card factory that loads a ROM
 // learns its size from the identification, not from a constant.
+#define VROM_CHIP_4K  (4u * 1024u)
 #define VROM_CHIP_32K (32u * 1024u)
 #define VROM_CHIP_64K (64u * 1024u)
 
@@ -99,6 +100,10 @@ static const struct vrom_known VROM_CATALOG[] = {
     {0xD722B053u, 0x10000, "824gc",              true }, // part 341-0266, v1.1 (default; 16bpp)
     {0x9E9857E8u, 0x08000, "824gc",              false}, // part 341-0812-02, v1.0 (shipping)
     {0x4740028Du, 0x08000, "824gc",              false}, // "Dolphin" 1.00a16 alpha
+    // Apple Macintosh II Video Card ("Toby", id "mac_ii_video_card"): part
+    // 342-0008-A, a 4 KB chip on byte lane 0 ($E1); loaded by
+    // mac_ii_video_card.c.
+    {0x729755F8u, 0x01000, "mac_ii_video_card",  true },
 };
 
 #define VROM_CATALOG_COUNT (sizeof(VROM_CATALOG) / sizeof(VROM_CATALOG[0]))
@@ -121,7 +126,7 @@ static enum vrom_id_result vrom_identify_image(const uint8_t *img, size_t size, 
     // Declaration-ROM chips come in two sizes: 32 KB (SE/30, JMFB, 24AC, the
     // 8•24 GC v1.0 / alpha) and 64 KB (the 8•24 GC v1.1).  The Format Block +
     // CRC live in the trailing bytes either way, so accept both.
-    if (size != VROM_CHIP_32K && size != VROM_CHIP_64K)
+    if (size != VROM_CHIP_4K && size != VROM_CHIP_32K && size != VROM_CHIP_64K)
         return VROM_ID_WRONG_SIZE;
     // Only the trailing Format Block matters for identity.
     const uint8_t *tail = img + size - VROM_CRC_OFF;
@@ -184,7 +189,7 @@ static enum vrom_id_result vrom_identify_core(const char *path, vrom_id_t *out, 
     // Zero only when stat failed (missing / unreadable).
     if (size == 0)
         return VROM_ID_UNREADABLE;
-    if (size != VROM_CHIP_32K && size != VROM_CHIP_64K)
+    if (size != VROM_CHIP_4K && size != VROM_CHIP_32K && size != VROM_CHIP_64K)
         return VROM_ID_WRONG_SIZE;
     uint8_t *img = malloc(size);
     if (!img)
