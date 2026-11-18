@@ -83,6 +83,7 @@
     "iifx-mactest": 5,
     "iifx-marathon": 6,
     "iix-aux3-boot": 10,
+    "iix-aux11-boot": 2,
     "image-attach-busy": 1,
     "image-export-raw": 0,
     "image-hfs-traverse": 0,

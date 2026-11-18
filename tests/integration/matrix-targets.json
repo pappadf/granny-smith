@@ -665,6 +665,16 @@
       "suite": "iix-aux3-boot"
     },
     {
+      "machine": "iix",
+      "system": "A/UX 1.1",
+      "card": "mac_ii_video_card",
+      "width": 640,
+      "height": 480,
+      "depth": 1,
+      "addr32": null,
+      "suite": "iix-aux11-boot"
+    },
+    {
       "machine": "lisa",
       "system": "LOS 3.1",
       "card": "builtin",
