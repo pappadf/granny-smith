@@ -998,13 +998,21 @@ static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *res
     //     off; MOVEA.L (0,A0,D2.L*4),A0 retried from A0 = $FFFFFFFF).
     //   - an address register the instruction stepped or moved before the
     //     faulting access, recognised by its value in the copy against the
-    //     faulting address and the access width: the <ea> operand's (An)+
-    //     (An = addr + size) or -(An) (An = addr) on a data read.  (RTS/RTD,
-    //     LINK and UNLK commit SP/An only after their access succeeds.)
-    // All of it is done here, on the cold path: an "undo if the access
-    // faulted" test after every operand read cost the decoders 1-3 % of their
-    // host instructions (the bench gate's metric A).  The write_ea_* helpers
-    // still roll back their own destination step.
+    //     faulting address and the access width:
+    //       the <ea> operand's (An)+ (An = addr + size) or -(An) (An = addr)
+    //       on a data read;
+    //       RTS/RTD's pop (SP = addr; the op went on to SP += 4 and jumped to
+    //       the fill value, which the decoders never execute: the fault ends
+    //       the sprint before the next instruction);
+    //       LINK's push (SP = addr + 4 after the push's own rollback; the op
+    //       then set An = SP and added the displacement);
+    //       UNLK's pop (An = addr, read before SP moves; the op then set
+    //       SP = An + 4 and loaded An with the fill value).
+    // All of it is done here, on the cold path, so the decoders run these
+    // instructions with no "did the access fault" test: one after every
+    // operand read cost them 1-3 % of their host instructions (the bench
+    // gate's metric A).  The write_ea_* helpers still roll back their own
+    // destination step.
     if (g_bus_fault_regs_valid) {
         g_bus_fault_regs_valid = false;
         const uint32_t *snap = g_bus_fault_regs; // d[8] then a[8], at the fault
@@ -1016,7 +1024,20 @@ static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *res
         if (movea || adda_suba)
             cpu->a[an] = snap[8 + an];
         unsigned r = op & 7u;
-        if (rw && fault_addr - faulting_pc >= 22u) { // a data read through <ea>'s (An)+ / -(An)
+        if (op == 0x4E75u || op == 0x4E74u) { // RTS / RTD
+            if (snap[15] == fault_addr)
+                cpu->a[7] = fault_addr;
+        } else if ((op & 0xFFF8u) == 0x4E58u) { // UNLK An
+            if (r != 7 && snap[8 + r] == fault_addr) {
+                cpu->a[r] = fault_addr;
+                cpu->a[7] = snap[15];
+            }
+        } else if ((op & 0xFFF8u) == 0x4E50u || (op & 0xFFF8u) == 0x4808u) { // LINK.W / LINK.L An
+            if (snap[15] == fault_addr + 4) {
+                cpu->a[r] = snap[8 + r];
+                cpu->a[7] = fault_addr + 4;
+            }
+        } else if (rw && fault_addr - faulting_pc >= 22u) { // a data read through <ea>'s (An)+ / -(An)
             unsigned mode = (op >> 3) & 7u;
             uint32_t step = (g_bus_fault_size == 1 && r == 7) ? 2 : g_bus_fault_size;
             if (mode == 3 && snap[8 + r] - fault_addr == step)

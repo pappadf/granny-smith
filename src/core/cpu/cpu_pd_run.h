@@ -843,12 +843,16 @@ static inline void pd_movem_to_regs(cpu_t *restrict cpu, uint16_t mask, uint32_t
     // then A0-A7, cpu_pd_classify.h asserts the layout): visit only the set
     // bits, staged so a fault partway leaves every register untouched.
     uint32_t staged[16];
+    uint32_t ea0 = ea;
     for (unsigned m = mask; m; m &= m - 1) {
         unsigned i = (unsigned)__builtin_ctz(m);
         uint32_t v = bits == 16 ? (uint32_t)(int32_t)(int16_t)READ16(ea) : READ32(ea);
         ea += (uint32_t)bits >> 3;
-        if (g_bus_error_pending)
+        if (g_bus_error_pending) {
+            if (postinc_off >= 0)
+                PD_R((uint8_t)postinc_off) = ea0; // undo the caller's early (An)+ step: the retry steps it
             return;
+        }
         staged[i] = v;
     }
     for (unsigned m = mask; m; m &= m - 1) {
@@ -1278,8 +1282,6 @@ top:
             PD_ENTER(1);
             PD_MAT(1);
             uint32_t _pc = READ32(PD_SP);
-            if (__builtin_expect(g_bus_error_pending, 0))
-                PD_NEXT(1); // the retry pops again from the same SP (OP_RTS)
             PD_SP += 4;
             PD_JUMP_PC(_pc);
         }
@@ -1287,8 +1289,6 @@ top:
             PD_ENTER(2);
             PD_MAT(2);
             uint32_t _pc = READ32(PD_SP);
-            if (__builtin_expect(g_bus_error_pending, 0))
-                PD_NEXT(2); // the retry pops again from the same SP
             PD_SP += 4;
             PD_SP += (uint32_t)(int32_t)e.c;
             PD_JUMP_PC(_pc);
@@ -1300,13 +1300,11 @@ top:
         case PDF_UNLK: {
             PD_ENTER(1);
             PD_MAT(1);
-            // Commit SP/An only if the read did not fault (OP_UNLK): the
-            // PMMU retry re-runs UNLK from intact registers.
+            // Read through An before SP moves, so the register copy a fault
+            // takes still holds the original SP (exception_bus_error_retry).
             uint32_t _v = READ32(PD_R(e.a));
-            if (__builtin_expect(!g_bus_error_pending, 1)) {
-                PD_SP = PD_R(e.a) + 4;
-                PD_R(e.a) = _v;
-            }
+            PD_SP = PD_R(e.a) + 4;
+            PD_R(e.a) = _v;
             PD_NEXT(1);
         }
         case PDF_LINK_W: {
@@ -1314,14 +1312,8 @@ top:
             PD_MAT(2);
             uint32_t _ay = PD_R(e.a);
             PD_PUSH32(_ay);
-            // A faulting push leaves An and SP alone (OP_LINK): the retry
-            // links once.  libc's memcpy opens with LINK A6,#0, and a call
-            // whose push first touched a new stack page came back with A6
-            // pointing at its own return address.
-            if (__builtin_expect(!g_bus_error_pending, 1)) {
-                PD_R(e.a) = PD_SP;
-                PD_SP += (uint32_t)(int32_t)e.c;
-            }
+            PD_R(e.a) = PD_SP;
+            PD_SP += (uint32_t)(int32_t)e.c;
             PD_NEXT(2);
         }
         case PDF_LINK_L: {
@@ -1329,10 +1321,8 @@ top:
             PD_MAT(3);
             uint32_t _a = PD_R(e.a);
             PD_PUSH32(_a);
-            if (__builtin_expect(!g_bus_error_pending, 1)) { // as LINK.W
-                PD_R(e.a) = PD_SP;
-                PD_SP += e.c;
-            }
+            PD_R(e.a) = PD_SP;
+            PD_SP += e.c;
             PD_NEXT(3);
         }
         case PDF_PEA_IND: {
