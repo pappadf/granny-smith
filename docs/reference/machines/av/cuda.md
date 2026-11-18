@@ -747,7 +747,9 @@ interrupt that had already been consumed, mid-session and not just at boot.
    [4] — which boards differ, and how, is unresolved.
 9. **Which tick mode the AV ROM enables.** The clock-carrying (mode 3) versus bare tick forms are both
    handled host-side [6]; the disassembly here did not pin the value the AV image writes with the
-   write-one-second-mode command.
+   write-one-second-mode command. Observed in the emulator (Quadra 840AV, System 7.1 AV disk): the
+   boot writes one-second mode 3 and never sends RdTime, so the clock reaches lowmem `Time` only
+   through the clock-carrying tick.
 10. **Host-side power-on latch values.** The reset values of the VIA emulation's own registers (and
     the port-B latch state before the first write) are unconstrained by the evidence; the ROM writes
     before reading, so software cannot tell (§2.6).

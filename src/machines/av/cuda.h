@@ -51,8 +51,10 @@ typedef struct av_cuda av_cuda_t;
 // 1-second tick, autopoll, and the delayed byte pushes the sync protocol
 // needs.  Restores plain-data state from `cp` when non-NULL.
 // mode3_clock enables the Mode3Clock RdTime one-second tick (the tick carries
-// the RTC). Enable only for machines with a live guest clock that needs a real
-// seed (the PDM family); the AV Quadras pass false to keep the bare tick.
+// the RTC). Every machine on this Cuda passes true: System 7.1 on the AV
+// Quadras never sends RdTime at boot -- it asks for one-second mode 3 and
+// seeds lowmem Time from those ticks, so with the bare tick the guest clock
+// counted up from 1 January 1904.
 av_cuda_t *av_cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, struct scheduler *sched, checkpoint_t *cp,
                         bool mode3_clock);
 void av_cuda_delete(av_cuda_t *cuda);
