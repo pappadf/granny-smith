@@ -554,7 +554,7 @@ the chunk's maps (`jt_ref_t refs[]`); anything else goes to the chain stub.
 Blocks lay out in address order inside one loop; a block falls into the
 next when it starts right after it.
 
-**Blocks that run through a branch** (`jit.inline`, off by default).  A
+**Blocks that run through a branch** (`jit.inline`, 8 by default).  A
 block ends at its first branch, and code shaped like an interpreter is
 mostly branches: on the PM6100 at the System 7.6 desktop, where 99.8 % of
 the instructions run translated, blocks average 2.5 instructions, half of
@@ -565,7 +565,7 @@ and 10 % in `blr`/`bctr`.  At that length the block's fixed cost (the
 guard, the registers in and out, the way on) is most of it, and the tier
 ran no faster than the predecoded loop (86 against 87 MIPS).
 
-With `jit.inline = n`, a block that ends in an unconditional direct `b`
+With `jit.inline = n` (0 or 1 ends every block at its first branch), a block that ends in an unconditional direct `b`
 goes on with a **copy** of the code at the branch's target, up to that
 code's next branch, and again from there: up to *n* stretches and 64
 instructions (`JIT_INL_LEN`).  The words copied are words some chunk of
@@ -609,8 +609,10 @@ four alternated rounds, where the modules compile asynchronously):
 | PM8500 at the System 7.6 desktop | 73.4 | 81.0 | 81.6 |
 
 The one row that may lose is the 7500's Open Firmware, where the tier
-already loses to the predecoded loop (§6).  Not measured with it yet:
-Quake III.
+already loses to the predecoded loop (§6).  Quake III's demo `four`
+(`g3-rage128-quake3-demo`'s script, Node, the software rasteriser) plays
+to its end with it: 3,233 frames, 16,046,175 primitives, 96 % of the
+instructions translated, 774 s of host time for the demo.
 
 What was measured and left out, because Mac OS X paid more for the
 compiles than it got back (cold / warm ms, against 1775 / 1190 and 1902 /
@@ -812,7 +814,7 @@ Safari 18.2, Node 20).
 The predecode differential (`tests/integration/predecode-diff`) runs each
 PowerPC row (the 6100 and 7500 ROM boots, and `dr`: the 8500 booting
 System 7.6 on the DR emulator, whose cache is written while it runs) a
-third time with the tier on, and a fourth with `jit.inline = 8`, eagerly (`jit.threshold = 1`,
+third time with the tier on and `jit.inline = 0`, and a fourth with `jit.inline = 8` (the default), eagerly (`jit.threshold = 1`,
 `jit.cooldown = 16`, `jit.budget = 100`), when the build has it (`jit.available`), and
 compares the checkpoints with the switch core's.  Build the Node wasm
 build (`make -f Makefile.headless TARGET=node`) and run the test with it;
@@ -871,7 +873,7 @@ Open Firmware (`pm7500-of`, 58 -> 50 MIPS): a few seconds at power-on.
 | `quiet` | entries after a code write before its region is retranslated (64) |
 | `supervisor` | 1 = also translate supervisor code running with data translation on, once the supervisor-translated SoA exists (the default: the Mac OS X boot is about 15 % faster with it than user-only, §3.3) |
 | `chunk_cap` | the most instructions one function translates (1024; 64..65536) |
-| `inline` | the most stretches of code a block runs through, past unconditional direct branches (§3.3); 0 or 1 ends every block at its first branch (0; 0..16).  Setting it drops every translation |
+| `inline` | the most stretches of code a block runs through, past unconditional direct branches (§3.3); 0 or 1 ends every block at its first branch (8; 0..16; a build sets another default with `-DJIT_INLINE_DEFAULT=<n>`).  Setting it drops every translation |
 | `churn_ok` | experiments: 1 = code that keeps changing is translated like any other (no volatile pages, no unstable words, §3.2); setting it drops every translation (0) |
 | `async` | 1 = compile through `WebAssembly.compile` off the call path (§2.2; the default except under Node) |
 | `regs` | 0 = guest GPRs in locals per block, 1 = per function; setting it drops every translation |

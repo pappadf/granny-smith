@@ -75,8 +75,8 @@ static uint32_t g_churn_ok;
 // jit.inline: the most stretches of code one block runs through.  A block that ends in an
 // unconditional direct branch (b, not bl) goes on with a copy of the code at the branch's target, up
 // to that code's next branch, and so on (§3.3).  0, 1: every branch ends its block.
-#ifndef JIT_INLINE_DEFAULT // (a build may set another default: EXTRA_CFLAGS=-DJIT_INLINE_DEFAULT=8, to bench it)
-#define JIT_INLINE_DEFAULT 0
+#ifndef JIT_INLINE_DEFAULT // (a build may set another default: EXTRA_CFLAGS=-DJIT_INLINE_DEFAULT=0, to bench it)
+#define JIT_INLINE_DEFAULT 8
 #endif
 static uint32_t g_inl = JIT_INLINE_DEFAULT;
 #define JIT_INL_SEGS 16 // the most jit.inline takes

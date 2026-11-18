@@ -17,9 +17,10 @@
 //   pm6100desk  601 at the same System 7.6 desktop as pm8500 (not in the
 //           default list): the ROM's interpretive 68K emulator at work
 //
-// PERF_JIT_INLINE=<n> adds a third arm, `jit-inline`: the tier with
-// jit.inline = n (blocks that run through unconditional branches,
-// ppc_jit.md §3.3).  Here the engine compiles the tier's modules
+// PERF_JIT_INLINE=<n> adds a third arm, `jit-inline<n>`: the tier with
+// jit.inline = n instead of its default (blocks that run through
+// unconditional branches, ppc_jit.md §3.3; 0 ends every block at its first
+// branch).  Here the engine compiles the tier's modules
 // asynchronously, which the headless measurements cannot show.
 //
 // Results are `PERFBENCH label=<...> machine=<...> exec=<predecode|jit>
@@ -40,7 +41,7 @@ const LABEL = process.env.PERF_LABEL ?? "unlabeled";
 const PAIRS = Number(process.env.PERF_PAIRS ?? 3);
 const WINDOW_SECS = Number(process.env.PERF_WINDOW_SECS ?? 8);
 const MACHINES = (process.env.PERF_MACHINES ?? "pm8500,pm6100").split(",");
-const INLINE = Number(process.env.PERF_JIT_INLINE ?? 0);
+const INLINE = process.env.PERF_JIT_INLINE; // (unset: no third arm)
 const SETTLE_MS = Number(process.env.PERF_SETTLE_SECS ?? 2) * 1000;
 
 const ROWS: Record<
@@ -154,12 +155,14 @@ for (const machine of MACHINES) {
       })
       .toBeGreaterThan(row.settle);
 
-    // The arms: [name, jit.enabled, jit.inline]
+    // The arms: [name, jit.enabled, jit.inline]; the tier's own arm runs
+    // the default jit.inline
+    const inlineDefault = Number(await probeString(page, "jit.inline"));
     const arms: [string, number, number][] = [
-      ["predecode", 0, 0],
-      ["jit", 1, 0],
+      ["predecode", 0, inlineDefault],
+      ["jit", 1, inlineDefault],
     ];
-    if (INLINE > 0) arms.push(["jit-inline", 1, INLINE]);
+    if (INLINE !== undefined) arms.push([`jit-inline${Number(INLINE)}`, 1, Number(INLINE)]);
     const results: Record<string, number[]> = {};
     for (const [exec] of arms) results[exec] = [];
     for (let pair = 1; pair <= PAIRS; pair++) {
