@@ -180,6 +180,10 @@
       "instr": 1577270261,
       "tolerance": 0.2
     },
+    "iix-aux11-boot/uname": {
+      "instr": 97326261,
+      "tolerance": 0.2
+    },
     "iicx-gsvrom/gsvrom-24ac": {
       "instr": 55312311,
       "tolerance": 0.2
