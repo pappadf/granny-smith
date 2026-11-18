@@ -611,8 +611,10 @@ four alternated rounds, where the modules compile asynchronously):
 The one row that may lose is the 7500's Open Firmware, where the tier
 already loses to the predecoded loop (§6).  Quake III's demo `four`
 (`g3-rage128-quake3-demo`'s script, Node, the software rasteriser) plays
-to its end with it: 3,233 frames, 16,046,175 primitives, 96 % of the
-instructions translated, 774 s of host time for the demo.
+to its end with it and without, the same either way: 3,233 frames,
+16,046,175 primitives, 96 % of the instructions translated.  Its host
+time does not tell them apart (two runs each: 774 and 702 s with it, 690
+and 712 s without).
 
 What was measured and left out, because Mac OS X paid more for the
 compiles than it got back (cold / warm ms, against 1775 / 1190 and 1902 /
