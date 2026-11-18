@@ -110,6 +110,9 @@ typedef struct {
     uint64_t cpu_executed; // instructions the stub actually ran
     bool cpu_stopped; // FAKE_STOP: STOPped until an event fires
     uint64_t cpu_stop_pings; // pings when the stub last stopped
+    // The stub debugger
+    bool debugger_on; // debug_active answers this (a breakpoint is set)
+    uint64_t break_after; // debug_break_and_trace stops once cpu_executed reaches it (0 = never)
 } host_model_t;
 
 static const host_model_t HOST_MODEL_DEFAULT = {.audio_fill = -1.0, .cpu_mode = FAKE_RUN_ALL};
@@ -140,10 +143,14 @@ debug_t *system_debug(void) {
 }
 bool debug_active(debug_t *debug) {
     (void)debug;
-    return false;
+    return g_host.debugger_on;
 }
+// A one-shot breakpoint "at" the instruction after the break_after'th one.
 int debug_break_and_trace(void) {
-    return 0;
+    if (!g_host.debugger_on || g_host.break_after == 0 || g_host.cpu_executed != g_host.break_after)
+        return 0;
+    g_host.break_after = 0; // spent: resuming runs on past it
+    return 1;
 }
 
 void debug_note_pc(void) {}
@@ -1925,6 +1932,53 @@ TEST(test_a_stall_past_an_event_is_carried_not_dropped) {
     teardown(s);
 }
 
+// --- Breakpoint stops (#419) ---------------------------------------------------
+
+static int g_bp_fires; // bp_event firings
+
+// One-shot device event, for the breakpoint test.
+static void bp_event(void *source, uint64_t data) {
+    (void)source;
+    (void)data;
+    g_bp_fires++;
+}
+
+// A breakpoint that stops on the instruction which ran past a due event must
+// not leave that event queued behind the clock.  The debugger single-steps, and
+// a sprint rounds up to one whole instruction, so with CPI 10 and an event due
+// in 8 cycles the step ends 2 cycles past it.  The probe used to break before
+// the queue was serviced: the run ended with the head event in the past (the
+// strict check at the end of scheduler_run_instructions), and resuming tripped
+// the entry check, the sprint clamp check and -- one instruction later -- the
+// one-instruction overshoot check.  On a Lisa, a breakpoint at the boot ROM's
+// JMP (A2) into the boot block met the COPS pump event this way.  The event
+// fires before the stop now, so the stopped machine is consistent.
+TEST(test_a_breakpoint_stop_leaves_no_overdue_event) {
+    scheduler_t *s = fresh_scheduler(false);
+    scheduler_set_cpi(s, 10);
+    g_bp_fires = 0;
+    scheduler_new_event_type(s, "test", &g_dummy_cfg, "bp", bp_event);
+    scheduler_new_cpu_event(s, bp_event, &g_dummy_cfg, 0, 8, 0); // due inside the first instruction
+    scheduler_new_cpu_event(s, bp_event, &g_dummy_cfg, 0, 1000, 0); // a later one, still queued at the stop
+    g_host.debugger_on = true;
+    g_host.break_after = 1; // break on the second instruction
+    uint64_t c0 = scheduler_cpu_cycles(s);
+
+    scheduler_run_instructions(s, 100);
+    ASSERT_EQ_INT((long long)g_host.cpu_executed, 1); // stopped at the breakpoint
+    ASSERT_EQ_INT((long long)(scheduler_cpu_cycles(s) - c0), 10);
+    ASSERT_EQ_INT(g_bp_fires, 1); // the event the step ran past fired before the stop
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 1); // the later one is still ahead
+    ASSERT_TRUE(!scheduler_is_running(s));
+
+    // Resuming from the stop runs on cleanly to the end of the budget
+    scheduler_run_instructions(s, 99);
+    ASSERT_EQ_INT((long long)g_host.cpu_executed, 100);
+    ASSERT_EQ_INT((long long)(scheduler_cpu_cycles(s) - c0), 1000);
+    ASSERT_EQ_INT(g_bp_fires, 2);
+    teardown(s);
+}
+
 int main(void) {
     RUN(test_a_mode_reports_its_owner_and_its_reason);
     RUN(test_ns_delay_rounds_sub_cycle_up_to_one_cycle);
@@ -1976,6 +2030,7 @@ int main(void) {
     RUN(test_a_stop_counts_no_instructions_while_asleep);
     RUN(test_a_stop_with_an_empty_queue_still_sees_the_next_vbl);
     RUN(test_a_stall_past_an_event_is_carried_not_dropped);
+    RUN(test_a_breakpoint_stop_leaves_no_overdue_event);
     fprintf(stderr, "[OK  ] scheduler suite passed\n");
     return 0;
 }
