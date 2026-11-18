@@ -589,6 +589,29 @@ What it gives, Node, medians of 9 windows of 100 M instructions:
 The guest timeline is the same (the differential's `jit-inline` runs, §5;
 the scenario's instruction counts).
 
+The bench rows (`scripts/bench/run.py`, metric B by wall clock, the jit
+executor, alternated rounds; head a build with `-DJIT_INLINE_DEFAULT=8`,
+base the same sources without it) and the browser
+(`perf-jit.spec.ts` with `PERF_JIT_INLINE=8`, headless Chromium, turbo,
+four alternated rounds, where the modules compile asynchronously):
+
+| Row | Base MIPS | `inline` 8 | Ratio (95 % CI) |
+|---|---:|---:|---|
+| `pm6100-68kemu` | 100.6 | 157.9 | 1.570 (1.459-1.622) |
+| `pm8500-finder` | 109.8 | 110.7 | 1.008 (0.976-1.052) |
+| `g3dt-boot` (11 rounds) | 120.6 | 121.3 | 1.006 (0.969-1.034) |
+| `pm7500-of` (11 rounds) | 59.6 | 55.1 | 0.923 (0.889-1.025) |
+
+| Browser, median MIPS | predecoded | tier | tier, `inline` 8 |
+|---|---:|---:|---:|
+| PM6100 at the System 7.6 desktop | 61.4 | 84.0 | 133.1 |
+| PM6100, media-free | 88.8 | 112.7 | 164.7 |
+| PM8500 at the System 7.6 desktop | 73.4 | 81.0 | 81.6 |
+
+The one row that may lose is the 7500's Open Firmware, where the tier
+already loses to the predecoded loop (§6).  Not measured with it yet:
+Quake III.
+
 What was measured and left out, because Mac OS X paid more for the
 compiles than it got back (cold / warm ms, against 1775 / 1190 and 1902 /
 1227 in their batches): running through a call as well (`bl`: the

@@ -14,6 +14,13 @@
 //           (the Energy Saver dialog in front), mostly 68K code under the
 //           ROM's emulator
 //   pm6100  601, media-free: the ROM's 68K emulator in the Start Manager
+//   pm6100desk  601 at the same System 7.6 desktop as pm8500 (not in the
+//           default list): the ROM's interpretive 68K emulator at work
+//
+// PERF_JIT_INLINE=<n> adds a third arm, `jit-inline`: the tier with
+// jit.inline = n (blocks that run through unconditional branches,
+// ppc_jit.md §3.3).  Here the engine compiles the tier's modules
+// asynchronously, which the headless measurements cannot show.
 //
 // Results are `PERFBENCH label=<...> machine=<...> exec=<predecode|jit>
 // pair=<n> mips=<...>` lines on stdout — tracked numbers, not a gate.
@@ -33,10 +40,12 @@ const LABEL = process.env.PERF_LABEL ?? "unlabeled";
 const PAIRS = Number(process.env.PERF_PAIRS ?? 3);
 const WINDOW_SECS = Number(process.env.PERF_WINDOW_SECS ?? 8);
 const MACHINES = (process.env.PERF_MACHINES ?? "pm8500,pm6100").split(",");
+const INLINE = Number(process.env.PERF_JIT_INLINE ?? 0);
+const SETTLE_MS = Number(process.env.PERF_SETTLE_SECS ?? 2) * 1000;
 
 const ROWS: Record<
   string,
-  { rom: string; ram: string; hd?: string; settle: number }
+  { rom: string; ram: string; hd?: string; settle: number; model?: string }
 > = {
   pm8500: {
     rom: "pm7500-pm8500-pm9500-96cd923d.rom",
@@ -48,6 +57,13 @@ const ROWS: Record<
     rom: "pm6100-pm7100-pm8100-9feb69b3.rom",
     ram: "24 MB",
     settle: 200_000_000,
+  },
+  pm6100desk: {
+    model: "pm6100",
+    rom: "pm6100-pm7100-pm8100-9feb69b3.rom",
+    ram: "24 MB",
+    hd: "systems/system_7_6_170mb_24ac.img",
+    settle: 2_500_000_000,
   },
 };
 
@@ -110,10 +126,11 @@ for (const machine of MACHINES) {
 
     await page.getByRole("button", { name: "New Machine..." }).click();
     const model = page.locator("#cfg-model");
-    await expect(model.locator(`option[value="${machine}"]`)).toHaveCount(1, {
+    const modelId = row.model ?? machine;
+    await expect(model.locator(`option[value="${modelId}"]`)).toHaveCount(1, {
       timeout: 30_000,
     });
-    await model.selectOption(machine);
+    await model.selectOption(modelId);
     await page.locator("#cfg-opt-memory").selectOption({ label: row.ram });
     if (row.hd)
       await page
@@ -137,32 +154,44 @@ for (const machine of MACHINES) {
       })
       .toBeGreaterThan(row.settle);
 
-    const results: Record<string, number[]> = { predecode: [], jit: [] };
+    // The arms: [name, jit.enabled, jit.inline]
+    const arms: [string, number, number][] = [
+      ["predecode", 0, 0],
+      ["jit", 1, 0],
+    ];
+    if (INLINE > 0) arms.push(["jit-inline", 1, INLINE]);
+    const results: Record<string, number[]> = {};
+    for (const [exec] of arms) results[exec] = [];
     for (let pair = 1; pair <= PAIRS; pair++) {
-      for (const [exec, on] of [
-        ["predecode", 0],
-        ["jit", 1],
-      ] as const) {
+      for (const [exec, on, inline] of arms) {
+        // (jit.inline drops every translation, as jit.enabled = 0 does: each
+        // arm starts cold)
+        await terminalRun(page, "jit.enabled = 0");
+        await terminalRun(page, `jit.inline = ${inline}`);
         await terminalRun(page, `jit.enabled = ${on}`);
         expect(await probeString(page, "jit.enabled")).toBe(String(on));
-        await page.waitForTimeout(2_000);
+        expect(await probeString(page, "jit.inline")).toBe(String(inline));
+        await page.waitForTimeout(SETTLE_MS);
         const mips = await measureOnce(page);
         results[exec].push(mips);
         console.log(
-          `PERFBENCH label=${LABEL} machine=${machine} exec=${exec} pair=${pair} mips=${mips.toFixed(2)}`,
+          `PERFBENCH label=${LABEL} machine=${machine} exec=${exec} pair=${pair} mips=${mips.toFixed(2)} jit_instr_total=${await probeString(page, "jit.instructions")}`,
         );
       }
     }
     console.log(
       `PERFBENCH label=${LABEL} machine=${machine} jit compiles=${await probeString(page, "jit.compiles")} compile_us=${await probeString(page, "jit.compile_us")} deferred=${await probeString(page, "jit.deferred")}`,
     );
-    for (const exec of ["predecode", "jit"] as const) {
+    for (const [exec] of arms) {
       const sorted = [...results[exec]].sort((x, y) => x - y);
       console.log(
         `PERFBENCH label=${LABEL} machine=${machine} exec=${exec} median mips=${sorted[Math.floor(sorted.length / 2)].toFixed(2)}`,
       );
     }
-    expect(Math.max(...results.predecode)).toBeGreaterThan(0.5);
-    expect(Math.max(...results.jit)).toBeGreaterThan(0.5);
+    for (const [exec] of arms)
+      expect(Math.max(...results[exec])).toBeGreaterThan(0.5);
+    // The machine is still what it was (a wrong translation shows as a
+    // crashed or hung guest): keep the screen for a look
+    await page.screenshot({ path: test.info().outputPath(`${machine}-end.png`) });
   });
 }
