@@ -1209,23 +1209,8 @@ static void v2_sw_triangle(const v2_draw_state_t *st, v2_target_t *tgt, const vo
         e_stepx[e] = -16 * o * e_dye[e];
     }
 
-    int32_t minx = T->ax, maxx = T->ax, miny = T->ay, maxy = T->ay;
-    if (T->bx < minx)
-        minx = T->bx;
-    if (T->cx < minx)
-        minx = T->cx;
-    if (T->bx > maxx)
-        maxx = T->bx;
-    if (T->cx > maxx)
-        maxx = T->cx;
-    if (T->by < miny)
-        miny = T->by;
-    if (T->cy < miny)
-        miny = T->cy;
-    if (T->by > maxy)
-        maxy = T->by;
-    if (T->cy > maxy)
-        maxy = T->cy;
+    int32_t minx, maxx, miny, maxy;
+    v2_tri_bbox(T, &minx, &maxx, &miny, &maxy);
 
     int32_t cx0 = st->clip_x0, cx1 = st->clip_x1, cy0 = st->clip_y0, cy1 = st->clip_y1;
     int32_t x0 = minx >> 4, x1 = (maxx + 15) >> 4;

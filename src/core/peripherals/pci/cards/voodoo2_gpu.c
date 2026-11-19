@@ -1092,23 +1092,8 @@ static void v2gpu_fallback(v2_gpu_t *g, const v2_draw_state_t *st, v2_target_t *
 static void v2gpu_triangle(v2_gpu_t *g, const v2_draw_state_t *st, v2_target_t *tgt, const v2_cmd_t *cmd) {
     const voodoo2_tri_t *T = &cmd->u.tri;
     uint32_t fbz = st->fbz, amode = st->amode;
-    int32_t minx = T->ax, maxx = T->ax, miny = T->ay, maxy = T->ay;
-    if (T->bx < minx)
-        minx = T->bx;
-    if (T->cx < minx)
-        minx = T->cx;
-    if (T->bx > maxx)
-        maxx = T->bx;
-    if (T->cx > maxx)
-        maxx = T->cx;
-    if (T->by < miny)
-        miny = T->by;
-    if (T->cy < miny)
-        miny = T->cy;
-    if (T->by > maxy)
-        maxy = T->by;
-    if (T->cy > maxy)
-        maxy = T->cy;
+    int32_t minx, maxx, miny, maxy;
+    v2_tri_bbox(T, &minx, &maxx, &miny, &maxy);
     int32_t bx0 = minx >> 4, bx1 = (maxx + 15) >> 4, by0 = miny >> 4, by1 = (maxy + 15) >> 4;
     // The fallbacks: a rotate-mode stipple MASK (per-pixel register order),
     // the "colour before fog" destination factor, and the zaColor depth
