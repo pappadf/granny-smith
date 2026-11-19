@@ -316,9 +316,6 @@ bool udif_source_detect(const uint8_t *tail, size_t len) {
     return len >= UDIF_TRAILER_SIZE && udif_detect(tail + len - UDIF_TRAILER_SIZE, UDIF_TRAILER_SIZE);
 }
 
-// Largest XML block map read.  Real ones are a few hundred KB.
-#define UDIF_MAX_XML (64u * 1024u * 1024u)
-
 // Largest decoded chunk a foreign UDIF is read in place with (each miss
 // decodes a whole chunk into the image cache).
 static size_t g_inplace_max = UDIF_INPLACE_MAX_CHUNK_DEFAULT;
@@ -333,13 +330,64 @@ void udif_set_inplace_max_chunk(size_t bytes) {
                                                    : bytes;
 }
 
-bool udif_xml_is_gs_profile(const uint8_t *xml, size_t len) {
-    static const char tag[] = "<key>gs-profile</key>";
-    size_t n = sizeof(tag) - 1;
-    for (size_t i = 0; i + n <= len; i++)
-        if (xml[i] == '<' && memcmp(xml + i, tag, n) == 0)
-            return true;
-    return false;
+bool udif_xml_is_gs_profile(const char *xml, size_t len) {
+    char v[16];
+    return udif_plist_value(xml, len, "gs-profile", v, sizeof(v));
+}
+
+int udif_load(source_t *data, udif_trailer_t *tr, char **xml, size_t *xml_len, udif_map_t **map, const char **why) {
+    const char *dummy;
+    if (!why)
+        why = &dummy;
+    *why = NULL;
+    *map = NULL;
+    if (xml)
+        *xml = NULL;
+    if (!data)
+        return -EINVAL;
+    uint64_t dsize = source_size(data);
+    uint8_t trailer[UDIF_TRAILER_SIZE];
+    // No trailer at all: not UDIF, nothing to explain.
+    if (dsize < UDIF_TRAILER_SIZE || source_read_exact(data, dsize - UDIF_TRAILER_SIZE, trailer, sizeof(trailer)) ||
+        !udif_detect(trailer, sizeof(trailer)))
+        return -EINVAL;
+    int rc = udif_parse_trailer(trailer, sizeof(trailer), tr);
+    if (rc != 0) {
+        *why = UDIF_NO_TRAILER;
+        return rc;
+    }
+    if (tr->xml_offset > dsize || tr->xml_length > dsize - tr->xml_offset) {
+        *why = "the block map lies outside the file";
+        return -EINVAL;
+    }
+    // udif_parse_trailer bounds xml_length (non-zero, at most 16 MB).
+    size_t xl = (size_t)tr->xml_length;
+    char *buf = malloc(xl + 1);
+    if (!buf) {
+        *why = "out of memory";
+        return -ENOMEM;
+    }
+    rc = source_read_exact(data, tr->xml_offset, buf, xl);
+    if (rc != 0) {
+        *why = "cannot read the block map";
+        free(buf);
+        return -EIO;
+    }
+    buf[xl] = '\0';
+    rc = udif_parse_blkx((const uint8_t *)buf, xl, map);
+    if (rc != 0) {
+        *why = "the block map does not parse";
+        free(buf);
+        return rc;
+    }
+    if (xml) {
+        *xml = buf;
+        if (xml_len)
+            *xml_len = xl;
+    } else {
+        free(buf);
+    }
+    return 0;
 }
 
 source_t *udif_source_open(source_t *data, int *err) {
@@ -352,42 +400,23 @@ source_t *udif_source_open_bounded(source_t *data, size_t max_chunk, int *err) {
         err = &e;
     *err = -EINVAL;
     uint64_t dsize = source_size(data);
-    uint8_t trailer[UDIF_TRAILER_SIZE];
-    if (dsize < UDIF_TRAILER_SIZE || source_read_exact(data, dsize - UDIF_TRAILER_SIZE, trailer, sizeof(trailer)))
-        return NULL;
-    if (!udif_detect(trailer, sizeof(trailer)))
-        return NULL;
     udif_trailer_t tr;
-    int rc = udif_parse_trailer(trailer, sizeof(trailer), &tr);
+    udif_map_t *map = NULL;
+    char *xml = NULL;
+    size_t xml_len = 0;
+    const char *why = NULL;
+    int rc = udif_load(data, &tr, &xml, &xml_len, &map, &why);
     if (rc != 0) {
-        LOG(1, "unsupported UDIF trailer in '%s' (%d)", source_key(data), rc);
+        if (why)
+            LOG(1, "UDIF '%s': %s (%d)", source_key(data), why, rc);
         *err = rc;
         return NULL;
     }
-    if (tr.xml_offset > dsize || tr.xml_length > dsize - tr.xml_offset || tr.xml_length > UDIF_MAX_XML) {
-        *err = -EINVAL;
-        return NULL;
-    }
-    uint8_t *xml = malloc(tr.xml_length ? (size_t)tr.xml_length : 1);
-    if (!xml) {
-        *err = -ENOMEM;
-        return NULL;
-    }
-    udif_map_t *map = NULL;
-    rc = source_read_exact(data, tr.xml_offset, xml, (size_t)tr.xml_length);
-    if (rc == 0)
-        rc = udif_parse_blkx(xml, (size_t)tr.xml_length, &map);
     // An image this emulator wrote has chunks of its own bounded size; any
     // other is held to the in-place bound.
-    bool ours = rc == 0 && udif_xml_is_gs_profile(xml, (size_t)tr.xml_length);
     if (!max_chunk)
-        max_chunk = ours ? NDIF_MAX_CHUNK_BYTES : g_inplace_max;
+        max_chunk = udif_xml_is_gs_profile(xml, xml_len) ? NDIF_MAX_CHUNK_BYTES : g_inplace_max;
     free(xml);
-    if (rc != 0) {
-        LOG(1, "UDIF '%s': block map unreadable (%d)", source_key(data), rc);
-        *err = rc;
-        return NULL;
-    }
     cm_src_t *m = cm_new(data, "udif");
     if (!m) {
         udif_map_free(map);

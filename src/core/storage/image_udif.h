@@ -108,6 +108,13 @@ int udif_parse_blkx(const uint8_t *xml, size_t xml_len, udif_map_t **out);
 
 void udif_map_free(udif_map_t *m);
 
+// The character data of the element after `<key>key</key>` in the plist
+// slice [xml, xml + len), with &lt; &gt; &amp; unescaped, into `dst`
+// (truncated to `cap` - 1 bytes and NUL-terminated).  True when the key is
+// in the slice.  The one key lookup for the block map's table names and the
+// gs-* keys udif_writer.h adds.
+bool udif_plist_value(const char *xml, size_t len, const char *key, char *dst, size_t cap);
+
 // The codec (codec.h) a compressed chunk type is coded with -- ADC, zlib,
 // bzip2, LZFSE or xz -- or -1 for a type that is not a compressed chunk.
 int udif_chunk_codec(uint32_t type);

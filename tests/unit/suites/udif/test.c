@@ -455,6 +455,46 @@ TEST(udif_parse_blkx_reads_chunks) {
     udif_map_free(m);
 }
 
+// A foreign writer escapes XML metacharacters in the partition label (hdiutil
+// writes "&amp;"); the table name is the unescaped text, as udif_info reads
+// the gs-* keys.
+TEST(udif_parse_blkx_unescapes_the_table_name) {
+    const test_chunk_t chunks[] = {
+        {UDIF_CHUNK_ZERO, 0, 4, 0, 0},
+    };
+    size_t mish_len = 0;
+    uint8_t *mish = build_mish(0, 4, 0, chunks, 1, &mish_len);
+    char *b64 = base64_encode(mish, mish_len);
+    char *xml = build_plist("Data &amp; Tools &lt;1&gt;", b64);
+    udif_map_t *m = NULL;
+    ASSERT_EQ_INT(0, udif_parse_blkx((const uint8_t *)xml, strlen(xml), &m));
+    ASSERT_TRUE(m != NULL);
+    ASSERT_EQ_INT(0, strcmp(m->tables[0].name, "Data & Tools <1>"));
+    udif_map_free(m);
+    free(xml);
+    free(b64);
+    free(mish);
+}
+
+// The shared plist accessor: the value after a key, unescaped, bounded by
+// the slice and the destination.
+TEST(udif_plist_value_reads_keys) {
+    static const char xml[] = "<dict><key>gs-profile</key><integer>1</integer>"
+                              "<key>gs-source</key><string>A &amp; B</string></dict>";
+    char v[64];
+    ASSERT_TRUE(udif_plist_value(xml, strlen(xml), "gs-profile", v, sizeof(v)));
+    ASSERT_EQ_INT(0, strcmp(v, "1"));
+    ASSERT_TRUE(udif_plist_value(xml, strlen(xml), "gs-source", v, sizeof(v)));
+    ASSERT_EQ_INT(0, strcmp(v, "A & B"));
+    // Truncated to the destination.
+    char small[3];
+    ASSERT_TRUE(udif_plist_value(xml, strlen(xml), "gs-source", small, sizeof(small)));
+    ASSERT_EQ_INT(0, strcmp(small, "A "));
+    ASSERT_TRUE(!udif_plist_value(xml, strlen(xml), "gs-origin", v, sizeof(v)));
+    // A key outside the slice is not found.
+    ASSERT_TRUE(!udif_plist_value(xml, 20, "gs-source", v, sizeof(v)));
+}
+
 TEST(udif_parse_blkx_rejects_malformed) {
     // A chunk running past the table's own sector count.
     const test_chunk_t overrun[] = {
@@ -771,6 +811,8 @@ int main(void) {
     RUN(udif_detect_rejects_impostors);
     RUN(udif_trailer_rejects_unsupported);
     RUN(udif_parse_blkx_reads_chunks);
+    RUN(udif_parse_blkx_unescapes_the_table_name);
+    RUN(udif_plist_value_reads_keys);
     RUN(udif_parse_blkx_rejects_malformed);
     RUN(udif_decode_zero_ignore_raw);
     RUN(udif_decode_zlib_chunk);

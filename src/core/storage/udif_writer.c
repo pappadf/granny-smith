@@ -9,10 +9,12 @@
 
 #include "codec.h"
 #include "common.h"
+#include "image_chunkmap.h"
 #include "image_udif.h"
 #include "image_volume.h"
 #include "mac_disk_layout.h"
 #include "storage_util.h"
+#include "udif_layout.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -21,41 +23,6 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-
-// 'koly' trailer field offsets (big-endian), the full set a writer fills.
-#define KOLY_VERSION      4
-#define KOLY_FLAGS        0x0C
-#define KOLY_RUNNING      0x10
-#define KOLY_DATA_OFFSET  0x18
-#define KOLY_DATA_LENGTH  0x20
-#define KOLY_RSRC_OFFSET  0x28
-#define KOLY_RSRC_LENGTH  0x30
-#define KOLY_SEG_NUMBER   0x38
-#define KOLY_SEG_COUNT    0x3C
-#define KOLY_SEG_ID       0x40
-#define KOLY_DATA_CK_TYPE 0x50
-#define KOLY_DATA_CK_BITS 0x54
-#define KOLY_DATA_CK      0x58
-#define KOLY_XML_OFFSET   0xD8
-#define KOLY_XML_LENGTH   0xE0
-#define KOLY_MASTER_TYPE  0x160
-#define KOLY_MASTER_BITS  0x164
-#define KOLY_MASTER_CK    0x168
-#define KOLY_VARIANT      0x1E8
-#define KOLY_SECTORS      0x1EC
-
-// 'mish' block table.
-#define MISH_HEADER   0xCC
-#define MISH_ENTRY    40
-#define MISH_SECTOR   0x08
-#define MISH_COUNT    0x10
-#define MISH_DATA_OFF 0x18
-#define MISH_BUFFERS  0x20
-#define MISH_DESC     0x24
-#define MISH_CK_TYPE  0x40
-#define MISH_CK_BITS  0x44
-#define MISH_CK       0x48
-#define MISH_CHUNKS   0xC8
 
 typedef struct {
     uint32_t type;
@@ -449,36 +416,36 @@ static void sb_base64(sbuf_t *s, const uint8_t *d, size_t n) {
 
 // The 'mish' block table for the extents written.
 static uint8_t *build_mish(const udif_writer_t *w, size_t *out_len) {
-    size_t n = MISH_HEADER + (w->n_ext + 1) * MISH_ENTRY;
+    size_t n = MISH_HEADER_SIZE + (w->n_ext + 1) * MISH_ENTRY_SIZE;
     uint8_t *b = calloc(1, n);
     if (!b)
         return NULL;
-    put32(b, 0x6D697368u); // 'mish'
-    put32(b + 4, 1);
-    put64(b + MISH_SECTOR, 0);
-    put64(b + MISH_COUNT, w->sectors);
-    put64(b + MISH_DATA_OFF, 0);
-    put32(b + MISH_BUFFERS, w->chunk_sectors + 8);
+    put32(b + MISH_OFF_SIGNATURE, MISH_SIGNATURE);
+    put32(b + MISH_OFF_VERSION, MISH_VERSION);
+    put64(b + MISH_OFF_SECTOR, 0);
+    put64(b + MISH_OFF_SECTOR_COUNT, w->sectors);
+    put64(b + MISH_OFF_DATA_OFFSET, 0);
+    put32(b + MISH_OFF_BUFFERS, w->chunk_sectors + 8);
     // -2, as in hdiutil's own whole-disk table (-layout NONE).
-    put32(b + MISH_DESC, 0xFFFFFFFEu);
-    put32(b + MISH_CK_TYPE, UDIF_CHECKSUM_CRC32);
-    put32(b + MISH_CK_BITS, 32);
-    put32(b + MISH_CK, w->crc_dec);
-    put32(b + MISH_CHUNKS, (uint32_t)(w->n_ext + 1));
+    put32(b + MISH_OFF_DESCRIPTOR, 0xFFFFFFFEu);
+    put32(b + MISH_OFF_CHECKSUM_TYPE, UDIF_CHECKSUM_CRC32);
+    put32(b + MISH_OFF_CHECKSUM_BITS, 32);
+    put32(b + MISH_OFF_CHECKSUM, w->crc_dec);
+    put32(b + MISH_OFF_CHUNK_COUNT, (uint32_t)(w->n_ext + 1));
     for (size_t i = 0; i <= w->n_ext; i++) {
-        uint8_t *e = b + MISH_HEADER + i * MISH_ENTRY;
+        uint8_t *e = b + MISH_HEADER_SIZE + i * MISH_ENTRY_SIZE;
         if (i == w->n_ext) {
-            put32(e, UDIF_CHUNK_END);
-            put64(e + 8, w->sectors);
-            put64(e + 24, w->data_len);
+            put32(e + MISH_ENTRY_OFF_TYPE, UDIF_CHUNK_END);
+            put64(e + MISH_ENTRY_OFF_SECTOR, w->sectors);
+            put64(e + MISH_ENTRY_OFF_OFFSET, w->data_len);
             continue;
         }
         const wext_t *x = &w->ext[i];
-        put32(e, x->type);
-        put64(e + 8, x->sector);
-        put64(e + 16, x->count);
-        put64(e + 24, x->offset);
-        put64(e + 32, x->length);
+        put32(e + MISH_ENTRY_OFF_TYPE, x->type);
+        put64(e + MISH_ENTRY_OFF_SECTOR, x->sector);
+        put64(e + MISH_ENTRY_OFF_COUNT, x->count);
+        put64(e + MISH_ENTRY_OFF_OFFSET, x->offset);
+        put64(e + MISH_ENTRY_OFF_LENGTH, x->length);
     }
     *out_len = n;
     return b;
@@ -608,35 +575,35 @@ int udif_writer_finish(udif_writer_t *w, udif_writer_stats_t *stats) {
     free(xml);
     if (!rc) {
         uint8_t k[UDIF_TRAILER_SIZE] = {0};
-        memcpy(k, "koly", 4);
-        put32(k + 4, KOLY_VERSION);
-        put32(k + 8, UDIF_TRAILER_SIZE);
-        put32(k + KOLY_FLAGS, 1); // flattened
-        put64(k + KOLY_RUNNING, 0);
-        put64(k + KOLY_DATA_OFFSET, 0);
-        put64(k + KOLY_DATA_LENGTH, w->data_len);
-        put64(k + KOLY_RSRC_OFFSET, 0);
-        put64(k + KOLY_RSRC_LENGTH, 0);
-        put32(k + KOLY_SEG_NUMBER, 1);
-        put32(k + KOLY_SEG_COUNT, 1);
-        random_uuid(k + KOLY_SEG_ID);
-        put32(k + KOLY_DATA_CK_TYPE, UDIF_CHECKSUM_CRC32);
-        put32(k + KOLY_DATA_CK_BITS, 32);
-        put32(k + KOLY_DATA_CK, w->crc_data);
-        put64(k + KOLY_XML_OFFSET, xml_off);
-        put64(k + KOLY_XML_LENGTH, xlen);
+        memcpy(k + KOLY_OFF_SIGNATURE, KOLY_SIGNATURE_STR, 4);
+        put32(k + KOLY_OFF_VERSION, KOLY_VERSION);
+        put32(k + KOLY_OFF_HEADER_SIZE, UDIF_TRAILER_SIZE);
+        put32(k + KOLY_OFF_FLAGS, 1); // flattened
+        put64(k + KOLY_OFF_RUNNING, 0);
+        put64(k + KOLY_OFF_DATA_OFFSET, 0);
+        put64(k + KOLY_OFF_DATA_LENGTH, w->data_len);
+        put64(k + KOLY_OFF_RSRC_OFFSET, 0);
+        put64(k + KOLY_OFF_RSRC_LENGTH, 0);
+        put32(k + KOLY_OFF_SEGMENT_NUM, 1);
+        put32(k + KOLY_OFF_SEGMENT_COUNT, 1);
+        random_uuid(k + KOLY_OFF_SEGMENT_ID);
+        put32(k + KOLY_OFF_CHECKSUM_TYPE, UDIF_CHECKSUM_CRC32);
+        put32(k + KOLY_OFF_CHECKSUM_BITS, 32);
+        put32(k + KOLY_OFF_CHECKSUM, w->crc_data);
+        put64(k + KOLY_OFF_XML_OFFSET, xml_off);
+        put64(k + KOLY_OFF_XML_LENGTH, xlen);
         // The master checksum: CRC-32 over the block tables' checksums,
         // each as its big-endian 4 bytes.
         uint8_t ck[4];
         put32(ck, w->crc_dec);
-        put32(k + KOLY_MASTER_TYPE, UDIF_CHECKSUM_CRC32);
-        put32(k + KOLY_MASTER_BITS, 32);
-        put32(k + KOLY_MASTER_CK, codec_crc32(0, ck, 4));
+        put32(k + KOLY_OFF_MASTER_TYPE, UDIF_CHECKSUM_CRC32);
+        put32(k + KOLY_OFF_MASTER_BITS, 32);
+        put32(k + KOLY_OFF_MASTER, codec_crc32(0, ck, 4));
         // A partition image, as hdiutil marks its own one-table images
         // (-layout NONE): a device image (1) must carry a partition map
         // hdiutil can read block-table IDs from, and is refused without one.
-        put32(k + KOLY_VARIANT, 2);
-        put64(k + KOLY_SECTORS, w->sectors);
+        put32(k + KOLY_OFF_VARIANT, 2);
+        put64(k + KOLY_OFF_SECTORS, w->sectors);
         rc = write_out(w, k, sizeof(k));
     }
     if (!rc && fflush(w->f) != 0)
@@ -727,26 +694,19 @@ int udif_verify(source_t *data, udif_writer_stats_t *stats, char *err, size_t er
         goto out;                                                                                                      \
     } while (0)
     int rc = 0;
-    uint8_t *xml = NULL, *in = NULL, *outb = NULL;
+    uint8_t *in = NULL, *outb = NULL;
     read_window_t win = {.src = data};
     udif_map_t *map = NULL;
     udif_writer_stats_t st = {0};
     size_t in_cap = 0, out_cap = 0;
     uint64_t size = data ? source_size(data) : 0;
-    uint8_t tb[UDIF_TRAILER_SIZE];
     udif_trailer_t tr;
-    if (size < UDIF_TRAILER_SIZE || source_read_exact(data, size - UDIF_TRAILER_SIZE, tb, sizeof(tb)) != 0 ||
-        udif_parse_trailer(tb, sizeof(tb), &tr) != 0)
-        FAIL(-EINVAL, "not a UDIF image (no usable 'koly' trailer)");
-    if (tr.xml_offset > size || tr.xml_length > size - tr.xml_offset)
-        FAIL(-EINVAL, "the block map lies outside the file");
-    xml = malloc((size_t)tr.xml_length);
-    if (!xml)
-        FAIL(-ENOMEM, "out of memory");
-    if (source_read_exact(data, tr.xml_offset, xml, (size_t)tr.xml_length) != 0)
-        FAIL(-EIO, "cannot read the block map");
-    if (udif_parse_blkx(xml, (size_t)tr.xml_length, &map) != 0)
-        FAIL(-EINVAL, "the block map does not parse");
+    const char *why = NULL;
+    int lrc = udif_load(data, &tr, NULL, NULL, &map, &why);
+    // Out of memory and an unreadable block map keep their codes; any other
+    // flaw is an image that is not (usable) UDIF.
+    if (lrc != 0)
+        FAIL(lrc == -ENOMEM || lrc == -EIO ? lrc : -EINVAL, "%s", why ? why : UDIF_NO_TRAILER);
     if (tr.data_fork_offset > size || tr.data_fork_length > size - tr.data_fork_offset)
         FAIL(-EINVAL, "the data fork lies outside the file");
     win.end = tr.data_fork_offset + tr.data_fork_length;
@@ -820,7 +780,6 @@ out:
     if (stats)
         *stats = st;
     udif_map_free(map);
-    free(xml);
     free(in);
     free(outb);
     free(win.buf);
@@ -830,79 +789,29 @@ out:
 
 // --- Info -----------------------------------------------------------------------
 
-// The text of <key>key</key><tag>VALUE</tag> in `xml`, unescaped, into `dst`.
-static bool plist_value(const char *xml, size_t len, const char *key, char *dst, size_t cap) {
-    char k[64];
-    snprintf(k, sizeof(k), "<key>%s</key>", key);
-    size_t kl = strlen(k);
-    for (size_t i = 0; i + kl <= len; i++) {
-        if (memcmp(xml + i, k, kl) != 0)
-            continue;
-        const char *p = memchr(xml + i + kl, '>', len - i - kl);
-        if (!p)
-            return false;
-        p++;
-        const char *end = xml + len;
-        size_t n = 0;
-        while (p < end && *p != '<' && n + 1 < cap) {
-            if (*p == '&') {
-                const char *semi = memchr(p, ';', (size_t)(end - p));
-                if (semi) {
-                    size_t el = (size_t)(semi - p);
-                    char c = el == 3 && !memcmp(p, "&lt", 3)    ? '<'
-                             : el == 3 && !memcmp(p, "&gt", 3)  ? '>'
-                             : el == 4 && !memcmp(p, "&amp", 4) ? '&'
-                                                                : '?';
-                    dst[n++] = c;
-                    p = semi + 1;
-                    continue;
-                }
-            }
-            dst[n++] = *p++;
-        }
-        dst[n] = '\0';
-        return true;
-    }
-    return false;
-}
-
 int udif_info(source_t *data, udif_info_t *out) {
     if (!data || !out)
         return -EINVAL;
     memset(out, 0, sizeof(*out));
-    uint64_t size = source_size(data);
-    uint8_t tb[UDIF_TRAILER_SIZE];
     udif_trailer_t tr;
-    if (size < UDIF_TRAILER_SIZE || source_read_exact(data, size - UDIF_TRAILER_SIZE, tb, sizeof(tb)) != 0)
-        return -EINVAL;
-    int rc = udif_parse_trailer(tb, sizeof(tb), &tr);
-    if (rc)
-        return rc;
-    if (tr.xml_offset > size || tr.xml_length > size - tr.xml_offset)
-        return -EINVAL;
-    char *xml = malloc((size_t)tr.xml_length + 1);
-    if (!xml)
-        return -ENOMEM;
     udif_map_t *map = NULL;
-    rc = source_read_exact(data, tr.xml_offset, xml, (size_t)tr.xml_length);
-    if (!rc)
-        rc = udif_parse_blkx((const uint8_t *)xml, (size_t)tr.xml_length, &map);
+    char *xml = NULL;
+    size_t xl = 0;
+    int rc = udif_load(data, &tr, &xml, &xl, &map, NULL);
     if (!rc) {
-        size_t xl = (size_t)tr.xml_length;
-        xml[xl] = '\0';
         out->sectors = tr.sectors;
         out->byte_length = tr.sectors * UDIF_SECTOR_SIZE;
         out->data_fork_bytes = tr.data_fork_length;
         out->tables = (uint32_t)map->n_tables;
         char v[64];
-        out->is_gs_profile = plist_value(xml, xl, "gs-profile", v, sizeof(v));
-        if (plist_value(xml, xl, "gs-byte-length", v, sizeof(v))) {
+        out->is_gs_profile = udif_plist_value(xml, xl, "gs-profile", v, sizeof(v));
+        if (udif_plist_value(xml, xl, "gs-byte-length", v, sizeof(v))) {
             uint64_t n = strtoull(v, NULL, 10);
             if (n && n <= out->byte_length)
                 out->byte_length = n;
         }
-        plist_value(xml, xl, "gs-source", out->source_name, sizeof(out->source_name));
-        plist_value(xml, xl, "gs-origin", out->origin, sizeof(out->origin));
+        udif_plist_value(xml, xl, "gs-source", out->source_name, sizeof(out->source_name));
+        udif_plist_value(xml, xl, "gs-origin", out->origin, sizeof(out->origin));
         for (size_t t = 0; t < map->n_tables; t++) {
             for (size_t i = 0; i < map->tables[t].n_chunks; i++) {
                 const udif_chunk_t *c = &map->tables[t].chunks[i];
