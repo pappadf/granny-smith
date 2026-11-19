@@ -18,7 +18,7 @@ import { test, expect, type Page } from '../helpers/test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
-import { terminalRun } from '../helpers/terminal';
+import { terminalRun, terminalEcho } from '../helpers/terminal';
 import { gsEvalInPage, scratchFiles } from '../helpers/web2-eval';
 
 const DATA = path.resolve(__dirname, '../../data');
@@ -80,13 +80,8 @@ function toast(page: Page, text: string | RegExp) {
 }
 
 // Read machine.cpu.instr_count through the terminal with a unique key.
-let probeSeq = 0;
 async function readInstr(page: Page): Promise<number | null> {
-  const key = `di${++probeSeq}`;
-  await terminalRun(page, `echo "${key}=\${machine.cpu.instr_count}"`);
-  await page.waitForTimeout(400);
-  const text = await page.locator('.console-output').innerText();
-  const m = text.match(new RegExp(`${key}=(\\d+)`));
+  const m = await terminalEcho(page, '${machine.cpu.instr_count}', '(\\d+)');
   return m ? Number(m[1]) : null;
 }
 

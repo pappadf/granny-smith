@@ -31,7 +31,7 @@
 import { test, expect, type Page } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
-import { terminalRun as typeLine } from '../helpers/terminal';
+import { terminalRun as typeLine, terminalEcho } from '../helpers/terminal';
 
 // Real pacing, not web2's default Faster: the splash capture relies on the
 // paced boot sitting at the splash until the spec stops the machine.
@@ -80,13 +80,12 @@ const MODES: VideoMode[] = (process.env.IICX_VIDEO_MODES?.split(',').map((s) => 
 // Each probe uses a fresh key so stale echoes can't satisfy the match. The
 // disassembly prompt redraws the input line while running, so the echoed
 // `key=…` value line is what we match, not the prompt.
-let probeSeq = 0;
 async function probeState(page: Page): Promise<{ instr: number; running: boolean } | null> {
-  const key = `probe${++probeSeq}`;
-  await terminalRun(page, `echo "${key}=\${machine.cpu.instr_count},\${scheduler.running}"`);
-  await page.waitForTimeout(400);
-  const text = await page.locator('.console-output').innerText();
-  const m = text.match(new RegExp(`${key}=(\\d+),(true|false)`));
+  const m = await terminalEcho(
+    page,
+    '${machine.cpu.instr_count},${scheduler.running}',
+    '(\\d+),(true|false)',
+  );
   if (!m) return null;
   return { instr: Number(m[1]), running: m[2] === 'true' };
 }

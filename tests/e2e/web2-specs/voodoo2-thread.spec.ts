@@ -22,7 +22,7 @@
 import { test, expect, type Page } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
-import { terminalRun as typeLine } from '../helpers/terminal';
+import { terminalRun as typeLine, terminalEval } from '../helpers/terminal';
 
 // Output is read right after each line: type, submit, then settle.
 const terminalRun = (page: Page, line: string) =>
@@ -41,22 +41,6 @@ function swap32(v: number): number {
   return (((v & 0xff) << 24) | ((v & 0xff00) << 8) | ((v >>> 8) & 0xff00) | ((v >>> 24) & 0xff)) >>> 0;
 }
 const hex = (v: number): string => '0x' + (v >>> 0).toString(16).toUpperCase().padStart(8, '0');
-
-// Read one expression back through the terminal with a fresh key per probe
-// so the echoed input line (still holding the unexpanded ${...}) can never
-// satisfy the match — only the response can.
-let probeSeq = 0;
-async function probe(page: Page, expr: string): Promise<string> {
-  for (let attempt = 0; attempt < 30; attempt++) {
-    const key = `v2p${++probeSeq}`;
-    await terminalRun(page, `echo "${key}=[${'$'}{${expr}}]"`);
-    await page.waitForTimeout(400);
-    const text = await page.locator('.console-output').innerText();
-    const m = text.match(new RegExp(`${key}=\\[([A-Za-z0-9_.-]+)\\]`));
-    if (m) return m[1];
-  }
-  throw new Error(`terminal probe never answered: ${expr}`);
-}
 
 // One PCI config-space dword write through Bandit 1's ports: socket A1 is
 // device 13, one-hot IDSEL $00200000.
@@ -106,22 +90,22 @@ test('the Voodoo2 rasterises on a second Web Worker, and the shadow is authorita
   // Halt whatever the boot left running: the guest's own Open Firmware
   // would otherwise enumerate the bus underneath the config pokes below.
   await terminalRun(page, 'scheduler.stop');
-  expect(await probe(page, 'scheduler.running')).toBe('false');
+  expect(await terminalEval(page, 'scheduler.running')).toBe('false');
   // The card is seated: its 4 MB framebuffer (the name carries a space,
   // which the probe's strict value pattern deliberately excludes).
-  expect(await probe(page, 'machine.pci.slot[1].card.regs.fb_size')).toBe('4194304');
+  expect(await terminalEval(page, 'machine.pci.slot[1].card.regs.fb_size')).toBe('4194304');
 
   // --- The backend the browser build installs. -----------------------------
   // "thread" means pthread_create succeeded on Emscripten's Worker pool
   // and the worker is running; a fallback to "sw" is exactly the failure
   // this spec exists to catch.
-  expect(await probe(page, 'machine.pci.slot[1].card.regs.raster')).toBe('thread');
+  expect(await terminalEval(page, 'machine.pci.slot[1].card.regs.raster')).toBe('thread');
 
   // --- Map the aperture and open the gates, as the driver would. -----------
   await cfgWrite(page, 0x10, BAR);
   await cfgWrite(page, 0x04, 0x0002);
   await cfgWrite(page, 0x40, 0x00000003);
-  expect(await probe(page, 'machine.pci.slot[1].card.config.bar[0].base')).toBe(hex(BAR).toLowerCase());
+  expect(await terminalEval(page, 'machine.pci.slot[1].card.config.bar[0].base')).toBe(hex(BAR).toLowerCase());
   // LFB reads on (fbiInit1[3], gated by initEnable[0] just opened) and the
   // front-buffer layout the unit row uses.
   await vregWrite(page, 0x218, (150 << 11) | 0x400000);
@@ -150,13 +134,13 @@ test('the Voodoo2 rasterises on a second Web Worker, and the shadow is authorita
   // fbiPixelsOut is executor-owned: the read retires the queue on the
   // second Worker and mirrors the count.  fbiTrianglesOut counts at
   // submission on the producer and needs no fence (the seam's contract).
-  expect(await probe(page, 'machine.pci.slot[1].card.regs.read(0x15C)')).toBe('136');
-  expect(await probe(page, 'machine.pci.slot[1].card.regs.read(0x25C)')).toBe('1');
+  expect(await terminalEval(page, 'machine.pci.slot[1].card.regs.read(0x15C)')).toBe('136');
+  expect(await terminalEval(page, 'machine.pci.slot[1].card.regs.read(0x25C)')).toBe('1');
   // The pixel at vertex A, through an LFB read: 5-6-5 red $F800 in the
   // card's little-endian domain, so the big-endian halfword view reads
   // $00F8 = 248.  (LFB offset = y<<11 | x<<1.)
   const lfbA = BAR + 0x400000 + (50 << 11) + (50 << 1);
-  expect(Number(await probe(page, `machine.memory.peek.w(${hex(lfbA)})`))).toBe(0xf8);
+  expect(Number(await terminalEval(page, `machine.memory.peek.w(${hex(lfbA)})`))).toBe(0xf8);
   // ...and just left of A is untouched.
-  expect(Number(await probe(page, `machine.memory.peek.w(${hex(lfbA - 2)})`))).toBe(0);
+  expect(Number(await terminalEval(page, `machine.memory.peek.w(${hex(lfbA - 2)})`))).toBe(0);
 });

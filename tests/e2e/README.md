@@ -234,7 +234,9 @@ keystrokes, no scraping the console, no sleeps for the render to settle.
 `gsCallInPage` fails the spec on a refusal (`{ error }`). Named arguments go
 as an object (`gsCallInPage(page, 'machine.boot', { model: 'iicx', ram: 8192,
 rom })`), positional ones as an array. Type into the Terminal panel
-(`helpers/terminal.ts`) only when the console itself is what the spec tests.
+(`helpers/terminal.ts`) only when the console itself is what the spec tests;
+its `terminalEval(page, expr)` reads a value back by echoing it behind a
+fresh key, the one copy of the terminal-scrape probe.
 The machine auto-runs after boot, so `scheduler.stop` before any bounded
 `scheduler.run`. See `helpers/web2-fs.ts` and the existing specs for the
 OPFS-staging and drag-gesture patterns (only the HTML5 drag *gesture* is

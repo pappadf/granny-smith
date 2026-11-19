@@ -34,7 +34,7 @@ import {
   stageOpfsFile,
   stageOpfsFileStreaming,
 } from "../helpers/web2-fs";
-import { CONSOLE_OUTPUT, terminalRun as typeLine } from "../helpers/terminal";
+import { CONSOLE_OUTPUT, terminalRun as typeLine, terminalEval } from "../helpers/terminal";
 
 // Output is read right after each line: type, submit, then settle.
 const terminalRun = (page: Page, line: string) =>
@@ -91,7 +91,7 @@ async function settleFinder(page: Page): Promise<void> {
   await expect
     .poll(
       () =>
-        probeString(
+        terminalEval(
           page,
           'debug.mac.globals.read("ApplZone") != debug.mac.globals.read("SysZone")',
         ),
@@ -139,18 +139,6 @@ async function probeSample(
     if (m) return { instr: Number(m[1]), wallNs: Number(m[2]) };
   }
   throw new Error("terminal sample probe never answered");
-}
-
-async function probeString(page: Page, expr: string): Promise<string> {
-  for (let attempt = 0; attempt < 30; attempt++) {
-    const key = `ps${++probeSeq}`;
-    await terminalRun(page, `echo "${key}=[${"$"}{${expr}}]"`);
-    await page.waitForTimeout(400);
-    const text = await page.locator(CONSOLE_OUTPUT).innerText();
-    const m = text.match(new RegExp(`${key}=\\[([A-Za-z0-9_.-]+)\\]`));
-    if (m) return m[1];
-  }
-  throw new Error("terminal string probe never answered");
 }
 
 async function measureOnce(page: Page): Promise<number> {
@@ -220,7 +208,7 @@ for (const machine of MACHINES) {
     await expect(page.locator(".console")).toBeVisible({ timeout: 15_000 });
 
     await terminalRun(page, 'scheduler.mode = "turbo"');
-    expect(await probeString(page, "scheduler.mode")).toBe("turbo");
+    expect(await terminalEval(page, "scheduler.mode")).toBe("turbo");
     // Boot the System to the measured state (and let the wasm tier up) first;
     // a media-free row only settles into its ROM loop.
     if (row.settle === "finder") await settleFinder(page);
@@ -231,14 +219,14 @@ for (const machine of MACHINES) {
     // The interpreters alone: the PowerPC translation tier (on by default
     // in the wasm build; ppc_jit.md) stays off in both arms
     await terminalRun(page, "jit.enabled = 0");
-    expect(await probeString(page, "jit.enabled")).toBe("0");
+    expect(await terminalEval(page, "jit.enabled")).toBe("0");
     for (let pair = 1; pair <= PAIRS; pair++) {
       for (const [exec, on] of [
         ["switch", 0],
         ["predecode", 1],
       ] as const) {
         await terminalRun(page, `predecode.enabled = ${on}`);
-        expect(await probeString(page, "predecode.enabled")).toBe(String(on));
+        expect(await terminalEval(page, "predecode.enabled")).toBe(String(on));
         await page.waitForTimeout(2_000);
         const mips = await measureOnce(page);
         results[exec].push(mips);

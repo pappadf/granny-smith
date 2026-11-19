@@ -40,7 +40,7 @@ import {
   micStats,
   mouseButton,
   moveTo,
-  probe,
+  probeValue,
   probeNumber,
   ticksMs,
 } from "../helpers/av";
@@ -69,7 +69,7 @@ test("record from the browser microphone in the Sound control panel", async ({
   await micBtn.click();
   await expect(micBtn).toHaveAttribute("aria-pressed", "true");
   await expect
-    .poll(async () => probe(page, "machine.audioin.source"))
+    .poll(async () => probeValue(page, "machine.audioin.source"))
     .toBe("host");
 
   // --- 4. Apple menu → Control Panels, then open the Sound cdev. ------------
@@ -109,11 +109,11 @@ test("record from the browser microphone in the Sound control panel", async ({
 
   // The guest really is recording…
   expect(
-    await probe(page, "machine.sound.in_enabled"),
+    await probeValue(page, "machine.sound.in_enabled"),
     "input DMA is not running while the recorder is armed",
   ).toBe("true");
   expect(
-    await probe(page, "machine.dsp.emr"),
+    await probeValue(page, "machine.dsp.emr"),
     "the DSP kernel died during recording",
   ).toBe("0x8000");
   expect(
@@ -155,7 +155,7 @@ test("record from the browser microphone in the Sound control panel", async ({
   }
   console.log(`  playback capture peak: ${outPeak}`);
   expect(
-    await probe(page, "machine.dsp.emr"),
+    await probeValue(page, "machine.dsp.emr"),
     "the DSP kernel died during playback",
   ).toBe("0x8000");
   expect(

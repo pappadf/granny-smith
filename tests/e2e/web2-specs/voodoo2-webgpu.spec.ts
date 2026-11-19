@@ -36,13 +36,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { stageOpfsFile } from "../helpers/web2-fs";
 import { gsEvalInPage } from "../helpers/web2-eval";
+import { terminalEval } from "../helpers/terminal";
 import {
   BASE_ARGS,
   STORED_ROM,
   WEBGPU_ARGS,
   bootWithCard,
   composeScript,
-  probe,
   storeTntRom,
   terminalRun,
 } from "../helpers/voodoo2";
@@ -99,10 +99,10 @@ test("the takeover engages when the card takes the monitor, and the GPU covers e
   // The backend the browser build installed: "webgpu" means the page
   // had a device and the GPU worker attached within the create-time
   // wait; "thread" would be the fallback this test exists to catch.
-  expect(await probe(page, "machine.pci.slot[1].card.regs.raster")).toBe(
+  expect(await terminalEval(page, "machine.pci.slot[1].card.regs.raster")).toBe(
     "webgpu",
   );
-  expect(await probe(page, "machine.pci.slot[1].card.regs.gpu_engaged")).toBe(
+  expect(await terminalEval(page, "machine.pci.slot[1].card.regs.gpu_engaged")).toBe(
     "false",
   );
   await expect(page.locator("#screen3d")).toBeHidden();
@@ -130,7 +130,7 @@ test("the takeover engages when the card takes the monitor, and the GPU covers e
   // Engaged — but the overlay is shown only after the first PRESENT, and
   // this spec never presents (headless Chromium would destroy the device),
   // so it stays hidden while the GPU holds the frame.
-  expect(await probe(page, "machine.pci.slot[1].card.regs.gpu_engaged")).toBe(
+  expect(await terminalEval(page, "machine.pci.slot[1].card.regs.gpu_engaged")).toBe(
     "true",
   );
   await expect(page.locator("#screen3d")).toBeHidden();
@@ -140,9 +140,9 @@ test("the takeover engages when the card takes the monitor, and the GPU covers e
   await terminalRun(page, "vreg_wr(0x210, vreg_rd(0x210) & 0xFFFFFFFE)");
   await terminalRun(page, 'echo "w=${machine.screen.width}"');
   expect(
-    await probe(page, "machine.pci.slot[1].card.video.drives_monitor"),
+    await terminalEval(page, "machine.pci.slot[1].card.video.drives_monitor"),
   ).toBe("false");
-  expect(await probe(page, "machine.pci.slot[1].card.regs.gpu_engaged")).toBe(
+  expect(await terminalEval(page, "machine.pci.slot[1].card.regs.gpu_engaged")).toBe(
     "false",
   );
   await expect(page.locator("#screen3d")).toBeHidden();

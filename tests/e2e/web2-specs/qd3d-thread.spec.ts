@@ -19,7 +19,7 @@
 import { test, expect, type Page } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
-import { terminalRun as typeLine } from '../helpers/terminal';
+import { terminalRun as typeLine, terminalEval } from '../helpers/terminal';
 
 const terminalRun = (page: Page, line: string) =>
   typeLine(page, line, { settleMs: 250 });
@@ -35,19 +35,6 @@ function swap32(v: number): number {
   return (((v & 0xff) << 24) | ((v & 0xff00) << 8) | ((v >>> 8) & 0xff00) | ((v >>> 24) & 0xff)) >>> 0;
 }
 const hex = (v: number): string => '0x' + (v >>> 0).toString(16).toUpperCase().padStart(8, '0');
-
-let probeSeq = 0;
-async function probe(page: Page, expr: string): Promise<string> {
-  for (let attempt = 0; attempt < 30; attempt++) {
-    const key = `q3p${++probeSeq}`;
-    await terminalRun(page, `echo "${key}=[${'$'}{${expr}}]"`);
-    await page.waitForTimeout(400);
-    const text = await page.locator('.console-output').innerText();
-    const m = text.match(new RegExp(`${key}=\\[([A-Za-z0-9_.-]+)\\]`));
-    if (m) return m[1];
-  }
-  throw new Error(`terminal probe never answered: ${expr}`);
-}
 
 // One PCI config-space dword write through Bandit 1's ports: socket A1 is
 // device 13, one-hot IDSEL $00200000.
@@ -98,12 +85,12 @@ test('the QuickDraw 3D card renders on a Web Worker, and a frame lands when it c
   await terminalRun(page, 'scheduler.stop');
   await terminalRun(page, 'scheduler.run 50000000');
   await page.waitForTimeout(1000);
-  expect(await probe(page, 'scheduler.running')).toBe('false');
-  expect(await probe(page, 'machine.pci.slot[1].card.renderer.frames')).toBe('0');
+  expect(await terminalEval(page, 'scheduler.running')).toBe('false');
+  expect(await terminalEval(page, 'machine.pci.slot[1].card.renderer.frames')).toBe('0');
 
   // "thread" means pthread_create succeeded on Emscripten's Workers; a
   // fallback to "sw" is exactly the failure this spec exists to catch.
-  expect(await probe(page, 'machine.pci.slot[1].card.renderer.raster')).toBe('thread');
+  expect(await terminalEval(page, 'machine.pci.slot[1].card.renderer.raster')).toBe('thread');
 
   // The BAR at $81000000, memory space and bus mastering on.
   await cfgWrite(page, 0x10, BAR);
@@ -136,15 +123,15 @@ test('the QuickDraw 3D card renders on a Web Worker, and a frame lands when it c
   await put(page, BAR, PROG);
 
   // Walked at the go write; the pixels wait for the frame's completion.
-  expect(await probe(page, 'machine.pci.slot[1].card.renderer.frames')).toBe('1');
-  expect(await probe(page, 'machine.pci.slot[1].card.renderer.objects')).toBe('1');
-  expect(await probe(page, 'machine.pci.slot[1].card.renderer.irq')).toBe('false');
-  expect(Number(await probe(page, `machine.memory.peek.l(${hex(OUT)})`))).toBe(0xeeeeeeee);
+  expect(await terminalEval(page, 'machine.pci.slot[1].card.renderer.frames')).toBe('1');
+  expect(await terminalEval(page, 'machine.pci.slot[1].card.renderer.objects')).toBe('1');
+  expect(await terminalEval(page, 'machine.pci.slot[1].card.renderer.irq')).toBe('false');
+  expect(Number(await terminalEval(page, `machine.memory.peek.l(${hex(OUT)})`))).toBe(0xeeeeeeee);
 
   await terminalRun(page, 'scheduler.run 200000');
   await page.waitForTimeout(1000);
-  expect(await probe(page, 'machine.pci.slot[1].card.renderer.irq')).toBe('true');
+  expect(await terminalEval(page, 'machine.pci.slot[1].card.renderer.irq')).toBe('true');
   // Pixel 0 under the triangle, red; pixel 15 past it, the background.
-  expect(Number(await probe(page, `machine.memory.peek.l(${hex(OUT)})`))).toBe(0x00ff0000);
-  expect(Number(await probe(page, `machine.memory.peek.l(${hex(OUT + 60)})`))).toBe(0x00404040);
+  expect(Number(await terminalEval(page, `machine.memory.peek.l(${hex(OUT)})`))).toBe(0x00ff0000);
+  expect(Number(await terminalEval(page, `machine.memory.peek.l(${hex(OUT + 60)})`))).toBe(0x00404040);
 });

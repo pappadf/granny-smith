@@ -23,7 +23,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import * as path from "node:path";
 import { gotoWeb2, stageOpfsFileStreaming } from "../helpers/web2-fs";
-import { CONSOLE_OUTPUT, terminalRun as typeLine } from "../helpers/terminal";
+import { CONSOLE_OUTPUT, terminalRun as typeLine, terminalEval } from "../helpers/terminal";
 
 const terminalRun = (page: Page, line: string) =>
   typeLine(page, line, { settleMs: 250 });
@@ -67,18 +67,6 @@ async function probeSample(
     if (m) return { instr: Number(m[1]), wallNs: Number(m[2]) };
   }
   throw new Error("terminal sample probe never answered");
-}
-
-async function probeString(page: Page, expr: string): Promise<string> {
-  for (let attempt = 0; attempt < 30; attempt++) {
-    const key = `ps${++probeSeq}`;
-    await terminalRun(page, `echo "${key}=[${"$"}{${expr}}]"`);
-    await page.waitForTimeout(400);
-    const text = await page.locator(CONSOLE_OUTPUT).innerText();
-    const m = text.match(new RegExp(`${key}=\\[([A-Za-z0-9_.-]+)\\]`));
-    if (m) return m[1];
-  }
-  throw new Error("terminal string probe never answered");
 }
 
 async function measureOnce(page: Page): Promise<number> {
@@ -126,10 +114,10 @@ for (const machine of MACHINES) {
 
     await page.locator('button.ptab[data-tab="terminal"]').click();
     await expect(page.locator(".console")).toBeVisible({ timeout: 15_000 });
-    expect(await probeString(page, "jit.available")).toBe("1");
+    expect(await terminalEval(page, "jit.available")).toBe("1");
 
     await terminalRun(page, 'scheduler.mode = "turbo"');
-    expect(await probeString(page, "scheduler.mode")).toBe("turbo");
+    expect(await terminalEval(page, "scheduler.mode")).toBe("turbo");
     await expect
       .poll(async () => (await probeSample(page)).instr, {
         timeout: 20 * 60 * 1000,
@@ -144,7 +132,7 @@ for (const machine of MACHINES) {
         ["jit", 1],
       ] as const) {
         await terminalRun(page, `jit.enabled = ${on}`);
-        expect(await probeString(page, "jit.enabled")).toBe(String(on));
+        expect(await terminalEval(page, "jit.enabled")).toBe(String(on));
         await page.waitForTimeout(2_000);
         const mips = await measureOnce(page);
         results[exec].push(mips);
@@ -154,7 +142,7 @@ for (const machine of MACHINES) {
       }
     }
     console.log(
-      `PERFBENCH label=${LABEL} machine=${machine} jit compiles=${await probeString(page, "jit.compiles")} compile_us=${await probeString(page, "jit.compile_us")} deferred=${await probeString(page, "jit.deferred")}`,
+      `PERFBENCH label=${LABEL} machine=${machine} jit compiles=${await terminalEval(page, "jit.compiles")} compile_us=${await terminalEval(page, "jit.compile_us")} deferred=${await terminalEval(page, "jit.deferred")}`,
     );
     for (const exec of ["predecode", "jit"] as const) {
       const sorted = [...results[exec]].sort((x, y) => x - y);

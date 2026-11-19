@@ -38,7 +38,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { stageOpfsFile, stageOpfsFileStreaming } from '../helpers/web2-fs';
-import { CONSOLE_OUTPUT, terminalRun as typeLine } from '../helpers/terminal';
+import { CONSOLE_OUTPUT, terminalRun as typeLine, terminalEval } from '../helpers/terminal';
 
 const terminalRun = (page: Page, line: string) => typeLine(page, line, { settleMs: 250 });
 
@@ -122,18 +122,6 @@ async function probeSample(page: Page): Promise<{ instr: number; wallNs: number 
   throw new Error('terminal sample probe never answered');
 }
 
-async function probeString(page: Page, expr: string): Promise<string> {
-  for (let attempt = 0; attempt < 30; attempt++) {
-    const key = `ps${++probeSeq}`;
-    await terminalRun(page, `echo "${key}=[${'$'}{${expr}}]"`);
-    await page.waitForTimeout(400);
-    const text = await page.locator(CONSOLE_OUTPUT).innerText();
-    const m = text.match(new RegExp(`${key}=\\[([A-Za-z0-9_.-]+)\\]`));
-    if (m) return m[1];
-  }
-  throw new Error('terminal string probe never answered');
-}
-
 async function instrCount(page: Page): Promise<number> {
   return (await probeSample(page)).instr;
 }
@@ -143,7 +131,7 @@ async function instrCount(page: Page): Promise<number> {
 // The Finder is the application, then 150 M more instructions to go idle.
 async function settleFinder(page: Page): Promise<void> {
   await expect
-    .poll(() => probeString(page, 'debug.mac.globals.read("ApplZone") != debug.mac.globals.read("SysZone")'), {
+    .poll(() => terminalEval(page, 'debug.mac.globals.read("ApplZone") != debug.mac.globals.read("SysZone")'), {
       timeout: 600_000,
       intervals: [5_000],
     })
@@ -220,7 +208,7 @@ async function bootRow(page: Page, url: string, machine: string, row: Row): Prom
   await page.locator('button.ptab[data-tab="terminal"]').click();
   await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
   await terminalRun(page, 'scheduler.mode = "turbo"');
-  expect(await probeString(page, 'scheduler.mode')).toBe('turbo');
+  expect(await terminalEval(page, 'scheduler.mode')).toBe('turbo');
   if (row.settle === 'finder') await settleFinder(page);
   else if (row.settle === 'marathon') await launchMarathon(page);
   else
@@ -450,7 +438,7 @@ for (const machine of MACHINES) {
     const median = (v: number[]) => [...v].sort((x, y) => x - y)[Math.floor(v.length / 2)];
     for (const side of ['head', 'base'] as const) {
       // try(): a base without the predecoded cores has no `predecode` object.
-      const pd = (attr: string) => probeString(pages[side], `try(predecode.${attr}, "none")`);
+      const pd = (attr: string) => terminalEval(pages[side], `try(predecode.${attr}, "none")`);
       console.log(
         `PERFBENCH label=${LABEL} machine=${machine} binary=${side} predecode=${await pd('enabled')} ` +
           `lookups=${await pd('lookups')} generic=${await pd('generic_steps')} instr=${await instrCount(pages[side])}`,

@@ -24,7 +24,7 @@
 import { test, expect, type Page } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
-import { terminalRun as typeLine } from '../helpers/terminal';
+import { terminalRun as typeLine, terminalEval } from '../helpers/terminal';
 
 // Real pacing, not web2's default Faster: it measures pacing itself.
 test.use({ gsSpeed: 'paced' });
@@ -58,22 +58,6 @@ async function probeCounters(
     if (m) return { cycles: Number(m[1]), instr: Number(m[2]) };
   }
   throw new Error('terminal counter probe never answered');
-}
-
-// Read a string expression through the terminal (mode readbacks). The value
-// pattern is strict word characters so the echoed *input* line (which still
-// shows the unexpanded ${...}) can never satisfy the match — only the
-// response can.
-async function probeString(page: Page, expr: string): Promise<string> {
-  for (let attempt = 0; attempt < 30; attempt++) {
-    const key = `str${++probeSeq}`;
-    await terminalRun(page, `echo "${key}=[${'$'}{${expr}}]"`);
-    await page.waitForTimeout(400);
-    const text = await page.locator('.console-output').innerText();
-    const m = text.match(new RegExp(`${key}=\\[([A-Za-z0-9_.-]+)\\]`));
-    if (m) return m[1];
-  }
-  throw new Error('terminal string probe never answered');
 }
 
 // Wall-clock rate measurement across `seconds` of free-running emulation.
@@ -131,7 +115,7 @@ test('Accelerated toolbar mode: faster CPU, real-time timebase', async ({
   // --- Real-Time baseline ---------------------------------------------------
   // The page starts in live/paced (speed=paced); the cycle rate must sit at the SE/30's clock
   // and instructions at cycles/CPI (authentic 4).
-  expect(await probeString(page, 'scheduler.mode')).toBe('paced');
+  expect(await terminalEval(page, 'scheduler.mode')).toBe('paced');
   const live = await measureRates(page, 6);
   expect(live.cyclesPerSec).toBeGreaterThan(SE30_HZ * 0.5);
   expect(live.cyclesPerSec).toBeLessThan(SE30_HZ * 1.5);
@@ -141,9 +125,9 @@ test('Accelerated toolbar mode: faster CPU, real-time timebase', async ({
   // --- Switch to Accelerated -------------------------------------------------
   await page.getByRole('button', { name: 'Faster', exact: true }).click();
   await expect
-    .poll(async () => probeString(page, 'scheduler.mode'), { timeout: 30_000 })
+    .poll(async () => terminalEval(page, 'scheduler.mode'), { timeout: 30_000 })
     .toBe('accelerated');
-  expect(await probeString(page, 'scheduler.speed_auto')).toBe('true');
+  expect(await terminalEval(page, 'scheduler.speed_auto')).toBe('true');
 
   // The adaptive governor climbs one quantized rung per ~2 s dwell as long as
   // the host shows headroom; wait until throughput clears 1.4x the Real-Time
@@ -174,7 +158,7 @@ test('Accelerated toolbar mode: faster CPU, real-time timebase', async ({
   // --- Back to Real-Time ------------------------------------------------------
   await page.getByRole('button', { name: 'Real', exact: true }).click();
   await expect
-    .poll(async () => probeString(page, 'scheduler.mode'), { timeout: 30_000 })
+    .poll(async () => terminalEval(page, 'scheduler.mode'), { timeout: 30_000 })
     .toBe('paced');
   // Back in Real the readout stays, and settles at the original's speed once
   // the governor has climbed back from its reset.

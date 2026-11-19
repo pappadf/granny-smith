@@ -18,7 +18,7 @@ import { expect, type Page } from "@playwright/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { gotoWeb2 } from "./web2-fs";
-import { terminalRun as typeLine } from "./terminal";
+import { terminalRun as typeLine, terminalEval } from "./terminal";
 
 // Output is read right after each line: type, submit, then settle.
 export const terminalRun = (page: Page, line: string) =>
@@ -45,22 +45,6 @@ export const WEBGPU_ARGS = [
   "--enable-features=Vulkan,WebGPU",
   "--use-webgpu-adapter=swiftshader",
 ];
-
-// Read one expression back through the terminal with a fresh key per
-// probe so the echoed input line (still holding the unexpanded ${...})
-// can never satisfy the match — only the response can.
-let probeSeq = 0;
-export async function probe(page: Page, expr: string): Promise<string> {
-  for (let attempt = 0; attempt < 30; attempt++) {
-    const key = `v2g${++probeSeq}`;
-    await terminalRun(page, `echo "${key}=[${"$"}{${expr}}]"`);
-    await page.waitForTimeout(400);
-    const text = await page.locator(".console-output").innerText();
-    const m = text.match(new RegExp(`${key}=\\[([A-Za-z0-9_.-]+)\\]`));
-    if (m) return m[1];
-  }
-  throw new Error(`terminal probe never answered: ${expr}`);
-}
 
 // Open the page and store the 7500's ROM through Welcome's Upload ROM
 // button; it is then at STORED_ROM, for this page and any reload of it.
@@ -105,8 +89,8 @@ export async function bootWithCard(page: Page, cardId: string): Promise<void> {
   // Halt whatever the boot left running: the guest's own Open Firmware
   // would otherwise enumerate the bus underneath the config pokes.
   await terminalRun(page, "scheduler.stop");
-  expect(await probe(page, "scheduler.running")).toBe("false");
-  expect(await probe(page, "machine.pci.slot[1].card.regs.fb_size")).toBe(
+  expect(await terminalEval(page, "scheduler.running")).toBe("false");
+  expect(await terminalEval(page, "machine.pci.slot[1].card.regs.fb_size")).toBe(
     "4194304",
   );
 }

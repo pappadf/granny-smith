@@ -47,7 +47,7 @@ export const CAMERA_BUTTON = '.gs-toolbar button[aria-label*="amera"]';
 // One object-model value as the text the shell would print for it: "true",
 // "none", "0x8000", "12345", an enum's label.  The specs compare against
 // those literals.
-export async function probe(page: Page, path: string, args?: unknown[]): Promise<string> {
+export async function probeValue(page: Page, path: string, args?: unknown[]): Promise<string> {
   const v = await gsEvalInPage(page, path, args);
   if (v !== null && typeof v === "object") {
     const o = v as { error?: unknown; enum?: unknown };
@@ -59,7 +59,7 @@ export async function probe(page: Page, path: string, args?: unknown[]): Promise
 }
 
 export async function probeNumber(page: Page, path: string, args?: unknown[]): Promise<number> {
-  return Number(await probe(page, path, args));
+  return Number(await probeValue(page, path, args));
 }
 
 // --- booting -----------------------------------------------------------------
@@ -97,7 +97,7 @@ export async function startMachine(
   await expect(page.locator(".toast .msg").filter({ hasText: "Machine started" })).toBeVisible({
     timeout: 60_000,
   });
-  await expect.poll(async () => probe(page, "machine.id"), { timeout: 30_000 }).toBe(model);
+  await expect.poll(async () => probeValue(page, "machine.id"), { timeout: 30_000 }).toBe(model);
 }
 
 export async function shutDown(page: Page): Promise<void> {
@@ -121,7 +121,7 @@ export async function holdRealTime(page: Page): Promise<void> {
 // input for the rest of the session (docs/internals/machines/av/dsp.md).
 export async function waitForDspKernel(page: Page): Promise<void> {
   await expect
-    .poll(async () => `${await probe(page, "machine.dsp.state")}/${await probe(page, "machine.dsp.emr")}`, {
+    .poll(async () => `${await probeValue(page, "machine.dsp.state")}/${await probeValue(page, "machine.dsp.emr")}`, {
       timeout: 120_000,
       intervals: [500],
     })
@@ -140,7 +140,7 @@ export async function bootAVToFinder(page: Page): Promise<void> {
   await page.getByRole("button", { name: "Faster", exact: true }).click();
   await waitForStableScreen(page, 420_000);
   await page.getByRole("button", { name: "Real", exact: true }).click();
-  await expect.poll(async () => probe(page, "scheduler.mode"), { timeout: 30_000 }).toBe("paced");
+  await expect.poll(async () => probeValue(page, "scheduler.mode"), { timeout: 30_000 }).toBe("paced");
 }
 
 // --- driving the guest's GUI -------------------------------------------------
@@ -206,7 +206,7 @@ export async function waitForStableScreen(page: Page, timeoutMs: number): Promis
   let previous = "";
   let since = Date.now();
   while (Date.now() < deadline) {
-    const now = await probe(page, "machine.screen.checksum");
+    const now = await probeValue(page, "machine.screen.checksum");
     if (now !== previous) {
       previous = now;
       since = Date.now();
