@@ -911,36 +911,38 @@ static void gc_line_to(display_card_824gc_priv_t *p, int x1, int y1) {
     p->gc_pen_x = x1;
     p->gc_pen_y = y1;
 }
-// opRgn ($08): fill a QuickDraw region.  Rectangular regions (rgnSize 0x0A) are
-// their bbox; complex regions are the classic band/inversion list {y, x-pairs,
-// 0x7FFF, …, 0x7FFF}.
-static void gc_fill_rgn(display_card_824gc_priv_t *p, uint32_t off, int ox, int oy) {
-    uint16_t size = (uint16_t)(dram_be32(p, off) >> 16);
-    int top = (int16_t)(dram_be32(p, off) & 0xFFFF) + oy;
-    int left = (int16_t)(dram_be32(p, off + 4) >> 16) + ox;
-    int bot = (int16_t)(dram_be32(p, off + 4) & 0xFFFF) + oy;
-    int right = (int16_t)(dram_be32(p, off + 8) >> 16) + ox;
-    if (size <= 0x0A) {
-        gc_fill_rect(p, top, left, bot, right);
-        return;
-    }
-    gc_cursor_shield(p, top, left, bot, right);
-    uint32_t d = off + 10; // band data follows the 10-byte header
-    uint32_t dend = off + size;
-    int inv[128];
-    int ninv = 0;
-    int y0raw = (int16_t)dram_be16(p, d);
+// === QuickDraw region walk ===================================================
+// The classic band/inversion list after a region's 10-byte header: {y,
+// x-pairs, 0x7FFF} per band, ended by a 0x7FFF y.  Each x toggles its column
+// in the sorted inversion set; between one band's y and the next, the set's
+// pairs are the region's spans.  One walk serves both region users -- the
+// opRgn fill (bytes in card DRAM) and the clip-mask AND (bytes in a host
+// buffer) -- so a bounds fix lands in both: every read is bounded by the
+// record (`dend`), never by the 0x7FFF that a damaged record may not carry.
+
+// Reads the big-endian word at byte offset `off` of a region source.
+typedef uint16_t (*gc_rgn_read_fn)(const void *src, uint32_t off);
+
+// Acts on one band: rows [y0, y1) (y0 >= 0, y1 <= GC824_CLIP_ROWS), whose
+// spans are the `n` sorted inversion points taken in pairs.
+typedef void (*gc_rgn_band_fn)(void *ctx, int y0, int y1, const int *inv, int n);
+
+// Walks the band data at [d, dend) of a region whose bbox bottom is `bot`
+// (already offset), offsetting every point by (ox, oy).
+static void gc_rgn_walk(gc_rgn_read_fn rd, const void *src, uint32_t d, uint32_t dend, int ox, int oy, int bot,
+                        gc_rgn_band_fn band, void *ctx) {
+    int inv[128], ninv = 0, guard = 0;
+    int y0raw = (int16_t)rd(src, d);
     int y = (y0raw == 0x7FFF) ? 0x7FFF : y0raw + oy;
-    int guard = 0;
     while (y != 0x7FFF && d + 2 <= dend && guard++ < 2000) {
         d += 2;
         for (;;) {
-            // Bounded by the record, as gc_mask_and_region does: past `dend`
-            // (and past the DRAM, where dram_be16 reads 0) the 0x7FFF that
-            // ends a band never comes, and this loop ran until `d` wrapped.
+            // Bounded by the record: past `dend` (and past the DRAM, where
+            // dram_be16 reads 0) the 0x7FFF that ends a band never comes, and
+            // an unbounded loop ran until `d` wrapped.
             if (d + 2 > dend)
                 return;
-            int x = (int16_t)dram_be16(p, d);
+            int x = (int16_t)rd(src, d);
             d += 2;
             if (x == 0x7FFF)
                 break;
@@ -962,16 +964,50 @@ static void gc_fill_rgn(display_card_824gc_priv_t *p, uint32_t off, int ox, int 
         }
         if (d + 2 > dend)
             return;
-        int nyraw = (int16_t)dram_be16(p, d);
+        int nyraw = (int16_t)rd(src, d);
         int ny = (nyraw == 0x7FFF) ? 0x7FFF : nyraw + oy;
-        int bandBot = (ny == 0x7FFF) ? bot : ny;
-        if (bandBot > GC824_CLIP_ROWS)
-            bandBot = GC824_CLIP_ROWS;
-        for (int yy = (y < 0 ? 0 : y); yy < bandBot; yy++)
-            for (int s = 0; s + 1 < ninv; s += 2)
-                gc_span(p, yy, inv[s], inv[s + 1]);
+        int band_bot = (ny == 0x7FFF) ? bot : ny;
+        if (band_bot > GC824_CLIP_ROWS)
+            band_bot = GC824_CLIP_ROWS;
+        band(ctx, y < 0 ? 0 : y, band_bot, inv, ninv);
         y = ny;
     }
+}
+
+// A region word in card DRAM (gc_rgn_read_fn).
+static uint16_t gc_rgn_read_dram(const void *src, uint32_t off) {
+    return dram_be16((display_card_824gc_priv_t *)src, off);
+}
+
+// A region word in a host buffer (gc_rgn_read_fn).
+static uint16_t gc_rgn_read_buf(const void *src, uint32_t off) {
+    return LOAD_BE16((const uint8_t *)src + off);
+}
+
+// opRgn's band action: paint each span (gc_rgn_band_fn).
+static void gc_fill_rgn_band(void *ctx, int y0, int y1, const int *inv, int n) {
+    display_card_824gc_priv_t *p = ctx;
+    for (int yy = y0; yy < y1; yy++)
+        for (int s = 0; s + 1 < n; s += 2)
+            gc_span(p, yy, inv[s], inv[s + 1]);
+}
+
+// opRgn ($08): fill a QuickDraw region.  Rectangular regions (rgnSize 0x0A) are
+// their bbox; complex regions are the classic band/inversion list {y, x-pairs,
+// 0x7FFF, …, 0x7FFF}.
+static void gc_fill_rgn(display_card_824gc_priv_t *p, uint32_t off, int ox, int oy) {
+    uint16_t size = (uint16_t)(dram_be32(p, off) >> 16);
+    int top = (int16_t)(dram_be32(p, off) & 0xFFFF) + oy;
+    int left = (int16_t)(dram_be32(p, off + 4) >> 16) + ox;
+    int bot = (int16_t)(dram_be32(p, off + 4) & 0xFFFF) + oy;
+    int right = (int16_t)(dram_be32(p, off + 8) >> 16) + ox;
+    if (size <= 0x0A) {
+        gc_fill_rect(p, top, left, bot, right);
+        return;
+    }
+    gc_cursor_shield(p, top, left, bot, right);
+    // Band data follows the 10-byte header
+    gc_rgn_walk(gc_rgn_read_dram, p, off + 10, off + size, ox, oy, bot, gc_fill_rgn_band, p);
 }
 
 // === Polygons (opPoly $07) — ROM DrawPoly/PaintVector port ====================
@@ -1136,6 +1172,19 @@ static void gc_mask_and_region_row(uint8_t *mask, int y, int x0, int x1) {
     for (int x = x0; x < x1; x++)
         row[x >> 3] &= (uint8_t) ~(0x80u >> (x & 7));
 }
+// The clip mask's band action: clear the gaps between the spans, so only the
+// region stays drawable (gc_rgn_band_fn).
+static void gc_mask_rgn_band(void *ctx, int y0, int y1, const int *inv, int n) {
+    uint8_t *mask = ctx;
+    for (int yy = y0; yy < y1; yy++) {
+        int prev = 0; // clear the gap [prev, inv[s]) then jump past the span
+        for (int s = 0; s + 1 < n; s += 2) {
+            gc_mask_and_region_row(mask, yy, prev, inv[s]);
+            prev = inv[s + 1];
+        }
+        gc_mask_and_region_row(mask, yy, prev, GC824_CLIP_STRIDE * 8);
+    }
+}
 static void gc_mask_and_region(uint8_t *mask, const uint8_t *rgn, uint32_t maxlen, int ox, int oy) {
     if (maxlen < 10)
         return;
@@ -1161,51 +1210,7 @@ static void gc_mask_and_region(uint8_t *mask, const uint8_t *rgn, uint32_t maxle
         return;
     }
     // Complex region: band/inversion list — clear the gaps between spans.
-    uint32_t d = 10, dend = size < maxlen ? size : maxlen;
-    int inv[128], ninv = 0, guard = 0;
-    int y0raw = (int16_t)LOAD_BE16(rgn + d);
-    int y = (y0raw == 0x7FFF) ? 0x7FFF : y0raw + oy;
-    while (y != 0x7FFF && d + 2 <= dend && guard++ < 2000) {
-        d += 2;
-        for (;;) {
-            if (d + 2 > dend)
-                return;
-            int x = (int16_t)LOAD_BE16(rgn + d);
-            d += 2;
-            if (x == 0x7FFF)
-                break;
-            x += ox;
-            int i = 0;
-            while (i < ninv && inv[i] < x)
-                i++;
-            if (i < ninv && inv[i] == x) {
-                for (int k = i; k + 1 < ninv; k++)
-                    inv[k] = inv[k + 1];
-                ninv--;
-            } else if (ninv < 128) {
-                for (int k = ninv; k > i; k--)
-                    inv[k] = inv[k - 1];
-                inv[i] = x;
-                ninv++;
-            }
-        }
-        if (d + 2 > dend)
-            return;
-        int nyraw = (int16_t)LOAD_BE16(rgn + d);
-        int ny = (nyraw == 0x7FFF) ? 0x7FFF : nyraw + oy;
-        int bandBot = (ny == 0x7FFF) ? bot : ny;
-        if (bandBot > GC824_CLIP_ROWS)
-            bandBot = GC824_CLIP_ROWS;
-        for (int yy = (y < 0 ? 0 : y); yy < bandBot; yy++) {
-            int prev = 0; // clear the gap [prev, inv[s]) then jump past the span
-            for (int s = 0; s + 1 < ninv; s += 2) {
-                gc_mask_and_region_row(mask, yy, prev, inv[s]);
-                prev = inv[s + 1];
-            }
-            gc_mask_and_region_row(mask, yy, prev, GC824_CLIP_STRIDE * 8);
-        }
-        y = ny;
-    }
+    gc_rgn_walk(gc_rgn_read_buf, rgn, 10, size < maxlen ? size : maxlen, ox, oy, bot, gc_mask_rgn_band, mask);
 }
 // Rebuild the effective drawable mask = clipRgn ∩ visRgn (each region is the
 // CURRENT one — the ops replace, not accumulate).
