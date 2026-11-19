@@ -67,7 +67,8 @@ Unlike the 68K cores (whose supervisor/user arrays are both filled by the
 bus-side MMU), the 601 core splits the two array pairs by ROLE:
 
 - the **supervisor arrays always hold the machine's eager physical
-  identity view** (filled by the family's page layout, e.g. `pdm_fill_page`);
+  identity view** (filled by the family's page layout through
+  `page_fill_identity_sv`, `src/machines/runtime/page_fill.h`);
 - the **user arrays belong to the MMU front end**, which fills them with
   LOGICAL page mappings as translated user-mode accesses succeed;
 - a third pair, the **supervisor-translated arrays** (`g_ppc_sv_read/write`,

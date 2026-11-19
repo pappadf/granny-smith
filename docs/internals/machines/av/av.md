@@ -90,7 +90,7 @@ through it when it is smaller. The ROM sizes memory against exactly that:
 
 A bank's ten bits are written boundary first, `Sz2` last, so the decode is
 rebuilt on each bank's `Sz2` write; windows it leaves are cleared
-(`mac030_clear_page`) so they do not echo.
+(`page_clear`, `src/machines/runtime/page_fill.h`) so they do not echo.
 
 The installed RAM is the board's banks (`av_ram_banks`): the soldered bank
 (660AV: 4 MB as bank 0) and SIMMs of 4/8/16/32 MB, slot `k` on banks

@@ -154,7 +154,7 @@ static void plus_map_read_page(uint32_t p, uint8_t *host_ptr) {
         g_supervisor_read[p] = adjusted;
     if (g_user_read)
         g_user_read[p] = adjusted;
-    tlb_track_page(p); // on the tracker like every fast-path entry (mac030_fill_page)
+    tlb_track_page(p); // on the tracker like every fast-path entry (page_fill_68k)
     memory_logpoint_guard_page(p);
 }
 

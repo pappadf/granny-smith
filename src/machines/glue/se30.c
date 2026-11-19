@@ -159,12 +159,12 @@ static void se30_memory_layout_tail(config_t *cfg) {
         uint32_t vram_mirror_end = (SE30_VRAM_BASE + 0x100000) >> MEM_PAGE_SHIFT; // 1 MB window
         for (uint32_t p = vram_start_page; p < vram_mirror_end && p < g_page_count; p++) {
             uint32_t offset_in_vram = ((p - vram_start_page) % vram_pages) << MEM_PAGE_SHIFT;
-            mac030_fill_page(p, se30->vram + offset_in_vram, true);
+            page_fill_68k(p, se30->vram + offset_in_vram, true);
         }
         // The 32-bit-mode window at the base of slot E: $FE000000-$FE00FFFF
         uint32_t slot_start_page = SE30_VRAM_BASE_SLOT >> MEM_PAGE_SHIFT;
         for (uint32_t p = 0; p < vram_pages && slot_start_page + p < g_page_count; p++)
-            mac030_fill_page(slot_start_page + p, se30->vram + (p << MEM_PAGE_SHIFT), true);
+            page_fill_68k(slot_start_page + p, se30->vram + (p << MEM_PAGE_SHIFT), true);
     }
 
     // --- VROM: $FEFF8000 - $FEFFFFFF (32 KB read-only) ---
@@ -172,7 +172,7 @@ static void se30_memory_layout_tail(config_t *cfg) {
         uint32_t vrom_pages = SE30_VROM_SIZE >> MEM_PAGE_SHIFT; // 8 pages
         uint32_t vrom_start_page = SE30_VROM_BASE >> MEM_PAGE_SHIFT;
         for (uint32_t p = 0; p < vrom_pages && vrom_start_page + p < g_page_count; p++)
-            mac030_fill_page(vrom_start_page + p, se30->vrom + (p << MEM_PAGE_SHIFT), false);
+            page_fill_68k(vrom_start_page + p, se30->vrom + (p << MEM_PAGE_SHIFT), false);
     }
 
     // --- ROM overlay: map ROM at $00000000 on reset ---

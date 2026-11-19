@@ -302,35 +302,6 @@ static void iifx_memory_layout_init(config_t *cfg);
 static void iifx_nubus_slot_irq(config_t *cfg, int slot, bool active);
 static void iifx_trigger_vbl(config_t *cfg);
 
-// Fills one page-table entry with a direct host mapping.
-static void iifx_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
-    if (page_index >= g_page_count)
-        return;
-    memory_page_set_host(page_index, host_ptr, writable);
-    uint32_t guest_base = page_index << MEM_PAGE_SHIFT;
-    uintptr_t adjusted = MEM_RAM_ENTRY((uintptr_t)host_ptr - guest_base);
-    if (g_supervisor_read)
-        g_supervisor_read[page_index] = adjusted;
-    if (g_user_read)
-        g_user_read[page_index] = adjusted;
-    if (writable) {
-        uintptr_t wadj = memory_write_fill(page_index, host_ptr, adjusted,
-                                           MEM_WT_SUPER | MEM_WT_USER); // 0 on a predecoded code page
-        if (g_supervisor_write)
-            g_supervisor_write[page_index] = wadj;
-        if (g_user_write)
-            g_user_write[page_index] = wadj;
-    } else {
-        if (g_supervisor_write)
-            g_supervisor_write[page_index] = 0;
-        if (g_user_write)
-            g_user_write[page_index] = 0;
-        memory_write_refused_clear(page_index, MEM_WT_SUPER | MEM_WT_USER); // read-only now on the switch core too
-    }
-    tlb_track_page(page_index); // tracked like every fast-path entry (mac030_fill_page)
-    memory_logpoint_guard_page(page_index);
-}
-
 // Repoints the page-table entries for $40008000-$4000FFFF to either
 // the ROM image or a pre-computed bitwise-inverted ROM image,
 // depending on `enable`.
@@ -447,24 +418,8 @@ static void iifx_apply_fmc_rom_invert(config_t *cfg, bool enable) {
     for (uint32_t p = start_page; p < end_page; p++) {
         uint32_t guest = p << MEM_PAGE_SHIFT;
         uint8_t *host_ptr = src + ((guest - 0x40000000u) % rom_size);
-        iifx_fill_page(p, host_ptr, false);
+        page_fill_68k(p, host_ptr, false);
     }
-}
-
-// Re-arms one ROM-window page as the first-access trap device (reset state):
-// the inverse of iifx_fill_page, restoring what memory_map_add installed.
-static void iifx_arm_rom_trap_page(iifx_state_t *st, config_t *cfg, uint32_t page_index) {
-    if (page_index >= g_page_count)
-        return;
-    memory_page_set_device(page_index, &st->rom_interface, cfg, (uint32_t)IIFX_ROM_START);
-    if (g_supervisor_read)
-        g_supervisor_read[page_index] = 0;
-    if (g_supervisor_write)
-        g_supervisor_write[page_index] = 0;
-    if (g_user_read)
-        g_user_read[page_index] = 0;
-    if (g_user_write)
-        g_user_write[page_index] = 0;
 }
 
 // Sets or clears the reset-time ROM overlay at physical zero.
@@ -486,7 +441,7 @@ static void iifx_set_rom_overlay(config_t *cfg, bool overlay) {
 
     for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++) {
         uint8_t *host_ptr = overlay ? rom_data + (p << MEM_PAGE_SHIFT) : ram_base + ((p % ram_pages) << MEM_PAGE_SHIFT);
-        iifx_fill_page(p, host_ptr, !overlay);
+        page_fill_68k(p, host_ptr, !overlay);
     }
 
     // The $40000000 ROM window doubles as the overlay trip-wire: while the
@@ -500,15 +455,15 @@ static void iifx_set_rom_overlay(config_t *cfg, bool overlay) {
     // on Marathon gameplay, 45% of all accesses were ROM-bound slow-path,
     // costing ~3.6x whole-machine throughput vs the IIcx.  RESET re-arms the
     // trap.  The FMC ROM-invert POST window ($40008000-$4000FFFF) re-points
-    // its 8 pages after this via the same iifx_fill_page path.
+    // its 8 pages after this via the same page_fill_68k path.
     uint32_t wstart = (uint32_t)(IIFX_ROM_START >> MEM_PAGE_SHIFT);
     uint32_t wend = (uint32_t)(IIFX_ROM_END >> MEM_PAGE_SHIFT);
     for (uint32_t p = wstart; p < wend && p < g_page_count; p++) {
         if (overlay) {
-            iifx_arm_rom_trap_page(st, cfg, p);
+            page_route_device(p, &st->rom_interface, cfg, (uint32_t)IIFX_ROM_START); // the reset trap
         } else {
             uint32_t guest = p << MEM_PAGE_SHIFT;
-            iifx_fill_page(p, rom_data + ((guest - (uint32_t)IIFX_ROM_START) % rom_size), false);
+            page_fill_68k(p, rom_data + ((guest - (uint32_t)IIFX_ROM_START) % rom_size), false);
         }
     }
 }
@@ -1438,7 +1393,7 @@ static void iifx_memory_layout_init(config_t *cfg) {
     uint32_t window_pages = IIFX_RAM_WINDOW >> MEM_PAGE_SHIFT;
     // RAM larger than the decode window still maps in full (the ROM's
     // descending probe walks above the window), so the span is the larger.
-    mac030_map_mirrored(0, (ram_pages > window_pages) ? ram_pages : window_pages, ram_base, ram_pages, iifx_fill_page,
+    mac030_map_mirrored(0, (ram_pages > window_pages) ? ram_pages : window_pages, ram_base, ram_pages, page_fill_68k,
                         true);
 
     st->rom_interface = (memory_interface_t){
@@ -1469,7 +1424,7 @@ static void iifx_memory_layout_init(config_t *cfg) {
 
     // Project card host regions (VRAM/declaration ROMs) plus their Mode-24
     // slot aliases into the page table (shared helper; see iicx.c).
-    mmu_host_regions_fill_pages(st->mmu, iifx_fill_page, /*mode24_alias*/ true);
+    mmu_host_regions_fill_pages(st->mmu, page_fill_68k, /*mode24_alias*/ true);
 
     st->rom_overlay = false;
     iifx_set_rom_overlay(cfg, true);

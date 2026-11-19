@@ -97,7 +97,7 @@ void iicx_memory_layout_tail(config_t *cfg) {
     // mode24_alias=true adds the 1 MB Mode-24 slot windows at $00s00000:
     // the IIcx/IIx/SE/30 ROM is 24-bit-only, so QuickDraw routinely reaches
     // a card framebuffer via a Mode-24 ScrnBase ($00900080).
-    mmu_host_regions_fill_pages(st->mmu, mac030_fill_page, /*mode24_alias*/ true);
+    mmu_host_regions_fill_pages(st->mmu, page_fill_68k, /*mode24_alias*/ true);
 
     st->rom_overlay = false;
     iicx_set_rom_overlay(cfg, true);

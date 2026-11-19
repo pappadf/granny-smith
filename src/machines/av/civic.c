@@ -659,7 +659,7 @@ void av_civic_install_memory(config_t *cfg, av_civic_t *cv) {
     uint32_t pages = AV_CIVIC_VRAM_SIZE >> MEM_PAGE_SHIFT;
     uint32_t start = AV_CIVIC_VRAM_BASE >> MEM_PAGE_SHIFT;
     for (uint32_t i = 0; i < pages && start + i < g_page_count; i++)
-        mac030_fill_page(start + i, cv->vram + (i << MEM_PAGE_SHIFT), true);
+        page_fill_68k(start + i, cv->vram + (i << MEM_PAGE_SHIFT), true);
     memory_map_host_region(cfg->memory_map, "civic_vram", cv->vram, AV_CIVIC_VRAM_BASE, AV_CIVIC_VRAM_SIZE,
                            /*writable*/ true);
 

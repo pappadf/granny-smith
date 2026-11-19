@@ -36,6 +36,7 @@
 #include "machine_checkpoint.h"
 #include "machine_teardown.h" // the shared config_t-owned delete chain
 #include "nubus.h"
+#include "page_fill.h"
 #include "ppc.h"
 #include "ppc_build.h"
 #include "rtc.h"
@@ -95,46 +96,6 @@ const struct nubus_slot_decl pdm_nubus_slots_cde[] = {
     {.slot = 0xE, .kind = NUBUS_SLOT_SOCKET, .label = "NuBus slot D", .fill_order = 3},
     {0},
 };
-
-// ============================================================
-// Page-table helpers (the mac030_fill_page shape, kept local so the PDM
-// family does not pull 68K-family headers)
-// ============================================================
-
-void pdm_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
-    if (page_index >= (uint32_t)g_page_count)
-        return;
-    memory_page_set_host(page_index, host_ptr, writable);
-    uint32_t guest_base = page_index << MEM_PAGE_SHIFT;
-    uintptr_t adjusted = MEM_RAM_ENTRY((uintptr_t)host_ptr - guest_base);
-    // Supervisor arrays hold the eager physical identity view; the USER
-    // arrays belong to the 601 MMU front end (logical fills, ppc_mmu.c)
-    // and are only ever cleared here.  Callers that change the physical
-    // map (HMC remap) additionally invalidate the MMU caches.
-    if (g_supervisor_read)
-        g_supervisor_read[page_index] = adjusted;
-    if (g_supervisor_write) // write entry refused on a predecoded code page (memory.h)
-        g_supervisor_write[page_index] = writable ? memory_write_fill(page_index, host_ptr, adjusted, MEM_WT_SUPER) : 0;
-    if (g_user_read)
-        g_user_read[page_index] = 0;
-    if (g_user_write)
-        g_user_write[page_index] = 0;
-    memory_logpoint_guard_page(page_index);
-}
-
-void pdm_clear_page(uint32_t page_index) {
-    if (page_index >= (uint32_t)g_page_count)
-        return;
-    memory_page_clear(page_index);
-    if (g_supervisor_read)
-        g_supervisor_read[page_index] = 0;
-    if (g_supervisor_write)
-        g_supervisor_write[page_index] = 0;
-    if (g_user_read)
-        g_user_read[page_index] = 0;
-    if (g_user_write)
-        g_user_write[page_index] = 0;
-}
 
 // ============================================================
 // I/O island dispatch ($50F00000-$50F4FFFF)
@@ -216,7 +177,7 @@ static void pdm_map_rom_window(config_t *cfg, uint32_t base, uint32_t window) {
     uint32_t first = base >> MEM_PAGE_SHIFT;
     uint32_t pages = window >> MEM_PAGE_SHIFT;
     for (uint32_t p = 0; p < pages; p++)
-        pdm_fill_page(first + p, rom + ((p << MEM_PAGE_SHIFT) % rom_size), false);
+        page_fill_identity_sv(first + p, rom + ((p << MEM_PAGE_SHIFT) % rom_size), false);
 }
 
 static void pdm_memory_layout(config_t *cfg) {
@@ -350,7 +311,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // machine's page table, so host-backed regions that core code registers
     // on the bus map — a NuBus card's VRAM and declaration ROM — are filled
     // through our own page filler.
-    const ppc_core_opts_t core = {.fill_page = pdm_fill_page, .cpi = 1, .tb_hz = 7833600u};
+    const ppc_core_opts_t core = {.fill_page = page_fill_identity_sv, .cpi = 1, .tb_hz = 7833600u};
     if (ppc_build_core(cfg, cp, &core) != 0)
         return -1;
 

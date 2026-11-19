@@ -30,6 +30,7 @@
 #include "pdm.h"
 
 #include "log.h"
+#include "page_fill.h"
 #include "ppc.h"
 
 #include <string.h>
@@ -94,7 +95,7 @@ static void map_bank_window(config_t *cfg, uint32_t base, uint32_t window, uint3
     uint32_t pages = window >> MEM_PAGE_SHIFT;
     uint32_t first = base >> MEM_PAGE_SHIFT;
     for (uint32_t p = 0; p < pages; p++)
-        pdm_fill_page(first + p, host + ((p << MEM_PAGE_SHIFT) % size), true);
+        page_fill_identity_sv(first + p, host + ((p << MEM_PAGE_SHIFT) % size), true);
 }
 
 // Rebuild the whole DRAM decode ($00000000-$3FFFFFFF) from the current
@@ -108,7 +109,7 @@ void pdm_hmc_remap(config_t *cfg) {
     // range), so empty windows fail the probe's signature compare — the
     // "empty banks must not echo" requirement.
     for (uint32_t p = 0; p < (0x40000000u >> MEM_PAGE_SHIFT); p++)
-        pdm_clear_page(p);
+        page_clear(p);
 
     // Motherboard bank at 0: 8 MB window, 4 MB parts alias twice.
     uint32_t mb_decode = (h->cfg_lo & HMC_MB_4MB) ? 0x400000u : 0x800000u;
@@ -230,10 +231,10 @@ static void pdm_hmc_wait_state(config_t *cfg, bool on) {
         st->wait_interface.peek_uint8 = wait_peek8;
         st->wait_interface.peek_uint16 = wait_peek16;
         st->wait_interface.peek_uint32 = wait_peek32;
-        pdm_clear_page(0);
+        page_clear(0);
         memory_page_set_device(0, &st->wait_interface, cfg, 0);
     } else {
-        pdm_fill_page(0, ram_native_pointer(cfg->memory_map, 0), true);
+        page_fill_identity_sv(0, ram_native_pointer(cfg->memory_map, 0), true);
     }
     // The physical map moved under the MMU's caches (as for the remap above):
     // the supervisor-translated tables and the translation TLB may hold page

@@ -292,11 +292,6 @@ extern const pci_slot_decl_t gossamer_pci_slots[];
 extern const uint32_t gossamer_ram_options_kb[];
 extern const uint8_t gossamer_whisper_eeprom[16];
 
-// Fill/clear one physical page in the AoS table + SoA fast-path arrays
-// (the tnt_fill_page shape; the PPC MMU owns the user arrays).
-void gos_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable);
-void gos_clear_page(uint32_t page_index);
-
 // DBDMA channel -> Heathrow interrupt source (the table, not the index:
 // ATA 11/12 on sources 2/3, BMAC 2/3 on bank-2 sources 32/33).  -1 for a
 // channel with no interrupt (10).

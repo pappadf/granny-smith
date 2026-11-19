@@ -67,6 +67,7 @@
 #include "tnt.h"
 
 #include "log.h"
+#include "page_fill.h"
 #include "ppc.h" // r24 (the 68k PC) annotates the R1 access log
 
 #include <stdlib.h>
@@ -173,7 +174,7 @@ void tnt_hh_remap(config_t *cfg) {
     tnt_hammerhead_t *hh = &tnt_st(cfg)->hh;
     uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
     for (uint32_t p = 0; p < (HH_DECODE_TOP >> MEM_PAGE_SHIFT); p++)
-        tnt_clear_page(p);
+        page_clear(p);
     for (unsigned k = 0; k < TNT_HH_BANKS; k++) {
         uint32_t size = hh->bank_size[k];
         // An interleaved pair is decoded by its lower bank, as one region
@@ -203,7 +204,7 @@ void tnt_hh_remap(config_t *cfg) {
         uint8_t *host = ram + hh->bank_host_off[k];
         uint32_t first = base >> MEM_PAGE_SHIFT;
         for (uint32_t p = 0; p < (window >> MEM_PAGE_SHIFT); p++)
-            tnt_fill_page(first + p, host + ((p << MEM_PAGE_SHIFT) % size), true);
+            page_fill_identity_sv(first + p, host + ((p << MEM_PAGE_SHIFT) % size), true);
         LOG(3, "bank %u: $%X bytes at $%08X (window $%X)", k, size, base, window);
     }
 }

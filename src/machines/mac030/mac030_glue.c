@@ -124,7 +124,7 @@ void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc) {
     bool standard_bank = (ram_size == 1 * 1024 * 1024 || ram_size == 4 * 1024 * 1024 || ram_size == 16 * 1024 * 1024);
     uint32_t map_end_page = standard_bank ? ram_pages : (ram_pages * 2);
     for (uint32_t p = 0; p < map_end_page && p < g_page_count; p++)
-        mac030_fill_page(p, ram_base + ((p % ram_pages) << MEM_PAGE_SHIFT), true);
+        page_fill_68k(p, ram_base + ((p % ram_pages) << MEM_PAGE_SHIFT), true);
 
     // --- ROM, mirrored across the board's window (read-only) ---
     uint32_t rom_pages = rom_size >> MEM_PAGE_SHIFT;
@@ -132,7 +132,7 @@ void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc) {
     uint32_t rom_end_page = desc->rom_end >> MEM_PAGE_SHIFT;
     if (rom_pages > 0) {
         for (uint32_t p = rom_start_page; p < rom_end_page && p < g_page_count; p++)
-            mac030_fill_page(p, rom_data + (((p - rom_start_page) % rom_pages) << MEM_PAGE_SHIFT), false);
+            page_fill_68k(p, rom_data + (((p - rom_start_page) % rom_pages) << MEM_PAGE_SHIFT), false);
     }
 
     // --- I/O dispatcher, the window directly above the ROM window ---
@@ -282,53 +282,6 @@ void mac030_map_mirrored(uint32_t start_page, uint32_t window_pages, uint8_t *ho
         fill(start_page + i, host + ((i % size_pages) << MEM_PAGE_SHIFT), writable);
 }
 
-void mac030_clear_page(uint32_t page_index) {
-    if (page_index >= g_page_count)
-        return;
-    memory_page_clear(page_index);
-    if (g_supervisor_read)
-        g_supervisor_read[page_index] = 0;
-    if (g_user_read)
-        g_user_read[page_index] = 0;
-    if (g_supervisor_write)
-        g_supervisor_write[page_index] = 0;
-    if (g_user_write)
-        g_user_write[page_index] = 0;
-}
-
-// Populate one page in the AoS table + SoA fast-path arrays.  Read-only pages
-// leave the write SoA entries at their zero-initialised value (slow path).
-void mac030_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
-    if (page_index >= g_page_count)
-        return;
-    memory_page_set_host(page_index, host_ptr, writable);
-    uint32_t guest_base = page_index << MEM_PAGE_SHIFT;
-    uintptr_t adjusted = MEM_RAM_ENTRY((uintptr_t)host_ptr - guest_base);
-    if (g_supervisor_read)
-        g_supervisor_read[page_index] = adjusted;
-    if (g_user_read)
-        g_user_read[page_index] = adjusted;
-    if (writable) {
-        uintptr_t wadj = memory_write_fill(page_index, host_ptr, adjusted,
-                                           MEM_WT_SUPER | MEM_WT_USER); // 0 on a predecoded code page
-        if (g_supervisor_write)
-            g_supervisor_write[page_index] = wadj;
-        if (g_user_write)
-            g_user_write[page_index] = wadj;
-    }
-    // A direct fast-path entry must be on the TLB tracker like every other
-    // one, or the next mmu_invalidate_tlb -- the guest enabling the PMMU --
-    // zeroes the tracked pages and leaves this identity mapping standing
-    // under translation.  That was a latent bug the ROM overlay exposed after
-    // a reset: the overlay's low pages stayed mapped to physical 0 with the
-    // MMU on, so a IIci's vectors went to Bank A (the frame buffer) instead
-    // of Bank B, the desktop fill wrote $AAAAAAAA over them, and the next
-    // A-trap double-faulted.  A fresh boot hid it only because its memory
-    // test overflows the tracker first, which forces a full clear.
-    tlb_track_page(page_index);
-    memory_logpoint_guard_page(page_index);
-}
-
 // Toggle the ROM overlay at $00000000.  overlay=true maps the ROM image
 // (read-only); overlay=false restores RAM (writable).  No-op if unchanged.
 void mac030_glue_set_rom_overlay(config_t *cfg, bool *overlay_flag, uint32_t rom_start, bool on) {
@@ -340,11 +293,11 @@ void mac030_glue_set_rom_overlay(config_t *cfg, bool *overlay_flag, uint32_t rom
     uint32_t rom_start_page = rom_start >> MEM_PAGE_SHIFT;
     if (on) {
         for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++)
-            mac030_fill_page(p, g_page_table[rom_start_page + p].host_base, false);
+            page_fill_68k(p, g_page_table[rom_start_page + p].host_base, false);
     } else {
         uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
         for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++)
-            mac030_fill_page(p, ram_base + (p << MEM_PAGE_SHIFT), true);
+            page_fill_68k(p, ram_base + (p << MEM_PAGE_SHIFT), true);
     }
 }
 

@@ -109,7 +109,7 @@ static void fire_events(void *source) {
 }
 
 // --- memory plumbing civic touches at install time (not exercised) ---
-void mac030_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
+void page_fill_68k(uint32_t page_index, uint8_t *host_ptr, bool writable) {
     (void)page_index;
     (void)host_ptr;
     (void)writable;

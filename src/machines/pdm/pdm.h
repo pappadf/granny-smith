@@ -280,14 +280,6 @@ static inline const pdm_board_desc_t *pdm_board(config_t *cfg) {
 
 extern const machine_substrate_t pdm_substrate;
 
-// Fill one physical page in the AoS table + SoA fast-path arrays (the
-// mac030_fill_page shape, local so pdm stays free of 68K-family headers).
-void pdm_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable);
-
-// Clear a physical page back to unmapped (reads 0 outside the bus-error
-// range — how empty RAM windows fail the probe signature compare).
-void pdm_clear_page(uint32_t page_index);
-
 // === hmc.c ==================================================================
 
 void pdm_hmc_init(config_t *cfg);

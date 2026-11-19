@@ -135,10 +135,10 @@ static void iici_memory_layout_init(config_t *cfg) {
     iici_split_ram_banks(ram_size, &bank_a_size, &bank_b_size);
 
     uint8_t *bank_b = ram_base + bank_a_size;
-    mac030_map_mirrored(0, IICI_BANK_B_PHYS >> MEM_PAGE_SHIFT, ram_base, bank_a_size >> MEM_PAGE_SHIFT,
-                        mac030_fill_page, true);
+    mac030_map_mirrored(0, IICI_BANK_B_PHYS >> MEM_PAGE_SHIFT, ram_base, bank_a_size >> MEM_PAGE_SHIFT, page_fill_68k,
+                        true);
     mac030_map_mirrored(IICI_BANK_B_PHYS >> MEM_PAGE_SHIFT, IICI_BANK_WINDOW >> MEM_PAGE_SHIFT, bank_b,
-                        bank_b_size >> MEM_PAGE_SHIFT, mac030_fill_page, true);
+                        bank_b_size >> MEM_PAGE_SHIFT, page_fill_68k, true);
 
     // Teach the PMMU-side physical resolver the same two-bank layout so
     // table walks and TLB fills resolve Bank B (no-op when bank_b_size == 0
@@ -151,7 +151,7 @@ static void iici_memory_layout_init(config_t *cfg) {
     if (rom_pages > 0) {
         for (uint32_t p = rom_start_page; p < rom_end_page && p < g_page_count; p++) {
             uint32_t offset_in_rom = (p - rom_start_page) % rom_pages;
-            mac030_fill_page(p, rom_data + (offset_in_rom << MEM_PAGE_SHIFT), false);
+            page_fill_68k(p, rom_data + (offset_in_rom << MEM_PAGE_SHIFT), false);
         }
     }
 
@@ -162,7 +162,7 @@ static void iici_memory_layout_init(config_t *cfg) {
     // Mode-24 slot aliases into the page table — same machinery as the IIcx
     // VRAM/Mode-24 handling.  The built-in video needs none: its frame buffer
     // is Bank A RAM, which the guest reaches through its own PMMU tables.
-    mmu_host_regions_fill_pages(st->mmu, mac030_fill_page, /*mode24_alias*/ true);
+    mmu_host_regions_fill_pages(st->mmu, page_fill_68k, /*mode24_alias*/ true);
 
     st->rom_overlay = false;
     iici_set_rom_overlay(cfg, true);

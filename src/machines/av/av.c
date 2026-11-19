@@ -606,7 +606,7 @@ static void av_ymca_remap(config_t *cfg) {
     if (st->decode_end > end)
         end = st->decode_end;
     for (uint32_t p = 0; p < (end >> MEM_PAGE_SHIFT); p++)
-        mac030_clear_page(p);
+        page_clear(p);
     st->decode_end = 0;
     uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
     for (int b = 0; b < AV_YMCA_BANK_COUNT; b++) {
@@ -620,7 +620,7 @@ static void av_ymca_remap(config_t *cfg) {
         uint32_t window = 1u << (20 + (code > 5 ? 5 : code) - 1);
         uint32_t base = boundary << 20;
         mac030_map_mirrored(base >> MEM_PAGE_SHIFT, window >> MEM_PAGE_SHIFT, ram + st->bank_image_off[b],
-                            st->bank_size[b] >> MEM_PAGE_SHIFT, mac030_fill_page, true);
+                            st->bank_size[b] >> MEM_PAGE_SHIFT, page_fill_68k, true);
         if (base + window > st->decode_end)
             st->decode_end = base + window;
     }

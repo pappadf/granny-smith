@@ -13,6 +13,7 @@
 #include "checkpoint.h"
 #include "mac030_glue_io.h"
 #include "memory.h" // memory_interface_t
+#include "page_fill.h" // page_fill_68k / page_clear, the family's page fills
 #include "system_internal.h"
 
 #include <stdbool.h>
@@ -78,19 +79,7 @@ void mac030_glue_scc_irq(void *context, bool active);
 void mac030_glue_via1_irq(void *context, bool active);
 void mac030_glue_via2_irq(void *context, bool active);
 
-// Populate the AoS page entry + SoA fast-path arrays for one page.  Pure
-// (touches only the global page table), identical across se30/iicx/iici/iisi.
-// (iifx keeps its own variant, which additionally zeroes the write entries
-// of read-only pages.)
-void mac030_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable);
-
-// Empty one page: no host memory and no device, so it reads as nothing is
-// there.  A bank decode that moves (the AV's YMCA) clears the windows it
-// leaves, or they would keep echoing the RAM that used to be mapped there.
-void mac030_clear_page(uint32_t page_index);
-
-// A page-filler, so families with their own (the IIfx) can share the mirroring
-// helper below.
+// A page-filler for the mirroring helper below (page_fill_68k, page_fill.h).
 typedef void (*mac030_fill_fn)(uint32_t page_index, uint8_t *host_ptr, bool writable);
 
 // Map `window_pages` pages from `start_page`, mirroring `size_pages` pages of

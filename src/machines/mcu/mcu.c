@@ -160,7 +160,7 @@ static void mcu_map_ram(config_t *cfg) {
                 end = st->bank_start[o];
 
         mac030_map_mirrored(start >> MEM_PAGE_SHIFT, (end - start) >> MEM_PAGE_SHIFT, ram_base + st->bank_image_off[b],
-                            size >> MEM_PAGE_SHIFT, mac030_fill_page, true);
+                            size >> MEM_PAGE_SHIFT, page_fill_68k, true);
     }
 }
 
@@ -599,7 +599,7 @@ static void mcu_memory_layout_init(config_t *cfg) {
     uint32_t vram_pages = dafb_vram_size(st->dafb) >> MEM_PAGE_SHIFT;
     uint32_t vram_start = DAFB_VRAM_BASE >> MEM_PAGE_SHIFT;
     for (uint32_t i = 0; i < vram_pages && vram_start + i < g_page_count; i++)
-        mac030_fill_page(vram_start + i, vram + (i << MEM_PAGE_SHIFT), true);
+        page_fill_68k(vram_start + i, vram + (i << MEM_PAGE_SHIFT), true);
     // Register VRAM with the bus resolver so 040 table walks / TT matches
     // reaching physical $F9xxxxxx resolve to the buffer.
     memory_map_host_region(cfg->memory_map, "dafb_vram", vram, DAFB_VRAM_BASE, dafb_vram_size(st->dafb),
@@ -669,7 +669,7 @@ static int mcu_init(config_t *cfg, checkpoint_t *cp) {
     // resolver serves the 040 walker when it's on.  No Mode-24 aliases —
     // this family's ROM and System are 32-bit clean, and a low alias would
     // shadow RAM at $00s00000 on large-memory configurations.
-    mmu_host_regions_fill_pages(st->bus_mmu, mac030_fill_page, /*mode24_alias*/ false);
+    mmu_host_regions_fill_pages(st->bus_mmu, page_fill_68k, /*mode24_alias*/ false);
 
     mac030_glue_finish(cfg, cp, &st->io);
     return 0;

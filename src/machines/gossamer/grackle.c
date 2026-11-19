@@ -49,6 +49,7 @@
 #include "log.h"
 #include "machine.h"
 #include "object.h"
+#include "page_fill.h"
 #include "pci.h"
 #include "ppc.h"
 
@@ -130,7 +131,7 @@ void gos_grackle_remap(config_t *cfg) {
     // enabled bank reads all-ones and drops writes (§6), which an empty
     // page gives by default.
     for (uint32_t p = 0; p < (0x40000000u >> MEM_PAGE_SHIFT); p++)
-        gos_clear_page(p);
+        page_clear(p);
     bool memgo = (cfg32(g, G_MCCR1) & MCCR1_MEMGO) != 0;
     uint8_t enables = g->cfg[G_BANK_EN];
     if (!memgo) {
@@ -154,7 +155,7 @@ void gos_grackle_remap(config_t *cfg) {
         uint8_t *host = ram + g->bank_host_off[n];
         uint32_t span = hi - lo + 1u;
         for (uint32_t p = 0; p < (span >> MEM_PAGE_SHIFT); p++)
-            gos_fill_page((lo >> MEM_PAGE_SHIFT) + p, host + (((uint64_t)p << MEM_PAGE_SHIFT) % size), true);
+            page_fill_identity_sv((lo >> MEM_PAGE_SHIFT) + p, host + (((uint64_t)p << MEM_PAGE_SHIFT) % size), true);
         LOG(2, "bank %u: $%08X-$%08X -> %u MB of DIMM storage at host +$%X", n, lo, hi, size >> 20,
             g->bank_host_off[n]);
     }

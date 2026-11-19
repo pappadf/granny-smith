@@ -41,6 +41,7 @@
 #include "machine_checkpoint.h"
 #include "machine_teardown.h"
 #include "of_nvram.h"
+#include "page_fill.h"
 #include "pci.h"
 #include "ppc.h"
 #include "ppc_build.h"
@@ -63,43 +64,6 @@
 LOG_USE_CATEGORY_NAME("board");
 
 // ============================================================
-// Page-table helpers (the tnt_fill_page shape)
-// ============================================================
-
-void gos_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
-    if (page_index >= (uint32_t)g_page_count)
-        return;
-    memory_page_set_host(page_index, host_ptr, writable);
-    uint32_t guest_base = page_index << MEM_PAGE_SHIFT;
-    uintptr_t adjusted = MEM_RAM_ENTRY((uintptr_t)host_ptr - guest_base);
-    // Supervisor arrays hold the eager physical identity view; the user
-    // arrays belong to the PPC MMU front end and are only cleared here.
-    if (g_supervisor_read)
-        g_supervisor_read[page_index] = adjusted;
-    if (g_supervisor_write) // write entry refused on a predecoded code page (memory.h)
-        g_supervisor_write[page_index] = writable ? memory_write_fill(page_index, host_ptr, adjusted, MEM_WT_SUPER) : 0;
-    if (g_user_read)
-        g_user_read[page_index] = 0;
-    if (g_user_write)
-        g_user_write[page_index] = 0;
-    memory_logpoint_guard_page(page_index);
-}
-
-void gos_clear_page(uint32_t page_index) {
-    if (page_index >= (uint32_t)g_page_count)
-        return;
-    memory_page_clear(page_index);
-    if (g_supervisor_read)
-        g_supervisor_read[page_index] = 0;
-    if (g_supervisor_write)
-        g_supervisor_write[page_index] = 0;
-    if (g_user_read)
-        g_user_read[page_index] = 0;
-    if (g_user_write)
-        g_user_write[page_index] = 0;
-}
-
-// ============================================================
 // Memory layout
 // ============================================================
 
@@ -110,8 +74,8 @@ static void gos_memory_layout(config_t *cfg, checkpoint_t *cp) {
     uint8_t *rom = ram_native_pointer(cfg->memory_map, cfg->ram_size);
     uint32_t rom_pages = cfg->machine->rom_size >> MEM_PAGE_SHIFT;
     for (uint32_t p = 0; p < rom_pages; p++) {
-        gos_fill_page((GOS_ROM_BASE >> MEM_PAGE_SHIFT) + p, rom + (p << MEM_PAGE_SHIFT), false);
-        gos_fill_page((GOS_ROM_BANK0 >> MEM_PAGE_SHIFT) + p, rom + (p << MEM_PAGE_SHIFT), false);
+        page_fill_identity_sv((GOS_ROM_BASE >> MEM_PAGE_SHIFT) + p, rom + (p << MEM_PAGE_SHIFT), false);
+        page_fill_identity_sv((GOS_ROM_BANK0 >> MEM_PAGE_SHIFT) + p, rom + (p << MEM_PAGE_SHIFT), false);
     }
 
     // PCI: the root, then the bridge (config ports, the bus, Grackle's own
@@ -298,7 +262,7 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     // Time base and decrementer at bus/4 = 16,705,000 Hz (the tree's
     // timebase-frequency $00FEE5E8; MPC750UM §2.1.1).
     const ppc_core_opts_t core = {
-        .fill_page = gos_fill_page,
+        .fill_page = page_fill_identity_sv,
         .cpi = 1,
         .tb_hz = board->bus_hz / 4u,
         .set_identity = true,

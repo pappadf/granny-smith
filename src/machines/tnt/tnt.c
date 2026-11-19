@@ -43,6 +43,7 @@
 #include "machine_checkpoint.h"
 #include "machine_teardown.h" // the shared config_t-owned delete chain
 #include "of_nvram.h"
+#include "page_fill.h"
 #include "pci.h"
 #include "ppc.h"
 #include "ppc_build.h"
@@ -62,45 +63,6 @@
 #include <string.h>
 
 LOG_USE_CATEGORY_NAME("board");
-
-// ============================================================
-// Page-table helpers (the pdm_fill_page shape, kept local so the TNT
-// family does not pull 68K-family headers)
-// ============================================================
-
-void tnt_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
-    if (page_index >= (uint32_t)g_page_count)
-        return;
-    memory_page_set_host(page_index, host_ptr, writable);
-    uint32_t guest_base = page_index << MEM_PAGE_SHIFT;
-    uintptr_t adjusted = MEM_RAM_ENTRY((uintptr_t)host_ptr - guest_base);
-    // Supervisor arrays hold the eager physical identity view; the USER
-    // arrays belong to the PPC MMU front end (logical fills, ppc_mmu.c)
-    // and are only ever cleared here.
-    if (g_supervisor_read)
-        g_supervisor_read[page_index] = adjusted;
-    if (g_supervisor_write) // write entry refused on a predecoded code page (memory.h)
-        g_supervisor_write[page_index] = writable ? memory_write_fill(page_index, host_ptr, adjusted, MEM_WT_SUPER) : 0;
-    if (g_user_read)
-        g_user_read[page_index] = 0;
-    if (g_user_write)
-        g_user_write[page_index] = 0;
-    memory_logpoint_guard_page(page_index);
-}
-
-void tnt_clear_page(uint32_t page_index) {
-    if (page_index >= (uint32_t)g_page_count)
-        return;
-    memory_page_clear(page_index);
-    if (g_supervisor_read)
-        g_supervisor_read[page_index] = 0;
-    if (g_supervisor_write)
-        g_supervisor_write[page_index] = 0;
-    if (g_user_read)
-        g_user_read[page_index] = 0;
-    if (g_user_write)
-        g_user_write[page_index] = 0;
-}
 
 // ============================================================
 // Grand Central island interface ($F3000000, 128 KB)
@@ -272,7 +234,7 @@ static void tnt_memory_layout(config_t *cfg, checkpoint_t *cp) {
     // ROM: 4 MB at $FFC00000 (direct read-only pages).
     uint8_t *rom = ram_native_pointer(cfg->memory_map, cfg->ram_size);
     for (uint32_t p = 0; p < (cfg->machine->rom_size >> MEM_PAGE_SHIFT); p++)
-        tnt_fill_page((TNT_ROM_BASE >> MEM_PAGE_SHIFT) + p, rom + (p << MEM_PAGE_SHIFT), false);
+        page_fill_identity_sv((TNT_ROM_BASE >> MEM_PAGE_SHIFT) + p, rom + (p << MEM_PAGE_SHIFT), false);
 
     // Grand Central: the 128 KB island.
     st->gc_interface.read_uint8 = gc_read8;
@@ -678,7 +640,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // quarter of the bus clock (Motorola, MPC604UM/AD, §1.3.2.2).
     const int cpu_model = cfg->machine->cpu_model;
     const ppc_core_opts_t core = {
-        .fill_page = tnt_fill_page,
+        .fill_page = page_fill_identity_sv,
         .cpi = 2,
         .tb_hz = (cpu_model == CPU_MODEL_PPC601) ? 7833600u : tnt_board(cfg)->bus_hz / 4u,
     };

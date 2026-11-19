@@ -445,11 +445,6 @@ extern const builtin_video_desc_t ans_builtin_video;
      .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD,                                                                       \
      .startup_ok = true}
 
-// Fill/clear one physical page in the AoS table + SoA fast-path arrays
-// (the pdm_fill_page shape; local so tnt stays free of 68K-family headers).
-void tnt_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable);
-void tnt_clear_page(uint32_t page_index);
-
 // === hammerhead.c ===========================================================
 
 void tnt_hh_init(config_t *cfg); // power-on register state + map claim
