@@ -467,7 +467,8 @@ Entry point: [`app/web2/src/main.ts`](../../app/web2/src/main.ts).
    quitting and restarting the browser, and does **not** mount Svelte. The
    error page is vanilla DOM so it survives a degraded framework runtime.
    A worker probe that cannot start or does not answer in 5 s is skipped,
-   never fatal. The verdict is left in `window.__gsGraphics`. WebGPU is
+   never fatal. The verdict is left in `window.__gsGraphics` under
+   automation or with `?debug` (`lib/debugGlobal.ts`). WebGPU is
    not checked here: only the Voodoo2's GPU mode uses it, and its absence
    just withholds that option (the reason is logged to the console).
 3. Mount the Svelte tree.

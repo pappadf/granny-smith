@@ -75,6 +75,7 @@ import {
   EVT_LOG,
   type MailboxFailure,
 } from './mailbox';
+import { exposeDebug } from '@/lib/debugGlobal';
 
 // The client id this page writes into every request (the daemon and the
 // script runner will have their own).
@@ -817,8 +818,7 @@ export function dispatchCoreEvent(kindWord: number, json: string): void {
   const same = (e: CoreEvent) => e.kind === ev.kind && e.event === ev.event;
   if (coreEventTrace.filter(same).length > CORE_EVENT_TRACE_MAX)
     coreEventTrace.splice(coreEventTrace.findIndex(same), 1);
-  if (typeof window !== 'undefined')
-    (window as unknown as { __gsCoreEvents?: CoreEvent[] }).__gsCoreEvents = coreEventTrace;
+  if (typeof window !== 'undefined') exposeDebug('__gsCoreEvents', coreEventTrace);
   routeCoreEvent(ev);
   for (const cb of coreEventListeners) cb(ev);
 }
@@ -1011,13 +1011,14 @@ export function heapBuffer(): ArrayBufferLike | null {
 
 // Hand `worker` the shared memory and the address of the control block it
 // serves ({type: 'attach', memory, ctrl}); the memory, the address and the
-// worker are left on window[debugName] for a page script to inspect when
-// something stalls.  False (nothing posted) when the memory is not shared.
+// worker are left on window[debugName] (lib/debugGlobal.ts) for a page
+// script to inspect when something stalls.  False (nothing posted) when the
+// memory is not shared.
 export function attachSharedWorker(worker: Worker, ctrl: number, debugName: string): boolean {
   const memory = getWasmMemory();
   if (!(memory instanceof WebAssembly.Memory) && !(memory instanceof SharedArrayBuffer))
     return false;
-  (window as unknown as Record<string, unknown>)[debugName] = { memory, ctrl, worker };
+  exposeDebug(debugName, { memory, ctrl, worker });
   worker.postMessage({ type: 'attach', memory, ctrl });
   return true;
 }

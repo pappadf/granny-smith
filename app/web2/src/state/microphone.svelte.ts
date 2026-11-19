@@ -51,6 +51,7 @@ import { gsEval } from '@/bus/emulator';
 import { opfs } from '@/bus/opfs';
 import { machine } from './machine.svelte';
 import { showNotification } from './toasts.svelte';
+import { exposeDebug } from '@/lib/debugGlobal';
 
 export interface AudioInputDevice {
   id: string;
@@ -147,15 +148,15 @@ function transport(): ReturnType<typeof getModuleHeap> {
 
 // Expose the counters for the e2e spec (and for anyone debugging in the
 // console). Cheap, and the alternative is guessing at which layer is dead.
-if (typeof globalThis !== 'undefined') {
-  (globalThis as unknown as { __micStats?: () => unknown }).__micStats = () => micStats();
-  (globalThis as unknown as { __micLive?: () => unknown }).__micLive = () => ({
+if (typeof window !== 'undefined') {
+  exposeDebug('__micStats', () => micStats());
+  exposeDebug('__micLive', () => ({
     enabled: microphone.enabled,
     guestActive: microphone.guestActive,
     live: microphone.live,
     ctx: audioCtx ? audioCtx.state + '@' + audioCtx.sampleRate : 'none',
     node: node ? node.constructor.name : 'none',
-  });
+  }));
 }
 
 export function onAudioInState(active: boolean): void {
