@@ -22,8 +22,9 @@ test("voodoo2_webgpu falls back to the thread backend, honestly, at creation", a
   );
   // ...and the dialog would not have offered it: the WebGPU kind is the
   // card's Rendering value, never a card of its own, so the tree lists the
-  // Mach64, the Voodoo2, the Rage 128 and the QuickDraw 3D Accelerator alone.
-  expect(await probe(page, 'len(catalog.profile("pm7500").cards)')).toBe("4");
+  // Mach64, the Cirrus 54M30, the Voodoo2, the Rage 128, the QuickDraw 3D
+  // Accelerator and the Symbios SCSI card alone.
+  expect(await probe(page, 'len(catalog.profile("pm7500").cards)')).toBe("6");
   expect(await probe(page, "machine.pci.slot[1].card.regs.gpu_engaged")).toBe(
     "false",
   );

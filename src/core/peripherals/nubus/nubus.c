@@ -62,14 +62,16 @@ extern const nubus_card_kind_t builtin_rbv_video_kind; // machines/mdu/builtin_r
 extern const nubus_card_kind_t builtin_rbv_iisi_video_kind; // machines/mdu/builtin_rbv_video.c
 extern const nubus_card_kind_t display_card_24ac_kind; // cards/display_card_24ac.c
 extern const nubus_card_kind_t display_card_824gc_kind; // cards/display_card_824gc.c
+extern const nubus_card_kind_t mac_ii_video_card_kind; // cards/mac_ii_video_card.c
 
 static const nubus_card_kind_t *const g_card_registry[] = {
-    &builtin_se30_video_kind,
+    &builtin_se30_video_kind, // one kind per line
     &mdc_8_24_kind,
     &builtin_rbv_video_kind,
     &builtin_rbv_iisi_video_kind,
     &display_card_24ac_kind,
     &display_card_824gc_kind,
+    &mac_ii_video_card_kind,
     NULL,
 };
 

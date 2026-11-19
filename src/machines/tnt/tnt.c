@@ -476,6 +476,16 @@ static void tnt_mesh_dbdma_kick(void *ctx) {
     dbdma_kick(tnt_st(cfg)->dbdma, 10);
 }
 
+// MESH's interrupt bits changed, and with them channel 10's s-bits: a
+// command held by a WAIT on them re-evaluates.  Only a waiting channel is
+// kicked -- a data command's own pacing stays with tnt_mesh_dbdma_kick.
+static void tnt_mesh_dbdma_status(void *ctx) {
+    config_t *cfg = (config_t *)ctx;
+    tnt_state_t *st = tnt_st(cfg);
+    if (st && st->dbdma && dbdma_waiting(st->dbdma, 10))
+        dbdma_kick(st->dbdma, 10);
+}
+
 static void tnt_scsi96_irq(void *context, bool active) {
     config_t *cfg = (config_t *)context;
     if (tnt_st(cfg))
@@ -532,6 +542,9 @@ static void tnt_fwscsi_attach(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     struct scsi *bus[2] = {cfg->scsi, st->scsi2};
     for (const pci_slot_decl_t *d = cfg->machine->pci_slots; d && d->slot; d++) {
+        // A 53C825A card in a socket brings its own bus (machine_card_scsi_buses).
+        if (d->kind == PCI_SLOT_SOCKET)
+            continue;
         sym53c8xx_t *chip = sym53c8xx_from_device(pci_slot_device(cfg->pci, d->slot));
         if (!chip)
             continue;
@@ -637,6 +650,7 @@ static void part_save_tnt_io(void *obj, checkpoint_t *cp) {
     // harmless; the leak and the non-reproducibility were not.
     system_write_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
     system_write_checkpoint_data(cp, &st->fdring, sizeof(st->fdring));
+    system_write_checkpoint_data(cp, &st->mace, sizeof(st->mace));
 }
 
 static int tnt_init(config_t *cfg, checkpoint_t *cp) {
@@ -780,6 +794,9 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     tnt_swim3_bind(cfg);
     tnt_swim3_init(cfg);
     tnt_scc_dma_init(cfg);
+    // The on-board MACE (Macintosh boards; see the island decode).
+    if (!tnt_board(cfg)->has_gbus)
+        tnt_mace_init(cfg);
     static const dma_mem_port_t dbdma_port = {
         .read = tnt_dbdma_mem_read1,
         .write = tnt_dbdma_mem_write1,
@@ -905,10 +922,11 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
         mesh_attach_bus(st->mesh, cfg->scsi);
         mesh_set_irq_callback(st->mesh, tnt_mesh_irq, cfg);
         mesh_set_dbdma_kick(st->mesh, tnt_mesh_dbdma_kick, cfg);
+        mesh_set_dbdma_status_kick(st->mesh, tnt_mesh_dbdma_status);
         dbdma_port_t mesh_port = {
             .out = mesh_port_out,
             .in = mesh_port_in,
-            .s_bits = NULL,
+            .s_bits = mesh_dbdma_s_bits,
             // MESH pops straight off the SCSI bus, so it never returns
             // short and the channel would run a whole transfer inside one
             // register store; the burst makes it yield and MESH's own pump
@@ -926,6 +944,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
         // The prefix only; *_swim3_bind re-attaches the pointer tail.
         system_read_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
         system_read_checkpoint_data(cp, &st->fdring, sizeof(st->fdring));
+        system_read_checkpoint_data(cp, &st->mace, sizeof(st->mace));
         tnt_swim3_bind(cfg); // the restore overwrote the chip's pointer tail
         tnt_gc_recompute(cfg); // mesh/53C94 lines fold into the fabric
     }
@@ -940,6 +959,8 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // the slot walk, so this runs after it — and after the buses exist,
     // which is why it is here rather than in the card factory.
     tnt_fwscsi_attach(cfg);
+    // And every card in a socket that brings a SCSI bus of its own.
+    machine_card_scsi_buses(cfg, cp);
 
     // Finish: the debugger.
     cfg->debugger = debug_init();
@@ -968,6 +989,8 @@ static void tnt_bus_reset(config_t *cfg) {
     // drive and its media) is reset by the shared chain; the SWIM3 was the
     // one controller in the tree that survived a reset.
     swim3_reset(&st->swim3);
+    if (!tnt_board(cfg)->has_gbus)
+        tnt_mace_reset(cfg);
     tnt_awacs_reset(cfg);
     tnt_control_reset(cfg);
     if (tnt_board(cfg)->has_mesh)

@@ -3,7 +3,8 @@
 This tree holds the implementation documentation: how Granny Smith models
 and is built, as opposed to what the real hardware does ([`../reference/`](../reference/))
 or how the product is used ([`../user/`](../user/)). Its subdirectories mirror
-`src/` — `core/` for `src/core/`, `machines/` for `src/machines/`.
+`src/` — `core/` for `src/core/`, `machines/` for `src/machines/`, `codec/`
+for `src/codec/`.
 
 ## The mirror rule
 

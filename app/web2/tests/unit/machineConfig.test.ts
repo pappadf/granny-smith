@@ -170,3 +170,65 @@ describe('the URL’s config=', () => {
     expect(urlConfig(p, { config: given, floppies: [{ slot: 'fd1', url: 'a' }] })).toBe(given);
   });
 });
+
+// A 9500 with the Symbios SCSI card on offer and the bus it brings in slot
+// pci_2, as catalog.profile describes a PCI card's bus: a storage bus whose
+// card_slot names the slot, and a card with scsi_bus.
+function pm9500WithScsiCard(): MachineProfile {
+  const p = profile('pm9500');
+  const units = [0, 1, 2, 3, 4, 5, 6].map((u) => ({ unit: u, label: `ID ${u}`, short: `ID ${u}` }));
+  p.storage.push({
+    ...p.storage[0],
+    id: 'pci_2',
+    label: 'SCSI card in PCI slot 2',
+    units,
+    reserved: [7],
+    bays: [],
+    startup: false,
+    card_slot: 'pci_2',
+  });
+  p.cards.push({
+    id: 'sym53c825',
+    label: 'Symbios 53C825A SCSI card',
+    class: 'scsi',
+    fits: ['pci_1', 'pci_2', 'pci_3'],
+    rom: null,
+    status: 'ok',
+    monitors: [],
+    modes: {},
+    options: [],
+    scsi_bus: true,
+  });
+  return p;
+}
+
+describe('a PCI card that brings its own SCSI bus', () => {
+  it('its bus is offered only while the card is in that slot', () => {
+    const p = pm9500WithScsiCard();
+    let doc = mc.defaultDocument(p);
+    expect(mc.visibleBuses(p, doc).map((b) => b.id)).toEqual(['scsi']);
+    doc = mc.addCard(p, doc, 'sym53c825', 'pci_1');
+    expect(mc.visibleBuses(p, doc).map((b) => b.id)).toEqual(['scsi']);
+    doc = mc.addCard(p, doc, 'sym53c825', 'pci_2');
+    expect(mc.visibleBuses(p, doc).map((b) => b.id)).toEqual(['scsi', 'pci_2']);
+  });
+
+  it('removing the card takes its bus and the devices on it', () => {
+    const p = pm9500WithScsiCard();
+    let doc = mc.addCard(p, mc.defaultDocument(p), 'sym53c825', 'pci_2');
+    doc = mc.addDevice(p, doc, 'pci_2', 'hd', 0);
+    doc = mc.addDevice(p, doc, 'pci_2', 'cd', 3);
+    expect(doc.storage.filter((d) => d.bus === 'pci_2')).toHaveLength(2);
+    doc = mc.removeCard(p, doc, 'pci_2');
+    expect(doc.storage.filter((d) => d.bus === 'pci_2')).toEqual([]);
+    expect(mc.visibleBuses(p, doc).map((b) => b.id)).toEqual(['scsi']);
+  });
+
+  it('a card without a bus leaves the storage alone when it goes', () => {
+    const p = pm9500WithScsiCard();
+    let doc = mc.addCard(p, mc.defaultDocument(p), 'mach64_gx', 'pci_3');
+    const before = JSON.stringify(doc.storage);
+    doc = mc.removeCard(p, doc, 'pci_3');
+    expect(JSON.stringify(doc.storage)).toBe(before);
+  });
+});

@@ -6,7 +6,8 @@
 # desktop as the raw image (desktop.png was captured from the raw boot);
 # checkpointed both ways -- a quick checkpoint that references the disk, a
 # consolidated one that embeds it -- and restored in a fresh process; and exported, as
-# .dmg and raw, the two decoding to the same bytes and the .dmg booting.
+# .dmg and raw, the two decoding to the same bytes and the .dmg booting --
+# and as an xz .dmg (codec="xz"), smaller and decoding to the same bytes.
 
 TEST_NAME := Boot from UDIF (IIci, System 7.5)
 TEST_DESC := Convert to .dmg, boot to the raw boot's desktop, quick and consolidated checkpoint/restore, export and boot the export

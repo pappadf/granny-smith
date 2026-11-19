@@ -689,7 +689,7 @@ def row_av_tts() {
     assert machine.dsp.state == "running" "av-tts: DSP ${machine.dsp.state} after speech"
     assert machine.dsp.emr == 0x8000 "av-tts: emr=${machine.dsp.emr:04x} after speech — kernel died"
     assert machine.sound.overruns == 0 "av-tts: ${machine.sound.overruns} frame overruns"
-    check_sound("goldens/av-tts.wav", 76560)
+    check_sound("goldens/av-tts.wav", 76320)
     report_perf("suite-av/av-tts", scheduler.instr_count)
 }
 

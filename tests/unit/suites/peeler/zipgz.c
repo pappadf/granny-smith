@@ -384,7 +384,7 @@ static uint8_t *zt_zip(const zt_member_t *m, int n, size_t prefix, int zip64, si
             packed = dz_deflate(m[i].data, m[i].len, 16384, 3, &clen);
             body = packed;
         }
-        uint32_t crc = peel_crc32(0, m[i].data, m[i].len) ^ (m[i].bad_crc ? 1u : 0u);
+        uint32_t crc = codec_crc32(0, m[i].data, m[i].len) ^ (m[i].bad_crc ? 1u : 0u);
         uint32_t local = (uint32_t)(b.n - prefix);
         size_t nl = strlen(m[i].name);
         // Local header.
@@ -486,7 +486,7 @@ static void zt_gzip_member(zt_buf_t *b, const uint8_t *data, size_t len, const c
     if (name)
         zt_bytes(b, name, strlen(name) + 1);
     zt_bytes(b, packed, clen);
-    zt_32(b, peel_crc32(0, data, len) ^ (bad_crc ? 1u : 0u));
+    zt_32(b, codec_crc32(0, data, len) ^ (bad_crc ? 1u : 0u));
     zt_32(b, (uint32_t)len);
     free(packed);
 }
@@ -516,7 +516,7 @@ TEST(test_inflate_every_block_type_round_trip) {
     uint8_t *z = dz_deflate(in, n, 10000, 3, &clen);
     ASSERT_TRUE(clen < n); // the matcher found the repeats
     uint8_t *out = malloc(n);
-    ASSERT_EQ_INT((int)n, (int)peel_inflate(z, clen, out, n));
+    ASSERT_EQ_INT((int)n, (int)codec_decode(CODEC_DEFLATE, z, clen, out, n));
     ASSERT_TRUE(memcmp(in, out, n) == 0);
     free(out);
     free(z);
@@ -536,7 +536,7 @@ static int64_t dz_pull(void *ctx, uint8_t *buf, size_t cap) {
     return (int64_t)k;
 }
 
-// The inflater stops wherever the caller's buffer fills -- mid-literal run,
+// The decoder stops wherever the caller's buffer fills -- mid-literal run,
 // mid-match, mid-stored-block -- and resumes exactly there.
 TEST(test_inflate_resumes_at_every_output_boundary) {
     size_t n = 60000, clen;
@@ -545,22 +545,23 @@ TEST(test_inflate_resumes_at_every_output_boundary) {
     static const size_t caps[] = {1, 2, 3, 5, 7, 11, 64, 257, 258, 259, 1000, 4093};
     for (size_t c = 0; c < sizeof(caps) / sizeof(caps[0]); c++) {
         dz_mem_t m = {z, clen, 0};
-        peel_inflater_t *inf = peel_inflater_new(dz_pull, &m);
+        codec_dec_opts_t o = {.in.pull = dz_pull, .in.ctx = &m, .out_len = CODEC_LEN_UNKNOWN};
+        codec_dec_t *inf = codec_dec_new(CODEC_DEFLATE, &o, NULL);
         ASSERT_TRUE(inf != NULL);
         uint8_t *out = malloc(n);
         size_t got = 0;
         int rc = 0;
         while (rc == 0) {
             size_t k = 0, want = caps[c] < n - got ? caps[c] : n - got;
-            rc = peel_inflater_run(inf, out + got, want ? want : 1, &k);
+            rc = codec_dec_run(inf, out + got, want ? want : 1, &k);
             ASSERT_TRUE(rc >= 0);
             got += k;
         }
         ASSERT_EQ_INT((int)n, (int)got);
-        ASSERT_EQ_INT((int)n, (int)peel_inflater_total_out(inf));
+        ASSERT_EQ_INT((int)n, (int)codec_dec_total_out(inf));
         ASSERT_TRUE(memcmp(in, out, n) == 0);
         free(out);
-        peel_inflater_free(inf);
+        codec_dec_free(inf);
     }
     free(z);
     free(in);
@@ -575,7 +576,7 @@ TEST(test_inflate_truncated_stream_is_refused) {
     for (size_t cut = 0; cut < clen; cut += clen / 37 + 1) {
         uint8_t *part = malloc(cut ? cut : 1); // exact size: ASan catches a read past it
         memcpy(part, z, cut);
-        ASSERT_TRUE(peel_inflate(part, cut, out, n) < 0);
+        ASSERT_TRUE(codec_decode(CODEC_DEFLATE, part, cut, out, n) < 0);
         free(part);
     }
     free(out);
@@ -598,7 +599,7 @@ TEST(test_inflate_distance_before_start_is_refused) {
     dz_code(&w, t.lcode[256], t.llen[256]);
     dz_align(&w);
     uint8_t out[16];
-    ASSERT_TRUE(peel_inflate(w.buf, w.n, out, sizeof(out)) < 0);
+    ASSERT_TRUE(codec_decode(CODEC_DEFLATE, w.buf, w.n, out, sizeof(out)) < 0);
     free(w.buf);
 }
 
@@ -616,7 +617,7 @@ TEST(test_inflate_oversubscribed_code_is_refused) {
     for (int i = 0; i < 40; i++)
         dz_put(&w, 0, 8);
     uint8_t out[16];
-    ASSERT_TRUE(peel_inflate(w.buf, w.n, out, sizeof(out)) < 0);
+    ASSERT_TRUE(codec_decode(CODEC_DEFLATE, w.buf, w.n, out, sizeof(out)) < 0);
     free(w.buf);
 }
 
@@ -640,13 +641,13 @@ TEST(test_zlib_wrapper_checks_its_trailer) {
     z[clen + 4] = (uint8_t)(adler >> 8);
     z[clen + 5] = (uint8_t)adler;
     uint8_t *out = malloc(n);
-    ASSERT_EQ_INT((int)n, (int)peel_zlib_inflate(z, clen + 6, out, n));
+    ASSERT_EQ_INT((int)n, (int)codec_decode(CODEC_ZLIB, z, clen + 6, out, n));
     ASSERT_TRUE(memcmp(in, out, n) == 0);
     z[clen + 5] ^= 1;
-    ASSERT_TRUE(peel_zlib_inflate(z, clen + 6, out, n) < 0);
+    ASSERT_TRUE(codec_decode(CODEC_ZLIB, z, clen + 6, out, n) < 0);
     z[clen + 5] ^= 1;
     z[1] ^= 1; // the header check fails
-    ASSERT_TRUE(peel_zlib_inflate(z, clen + 6, out, n) < 0);
+    ASSERT_TRUE(codec_decode(CODEC_ZLIB, z, clen + 6, out, n) < 0);
     free(out);
     free(z);
     free(raw);
@@ -846,7 +847,7 @@ TEST(test_zip_open_reads_only_the_directory) {
             size_t k = big - off < sizeof(chunk) ? (size_t)(big - off) : sizeof(chunk);
             for (size_t i = 0; i < k; i++)
                 chunk[i] = cnt_synth(off + i);
-            crc = peel_crc32(crc, chunk, k);
+            crc = codec_crc32(crc, chunk, k);
         }
     }
     zt_32(&lh, 0x04034b50);

@@ -60,6 +60,9 @@ struct chunk_cache {
     pthread_mutex_t mu;
     pthread_cond_t cv;
     size_t mem_budget;
+    unsigned min_chunks; // 0: none; else the budget holds at least this many of the largest chunk
+    size_t floor_cap; // upper bound on the min_chunks floor, in bytes
+    size_t max_len; // largest chunk held so far (monotonic)
     char *spill_dir; // NULL: no spill
     uint64_t spill_budget; // 0: unbounded
     cc_entry_t *buckets[CC_BUCKETS];
@@ -195,10 +198,28 @@ static bool spill(chunk_cache_t *c, const cc_entry_t *e) {
     return true;
 }
 
+// The memory budget in force: the configured one, raised to hold `min_chunks`
+// of the largest chunk seen (bounded by `floor_cap`).  Caller holds the lock.
+static size_t effective_budget(const chunk_cache_t *c) {
+    if (!c->min_chunks || !c->max_len)
+        return c->mem_budget;
+    uint64_t floor = (uint64_t)c->min_chunks * c->max_len;
+    if (c->floor_cap && floor > c->floor_cap)
+        floor = c->floor_cap; // never grow past the cap on account of chunk size
+    return floor > c->mem_budget ? (size_t)floor : c->mem_budget;
+}
+
+// Note a chunk of `len` bytes for the min_chunks floor.  Caller holds the lock.
+static void note_len(chunk_cache_t *c, size_t len) {
+    if (len > c->max_len)
+        c->max_len = len;
+}
+
 // Evict from the LRU tail until the budget holds.  `keep` is never evicted.
 static void evict(chunk_cache_t *c, const cc_entry_t *keep) {
     cc_entry_t *e = c->lru_tail;
-    while (c->st.mem_bytes > c->mem_budget && e) {
+    size_t budget = effective_budget(c);
+    while (c->st.mem_bytes > budget && e) {
         cc_entry_t *prev = e->lru_prev;
         if (e != keep) {
             spill(c, e);
@@ -287,6 +308,34 @@ void chunk_cache_set_budgets(chunk_cache_t *c, size_t mem_budget, uint64_t spill
     pthread_mutex_unlock(&c->mu);
 }
 
+void chunk_cache_set_min_chunks(chunk_cache_t *c, unsigned min_chunks, size_t floor_cap) {
+    if (!c)
+        return;
+    pthread_mutex_lock(&c->mu);
+    c->min_chunks = min_chunks;
+    c->floor_cap = floor_cap;
+    evict(c, NULL); // a lowered floor frees what is over it at once
+    pthread_mutex_unlock(&c->mu);
+}
+
+unsigned chunk_cache_min_chunks(chunk_cache_t *c) {
+    if (!c)
+        return 0;
+    pthread_mutex_lock(&c->mu);
+    unsigned n = c->min_chunks;
+    pthread_mutex_unlock(&c->mu);
+    return n;
+}
+
+size_t chunk_cache_effective_budget(chunk_cache_t *c) {
+    if (!c)
+        return 0;
+    pthread_mutex_lock(&c->mu);
+    size_t b = effective_budget(c);
+    pthread_mutex_unlock(&c->mu);
+    return b;
+}
+
 void chunk_cache_budgets(chunk_cache_t *c, size_t *mem_budget, uint64_t *spill_budget) {
     if (!c)
         return;
@@ -329,10 +378,23 @@ chunk_cache_t *chunk_cache_default(void) {
 }
 
 static chunk_cache_t *g_images;
+#define IMAGE_REF_CHUNK (64u << 10) // the chunk size the image budget is sized for
+#define IMAGE_FLOOR_CAP (256ull << 20) // the most the chunk-count floor raises it to
 static pthread_once_t g_images_once = PTHREAD_ONCE_INIT;
 
 static void images_init(void) {
-    g_images = chunk_cache_new((size_t)env_mib("GS_IMAGE_CACHE_MB", 16ull << 20), NULL, 0);
+    g_images = chunk_cache_new(0, NULL, 0);
+    chunk_cache_images_set_budget(g_images, (size_t)env_mib("GS_IMAGE_CACHE_MB", 16ull << 20));
+}
+
+void chunk_cache_images_set_budget(chunk_cache_t *c, size_t mem_budget) {
+    // The budget is sized for 64 KiB chunks: it holds mem_budget / 64 KiB of
+    // them.  An image with larger chunks (hdiutil writes 1 MiB) keeps that
+    // many chunks too, up to 256 MiB, so a boot's working set is not
+    // re-inflated over and over (#377)
+    size_t n = mem_budget / IMAGE_REF_CHUNK;
+    chunk_cache_set_budgets(c, mem_budget, 0);
+    chunk_cache_set_min_chunks(c, (unsigned)(n ? n : 1), IMAGE_FLOOR_CAP);
 }
 
 chunk_cache_t *chunk_cache_images(void) {
@@ -365,6 +427,7 @@ static cc_entry_t *insert_ready(chunk_cache_t *c, uint64_t h, const char *key, u
     c->buckets[h % CC_BUCKETS] = e;
     lru_push_head(c, e);
     c->st.mem_bytes += len;
+    note_len(c, len);
     evict(c, e);
     return e;
 }
@@ -459,6 +522,7 @@ int64_t chunk_cache_get(chunk_cache_t *c, const char *key, uint64_t idx, size_t 
         ph->state = CE_READY;
         lru_push_head(c, ph);
         c->st.mem_bytes += ph->len;
+        note_len(c, ph->len);
         evict(c, ph);
     }
     pthread_cond_broadcast(&c->cv);

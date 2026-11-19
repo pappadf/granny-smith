@@ -665,6 +665,16 @@
       "suite": "iix-aux3-boot"
     },
     {
+      "machine": "iix",
+      "system": "A/UX 1.1",
+      "card": "mac_ii_video_card",
+      "width": 640,
+      "height": 480,
+      "depth": 1,
+      "addr32": null,
+      "suite": "iix-aux11-boot"
+    },
+    {
       "machine": "lisa",
       "system": "LOS 3.1",
       "card": "builtin",
@@ -1082,6 +1092,26 @@
       "depth": 32,
       "addr32": null,
       "suite": "mklinux-boot"
+    },
+    {
+      "machine": "iici",
+      "system": "Debian 3.1",
+      "card": "mdc_8_24",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": null,
+      "suite": "iici-debian-sarge"
+    },
+    {
+      "machine": "q950",
+      "system": "Debian 12",
+      "card": "dafb",
+      "width": 640,
+      "height": 480,
+      "depth": 16,
+      "addr32": null,
+      "suite": "q950-debian-bookworm"
     },
     {
       "machine": "pm8100",

@@ -401,10 +401,13 @@ bool ppc_mfspr(ppc_t *p, uint32_t iw) {
     // opcodes apart (MPC603e UM §2.3.5.1, "ignoring bit 25 of both
     // instructions and treating them identically").  So mfspr from the
     // TBR numbers 268/269 reads TB, and so does mfspr from the write-side
-    // numbers 284/285 — which is how BeOS's kernel samples the timebase
-    // (`mfspr r3,285 / mfspr r4,284 / mfspr r5,285` at its boot-time
-    // clock calibration); taking the illegal-instruction exception there
-    // leaves its clock scale at zero and every snooze() spinning forever.
+    // numbers 284/285.  Both ran on 604 hardware: IBM's OS/2 Warp PowerPC
+    // Edition boot loader (December 1995, for the 604-based Power Series
+    // 830/850) reads TB with `mfspr r3,269` / `mfspr r3,268` on every
+    // non-601 CPU, and BeOS's kernel samples it with `mfspr r3,285 /
+    // mfspr r4,284 / mfspr r5,285` at its boot-time clock calibration --
+    // taking the illegal-instruction exception there leaves its clock
+    // scale at zero and every snooze() spinning forever.
     case 268:
     case 284:
         if (!ppc_is_604(p))

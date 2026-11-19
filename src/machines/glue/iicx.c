@@ -245,7 +245,7 @@ const hw_profile_t machine_iicx = {
     .storage = mac_storage_scsi_hd_bay,
     .default_storage = mac_default_storage_hd0_cd3,
     .appletalk = true,
-    .cdrom_drive = &mac_cdrom_drive_applecd,
+    .cdrom_drive = &scsi_cd_drive_applecd_sc_plus,
     // No built-in video: the screen is the NuBus card in slot $9 (the
     // Display Card 8•24 by default), whose declaration ROM the card kind
     // requires (requires_vrom) -- see docs/reference/machines/glue/iicx.md.

@@ -50,8 +50,9 @@ value_t io_leaf_dispatch(io_leaf_t *j, const char *what);
 bool io_leaf_destination_attached(const char *dst);
 
 // The export of a device's live image (base + delta) to a new file as an
-// I/O job (image_export_begin/run/end, image.h); `what` names the leaf.
+// I/O job (image_export_begin/run/end, image.h); `codec` is a .dmg
+// export's (image_export_set_codec; NULL: zlib), `what` names the leaf.
 struct image;
-value_t io_leaf_export_image(struct image *img, const char *dest, const char *what);
+value_t io_leaf_export_image(struct image *img, const char *dest, const char *codec, const char *what);
 
 #endif // GS_IO_LEAF_H

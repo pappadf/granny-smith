@@ -138,9 +138,9 @@ Each **chunk entry**, 40 bytes:
 | `0x00000002` | ignored | none; unallocated, contents unspecified (read as zeros) |
 | `0x80000004` | ADC (UDCO) | Apple Data Compression stream ([ndif.md](ndif.md) §3) |
 | `0x80000005` | zlib (UDZO) | one complete zlib stream [4] |
-| `0x80000006` | bzip2 (UDBZ) | one bzip2 stream |
-| `0x80000007` | LZFSE (ULFO) | |
-| `0x80000008` | LZMA (ULMO) | |
+| `0x80000006` | bzip2 (UDBZ) | one bzip2 stream (`BZh` and a level digit) |
+| `0x80000007` | LZFSE (ULFO) | one LZFSE stream: `bvx2` / `bvxn` / `bvx-` blocks ending in `bvx$` [5] |
+| `0x80000008` | LZMA (ULMO) | one xz stream (LZMA2 filter), as Apple's compression library writes LZMA [5] |
 | `0x7FFFFFFE` | comment | `+beg` / `+end` markers; covers no sectors |
 | `0xFFFFFFFF` | terminator | ends the entry list |
 
@@ -214,3 +214,6 @@ append the property list and the trailer. Memory is one chunk and the growing en
    UDRW), `imageinfo`, `verify`, `convert`.
 4. P. Deutsch and J-L. Gailly, *ZLIB Compressed Data Format Specification version 3.3*, RFC 1950, May 1996; and
    P. Deutsch, *DEFLATE Compressed Data Format Specification version 1.3*, RFC 1951, May 1996.
+5. Apple Inc., Compression framework documentation (`compression.h`: `COMPRESSION_LZFSE`, `COMPRESSION_LZMA`) and
+   the LZFSE reference implementation's stream format (github.com/lzfse/lzfse); the xz file format specification,
+   version 1.0.4 (tukaani.org).

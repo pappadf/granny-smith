@@ -162,6 +162,18 @@ Selection and identification:
 - `catalog.profile` reports a card whose ROM is not offered as status
   `substitute` (it boots with this ROM); the dialog says so and offers the
   upload.
+- A card with a substitute ROM is listed once per ROM, as in v0.8.0
+  (#346): "<card> (real video ROM)", the card's own id, only while Apple's
+  ROM is offered; and "<card> (generic video ROM)", id `<card>_generic`,
+  `variant_of` the card, status `ok`, no `rom` (it needs no file), with the
+  substitute's own monitors and modes, always. A document naming the generic
+  entry seats the card with `rom=substitute`. The default document seats the
+  real entry when its ROM is offered, else the generic one; a document naming
+  the real entry without its ROM is read as the generic one (the fallback
+  older documents, links and checkpoints rely on). The SE/30's built-in video
+  is not a slot card: its choice is the machine option `video_rom` (`real`,
+  offered and the default only while its ROM is, or `generic`), listed on
+  every model whose built-in video pseudo-slot card has a substitute ROM.
 - `custom=WxHxD` in a slot entry (`custom_mode=` for the first socket; the
   8•24 today) boots the card's default monitor at a user-chosen resolution
   on the substitute ROM: the generated records carry a video sResource at

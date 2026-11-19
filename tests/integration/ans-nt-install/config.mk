@@ -1,8 +1,8 @@
 # Integration test: installing Windows NT 4.0 on an Apple Network Server 500
 #
 # The whole installation, from a cold machine to NT's logon screen, the way
-# a person does it: three two-line Open Firmware commands off the
-# powermac-nt-hal boot floppy (setup.of, boot.of, bootdisk.of), every
+# a person does it: two two-line Open Firmware commands off the
+# powermac-nt-hal boot floppy (boot.of, bootdisk.of; nothing in NVRAM), every
 # Setup screen answered on the serial console or the ADB keyboard, and
 # nothing poked, patched or restored from a checkpoint in between.
 #
@@ -12,8 +12,9 @@
 # absent; test.script's header lists what goes where.
 #
 # TEST_ROM is the production ROM only because the runner insists on one that
-# exists at every data revision: the row boots the 2.26NT ROM itself, because
-# the production 1.1.22 ROM cannot run NT at all.
+# exists at every data revision: the row boots the 2.26NT ROM itself.  (Since
+# 6 November 2026 the production ROM runs NT too -- ans-nt-stock-boot -- and
+# the install has been taken through text-mode Setup on it by hand.)
 
 TEST_NAME := ANS Windows NT install
 TEST_DESC := Installs Windows NT 4.0 PowerPC on an emulated Network Server 500 from the powermac-nt-hal boot floppy, text-mode and GUI Setup, and boots the result to the logon screen

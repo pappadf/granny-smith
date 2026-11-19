@@ -14,7 +14,8 @@
 
 #include "io_leaf.h"
 
-value_t io_leaf_export_image(struct image *img, const char *dest, const char *what) __attribute__((weak));
+value_t io_leaf_export_image(struct image *img, const char *dest, const char *codec, const char *what)
+    __attribute__((weak));
 #include "checkpoint.h"
 #include "drive_catalog.h"
 #include "gs_assert.h"
@@ -280,6 +281,48 @@ static void scsi_schedule_drq_service(scsi_t *scsi) {
     scheduler_new_cpu_event(s, &scsi_drq_service, scsi, 0, SCSI_DRQ_PULSE_CYCLES, 0);
 }
 
+// The target's turnaround from the last DATA IN byte to STATUS phase.  On the
+// hardware the 5380's phase-mismatch interrupt is asynchronous to the host: the
+// target changes phase some microseconds after the final ACK, so a host that
+// leaves DMA mode promptly never sees it, and a host that waits for it gets it.
+// 1600 CPU cycles is 100 us at 16 MHz (IIx, IIcx, SE/30), 40 us at 40 MHz (IIfx):
+// within a drive's command-completion time, and long after A/UX 3's pseudo-DMA
+// loop has cleared MR.DMA (see scsi_5380_entered_status).
+#define SCSI_STATUS_IRQ_CYCLES 1600
+
+// Deferred interrupt evaluation for the DATA IN -> STATUS transition.  A host
+// still in DMA mode when the target changes phase gets the Bus Phase Mismatch
+// interrupt (S8.5) on its own: the end-of-DMA latch scsi_5380_entered_status
+// set is A/UX 3's EOP decode for a host that has already left DMA mode, and the
+// Mac drives no EOP on a data-in completion.  A/UX 1.1's sash decodes BSR|CSR
+// against a table whose phase-mismatch row ($1060 under mask $B462) requires
+// BSR_EDMA clear; with it set, no row matches and the driver spins at IPL 2.
+// DRQ drops too: the 5380 raises it only for REQ in a matching phase, and the
+// status-ready row ($1040 under $FDC2) requires it clear -- with DRQ still up
+// from the data the table falls to its transitional row and sash reports
+// "Protocol Error Processing SCSI request".
+static void scsi_status_irq(void *source, uint64_t data) {
+    scsi_t *scsi = (scsi_t *)source;
+    (void)data;
+    if (!scsi->chip5380)
+        return;
+    // Only a real mismatch: MR.DMA still set with TCR still describing the data
+    // phase.  A host that has moved on -- cleared MR.DMA, or (A/UX 1.1's kernel)
+    // set TCR to STATUS and armed a DMA receive for the status byte -- sees a
+    // matching phase, gets no interrupt, and keeps its DRQ.  Dropping that DRQ
+    // stalled the kernel until its watchdog fired, and the REQUEST SENSE
+    // recovery that followed corrupted page-ins ("Illegal instruction",
+    // "Memory fault" in the installer).
+    if ((scsi->chip5380->reg.mr & MR_DMA) && scsi->bus.phase == scsi_status && !scsi_phase_match(scsi, false)) {
+        scsi->chip5380->end_of_dma = false;
+        if (scsi->chip5380->reg.bsr & BSR_DR) {
+            scsi->chip5380->reg.bsr &= ~BSR_DR;
+            scsi_update_drq(scsi);
+        }
+    }
+    scsi_update_irq(scsi);
+}
+
 void scsi_cancel_drq_service(scsi_t *scsi) {
     // A bus with no 5380 attached -- a Quadra, an AV, a PowerMac, a Network
     // Server -- has nothing here to update.
@@ -383,18 +426,26 @@ void scsi_5380_entered_status(scsi_t *scsi, bool from_data_in) {
     if (scsi->chip5380->reg.mr & MR_DMA)
         scsi->chip5380->end_of_dma = true;
 
-    // Coming out of data-in with DMA active, skip scsi_update_irq.  On real
-    // NCR 5380 hardware the target changes bus phase only AFTER the final ACK
-    // handshake completes — the phase-mismatch IRQ fires asynchronously, not
-    // during the register read that returns the last data byte.  A/UX's
-    // pseudo-DMA loop (scsiin) runs at IPL 0 and would service the IRQ
-    // immediately, causing a nested scsidintr that stamps SST_MORE.  Mac OS
-    // runs its pseudo-DMA at IPL >= 2, so the IRQ is masked and harmlessly
-    // deferred; skipping it has no effect.  The host clears MR_DMA next
-    // (write_mr), which fires scsi_update_irq with DMA off — the correct
-    // post-transfer notification.
-    if (from_data_in && (scsi->chip5380->reg.mr & MR_DMA))
+    // Coming out of data-in with DMA active, the interrupt is deferred, not
+    // raised now.  On real NCR 5380 hardware the target changes bus phase only
+    // AFTER the final ACK handshake completes, so the phase-mismatch IRQ fires
+    // asynchronously, not during the register read that returns the last data
+    // byte.  Raising it now breaks A/UX 3: its pseudo-DMA loop (scsiin) runs
+    // at IPL 0, would service the IRQ immediately and nest a scsidintr that
+    // stamps SST_MORE.  It clears MR_DMA (write_mr) well inside the target's
+    // turnaround, so the deferred evaluation finds DMA off and raises nothing.
+    // Dropping the interrupt altogether breaks A/UX 1.1's stand-alone shell
+    // (sash): its driver reads the data and then spins on BSR_INT for the
+    // phase change, timing out ("Disk c0d0s0 Error: SCSI timeout") and
+    // resetting the bus on every READ CAPACITY.  Without a scheduler (unit
+    // tests) the deferral degrades to the old skip.
+    if (from_data_in && (scsi->chip5380->reg.mr & MR_DMA)) {
+        if (scsi->sched) {
+            remove_event(scsi->sched, &scsi_status_irq, scsi);
+            scheduler_new_cpu_event(scsi->sched, &scsi_status_irq, scsi, 0, SCSI_STATUS_IRQ_CYCLES, 0);
+        }
         return;
+    }
 
     scsi_update_irq(scsi);
 }
@@ -681,6 +732,16 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
         // transition to status at that point (via TCR write or here).
         if (scsi->bus.phase == scsi_data_in && scsi->buf.size == 0)
             phase_status(scsi, STATUS_GOOD);
+        // Bytes still to come: leaving DMA mode releases the ACK the chip
+        // held for the last byte it latched, and the target answers with REQ
+        // for the next one (NCR 5380 DMA mode: ACK stays asserted "until DACK
+        // ... or the DMA MODE bit is reset").  The pseudo-DMA reads dropped
+        // REQ per byte; without this, a host that moves a block per DMA arm
+        // and the rest by PIO -- Linux's NCR5380 core, which ends every arm
+        // with a PIO read of the last byte -- waits for a REQ that never
+        // comes.
+        else if (scsi->bus.phase == scsi_data_in && scsi->buf.size != 0 && !(scsi->chip5380->reg.icr & ICR_ACK))
+            scsi->bus.req = true;
         scsi_update_drq(scsi);
         scsi_update_irq(scsi);
     } else if (bits_set & MR_DMA) {
@@ -804,7 +865,16 @@ static uint8_t reg_read(scsi_t *scsi, uint32_t addr, bool peek) {
         // that STATUS phase would present (phase lines, REQ and BSY asserted)
         // without making the transition.
         uint8_t val;
-        if (scsi->bus.phase == scsi_data_in && scsi->buf.size == 0 && peek)
+        // Not while the initiator still holds ACK on the last byte: the
+        // target may change phase and raise the next REQ only once ACK is
+        // false (ANSI X3.131-1986 S5.1.5.1, the REQ/ACK interlock).  Linux's
+        // NCR5380 core asserts ACK and spins until REQ drops; switching to
+        // STATUS here re-raised REQ under it and the loop never ended.  The
+        // ACK release (write_icr) makes the transition instead.
+        bool ack_held = (scsi->chip5380->reg.icr & ICR_ACK) != 0;
+        if (scsi->bus.phase == scsi_data_in && scsi->buf.size == 0 && ack_held)
+            val = csr_from_bus(scsi, peek);
+        else if (scsi->bus.phase == scsi_data_in && scsi->buf.size == 0 && peek)
             val = (uint8_t)((scsi_phase_wire_bits(scsi_status) << 2) | CSR_REQ | CSR_BSY |
                             (scsi->chip5380->reg.csr & (CSR_SEL | CSR_RST)));
         else {
@@ -1015,6 +1085,20 @@ void scsi_odr_auto_handshake_byte(scsi_t *scsi, uint8_t value) {
     if ((scsi->chip5380->reg.mr & MR_DMA) && !scsi->chip5380->dma_write_armed)
         return;
 
+    // ── GATE 2b: DMA transfers need a phase match ───────────────────────
+    // In DMA mode the 5380 moves a byte only while the bus phase matches TCR
+    // (BSR bit 3, "Phase Match"; design manual S6.4).  A/UX's blind primer
+    // (below) is written with TCR still describing COMMAND while the target
+    // has gone to DATA OUT, and the Start DMA Send of the CDB is still armed:
+    // the real chip drops it on the mismatch.  The settle in GATE 3 catches
+    // the primer only while it lands within SCSI_DATA_OUT_SETTLE_CYCLES of
+    // the command; an interrupt between the CDB and the primer -- A/UX 1.1
+    // takes clock ticks there -- pushed it past, and it went to disk as byte 0
+    // of the payload, shifting a whole block ("EXCESSIVE BAD BLKS" from fsck,
+    // a 1-byte shift in /bin/pr's indirect block).
+    if ((scsi->chip5380->reg.mr & MR_DMA) && !scsi_phase_match(scsi, false))
+        return;
+
     // ── GATE 3: the target has to be asking ─────────────────────────────
     // No REQ, no transfer.  A byte the initiator puts on the bus is only
     // taken when the target is requesting one; the 5380 cannot complete a
@@ -1201,6 +1285,8 @@ scsi_5380_t *scsi_5380_attach(scsi_t *bus, checkpoint_t *checkpoint) {
     // one.
     if (bus->sched)
         scheduler_new_event_type(bus->sched, "scsi", bus, "drq_service", &scsi_drq_service);
+    if (bus->sched)
+        scheduler_new_event_type(bus->sched, "scsi", bus, "status_irq", &scsi_status_irq);
 
     if (checkpoint) {
         // The chip's plain-data block, matching the single write in
@@ -1224,6 +1310,7 @@ void scsi_add_cd_drive(scsi_t *bus, int id, const scsi_cd_drive_t *drive) {
     GS_ASSERTF(id >= 0 && id < 7, "scsi_add_cd_drive: id %d is not a target slot", id);
     scsi_add_device(bus, id, drive->vendor, drive->product, drive->revision, NULL, scsi_dev_cdrom, drive->block_size,
                     true);
+    bus->cd_drive[id] = drive; // the model itself, even one not in the catalogue
 }
 
 scsi_t *scsi_init_named(struct scheduler *sched, checkpoint_t *checkpoint, const image_list_t *images,
@@ -1272,6 +1359,13 @@ scsi_t *scsi_init_named(struct scheduler *sched, checkpoint_t *checkpoint, const
                 scsi->devices[i].default_block_size = scsi->devices[i].block_size;
             if (scsi->devices[i].type == scsi_dev_none && scsi->devices[i].vendor_id[0] != 0)
                 scsi->devices[i].type = scsi_dev_hd;
+            // A CD-ROM drive's model is a pointer, so it is not in the block:
+            // re-derive it from the INQUIRY identity, which is.
+            scsi->cd_drive[i] = scsi->devices[i].type == scsi_dev_cdrom
+                                    ? scsi_cd_drive_by_identity((const char *)scsi->devices[i].vendor_id,
+                                                                (const char *)scsi->devices[i].product_id,
+                                                                (const char *)scsi->devices[i].revision)
+                                    : NULL;
 
             // The medium: re-opened by name.  medium_present is deliberately
             // recomputed rather than restored -- it means "is there an image in
@@ -1915,22 +2009,24 @@ static DEF_GETTER(scsi_image_attr_present) {
     return val_bool(scsi ? scsi_device_medium_present(scsi, slot) : false);
 }
 
-// `export(path)` — flatten this device's live image (base + delta) into a
-// NEW file. image_export_to refuses to overwrite, so this is always a
-// "Save As…" and never mutates the source image.
+// `export(path, [codec])` — flatten this device's live image (base + delta)
+// into a NEW file; a .dmg is compressed with `codec` (zlib or xz).
+// image_export_to refuses to overwrite, so this is always a "Save As…" and
+// never mutates the source image.
 static DEF_METHOD(scsi_image_method_export) {
     unsigned slot = 0;
     scsi_t *scsi = scsi_dev_scsi(self, &slot);
     image_t *img = scsi ? scsi_device_image(scsi, slot) : NULL;
     if (!img)
         return val_err("image.export: no medium present in this device");
+    const char *codec = argc > 1 && argv[1].kind == VK_STRING ? argv[1].s : NULL;
     // An I/O job: the disk is snapshotted and write-locked here, streamed
     // to the file on the I/O worker, and the answer comes when it is done.
     // (Weak: a unit suite of the controller alone links no I/O leaves and
     // exports here and now.)
     if (io_leaf_export_image)
-        return io_leaf_export_image(img, argv[0].s, "image.export");
-    if (image_export_to(img, argv[0].s) != 0)
+        return io_leaf_export_image(img, argv[0].s, codec, "image.export");
+    if (image_export_to_codec(img, argv[0].s, codec) != 0)
         return val_err("image.export: failed to write '%s' (refuses to overwrite an existing file)", argv[0].s);
     return val_bool(true);
 }
@@ -1946,6 +2042,11 @@ static const arg_decl_t scsi_image_export_args[] = {
      .presentation_flags = VFLAG_PATH,
      .validation_flags = OBJ_ARG_NONEMPTY,
      .doc = "Destination host path for the flattened image (must not exist)"},
+    {.name = "codec",
+     .kind = VK_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "A .dmg's compression: zlib (UDZO) or xz (ULMO: 14-16% smaller on system disks, decodes ~4x slower)",
+     .default_doc = "zlib"                                                  },
 };
 
 static const member_t scsi_image_members[] = {
@@ -1973,7 +2074,7 @@ static const member_t scsi_image_members[] = {
      .name = "export",
      .doc = "Save a flattened copy (base + delta) of this disk to a new file",
      .method = {.args = scsi_image_export_args,
-                .nargs = 1,
+                .nargs = 2,
                 .result = VK_BOOL,
                 .fn = scsi_image_method_export,
                 .ui_flags = MM_MUTATE | MM_IO,

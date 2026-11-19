@@ -49,10 +49,18 @@ static object_cache_t g_session_objects;
 // for the singleton nodes: their accessors call into the modules, which
 // answer for whatever connection is plugged in.  Collection entries carry
 // their slot index.
+// The `appletalk` node, once installed
+static struct object *g_atalk_object;
+
+struct object *atalk_object(void) {
+    return g_atalk_object;
+}
+
 void atalk_install_objects(void) {
     struct object *atalk = object_new(&atalk_class, NULL, "appletalk");
     if (!atalk)
         return;
+    g_atalk_object = atalk;
     object_set_order(atalk, 100);
     object_set_domain(atalk, OBJ_DOMAIN_NETWORK);
     object_attach(object_root(), atalk);

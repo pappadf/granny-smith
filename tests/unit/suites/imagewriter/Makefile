@@ -8,7 +8,5 @@ EXTRA_SRCS   := ../../../../src/core/printer/iw_interp.c \
                 ../../../../src/core/printer/iw_font.c \
                 ../../../../src/core/printer/iw_font_data.c \
                 ../../../../src/core/printer/pdf_writer.c \
-                ../../../../src/core/storage/deflate.c \
-                ../../../../src/core/storage/inflate.c \
-                ../../../../src/peeler/lib/inflate.c
+                $(wildcard ../../../../src/codec/lib/*.c)
 include ../../common.mk

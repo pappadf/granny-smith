@@ -341,6 +341,46 @@ path: `video_mode=` is NuBus sugar and a PCI slot entry takes no `mode=`
 (the boot is rejected), so the web UI hides the Video Mode row for a PCI
 pick and the card uses the mode its driver programs.
 
+## A card that brings its own SCSI bus
+
+A SCSI host adapter in a socket is wired to no bus of the board's, so it
+brings one. A kind that does sets `pci_card_kind_t.attach_scsi_bus`; after
+its slot walk a PCI family calls `machine_card_scsi_buses()`, which for every
+such card in a **socket** builds a SCSI bus named for the slot's id
+(`pci_1`, `pci_2`, ...), registers it as a checkpoint part of its own (after
+the slot walk, so a restore reads the parts in the order they were saved),
+keeps it in `config_t.card_scsi[slot]` and hands it to the card. A
+soldered controller wired to the board's own bus (the Network Server's two
+53C825A channels, bound by `tnt_fwscsi_attach`) is not in a socket and is
+left alone. The bus is freed after the PCI root, so a card never outlives it.
+
+The bus is an ordinary one from there on:
+
+- **object** `machine.pci_1`, with the usual `attach_hd`, `attach_cdrom`
+  and `device[N]`;
+- **storage** id `pci_1` in the configuration document, `drive=pci_1:0:hd`,
+  `machine.attach_media("pci_1", ...)`, `machine.eject_media("pci_1", id)`.
+  `machine_storage_bus()` answers `pci_<slot>` for any socket of the model
+  (a narrow bus: IDs 0-6, the card is 7, hard disks and CD-ROM drives), and
+  the configuration is refused when a device sits on a card's bus with no
+  card that brings one in that slot (`check_card_buses`, run once the
+  slots are resolved, since storage is read before the cards);
+- **media bus** `MEDIA_BUS_CARD`, one for every card: unit = slot × 8 + SCSI
+  id, routed by the shared `system_media_*_std` paths, which every PCI
+  family's substrate falls back to;
+- **catalog**: `catalog.profile` lists each socket's potential card bus
+  with `card_slot` set to the slot id, and each such card kind with
+  `scsi_bus: true`. The web configuration dialog shows a card's bus only
+  while its slot holds such a card (`visibleBuses`), and removing the card
+  drops the devices on its bus (`removeCard`).
+
+The one kind today is `sym53c825`, the Symbios 53C825A as a PC SCSI card
+(the same model as the Network Server's soldered channels, whose own kinds
+stay `sym53c825_0` / `sym53c825_1`). It has no FCode PROM: Open Firmware
+builds its generic `pci1000,3` node and the Mac OS ignores it, and an
+operating system with a 53C8xx driver -- Windows NT's `symc810.sys` -- drives
+it. `tnt-pci-scsi-card` puts one in an 8500 beside a Cirrus 54M30.
+
 `pci_bus_is_populated()` exists for one caller: a family that has to pick
 between two bridges claiming the same physical range, where the tie is
 broken by which bus actually seated something.  See the TNT doc for the

@@ -1466,6 +1466,11 @@ void system_destroy(config_t *config) {
         pci_root_delete(config->pci);
         config->pci = NULL;
     }
+    // The buses PCI slot cards brought: their cards are gone, now them.
+    for (int i = 0; i < CARD_SCSI_SLOTS; i++) {
+        scsi_delete(config->card_scsi[i]);
+        config->card_scsi[i] = NULL;
+    }
     if (config->nubus) {
         nubus_delete(config->nubus);
         config->nubus = NULL;
@@ -1563,8 +1568,10 @@ static bool media_open(media_bus_t bus, bool cdrom, const char *path, media_slot
         snprintf(slot->vendor, sizeof(slot->vendor), "%s", drive->vendor);
         snprintf(slot->product, sizeof(slot->product), "%s", drive->product);
         snprintf(slot->revision, sizeof(slot->revision), "%s", drive->revision);
-        out_printf("Attaching SCSI CD-ROM: %s as %s %s (size: %llu bytes, %u-byte blocks)\n", path, drive->vendor,
-                   drive->product, (unsigned long long)disk_size(slot->img), slot->block_size);
+        // The drive it lands in may be a configured model other than the
+        // profile's (system_media_attach_scsi_bus), so the line names the disc.
+        out_printf("Attaching SCSI CD-ROM: %s (size: %llu bytes, %u-byte blocks)\n", path,
+                   (unsigned long long)disk_size(slot->img), slot->block_size);
         return true;
     }
     slot->img = image_create(path, pick_delta_dir(path));
@@ -1635,8 +1642,9 @@ bool system_attach_scsi_hd(struct config *restrict config, struct scsi *bus, con
     return true;
 }
 
-// Attach a SCSI CD-ROM (AppleCD SC Plus / Sony CDU-8002) on a named bus;
-// see system_attach_scsi_hd.
+// Attach a SCSI CD-ROM on a named bus, in the drive the machine has there
+// (the profile's model unless the configuration chose another); see
+// system_attach_scsi_hd.
 bool system_attach_scsi_cdrom(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
     if (!bus) {
         out_printf("Cannot attach CD-ROM %s: this machine has no SCSI bus\n", filename);
@@ -1672,9 +1680,20 @@ int system_media_attach_std(config_t *cfg, const media_slot_t *slot) {
         return 0;
     case MEDIA_BUS_SCSI:
         return system_media_attach_scsi_bus(cfg, cfg->scsi, slot);
+    case MEDIA_BUS_CARD: {
+        media_slot_t on_card = *slot;
+        on_card.unit = slot->unit % CARD_SCSI_IDS; // the SCSI id on that card's bus
+        return system_media_attach_scsi_bus(cfg, system_card_scsi_bus(cfg, slot->unit), &on_card);
+    }
     default:
         return -1;
     }
+}
+
+// The SCSI bus of the PCI slot card a MEDIA_BUS_CARD unit names, or NULL.
+struct scsi *system_card_scsi_bus(config_t *cfg, int unit) {
+    int slot = unit / CARD_SCSI_IDS;
+    return (cfg && unit >= 0 && slot < CARD_SCSI_SLOTS) ? cfg->card_scsi[slot] : NULL;
 }
 
 // Attach one opened medium to a named SCSI bus: a machine may have more than
@@ -1691,6 +1710,17 @@ int system_media_attach_scsi_bus(config_t *cfg, struct scsi *bus, const media_sl
         return -1;
     }
     config_add_image(cfg, slot->img);
+    // A disc goes into the drive that is there: a CD-ROM drive seated at power-on
+    // keeps its own model (a storage entry's "model" may differ from the
+    // profile's default that media_open filled in).
+    const scsi_cd_drive_t *seated = NULL;
+    if (slot->scsi_type == scsi_dev_cdrom && slot->unit >= 0)
+        seated = scsi_cd_drive_at(bus, (unsigned)slot->unit);
+    if (seated) {
+        scsi_add_device(bus, slot->unit, seated->vendor, seated->product, seated->revision, slot->img, scsi_dev_cdrom,
+                        seated->block_size, true);
+        return 0;
+    }
     scsi_add_device(bus, slot->unit, slot->vendor, slot->product, slot->revision, slot->img,
                     (enum scsi_device_type)slot->scsi_type, slot->block_size, slot->read_only);
     return 0;
@@ -1724,6 +1754,8 @@ bool system_media_present_std(config_t *cfg, media_bus_t bus, int unit) {
         return sys_fd_is_inserted(cfg, unit);
     case MEDIA_BUS_SCSI:
         return system_media_present_scsi_bus(cfg->scsi, unit);
+    case MEDIA_BUS_CARD:
+        return system_media_present_scsi_bus(system_card_scsi_bus(cfg, unit), unit % CARD_SCSI_IDS);
     default:
         return false;
     }
@@ -1735,12 +1767,16 @@ int system_media_eject_std(config_t *cfg, media_bus_t bus, int unit) {
         return (cfg->floppy && unit >= 0 && floppy_drive_eject(cfg->floppy, (unsigned)unit)) ? 0 : -1;
     case MEDIA_BUS_SCSI:
         return system_media_eject_scsi_bus(cfg->scsi, unit);
+    case MEDIA_BUS_CARD:
+        return system_media_eject_scsi_bus(system_card_scsi_bus(cfg, unit), unit % CARD_SCSI_IDS);
     default:
         return -1;
     }
 }
 
 image_t *system_media_image_std(config_t *cfg, media_bus_t bus, int unit) {
+    if (bus == MEDIA_BUS_CARD)
+        return system_media_image_scsi_bus(system_card_scsi_bus(cfg, unit), unit % CARD_SCSI_IDS);
     return bus == MEDIA_BUS_SCSI ? system_media_image_scsi_bus(cfg->scsi, unit) : NULL;
 }
 

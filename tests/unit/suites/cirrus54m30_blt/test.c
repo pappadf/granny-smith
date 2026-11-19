@@ -57,6 +57,8 @@ const pci_card_kind_t sym53c825_ch0_kind = {
     .id = "sym53c825_0", .display_name = "Symbios 53C825A (channel 0)", .attach = PCI_ATTACH_BUILTIN};
 const pci_card_kind_t sym53c825_ch1_kind = {
     .id = "sym53c825_1", .display_name = "Symbios 53C825A (channel 1)", .attach = PCI_ATTACH_BUILTIN};
+const pci_card_kind_t sym53c825_kind = {
+    .id = "sym53c825", .display_name = "Symbios 53C825A SCSI card", .attach = PCI_ATTACH_PCI};
 const pci_card_kind_t voodoo2_kind = {.id = "voodoo2", .display_name = "3dfx Voodoo2", .attach = PCI_ATTACH_PCI};
 const pci_card_kind_t voodoo2_webgpu_kind = {
     .id = "voodoo2_webgpu", .display_name = "3dfx Voodoo2 (WebGPU)", .attach = PCI_ATTACH_PCI};

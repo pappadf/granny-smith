@@ -86,6 +86,7 @@ struct config {
     // The machine's ImageWriter (iw_printer.h), on a serial port or LocalTalk;
     // NULL on a machine without an SCC.
     struct iw_printer *imagewriter;
+    struct iw_printer *atalk_imagewriter; // the AppleTalk ImageWriter (machines with AppleTalk)
     scsi_t *scsi;
     rtc_t *rtc;
     floppy_t *floppy; // floppy controller: IWM (Plus) or SWIM (SE/30)
@@ -117,6 +118,11 @@ struct config {
     // a machine-side include, and this header must not drag it in (its
     // sibling card.h would shadow the NuBus one).
     struct pci_root *pci;
+
+    // The SCSI bus each PCI slot card that brings one owns, by slot number
+    // (machine_card_scsi_buses).  NULL where the slot holds no such card.
+    // Freed after the PCI root, so a card never outlives its bus.
+    scsi_t *card_scsi[CARD_SCSI_SLOTS];
 };
 
 #endif // SYSTEM_INTERNAL_H

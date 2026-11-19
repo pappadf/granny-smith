@@ -174,6 +174,12 @@ chosen LR.
   cache does: the guest's stores fill it, and `dcbst`/`dcbf` (or an
   eviction) send it to the device as one burst; `dcbi` drops it
   ([memory.md](../memory/memory.md), "Cache lines held over devices").
+  With no cache to act on, `dcbst`, `dcbf`, `dcbi` and the 604's `icbi`
+  still translate their address and check protection, `dcbi` as a store
+  and the rest as loads (PEM Table 4-32, §5.3.3; 604UM §3.8), so an
+  unmapped address is a DSI as it is on the hardware; a direct-store
+  segment makes them no-ops.  The 601's `icbi` is a no-op without even
+  the translation (601UM, `icbi`).
 - **Caches**: the user and supervisor-translated SoA fills (tracked per
   256 MB segment, so invalidation is proportional to fills and a
   segment-register write drops only its own segment's -- Mac OS X switches
@@ -306,9 +312,10 @@ precedent).  The deltas, each keyed on `cpu_model`:
 - **Time**: TBL/TBU replace the RTC — read via `mftb`/`mftbu` (xo 371,
   user-readable) **and via `mfspr` of 268/269/284/285** (the 60x parts
   treat `mfspr` and `mftb` identically — MPC603e UM §2.3.5.1, "ignoring
-  bit 25" — and BeOS's kernel calibrates its clock with `mfspr 285/284`;
-  trapping it left BeOS's time scale at zero and every `snooze()`
-  spinning), written via SPR 284/285 (supervisor), stored in the
+  bit 25" — IBM's OS/2 PowerPC boot loader reads TB with `mfspr 268/269`,
+  and BeOS's kernel calibrates its clock with `mfspr 285/284`; trapping
+  it left BeOS's time scale at zero and every `snooze()` spinning),
+  written via SPR 284/285 (supervisor), stored in the
   same `rtcu/rtcl` slots at their rebase instant.  DEC decrements once
   per timebase tick.  `ppc_bind_time(p, s, freq_hz, tick_hz)` takes the
   tick rate explicitly: 7,833,600 on the 601 (PDM), bus/4 on the 604.

@@ -69,7 +69,7 @@ const hw_profile_t machine_q950 = {
     .default_storage = mac_default_storage_hd0_cd3,
     .appletalk = true,
     .builtin_video = &mcu_builtin_video_q950,
-    .cdrom_drive = &mac_cdrom_drive_applecd,
+    .cdrom_drive = &scsi_cd_drive_applecd_sc_plus,
 
     .nubus_slots = q900_nubus_slots, // same Eclipse board (q900_internal.h)
 

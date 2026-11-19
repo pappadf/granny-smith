@@ -1444,8 +1444,9 @@ static void test_604_timebase(void) {
     CHECK_EQ(P->rtcl, 0xAAAAAAAAu);
     // mfspr reads the timebase too, from the TBR numbers and from the
     // write encodings: the 60x parts treat mfspr and mftb identically
-    // (MPC603e UM §2.3.5.1, "ignoring bit 25"), and BeOS's kernel samples
-    // TB with mfspr 285/284/285 at its clock calibration.
+    // (MPC603e UM §2.3.5.1, "ignoring bit 25").  IBM's OS/2 PowerPC boot
+    // loader uses 268/269; BeOS's kernel samples TB with mfspr 285/284/285
+    // at its clock calibration.
     fresh604();
     P->rtcu = 0x00000034u;
     P->rtcl = 0x56789ABCu;

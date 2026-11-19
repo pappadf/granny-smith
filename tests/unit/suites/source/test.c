@@ -558,6 +558,37 @@ TEST(test_chunk_cache_budgets_change_at_run_time) {
     rmdir(dir);
 }
 
+// With a chunk-count floor, a budget that would hold only a few large chunks
+// is raised to hold min_chunks of them (up to the cap), so a working set of
+// large chunks is not re-fetched (#377); small chunks keep the plain budget.
+TEST(test_chunk_cache_min_chunks_floor) {
+    chunk_cache_t *c = chunk_cache_new(4096, NULL, 0); // two 2 KiB chunks by budget alone
+    chunk_cache_set_min_chunks(c, 4, 0);
+    ASSERT_EQ_INT(4, (int)chunk_cache_min_chunks(c));
+    int calls = 0;
+    uint8_t b[4];
+    for (uint64_t i = 0; i < 4; i++)
+        ASSERT_EQ_INT(4, (int)chunk_cache_get(c, "big", i, 2048, 0, b, 4, fill_fetch, &calls));
+    ASSERT_TRUE(chunk_cache_effective_budget(c) == 4 * 2048);
+    for (uint64_t i = 0; i < 4; i++)
+        chunk_cache_get(c, "big", i, 2048, 0, b, 4, fill_fetch, &calls);
+    ASSERT_EQ_INT(4, calls); // all four held: none fetched again
+    chunk_cache_stats_t st;
+    chunk_cache_stats(c, &st);
+    ASSERT_EQ_INT(0, (int)st.evictions);
+    // A cap bounds the floor: back to three chunks' room, so one is evicted.
+    chunk_cache_set_min_chunks(c, 4, 3 * 2048);
+    ASSERT_TRUE(chunk_cache_effective_budget(c) == 3 * 2048);
+    chunk_cache_stats(c, &st);
+    ASSERT_TRUE(st.mem_bytes <= 3 * 2048);
+    // Floor off: the plain budget again.
+    chunk_cache_set_min_chunks(c, 0, 0);
+    ASSERT_TRUE(chunk_cache_effective_budget(c) == 4096);
+    chunk_cache_stats(c, &st);
+    ASSERT_TRUE(st.mem_bytes <= 4096);
+    chunk_cache_free(c);
+}
+
 // Keys made at different times name the same bytes when they are equal --
 // or, ignoring host time stamps (the browser's OPFS gives files their load
 // time), when only those differ.  A path or a size that differs never
@@ -668,6 +699,7 @@ int main(void) {
     RUN(test_lisaem_profile_detection_is_exact);
     RUN(test_not_yet_is_waited_out_with_poll);
     RUN(test_chunk_cache_budgets_change_at_run_time);
+    RUN(test_chunk_cache_min_chunks_floor);
     RUN(test_key_same_ignores_only_host_times);
     fprintf(stderr, "All source tests passed\n");
     return 0;

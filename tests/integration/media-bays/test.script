@@ -30,7 +30,7 @@ assert machine.scsi2.device[4].type == "hd" "the disk is on machine.scsi2"
 # not overwritten.
 assert try(machine.attach_hd("${$WORK_DIR}/hd2.img"), "refused") == "refused" "occupied hard disk refused"
 assert try(machine.attach_hd("${$WORK_DIR}/hd2.img", 1), "refused") == "refused" "a second default hard disk does not exist"
-assert try(machine.attach_media("scsi2", 3, "hd", "${$WORK_DIR}/hd2.img"), "refused") == "refused" "unit 3 is not on bus 1"
+assert try(machine.attach_media("scsi2", 8, "hd", "${$WORK_DIR}/hd2.img"), "refused") == "refused" "no ID 8 on the emulated bus"
 assert try(machine.attach_media("scsi", 7, "hd", "${$WORK_DIR}/hd2.img"), "refused") == "refused" "the initiator's ID"
 assert try(machine.attach_media("bogus", 1, "hd", "${$WORK_DIR}/hd2.img"), "refused") == "refused" "no such bus"
 assert try(machine.attach_cdrom("${$WORK_DIR}/cd.iso"), "refused") == "refused" "occupied CD-ROM drive refused"
@@ -39,6 +39,14 @@ assert try(machine.attach_cdrom("${$WORK_DIR}/cd.iso"), "refused") == "refused" 
 machine.eject_media "scsi2" 4
 assert try(machine.eject_media("scsi2", 4), "empty") == "empty" "nothing left to eject"
 assert try(machine.eject_media("bogus", 0), "bad") == "bad" "unknown bus refused"
+
+# A bay is where a drive sits, not which IDs exist: any ID but the
+# initiator's on either bus, past the bays wired to it (OS/2 PPC's disk
+# loader wants its disk at ID 6 on bus 0, whose bays are 0-3).
+let o = machine.attach_media("scsi", 6, "hd", "${$WORK_DIR}/hd2.img")
+assert $o.bus == "scsi" && $o.id == 6 "ID 6 on bus 0"
+assert machine.scsi.device[6].type == "hd" "the disk is on machine.scsi"
+machine.eject_media "scsi" 6
 
 # The Plus's external CD-ROM drive is at ID 3, its hard disk at ID 0.
 machine.boot model="plus" rom="${$TEST_DATA}/roms/plus-v3-4d1f8172.rom"

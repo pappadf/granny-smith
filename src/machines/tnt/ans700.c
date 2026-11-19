@@ -61,7 +61,7 @@ static const storage_bus_decl_t ans700_storage[] = {
       .kind = STORAGE_KIND_SCSI,
       .wide = true,
       .media_bus = MEDIA_BUS_SCSI2,
-      .units = 0x73u, // front bays 4-6 and the two rear brackets
+      .units = MAC_SCSI_UNITS, // any ID 0-6; a bay is a physical place, not an ID
      .reserved = 0x80u,
       .bays = ans700_bays_bus1,
       .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD},
@@ -101,7 +101,7 @@ const hw_profile_t machine_ans700 = {
     .appletalk = true,
     .options = ans700_options,
     .builtin_video = &ans_builtin_video,
-    .cdrom_drive = &mac_cdrom_drive_applecd,
+    .cdrom_drive = &scsi_cd_drive_applecd_600i,
 
     .pci_slots = ans_pci_slots,
 

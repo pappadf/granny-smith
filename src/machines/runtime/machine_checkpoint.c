@@ -157,6 +157,19 @@ void machine_part_imagewriter(config_t *cfg, checkpoint_t *cp, bool lisa) {
         iw_printer_install(cfg->imagewriter, model, conn);
     }
     machine_part(cfg, cp, "imagewriter", part_save_imagewriter, cfg->imagewriter);
+    // The AppleTalk ImageWriter: on the network beside the LaserWriter on
+    // every machine with AppleTalk, whatever is on the serial ports (#345)
+    if (!cfg->atalk)
+        return;
+    machine_part_begin(cfg, cp, "atalk_imagewriter");
+    cfg->atalk_imagewriter = iw_printer_new_network(cfg->scheduler, cp);
+    if (!cfg->atalk_imagewriter) {
+        machine_part_cancel(cfg);
+        return;
+    }
+    if (!lisa)
+        iw_printer_set_title_source(cfg->atalk_imagewriter, mac_print_title);
+    machine_part(cfg, cp, "atalk_imagewriter", part_save_imagewriter, cfg->atalk_imagewriter);
 }
 
 static void part_save_irq(void *obj, checkpoint_t *cp) {

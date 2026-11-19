@@ -52,6 +52,13 @@ export async function stageOpfsFile(page: Page, opfsPath: string, hostFile: stri
       const w = await fh.createWritable();
       await w.write(bytes);
       await w.close();
+      // A declaration ROM put in the vROM store: offer it to the core, as an
+      // upload does (and as the startup scan does after a reload), so the
+      // dialog lists the card's real-ROM entry.  Before the bridge is up
+      // there is nothing to offer to; the startup scan picks the file up.
+      const hook = (window as { __gsEvalForTests?: (p: string, a?: unknown) => Promise<unknown> })
+        .__gsEvalForTests;
+      if (hook && path.startsWith('/opfs/images/vrom/')) await hook('catalog.vroms.offer', [path]);
     },
     { path: opfsPath, data },
   );

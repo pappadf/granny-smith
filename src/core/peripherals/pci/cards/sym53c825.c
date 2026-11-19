@@ -153,6 +153,15 @@ static void sym825_unstack_sist(sym53c8xx_t *s) {
         return;
     if (s->reg[SYM825_SIST0] || s->reg[SYM825_SIST1] || !(s->sist0_stacked | s->sist1_stacked))
         return;
+    // "After the first interrupt is cleared by reading the appropriate
+    // register, the IRQ/ pin will be deasserted for a minimum of three CLKs;
+    // the stacked interrupt(s) will move into the SIST0, SIST1, or DSTAT; and
+    // the IRQ/ pin will be asserted once again" (SYM53C825A Data Manual v3.0,
+    // Stacked Interrupts).  The pulse is what an edge-triggered controller
+    // sees: OS/2 PowerPC's NCR driver sits on an edge-triggered 8259 input,
+    // and a pin held high straight through lost the UDC stacked behind a
+    // selection time-out.
+    sym53c8xx_update_irq(s);
     s->reg[SYM825_SIST0] = s->sist0_stacked;
     s->reg[SYM825_SIST1] = s->sist1_stacked;
     s->sist0_stacked = 0;
@@ -545,7 +554,7 @@ static void ram_write32(void *ctx, uint32_t offset, uint32_t value) {
 
 static const char *sym825_name(const pci_device_t *dev) {
     sym53c8xx_t *s = (sym53c8xx_t *)dev->priv;
-    return s && s->channel ? "53C825A #1" : "53C825A #0";
+    return s ? s->label : "53C825A";
 }
 
 static void sym825_pci_reset(pci_device_t *dev, config_t *cfg) {
@@ -587,7 +596,11 @@ sym53c8xx_t *sym53c8xx_from_device(pci_device_t *dev) {
 // — restarts and checkpoint restores then reproduce the same assignment.
 static pci_device_t *sym825_factory_for(int slot_index, config_t *cfg, int channel) {
     pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
-    sym53c8xx_t *s = sym53c8xx_new(cfg, channel);
+    char owner[24];
+    // A slot card's events are named for its slot, the board's for their channel.
+    if (channel < 0)
+        snprintf(owner, sizeof owner, "53c825-slot%d", slot_index);
+    sym53c8xx_t *s = channel < 0 ? sym53c8xx_new_named(cfg, channel, owner) : sym53c8xx_new(cfg, channel);
     if (!dev || !s) {
         free(dev);
         sym53c8xx_delete(s);
@@ -598,6 +611,11 @@ static pci_device_t *sym825_factory_for(int slot_index, config_t *cfg, int chann
     dev->priv = s;
     pci_cfg_reset(dev);
     s->dev = dev;
+    // What the device is called: the board's channel, or the slot a card is in.
+    if (channel < 0)
+        snprintf(s->label, sizeof s->label, "53C825A (slot %d)", slot_index);
+    else
+        snprintf(s->label, sizeof s->label, "53C825A #%d", channel);
 
     s->regs_if.read_uint8 = regs_read8;
     s->regs_if.read_uint16 = regs_read16;
@@ -657,4 +675,31 @@ const pci_card_kind_t sym53c825_ch1_kind = {
     .attach = PCI_ATTACH_BUILTIN,
     .card_class = "scsi",
     .factory = sym825_ch1_factory,
+};
+
+// The same chip on a PCI card, for any machine's socket: a SCSI host
+// adapter of the PC kind, with no FCode PROM, so Open Firmware and the Mac
+// OS leave it alone and an operating system with its own 53C8xx driver --
+// Windows NT's symc810.sys -- drives it.  It brings its own SCSI bus, which
+// the machine builds as "pci_<slot>" once the card is seated
+// (machine_card_scsi_buses) and hands over here.
+static pci_device_t *sym825_socket_factory(int slot_index, config_t *cfg, const rom_image_t *rom,
+                                           const slot_opts_t *opts) {
+    (void)opts;
+    (void)rom;
+    return sym825_factory_for(slot_index, cfg, -1);
+}
+
+// Take the bus the machine built for this card.
+static void sym825_attach_scsi_bus(pci_device_t *dev, struct scsi *bus) {
+    sym53c8xx_attach_bus(sym53c8xx_from_device(dev), bus);
+}
+
+const pci_card_kind_t sym53c825_kind = {
+    .id = "sym53c825",
+    .display_name = "Symbios 53C825A SCSI card",
+    .attach = PCI_ATTACH_PCI,
+    .card_class = "scsi",
+    .factory = sym825_socket_factory,
+    .attach_scsi_bus = sym825_attach_scsi_bus,
 };

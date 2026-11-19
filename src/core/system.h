@@ -89,6 +89,9 @@ struct media_slot;
 int system_media_attach_std(config_t *cfg, const struct media_slot *slot);
 // One SCSI bus's worth of the same, for a machine with more than one.
 int system_media_attach_scsi_bus(config_t *cfg, struct scsi *bus, const struct media_slot *slot);
+// The SCSI bus of the PCI slot card a MEDIA_BUS_CARD unit (slot * 8 + id)
+// names, or NULL when that slot holds no card with a bus.
+struct scsi *system_card_scsi_bus(config_t *cfg, int unit);
 
 // === Generic Machine Lifecycle ===
 

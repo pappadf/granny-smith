@@ -12,6 +12,9 @@
 #
 # Usage: scripts/check-udif-interop.sh DIR
 #
+# Samples named *-xz are LZMA (ULMO) images, which only hdiutil of these
+# tools reads; 7-Zip and dmg2img skip them.
+#
 # With hdiutil (macOS), each image must pass `hdiutil imageinfo` and
 # `hdiutil verify`, `hdiutil convert -format UDTO` must yield the disk, and
 # `hdiutil attach -readonly -nomount` must present a device that reads as the
@@ -68,6 +71,11 @@ run() {
     tools=$((tools + 1))
     while read -r n; do
         [ -n "$n" ] || continue
+        # xz (ULMO) images: hdiutil reads them; 7-Zip and dmg2img do not.
+        if [ "$tool" != hdiutil ] && [[ "$n" == *-xz ]]; then
+            printf '%-8s %-12s skipped (no LZMA support)\n' "$tool" "$n"
+            continue
+        fi
         if "check_$tool" "$n"; then
             printf '%-8s %-12s ok\n' "$tool" "$n"
         else

@@ -87,6 +87,12 @@ typedef struct dbdma_chan {
     uint32_t br_sel; // branch condition select
     uint32_t wait_sel; // wait condition select
     uint32_t cursor; // bytes already moved by the in-flight data command
+    // The in-flight command has done its work and is held by its WAIT
+    // modifier; completion processing (branch, write-back, interrupt)
+    // runs once the wait condition clears.  A resumed channel must not
+    // repeat the command -- a quad store to a sequence register would
+    // re-issue the sequence.
+    uint32_t waiting;
 } dbdma_chan_t;
 
 struct dbdma {
@@ -96,6 +102,12 @@ struct dbdma {
     dma_mem_port_t mem; // guest-physical port (dma_mem.h)
     dbdma_irq_fn irq;
     void *irq_ctx;
+    // run_channel is executing channel n.  A device kick raised from inside
+    // the channel's own command -- a quad store to a MESH register that
+    // changes its interrupt status -- must not re-enter and re-run the
+    // in-flight descriptor; the running loop re-reads the device status
+    // itself.  Transient, never set across a checkpoint.
+    bool running[DBDMA_MAX_CHANNELS];
 };
 
 // ============================================================
@@ -223,7 +235,17 @@ static bool runnable(const dbdma_chan_t *c) {
 // or exhausts the runaway budget.  Synchronous by design: control-write
 // status transitions and completion interrupts all happen before the
 // guest's next instruction.
+static void run_channel_loop(dbdma_t *d, int n);
+
 static void run_channel(dbdma_t *d, int n) {
+    if (d->running[n])
+        return;
+    d->running[n] = true;
+    run_channel_loop(d, n);
+    d->running[n] = false;
+}
+
+static void run_channel_loop(dbdma_t *d, int n) {
     dbdma_chan_t *c = &d->chan[n];
     if (!dma_mem_port_bound(&d->mem)) {
         LOG(1, "ch%d activated with no memory hooks", n);
@@ -243,19 +265,15 @@ static void run_channel(dbdma_t *d, int n) {
         uint32_t b_mod = (w[0] >> 18) & 3u;
         uint32_t w_mod = (w[0] >> 16) & 3u;
         uint32_t req = w[0] & 0xFFFFu;
-        uint8_t stat = devstat(d, n);
-
-        // WAIT is a modifier, evaluated before the command runs; a
-        // waiting channel stays ACTIVE and re-evaluates on the next kick
-        // (a device s-bit change) or control write.
-        if (cond_eval(w_mod, c->wait_sel, stat)) {
-            LOG(3, "ch%d waiting at $%08X (w=%u devstat=$%02X)", n, c->cmdptr, w_mod, stat);
-            return;
-        }
 
         bool advance = true; // STOP parks on its own descriptor
         bool taken = false; // branch outcome -> BT + next cmdptr
         bool wrote_result = false; // data commands write result before any irq
+
+        // A command held by its WAIT has already run: only the wait is
+        // re-evaluated (below), on the device's kick or a control write.
+        if (c->waiting)
+            goto completion;
 
         switch (cmd) {
         case CMD_OUTPUT_MORE:
@@ -322,15 +340,8 @@ static void run_channel(dbdma_t *d, int n) {
             }
             if (cmd == CMD_OUTPUT_LAST && p->out_last)
                 p->out_last(p->ctx);
-            // Command complete: branch decision, then result write-back,
-            // then (below) the interrupt.
-            taken = cond_eval(b_mod, c->br_sel, devstat(d, n));
-            if (taken)
-                c->status |= DBDMA_BT;
-            else
-                c->status &= ~(uint32_t)DBDMA_BT;
-            result_writeback(d, n, c->cmdptr, req);
-            wrote_result = true;
+            // The transfer is done; branch, write-back and interrupt are
+            // completion processing (below, after any WAIT).
             break;
         }
         case CMD_STORE_QUAD:
@@ -364,11 +375,7 @@ static void run_channel(dbdma_t *d, int n) {
         case CMD_NOP:
             // NOP carries the modifiers: branch (target in cmdDep) and
             // interrupt.  BR_ALWAYS+NOP is the ring-buffer jump idiom.
-            taken = cond_eval(b_mod, c->br_sel, stat);
-            if (taken)
-                c->status |= DBDMA_BT;
-            else
-                c->status &= ~(uint32_t)DBDMA_BT;
+            // Its branch is decided at completion (below).
             break;
         case CMD_STOP:
             // Park ON the STOP descriptor (cmdptr does not advance): the
@@ -387,6 +394,38 @@ static void run_channel(dbdma_t *d, int n) {
             c->status &= ~(uint32_t)DBDMA_ACTIVE;
             advance = false;
             break;
+        }
+
+    completion:
+        // WAIT is evaluated at command completion, after the command has
+        // done its work and before completion processing (CHRP I/O Device
+        // Reference §15.4.5-§15.4.7): Rhapsody's MESH driver stores a
+        // sequence command with w=IFSET on "sequence not done" and relies
+        // on the store landing before the channel holds.  A waiting
+        // channel stays ACTIVE and re-evaluates on the device's next kick
+        // or a control write.  STOP and a dead channel have no completion.
+        if (cmd != CMD_STOP && runnable(c)) {
+            uint8_t stat = devstat(d, n);
+            if (cond_eval(w_mod, c->wait_sel, stat)) {
+                if (!c->waiting)
+                    LOG(3, "ch%d waiting at $%08X (w=%u devstat=$%02X)", n, c->cmdptr, w_mod, stat);
+                c->waiting = 1;
+                return;
+            }
+            c->waiting = 0;
+            if (cmd <= CMD_INPUT_LAST || cmd == CMD_NOP) {
+                // Branch decision, then result write-back, then (below)
+                // the interrupt.
+                taken = cond_eval(b_mod, c->br_sel, stat);
+                if (taken)
+                    c->status |= DBDMA_BT;
+                else
+                    c->status &= ~(uint32_t)DBDMA_BT;
+            }
+            if (cmd <= CMD_INPUT_LAST) {
+                result_writeback(d, n, c->cmdptr, req);
+                wrote_result = true;
+            }
         }
 
         uint32_t desc_addr = c->cmdptr;
@@ -426,6 +465,23 @@ static void partial_writeback(dbdma_t *d, int n) {
     uint32_t w[4];
     desc_fetch(d, c->cmdptr, w);
     result_writeback(d, n, c->cmdptr, w[0] & 0xFFFFu);
+}
+
+// Flush status update: an executing INPUT command reports its progress
+// even with no bytes received yet (xferStatus carries ACTIVE|FLUSH, the
+// partial-status mark) — serial receive drivers flush and poll the
+// descriptor's result word for it (CHRP I/O Device Reference §15.4.3).
+static void flush_writeback(dbdma_t *d, int n) {
+    dbdma_chan_t *c = &d->chan[n];
+    if (c->cursor != 0 || !(c->status & DBDMA_ACTIVE) || !dma_mem_port_bound(&d->mem)) {
+        partial_writeback(d, n);
+        return;
+    }
+    uint32_t w[4];
+    desc_fetch(d, c->cmdptr, w);
+    uint32_t cmd = (w[0] >> 28) & 0xFu;
+    if (cmd == CMD_INPUT_MORE || cmd == CMD_INPUT_LAST)
+        result_writeback(d, n, c->cmdptr, w[0] & 0xFFFFu);
 }
 
 uint32_t dbdma_reg_read(dbdma_t *d, int chan, uint32_t offset) {
@@ -487,10 +543,12 @@ void dbdma_reg_write(dbdma_t *d, int chan, uint32_t offset, uint32_t value) {
             c->status &= ~(uint32_t)DBDMA_DEAD;
             c->status |= DBDMA_ACTIVE;
             c->cursor = 0;
+            c->waiting = 0;
         } else if (!(c->status & DBDMA_RUN) && (was & DBDMA_RUN)) {
             partial_writeback(d, chan);
             c->status &= ~(DBDMA_ACTIVE | DBDMA_DEAD);
             c->cursor = 0;
+            c->waiting = 0;
             if (d->port[chan].stop)
                 d->port[chan].stop(d->port[chan].ctx);
         }
@@ -505,7 +563,7 @@ void dbdma_reg_write(dbdma_t *d, int chan, uint32_t offset, uint32_t value) {
         // — there is no buffered data in this model, so it is complete
         // synchronously.
         if (c->status & DBDMA_FLUSH) {
-            partial_writeback(d, chan);
+            flush_writeback(d, chan);
             c->status &= ~(uint32_t)DBDMA_FLUSH;
         }
         run_channel(d, chan);
@@ -529,6 +587,7 @@ void dbdma_reg_write(dbdma_t *d, int chan, uint32_t offset, uint32_t value) {
         }
         c->cmdptr = value;
         c->cursor = 0;
+        c->waiting = 0;
         break;
     case DBDMA_REG_INTRSEL:
         c->intr_sel = value & 0x00FF00FFu;
@@ -557,4 +616,9 @@ void dbdma_kick(dbdma_t *d, int chan) {
 bool dbdma_active(dbdma_t *d, int chan) {
     assert(chan >= 0 && chan < d->nchan);
     return runnable(&d->chan[chan]);
+}
+
+bool dbdma_waiting(dbdma_t *d, int chan) {
+    assert(chan >= 0 && chan < d->nchan);
+    return runnable(&d->chan[chan]) && d->chan[chan].waiting;
 }

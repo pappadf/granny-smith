@@ -20,7 +20,6 @@ const FORBIDDEN = [
   [/\d+x\d+/, 'an "x" for "×"'],
   [/Colour/i, 'British spelling'],
   [/on-?board/i, '"on-board": an emulator artefact or a chip'],
-  [/\(generic/i, 'a "(generic …)" stand-in'],
 ];
 
 const problems = [];

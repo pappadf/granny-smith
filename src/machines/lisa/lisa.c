@@ -604,7 +604,7 @@ static DEF_METHOD(lisa_fd_drive_export) {
     image_t *img = (ls && ls->fdc) ? lisa_fdc_image(ls->fdc) : NULL;
     if (!img)
         return val_err("floppy.drive.0: no disk inserted");
-    return io_leaf_export_image(img, argv[0].s, "floppy.export");
+    return io_leaf_export_image(img, argv[0].s, NULL, "floppy.export");
 }
 
 // The source path the inserted diskette was loaded from ("" when empty):
@@ -765,7 +765,7 @@ static DEF_METHOD(lisa_hd_save) {
     // An I/O job (io_leaf.h): the consolidated 532-bytes/block disk = base
     // merged with the delta, streamed on the I/O worker from a snapshot
     // taken here; image_export refuses to overwrite an existing file.
-    return io_leaf_export_image(lisa_profile_image(ls->profile), path, "profile.save");
+    return io_leaf_export_image(lisa_profile_image(ls->profile), path, NULL, "profile.save");
 }
 
 static const arg_decl_t lisa_hd_save_args[] = {

@@ -33,7 +33,9 @@
 //
 // NO EXPANSION ROM, AND NO INTERRUPT.  Unlike the Mach64 GX, this card's
 // Open Firmware node is built by `54m30-config` in the MAIN ROM, so there
-// is no FCode PROM to provision and the expansion-ROM BAR reads zero.  And
+// is no FCode PROM to provision and the expansion-ROM BAR reads zero.  (In
+// another machine's PCI socket the same holds: the card brings no FCode,
+// so only an OS with its own driver uses it.)  And
 // Apple states plainly that the part has no interrupt line — allocating it
 // a Grand Central external would corrupt the interrupt map.
 //
@@ -46,6 +48,7 @@
 // Register truth: Cirrus Logic, "Alpine VGA Family CL-GD543X/4X Technical
 // Reference Manual", 4th ed. (Feb 1995), §4.14-§4.20.
 
+#include "card.h"
 #include "checkpoint.h"
 #include "display.h"
 #include "display_class.h"
@@ -134,12 +137,12 @@ static const pci_config_decl_t c54m30_decl = {
 // $A0 is the CL-GD5430 (the GD5430/5440-family die this card carries, and
 // the value that agrees with its $00A0 PCI device ID), revision 0.
 #define C54M30_CR27_ID 0xA0u
-// SR15, "DRAM Control": bits 3:0 report how much display memory the board
-// fits — 0 = 256 KB, 1 = 512 KB, 2 = 1 MB, 3 = 2 MB, 5 = 3 MB, 4 = 4 MB.
-// A driver sizes its mode list from this field instead of probing, so it
-// has to agree with the DRAM below, or every mode is judged too large.
-#define C54M30_SR15_MEMSIZE 0x2u // 1 MB
-_Static_assert(C54M30_VRAM == 0x00100000u, "C54M30_SR15_MEMSIZE must match the fitted DRAM");
+// SR14/SR15, "Scratch Pad 2, 3" (TRM §9.11): plain read/write, reset 0,
+// reserved for the Cirrus video BIOS.  A PC's BIOS records the display
+// memory in SR15 bits 3:0 (2 = 1 MB), and NT's cirrus.sys sizes its mode
+// list from that field.  A Network Server has no PC BIOS, so nothing puts a
+// size there unless the OS's own code does (powermac-nt-hal's mode-set
+// writes 2): the model keeps the register as memory, as the part does.
 
 // The parameters of one BLT, latched from the register file when the start bit is written.
 // Laid out widest-first so the struct has no interior padding: it is checkpointed whole.
@@ -843,8 +846,8 @@ static void fb_write32(void *ctx, uint32_t offset, uint32_t value) {
 // extensions, all reached through index/data port pairs.  Store-and-readback
 // for the mode registers, which the model reads a display geometry back out
 // of; the exceptions are the handful of registers that are not memory on the
-// real part — Input Status 1 below, and SR06 / SR15 / CR27 above, which a
-// driver uses to decide the chip is there and how much memory it has.
+// real part — Input Status 1 below, and SR06 / CR27 above, which a driver
+// uses to decide the chip is there.
 
 // Input Status Register 1 ($3BA mono / $3DA colour) — the one VGA register
 // that MUST NOT be store-and-readback, because software does not read it
@@ -958,8 +961,6 @@ static uint8_t io_rd8(c54m30_t *c, uint32_t offset, bool peek, uint8_t *pelmask_
             c->attr_data = false;
         return status1_value(c);
     case C54M30_SEQ_DATA:
-        if ((c->seq_index & (C54M30_SEQ_REGS - 1u)) == 0x15u)
-            return (uint8_t)((c->seq[0x15] & 0xF0u) | C54M30_SR15_MEMSIZE);
         return c->seq[c->seq_index & (C54M30_SEQ_REGS - 1u)];
     case C54M30_CRTC_DATA:
         if ((c->crtc_index & (C54M30_CRTC_REGS - 1u)) == 0x27u)
@@ -1509,13 +1510,30 @@ static void c54m30_attach_objects(pci_device_t *dev, struct object *card_node) {
     pci_card_set_framebuffer_object(dev, fb);
 }
 
-// BUILTIN: soldered down on the Network Server logic board, instantiable
-// only where a machine's slot table names it.
+// The monitor a socketed card can drive.  Without one the configuration
+// could not plug a monitor into the card at all: the screen stayed on the
+// Mac's own video, which an operating system driving the 54M30 (OS/2 Warp
+// for the PowerPC on an 8500, Windows NT) never draws on.  The mode is the
+// guest's, programmed through the VGA CRTC; this row only says what is
+// connected.  A VGA monitor, as on the Network Server's own port.
+static const int c54m30_depths[] = {8, 16, 0};
+static const struct nubus_monitor c54m30_monitors[] = {
+    {.id = "vga", .monitor = "vga", .width = 640, .height = 480, .depths = c54m30_depths, .sense_code = 6},
+    {.id = NULL},
+};
+
+// A PCI device like any other: soldered down on the Network Server logic
+// board, where the slot table names it, and offered on every PCI socket
+// besides.  In a socket it is a PC card in a Mac: with no FCode PROM, Open
+// Firmware and the Mac OS leave it alone (a Mac's own video stays the
+// console), and an operating system with its own Cirrus driver -- Windows
+// NT's cirrus.sys -- drives it through BAR0 and the legacy VGA window.
 const pci_card_kind_t cirrus_54m30_kind = {
     .id = "cirrus_54m30",
-    .display_name = "Built-in video",
-    .attach = PCI_ATTACH_BUILTIN,
+    .display_name = "Cirrus Logic 54M30 VGA card",
+    .attach = PCI_ATTACH_PCI,
     .card_class = "display",
     .factory = c54m30_factory,
     .attach_objects = c54m30_attach_objects,
+    .monitors = c54m30_monitors,
 };

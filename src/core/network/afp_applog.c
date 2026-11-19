@@ -6,8 +6,8 @@
 // afp_applog.h).
 
 #include "afp_applog.h"
+#include "codec.h"
 #include "common.h"
-#include "crc32.h"
 
 #include "log.h"
 #include "storage_util.h"
@@ -42,7 +42,7 @@ static bool record_write(FILE *f, uint8_t op, const void *payload, uint16_t len)
     head[0] = op;
     WR_BE16(head + 1, len);
     uint8_t tail[4];
-    WR_BE32(tail, gs_crc32(gs_crc32(0, head, sizeof(head)), payload, len));
+    WR_BE32(tail, codec_crc32(codec_crc32(0, head, sizeof(head)), payload, len));
     return fwrite(head, 1, sizeof(head), f) == sizeof(head) && (len == 0 || fwrite(payload, 1, len, f) == len) &&
            fwrite(tail, 1, sizeof(tail), f) == sizeof(tail);
 }
@@ -72,7 +72,7 @@ static bool applog_replay(afp_applog_t *log, afp_applog_replay_fn replay) {
         uint16_t len = RD_BE16(head + 1);
         if (fread(payload, 1, len, f) != len || fread(tail, 1, sizeof(tail), f) != sizeof(tail))
             break;
-        if (gs_crc32(gs_crc32(0, head, sizeof(head)), payload, len) != RD_BE32(tail))
+        if (codec_crc32(codec_crc32(0, head, sizeof(head)), payload, len) != RD_BE32(tail))
             break;
         replay(log->ctx, head[0], payload, len);
         log->records++;

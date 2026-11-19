@@ -124,6 +124,14 @@ describe('URL configuration parameters', () => {
     expect(config).not.toHaveProperty('startup');
   });
 
+  it("storage= carries a CD-ROM drive's model on its type", () => {
+    const { config, warnings } = apply('pm9500', 'storage=scsi:3:cd@AppleCD1200i');
+    expect(warnings).toEqual([]);
+    expect(config).toMatchObject({
+      storage: [{ bus: 'scsi', unit: 3, type: 'cd', model: 'applecd1200i' }],
+    });
+  });
+
   it('storage= takes the headless drive= separator too, and startup=', () => {
     const { config } = apply('pmg3dt', 'storage=scsi:0:hd;scsi:1:hd&startup=scsi:1');
     expect(config).toMatchObject({
@@ -147,6 +155,20 @@ describe('URL configuration parameters', () => {
       warnings: ['startup=scsi:0: Macintosh Plus has no startup device setting'],
     });
     expect(apply('plus', 'startup=none')).toEqual({ config: null, warnings: [] });
+  });
+
+  it("storage= takes a PCI card's bus; the core checks the card is seated", () => {
+    const p = profile('pm9500');
+    p.storage.push({
+      ...p.storage[0],
+      id: 'pci_2',
+      label: 'SCSI card in PCI slot 2',
+      card_slot: 'pci_2',
+    });
+    const settings = parseUrlMediaParams(new URLSearchParams('storage=pci_2:0:hd')).settings;
+    const { config, warnings } = applyUrlConfig(p, null, settings);
+    expect(warnings).toEqual([]);
+    expect(config).toMatchObject({ storage: [{ bus: 'pci_2', unit: 0, type: 'hd' }] });
   });
 
   it('a storage= the model cannot take is reported and left out', () => {

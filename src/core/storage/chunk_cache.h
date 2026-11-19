@@ -49,8 +49,23 @@ chunk_cache_t *chunk_cache_default(void);
 // its decoded chunks would rebuild the expanded image on disk -- in the
 // browser, in the origin's quota -- which is what storing it compressed
 // avoids.  Re-inflating a 64 KB chunk costs well under a millisecond.
-// Budget GS_IMAGE_CACHE_MB (default 16 MiB).
+// Budget GS_IMAGE_CACHE_MB (default 16 MiB), sized for 64 KiB chunks: it is
+// raised to hold as many chunks of the largest size decoded (up to 256 MiB),
+// since an image written with 1 MiB chunks would otherwise fit only 16 of
+// them and thrash (#377).
 chunk_cache_t *chunk_cache_images(void);
+
+// Set the image cache's budget and the chunk-count floor that goes with it.
+void chunk_cache_images_set_budget(chunk_cache_t *c, size_t mem_budget);
+
+// Raise the memory budget, while it is lower, to hold `min_chunks` chunks of
+// the largest length the cache has held, but never past `floor_cap` bytes
+// (0: no cap).  `min_chunks` 0 turns the floor off.
+void chunk_cache_set_min_chunks(chunk_cache_t *c, unsigned min_chunks, size_t floor_cap);
+unsigned chunk_cache_min_chunks(chunk_cache_t *c);
+
+// The memory budget in force: the configured one or the min_chunks floor.
+size_t chunk_cache_effective_budget(chunk_cache_t *c);
 
 // Change the budgets (`spill_budget` 0: unbounded).  Memory over the new
 // budget is evicted at once (to the spill area, as eviction always goes);

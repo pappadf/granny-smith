@@ -49,6 +49,8 @@ void machine_teardown_config_devices(config_t *cfg) {
     // The printer is plugged into the SCC (or the network): it goes first too
     iw_printer_delete(cfg->imagewriter);
     cfg->imagewriter = NULL;
+    iw_printer_delete(cfg->atalk_imagewriter);
+    cfg->atalk_imagewriter = NULL;
     if (cfg->scc) {
         scc_delete(cfg->scc);
         cfg->scc = NULL;

@@ -1064,10 +1064,19 @@ static void disasm_atrap(uint16_t opcode, char *buf) {
     do {                                                                                                               \
         goto illegal;                                                                                                  \
     } while (0)
-#define OP_ILLEGAL          ASM("ILLEGAL")
-#define OP_JMP_EA           ASM("JMP\t%s", DST_EA(4, 0, ea_control))
-#define OP_JSR_EA           ASM("JSR\t%s", DST_EA(4, 0, ea_control))
-#define OP_LEA_EA_AN        ASM("LEA\t%s,%s", SRC_EA(4, 0, ea_any), AN)
+#define OP_ILLEGAL ASM("ILLEGAL")
+#define OP_JMP_EA  ASM("JMP\t%s", DST_EA(4, 0, ea_control))
+#define OP_JSR_EA  ASM("JSR\t%s", DST_EA(4, 0, ea_control))
+// EXTB.L Dn (68020+) is encoded in the LEA <ea>,A4 slot with a data-register
+// EA, which no LEA can have: the cores execute it as EXTB.L (cpu_ops.h), and
+// the listing says so instead of the impossible "LEA D0,A4".
+#define OP_LEA_EA_AN                                                                                                   \
+    do {                                                                                                               \
+        if ((opcode & 0x0E38) == 0x0800)                                                                               \
+            ASM("EXTB.L\t%s", DY)                                                                                      \
+        else                                                                                                           \
+            ASM("LEA\t%s,%s", SRC_EA(4, 0, ea_any), AN)                                                                \
+    } while (0)
 #define OP_LINK             ASM("LINK\t%s,#$%X", AY, DST_WORD)
 #define OP_LINK_L_AN_DISP   ASM("LINK.L\t%s,#$%08X", AY, SRC_LONG)
 #define OP_LSL_B_DATA_DY    ASM("LSL.B\t#$%X,%s", (int)IMM, DY);

@@ -433,7 +433,7 @@ const hw_profile_t machine_iici = {
     .default_storage = mac_default_storage_hd0_cd3,
     .appletalk = true,
     .builtin_video = &mdu_builtin_video_iici,
-    .cdrom_drive = &mac_cdrom_drive_applecd,
+    .cdrom_drive = &scsi_cd_drive_applecd_sc_plus,
     // Built-in RBV video has no separate declaration ROM — the boot ROM
     // drives it from the hard-coded VideoInfoMDU record.
 

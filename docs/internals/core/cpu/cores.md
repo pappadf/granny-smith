@@ -248,6 +248,20 @@ PACK/UNPK, PUSH/POP (SP committed only if no bus error), and MOVEM
 registers on a fault).  A new op with a faultable memory access must do
 the same.
 
+**Data registers are restored centrally.**  An op body that loads a
+faulted read into a data register (`MOVE.L <ea>,Dn` and the like) has
+stored the fill value by the time the retry is delivered.  That is
+harmless only when the register is not also an input to the restart: A/UX
+1.1's stdio computes a read size with `MOVE.L $4019E4(,D0.L*4),D0`, the
+table page faults, and the restart indexed with `D0 = $FFFFFFFF`
+(`read(fd, buf, -12888)` — `chown: unknown user id root`).  So the MMU
+fault sites in `memory.c` snapshot D0–D7 at the first fault of an
+instruction (`g_fault_dregs`, through the `g_fault_dregs_src` pointer each
+68k sprint prologue sets), and `exception_bus_error_retry()` puts them
+back on the 68020/030 path.  The address registers stay with the per-op
+rollbacks: those restore pre-instruction values, which a snapshot taken at
+the fault would undo.
+
 The retry function detects a **double bus error** the way real hardware
 does — not by comparing PCs (legitimate retry loops would false-trigger)
 but by checking whether the frame push or vector read itself faulted; a

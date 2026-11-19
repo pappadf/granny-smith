@@ -4,8 +4,8 @@
 # by the core (docs/reference/object-model.md, "catalog.profile").  This walks
 # every model's tree and fails on a label that breaks the labelling rules:
 # internal identifiers (FD0, SLOT1_PCI0), a chip name standing as a label,
-# "640x480" for "640 × 480", British spelling, emulator artefacts ("(generic",
-# "on-board"), two things on one machine sharing a label, or a label not in
+# "640x480" for "640 × 480", British spelling, emulator artefacts
+# ("on-board"), two things on one machine sharing a label, or a label not in
 # sentence case.
 
 TEST_NAME := Configuration labels

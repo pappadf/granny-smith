@@ -167,4 +167,8 @@ void dbdma_kick(dbdma_t *d, int chan);
 // this to know whether polling its side is worthwhile).
 bool dbdma_active(dbdma_t *d, int chan);
 
+// True when the channel's in-flight command is held by its WAIT modifier
+// (a device whose s-bits changed kicks it to re-evaluate the wait).
+bool dbdma_waiting(dbdma_t *d, int chan);
+
 #endif // GS_CORE_PERIPHERALS_DBDMA_H

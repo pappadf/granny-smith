@@ -781,6 +781,7 @@ struct image_export {
     char *name; // the image's own name, recorded in a UDIF export
     uint32_t block_size;
     export_format_t format;
+    udif_codec_t udif_codec; // what a UDIF export compresses with
     // DiskCopy 4.2 and MOOF: the tags as they were at begin (the view's
     // moment), and the header's label (DiskCopy) and format byte.
     uint8_t *tags; // tag_count * tag_bytes, or NULL for an untagged disk
@@ -922,7 +923,7 @@ static int udif_write_cb(void *ctx, const void *data, size_t size) {
 }
 
 static int image_export_run_udif(image_export_t *e, char *err, size_t err_cap) {
-    udif_writer_opts_t o = {.level = 1, .source_name = e->name};
+    udif_writer_opts_t o = {.codec = e->udif_codec, .level = -1, .source_name = e->name};
     udif_writer_t *w = udif_writer_open(e->dest, &o, err, err_cap);
     if (!w)
         return -EIO;
@@ -1079,15 +1080,35 @@ void image_export_end(image_export_t *e) {
     free(e);
 }
 
+int image_export_set_codec(image_export_t *e, const char *codec, char *err, size_t err_cap) {
+    udif_codec_t c;
+    if (udif_codec_parse(codec, &c) != 0) {
+        if (err)
+            snprintf(err, err_cap, "codec '%s' is neither zlib nor xz", codec);
+        return -1;
+    }
+    if (c != UDIF_CODEC_ZLIB && e->format != EXPORT_UDIF) {
+        if (err)
+            snprintf(err, err_cap, "codec %s applies to a .dmg (UDIF) export only", codec);
+        return -1;
+    }
+    e->udif_codec = c;
+    return 0;
+}
+
 // Export the full disk content (base + delta) to a new file at dest_path,
 // here and now.
-int image_export_to(image_t *image, const char *dest_path) {
+int image_export_to_codec(image_t *image, const char *dest_path, const char *codec) {
     image_export_t *e = image_export_begin(image, dest_path, NULL, 0);
     if (!e)
         return -1;
-    int rc = image_export_run(e, NULL, 0);
+    int rc = image_export_set_codec(e, codec, NULL, 0) == 0 ? image_export_run(e, NULL, 0) : -1;
     image_export_end(e);
     return rc == 0 ? 0 : -1;
+}
+
+int image_export_to(image_t *image, const char *dest_path) {
+    return image_export_to_codec(image, dest_path, NULL);
 }
 
 // ============================================================================

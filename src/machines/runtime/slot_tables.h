@@ -21,6 +21,7 @@
 #define GS_MACHINES_RUNTIME_SLOT_TABLES_H
 
 #include "machine_profile.h"
+#include "scsi.h"
 
 // Internal + External floppy drive, both SuperDrive; the external port ships
 // without a drive.  The IIcx, IIci and IIsi.
@@ -52,9 +53,9 @@ extern const storage_device_decl_t mac_default_storage_hd0_cd3[];
 extern const storage_bay_decl_t mac_bays_hd0[];
 extern const storage_bay_decl_t mac_bays_hd0_cd3[];
 
-// The CD-ROM drive every Macintosh profile takes: Apple's AppleCD SC, a SONY
-// CD-ROM CDU-8002 presenting 2048-byte blocks (Mode 1 sectors).
-extern const struct scsi_cd_drive mac_cdrom_drive_applecd;
+// A profile's CD-ROM drive (hw_profile_t.cdrom_drive) is one of Apple's drive
+// models, scsi_cd_drive_applecd_* in scsi.h: the drive the machine shipped
+// with, or the AppleCD SC Plus for a machine that shipped with none.
 
 // A narrow SCSI bus declaration: units 0-6, the Macintosh at 7, hard disks and
 // CD-ROM drives, able to hold the startup device.

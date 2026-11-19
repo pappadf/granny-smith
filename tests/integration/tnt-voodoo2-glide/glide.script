@@ -133,7 +133,13 @@ def glide_play(golden, raster, perf_row) {
     # scheduler is instruction-exact.  (Played from a restored checkpoint
     # the demo is a few frames elsewhere at this count, so the -sw row's
     # golden is its own: see that row.)
-    check($golden)
+    # A mismatch keeps the frame it got, as fail-<golden> in the results
+    # directory (CI uploads it), so a recapture can be reviewed.
+    if $REGEN_MODE == "1" {
+        check($golden)
+    } else {
+        assert machine.screen.match_or_save("${$golden}", "${$RESULTS_DIR}/fail-${$golden}") "screen does not match '${$golden}'"
+    }
     report_perf($perf_row, scheduler.instr_count)
 
     echo "tnt-voodoo2-glide: Quake renders in-game frames through the model (raster=${$raster})"

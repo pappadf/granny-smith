@@ -8,7 +8,7 @@
 // -- a track starting mid-byte, a flux track, a bad sector, a blank track,
 // a stale CRC -- and check what the reader makes of each.
 
-#include "crc32.h"
+#include "codec.h"
 #include "format_registry.h"
 #include "image_moof.h"
 #include "test_assert.h"
@@ -50,7 +50,7 @@ static void fill(uint8_t *data, uint8_t *tags, uint32_t sectors, uint32_t seed) 
 
 // Restamp the header CRC after an edit.
 static void restamp(uint8_t *f, size_t len) {
-    wr32(f + 8, gs_crc32(0, f + MOOF_HEADER_SIZE, len - MOOF_HEADER_SIZE));
+    wr32(f + 8, codec_crc32(0, f + MOOF_HEADER_SIZE, len - MOOF_HEADER_SIZE));
 }
 
 // The TRK record (start block, block count, bit count) of track `t`, side `s`.
