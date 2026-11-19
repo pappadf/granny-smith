@@ -10,6 +10,7 @@ import { sanitizeName } from '@/lib/archive';
 import { isInImageSpace } from '@/lib/diskImage';
 import { scratchPath } from '@/lib/opfsPaths';
 import { xferReadDisk } from './xfer';
+import { saveBlob } from '@/lib/saveBlob';
 
 // Per-item progress hook (e.g. to drive the status-bar indicator).
 export type ProgressFn = (name: string, index: number, total: number) => void;
@@ -148,23 +149,10 @@ export async function deleteItems(paths: string[], onItem?: ProgressFn): Promise
   return { total: paths.length, failures, firstError: '' };
 }
 
-// Save a Blob to the user's machine via a transient object-URL anchor.  An
-// untyped Blob is sent as application/octet-stream: given none, Safari takes
-// a file with no extension (hd0_2026-10-05_11-42-50) for text and saves it
-// as .txt.  The URL is revoked later, not at once: the download resolves it
-// after the click (a lazy OPFS-backed File is read only then), so an
-// immediate revoke can fail it (logs.svelte.ts delays the same way).
-function saveBlob(blob: Blob, filename: string): void {
-  if (!blob.type) blob = new Blob([blob], { type: 'application/octet-stream' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.style.display = 'none';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+// Save through the shared anchor helper; a save that cannot start is a
+// failed download to the callers below.
+function saveOrThrow(blob: Blob, filename: string): void {
+  if (!saveBlob(blob, filename)) throw new Error(`cannot save ${filename}`);
 }
 
 // Download one file. A plain OPFS file is read straight from OPFS; a file
@@ -186,7 +174,7 @@ async function downloadOne(target: string): Promise<{ ok: boolean; rsrc: number 
         // deleting the scratch file or the download races its own backing
         // store and fails/truncates.
         const bytes = await (await opfs.readFile(scratch)).arrayBuffer();
-        saveBlob(new Blob([bytes]), name);
+        saveOrThrow(new Blob([bytes]), name);
       } finally {
         await opfs.delete(scratch);
         // The copy wrote the forks and Finder info beside it, as AppleDouble.
@@ -194,7 +182,7 @@ async function downloadOne(target: string): Promise<{ ok: boolean; rsrc: number 
       }
       return { ok: true, rsrc };
     }
-    saveBlob(await opfs.readFile(target), name);
+    saveOrThrow(await opfs.readFile(target), name);
     return { ok: true, rsrc: 0 };
   } catch (err) {
     console.error('download failed', err);
@@ -270,7 +258,7 @@ export async function downloadRawImage(
       at += part.length;
       onProgress?.(at, total);
     }
-    saveBlob(new Blob(parts as BlobPart[]), name);
+    saveOrThrow(new Blob(parts as BlobPart[]), name);
     return { ok: true };
   } catch (err) {
     console.error('raw download failed', err);

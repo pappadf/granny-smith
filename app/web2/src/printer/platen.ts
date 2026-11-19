@@ -14,6 +14,7 @@
 import { getModule } from '@/bus/emulator';
 import { showNotification } from '@/state/toasts.svelte';
 import { showPrintedDocument } from '@/state/printer.svelte';
+import { saveBlob } from '@/lib/saveBlob';
 import type { DocumentMsg } from './platenRing';
 
 let worker: Worker | null = null;
@@ -112,18 +113,10 @@ function deliver(doc: DocumentMsg): void {
 
 // The automatic download of a finished document.
 function download(doc: DocumentMsg): void {
-  try {
-    const blob = new Blob([doc.pdf as BlobPart], { type: 'application/pdf' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = doc.name;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(a.href), 0);
+  const blob = new Blob([doc.pdf as BlobPart], { type: 'application/pdf' });
+  if (saveBlob(blob, doc.name)) {
     showNotification(`LaserWriter: ${doc.name} (${doc.pages} page${doc.pages === 1 ? '' : 's'})`);
-  } catch (e) {
-    console.error('[platen] download failed:', e);
+  } else {
     showNotification(`LaserWriter: could not save ${doc.name}`, 'error');
   }
 }
