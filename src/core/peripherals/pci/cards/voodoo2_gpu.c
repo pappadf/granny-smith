@@ -220,6 +220,7 @@ static uint32_t v2gpu_reserve(v2_gpu_t *g, uint32_t kind, uint32_t len) {
             return UINT32_MAX;
         v2gpu_publish(g); // the worker can only free what it can see
         platform_v2gpu_wait(&g->ctrl[V2GPU_C_TAIL], tail, 20);
+        platform_v2gpu_keepalive(); // the page's stall watch: busy, not dead
         if (v2gpu_now_ms() - t0 > (double)V2GPU_ACK_MS) {
             v2gpu_mark_lost(g, "the GPU worker stopped consuming the op ring");
             return UINT32_MAX;
@@ -252,6 +253,7 @@ static bool v2gpu_wait_ack(v2_gpu_t *g, uint32_t seq) {
         if (v2gpu_worker_lost(g))
             return false;
         platform_v2gpu_wait(&g->ctrl[V2GPU_C_ACK], ack, 20);
+        platform_v2gpu_keepalive(); // the page's stall watch: busy, not dead
         if (v2gpu_now_ms() - t0 > (double)V2GPU_ACK_MS) {
             v2gpu_mark_lost(g, "the GPU worker stopped answering");
             return false;
@@ -1662,6 +1664,7 @@ v2_gpu_t *v2_gpu_create(v2_target_t *tgt) {
             return NULL;
         }
         platform_v2gpu_wait(&g->ctrl[V2GPU_C_STATUS], V2GPU_STATUS_DETACHED, 20);
+        platform_v2gpu_keepalive(); // the page's stall watch: busy, not dead
     }
     g->attached = true;
     LOG(1, "raster=webgpu: GPU worker attached (op ring %u KB)", g->ring.size >> 10);

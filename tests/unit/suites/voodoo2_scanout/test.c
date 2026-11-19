@@ -63,6 +63,7 @@ int platform_v2gpu_wait(volatile uint32_t *addr, uint32_t expected, uint32_t tim
     (void)timeout_ms;
     return -1;
 }
+void platform_v2gpu_keepalive(void) {}
 struct object *object_new(const class_desc_t *cls, void *data, const char *name) {
     (void)cls;
     (void)data;
