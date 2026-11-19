@@ -235,7 +235,7 @@ const char *atalk_printer_get_status(void);
 bool atalk_printer_has_interpreter(void);
 
 // Whether each job's PostScript is also handed to the platform, as it was
-// sent (laserwriter_sink_capture): a .ps beside the PDF, or a download.
+// sent (printer_sink_capture): a .ps beside the PDF, or a download.
 bool atalk_printer_get_capture(void);
 void atalk_printer_set_capture(bool enabled);
 

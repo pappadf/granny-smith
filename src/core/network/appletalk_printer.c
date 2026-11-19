@@ -64,7 +64,7 @@ enum { PAP_MARK_FLUSH = 1u << 0, PAP_MARK_PATCHPREP = 1u << 1, PAP_MARK_FONTLIST
 #endif
 
 // A job's captured PostScript is held in memory and handed to the platform
-// (laserwriter_sink_capture) when the job ends.  It went to a file under /tmp
+// (printer_sink_capture) when the job ends.  It went to a file under /tmp
 // -- a path the core has no business naming, and one the browser cannot
 // reach.  A job larger than this is aborted, not held.
 #ifndef PRINTER_CAPTURE_MAX
@@ -461,14 +461,17 @@ static void pap_session_abort(const char *reason) {
 // Hand what was captured to the platform, and start the next job empty.
 static void pap_capture_deliver(pap_session_t *sess, uint32_t job_id, bool complete) {
     if (byteq_len(&sess->capture)) {
-        laserwriter_capture_t cap = {.job_id = job_id,
-                                     .ps = byteq_data(&sess->capture),
-                                     .ps_len = byteq_len(&sess->capture),
-                                     .complete = complete};
-        LOG(3, "pap: job %u captured (%zu bytes)", (unsigned)job_id, cap.ps_len);
+        printer_capture_t cap = {.printer = "LaserWriter",
+                                 .slug = NULL, // as the LaserWriter's documents: no prefix
+                                 .job_id = job_id,
+                                 .ext = "ps",
+                                 .data = byteq_data(&sess->capture),
+                                 .len = byteq_len(&sess->capture),
+                                 .complete = complete};
+        LOG(3, "pap: job %u captured (%zu bytes)", (unsigned)job_id, cap.len);
         g_printer->stats.captures++;
-        g_printer->stats.last_capture = cap.ps_len;
-        laserwriter_sink_capture(&cap);
+        g_printer->stats.last_capture = cap.len;
+        printer_sink_capture(&cap);
     }
     byteq_clear(&sess->capture);
 }

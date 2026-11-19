@@ -345,11 +345,13 @@ static void job_end(iw_printer_t *p) {
         remove_event(p->scheduler, idle_event, p);
 
     if (p->set.capture && byteq_len(&p->capture)) {
-        printer_capture_t cap = {.slug = printer_slug(p),
+        printer_capture_t cap = {.printer = iw_printer_name(p),
+                                 .slug = printer_slug(p),
                                  .job_id = j->job_id,
                                  .ext = "iw",
                                  .data = byteq_data(&p->capture),
-                                 .len = byteq_len(&p->capture)};
+                                 .len = byteq_len(&p->capture),
+                                 .complete = true};
         printer_sink_capture(&cap);
     }
     byteq_clear(&p->capture);
@@ -393,7 +395,7 @@ static void job_end(iw_printer_t *p) {
                               .ok = true,
                               .detail = ""};
     LOG(2, "job %u: %u page(s), %zu bytes", (unsigned)j->job_id, (unsigned)pages, pdf_len);
-    printer_sink_deliver(&doc);
+    printer_sink_document(&doc);
     free(pdf);
     update_status(p);
 }

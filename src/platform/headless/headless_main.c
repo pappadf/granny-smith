@@ -17,7 +17,6 @@
 #include "floppy.h"
 #include "gs_assert.h"
 #include "image.h"
-#include "laserwriter_job.h"
 #include "log.h"
 #include "machine.h"
 #include "machine_config.h"
@@ -39,6 +38,7 @@
 #include "job/job.h"
 #include "mailbox/mailbox.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <limits.h>
 #include <poll.h>
@@ -66,160 +66,73 @@ static char g_shared_dir[PATH_MAX];
 // Empty means "no directory": a finished job is logged and dropped.
 static char g_print_dir[PATH_MAX];
 
-// Platform sink for a finished LaserWriter job (weak default in
-// laserwriter_job.c drops it): <print-dir>/<job>-<title>.pdf, the title
-// reduced to filename-safe characters.  An error outcome keeps its
-// document (the pages shown before the error are in it) and is reported
-// on the console.
-void laserwriter_sink_document(const laserwriter_document_t *doc) {
-    const char *outcome = doc->ok ? "ok" : doc->budget_exceeded ? "execution budget spent" : doc->error_name;
-    if (!g_print_dir[0]) {
-        printf("laserwriter: job %u '%s' (%u pages, %s) discarded: no --print-dir\n", (unsigned)doc->job_id, doc->title,
-               (unsigned)doc->pages, outcome);
-        return;
-    }
-    if (mkdir(g_print_dir, 0755) != 0 && errno != EEXIST) {
-        printf("laserwriter: cannot create print directory %s: %s\n", g_print_dir, strerror(errno));
-        return;
-    }
-    // Filename-safe title: one '_' per run of anything outside [A-Za-z0-9._-]
-    char safe[LASERWRITER_TITLE_MAX + 1];
+// The console name of a printer: its file-name slug, else its display name
+// in lower case ("laserwriter").
+static void hl_print_who(char *out, size_t cap, const char *printer, const char *slug) {
+    const char *src = slug && *slug ? slug : printer ? printer : "printer";
     size_t n = 0;
-    bool pending_sep = false;
-    for (const char *p = doc->title; *p && n < LASERWRITER_TITLE_MAX; p++) {
-        unsigned char c = (unsigned char)*p;
-        bool keep = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '.' || c == '-';
-        if (keep) {
-            if (pending_sep && n > 0)
-                safe[n++] = '_';
-            pending_sep = false;
-            if (n < LASERWRITER_TITLE_MAX)
-                safe[n++] = (char)c;
-        } else {
-            pending_sep = true;
-        }
-    }
-    safe[n] = '\0';
-    // Room for the directory plus the longest name this can form
-    char path[PATH_MAX + LASERWRITER_TITLE_MAX + 32];
-    snprintf(path, sizeof(path), "%s/%05u-%s.pdf", g_print_dir, (unsigned)doc->job_id, n ? safe : "untitled");
-    FILE *f = fopen(path, "wb");
-    if (!f) {
-        printf("laserwriter: cannot write %s: %s\n", path, strerror(errno));
-        return;
-    }
-    size_t wrote = fwrite(doc->pdf, 1, doc->pdf_len, f);
-    fclose(f);
-    if (wrote != doc->pdf_len)
-        printf("laserwriter: short write to %s (%zu of %zu bytes)\n", path, wrote, doc->pdf_len);
-    if (doc->ok)
-        printf("laserwriter: job %u '%s': %u pages -> %s\n", (unsigned)doc->job_id, doc->title, (unsigned)doc->pages,
-               path);
-    else
-        printf("laserwriter: job %u '%s': %u pages -> %s (error: %s in %s)\n", (unsigned)doc->job_id, doc->title,
-               (unsigned)doc->pages, path, outcome, doc->offending);
+    for (; src[n] && n + 1 < cap; n++)
+        out[n] = (char)tolower((unsigned char)src[n]);
+    out[n] = '\0';
 }
 
-// Platform sink for a job's captured PostScript (appletalk.printer.capture):
-// <print-dir>/<job>.ps, the job number matching its PDF's.
-void laserwriter_sink_capture(const laserwriter_capture_t *cap) {
-    if (!g_print_dir[0]) {
-        printf("laserwriter: job %u PostScript (%zu bytes) discarded: no --print-dir\n", (unsigned)cap->job_id,
-               cap->ps_len);
-        return;
-    }
+// Write a print job's output to <print-dir>/<name>: the one writer under the
+// document and capture sinks.  Returns the path written in `path`, or false
+// with the reason printed (no --print-dir, the directory or file failed).
+static bool hl_print_write(const char *who, const char *name, const void *data, size_t len, char *path,
+                           size_t path_cap) {
     if (mkdir(g_print_dir, 0755) != 0 && errno != EEXIST) {
-        printf("laserwriter: cannot create print directory %s: %s\n", g_print_dir, strerror(errno));
-        return;
+        printf("%s: cannot create print directory %s: %s\n", who, g_print_dir, strerror(errno));
+        return false;
     }
-    char path[PATH_MAX + 32];
-    snprintf(path, sizeof(path), "%s/%05u.ps", g_print_dir, (unsigned)cap->job_id);
+    snprintf(path, path_cap, "%s/%s", g_print_dir, name);
     FILE *f = fopen(path, "wb");
     if (!f) {
-        printf("laserwriter: cannot write %s: %s\n", path, strerror(errno));
-        return;
+        printf("%s: cannot write %s: %s\n", who, path, strerror(errno));
+        return false;
     }
-    size_t wrote = fwrite(cap->ps, 1, cap->ps_len, f);
+    size_t wrote = fwrite(data, 1, len, f);
     fclose(f);
-    if (wrote != cap->ps_len)
-        printf("laserwriter: short write to %s (%zu of %zu bytes)\n", path, wrote, cap->ps_len);
-    printf("laserwriter: job %u PostScript%s -> %s\n", (unsigned)cap->job_id, cap->complete ? "" : " (cut off)", path);
+    if (wrote != len)
+        printf("%s: short write to %s (%zu of %zu bytes)\n", who, path, wrote, len);
+    return true;
 }
 
-// Platform sink for a document from a printer the core rasterises itself
-// (the ImageWriter, printer_sink.h): <print-dir>/<printer>-<job>-<title>.pdf,
-// with the same safe-name reduction as the LaserWriter's.
+// Platform sink for a finished document from any printer (printer_sink.h):
+// <print-dir>/<printer_file_name>.  An error outcome keeps its document (the
+// pages shown before the error are in it) and is reported on the console.
 void printer_sink_document(const printer_document_t *doc) {
+    char who[64];
+    hl_print_who(who, sizeof who, doc->printer, doc->slug);
     if (!g_print_dir[0]) {
-        printf("%s: job %u '%s' (%u pages) discarded: no --print-dir\n", doc->slug, (unsigned)doc->job_id, doc->title,
+        printf("%s: job %u '%s' (%u pages) discarded: no --print-dir\n", who, (unsigned)doc->job_id, doc->title,
                (unsigned)doc->pages);
         return;
     }
-    if (mkdir(g_print_dir, 0755) != 0 && errno != EEXIST) {
-        printf("%s: cannot create print directory %s: %s\n", doc->slug, g_print_dir, strerror(errno));
+    char name[PRINTER_TITLE_MAX + 64], path[PATH_MAX + sizeof name];
+    printer_file_name(name, sizeof name, doc->slug, doc->job_id, doc->title, "pdf");
+    if (!hl_print_write(who, name, doc->pdf, doc->pdf_len, path, sizeof path))
         return;
-    }
-    // Filename-safe title: one '_' per run of anything outside [A-Za-z0-9.-]
-    char safe[PRINTER_TITLE_MAX + 1];
-    size_t n = 0;
-    bool pending_sep = false;
-    for (const char *p = doc->title; *p && n < PRINTER_TITLE_MAX; p++) {
-        unsigned char c = (unsigned char)*p;
-        bool keep = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '.' || c == '-';
-        if (keep) {
-            if (pending_sep && n > 0)
-                safe[n++] = '_';
-            pending_sep = false;
-            if (n < PRINTER_TITLE_MAX)
-                safe[n++] = (char)c;
-        } else {
-            pending_sep = true;
-        }
-    }
-    safe[n] = '\0';
-    char path[PATH_MAX + PRINTER_TITLE_MAX + 64];
-    snprintf(path, sizeof(path), "%s/%s-%05u-%s.pdf", g_print_dir, doc->slug, (unsigned)doc->job_id,
-             n ? safe : "untitled");
-    FILE *f = fopen(path, "wb");
-    if (!f) {
-        printf("%s: cannot write %s: %s\n", doc->slug, path, strerror(errno));
-        return;
-    }
-    size_t wrote = fwrite(doc->pdf, 1, doc->pdf_len, f);
-    fclose(f);
-    if (wrote != doc->pdf_len)
-        printf("%s: short write to %s (%zu of %zu bytes)\n", doc->slug, path, wrote, doc->pdf_len);
     if (doc->ok)
-        printf("%s: job %u '%s': %u pages -> %s\n", doc->slug, (unsigned)doc->job_id, doc->title, (unsigned)doc->pages,
-               path);
+        printf("%s: job %u '%s': %u pages -> %s\n", who, (unsigned)doc->job_id, doc->title, (unsigned)doc->pages, path);
     else
-        printf("%s: job %u '%s': %u pages -> %s (%s)\n", doc->slug, (unsigned)doc->job_id, doc->title,
-               (unsigned)doc->pages, path, doc->detail);
+        printf("%s: job %u '%s': %u pages -> %s (%s)\n", who, (unsigned)doc->job_id, doc->title, (unsigned)doc->pages,
+               path, doc->detail);
 }
 
 // Platform sink for a printer job's raw input (the printer's `capture`):
-// <print-dir>/<printer>-<job>.<ext>, beside its PDF.
+// <print-dir>/<printer_file_name>, beside its PDF.
 void printer_sink_capture(const printer_capture_t *cap) {
+    char who[64];
+    hl_print_who(who, sizeof who, cap->printer, cap->slug);
     if (!g_print_dir[0]) {
-        printf("%s: job %u input (%zu bytes) discarded: no --print-dir\n", cap->slug, (unsigned)cap->job_id, cap->len);
+        printf("%s: job %u input (%zu bytes) discarded: no --print-dir\n", who, (unsigned)cap->job_id, cap->len);
         return;
     }
-    if (mkdir(g_print_dir, 0755) != 0 && errno != EEXIST) {
-        printf("%s: cannot create print directory %s: %s\n", cap->slug, g_print_dir, strerror(errno));
-        return;
-    }
-    char path[PATH_MAX + 64];
-    snprintf(path, sizeof(path), "%s/%s-%05u.%s", g_print_dir, cap->slug, (unsigned)cap->job_id, cap->ext);
-    FILE *f = fopen(path, "wb");
-    if (!f) {
-        printf("%s: cannot write %s: %s\n", cap->slug, path, strerror(errno));
-        return;
-    }
-    size_t wrote = fwrite(cap->data, 1, cap->len, f);
-    fclose(f);
-    if (wrote != cap->len)
-        printf("%s: short write to %s (%zu of %zu bytes)\n", cap->slug, path, wrote, cap->len);
-    printf("%s: job %u input -> %s\n", cap->slug, (unsigned)cap->job_id, path);
+    char name[64], path[PATH_MAX + sizeof name];
+    printer_file_name(name, sizeof name, cap->slug, cap->job_id, NULL, cap->ext);
+    if (hl_print_write(who, name, cap->data, cap->len, path, sizeof path))
+        printf("%s: job %u input%s -> %s\n", who, (unsigned)cap->job_id, cap->complete ? "" : " (cut off)", path);
 }
 
 // VBL is

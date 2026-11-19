@@ -200,12 +200,18 @@ job begins (the Finder for Print Directory); on the Lisa, or when the global
 holds no name (the boot prompt), the title is `Print`. It names the PDF's
 document title and its file.
 
-At the end of a job the PDF goes to `printer_sink_deliver()`:
+At the end of a job the PDF goes to `printer_sink_document()`
+(`printer_sink.h`, the sink the LaserWriter's documents and captures use too).
+Both platforms name the file by `printer_file_name()`, whose title rule
+(`printer_safe_title()`: one `_` per run of anything outside
+`[A-Za-z0-9.-]`, none leading, "untitled" when nothing is left) is the one
+the page's `documentName` mirrors; unit suite `printer_sink`:
 
 - **Headless** (`headless_main.c`): `<print-dir>/<slug>-<job:05>-<title>.pdf`
   (`imagewriter2-00001-Finder.pdf`), and with `capture` the job's raw input as
   `<slug>-<job:05>.iw` beside it.
-- **Browser** (`em_main.c`): the bytes go to the page over the download path
+- **Browser** (`em_main.c`): the same names (the browser used to write one
+  `_` per character, `My__Doc`); the bytes go to the page over the download path
   (I/O job, transfer buffer, `download_chunk` events) with
   `kind: "document"`, the printer's name, job, pages and title;
   `bus/download.ts` opens them in the print viewer, or saves them where the

@@ -27,11 +27,16 @@
 
 #include "laserwriter_ring_protocol.h"
 #include "log.h"
+#include "printer_sink.h"
 #include "mailbox/mailbox_ring.h"
 
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+// The ring header keeps the title cap numeric (the page's mirror test parses
+// it); it is the one printer title limit.
+_Static_assert(LWRING_TITLE_MAX == PRINTER_TITLE_MAX, "LWRING_TITLE_MAX is PRINTER_TITLE_MAX");
 
 LOG_USE_CATEGORY_NAME("laserwriter");
 

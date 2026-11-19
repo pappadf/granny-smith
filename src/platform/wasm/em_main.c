@@ -722,9 +722,9 @@ static void js_log_stdout_sink(const char *line, void *user) {
 // The printer bridge runs its PostScript interpreter in the page's platen
 // worker (app/web2/src/printer/), reached through a shared-memory ring
 // (laserwriter_ring_protocol.h).  The finished PDF never enters the core
-// here: the worker posts it to the page, which downloads it — so there is
-// no laserwriter_sink_document override on this platform (the weak default
-// in laserwriter_job.c is never reached: the ring result carries no bytes).
+// here: the worker posts it to the page, which downloads it — so the
+// LaserWriter never reaches printer_sink_document on this platform (the ring
+// result carries no bytes).
 
 // The bridge allocated its control block at `ctrl_addr` (emulation
 // pthread): ask the page to start the worker and attach it, the way
@@ -926,36 +926,36 @@ static int download_start(download_job_t *d) {
     return -1;
 }
 
-// Platform sink for a job's captured PostScript (appletalk.printer.capture):
-// downloaded as <job>.ps, the way the page downloads the job's PDF.
-void laserwriter_sink_capture(const laserwriter_capture_t *cap) {
-    download_job_t *d = (download_job_t *)calloc(1, sizeof(*d));
-    if (!d)
-        return;
-    snprintf(d->name, sizeof d->name, "%05u.ps", (unsigned)cap->job_id);
-    d->bytes = (uint8_t *)malloc(cap->ps_len ? cap->ps_len : 1);
-    if (!d->bytes) {
-        free(d);
-        return;
-    }
-    memcpy(d->bytes, cap->ps, cap->ps_len);
-    d->bytes_len = cap->ps_len;
-    download_start(d);
-}
-
-// Copy `s` into `out` with what JSON strings and file names cannot hold
-// replaced: quotes, backslashes and control bytes become '_' (`file`: also
-// anything outside [A-Za-z0-9.-]).
-static void sanitize(char *out, size_t cap, const char *s, bool file) {
+// Copy `s` into `out` with what a JSON string cannot hold replaced: quotes,
+// backslashes and control bytes become '_'.  (File names are
+// printer_file_name's, printer_sink.h.)
+static void sanitize(char *out, size_t cap, const char *s) {
     size_t n = 0;
     for (; s && *s && n + 1 < cap; s++) {
         unsigned char c = (unsigned char)*s;
         bool ok = c >= 0x20 && c < 0x7F && c != '"' && c != '\\';
-        if (file)
-            ok = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '.' || c == '-';
         out[n++] = ok ? (char)c : '_';
     }
     out[n] = '\0';
+}
+
+// Hand a copy of `len` bytes to the page as the download `name`, with `meta`
+// (JSON members after the name, or "") -- the one path under the printer
+// sinks.  0, or -1 when out of memory or the download could not start.
+static int download_bytes(const char *name, const char *meta, const void *data, size_t len) {
+    download_job_t *d = (download_job_t *)calloc(1, sizeof(*d));
+    if (!d)
+        return -1;
+    snprintf(d->name, sizeof d->name, "%s", name);
+    snprintf(d->meta, sizeof d->meta, "%s", meta ? meta : "");
+    d->bytes = (uint8_t *)malloc(len ? len : 1);
+    if (!d->bytes) {
+        free(d);
+        return -1;
+    }
+    memcpy(d->bytes, data, len);
+    d->bytes_len = len;
+    return download_start(d);
 }
 
 // Platform sink for a document a printer rasterised in the core (the
@@ -963,51 +963,30 @@ static void sanitize(char *out, size_t cap, const char *s, bool file) {
 // download path, marked as a document, and the page shows them in the print
 // viewer (or downloads them where the browser has no PDF viewer).
 void printer_sink_document(const printer_document_t *doc) {
-    download_job_t *d = (download_job_t *)calloc(1, sizeof(*d));
-    if (!d)
-        return;
-    char title[PRINTER_TITLE_MAX + 1], ftitle[PRINTER_TITLE_MAX + 1], printer[64];
-    sanitize(title, sizeof title, doc->title, false);
-    sanitize(ftitle, sizeof ftitle, doc->title, true);
-    sanitize(printer, sizeof printer, doc->printer, false);
-    snprintf(d->name, sizeof d->name, "%s-%05u-%s.pdf", doc->slug, (unsigned)doc->job_id,
-             ftitle[0] ? ftitle : "untitled");
-    snprintf(d->meta, sizeof d->meta,
-             ",\"kind\":\"document\",\"printer\":\"%s\",\"job\":%u,\"pages\":%u,\"title\":\"%s\"", printer,
-             (unsigned)doc->job_id, (unsigned)doc->pages, title);
-    d->bytes = (uint8_t *)malloc(doc->pdf_len ? doc->pdf_len : 1);
-    if (!d->bytes) {
-        free(d);
-        return;
-    }
-    memcpy(d->bytes, doc->pdf, doc->pdf_len);
-    d->bytes_len = doc->pdf_len;
-    download_start(d);
+    char title[PRINTER_TITLE_MAX + 1], printer[64], name[PRINTER_TITLE_MAX + 64], meta[256];
+    sanitize(title, sizeof title, doc->title);
+    sanitize(printer, sizeof printer, doc->printer);
+    printer_file_name(name, sizeof name, doc->slug, doc->job_id, doc->title, "pdf");
+    snprintf(meta, sizeof meta, ",\"kind\":\"document\",\"printer\":\"%s\",\"job\":%u,\"pages\":%u,\"title\":\"%s\"",
+             printer, (unsigned)doc->job_id, (unsigned)doc->pages, title);
+    download_bytes(name, meta, doc->pdf, doc->pdf_len);
 }
 
-// Platform sink for a printer job's raw input (the printer's `capture`):
-// downloaded as <printer>-<job>.<ext>.
+// Platform sink for a printer job's raw input (the printer's `capture`, the
+// LaserWriter's PostScript among them): downloaded as printer_file_name's
+// <printer>-<job>.<ext> (the LaserWriter's <job>.ps).
 void printer_sink_capture(const printer_capture_t *cap) {
-    download_job_t *d = (download_job_t *)calloc(1, sizeof(*d));
-    if (!d)
-        return;
-    snprintf(d->name, sizeof d->name, "%s-%05u.%s", cap->slug, (unsigned)cap->job_id, cap->ext);
-    d->bytes = (uint8_t *)malloc(cap->len ? cap->len : 1);
-    if (!d->bytes) {
-        free(d);
-        return;
-    }
-    memcpy(d->bytes, cap->data, cap->len);
-    d->bytes_len = cap->len;
-    download_start(d);
+    char name[64];
+    printer_file_name(name, sizeof name, cap->slug, cap->job_id, NULL, cap->ext);
+    download_bytes(name, "", cap->data, cap->len);
 }
 
 // A core printer's status changed: the same printer_status event the
 // LaserWriter sends, naming the printer.
 void printer_sink_status(const char *printer, const char *status) {
     char p[64], st[128];
-    sanitize(p, sizeof p, printer, false);
-    sanitize(st, sizeof st, status, false);
+    sanitize(p, sizeof p, printer);
+    sanitize(st, sizeof st, status);
     event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"printer_status\",\"printer\":\"%s\",\"status\":\"%s\"}", p, st);
 }
 
