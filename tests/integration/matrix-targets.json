@@ -183,6 +183,16 @@
     },
     {
       "machine": "iici",
+      "system": "A/UX 2.0.1",
+      "card": "rbv",
+      "width": 640,
+      "height": 480,
+      "depth": 1,
+      "addr32": null,
+      "suite": "iici-aux201-boot"
+    },
+    {
+      "machine": "iici",
       "system": "7.1",
       "card": "mdc_8_24 substitute",
       "width": 640,
