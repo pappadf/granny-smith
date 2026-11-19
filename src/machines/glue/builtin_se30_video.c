@@ -22,15 +22,12 @@
 #include "declrom.h"
 #include "display.h"
 #include "gsvrom.h"
-#include "log.h"
 
 #include <stddef.h> // offsetof — the checkpoint range
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-LOG_USE_CATEGORY_NAME("video");
 
 #define SE30_VRAM_SIZE           0x00010000UL // 64 KB
 #define SE30_VROM_SIZE           0x00008000UL // 32 KB
