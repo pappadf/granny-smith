@@ -65,6 +65,7 @@
 #include "of_nvram.h"
 #include "pci.h"
 #include "ppc.h"
+#include "regfile.h"
 #include "scc.h"
 #include "scsi_mesh.h"
 #include "swim3.h"
@@ -305,13 +306,13 @@ static void ctrl_write32le(config_t *cfg, uint32_t reg, uint32_t v) {
 // little-endian register (the 8600 byte dump returned exactly that).
 static uint8_t ctrl_read8(config_t *cfg, uint32_t off) {
     uint32_t reg = off & 0x3Cu;
-    return (uint8_t)(ctrl_read32le(cfg, reg) >> (8 * (off & 3u)));
+    return le_lane8(ctrl_read32le(cfg, reg), off);
 }
 
 static void ctrl_write8(config_t *cfg, uint32_t off, uint8_t value) {
-    uint32_t reg = off & 0x3Cu, shift = 8 * (off & 3u);
+    uint32_t reg = off & 0x3Cu;
     uint32_t v = ctrl_read32le(cfg, reg);
-    v = (v & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+    le_lane8_set(&v, off, value);
     ctrl_write32le(cfg, reg, v);
 }
 
@@ -422,9 +423,10 @@ static void hr_write8(void *ctx, uint32_t off, uint8_t value) {
         if (off >= HR_INTS2) {
             int b = (off < HR_INTS1) ? 1 : 0;
             uint32_t base = b ? HR_INTS2 : HR_INTS1;
-            uint32_t reg = (off - base) & 0xCu, shift = 8 * (off & 3u);
+            uint32_t reg = (off - base) & 0xCu;
             uint32_t cur = (reg == INT_MASK) ? st->hr.mask[b] : 0;
-            int_write(cfg, b, reg, (cur & ~(0xFFu << shift)) | ((uint32_t)value << shift));
+            le_lane8_set(&cur, off, value);
+            int_write(cfg, b, reg, cur);
         }
         return;
     }

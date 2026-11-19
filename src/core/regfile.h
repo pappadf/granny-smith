@@ -2,10 +2,13 @@
 // Copyright (c) pappadf
 
 // regfile.h
-// Big-endian byte-lane access for chipset register files.
+// Byte-lane access for 32-bit register files: big-endian (the 68K-side
+// chipsets) and little-endian (PCI configuration space and the PCI parts).
+// Core and machines both include it (it lived in src/machines/ until the
+// PCI cards needed the little-endian half).
 
-#ifndef MACHINES_REGFILE_H
-#define MACHINES_REGFILE_H
+#ifndef REGFILE_H
+#define REGFILE_H
 
 #include <stdint.h>
 
@@ -40,4 +43,22 @@ static inline void be_lane8_set(uint32_t *value, unsigned lane, uint8_t byte) {
     *value = (*value & ~(0xFFu << shift)) | ((uint32_t)byte << shift);
 }
 
-#endif // MACHINES_REGFILE_H
+// The little-endian lane order, LANE 0 THE LEAST SIGNIFICANT BYTE: PCI
+// configuration space, the PCI host bridges' CONFIG_ADDR ports (Bandit,
+// Grackle), the PCI cards' own register files and the Heathrow/Control
+// little-endian registers.  These sat open-coded as
+// `(x & ~(0xFF << 8*lane)) | (v << 8*lane)` at a dozen sites in core and
+// machines before this header moved to core.
+
+// Extract byte `lane` (0 = LSB) from a little-endian 32-bit register value.
+static inline uint8_t le_lane8(uint32_t value, unsigned lane) {
+    return (uint8_t)(value >> ((lane & 3u) * 8u));
+}
+
+// Replace byte `lane` (0 = LSB) of a little-endian 32-bit register value.
+static inline void le_lane8_set(uint32_t *value, unsigned lane, uint8_t byte) {
+    unsigned shift = (lane & 3u) * 8u;
+    *value = (*value & ~(0xFFu << shift)) | ((uint32_t)byte << shift);
+}
+
+#endif // REGFILE_H

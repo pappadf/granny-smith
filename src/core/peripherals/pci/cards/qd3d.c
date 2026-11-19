@@ -78,6 +78,7 @@
 #include "object.h"
 #include "pci.h"
 #include "qd3d_raster.h"
+#include "regfile.h"
 #include "scheduler.h"
 #include "system.h"
 #include "system_internal.h"
@@ -766,8 +767,7 @@ static bool qd3d_cfg_read(pci_device_t *dev, uint32_t reg, uint32_t *out) {
 static bool qd3d_cfg_write(pci_device_t *dev, uint32_t reg, uint32_t byte, uint8_t value) {
     qd3d_t *q = (qd3d_t *)dev->priv;
     if (reg == QD3D_CFG_POSITION) {
-        uint32_t shift = 8u * byte;
-        q->cfg_position = (q->cfg_position & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+        le_lane8_set(&q->cfg_position, byte, value);
         LOG(3, "position register = $%08X", q->cfg_position);
         return true;
     }

@@ -69,6 +69,7 @@
 #include "object.h"
 #include "pci.h"
 #include "platform_hooks.h"
+#include "regfile.h"
 #include "scheduler.h"
 #include "system.h"
 #include "system_internal.h"
@@ -2521,24 +2522,23 @@ static bool v2_cfg_read(pci_device_t *dev, uint32_t reg, uint32_t *out) {
 
 static bool v2_cfg_write(pci_device_t *dev, uint32_t reg, uint32_t byte, uint8_t value) {
     voodoo2_t *v = (voodoo2_t *)dev->priv;
-    uint32_t shift = 8u * byte, mask = 0xFFu << shift;
     switch (reg) {
     case CFG_INIT_ENABLE:
-        v->init_enable = (v->init_enable & ~mask) | ((uint32_t)value << shift);
+        le_lane8_set(&v->init_enable, byte, value);
         return true;
     case CFG_BUS_SNOOP0:
-        v->bus_snoop[0] = (v->bus_snoop[0] & ~mask) | ((uint32_t)value << shift);
+        le_lane8_set(&v->bus_snoop[0], byte, value);
         return true;
     case CFG_BUS_SNOOP1:
-        v->bus_snoop[1] = (v->bus_snoop[1] & ~mask) | ((uint32_t)value << shift);
+        le_lane8_set(&v->bus_snoop[1], byte, value);
         return true;
     case CFG_STATUS:
         return true; // the alias is read-only
     case CFG_SCRATCH:
-        v->cfg_scratch = (v->cfg_scratch & ~mask) | ((uint32_t)value << shift);
+        le_lane8_set(&v->cfg_scratch, byte, value);
         return true;
     case CFG_SIPROCESS:
-        v->si_process = (v->si_process & ~mask) | ((uint32_t)value << shift);
+        le_lane8_set(&v->si_process, byte, value);
         return true;
     default:
         if (reg >= 0x58u && !v->warned_cfg_unknown) {

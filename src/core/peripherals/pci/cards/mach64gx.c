@@ -64,6 +64,7 @@
 #include "object.h"
 #include "pci.h"
 #include "prom.h"
+#include "regfile.h"
 #include "scheduler.h"
 #include "system.h"
 #include "system_internal.h"
@@ -737,8 +738,8 @@ static void mach64_reg_write_lane(mach64_t *m, int dw, uint32_t lane, uint8_t va
         mach64_dac_write_lane(m, lane, value);
         return;
     }
-    uint32_t shift = 8u * (lane & 3u);
-    uint32_t v = (mach64_reg_read(m, dw, false) & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+    uint32_t v = mach64_reg_read(m, dw, false);
+    le_lane8_set(&v, lane, value);
     mach64_reg_write(m, dw, v);
 }
 
@@ -2614,9 +2615,7 @@ static void aper_write8(void *ctx, uint32_t offset, uint8_t value) {
         return;
     }
     if (at == MACH64_APER_REGS1) {
-        uint32_t *r = &m->reg1[(offset & 0x3FFu) >> 2];
-        uint32_t sh = 8u * (offset & 3u);
-        *r = (*r & ~(0xFFu << sh)) | ((uint32_t)value << sh);
+        le_lane8_set(&m->reg1[(offset & 0x3FFu) >> 2], offset, value);
         return;
     }
     m->vram[at] = value;
@@ -2719,9 +2718,7 @@ static void aux_write8(void *ctx, uint32_t offset, uint8_t value) {
     mach64_t *m = (mach64_t *)ctx;
     offset &= RAGEPRO_BAR2_DECODE;
     if (offset < 0x400u) {
-        uint32_t *r = &m->reg1[offset >> 2];
-        uint32_t sh = 8u * (offset & 3u);
-        *r = (*r & ~(0xFFu << sh)) | ((uint32_t)value << sh);
+        le_lane8_set(&m->reg1[offset >> 2], offset, value);
     } else {
         mach64_reg_write_lane(m, (int)((offset & 0x3FFu) >> 2), offset & 3u, value);
     }

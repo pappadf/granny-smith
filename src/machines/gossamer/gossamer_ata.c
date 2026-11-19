@@ -31,6 +31,7 @@
 #include "log.h"
 #include "machine.h"
 #include "object.h"
+#include "regfile.h"
 #include "scheduler.h"
 #include "scsi.h"
 #include "system.h"
@@ -168,8 +169,7 @@ void gos_ata_write8(config_t *cfg, uint32_t off, uint8_t value) {
         return;
     }
     if (rel >= ATA_TIMING && rel < ATA_TIMING + 4u) {
-        uint32_t shift = 8u * (rel - ATA_TIMING);
-        ch->timing = (ch->timing & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+        le_lane8_set(&ch->timing, rel - ATA_TIMING, value);
         return;
     }
     LOG(2, "cell %d: write of unassigned +$%03X = $%02X", ch->index, rel, value);

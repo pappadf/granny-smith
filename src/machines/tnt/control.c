@@ -49,6 +49,7 @@
 // Apple "Power Macintosh 7500 and 8500 Computers" Developer Note [Apple-doc].
 
 #include "display_timing.h"
+#include "regfile.h"
 #include "tnt.h"
 
 #include "card.h"
@@ -933,8 +934,8 @@ static void regs_write8(void *ctx, uint32_t offset, uint8_t value) {
     // Read-modify-write the byte lane so byte pokes of a register work.
     config_t *cfg = (config_t *)ctx;
     uint32_t reg = offset & ~3u;
-    uint32_t shift = 8u * (offset & 3u);
-    uint32_t v = (control_reg_read(cfg, reg) & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+    uint32_t v = control_reg_read(cfg, reg);
+    le_lane8_set(&v, offset, value);
     control_reg_write(cfg, reg, v);
 }
 

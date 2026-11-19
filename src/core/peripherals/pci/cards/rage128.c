@@ -63,6 +63,7 @@
 #include "prom.h"
 #include "rage128_gpu.h"
 #include "rage128_priv.h"
+#include "regfile.h"
 #include "scheduler.h"
 #include "system.h"
 #include "system_internal.h"
@@ -1259,11 +1260,10 @@ static bool r128_cfg_read(pci_device_t *dev, uint32_t reg, uint32_t *out) {
 
 static bool r128_cfg_write(pci_device_t *dev, uint32_t reg, uint32_t byte, uint8_t value) {
     rage128_t *r = (rage128_t *)dev->priv;
-    uint32_t sh = 8u * (byte & 3u);
     switch (reg) {
     case CFG_AGP_CMD:
         if (r)
-            r->agp_cmd = (r->agp_cmd & ~(0xFFu << sh)) | ((uint32_t)value << sh);
+            le_lane8_set(&r->agp_cmd, byte, value);
         return true;
     case CFG_PMI_PMCSR:
         if (r && byte == 0)

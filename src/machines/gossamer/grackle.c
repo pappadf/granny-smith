@@ -52,6 +52,7 @@
 #include "page_fill.h"
 #include "pci.h"
 #include "ppc.h"
+#include "regfile.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -355,13 +356,12 @@ static void data_write8(config_t *cfg, uint32_t offset, uint8_t value) {
 
 // CONFIG_ADDR: byte i of the port is byte i of the little-endian latch.
 static uint8_t addr_read8(void *ctx, uint32_t offset) {
-    return (uint8_t)(gos_st((config_t *)ctx)->grackle.cfg_addr >> (8 * (offset & 3u)));
+    return le_lane8(gos_st((config_t *)ctx)->grackle.cfg_addr, offset);
 }
 
 static void addr_write8(void *ctx, uint32_t offset, uint8_t value) {
     gos_grackle_t *g = &gos_st((config_t *)ctx)->grackle;
-    uint32_t shift = 8 * (offset & 3u);
-    g->cfg_addr = (g->cfg_addr & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+    le_lane8_set(&g->cfg_addr, offset, value);
 }
 
 static uint16_t addr_read16(void *ctx, uint32_t offset) {
