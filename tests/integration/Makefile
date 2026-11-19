@@ -86,6 +86,15 @@ ifneq ($(UNTIERED),)
 $(error tests with no recognised TEST_TIER (unit | matrix | extended): $(UNTIERED))
 endif
 
+# Every config.mk reader (the runner's cfg(), tier_of above,
+# scripts/order-tests.py, scripts/test-matrix.py) takes `KEY := value`;
+# a `KEY = value` (or ?=, +=) line is seen by some of them and silently
+# ignored by others.  One syntax, enforced here, instead of seven parsers.
+MISASSIGNED := $(shell grep -lE '^TEST_[A-Z0-9_]+[[:space:]]*[?+]?=' $(addsuffix /config.mk,$(ALL_TEST_DIRS)) 2>/dev/null)
+ifneq ($(MISASSIGNED),)
+$(error config.mk files assigning a TEST_ key with something other than :=: $(MISASSIGNED))
+endif
+
 # TIER may name several tiers ("matrix extended"): CI runs them as ONE -j
 # pool, so the machine never idles at the boundary between two tails.
 space := $(empty) $(empty)
