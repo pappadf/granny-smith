@@ -984,8 +984,84 @@ static inline void bus_error_double_fault(cpu_t *restrict cpu, uint32_t faulting
 static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *restrict cpu, uint32_t fault_addr,
                                                                       uint32_t rw) {
     uint32_t faulting_pc = cpu->instruction_pc;
+    // The retry restarts the instruction, so it must find the registers as
+    // they were when the instruction began.  On hardware the 68030 suspends
+    // the instruction at the fault and continues the bus cycle after RTE
+    // (Linux's bus_error030 relies on that), and the 68040 restarts one whose
+    // results were never written.  Here the op body has run on with a garbage
+    // operand (all ones), so put back what it overwrote, from the copy taken
+    // when the fault latched (memory.c):
+    //   - every data register: an effective address never changes one, so
+    //     the copy holds the pre-instruction value;
+    //   - the destination of MOVEA/ADDA/SUBA, which ld.so and libc read in
+    //     their own effective address or sum (SUBA.L 32(A5),A0 left A0 one
+    //     off; MOVEA.L (0,A0,D2.L*4),A0 retried from A0 = $FFFFFFFF).
+    //   - an address register the instruction stepped or moved before the
+    //     faulting access, recognised by its value in the copy against the
+    //     faulting address and the access width:
+    //       the <ea> operand's (An)+ (An = addr + size) or -(An) (An = addr)
+    //       on a data read;
+    //       RTS/RTD's pop (SP = addr; the op went on to SP += 4 and jumped to
+    //       the fill value, which the decoders never execute: the fault ends
+    //       the sprint before the next instruction);
+    //       LINK's push (SP = addr + 4 after the push's own rollback; the op
+    //       then set An = SP and added the displacement);
+    //       UNLK's pop (An = addr, read before SP moves; the op then set
+    //       SP = An + 4 and loaded An with the fill value).
+    // All of it is done here, on the cold path, so the decoders run these
+    // instructions with no "did the access fault" test: one after every
+    // operand read cost them 1-3 % of their host instructions (the bench
+    // gate's metric A).  The write_ea_* helpers still roll back their own
+    // destination step.
+    if (g_bus_fault_regs_valid) {
+        g_bus_fault_regs_valid = false;
+        const uint32_t *snap = g_bus_fault_regs; // d[8] then a[8], at the fault
+        memcpy(cpu->d, snap, 8 * sizeof(uint32_t));
+        uint16_t op = memory_debug_read_uint16(faulting_pc);
+        unsigned an = (op >> 9) & 7u;
+        bool movea = (op & 0xE1C0u) == 0x2040u; // 0010/0011 rrr 001 <ea>: MOVEA.L / MOVEA.W
+        bool adda_suba = (op & 0xB0C0u) == 0x90C0u; // 1101/1001 rrr s11 <ea>
+        if (movea || adda_suba)
+            cpu->a[an] = snap[8 + an];
+        unsigned r = op & 7u;
+        if (op == 0x4E75u || op == 0x4E74u) { // RTS / RTD
+            if (snap[15] == fault_addr)
+                cpu->a[7] = fault_addr;
+        } else if ((op & 0xFFF8u) == 0x4E58u) { // UNLK An
+            if (r != 7 && snap[8 + r] == fault_addr) {
+                cpu->a[r] = fault_addr;
+                cpu->a[7] = snap[15];
+            }
+        } else if ((op & 0xFFF8u) == 0x4E50u || (op & 0xFFF8u) == 0x4808u) { // LINK.W / LINK.L An
+            if (snap[15] == fault_addr + 4) {
+                cpu->a[r] = snap[8 + r];
+                cpu->a[7] = fault_addr + 4;
+            }
+        } else if (rw && fault_addr - faulting_pc >= 22u) { // a data read through <ea>'s (An)+ / -(An)
+            unsigned mode = (op >> 3) & 7u;
+            uint32_t step = (g_bus_fault_size == 1 && r == 7) ? 2 : g_bus_fault_size;
+            if (mode == 3 && snap[8 + r] - fault_addr == step)
+                cpu->a[r] = fault_addr;
+            else if (mode == 4 && snap[8 + r] == fault_addr)
+                cpu->a[r] = fault_addr + step;
+        }
+    }
     uint16_t saved_sr = cpu_get_sr(cpu);
     uint32_t saved_pc = faulting_pc; // retry: RTE restarts the instruction
+
+    // The instruction ran on past the fault with a fill value standing in for
+    // the faulted read, and its op body may have stored that into a data
+    // register.  "The restarted execution overwrites all results" only holds
+    // when that register is not also an input: A/UX 1.1's stdio computes a
+    // read size with MOVE.L $4019E4(,D0.L*4),D0, the table page faults, and
+    // the retry indexed with D0 = $FFFFFFFF (read(fd, buf, -12888): chown
+    // "unknown user id root").  The hardware never writes a destination whose
+    // operand read faulted, so D0-D7 go back to the values at the fault.  The
+    // address registers keep their per-op rollbacks (cpu_ops.h), which restore
+    // pre-instruction values and must not be undone here.
+    if (g_fault_dregs_valid && cpu->cpu_model < CPU_MODEL_68040 && cpu->cpu_model != CPU_MODEL_68000)
+        memcpy(cpu->d, g_fault_dregs, sizeof g_fault_dregs);
+    g_fault_dregs_valid = false;
 
     enter_exception_supervisor(cpu);
     uint16_t fc = (uint16_t)(g_bus_error_fc & 0x7);
@@ -1041,6 +1117,7 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
     // its handler may legitimately retry the instruction.
     bool addr_err = g_bus_error_is_address;
     g_bus_error_is_address = false;
+    g_bus_fault_regs_valid = false; // skip semantics: nothing restarts, the copy is moot
     if (addr_err) {
         // Back to the state at the fault (see m68k_raise_address_error).
         memcpy(cpu->d, g_m68k_fault_regs, sizeof g_m68k_fault_regs);
@@ -1348,6 +1425,19 @@ static inline void f_trap(cpu_t *restrict cpu, uint16_t opcode) {
     // mis-detected as a double bus error → HALT → GLU reset → POST → SCC poll.
     // (Headless scheduler.run happened to have the page ready on retry, so it
     // booted — masking the bug.)  See memory project_iifx_aux_8bpp_scc_iop_hang.
+    // A PMMU fault on a LATER word of the instruction -- an extension word on
+    // the next, not-yet-mapped page -- also wins over the line-F trap: the
+    // decoder saw the faulted fetch's all-ones word and took it for an
+    // invalid encoding.  Taking the trap anyway entered supervisor state with
+    // the fault still pending, and the epilogue then delivered it as a
+    // supervisor fault at a user PC: Linux oopsed ("Bad PC value") in xfwm4
+    // on an FPU instruction straddling a page boundary on a 68040.
+    if (__builtin_expect(g_bus_error_pending, 0) && g_bus_error_is_pmmu && g_bus_error_address != cpu->instruction_pc &&
+        g_bus_error_address - cpu->instruction_pc < 22u) {
+        g_bus_error_pending = false;
+        exception_bus_error_retry(cpu, g_bus_error_address, 1);
+        return;
+    }
     if (__builtin_expect(g_bus_error_pending, 0) && g_bus_error_address == cpu->instruction_pc) {
         bool is_pmmu = g_bus_error_is_pmmu;
         g_bus_error_pending = false;

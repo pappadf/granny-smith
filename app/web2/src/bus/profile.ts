@@ -135,6 +135,7 @@ export interface StorageDevice {
   bus: string;
   unit: number;
   type: string; // "hd" | "cd"
+  model?: string; // a SCSI CD-ROM drive's model id ("applecd600i"); absent = the profile's
 }
 
 export interface CardEntry {

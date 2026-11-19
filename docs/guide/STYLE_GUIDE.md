@@ -35,8 +35,6 @@ other compilers.
   |------|--------|
   | `gs_strdup` | POSIX `strdup` |
   | `gs_assert_fail`, `gs_assert_failf` (and the file `gs_assert.h`) | `<assert.h>`'s `assert` / `__assert_fail` |
-  | `gs_crc32`, `gs_crc32_zeros` | zlib's `crc32` family |
-  | `gs_adler32` | zlib's `adler32` |
 
 - The enumerators of a kind/discriminator enum carry a short prefix derived
   from the type's name: `VK_*` (`value_kind_t`), `MK_*` (`member_kind_t`),

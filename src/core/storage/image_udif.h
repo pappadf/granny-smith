@@ -43,9 +43,9 @@
 #define UDIF_CHUNK_IGNORE  0x00000002u // unallocated; reads as zeros
 #define UDIF_CHUNK_ADC     0x80000004u // Apple Data Compression (UDCO)
 #define UDIF_CHUNK_ZLIB    0x80000005u // zlib / DEFLATE (UDZO)
-#define UDIF_CHUNK_BZ2     0x80000006u // bzip2 (UDBZ, unsupported)
-#define UDIF_CHUNK_LZFSE   0x80000007u // LZFSE (ULFO, unsupported)
-#define UDIF_CHUNK_LZMA    0x80000008u // LZMA (ULMO, unsupported)
+#define UDIF_CHUNK_BZ2     0x80000006u // bzip2 (UDBZ)
+#define UDIF_CHUNK_LZFSE   0x80000007u // LZFSE (ULFO)
+#define UDIF_CHUNK_LZMA    0x80000008u // LZMA in an xz container (ULMO)
 #define UDIF_CHUNK_COMMENT 0x7FFFFFFEu // "+beg"/"+end" marker; no blocks
 #define UDIF_CHUNK_END     0xFFFFFFFFu // terminator
 
@@ -108,14 +108,20 @@ int udif_parse_blkx(const uint8_t *xml, size_t xml_len, udif_map_t **out);
 
 void udif_map_free(udif_map_t *m);
 
+// The codec (codec.h) a compressed chunk type is coded with -- ADC, zlib,
+// bzip2, LZFSE or xz -- or -1 for a type that is not a compressed chunk.
+int udif_chunk_codec(uint32_t type);
+
 // Decode one chunk: `src`/`src_len` are the stored data-fork bytes, `dst`/
 // `dst_len` the output (must be >= chunk->count * 512).  Handles ZERO,
-// IGNORE, RAW, ADC and ZLIB; returns -ENOTSUP for a codec we do not implement
-// (bzip2 / LZFSE / LZMA) and -EINVAL for a malformed chunk.  0 on success.
+// IGNORE, RAW and every compressed type (udif_chunk_codec).  0 on success;
+// -ENOTSUP for a stream using a codec feature not implemented (a randomised
+// bzip2 block, an xz filter other than LZMA2), -ENOMEM, or -EINVAL for a
+// malformed chunk or one that decodes to other than count * 512 bytes.
 int udif_decode_chunk(const udif_chunk_t *chunk, const uint8_t *src, size_t src_len, uint8_t *dst, size_t dst_len);
 
 // A table's decoded bytes are checked against udif_table_t::checksum with
-// gs_crc32 (crc32.h), the polynomial UDIF uses; chunks of type
+// codec_crc32 (codec.h), the polynomial UDIF uses; chunks of type
 // UDIF_CHUNK_IGNORE are excluded from that running total.
 
 #endif // GS_IMAGE_UDIF_H

@@ -143,6 +143,35 @@ LOG_USE_CATEGORY_NAME("mesh");
 static void mesh_update_irq(mesh_t *m) {
     if (m->irq_cb)
         m->irq_cb(m->irq_ctx, (m->interrupt & m->intr_mask) != 0);
+    // The interrupt bits are also the channel-10 DBDMA s-bits
+    // (mesh_dbdma_s_bits): a channel held by a WAIT on them re-evaluates.
+    if (m->dbdma_status_kick)
+        m->dbdma_status_kick(m->dbdma_ctx);
+}
+
+// Channel-10 DBDMA device status (s7..s0): s7 = no error, s6 = no
+// exception, s5 = the sequence is still running (no completion of any
+// kind -- done, exception or error -- latched yet); s4-s0 read zero.
+// Pinned by Rhapsody DR2's MESH driver, the only shipped software that
+// programs the selects: every sequence it chains through the channel is
+// a quad store to the sequence register right after a W1C of the
+// interrupt register, carrying w=IFSET with WaitSelect $00200020 (hold
+// while s5) and b=IFCLR with BranchSelect $00C000C0 (take its error path
+// unless s7 and s6).  A successful selection must fall through, a
+// selection timeout (exception) must branch, and the STATUS-with-ATN it
+// issues straight after selecting -- a deliberate phase mismatch against
+// the target's MESSAGE OUT -- must end the wait on the exception alone.
+uint8_t mesh_dbdma_s_bits(void *ctx) {
+    mesh_t *m = (mesh_t *)ctx;
+    uint8_t done = m->interrupt & (INT_ERROR | INT_EXCEPTION | INT_CMDDONE);
+    uint8_t s = 0;
+    if (!(done & INT_ERROR))
+        s |= 0x80u;
+    if (!(done & INT_EXCEPTION))
+        s |= 0x40u;
+    if (!done)
+        s |= 0x20u;
+    return s;
 }
 
 static void raise_int(mesh_t *m, uint8_t bits) {
@@ -388,6 +417,17 @@ static void mesh_pump_event(void *source, uint64_t data) {
 
 int mesh_port_in(void *ctx, uint8_t *buf, int len) {
     mesh_t *m = (mesh_t *)ctx;
+    // The status and message-in bytes by DMA: Rhapsody DR2's MESH driver
+    // issues STATUS and MSGIN with SEQ_DMA_MODE and reads each byte through
+    // a one-byte INPUT on channel 10.  The sequencer has already latched
+    // the byte into the FIFO (do_sequence); the channel drains it from there.
+    uint8_t seq_cmd = m->sequence & 0x0Fu;
+    if ((m->sequence & SEQ_DMA_MODE) && (seq_cmd == CMD_STATUS || seq_cmd == CMD_MSGIN) && m->active != CMD_DATAIN) {
+        int n = 0;
+        while (n < len && byte_fifo_count(&m->fifo) > 0)
+            buf[n++] = fifo_pop(m);
+        return n;
+    }
     if (m->active != CMD_DATAIN || !m->active_dma || !m->bus)
         return 0; // no transfer armed: honest stall
     int n = 0;
@@ -412,7 +452,28 @@ int mesh_port_in(void *ctx, uint8_t *buf, int len) {
 
 int mesh_port_out(void *ctx, const uint8_t *buf, int len) {
     mesh_t *m = (mesh_t *)ctx;
+    // Message-out and command bytes by DMA: Rhapsody DR2's MESH driver
+    // sends its IDENTIFY and CDBs through channel 10 with SEQ_DMA_MODE set
+    // on MSGOUT/COMMAND.  They take the same path as FIFO-loaded bytes.
+    if ((m->active == CMD_MSGOUT || m->active == CMD_COMMAND) && (m->sequence & SEQ_DMA_MODE)) {
+        int n = 0;
+        while (n < len && m->remaining > 0 && m->connected && !byte_fifo_full(&m->fifo)) {
+            fifo_push(m, buf[n++]);
+            pump_out(m);
+        }
+        return n;
+    }
     if (m->active != CMD_DATAOUT || !m->active_dma || !m->bus)
+        return 0;
+    // The sequencer paces DMA bytes with REQ.  Right after a WRITE's CDB the
+    // target shows DATA OUT but is still settling with REQ low (bus.
+    // data_out_pending); a byte offered then is not taken, so hold the
+    // channel and let the pump (mesh_pump_arm) kick it again.  Rhapsody DR2's
+    // driver chains SEQ DATAOUT and its OUTPUT straight after the CDB in one
+    // DBDMA program and reaches this window; counting the dropped bytes as
+    // sent completed the transfer empty and its STATUS found the target
+    // still waiting for data.
+    if (scsi_get_bus_phase(m->bus) == scsi_data_out && !scsi_bus_req(m->bus))
         return 0;
     int n = 0;
     while (n < len && m->remaining > 0 && scsi_get_bus_phase(m->bus) == scsi_data_out) {
@@ -520,6 +581,10 @@ static void do_sequence(mesh_t *m, uint8_t value, uint32_t count) {
             mesh_pump_arm(m);
         } else {
             pump_out(m); // consume whatever is already in the FIFO
+            // A DMA-mode message-out/command takes its bytes from channel
+            // 10 (mesh_port_out): wake an OUTPUT already waiting on us.
+            if (dma && m->active && m->dbdma_kick)
+                m->dbdma_kick(m->dbdma_ctx);
         }
         return;
 
@@ -558,8 +623,16 @@ static void do_sequence(mesh_t *m, uint8_t value, uint32_t count) {
         }
         int st = m->bus ? scsi_external_status_byte(m->bus) : -1;
         if (st < 0) {
+            // The target REQs in another phase: the sequence ends on the
+            // phase mismatch, and it ENDS -- command-done latches with the
+            // exception.  Open Firmware 1.0.5's MESH driver issues STATUS
+            // straight into the DATA IN of the REQUEST SENSE it sends after
+            // a UNIT ATTENTION and then polls `interrupt & 1`; with the
+            // exception alone it spins there forever and never boots
+            // (Rhapsody DR2 from the internal disk).
             LOG(2, "STATUS sequence outside status phase");
             raise_exception(m, EXC_PHASEMM);
+            raise_int(m, INT_CMDDONE);
             return;
         }
         fifo_push(m, (uint8_t)st);
@@ -603,6 +676,7 @@ static void do_sequence(mesh_t *m, uint8_t value, uint32_t count) {
         if (msg < 0) {
             LOG(2, "MSGIN sequence outside message phase");
             raise_exception(m, EXC_PHASEMM);
+            raise_int(m, INT_CMDDONE); // the sequence ends (see CMD_STATUS)
             return;
         }
         fifo_push(m, (uint8_t)msg);
@@ -1009,4 +1083,10 @@ void mesh_set_dbdma_kick(mesh_t *m, mesh_dbdma_kick_cb cb, void *ctx) {
         return;
     m->dbdma_kick = cb;
     m->dbdma_ctx = ctx;
+}
+
+void mesh_set_dbdma_status_kick(mesh_t *m, mesh_dbdma_kick_cb cb) {
+    if (!m)
+        return;
+    m->dbdma_status_kick = cb;
 }

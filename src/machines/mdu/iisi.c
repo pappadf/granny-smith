@@ -394,7 +394,7 @@ const hw_profile_t machine_iisi = {
     .default_storage = mac_default_storage_hd0_cd3,
     .appletalk = true,
     .builtin_video = &mdu_builtin_video_iisi,
-    .cdrom_drive = &mac_cdrom_drive_applecd,
+    .cdrom_drive = &scsi_cd_drive_applecd_sc_plus,
     // Built-in V8 video has no separate declaration ROM — the boot ROM drives
     // it from the hard-coded VideoInfoMacIIsi record.
 

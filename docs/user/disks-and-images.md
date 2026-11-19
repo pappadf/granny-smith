@@ -66,7 +66,10 @@ zstd cannot be read: make a standalone copy first with
 `qemu-img convert -O qcow2 overlay.qcow2 standalone.qcow2`.
 
 A `.dmg` you save to your computer opens in macOS (`hdiutil`), 7-Zip and
-`dmg2img`; **Export as raw image…** gives a plain image instead.
+`dmg2img`; **Export as raw image…** gives a plain image instead. The
+Terminal can also write a `.dmg` about 15% smaller (`files.convert` with
+`codec=xz`, [Terminal guide](terminal.md) §3.1), which opens in macOS 10.15 and
+later but not in 7-Zip or `dmg2img`.
 
 ## 3. Blank disks
 

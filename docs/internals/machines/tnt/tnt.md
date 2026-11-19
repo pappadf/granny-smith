@@ -133,10 +133,18 @@ The board model is the chipset skeleton plus the DMA architecture:
   (`+$15000`, swim3.c) is the shared floppy controller on DBDMA channel 1;
   the internal MESH SCSI (`+$18000`, `scsi_mesh.c` — DATA OUT, programmed
   or DMA, ends in a phase mismatch when the target takes fewer bytes than
-  the count; absent on the Network Servers) and the external 53C94 chain
-  (`+$10000`) are
-  modelled, and the MACE aperture (`+$11000`) logs and reads open bus
-  until it is.  (Reference:
+  the count; message-out, command, status and message-in also run over
+  DMA, DMA data-out is paced by REQ, a STATUS/MSGIN phase mismatch also
+  raises CMDDONE, and channel 10's s-bits carry s7 no-error, s6
+  no-exception and s5 sequence-running for DBDMA conditions — Rhapsody
+  DR2's driver uses all of these; absent on the Network Servers) and the
+  external 53C94 chain (`+$10000`) are modelled.  The MACE Ethernet
+  (`+$11000`, `tnt_mace.c`; Mac boards only) has no wire behind it: a
+  frame on DBDMA channel 2 is dropped and completes as a good
+  transmission (XMTFS = XMTSV, XMTINT), and nothing is ever received —
+  enough for Rhapsody DR2, Open Firmware and MkLinux, whose drivers
+  transmit as soon as the interface comes up and hung on a stalled
+  channel.  (Reference:
   [grand-central.md](../../../reference/machines/tnt/grand-central.md)
   §2.1 for the window and its decode law, §2.2 for the interrupt block,
   §2.5 for the device apertures.)
@@ -158,7 +166,14 @@ The board model is the chipset skeleton plus the DMA architecture:
   refetched rather than cached (the operation-word commit rule; STOP
   parks *on* its descriptor so the overwrite-and-WAKE ring idiom works),
   and `resCount`/`xferStatus` write-back is guest-visible *before* the
-  channel interrupt.  Every completed command but STOP writes its result
+  channel interrupt.  The WAIT modifier is evaluated at command
+  *completion*, after the command has done its work and before its
+  branch, write-back and interrupt (CHRP I/O Device Reference
+  §15.4.5–§15.4.7): a held command is not re-run when the wait clears,
+  so a STORE_QUAD to MESH's sequence register issues the sequence once
+  (Rhapsody DR2 stores with a wait on "sequence running").  A device
+  kick raised from inside the channel's own command does not re-enter
+  the channel.  Every completed command but STOP writes its result
   word, interrupt or not — the active bit in `xferStatus` is the done
   flag drivers poll (MacTest Pro's codec control test runs a STORE_QUAD
   with no interrupt and waits for it).  STORE_QUAD/LOAD_QUAD are one bus
@@ -261,8 +276,13 @@ Four little-endian registers at `+$20` Events (edge-latched) / `+$24`
 Mask / `+$28` Clear / `+$2C` Levels (live), with **two clear modes**
 selected by Clear-write bit 31 (`ifMode1Clear`):
 
-- **Mode 0** (power-on; the MkLinux scheme): the CPU line is
-  combinational `(events | levels) & mask`; Events clear by explicit W1C.
+- **Mode 0** (power-on; the MkLinux scheme): the CPU line follows the
+  edge-latched Events, `events & mask`; Events clear by explicit W1C,
+  which drops the line even while the source's level stays up.  Rhapsody
+  DR2 acknowledges the 53C94's interrupt this way and services the chip
+  later from its driver thread; a line that also followed Levels
+  stormed (livelocked) there.  The source's next assertion is a new
+  edge.
 - **Mode 1** (the NanoKernel's scheme): the line is an **output latch**,
   and the scheme is **interrupt-on-CHANGE** (the AMIC INTMODE=1 law) —
   set by any change of an enabled level source (assertion OR
@@ -300,9 +320,9 @@ firmware beep played (Open Firmware polls), the 68k startup chime and
 every later sound — alert beeps, the Sound control panel, Quake — were
 silence.  With levels, all of them play (`tests/unit/suites/tnt_gc`
 `test_mode1_dbdma_level_ack`; `suite-tnt`'s disk-boot rows assert the
-chime on all three models).  For mode 0 (MkLinux/Linux) nothing changes:
-their handlers acknowledge by writing the event bits, which deasserts the
-level too.
+chime on all three models).  For mode 0 (MkLinux/Linux, Rhapsody)
+nothing changes: their handlers acknowledge by writing the event bits,
+which deasserts the level too.
 
 ### PCI slot topology
 
@@ -771,14 +791,15 @@ window in `display_t`, which this repository does not have.
 
 Open Firmware and AIX both arrive knowing what the part is, so for a long
 time a flat byte array per register block was enough. A driver that has to
-*find* the chip needs four registers that do not behave like storage, and
-Windows NT's `cirrus.sys` reads all four before it will claim the adapter:
+*find* the chip needs three registers that do not behave like storage, and
+Windows NT's `cirrus.sys` reads them, and `SR15`, before it will claim the
+adapter:
 
 | | behaviour | why a driver cares |
 |---|---|---|
 | `SR06` | writing `$12` unlocks the extensions and reads back `$12`; anything else locks them and reads back `$0F` | the round trip *is* the presence test |
 | `CR27` | read-only `$A0`: bits 7:2 the device (CL-GD5430, agreeing with the `$00A0` PCI ID), 1:0 the revision | the chip ID, and which mode tables apply |
-| `SR15` | bits 3:0 report the fitted DRAM — `2` is 1 MB | the driver sizes its mode list from this instead of probing, and rejects every mode that will not fit |
+| `SR15` | plain storage, reset `0`: "Scratch Pad 3" (TRM §9.11), where a PC's video BIOS records the memory size in bits 3:0 (`2` = 1 MB) | the driver sizes its mode list from it and rejects every mode that will not fit, so with no PC BIOS it reads `0` and finds no modes — the OS has to write it (powermac-nt-hal's mode-set does). The model once answered `2` regardless, which hid that |
 | `$3CC` | reads back what `$3C2` (Miscellaneous Output) was given | bit 0 says whether the CRTC pair is at `$3D4/$3D5` or `$3B4/$3B5` |
 
 The monochrome CRTC pair `$3B4/$3B5` is folded onto the colour one whatever
@@ -886,8 +907,8 @@ boots twice.
 | `suite-ans` `ans500-diag-floppy` | matrix, fixture-gated | the Diagnostic Utility booted from the internal floppy in Service position, driven from the ADB keyboard through its complete system test |
 | `ans-aix-boot` | extended, fixture-gated | the documented Service-keyswitch install path, up to `bootapple` launching off the AIX 4.1.5 Install CD |
 | `ans-aix-installed-boot` | extended, gs-test-data | an installed AIX 4.1.5 disk (gs-test-data `systems/aix_4_1_5_lp240s_234mb.img`) cold-booted through Open Firmware's default `disk2:aix` to the login prompt on the graphics console, then a root logon from the ADB keyboard |
-| `ans-nt-install` | extended, fixture-gated | Windows NT 4.0 PowerPC installed end to end on the 2.26NT ROM from the [powermac-nt-hal](https://github.com/pappadf/powermac-nt-hal) boot floppy — `setup.of`, `boot.of`, text-mode Setup, NT's restart through Cuda, `bootdisk.of`, GUI Setup — to the installed system's logon screen (rungs N1-N12; without a `product-id.txt` fixture it stops at GUI Setup's Registration page, N10). `NT_EXPORT=<path>` keeps the installed disk |
-| `ans-nt-installed-boot` | extended, gs-test-data | the disk `ans-nt-install` produces (gs-test-data `systems/winnt_4_0_ppc_ans_512mb.img`), cold-booted on the 2.26NT ROM through the boot floppy's `setup.of` and `bootdisk.of` to the logon screen, then Ctrl+Alt+Del and a logon as Administrator from the ADB keyboard to the desktop (rungs B1-B5). Needs gs-test-data 9b20396 or later and skips before it |
+| `ans-nt-install` | extended, fixture-gated | Windows NT 4.0 PowerPC installed end to end on the 2.26NT ROM from the [powermac-nt-hal](https://github.com/pappadf/powermac-nt-hal) boot floppy — `boot.of` (no NVRAM setting: the floppy switches the machine to little-endian itself), text-mode Setup, NT's restart through Cuda, `bootdisk.of`, GUI Setup — to the installed system's logon screen (rungs N1-N12; without a `product-id.txt` fixture it stops at GUI Setup's Registration page, N10). `NT_EXPORT=<path>` keeps the installed disk |
+| `ans-nt-installed-boot` | extended, gs-test-data | the disk `ans-nt-install` produces (gs-test-data `systems/winnt_4_0_ppc_ans_512mb.img`), cold-booted on the 2.26NT ROM through the boot floppy's `bootdisk.of` to the logon screen, then Ctrl+Alt+Del and a logon as Administrator from the ADB keyboard to the desktop (rungs B1-B5). Needs gs-test-data 9b20396 or later and skips before it |
 | `ans-nt-stock-boot` | extended, gs-test-data | the same boot on the **production 1.1.22 ROM**, the one every Network Server shipped with: since powermac-nt-hal 1741579 (6 November 2026) the floppy's firmware is an XCOFF the ROM's own `xcoff-loader` starts, walks FAT and ISO 9660 itself and reads the disk raw, so the 2.26NT ROM is no longer required. Rungs B1-B5 as above (shared in `lib/nt.script`), 6.9 G instructions to the desktop against 8.3 G on 2.26NT. Needs gs-test-data 30b6b8e or later |
 | `tnt-pci-scsi-card` | matrix | a Power Macintosh 8500 with a Symbios 53C825A SCSI card in A1 (and its own SCSI bus, `pci_1`) and a Cirrus 54M30 in B1: System 7.6 boots from MESH to a desktop identical to the plain 8500's, the card bus takes drives and survives a checkpoint, a device on `pci_1` without the card is refused, and Open Firmware builds `/bandit/pci1000,3` and `/bandit/pci1013,a0` for the two |
 

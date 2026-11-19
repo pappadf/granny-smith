@@ -1,8 +1,8 @@
 # Integration test: installing Windows NT 4.0 on an Apple Network Server 500
 #
 # The whole installation, from a cold machine to NT's logon screen, the way
-# a person does it: three two-line Open Firmware commands off the
-# powermac-nt-hal boot floppy (setup.of, boot.of, bootdisk.of), every
+# a person does it: two two-line Open Firmware commands off the
+# powermac-nt-hal boot floppy (boot.of, bootdisk.of; nothing in NVRAM), every
 # Setup screen answered on the serial console or the ADB keyboard, and
 # nothing poked, patched or restored from a checkpoint in between.
 #

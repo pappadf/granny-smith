@@ -11,7 +11,7 @@
 TEST_NAME    := bmac
 TEST_SRCS    := test.c
 TEST_HARNESS := none
-EXTRA_SRCS   := ../../../../src/core/crc32.c \
+EXTRA_SRCS   := $(wildcard ../../../../src/codec/lib/*.c) \
                 ../../../../src/core/peripherals/dma_mem.c \
                 ../../../../src/core/peripherals/dbdma.c \
                 ../../../../src/core/peripherals/bmac.c

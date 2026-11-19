@@ -15,6 +15,7 @@ case there is nothing to do.
 
 - `src/core/`: Platform-agnostic emulator (cpu/, memory/, peripherals/, scheduler/, debug/, storage/, network/, shell/, object/, vfs/, plus the system and machine-configuration files at its root)
 - `src/peeler/`: In-tree archive library (StuffIt/Compact Pro/Zip archives; BinHex/MacBinary/gzip wrappers) over byte sources; its archives are VFS namespaces and it backs the `files.archive` object. See `docs/guide/peeler.md`.
+- `src/codec/`: In-tree codec library, the one place for compression, decompression and checksums (DEFLATE/zlib both ways; ADC, bzip2, LZFSE/LZVN, LZMA/xz decode; CRC-32/64, Adler-32), shared by peeler, the image layer (UDIF/NDIF/QCOW2) and the PNG/PDF/UDIF writers; depends on nothing. See `docs/internals/codec/codec.md`.
 - `src/platform/`: Platform-specific code (wasm/, headless/)
   - `wasm/`: WebAssembly platform for browser (em_main.c, em_audio.c, em_video.c) — compiled with Emscripten
   - `headless/`: Native command-line platform for testing (headless_main.c)

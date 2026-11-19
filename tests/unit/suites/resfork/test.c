@@ -8,9 +8,9 @@
 // forks, missing-name (name_off == -1) records, and assorted corruption
 // scenarios that must produce a defined error rather than a crash.
 
+#include "codec.h"
 #include "macroman.h"
 #include "resource_fork.h"
-#include "rsrc_dcmp.h"
 #include "test_assert.h"
 
 #include <errno.h>
@@ -18,6 +18,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+// A compressed resource decoded whole, as resource_fork.c decodes it: the
+// buffer (*out_len set), or NULL with *err the CODEC_ERR_* code.
+static uint8_t *dcmp_decode(const uint8_t *src, size_t len, size_t *out_len, int *err) {
+    size_t n = 0;
+    int e = 0;
+    uint8_t *out = codec_decode_alloc(CODEC_DCMP, src, len, CODEC_DCMP_MAX_SIZE, &n, &e);
+    if (out_len)
+        *out_len = n;
+    if (err)
+        *err = e;
+    return out;
+}
 
 // ---- Big-endian writer helpers --------------------------------------------
 
@@ -458,11 +471,11 @@ TEST(test_info_format) {
 
 TEST(test_dcmp_is_compressed) {
     uint8_t magic[4] = {0xA8, 0x9F, 0x65, 0x72};
-    ASSERT_TRUE(rsrc_dcmp_is_compressed(magic, 4));
+    ASSERT_TRUE(codec_dcmp_is_compressed(magic, 4));
     uint8_t notmagic[4] = {0xA8, 0x9F, 0x65, 0x71};
-    ASSERT_TRUE(!rsrc_dcmp_is_compressed(notmagic, 4));
-    ASSERT_TRUE(!rsrc_dcmp_is_compressed(NULL, 0));
-    ASSERT_TRUE(!rsrc_dcmp_is_compressed(magic, 3)); // too short
+    ASSERT_TRUE(!codec_dcmp_is_compressed(notmagic, 4));
+    ASSERT_TRUE(!codec_dcmp_is_compressed(NULL, 0));
+    ASSERT_TRUE(!codec_dcmp_is_compressed(magic, 3)); // too short
 }
 
 TEST(test_dcmp_roundtrip_minimal) {
@@ -494,10 +507,10 @@ TEST(test_dcmp_roundtrip_minimal) {
     };
 
     size_t out_len = 0;
-    const char *err = NULL;
-    uint8_t *out = rsrc_dcmp_decompress(payload, sizeof(payload), &out_len, &err);
+    int err = 0;
+    uint8_t *out = dcmp_decode(payload, sizeof(payload), &out_len, &err);
     ASSERT_TRUE(out != NULL);
-    ASSERT_TRUE(err == NULL);
+    ASSERT_TRUE(err == 0);
     ASSERT_EQ_INT(12, (int)out_len);
 
     uint8_t expected[12] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x4E, 0xBA, 0x4E, 0x75, 0x00, 0x08};
@@ -526,8 +539,8 @@ TEST(test_dcmp_remember_then_reuse) {
         0xFF, // end
     };
     size_t out_len = 0;
-    const char *err = NULL;
-    uint8_t *out = rsrc_dcmp_decompress(payload, sizeof(payload), &out_len, &err);
+    int err = 0;
+    uint8_t *out = dcmp_decode(payload, sizeof(payload), &out_len, &err);
     ASSERT_TRUE(out != NULL);
     ASSERT_EQ_INT(20, (int)out_len);
     uint8_t expected[20] = {0xAA, 0xBB, 0x00, 0x00, 0xAA, 0xBB, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
@@ -537,10 +550,10 @@ TEST(test_dcmp_remember_then_reuse) {
 
 TEST(test_dcmp_rejects_bad_magic) {
     uint8_t bad[18] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x12, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-    const char *err = NULL;
-    uint8_t *out = rsrc_dcmp_decompress(bad, sizeof(bad), NULL, &err);
+    int err = 0;
+    uint8_t *out = dcmp_decode(bad, sizeof(bad), NULL, &err);
     ASSERT_TRUE(out == NULL);
-    ASSERT_TRUE(err != NULL);
+    ASSERT_TRUE(err != 0);
 }
 
 TEST(test_dcmp_rejects_wrong_dcmp_id) {
@@ -551,10 +564,10 @@ TEST(test_dcmp_rejects_wrong_dcmp_id) {
     uint8_t hdr[18] = {0xA8, 0x9F, 0x65, 0x72, 0x00, 0x12, 0x08, 0x00,
                        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, // dcmp_id = 2
                        0x00, 0x00};
-    const char *err = NULL;
-    uint8_t *out = rsrc_dcmp_decompress(hdr, sizeof(hdr), NULL, &err);
+    int err = 0;
+    uint8_t *out = dcmp_decode(hdr, sizeof(hdr), NULL, &err);
     ASSERT_TRUE(out == NULL);
-    ASSERT_TRUE(err != NULL);
+    ASSERT_TRUE(err != 0);
 }
 
 TEST(test_dcmp2_greggy_static_nonbitmapped) {
@@ -576,8 +589,8 @@ TEST(test_dcmp2_greggy_static_nonbitmapped) {
         0x04, // -> static[0x04] = 0x4E75
     };
     size_t out_len = 0;
-    const char *err = NULL;
-    uint8_t *out = rsrc_dcmp_decompress(payload, sizeof(payload), &out_len, &err);
+    int err = 0;
+    uint8_t *out = dcmp_decode(payload, sizeof(payload), &out_len, &err);
     ASSERT_TRUE(out != NULL);
     ASSERT_EQ_INT(4, (int)out_len);
     // Output: 0x0000 (BE) then 0x4E75 (BE) = 00 00 4E 75
@@ -610,7 +623,7 @@ TEST(test_dcmp2_greggy_bitmapped) {
         0x55, 0x66, // raw word 0x5566
     };
     size_t out_len = 0;
-    uint8_t *out = rsrc_dcmp_decompress(payload, sizeof(payload), &out_len, NULL);
+    uint8_t *out = dcmp_decode(payload, sizeof(payload), &out_len, NULL);
     ASSERT_TRUE(out != NULL);
     ASSERT_EQ_INT(16, (int)out_len);
     uint8_t expected[16] = {
@@ -632,7 +645,7 @@ TEST(test_dcmp_zero_pads_short_streams) {
         0xFF, // end
     };
     size_t out_len = 0;
-    uint8_t *out = rsrc_dcmp_decompress(payload, sizeof(payload), &out_len, NULL);
+    uint8_t *out = dcmp_decode(payload, sizeof(payload), &out_len, NULL);
     ASSERT_TRUE(out != NULL);
     ASSERT_EQ_INT(10, (int)out_len);
     uint8_t expected[10] = {0x11, 0x22, 0x33, 0x44, 0, 0, 0, 0, 0, 0};
@@ -656,27 +669,27 @@ TEST(test_dcmp_huge_actual_size_is_refused) {
         0xFF, // end of stream at once
     };
     size_t out_len = 0;
-    const char *err = NULL;
-    uint8_t *out = rsrc_dcmp_decompress(payload, sizeof(payload), &out_len, &err);
+    int err = 0;
+    uint8_t *out = dcmp_decode(payload, sizeof(payload), &out_len, &err);
     ASSERT_TRUE(out == NULL);
-    ASSERT_TRUE(err != NULL);
+    ASSERT_TRUE(err != 0);
 }
 
-// The bound is exact: RSRC_DCMP_MAX_SIZE decodes (zero-padded), one byte more
+// The bound is exact: CODEC_DCMP_MAX_SIZE decodes (zero-padded), one byte more
 // does not.
 TEST(test_dcmp_size_bound_is_exact) {
     uint8_t payload[] = {
         0xA8, 0x9F, 0x65, 0x72, 0x00, 0x12, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, // actual_size set below
         0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF,
     };
-    uint32_t sizes[2] = {RSRC_DCMP_MAX_SIZE, RSRC_DCMP_MAX_SIZE + 1};
+    uint32_t sizes[2] = {CODEC_DCMP_MAX_SIZE, CODEC_DCMP_MAX_SIZE + 1};
     for (int i = 0; i < 2; i++) {
         w_u32(payload + 8, sizes[i]);
         size_t out_len = 0;
-        uint8_t *out = rsrc_dcmp_decompress(payload, sizeof(payload), &out_len, NULL);
+        uint8_t *out = dcmp_decode(payload, sizeof(payload), &out_len, NULL);
         if (i == 0) {
             ASSERT_TRUE(out != NULL);
-            ASSERT_TRUE(out_len == RSRC_DCMP_MAX_SIZE);
+            ASSERT_TRUE(out_len == CODEC_DCMP_MAX_SIZE);
             free(out);
         } else {
             ASSERT_TRUE(out == NULL);
@@ -772,7 +785,7 @@ TEST(test_inflation_is_budgeted_per_fork) {
             ASSERT_EQ_INT(16 * 1024 * 1024, (int)sz);
         } else {
             ASSERT_EQ_INT((int)sizeof(hdr), (int)sz); // over budget: the raw payload
-            ASSERT_TRUE(rsrc_dcmp_is_compressed(b, sz));
+            ASSERT_TRUE(codec_dcmp_is_compressed(b, sz));
         }
     }
     rfork_free(rf);

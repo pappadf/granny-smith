@@ -2,7 +2,8 @@
 // Copyright (c) pappadf
 
 // scsi_cdrom.c
-// CD-ROM device logic for the SCSI subsystem (AppleCD SC Plus / Sony CDU-8002).
+// CD-ROM device logic for the SCSI subsystem: Apple's SCSI CD-ROM drives, from
+// the AppleCD SC Plus (Sony CDU-8002) to the AppleCD 24X (Matsushita CR-508).
 
 #include "gs_assert.h"
 #include "platform.h"
@@ -11,6 +12,222 @@
 
 #include <assert.h>
 #include <string.h>
+
+// ============================================================================
+// Drive families and models
+// ============================================================================
+//
+// Every Apple CD-ROM drive ran Apple firmware on an OEM mechanism, and reports
+// an Apple product name rather than the OEM's (a CDU-75S answers "CD-ROM
+// CDU-8005", a CR-504 "CD-ROM CR-8005A").  The INQUIRY strings and header bytes
+// below are read from the drives' Apple firmware ROMs, where the standard
+// INQUIRY response sits as a literal 36-byte block.
+//
+// The INQUIRY header sorts the drives into firmware families, and the family
+// is what decides how a drive answers.  The command handlers in this file and
+// in scsi_bus.c are shared by every family; a family only supplies the answers
+// that differ (scsi_cd_family_t).
+
+// SONY SCSI-1 caddy drives: the AppleCD SC and SC Plus.  The behaviour every
+// drive in this emulator had before models existed, and documented throughout
+// this file from the Sony CDU-541 SCSI Interface Manual (1990).  The firmware
+// ROM's header reads 05 80 01 01; byte 7 is zero.  The ROM's additional length
+// is 31h (a 54-byte response), but this model keeps the 36-byte response it
+// has always given.
+static const scsi_cd_family_t cd_family_sony_scsi1 = {
+    .id = "sony-scsi1",
+    .inquiry_version = 0x01, // SCSI-1
+    .inquiry_format = 0x01, // CCS
+    .inquiry_flags = 0x00,
+    .no_medium_asc = ASC_SONY_CADDY_NOT_INSERTED, // B0h, CDU-541 NOT READY table
+    .removal_prevented_asc = ASC_SONY_PREVENT_BIT_SET, // 80h, CDU-541 S5.2.33
+};
+
+// SONY SCSI-2 caddy drives: the AppleCD 300 and 300i (CDU-8003A).  The ROM's
+// header reads 05 80 02 01 1F 00 00 18 -- SCSI-2, but still the CCS response
+// format, and Sync and Linked set in byte 7.  Still a caddy drive with Sony
+// firmware, so it keeps the Sony sense vocabulary.  NOT VERIFIED: no manual or
+// capture of this drive's sense codes is known; B0h is the CDU-541 family's
+// code for the same caddy-out condition.
+static const scsi_cd_family_t cd_family_sony_scsi2_caddy = {
+    .id = "sony-scsi2-caddy",
+    .inquiry_version = 0x02, // SCSI-2
+    .inquiry_format = 0x01, // CCS
+    .inquiry_flags = 0x18, // Sync, Linked
+    .no_medium_asc = ASC_SONY_CADDY_NOT_INSERTED,
+    .removal_prevented_asc = ASC_SONY_PREVENT_BIT_SET,
+};
+
+// SCSI-2 tray drives with Apple firmware, 1994-1997: the Matsushita CR-8004A
+// (300i Plus), CR-8005 and CR-8005A (600i), CR-8008 (1200i), CR-8012 (1600i)
+// and CR-8024 (24X), and the Sony CDU-8005 (600i).  Every one of those ROMs
+// reads 05 80 02 02 1F 00 00 18: SCSI-2, SCSI-2 response format, Sync and
+// Linked.  The Sony and the Matsushita 600i present the same header, so they
+// are one family here.
+//
+// A tray drive has no caddy to report, and SCSI-2 has a standard code for an
+// empty drive: X3.131-1994 table 74, "Preferred TEST UNIT READY responses",
+// NOT READY with 3Ah MEDIUM NOT PRESENT, defined for CD-ROM devices.  NOT
+// VERIFIED against a real drive: no manual for these mechanisms is known, and
+// no sense capture of an empty one has been published.  It is the answer a
+// SCSI-2 driver is written for; a driver that knows only the standard codes
+// treats B0h as "becoming ready" and polls.
+static const scsi_cd_family_t cd_family_apple_scsi2_tray = {
+    .id = "apple-scsi2-tray",
+    .inquiry_version = 0x02, // SCSI-2
+    .inquiry_format = 0x02, // SCSI-2
+    .inquiry_flags = 0x18, // Sync, Linked
+    .no_medium_asc = ASC_MEDIUM_NOT_PRESENT, // 3Ah, X3.131-1994 table 74
+    .removal_prevented_asc = ASC_MEDIUM_LOAD_EJECT_FAILED, // 53h/02h, X3.131-1994 table 71
+    .removal_prevented_ascq = ASCQ_MEDIUM_REMOVAL_PREVENTED,
+};
+
+// AppleCD SC Plus and AppleCD 150: Sony CDU-541 mechanism, firmware 1.8g.
+// The drive of the Macintosh Plus through the Quadras.
+const scsi_cd_drive_t scsi_cd_drive_applecd_sc_plus = {
+    .id = "applecd",
+    .name = "AppleCD SC Plus",
+    .vendor = "SONY",
+    .product = "CD-ROM CDU-8002",
+    .revision = "1.8g",
+    .block_size = 2048,
+    .family = &cd_family_sony_scsi1,
+};
+
+// AppleCD 300i: Sony CDU-561 mechanism, double speed, caddy; the internal
+// drive of the Quadra 660AV and 840AV.
+const scsi_cd_drive_t scsi_cd_drive_applecd_300i = {
+    .id = "applecd300i",
+    .name = "AppleCD 300i",
+    .vendor = "SONY",
+    .product = "CD-ROM CDU-8003A",
+    .revision = "1.9a",
+    .block_size = 2048,
+    .family = &cd_family_sony_scsi2_caddy,
+};
+
+// AppleCD 300i Plus: Matsushita CR-503-K, double speed, tray; the internal
+// drive of the Power Macintosh 6100, 7100 and 8100.
+const scsi_cd_drive_t scsi_cd_drive_applecd_300i_plus = {
+    .id = "applecd300iplus",
+    .name = "AppleCD 300i Plus",
+    .vendor = "MATSHITA",
+    .product = "CD-ROM CR-8004A",
+    .revision = "2.0a",
+    .block_size = 2048,
+    .family = &cd_family_apple_scsi2_tray,
+};
+
+// AppleCD 600i: quadruple speed, tray (Apple, Developer Note: Power Macintosh
+// 7500 and 8500 Computers, 1995, ch. 3, Table 3-7).  Apple shipped it on a
+// Matsushita CR-504 or a Sony CDU-75S under the same part number, 678-0065.
+// This is the Matsushita, firmware 4.0i (the CR-504-K).  The internal drive of
+// the Power Macintosh 7500, 8500 and 9500 and the Network Server 500 and 700.
+const scsi_cd_drive_t scsi_cd_drive_applecd_600i = {
+    .id = "applecd600i",
+    .name = "AppleCD 600i",
+    .vendor = "MATSHITA",
+    .product = "CD-ROM CR-8005A",
+    .revision = "4.0i",
+    .block_size = 2048,
+    .family = &cd_family_apple_scsi2_tray,
+};
+
+// AppleCD 600i on its Sony mechanism, the CDU-75S-25, Apple firmware 1.0j.
+const scsi_cd_drive_t scsi_cd_drive_applecd_600i_sony = {
+    .id = "applecd600i-sony",
+    .name = "AppleCD 600i (Sony)",
+    .vendor = "SONY",
+    .product = "CD-ROM CDU-8005",
+    .revision = "1.0j",
+    .block_size = 2048,
+    .family = &cd_family_apple_scsi2_tray,
+};
+
+// AppleCD 1200i: Matsushita CR-506-C, eight-times speed, Apple part 678-0090,
+// firmware 8.0h.  The 1996 revisions of the Power Macintosh 9500 and 7600.
+const scsi_cd_drive_t scsi_cd_drive_applecd_1200i = {
+    .id = "applecd1200i",
+    .name = "AppleCD 1200i",
+    .vendor = "MATSHITA",
+    .product = "CD-ROM CR-8008",
+    .revision = "8.0h",
+    .block_size = 2048,
+    .family = &cd_family_apple_scsi2_tray,
+};
+
+// AppleCD 1600i, labelled "AppleCD 12X Speed CD-ROM": Matsushita CR-507-C,
+// Apple part 678-0109, firmware 1.0g.  Apple, Developer Note: Power Macintosh
+// 7300, 7600, 8600, and 9600 Computers (1996): "All the new models include a
+// built-in 12X-speed CD-ROM drive, an AppleCD 1600i."
+const scsi_cd_drive_t scsi_cd_drive_applecd_1600i = {
+    .id = "applecd1600i",
+    .name = "AppleCD 1600i",
+    .vendor = "MATSHITA",
+    .product = "CD-ROM CR-8012",
+    .revision = "1.0g",
+    .block_size = 2048,
+    .family = &cd_family_apple_scsi2_tray,
+};
+
+// AppleCD 24X: Matsushita CR-508-C, Apple part 678-0132.  Its Apple firmware
+// has not been read; the identity is the one an owner's System Profiler report
+// gives, and the family is assumed from its predecessors.
+const scsi_cd_drive_t scsi_cd_drive_applecd_24x = {
+    .id = "applecd24x",
+    .name = "AppleCD 24X",
+    .vendor = "MATSHITA",
+    .product = "CD-ROM CR-8024",
+    .revision = "2.0e",
+    .block_size = 2048,
+    .family = &cd_family_apple_scsi2_tray,
+};
+
+const scsi_cd_drive_t *const scsi_cd_drives[] = {
+    &scsi_cd_drive_applecd_sc_plus, &scsi_cd_drive_applecd_300i,      &scsi_cd_drive_applecd_300i_plus,
+    &scsi_cd_drive_applecd_600i,    &scsi_cd_drive_applecd_600i_sony, &scsi_cd_drive_applecd_1200i,
+    &scsi_cd_drive_applecd_1600i,   &scsi_cd_drive_applecd_24x,       NULL,
+};
+
+// Do `a` and the padded field `b` hold the same string, ignoring trailing
+// spaces on either?
+static bool same_padded(const char *a, const char *b) {
+    size_t la = strlen(a), lb = strlen(b);
+    while (la > 0 && a[la - 1] == ' ')
+        la--; // drop the padding
+    while (lb > 0 && b[lb - 1] == ' ')
+        lb--;
+    return la == lb && memcmp(a, b, la) == 0;
+}
+
+const scsi_cd_drive_t *scsi_cd_drive_find(const char *id) {
+    for (int i = 0; id && scsi_cd_drives[i]; i++)
+        if (strcmp(scsi_cd_drives[i]->id, id) == 0)
+            return scsi_cd_drives[i];
+    return NULL;
+}
+
+const scsi_cd_drive_t *scsi_cd_drive_by_identity(const char *vendor, const char *product, const char *revision) {
+    if (!vendor || !product || !revision)
+        return NULL;
+    for (int i = 0; scsi_cd_drives[i]; i++) {
+        const scsi_cd_drive_t *d = scsi_cd_drives[i];
+        if (same_padded(d->vendor, vendor) && same_padded(d->product, product) && same_padded(d->revision, revision))
+            return d;
+    }
+    return NULL;
+}
+
+const scsi_cd_drive_t *scsi_cd_drive_at(const scsi_t *bus, unsigned which) {
+    if (!bus || which >= 8 || bus->devices[which].type != scsi_dev_cdrom)
+        return NULL;
+    return bus->cd_drive[which];
+}
+
+const scsi_cd_family_t *scsi_cd_family_at(const scsi_t *scsi, int target) {
+    const scsi_cd_drive_t *d = scsi_cd_drive_at(scsi, (unsigned)target);
+    return d && d->family ? d->family : &cd_family_sony_scsi1;
+}
 
 // ============================================================================
 // MODE SENSE Pages
@@ -646,8 +863,7 @@ static void put_bcd_msf(uint8_t *dst, uint32_t lba) {
 // System 7's Apple CD-ROM driver uses for the disc's table of contents.  It is
 // not the SCSI-2 (43h) layout.  The control byte's bits 7-6 (CDB byte 9) pick
 // what comes back, the allocation length is bytes 7-8, and every answer is
-// built from 4-byte BCD fields (MAME's nscsi_cdrom_apple_device models the
-// same command):
+// built from 4-byte BCD fields:
 //   00b  first and last track numbers:   [first][last][0][0]
 //   01b  start of the lead-out:          [M][S][F][0]
 //   10b  from the track in byte 5, one entry per 4 bytes requested:
@@ -757,8 +973,12 @@ void scsi_cdrom_start_stop_unit(scsi_t *scsi) {
         // SET".  This used to report 0x3A MEDIUM NOT PRESENT, which tells the
         // driver the drive is empty -- the opposite of the truth, and a reason
         // to stop retrying.
+        //
+        // That is the Sony vocabulary; a SCSI-2 tray drive reports 53h/02h
+        // MEDIUM REMOVAL PREVENTED instead, so the code is the drive family's.
         if (scsi_eject_device(scsi, target) == -2) {
-            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_SONY_PREVENT_BIT_SET, 0x00);
+            const scsi_cd_family_t *fam = scsi_cd_family_at(scsi, target);
+            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, fam->removal_prevented_asc, fam->removal_prevented_ascq);
             return;
         }
     }
@@ -780,13 +1000,14 @@ void scsi_cdrom_prevent_allow(scsi_t *scsi) {
     // terminated with a CHECK CONDITION status.  The sense key will be set to
     // NOT READY and the appropriate additional sense code will be set."  The
     // ready condition is a caddy inserted with its TOC recovered (S4.1.4), so
-    // the appropriate code for an empty bay is 0xB0.
+    // the appropriate code for an empty bay is 0xB0 -- on a Sony; each drive
+    // family names its own (scsi_check_no_medium).
     //
     // ALLOW is not covered by that sentence and is not refused: unlocking a
     // drive that has nothing in it is harmless, and a driver tidying up after
     // an eject has every reason to send it.
     if (prevent && !scsi->devices[target].medium_present) {
-        scsi_check_condition(scsi, SENSE_NOT_READY, ASC_SONY_CADDY_NOT_INSERTED, 0x00);
+        scsi_check_no_medium(scsi, target);
         return;
     }
 

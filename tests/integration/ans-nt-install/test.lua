@@ -7,20 +7,22 @@
 -- HAL itself as HALSHINR.DLL, an ADB keyboard/mouse driver that also serves
 -- the floppy to Setup from RAM, that project's own ARC firmware (arcfw, in
 -- place of Microsoft's veneer since 5 November 2026; nothing of Microsoft's
--- is on the floppy), and three Open Firmware scripts.
+-- is on the floppy), and two Open Firmware scripts.
 -- This row installs NT the way that project's wiki tells a person to, and
--- nothing else: three commands typed at `0 >`, and every Setup screen
--- answered with a key.
+-- nothing else: two commands typed at `0 >`, and every Setup screen
+-- answered with a key.  The firmware stays in its factory big-endian mode
+-- and nothing is stored in NVRAM: the floppy's first stage switches the 604
+-- and the bridges to little-endian itself, until the next reset.
 --
---   load fd:,\setup.of     once per machine: little-endian mode, then reset
 --   load fd:,\boot.of      arcfw off the floppy, SETUPLDR off the CD
 --   load fd:,\bootdisk.of  after text-mode Setup restarts: NT off the disk
 --
 -- (each followed by `load-base loadsize eval`).
 --
 -- WHAT IT EXERCISES IN THE EMULATOR.  More of the Network Server than any
--- other row: the 604 in little-endian mode and Bandit's byte-lane reversal
--- (NT runs little-endian from the firmware onward), both 53C825A SCRIPTS
+-- other row: the 604 switched to little-endian at run time and Bandit's
+-- byte-lane reversal set by a client, not the ROM (NT runs little-endian
+-- from the ARC firmware onward), both 53C825A SCRIPTS
 -- engines under a driver that is not Apple's, SWIM3 reads from Open
 -- Firmware, Cuda's ADB auto-poll feeding NT's own keyboard stack, Cuda's
 -- RESET SYSTEM (NT's restart), and the 54M30 in VGA text mode, in linear
@@ -31,7 +33,7 @@
 -- failed at:
 --
 --   N1  the 2.26NT firmware reaches `0 >` on ttya
---   N2  setup.of switches to little-endian and the machine comes back
+--   N2  the firmware is big-endian and little-endian? is false, as shipped
 --   N3  boot.of loads arcfw, reads the OEM disk into RAM, SETUPLDR runs
 --   N4  Setup offers "Apple Network Server 500/700" off the floppy
 --   N5  the ADB driver and the 54M30 display are taken from the floppy
@@ -51,10 +53,13 @@
 --   roms/ans500-ans700-2.26nt-962f6c13-50348b3d0126096b.rom
 --                                  the Network Server's Windows NT
 --                                  Open Firmware 2.26NT
---   systems/ans_nt_boot_floppy_d8b30a2.img
+--   systems/ans_nt_boot_floppy_9b7f7b7.img
 --                                  `make floppy` in powermac-nt-hal: its own
 --                                  ARC firmware, HAL and ADB driver, nothing
---                                  of Microsoft's (the 5 November 2026 build)
+--                                  of Microsoft's, and no NVRAM setting (the
+--                                  13 November 2026 build: the firmware
+--                                  stays big-endian, the floppy's stage0
+--                                  switches the machine itself)
 --
 -- and, not redistributable, from $GS_EXTRA_MEDIA_DIR/windows-nt-ppc-ans/
 -- (the runner hands it to the script as $EXTRA_MEDIA):
@@ -89,7 +94,7 @@ dofile("../lib/ans.lua")
 dofile("../lib/nt.lua")
 
 local nt_rom = "../../data/roms/ans500-ans700-2.26nt-962f6c13-50348b3d0126096b.rom"
-local nt_floppy = "../../data/systems/ans_nt_boot_floppy_1741579.img"
+local nt_floppy = "../../data/systems/ans_nt_boot_floppy_9b7f7b7.img"
 local nt_root = F"${vars.EXTRA_MEDIA}/windows-nt-ppc-ans"
 local nt_cd = F"${nt_root}/nt4-ppc.iso"
 local nt_disk = F"${nt_root}/nt-disk-blank.img"
@@ -115,9 +120,8 @@ local function nt_install()
     assert(machine.scsi2.device[0].type == "hd", "the install disk is not at id 0 on the second controller")
     assert(machine.floppy.drive[0].present, "the boot floppy is not in the drive")
 
-    -- N2 — setup.of: little-endian? true, real-mode? false, real-base and
-    -- load-base, reset-all.  It resets the machine itself.
-    nt_setup_of()
+    -- N2 — the firmware as the factory left it: nothing to configure.
+    nt_factory_endian()
 
     -- N3 — boot.of: powermac-nt-hal's ARC firmware (arcfw) off the floppy by
     -- read-blocks, all 2880 blocks of the floppy into RAM behind it (NT has

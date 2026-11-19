@@ -612,6 +612,9 @@ int machine_floppy_count(const struct config *cfg);
 // configuration's CD-ROM drives on it; a restore brings its drives back from
 // the bus's own block.
 struct scsi *machine_scsi_bus_init(struct config *cfg, checkpoint_t *cp, const char *bus_id);
+// The CD-ROM drive model storage entry `d` is built as: the model it names,
+// else the profile's (NULL when the machine takes no CD-ROM drive).
+const struct scsi_cd_drive *machine_cd_drive_model(const hw_profile_t *p, const machine_storage_dev_t *d);
 // Build the SCSI bus of every card in a PCI socket that brings one (a
 // 53C825A): "pci_<slot>", a checkpoint part of its own, handed to its card.
 // Called by a PCI family after its slot walk, in the same place on a boot

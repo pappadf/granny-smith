@@ -51,6 +51,10 @@ make
 
 This produces the `peeler` executable in the `build/` directory.
 
+peeler inflates its zip and gzip members, and takes its CRC-32, through the
+codec library (`codec.h`): `src/codec` beside it in a granny-smith tree, or
+`codec/` inside this one (`make CODEC_DIR=...` to point elsewhere).
+
 ## Usage
 
 ```bash

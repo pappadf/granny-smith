@@ -298,7 +298,7 @@ they are never overwriters and never elided.
 | Branches | `b`, `bl`, `bdnz`, `bc` true/false (each `_IN` / `_OUT`), `blr`, `bctr` |
 | SPR and CR moves | `mflr`, `mtlr`, `mfctr`, `mtctr`, `mfxer`, `mtxer`, `mfcr`, `mtcrf` |
 | CR logic | the eight CR logical ops, `mcrf` |
-| Sync and cache | a shared `NOP` (`sync`, `eieio`, `icbi`, `dcbt`, `dcbtst`, `dcbst`, `dcbf`), `isync` |
+| Sync and cache | a shared `NOP` (`sync`, `eieio`, `dcbt`, `dcbtst`), `isync`; `icbi`, `dcbst` and `dcbf` stay T1, since they translate their address and can take a DSI |
 | Loads and stores | the D-form integer accesses with rA ≠ 0: `lwz`/`lwzu`, `lbz`/`lbzu`, `lhz`/`lhzu`, `lha`/`lhau`, `stw`/`stwu`, `stb`/`stbu`, `sth`/`sthu` (§3.10) |
 
 The other loads and stores stay **T1**: the X-forms, the D-forms with

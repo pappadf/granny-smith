@@ -191,13 +191,19 @@ struct scsi *machine_scsi_bus_init(struct config *cfg, checkpoint_t *cp, const c
     // Power-on: the configuration's CD-ROM drives on this bus, empty.  SCSI is
     // not hot-plug -- the guest's CD driver claims its targets at the boot-time
     // bus scan -- so a drive must exist from power-on, disc or no disc.
-    const struct scsi_cd_drive *drive = cfg->machine->cdrom_drive;
-    for (int i = 0; drive && i < cfg->build_opts.n_storage; i++) {
+    for (int i = 0; i < cfg->build_opts.n_storage; i++) {
         const machine_storage_dev_t *d = &cfg->build_opts.storage[i];
-        if (d->type == STORAGE_DEV_CD && strcmp(d->bus, bus_id) == 0)
+        const struct scsi_cd_drive *drive = machine_cd_drive_model(cfg->machine, d);
+        if (drive && d->type == STORAGE_DEV_CD && strcmp(d->bus, bus_id) == 0)
             scsi_add_cd_drive(bus, d->unit, drive);
     }
     return bus;
+}
+
+const struct scsi_cd_drive *machine_cd_drive_model(const hw_profile_t *p, const machine_storage_dev_t *d) {
+    if (d && d->model[0])
+        return scsi_cd_drive_find(d->model); // validated when the document was read
+    return p ? p->cdrom_drive : NULL;
 }
 
 // A card bus's checkpoint part: the bus and its drives.
@@ -351,6 +357,15 @@ static DEF_GETTER(attr_machine_storage) {
         val_map_put(m, "unit", val_int(d->unit));
         val_map_put(m, "position", val_str(position));
         val_map_put(m, "type", val_str(d->type == STORAGE_DEV_CD ? "cd" : "hd"));
+        // A CD-ROM drive's model: the one the configuration named, else the
+        // profile's.  (An ATAPI drive is its own device, not one of these.)
+        const struct scsi_cd_drive *cd = d->type == STORAGE_DEV_CD && b && b->kind == STORAGE_KIND_SCSI
+                                             ? machine_cd_drive_model(cfg->machine, d)
+                                             : NULL;
+        if (cd) {
+            val_map_put(m, "model", val_str(cd->id));
+            val_map_put(m, "model_name", val_str(cd->name));
+        }
         media_bay_t bay;
         const machine_substrate_t *sub = cfg->machine->substrate;
         bool have_bay = machine_storage_media_bay(cfg->machine, d->bus, d->unit, &bay);

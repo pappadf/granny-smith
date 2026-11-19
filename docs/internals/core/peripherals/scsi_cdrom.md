@@ -8,29 +8,88 @@ For the NCR 5380 host controller, bus phases, register model, and hard disk comm
 
 ## 1. Device Identity
 
-### 1.1 Emulated Drive
+### 1.1 Drive models
 
-The emulated CD-ROM presents as a **Sony CDU-8002** — the OEM mechanism inside the Apple AppleCD SC Plus (M3021). This is a 1x caddy-loading SCSI-1 drive with a 64 KB buffer and 380 ms average access time.
+A machine presents the CD-ROM drive it shipped with. Apple's drives ran Apple
+firmware on Sony and Matsushita mechanisms and report an Apple product name, not
+the OEM's (a Sony CDU-75S answers `CD-ROM CDU-8005`, a Matsushita CR-504
+`CD-ROM CR-8005A`). Each drive is a descriptor in `scsi_cdrom.c`
+(`scsi_cd_drive_t`): its configuration id, INQUIRY strings, block size, and a
+pointer to its **firmware family** (`scsi_cd_family_t`). The strings and the
+INQUIRY header bytes are read from each drive's Apple firmware ROM.
+
+| Id | Apple drive | Mechanism | INQUIRY vendor / product / revision | Family | Default on |
+|----|-------------|-----------|-------------------------------------|--------|------------|
+| `applecd` | AppleCD SC Plus | Sony CDU-541 | `SONY` / `CD-ROM CDU-8002` / `1.8g` | SONY SCSI-1 | Plus, SE/30, II family, Quadra 700/900/950, beige G3 (external) |
+| `applecd300i` | AppleCD 300i | Sony CDU-561 | `SONY` / `CD-ROM CDU-8003A` / `1.9a` | SONY SCSI-2 caddy | Quadra 660AV, 840AV |
+| `applecd300iplus` | AppleCD 300i Plus | Matsushita CR-503-K | `MATSHITA` / `CD-ROM CR-8004A` / `2.0a` | SCSI-2 tray | Power Macintosh 6100, 7100, 8100 |
+| `applecd600i` | AppleCD 600i | Matsushita CR-504-K | `MATSHITA` / `CD-ROM CR-8005A` / `4.0i` | SCSI-2 tray | Power Macintosh 7500, 8500, 9500; Network Server 500, 700 |
+| `applecd600i-sony` | AppleCD 600i | Sony CDU-75S-25 | `SONY` / `CD-ROM CDU-8005` / `1.0j` | SCSI-2 tray | — |
+| `applecd1200i` | AppleCD 1200i | Matsushita CR-506-C | `MATSHITA` / `CD-ROM CR-8008` / `8.0h` | SCSI-2 tray | — |
+| `applecd1600i` | AppleCD 1600i ("12X") | Matsushita CR-507-C | `MATSHITA` / `CD-ROM CR-8012` / `1.0g` | SCSI-2 tray | — |
+| `applecd24x` | AppleCD 24X | Matsushita CR-508-C | `MATSHITA` / `CD-ROM CR-8024` / `2.0e` | SCSI-2 tray | — |
+
+The 24X's Apple firmware has not been read; its identity comes from an owner's
+System Profiler report and its family is assumed. The beige G3's internal drive
+is ATAPI and is not one of these.
+
+**Families.** Every drive runs the same command handlers. A family supplies only
+the answers that differ between firmware generations:
+
+| Field | SONY SCSI-1 | SONY SCSI-2 caddy | SCSI-2 tray |
+|-------|-------------|-------------------|-------------|
+| INQUIRY bytes 2, 3 (ANSI version, response format) | `01 01` | `02 01` | `02 02` |
+| INQUIRY byte 7 | `00` | `18` (Sync, Linked) | `18` |
+| Empty bay: NOT READY ASC/ASCQ | `B0/00` | `B0/00` (unverified) | `3A/00` (unverified) |
+| Eject refused by PREVENT: ILLEGAL REQUEST ASC/ASCQ | `80/00` | `80/00` | `53/02` |
+
+The SCSI-2 tray codes are X3.131-1994's (table 74 for an empty drive, table 71
+for MEDIUM REMOVAL PREVENTED). No manual for those mechanisms is known and no
+sense capture of an empty one has been published, so the empty-bay codes of the
+two SCSI-2 families are marked unverified in the source. The Sony and the
+Matsushita 600i present identical INQUIRY headers and share one family.
+
+The medium-change UNIT ATTENTION, `28/00`, is the same in every family (the
+CDU-541's "caddy inserted" and SCSI-2's NOT READY TO READY TRANSITION), as are
+the command set, the mode pages and Apple's page `30h`, whose
+`APPLE COMPUTER, INC` string every Apple firmware ROM carries.
+
+**Choosing a drive.** A profile's `cdrom_drive` names its default. A storage
+entry of type `cd` on a SCSI bus may name another by id:
+`{"bus": "scsi", "unit": 3, "type": "cd", "model": "applecd600i"}`, or
+`drive=scsi:3:cd@applecd600i` on the headless command line. `machine.storage`
+reports each CD-ROM drive's `model` and `model_name`.
+
+**Where the model lives.** `scsi_add_cd_drive` seats the drive and records its
+descriptor per target (`scsi_t.cd_drive[]`, outside the saved block, since it is
+a pointer). A disc inserted later goes into the drive that is there, so it keeps
+the drive's identity. A restore re-derives the descriptor from the saved INQUIRY
+identity (`scsi_cd_drive_by_identity`). A CD-ROM target whose identity matches
+no descriptor answers as the SONY SCSI-1 family.
 
 ### 1.2 SCSI INQUIRY Response
 
-The INQUIRY response is 36 bytes minimum (53 bytes with the additional length reported by the real hardware). The device type, removable media bit, SCSI version, and vendor/product strings must be exact — the Apple CD-ROM driver checks them against an internal whitelist.
+The model returns the 36-byte standard response; the allocation length is a
+ceiling. The table shows the AppleCD SC Plus; the other drives differ in the
+strings and in bytes 2, 3 and 7, per §1.1. (The real CDU-8002's ROM reports an
+additional length of `0x31`, a 54-byte response; the model keeps 36.) The
+device type, removable media bit, SCSI version, and vendor/product strings must
+be exact — the Apple CD-ROM driver checks them against an internal whitelist.
 
 | Byte(s) | Field | Value | Notes |
 |---------|-------|-------|-------|
 | 0 | Peripheral Device Type | `0x05` | CD-ROM |
 | 1 | RMB / Device-Type Qualifier | `0x80` | Removable media |
-| 2 | ISO/ECMA/ANSI Version | `0x01` | SCSI-1 (ANSI X3.131-1986) |
-| 3 | Response Data Format | `0x01` | CCS (Common Command Set) |
-| 4 | Additional Length | `0x31` | 49 additional bytes (total 53) |
-| 5-7 | Reserved/Flags | `0x00` | |
-| 8-15 | Vendor Identification | `"    SONY"` | 8 bytes, right-aligned (left-padded with spaces) |
+| 2 | ISO/ECMA/ANSI Version | `0x01` | SCSI-1 (ANSI X3.131-1986); family field |
+| 3 | Response Data Format | `0x01` | CCS (Common Command Set); family field |
+| 4 | Additional Length | `0x1F` | 31 additional bytes (total 36) |
+| 5-6 | Reserved | `0x00` | |
+| 7 | Flags | `0x00` | Family field |
+| 8-15 | Vendor Identification | `"SONY    "` | 8 bytes, space-padded right |
 | 16-31 | Product Identification | `"CD-ROM CDU-8002 "` | 16 bytes, space-padded right |
 | 32-35 | Product Revision Level | `"1.8g"` | See below |
 
 **Firmware revision format:** The revision string encodes production status in byte 32 (3 = production, 2 = beta, 1 = engineering), a period in byte 33, and major/minor revision in bytes 34-35. The CDU-8001 (AppleCD SC) carried `"3.2i"`. Linux kernel `scsi_devinfo.c` references `"1.8g"` for the CDU-8002; a preserved AppleCD 150 firmware dump (also CDU-8002 mechanism) shows `"v1.89"`. Different production runs and Apple product variants may carry different revision strings.
-
-**Right-alignment:** Apple drives use right-aligned (left-padded) vendor strings. The existing `scsi_add_device()` function applies this via `sprintf("%8s", vendor)`.
 
 **Whitelist strings recognized by the Apple CD-ROM extension:**
 
@@ -41,7 +100,12 @@ The INQUIRY response is 36 bytes minimum (53 bytes with the additional length re
 - `CD-ROM CDR-8004` (alternate)
 - `CD-ROM CR-8004` (Matsushita, AppleCD 300i/300e Plus)
 - `CD-ROM CDU-8005` (AppleCD 600e/600i, Sony)
-- `CD-ROM CR-8005` (AppleCD 600e, Matsushita)
+- `CD-ROM CR-8005` (AppleCD 600e/600i, Matsushita; matched as a prefix, so
+  `CR-8005A` passes)
+
+That list is Apple CD-ROM Software 5.1.1's. The 1200i, 1600i and 24X product
+names (`CR-8008`, `CR-8012`, `CR-8024`) are not on it, so the drivers that
+shipped with those drives must recognise them another way.
 
 ### 1.3 Default SCSI ID
 
@@ -740,7 +804,10 @@ The sense buffer is populated when a command terminates with CHECK CONDITION sta
 
 ### 6.3 Additional Sense Codes (ASC/ASCQ)
 
-The drive we advertise is a `SONY CD-ROM CDU-8002`, so the codes below are the
+The table below is the SONY families' vocabulary (§1.1): the AppleCD SC Plus,
+a `SONY CD-ROM CDU-8002`, and the AppleCD 300i. The SCSI-2 tray drives differ
+in the two codes §1.1's family table lists — an empty bay is `3A/00` and a
+refused eject `53/02` — and otherwise emit the same codes. The codes are the
 CDU-541 manual's (§5.4, Tables 5-48 and 5-49), reproduced by sense key. They are
 **not** the SCSI-2 set. Where the two differ the drive's own value is what a
 period driver expects, because Apple's CD-ROM driver was written against these
@@ -810,9 +877,10 @@ listed for completeness; they belong to conditions this model does not simulate.
 
 ### 6.4 UNIT ATTENTION
 
-UNIT ATTENTION is a per-initiator condition. The drive we advertise is a
-`SONY CD-ROM CDU-8002`, so the authority is the Sony CDU-541 SCSI manual
-§4.1.3, which names exactly four causes:
+UNIT ATTENTION is a per-initiator condition. For the SONY drives the authority
+is the Sony CDU-541 SCSI manual §4.1.3, which names exactly four causes (the
+SCSI-2 tray drives report the same codes; a disc arriving is `0x28/0x00` NOT
+READY TO READY TRANSITION in X3.131-1994 as well):
 
 1. **Power-on:** ASC/ASCQ `0x29/0x00`
 2. **Reset (or BUS DEVICE RESET):** ASC/ASCQ `0x29/0x00`
@@ -954,7 +1022,8 @@ CD-ROM images are always opened read-only (`writable = false` in `image_open()`)
 | Apple CD-ROM 5.4.2 | Mac OS 8.1 | INQUIRY whitelist + page 0x30 | Re-enabled vendor checks |
 | Apple CD/DVD Driver 1.0.1+ | Mac OS 8.5+ | INQUIRY whitelist + page 0x30 | ATAPI + SCSI |
 
-The CDU-8002 identity passes all whitelist checks across all driver versions.
+The CDU-8002 identity passes all whitelist checks across all driver versions. The
+later drives' identities are the ones their own Apple firmware reports (§1.1).
 
 ### 9.2 Required Extension Suite
 
@@ -1013,17 +1082,17 @@ CD-ROM section validates with `identify_cdrom`.
 
 Attach a CD-ROM image to the SCSI bus (default SCSI ID 3; the top-level
 `machine.attach_cdrom(path)` form attaches to the machine's CD bay on
-models that have one). The image is opened read-only and the device
-presents as a Sony CDU-8002 with all Apple-compatible INQUIRY and MODE
-page responses.
+models that have one). The image is opened read-only. A disc goes into the
+drive already at that ID and keeps its model (§1.1); a new drive there is the
+machine's default model.
 
 ### 10.3 `machine.scsi.device[id].eject()`
 
 Eject the medium at the given SCSI ID. Fails if medium removal is
 prevented. Raises no UNIT ATTENTION — see §3.9. The method takes any SCSI
 ID, not only a CD-ROM's, so it doubles as "detach this disk"; the emptied
-device then answers NOT READY in its own vocabulary (`0xB0` for a CD-ROM,
-`0x3A` for anything else).
+device then answers NOT READY in its own vocabulary (its family's code for a
+CD-ROM, §1.1; `0x3A` for anything else).
 
 ### 10.4 `machine.scsi.device[id].info`
 

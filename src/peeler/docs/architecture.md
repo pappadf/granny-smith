@@ -409,39 +409,15 @@ if (src_len < 128) {
 }
 ```
 
-### 7.3  setjmp/longjmp for Deep Errors
+### 7.3  No setjmp/longjmp
 
-Some decompressors (StuffIt method 15's arithmetic coder, LZW decoders)
-detect errors deep inside nested call stacks.  Propagating error codes
-through every return is tedious.  For these cases, use `setjmp`/`longjmp`:
-
-```c
-typedef struct {
-    jmp_buf  jmp;
-    char     errmsg[256];
-} decode_ctx_t;
-
-static void decode_abort(decode_ctx_t *ctx, const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(ctx->errmsg, sizeof(ctx->errmsg), fmt, ap);
-    va_end(ap);
-    longjmp(ctx->jmp, 1);
-}
-
-peel_buf_t peel_sit15(const uint8_t *src, size_t len,
-                                     peel_err_t **err) {
-    decode_ctx_t ctx = {0};
-    if (setjmp(ctx.jmp)) {
-        *err = make_err("SIT15: %s", ctx.errmsg);
-        return (peel_buf_t){0};
-    }
-    // ... deep decompression code can call decode_abort(&ctx, ...) ...
-}
-```
-
-This keeps the hot path free of error-checking boilerplate while still
-surfacing errors cleanly through the public API.
+peeler once aborted deep container decoders (BinHex's layers, MacBinary,
+gzip's whole-buffer form, and the compression methods before they moved to
+the codec library) with `setjmp`/`longjmp` through a context that owned
+their allocations.  None needs it now: every compression layer is a codec
+decoder that reports errors by return value, and the containers are
+shallow enough to return them too, so every error path is an ordinary
+return.
 
 ---
 
@@ -600,13 +576,15 @@ include/peeler.h             Public API (types + all function declarations)
 lib/
   peeler.c                   peel(), detection, helpers
   err.c                      Error object creation and formatting
+  fork_decoder.c             A fork as a codec decoder over its archive range
   formats/
     hqx.c                    BinHex 4.0 decoder
     bin.c                    MacBinary decoder
     sit.c                    StuffIt classic + SIT5 peeler
-    sit13.c                  SIT method 13 decompressor (helper)
-    sit15.c                  SIT method 15 decompressor (helper)
     cpt.c                    Compact Pro peeler
+    zip.c, gz.c, tar.c       Zip, gzip, tar
+codec/ (src/codec in-tree)   Every compression method: StuffIt 1/2/3/13/15,
+                             Compact Pro LZH + RLE, BinHex RLE, DEFLATE
 cmd/
   main.c                     CLI entry point (`peeler` binary)
 test/

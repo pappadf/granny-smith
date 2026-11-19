@@ -1171,6 +1171,34 @@ int ppc_dxlate_dcbz(ppc_t *p, uint32_t iw, uint32_t *addr) {
     return 0;
 }
 
+// The other cache-block operations: dcbst, dcbf and icbi are treated as a
+// load from the addressed byte for translation and protection (PEM Table
+// 4-32), dcbi as a store (PEM §5.3.3); the
+// 604 computes, translates and checks each (604UM §3.8.1, §3.8.5-3.8.7).
+// So an EA with no translation takes a DSI, as a load would: a guest that
+// sweeps the caches through an unmapped range faults on the hardware and
+// must fault here.  Referenced/changed recording need not occur (PEM), so
+// the walk leaves R and C alone.  A direct-store (T=1) segment makes them
+// no-ops, as it does dcbz.  Nothing is accessed.  (The 601's icbi skips
+// even the translation, 601UM "icbi": the caller decides that.)
+// Returns false to go on, true when a DSI was raised.
+bool ppc_dxlate_cacheop(ppc_t *p, uint32_t ea, bool store) {
+    bool dt = (p->msr & PPC_MSR_DT) != 0;
+    if (!dt && !(p->sr_t_mask & (1u << (ea >> 28))))
+        return false; // real addressing: nothing to translate
+    bool user = (p->msr & PPC_MSR_PR) != 0;
+    uint32_t sr = p->sr[ea >> 28];
+    if (!ppc_is_604(p) && (sr & 0x80000000u) && ((sr >> 20) & 0x1FFu) != 0x07Fu)
+        return false; // 601, T=1 I/O controller segment: no-op (§6.10.6)
+    xl_out_t out;
+    xl_result_t res = xlate(p, ea, user, store, false, dt, true, &out, NULL);
+    if (res == XL_OK || res == XL_IOSEG)
+        return false;
+    uint32_t dsisr = (res == XL_PROT) ? PPC_DSISR_PROT : PPC_DSISR_NOTFOUND;
+    raise_dsi(p, ea, dsisr | (store ? PPC_DSISR_STORE : 0u));
+    return true;
+}
+
 // dcbz from the translation tier (ppc_jit_dcbz): the block's host address
 // when ppc_dxlate_dcbz would zero it through a live write entry -- the
 // data cache on, no T=1 segment, W and I clear, not a device's block, and

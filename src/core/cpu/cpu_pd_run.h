@@ -843,12 +843,16 @@ static inline void pd_movem_to_regs(cpu_t *restrict cpu, uint16_t mask, uint32_t
     // then A0-A7, cpu_pd_classify.h asserts the layout): visit only the set
     // bits, staged so a fault partway leaves every register untouched.
     uint32_t staged[16];
+    uint32_t ea0 = ea;
     for (unsigned m = mask; m; m &= m - 1) {
         unsigned i = (unsigned)__builtin_ctz(m);
         uint32_t v = bits == 16 ? (uint32_t)(int32_t)(int16_t)READ16(ea) : READ32(ea);
         ea += (uint32_t)bits >> 3;
-        if (g_bus_error_pending)
+        if (g_bus_error_pending) {
+            if (postinc_off >= 0)
+                PD_R((uint8_t)postinc_off) = ea0; // undo the caller's early (An)+ step: the retry steps it
             return;
+        }
         staged[i] = v;
     }
     for (unsigned m = mask; m; m &= m - 1) {
@@ -979,6 +983,11 @@ void PD_RUN_NAME(cpu_t *restrict cpu, uint32_t *instructions) {
     // arrives with the supervisor pair selected whatever its SR says.
     cpu_select_soa(cpu->supervisor);
     g_bus_error_instr_ptr = instructions; // let memory slow paths force exit
+#ifndef CPU_DECODER_IS_68000
+    // MMU faults snapshot D0-D7 for the retry: 68020/030 only, as a 68000 has
+    // no MMU to fault, and its run loop is kept free of the store.
+    g_fault_dregs_src = cpu->d;
+#endif
     cpu_check_interrupt(cpu);
     // The same-PC retry latch is decided here and in write_sr, never per
     // instruction (m68k_bus_error_latch_settle).
@@ -1291,9 +1300,10 @@ top:
         case PDF_UNLK: {
             PD_ENTER(1);
             PD_MAT(1);
-            PD_SP = PD_R(e.a);
-            uint32_t _v = READ32(PD_SP);
-            PD_SP += 4;
+            // Read through An before SP moves, so the register copy a fault
+            // takes still holds the original SP (exception_bus_error_retry).
+            uint32_t _v = READ32(PD_R(e.a));
+            PD_SP = PD_R(e.a) + 4;
             PD_R(e.a) = _v;
             PD_NEXT(1);
         }

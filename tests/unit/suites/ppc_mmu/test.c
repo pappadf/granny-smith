@@ -838,6 +838,68 @@ static const char *step_s(const mmu_trace_step_t *st, const char *key) {
     return "";
 }
 
+// The cache-block operations other than dcbz translate their address and
+// check it like a load (dcbst, dcbf, icbi) or a store (dcbi): with nothing
+// mapped there they take a DSI (PEM Table 4-32, §5.3.3; 604UM §3.8).  NT's
+// HAL once swept I/O buffers through an 8 MB KSEG0 BAT with dcbf/icbi and
+// faulted on the hardware above it; the emulator, treating them as no-ops,
+// never did.  The 601's icbi is a no-op without the translation (601UM).
+static void cacheop_dsi(uint32_t xo, uint32_t ea, uint32_t want_dsisr) {
+    P->gpr[4] = ea;
+    memory_write_uint32(0x1000, e_x(0, 0, 4, xo, 0));
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000300u);
+    CHECK_EQ(P->srr0, 0x1000u);
+    CHECK_EQ(P->dar, ea);
+    CHECK_EQ(P->dsisr, want_dsisr);
+}
+
+static void cacheop_ok(uint32_t xo, uint32_t ea) {
+    P->gpr[4] = ea;
+    memory_write_uint32(0x1000, e_x(0, 0, 4, xo, 0));
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x1004u);
+}
+
+enum { XO_DCBST = 54, XO_DCBF = 86, XO_DCBI = 470, XO_ICBI = 982 };
+
+static void cacheop_setup604(void) {
+    fresh604();
+    wipe_htab();
+    P->sdr1 = SDR1_VAL; // an empty table behind the BAT
+    // DBAT0: EA $00000000 (8 MB) -> PA $00000000, read/write: the KSEG0 shape
+    P->dbatu[0] = bat604u(0x00000000u, 0x3Fu, 1, 0);
+    P->dbatl[0] = bat604l(0x00000000u, 0, 2);
+    P->msr |= PPC_MSR_DT;
+    ppc_update_active_maps(P);
+    ppc_mmu_invalidate_all(P);
+}
+
+static void test_604_cache_ops(void) {
+    static const uint32_t loads[] = {XO_DCBST, XO_DCBF, XO_ICBI};
+    for (unsigned i = 0; i < sizeof loads / sizeof loads[0]; i++) {
+        cacheop_setup604();
+        cacheop_ok(loads[i], 0x00002000u); // inside the BAT
+        cacheop_dsi(loads[i], 0x00AF2000u, PPC_DSISR_NOTFOUND); // above it: a load's DSI
+    }
+    cacheop_setup604();
+    cacheop_ok(XO_DCBI, 0x00002000u);
+    cacheop_dsi(XO_DCBI, 0x00AF2000u, PPC_DSISR_NOTFOUND | PPC_DSISR_STORE); // a store's DSI
+    // Translation off: real addressing, nothing to fault on
+    fresh604();
+    for (unsigned i = 0; i < sizeof loads / sizeof loads[0]; i++)
+        cacheop_ok(loads[i], 0x00AF2000u);
+    // The 601: dcbf translates, icbi does not
+    fresh();
+    wipe_htab();
+    enter_dt();
+    cacheop_dsi(XO_DCBF, 0x00500000u, PPC_DSISR_NOTFOUND);
+    fresh();
+    wipe_htab();
+    enter_dt();
+    cacheop_ok(XO_ICBI, 0x00500000u);
+}
+
 // 601 order: the segment register first (T=1 prevails), then the BATs, then
 // the primary and secondary PTE groups -- and the walk is side-effect-free:
 // R stays clear on the PTE it found.
@@ -980,6 +1042,7 @@ int main(void) {
     test_604_split_access();
     test_604_tlbie();
     test_604_dcbz();
+    test_604_cache_ops();
 
     // The debugger's walk on both models.
     test_debug_walk_601();

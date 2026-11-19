@@ -292,6 +292,31 @@ The emulator **must** reproduce this: the phase-match gate on
 `BSR.DR` and the CDR-read auto-transition is what makes the
 `se30-format-hd` integration test work.
 
+The same interrupt ends every DMA data-in transfer whose host stays in DMA
+mode: the target changes to STATUS some microseconds after the last ACK,
+and with TCR still saying DATA IN the 5380 raises the phase-mismatch IRQ.
+`scsi_5380_entered_status()` defers it by `SCSI_STATUS_IRQ_CYCLES` (1600,
+100 µs at 16 MHz) instead of raising it during the read of the last byte,
+and the deferred `scsi_status_irq()` acts only on a real mismatch (MR.DMA
+set, TCR not STATUS), raising it with BSR's end-of-DMA latch and DRQ clear
+— DRQ needs a matching phase.  Two hosts bound it:
+
+* **A/UX 3's `scsiin`** runs its pseudo-DMA at IPL 0 and must not take the
+  IRQ mid-loop (it would nest a `scsidintr` that stamps `SST_MORE`); it
+  clears MR.DMA well inside the turnaround, so the deferred evaluation
+  finds no mismatch.
+* **A/UX 1.1's stand-alone shell (`sash`)** reads the data and then spins
+  on `BSR_INT`, decoding BSR|CSR against a table whose phase-mismatch row
+  (`$1060` under `$B462`) wants EDMA clear and whose status-ready row
+  (`$1040` under `$FDC2`) wants DRQ clear.  Without the IRQ it timed out on
+  every READ CAPACITY ("Disk c0d0s0 Error: SCSI timeout"); with EDMA or
+  DRQ left set it reported "Protocol Error Processing SCSI request".
+* **A/UX 1.1's kernel** sets TCR to STATUS and arms a DMA receive for the
+  status byte, then polls for its DRQ.  An earlier version of the deferral
+  that ignored TCR dropped that DRQ when the kernel was slow; the kernel's
+  watchdog fired, and the REQUEST SENSE recovery that followed corrupted
+  page-ins during the floppy install.
+
 ### 5.3 Apple HD SC Setup bus scan
 
 On launch, the utility iterates SCSI IDs 0..6 issuing a minimal probe
@@ -437,6 +462,15 @@ completes:
 The settle sits at 256 — after the primer, before any polled driver's
 first write.  Nothing identifies the primer; a driver that polls simply
 waits, which is what the hardware makes it do.
+
+The settle is not the only guard.  In DMA mode the 5380 moves a byte only
+while the bus phase matches TCR, and the primer is written with TCR still
+describing COMMAND (the CDB's Start DMA Send is still armed), so
+`scsi_odr_auto_handshake_byte()` drops a DMA-mode write on a phase
+mismatch.  That catches the primer when an interrupt between the CDB and
+the primer pushes it past the settle — A/UX 1.1 takes clock ticks there,
+and the primer went to disk as byte 0 of the payload, shifting a whole
+block (fsck "EXCESSIVE BAD BLKS" on `/bin/pr`'s indirect block).
 
 This also protects the case the DRQ window used to protect by accident:
 **classic Mac OS legitimately writes leading `$00` bytes** (an HFS volume

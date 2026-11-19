@@ -136,7 +136,7 @@ const hw_profile_t machine_ans500 = {
     .appletalk = true,
     .options = ans500_options,
     .builtin_video = &ans_builtin_video,
-    .cdrom_drive = &mac_cdrom_drive_applecd,
+    .cdrom_drive = &scsi_cd_drive_applecd_600i,
 
     .pci_slots = ans_pci_slots,
 

@@ -110,6 +110,7 @@ struct scsi_53c96 {
     uint32_t counter_live; // live byte counter (0 write = 65536)
     uint32_t xfer_residual; // bytes held back in the FIFO at INT time (odd = 1)
     uint8_t xfer_int_done; // completion INT already posted for this transfer
+    uint8_t msg_skip; // ATN message bytes of a DMA select still to come through the aperture
 
     struct scheduler *sched;
     struct scsi *bus; // bus/target model (NULL until attached)
@@ -340,8 +341,14 @@ static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
         // Message byte(s) first for the ATN variants (IDENTIFY etc.) —
         // informational to the target model; consumed from the FIFO.
         int msg_bytes = (code == 0x41) ? 0 : (code == 0x46) ? 3 : 1;
-        for (int i = 0; i < msg_bytes && byte_fifo_count(&c->fifo) > 0; i++)
+        int i = 0;
+        for (; i < msg_bytes && byte_fifo_count(&c->fifo) > 0; i++)
             (void)fifo_pop(c);
+        // A DMA select takes its message byte(s) through the DMA channel
+        // too, ahead of the CDB: Linux's esp_scsi loads IDENTIFY + CDB into
+        // its DMA buffer and issues Select with ATN | DMA with an empty
+        // FIFO.  The bytes still owed are message-out, not command.
+        c->msg_skip = (uint8_t)(msg_bytes - i);
         if (code == 0x43) {
             // Select-with-ATN-and-stop: halt after the message byte.
             c->seq_step = 1;
@@ -839,6 +846,10 @@ static void pdma_out_byte(scsi_53c96_t *c, uint8_t value) {
     if (!c->bus)
         return;
     if (c->xfer_mode == XFER_CMD_OUT) {
+        if (c->msg_skip) {
+            c->msg_skip--; // the select's message-out byte (IDENTIFY ...)
+            return;
+        }
         scsi_push_data_out_byte(c->bus, value);
         if (scsi_get_bus_phase(c->bus) != scsi_command) {
             // Full CDB dispatched: the select sequence completes.

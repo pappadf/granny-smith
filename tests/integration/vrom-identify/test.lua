@@ -33,6 +33,10 @@ assert(gs.str(catalog.vroms.identify("../../data/roms/824gc-v1.1-revb-d722b053.v
 assert(gs.str(catalog.vroms.identify("../../data/roms/824gc-v1.0-reva-9e9857e8.vrom")) == "{\"recognised\":true,\"card_id\":\"824gc\",\"compatible\":[\"824gc\"],\"size\":32768,\"crc\":\"0x9e9857e8\"}", "8•24 GC v1.0 vROM identity")
 assert(gs.str(catalog.vroms.identify("../../data/roms/824gc-v1.0a16-4740028d.vrom")) == "{\"recognised\":true,\"card_id\":\"824gc\",\"compatible\":[\"824gc\"],\"size\":32768,\"crc\":\"0x4740028d\"}", "8•24 GC alpha vROM identity")
 
+-- Macintosh II Video Card ("Toby") → "mac_ii_video_card".  A 4 KB chip on
+-- byte lane 0 (byteLanes $E1), CRC $729755F8.
+assert(gs.str(catalog.vroms.identify("../../data/roms/mac-ii-video-card-reva-729755f8.vrom")) == "{\"recognised\":true,\"card_id\":\"mac_ii_video_card\",\"compatible\":[\"mac_ii_video_card\"],\"size\":4096,\"crc\":\"0x729755f8\"}", "Macintosh II Video Card vROM identity")
+
 -- A main ROM is the wrong size for a vROM → recognised:false (no false match).
 assert(gs.str(catalog.vroms.identify("../../data/roms/plus-v3-4d1f8172.rom")) == "{\"recognised\":false}", "non-vROM file must be unrecognised")
 
@@ -42,6 +46,6 @@ assert(not gs.truthy(function() return catalog.vroms.identify("/dev/null/nonexis
 -- --- Part 2: every catalog card_id resolves to a registered nubus card. ---
 -- The vROM catalog's card ids are registry ids: the card registry lists each
 -- one, so the catalog and the registry don't drift.
-assert(gs.str(catalog.nubus_cards) == "[builtin_se30_video, mdc_8_24, builtin_rbv_video, builtin_rbv_iisi_video, display_card_24ac, 824gc]", "the NuBus card registry")
+assert(gs.str(catalog.nubus_cards) == "[builtin_se30_video, mdc_8_24, builtin_rbv_video, builtin_rbv_iisi_video, display_card_24ac, 824gc, mac_ii_video_card]", "the NuBus card registry")
 
 quit()

@@ -27,6 +27,7 @@
 #include "harness.h"
 #include "memory.h"
 #include "mmu.h"
+#include "predecode.h"
 #include "test_assert.h"
 
 #include <stdint.h>
@@ -58,13 +59,12 @@ static void store_be16(uint8_t *p, uint16_t val) {
     p[1] = (uint8_t)(val);
 }
 
-// The 68030 decoder: cpu.c declares it for itself, no header exports it.
-void cpu_run_68030(cpu_t *cpu, uint32_t *instructions);
-
-// Run one 68030 instruction (plus any pending exception dispatch).
+// Run one 68030 instruction (plus any pending exception dispatch), through
+// the dispatcher as the scheduler does: it publishes the register file the
+// MMU-fault copy is taken from, which the retry's rollbacks read.
 static void run_one(cpu_t *cpu) {
     uint32_t one = 1;
-    cpu_run_68030(cpu, &one);
+    cpu_run_sprint(cpu, &one);
 }
 
 // Build the two-level table and switch the MMU on. Maps pages 0x0000,
@@ -203,14 +203,20 @@ TEST(clr_l_d16_valid_ext_word_still_writes) {
 // `words` is placed at 0x3F00 in the mapped code page.
 static void run_user_faulting(cpu_t *cpu, memory_map_t *mem, const uint16_t *words, int n, uint32_t usp) {
     uint8_t *ram = ram_native_pointer(mem, 0);
+    // A NOP first, in the same sprint: the first instruction on a freshly
+    // walked page runs in the generic step (it fills the page's fast-path
+    // entry), so only the next one reaches a predecoded handler.
+    store_be16(ram + 0x3EFE, 0x4E71);
     for (int i = 0; i < n; i++)
         store_be16(ram + 0x3F00 + 2 * i, words[i]);
-    cpu->pc = 0x3F00;
+    predecode_invalidate_host(ram + 0x3000, 0x1000); // the code was stored behind the predecoder's back
+    cpu->pc = 0x3EFE;
     cpu->a[7] = STACK_TOP;
     cpu->supervisor = 1;
     cpu->usp = usp;
     cpu_set_sr(cpu, 0x0000); // drop to user mode: A7 <- USP
-    run_one(cpu); // faulting instruction
+    uint32_t two = 2;
+    cpu_run_sprint(cpu, &two); // NOP, then the faulting instruction
     run_one(cpu); // let the deferred bus error vector
     ASSERT_TRUE(cpu->pc >= HANDLER_ADDR && cpu->pc <= HANDLER_ADDR + 4);
     ASSERT_TRUE(cpu->halted == 0);
@@ -244,6 +250,43 @@ TEST(unlk_pop_fault_leaves_an_and_sp) {
     run_user_faulting(cpu, mem, code, 1, 0x5800);
     ASSERT_EQ_INT((int)cpu->a[6], 0x4100);
     ASSERT_EQ_INT((int)cpu->usp, 0x5800);
+    teardown_mmu(cpu, mmu);
+}
+
+// The Format $B frame's stacked PC (SR at SSP, PC at SSP+2): the retry must
+// restart the faulting instruction, never the target it jumped to.
+static uint32_t frame_pc(cpu_t *cpu, memory_map_t *mem) {
+    uint8_t *ram = ram_native_pointer(mem, 0);
+    uint32_t sp = cpu->a[7];
+    return ((uint32_t)ram[sp + 2] << 24) | ((uint32_t)ram[sp + 3] << 16) | ((uint32_t)ram[sp + 4] << 8) | ram[sp + 5];
+}
+
+TEST(rts_pop_fault_leaves_sp) {
+    // RTS with USP in the invalid page: the pop faults, the op still added 4
+    // to SP and jumped to the fill value; the retry must pop from USP again.
+    cpu_t *cpu = test_get_cpu(test_get_active_context());
+    memory_map_t *mem = test_get_memory(test_get_active_context());
+    cpu->cpu_model = CPU_MODEL_68030;
+    mmu_state_t *mmu = setup_mmu(cpu, mem);
+    ASSERT_TRUE(mmu != NULL);
+    const uint16_t code[] = {0x4E75};
+    run_user_faulting(cpu, mem, code, 1, 0x4100);
+    ASSERT_EQ_INT((int)cpu->usp, 0x4100);
+    ASSERT_EQ_INT((int)frame_pc(cpu, mem), 0x3F00);
+    teardown_mmu(cpu, mmu);
+}
+
+TEST(rtd_pop_fault_leaves_sp) {
+    // RTD #16: as RTS, and the displacement must not be added either.
+    cpu_t *cpu = test_get_cpu(test_get_active_context());
+    memory_map_t *mem = test_get_memory(test_get_active_context());
+    cpu->cpu_model = CPU_MODEL_68030;
+    mmu_state_t *mmu = setup_mmu(cpu, mem);
+    ASSERT_TRUE(mmu != NULL);
+    const uint16_t code[] = {0x4E74, 0x0010};
+    run_user_faulting(cpu, mem, code, 2, 0x4100);
+    ASSERT_EQ_INT((int)cpu->usp, 0x4100);
+    ASSERT_EQ_INT((int)frame_pc(cpu, mem), 0x3F00);
     teardown_mmu(cpu, mmu);
 }
 
@@ -293,12 +336,73 @@ TEST(fsave_predec_fault_leaves_an) {
     teardown_mmu(cpu, mmu);
 }
 
+TEST(fmovem_predec_fault_leaves_an) {
+    // FMOVEM.X FP2,-(A0) with the 12-byte frame in the invalid page: A0
+    // keeps its value, so the retry pushes FP2 once (glib's function
+    // prologues: `FMOVEM.X FP2,-(SP)` on a fresh stack page).
+    cpu_t *cpu = test_get_cpu(test_get_active_context());
+    memory_map_t *mem = test_get_memory(test_get_active_context());
+    cpu->cpu_model = CPU_MODEL_68030;
+    if (!cpu->fpu)
+        cpu->fpu = fpu_init();
+    mmu_state_t *mmu = setup_mmu(cpu, mem);
+    ASSERT_TRUE(mmu != NULL);
+    uint8_t *ram = ram_native_pointer(mem, 0);
+    store_be16(ram + 0x3F00, 0xF220); // FMOVEM.X <list>,-(A0)
+    store_be16(ram + 0x3F02, 0xE004); // predecrement list: FP2
+    cpu->pc = 0x3F00;
+    cpu->a[0] = 0x4100;
+    cpu->a[7] = STACK_TOP;
+    cpu->supervisor = 1;
+    cpu->halted = 0;
+    run_one(cpu);
+    run_one(cpu);
+    ASSERT_TRUE(cpu->pc >= HANDLER_ADDR && cpu->pc <= HANDLER_ADDR + 4);
+    ASSERT_EQ_INT((int)cpu->a[0], 0x4100);
+    teardown_mmu(cpu, mmu);
+}
+
+TEST(fadd_x_postinc_fault_leaves_an_and_fpn) {
+    // FADD.X (A0)+,FP0 reading from the invalid page: A0 stays, and FP0 is
+    // not combined with the all-ones operand the faulted read returned --
+    // the retry must add the real operand to the real FP0.
+    cpu_t *cpu = test_get_cpu(test_get_active_context());
+    memory_map_t *mem = test_get_memory(test_get_active_context());
+    cpu->cpu_model = CPU_MODEL_68030;
+    if (!cpu->fpu)
+        cpu->fpu = fpu_init();
+    fpu_state_t *fpu = (fpu_state_t *)cpu->fpu;
+    fpu->fp[0].exponent = 0x3FFF; // 1.0
+    fpu->fp[0].mantissa = 0x8000000000000000ull;
+    mmu_state_t *mmu = setup_mmu(cpu, mem);
+    ASSERT_TRUE(mmu != NULL);
+    uint8_t *ram = ram_native_pointer(mem, 0);
+    store_be16(ram + 0x3F00, 0xF218); // FADD.X (A0)+,FP0
+    store_be16(ram + 0x3F02, 0x4822);
+    cpu->pc = 0x3F00;
+    cpu->a[0] = 0x4000;
+    cpu->a[7] = STACK_TOP;
+    cpu->supervisor = 1;
+    cpu->halted = 0;
+    run_one(cpu);
+    run_one(cpu);
+    ASSERT_TRUE(cpu->pc >= HANDLER_ADDR && cpu->pc <= HANDLER_ADDR + 4);
+    ASSERT_EQ_INT((int)cpu->a[0], 0x4000);
+    ASSERT_EQ_INT((int)fpu->fp[0].exponent, 0x3FFF);
+    ASSERT_TRUE(fpu->fp[0].mantissa == 0x8000000000000000ull);
+    teardown_mmu(cpu, mmu);
+}
+
 int main(void) {
     test_context_t *ctx = test_harness_init();
     if (!ctx) {
         fprintf(stderr, "Failed to initialize test harness\n");
         return 1;
     }
+    // Under CPU_TEST_PREDECODE=1 the faulting instruction must run in its
+    // predecoded handler: switch off the thrash rule, which would keep these
+    // one-instruction pages on the generic tier (as the cpu suite does).
+    predecode_set_thrash_ratio(0);
 
     RUN(clr_l_d16_ext_word_fetch_fault_aborts_write);
     RUN(clr_w_d16_ext_word_fetch_fault_aborts_write);
@@ -306,8 +410,12 @@ int main(void) {
     RUN(clr_l_d16_valid_ext_word_still_writes);
     RUN(link_push_fault_leaves_an_and_sp);
     RUN(unlk_pop_fault_leaves_an_and_sp);
+    RUN(rts_pop_fault_leaves_sp);
+    RUN(rtd_pop_fault_leaves_sp);
     RUN(movem_postinc_fault_leaves_an);
     RUN(fsave_predec_fault_leaves_an);
+    RUN(fmovem_predec_fault_leaves_an);
+    RUN(fadd_x_postinc_fault_leaves_an_and_fpn);
 
     test_harness_destroy(ctx);
     return 0;

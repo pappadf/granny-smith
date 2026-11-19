@@ -8,8 +8,8 @@
 
 #include "image_moof.h"
 
+#include "codec.h"
 #include "common.h"
-#include "crc32.h"
 #include "format_registry.h"
 #include "log.h"
 #include "storage_util.h"
@@ -330,7 +330,7 @@ int moof_decode(const uint8_t *f, size_t len, moof_disk_t *out) {
     if (!moof_detect(f, len) || len < MOOF_HEADER_SIZE + CHUNK_HDR)
         return -EINVAL;
     uint32_t want_crc = RD_LE32(f + 8);
-    if (want_crc && gs_crc32(0, f + MOOF_HEADER_SIZE, len - MOOF_HEADER_SIZE) != want_crc)
+    if (want_crc && codec_crc32(0, f + MOOF_HEADER_SIZE, len - MOOF_HEADER_SIZE) != want_crc)
         out->crc_mismatch = true; // the spec says warn, not refuse
     moof_chunks_t c;
     moof_walk(f, len, &c);
@@ -594,7 +594,7 @@ int moof_encode(const uint8_t *data, uint32_t sectors, const uint8_t *tags, uint
     WR_LE16(info + 38, largest); // largest track, in blocks
     size_t len = (size_t)block * MOOF_BLOCK;
     WR_LE32(f + TRKS_AT + 4, (uint32_t)(len - (TRKS_AT + CHUNK_HDR)));
-    WR_LE32(f + 8, gs_crc32(0, f + MOOF_HEADER_SIZE, len - MOOF_HEADER_SIZE));
+    WR_LE32(f + 8, codec_crc32(0, f + MOOF_HEADER_SIZE, len - MOOF_HEADER_SIZE));
     *out = f;
     *out_len = len;
     return 0;

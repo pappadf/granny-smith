@@ -51,7 +51,7 @@
 // Reference Guide* (RRG-G04100-C Rev 0.02, 1999), PCI_GART_PAGE, BUS_CNTL;
 // ATI, *RAGE 128 Register Reference Supplement: CCE and 3D Packets*.
 
-#include "crc32.h"
+#include "codec.h"
 #include "log.h"
 #include "rage128_priv.h"
 
@@ -876,7 +876,7 @@ static void ucode_check(rage128_t *r) {
             uint8_t *o = be + 8u * a + 4u * h;
             o[0] = (uint8_t)(v >> 24), o[1] = (uint8_t)(v >> 16), o[2] = (uint8_t)(v >> 8), o[3] = (uint8_t)v;
         }
-    uint32_t crc = gs_crc32(0, be, sizeof(be));
+    uint32_t crc = codec_crc32(0, be, sizeof(be));
     r->cce.ucode_state = crc == R128_UCODE_CRC ? R128_UCODE_KNOWN : R128_UCODE_UNKNOWN;
     if (r->cce.ucode_state == R128_UCODE_KNOWN)
         LOG(1, "Rage 128 CCE: microcode uploaded — ATI's published Rage 128 image (CRC $%08X)", crc);

@@ -24,7 +24,8 @@
 //   startup video mode.  Without monitor=, the device's monitors are searched
 //   for it, the plugged-in one first.
 // - storage=<bus>:<unit>:<type>[,…]: the whole storage list, as the
-//   headless drive= spells an entry (`storage=ata0:0:hd,ata1:0:cd`).
+//   headless drive= spells an entry (`storage=ata0:0:hd,ata1:0:cd`); a SCSI
+//   CD-ROM drive may name its model (`scsi:3:cd@applecd600i`).
 // - startup=<bus>:<unit>[:<partition>] (or `none`): the startup device, and
 //   on a machine whose firmware boots a partition (the G3) the volume's
 //   partition number on that disk (files.partitions).  Without it, a
@@ -146,20 +147,23 @@ function optionValueId(option: ConfigOption, value: string): string | null {
 }
 
 // storage=: "<bus>:<unit>:<type>" entries, separated by commas (or by
-// semicolons, as the headless drive= separates them).  Returns the list, or
-// why it is not one; the core checks the units and their sharing.
+// semicolons, as the headless drive= separates them); a type "cd@<model>"
+// names a CD-ROM drive's model.  Returns the list, or why it is not one; the
+// core checks the units, their sharing and the model.
 function parseStorage(profile: MachineProfile, s: string): StorageDevice[] | string {
   const out: StorageDevice[] = [];
   for (const raw of s.split(/[,;]/)) {
     const e = raw.trim();
     if (!e) continue;
-    const m = /^([^:\s]+):(\d+):([^:\s]+)$/.exec(e);
+    const m = /^([^:\s]+):(\d+):([^:@\s]+)(?:@([^:\s]+))?$/.exec(e);
     if (!m) return `${e} is not <bus>:<unit>:<type>`;
     const bus = profile.storage.find((b) => b.id.toLowerCase() === m[1].toLowerCase());
     if (!bus) return `${profile.name}'s buses are ${profile.storage.map((b) => b.id).join(', ')}`;
     const type = bus.accepts.find((a) => a.id.toLowerCase() === m[3].toLowerCase());
     if (!type) return `${bus.id} takes ${bus.accepts.map((a) => a.id).join(', ')}`;
-    out.push({ bus: bus.id, unit: Number(m[2]), type: type.id });
+    const device: StorageDevice = { bus: bus.id, unit: Number(m[2]), type: type.id };
+    if (m[4]) device.model = m[4].toLowerCase(); // the core checks the drive model exists
+    out.push(device);
   }
   return out;
 }

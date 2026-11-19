@@ -135,7 +135,13 @@ function glide_play(golden, raster, perf_row) -- global: included file
     -- scheduler is instruction-exact.  (Played from a restored checkpoint
     -- the demo is a few frames elsewhere at this count, so the -sw row's
     -- golden is its own: see that row.)
-    mac.check(golden)
+    -- A mismatch keeps the frame it got, as fail-<golden> in the results
+    -- directory (CI uploads it), so a recapture can be reviewed.
+    if mac.REGEN_MODE == "1" then
+        mac.check(golden)
+    else
+        assert(machine.screen.match_or_save(golden, F"${mac.RESULTS_DIR}/fail-${golden}"), F"screen does not match '${golden}'")
+    end
     mac.report_perf(perf_row, scheduler.instr_count)
 
     echo(F"tnt-voodoo2-glide: Quake renders in-game frames through the model (raster=${raster})")

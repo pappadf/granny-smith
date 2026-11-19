@@ -10,15 +10,18 @@ local mac = dofile("mac.lua") -- NOTE: no direct mac.script include (this file i
 --     include "../lib/nt.script"
 --
 -- NT on this machine comes from the powermac-nt-hal boot floppy
--- (github.com/pappadf/powermac-nt-hal): three Open Firmware scripts on it
--- (setup.of, boot.of, bootdisk.of), each started with two typed lines,
+-- (github.com/pappadf/powermac-nt-hal): two Open Firmware scripts on it
+-- (boot.of, bootdisk.of), each started with two typed lines,
 --
 --     load fd:,\<script>
 --     load-base loadsize eval
 --
--- on the serial console.  Until NT's kernel runs, SETUPLDR and the veneer
--- draw on ttya; from the kernel on NT draws only on the 54M30 and reads
--- only the ADB keyboard.  These helpers are that split.
+-- on the serial console.  The firmware stays in its factory big-endian mode
+-- and nothing is stored in NVRAM: the floppy's first stage switches the 604
+-- and the bridges to little-endian itself, until the next reset.  Until NT's
+-- kernel runs, SETUPLDR and the ARC firmware draw on ttya; from the kernel on
+-- NT draws only on the 54M30 and reads only the ADB keyboard.  These helpers
+-- are that split.
 
 -- --- Keys ---------------------------------------------------------------------
 
@@ -156,7 +159,7 @@ function nt_screen(golden, ceiling) -- global: included file
     return spent
 end
 
--- --- Power-on and setup.of ------------------------------------------------------
+-- --- Power-on, and the firmware as the factory left it -----------------------------
 
 -- True when `out` carries the banner of a Network Server firmware NT runs
 -- on: the production 1.1.22 ROM or the 2.26NT ROM.  Both print it when they
@@ -167,9 +170,9 @@ end
 
 -- N1: a machine that has never been booted, on the given ROM (the production
 -- 1.1.22 or the 2.26NT ROM: since powermac-nt-hal 1741579, 6 November 2026,
--- the firmware on the floppy needs nothing the NT ROM added), with 64 MB -- setup.of puts
--- load-base at 62 MB and boot.of / bootdisk.of stage the veneer between 59
--- and 63 MB, so the 32 MB default cannot work.  Leaves the machine at `0 >`
+-- the firmware on the floppy needs nothing the NT ROM added), with 64 MB -- the
+-- OEM disk boot.of reads into RAM for NT sits at 59 MB (powermac-nt-hal
+-- include/oemdisk.h), so the 32 MB default cannot work.  Leaves the machine at `0 >`
 -- on ttya and returns what the firmware printed.
 function nt_power_on(rom) -- global: included file
     machine.boot{model = "ans500", ram = 65536, rom = rom}
@@ -209,15 +212,18 @@ function nt_power_on(rom) -- global: included file
     return fw
 end
 
--- N2: setup.of, which the floppy's README says to run once per machine.
--- The store is virgin on every row (nt_power_on clears it), so every row
--- runs it.  It resets the machine itself; returns once the prompt is back.
-function nt_setup_of() -- global: included file
-    local le = nt_load_eval("setup", ".of", 200000000)
-    assert(gs.contains(le, "setting little-endian mode"), F"N2: setup.of did not run: ${le}")
-    local back = nt_prompt(6000000000)
-    assert(nt_firmware_banner(back), "N2: the machine did not come back from setup.of's reset")
-    echo("N2: little-endian configuration set; the firmware is back")
+-- N2: the firmware as the factory left it.  Earlier floppies had a setup.of
+-- that stored little-endian? true in NVRAM and reset -- a setting Apple never
+-- supported, which has left real machines needing an NVRAM reset.  The
+-- floppy now runs as an ordinary big-endian client and switches the machine
+-- itself, so a row asserts the opposite of what it used to: the 604 is
+-- big-endian at the prompt and little-endian? reads false.
+function nt_factory_endian() -- global: included file
+    assert((machine.cpu.msr & 1) == 0, "N2: the firmware is running little-endian at its prompt")
+    ans_send("printenv little-endian?")
+    local le = ans_go()
+    assert(gs.contains(le, "false"), F"N2: little-endian? is not false: ${le}")
+    echo("N2: the firmware is big-endian and little-endian? is false, as shipped")
 end
 
 -- --- The installed system, cold, to the desktop ------------------------------
@@ -245,7 +251,7 @@ function nt_installed_boot_rungs(nt_rom, nt_disk, nt_floppy, row, g_logon, g_inf
     assert(machine.floppy.drive[0].present, "the boot floppy is not in the drive")
 
     -- B2
-    nt_setup_of()
+    nt_factory_endian()
 
     -- B3 — marks from the HAL's and the driver's own serial trace.
     -- (sent() escapes backslashes, so the matches avoid them.)

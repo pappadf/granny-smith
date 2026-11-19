@@ -1,16 +1,27 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// rsrc_dcmp.c
-// Apple System 7 "DonnBits" (dcmp 0) decompressor, ported from the
-// open-sourced Apple assembly in the System 7.1 source drop:
-//   Patches/DeCompressDefProc.a
-//   Patches/DeCompressCommon.A
-//   Internal/Asm/Decompression.a
-// © 1990-1991 Apple Computer (Donn Denman), released as part of the
-// System 7 source drop.
+// dcmp.c
+// System 7 compressed resources (see codec.h): the 0xA89F6572 header and
+// three of Apple's decompressors --
+//   header version 8 + dcmp 0   DonnBits (Donn Denman, 1990-1991)
+//   header version 9 + dcmp 2   GreggyBits (Greg Marriott, 1990-1991)
+//   header version 9 + dcmp 3   InstaCompOne (undocumented; see its section)
+// dcmp 0 and 2 are ported from Apple's open-sourced assembly in the System 7
+// source drop (Patches/DeCompressDefProc.a, DeCompressCommon.A,
+// GreggyBitsDefProc.a; (c) 1990-1991 Apple): the constant-word emit tables,
+// opcode dispatch, var-table mechanics and GreggyBits' static table are
+// reproduced verbatim, the assembly's Bsr / Bra flow rewritten as a C
+// switch.  Other dcmp ids (1, 7, 8, the custom ones extensions ship) and
+// dcmp 0 in a version-9 header are CODEC_ERR_UNSUPPORTED, so a caller can
+// keep the raw bytes.
 //
-// On-disk layout of a compressed resource:
+// A resource is at most CODEC_DCMP_MAX_SIZE decoded (a fork's data offsets
+// are 24 bits) and its decoders address the whole output, so this one
+// decodes the resource at once, on its first fill, and hands it out from
+// there.  The stream's decoded size is the header's actualSize.
+//
+// On-disk layout:
 //
 //   Common header (bytes 0..11, both versions):
 //     +0   signature (u32 BE) = 0xA89F6572
@@ -33,7 +44,7 @@
 //
 //   +18  compressed payload starts here (both versions)
 //
-// The payload is a stream of single-byte opcodes; each opcode either
+// The dcmp 0 payload is a stream of single-byte opcodes; each opcode either
 // emits 16-bit words into the output buffer, slurps additional bytes
 // from the input, or both.  The dispatch table is fixed at 256 entries:
 //
@@ -60,26 +71,10 @@
 //   downward.  String N occupies bytes [VarsList[N+1], VarsList[N]) of
 //   the table buffer (where VarsList[N+1] is set when N is remembered).
 
-#include "rsrc_dcmp.h"
-#include "common.h"
+#include "codec_internal.h"
 
-#include <errno.h>
 #include <stdlib.h>
-#include <string.h>
 
-// ---- Big-endian field readers --------------------------------------------
-
-bool rsrc_dcmp_is_compressed(const uint8_t *bytes, size_t len) {
-    return bytes && len >= 4 && RD_BE32(bytes) == RSRC_DCMP_MAGIC;
-}
-
-// ---- Constant-word emit table (opcodes 0x4B..0xFD) ------------------------
-//
-// 179 entries, transcribed verbatim from DeCompressDefProc.a.  The first
-// entry (originally `Clr.W (A1)+`) emits 0x0000; the remaining 178 use
-// `Move.W #$xxxx,(A1)+`.  Reproducing this table 1:1 with the assembly
-// is mandatory — any deviation would silently corrupt every decompressed
-// output that uses these opcodes (which is most of them).
 static const uint16_t g_const_words[179] = {
     0x0000, 0x4EBA, 0x0008, 0x4E75, 0x000C, 0x4EAD, 0x2053, 0x2F0B, // 0x4B..0x52
     0x6100, 0x0010, 0x7000, 0x2F00, 0x486E, 0x2050, 0x206E, 0x2F2E, // 0x53..0x5A
@@ -106,55 +101,71 @@ static const uint16_t g_const_words[179] = {
     0x4400, 0x41E8, 0x4841, // 0xFB..0xFD
 };
 
-// ---- Streaming I/O contexts -----------------------------------------------
+// ---- Input and output cursors -----------------------------------------------
 //
-// `ic_t` is the input cursor over the compressed payload; `oc_t` is the
-// output cursor over the allocated inflated buffer.  All bounds checks
-// route through ic_get* / oc_put*, so a malformed stream produces a
-// clean -1 return rather than walking off either buffer.
+// `ic_t` reads the compressed payload from the decoder's input as it is
+// needed; `oc_t` writes into the decoder's ring, which holds the whole
+// resource (its window is the resource: dcmp 3 refers back anywhere in it).
+// All bounds checks route through ic_get* / oc_put*, so a malformed stream
+// produces a clean -1 return rather than walking off either buffer.
 
 typedef struct {
-    const uint8_t *p;
-    size_t len;
-    size_t off;
+    codec_in_t *in;
+    uint8_t *scratch; // the last ic_get_n's bytes
+    size_t scratch_cap;
 } ic_t;
 
 typedef struct {
-    uint8_t *p;
-    size_t cap;
-    size_t off;
+    codec_ring_t *r;
+    size_t cap; // the most this resource may write (with dcmp 0's overrun)
+    size_t off; // bytes written
 } oc_t;
 
 static int ic_get_u8(ic_t *ic, uint8_t *out) {
-    if (ic->off >= ic->len)
+    int b = codec_in_byte(ic->in);
+    if (b < 0)
         return -1;
-    *out = ic->p[ic->off++];
+    *out = (uint8_t)b;
     return 0;
 }
+// The next `n` input bytes, valid until the next call.
 static int ic_get_n(ic_t *ic, size_t n, const uint8_t **out) {
-    if (ic->off + n > ic->len)
+    static const uint8_t none[1];
+    if (n == 0) {
+        *out = none;
+        return 0;
+    }
+    if (n > ic->scratch_cap) {
+        uint8_t *b = realloc(ic->scratch, n);
+        if (!b)
+            return -1;
+        ic->scratch = b;
+        ic->scratch_cap = n;
+    }
+    if (codec_in_read(ic->in, ic->scratch, n) != n)
         return -1;
-    *out = ic->p + ic->off;
-    ic->off += n;
+    *out = ic->scratch;
     return 0;
 }
 static int oc_put_u8(oc_t *oc, uint8_t b) {
     if (oc->off >= oc->cap)
         return -1;
-    oc->p[oc->off++] = b;
+    ring_put(oc->r, b);
+    oc->off++;
     return 0;
 }
 static int oc_put_u16_be(oc_t *oc, uint16_t v) {
     if (oc->off + 2 > oc->cap)
         return -1;
-    oc->p[oc->off++] = (uint8_t)(v >> 8);
-    oc->p[oc->off++] = (uint8_t)v;
+    ring_put(oc->r, (uint8_t)(v >> 8));
+    ring_put(oc->r, (uint8_t)v);
+    oc->off += 2;
     return 0;
 }
 static int oc_put_n(oc_t *oc, const uint8_t *src, size_t n) {
-    if (oc->off + n > oc->cap)
+    if (n > oc->cap - oc->off)
         return -1;
-    memcpy(oc->p + oc->off, src, n);
+    ring_write(oc->r, src, n);
     oc->off += n;
     return 0;
 }
@@ -187,7 +198,7 @@ static int get_encoded(ic_t *ic, int32_t *out) {
     if (ic_get_u8(ic, &b1) < 0)
         return -1;
     int8_t hi = (int8_t)((int)b0 - 0xC0); // -64..62
-    int16_t v = (int16_t)(((int16_t)hi << 8) | b1);
+    int16_t v = (int16_t)(hi * 256 + b1); // (hi << 8 | b1, without shifting a negative value)
     *out = (int32_t)v;
     return 0;
 }
@@ -230,11 +241,11 @@ static void vt_init(vt_t *vt, uint8_t *buf, size_t size) {
 static int vt_remember(vt_t *vt, const uint8_t *data, size_t len) {
     if (vt->size < 4)
         return -1;
-    uint16_t next_idx = RD_BE16(vt->buf);
+    uint16_t next_idx = codec_be16(vt->buf);
     if ((size_t)next_idx + 2 > vt->size)
         return -1; // index list would collide with the data area
     // Previous entry's offset = end of the new string.
-    uint16_t prev_off = RD_BE16(vt->buf + next_idx - 2);
+    uint16_t prev_off = codec_be16(vt->buf + next_idx - 2);
     if (len > prev_off)
         return -1; // data area exhausted
     uint16_t new_off = (uint16_t)(prev_off - len);
@@ -259,14 +270,14 @@ static int vt_remember(vt_t *vt, const uint8_t *data, size_t len) {
 static int vt_fetch(const vt_t *vt, uint32_t idx, const uint8_t **data, size_t *len) {
     if (vt->size < 4)
         return -1;
-    uint16_t next_idx = RD_BE16(vt->buf);
+    uint16_t next_idx = codec_be16(vt->buf);
     // VarsList[idx] is at byte offset 2 + idx*2; VarsList[idx+1] at +2*idx+4.
     size_t a_off = (size_t)2 + (size_t)idx * 2;
     size_t b_off = a_off + 2;
     if (b_off + 2 > next_idx)
         return -1;
-    uint16_t a = RD_BE16(vt->buf + a_off); // string end
-    uint16_t b = RD_BE16(vt->buf + b_off); // string start
+    uint16_t a = codec_be16(vt->buf + a_off); // string end
+    uint16_t b = codec_be16(vt->buf + b_off); // string start
     if (b > a || a > vt->size)
         return -1;
     *data = vt->buf + b;
@@ -665,12 +676,12 @@ static const uint16_t g_greggy_static[256] = {
 // count when the dynamic-table flag is set); `compress_flags` is the
 // header's compressFlags byte.  Returns 0 on success and fills
 // `out_uncompressed` (caller-provided, capacity `actual_size`).
-static int dcmp2_decompress(const uint8_t *payload, size_t payload_len, uint8_t *out, size_t actual_size,
-                            uint8_t byte_table_size_field, uint8_t compress_flags) {
+static int dcmp2_decompress(ic_t *icp, oc_t *ocp, size_t actual_size, uint8_t byte_table_size_field,
+                            uint8_t compress_flags) {
     // Decide which table to read indices through.
     const uint16_t *table = g_greggy_static;
     uint16_t dyn_table[256];
-    ic_t ic = {payload, payload_len, 0};
+    ic_t ic = *icp;
     if (compress_flags & GREGGY_BYTE_TABLE_SAVED) {
         // Dynamic table: read (byte_table_size_field + 1) 16-bit words
         // from the payload into dyn_table[0..N-1].  Entries past that
@@ -691,8 +702,7 @@ static int dcmp2_decompress(const uint8_t *payload, size_t payload_len, uint8_t 
         table = dyn_table;
     }
 
-    // Output cursor.
-    oc_t oc = {out, actual_size, 0};
+    oc_t oc = *ocp;
     size_t total_words = actual_size / 2;
     bool odd_extra = (actual_size & 1) != 0;
 
@@ -811,51 +821,35 @@ static int dcmp2_decompress(const uint8_t *payload, size_t payload_len, uint8_t 
 //   2. The distance code layout is keyed on how many bytes have been produced
 //      so far, so it widens as the output grows.  There is no fixed window.
 //
-#include "rsrc_dcmp3_tables.h"
+#include "dcmp3_tables.h"
 
 // Stream layout: the bitstream starts at `hdr_len` (18).  The 4 bytes at
 // +14..+17 are decompressor-specific parameters that this algorithm does not
 // consume.  `actual_size` is the sole termination condition — there is no
 // end-of-stream marker.
 
-// MSB-first bit reader.  Nothing in this format is byte-aligned; literal
-// bytes are read as 8-bit fields wherever the bit position happens to be.
-typedef struct {
-    const uint8_t *data;
-    size_t len;
-    size_t bit; // next bit index, MSB-first within each byte
-} bitr_t;
+// Nothing in this format is byte-aligned; literal bytes are read as 8-bit
+// fields wherever the bit position happens to be.
+// The shared MSB-first reader (codec_internal.h, msb_*): bits past the end
+// read as zeros, which lets a stream that ends mid-byte finish its final
+// token.
 
-// Peek `n` bits (n <= 24) without consuming.  Reads past the end yield zero
-// bits, which lets a stream that ends mid-byte finish its final token.
-static uint32_t bitr_peek(const bitr_t *br, unsigned n) {
-    uint32_t v = 0;
-    for (unsigned i = 0; i < n; i++) {
-        size_t b = br->bit + i;
-        unsigned bitval = 0;
-        if ((b >> 3) < br->len)
-            bitval = (br->data[b >> 3] >> (7 - (b & 7))) & 1;
-        v = (v << 1) | bitval;
-    }
-    return v;
+// Peek `n` bits (1 <= n <= 24) without consuming.
+static uint32_t bitr_peek(codec_in_t *in, unsigned n) {
+    msb_fill(in);
+    return msb_peek(in, (int)n);
 }
 
-static void bitr_skip(bitr_t *br, unsigned n) {
-    br->bit += n;
+static uint32_t bitr_get(codec_in_t *in, unsigned n) {
+    return msb_get(in, (int)n);
 }
 
-static uint32_t bitr_get(bitr_t *br, unsigned n) {
-    uint32_t v = bitr_peek(br, n);
-    bitr_skip(br, n);
-    return v;
-}
-
-// True once the reader has consumed more bits than the payload holds.  Used
-// only as a corruption guard; a well-formed stream stops on actual_size.
-static bool bitr_overrun(const bitr_t *br) {
-    // Byte-granular on purpose: bitr_peek yields zero bits past the end so a
-    // stream that ends mid-byte can finish its final token.
-    return (br->bit >> 3) > br->len;
+// True once the reader has consumed a whole byte or more past the end of
+// the input.  Used only as a corruption guard; a well-formed stream stops
+// on actual_size.  Byte-granular on purpose: a stream that ends mid-byte
+// may finish its final token on the zeros after it.
+static bool bitr_overrun(const codec_in_t *in) {
+    return (int)in->over * 8 - in->nbits >= 8;
 }
 
 // One entry of a static prefix code.  `nbits`/`code` are the prefix; the
@@ -917,12 +911,12 @@ static const dc3_code_t DC3_LIT[] = {
 // Decode one symbol from a static table.  Both tables are prefix-free, so
 // matching the shortest candidate first is unambiguous.  Returns -1 if no
 // prefix matches (corrupt stream).
-static int32_t dc3_decode(bitr_t *br, const dc3_code_t *tbl, size_t n) {
+static int32_t dc3_decode(codec_in_t *br, const dc3_code_t *tbl, size_t n) {
     for (unsigned bits = 1; bits <= 11; bits++) {
         uint32_t v = bitr_peek(br, bits);
         for (size_t i = 0; i < n; i++) {
             if (tbl[i].nbits == bits && tbl[i].code == v) {
-                bitr_skip(br, bits);
+                msb_drop(br, (int)bits);
                 return (int32_t)tbl[i].base + (int32_t)(tbl[i].extra ? bitr_get(br, tbl[i].extra) : 0);
             }
         }
@@ -943,8 +937,8 @@ static int32_t dc3_decode(bitr_t *br, const dc3_code_t *tbl, size_t n) {
 // The ladder is genuinely irregular — some steps repeat a width, and one
 // threshold in band 0xA80 reproduces an off-by-one in Apple's original
 // encoder.  It therefore cannot be reduced to a closed form; the table in
-// rsrc_dcmp3_tables.h is the specification.
-static int64_t dc3_distance(bitr_t *br, uint32_t mag) {
+// dcmp3_tables.h is the specification.
+static int64_t dc3_distance(codec_in_t *br, uint32_t mag) {
     if (mag == 0)
         return -1;
 
@@ -980,177 +974,131 @@ static int64_t dc3_distance(bitr_t *br, uint32_t mag) {
 // literal run follows", true means "a real match of length 3".  The +1 in
 // the after-literal branch keeps the minimum match length at 3 either way.
 // Writes exactly `actual_size` bytes.  Returns 0 on success.
-static int dcmp3_decompress(const uint8_t *in, size_t in_len, uint8_t *out, size_t actual_size) {
-    bitr_t br = {in, in_len, 0};
+static int dcmp3_decompress(codec_in_t *br, codec_ring_t *r, size_t actual_size) {
     size_t produced = 0;
     bool after_literal = false;
 
     while (produced < actual_size) {
-        int32_t lc = dc3_decode(&br, DC3_LEN, sizeof(DC3_LEN) / sizeof(DC3_LEN[0]));
-        if (lc < 0 || bitr_overrun(&br))
+        int32_t lc = dc3_decode(br, DC3_LEN, sizeof(DC3_LEN) / sizeof(DC3_LEN[0]));
+        if (lc < 0 || bitr_overrun(br))
             return -1;
 
         if (lc > 0 || after_literal) {
             size_t mlen = (size_t)lc + 2 + (after_literal ? 1u : 0u);
-            int64_t dist = dc3_distance(&br, (uint32_t)produced);
+            int64_t dist = dc3_distance(br, (uint32_t)produced);
             if (dist <= 0 || (uint64_t)dist > produced)
                 return -1;
             if (produced + mlen > actual_size)
                 mlen = actual_size - produced; // tolerate a trailing partial match
-            // Byte-at-a-time and forward: dist < mlen is legal and produces
-            // run-length repetition, which any bulk copy would corrupt.
-            size_t src = produced - (size_t)dist;
-            for (size_t i = 0; i < mlen; i++)
-                out[produced + i] = out[src + i];
+            // Forward, overlapping as LZ77 does: dist < mlen is legal and
+            // produces run-length repetition.
+            ring_copy(r, (size_t)dist, mlen);
             produced += mlen;
             after_literal = false;
         } else {
-            int32_t n = dc3_decode(&br, DC3_LIT, sizeof(DC3_LIT) / sizeof(DC3_LIT[0]));
+            int32_t n = dc3_decode(br, DC3_LIT, sizeof(DC3_LIT) / sizeof(DC3_LIT[0]));
             if (n < 1)
                 return -1;
             size_t run = (size_t)n;
             if (produced + run > actual_size)
                 run = actual_size - produced;
             for (size_t i = 0; i < run; i++)
-                out[produced + i] = (uint8_t)bitr_get(&br, 8);
+                ring_put(r, (uint8_t)bitr_get(br, 8));
             produced += run;
             // A maximal run is a chunk of a longer run and must be able to
             // continue, so it does not arm the after-literal state.
             after_literal = (n < 63);
         }
-        if (bitr_overrun(&br))
+        if (bitr_overrun(br))
             return -1;
     }
     return produced == actual_size ? 0 : -1;
 }
 
-// ---- Public entry point ---------------------------------------------------
+// ============================================================================
+// The decoder
+// ============================================================================
 
-uint8_t *rsrc_dcmp_decompress(const uint8_t *compressed, size_t compressed_len, size_t *out_len, const char **errmsg) {
-#define FAIL(msg)                                                                                                      \
-    do {                                                                                                               \
-        if (errmsg)                                                                                                    \
-            *errmsg = (msg);                                                                                           \
-        free(uncompressed);                                                                                            \
-        free(vtbuf);                                                                                                   \
-        return NULL;                                                                                                   \
-    } while (0)
-    if (out_len)
-        *out_len = 0;
-    if (errmsg)
-        *errmsg = NULL;
-    uint8_t *uncompressed = NULL;
-    uint8_t *vtbuf = NULL;
+#define DCMP_HDR_MIN 18
+#define DCMP_OVERRUN 256 // dcmp 0's header `overrun` (a byte): the most it may write past the size
 
-    if (!compressed || compressed_len < 18)
-        FAIL("truncated header");
-    if (RD_BE32(compressed) != RSRC_DCMP_MAGIC)
-        FAIL("not compressed");
+typedef struct {
+    ic_t ic; // its scratch buffer
+} dcmp_t;
 
-    uint16_t hdr_len = RD_BE16(compressed + 4);
-    uint8_t hdr_ver = compressed[6];
-    uint32_t actual_size = RD_BE32(compressed + 8);
+// Decode the whole resource into the ring, in one fill: its window is the
+// resource, and the ring is sized to hold all of it.
+static int dcmp_fill(codec_dec_t *d) {
+    dcmp_t *s = d->st;
+    codec_in_t *in = &d->in;
+    uint8_t h[DCMP_HDR_MIN];
+    if (codec_in_read(in, h, sizeof(h)) != sizeof(h))
+        return codec_fail(d, CODEC_ERR_TRUNCATED, "dcmp: truncated header");
+    if (codec_be32(h) != CODEC_DCMP_MAGIC)
+        return codec_fail(d, CODEC_ERR_DATA, "dcmp: not a compressed resource");
+    size_t hdr_len = codec_be16(h + 4);
+    unsigned hdr_ver = h[6];
+    uint32_t actual_size = codec_be32(h + 8);
+    if (hdr_len < DCMP_HDR_MIN)
+        return codec_fail(d, CODEC_ERR_DATA, "dcmp: bad header length");
+    for (size_t k = DCMP_HDR_MIN; k < hdr_len; k++)
+        if (codec_in_byte(in) < 0)
+            return codec_fail(d, CODEC_ERR_TRUNCATED, "dcmp: truncated header");
+    // Bound the declared size before anything is sized from it: unbounded,
+    // dcmp 0's actual_size + overrun wrapped a 32-bit size_t.
+    if (actual_size > CODEC_DCMP_MAX_SIZE)
+        return codec_fail(d, CODEC_ERR_DATA, "dcmp: declared size too large");
+    // v8 puts dcmp_id at +14; v9 at +12 (over v8's ratio and overrun).
+    int dcmp_id;
+    if (hdr_ver == 8)
+        dcmp_id = (int16_t)codec_be16(h + 14);
+    else if (hdr_ver == 9)
+        dcmp_id = (int16_t)codec_be16(h + 12);
+    else
+        return codec_fail(d, CODEC_ERR_UNSUPPORTED, "dcmp: unsupported header version");
+    if (!((dcmp_id == 0 && hdr_ver == 8) || ((dcmp_id == 2 || dcmp_id == 3) && hdr_ver == 9)))
+        return codec_fail(d, CODEC_ERR_UNSUPPORTED, "dcmp: unsupported decompressor");
+    // The stream states its size: exactly that many bytes, and a window of
+    // all of them.
+    int rc = codec_set_size(d, actual_size);
+    if (rc == 0)
+        rc = codec_ring_alloc(d, actual_size, DCMP_OVERRUN);
+    if (rc < 0)
+        return rc;
+    s->ic.in = in;
+    oc_t oc = {&d->ring, actual_size, 0};
 
-    if (hdr_len < 18 || hdr_len > compressed_len)
-        FAIL("truncated header");
-
-    // Bound the declared size before anything is sized from it.  A resource
-    // fork's data offsets are 24-bit, so no fork -- and no resource in one --
-    // exceeds 16 MiB.  Unbounded, dcmp 0's `(size_t)actual_size + overrun`
-    // wrapped on wasm32 (32-bit size_t) and a 16-byte buffer met a ~4 GiB
-    // zero-padding memset: a heap overflow from one resource.  Natively it
-    // was a real 4 GiB allocation and memset instead.
-    if (actual_size > RSRC_DCMP_MAX_SIZE)
-        FAIL("declared size too large");
-
-    // v8 puts dcmp_id at +14; v9 puts it at +12 (overlaying v8's
-    // var_table_ratio + overrun fields — see the header docs at the
-    // top of this file).
-    int16_t dcmp_id;
-    if (hdr_ver == 8) {
-        dcmp_id = (int16_t)RD_BE16(compressed + 14);
-    } else if (hdr_ver == 9) {
-        dcmp_id = (int16_t)RD_BE16(compressed + 12);
-    } else {
-        FAIL("unsupported version");
-    }
-
-    // ---- dcmp 0 — DonnBits (v8) ------------------------------------------
-    if (dcmp_id == 0 && hdr_ver == 8) {
-        uint8_t var_ratio = compressed[12];
-        uint8_t overrun = compressed[13];
-
-        // Output buffer: actual_size + overrun (the assembly explicitly
-        // permits the decompressor to overshoot by `overrun` bytes during
-        // operation; we honour that for byte-identical behaviour).
-        size_t out_cap = (size_t)actual_size + (size_t)overrun;
-        uncompressed = malloc(out_cap > 0 ? out_cap : 1);
-        if (!uncompressed)
-            FAIL("out of memory");
-
-        // Var table: actual_size * var_ratio / 256, rounded up to even.
-        // The original code allocates "VarTableSize" bytes; the ratio comes
-        // straight from the header.  Apple's compressor sets this so the
-        // table is large enough to hold every Remember* literal plus the
-        // index list.
-        size_t vt_size = ((size_t)actual_size * (size_t)var_ratio) / 256;
+    if (dcmp_id == 0) {
+        // DonnBits.  The output may overshoot by the header's `overrun`
+        // bytes while decoding (the assembly allows it; codec.c drops them);
+        // the var table is actual_size * ratio / 256, rounded up to even.
+        oc.cap += h[13];
+        size_t vt_size = ((size_t)actual_size * h[12]) / 256;
         if (vt_size < 4)
             vt_size = 4;
-        if (vt_size & 1)
-            vt_size++;
-        vtbuf = malloc(vt_size);
+        vt_size += vt_size & 1;
+        uint8_t *vtbuf = malloc(vt_size);
         if (!vtbuf)
-            FAIL("out of memory");
-
+            return CODEC_ERR_NOMEM;
         vt_t vt;
         vt_init(&vt, vtbuf, vt_size);
-        ic_t ic = {compressed + hdr_len, compressed_len - hdr_len, 0};
-        oc_t oc = {uncompressed, out_cap, 0};
-
-        if (unpack_loop(&ic, &oc, &vt) < 0)
-            FAIL("corrupt stream");
-
+        rc = unpack_loop(&s->ic, &oc, &vt);
         free(vtbuf);
-        vtbuf = NULL;
+        if (rc < 0)
+            return codec_fail(d, CODEC_ERR_DATA, "dcmp 0: corrupt stream");
         if (oc.off < actual_size)
-            memset(uncompressed + oc.off, 0, actual_size - oc.off);
-        if (out_len)
-            *out_len = actual_size;
-        return uncompressed;
-    }
-
-    // ---- dcmp 2 — GreggyBits (v9) ----------------------------------------
-    if (dcmp_id == 2 && hdr_ver == 9) {
-        uint8_t byte_table_size = compressed[16];
-        uint8_t compress_flags = compressed[17];
-        uncompressed = calloc(actual_size > 0 ? actual_size : 1, 1);
-        if (!uncompressed)
-            FAIL("out of memory");
-        if (dcmp2_decompress(compressed + hdr_len, compressed_len - hdr_len, uncompressed, actual_size, byte_table_size,
-                             compress_flags) < 0)
-            FAIL("corrupt stream");
-        if (out_len)
-            *out_len = actual_size;
-        return uncompressed;
-    }
-
-    // ---- dcmp 3 — InstaCompOne (v9) --------------------------------------
-    if (dcmp_id == 3 && hdr_ver == 9) {
-        uncompressed = calloc(actual_size > 0 ? actual_size : 1, 1);
-        if (!uncompressed)
-            FAIL("out of memory");
-        if (dcmp3_decompress(compressed + hdr_len, compressed_len - hdr_len, uncompressed, actual_size) < 0)
-            FAIL("corrupt stream");
-        if (out_len)
-            *out_len = actual_size;
-        return uncompressed;
-    }
-
-    // Any other (dcmp_id, version) combo is currently unsupported.  This
-    // includes dcmp 0 in a v9 wrapper (custom Donn variant) and the various
-    // other dcmp ids (1, 7, 8, 0x10+) that ship in System file extensions.  The caller falls through to raw compressed
-    // bytes — .info still surfaces the compressed flag, and re.dump's disasm pass shows compressed-payload garbage in
-    // the .s file (with a header comment) but does not crash.
-    FAIL("unsupported dcmp");
-#undef FAIL
+            ring_fill(&d->ring, 0, actual_size - oc.off); // a short stream is zero-padded
+    } else if (dcmp_id == 2) {
+        if (dcmp2_decompress(&s->ic, &oc, actual_size, h[16], h[17]) < 0)
+            return codec_fail(d, CODEC_ERR_DATA, "dcmp 2: corrupt stream");
+    } else if (dcmp3_decompress(in, &d->ring, actual_size) < 0)
+        return codec_fail(d, CODEC_ERR_DATA, "dcmp 3: corrupt stream");
+    return CODEC_END;
 }
+
+static void dcmp_free(codec_dec_t *d) {
+    free(((dcmp_t *)d->st)->ic.scratch);
+}
+
+// The ring is sized from the header (the whole resource), so none is declared.
+const codec_dec_ops_t codec_dcmp_dec = {.state_size = sizeof(dcmp_t), .fill = dcmp_fill, .free = dcmp_free};

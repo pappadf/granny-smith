@@ -465,7 +465,7 @@ const hw_profile_t machine_se30 = {
     .floppy_slots = se30_floppy_slots,
     .storage = mac_storage_scsi_hd_bay,
     .default_storage = mac_default_storage_hd0_cd3,
-    .cdrom_drive = &mac_cdrom_drive_applecd,
+    .cdrom_drive = &scsi_cd_drive_applecd_sc_plus,
     .appletalk = true,
     .builtin_video = &se30_builtin_video,
 

@@ -38,16 +38,13 @@ LIB_SRCS  = lib/err.c      \
             lib/util.c     \
             lib/source.c   \
             lib/reader.c   \
-            lib/inflate.c  \
             lib/archive.c  \
+            lib/fork_decoder.c \
             lib/peeler.c
 
 FMT_SRCS  = lib/formats/hqx.c   \
             lib/formats/bin.c    \
             lib/formats/sit.c    \
-            lib/formats/sit3.c   \
-            lib/formats/sit13.c  \
-            lib/formats/sit15.c  \
             lib/formats/cpt.c    \
             lib/formats/zip.c    \
             lib/formats/gz.c     \
@@ -55,14 +52,25 @@ FMT_SRCS  = lib/formats/hqx.c   \
 
 CMD_SRCS  = cmd/main.c
 
-LIB_OBJS  = $(patsubst %.c,$(BUILD)/%.o,$(LIB_SRCS) $(FMT_SRCS))
+# The codec library every compressed fork decodes through (and the CRCs):
+# src/codec in a granny-smith tree, ./codec in the standalone repository.
+CODEC_DIR ?= $(if $(wildcard codec/include/codec.h),codec,../codec)
+CODEC_SRCS = $(sort $(wildcard $(CODEC_DIR)/lib/*.c))
+CODEC_OBJS = $(patsubst $(CODEC_DIR)/lib/%.c,$(BUILD)/codec/%.o,$(CODEC_SRCS))
+
+LIB_OBJS  = $(patsubst %.c,$(BUILD)/%.o,$(LIB_SRCS) $(FMT_SRCS)) $(CODEC_OBJS)
 CMD_OBJS  = $(patsubst %.c,$(BUILD)/%.o,$(CMD_SRCS))
 
 LIB_OUT   = $(BUILD)/libpeeler.a
 CLI_OUT   = $(BUILD)/peeler
 
-# Include paths: public header for CLI, private lib dir for format sources
-LIB_CFLAGS = -Iinclude -Ilib
+# Every object also writes its header dependencies (-MMD), so a changed
+# header -- the codec library's included -- rebuilds what includes it.
+DEPFLAGS  = -MMD -MP
+
+# Include paths: public header for CLI, private lib dir for format sources,
+# and the codec library's header
+LIB_CFLAGS = -Iinclude -Ilib -I$(CODEC_DIR)/include
 CMD_CFLAGS = -Iinclude
 
 # ============================================================================
@@ -83,12 +91,17 @@ $(LIB_OUT): $(LIB_OBJS)
 # Library object files
 $(BUILD)/lib/%.o: lib/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(LIB_CFLAGS) -c -o $@ $<
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(LIB_CFLAGS) -c -o $@ $<
 
 # Format decoder object files (same flags as library)
 $(BUILD)/lib/formats/%.o: lib/formats/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(LIB_CFLAGS) -c -o $@ $<
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(LIB_CFLAGS) -c -o $@ $<
+
+# Codec library object files
+$(BUILD)/codec/%.o: $(CODEC_DIR)/lib/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(DEPFLAGS) -I$(CODEC_DIR)/include -c -o $@ $<
 
 # ============================================================================
 # CLI
@@ -100,7 +113,9 @@ $(CLI_OUT): $(CMD_OBJS) $(LIB_OUT)
 
 $(BUILD)/cmd/%.o: cmd/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(CMD_CFLAGS) -c -o $@ $<
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(CMD_CFLAGS) -c -o $@ $<
+
+-include $(LIB_OBJS:.o=.d) $(CMD_OBJS:.o=.d)
 
 # ============================================================================
 # Tests

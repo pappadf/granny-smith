@@ -41,15 +41,22 @@
 --                    golden-matched.
 --   qd3d-thousands   Gerbils at thousands of colours: the card's 16-bpp
 --                    (x1555) output path, and Control's 16-bpp DAC lookup.
+--   qd3d-virtual-wings  Virtual Wings 1.0, a 1997 flight simulator, from
+--                    apps/virtual_wings_qd3d.dmg (the same system with the
+--                    game installed, registered and set to "Use 3D
+--                    acceleration hardware"): its cockpit view is drawn by
+--                    the card -- textured, hazy terrain -- not by QuickDraw
+--                    3D's software engine.
 --
--- The image rows share one boot: qd3d-boot checkpoints the open QD3D Lab
--- window.
+-- The QD3D Lab rows share one boot: qd3d-boot checkpoints the open QD3D Lab
+-- window.  qd3d-virtual-wings boots its own disk.
 -- Run on its own with make -C tests/integration test-tnt-qd3d.
 
 local mac = dofile("../lib/mac.lua")
 
 local hd = "../../data/systems/system_7_6_170mb_24ac_qd3d.dmg"
 local lab = F"${mac.RESULTS_DIR}/qd3d-lab.gscp"
+local vw = "../../data/apps/virtual_wings_qd3d.dmg"
 
 -- Low-memory CurApName ($910, a Pascal string) holds `name`.
 local function current_app_is(name)
@@ -408,9 +415,56 @@ local function row_qd3d_thousands()
     mac.double_click(39, 92)
     scheduler.run(600000000)
     assert(current_app_is("Gerbils!"), "Gerbils! is not the current application")
+    -- Gerbils! switches the card to 16-bpp output once its first frame is
+    -- under way, and how soon depends on everything the boot did before it
+    -- (a different CD-ROM drive moves it by a couple of hundred million
+    -- instructions), so wait for the switch; the ceiling is a hang detector.
+    local n16 = 0
+    while n16 < 30 and (machine.pci.slot[1].card.renderer.dma_control & 0x0C00) ~= 0x0C00 do
+        scheduler.run(100000000)
+        n16 = n16 + 1
+    end
     assert((machine.pci.slot[1].card.renderer.dma_control & 0x0C00) == 0x0C00, F"the card is not producing 16-bpp output (DMACONTROL ${machine.pci.slot[1].card.renderer.dma_control:04x})")
     mac.check_ex("goldens/qd3d-thousands.png", 0, 500, 20, 640)
     frames_flow("Gerbils! at thousands")
+end
+
+-- ---- qd3d-virtual-wings -----------------------------------------------------
+-- Virtual Wings needs at least 832 x 624, so the 8500's built-in video drives
+-- the 21" display (1152 x 870, thousands of colours); the game draws in an
+-- 832 x 624 window in the middle.  The clock is set to the early afternoon:
+-- the game takes its time of day from the Mac's.  The disk boots with the
+-- game's folder open; the Energy Saver note is dismissed, the game launched,
+-- and its Cockpit button opens the 3D view over the instrument panel.
+--
+-- That the CARD draws it, not QuickDraw 3D's software engine, is shown three
+-- ways: nothing reaches the card until the cockpit opens; then its frames
+-- keep completing, each an 832-wide strip of over 200 scanlines with
+-- hundreds of objects, from texture maps loaded into the card; and the view
+-- matches its golden -- textured, hazy terrain, which the software engine
+-- (flat-shaded polygons under the same setting) does not draw.  The golden
+-- leaves out the instrument panel below the view, whose clock runs.
+local function row_qd3d_virtual_wings()
+    machine.boot{model = "pm8500", ram = 65536, monitor = "twopage", rom = vars.ROM, pci_card = "qd3d"}
+    machine.rtc.time = "2026-11-03T13:00:00"
+    machine.scsi.attach_hd(vw, 0)
+    mac.wait_desktop(4000000000)
+    assert(debug.mac.globals.read("DSErrCode") == 0, F"system error ${debug.mac.globals.read(\"DSErrCode\"):04x} during startup")
+    machine.adb.keyboard.press("Return")
+    scheduler.run(60000000)
+    mac.double_click(82, 135)
+    scheduler.run(1500000000)
+    assert(current_app_is("Virtual Wings"), "Virtual Wings is not the current application")
+    assert(machine.pci.slot[1].card.renderer.frames == 0, F"the card drew ${machine.pci.slot[1].card.renderer.frames} frames before the cockpit opened")
+    mac.click(942, 185)
+    scheduler.run(1500000000)
+    assert(debug.mac.globals.read("DSErrCode") == 0, F"system error ${debug.mac.globals.read(\"DSErrCode\"):04x} in Virtual Wings")
+    assert(machine.pci.slot[1].card.renderer.frames > 100, F"the cockpit view is not drawn by the card (${machine.pci.slot[1].card.renderer.frames} frames)")
+    assert(machine.pci.slot[1].card.renderer.lines > 200, F"the card's last frame had ${machine.pci.slot[1].card.renderer.lines} scanlines, not the 3D view")
+    assert(machine.pci.slot[1].card.renderer.objects > 100, F"the card's last frame held ${machine.pci.slot[1].card.renderer.objects} objects, not the scenery")
+    assert(machine.pci.slot[1].card.renderer.read(0x80) ~= 0, "no texture map was loaded into the card")
+    frames_flow("Virtual Wings")
+    mac.check_ex("goldens/qd3d-virtual-wings.png", 340, 0, 870, 1152)
 end
 
 -- ---- row dispatch -----------------------------------------------------------
@@ -425,6 +479,13 @@ else
     mac.row("qd3d-texture", row_qd3d_texture)
     mac.row("qd3d-viewer", row_qd3d_viewer)
     mac.row("qd3d-thousands", row_qd3d_thousands)
+end
+if mac.row_on("qd3d-virtual-wings") then
+    if not gs.truthy(function() return mac.have_media(vw) end) then
+        echo("skip: qd3d-virtual-wings (virtual_wings_qd3d.dmg not fetched)")
+    else
+        mac.row("qd3d-virtual-wings", row_qd3d_virtual_wings)
+    end
 end
 mac.suite_done()
 
