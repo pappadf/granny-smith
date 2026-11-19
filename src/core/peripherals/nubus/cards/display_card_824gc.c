@@ -34,6 +34,7 @@
 #include "gsvrom.h"
 #include "log.h"
 #include "memory.h"
+#include "memory_iface_sized.h"
 #include "nubus.h"
 #include "object.h"
 #include "system.h"
@@ -783,54 +784,15 @@ static void gc_write(display_card_824gc_priv_t *p, uint32_t phys, uint32_t val, 
 
 // === Memory interface (single dispatcher over every region) =================
 
-static uint8_t io_read8(void *dev, uint32_t addr) {
-    gc_reg_ctx_t *c = dev;
-    return (uint8_t)gc_read(c->p, c->region_base + addr, 1, false);
+// The sized handlers over one region's context: its offset within the card.
+static uint32_t gc824_io_read(gc_reg_ctx_t *c, uint32_t addr, unsigned width, bool peek) {
+    return gc_read(c->p, c->region_base + addr, width, peek);
 }
-static uint16_t io_read16(void *dev, uint32_t addr) {
-    gc_reg_ctx_t *c = dev;
-    return (uint16_t)gc_read(c->p, c->region_base + addr, 2, false);
-}
-static uint32_t io_read32(void *dev, uint32_t addr) {
-    gc_reg_ctx_t *c = dev;
-    return gc_read(c->p, c->region_base + addr, 4, false);
-}
-static uint8_t io_peek8(void *dev, uint32_t addr) {
-    gc_reg_ctx_t *c = dev;
-    return (uint8_t)gc_read(c->p, c->region_base + addr, 1, true);
-}
-static uint16_t io_peek16(void *dev, uint32_t addr) {
-    gc_reg_ctx_t *c = dev;
-    return (uint16_t)gc_read(c->p, c->region_base + addr, 2, true);
-}
-static uint32_t io_peek32(void *dev, uint32_t addr) {
-    gc_reg_ctx_t *c = dev;
-    return gc_read(c->p, c->region_base + addr, 4, true);
-}
-static void io_write8(void *dev, uint32_t addr, uint8_t val) {
-    gc_reg_ctx_t *c = dev;
-    gc_write(c->p, c->region_base + addr, val, 1);
-}
-static void io_write16(void *dev, uint32_t addr, uint16_t val) {
-    gc_reg_ctx_t *c = dev;
-    gc_write(c->p, c->region_base + addr, val, 2);
-}
-static void io_write32(void *dev, uint32_t addr, uint32_t val) {
-    gc_reg_ctx_t *c = dev;
-    gc_write(c->p, c->region_base + addr, val, 4);
+static void gc824_io_write(gc_reg_ctx_t *c, uint32_t addr, uint32_t val, unsigned width) {
+    gc_write(c->p, c->region_base + addr, val, width);
 }
 
-static memory_interface_t s_gc824_mem_iface = {
-    .read_uint8 = io_read8,
-    .read_uint16 = io_read16,
-    .read_uint32 = io_read32,
-    .write_uint8 = io_write8,
-    .write_uint16 = io_write16,
-    .write_uint32 = io_write32,
-    .peek_uint8 = io_peek8,
-    .peek_uint16 = io_peek16,
-    .peek_uint32 = io_peek32,
-};
+MEMORY_IFACE_SIZED(s_gc824_mem_iface, gc_reg_ctx_t, gc824_io_read, gc824_io_write);
 
 static const nubus_monitor_t display_card_824gc_monitors[]; // fwd
 
