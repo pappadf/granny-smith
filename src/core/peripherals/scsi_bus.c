@@ -564,6 +564,79 @@ static bool scsi_seek_lba_ok(const scsi_t *scsi, int target, uint32_t lba) {
     return scsi_blocks_ok(scsi, target, lba, 1, NULL, NULL);
 }
 
+// The shared tail of READ/WRITE(6) and READ/WRITE(10)/READ(12), once the
+// CDB is decoded into cmd.lba/cmd.tl: range check, staging buffer, the data
+// phase and, for a read, the medium copy.  `tag` ("" or "_10") only labels
+// the log lines.
+//
+// A 6-byte CDB's transfer length is 8 bits (0 meaning 256), so the
+// product tops out at 256 blocks — 128 KB at 512-byte blocks, but
+// 512 KB on a CD-ROM's 2048-byte blocks.  BUF_LIMIT is 256 * 512, so
+// this used to reject any CD-ROM READ(6) of more than 64 blocks with
+// ILLEGAL REQUEST.  The comment here used to claim "the product stays
+// inside BUF_LIMIT in practice", which is only true for 512-byte
+// blocks and is why no hard-disk row ever caught it: booting System
+// 7.5.3 off a CD dies on `lba=2531 tl=124` (248 KB), and the System
+// reports the refused read as "Not enough memory is available".
+//
+// Grow the staging buffer instead, exactly as the 10-byte path
+// already does (see scsi_buf_ensure in phase_data_in/out).  Promote
+// both operands before the multiply so an overflow can't slip past a
+// 32-bit-int host.
+// Validate the range BEFORE any phase change, for READ and WRITE alike.
+// phase_data_in/out call scsi_buf_ensure, which reallocs the staging
+// buffer to the full requested size -- and the buffer never shrinks.
+// With the check second, a READ(10) of tl=0xFFFF against a 32 KB
+// medium was correctly refused with CHECK CONDITION and STILL left a
+// 32 MB staging buffer behind for the life of the machine (134 MB at a
+// CD-ROM's 2048-byte blocks), from one CDB the code already knew was
+// invalid.  And if that realloc fails, GS_ASSERTF continues (and is
+// compiled out under GS_FAST), so buf.data becomes NULL and the copy
+// below writes through it.  Nothing may grow the buffer until the
+// request is known to be sane.
+//
+// For WRITE there is a second reason: refusing after the initiator has
+// already pushed a whole data-out phase is a late phase change some
+// initiators do not recover from (the Network Server's SCRIPTS program
+// is one -- see the empty-CD-bay note above).
+static void scsi_rw_transfer(scsi_t *scsi, int target, bool write, const char *tag) {
+    const char *dir = write ? "WRITE" : "READ";
+    uint16_t blk_sz = scsi->devices[target].block_size;
+    uint64_t byte_off = 0;
+    size_t byte_cnt = 0;
+    if (!scsi_lba_range_ok(scsi, target, &byte_off, &byte_cnt)) {
+        LOG(1, "SCSI %s%s out of range: target=%d lba=%u tl=%u blk_sz=%u raw_size=%llu", dir, tag, target,
+            scsi->cmd.lba, scsi->cmd.tl, blk_sz, (unsigned long long)disk_size(scsi->device_images[target]));
+        scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
+        return;
+    }
+
+    // Past the check, the size is known to fit the medium.  Narrate the
+    // legitimately large ones: the Apple SCSI driver does issue these.
+    if (byte_cnt > BUF_LIMIT)
+        LOG(2, "SCSI %s%s large transfer: tl=%u blk_sz=%u (%zu bytes > BUF_LIMIT)", dir, tag, scsi->cmd.tl, blk_sz,
+            byte_cnt);
+
+    if (!scsi_buf_ensure(scsi, byte_cnt)) {
+        scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_NO_ASC, 0x00);
+        return;
+    }
+    if (write) {
+        phase_data_out(scsi, (int)byte_cnt);
+        return;
+    }
+    phase_data_in(scsi, (int)byte_cnt);
+    // The range is already known to fit, so a short read is a backing-store
+    // failure: report it as a MEDIUM ERROR, never as GOOD over stale bytes
+    // (an assert() here was compiled out by -DNDEBUG in the release build).
+    size_t n = disk_read_data(scsi->device_images[target], byte_off, scsi->buf.data, byte_cnt);
+    if (n != byte_cnt) {
+        LOG(1, "SCSI READ%s: storage gave %zu of %zu bytes at offset %llu", tag, n, byte_cnt,
+            (unsigned long long)byte_off);
+        scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_UNRECOVERED_READ_ERROR, 0x00);
+    }
+}
+
 // Execute a SCSI command after receiving it from the initiator
 void run_cmd(scsi_t *scsi) {
     scsi->cmd.opcode = scsi->buf.data[0];
@@ -739,70 +812,7 @@ void run_cmd(scsi_t *scsi) {
             break;
         }
 
-        // A 6-byte CDB's transfer length is 8 bits (0 meaning 256), so the
-        // product tops out at 256 blocks — 128 KB at 512-byte blocks, but
-        // 512 KB on a CD-ROM's 2048-byte blocks.  BUF_LIMIT is 256 * 512, so
-        // this used to reject any CD-ROM READ(6) of more than 64 blocks with
-        // ILLEGAL REQUEST.  The comment here used to claim "the product stays
-        // inside BUF_LIMIT in practice", which is only true for 512-byte
-        // blocks and is why no hard-disk row ever caught it: booting System
-        // 7.5.3 off a CD dies on `lba=2531 tl=124` (248 KB), and the System
-        // reports the refused read as "Not enough memory is available".
-        //
-        // Grow the staging buffer instead, exactly as the 10-byte path below
-        // already does (see scsi_buf_ensure in phase_data_in/out).  Promote
-        // both operands before the multiply so an overflow can't slip past a
-        // 32-bit-int host.
-        // Validate the range BEFORE any phase change, for READ and WRITE alike.
-        // phase_data_in/out call scsi_buf_ensure, which reallocs the staging
-        // buffer to the full requested size -- and the buffer never shrinks.
-        // With the check second, a READ(10) of tl=0xFFFF against a 32 KB
-        // medium was correctly refused with CHECK CONDITION and STILL left a
-        // 32 MB staging buffer behind for the life of the machine (134 MB at a
-        // CD-ROM's 2048-byte blocks), from one CDB the code already knew was
-        // invalid.  And if that realloc fails, GS_ASSERTF continues (and is
-        // compiled out under GS_FAST), so buf.data becomes NULL and the copy
-        // below writes through it.  Nothing may grow the buffer until the
-        // request is known to be sane.
-        //
-        // For WRITE there is a second reason: refusing after the initiator has
-        // already pushed a whole data-out phase is a late phase change some
-        // initiators do not recover from (the Network Server's SCRIPTS program
-        // is one -- see the empty-CD-bay note above).
-        uint64_t byte_off = 0;
-        size_t byte_cnt = 0;
-        if (!scsi_lba_range_ok(scsi, target, &byte_off, &byte_cnt)) {
-            LOG(1, "SCSI %s out of range: target=%d lba=%u tl=%u blk_sz=%u raw_size=%llu",
-                scsi->cmd.opcode == CMD_WRITE ? "WRITE" : "READ", target, scsi->cmd.lba, scsi->cmd.tl, blk_sz,
-                (unsigned long long)disk_size(scsi->device_images[target]));
-            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
-            break;
-        }
-
-        // Past the check, the size is known to fit the medium.  Narrate the
-        // legitimately large ones: the Apple SCSI driver does issue these.
-        if (byte_cnt > BUF_LIMIT)
-            LOG(2, "SCSI %s large transfer: tl=%u blk_sz=%u (%zu bytes > BUF_LIMIT)",
-                scsi->cmd.opcode == CMD_WRITE ? "WRITE" : "READ", scsi->cmd.tl, blk_sz, byte_cnt);
-
-        if (!scsi_buf_ensure(scsi, byte_cnt)) {
-            scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_NO_ASC, 0x00);
-            break;
-        }
-        if (scsi->cmd.opcode == CMD_WRITE) {
-            phase_data_out(scsi, (int)byte_cnt);
-        } else {
-            phase_data_in(scsi, (int)byte_cnt);
-            // The range is already known to fit, so a short read is a backing-store
-            // failure: report it as a MEDIUM ERROR, never as GOOD over stale bytes
-            // (an assert() here was compiled out by -DNDEBUG in the release build).
-            size_t n = disk_read_data(scsi->device_images[target], byte_off, scsi->buf.data, byte_cnt);
-            if (n != byte_cnt) {
-                LOG(1, "SCSI READ: storage gave %zu of %zu bytes at offset %llu", n, byte_cnt,
-                    (unsigned long long)byte_off);
-                scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_UNRECOVERED_READ_ERROR, 0x00);
-            }
-        }
+        scsi_rw_transfer(scsi, target, scsi->cmd.opcode == CMD_WRITE, "");
         break;
     }
 
@@ -851,43 +861,12 @@ void run_cmd(scsi_t *scsi) {
         // can move far more than the 256-block (BUF_LIMIT) staging buffer holds
         // — the Apple SCSI driver does exactly this writing the System file
         // during a System 7.1 install.  The staging buffer grows to fit (see
-        // scsi_buf_ensure in phase_data_in/out); no cap, no assert.
-        // Range check first, then the phase change -- see the 6-byte path
-        // above for why the order matters.  The largest product that can
-        // reach here is 65535 blocks x 2048 bytes = 134,215,680, which fits
-        // the int that phase_data_in/out take; a block size of 32 KB or more
-        // would overflow it, so cast from the checked size_t rather than
-        // recomputing the multiply in int.
-        uint64_t byte_off = 0;
-        size_t byte_cnt = 0;
-        if (!scsi_lba_range_ok(scsi, target, &byte_off, &byte_cnt)) {
-            LOG(1, "SCSI %s_10 out of range: target=%d lba=%u tl=%u blk_sz=%u raw_size=%llu",
-                scsi->cmd.opcode == CMD_WRITE_10 ? "WRITE" : "READ", target, scsi->cmd.lba, scsi->cmd.tl, blk_sz,
-                (unsigned long long)disk_size(scsi->device_images[target]));
-            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
-            break;
-        }
-
-        if (byte_cnt > BUF_LIMIT)
-            LOG(2, "SCSI %s_10 large transfer: tl=%u blk_sz=%u (%zu bytes > BUF_LIMIT)",
-                scsi->cmd.opcode == CMD_WRITE_10 ? "WRITE" : "READ", scsi->cmd.tl, blk_sz, byte_cnt);
-
-        if (!scsi_buf_ensure(scsi, byte_cnt)) {
-            scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_NO_ASC, 0x00);
-            break;
-        }
-        if (scsi->cmd.opcode == CMD_WRITE_10) {
-            phase_data_out(scsi, (int)byte_cnt);
-        } else {
-            phase_data_in(scsi, (int)byte_cnt);
-            // A short read is a backing-store failure, as for READ(6) above.
-            size_t n = disk_read_data(scsi->device_images[target], byte_off, scsi->buf.data, byte_cnt);
-            if (n != byte_cnt) {
-                LOG(1, "SCSI READ_10: storage gave %zu of %zu bytes at offset %llu", n, byte_cnt,
-                    (unsigned long long)byte_off);
-                scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_UNRECOVERED_READ_ERROR, 0x00);
-            }
-        }
+        // scsi_buf_ensure in phase_data_in/out); no cap, no assert.  The
+        // largest product that can reach the transfer is 65535 blocks x 2048
+        // bytes = 134,215,680, which fits the int that phase_data_in/out take;
+        // a block size of 32 KB or more would overflow it, so the transfer
+        // casts from the checked size_t rather than recomputing the multiply.
+        scsi_rw_transfer(scsi, target, scsi->cmd.opcode == CMD_WRITE_10, "_10");
         break;
     }
 
