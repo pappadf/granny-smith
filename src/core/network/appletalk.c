@@ -29,7 +29,7 @@
 #include "shell.h"
 #include "system.h"
 #include "value.h"
-#include "worker_thread.h"
+#include "job/job.h" // EMU_THREAD_CHECK
 
 #include <assert.h>
 #include <ctype.h>
@@ -738,7 +738,7 @@ static void llap_in(atalk_conn_t *c, const uint8_t *buf, size_t len) {
 // guest's frames and the scheduler's timers there, the object model's calls
 // through the mailbox.  A debug build checks it.
 static void llap_receive(void *ctx, const uint8_t *buf, size_t size) {
-    worker_thread_check("llap_receive");
+    EMU_THREAD_CHECK("llap_receive");
     llap_in((atalk_conn_t *)ctx, buf, size);
 }
 

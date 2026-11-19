@@ -10,7 +10,6 @@
 #include "core_singletons.h"
 #include "log_context.h"
 #include "shell.h"
-#include "worker_thread.h"
 #include "job/job.h"
 
 #include <stdbool.h>
@@ -22,15 +21,14 @@ int core_init(void) {
 
     // Ordering invariants, top to bottom:
     //
-    // 1. worker_thread_latch first: it latches this pthread for the
-    //    thread-affinity guard (MODE=debug/sanitize: any object_eval or shell
-    //    entry from another thread then aborts).  Everything below runs on
-    //    this thread, so a registration that hands work to the emulator
-    //    thread already finds the latch set.
+    // 1. job_layer_init first: it latches this pthread as the emulator
+    //    thread, for the job layer and for the thread-affinity guard
+    //    (MODE=debug/sanitize: any object_eval or shell entry from another
+    //    thread then aborts).  Everything below runs on this thread, so a
+    //    registration that hands work to the emulator thread already finds
+    //    the latch set.
     // 2. log_context_install (the logger's PC/count decorations and trace
     //    capture) before anything that logs.
-    // 3. job_layer_init (records this as the emulator thread) before any
-    //    module that prints or runs work through the job layer.
     // 4. shell_init (binding store, completion provider) before the root is
     //    populated, so an object_eval landing during init sees a live provider
     //    and the `shell` node never exists without its interpreter state.
@@ -39,9 +37,8 @@ int core_init(void) {
     // 6. The singletons in any order among themselves (each attaches only
     //    its own node), but before root_install, whose cfg-scoped stubs and
     //    install hooks (files.images, ...) hang off nodes they create.
-    worker_thread_latch();
-    log_context_install();
     job_layer_init();
+    log_context_install();
     if (shell_init() != 0)
         return -1;
 

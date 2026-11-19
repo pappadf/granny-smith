@@ -21,7 +21,7 @@
 
 #include "object.h"
 #include "value.h"
-#include "worker_thread.h"
+#include "job/job.h" // EMU_THREAD_CHECK
 
 // === JSON formatting ========================================================
 //
@@ -422,8 +422,8 @@ static int json_parse_args(const char *json, value_t **out_argv, int *out_argc, 
 // === Public entry points ====================================================
 
 int object_eval(const char *path, const char *args_json, char *out_buf, size_t out_size) {
-    // Thread-affinity guard (compiled out in release). See worker_thread.h.
-    worker_thread_check("object_eval");
+    // Thread-affinity guard (compiled out in release). See job/job.h.
+    EMU_THREAD_CHECK("object_eval");
 
     if (!out_buf || out_size == 0)
         return -1;

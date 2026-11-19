@@ -565,9 +565,9 @@ configure, and what the JS frontend operates on:
   and the worker's `shell_poll()` drains every tick, and an event ring
   the answers come back on, each carrying its request's id.
   `Atomics.waitAsync` + `emscripten_atomic_notify` carry the wake-ups —
-  no polling. The worker-thread guard
-  in `worker_thread.h` enforces that `object_eval` only runs on the worker
-  pthread, never via direct `Module.ccall` from the main thread. JS
+  no polling. The thread-affinity guard
+  (`EMU_THREAD_CHECK`, [`job/seam.md`](../job/seam.md)) enforces that
+  `object_eval` only runs on the emulator pthread, never via direct `Module.ccall` from the main thread. JS
   callers see numbers, strings, lists, and `{error: "…"}` shapes —
   never raw exit codes. See [`web.md`](../../../guide/web.md) for the wire layout
   and protocol.
