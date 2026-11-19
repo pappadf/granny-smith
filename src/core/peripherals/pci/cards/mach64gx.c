@@ -3024,20 +3024,8 @@ static void mach64_compose(mach64_t *m) {
         // yellow) and the colours at $FFFFFF / $000000, and a real machine
         // shows a black-outlined white arrow.  The composite is built in the
         // frame's own depth, so each colour becomes its nearest palette entry.
-        for (int k = 0; k < 2; k++) {
-            uint32_t rgb = m->cur_latch[k ? 4 : 3] >> 8;
-            int r = (int)(rgb >> 16) & 0xFF, g = (int)(rgb >> 8) & 0xFF, b = (int)rgb & 0xFF;
-            uint32_t best = 0, best_d = 0xFFFFFFFFu;
-            for (uint32_t i = 0; i < 256; i++) {
-                int dr = m->clut_view[i].r - r, dg = m->clut_view[i].g - g, db = m->clut_view[i].b - b;
-                uint32_t d = (uint32_t)(dr * dr + dg * dg + db * db);
-                if (d < best_d) {
-                    best_d = d;
-                    best = i;
-                }
-            }
-            clr[k] = best;
-        }
+        for (int k = 0; k < 2; k++)
+            clr[k] = display_nearest_index(m->clut_view, m->cur_latch[k ? 4 : 3] >> 8);
     }
 
     // At 15/16 bpp a direct colour is packed to the frame's own pixel; the
@@ -3046,7 +3034,7 @@ static void mach64_compose(mach64_t *m) {
         bool g6 = m->display.format == PIXEL_16BPP_565;
         for (int k = 0; k < 2; k++) {
             uint32_t r = (clr[k] >> 16) & 0xFFu, g = (clr[k] >> 8) & 0xFFu, b = clr[k] & 0xFFu;
-            clr[k] = g6 ? ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3) : ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
+            clr[k] = g6 ? display_pack565(r, g, b) : display_pack555(r, g, b);
         }
     }
 

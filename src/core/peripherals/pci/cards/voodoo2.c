@@ -730,17 +730,17 @@ static bool v2_lfb_expand16(uint32_t fmt, uint32_t lanes, uint16_t d, uint32_t *
         c1 = (d >> 11) & 0x1Fu;
         c2 = (d >> 5) & 0x3Fu;
         c3 = d & 0x1Fu;
-        c1 = (c1 << 3) | (c1 >> 2);
-        c2 = (c2 << 2) | (c2 >> 4);
-        c3 = (c3 << 3) | (c3 >> 2);
+        c1 = display_expand5(c1);
+        c2 = display_expand6(c2);
+        c3 = display_expand5(c3);
         *a = 255;
     } else { // x-5-5-5 or 1-5-5-5
         c1 = (d >> 10) & 0x1Fu;
         c2 = (d >> 5) & 0x1Fu;
         c3 = d & 0x1Fu;
-        c1 = (c1 << 3) | (c1 >> 2);
-        c2 = (c2 << 3) | (c2 >> 2);
-        c3 = (c3 << 3) | (c3 >> 2);
+        c1 = display_expand5(c1);
+        c2 = display_expand5(c2);
+        c3 = display_expand5(c3);
         if (fmt == 2u || fmt == 14u) {
             *a = (d >> 15) ? 255u : 0u;
             has_a = true;

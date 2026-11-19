@@ -901,23 +901,12 @@ static void r128_refresh_dac(rage128_t *r) {
 // frame's depth — takes the nearest palette entry.
 static uint32_t r128_cursor_pixel(const rage128_t *r, uint32_t rgb, uint32_t bpp) {
     uint32_t cr = (rgb >> 16) & 0xFFu, cg = (rgb >> 8) & 0xFFu, cb = rgb & 0xFFu;
-    if (bpp == 1) {
-        uint32_t best = 0, best_d = 0xFFFFFFFFu;
-        for (uint32_t i = 0; i < 256; i++) {
-            int dr = (int)r->clut_view[i].r - (int)cr, dg = (int)r->clut_view[i].g - (int)cg,
-                db = (int)r->clut_view[i].b - (int)cb;
-            uint32_t d = (uint32_t)(dr * dr + dg * dg + db * db);
-            if (d < best_d) {
-                best_d = d;
-                best = i;
-            }
-        }
-        return best;
-    }
+    if (bpp == 1)
+        return display_nearest_index(r->clut_view, rgb);
     if (bpp == 2) {
         if (r->display.format == PIXEL_16BPP_565)
-            return ((cr >> 3) << 11) | ((cg >> 2) << 5) | (cb >> 3);
-        return ((cr >> 3) << 10) | ((cg >> 3) << 5) | (cb >> 3);
+            return display_pack565(cr, cg, cb);
+        return display_pack555(cr, cg, cb);
     }
     return rgb & 0xFFFFFFu;
 }

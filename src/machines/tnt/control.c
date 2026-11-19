@@ -52,6 +52,7 @@
 #include "tnt.h"
 
 #include "card.h"
+#include "display.h"
 #include "log.h"
 #include "pci.h"
 #include "ppc.h"
@@ -410,7 +411,7 @@ static void control_compose(config_t *cfg) {
                 dst[0] = control_clut_match(c, pal[0], pal[1], pal[2]);
                 break;
             case 2: {
-                uint16_t v = (uint16_t)(((pal[0] >> 3) << 10) | ((pal[1] >> 3) << 5) | (pal[2] >> 3));
+                uint16_t v = display_pack555(pal[0], pal[1], pal[2]);
                 dst[0] = (uint8_t)(v >> 8);
                 dst[1] = (uint8_t)v;
                 break;

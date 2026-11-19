@@ -15,6 +15,7 @@
 
 #include "qd3d_raster.h"
 
+#include "display.h"
 #include "log.h"
 
 #include <math.h>
@@ -361,7 +362,7 @@ static inline uint8_t to_byte(float v) {
 // Pack one pixel into the output stream: big-endian x1555 or xRGB8888.
 static inline uint8_t *put_pixel(uint8_t *out, bool dest16, uint8_t R, uint8_t G, uint8_t B) {
     if (dest16) {
-        uint16_t p = (uint16_t)(((R >> 3) << 10) | ((G >> 3) << 5) | (B >> 3));
+        uint16_t p = display_pack555(R, G, B);
         *out++ = (uint8_t)(p >> 8);
         *out++ = (uint8_t)p;
     } else {

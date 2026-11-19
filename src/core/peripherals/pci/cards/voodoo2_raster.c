@@ -23,6 +23,7 @@
 #include "voodoo2_gpu.h"
 #include "voodoo2_raster_priv.h"
 
+#include "display.h"
 #include "log.h"
 
 #include <math.h>
@@ -286,13 +287,15 @@ uint32_t v2_texel_expand(const v2_tmu_state_t *tm, const v2_target_t *tgt, int t
         r = (raw >> 11) & 0x1Fu;
         g = (raw >> 5) & 0x3Fu;
         b = raw & 0x1Fu;
-        return 0xFF000000u | (((r << 3) | (r >> 2)) << 16) | (((g << 2) | (g >> 4)) << 8) | (b << 3) | (b >> 2);
+        return 0xFF000000u | ((uint32_t)display_expand5(r) << 16) | ((uint32_t)display_expand6(g) << 8) |
+               display_expand5(b);
     case 11: // 16-bit ARGB 1-5-5-5
         a = (raw >> 15) ? 0xFFu : 0u;
         r = (raw >> 10) & 0x1Fu;
         g = (raw >> 5) & 0x1Fu;
         b = raw & 0x1Fu;
-        return (a << 24) | (((r << 3) | (r >> 2)) << 16) | (((g << 3) | (g >> 2)) << 8) | (b << 3) | (b >> 2);
+        return (a << 24) | ((uint32_t)display_expand5(r) << 16) | ((uint32_t)display_expand5(g) << 8) |
+               display_expand5(b);
     case 12: // 16-bit ARGB 4-4-4-4
         a = (raw >> 12) & 0xFu;
         r = (raw >> 8) & 0xFu;
@@ -869,9 +872,9 @@ static bool v2_pixel_pipe(const v2_draw_state_t *st, v2_target_t *tgt, v2_pix_t 
         uint32_t dr = ((dst565 >> 11) & 0x1Fu);
         uint32_t dg = ((dst565 >> 5) & 0x3Fu);
         uint32_t db = dst565 & 0x1Fu;
-        dr = (dr << 3) | (dr >> 2);
-        dg = (dg << 2) | (dg >> 4);
-        db = (db << 3) | (db >> 2);
+        dr = display_expand5(dr);
+        dg = display_expand6(dg);
+        db = display_expand5(db);
         uint32_t dst_a = 255; // destination alpha planes not enabled
         uint32_t sf = (amode >> 8) & 0xFu, df = (amode >> 12) & 0xFu;
         uint32_t nr = v2_blend_mul(out_r, v2_blend_factor(sf, true, out_a, dst_a, dr, 0)) +

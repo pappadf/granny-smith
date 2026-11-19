@@ -45,6 +45,7 @@
 // documents leave a field's meaning open, Mesa's classic r128 driver's
 // usage decides, and the choice is a comment.
 
+#include "display.h"
 #include "log.h"
 #include "platform_clock.h"
 #include "rage128_gpu.h"
@@ -452,11 +453,11 @@ static inline __attribute__((always_inline)) uint32_t texel_argb(rage128_t *r, u
     case 3: // ARGB1555
         a = (v & 0x8000u) ? 0xFFu : 0u;
         rr = (v >> 10) & 0x1Fu, g = (v >> 5) & 0x1Fu, b = v & 0x1Fu;
-        rr = (rr << 3) | (rr >> 2), g = (g << 3) | (g >> 2), b = (b << 3) | (b >> 2);
+        rr = display_expand5(rr), g = display_expand5(g), b = display_expand5(b);
         break;
     case 4: // RGB565
         rr = (v >> 11) & 0x1Fu, g = (v >> 5) & 0x3Fu, b = v & 0x1Fu;
-        rr = (rr << 3) | (rr >> 2), g = (g << 2) | (g >> 4), b = (b << 3) | (b >> 2);
+        rr = display_expand5(rr), g = display_expand6(g), b = display_expand5(b);
         break;
     case 6: // ARGB8888
         a = v >> 24, rr = (v >> 16) & 0xFFu, g = (v >> 8) & 0xFFu, b = v & 0xFFu;

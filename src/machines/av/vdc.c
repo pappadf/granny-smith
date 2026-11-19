@@ -32,6 +32,7 @@
 
 #include "checkpoint.h"
 #include "debug.h"
+#include "display.h"
 #include "log.h"
 #include "machine_profile.h"
 #include "object.h"
@@ -329,7 +330,7 @@ static void vdc_write_field(av_vdc_t *vdc, av_civic_t *cv, int parity) {
                 // 1-5-5-5 ARGB, α = 0 (keyer disabled is Apple's shipping
                 // state), 8→5 bit truncation, guest
                 // big-endian byte order.
-                uint16_t px = (uint16_t)(((p[0] >> 3) << 10) | ((p[1] >> 3) << 5) | (p[2] >> 3));
+                uint16_t px = display_pack555(p[0], p[1], p[2]);
                 dst[i * 2 + 0] = (uint8_t)(px >> 8);
                 dst[i * 2 + 1] = (uint8_t)px;
             } else {

@@ -231,6 +231,33 @@ static inline uint8_t display_expand6(uint8_t v) {
     return (uint8_t)((v << 2) | (v >> 4));
 }
 
+// The inverse: 8-bit channels truncated into an x-5-5-5 / 5-6-5 pixel (the
+// packing every chip's 16 bpp cursor, scaler and rasteriser path uses).
+static inline uint16_t display_pack555(uint32_t r, uint32_t g, uint32_t b) {
+    return (uint16_t)(((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3));
+}
+static inline uint16_t display_pack565(uint32_t r, uint32_t g, uint32_t b) {
+    return (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+}
+
+// The index of the 256-entry palette's colour nearest `rgb` (0xRRGGBB) by
+// squared distance, the first on a tie: how a DAC that overlays true colour
+// (a hardware cursor) is shown in an 8 bpp composite.
+static inline uint32_t display_nearest_index(const rgba8_t clut[256], uint32_t rgb) {
+    int r = (int)(rgb >> 16) & 0xFF, g = (int)(rgb >> 8) & 0xFF, b = (int)rgb & 0xFF;
+    uint32_t best = 0, best_d = 0xFFFFFFFFu;
+    for (uint32_t i = 0; i < 256; i++) {
+        int dr = (int)clut[i].r - r, dg = (int)clut[i].g - g, db = (int)clut[i].b - b;
+        uint32_t d = (uint32_t)(dr * dr + dg * dg + db * db);
+        // Strictly closer only, so the lowest index wins a tie
+        if (d < best_d) {
+            best_d = d;
+            best = i;
+        }
+    }
+    return best;
+}
+
 // The shell-facing name of a format.  One spelling, so machine.screen and a
 // card's framebuffer node cannot disagree about what the guest is running.
 static inline const char *display_format_name(pixel_format_t format) {
