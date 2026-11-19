@@ -52,10 +52,6 @@ LOG_USE_CATEGORY_NAME("board");
 // VIA callbacks (direct IIci-like wiring)
 // ============================================================
 
-static inline mcu_state_t *q700_state(config_t *cfg) {
-    return (mcu_state_t *)cfg->machine_context;
-}
-
 // VIA1 outputs: PA5 = floppy head select; PB = classic RTC serial
 // (bits 0-2) + ADB ST lines (bits 4-5) — the IIci pattern verbatim.
 static void q700_via1_output(void *context, uint8_t port, uint8_t output) {
@@ -109,7 +105,7 @@ static void q700_sonic_irq(void *context, bool active) {
 // ============================================================
 
 static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
-    mcu_state_t *st = q700_state(cfg);
+    mcu_state_t *st = mcu_st(cfg);
     const mcu_board_t *board = (const mcu_board_t *)cfg->machine->board;
     const mcu_board_desc_t *desc = board->desc;
 

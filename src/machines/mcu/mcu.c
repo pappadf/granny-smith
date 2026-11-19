@@ -52,10 +52,6 @@ static inline const mcu_board_t *mcu_board(config_t *cfg) {
     return (const mcu_board_t *)cfg->machine->board;
 }
 
-static inline mcu_state_t *mcu_st(config_t *cfg) {
-    return (mcu_state_t *)cfg->machine_context;
-}
-
 // ============================================================
 // Accept-and-log handler windows (MCU / SONIC / MAC PROM / SCSI / YANCC)
 // ============================================================

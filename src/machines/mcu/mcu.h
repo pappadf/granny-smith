@@ -169,6 +169,11 @@ typedef struct mcu_state {
     memory_interface_t io_interface; // registered at the $50000000 island
 } mcu_state_t;
 
+// The MCU family's machine state (cfg->machine_context).
+static inline mcu_state_t *mcu_st(config_t *cfg) {
+    return (mcu_state_t *)cfg->machine_context;
+}
+
 // The one MCU-family substrate; q700/q900/q950 bind this.
 extern const machine_substrate_t mcu_substrate;
 

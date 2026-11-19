@@ -62,21 +62,17 @@ LOG_USE_CATEGORY_NAME("board");
 // VIA callbacks (tower wiring: Caboose on VIA1, IOP IRQs on VIA2)
 // ============================================================
 
-static inline mcu_state_t *q900_state(config_t *cfg) {
-    return (mcu_state_t *)cfg->machine_context;
-}
-
 // VIA1 outputs: PB carries the Egret/Caboose handshake (PB4 viaFull, PB5
 // sysSes; PB3 xcvrSes is our input to the host) — VIA1InitQuadra900.  Port A
 // is all model-sense inputs on the tower (no head select: floppy is behind
 // the SWIM IOP).
 void q900_via1_output(void *context, uint8_t port, uint8_t output) {
-    egret_via1_port_output(q900_state((config_t *)context)->caboose, port, output);
+    egret_via1_port_output(mcu_st((config_t *)context)->caboose, port, output);
 }
 
 // VIA1 SR shift-out: a command byte for Caboose (Egret byte pump).
 void q900_via1_shift_out(void *context, uint8_t byte) {
-    egret_via1_shift_input(q900_state((config_t *)context)->caboose, byte);
+    egret_via1_shift_input(mcu_st((config_t *)context)->caboose, byte);
 }
 
 // VIA2 outputs: PB3/PB6 select the sound input source on the towers; DFAC
@@ -96,7 +92,7 @@ static void q900_asc_irq(void *context, bool active) {
 // The two 53C96 INT outputs wire-OR (active-low) onto VIA2 CB2:
 // don't drop the line while the other controller still requests.
 static void q900_scsi_irq_update(config_t *cfg, int bit, bool active) {
-    mcu_state_t *st = q900_state(cfg);
+    mcu_state_t *st = mcu_st(cfg);
     st->scsi_irq_or = active ? (st->scsi_irq_or | (uint8_t)(1u << bit)) : (st->scsi_irq_or & (uint8_t) ~(1u << bit));
     via_input_c(cfg->via2, 1, 1, st->scsi_irq_or ? 0 : 1);
 }
@@ -113,7 +109,7 @@ static void q900_scsi96_ext_irq(void *context, bool active) {
 // IOP host INT (mailbox traffic) — same combination the IIfx routes into its
 // OSS source.
 static void q900_scc_irq_update(config_t *cfg, int bit, bool active) {
-    mcu_state_t *st = q900_state(cfg);
+    mcu_state_t *st = mcu_st(cfg);
     st->scc_irq_or = active ? (st->scc_irq_or | (uint8_t)(1u << bit)) : (st->scc_irq_or & (uint8_t) ~(1u << bit));
     mac030_glue_update_ipl(cfg, MAC030_GLUE_IRQ_SCC, st->scc_irq_or != 0);
 }
@@ -145,7 +141,7 @@ static void q900_sonic_irq(void *context, bool active) {
 // ============================================================
 
 int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
-    mcu_state_t *st = q900_state(cfg);
+    mcu_state_t *st = mcu_st(cfg);
     const mcu_board_t *board = (const mcu_board_t *)cfg->machine->board;
     const mcu_board_desc_t *desc = board->desc;
 

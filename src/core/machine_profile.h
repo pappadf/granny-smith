@@ -538,10 +538,10 @@ typedef struct hw_profile {
     // the Network Servers, whose store starts blank.
     const char *(*of_nvram_check)(int n, const char *packed, const char **bad);
 
-    // "Bespoke substrate" is not "bespoke machine": every 68k family, the IIfx
-    // included, builds through mac030_build_core + mac030_build_lowspeed and
-    // tears down through
-    // machine_teardown_config_devices.  What a family keeps for itself is what
+    // "Bespoke substrate" is not "bespoke machine": every II-class 68k family,
+    // the IIfx included, builds through mac030_build_core +
+    // mac030_build_lowspeed (the Plus and the Lisa build their own core), and
+    // every family tears down through machine_teardown_config_devices.  What a family keeps for itself is what
     // its hardware actually does differently -- for the IIfx, the OSS
     // interrupt controller, the FMC ROM-invert POST window, the SCSI DMA
     // engine, and a ROM overlay that doubles as a trip-wire.

@@ -118,7 +118,7 @@ struct mmu_state *mac030_build_bus_mmu040(config_t *cfg, uint32_t ram_aperture, 
 // for mac030_build_mmu — so the duplicated per-machine #defines are gone.
 // I/O is the $10000000 window immediately above the ROM window on all three.
 void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc) {
-    mac030_glue_state_t *st = (mac030_glue_state_t *)cfg->machine_context;
+    mac030_glue_state_t *st = glue_st(cfg);
 
     uint32_t ram_size = cfg->ram_size;
     uint32_t rom_size = cfg->machine->rom_size;
@@ -174,7 +174,7 @@ void mac030_build_lowspeed(config_t *cfg, checkpoint_t *cp, void (*scc_irq)(void
     machine_part_begin(cfg, cp, "scc");
     cfg->scc = scc_init(NULL, cfg->scheduler, scc_irq ? scc_irq : mac030_glue_scc_irq, cfg, cp);
     machine_part(cfg, cp, "scc", part_save_scc, cfg->scc);
-    // 3.6864 MHz PCLK / 7.8336 MHz RTxC -- the same pair on every 68k Mac.
+    // 7.8336 MHz PCLK (C8M) / 3.6864 MHz RTxC -- the same pair on every 68k Mac.
     scc_set_clocks(cfg->scc, 7833600, 3686400);
     machine_part_begin(cfg, cp, "appletalk");
     cfg->atalk = atalk_conn_new(appletalk_network(), cfg->scheduler, cfg->scc, cp);
@@ -359,7 +359,7 @@ void mac030_glue_update_ipl(config_t *cfg, int source, bool active) {
 // built-in video is the same shape.  A bus that cannot see every contributor
 // cannot compute the edge.  The OR itself is shared with the MCU (slot_irq.h).
 void mac030_glue_slot_irq_source(config_t *cfg, int pa_bit, bool active) {
-    mac030_glue_state_t *st = (mac030_glue_state_t *)cfg->machine_context;
+    mac030_glue_state_t *st = glue_st(cfg);
     if (!st)
         return;
     slot_irq_source(cfg->via2, &st->slot_pa_mask, pa_bit, active);
@@ -391,12 +391,12 @@ static int glue_init(config_t *cfg, checkpoint_t *cp) {
 }
 
 static void glue_bus_reset(config_t *cfg) {
-    mac030_glue_state_t *st = (mac030_glue_state_t *)cfg->machine_context;
+    mac030_glue_state_t *st = glue_st(cfg);
     mac030_glue_bus_reset(cfg, &st->overlay);
 }
 
 static void glue_teardown(config_t *cfg) {
-    mac030_glue_state_t *st = (mac030_glue_state_t *)cfg->machine_context;
+    mac030_glue_state_t *st = glue_st(cfg);
     if (st) {
         // Borrowed slot-$E video pointers (SE/30 only; already NULL on IIcx/IIx).
         // system_destroy ran nubus_delete first, so the card buffer is gone.

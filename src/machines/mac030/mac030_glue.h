@@ -63,6 +63,11 @@ typedef struct mac030_glue_state {
     memory_interface_t io_interface; // registered at the $50000000 I/O region
 } mac030_glue_state_t;
 
+// The GLUE family's machine state (cfg->machine_context).
+static inline mac030_glue_state_t *glue_st(config_t *cfg) {
+    return (mac030_glue_state_t *)cfg->machine_context;
+}
+
 // The II-family construction prefix shared by every GLUE machine: build the
 // memory map, the CPU (model read FROM THE PROFILE — closing the drift
 // where every init hardcoded CPU_MODEL_68030), the scheduler, and its
@@ -182,7 +187,7 @@ typedef struct mac030_board_desc {
 void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc);
 
 // Build the low-speed spine every 68k family shares: RTC, the SCC at the Mac's
-// clocks (3.6864 MHz PCLK / 7.8336 MHz RTxC), and the machine's connection to
+// clocks (7.8336 MHz PCLK / 3.6864 MHz RTxC), and the machine's connection to
 // the AppleTalk network on its LocalTalk channel.  Pass NULL for `scc_irq` to take the family
 // default (mac030_glue_scc_irq).
 //
