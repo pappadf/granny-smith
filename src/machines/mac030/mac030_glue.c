@@ -24,7 +24,6 @@
 #include "machine_checkpoint.h"
 #include "memory.h"
 #include "mmu.h"
-#include "mmu_checkpoint.h"
 #include "nubus.h"
 #include "rtc.h"
 #include "scc.h"
@@ -233,19 +232,8 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
     if (board->memory_layout_tail)
         board->memory_layout_tail(cfg);
 
-    machine_part_begin(cfg, cp, "mmu");
-    if (cp)
-        mmu_checkpoint_restore(st->mmu, cp);
-    machine_part(cfg, cp, "mmu", part_save_mmu, st->mmu);
-    if (cp) {
-        mmu_invalidate_tlb(st->mmu);
-        // Set both, always together: the fault hook runs on the map's PMMU and
-        // the 68030 bus-error path reads cpu->mmu (asserted equal there).
-        memory_map_set_pmmu(cfg->memory_map, st->mmu);
-        cpu_attach_mmu(cfg->cpu, st->mmu);
-        via_redrive_outputs(cfg->via1);
-        via_redrive_outputs(cfg->via2);
-    }
+    // VIA2 drives GLUE outputs too: re-driven once the PMMU is bound
+    machine_part_pmmu(cfg, cp, st->mmu, cfg->via1, cfg->via2);
 
     mac030_glue_finish(cfg, cp, &st->glue_io);
     return 0;

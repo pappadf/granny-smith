@@ -10,7 +10,6 @@
 #include "mac_host_io.h"
 #include "machine.h"
 #include "machine_teardown.h"
-#include "mmu_checkpoint.h"
 #include "slot_tables.h"
 #include "system_internal.h"
 
@@ -1663,18 +1662,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
         system_read_checkpoint_data(checkpoint, &st->scsi_dma_fifo_word, sizeof(st->scsi_dma_fifo_word));
     }
     machine_part(cfg, checkpoint, "scsi_dma", part_save_scsi_dma, st);
-    machine_part_begin(cfg, checkpoint, "mmu");
-    if (checkpoint)
-        mmu_checkpoint_restore(st->mmu, checkpoint);
-    machine_part(cfg, checkpoint, "mmu", part_save_mmu, st->mmu);
-    if (checkpoint) {
-        mmu_invalidate_tlb(st->mmu);
-        // Set both, always together: the fault hook runs on the map's PMMU and
-        // the 68030 bus-error path reads cpu->mmu (asserted equal there).
-        memory_map_set_pmmu(cfg->memory_map, st->mmu);
-        cpu_attach_mmu(cfg->cpu, st->mmu);
-        via_redrive_outputs(cfg->via1);
-    }
+    machine_part_pmmu(cfg, checkpoint, st->mmu, cfg->via1, NULL);
 
     mac030_glue_finish(cfg, checkpoint, &st->iifx_io);
     return 0;

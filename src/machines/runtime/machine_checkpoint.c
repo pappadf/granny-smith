@@ -21,6 +21,7 @@
 #include "keyboard.h"
 #include "macroman.h"
 #include "memory.h"
+#include "mmu.h"
 #include "mmu_checkpoint.h"
 #include "mouse.h"
 #include "nubus.h"
@@ -182,6 +183,28 @@ void machine_part_irq(config_t *cfg, checkpoint_t *cp) {
     if (cp)
         system_read_checkpoint_data(cp, &cfg->rt.irq, sizeof(cfg->rt.irq));
     machine_part(cfg, cp, "irq", part_save_irq, cfg);
+}
+
+void machine_part_pmmu(config_t *cfg, checkpoint_t *cp, mmu_state_t *mmu, via_t *pre, via_t *post) {
+    machine_part_begin(cfg, cp, "mmu");
+    if (cp) {
+        // Re-drive the overlay VIA first, while the PMMU is the fresh, disabled
+        // one: its overlay output writes RAM identity entries for the low pages
+        // straight into the SoA arrays.  Those are right with the MMU off and
+        // wrong under the guest's tables; left in place past the invalidate
+        // below, they sent the restored guest's low-memory writes elsewhere
+        // (on the IIci and IIsi, into the screen at the bottom of Bank A).
+        via_redrive_outputs(pre);
+        mmu_checkpoint_restore(mmu, cp);
+        mmu_invalidate_tlb(mmu);
+        // Set both, always together: the fault hook runs on the map's PMMU and
+        // the 68030 bus-error path reads cpu->mmu (asserted equal there).
+        memory_map_set_pmmu(cfg->memory_map, mmu);
+        cpu_attach_mmu(cfg->cpu, mmu);
+        if (post)
+            via_redrive_outputs(post);
+    }
+    machine_part(cfg, cp, "mmu", part_save_mmu, mmu);
 }
 
 static void part_save_images(void *obj, checkpoint_t *cp) {

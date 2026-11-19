@@ -25,7 +25,6 @@
 #include "machine.h"
 #include "machine_checkpoint.h"
 #include "mdu.h" // mdu_substrate + mac030_mdu_board_t
-#include "mmu_checkpoint.h"
 #include "slot_tables.h"
 #include "system_internal.h"
 
@@ -370,24 +369,9 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
 
     iici_memory_layout_init(cfg);
 
-    machine_part_begin(cfg, checkpoint, "mmu");
-    if (checkpoint) {
-        // Re-drive VIA1 first, while the PMMU is still the fresh, disabled one:
-        // its Overlay output switches the ROM overlay off, which writes RAM
-        // identity entries for the low pages straight into the SoA arrays.
-        // That is right with the MMU off and wrong under the guest's tables,
-        // which start logical 0 at physical $50000 (past the frame buffer);
-        // left in place after the invalidate below, those untracked entries
-        // sent the restored guest's low-memory writes into the screen.
-        via_redrive_outputs(cfg->via1);
-        mmu_checkpoint_restore(st->mmu, checkpoint);
-        mmu_invalidate_tlb(st->mmu);
-        // Set both, always together: the fault hook runs on the map's PMMU and
-        // the 68030 bus-error path reads cpu->mmu (asserted equal there).
-        memory_map_set_pmmu(cfg->memory_map, st->mmu);
-        cpu_attach_mmu(cfg->cpu, st->mmu);
-    }
-    machine_part(cfg, checkpoint, "mmu", part_save_mmu, st->mmu);
+    // VIA1 is re-driven before the PMMU restore: the guest's tables start
+    // logical 0 at physical $50000, past the frame buffer (machine_part_pmmu)
+    machine_part_pmmu(cfg, checkpoint, st->mmu, cfg->via1, NULL);
     return 0;
 }
 

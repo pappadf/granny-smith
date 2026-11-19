@@ -17,6 +17,8 @@
 #include "machine_parts.h"
 
 struct config;
+struct mmu_state;
+struct via;
 
 // Part-save functions: `obj` is the device the part names.
 void part_save_memory(void *obj, checkpoint_t *cp); // memory_map_t
@@ -51,6 +53,16 @@ void machine_part_imagewriter(struct config *cfg, checkpoint_t *cp, bool lisa);
 // cfg->rt.irq, the 68k families' aggregated interrupt-source bitmap: read it
 // on a restore, and register it.
 void machine_part_irq(struct config *cfg, checkpoint_t *cp);
+
+// The 68030 PMMU, part "mmu": on a restore, re-drive `pre` (the VIA whose
+// outputs write the SoA arrays -- the ROM overlay) while the PMMU is still the
+// fresh, disabled one, then read the PMMU, invalidate its TLB, bind it to the
+// memory map and the CPU, and re-drive `post` (may be NULL); register the
+// part.  `pre` goes first because an overlay switch writes identity entries
+// for the low pages, which are wrong under guest tables that do not map
+// logical 0 to physical 0 (the IIci and IIsi frame buffer is the bottom of
+// Bank A); the invalidate after it drops them.
+void machine_part_pmmu(struct config *cfg, checkpoint_t *cp, struct mmu_state *mmu, struct via *pre, struct via *post);
 
 // The machine's image list (checkpoint_images.h): read it on a restore,
 // before the devices that reference it, and register it.

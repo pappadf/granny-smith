@@ -24,7 +24,6 @@
 #include "machine.h"
 #include "machine_checkpoint.h"
 #include "mdu.h" // mdu_substrate + mac030_mdu_board_t
-#include "mmu_checkpoint.h"
 #include "slot_tables.h"
 #include "system_internal.h"
 
@@ -341,17 +340,9 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
 
     iisi_memory_layout_init(cfg);
 
-    machine_part_begin(cfg, checkpoint, "mmu");
-    if (checkpoint) {
-        mmu_checkpoint_restore(st->mmu, checkpoint);
-        mmu_invalidate_tlb(st->mmu);
-        // Set both, always together: the fault hook runs on the map's PMMU and
-        // the 68030 bus-error path reads cpu->mmu (asserted equal there).
-        memory_map_set_pmmu(cfg->memory_map, st->mmu);
-        cpu_attach_mmu(cfg->cpu, st->mmu);
-        via_redrive_outputs(cfg->via1);
-    }
-    machine_part(cfg, checkpoint, "mmu", part_save_mmu, st->mmu);
+    // VIA1 is re-driven before the PMMU restore, as on the IIci: the frame
+    // buffer is the bottom of Bank A, past which the guest's tables start
+    machine_part_pmmu(cfg, checkpoint, st->mmu, cfg->via1, NULL);
     return 0;
 }
 
