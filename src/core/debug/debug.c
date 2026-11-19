@@ -1443,6 +1443,36 @@ static void framebuffer_row_to_rgba(const display_t *d, int y, uint8_t *out_rgba
     display_row_to_rgba(d, (uint32_t)y, out_rgba);
 }
 
+// Whether display d can be converted to RGBA by framebuffer_row_to_rgba:
+// it has a framebuffer, a pixel format the converter knows and, when
+// indexed, a CLUT.  Prints why not (`verb` names the PNG operation, "match"
+// or "save") and returns -1; 0 when it can.
+static int framebuffer_check_exportable(const display_t *d, const char *verb) {
+    if (!d || !d->bits) {
+        out_printf("Error: No active display.\n");
+        return -1;
+    }
+    switch (d->format) {
+    case PIXEL_1BPP_MSB:
+    case PIXEL_2BPP_MSB:
+    case PIXEL_4BPP_MSB:
+    case PIXEL_8BPP:
+    case PIXEL_16BPP_555:
+    case PIXEL_16BPP_565:
+    case PIXEL_32BPP_XRGB:
+        break;
+    default:
+        out_printf("Error: PNG %s: unsupported pixel format %d.\n", verb, (int)d->format);
+        return -1;
+    }
+    if ((d->format == PIXEL_2BPP_MSB || d->format == PIXEL_4BPP_MSB || d->format == PIXEL_8BPP) &&
+        (!d->clut || d->clut_len == 0)) {
+        out_printf("Error: PNG %s: indexed format with no CLUT.\n", verb);
+        return -1;
+    }
+    return 0;
+}
+
 // Load a PNG file and decode it to packed RGBA (8 bits per channel, 4
 // bytes per pixel, no filter bytes).  Used by screen.match's
 // RGBA-vs-RGBA comparison path; works with any PNG color type that
@@ -1629,28 +1659,8 @@ int debug_load_png_rgba(const char *filename, int width, int height, uint8_t *ou
 // Unused Block" figure lower down, with "Total Memory" -- an assertion the
 // row exists to make -- sitting between the two.
 int match_framebuffer_with_png(const display_t *d, const char *filename, const int *exclude_rects, int n_rects) {
-    if (!d || !d->bits) {
-        out_printf("Error: No active display.\n");
+    if (framebuffer_check_exportable(d, "match") < 0)
         return -1;
-    }
-    switch (d->format) {
-    case PIXEL_1BPP_MSB:
-    case PIXEL_2BPP_MSB:
-    case PIXEL_4BPP_MSB:
-    case PIXEL_8BPP:
-    case PIXEL_16BPP_555:
-    case PIXEL_16BPP_565:
-    case PIXEL_32BPP_XRGB:
-        break;
-    default:
-        out_printf("Error: PNG match: unsupported pixel format %d.\n", (int)d->format);
-        return -1;
-    }
-    if ((d->format == PIXEL_2BPP_MSB || d->format == PIXEL_4BPP_MSB || d->format == PIXEL_8BPP) &&
-        (!d->clut || d->clut_len == 0)) {
-        out_printf("Error: PNG match: indexed format with no CLUT.\n");
-        return -1;
-    }
 
     const size_t rgba_bytes = (size_t)d->width * (size_t)d->height * 4;
     uint8_t *fb_rgba = malloc(rgba_bytes);
@@ -1701,28 +1711,8 @@ int match_framebuffer_with_png(const display_t *d, const char *filename, const i
 // Emits an 8-bit RGBA truecolour PNG whatever the display's pixel format;
 // indexed formats are decoded through the display's CLUT.
 int save_framebuffer_as_png(const display_t *d, const char *filename) {
-    if (!d || !d->bits) {
-        out_printf("Error: No active display.\n");
+    if (framebuffer_check_exportable(d, "save") < 0)
         return -1;
-    }
-    switch (d->format) {
-    case PIXEL_1BPP_MSB:
-    case PIXEL_2BPP_MSB:
-    case PIXEL_4BPP_MSB:
-    case PIXEL_8BPP:
-    case PIXEL_16BPP_555:
-    case PIXEL_16BPP_565:
-    case PIXEL_32BPP_XRGB:
-        break;
-    default:
-        out_printf("Error: PNG save: unsupported pixel format %d.\n", (int)d->format);
-        return -1;
-    }
-    if ((d->format == PIXEL_2BPP_MSB || d->format == PIXEL_4BPP_MSB || d->format == PIXEL_8BPP) &&
-        (!d->clut || d->clut_len == 0)) {
-        out_printf("Error: PNG save: indexed format with no CLUT.\n");
-        return -1;
-    }
     const int width = (int)d->width;
     const int height = (int)d->height;
 
