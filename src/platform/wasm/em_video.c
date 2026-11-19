@@ -131,62 +131,71 @@ static const char *VS_SHARED = "#version 300 es\n"
                                "    gl_Position = vec4(a_position, 0.0, 1.0);\n"
                                "}\n";
 
+// One GLSL line per C line: clang-format would fold the lines into the
+// macro calls.
+// clang-format off
+// The fragment shaders share a head and, all but 1 bpp, an epilogue; they
+// are built from adjacent string literals at compile time, one program per
+// format (a per-format program keeps the per-fragment shader branch-free).
+//
+// FS_HEAD: the version, the precision, the framebuffer texture, the
+// format's extra samplers (`samplers`, possibly ""), the size uniforms and
+// the pixel this fragment shows (x, y).
+#define FS_HEAD(precision, samplers)                                                                                   \
+    "#version 300 es\n"                                                                                                \
+    "precision " precision " float;\n"                                                                                 \
+    "uniform sampler2D u_texture;\n" samplers "uniform vec2 u_fb_size;\n"                                              \
+    "uniform float u_stride;\n"                                                                                        \
+    "in  vec2 v_uv;\n"                                                                                                 \
+    "out vec4 fragColor;\n"                                                                                            \
+    "void main() {\n"                                                                                                  \
+    "    vec2 px      = v_uv * u_fb_size;\n"                                                                           \
+    "    float x      = floor(px.x);\n"                                                                                \
+    "    float y      = floor(px.y);\n"
+#define FS_CLUT     "uniform sampler2D u_clut;\n"
+#define FS_RESPONSE "uniform sampler2D u_response;\n"
+
+// FS_RESPOND: route each channel (GLSL expressions in [0,1]) through the
+// per-channel CRT response LUT (`u_response`, 256x3 R8: row 0 = R, row 1 =
+// G, row 2 = B), write the colour and close main().
+#define FS_RESPOND(r, g, b)                                                                                            \
+    "    float r_out  = texture(u_response, vec2(" r ", 0.5 / 3.0)).r;\n"                                              \
+    "    float g_out  = texture(u_response, vec2(" g ", 1.5 / 3.0)).r;\n"                                              \
+    "    float b_out  = texture(u_response, vec2(" b ", 2.5 / 3.0)).r;\n"                                              \
+    "    fragColor    = vec4(r_out, g_out, b_out, 1.0);\n"                                                             \
+    "}\n"
+
+// The CLUT entry for colour index `idx`, then the response epilogue.
+#define FS_CLUT_RESPOND                                                                                                \
+    "    vec4 entry   = texture(u_clut, vec2((idx + 0.5) / 256.0, 0.5));\n" FS_RESPOND("entry.r", "entry.g", "entry.b")
+
 // 1 bpp packed, MSB-first.  Texture stores raw framebuffer bytes in
 // red channel (R8); shader unpacks the bit at the pixel column.  Output is
 // inverted (1 = black, 0 = white) to match Mac display convention.
-static const char *FS_1BPP = "#version 300 es\n"
-                             "precision mediump float;\n"
-                             "uniform sampler2D u_texture;\n"
-                             "uniform vec2 u_fb_size;\n"
-                             "uniform float u_stride;\n"
-                             "in  vec2 v_uv;\n"
-                             "out vec4 fragColor;\n"
-                             "void main() {\n"
-                             "    vec2 px        = v_uv * u_fb_size;\n"
-                             "    float x        = floor(px.x);\n"
-                             "    float y        = floor(px.y);\n"
-                             "    float byteIdx  = floor(x / 8.0);\n"
-                             "    float bitPos   = mod(x, 8.0);\n"
-                             "    vec2 tc        = vec2((byteIdx + 0.5) / u_stride,\n"
-                             "                          (y + 0.5) / u_fb_size.y);\n"
-                             "    float byteVal  = floor(texture(u_texture, tc).r * 255.0 + 0.5);\n"
-                             "    float mask     = exp2(7.0 - bitPos);\n"
-                             "    float pixel    = step(mask, mod(byteVal, mask * 2.0));\n"
-                             "    float col      = 1.0 - pixel;\n"
-                             "    fragColor      = vec4(col, col, col, 1.0);\n"
-                             "}\n";
+static const char *FS_1BPP = FS_HEAD("mediump", "")
+    "    float byteIdx  = floor(x / 8.0);\n"
+    "    float bitPos   = mod(x, 8.0);\n"
+    "    vec2 tc        = vec2((byteIdx + 0.5) / u_stride,\n"
+    "                          (y + 0.5) / u_fb_size.y);\n"
+    "    float byteVal  = floor(texture(u_texture, tc).r * 255.0 + 0.5);\n"
+    "    float mask     = exp2(7.0 - bitPos);\n"
+    "    float pixel    = step(mask, mod(byteVal, mask * 2.0));\n"
+    "    float col      = 1.0 - pixel;\n"
+    "    fragColor      = vec4(col, col, col, 1.0);\n"
+    "}\n";
 
 // 8 bpp indexed.  Framebuffer texture stores raw bytes in red channel;
 // CLUT texture is 256x1 RGBA8.  Sample the byte, scale to [0,1], lookup
 // in the CLUT, then route each component through the per-channel CRT
-// response LUT (`u_response`, 256x3 R8: row 0 = R, row 1 = G, row 2 = B).
-// The response LUT models the monitor's physical gamma response — see
-// display_t::crt_response.  For monitors with near-identity gamma
-// (12"/13" RGB, Portrait), the LUT is filled with identity so this
-// pass is a no-op; for Kong it un-does Apple's gamma pre-correction
-// and yields a neutral image.
-static const char *FS_8BPP = "#version 300 es\n"
-                             "precision mediump float;\n"
-                             "uniform sampler2D u_texture;\n"
-                             "uniform sampler2D u_clut;\n"
-                             "uniform sampler2D u_response;\n"
-                             "uniform vec2 u_fb_size;\n"
-                             "uniform float u_stride;\n"
-                             "in  vec2 v_uv;\n"
-                             "out vec4 fragColor;\n"
-                             "void main() {\n"
-                             "    vec2 px       = v_uv * u_fb_size;\n"
-                             "    float x       = floor(px.x);\n"
-                             "    float y       = floor(px.y);\n"
-                             "    vec2 tc       = vec2((x + 0.5) / u_stride,\n"
-                             "                         (y + 0.5) / u_fb_size.y);\n"
-                             "    float idx     = floor(texture(u_texture, tc).r * 255.0 + 0.5);\n"
-                             "    vec4 entry    = texture(u_clut, vec2((idx + 0.5) / 256.0, 0.5));\n"
-                             "    float r_out   = texture(u_response, vec2(entry.r, 0.5 / 3.0)).r;\n"
-                             "    float g_out   = texture(u_response, vec2(entry.g, 1.5 / 3.0)).r;\n"
-                             "    float b_out   = texture(u_response, vec2(entry.b, 2.5 / 3.0)).r;\n"
-                             "    fragColor     = vec4(r_out, g_out, b_out, 1.0);\n"
-                             "}\n";
+// response LUT.  The response LUT models the monitor's physical gamma
+// response — see display_t::crt_response.  For monitors with near-identity
+// gamma (12"/13" RGB, Portrait), the LUT is filled with identity so this
+// pass is a no-op; for Kong it un-does Apple's gamma pre-correction and
+// yields a neutral image.
+static const char *FS_8BPP = FS_HEAD("mediump", FS_CLUT FS_RESPONSE)
+    "    vec2 tc      = vec2((x + 0.5) / u_stride,\n"
+    "                        (y + 0.5) / u_fb_size.y);\n"
+    "    float idx    = floor(texture(u_texture, tc).r * 255.0 + 0.5);\n" FS_CLUT_RESPOND;
 
 // 32 bpp direct (PIXEL_32BPP_XRGB): the framebuffer is 00RRGGBB stored
 // big-endian, so the bytes in memory are [00, RR, GG, BB].  Uploaded as
@@ -194,87 +203,35 @@ static const char *FS_8BPP = "#version 300 es\n"
 // colour is (texel.g, texel.b, texel.a).  u_stride is the texel width
 // (stride/4, set by refresh_from_display), one texel per pixel.  Route
 // each channel through the CRT response LUT exactly like the 8bpp path.
-static const char *FS_32BPP = "#version 300 es\n"
-                              "precision mediump float;\n"
-                              "uniform sampler2D u_texture;\n"
-                              "uniform sampler2D u_response;\n"
-                              "uniform vec2 u_fb_size;\n"
-                              "uniform float u_stride;\n"
-                              "in  vec2 v_uv;\n"
-                              "out vec4 fragColor;\n"
-                              "void main() {\n"
-                              "    vec2 px      = v_uv * u_fb_size;\n"
-                              "    float x      = floor(px.x);\n"
-                              "    float y      = floor(px.y);\n"
-                              "    vec2 tc      = vec2((x + 0.5) / u_stride,\n"
-                              "                        (y + 0.5) / u_fb_size.y);\n"
-                              "    vec4 texel   = texture(u_texture, tc);\n"
-                              "    float r_out  = texture(u_response, vec2(texel.g, 0.5 / 3.0)).r;\n"
-                              "    float g_out  = texture(u_response, vec2(texel.b, 1.5 / 3.0)).r;\n"
-                              "    float b_out  = texture(u_response, vec2(texel.a, 2.5 / 3.0)).r;\n"
-                              "    fragColor    = vec4(r_out, g_out, b_out, 1.0);\n"
-                              "}\n";
+static const char *FS_32BPP = FS_HEAD("mediump", FS_RESPONSE)
+    "    vec2 tc      = vec2((x + 0.5) / u_stride,\n"
+    "                        (y + 0.5) / u_fb_size.y);\n"
+    "    vec4 texel   = texture(u_texture, tc);\n" FS_RESPOND("texel.g", "texel.b", "texel.a");
 
-// 16 bpp direct (PIXEL_16BPP_555): 0RRRRRGGGGGBBBBB stored big-endian, so
-// the two bytes per pixel are [hi, lo] with hi = 0RRRRRGG, lo = GGGBBBBB.
-// The texture is R8 (u_stride = byte stride), so pixel x reads bytes 2x and
-// 2x+1.  highp is needed for the 15-bit reconstruction.  5-bit channels
-// scale to [0,1] via /31, then through the CRT response LUT.
-static const char *FS_16BPP =
-    "#version 300 es\n"
-    "precision highp float;\n"
-    "uniform sampler2D u_texture;\n"
-    "uniform sampler2D u_response;\n"
-    "uniform vec2 u_fb_size;\n"
-    "uniform float u_stride;\n"
-    "in  vec2 v_uv;\n"
-    "out vec4 fragColor;\n"
-    "void main() {\n"
-    "    vec2 px      = v_uv * u_fb_size;\n"
-    "    float x      = floor(px.x);\n"
-    "    float y      = floor(px.y);\n"
-    "    float row    = (y + 0.5) / u_fb_size.y;\n"
-    "    float hi     = floor(texture(u_texture, vec2((2.0 * x + 0.5) / u_stride, row)).r * 255.0 + 0.5);\n"
-    "    float lo     = floor(texture(u_texture, vec2((2.0 * x + 1.5) / u_stride, row)).r * 255.0 + 0.5);\n"
+// 16 bpp direct: two big-endian bytes per pixel, [hi, lo].  The texture is
+// R8 (u_stride = byte stride), so pixel x reads bytes 2x and 2x+1.  highp
+// is needed for the 15/16-bit reconstruction.
+#define FS_16BPP_WORD                                                                                                  \
+    "    float row    = (y + 0.5) / u_fb_size.y;\n"                                                                    \
+    "    float hi     = floor(texture(u_texture, vec2((2.0 * x + 0.5) / u_stride, row)).r * 255.0 + 0.5);\n"           \
+    "    float lo     = floor(texture(u_texture, vec2((2.0 * x + 1.5) / u_stride, row)).r * 255.0 + 0.5);\n"           \
     "    float v      = hi * 256.0 + lo;\n"
+
+// 16 bpp direct (PIXEL_16BPP_555): 0RRRRRGGGGGBBBBB, so hi = 0RRRRRGG and
+// lo = GGGBBBBB.  5-bit channels scale to [0,1] via /31, then through the
+// CRT response LUT.
+static const char *FS_16BPP = FS_HEAD("highp", FS_RESPONSE) FS_16BPP_WORD
     "    float r5     = mod(floor(v / 1024.0), 32.0);\n"
     "    float g5     = mod(floor(v / 32.0), 32.0);\n"
-    "    float b5     = mod(v, 32.0);\n"
-    "    float r_out  = texture(u_response, vec2(r5 / 31.0, 0.5 / 3.0)).r;\n"
-    "    float g_out  = texture(u_response, vec2(g5 / 31.0, 1.5 / 3.0)).r;\n"
-    "    float b_out  = texture(u_response, vec2(b5 / 31.0, 2.5 / 3.0)).r;\n"
-    "    fragColor    = vec4(r_out, g_out, b_out, 1.0);\n"
-    "}\n";
+    "    float b5     = mod(v, 32.0);\n" FS_RESPOND("r5 / 31.0", "g5 / 31.0", "b5 / 31.0");
 
-// 16 bpp direct (PIXEL_16BPP_565): RRRRRGGGGGGBBBBB stored big-endian, so
-// the two bytes per pixel are [hi, lo] with hi = RRRRRGGG, lo = GGGBBBBB.
-// Same R8 texture walk as the 5-5-5 shader; the green channel is 6 bits
-// wide so it scales via /63 where red and blue scale via /31.
-static const char *FS_16BPP_565 =
-    "#version 300 es\n"
-    "precision highp float;\n"
-    "uniform sampler2D u_texture;\n"
-    "uniform sampler2D u_response;\n"
-    "uniform vec2 u_fb_size;\n"
-    "uniform float u_stride;\n"
-    "in  vec2 v_uv;\n"
-    "out vec4 fragColor;\n"
-    "void main() {\n"
-    "    vec2 px      = v_uv * u_fb_size;\n"
-    "    float x      = floor(px.x);\n"
-    "    float y      = floor(px.y);\n"
-    "    float row    = (y + 0.5) / u_fb_size.y;\n"
-    "    float hi     = floor(texture(u_texture, vec2((2.0 * x + 0.5) / u_stride, row)).r * 255.0 + 0.5);\n"
-    "    float lo     = floor(texture(u_texture, vec2((2.0 * x + 1.5) / u_stride, row)).r * 255.0 + 0.5);\n"
-    "    float v      = hi * 256.0 + lo;\n"
+// 16 bpp direct (PIXEL_16BPP_565): RRRRRGGGGGGBBBBB, so hi = RRRRRGGG and
+// lo = GGGBBBBB.  The green channel is 6 bits wide so it scales via /63
+// where red and blue scale via /31.
+static const char *FS_16BPP_565 = FS_HEAD("highp", FS_RESPONSE) FS_16BPP_WORD
     "    float r5     = floor(v / 2048.0);\n"
     "    float g6     = mod(floor(v / 32.0), 64.0);\n"
-    "    float b5     = mod(v, 32.0);\n"
-    "    float r_out  = texture(u_response, vec2(r5 / 31.0, 0.5 / 3.0)).r;\n"
-    "    float g_out  = texture(u_response, vec2(g6 / 63.0, 1.5 / 3.0)).r;\n"
-    "    float b_out  = texture(u_response, vec2(b5 / 31.0, 2.5 / 3.0)).r;\n"
-    "    fragColor    = vec4(r_out, g_out, b_out, 1.0);\n"
-    "}\n";
+    "    float b5     = mod(v, 32.0);\n" FS_RESPOND("r5 / 31.0", "g6 / 63.0", "b5 / 31.0");
 
 // 2 bpp and 4 bpp indexed.  The 8 bpp shader with the byte unpacked into four
 // or two pixels, MSB first -- the Mac convention display.h's decoder follows.
@@ -288,57 +245,21 @@ static const char *FS_16BPP_565 =
 //
 // The unpack stays in float arithmetic: the byte arrives normalised from an R8
 // texture, so recover it, divide down to the wanted field, take the remainder.
-static const char *FS_2BPP = "#version 300 es\n"
-                             "precision mediump float;\n"
-                             "uniform sampler2D u_texture;\n"
-                             "uniform sampler2D u_clut;\n"
-                             "uniform sampler2D u_response;\n"
-                             "uniform vec2 u_fb_size;\n"
-                             "uniform float u_stride;\n"
-                             "in  vec2 v_uv;\n"
-                             "out vec4 fragColor;\n"
-                             "void main() {\n"
-                             "    vec2 px      = v_uv * u_fb_size;\n"
-                             "    float x      = floor(px.x);\n"
-                             "    float y      = floor(px.y);\n"
-                             "    float byte_x = floor(x / 4.0);\n"
-                             "    vec2 tc      = vec2((byte_x + 0.5) / u_stride,\n"
-                             "                        (y + 0.5) / u_fb_size.y);\n"
-                             "    float b      = floor(texture(u_texture, tc).r * 255.0 + 0.5);\n"
-                             "    float shift  = (4.0 - 1.0 - mod(x, 4.0)) * 2.0;\n"
-                             "    float idx    = mod(floor(b / pow(2.0, shift)), 4.0);\n"
-                             "    vec4 entry   = texture(u_clut, vec2((idx + 0.5) / 256.0, 0.5));\n"
-                             "    float r_out  = texture(u_response, vec2(entry.r, 0.5 / 3.0)).r;\n"
-                             "    float g_out  = texture(u_response, vec2(entry.g, 1.5 / 3.0)).r;\n"
-                             "    float b_out  = texture(u_response, vec2(entry.b, 2.5 / 3.0)).r;\n"
-                             "    fragColor    = vec4(r_out, g_out, b_out, 1.0);\n"
-                             "}\n";
+// FS_PACKED's arguments are GLSL float literals: pixels per byte, bits per
+// pixel and the number of colours.
+#define FS_PACKED(per_byte, bits, colours)                                                                             \
+    FS_HEAD("mediump", FS_CLUT FS_RESPONSE)                                                                            \
+    "    float byte_x = floor(x / " per_byte ");\n"                                                                    \
+    "    vec2 tc      = vec2((byte_x + 0.5) / u_stride,\n"                                                             \
+    "                        (y + 0.5) / u_fb_size.y);\n"                                                              \
+    "    float b      = floor(texture(u_texture, tc).r * 255.0 + 0.5);\n"                                              \
+    "    float shift  = (" per_byte " - 1.0 - mod(x, " per_byte ")) * " bits ";\n"                                     \
+    "    float idx    = mod(floor(b / pow(2.0, shift)), " colours ");\n" FS_CLUT_RESPOND
 
-static const char *FS_4BPP = "#version 300 es\n"
-                             "precision mediump float;\n"
-                             "uniform sampler2D u_texture;\n"
-                             "uniform sampler2D u_clut;\n"
-                             "uniform sampler2D u_response;\n"
-                             "uniform vec2 u_fb_size;\n"
-                             "uniform float u_stride;\n"
-                             "in  vec2 v_uv;\n"
-                             "out vec4 fragColor;\n"
-                             "void main() {\n"
-                             "    vec2 px      = v_uv * u_fb_size;\n"
-                             "    float x      = floor(px.x);\n"
-                             "    float y      = floor(px.y);\n"
-                             "    float byte_x = floor(x / 2.0);\n"
-                             "    vec2 tc      = vec2((byte_x + 0.5) / u_stride,\n"
-                             "                        (y + 0.5) / u_fb_size.y);\n"
-                             "    float b      = floor(texture(u_texture, tc).r * 255.0 + 0.5);\n"
-                             "    float shift  = (2.0 - 1.0 - mod(x, 2.0)) * 4.0;\n"
-                             "    float idx    = mod(floor(b / pow(2.0, shift)), 16.0);\n"
-                             "    vec4 entry   = texture(u_clut, vec2((idx + 0.5) / 256.0, 0.5));\n"
-                             "    float r_out  = texture(u_response, vec2(entry.r, 0.5 / 3.0)).r;\n"
-                             "    float g_out  = texture(u_response, vec2(entry.g, 1.5 / 3.0)).r;\n"
-                             "    float b_out  = texture(u_response, vec2(entry.b, 2.5 / 3.0)).r;\n"
-                             "    fragColor    = vec4(r_out, g_out, b_out, 1.0);\n"
-                             "}\n";
+static const char *FS_2BPP = FS_PACKED("4.0", "2.0", "4.0");
+
+static const char *FS_4BPP = FS_PACKED("2.0", "4.0", "16.0");
+// clang-format on
 
 // ============================================================================
 // Static helpers
