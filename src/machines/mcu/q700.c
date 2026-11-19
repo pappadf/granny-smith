@@ -26,7 +26,6 @@
 #include "dafb.h"
 #include "floppy.h"
 #include "image.h"
-#include "log.h"
 #include "memory.h"
 #include "mmu.h"
 #include "mmu040.h"
@@ -45,8 +44,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
-
-LOG_USE_CATEGORY_NAME("board");
 
 // ============================================================
 // VIA callbacks (direct IIci-like wiring)
