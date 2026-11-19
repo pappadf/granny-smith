@@ -209,6 +209,35 @@ static void mint_random_hex_id(char out[static 17]) {
     out[16] = '\0';
 }
 
+// Give `image` ghost sidecars: a delta and a journal under a fresh id in the
+// scratch root, removed on close, so they never land beside the media or in
+// a user directory.  0, or -ENOMEM (either path may be left NULL).
+static int ghost_paths(image_t *image) {
+    mkdir_p(image_scratch_dir());
+    char id[17];
+    mint_random_hex_id(id);
+    image->ghost_instance = true;
+    image->delta_path = str_printf("%s/%s.delta", image_scratch_dir(), id);
+    image->journal_path = str_printf("%s/%s.journal", image_scratch_dir(), id);
+    return image->delta_path && image->journal_path ? 0 : -ENOMEM;
+}
+
+// The message and code of an export whose writer stopped with `rc` (a
+// storage status or a negative errno): cancelled, an unreadable disk image,
+// or a failed write to `dest`.  The words are user-visible.
+static int export_fail(int rc, const char *dest, char *err, size_t err_cap) {
+    if (rc == -ECANCELED) {
+        if (err)
+            snprintf(err, err_cap, "cancelled");
+        return -ECANCELED;
+    }
+    if (err)
+        snprintf(err, err_cap,
+                 rc == STATUS_E_IO ? "the disk image could not be read; '%s' not written" : "write to '%s' failed",
+                 dest);
+    return -EIO;
+}
+
 // Normalise a geometry's block size, treating 0 as the default (512).
 static uint32_t geometry_block_size(image_geometry_t geom) {
     return geom.block_size ? geom.block_size : STORAGE_BLOCK_SIZE;
@@ -427,13 +456,8 @@ static image_t *image_open_source(const char *name, source_t *data, source_t *rs
         image->instance_path = str_printf("%s/%s", dir, id);
     } else {
         // A read-only mount's delta+journal are ghosts in the scratch root,
-        // so they never land beside the media.
-        mkdir_p(image_scratch_dir());
-        char id[17];
-        mint_random_hex_id(id);
-        image->ghost_instance = true;
-        image->delta_path = str_printf("%s/%s.delta", image_scratch_dir(), id);
-        image->journal_path = str_printf("%s/%s.journal", image_scratch_dir(), id);
+        // so they never land beside the media (a NULL path is caught below).
+        ghost_paths(image);
     }
     if (image->instance_path) {
         image->delta_path = str_printf("%s.delta", image->instance_path);
@@ -561,18 +585,11 @@ image_t *image_create_blank(uint64_t block_count, image_geometry_t geom) {
     image->type = image_hd;
     image->writable = true;
     image->from_diskcopy = false;
-    image->ghost_instance = true; // delta+journal are scratch, removed on close
-
     // Place the delta+journal in the scratch root so the blank disk's
     // sidecars don't clutter any user directory; ghost_instance unlinks them on
     // image_close.  The image is ephemeral unless exported via image_export_to.
-    mkdir_p(image_scratch_dir());
-    char id[17];
-    mint_random_hex_id(id);
     image->instance_path = NULL; // never serialized
-    image->delta_path = str_printf("%s/%s.delta", image_scratch_dir(), id);
-    image->journal_path = str_printf("%s/%s.journal", image_scratch_dir(), id);
-    if (!image->delta_path || !image->journal_path) {
+    if (ghost_paths(image) != 0) {
         image->writable = false; // never registered
         image_close(image);
         return NULL;
@@ -929,17 +946,8 @@ static int image_export_run_udif(image_export_t *e, char *err, size_t err_cap) {
         return -EIO;
     int rc = storage_export_view_write(e->view, w, udif_write_cb);
     if (rc != STATUS_OK) {
-        udif_writer_abort(w);
-        if (rc == -ECANCELED) {
-            if (err)
-                snprintf(err, err_cap, "cancelled");
-            return -ECANCELED;
-        }
-        if (err)
-            snprintf(err, err_cap,
-                     rc == STATUS_E_IO ? "the disk image could not be read; '%s' not written" : "write to '%s' failed",
-                     e->dest);
-        return -EIO;
+        udif_writer_abort(w); // removes the partial file
+        return export_fail(rc, e->dest, err, err_cap);
     }
     rc = udif_writer_finish(w, NULL);
     if (rc != 0 && err)
@@ -1056,16 +1064,7 @@ int image_export_run(image_export_t *e, char *err, size_t err_cap) {
     free(iobuf);
     if (rc != STATUS_OK || !closed) {
         remove(e->dest);
-        if (rc == -ECANCELED) {
-            if (err)
-                snprintf(err, err_cap, "cancelled");
-            return -ECANCELED;
-        }
-        if (err)
-            snprintf(err, err_cap,
-                     rc == STATUS_E_IO ? "the disk image could not be read; '%s' not written" : "write to '%s' failed",
-                     e->dest);
-        return -EIO;
+        return export_fail(rc, e->dest, err, err_cap);
     }
     return 0;
 }
