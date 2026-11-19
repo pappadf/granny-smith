@@ -12,16 +12,18 @@ Scripts under scripts/ carry the same two lines in their own comment syntax
 Usage: scripts/check-spdx.py        Exit: 0 clean, 1 files missing it.
 """
 
-import subprocess
+import os
 import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import repo  # the tracked-file listing
 
 SPDX = "SPDX-License-Identifier: MIT"
 COPY = "Copyright (c) pappadf"
 
 
 def tracked(*patterns):
-    out = subprocess.run(["git", "ls-files", "--", *patterns], capture_output=True, text=True, check=True)
-    return out.stdout.split()
+    return repo.tracked(*patterns)
 
 
 def c_ok(path):

@@ -27,8 +27,10 @@ Usage: scripts/check-doc-rules.py     Exit: 0 clean, 1 violations.
 
 import os
 import re
-import subprocess
 import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import repo  # the tracked-file listing
 
 BANNER = re.compile(r"^> 🚧 \*\*Placeholder\*\*", re.M)
 MARKER = re.compile(r"^<!-- gs-doc-status: stub -->\s*$", re.M)
@@ -79,8 +81,7 @@ FENCE = re.compile(r"^\s*(```|~~~)")
 
 
 def scanned():
-    out = subprocess.run(["git", "ls-files", "--", "*.md"], capture_output=True, text=True, check=True)
-    return [p for p in out.stdout.split() if p.startswith("docs/") or p in ROOT_DOCS]
+    return [p for p in repo.tracked("*.md") if p.startswith("docs/") or p in ROOT_DOCS]
 
 
 def denylist_violations(path):
