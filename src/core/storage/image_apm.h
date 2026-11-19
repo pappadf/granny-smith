@@ -24,6 +24,11 @@
 // a map whose descriptor says 2048 would refuse those discs.
 #define APM_BLOCK_SIZE 512
 
+// Upper bound on the partition map length we will accept.  Real Apple
+// media never exceeds ~64 entries; capping at 256 protects against a
+// corrupt pmMapBlkCnt that would otherwise drive a huge allocation.
+#define APM_MAX_PARTITIONS 256
+
 // Filesystem kind inferred from the APM partition type string.  The
 // strings we probe against match period-correct Apple tooling.
 enum apm_fs_kind {
@@ -65,6 +70,7 @@ typedef struct apm_table {
 // carries the APM signature "PM" and a plausible pmMapBlkCnt. This is the
 // cheap sniff the implicit-mount probe calls before committing to a full
 // parse; direct callers can skip it and go straight to image_apm_parse.
+// Defined in image_volume.c beside the other volume signature tests.
 bool image_apm_probe_magic(const uint8_t *block1);
 
 // Parse the APM from an open image.  Returns NULL and leaves *errmsg

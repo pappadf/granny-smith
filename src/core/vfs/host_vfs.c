@@ -8,6 +8,8 @@
 
 #include "vfs.h"
 
+#include "storage_util.h"
+
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -120,31 +122,20 @@ static void host_closedir(vfs_dir_t *d) {
 
 // Open a regular file for reading.  Symbolic links are followed (the shell
 // acts for the user; see vfs.h on sandboxing).  Anything but a regular file
-// is refused, so a read never meets a FIFO, socket or device: the open is
-// non-blocking (a FIFO with no writer would otherwise block here) and the
-// type is checked on the descriptor before it is used.
+// is refused, so a read never meets a FIFO, socket or device: the shared
+// host opener (open_regular_file, the one under every source_t host file
+// too) opens non-blocking and checks the type on the descriptor.
 static int host_open(void *ctx, const char *path, vfs_file_t **out) {
     (void)ctx;
     if (!path || !out)
         return -EINVAL;
-    // O_CLOEXEC: don't leak the fd across a hypothetical future fork/exec.
-    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+    int fd = open_regular_file(path, NULL, NULL);
     if (fd < 0)
-        return -errno;
-    struct stat st;
-    int rc = 0;
-    if (fstat(fd, &st) != 0)
-        rc = -errno;
-    else if (S_ISDIR(st.st_mode))
-        rc = -EISDIR;
-    else if (!S_ISREG(st.st_mode))
-        rc = -EINVAL;
-    host_vfs_file_t *handle = rc == 0 ? calloc(1, sizeof(*handle)) : NULL;
-    if (rc == 0 && !handle)
-        rc = -ENOMEM;
-    if (rc != 0) {
+        return fd;
+    host_vfs_file_t *handle = calloc(1, sizeof(*handle));
+    if (!handle) {
         close(fd);
-        return rc;
+        return -ENOMEM;
     }
     handle->fd = fd;
     *out = (vfs_file_t *)(void *)handle;

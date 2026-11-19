@@ -10,6 +10,8 @@
 #include "codec.h"
 #include "common.h"
 #include "image_udif.h"
+#include "image_volume.h"
+#include "mac_disk_layout.h"
 #include "storage_util.h"
 
 #include <errno.h>
@@ -96,11 +98,16 @@ struct udif_writer {
 // spelling, so tools that open the payload pick the right reader (7-Zip
 // treats an "Apple_HFS" table as a bare HFS volume).
 static const char *table_name_for(const uint8_t *p, size_t n) {
-    if (n >= 2 && p[0] == 'E' && p[1] == 'R')
+    // A Driver Descriptor Map alone already makes a partitioned disk.
+    if (n >= 2 && RD_BE16(p) == DDM_SIG_ER)
         return "whole disk (Apple_partition_scheme : 0)";
-    if (n >= 1026 && ((p[1024] == 'B' && p[1025] == 'D') || (p[1024] == 'H' && (p[1025] == '+' || p[1025] == 'X'))))
+    // Otherwise what the first chunk shows the disk to be.
+    volume_kind_t kind = volume_sniff(p, n, n).kind;
+    if (kind == VOL_APM)
+        return "whole disk (Apple_partition_scheme : 0)";
+    if (volume_kind_is_hfs(kind))
         return "whole disk (Apple_HFS : 0)";
-    if (n >= 32774 && memcmp(p + 32769, "CD001", 5) == 0)
+    if (kind == VOL_ISO)
         return "whole disk (ISO9660 : 0)";
     return "whole disk (Unknown Partition : 0)";
 }

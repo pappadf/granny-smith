@@ -11,6 +11,7 @@
 #include "codec.h"
 #include "common.h"
 #include "format_registry.h"
+#include "gcr.h"
 #include "log.h"
 #include "storage_util.h"
 
@@ -36,10 +37,10 @@ static const uint8_t moof_magic[8] = {'M', 'O', 'O', 'F', 0xFF, 0x0A, 0x0D, 0x0A
 #define FIRST_BLOCK  3 // track data starts at byte 1536
 #define NUM_TRACKS   80
 #define SECTOR_BYTES 512
-#define SECTOR_NIBS  699 // 12 tag + 512 data bytes in 6-and-2 GCR
-#define CKSUM_NIBS   4 // the 24-bit data checksum
+#define SECTOR_NIBS  699 // 12 tag + 512 data bytes in 6-and-2 GCR (then 4 checksum values)
 #define GCR_TIMING   16 // optimal bit timing for GCR, in 125 ns ticks (2 µs)
-#define SECTOR_RAW   (MOOF_TAG_BYTES + SECTOR_BYTES) // 524
+
+_Static_assert(MOOF_TAG_BYTES == GCR_TAG_BYTES && SECTOR_BYTES == GCR_DATA_BYTES, "a MOOF sector is a GCR sector");
 
 // Fixed chunk positions an Applesauce file uses (the chunk walk finds them
 // anyway; these are what a writer emits).
@@ -50,142 +51,6 @@ static const uint8_t moof_magic[8] = {'M', 'O', 'O', 'F', 0xFF, 0x0A, 0x0D, 0x0A
 // Sectors per track in each of the five speed zones (16 tracks each).
 static int zone_sectors(int track) {
     return 12 - track / 16;
-}
-
-// ============================================================================
-// 6-and-2 GCR
-// ============================================================================
-
-// The 64 disk bytes the 6-bit values 0x00-0x3F encode to.
-static const uint8_t gcr_encode[64] = {0x96, 0x97, 0x9A, 0x9B, 0x9D, 0x9E, 0x9F, 0xA6, 0xA7, 0xAB, 0xAC, 0xAD, 0xAE,
-                                       0xAF, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE,
-                                       0xBF, 0xCB, 0xCD, 0xCE, 0xCF, 0xD3, 0xD6, 0xD7, 0xD9, 0xDA, 0xDB, 0xDC, 0xDD,
-                                       0xDE, 0xDF, 0xE5, 0xE6, 0xE7, 0xE9, 0xEA, 0xEB, 0xEC, 0xED, 0xEE, 0xEF, 0xF2,
-                                       0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF};
-
-// Disk byte -> 6-bit value, 0xFF for a byte that is no codeword.
-static const uint8_t gcr_decode[256] = {
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x01,
-    0xFF, 0xFF, 0x02, 0x03, 0xFF, 0x04, 0x05, 0x06, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x07, 0x08, 0xFF, 0xFF, 0xFF,
-    0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0xFF, 0xFF, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0xFF, 0x14, 0x15, 0x16, 0x17, 0x18,
-    0x19, 0x1A, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x1B, 0xFF, 0x1C, 0x1D, 0x1E, 0xFF,
-    0xFF, 0xFF, 0x1F, 0xFF, 0xFF, 0x20, 0x21, 0xFF, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xFF, 0x29, 0x2A, 0x2B, 0xFF, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0xFF, 0xFF, 0x33, 0x34, 0x35, 0x36, 0x37,
-    0x38, 0xFF, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F,
-};
-
-// Decode 699 data nibbles and 4 checksum nibbles (disk bytes) into the 524
-// bytes of a sector.  1 when the checksum matches, 0 when it does not, -1
-// when a nibble is no codeword.
-static int gcr_denibblize(const uint8_t *nib, uint8_t out[SECTOR_RAW]) {
-    uint8_t w[SECTOR_NIBS + CKSUM_NIBS];
-    for (int i = 0; i < SECTOR_NIBS + CKSUM_NIBS; i++) {
-        w[i] = gcr_decode[nib[i]];
-        if (w[i] == 0xFF)
-            return -1;
-    }
-    // Each group is a nibble of high bits, then up to three low-6-bit nibbles.
-    uint8_t b1[175], b2[175], b3[175];
-    int k = 0;
-    for (int g = 0; g < 175; g++) {
-        uint8_t hi = w[k++];
-        b1[g] = (uint8_t)(w[k++] | ((hi << 2) & 0xC0));
-        b2[g] = (uint8_t)(w[k++] | ((hi << 4) & 0xC0));
-        b3[g] = g < 174 ? (uint8_t)(w[k++] | ((hi << 6) & 0xC0)) : 0; // the last group has two bytes
-    }
-    // Undo the rolling three-byte checksum the bytes were XORed with.
-    uint32_t c1 = 0, c2 = 0, c3 = 0;
-    int n = 0;
-    for (int j = 0;; j++) {
-        c1 = (c1 & 0xFF) << 1; // rotate c1 left...
-        if (c1 & 0x100)
-            c1++; // ...bit 7 into bit 0
-        uint8_t v = b1[j] ^ (uint8_t)c1;
-        c3 += v;
-        if (c1 & 0x100) {
-            c3++; // the rotate's carry
-            c1 &= 0xFF;
-        }
-        out[n++] = v;
-        v = b2[j] ^ (uint8_t)c3;
-        c2 += v;
-        if (c3 > 0xFF) {
-            c2++;
-            c3 &= 0xFF;
-        }
-        out[n++] = v;
-        if (n == SECTOR_RAW)
-            break;
-        v = b3[j] ^ (uint8_t)c2;
-        c1 += v;
-        if (c2 > 0xFF) {
-            c1++;
-            c2 &= 0xFF;
-        }
-        out[n++] = v;
-    }
-    c1 &= 0xFF, c2 &= 0xFF, c3 &= 0xFF;
-    const uint8_t *ck = w + SECTOR_NIBS;
-    uint8_t hi = (uint8_t)(((c1 & 0xC0) >> 6) | ((c2 & 0xC0) >> 4) | ((c3 & 0xC0) >> 2));
-    return ck[0] == hi && ck[1] == (c3 & 0x3F) && ck[2] == (c2 & 0x3F) && ck[3] == (c1 & 0x3F);
-}
-
-// Encode the 524 bytes of a sector as 699 data nibbles and 4 checksum
-// nibbles (disk bytes): gcr_denibblize's inverse.
-static void gcr_nibblize(const uint8_t in[SECTOR_RAW], uint8_t nib[SECTOR_NIBS + CKSUM_NIBS]) {
-    uint8_t b1[175], b2[175], b3[175];
-    uint32_t c1 = 0, c2 = 0, c3 = 0;
-    int i = 0;
-    for (int j = 0;; j++) {
-        c1 = (c1 & 0xFF) << 1;
-        if (c1 & 0x100)
-            c1++;
-        uint8_t v = in[i++];
-        c3 += v;
-        if (c1 & 0x100) {
-            c3++;
-            c1 &= 0xFF;
-        }
-        b1[j] = v ^ (uint8_t)c1;
-        v = in[i++];
-        c2 += v;
-        if (c3 > 0xFF) {
-            c2++;
-            c3 &= 0xFF;
-        }
-        b2[j] = v ^ (uint8_t)c3;
-        if (i == SECTOR_RAW) {
-            b3[j] = 0;
-            break;
-        }
-        v = in[i++];
-        c1 += v;
-        if (c2 > 0xFF) {
-            c1++;
-            c2 &= 0xFF;
-        }
-        b3[j] = v ^ (uint8_t)c2;
-    }
-    c1 &= 0xFF, c2 &= 0xFF, c3 &= 0xFF;
-    int k = 0;
-    for (int g = 0; g < 175; g++) {
-        nib[k++] = gcr_encode[((b1[g] >> 2) & 0x30) | ((b2[g] >> 4) & 0x0C) | ((b3[g] >> 6) & 0x03)];
-        nib[k++] = gcr_encode[b1[g] & 0x3F];
-        nib[k++] = gcr_encode[b2[g] & 0x3F];
-        if (g < 174)
-            nib[k++] = gcr_encode[b3[g] & 0x3F];
-    }
-    nib[k++] = gcr_encode[((c1 & 0xC0) >> 6) | ((c2 & 0xC0) >> 4) | ((c3 & 0xC0) >> 2)];
-    nib[k++] = gcr_encode[c3 & 0x3F];
-    nib[k++] = gcr_encode[c2 & 0x3F];
-    nib[k++] = gcr_encode[c1 & 0x3F];
 }
 
 // ============================================================================
@@ -288,37 +153,32 @@ typedef struct {
 static void decode_track(const uint8_t *nib, size_t n, int track, int side, uint8_t *data, uint8_t *tags,
                          sector_seen_t *seen, moof_disk_t *d) {
     int nsec = zone_sectors(track);
-    uint8_t raw[SECTOR_RAW];
+    uint8_t tag[MOOF_TAG_BYTES], sector_data[SECTOR_BYTES];
     for (size_t i = 0; i + 8 <= n; i++) {
         if (nib[i] != 0xD5 || nib[i + 1] != 0xAA || nib[i + 2] != 0x96)
             continue;
         // Address field: track, sector, side (+ track bit 6), format, checksum.
-        uint8_t h[5];
-        bool ok = true;
-        for (int j = 0; j < 5; j++) {
-            h[j] = gcr_decode[nib[i + 3 + j]];
-            ok = ok && h[j] != 0xFF;
-        }
-        if (!ok || ((h[0] ^ h[1] ^ h[2] ^ h[3]) & 0x3F) != h[4])
+        int trk, sec, sid;
+        uint8_t fmt;
+        if (!gcr_addr_from_disk(nib + i + 3, &trk, &sec, &sid, &fmt))
             continue;
-        int trk = h[0] | ((h[2] & 0x01) << 6), sec = h[1], sid = (h[2] & 0x20) ? 1 : 0;
         if (trk != track || sid != side || sec >= nsec)
             continue; // not a sector of this track
         // The data field follows within a few dozen bytes.
         size_t j = i + 8, end = i + 8 + 64;
         while (j + 3 <= n && j < end && !(nib[j] == 0xD5 && nib[j + 1] == 0xAA && nib[j + 2] == 0xAD))
             j++;
-        if (j >= end || j + 4 + SECTOR_NIBS + CKSUM_NIBS > n)
+        if (j >= end || j + 4 + GCR_SECTOR_VALUES > n)
             continue;
         if (seen[sec].good)
             continue; // the second revolution's copy
-        int rc = gcr_denibblize(nib + j + 4, raw);
+        int rc = gcr_sector_from_disk(nib + j + 4, tag, sector_data);
         if (rc < 0 || (seen[sec].found && rc == 0))
             continue; // undecodable, or no better than the copy we have
-        memcpy(tags + (size_t)sec * MOOF_TAG_BYTES, raw, MOOF_TAG_BYTES);
-        memcpy(data + (size_t)sec * SECTOR_BYTES, raw + MOOF_TAG_BYTES, SECTOR_BYTES);
+        memcpy(tags + (size_t)sec * MOOF_TAG_BYTES, tag, MOOF_TAG_BYTES);
+        memcpy(data + (size_t)sec * SECTOR_BYTES, sector_data, SECTOR_BYTES);
         if (!d->format_byte)
-            d->format_byte = h[3];
+            d->format_byte = fmt;
         seen[sec].found = true;
         seen[sec].good = rc == 1;
         i = j + SECTOR_NIBS; // past the data field
@@ -480,7 +340,7 @@ static uint32_t zone_track_bits(int track) {
 
 // Bits one sector costs beyond its leading sync: address field and slip
 // bytes (11 bytes), five sync, data field (3 + 1 + 703 + 2) and a pad.
-#define SECTOR_FIXED_BITS (11 * 8 + 5 * 10 + (3 + 1 + SECTOR_NIBS + CKSUM_NIBS + 2 + 1) * 8)
+#define SECTOR_FIXED_BITS (11 * 8 + 5 * 10 + (3 + 1 + GCR_SECTOR_VALUES + 2 + 1) * 8)
 #define MIN_GAP_SYNC      5 // fewest self-sync bytes ahead of an address field
 
 // Lay one track down as a Mac formats it: 2:1 interleave, each sector a
@@ -506,31 +366,25 @@ static void encode_track(bitbuf_t *b, int track, int side, uint8_t format_byte, 
     int gap = want > fixed ? (int)((want - fixed) / 10 / (uint32_t)nsec) : 0;
     if (gap < MIN_GAP_SYNC)
         gap = MIN_GAP_SYNC;
-    uint8_t raw[SECTOR_RAW];
-    uint8_t nib[SECTOR_NIBS + CKSUM_NIBS];
+    static const uint8_t no_tag[MOOF_TAG_BYTES];
+    uint8_t addr[GCR_ADDR_VALUES];
+    uint8_t values[GCR_SECTOR_VALUES];
     for (int p = 0; p < nsec; p++) {
         int sec = order[p];
-        uint8_t trk = (uint8_t)(track & 0x3F);
-        uint8_t sid = (uint8_t)((side ? 0x20 : 0) | (track >> 6)); // side, and track bit 6
         bits_sync(b, gap);
         bits_byte(b, 0xD5), bits_byte(b, 0xAA), bits_byte(b, 0x96);
-        bits_byte(b, gcr_encode[trk]);
-        bits_byte(b, gcr_encode[sec]);
-        bits_byte(b, gcr_encode[sid]);
-        bits_byte(b, gcr_encode[format_byte & 0x3F]);
-        bits_byte(b, gcr_encode[(trk ^ sec ^ sid ^ format_byte) & 0x3F]);
+        // Track, sector, side (+ track bit 6), format, checksum.
+        gcr_addr_encode(track, sec, side, format_byte, addr);
+        for (int k = 0; k < GCR_ADDR_VALUES; k++)
+            bits_byte(b, gcr_encode6[addr[k]]);
         bits_byte(b, 0xDE), bits_byte(b, 0xAA), bits_byte(b, 0xFF);
         bits_sync(b, 5);
         bits_byte(b, 0xD5), bits_byte(b, 0xAA), bits_byte(b, 0xAD);
-        bits_byte(b, gcr_encode[sec]);
-        if (tags)
-            memcpy(raw, tags + (size_t)sec * MOOF_TAG_BYTES, MOOF_TAG_BYTES);
-        else
-            memset(raw, 0, MOOF_TAG_BYTES);
-        memcpy(raw + MOOF_TAG_BYTES, data + (size_t)sec * SECTOR_BYTES, SECTOR_BYTES);
-        gcr_nibblize(raw, nib);
-        for (int k = 0; k < SECTOR_NIBS + CKSUM_NIBS; k++)
-            bits_byte(b, nib[k]);
+        bits_byte(b, gcr_encode6[sec]);
+        const uint8_t *tag = tags ? tags + (size_t)sec * MOOF_TAG_BYTES : no_tag;
+        gcr_sector_nibblize(tag, data + (size_t)sec * SECTOR_BYTES, false, values);
+        for (int k = 0; k < GCR_SECTOR_VALUES; k++)
+            bits_byte(b, gcr_encode6[values[k]]);
         bits_byte(b, 0xDE), bits_byte(b, 0xAA), bits_byte(b, 0xFF);
     }
 }

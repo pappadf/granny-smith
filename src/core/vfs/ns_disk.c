@@ -19,6 +19,7 @@
 #include "image_iso9660.h"
 #include "image_mfs.h"
 #include "image_ufs.h"
+#include "image_volume.h"
 #include "storage_util.h"
 
 #include <errno.h>
@@ -26,12 +27,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-
-// Where a volume's signature word sits when there is no partition map:
-// block 2 (of 512 bytes) holds the HFS Master Directory Block, the HFS+ /
-// HFSX Volume Header and the MFS Master Directory Block alike.  The
-// signatures themselves are the storage modules' (HFS_SIG_*, MFS_SIG).
-#define VOLUME_SIG_OFFSET 1024
 
 // ============================================================================
 // Filesystems
@@ -689,39 +684,43 @@ ns_t *ns_open_disk(source_t *src) {
     if (!d)
         return NULL;
     uint64_t size = source_size(src);
-    // The partition map first, then a bare HFS / HFS+, UFS, MFS or ISO 9660
-    // volume.
-    d->apm = image_apm_parse_source(src, NULL);
-    if (d->apm) {
+    // The partition map first, then a bare HFS / HFS+ / HFSX, UFS, MFS or
+    // ISO 9660 volume, as the volume classifier (and so the registry's disk
+    // detector) ranks them.
+    volume_sniff_t v = volume_sniff_source(src, 0, size);
+    d->apm = v.kind == VOL_APM ? image_apm_parse_source(src, NULL) : NULL;
+    // A map that does not parse leaves only an ISO 9660 side to show.
+    volume_kind_t kind = d->apm ? VOL_APM : v.kind == VOL_APM ? (v.iso ? VOL_ISO : VOL_NONE) : v.kind;
+    switch (kind) {
+    case VOL_APM:
         d->n_parts = d->apm->n_partitions;
         d->kind = "APM";
-    } else {
-        // The signature word only: a volume too small to hold the 512-byte
-        // block it starts is no volume.
-        uint8_t sig_bytes[2];
-        uint16_t sig = 0;
-        if (size >= VOLUME_SIG_OFFSET + 512 && source_read_exact(src, VOLUME_SIG_OFFSET, sig_bytes, 2) == 0)
-            sig = RD_BE16(sig_bytes);
-        if (sig == HFS_SIG_BD || sig == HFS_SIG_HP || sig == HFS_SIG_HX) {
-            set_synthetic(d, size, "HFS", "Apple_HFS", APM_FS_HFS);
-            d->kind = "HFS";
-        } else if (ufs_probe_source(src, 0, size)) {
-            set_synthetic(d, size, "UFS", "Apple_UNIX_SVR2", APM_FS_UFS);
-            d->kind = "UFS";
-        } else if (sig == MFS_SIG) {
-            set_synthetic(d, size, "MFS", "Apple_MFS", APM_FS_MFS);
-            d->kind = "MFS";
-        } else if (iso_probe_source(src, 0, size)) {
-            set_synthetic(d, size, "ISO9660", "ISO9660", APM_FS_ISO9660);
-            d->kind = "ISO";
-        } else {
-            free(d);
-            return NULL;
-        }
+        break;
+    case VOL_HFS:
+    case VOL_HFSPLUS:
+    case VOL_HFSX:
+        set_synthetic(d, size, "HFS", "Apple_HFS", APM_FS_HFS);
+        d->kind = "HFS";
+        break;
+    case VOL_UFS:
+        set_synthetic(d, size, "UFS", "Apple_UNIX_SVR2", APM_FS_UFS);
+        d->kind = "UFS";
+        break;
+    case VOL_MFS:
+        set_synthetic(d, size, "MFS", "Apple_MFS", APM_FS_MFS);
+        d->kind = "MFS";
+        break;
+    case VOL_ISO:
+        set_synthetic(d, size, "ISO9660", "ISO9660", APM_FS_ISO9660);
+        d->kind = "ISO";
+        break;
+    default:
+        free(d);
+        return NULL;
     }
     // A hybrid: an ISO 9660 volume descriptor beside the map or the HFS
-    // volume (a bare ISO disc already took the iso branch above).
-    if ((d->apm || strcmp(d->kind, "HFS") == 0) && iso_probe_source(src, 0, size)) {
+    // volume (a bare ISO disc already took the iso case above).
+    if ((kind == VOL_APM || volume_kind_is_hfs(kind)) && v.iso) {
         d->hybrid = true;
         memset(&d->iso_side, 0, sizeof(d->iso_side));
         d->iso_side.index = d->n_parts + 1;

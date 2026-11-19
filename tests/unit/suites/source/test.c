@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 // ---- A counting source -------------------------------------------------------
@@ -684,6 +685,35 @@ TEST(test_not_yet_is_waited_out_with_poll) {
     source_release(s);
 }
 
+// ---- Host files --------------------------------------------------------------
+
+// A path that is not a regular file is refused without blocking: a FIFO
+// with no writer would hang a plain open() before the type check could see
+// it.  The alarm turns a hang into a failed run instead of a stuck suite.
+TEST(test_host_path_refuses_a_fifo_without_blocking) {
+    char dir[] = "/tmp/gs_host_fifo_XXXXXX";
+    ASSERT_TRUE(mkdtemp(dir) != NULL);
+    char path[64];
+    snprintf(path, sizeof(path), "%s/f", dir);
+    if (mkfifo(path, 0600) != 0) {
+        printf("  (skipped: no FIFO can be made here)\n");
+        rmdir(dir);
+        return;
+    }
+    alarm(5); // SIGALRM's default action ends the run if open() blocks
+    int err = 0;
+    source_t *s = source_open_host_path(path, GS_FORK_DATA, &err);
+    alarm(0);
+    ASSERT_TRUE(s == NULL);
+    ASSERT_EQ_INT(-EINVAL, err);
+    // A directory is refused as one.
+    s = source_open_host_path(dir, GS_FORK_DATA, &err);
+    ASSERT_TRUE(s == NULL);
+    ASSERT_EQ_INT(-EISDIR, err);
+    unlink(path);
+    rmdir(dir);
+}
+
 int main(void) {
     RUN(test_view_arithmetic_at_boundaries);
     RUN(test_pad_lengthens_with_a_patch);
@@ -701,6 +731,7 @@ int main(void) {
     RUN(test_chunk_cache_budgets_change_at_run_time);
     RUN(test_chunk_cache_min_chunks_floor);
     RUN(test_key_same_ignores_only_host_times);
+    RUN(test_host_path_refuses_a_fifo_without_blocking);
     fprintf(stderr, "All source tests passed\n");
     return 0;
 }

@@ -9,13 +9,14 @@
 # exactly what a table test catches.
 #
 # floppy_gcr.c is #included rather than linked so the test can reach its static
-# encode_sector / decode_sector / decode_gcr.  gcr_stubs.c supplies the image
-# and log symbols that belong to subsystems this isolated suite does not link.
+# encode_sector / decode_sector; the codec under them (storage/gcr.c) is linked.
+# gcr_stubs.c supplies the image and log symbols that belong to subsystems
+# this isolated suite does not link.
 
 TEST_NAME    := floppy
 TEST_SRCS    := test.c
 TEST_HARNESS := isolated
-EXTRA_SRCS   := gcr_stubs.c
+EXTRA_SRCS   := gcr_stubs.c ../../../../src/core/storage/gcr.c
 EXTRA_CFLAGS  = -I$(EMU_ROOT)/core/peripherals -I$(EMU_ROOT)/core/storage
 
 # The real image_t accessors; the rest of the image layer is faked here

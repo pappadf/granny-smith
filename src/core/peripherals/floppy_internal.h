@@ -342,7 +342,7 @@ void iwm_flush_modified_tracks(floppy_drive_t *drive, image_t *img, int drive_in
 // See the comment at the definition (floppy_gcr.c) for why this exists.
 void iwm_write_through(floppy_drive_t *drive, image_t *img, int drive_index, int side);
 
-// gcr_codewords / decode_gcr / the triplet chain are public: floppy_geometry.h.
+// The GCR codec (codeword tables, sector nibblizer, address field) is gcr.h.
 
 // ============================================================================
 // Shared drive/IWM functions (defined in floppy.c), genuinely shared with

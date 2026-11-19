@@ -4,8 +4,9 @@
 // swim3_xfer.c
 // The SWIM3 media transfer engine: address-header hunt, sector read and
 // write, whole-track format, raw (copy-protect) capture, and the GCR
-// nibble codec.  swim3.c is the register file and the Sony drive protocol;
-// this file is what happens between GO going up and doneIntNum coming
+// nibble stream (its codec is gcr.h).  swim3.c is the register file and
+// the Sony drive protocol; this file is what happens between GO going up
+// and doneIntNum coming
 // back.  The DMA channel it streams through is the board's, behind the
 // swim3_backend_t movers (AMIC on the PDM, DBDMA channel 1 behind Grand
 // Central); the engine sees only "one byte, yes or no".
@@ -63,7 +64,7 @@ LOG_USE_CATEGORY_NAME("floppy");
 #define TAG_BYTES    12
 
 // The GCR data field's DMA form: one sector byte then 703 six-bit values.
-#define GCR_STREAM_BYTES 704
+#define GCR_STREAM_BYTES (1 + GCR_SECTOR_VALUES)
 
 // Hardware paces step pulses 80 us apart (SWIM3 ERS).
 #define STEP_PULSE_NS 80000.0
@@ -126,66 +127,6 @@ int swim3_index_pulse(swim3_t *sw) {
     return floppy_index_signal(m.mfm ? FLOPPY_INDEX_SWIM3_MFM : FLOPPY_INDEX_GCR_TACH, now, rev_ns, 60);
 }
 
-// === GCR nibble codec =======================================================
-//
-// The 6-bit values SWIM3's converter would have produced from (or consumed
-// for) a sector's 12 tag + 512 data bytes: 4+170 encoded triplets, a final
-// pair, and the three checksum registers — 699 + 4 = 703 values.  The
-// checksum is Apple's rotate-add-xor chain; hardware verifies it and the
-// driver verifies it again in software, so it must be right.
-
-// tag[12] + data[512] -> 703 six-bit values.
-static void gcr_nibblize(const uint8_t *tag, const uint8_t *data, uint8_t *out) {
-    uint16_t ca = 0, cb = 0, cc = 0;
-    uint8_t *dst = out;
-    for (int i = 0; i < TAG_BYTES; i += 3, dst += 4)
-        gcr_encode_triplet(tag + i, &ca, &cb, &cc, dst);
-    for (int i = 0; i < 510; i += 3, dst += 4)
-        gcr_encode_triplet(data + i, &ca, &cb, &cc, dst);
-    // The last two data bytes make a pair, not a triplet.
-    cc = (uint16_t)((cc << 1) | ((cc >> 7) & 1));
-    ca &= 0xFF;
-    ca = (uint16_t)(ca + data[510] + (cc & 1));
-    uint8_t ba = (uint8_t)(data[510] ^ cc);
-    cb &= 0xFF;
-    cb = (uint16_t)(cb + data[511] + ((ca >> 8) & 1));
-    uint8_t bb = (uint8_t)(data[511] ^ ca);
-    *dst++ = (uint8_t)(((ba >> 2) & 0x30) | ((bb >> 4) & 0x0C));
-    *dst++ = (uint8_t)(ba & 0x3F);
-    *dst++ = (uint8_t)(bb & 0x3F);
-    // ...then the three checksum registers, themselves encoded as a triplet.
-    uint8_t c[3] = {(uint8_t)ca, (uint8_t)cb, (uint8_t)cc};
-    *dst++ = (uint8_t)(((c[0] >> 2) & 0x30) | ((c[1] >> 4) & 0x0C) | ((c[2] >> 6) & 0x03));
-    *dst++ = (uint8_t)(c[0] & 0x3F);
-    *dst++ = (uint8_t)(c[1] & 0x3F);
-    *dst++ = (uint8_t)(c[2] & 0x3F);
-}
-
-// 703 six-bit values -> tag[12] + data[512].  Returns false when the
-// three-byte checksum the stream carries disagrees with the recomputed one.
-static bool gcr_denibblize(const uint8_t *in, uint8_t *tag, uint8_t *data) {
-    uint16_t ca = 0, cb = 0, cc = 0;
-    const uint8_t *src = in;
-    for (int i = 0; i < TAG_BYTES; i += 3, src += 4)
-        gcr_decode_triplet(src, &ca, &cb, &cc, tag + i);
-    for (int i = 0; i < 510; i += 3, src += 4)
-        gcr_decode_triplet(src, &ca, &cb, &cc, data + i);
-    uint8_t ba = (uint8_t)(((src[0] << 2) & 0xC0) | (src[1] & 0x3F));
-    uint8_t bb = (uint8_t)(((src[0] << 4) & 0xC0) | (src[2] & 0x3F));
-    cc = (uint16_t)((cc << 1) | ((cc >> 7) & 1));
-    data[510] = (uint8_t)(ba ^ cc);
-    ca &= 0xFF;
-    ca = (uint16_t)(ca + data[510] + (cc & 1));
-    data[511] = (uint8_t)(bb ^ ca);
-    cb &= 0xFF;
-    cb = (uint16_t)(cb + data[511] + ((ca >> 8) & 1));
-    src += 3;
-    uint8_t got[3] = {(uint8_t)(((src[0] << 2) & 0xC0) | (src[1] & 0x3F)),
-                      (uint8_t)(((src[0] << 4) & 0xC0) | (src[2] & 0x3F)),
-                      (uint8_t)(((src[0] << 6) & 0xC0) | (src[3] & 0x3F))};
-    return got[0] == (uint8_t)ca && got[1] == (uint8_t)cb && got[2] == (uint8_t)cc;
-}
-
 // === Image access ===========================================================
 
 // Read one sector's user data (the shared floppy_media_read_sector) and
@@ -241,7 +182,7 @@ static bool swim3_stream_read(swim3_t *sw, const swim3_media_t *m, int track, in
             }
     } else {
         uint8_t nib[GCR_STREAM_BYTES - 1];
-        gcr_nibblize(tag, data, nib);
+        gcr_sector_nibblize(tag, data, false, nib);
         if (!dma_put(sw, (uint8_t)sector)) { // the sector byte leads the field
             sw->error |= SWIM3_E_OVERRUN;
             return false;
@@ -399,6 +340,9 @@ static bool swim3_parse_gcr(swim3_t *sw, swim3_parse_t *p) {
                 for (int i = 0; i < 5; i++)
                     if (!dma_get(sw, &h[i]))
                         return false;
+                // Only the sector number is taken, the checksum unchecked:
+                // this is the guest's own format stream, which the
+                // hardware lays down as given.
                 hdr_sector = h[1] & 0x3F;
                 prev2 = prev = 0;
                 continue;
@@ -411,7 +355,7 @@ static bool swim3_parse_gcr(swim3_t *sw, swim3_parse_t *p) {
                 for (int i = 0; i < GCR_STREAM_BYTES - 1; i++)
                     if (!dma_get(sw, &nib[i]))
                         return false;
-                if (!gcr_denibblize(nib, tag, data))
+                if (!gcr_sector_denibblize(nib, tag, data))
                     sw->error |= SWIM3_E_CRC_DATA;
                 else
                     swim3_deposit(sw, p, p->format ? (int)s : hdr_sector, data, tag);
@@ -483,13 +427,11 @@ static void swim3_raw_track(swim3_t *sw, const swim3_media_t *m, int track, int 
             if (!sink.ok)
                 return;
         } else {
-            // The 6-to-8 GCR codeword table, shared: this used to be a
-            // byte-identical second copy, kept here only because the shared one
-            // lived behind a private header.
-            const uint8_t *gcr6 = gcr_codewords;
-            uint8_t side_enc = (uint8_t)((side << 5) | ((track >> 6) & 0x1F));
-            uint8_t hdr[5] = {(uint8_t)track, (uint8_t)s, side_enc, m->fmt_byte,
-                              (uint8_t)(track ^ s ^ side_enc ^ m->fmt_byte)};
+            // The shared GCR codec (gcr.h): the 6-to-8 codeword table, the
+            // address field and the sector nibblizer.
+            const uint8_t *gcr6 = gcr_encode6;
+            uint8_t hdr[GCR_ADDR_VALUES];
+            gcr_addr_encode(track, s, side, m->fmt_byte, hdr);
             for (int i = 0; i < 5; i++) // self-sync leader
                 if (!raw_pair(sw, 0x00, 0xFF))
                     return;
@@ -506,7 +448,7 @@ static void swim3_raw_track(swim3_t *sw, const swim3_media_t *m, int track, int 
             if (!raw_pair(sw, 0x80, 0xD5) || !raw_pair(sw, 0x80, 0xAA) || !raw_pair(sw, 0x80, 0xAD))
                 return;
             uint8_t nib[GCR_STREAM_BYTES - 1];
-            gcr_nibblize(tag, data, nib);
+            gcr_sector_nibblize(tag, data, false, nib);
             if (!raw_pair(sw, 0x00, gcr6[s & 0x3F]))
                 return;
             for (int i = 0; i < GCR_STREAM_BYTES - 1; i++)

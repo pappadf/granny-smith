@@ -24,6 +24,7 @@
 #include "image.h"
 #include "image_part.h"
 #include "log.h"
+#include "mac_disk_layout.h"
 #include "macroman.h"
 #include "storage.h"
 
@@ -42,13 +43,11 @@ LOG_USE_CATEGORY_NAME("image")
 
 // ---- HFS on-disk offsets --------------------------------------------------
 
-#define HFS_MDB_OFF_IN_VOL 1024
+#define HFS_MDB_OFF_IN_VOL MAC_VOLUME_HEADER_OFF
 
-// Master Directory Block field offsets (bytes, from MDB start).
-#define MDB_OFF_SIG        0
-#define MDB_OFF_NM_AL_BLKS 18
-#define MDB_OFF_AL_BLK_SIZ 20
-#define MDB_OFF_AL_BL_ST   28
+// Master Directory Block field offsets (bytes, from MDB start).  The
+// signature and allocation-geometry fields (MDB_OFF_SIG .. MDB_OFF_AL_BL_ST)
+// are in mac_disk_layout.h, shared with the volume classifier.
 #define MDB_OFF_VN         36 // pstring up to 28 bytes
 #define MDB_OFF_XT_FL_SIZE 130 // extents overflow file size (u32)
 #define MDB_OFF_XT_EXT_REC 134 // 3 x (startABlk:2, numABlks:2) for the EO file
@@ -64,14 +63,13 @@ LOG_USE_CATEGORY_NAME("image")
 
 // ---- HFS Plus on-disk offsets (TN1150) ------------------------------------
 
-#define HFSP_VH_OFF_IN_VOL 1024 // Volume Header sits 1024 bytes into the volume
+#define HFSP_VH_OFF_IN_VOL MAC_VOLUME_HEADER_OFF // Volume Header sits 1024 bytes into the volume
 
-// HFS Plus Volume Header field offsets (bytes, from header start).
-#define VH_OFF_SIG        0x00 // uint16 "H+" / "HX"
-#define VH_OFF_BLOCK_SIZE 0x28 // uint32 allocation block size
-#define VH_OFF_TOTAL_BLKS 0x2C // uint32 total allocation blocks
-#define VH_OFF_CAT_FORK   0x110 // HFSPlusForkData catalogFile
-#define VH_OFF_EXT_FORK   0xC0 // HFSPlusForkData extentsFile
+// HFS Plus Volume Header field offsets (bytes, from header start).  The
+// signature and size fields (VH_OFF_SIG, VH_OFF_BLOCK_SIZE,
+// VH_OFF_TOTAL_BLKS) are in mac_disk_layout.h.
+#define VH_OFF_CAT_FORK 0x110 // HFSPlusForkData catalogFile
+#define VH_OFF_EXT_FORK 0xC0 // HFSPlusForkData extentsFile
 
 // HFSPlusForkData (80 bytes): logicalSize(8) clumpSize(4) totalBlocks(4)
 // then 8 x HFSPlusExtentDescriptor (startBlock:4, blockCount:4).

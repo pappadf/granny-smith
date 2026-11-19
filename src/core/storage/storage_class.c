@@ -30,6 +30,7 @@
 #include "image_part.h"
 #include "image_udif.h"
 #include "image_vfs.h"
+#include "image_volume.h"
 #include "image_wrap.h"
 #include "object.h"
 #include "platform_hooks.h"
@@ -570,21 +571,18 @@ static DEF_METHOD(files_method_partmap) {
 
 // The filesystem a partition's volume header names, or NULL.
 static const char *partition_volume_kind(image_t *img, uint64_t size, const apm_partition_t *p) {
-    uint64_t at = p->start_block * APM_BLOCK_SIZE + 1024;
-    uint8_t hdr[2];
-    if (p->size_blocks * APM_BLOCK_SIZE < 1024 + sizeof(hdr) || at + sizeof(hdr) > size ||
-        image_read_bytes(img, at, hdr, sizeof(hdr)) != 0)
+    uint64_t at = p->start_block * APM_BLOCK_SIZE;
+    if (at >= size)
         return NULL;
-    switch (RD_BE16(hdr)) {
-    case HFS_SIG_BD:
-        return "HFS";
-    case HFS_SIG_HP:
-        return "HFS+";
-    case HFS_SIG_HX:
-        return "HFSX";
-    default:
-        return NULL;
-    }
+    // The partition as far as the disk holds it.
+    uint64_t len = p->size_blocks * APM_BLOCK_SIZE;
+    if (len > size - at)
+        len = size - at;
+    source_t *src = image_source(img);
+    volume_kind_t kind = volume_sniff_source(src, at, len).kind;
+    source_release(src);
+    // A map inside a partition is no volume of its own.
+    return kind == VOL_APM ? NULL : volume_kind_label(kind);
 }
 
 // files.probe's lines for an APM disk's filesystem partitions.
@@ -637,34 +635,20 @@ static DEF_METHOD(files_method_probe) {
         return val_bool(false);
     }
     uint64_t size = disk_size(img);
-    uint8_t block[512];
-    bool apm = false;
-    if (size >= 1024 && image_read_bytes(img, 512, block, sizeof(block)) == 0)
-        apm = image_apm_probe_magic(block);
-    // ISO 9660 by the same probe the VFS mounts with, so a disc reported as
-    // a hybrid here is one the VFS shows both sides of.
-    source_t *isrc = image_source(img);
-    bool iso = iso_probe_source(isrc, 0, size);
-    source_release(isrc);
-    // The volume header at 1024: 'BD' is HFS, 'H+' HFS Plus and 'HX' HFSX.
-    const char *hfs = NULL;
-    if (!apm && size >= 1024 + 512 && image_read_bytes(img, 1024, block, sizeof(block)) == 0) {
-        uint16_t sig = RD_BE16(block);
-        if (sig == HFS_SIG_BD)
-            hfs = "HFS";
-        else if (block[0] == 'H' && (block[1] == '+' || block[1] == 'X'))
-            hfs = "HFS+";
-    }
-    if (apm && iso)
-        out_printf("format: APM + ISO 9660 hybrid (%llu bytes)\n", (unsigned long long)size);
-    else if (apm)
-        out_printf("format: APM (%llu bytes)\n", (unsigned long long)size);
-    else if (hfs && iso)
-        out_printf("format: %s + ISO 9660 hybrid (bare, %llu bytes)\n", hfs, (unsigned long long)size);
-    else if (iso)
-        out_printf("format: ISO 9660 (%llu bytes)\n", (unsigned long long)size);
-    else if (hfs)
-        out_printf("format: %s (bare, %llu bytes)\n", hfs, (unsigned long long)size);
+    // The classifier the VFS mounts with, so a disc reported as a hybrid
+    // here is one the VFS shows both sides of, and a bare volume named here
+    // is one it opens.
+    source_t *vsrc = image_source(img);
+    volume_sniff_t v = volume_sniff_source(vsrc, 0, size);
+    source_release(vsrc);
+    bool apm = v.kind == VOL_APM;
+    const char *label = volume_kind_label(v.kind);
+    bool hybrid = v.iso && (apm || volume_kind_is_hfs(v.kind));
+    if (apm || v.kind == VOL_ISO)
+        out_printf("format: %s%s (%llu bytes)\n", label, hybrid ? " + ISO 9660 hybrid" : "", (unsigned long long)size);
+    else if (label)
+        out_printf("format: %s%s (bare, %llu bytes)\n", label, hybrid ? " + ISO 9660 hybrid" : "",
+                   (unsigned long long)size);
     else
         out_printf("format: unrecognised / raw (%llu bytes)\n", (unsigned long long)size);
     // A partitioned disk's volumes: each partition the map names as a

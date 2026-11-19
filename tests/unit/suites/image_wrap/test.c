@@ -196,6 +196,11 @@ TEST(test_bare_volume_sniff) {
     head[2 * BLK + 1] = '+';
     ASSERT_TRUE(image_wrap_is_bare_volume(head, sizeof(head))); // HFS+
     ASSERT_TRUE(!image_wrap_is_bare_volume(head, 2 * BLK)); // too short
+    head[2 * BLK + 1] = 'X';
+    ASSERT_TRUE(!image_wrap_is_bare_volume(head, sizeof(head))); // HFSX: no classic Mac OS mounts it
+    head[2 * BLK] = 0xD2;
+    head[2 * BLK + 1] = 0xD7;
+    ASSERT_TRUE(!image_wrap_is_bare_volume(head, sizeof(head))); // MFS: a floppy-only volume
 
     bare_head(head);
     head[0] = 'E';

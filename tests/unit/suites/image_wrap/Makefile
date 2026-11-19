@@ -13,6 +13,8 @@ EXTRA_SRCS   := ../../../../src/core/storage/image_wrap.c \
                 ../../../../src/core/storage/image_wrap_sniff.c \
                 ../../../../src/core/storage/image_apm.c
 EXTRA_CFLAGS := -I$(abspath ../../../..)/build/gsdisk
+# The sniffs classify through image_volume.c, part of the source layer.
+USE_SOURCE_LAYER := 1
 
 include ../../common.mk
 

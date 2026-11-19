@@ -6,6 +6,7 @@
 
 #include "image_mfs.h"
 
+#include "mac_disk_layout.h"
 #include "macroman.h"
 #include "source.h"
 
@@ -18,7 +19,7 @@
 // ============================================================================
 
 #define MFS_BLOCK      512u
-#define MFS_MDB_OFF    1024u // the master directory block is block 2
+#define MFS_MDB_OFF    MAC_VOLUME_HEADER_OFF // the master directory block is block 2
 #define MFS_MAP_OFF    64u // the allocation block map follows the MDB's fields
 #define MFS_DIRENT_MIN 51u // a file directory entry without its name
 #define MFS_MAX_FILES  4096 // far above any floppy's; bounds a corrupt count
