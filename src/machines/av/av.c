@@ -825,17 +825,9 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
     // Bus-side physical resolver for the 040 walker: RAM decoded up to the
     // ROM base, the 2 MB ROM at $40800000.  ram aperture max = $40800000 so
     // RAM-sizing probes above installed memory read $FF, not bus-error.
-    uint32_t ram_size = cfg->ram_size;
-    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
-    uint8_t *rom_data = ram_native_pointer(cfg->memory_map, ram_size);
-    st->bus_mmu = mmu_init(ram_base, ram_size, desc->common.rom_base, rom_data, cfg->machine->rom_size,
-                           desc->common.rom_base, desc->common.rom_end);
-    if (!st->bus_mmu) {
-        LOG(0, "Error: out of memory constructing the 040 bus MMU");
+    st->bus_mmu = mac030_build_bus_mmu040(cfg, desc->common.rom_base, desc->common.rom_base, desc->common.rom_end);
+    if (!st->bus_mmu)
         return -1;
-    }
-    memory_map_set_pmmu(cfg->memory_map, st->bus_mmu);
-    mmu_attach_mmu040(st->bus_mmu, (mmu040_state_t *)cfg->cpu->mmu);
 
     // Bind the I/O island + CPU-ID + ROM aperture, then arm the overlay.
     av_io_bind(&st->io, cfg, desc);

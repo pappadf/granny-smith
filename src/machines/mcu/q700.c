@@ -139,57 +139,19 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     machine_part_images(cfg, cp);
 
-    // The bus/target model carries the disks and CD; the 53C96 chip model
-    // is the protocol front-end driving it through the external-initiator
-    // API (there is no NCR 5380 register file on this family).
-    machine_part_begin(cfg, cp, "scsi");
-    cfg->scsi = machine_scsi_bus_init(cfg, cp, "scsi");
-    machine_part(cfg, cp, "scsi", part_save_scsi, cfg->scsi);
-    machine_part_begin(cfg, cp, "scsi96");
-    st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp);
-    machine_part(cfg, cp, "scsi96", part_save_scsi96, st->scsi96);
-    scsi_53c96_set_irq_callback(st->scsi96, q700_scsi96_irq, cfg);
-    scsi_53c96_attach_bus(st->scsi96, cfg->scsi);
+    mcu_build_scsi0(cfg, cp, q700_scsi96_irq);
 
-    // SONIC Ethernet (~20 MHz part on the Q700, no wire in v1).
-    machine_part_begin(cfg, cp, "sonic");
-    st->sonic = sonic_init(cp);
-    machine_part(cfg, cp, "sonic", part_save_sonic, st->sonic);
-    sonic_set_irq_callback(st->sonic, q700_sonic_irq, cfg);
-    // SONIC bus-master DMA: the shared guest-physical port.
-    sonic_set_memory_port(st->sonic, &dma_mem_port_physical);
-
-    machine_part_begin(cfg, cp, "asc");
-    st->asc = asc_init(NULL, cfg->scheduler, cp); // EASC: ASC-compatible core
-    machine_part(cfg, cp, "asc", part_save_asc, st->asc);
-    asc_set_mix(st->asc, ASC_MIX_CH_A);
-    asc_set_irq_handler(st->asc, q700_asc_irq, cfg);
-    machine_part_begin(cfg, cp, "floppy");
-    cfg->floppy =
-        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
-    machine_part(cfg, cp, "floppy", part_save_floppy, cfg->floppy);
+    // SONIC Ethernet (~20 MHz part on the Q700), the EASC and the SWIM.
+    mcu_build_sonic_asc_floppy(cfg, cp, q700_sonic_irq, q700_asc_irq);
 
     if (mcu_build_dafb(cfg, cp) != 0)
         return -1;
 
-    // Bus-side physical resolver for the 040 walker: RAM at 0, the 1 MiB ROM
-    // mirroring through the aperture.  ram_size_max is the full 1 GiB RAM
-    // aperture — RAM-sizing probes above installed memory read $FF rather
-    // than bus-erroring (flat functional model).
-    uint32_t ram_size = cfg->ram_size;
-    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
-    uint8_t *rom_data = ram_native_pointer(cfg->memory_map, ram_size);
-    st->bus_mmu = mmu_init(ram_base, ram_size, 0x40000000u, rom_data, cfg->machine->rom_size, desc->common.rom_base,
-                           desc->common.rom_end);
-    if (!st->bus_mmu) {
-        LOG(0, "Error: out of memory constructing the 040 bus MMU");
+    // Bus-side physical resolver for the 040 walker: RAM at 0 through the
+    // full 1 GiB aperture, the 1 MiB ROM mirroring through its window.
+    st->bus_mmu = mac030_build_bus_mmu040(cfg, 0x40000000u, desc->common.rom_base, desc->common.rom_end);
+    if (!st->bus_mmu)
         return -1;
-    }
-    memory_map_set_pmmu(cfg->memory_map, st->bus_mmu);
-    // Attach the CPU-owned 040 register file: translation now dispatches to
-    // the mmu040 walker; `enabled` mirrors TC.E.  (The cpu.mmu debug object
-    // is bound by cpu_init itself — the 040-shaped mmu040_class in cpu.c.)
-    mmu_attach_mmu040(st->bus_mmu, (mmu040_state_t *)cfg->cpu->mmu);
 
     // Bind the I/O island + DAFB apertures + overlay, then arm the overlay.
     mcu_io_bind(&st->io, cfg, desc, st->asc, cfg->floppy);

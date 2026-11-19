@@ -198,6 +198,13 @@ void mac030_build_lowspeed(config_t *cfg, checkpoint_t *cp, void (*scc_irq)(void
 // attach it to the CPU.  Returns the MMU; the caller sets any TT registers.
 struct mmu_state *mac030_build_mmu(config_t *cfg, uint32_t rom_base, uint32_t rom_end);
 
+// The 68040 boards' (MCU, AV) bus-side physical resolver: RAM at 0 decoded up
+// to `ram_aperture` (probes above installed memory read $FF rather than
+// bus-erroring), the ROM mirrored through [rom_base, rom_end).  Makes it the
+// map's PMMU and attaches the CPU-owned 040 register file, so translation
+// dispatches to the mmu040 walker.  NULL (logged) when out of memory.
+struct mmu_state *mac030_build_bus_mmu040(config_t *cfg, uint32_t ram_aperture, uint32_t rom_base, uint32_t rom_end);
+
 // A GLUE machine = its board descriptor (data) + a few hooks.
 // The shared mac030_glue_init() walks this in canonical order; the per-machine
 // deltas are the VIA output/shift callbacks, the machine-ID strap sequence, the

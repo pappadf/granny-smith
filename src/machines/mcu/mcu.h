@@ -235,6 +235,17 @@ void mcu_private_part(config_t *cfg, checkpoint_t *cp);
 // board data instead of coinciding with dafb_init()'s zeroed defaults.
 int mcu_build_dafb(config_t *cfg, checkpoint_t *cp);
 
+// The internal SCSI bus (part "scsi", with the configured disks and CD) and
+// the 53C96 fronting it (part "scsi96"), its interrupt on `irq`.  The Q900
+// builds its external bus after this, before the SONIC.
+void mcu_build_scsi0(config_t *cfg, checkpoint_t *cp, void (*irq)(void *ctx, bool active));
+
+// The SONIC Ethernet (no wire; bus-master DMA through the guest-physical
+// port), the EASC (left channel to the internal speaker) and the SWIM floppy,
+// as parts "sonic", "asc" and "floppy", in that order.
+void mcu_build_sonic_asc_floppy(config_t *cfg, checkpoint_t *cp, void (*sonic_irq)(void *ctx, bool active),
+                                void (*asc_irq)(void *ctx, bool active));
+
 void mcu_slot_irq_source(config_t *cfg, int pa_bit, bool active);
 
 #endif // GS_MACHINES_MCU_H

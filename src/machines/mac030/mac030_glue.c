@@ -17,6 +17,7 @@
 #include "asc.h"
 #include "checkpoint.h"
 #include "cpu.h"
+#include "cpu_internal.h" // cpu->mmu, the CPU-owned 040 register file
 #include "debug.h"
 #include "floppy.h"
 #include "image.h"
@@ -24,6 +25,7 @@
 #include "machine_checkpoint.h"
 #include "memory.h"
 #include "mmu.h"
+#include "mmu040.h"
 #include "nubus.h"
 #include "rtc.h"
 #include "scc.h"
@@ -84,6 +86,22 @@ struct mmu_state *mac030_build_mmu(config_t *cfg, uint32_t rom_base, uint32_t ro
     // the 68030 bus-error path reads cpu->mmu (asserted equal there).
     memory_map_set_pmmu(cfg->memory_map, mmu);
     cpu_attach_mmu(cfg->cpu, mmu);
+    return mmu;
+}
+
+struct mmu_state *mac030_build_bus_mmu040(config_t *cfg, uint32_t ram_aperture, uint32_t rom_base, uint32_t rom_end) {
+    uint32_t ram_size = cfg->ram_size;
+    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
+    uint8_t *rom_data = ram_native_pointer(cfg->memory_map, ram_size); // the ROM follows RAM
+    mmu_state_t *mmu = mmu_init(ram_base, ram_size, ram_aperture, rom_data, cfg->machine->rom_size, rom_base, rom_end);
+    if (!mmu) {
+        LOG(0, "Error: out of memory constructing the 040 bus MMU");
+        return NULL;
+    }
+    memory_map_set_pmmu(cfg->memory_map, mmu);
+    // The cpu.mmu debug object is bound by cpu_init itself (the 040-shaped
+    // mmu040_class in cpu.c); this only points the walker at the bus.
+    mmu_attach_mmu040(mmu, (mmu040_state_t *)cfg->cpu->mmu);
     return mmu;
 }
 

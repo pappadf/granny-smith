@@ -23,6 +23,7 @@
 #include "cpu_internal.h" // cpu->mmu (attach the 040 walker to the bus resolver)
 #include "dafb.h"
 #include "debug.h"
+#include "dma_mem.h" // dma_mem_port_physical (SONIC bus-master DMA)
 #include "egret.h" // tower Caboose = Egret-protocol engine
 #include "floppy.h"
 #include "image.h"
@@ -744,6 +745,43 @@ static void mcu_teardown(config_t *cfg) {
     // The config_t-owned devices, in the family-shared canonical order
     // (machine_teardown.h).  Was a byte-identical copy in five families.
     machine_teardown_config_devices(cfg);
+}
+
+void mcu_build_scsi0(config_t *cfg, checkpoint_t *cp, void (*irq)(void *ctx, bool active)) {
+    mcu_state_t *st = mcu_st(cfg);
+    // The bus/target model carries the disks and CD; the 53C96 chip model
+    // is the protocol front-end driving it through the external-initiator
+    // API (there is no NCR 5380 register file on this family).
+    machine_part_begin(cfg, cp, "scsi");
+    cfg->scsi = machine_scsi_bus_init(cfg, cp, "scsi");
+    machine_part(cfg, cp, "scsi", part_save_scsi, cfg->scsi);
+    machine_part_begin(cfg, cp, "scsi96");
+    st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp);
+    machine_part(cfg, cp, "scsi96", part_save_scsi96, st->scsi96);
+    scsi_53c96_set_irq_callback(st->scsi96, irq, cfg);
+    scsi_53c96_attach_bus(st->scsi96, cfg->scsi);
+}
+
+void mcu_build_sonic_asc_floppy(config_t *cfg, checkpoint_t *cp, void (*sonic_irq)(void *ctx, bool active),
+                                void (*asc_irq)(void *ctx, bool active)) {
+    mcu_state_t *st = mcu_st(cfg);
+    // SONIC Ethernet (a 20 MHz-class part; no wire in v1).
+    machine_part_begin(cfg, cp, "sonic");
+    st->sonic = sonic_init(cp);
+    machine_part(cfg, cp, "sonic", part_save_sonic, st->sonic);
+    sonic_set_irq_callback(st->sonic, sonic_irq, cfg);
+    // SONIC bus-master DMA: the shared guest-physical port.
+    sonic_set_memory_port(st->sonic, &dma_mem_port_physical);
+
+    machine_part_begin(cfg, cp, "asc");
+    st->asc = asc_init(NULL, cfg->scheduler, cp); // EASC: ASC-compatible core
+    machine_part(cfg, cp, "asc", part_save_asc, st->asc);
+    asc_set_mix(st->asc, ASC_MIX_CH_A);
+    asc_set_irq_handler(st->asc, asc_irq, cfg);
+    machine_part_begin(cfg, cp, "floppy");
+    cfg->floppy =
+        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
+    machine_part(cfg, cp, "floppy", part_save_floppy, cfg->floppy);
 }
 
 void mcu_apply_via1_model_sense(config_t *cfg, const mcu_board_desc_t *desc) {
