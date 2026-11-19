@@ -437,8 +437,6 @@ static void gossamer_bus_reset(config_t *cfg) {
 }
 
 static void gossamer_teardown(config_t *cfg) {
-    if (cfg->scheduler)
-        scheduler_stop(cfg->scheduler);
     gossamer_state_t *st = gos_st(cfg);
     if (st) {
         gos_bmac_detach_objects(cfg);
@@ -465,15 +463,7 @@ static void gossamer_teardown(config_t *cfg) {
         av_cuda_delete(st->cuda);
         st->cuda = NULL;
     }
-    if (cfg->adb) {
-        adb_delete(cfg->adb);
-        cfg->adb = NULL;
-    }
-    machine_teardown_config_devices(cfg);
-    if (st) {
-        free(st);
-        cfg->machine_context = NULL;
-    }
+    machine_teardown_config_devices(cfg); // the adb after the Cuda above, then the rest
 }
 
 // Frame tick: the 60.15 Hz reference into VIA1 CA1 (the Cuda driver waits

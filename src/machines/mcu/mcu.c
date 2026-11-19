@@ -697,8 +697,6 @@ static void mcu_bus_reset(config_t *cfg) {
 }
 
 static void mcu_teardown(config_t *cfg) {
-    if (cfg->scheduler)
-        scheduler_stop(cfg->scheduler);
     mcu_state_t *st = mcu_st(cfg);
     if (st) {
         // Tower devices first (Q900/Q950; all NULL on the Q700).
@@ -738,28 +736,14 @@ static void mcu_teardown(config_t *cfg) {
             mmu_delete(st->bus_mmu);
             st->bus_mmu = NULL;
         }
-        if (st->floppy) {
-            floppy_delete(st->floppy);
-            st->floppy = NULL;
-            cfg->floppy = NULL;
-        }
         if (st->asc) {
             asc_delete(st->asc);
             st->asc = NULL;
-        }
-        if (st->adb) {
-            adb_delete(st->adb);
-            st->adb = NULL;
-            cfg->adb = NULL;
         }
     }
     // The config_t-owned devices, in the family-shared canonical order
     // (machine_teardown.h).  Was a byte-identical copy in five families.
     machine_teardown_config_devices(cfg);
-    if (st) {
-        free(st);
-        cfg->machine_context = NULL;
-    }
 }
 
 void mcu_apply_via1_model_sense(config_t *cfg, const mcu_board_desc_t *desc) {

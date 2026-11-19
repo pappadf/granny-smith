@@ -34,9 +34,7 @@ struct via;
 // leaves the IIcx soft-power fields unused; the IIcx/IIx use the soft-power
 // fields and leave the video pointers NULL.
 typedef struct mac030_glue_state {
-    struct adb *adb;
-    struct asc *asc;
-    struct floppy *floppy;
+    struct asc *asc; // (the adb and floppy are cfg->adb / cfg->floppy)
 
     mac030_rom_overlay_t overlay; // ROM at $00000000, following VIA1 PA4
     struct mmu_state *mmu; // 68030 PMMU
@@ -291,13 +289,5 @@ void mac_vbl_pulse(struct via *via);
 void mac030_glue_slot_irq_source(config_t *cfg, int pa_bit, bool active);
 
 void mac030_glue_nubus_slot_irq(config_t *cfg, int slot, bool active);
-
-// Family-shared teardown delete-chain: scheduler_stop → mmu → floppy → asc →
-// adb → scsi → via2 → via1 → scc → rtc → scheduler → cpu → memory_map → debugger.
-// The machine-owned devices (which live in its private state, not config_t)
-// are passed in; the caller frees its own state struct afterwards.  Any NULL
-// handle is skipped.
-void mac030_glue_teardown(config_t *cfg, struct adb *adb, struct asc *asc, struct floppy *floppy,
-                          struct mmu_state *mmu);
 
 #endif // GS_MACHINES_MAC030_GLUE_H

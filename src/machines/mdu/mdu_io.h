@@ -52,10 +52,8 @@ const mac030_io_range_t *mdu_io_ranges(void);
 // IIsi (mirrors the GLUE-family unification).  Superset: the IIsi uses egret;
 // the IIci leaves egret NULL.
 typedef struct mac030_mdu_state {
-    struct adb *adb;
-    struct asc *asc;
+    struct asc *asc; // (the adb and floppy are cfg->adb / cfg->floppy)
     struct egret *egret; // IIsi companion (ADB/RTC/PRAM/power); NULL on IIci
-    struct floppy *floppy;
     struct rbv *rbv; // RBV chip (VIA2 replacement + video control)
     struct nubus_card *video_card; // built-in RBV video pseudo-card
 

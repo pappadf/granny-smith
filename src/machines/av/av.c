@@ -742,13 +742,12 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
     // ADB device state, serviced through Cuda packets (adb_iop_transact),
     // not the VIA shifter — pass NULL for the VIA (the IIsi/Egret pattern).
     machine_part_begin(cfg, cp, "adb");
-    st->adb = adb_init(NULL, cfg->scheduler, cp);
-    cfg->adb = st->adb;
-    machine_part(cfg, cp, "adb", part_save_adb, st->adb);
+    cfg->adb = adb_init(NULL, cfg->scheduler, cp);
+    machine_part(cfg, cp, "adb", part_save_adb, cfg->adb);
 
     // The behavioral Cuda on VIA1's shift register + PB3/PB4/PB5.
     machine_part_begin(cfg, cp, "cuda");
-    st->cuda = av_cuda_init(cfg->via1, cfg->rtc, st->adb, cfg->scheduler, cp, /*mode3_clock=*/false);
+    st->cuda = av_cuda_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp, /*mode3_clock=*/false);
     if (!st->cuda) {
         LOG(0, "Error: out of memory constructing the Cuda");
         return -1;
@@ -952,8 +951,6 @@ static void av_bus_reset(config_t *cfg) {
 }
 
 static void av_teardown(config_t *cfg) {
-    if (cfg->scheduler)
-        scheduler_stop(cfg->scheduler);
     av_state_t *st = av_st(cfg);
     if (st) {
         if (st->vdc) {
@@ -998,11 +995,6 @@ static void av_teardown(config_t *cfg) {
             av_psc_delete(st->psc);
             st->psc = NULL;
         }
-        if (st->adb) {
-            adb_delete(st->adb);
-            st->adb = NULL;
-            cfg->adb = NULL;
-        }
         if (st->bus_mmu) {
             mmu_delete(st->bus_mmu);
             st->bus_mmu = NULL;
@@ -1011,10 +1003,6 @@ static void av_teardown(config_t *cfg) {
     // The config_t-owned devices, in the family-shared canonical order
     // (machine_teardown.h).  Was a byte-identical copy in five families.
     machine_teardown_config_devices(cfg);
-    if (st) {
-        free(st);
-        cfg->machine_context = NULL;
-    }
 }
 
 // VBL tick: VIA1 CA1 pulse (60 Hz reference) + the PSC's own 60.15 Hz

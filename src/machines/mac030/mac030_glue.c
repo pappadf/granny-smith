@@ -41,9 +41,8 @@ LOG_USE_CATEGORY_NAME("system");
 int mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_state_t *st,
                                   const mac030_board_desc_t *desc) {
     machine_part_begin(cfg, cp, "adb");
-    st->adb = adb_init(cfg->via1, cfg->scheduler, cp);
-    cfg->adb = st->adb;
-    machine_part(cfg, cp, "adb", part_save_adb, st->adb);
+    cfg->adb = adb_init(cfg->via1, cfg->scheduler, cp);
+    machine_part(cfg, cp, "adb", part_save_adb, cfg->adb);
 
     // The image list before the devices that reference it.
     machine_part_images(cfg, cp);
@@ -62,11 +61,11 @@ int mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_s
     asc_set_mix(st->asc, desc->asc_mix); // board speaker fold (not checkpointed)
 
     machine_part_begin(cfg, cp, "floppy");
-    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
-    cfg->floppy = st->floppy;
-    machine_part(cfg, cp, "floppy", part_save_floppy, st->floppy);
+    cfg->floppy =
+        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
+    machine_part(cfg, cp, "floppy", part_save_floppy, cfg->floppy);
 
-    mac030_glue_io_bind(&st->glue_io, cfg, desc, st->asc, st->floppy);
+    mac030_glue_io_bind(&st->glue_io, cfg, desc, st->asc, cfg->floppy);
     return 0;
 }
 
@@ -355,31 +354,6 @@ void mac030_glue_nubus_slot_irq(config_t *cfg, int slot, bool active) {
     mac030_glue_slot_irq_source(cfg, pa_bit, active);
 }
 
-// Family-shared teardown delete-chain.  Order matches the (identical)
-// per-machine teardowns; NuBus cards are already gone (system_destroy calls
-// nubus_delete before machine teardown — the cards' ownership invariant).
-void mac030_glue_teardown(config_t *cfg, struct adb *adb, struct asc *asc, struct floppy *floppy,
-                          struct mmu_state *mmu) {
-    if (cfg->scheduler)
-        scheduler_stop(cfg->scheduler);
-
-    // Machine-owned devices (in the machine's private state).
-    if (mmu)
-        mmu_delete(mmu); // also clears g_mmu if it matches
-    if (floppy) {
-        floppy_delete(floppy);
-        cfg->floppy = NULL;
-    }
-    if (asc)
-        asc_delete(asc);
-    if (adb) {
-        adb_delete(adb);
-        cfg->adb = NULL;
-    }
-
-    machine_teardown_config_devices(cfg);
-}
-
 // ============================================================
 // The shared GLUE-family substrate
 // ============================================================
@@ -411,12 +385,16 @@ static void glue_teardown(config_t *cfg) {
         st->vram = NULL;
         st->vrom = NULL;
         st->video_card = NULL;
+        if (st->mmu) {
+            mmu_delete(st->mmu); // also clears g_mmu if it matches
+            st->mmu = NULL;
+        }
+        if (st->asc) {
+            asc_delete(st->asc);
+            st->asc = NULL;
+        }
     }
-    mac030_glue_teardown(cfg, st ? st->adb : NULL, st ? st->asc : NULL, st ? st->floppy : NULL, st ? st->mmu : NULL);
-    if (st) {
-        free(st);
-        cfg->machine_context = NULL;
-    }
+    machine_teardown_config_devices(cfg); // floppy, adb, scsi, VIAs, ... (machine_teardown.h)
 }
 
 // One 60.15 Hz VBL pulse on a VIA's CA1.  The lines idle high (via_init parks

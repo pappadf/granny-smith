@@ -135,8 +135,8 @@ static void iisi_via1_output(void *context, uint8_t port, uint8_t output) {
     iisi_state_t *st = iisi_state(cfg);
 
     if (port == 0) {
-        if (st->floppy)
-            floppy_set_sel_signal(st->floppy, (output & 0x20) != 0);
+        if (cfg->floppy)
+            floppy_set_sel_signal(cfg->floppy, (output & 0x20) != 0);
         // ROM overlay.  Unlike the IIci (reset PC in high ROM) the IIsi reset
         // vector is $0000002A: the ROM runs its early POST from the $0 overlay
         // and PA4 here is a machine-ID *input* (not the SE/30's overlay output).
@@ -213,9 +213,8 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     // ADB is driven by Egret via adb_iop_transact() (like the IIfx IOP path),
     // not by the VIA1 shift register — pass NULL for the VIA argument.
     machine_part_begin(cfg, checkpoint, "adb");
-    st->adb = adb_init(NULL, cfg->scheduler, checkpoint);
-    cfg->adb = st->adb;
-    machine_part(cfg, checkpoint, "adb", part_save_adb, st->adb);
+    cfg->adb = adb_init(NULL, cfg->scheduler, checkpoint);
+    machine_part(cfg, checkpoint, "adb", part_save_adb, cfg->adb);
 
     machine_part_images(cfg, checkpoint);
 
@@ -230,15 +229,14 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part(cfg, checkpoint, "asc", part_save_asc, st->asc);
     machine_part_begin(cfg, checkpoint, "floppy");
     asc_set_mix(st->asc, ASC_MIX_CH_A); // internal speaker takes the left channel
-    st->floppy =
+    cfg->floppy =
         floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), checkpoint, config_images(cfg));
-    cfg->floppy = st->floppy;
-    machine_part(cfg, checkpoint, "floppy", part_save_floppy, st->floppy);
+    machine_part(cfg, checkpoint, "floppy", part_save_floppy, cfg->floppy);
 
     // Egret companion: owns ADB / RTC / PRAM / 1-sec tick / soft power-off via
     // the VIA1 shift register.  Created after via1/rtc/adb exist.
     machine_part_begin(cfg, checkpoint, "egret");
-    st->egret = egret_init(cfg->via1, cfg->rtc, st->adb, cfg->scheduler, checkpoint);
+    st->egret = egret_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, checkpoint);
     if (!st->egret) {
         LOG(0, "Error: out of memory constructing the Egret");
         return -1;
@@ -280,7 +278,7 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     builtin_rbv_video_set_rbv(st->video_card, st->rbv);
 
     // Bind device handles + the board's I/O window table for the shared engine.
-    mdu_io_bind(&st->mdu_io, cfg, &iisi_board_desc, st->asc, st->floppy, st->rbv, st->video_card);
+    mdu_io_bind(&st->mdu_io, cfg, &iisi_board_desc, st->asc, cfg->floppy, st->rbv, st->video_card);
 
     // On-board video reads its frame buffer from the BOTTOM of Bank A — physical
     // 0 (Developer Note §8.2; VideoInfoMacIIsi screen physical base = 0), and

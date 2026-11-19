@@ -60,17 +60,16 @@ static inline mcu_state_t *q700_state(config_t *cfg) {
 // (bits 0-2) + ADB ST lines (bits 4-5) — the IIci pattern verbatim.
 static void q700_via1_output(void *context, uint8_t port, uint8_t output) {
     config_t *cfg = (config_t *)context;
-    mcu_state_t *st = q700_state(cfg);
 
     if (port == 0) {
-        if (st->floppy)
-            floppy_set_sel_signal(st->floppy, (output & 0x20) != 0);
+        if (cfg->floppy)
+            floppy_set_sel_signal(cfg->floppy, (output & 0x20) != 0);
         // No overlay bit here: the MCU's overlay is access-triggered (mcu.c).
     } else {
         // Bits 4-5: ADB state lines (ST0/ST1) -> ADB controller.  The
         // ST-transition filter and its port-B shadow live in adb.c now.
-        if (st->adb)
-            adb_port_b_output(st->adb, output);
+        if (cfg->adb)
+            adb_port_b_output(cfg->adb, output);
         rtc_via1_pb_output(cfg->rtc, output);
     }
 }
@@ -135,9 +134,8 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     via_input_c(cfg->via2, 1, 0, 1); // CB1 sound idle
 
     machine_part_begin(cfg, cp, "adb");
-    st->adb = adb_init(cfg->via1, cfg->scheduler, cp);
-    cfg->adb = st->adb;
-    machine_part(cfg, cp, "adb", part_save_adb, st->adb);
+    cfg->adb = adb_init(cfg->via1, cfg->scheduler, cp);
+    machine_part(cfg, cp, "adb", part_save_adb, cfg->adb);
 
     machine_part_images(cfg, cp);
 
@@ -167,9 +165,9 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     asc_set_mix(st->asc, ASC_MIX_CH_A);
     asc_set_irq_handler(st->asc, q700_asc_irq, cfg);
     machine_part_begin(cfg, cp, "floppy");
-    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
-    cfg->floppy = st->floppy;
-    machine_part(cfg, cp, "floppy", part_save_floppy, st->floppy);
+    cfg->floppy =
+        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
+    machine_part(cfg, cp, "floppy", part_save_floppy, cfg->floppy);
 
     if (mcu_build_dafb(cfg, cp) != 0)
         return -1;
@@ -194,7 +192,7 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     mmu_attach_mmu040(st->bus_mmu, (mmu040_state_t *)cfg->cpu->mmu);
 
     // Bind the I/O island + DAFB apertures + overlay, then arm the overlay.
-    mcu_io_bind(&st->io, cfg, desc, st->asc, st->floppy);
+    mcu_io_bind(&st->io, cfg, desc, st->asc, cfg->floppy);
     mcu_memory_layout(cfg);
 
     mcu_private_part(cfg, cp);

@@ -137,7 +137,6 @@ typedef struct av_board {
 
 // Unified AV-family machine state.
 typedef struct av_state {
-    struct adb *adb;
     struct av_cuda *cuda; // behavioral Cuda 2.37 model on VIA1's SR
     struct av_psc *psc; // DMA + interrupt controller (the platform's heart)
     struct av_dsp *dsp; // the DSP3210 aux core on the PSC reset latch

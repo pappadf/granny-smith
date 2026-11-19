@@ -202,8 +202,8 @@ static void se30_via1_output(void *context, uint8_t port, uint8_t output) {
         bool main_buf = (output & 0x40) != 0;
         builtin_se30_video_select_buffer(se30->video_card, main_buf);
         // Bit 5: floppy head select → SWIM
-        if (se30->floppy)
-            floppy_set_sel_signal(se30->floppy, (output & 0x20) != 0);
+        if (cfg->floppy)
+            floppy_set_sel_signal(cfg->floppy, (output & 0x20) != 0);
         // Bit 4: ROM overlay control (1 = ROM at $00000000, 0 = RAM)
         se30_set_rom_overlay(cfg, (output & 0x10) != 0);
         // Bit 3: alternate sound buffer (legacy, ignored for ASC)
@@ -212,8 +212,8 @@ static void se30_via1_output(void *context, uint8_t port, uint8_t output) {
         // Port B outputs:
         // Bits 4-5: ADB state lines (ST0/ST1) -> ADB controller.  The
         // ST-transition filter and its port-B shadow live in adb.c now.
-        if (se30->adb)
-            adb_port_b_output(se30->adb, output);
+        if (cfg->adb)
+            adb_port_b_output(cfg->adb, output);
         // Bit 3: vADBInt (input — read-only, driven by ADB module)
         // Bits 0-2: RTC chip select/clock/data
         rtc_via1_pb_output(cfg->rtc, output);

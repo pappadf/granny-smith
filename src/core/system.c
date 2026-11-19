@@ -1220,6 +1220,19 @@ static void reselect_active_map(uintptr_t *active_read, uintptr_t *active_write)
     }
 }
 
+// The bracket around every substrate teardown: stop the scheduler so no
+// device callback fires mid-teardown, let the family delete what it built
+// (machine_teardown_config_devices does the config_t-owned rest), then free
+// the family's private state.  Tolerates a partially-constructed machine.
+static void machine_teardown_bracket(config_t *cfg) {
+    if (cfg->scheduler)
+        scheduler_stop(cfg->scheduler);
+    if (cfg->machine && cfg->machine->substrate->teardown)
+        cfg->machine->substrate->teardown(cfg);
+    free(cfg->machine_context);
+    cfg->machine_context = NULL;
+}
+
 // Create an emulator instance for the given machine profile: allocate the
 // config_t, wire the machine descriptor, and call profile->substrate->init().
 config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t *opts, checkpoint_t *checkpoint) {
@@ -1275,8 +1288,7 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
         s_constructing = false;
         event_hold(0);
         LOG(0, "Error: failed to construct %s", profile->name);
-        if (profile->substrate->teardown)
-            profile->substrate->teardown(cfg);
+        machine_teardown_bracket(cfg);
         image_table_free(cfg);
         machine_parts_free(cfg);
         free(cfg);
@@ -1480,9 +1492,7 @@ void system_destroy(config_t *config) {
     }
 
     // Delegate machine-specific teardown to the profile
-    if (config->machine && config->machine->substrate->teardown) {
-        config->machine->substrate->teardown(config);
-    }
+    machine_teardown_bracket(config);
 
     // Free all tracked images (managed at the system level)
     image_table_free(config);

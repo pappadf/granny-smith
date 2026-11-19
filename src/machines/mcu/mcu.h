@@ -130,9 +130,7 @@ typedef struct mcu_board {
 
 // Unified MCU-family machine state.
 typedef struct mcu_state {
-    struct adb *adb;
-    struct asc *asc; // EASC (ASC-compatible core)
-    struct floppy *floppy;
+    struct asc *asc; // EASC (ASC-compatible core); the adb and floppy are cfg->'s
     struct dafb *dafb; // DAFB video
     struct scsi_53c96 *scsi96; // NCR 53C96
     struct sonic *sonic; // DP83932 SONIC Ethernet (no wire in v1)

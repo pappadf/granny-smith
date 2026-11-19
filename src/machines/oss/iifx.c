@@ -166,10 +166,8 @@ LOG_USE_CATEGORY_NAME("board");
 
 // Per-machine IIfx runtime state.
 typedef struct iifx_state {
-    struct asc *asc;
-    struct floppy *floppy;
+    struct asc *asc; // (the floppy and the adb, driven via SWIM IOP slot 3, are cfg->'s)
     oss_t *oss;
-    adb_t *adb; // ADB device state — driven via SWIM IOP slot 3
     iop_t *scc_iop;
     iop_t *swim_iop;
 
@@ -1215,10 +1213,9 @@ static void iifx_scc_irq(void *context, bool active) {
 // Handles VIA1 output pins.
 static void iifx_via1_output(void *context, uint8_t port, uint8_t output) {
     config_t *cfg = (config_t *)context;
-    iifx_state_t *st = iifx_state(cfg);
     if (port == 0) {
-        if (st->floppy)
-            floppy_set_sel_signal(st->floppy, (output & 0x20) != 0);
+        if (cfg->floppy)
+            floppy_set_sel_signal(cfg->floppy, (output & 0x20) != 0);
         return;
     }
     rtc_via1_pb_output(cfg->rtc, output);
@@ -1466,10 +1463,9 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part(cfg, checkpoint, "asc", part_save_asc, st->asc);
     machine_part_begin(cfg, checkpoint, "floppy");
     asc_set_mix(st->asc, ASC_MIX_CH_A); // internal speaker takes the left channel
-    st->floppy =
+    cfg->floppy =
         floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), checkpoint, config_images(cfg));
-    cfg->floppy = st->floppy;
-    machine_part(cfg, checkpoint, "floppy", part_save_floppy, st->floppy);
+    machine_part(cfg, checkpoint, "floppy", part_save_floppy, cfg->floppy);
 
     // ADB device state: the IIfx's ADB bus is bit-banged by the SWIM IOP
     // firmware ($F032 in iop-swim.bin), not by VIA1's shift register, so
@@ -1479,15 +1475,14 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     // to system_mouse_update / adb_keyboard_event so host-side mouse +
     // keyboard input routes here transparently.
     machine_part_begin(cfg, checkpoint, "adb");
-    st->adb = adb_init(NULL, cfg->scheduler, checkpoint);
-    cfg->adb = st->adb;
-    machine_part(cfg, checkpoint, "adb", part_save_adb, st->adb);
+    cfg->adb = adb_init(NULL, cfg->scheduler, checkpoint);
+    machine_part(cfg, checkpoint, "adb", part_save_adb, cfg->adb);
 
     st->via1_iface = via_get_memory_interface(cfg->via1);
     st->scc_iface = scc_get_memory_interface(cfg->scc);
     st->scsi_iface = scsi_get_memory_interface(cfg->scsi);
     st->asc_iface = asc_get_memory_interface(st->asc);
-    st->floppy_iface = floppy_get_memory_interface(st->floppy);
+    st->floppy_iface = floppy_get_memory_interface(cfg->floppy);
 
     machine_part_begin(cfg, checkpoint, "oss");
     st->oss = oss_init(iifx_oss_irq_changed, iifx_oss_control, cfg, cfg->scheduler, checkpoint);
@@ -1500,9 +1495,9 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part(cfg, checkpoint, "scc_iop", part_save_iop, st->scc_iop);
     machine_part_begin(cfg, checkpoint, "swim_iop");
     st->swim_iop =
-        iop_init(SwimIopNum, st->floppy_iface, st->floppy, iifx_swim_iop_irq, cfg, cfg->scheduler, checkpoint);
+        iop_init(SwimIopNum, st->floppy_iface, cfg->floppy, iifx_swim_iop_irq, cfg, cfg->scheduler, checkpoint);
     machine_part(cfg, checkpoint, "swim_iop", part_save_iop, st->swim_iop);
-    iop_swim_attach_adb(st->swim_iop, st->adb); // ADB is driven through IOP slot 3
+    iop_swim_attach_adb(st->swim_iop, cfg->adb); // ADB is driven through IOP slot 3
     st->scc_iop_iface = iop_get_memory_interface(st->scc_iop);
     st->swim_iop_iface = iop_get_memory_interface(st->swim_iop);
 
@@ -1536,8 +1531,6 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
 
 // Tears down an IIfx machine.
 static void iifx_teardown(config_t *cfg) {
-    if (cfg->scheduler)
-        scheduler_stop(cfg->scheduler);
     iifx_state_t *st = iifx_state(cfg);
     if (st) {
         if (st->scc_iop) {
@@ -1560,28 +1553,14 @@ static void iifx_teardown(config_t *cfg) {
             free(st->fmc_inverted_rom);
             st->fmc_inverted_rom = NULL;
         }
-        if (st->floppy) {
-            floppy_delete(st->floppy);
-            st->floppy = NULL;
-            cfg->floppy = NULL;
-        }
         if (st->asc) {
             asc_delete(st->asc);
             st->asc = NULL;
-        }
-        if (st->adb) {
-            adb_delete(st->adb);
-            st->adb = NULL;
-            cfg->adb = NULL;
         }
     }
     // The config_t-owned devices, in the family-shared canonical order
     // (machine_teardown.h).  Was a byte-identical copy in five families.
     machine_teardown_config_devices(cfg);
-    if (st) {
-        free(st);
-        cfg->machine_context = NULL;
-    }
 }
 
 // Machine descriptor data.

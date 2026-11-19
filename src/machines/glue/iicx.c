@@ -111,20 +111,19 @@ void iicx_memory_layout_tail(config_t *cfg) {
 // built-in framebuffer, so PA6 is a free port pin we ignore.
 void iicx_via1_output(void *context, uint8_t port, uint8_t output) {
     config_t *cfg = (config_t *)context;
-    iicx_state_t *st = iicx_state(cfg);
 
     if (port == 0) {
         // Bit 5: floppy head select → SWIM
-        if (st->floppy)
-            floppy_set_sel_signal(st->floppy, (output & 0x20) != 0);
+        if (cfg->floppy)
+            floppy_set_sel_signal(cfg->floppy, (output & 0x20) != 0);
         // Bit 4: ROM overlay control (1 = ROM at $00000000, 0 = RAM) -- the
         // same vOverlay pin as the SE/30's
         iicx_set_rom_overlay(cfg, (output & 0x10) != 0);
     } else {
         // Bits 4-5: ADB state lines (ST0/ST1) -> ADB controller.  The
         // ST-transition filter and its port-B shadow live in adb.c now.
-        if (st->adb)
-            adb_port_b_output(st->adb, output);
+        if (cfg->adb)
+            adb_port_b_output(cfg->adb, output);
         rtc_via1_pb_output(cfg->rtc, output);
     }
 }

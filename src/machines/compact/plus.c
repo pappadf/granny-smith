@@ -415,13 +415,9 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
 
 // Tear down all Plus resources in reverse init order.
 static void plus_teardown(config_t *cfg) {
-    if (cfg->scheduler)
-        scheduler_stop(cfg->scheduler);
-
     // Machine-owned devices first, then the shared delete-chain.  This is the
-    // shape mac030_glue_teardown uses and the other six families already
-    // follow; the Plus and the Lisa were the two that still hand-rolled the
-    // whole thing.
+    // shape every family follows; the Plus and the Lisa were the last two that
+    // hand-rolled the whole thing.
     //
     // ORDER IS LOAD-BEARING and this is why: the floppy used to be deleted
     // AFTER scheduler_delete here.  That was harmless while floppy_delete only
@@ -439,25 +435,15 @@ static void plus_teardown(config_t *cfg) {
         mouse_delete(cfg->mouse);
         cfg->mouse = NULL;
     }
-    if (cfg->floppy) {
-        floppy_delete(cfg->floppy);
-        cfg->floppy = NULL;
-    }
     if (ps && ps->sound) {
         sound_delete(ps->sound);
         ps->sound = NULL;
         cfg->sound = NULL;
     }
 
-    // scsi, appletalk, scc, rtc, via1, the scheduler, the CPU, the memory map
-    // and the debugger -- in the one order that is documented once.
+    // floppy, scsi, appletalk, scc, rtc, via1, the scheduler, the CPU, the
+    // memory map and the debugger -- in the one order that is documented once.
     machine_teardown_config_devices(cfg);
-
-    // Machine-specific state; images are freed by system_destroy().
-    if (ps) {
-        free(ps);
-        cfg->machine_context = NULL;
-    }
 }
 
 // ============================================================

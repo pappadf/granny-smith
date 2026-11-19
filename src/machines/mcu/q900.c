@@ -179,9 +179,8 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     // (ADBIop in InfoQuadra900), not VIA1's shift register — pass NULL for
     // the VIA so slot-3 IOP traffic reaches adb_iop_transact() directly.
     machine_part_begin(cfg, cp, "adb");
-    st->adb = adb_init(NULL, cfg->scheduler, cp);
-    cfg->adb = st->adb;
-    machine_part(cfg, cp, "adb", part_save_adb, st->adb);
+    cfg->adb = adb_init(NULL, cfg->scheduler, cp);
+    machine_part(cfg, cp, "adb", part_save_adb, cfg->adb);
 
     machine_part_images(cfg, cp);
 
@@ -230,9 +229,9 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     asc_set_mix(st->asc, ASC_MIX_CH_A);
     asc_set_irq_handler(st->asc, q900_asc_irq, cfg);
     machine_part_begin(cfg, cp, "floppy");
-    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
-    cfg->floppy = st->floppy;
-    machine_part(cfg, cp, "floppy", part_save_floppy, st->floppy);
+    cfg->floppy =
+        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
+    machine_part(cfg, cp, "floppy", part_save_floppy, cfg->floppy);
 
     // Caboose: the Egret-protocol system manager (RTC/PRAM/power/keyswitch;
     // the ROM drives it through the same EgretMgr dispatch it uses for
@@ -255,10 +254,10 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
         iop_init(SccIopNum, scc_get_memory_interface(cfg->scc), cfg->scc, q900_scc_iop_irq, cfg, cfg->scheduler, cp);
     machine_part(cfg, cp, "scc_iop", part_save_iop, st->scc_iop);
     machine_part_begin(cfg, cp, "swim_iop");
-    st->swim_iop = iop_init(SwimIopNum, floppy_get_memory_interface(st->floppy), st->floppy, q900_swim_iop_irq, cfg,
+    st->swim_iop = iop_init(SwimIopNum, floppy_get_memory_interface(cfg->floppy), cfg->floppy, q900_swim_iop_irq, cfg,
                             cfg->scheduler, cp);
     machine_part(cfg, cp, "swim_iop", part_save_iop, st->swim_iop);
-    iop_swim_attach_adb(st->swim_iop, st->adb); // ADB is driven through IOP slot 3
+    iop_swim_attach_adb(st->swim_iop, cfg->adb); // ADB is driven through IOP slot 3
 
     if (mcu_build_dafb(cfg, cp) != 0)
         return -1;
@@ -279,7 +278,7 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     // Bind the I/O island (tower decode: IOP apertures + dual SCSI), then
     // hook the IOP host interfaces the shared table routes to.
-    mcu_io_bind(&st->io, cfg, desc, st->asc, st->floppy);
+    mcu_io_bind(&st->io, cfg, desc, st->asc, cfg->floppy);
     st->io.handle[MAC030_DEV_SCC_IOP] = st->scc_iop;
     st->io.iface[MAC030_DEV_SCC_IOP] = iop_get_memory_interface(st->scc_iop);
     st->io.handle[MAC030_DEV_SWIM_IOP] = st->swim_iop;

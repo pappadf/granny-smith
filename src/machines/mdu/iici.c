@@ -176,17 +176,16 @@ static void iici_memory_layout_init(config_t *cfg) {
 // port A; ADB shift-state filtering + classic RTC on port B.
 static void iici_via1_output(void *context, uint8_t port, uint8_t output) {
     config_t *cfg = (config_t *)context;
-    iici_state_t *st = iici_state(cfg);
 
     if (port == 0) {
-        if (st->floppy)
-            floppy_set_sel_signal(st->floppy, (output & 0x20) != 0);
+        if (cfg->floppy)
+            floppy_set_sel_signal(cfg->floppy, (output & 0x20) != 0);
         iici_set_rom_overlay(cfg, (output & 0x10) != 0);
     } else {
         // Bits 4-5: ADB state lines (ST0/ST1) -> ADB controller.  The
         // ST-transition filter and its port-B shadow live in adb.c now.
-        if (st->adb)
-            adb_port_b_output(st->adb, output);
+        if (cfg->adb)
+            adb_port_b_output(cfg->adb, output);
         rtc_via1_pb_output(cfg->rtc, output);
     }
 }
@@ -258,9 +257,8 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     via_input_c(cfg->via1, 1, 0, 1);
 
     machine_part_begin(cfg, checkpoint, "adb");
-    st->adb = adb_init(cfg->via1, cfg->scheduler, checkpoint);
-    cfg->adb = st->adb;
-    machine_part(cfg, checkpoint, "adb", part_save_adb, st->adb);
+    cfg->adb = adb_init(cfg->via1, cfg->scheduler, checkpoint);
+    machine_part(cfg, checkpoint, "adb", part_save_adb, cfg->adb);
 
     machine_part_images(cfg, checkpoint);
 
@@ -275,10 +273,9 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part(cfg, checkpoint, "asc", part_save_asc, st->asc);
     machine_part_begin(cfg, checkpoint, "floppy");
     asc_set_mix(st->asc, ASC_MIX_CH_A); // internal speaker takes the left channel
-    st->floppy =
+    cfg->floppy =
         floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), checkpoint, config_images(cfg));
-    cfg->floppy = st->floppy;
-    machine_part(cfg, checkpoint, "floppy", part_save_floppy, st->floppy);
+    machine_part(cfg, checkpoint, "floppy", part_save_floppy, cfg->floppy);
 
     // RBV chip (VIA2 replacement + video control), the built-in port's
     // monitor strapped on its sense lines (7, nothing connected, turns
@@ -314,7 +311,7 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     // reads, as on the IIsi.
 
     // Bind device handles + the board's I/O window table for the shared engine.
-    mdu_io_bind(&st->mdu_io, cfg, &iici_board_desc, st->asc, st->floppy, st->rbv, st->video_card);
+    mdu_io_bind(&st->mdu_io, cfg, &iici_board_desc, st->asc, cfg->floppy, st->rbv, st->video_card);
 
     iici_memory_layout_init(cfg);
 

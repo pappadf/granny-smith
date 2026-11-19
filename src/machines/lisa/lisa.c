@@ -1176,9 +1176,6 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
 }
 
 static void lisa_teardown(config_t *cfg) {
-    if (cfg->scheduler)
-        scheduler_stop(cfg->scheduler);
-
     lisa_state_t *ls0 = lisa_state(cfg);
     if (ls0) {
         // Tear down the `floppy` object tree (entry is unattached, like the IWM
@@ -1232,11 +1229,6 @@ static void lisa_teardown(config_t *cfg) {
     // both.  Note it also deletes the scheduler LAST of those, which is what
     // keeps the device destructors' scheduler_forget_source calls valid.
     machine_teardown_config_devices(cfg);
-
-    if (ls) {
-        free(ls);
-        cfg->machine_context = NULL;
-    }
 }
 
 // ============================================================

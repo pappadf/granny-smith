@@ -116,12 +116,10 @@ static void mdu_power_on(config_t *cfg) {
     asc_power_on(mdu_st(cfg)->asc);
 }
 
-// MDU delete-chain (no VIA2; RBV instead; Egret on the IIsi).  Order matches
-// the former iici/iisi teardowns: scheduler_stop → egret → rbv → mmu → floppy →
-// asc → adb → scsi → via1 → scc → rtc → scheduler → cpu → memory_map → debugger.
+// MDU delete-chain (no VIA2; RBV instead; Egret on the IIsi): egret → rbv →
+// mmu → asc, then the shared chain from floppy and adb on (machine_teardown.h).
+// Egret goes before the adb it was handed.
 static void mdu_teardown(config_t *cfg) {
-    if (cfg->scheduler)
-        scheduler_stop(cfg->scheduler);
     mac030_mdu_state_t *st = mdu_st(cfg);
     if (st) {
         if (st->egret) {
@@ -136,28 +134,14 @@ static void mdu_teardown(config_t *cfg) {
             mmu_delete(st->mmu);
             st->mmu = NULL;
         }
-        if (st->floppy) {
-            floppy_delete(st->floppy);
-            st->floppy = NULL;
-            cfg->floppy = NULL;
-        }
         if (st->asc) {
             asc_delete(st->asc);
             st->asc = NULL;
-        }
-        if (st->adb) {
-            adb_delete(st->adb);
-            st->adb = NULL;
-            cfg->adb = NULL;
         }
     }
     // The config_t-owned devices, in the family-shared canonical order
     // (machine_teardown.h).  Was a byte-identical copy in five families.
     machine_teardown_config_devices(cfg);
-    if (st) {
-        free(st);
-        cfg->machine_context = NULL;
-    }
 }
 
 // substrate.nubus_slot_irq — the RBV aggregates NuBus slot interrupts itself
