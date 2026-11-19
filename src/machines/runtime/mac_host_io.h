@@ -24,7 +24,9 @@
 struct config;
 struct image;
 
-// Floppy: route to the machine's IWM/SWIM controller (cfg->floppy).
+// Floppy: route to the machine's IWM/SWIM/SWIM3 controller (cfg->floppy),
+// bounded by the configuration's drive count (machine_floppy_count): a drive
+// the machine does not have refuses a disk and holds none.
 int mac_fd_insert(struct config *cfg, int drive, struct image *disk);
 bool mac_fd_present(struct config *cfg, int drive);
 
@@ -34,5 +36,18 @@ bool mac_fd_present(struct config *cfg, int drive);
 int mac_input_key(struct config *cfg, int adb_code, bool down);
 int mac_input_mouse_move(struct config *cfg, int x, int y, const char *mode);
 int mac_input_mouse_button(struct config *cfg, bool down, const char *mode);
+
+// The substrate vtable slots these fill, for a Mac family's
+// machine_substrate_t initialiser: the floppy pair and the three input
+// methods.  (Not overridable after the macro: -Woverride-init.)
+#define MAC_SUBSTRATE_HOST_IO                                                                                          \
+    .fd_insert = mac_fd_insert, .fd_present = mac_fd_present, .input_key = mac_input_key,                              \
+    .input_mouse_move = mac_input_mouse_move, .input_mouse_button = mac_input_mouse_button
+
+// The standard media slots over cfg->floppy and the SCSI buses (system.h),
+// for a family that has no media of its own (Gossamer's ATA does).
+#define MAC_SUBSTRATE_MEDIA_STD                                                                                        \
+    .media_attach = system_media_attach_std, .media_present = system_media_present_std,                                \
+    .media_eject = system_media_eject_std, .media_image = system_media_image_std
 
 #endif // GS_MACHINES_RUNTIME_MAC_HOST_IO_H

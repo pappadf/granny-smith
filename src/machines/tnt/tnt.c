@@ -1066,7 +1066,8 @@ static void tnt_pci_slot_irq(config_t *cfg, int slot, bool active) {
 // The board's one internal SuperDrive is the same shape the Quadras and the
 // PDM Power Macs present, so the five profiles reference the shared
 // mac_floppy_slots_1hd (slot_tables.h) rather than the TNT keeping a seventh
-// identical copy.  tnt_fd_insert below is what makes one slot the right count.
+// identical copy.  The shared mac_fd_* (MAC_SUBSTRATE_HOST_IO) refuse
+// every drive past that one slot.
 
 // The Power Macintosh boards' internal bus, MESH: the hard disk bay at ID 0
 // and the 3.5" bay at ID 1 (the 8500 and 9500 add a second 3.5" bay at ID 2).
@@ -1329,20 +1330,6 @@ const pci_slot_decl_t ans_pci_slots[] = {
     {0},
 };
 
-static int tnt_fd_insert(config_t *cfg, int drive, struct image *disk) {
-    if (!cfg->floppy || drive != 0)
-        return -1;
-    return floppy_insert(cfg->floppy, drive, disk);
-}
-
-// A drive the board does not have holds no disk (see pdm_fd_present: the
-// auto-select no longer needs a phantom "occupied" to stay off drive 1).
-static bool tnt_fd_present(config_t *cfg, int drive) {
-    if (!cfg->floppy || drive != 0)
-        return false;
-    return floppy_is_inserted(cfg->floppy, drive);
-}
-
 // The seeding step: Mac OS keeps its PRAM in the NVRAM's XPRAM partition
 // here, not in Cuda, so the SysParam and startup-device records go there.
 static void tnt_seed(config_t *cfg) {
@@ -1370,13 +1357,6 @@ const machine_substrate_t tnt_substrate = {
     .seed = tnt_seed,
     .pci_slot_irq = tnt_pci_slot_irq,
     .trigger_vbl = tnt_trigger_vbl,
-    .fd_insert = tnt_fd_insert,
-    .fd_present = tnt_fd_present,
-    .input_key = mac_input_key,
-    .input_mouse_move = mac_input_mouse_move,
-    .input_mouse_button = mac_input_mouse_button,
-    .media_attach = system_media_attach_std,
-    .media_present = system_media_present_std,
-    .media_eject = system_media_eject_std,
-    .media_image = system_media_image_std,
+    MAC_SUBSTRATE_HOST_IO,
+    MAC_SUBSTRATE_MEDIA_STD,
 };

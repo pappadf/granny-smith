@@ -533,18 +533,6 @@ static void gossamer_pci_slot_irq(config_t *cfg, int slot, bool active) {
     gos_set_source(cfg, d->int_line, active);
 }
 
-static int gossamer_fd_insert(config_t *cfg, int drive, struct image *disk) {
-    if (!cfg->floppy || drive != 0)
-        return -1;
-    return floppy_insert(cfg->floppy, drive, disk);
-}
-
-static bool gossamer_fd_present(config_t *cfg, int drive) {
-    if (!cfg->floppy || drive != 0)
-        return false;
-    return floppy_is_inserted(cfg->floppy, drive);
-}
-
 // The board's storage: the MESH SCSI bus (the internal 50-pin cable and the
 // external DB-25 on one bus, with no named bay) and Heathrow's two ATA
 // buses.  A stock machine has its hard disk and CD-ROM drive on ATA; the
@@ -774,11 +762,7 @@ const machine_substrate_t gossamer_substrate = {
     .seed = gossamer_seed,
     .pci_slot_irq = gossamer_pci_slot_irq,
     .trigger_vbl = gossamer_trigger_vbl,
-    .fd_insert = gossamer_fd_insert,
-    .fd_present = gossamer_fd_present,
-    .input_key = mac_input_key,
-    .input_mouse_move = mac_input_mouse_move,
-    .input_mouse_button = mac_input_mouse_button,
+    MAC_SUBSTRATE_HOST_IO,
     .media_attach = gos_media_attach,
     .media_present = gos_media_present,
     .media_eject = gos_media_eject,

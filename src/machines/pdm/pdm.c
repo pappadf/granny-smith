@@ -569,23 +569,8 @@ static struct display *pdm_display(config_t *cfg) {
 }
 
 // Floppy: the one internal SuperDrive behind SWIM3.  Drive 1 is the only
-// bay the family has — there is no external port on any PDM — so slot 1
-// refuses whatever the caller asks.
-static int pdm_fd_insert(config_t *cfg, int drive, struct image *disk) {
-    if (!cfg->floppy || drive != 0)
-        return -1;
-    return floppy_insert(cfg->floppy, drive, disk);
-}
-
-// A drive the family does not have holds no disk.  This used to answer
-// "occupied" so the core's drive auto-select would never pick drive 1; the
-// auto-select is now bounded by the profile's floppy_slots (#177), so
-// the answer can be the true one.
-static bool pdm_fd_present(config_t *cfg, int drive) {
-    if (!cfg->floppy || drive != 0)
-        return false;
-    return floppy_is_inserted(cfg->floppy, drive);
-}
+// bay the family has — there is no external port on any PDM — so the shared
+// mac_fd_* (bounded by the profile's floppy_slots) refuse slot 1.
 
 const machine_substrate_t pdm_substrate = {
     .init = pdm_init,
@@ -595,13 +580,7 @@ const machine_substrate_t pdm_substrate = {
     .seed = mac_seed_rtc_pram,
     .nubus_slot_irq = pdm_nubus_slot_irq,
     .trigger_vbl = pdm_trigger_vbl,
-    .fd_insert = pdm_fd_insert,
-    .fd_present = pdm_fd_present,
-    .input_key = mac_input_key,
-    .input_mouse_move = mac_input_mouse_move,
-    .input_mouse_button = mac_input_mouse_button,
-    .media_attach = system_media_attach_std,
-    .media_present = system_media_present_std,
-    .media_eject = system_media_eject_std,
+    MAC_SUBSTRATE_HOST_IO,
+    MAC_SUBSTRATE_MEDIA_STD,
     .display = pdm_display,
 };
