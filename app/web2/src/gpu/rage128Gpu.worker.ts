@@ -289,10 +289,19 @@ function readPacked(fmt: number, src: Uint8Array, o: number): number {
 
 // --- device setup --------------------------------------------------------
 
+// Why initDevice found no device, for the page's log (as the Voodoo2's).
+let unavailableReason = '';
+
 async function initDevice(cv: OffscreenCanvas): Promise<boolean> {
-  if (!('gpu' in navigator)) return false;
+  if (!('gpu' in navigator)) {
+    unavailableReason = 'no WebGPU in this browser (navigator.gpu is missing in workers)';
+    return false;
+  }
   const adapter = await navigator.gpu.requestAdapter();
-  if (!adapter) return false;
+  if (!adapter) {
+    unavailableReason = 'navigator.gpu.requestAdapter() returned null';
+    return false;
+  }
   const d = await adapter.requestDevice();
   device = d;
   canvas = cv;
@@ -310,7 +319,10 @@ async function initDevice(cv: OffscreenCanvas): Promise<boolean> {
     console.error('[rage128-gpu] uncaptured error:', (e as GPUUncapturedErrorEvent).error.message);
   });
   context = cv.getContext('webgpu') as GPUCanvasContext | null;
-  if (!context) return false;
+  if (!context) {
+    unavailableReason = 'getContext("webgpu") returned null on the overlay canvas';
+    return false;
+  }
   canvasFormat = navigator.gpu.getPreferredCanvasFormat();
   context.configure({ device: d, format: canvasFormat, alphaMode: 'opaque' });
   mainModule = d.createShaderModule({ label: 'rage128-pipe', code: RAGE128_WGSL });
@@ -1163,8 +1175,13 @@ let deviceReady: Promise<boolean> | null = null;
 self.onmessage = (ev: MessageEvent<InMsg>) => {
   const msg = ev.data;
   if (msg.type === 'init') {
-    deviceReady = initDevice(msg.canvas).catch(() => false);
-    void deviceReady.then((ok) => postMessage({ type: ok ? 'ready' : 'unavailable' }));
+    deviceReady = initDevice(msg.canvas).catch((e) => {
+      unavailableReason = `WebGPU device setup failed: ${e}`;
+      return false;
+    });
+    void deviceReady.then((ok) =>
+      postMessage(ok ? { type: 'ready' } : { type: 'unavailable', reason: unavailableReason }),
+    );
   } else if (msg.type === 'attach') {
     void (deviceReady ?? Promise.resolve(false)).then((ok) => {
       if (ok && !lost) attach(msg.memory, msg.ctrl);

@@ -14,7 +14,8 @@
 // display path once the canvas underneath holds a fresh frame (em_video.c
 // → Module.onVoodooGpuOverlay(0), which hides every GPU overlay).
 
-import { getModule } from '@/bus/emulator';
+import { attachSharedWorker, getModule, heapBuffer, setGpuUnavailable } from '@/bus/emulator';
+import { showNotification } from '@/state/toasts.svelte';
 import {
   MAGIC,
   C_HEAD,
@@ -50,11 +51,9 @@ export function registerRage128Canvas(canvas: HTMLCanvasElement): void {
 // Is the control block at `ctrl` the Rage 128's?  (The transport seam is
 // shared; the magic word tells the two cards apart.)
 export function isRage128Ctrl(ctrl: number): boolean {
-  const mod = getModule();
-  if (!mod) return false;
   // The memory as it is now (the heap may have grown since HEAPU8 was made).
-  const buffer =
-    (mod as unknown as { wasmMemory?: WebAssembly.Memory }).wasmMemory?.buffer ?? mod.HEAPU8.buffer;
+  const buffer = heapBuffer();
+  if (!buffer) return false;
   return new Uint32Array(buffer)[ctrl >>> 2] >>> 0 === MAGIC;
 }
 
@@ -97,6 +96,12 @@ function startWorker(): Worker | null {
       lostReason = m.reason ?? 'lost';
       console.warn('[rage128-gpu] device lost:', m.reason);
       rage128Overlay.visible = false;
+      // An attached card reads the loss from the shared control block (the
+      // worker stores STATUS_LOST) and falls back to its software raster; a
+      // card created later must not be offered the GPU (the Voodoo2's rule).
+      if (attachedCtrls.length)
+        showNotification('WebGPU device lost: Rage 128 3D falls back to software', 'warning');
+      setGpuUnavailable();
     } else if (m.type === 'unavailable') {
       console.warn('[rage128-gpu] no WebGPU device for the Rage 128 takeover', m.reason ?? '');
     }
@@ -114,12 +119,8 @@ export function onRage128GpuAttach(ctrl: number): void {
   const mod = getModule();
   const w = startWorker();
   if (!w || !mod) return;
-  const memory =
-    (mod as unknown as { wasmMemory?: WebAssembly.Memory }).wasmMemory ?? mod.HEAPU8.buffer;
-  if (!(memory instanceof WebAssembly.Memory) && !(memory instanceof SharedArrayBuffer)) return;
+  if (!attachSharedWorker(w, ctrl, '__r128gpu')) return;
   if (!attachedCtrls.includes(ctrl)) attachedCtrls.push(ctrl);
-  (window as unknown as { __r128gpu?: unknown }).__r128gpu = { memory, ctrl, worker: w };
-  w.postMessage({ type: 'attach', memory, ctrl });
 }
 
 // Detach requests for a control block this module attached; false when
@@ -141,11 +142,9 @@ export function hideRage128Overlay(): void {
 // the op ring and the acknowledgements are, whatever the emulator thread
 // or the worker is doing.  Null when no card is attached.
 export function rage128GpuProbe(): Record<string, number | string> | null {
-  const mod = getModule();
   const ctrl = attachedCtrls[0];
-  if (!mod || ctrl === undefined) return null;
-  const buffer =
-    (mod as unknown as { wasmMemory?: WebAssembly.Memory }).wasmMemory?.buffer ?? mod.HEAPU8.buffer;
+  const buffer = heapBuffer();
+  if (!buffer || ctrl === undefined) return null;
   const w = new Int32Array(buffer, ctrl, 32);
   const u = (i: number) => Atomics.load(w, i) >>> 0;
   return {

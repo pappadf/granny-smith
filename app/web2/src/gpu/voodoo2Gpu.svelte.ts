@@ -10,7 +10,7 @@
 // MODE records it consumes), so the pass-through switch is literally
 // which canvas is on top.
 
-import { getModule, setGpuUnavailable } from '@/bus/emulator';
+import { attachSharedWorker, getModule, setGpuUnavailable } from '@/bus/emulator';
 import { showNotification } from '@/state/toasts.svelte';
 
 // Reactive overlay state, read by ScreenView.
@@ -123,13 +123,9 @@ export function onVoodooGpuAttach(ctrl: number): void {
     console.warn('[voodoo2-gpu] attach request with no GPU device: not attached');
     return;
   }
-  const memory =
-    (mod as unknown as { wasmMemory?: WebAssembly.Memory }).wasmMemory ?? mod.HEAPU8.buffer;
-  if (!(memory instanceof WebAssembly.Memory) && !(memory instanceof SharedArrayBuffer)) return;
-  // Diagnostics: the control block's address and the memory, for a page
-  // script to read HEAD/TAIL/ACK/STATUS when something stalls.
-  (window as unknown as { __v2gpu?: unknown }).__v2gpu = { memory, ctrl, worker };
-  worker.postMessage({ type: 'attach', memory, ctrl });
+  // window.__v2gpu: the control block's address and the memory, for a
+  // page script to read HEAD/TAIL/ACK/STATUS when something stalls.
+  attachSharedWorker(worker, ctrl, '__v2gpu');
 }
 
 // Module.onVoodooGpuOverlay(0): the display path drew a fresh frame on

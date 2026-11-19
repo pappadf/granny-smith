@@ -81,6 +81,8 @@ const CLIENT_PAGE = 1;
 
 // Minimal Emscripten module surface — enough to type-check what bus uses.
 interface EmscriptenModule {
+  // The linked memory (a shared Memory in the pthread build).
+  wasmMemory?: WebAssembly.Memory;
   HEAP16: Int16Array<ArrayBufferLike>;
   HEAP32: Int32Array<ArrayBufferLike>;
   HEAPU8: Uint8Array<ArrayBufferLike>;
@@ -284,12 +286,8 @@ async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
   // The rings are static and below the boot-time heap size; a transfer
   // buffer (a download chunk) is anywhere in the heap, so the mailbox reads
   // those through the memory as it is at that moment.
-  const memMod = Module as unknown as { wasmMemory?: WebAssembly.Memory; HEAPU8: Uint8Array };
-  mailbox = new Mailbox(
-    Module.HEAP32.buffer,
-    Module._get_mailbox(),
-    CLIENT_PAGE,
-    () => memMod.wasmMemory?.buffer ?? memMod.HEAPU8.buffer,
+  mailbox = new Mailbox(Module.HEAP32.buffer, Module._get_mailbox(), CLIENT_PAGE, () =>
+    heapBuffer()!,
   );
   mailbox.setLostHandler((why) => markBridgeDead(why));
   mailbox.on(dispatchCoreEvent);
@@ -1024,12 +1022,48 @@ export function setGpuUnavailable(): void {
   mailbox?.setGpuAvailable(false);
 }
 
+// The wasm memory as a worker is handed it: the shared Memory when the
+// build exposes it, else the heap's buffer.  Null before the module loads.
+export function getWasmMemory(): WebAssembly.Memory | ArrayBufferLike | null {
+  if (!Module) return null;
+  return Module.wasmMemory ?? Module.HEAPU8.buffer;
+}
+
+// The heap's buffer as it is NOW.  Under ALLOW_MEMORY_GROWTH with pthreads
+// a growth on the emulator thread replaces the buffer before this thread's
+// Module.HEAP* views catch up, so a block allocated after a growth is only
+// reachable through this.
+export function heapBuffer(): ArrayBufferLike | null {
+  if (!Module) return null;
+  return Module.wasmMemory?.buffer ?? Module.HEAPU8.buffer;
+}
+
+// Hand `worker` the shared memory and the address of the control block it
+// serves ({type: 'attach', memory, ctrl}); the memory, the address and the
+// worker are left on window[debugName] for a page script to inspect when
+// something stalls.  False (nothing posted) when the memory is not shared.
+export function attachSharedWorker(worker: Worker, ctrl: number, debugName: string): boolean {
+  const memory = getWasmMemory();
+  if (!(memory instanceof WebAssembly.Memory) && !(memory instanceof SharedArrayBuffer))
+    return false;
+  (window as unknown as Record<string, unknown>)[debugName] = { memory, ctrl, worker };
+  worker.postMessage({ type: 'attach', memory, ctrl });
+  return true;
+}
+
 // Fresh heap views for direct shared-memory writers (the camera frame
 // transport). Fetched per use — under ALLOW_MEMORY_GROWTH the underlying
-// buffer can be replaced, so callers must never cache these.
+// buffer can be replaced, so callers must never cache these.  Views over
+// the current buffer (heapBuffer) when Module.HEAP* still show an older one.
+let grownViews: { u8: Uint8Array; i16: Int16Array; i32: Int32Array } | null = null;
 export function getModuleHeap(): { u8: Uint8Array; i16: Int16Array; i32: Int32Array } | null {
   if (!Module || !moduleReady) return null;
-  return { u8: Module.HEAPU8, i16: Module.HEAP16, i32: Module.HEAP32 };
+  const buf = heapBuffer()!;
+  if (Module.HEAPU8.buffer === buf)
+    return { u8: Module.HEAPU8, i16: Module.HEAP16, i32: Module.HEAP32 };
+  if (grownViews?.u8.buffer !== buf)
+    grownViews = { u8: new Uint8Array(buf), i16: new Int16Array(buf), i32: new Int32Array(buf) };
+  return grownViews;
 }
 
 // --- Lifecycle wrappers --------------------------------------------------

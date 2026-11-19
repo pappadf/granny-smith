@@ -13,6 +13,8 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import * as Shm from '@/bus/shmLayout';
 import * as V2 from '@/gpu/voodoo2Protocol';
+import * as R128 from '@/gpu/rage128Protocol';
+import * as Takeover from '@/gpu/takeoverProtocol';
 import * as Lw from '@/printer/platenProtocol';
 
 const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
@@ -87,6 +89,22 @@ describe('shared-heap layout mirrors', () => {
     ];
     compare(h, 'V2GPU_', tsNumbers(V2), tsOnly);
     expect(V2.VERTEX_BYTES).toBe(h.get('V2GPU_VERTEX_FLOATS')! * 4);
+  });
+
+  it('rage128_gpu_protocol.h and gpu/rage128Protocol.ts agree', () => {
+    const h = headerDefines('src/core/peripherals/pci/cards/rage128_gpu_protocol.h');
+    // The draw-header words are struct-derived on the C side.
+    const tsOnly = [...tsNumbers(R128).keys()].filter((k) => k.startsWith('DH_'));
+    compare(h, 'R128GPU_', tsNumbers(R128), tsOnly);
+  });
+
+  it('the shared takeover control block is both cards', () => {
+    const v2 = headerDefines('src/core/peripherals/pci/cards/voodoo2_gpu_protocol.h');
+    const r128 = headerDefines('src/core/peripherals/pci/cards/rage128_gpu_protocol.h');
+    const shared = tsNumbers(Takeover);
+    const tsOnly = [...shared.keys()].filter((k) => k.startsWith('DH_'));
+    compare(v2, 'V2GPU_', shared, tsOnly);
+    compare(r128, 'R128GPU_', shared, tsOnly);
   });
 
   it('laserwriter_ring_protocol.h and printer/platenProtocol.ts agree', () => {
