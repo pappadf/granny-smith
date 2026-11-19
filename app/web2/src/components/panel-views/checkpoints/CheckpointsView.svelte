@@ -26,7 +26,7 @@
   import { saveBlob } from '@/bus/download';
   import { saveCheckpoint } from '@/bus/checkpoint';
   import { getOrCreateMachine } from '@/lib/machineId';
-  import { sanitizeName } from '@/lib/archive';
+  import { sanitizeName } from '@/lib/fileName';
   import { machine } from '@/state/machine.svelte';
 
   let rows = $state<CheckpointEntry[]>([]);

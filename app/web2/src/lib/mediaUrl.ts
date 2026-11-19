@@ -18,6 +18,7 @@
 // container as the last segment is just the file.
 
 import { pad2 } from './time';
+import { safeFileName } from './fileName';
 
 // Extensions that end a container segment when a member path follows.
 const CONTAINER_EXT = /\.(zip|sit|sea|cpt|hqx|bin)$/i;
@@ -153,8 +154,8 @@ export function urlMediaFileName(
   } catch {
     // The fetch reports what is wrong with the URL.
   }
-  // As bus/fsOps opfsSafeName: what OPFS or Windows reject, and trailing dots.
-  name = name.replace(/[\\/:*?"<>|]/g, '_').replace(/[ .]+$/g, '');
+  // What OPFS or Windows reject, and trailing dots (lib/fileName.ts).
+  name = safeFileName(name, '');
   if (!name || name.startsWith('.') || SCRIPT_EXT.test(name)) return urlMediaName(slot, at);
   return name;
 }

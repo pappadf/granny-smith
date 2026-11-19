@@ -34,7 +34,7 @@ import { xferChunkBytes, xferUdifAppend, xferRead } from './xfer';
 import { showNotification } from '@/state/toasts.svelte';
 import { bumpImagesRevision } from '@/state/images.svelte';
 import { setActivityCancel, setActivityDetail } from '@/state/activity.svelte';
-import { sanitizeName } from '@/lib/archive';
+import { sanitizeName } from '@/lib/fileName';
 import { scratchPath } from '@/lib/opfsPaths';
 import { MEDIA_TYPES, LARGE_IMPORT_BYTES, validateUnstated, type MediaTypeId } from '@/lib/media';
 import { findMember } from '@/lib/mediaUrl';

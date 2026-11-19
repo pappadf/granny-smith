@@ -40,7 +40,7 @@
   import FormGrid from '@/components/ui/FormGrid.svelte';
   import { showNotification } from '@/state/toasts.svelte';
   import { downloadFiles } from '@/bus/fsOps';
-  import { sanitizeName } from '@/lib/archive';
+  import { sanitizeName } from '@/lib/fileName';
   import { copyText } from '@/lib/clipboard';
   import Checkbox from '@/components/ui/Checkbox.svelte';
 

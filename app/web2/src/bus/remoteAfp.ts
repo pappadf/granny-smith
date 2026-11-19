@@ -27,6 +27,7 @@ import {
   type RemoteEntry,
   type ZipMember,
 } from '@/lib/remoteAfp';
+import { slug } from '@/lib/fileName';
 
 interface VolumeSpec {
   name: string; // as the Chooser lists it (max 27 characters)
@@ -80,11 +81,6 @@ function readSettings(): Settings {
 let unpackLimit = 64 << 20;
 const inFlight = new Set<number>();
 
-// A folder name for a cache directory.
-function slug(s: string): string {
-  return s.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'volume';
-}
-
 async function addServer(spec: ServerSpec): Promise<void> {
   const servers = await gsEval('appletalk.remote.servers');
   if (!(Array.isArray(servers) && servers.includes(spec.name))) {
@@ -95,7 +91,7 @@ async function addServer(spec: ServerSpec): Promise<void> {
     }
   }
   for (const v of spec.volumes) {
-    const cache = `${AFP_REMOTE_DIR}/${slug(spec.name)}/${slug(v.name)}`;
+    const cache = `${AFP_REMOTE_DIR}/${slug(spec.name, 'volume')}/${slug(v.name, 'volume')}`;
     const r = await gsEval('appletalk.remote.add_volume', [spec.name, v.name, v.uri, cache]);
     if (!gsOk(r))
       console.warn(`remote AFP: cannot add ${spec.name} / ${v.name}: ${gsErrorText(r)}`);

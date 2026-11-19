@@ -6,7 +6,7 @@
 
 import { gsEval, gsErrorText } from './emulator';
 import { opfs } from './opfs';
-import { sanitizeName } from '@/lib/archive';
+import { safeFileName, sanitizeName } from '@/lib/fileName';
 import { isInImageSpace } from '@/lib/diskImage';
 import { scratchPath } from '@/lib/opfsPaths';
 import { xferReadDisk } from './xfer';
@@ -28,13 +28,8 @@ export interface CopySource {
   isDir: boolean;
 }
 
-// Make a name safe for an OPFS / cross-platform destination: replace the
-// characters OPFS or Windows reject (notably ':' which the HFS reader produces
-// from an in-name '/') and trim trailing dots/spaces. Spaces and leading dots
-// are kept.
-export function opfsSafeName(name: string): string {
-  return name.replace(/[\\/:*?"<>|]/g, '_').replace(/[ .]+$/g, '') || 'untitled';
-}
+// A name safe for an OPFS / cross-platform destination (lib/fileName.ts).
+export const opfsSafeName = safeFileName;
 
 function basename(path: string): string {
   return path.split('/').pop() ?? '';
