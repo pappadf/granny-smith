@@ -225,6 +225,74 @@ struct logpoint {
 };
 
 // ============================================================================
+// Id-keyed list walks
+// ============================================================================
+//
+// Every breakpoint and logpoint carries a sparse stable id (never recycled,
+// max-id-ever + 1 on add), which the indexed-child callbacks expose as the
+// "index" segment.  One set of walks serves both lists.  The logpoint list
+// holds two collections, the logpoints and the watchpoints (`stops`), which
+// share its id counter, so each walk takes a selector: DP_ANY, or the
+// `stops` value of one collection.  Breakpoints ignore it.
+
+#define DP_ANY -1
+
+// Selectors: whether entry p belongs to the walk's collection
+#define DP_BP_SELECTED(p, sel) ((void)(p), (void)(sel), true)
+#define DP_LP_SELECTED(p, sel) ((sel) == DP_ANY || (p)->stops == ((sel) != 0))
+
+// The walks over one list type:
+//   NAME_by_id      the live entry with this id, or NULL;
+//   NAME_next_id    the smallest live id strictly greater than prev_id (any
+//                   if prev_id < 0), or -1: a linear scan, as the list is in
+//                   add order, so next() yields ascending ids even after
+//                   entries were removed and re-added;
+//   NAME_unlink     unlink the entry with this id and return it (NULL if
+//                   none), matching the id, never the list position;
+//   NAME_free_where free every selected entry; returns how many.
+#define DP_LIST_OPS(NAME, type_t, SELECTED)                                                                            \
+    static type_t *NAME##_by_id(type_t *head, int id, int sel) {                                                       \
+        for (type_t *p = head; p; p = p->next)                                                                         \
+            if (p->id == id && SELECTED(p, sel))                                                                       \
+                return p;                                                                                              \
+        return NULL;                                                                                                   \
+    }                                                                                                                  \
+    static int NAME##_next_id(type_t *head, int prev_id, int sel) {                                                    \
+        int best = -1;                                                                                                 \
+        for (type_t *p = head; p; p = p->next)                                                                         \
+            if (p->id > prev_id && SELECTED(p, sel) && (best < 0 || p->id < best))                                     \
+                best = p->id;                                                                                          \
+        return best;                                                                                                   \
+    }                                                                                                                  \
+    static type_t *NAME##_unlink(type_t **pp, int id, int sel) {                                                       \
+        for (; *pp; pp = &(*pp)->next) {                                                                               \
+            type_t *p = *pp;                                                                                           \
+            if (p->id == id && SELECTED(p, sel)) {                                                                     \
+                *pp = p->next;                                                                                         \
+                return p;                                                                                              \
+            }                                                                                                          \
+        }                                                                                                              \
+        return NULL;                                                                                                   \
+    }                                                                                                                  \
+    static int NAME##_free_where(type_t **pp, int sel, void (*free_fn)(type_t *)) {                                    \
+        int count = 0;                                                                                                 \
+        while (*pp) {                                                                                                  \
+            type_t *p = *pp;                                                                                           \
+            if (!SELECTED(p, sel)) {                                                                                   \
+                pp = &p->next;                                                                                         \
+                continue;                                                                                              \
+            }                                                                                                          \
+            *pp = p->next;                                                                                             \
+            free_fn(p);                                                                                                \
+            count++;                                                                                                   \
+        }                                                                                                              \
+        return count;                                                                                                  \
+    }
+
+DP_LIST_OPS(bp_list, breakpoint_t, DP_BP_SELECTED)
+DP_LIST_OPS(lp_list, logpoint_t, DP_LP_SELECTED)
+
+// ============================================================================
 // Static Helpers
 // ============================================================================
 
@@ -862,7 +930,7 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
             format_logpoint_message(formatted, sizeof(formatted), lp->message, addr, value, size);
             LOG_WITH(category, level, "logpoint %s $%08X.%c value=$%0*X: %s", is_write ? "WRITE" : "READ", addr,
                      access_width_letter(size), (int)(size * 2), value, formatted);
-            lp = debug_logpoint_by_id(debug, id);
+            lp = lp_list_by_id(debug->logpoints, id, DP_ANY);
             if (!lp)
                 return;
         } else {
@@ -985,7 +1053,7 @@ static bool check_breakpoints(debug_t *debug, uint32_t current_pc) {
             if (bp->condition) {
                 int id = bp->id;
                 bool pass = eval_breakpoint_condition(bp->condition);
-                bp = debug_breakpoint_by_id(debug, id);
+                bp = bp_list_by_id(debug->breakpoints, id, DP_ANY);
                 if (!bp)
                     break;
                 if (!pass) {
@@ -1083,7 +1151,7 @@ int debug_break_and_trace(void) {
                 char formatted[256];
                 format_logpoint_message(formatted, sizeof(formatted), lp->message, current_pc, 0, 0);
                 LOG_WITH(category, level, "logpoint $%08X: %s", current_pc, formatted);
-                lp = debug_logpoint_by_id(debug, id);
+                lp = lp_list_by_id(debug->logpoints, id, DP_ANY);
                 if (!lp)
                     break;
             } else {
@@ -1127,37 +1195,19 @@ static void free_breakpoint(breakpoint_t *bp) {
     free(bp);
 }
 
-// Delete breakpoint by sparse stable id. Walks the list
-// matching `bp->id` rather than the position-in-list — positions shift
-// when other entries are removed, ids do not.
+// Delete the breakpoint with this sparse stable id; false if none has it
 static bool delete_breakpoint_by_id(debug_t *debug, int id) {
-    breakpoint_t **pp = &debug->breakpoints;
-    while (*pp) {
-        if ((*pp)->id == id) {
-            breakpoint_t *bp = *pp;
-            *pp = bp->next;
-            free_breakpoint(bp);
-            index_breakpoints(debug);
-            return true;
-        }
-        pp = &(*pp)->next;
-    }
-    return false;
+    breakpoint_t *bp = bp_list_unlink(&debug->breakpoints, id, DP_ANY);
+    if (!bp)
+        return false;
+    free_breakpoint(bp);
+    index_breakpoints(debug);
+    return true;
 }
 
-// Delete all breakpoints
-// Returns the number of breakpoints deleted
+// Delete all breakpoints; returns the number deleted
 static int delete_all_breakpoints(debug_t *debug) {
-    int count = 0;
-    breakpoint_t *bp = debug->breakpoints;
-
-    while (bp != NULL) {
-        breakpoint_t *next = bp->next;
-        free_breakpoint(bp);
-        bp = next;
-        count++;
-    }
-    debug->breakpoints = NULL;
+    int count = bp_list_free_where(&debug->breakpoints, DP_ANY, free_breakpoint);
     index_breakpoints(debug);
     return count;
 }
@@ -1807,42 +1857,24 @@ static void free_logpoint(logpoint_t *lp) {
     free(lp);
 }
 
-// Delete logpoint by sparse stable id. Same shape as
-// delete_breakpoint_by_id — match `lp->id`, not list position.
-static int delete_logpoint_by_id(debug_t *debug, int id) {
-    logpoint_t **pp = &debug->logpoints;
-    while (*pp) {
-        if ((*pp)->id == id) {
-            logpoint_t *lp = *pp;
-            *pp = lp->next;
-            free_logpoint(lp);
-            index_logpoints(debug);
-            return 0;
-        }
-        pp = &(*pp)->next;
-    }
-    return -1;
+// Delete the logpoint or watchpoint with this sparse stable id; false if
+// none has it
+static bool delete_logpoint_by_id(debug_t *debug, int id) {
+    logpoint_t *lp = lp_list_unlink(&debug->logpoints, id, DP_ANY);
+    if (!lp)
+        return false;
+    free_logpoint(lp);
+    index_logpoints(debug);
+    return true;
 }
 
-// Delete all logpoints; returns the number deleted (matches the
-// breakpoint counterpart so typed wrappers can report the count).
 // Remove every entry of one collection -- the logpoints (stops == false) or
-// the watchpoints (stops == true) -- and keep the other's.
+// the watchpoints (stops == true) -- and keep the other's.  Returns the
+// number deleted.
 static int delete_all_where(debug_t *debug, bool stops) {
-    int count = 0;
     if (!debug)
         return 0;
-    logpoint_t **pp = &debug->logpoints;
-    while (*pp) {
-        logpoint_t *lp = *pp;
-        if (lp->stops != stops) {
-            pp = &lp->next;
-            continue;
-        }
-        *pp = lp->next;
-        free_logpoint(lp);
-        count++;
-    }
+    int count = lp_list_free_where(&debug->logpoints, stops, free_logpoint);
     index_logpoints(debug);
     return count;
 }
@@ -1855,173 +1887,14 @@ static int delete_all_watchpoints(debug_t *debug) {
     return delete_all_where(debug, true);
 }
 
-// ============================================================================
-// Object-model accessors and id-based collection helpers
-// ============================================================================
-//
-// These implement the `debug.{breakpoints,logpoints}` indexed-child
-// surface declared in debug.h. Walks are O(N) over the linked list;
-// fanout is bounded by user-set entries (~tens) so this is fine.
-
-int debug_alloc_breakpoint_id(debug_t *debug) {
-    return debug ? debug->next_breakpoint_id++ : -1;
-}
-int debug_alloc_logpoint_id(debug_t *debug) {
-    return debug ? debug->next_logpoint_id++ : -1;
-}
-
-breakpoint_t *debug_breakpoint_by_id(debug_t *debug, int id) {
-    if (!debug)
-        return NULL;
-    for (breakpoint_t *bp = debug->breakpoints; bp; bp = bp->next)
-        if (bp->id == id)
-            return bp;
-    return NULL;
-}
-
-logpoint_t *debug_logpoint_by_id(debug_t *debug, int id) {
-    if (!debug)
-        return NULL;
-    for (logpoint_t *lp = debug->logpoints; lp; lp = lp->next)
-        if (lp->id == id)
-            return lp;
-    return NULL;
-}
-
-int debug_breakpoint_count(debug_t *debug) {
-    int n = 0;
-    if (!debug)
-        return 0;
-    for (breakpoint_t *bp = debug->breakpoints; bp; bp = bp->next)
-        n++;
-    return n;
-}
-
-// The two collections split one list: the logpoints are the entries that do
-// not stop, the watchpoints the ones that do.
-static int logpoint_count_where(debug_t *debug, bool stops) {
-    int n = 0;
-    if (!debug)
-        return 0;
-    for (logpoint_t *lp = debug->logpoints; lp; lp = lp->next)
-        if (lp->stops == stops)
-            n++;
-    return n;
-}
-
-int debug_logpoint_count(debug_t *debug) {
-    return logpoint_count_where(debug, false);
-}
-
-int debug_watchpoint_count(debug_t *debug) {
-    return logpoint_count_where(debug, true);
-}
-
-// next(prev) — return the smallest live id strictly greater than `prev`
-// (or any live id if `prev<0`). Linear scan because the list is in
-// add-order, not id order: callers iterating via next() get a stable
-// ascending sequence even when entries were removed and re-added.
-int debug_breakpoint_next_id(debug_t *debug, int prev_id) {
-    if (!debug)
-        return -1;
-    int best = -1;
-    for (breakpoint_t *bp = debug->breakpoints; bp; bp = bp->next) {
-        if (bp->id <= prev_id)
-            continue;
-        if (best < 0 || bp->id < best)
-            best = bp->id;
-    }
-    return best;
-}
-
-static int logpoint_next_id_where(debug_t *debug, int prev_id, bool stops) {
-    if (!debug)
-        return -1;
-    int best = -1;
-    for (logpoint_t *lp = debug->logpoints; lp; lp = lp->next) {
-        if (lp->stops != stops || lp->id <= prev_id)
-            continue;
-        if (best < 0 || lp->id < best)
-            best = lp->id;
-    }
-    return best;
-}
-
-int debug_logpoint_next_id(debug_t *debug, int prev_id) {
-    return logpoint_next_id_where(debug, prev_id, false);
-}
-
-int debug_watchpoint_next_id(debug_t *debug, int prev_id) {
-    return logpoint_next_id_where(debug, prev_id, true);
-}
-
-bool debug_remove_breakpoint(debug_t *debug, int id) {
-    if (!debug)
-        return false;
-    return delete_breakpoint_by_id(debug, id);
-}
-
-bool debug_remove_logpoint(debug_t *debug, int id) {
-    if (!debug)
-        return false;
-    return delete_logpoint_by_id(debug, id) == 0;
-}
-
-uint32_t breakpoint_get_addr(const breakpoint_t *bp) {
-    return bp ? bp->addr : 0;
-}
-addr_space_t breakpoint_get_space(const breakpoint_t *bp) {
-    return bp ? bp->space : ADDR_SPACE_LOGICAL;
-}
-const char *breakpoint_get_condition(const breakpoint_t *bp) {
-    return bp ? bp->condition : NULL;
-}
-uint32_t breakpoint_get_hit_count(const breakpoint_t *bp) {
-    return bp ? bp->hit_count : 0;
-}
-int breakpoint_get_id(const breakpoint_t *bp) {
-    return bp ? bp->id : -1;
-}
-struct object *breakpoint_get_entry_object(const breakpoint_t *bp) {
-    return bp ? bp->entry_object : NULL;
-}
-void breakpoint_set_condition(breakpoint_t *bp, const char *expr) {
+// Replace the condition string (NULL or empty clears it); takes a copy
+static void breakpoint_set_condition(breakpoint_t *bp, const char *expr) {
     if (!bp)
         return;
     char *copy = (expr && *expr) ? strdup(expr) : NULL;
     if (bp->condition)
         free(bp->condition);
     bp->condition = copy;
-}
-
-uint32_t logpoint_get_addr(const logpoint_t *lp) {
-    return lp ? lp->addr : 0;
-}
-uint32_t logpoint_get_end_addr(const logpoint_t *lp) {
-    return lp ? lp->end_addr : 0;
-}
-int logpoint_get_kind(const logpoint_t *lp) {
-    return lp ? lp->kind : 0;
-}
-int logpoint_get_level(const logpoint_t *lp) {
-    return lp ? lp->level : 0;
-}
-const char *logpoint_get_category_name(const logpoint_t *lp) {
-    if (!lp || !lp->category)
-        return NULL;
-    return log_category_name(lp->category);
-}
-const char *logpoint_get_message(const logpoint_t *lp) {
-    return lp ? lp->message : NULL;
-}
-uint32_t logpoint_get_hit_count(const logpoint_t *lp) {
-    return lp ? lp->hit_count : 0;
-}
-int logpoint_get_id(const logpoint_t *lp) {
-    return lp ? lp->id : -1;
-}
-struct object *logpoint_get_entry_object(const logpoint_t *lp) {
-    return lp ? lp->entry_object : NULL;
 }
 
 // ============================================================================
@@ -2362,7 +2235,7 @@ static DEF_GETTER(bp_attr_addr) {
     breakpoint_t *bp = bp_from(self);
     if (!bp)
         return val_err("breakpoint detached");
-    value_t v = val_uint(4, breakpoint_get_addr(bp));
+    value_t v = val_uint(4, bp->addr);
     v.flags |= VFLAG_HEX;
     return v;
 }
@@ -2371,14 +2244,14 @@ static DEF_GETTER(bp_attr_space) {
     breakpoint_t *bp = bp_from(self);
     if (!bp)
         return val_err("breakpoint detached");
-    return val_enum((int)breakpoint_get_space(bp), debug_space_values, DEBUG_SPACE_COUNT);
+    return val_enum((int)bp->space, debug_space_values, DEBUG_SPACE_COUNT);
 }
 
 static DEF_GETTER(bp_attr_condition) {
     breakpoint_t *bp = bp_from(self);
     if (!bp)
         return val_err("breakpoint detached");
-    const char *c = breakpoint_get_condition(bp);
+    const char *c = bp->condition;
     return val_str(c ? c : "");
 }
 
@@ -2426,14 +2299,14 @@ static DEF_GETTER(bp_attr_hit_count) {
     breakpoint_t *bp = bp_from(self);
     if (!bp)
         return val_err("breakpoint detached");
-    return val_uint(4, breakpoint_get_hit_count(bp));
+    return val_uint(4, bp->hit_count);
 }
 
 static DEF_GETTER(bp_attr_id) {
     breakpoint_t *bp = bp_from(self);
     if (!bp)
         return val_err("breakpoint detached");
-    return val_int(breakpoint_get_id(bp));
+    return val_int(bp->id);
 }
 
 static DEF_METHOD(bp_method_remove) {
@@ -2443,8 +2316,8 @@ static DEF_METHOD(bp_method_remove) {
     debug_t *debug = system_debug();
     if (!debug)
         return val_err("debugger not initialised");
-    int id = breakpoint_get_id(bp);
-    if (!debug_remove_breakpoint(debug, id))
+    int id = bp->id;
+    if (!delete_breakpoint_by_id(debug, id))
         return val_err("breakpoint #%d not found", id);
     return val_none();
 }
@@ -2505,7 +2378,7 @@ static DEF_GETTER(lpe_attr_addr) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("logpoint detached");
-    value_t v = val_uint(4, logpoint_get_addr(lp));
+    value_t v = val_uint(4, lp->addr);
     v.flags |= VFLAG_HEX;
     return v;
 }
@@ -2513,7 +2386,7 @@ static DEF_GETTER(lpe_attr_end_addr) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("logpoint detached");
-    value_t v = val_uint(4, logpoint_get_end_addr(lp));
+    value_t v = val_uint(4, lp->end_addr);
     v.flags |= VFLAG_HEX;
     return v;
 }
@@ -2524,7 +2397,7 @@ static DEF_GETTER(lpe_attr_kind) {
     // Indexed by enum logpoint_kind; an out-of-range kind is reported as
     // an error rather than shown as one of the known kinds.
     static const char *const names[] = {"pc", "write", "read", "rw"};
-    int idx = logpoint_get_kind(lp);
+    int idx = lp->kind;
     if (idx < 0 || idx >= (int)(sizeof(names) / sizeof(names[0])))
         return val_err("logpoint has unknown kind %d", idx);
     return val_enum(idx, names, (int)(sizeof(names) / sizeof(names[0])));
@@ -2533,33 +2406,33 @@ static DEF_GETTER(lpe_attr_level) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("logpoint detached");
-    return val_int(logpoint_get_level(lp));
+    return val_int(lp->level);
 }
 static DEF_GETTER(lpe_attr_category) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("logpoint detached");
-    const char *n = logpoint_get_category_name(lp);
+    const char *n = lp->category ? log_category_name(lp->category) : NULL;
     return val_str(n ? n : "");
 }
 static DEF_GETTER(lpe_attr_message) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("logpoint detached");
-    const char *s = logpoint_get_message(lp);
+    const char *s = lp->message;
     return val_str(s ? s : "");
 }
 static DEF_GETTER(lpe_attr_hit_count) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("logpoint detached");
-    return val_uint(4, logpoint_get_hit_count(lp));
+    return val_uint(4, lp->hit_count);
 }
 static DEF_GETTER(lpe_attr_id) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("logpoint detached");
-    return val_int(logpoint_get_id(lp));
+    return val_int(lp->id);
 }
 static DEF_METHOD(lpe_method_remove) {
     logpoint_t *lp = lp_from(self);
@@ -2568,8 +2441,8 @@ static DEF_METHOD(lpe_method_remove) {
     debug_t *debug = system_debug();
     if (!debug)
         return val_err("debugger not initialised");
-    int id = logpoint_get_id(lp);
-    if (!debug_remove_logpoint(debug, id))
+    int id = lp->id;
+    if (!delete_logpoint_by_id(debug, id))
         return val_err("logpoint #%d not found", id);
     return val_none();
 }
@@ -2728,19 +2601,24 @@ static struct object *lp_entries_get(struct object *self, int index);
 static int lp_entries_next(struct object *self, int prev_index);
 
 static struct object *bp_entries_get(struct object *self, int index) {
-    breakpoint_t *bp = debug_breakpoint_by_id(debug_from(self), index);
-    return bp ? breakpoint_get_entry_object(bp) : NULL;
+    debug_t *debug = debug_from(self);
+    breakpoint_t *bp = debug ? bp_list_by_id(debug->breakpoints, index, DP_ANY) : NULL;
+    return bp ? bp->entry_object : NULL;
 }
 static int bp_entries_next(struct object *self, int prev_index) {
-    return debug_breakpoint_next_id(debug_from(self), prev_index);
+    debug_t *debug = debug_from(self);
+    return debug ? bp_list_next_id(debug->breakpoints, prev_index, DP_ANY) : -1;
 }
 
+// The non-stopping entries only: a watchpoint's id is no logpoint child
 static struct object *lp_entries_get(struct object *self, int index) {
-    logpoint_t *lp = debug_logpoint_by_id(debug_from(self), index);
-    return lp ? logpoint_get_entry_object(lp) : NULL;
+    debug_t *debug = debug_from(self);
+    logpoint_t *lp = debug ? lp_list_by_id(debug->logpoints, index, false) : NULL;
+    return lp ? lp->entry_object : NULL;
 }
 static int lp_entries_next(struct object *self, int prev_index) {
-    return debug_logpoint_next_id(debug_from(self), prev_index);
+    debug_t *debug = debug_from(self);
+    return debug ? lp_list_next_id(debug->logpoints, prev_index, false) : -1;
 }
 
 static DEF_METHOD(bp_method_add) {
@@ -2777,7 +2655,7 @@ static DEF_METHOD(bp_method_add) {
         return val_err("breakpoints.add: allocation failed");
     if (cond)
         breakpoint_set_condition(bp, cond);
-    return val_obj(breakpoint_get_entry_object(bp));
+    return val_obj(bp->entry_object);
 }
 
 static DEF_METHOD(bp_method_clear) {
@@ -2899,7 +2777,7 @@ static DEF_METHOD(lp_method_add) {
         lp->value_filter_active = true;
         lp->value_filter = value_filter;
     }
-    return val_obj(logpoint_get_entry_object(lp));
+    return val_obj(lp->entry_object);
 }
 
 // "logical" — the default for every space= argument below.
@@ -3036,11 +2914,13 @@ static const class_desc_t lp_collection_class = {
 // the stopping entries answer here, and debug.logpoints never lists them.
 
 static struct object *wp_entries_get(struct object *self, int index) {
-    logpoint_t *lp = debug_logpoint_by_id(debug_from(self), index);
-    return (lp && lp->stops) ? logpoint_get_entry_object(lp) : NULL;
+    debug_t *debug = debug_from(self);
+    logpoint_t *lp = debug ? lp_list_by_id(debug->logpoints, index, true) : NULL;
+    return lp ? lp->entry_object : NULL;
 }
 static int wp_entries_next(struct object *self, int prev_index) {
-    return debug_watchpoint_next_id(debug_from(self), prev_index);
+    debug_t *debug = debug_from(self);
+    return debug ? lp_list_next_id(debug->logpoints, prev_index, true) : -1;
 }
 
 // `debug.watchpoints.add addr=0x16A mode=write width=l` -- stops the machine
@@ -3097,7 +2977,7 @@ static DEF_METHOD(wp_method_add) {
     logpoint_t *lp = install_memory_logpoint(debug, addr, end_addr, space, kind, category, 0, true);
     if (!lp)
         return val_err("watchpoints.add: allocation failed");
-    return val_obj(logpoint_get_entry_object(lp));
+    return val_obj(lp->entry_object);
 }
 
 static DEF_METHOD(wp_method_clear) {
