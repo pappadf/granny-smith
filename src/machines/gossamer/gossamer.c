@@ -43,6 +43,7 @@
 #include "of_nvram.h"
 #include "pci.h"
 #include "ppc.h"
+#include "ppc_build.h"
 #include "rom.h"
 #include "rtc.h"
 #include "scc.h"
@@ -289,78 +290,42 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
 
     // Core: memory map, the 750 with the board's PVR and PLL straps, the
     // scheduler on the PPC seam.
-    machine_part_begin(cfg, cp, "memory");
-    cfg->memory_map =
-        memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, MEMORY_BUS_ERR_NONE,
-                        &cfg->build_opts.rom, cp); // no bus-error watchdog: unanswered floats to $FF
-    machine_part(cfg, cp, "memory", part_save_memory, cfg->memory_map);
-    memory_map_set_host_fill(cfg->memory_map, gos_fill_page);
-    machine_part_begin(cfg, cp, "cpu");
-    cfg->ppc = ppc_init(cp, cfg->machine->cpu_model);
-    if (cfg->ppc) {
-        memory_cpu_hooks_t hooks = ppc_memory_hooks(cfg->ppc);
-        memory_map_set_cpu_hooks(cfg->memory_map, &hooks);
-    }
-    if (!cfg->ppc) {
-        LOG(0, "Error: out of memory constructing the PowerPC core");
-        return -1;
-    }
-    machine_part(cfg, cp, "cpu", part_save_ppc, cfg->ppc);
-    ppc_set_identity(cfg->ppc, board->pvr, board->hid1);
-    sched_cpu_if_t cpu_if = ppc_sched_if(cfg->ppc);
-    machine_part_begin(cfg, cp, "scheduler");
-    cfg->scheduler = scheduler_init(&cpu_if, cp);
-    machine_part(cfg, cp, "scheduler", part_save_scheduler, cfg->scheduler);
-    scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
+    //
     // CPI 1: the 750 sustains close to one instruction per clock, and with
     // the translation tier the host can pace 267 MIPS of busy guest at 1x
     // (CPI 2 halved a fully busy guest to 134 MIPS of real time).
-    scheduler_set_cpi(cfg->scheduler, 1);
+    //
     // Time base and decrementer at bus/4 = 16,705,000 Hz (the tree's
     // timebase-frequency $00FEE5E8; MPC750UM §2.1.1).
-    ppc_bind_time(cfg->ppc, cfg->scheduler, cfg->machine->freq, board->bus_hz / 4u);
-
-    machine_part_begin(cfg, cp, "rtc");
-    cfg->rtc = rtc_init(cfg->scheduler, cp, true, cfg->machine->pram);
-    machine_part(cfg, cp, "rtc", part_save_rtc, cfg->rtc);
+    const ppc_core_opts_t core = {
+        .fill_page = gos_fill_page,
+        .cpi = 1,
+        .tb_hz = board->bus_hz / 4u,
+        .set_identity = true,
+        .pvr = board->pvr,
+        .hid1 = board->hid1,
+    };
+    if (ppc_build_core(cfg, cp, &core) != 0)
+        return -1;
 
     // The ESCC behind Heathrow's two apertures; RTxC 3.6864 MHz, the value
     // every driver assumes (Linux ZS_CLOCK 3686400; NetBSD "RTxC is 230400*16").
-    machine_part_begin(cfg, cp, "scc");
-    cfg->scc = scc_init(NULL, cfg->scheduler, gos_scc_irq, cfg, cp);
-    machine_part(cfg, cp, "scc", part_save_scc, cfg->scc);
-    scc_set_clocks(cfg->scc, 15667200, 3686400);
-    machine_part_begin(cfg, cp, "appletalk");
-    cfg->atalk = atalk_conn_new(appletalk_network(), cfg->scheduler, cfg->scc, cp);
-    machine_part(cfg, cp, "appletalk", part_save_atalk, cfg->atalk);
-    machine_part_imagewriter(cfg, cp, false);
-
     // VIA1: the 6522 cell at Heathrow +$16000 ($200 stride), timers at the
     // classic 783.36 kHz.
-    uint8_t via_ff = via_freq_factor_for_clock(cfg->machine->freq);
-    machine_part_begin(cfg, cp, "via1");
-    cfg->via1 =
-        via_init(NULL, cfg->scheduler, via_ff, "via1", gos_via1_output, gos_via1_shift_out, gos_via1_irq, cfg, cp);
-    machine_part(cfg, cp, "via1", part_save_via, cfg->via1);
-    via_set_exact_clock(cfg->via1, cfg->machine->freq);
-    via_input(cfg->via1, 1, 3, 1); // PB3 = Cuda TREQ, idle high
-    via_input_c(cfg->via1, 0, 0, 1);
-    via_input_c(cfg->via1, 1, 0, 1);
-    via_input_c(cfg->via1, 1, 1, 1);
-
-    machine_part_begin(cfg, cp, "adb");
-    cfg->adb = adb_init(NULL, cfg->scheduler, cp);
-    machine_part(cfg, cp, "adb", part_save_adb, cfg->adb);
+    const ppc_lowspeed_opts_t lowspeed = {
+        .scc_irq = gos_scc_irq,
+        .scc_rtxc_hz = 3686400,
+        .via1_output = gos_via1_output,
+        .via1_shift_out = gos_via1_shift_out,
+        .via1_irq = gos_via1_irq,
+    };
+    ppc_build_lowspeed(cfg, cp, &lowspeed);
 
     // Cuda: the 341S0060 part with firmware 2.40, the RTC seed in the
     // Mode3Clock tick (the PDM/TNT choice), and the board's I2C bus.
-    machine_part_begin(cfg, cp, "cuda");
-    st->cuda = av_cuda_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp, /*mode3_clock=*/true);
-    if (!st->cuda) {
-        LOG(0, "Error: out of memory constructing the Cuda");
+    st->cuda = ppc_build_cuda(cfg, cp);
+    if (!st->cuda)
         return -1;
-    }
-    machine_part(cfg, cp, "cuda", part_save_cuda, st->cuda);
     av_cuda_set_firmware_240(st->cuda);
     av_cuda_attach_i2c_bus(st->cuda, gos_i2c_read, gos_i2c_write, cfg);
 

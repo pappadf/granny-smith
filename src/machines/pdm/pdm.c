@@ -37,6 +37,7 @@
 #include "machine_teardown.h" // the shared config_t-owned delete chain
 #include "nubus.h"
 #include "ppc.h"
+#include "ppc_build.h"
 #include "rtc.h"
 #include "scc.h"
 #include "scheduler.h"
@@ -344,88 +345,35 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
 
     // Core: memory map, the 601, the scheduler on the PPC seam.  CPI is
     // 1.0 — the 601 is near-1-CPI on HWInit's measurement loop, and 1.0
-    // makes the measured clock land exactly on the snap-table value.
-    machine_part_begin(cfg, cp, "memory");
-    cfg->memory_map =
-        memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, MEMORY_BUS_ERR_NONE,
-                        &cfg->build_opts.rom, cp); // no bus-error watchdog: unanswered floats to $FF
-    machine_part(cfg, cp, "memory", part_save_memory, cfg->memory_map);
-    // No 68k MMU owns this machine's page table, so host-backed regions that
-    // core code registers on the bus map — a NuBus card's VRAM and
-    // declaration ROM — are filled through our own page filler.
-    memory_map_set_host_fill(cfg->memory_map, pdm_fill_page);
-    machine_part_begin(cfg, cp, "cpu");
-    cfg->ppc = ppc_init(cp, cfg->machine->cpu_model);
-    if (cfg->ppc) {
-        memory_cpu_hooks_t hooks = ppc_memory_hooks(cfg->ppc);
-        memory_map_set_cpu_hooks(cfg->memory_map, &hooks);
-    }
-    if (!cfg->ppc) {
-        LOG(0, "Error: out of memory constructing the PowerPC core");
+    // makes the measured clock land exactly on the snap-table value.  The
+    // 601's RTC input: 7.8336 MHz on every PDM board.  No 68k MMU owns this
+    // machine's page table, so host-backed regions that core code registers
+    // on the bus map — a NuBus card's VRAM and declaration ROM — are filled
+    // through our own page filler.
+    const ppc_core_opts_t core = {.fill_page = pdm_fill_page, .cpi = 1, .tb_hz = 7833600u};
+    if (ppc_build_core(cfg, cp, &core) != 0)
         return -1;
-    }
-    machine_part(cfg, cp, "cpu", part_save_ppc, cfg->ppc);
-    sched_cpu_if_t cpu_if = ppc_sched_if(cfg->ppc);
-    machine_part_begin(cfg, cp, "scheduler");
-    cfg->scheduler = scheduler_init(&cpu_if, cp);
-    machine_part(cfg, cp, "scheduler", part_save_scheduler, cfg->scheduler);
-    scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
-    scheduler_set_cpi(cfg->scheduler, 1);
-    // The 601's RTC input: 7.8336 MHz on every PDM board.
-    ppc_bind_time(cfg->ppc, cfg->scheduler, cfg->machine->freq, 7833600u);
-
-    machine_part_begin(cfg, cp, "rtc");
-    cfg->rtc = rtc_init(cfg->scheduler, cp, true, cfg->machine->pram);
-    machine_part(cfg, cp, "rtc", part_save_rtc, cfg->rtc);
 
     // The ESCC cell in Curio behind the AMIC island decode (single base
     // $50F04000, +0 bCtl / +2 aCtl / +4 bData / +6 aData;
-    // PCLK 15.6672 MHz, RTxC 3.672 MHz synthesized by AMIC).
-    machine_part_begin(cfg, cp, "scc");
-    cfg->scc = scc_init(NULL, cfg->scheduler, pdm_scc_irq, cfg, cp);
-    machine_part(cfg, cp, "scc", part_save_scc, cfg->scc);
-    scc_set_clocks(cfg->scc, 15667200, 3672000);
+    // PCLK 15.6672 MHz, RTxC 3.672 MHz synthesized by AMIC), the AppleTalk
+    // connection on its LocalTalk channel, and the AMIC pseudo-VIA1: a real
+    // 6522 core instance behind the island decode, its timers at 783.36 kHz
+    // on every model (checked at pdm-rom-ladder rung L17).
+    const ppc_lowspeed_opts_t lowspeed = {
+        .scc_irq = pdm_scc_irq,
+        .scc_rtxc_hz = 3672000,
+        .via1_output = pdm_via1_output,
+        .via1_shift_out = pdm_via1_shift_out,
+        .via1_irq = pdm_via1_irq,
+    };
+    ppc_build_lowspeed(cfg, cp, &lowspeed);
 
-    // The AppleTalk connection rides the SCC's LocalTalk channel.
-    machine_part_begin(cfg, cp, "appletalk");
-    cfg->atalk = atalk_conn_new(appletalk_network(), cfg->scheduler, cfg->scc, cp);
-    machine_part(cfg, cp, "appletalk", part_save_atalk, cfg->atalk);
-    machine_part_imagewriter(cfg, cp, false);
-
-    // The AMIC pseudo-VIA1 is a real 6522 core instance behind the island
-    // decode.  Its timers run at 783.36 kHz on every model, and no PDM CPU
-    // clock divides integrally by that — the rounded divisor is display-only
-    // and via_set_exact_clock installs the reduced 783360/freq rational so
-    // guest-measured timer rates are exactly φ2-equivalent (checked at
-    // pdm-rom-ladder rung L17).
-    uint8_t via_ff = via_freq_factor_for_clock(cfg->machine->freq);
-    machine_part_begin(cfg, cp, "via1");
-    cfg->via1 =
-        via_init(NULL, cfg->scheduler, via_ff, "via1", pdm_via1_output, pdm_via1_shift_out, pdm_via1_irq, cfg, cp);
-    machine_part(cfg, cp, "via1", part_save_via, cfg->via1);
-    via_set_exact_clock(cfg->via1, cfg->machine->freq);
-
-    // VIA1 idle input levels: PB3 is Cuda TREQ (active-low, idle high);
-    // CA1 (tick) and the Cuda CB1/CB2 lines idle high.
-    via_input(cfg->via1, 1, 3, 1);
-    via_input_c(cfg->via1, 0, 0, 1);
-    via_input_c(cfg->via1, 1, 0, 1);
-    via_input_c(cfg->via1, 1, 1, 1);
-
-    // ADB device state, serviced through Cuda packets (the AV pattern).
-    machine_part_begin(cfg, cp, "adb");
-    cfg->adb = adb_init(NULL, cfg->scheduler, cp);
-    machine_part(cfg, cp, "adb", part_save_adb, cfg->adb);
-
-    // The behavioral Cuda (firmware 2.37 — the same 341S0788 part as the
-    // AV machines) on the pseudo-VIA1 shift register + PB3/4/5.
-    machine_part_begin(cfg, cp, "cuda");
-    st->cuda = av_cuda_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp, /*mode3_clock=*/true);
-    if (!st->cuda) {
-        LOG(0, "Error: out of memory constructing the Cuda");
+    // ADB, and the behavioral Cuda (firmware 2.37 — the same 341S0788 part
+    // as the AV machines) on the pseudo-VIA1 shift register + PB3/4/5.
+    st->cuda = ppc_build_cuda(cfg, cp);
+    if (!st->cuda)
         return -1;
-    }
-    machine_part(cfg, cp, "cuda", part_save_cuda, st->cuda);
 
     // The image list before the devices that reference it (floppy and SCSI
     // both resolve their media out of it by filename).
