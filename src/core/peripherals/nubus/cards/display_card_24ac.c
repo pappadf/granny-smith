@@ -35,6 +35,7 @@
 #include "checkpoint.h"
 #include "declrom.h"
 #include "display.h"
+#include "display_ramdac.h"
 #include "gsvrom.h"
 #include "log.h"
 #include "memory.h"
@@ -76,9 +77,7 @@ struct display_card_24ac_priv {
     // CLUT / RAMDAC write sub-state.  Both the init (0xC8000E/0xC8000A)
     // and runtime (0xC8001E/0xC8001A) index/data pairs feed this; an index
     // write resets the R/G/B sub-counter, then three data writes load R,G,B.
-    uint8_t clut_idx; // current palette index
-    uint8_t clut_phase; // 0 = R, 1 = G, 2 = B
-    rgba8_t clut_pending; // accumulating entry
+    ramdac_seq_t clut_seq; // index, R/G/B phase and the accumulating entry
 
     // Standard video register shadows (the few the vrom driver drives).
     uint8_t vidctl; // 0xD00403 shadow (VBL mask / commit / depth bits)
@@ -245,33 +244,18 @@ static void apply_mode_depth(display_card_24ac_priv_t *p, uint8_t mode_byte) {
 // palette.)  At 8 bpp the driver's index pack-shift is 0 (shift table 0x2230
 // = `07 04 00 …`), so the staged index byte is a clean ~N.
 static void clut_set_index(display_card_24ac_priv_t *p, uint8_t idx) {
-    p->clut_idx = (uint8_t)~idx;
-    p->clut_phase = 0;
+    ramdac_seq_set_waddr(&p->clut_seq, (uint8_t)~idx);
 }
 
 // Data-register write: accumulate R, G, B over three writes, commit, and
 // auto-increment the index for a run-write.
 static void clut_write_data(display_card_24ac_priv_t *p, uint8_t comp) {
     // Active-low RAMDAC: the driver writes ~component (see clut_set_index).
-    comp = (uint8_t)~comp;
-    switch (p->clut_phase) {
-    case 0:
-        p->clut_pending.r = comp;
-        p->clut_phase = 1;
-        break;
-    case 1:
-        p->clut_pending.g = comp;
-        p->clut_phase = 2;
-        break;
-    case 2:
-    default:
-        p->clut_pending.b = comp;
-        p->clut_pending.a = 255;
-        p->clut[p->clut_idx] = p->clut_pending;
-        p->clut_idx++; // auto-increment for run-write
-        p->clut_phase = 0;
+    uint8_t idx;
+    if (ramdac_seq_write(&p->clut_seq, (uint8_t)~comp, &idx)) {
+        const uint8_t *c = p->clut_seq.pending;
+        p->clut[idx] = (rgba8_t){c[0], c[1], c[2], 255};
         p->display.clut_dirty = true;
-        break;
     }
 }
 
@@ -823,9 +807,7 @@ static void set_poweron_defaults(display_card_24ac_priv_t *p, bool cold) {
     p->status_busy = 0;
 
     // CLUT write sub-state (index / R-G-B phase / accumulating entry).
-    p->clut_idx = 0;
-    p->clut_phase = 0;
-    p->clut_pending = (rgba8_t){0};
+    ramdac_seq_init(&p->clut_seq, 0);
 
     // Engine geometry bits, kept consistent with the large-VRAM framebuffer
     // we present; engine handshake latches idle.

@@ -22,6 +22,7 @@
 
 #include "display.h"
 #include "display_class.h"
+#include "display_ramdac.h"
 #include "machine.h"
 #include "memory.h"
 #include "nubus.h" // struct nubus_slot_decl, for the shared slot table below
@@ -139,7 +140,8 @@ typedef struct pdm_amic {
     uint8_t vid_depth; // $50F28001
     uint8_t vid_sense; // $50F28002 (drive bits; sense readback stubbed)
     uint8_t vid_test; // $50F28003
-    uint8_t clut_addr, clut_phase, clut_ctrl, clut_key;
+    ramdac_seq_t clut_seq; // Ariel's CLUT address and R/G/B phase
+    uint8_t clut_ctrl, clut_key;
     uint8_t clut[256][3];
     uint8_t snd_out_buf; // sound-out ping-pong: next buffer to complete (0/1)
     pdm_via2_t via2;

@@ -297,8 +297,7 @@ static void io_write8(void *dev, uint32_t addr, uint8_t val) {
     // at a stale index, and an X session on a Display Card 8*24 came up
     // black on black.
     if (classify(addr, p->slot_base, &off) == JMFB_BLK_CLUT && (off & ~3u) == CLUTAddrReg) {
-        p->regs.clut_idx = val;
-        p->regs.clut_phase = 0;
+        ramdac_seq_set_waddr(&p->regs.clut_seq, val);
         return;
     }
     // Otherwise the same treatment as io_read8 — promote to a 16-bit write.

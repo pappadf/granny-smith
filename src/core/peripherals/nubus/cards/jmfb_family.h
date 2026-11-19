@@ -29,6 +29,7 @@
 #define JMFB_FAMILY_H
 
 #include "display.h"
+#include "display_ramdac.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -83,8 +84,7 @@ typedef struct jmfb_regs {
     uint16_t clut_long_hi; // high half of a CLUTDataReg long, awaiting its low
     uint32_t clut_pending[3]; // the three longs of one palette entry
     uint32_t raster_h; // the sensed monitor's height; see jmfb_apply_scanout
-    uint8_t clut_idx;
-    uint8_t clut_phase; // 0..2, which of the three longs comes next
+    ramdac_seq_t clut_seq; // palette index, and which of the three longs comes next
     uint8_t sense_code; // 0..7, read back through CSR bits 9-11
     uint8_t blanked; // out of /RESET: sync off, VRAM not scanned until VideoBase is written
 } jmfb_regs_t;

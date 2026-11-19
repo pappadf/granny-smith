@@ -52,6 +52,7 @@
 #include "checkpoint.h"
 #include "display.h"
 #include "display_class.h"
+#include "display_ramdac.h"
 #include "log.h"
 #include "pci.h"
 #include "scheduler.h"
@@ -183,7 +184,7 @@ typedef struct c54m30 {
     uint8_t attr[C54M30_ATTR_REGS]; // attribute   ($3C0, index/data alternating)
     uint8_t seq_index, crtc_index, gr_index, attr_index;
     bool attr_data; // the attribute port's index/data flip-flop
-    uint8_t dac_write_index, dac_read_index, dac_phase;
+    ramdac_seq_t dac_seq; // the VGA DAC's separate write/read indices over one R/G/B phase
     uint8_t dac[256][3]; // the palette, as written: six bits (VGA) or eight (hidden DAC, below)
     // The Cirrus "hidden DAC register" sits behind the pel mask: four consecutive reads of
     // $3C6 and the fifth access to $3C6 reaches it instead.  Bit 1 puts the palette DAC in its
@@ -973,13 +974,11 @@ static uint8_t io_rd8(c54m30_t *c, uint32_t offset, bool peek, uint8_t *pelmask_
     case C54M30_DAC_DATA: {
         // Stored as written (see the write side), but read back the way the DAC holds it:
         // six bits unless the hidden DAC register has put the palette in 8-bit mode.
-        uint8_t v = c->dac[c->dac_read_index][c->dac_phase];
+        uint8_t comp;
+        uint8_t idx = ramdac_seq_read(&c->dac_seq, peek, &comp);
+        uint8_t v = c->dac[idx][comp];
         if (!c->dac_8bit)
             v &= 0x3Fu;
-        if (!peek && ++c->dac_phase == 3) {
-            c->dac_phase = 0;
-            c->dac_read_index++;
-        }
         return v;
     }
     default:
@@ -1077,28 +1076,26 @@ static void io_write8(void *ctx, uint32_t offset, uint8_t value) {
         c->attr_data = !c->attr_data;
         return;
     case C54M30_DAC_WINDEX:
-        c->dac_write_index = value;
-        c->dac_phase = 0;
+        ramdac_seq_set_waddr(&c->dac_seq, value);
         return;
     case C54M30_DAC_RINDEX:
-        c->dac_read_index = value;
-        c->dac_phase = 0;
+        ramdac_seq_set_raddr(&c->dac_seq, value);
         return;
-    case C54M30_DAC_DATA:
-        // Three writes per entry, R then G then B, and the index
-        // auto-advances — which is how a driver loads 256 colours with one
-        // index write and 768 data writes.
+    case C54M30_DAC_DATA: {
+        // Three writes per entry, R then G then B, latched and stored on B,
+        // and the index auto-advances — which is how a driver loads 256
+        // colours with one index write and 768 data writes.
         // Stored as written; the hidden DAC register decides whether six or eight bits count.
         // (A guess from the values -- "above $3F must mean 8-bit" -- was tried and was wrong:
         // one stray $FF darkened a driver's whole 6-bit palette.)
-        c->dac[c->dac_write_index][c->dac_phase] = value;
-        if (++c->dac_phase == 3) {
-            c->dac_phase = 0;
-            c54m30_materialise(c, c->dac_write_index);
+        uint8_t idx;
+        if (ramdac_seq_write(&c->dac_seq, value, &idx)) {
+            memcpy(c->dac[idx], c->dac_seq.pending, 3);
+            c54m30_materialise(c, idx);
             c->display.clut_dirty = true;
-            c->dac_write_index++;
         }
         return;
+    }
     default:
         return;
     }
@@ -1308,9 +1305,7 @@ static void c54m30_reset(pci_device_t *dev, config_t *cfg) {
     c->gr_index = 0;
     c->attr_index = 0;
     c->attr_data = false;
-    c->dac_write_index = 0;
-    c->dac_read_index = 0;
-    c->dac_phase = 0;
+    ramdac_seq_init(&c->dac_seq, RAMDAC_SPLIT_INDEX);
     // The hidden DAC register is part of that register file, and it powers up at zero: six-bit
     // palette data, and the $3C6 door shut.  Carrying an eight-bit selection across a reset
     // makes every VGA palette write afterwards four times too dark -- which is what a guest
@@ -1360,9 +1355,11 @@ static void c54m30_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, c->dac, sizeof(c->dac));
     // The port latches: a checkpoint taken between an index write and its
     // data write, or partway through a palette entry, must resume there.
-    uint8_t latches[8] = {c->seq_index,           c->crtc_index,      c->gr_index,       c->attr_index,
-                          c->attr_data ? 1u : 0u, c->dac_write_index, c->dac_read_index, c->dac_phase};
+    uint8_t latches[8] = {c->seq_index,           c->crtc_index,   c->gr_index,     c->attr_index,
+                          c->attr_data ? 1u : 0u, c->dac_seq.widx, c->dac_seq.ridx, c->dac_seq.phase};
     system_write_checkpoint_data(cp, latches, sizeof(latches));
+    // ...and the components of a palette entry written partway
+    system_write_checkpoint_data(cp, c->dac_seq.pending, sizeof(c->dac_seq.pending));
     system_write_checkpoint_data(cp, c->vram, C54M30_VRAM);
     // A system-to-screen BLT half-fed by the CPU is the only engine state not already in the
     // register shadows; without it a restore would leave the guest polling a status bit that
@@ -1389,9 +1386,11 @@ static void c54m30_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     // them in range (& 0x1F, wrap at 3), and a checkpoint is file content.
     c->attr_index = latches[3] & (C54M30_ATTR_REGS - 1u);
     c->attr_data = latches[4] != 0;
-    c->dac_write_index = latches[5];
-    c->dac_read_index = latches[6];
-    c->dac_phase = latches[7] < 3u ? latches[7] : 0u;
+    ramdac_seq_init(&c->dac_seq, RAMDAC_SPLIT_INDEX);
+    c->dac_seq.widx = latches[5];
+    c->dac_seq.ridx = latches[6];
+    c->dac_seq.phase = latches[7] < 3u ? latches[7] : 0u;
+    system_read_checkpoint_data(cp, c->dac_seq.pending, sizeof(c->dac_seq.pending));
     system_read_checkpoint_data(cp, c->vram, C54M30_VRAM);
     system_read_checkpoint_data(cp, &c->blt, sizeof(c->blt));
     // The palette view and the scanout descriptor are DERIVED: rebuild them

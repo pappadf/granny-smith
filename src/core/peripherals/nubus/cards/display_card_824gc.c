@@ -755,17 +755,14 @@ static void gc_write(display_card_824gc_priv_t *p, uint32_t phys, uint32_t val, 
             // ACDC RAMDAC address port: a write sets the palette index and
             // resets the R/G/B phase.  (The ACDC probe / loadCRTCandCLUT write
             // this too — harmless: they never follow with DATA-port writes.)
-            p->acdc_addr = (uint8_t)(val & 0xFFu);
-            p->acdc_phase = 0;
+            ramdac_seq_set_waddr(&p->acdc, (uint8_t)(val & 0xFFu));
         } else if (cl == GC824_REG_ACDC_DATA) {
             // ACDC RAMDAC data port: three successive byte writes are R, G, B
             // (8 bpc); after B, commit clut[index] and auto-increment the index.
-            if (p->acdc_phase < 3)
-                p->acdc_rgb[p->acdc_phase] = (uint8_t)(val & 0xFFu);
-            if (++p->acdc_phase >= 3) {
-                p->clut[p->acdc_addr] = (rgba8_t){p->acdc_rgb[0], p->acdc_rgb[1], p->acdc_rgb[2], 255};
-                p->acdc_addr++;
-                p->acdc_phase = 0;
+            uint8_t idx;
+            if (ramdac_seq_write(&p->acdc, (uint8_t)(val & 0xFFu), &idx)) {
+                const uint8_t *c = p->acdc.pending;
+                p->clut[idx] = (rgba8_t){c[0], c[1], c[2], 255};
                 p->display.clut_dirty = true;
             }
         }
@@ -904,11 +901,9 @@ static void set_poweron_defaults(display_card_824gc_priv_t *p) {
     p->jmfb.csr = 0;
     p->jmfb.video_base = 0xA00 / 32; // $A00 byte offset (driver convention)
     p->jmfb.row_words = p->display.width ? (uint16_t)(p->display.width / 32u) : (640u / 32u);
-    p->jmfb.clut_idx = 0;
-    p->jmfb.clut_phase = 0;
+    ramdac_seq_init(&p->jmfb.clut_seq, 0);
     p->jmfb.clut_pbcr = 0;
-    p->acdc_addr = 0;
-    p->acdc_phase = 0;
+    ramdac_seq_init(&p->acdc, 0);
     p->jmfb.clut_long_hi = 0;
 
     // The GC decl-ROM video driver (config 0 → 640×480) brings the screen up

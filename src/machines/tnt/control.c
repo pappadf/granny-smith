@@ -796,41 +796,45 @@ const pci_card_kind_t tnt_control_kind = {
 // RaDACal (Grand Central +$1B000) — byte cells on $10 centres
 // ============================================================
 
+// The cursor-colour port (+$10) runs an R/G/B phase of its own over RaDACal's
+// one address register: an access borrows the address, and hands back where
+// the entry advance left it.
+static void crsr_seq_take(tnt_control_t *c) {
+    c->crsr_seq.widx = c->crsr_seq.ridx = ramdac_seq_addr(&c->rad);
+}
+
+static void crsr_seq_give(tnt_control_t *c) {
+    c->rad.widx = c->rad.ridx = ramdac_seq_addr(&c->crsr_seq);
+}
+
 // A cell read; the cursor and CLUT data ports step their RGB phase (and the
 // entry) unless it is an inspection (`peek`).
 static uint8_t rad_read(config_t *cfg, uint32_t offset, bool peek) {
     tnt_control_t *c = ctl(cfg);
+    uint8_t comp, idx;
     switch (offset & 0x30u) {
     case 0x00:
-        return c->rad_addr;
-    case 0x10: {
-        uint8_t v = c->crsr[c->rad_addr & 7u][c->crsr_phase];
-        if (!peek && ++c->crsr_phase == 3) {
-            c->crsr_phase = 0;
-            c->rad_addr++; // entry auto-advances, like the CLUT port
-        }
-        return v;
-    }
+        return ramdac_seq_addr(&c->rad);
+    case 0x10: // entry auto-advances, like the CLUT port
+        crsr_seq_take(c);
+        idx = ramdac_seq_read(&c->crsr_seq, peek, &comp);
+        crsr_seq_give(c);
+        return c->crsr[idx & 7u][comp];
     case 0x20:
-        switch (c->rad_addr) {
+        switch (ramdac_seq_addr(&c->rad)) {
         case 0x20:
             return c->rad_ctrl;
         case 0x21:
             return c->rad_bank;
         case 0x10:
         case 0x11:
-            return c->rad_misc[c->rad_addr & 1u];
+            return c->rad_misc[ramdac_seq_addr(&c->rad) & 1u];
         default:
-            return c->rad_reg[c->rad_addr];
+            return c->rad_reg[ramdac_seq_addr(&c->rad)];
         }
-    default: { // +$30: CLUT data, RGB phase auto-advances
-        uint8_t v = c->clut[c->rad_addr][c->rad_phase];
-        if (!peek && ++c->rad_phase == 3) {
-            c->rad_phase = 0;
-            c->rad_addr++;
-        }
-        return v;
-    }
+    default: // +$30: CLUT data, RGB phase auto-advances
+        idx = ramdac_seq_read(&c->rad, peek, &comp);
+        return c->clut[idx][comp];
     }
 }
 
@@ -844,24 +848,24 @@ uint8_t tnt_control_rad_peek(config_t *cfg, uint32_t offset) {
 
 void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
     tnt_control_t *c = ctl(cfg);
+    uint8_t addr = ramdac_seq_addr(&c->rad);
+    uint8_t idx;
     switch (offset & 0x30u) {
     case 0x00:
-        c->rad_addr = value;
-        c->rad_phase = 0;
-        c->crsr_phase = 0;
+        ramdac_seq_set_waddr(&c->rad, value);
+        ramdac_seq_set_waddr(&c->crsr_seq, value);
         break;
     case 0x10:
-        LOG(4, "Control: cursor data [%u.%u] = $%02X (pc=%08X)", c->rad_addr, c->crsr_phase, value,
-            ppc_get_pc(cfg->ppc));
-        c->crsr[c->rad_addr & 7u][c->crsr_phase] = value;
-        if (++c->crsr_phase == 3) {
-            c->crsr_phase = 0;
-            c->rad_addr++; // the driver streams all 8 entries in one burst
-        }
+        LOG(4, "Control: cursor data [%u.%u] = $%02X (pc=%08X)", addr, c->crsr_seq.phase, value, ppc_get_pc(cfg->ppc));
+        // The driver streams all 8 entries in one burst
+        crsr_seq_take(c);
+        if (ramdac_seq_write(&c->crsr_seq, value, &idx))
+            memcpy(c->crsr[idx & 7u], c->crsr_seq.pending, 3);
+        crsr_seq_give(c);
         break;
     case 0x20:
-        LOG(2, "Control: RaDACal misc[$%02X] = $%02X", c->rad_addr, value);
-        switch (c->rad_addr) {
+        LOG(2, "Control: RaDACal misc[$%02X] = $%02X", addr, value);
+        switch (addr) {
         case 0x20:
             c->rad_ctrl = value; // depth control — geometry follows
             tnt_control_update(cfg);
@@ -871,23 +875,20 @@ void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
             break;
         case 0x10:
         case 0x11:
-            c->rad_misc[c->rad_addr & 1u] = value;
+            c->rad_misc[addr & 1u] = value;
             break;
         default:
             // Indices with no modelled function still hold what was
             // written: MacTest Pro's Color Look Up Register test walks
             // a bit through misc $22 and reads each pattern back.
-            c->rad_reg[c->rad_addr] = value;
+            c->rad_reg[addr] = value;
             break;
         }
         break;
-    default: // +$30: CLUT data
-        c->clut[c->rad_addr][c->rad_phase] = value;
-        if (++c->rad_phase == 3) {
-            LOG(3, "Control: CLUT[$%02X] = %02X %02X %02X", c->rad_addr, c->clut[c->rad_addr][0],
-                c->clut[c->rad_addr][1], c->clut[c->rad_addr][2]);
-            c->rad_phase = 0;
-            c->rad_addr++;
+    default: // +$30: CLUT data, latched and stored on B
+        if (ramdac_seq_write(&c->rad, value, &idx)) {
+            memcpy(c->clut[idx], c->rad.pending, 3);
+            LOG(3, "Control: CLUT[$%02X] = %02X %02X %02X", idx, c->clut[idx][0], c->clut[idx][1], c->clut[idx][2]);
             control_refresh_clut(cfg);
         }
         break;
@@ -975,9 +976,8 @@ void tnt_control_reset(config_t *cfg) {
     // a stale VBL fires once into a disabled controller and goes quiet.
     memset(c->reg, 0, sizeof(c->reg));
     c->vbl_pending = 0;
-    c->rad_addr = 0;
-    c->rad_phase = 0;
-    c->crsr_phase = 0;
+    ramdac_seq_init(&c->rad, 0);
+    ramdac_seq_init(&c->crsr_seq, 0);
     c->rad_ctrl = 0;
     c->rad_bank = 0;
     memset(c->rad_misc, 0, sizeof(c->rad_misc));

@@ -25,6 +25,7 @@
 
 #include "checkpoint.h"
 #include "display_class.h"
+#include "display_ramdac.h"
 #include "log.h"
 #include "scheduler.h"
 #include "system.h"
@@ -89,11 +90,9 @@ struct dafb {
     struct object *video_node;
     rgba8_t clut[256];
 
-    // AC842 write machine: index + RGB component phase (the partial
+    // AC842 palette port: index + RGB component phase (the partial
     // triplet is real state and checkpoints with the device).
-    uint8_t dac_idx;
-    uint8_t dac_phase;
-    uint8_t dac_rgb[3];
+    ramdac_seq_t dac;
     uint8_t pcbr0;
 
     // AC842a (Q950): PCBR1 lives behind AddrReg==1 at the config register
@@ -419,23 +418,18 @@ static void dp8531_commit(dafb_t *dafb) {
 static void ac842_write(dafb_t *dafb, uint32_t reg, uint8_t value) {
     switch (reg) {
     case AC842_ADDR:
-        dafb->dac_idx = value;
-        dafb->dac_phase = 0;
+        ramdac_seq_set_waddr(&dafb->dac, value);
         break;
-    case AC842_DATA:
-        if (dafb->dac_phase < 3)
-            dafb->dac_rgb[dafb->dac_phase] = value;
-        dafb->dac_phase++;
-        if (dafb->dac_phase >= 3) {
-            dafb->clut[dafb->dac_idx].r = dafb->dac_rgb[0];
-            dafb->clut[dafb->dac_idx].g = dafb->dac_rgb[1];
-            dafb->clut[dafb->dac_idx].b = dafb->dac_rgb[2];
-            dafb->clut[dafb->dac_idx].a = 255;
-            dafb->dac_idx++;
-            dafb->dac_phase = 0;
+    case AC842_DATA: {
+        // Latched R, G, B; the entry is stored on blue (display_ramdac.h)
+        uint8_t idx;
+        if (ramdac_seq_write(&dafb->dac, value, &idx)) {
+            const uint8_t *c = dafb->dac.pending;
+            dafb->clut[idx] = (rgba8_t){c[0], c[1], c[2], 255};
             dafb->display.clut_dirty = true;
         }
         break;
+    }
     case AC842_PCBR0:
         // On an AC842a, AddrReg == 1 routes the config register to PCBR1
         // (Apple's own driver: "Move.l #1,ACDC_AddrReg … Tell ACDC to use
@@ -443,7 +437,7 @@ static void ac842_write(dafb_t *dafb, uint32_t reg, uint8_t value) {
         // is no PCBR1 — the write always lands in PCBR0, which is exactly
         // what PrimaryInit's presence probe exploits ($06 into PCBR0,
         // 0 "into PCBR1", read PCBR0 back: $06 ⇒ AC842a, 0 ⇒ AC842).
-        if (dafb->ac842a && dafb->dac_idx == 1) {
+        if (dafb->ac842a && ramdac_seq_addr(&dafb->dac) == 1) {
             dafb->pcbr1 = (uint8_t)((value & 0xF0u) | (dafb->pcbr1 & 0x0Fu)); // low nibble = RO mfg/rev
             LOG(2, "AC842a PCBR1 = $%02X%s", dafb->pcbr1, (dafb->pcbr1 & 0xC0u) == 0xC0u ? " (x555 16bpp)" : "");
         } else {
@@ -461,19 +455,18 @@ static void ac842_write(dafb_t *dafb, uint32_t reg, uint8_t value) {
 static uint8_t ac842_read(dafb_t *dafb, uint32_t reg, bool peek) {
     switch (reg) {
     case AC842_ADDR:
-        return dafb->dac_idx;
+        return ramdac_seq_addr(&dafb->dac);
     case AC842_DATA: {
-        const uint8_t *entry = (const uint8_t *)&dafb->clut[dafb->dac_idx];
-        uint8_t v = (dafb->dac_phase < 3) ? entry[dafb->dac_phase] : 0;
-        if (!peek)
-            dafb->dac_phase = (uint8_t)((dafb->dac_phase + 1) % 3);
-        return v;
+        // The run-read advances the index after blue, as the write does
+        uint8_t comp;
+        uint8_t idx = ramdac_seq_read(&dafb->dac, peek, &comp);
+        return ((const uint8_t *)&dafb->clut[idx])[comp];
     }
     case AC842_PCBR0:
         // AC842a: AddrReg == 1 reads PCBR1 (low nibble = mfg/rev, 0 here —
         // the non-Antelope answer, so the driver loads the sparse
         // Trans5to8 CLUT for x555).
-        if (dafb->ac842a && dafb->dac_idx == 1)
+        if (dafb->ac842a && ramdac_seq_addr(&dafb->dac) == 1)
             return dafb->pcbr1;
         return dafb->pcbr0;
     default:
@@ -752,9 +745,7 @@ dafb_t *dafb_init(uint32_t vram_size, uint8_t monitor, checkpoint_t *cp) {
     if (cp) {
         system_read_checkpoint_data(cp, dafb->regs, sizeof(dafb->regs));
         system_read_checkpoint_data(cp, dafb->clut, sizeof(dafb->clut));
-        system_read_checkpoint_data(cp, &dafb->dac_idx, sizeof(dafb->dac_idx));
-        system_read_checkpoint_data(cp, &dafb->dac_phase, sizeof(dafb->dac_phase));
-        system_read_checkpoint_data(cp, dafb->dac_rgb, sizeof(dafb->dac_rgb));
+        system_read_checkpoint_data(cp, &dafb->dac, sizeof(dafb->dac));
         system_read_checkpoint_data(cp, &dafb->pcbr0, sizeof(dafb->pcbr0));
         system_read_checkpoint_data(cp, &dafb->pcbr1, sizeof(dafb->pcbr1));
         system_read_checkpoint_data(cp, dafb->clk_reg, sizeof(dafb->clk_reg));
@@ -815,9 +806,7 @@ void dafb_checkpoint(dafb_t *dafb, checkpoint_t *cp) {
         return;
     system_write_checkpoint_data(cp, dafb->regs, sizeof(dafb->regs));
     system_write_checkpoint_data(cp, dafb->clut, sizeof(dafb->clut));
-    system_write_checkpoint_data(cp, &dafb->dac_idx, sizeof(dafb->dac_idx));
-    system_write_checkpoint_data(cp, &dafb->dac_phase, sizeof(dafb->dac_phase));
-    system_write_checkpoint_data(cp, dafb->dac_rgb, sizeof(dafb->dac_rgb));
+    system_write_checkpoint_data(cp, &dafb->dac, sizeof(dafb->dac));
     system_write_checkpoint_data(cp, &dafb->pcbr0, sizeof(dafb->pcbr0));
     system_write_checkpoint_data(cp, &dafb->pcbr1, sizeof(dafb->pcbr1));
     system_write_checkpoint_data(cp, dafb->clk_reg, sizeof(dafb->clk_reg));
@@ -912,8 +901,7 @@ void dafb_reset(dafb_t *dafb) {
     memset(dafb->clk_reg, 0, sizeof(dafb->clk_reg));
     dafb->pcbr0 = 0;
     dafb->pcbr1 = 0;
-    dafb->dac_idx = 0;
-    dafb->dac_phase = 0;
+    ramdac_seq_init(&dafb->dac, 0);
     dafb->clock_hz = 0;
     dafb->timing_valid = false;
     dafb->irq_line = false;

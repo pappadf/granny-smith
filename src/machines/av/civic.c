@@ -24,6 +24,7 @@
 
 #include "civic.h"
 #include "display_class.h"
+#include "display_ramdac.h"
 #include "display_timing.h"
 
 #include "av.h"
@@ -86,8 +87,7 @@ struct av_civic {
     bool vdc_flag; // VDCInt latch (reads inverted — active low)
     bool vdc_armed; // VDCClr wrote 1 after 0 (re-armed)
     rgba8_t clut[2][256]; // Sebastian CLUT banks (graphics, video-in)
-    uint8_t seb_addr; // CLUT address register
-    uint8_t seb_phase; // 0-3 within the R,G,B,A quad
+    ramdac_seq_t seb; // CLUT address register and the phase within the R,G,B,A quad
     uint8_t seb_pcbr; // Pixel Bus Control Register
     uint8_t clk_reg[3]; // Endeavor M/N/Clk latches
     // The monitor strapped on the sense lines (the build's built-in monitor,
@@ -574,29 +574,11 @@ static uint8_t av_civic_seb_read_access(config_t *cfg, uint32_t win_off, uint32_
     int bank = (cv->seb_pcbr >> 6) & 1;
     switch (reg) {
     case 0: // address register
-        return cv->seb_addr;
+        return ramdac_seq_addr(&cv->seb);
     case 1: { // data register: R,G,B,A with auto-increment after the quad
-        rgba8_t *e = &cv->clut[bank][cv->seb_addr];
-        uint8_t v = 0;
-        switch (cv->seb_phase) {
-        case 0:
-            v = e->r;
-            break;
-        case 1:
-            v = e->g;
-            break;
-        case 2:
-            v = e->b;
-            break;
-        default:
-            v = e->a;
-            break;
-        }
-        if (!peek && ++cv->seb_phase == 4) {
-            cv->seb_phase = 0;
-            cv->seb_addr++;
-        }
-        return v;
+        uint8_t comp;
+        uint8_t idx = ramdac_seq_read(&cv->seb, peek, &comp);
+        return ((const uint8_t *)&cv->clut[bank][idx])[comp];
     }
     case 2:
         return cv->seb_pcbr;
@@ -619,30 +601,16 @@ void av_civic_seb_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t 
     int bank = (cv->seb_pcbr >> 6) & 1;
     switch (reg) {
     case 0:
-        cv->seb_addr = value;
-        cv->seb_phase = 0;
+        ramdac_seq_set_waddr(&cv->seb, value);
         break;
     case 1: {
-        rgba8_t *e = &cv->clut[bank][cv->seb_addr];
-        switch (cv->seb_phase) {
-        case 0:
-            e->r = value;
-            break;
-        case 1:
-            e->g = value;
-            break;
-        case 2:
-            e->b = value;
-            break;
-        default:
-            e->a = value;
-            break;
+        // R, G, B, A latch; the entry is stored in the selected bank on A
+        uint8_t idx;
+        if (ramdac_seq_write(&cv->seb, value, &idx)) {
+            const uint8_t *c = cv->seb.pending;
+            cv->clut[bank][idx] = (rgba8_t){c[0], c[1], c[2], c[3]};
+            civic_update_disp_clut(cv);
         }
-        if (++cv->seb_phase == 4) {
-            cv->seb_phase = 0;
-            cv->seb_addr++;
-        }
-        civic_update_disp_clut(cv);
         break;
     }
     case 2:
@@ -729,6 +697,7 @@ av_civic_t *av_civic_init(config_t *cfg, checkpoint_t *cp) {
     if (!cv)
         return NULL;
     cv->cfg = cfg;
+    ramdac_seq_init(&cv->seb, RAMDAC_RGBA); // Sebastian: four bytes per entry, one index
     cv->vram = calloc(1, AV_CIVIC_VRAM_SIZE);
     if (!cv->vram) {
         free(cv);

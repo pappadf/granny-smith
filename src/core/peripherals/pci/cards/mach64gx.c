@@ -58,6 +58,7 @@
 #include "config_space.h"
 #include "display.h"
 #include "display_class.h"
+#include "display_ramdac.h"
 #include "log.h"
 #include "memory.h"
 #include "object.h"
@@ -581,8 +582,7 @@ typedef struct mach64 {
     uint8_t dac_indexed[0x500]; // indexed file + the 1 KB cursor array
     uint8_t dac_pixel_mask; // RS 010
     uint8_t clut[256][3];
-    uint8_t clut_addr; // palette address (RS 000 write / 011 read)
-    uint8_t clut_phase; // R/G/B byte phase of the palette data cell
+    ramdac_seq_t pal; // palette address (RS 000 write / 011 read) and R/G/B phase
 
     // Expansion ROM (owned by pci_device_t.rom; this is the backing iface)
     memory_interface_t rom_if;
@@ -1042,12 +1042,20 @@ static void gp_dac_write_lane(mach64_t *m, uint32_t lane, uint8_t value);
 // The palette data cell: the current entry's R, G or B byte; the guest's read
 // (`peek` false) then steps the cursor, and after B moves to the next entry.
 static uint8_t dac_palette_data_read(mach64_t *m, bool peek) {
-    uint8_t v = m->clut[m->clut_addr][m->clut_phase];
-    if (!peek && ++m->clut_phase == 3) {
-        m->clut_phase = 0;
-        m->clut_addr++;
-    }
-    return v;
+    uint8_t comp;
+    uint8_t idx = ramdac_seq_read(&m->pal, peek, &comp);
+    return m->clut[idx][comp];
+}
+
+// The palette data cell written: R, G, B latch, and the entry is stored on B
+// (display_ramdac.h) before the index moves on.  Both DACs' cell.
+static void dac_palette_data_write(mach64_t *m, uint8_t value) {
+    uint8_t idx;
+    if (!ramdac_seq_write(&m->pal, value, &idx))
+        return;
+    memcpy(m->clut[idx], m->pal.pending, 3);
+    LOG(4, "Mach64: CLUT[$%02X] = %02X %02X %02X", idx, m->clut[idx][0], m->clut[idx][1], m->clut[idx][2]);
+    mach64_clut_changed(m);
 }
 
 static uint8_t mach64_dac_read_lane(mach64_t *m, uint32_t lane, bool peek) {
@@ -1056,7 +1064,7 @@ static uint8_t mach64_dac_read_lane(mach64_t *m, uint32_t lane, bool peek) {
     switch (mach64_dac_rs(m, lane)) {
     case 0: // palette address (write mode)
     case 3: // palette address (read mode)
-        return m->clut_addr;
+        return ramdac_seq_addr(&m->pal);
     case 1: // palette data — R, G, B, then the entry auto-advances
         return dac_palette_data_read(m, peek);
     case 2:
@@ -1081,18 +1089,10 @@ static void mach64_dac_write_lane(mach64_t *m, uint32_t lane, uint8_t value) {
     switch (mach64_dac_rs(m, lane)) {
     case 0:
     case 3:
-        m->clut_addr = value;
-        m->clut_phase = 0;
+        ramdac_seq_set_waddr(&m->pal, value);
         return;
     case 1:
-        m->clut[m->clut_addr][m->clut_phase] = value;
-        if (++m->clut_phase == 3) {
-            m->clut_phase = 0;
-            LOG(4, "Mach64: CLUT[$%02X] = %02X %02X %02X", m->clut_addr, m->clut[m->clut_addr][0],
-                m->clut[m->clut_addr][1], m->clut[m->clut_addr][2]);
-            m->clut_addr++;
-            mach64_clut_changed(m);
-        }
+        dac_palette_data_write(m, value);
         return;
     case 2:
         // The card's FCode sets this to $FF (no masking) at bring-up.
@@ -1125,8 +1125,8 @@ static uint32_t mach64_dac_read(mach64_t *m, bool peek) {
         v |= (uint32_t)mach64_dac_read_lane(m, lane, peek) << (8u * lane);
     bool data_at_1 = m->gp || mach64_dac_rs(m, 1) == 1;
     bool addr_at_3 = m->gp || mach64_dac_rs(m, 3) == 3;
-    if (peek && data_at_1 && addr_at_3 && m->clut_phase == 2)
-        v = (v & 0x00FFFFFFu) | ((uint32_t)(uint8_t)(m->clut_addr + 1u) << 24);
+    if (peek && data_at_1 && addr_at_3 && m->pal.phase == 2)
+        v = (v & 0x00FFFFFFu) | ((uint32_t)(uint8_t)(ramdac_seq_addr(&m->pal) + 1u) << 24);
     return v;
 }
 
@@ -1249,7 +1249,7 @@ static uint8_t gp_dac_read_lane(mach64_t *m, uint32_t lane, bool peek) {
     switch (lane & 3u) {
     case 0:
     case 3:
-        return m->clut_addr;
+        return ramdac_seq_addr(&m->pal);
     case 1:
         return dac_palette_data_read(m, peek);
     default:
@@ -1261,16 +1261,10 @@ static void gp_dac_write_lane(mach64_t *m, uint32_t lane, uint8_t value) {
     switch (lane & 3u) {
     case 0:
     case 3:
-        m->clut_addr = value;
-        m->clut_phase = 0;
+        ramdac_seq_set_waddr(&m->pal, value);
         return;
     case 1:
-        m->clut[m->clut_addr][m->clut_phase] = value;
-        if (++m->clut_phase == 3) {
-            m->clut_phase = 0;
-            m->clut_addr++;
-            mach64_clut_changed(m);
-        }
+        dac_palette_data_write(m, value);
         return;
     default:
         m->dac_pixel_mask = value;
@@ -3363,8 +3357,7 @@ static void mach64_reset(pci_device_t *dev, config_t *cfg) {
     m->dac_index = 0;
     m->dac_index_lo = 0;
     m->dac_pixel_mask = 0xFFu;
-    m->clut_addr = 0;
-    m->clut_phase = 0;
+    ramdac_seq_init(&m->pal, 0);
     memset(m->dac_indexed, 0, sizeof(m->dac_indexed));
     m->dac_indexed[0x01] = 0x01; // RGB514 ID register reset value
     memset(m->clut, 0, sizeof(m->clut));
@@ -3414,7 +3407,8 @@ typedef struct mach64_ckpt {
     uint8_t mon_id_dir, mon_id_out, sense_primary, sense_ext;
     uint8_t sense_seen;
     uint16_t dac_index;
-    uint8_t dac_index_lo, dac_pixel_mask, clut_addr, clut_phase;
+    uint8_t dac_index_lo, dac_pixel_mask;
+    ramdac_seq_t pal;
     uint8_t dac_indexed[0x500];
     uint8_t clut[256][3];
     uint32_t reg1[256]; // Rage Pro block 1
@@ -3436,8 +3430,7 @@ static void mach64_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
     c.dac_index = m->dac_index;
     c.dac_index_lo = m->dac_index_lo;
     c.dac_pixel_mask = m->dac_pixel_mask;
-    c.clut_addr = m->clut_addr;
-    c.clut_phase = m->clut_phase;
+    c.pal = m->pal;
     memcpy(c.dac_indexed, m->dac_indexed, sizeof(c.dac_indexed));
     memcpy(c.clut, m->clut, sizeof(c.clut));
     memcpy(c.reg1, m->reg1, sizeof(c.reg1));
@@ -3460,8 +3453,7 @@ static void mach64_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     m->dac_index = c.dac_index;
     m->dac_index_lo = c.dac_index_lo;
     m->dac_pixel_mask = c.dac_pixel_mask;
-    m->clut_addr = c.clut_addr;
-    m->clut_phase = c.clut_phase;
+    m->pal = c.pal;
     memcpy(m->dac_indexed, c.dac_indexed, sizeof(m->dac_indexed));
     memcpy(m->clut, c.clut, sizeof(m->clut));
     memcpy(m->reg1, c.reg1, sizeof(m->reg1));

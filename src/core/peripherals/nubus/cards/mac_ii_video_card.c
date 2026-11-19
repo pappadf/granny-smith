@@ -30,6 +30,7 @@
 #include "checkpoint.h"
 #include "declrom.h"
 #include "display.h"
+#include "display_ramdac.h"
 #include "log.h"
 #include "memory.h"
 #include "nubus.h"
@@ -55,8 +56,7 @@ typedef struct {
     // address -- which for a pixel is the complemented VRAM value, left-aligned
     // in the 8-bit index (see rebuild_display_clut).
     uint8_t ramdac[256][3];
-    uint8_t ramdac_addr; // the Bt453 address register
-    uint8_t ramdac_comp; // 0..2: which of R, G, B the next data access is
+    ramdac_seq_t ramdac_seq; // the Bt453 address register and R/G/B phase
     uint8_t vint_enabled; // ClrVInt enables, DisableVInt masks
     uint8_t vint_pending; // the slot line is asserted
     uint8_t vsync; // RdVSync bit 0, toggled per guest read
@@ -140,17 +140,16 @@ static uint32_t smear(uint32_t val, unsigned size) {
 static void ramdac_write(toby_t *t, unsigned reg, uint8_t v) {
     switch (reg) {
     case 3: // wCLUTAddReg / rCLUTAddReg: the address, restarting at R
-        t->ramdac_addr = v;
-        t->ramdac_comp = 0;
+        ramdac_seq_set_waddr(&t->ramdac_seq, v);
         break;
-    case 2: // wCLUTDataReg: R, G, B, then on to the next entry
-        t->ramdac[t->ramdac_addr][t->ramdac_comp] = v;
-        if (++t->ramdac_comp == 3) {
-            t->ramdac_comp = 0;
+    case 2: { // wCLUTDataReg: R, G, B, then on to the next entry
+        uint8_t idx;
+        if (ramdac_seq_write(&t->ramdac_seq, v, &idx)) {
+            memcpy(t->ramdac[idx], t->ramdac_seq.pending, 3);
             rebuild_display_clut(t);
-            t->ramdac_addr++;
         }
         break;
+    }
     default:
         LOG(2, "TFB: RAMDAC write to register %u = $%02X (unmodelled)", reg, v);
         break;
@@ -160,14 +159,11 @@ static void ramdac_write(toby_t *t, unsigned reg, uint8_t v) {
 static uint8_t ramdac_read(toby_t *t, unsigned reg, bool peek) {
     switch (reg) {
     case 3:
-        return t->ramdac_addr;
+        return ramdac_seq_addr(&t->ramdac_seq);
     case 2: {
-        uint8_t v = t->ramdac[t->ramdac_addr][t->ramdac_comp];
-        if (!peek && ++t->ramdac_comp == 3) {
-            t->ramdac_comp = 0;
-            t->ramdac_addr++;
-        }
-        return v;
+        uint8_t comp;
+        uint8_t idx = ramdac_seq_read(&t->ramdac_seq, peek, &comp);
+        return t->ramdac[idx][comp];
     }
     default:
         return 0;
@@ -301,8 +297,7 @@ static void map_regions(toby_t *t, config_t *cfg) {
 // VBL interrupt masked, 1 bpp, a palette of black.
 static void power_on_registers(toby_t *t) {
     memset(t->tfb, 0, sizeof t->tfb);
-    t->ramdac_addr = 0;
-    t->ramdac_comp = 0;
+    ramdac_seq_init(&t->ramdac_seq, 0);
     t->vint_enabled = 0;
     t->vint_pending = 0;
     t->vsync = 0;

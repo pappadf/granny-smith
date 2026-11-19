@@ -14,6 +14,7 @@
 #include "card.h"
 #include "checkpoint.h"
 #include "display.h"
+#include "display_ramdac.h"
 #include "display_timing.h" // the sense code -> raster table
 #include "log.h"
 #include "memory.h" // ram_native_pointer: the frame buffer in main RAM
@@ -41,11 +42,10 @@ LOG_USE_CATEGORY_NAME("video");
 typedef struct {
     rgba8_t clut[256]; // 256-entry palette fed by the VDAC
 
-    // VDAC (Bt450) write state: an address write resets the R/G/B counter;
-    // three data writes load one entry, then the index auto-increments.
-    uint8_t vdac_idx; // current CLUT write index
-    uint8_t vdac_phase; // 0 = R, 1 = G, 2 = B
-    uint8_t vdac_rgb[3]; // accumulated R/G/B for the in-progress entry
+    // VDAC (Bt450) palette port: an address write resets the R/G/B counter;
+    // three data accesses load (or read) one entry, then the index
+    // auto-increments.  One index serves both address registers.
+    ramdac_seq_t vdac;
     uint8_t vdac_pix_mask; // pixel read mask (accept-and-log)
     bool video_off; // RvMonP RvVIDOff: the raster is blanked
 
@@ -401,33 +401,26 @@ void builtin_rbv_video_vdac_write(nubus_card_t *card, uint32_t off, uint8_t val)
     switch (off & 0xF) {
     case VDAC_WADDR:
         // Set the CLUT write index; reset the R/G/B sub-counter.
-        p->vdac_idx = val;
-        p->vdac_phase = 0;
+        ramdac_seq_set_waddr(&p->vdac, val);
         return;
-    case VDAC_WDATA:
+    case VDAC_WDATA: {
         // Accumulate R, then G, then B; commit the entry on the third write
         // and auto-increment the index (Bt450 run-write protocol).
-        if (p->vdac_phase < 3)
-            p->vdac_rgb[p->vdac_phase] = val;
-        p->vdac_phase++;
-        if (p->vdac_phase >= 3) {
-            p->clut[p->vdac_idx].r = p->vdac_rgb[0];
-            p->clut[p->vdac_idx].g = p->vdac_rgb[1];
-            p->clut[p->vdac_idx].b = p->vdac_rgb[2];
-            p->clut[p->vdac_idx].a = 255;
-            p->vdac_idx++;
-            p->vdac_phase = 0;
+        uint8_t idx;
+        if (ramdac_seq_write(&p->vdac, val, &idx)) {
+            const uint8_t *c = p->vdac.pending;
+            p->clut[idx] = (rgba8_t){c[0], c[1], c[2], 255};
             p->display.clut_dirty = true;
         }
         return;
+    }
     case VDAC_PIXRD:
         p->vdac_pix_mask = val;
         return;
     case VDAC_RADDR:
-        // Read-address register write: resets the read sub-counter (we don't
-        // model CLUT readback beyond the address latch).
-        p->vdac_idx = val;
-        p->vdac_phase = 0;
+        // Read-address register write: selects the entry a run-read starts
+        // at and resets the sub-counter.
+        ramdac_seq_set_raddr(&p->vdac, val);
         return;
     default:
         LOG(2, "RBV video: VDAC write at +%X = $%02X (unmodeled)", off, val);
@@ -446,13 +439,12 @@ static uint8_t vdac_read(nubus_card_t *card, uint32_t off, bool peek) {
         return p->vdac_pix_mask;
     case VDAC_WADDR:
     case VDAC_RADDR:
-        return p->vdac_idx;
+        return ramdac_seq_addr(&p->vdac);
     case VDAC_WDATA: {
-        // Return the current entry's components in R/G/B sequence.
-        uint8_t v = (p->vdac_phase < 3) ? ((const uint8_t *)&p->clut[p->vdac_idx])[p->vdac_phase] : 0;
-        if (!peek)
-            p->vdac_phase = (uint8_t)((p->vdac_phase + 1) % 3);
-        return v;
+        // Return the entries' components in R/G/B sequence, advancing after B.
+        uint8_t comp;
+        uint8_t idx = ramdac_seq_read(&p->vdac, peek, &comp);
+        return ((const uint8_t *)&p->clut[idx])[comp];
     }
     default:
         return 0;

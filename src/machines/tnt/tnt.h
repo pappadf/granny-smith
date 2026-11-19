@@ -39,6 +39,7 @@
 #include "davbus.h" // the DAVbus sound cell (core/peripherals/)
 #include "display.h"
 #include "display_class.h" // scanout descriptor (control.c presents through it)
+#include "display_ramdac.h" // the RaDACal palette ports
 #include "gbus.h" // the ANS GBUS island: board registers, keyswitch, LCD
 #include "machine.h"
 #include "machine_profile.h"
@@ -286,15 +287,14 @@ typedef struct tnt_control {
     uint8_t vbl_pending; // intr_stat: a VBL edge not yet acknowledged
     uint8_t vbl_armed; // the frame event is pending in the scheduler
     // RaDACal (byte registers on $10 centres at GC +$1B000)
-    uint8_t rad_addr; // +$00 index register (CLUT entry / misc register)
-    uint8_t rad_phase; // RGB byte phase of the CLUT data port
+    ramdac_seq_t rad; // +$00 index register (CLUT entry / misc register), CLUT port phase
     uint8_t rad_ctrl; // misc $20: depth control (bits 3:2 = 8/16/32 bpp)
     uint8_t rad_bank; // misc $21: VRAM bank select
     uint8_t rad_misc[2]; // misc $10/$11 (cursor, cleared on mode set)
     uint8_t rad_reg[256]; // every other misc index: latched, read back
     uint8_t clut[256][3];
     uint8_t crsr[8][3]; // cursor palette (+$10 port)
-    uint8_t crsr_phase;
+    ramdac_seq_t crsr_seq; // the cursor port's phase (the index is rad's)
     // The pixel-clock synthesiser (Cuda I2C device $50, subaddresses 1..3):
     // divisor p0, multiplier p1, post-scale exponent p2.  Zero = unprogrammed.
     uint8_t clk[3];
