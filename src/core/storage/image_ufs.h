@@ -39,6 +39,9 @@
 // Superblock offset in bytes within the partition.
 #define UFS_SBOFF 8192
 
+// fs_magic within the superblock.
+#define UFS_SB_MAGIC_OFF 1372
+
 // Opaque volume handle.
 typedef struct ufs_volume ufs_volume_t;
 

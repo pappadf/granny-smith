@@ -42,7 +42,7 @@
 #define SB_OFF_NINDIR   116
 #define SB_OFF_IPG      184
 #define SB_OFF_FPG      188
-#define SB_OFF_MAGIC    1372
+#define SB_OFF_MAGIC    UFS_SB_MAGIC_OFF
 
 // ---- Dinode offsets ------------------------------------------------------
 // 4.3BSD-Tahoe dinode.  Size is 128 bytes on disk.

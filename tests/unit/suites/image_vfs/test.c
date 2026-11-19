@@ -3,9 +3,11 @@
 
 // The image VFS backend over in-memory HFS+ volumes.  See Makefile.
 
+#include "format_registry.h"
 #include "hfsplus_builder.h"
 #include "image.h"
 #include "image_vfs.h"
+#include "image_volume.h"
 #include "namespace.h"
 #include "source.h"
 #include "test_assert.h"
@@ -544,7 +546,137 @@ TEST(test_changed_file_supersedes_a_held_mount) {
     unmount_volume();
 }
 
+// ---- Disk classification ------------------------------------------------------
+
+#define CLASS_DISK_SIZE (40u * 1024u) // past the ISO 9660 descriptor sector
+
+// The disk heads the classification tests build.
+enum shape {
+    SHAPE_JUNK,
+    SHAPE_APM,
+    SHAPE_HFS,
+    SHAPE_HFSPLUS,
+    SHAPE_HFSX,
+    SHAPE_MFS,
+    SHAPE_UFS_BE,
+    SHAPE_UFS_LE,
+    SHAPE_ISO,
+    SHAPE_HFS_ISO
+};
+
+// Fill `d` (CLASS_DISK_SIZE bytes) with a head of the given shape: only the
+// signature bytes the classifier and the openers' probes look at.
+static void make_shape(uint8_t *d, enum shape s) {
+    memset(d, 0, CLASS_DISK_SIZE);
+    uint8_t *vh = d + 1024, *magic = d + 8192 + 1372, *vd = d + 16 * 2048;
+    switch (s) {
+    case SHAPE_APM:
+        d[512] = 'P', d[513] = 'M', d[512 + 7] = 1; // one map block
+        memcpy(d + 512 + 0x30, "Apple_partition_map", 19);
+        break;
+    case SHAPE_HFS:
+    case SHAPE_HFS_ISO:
+        vh[0] = 'B', vh[1] = 'D';
+        break;
+    case SHAPE_HFSPLUS:
+        vh[0] = 'H', vh[1] = '+';
+        break;
+    case SHAPE_HFSX:
+        vh[0] = 'H', vh[1] = 'X';
+        break;
+    case SHAPE_MFS:
+        vh[0] = 0xD2, vh[1] = 0xD7;
+        break;
+    case SHAPE_UFS_BE:
+        magic[1] = 0x01, magic[2] = 0x19, magic[3] = 0x54; // 0x00011954
+        break;
+    case SHAPE_UFS_LE:
+        magic[0] = 0x54, magic[1] = 0x19, magic[2] = 0x01; // the same, little-endian
+        break;
+    default:
+        break;
+    }
+    if (s == SHAPE_ISO || s == SHAPE_HFS_ISO) {
+        vd[0] = 1, vd[6] = 1;
+        memcpy(vd + 1, "CD001", 5);
+    }
+    if (s == SHAPE_JUNK)
+        memset(d, 0x5A, CLASS_DISK_SIZE);
+}
+
+// The classifier names each kind of disk, ranks a map over a volume and a
+// volume over an ISO side, and reports that side; a little-endian UFS magic,
+// which ufs_open does not read, is no UFS volume.
+TEST(test_volume_sniff_names_each_kind) {
+    static uint8_t d[CLASS_DISK_SIZE];
+    static const struct {
+        enum shape s;
+        volume_kind_t kind;
+        bool iso;
+        const char *label;
+    } cases[] = {
+        {SHAPE_JUNK,    VOL_NONE,    false, NULL      },
+        {SHAPE_APM,     VOL_APM,     false, "APM"     },
+        {SHAPE_HFS,     VOL_HFS,     false, "HFS"     },
+        {SHAPE_HFSPLUS, VOL_HFSPLUS, false, "HFS+"    },
+        {SHAPE_HFSX,    VOL_HFSX,    false, "HFSX"    },
+        {SHAPE_MFS,     VOL_MFS,     false, "MFS"     },
+        {SHAPE_UFS_BE,  VOL_UFS,     false, "UFS"     },
+        {SHAPE_UFS_LE,  VOL_NONE,    false, NULL      },
+        {SHAPE_ISO,     VOL_ISO,     true,  "ISO 9660"},
+        {SHAPE_HFS_ISO, VOL_HFS,     true,  "HFS"     },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        make_shape(d, cases[i].s);
+        volume_sniff_t v = volume_sniff(d, sizeof(d), sizeof(d));
+        ASSERT_EQ_INT(cases[i].kind, v.kind);
+        ASSERT_EQ_INT(cases[i].iso, v.iso);
+        const char *label = volume_kind_label(v.kind);
+        ASSERT_TRUE(cases[i].label ? label && strcmp(label, cases[i].label) == 0 : label == NULL);
+        // The source form answers the same.
+        source_t *src = source_memory(d, sizeof(d), false, "sniff");
+        volume_sniff_t vs = volume_sniff_source(src, 0, sizeof(d));
+        source_release(src);
+        ASSERT_EQ_INT(v.kind, vs.kind);
+        ASSERT_EQ_INT(v.iso, vs.iso);
+    }
+    // A volume too small for the block its header starts is no volume; one
+    // too small for ufs_open's superblock read is no UFS.
+    make_shape(d, SHAPE_HFS);
+    ASSERT_EQ_INT(VOL_NONE, volume_sniff(d, sizeof(d), 1024 + 511).kind);
+    ASSERT_EQ_INT(VOL_HFS, volume_sniff(d, 1026, 1024 + 512).kind);
+    make_shape(d, SHAPE_UFS_BE);
+    ASSERT_EQ_INT(VOL_NONE, volume_sniff(d, sizeof(d), 8192 + 2047).kind);
+}
+
+// The registry's disk detector claims exactly the disks ns_open_disk opens:
+// a disk it claims and the namespace then refuses would be neither listed as
+// a plain file nor browsable.  A little-endian UFS magic was such a disk.
+TEST(test_disk_detection_agrees_with_open) {
+    ns_register_formats();
+    static uint8_t d[CLASS_DISK_SIZE];
+    for (int s = SHAPE_JUNK; s <= SHAPE_HFS_ISO; s++) {
+        make_shape(d, (enum shape)s);
+        source_t *src = source_memory(d, sizeof(d), false, "detect");
+        format_probe_t p;
+        ASSERT_EQ_INT(0, format_probe_init(&p, src, NULL));
+        const format_t *f = format_detect(&p, GS_FMT_NAMESPACE);
+        bool claimed = f && strcmp(f->name, "disk") == 0;
+        format_probe_free(&p);
+        ns_t *ns = ns_open_disk(src);
+        if (claimed != (ns != NULL))
+            fprintf(stderr, "  shape %d: detected %d, opened %d\n", s, claimed, ns != NULL);
+        ASSERT_EQ_INT(claimed, ns != NULL);
+        ASSERT_EQ_INT(s != SHAPE_JUNK && s != SHAPE_UFS_LE, claimed);
+        if (ns)
+            ns_close(ns);
+        source_release(src);
+    }
+}
+
 int main(void) {
+    RUN(test_volume_sniff_names_each_kind);
+    RUN(test_disk_detection_agrees_with_open);
     RUN(test_reads_a_data_fork_and_a_resource);
     RUN(test_open_resource_survives_cache_pressure);
     RUN(test_open_resource_directory_survives_cache_pressure);
