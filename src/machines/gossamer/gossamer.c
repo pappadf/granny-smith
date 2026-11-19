@@ -595,6 +595,18 @@ const builtin_video_desc_t gossamer_builtin_video = {
     .default_monitor = "13in_rgb",
 };
 
+// The DIMM totals both G3 profiles offer.
+const uint32_t gossamer_ram_options_kb[] = {32768,  65536,  98304,  131072, 163840, 196608, 229376,
+                                            262144, 294912, 327680, 360448, 393216, 425984, 458752,
+                                            524288, 557056, 589824, 655360, 786432, 0};
+
+// The Whisper card's ID EEPROM (I2C $53): a length/marker byte, the
+// AA 55 AA signature, the NUL-terminated name, the version the tree
+// surfaces as `version 00000002` (read back from a real Rev C machine with
+// `8c 0 0a6 read-iic` at an Open Firmware prompt).
+const uint8_t gossamer_whisper_eeprom[16] = {0x0F, 0xAA, 0x55, 0xAA, 'W',  'h',  'i',  's',
+                                             'p',  'e',  'r',  0x00, 0x00, 0x00, 0x00, 0x02};
+
 // The PCI topology: the three expansion sockets at devices $0D/$0E/$0F
 // (the Grackle node's `slot-names 0000e000 "A1" "B1" "C1"`) with their
 // strapped lines $17/$18/$19 (the ROM's device -> source pairs).  Grackle

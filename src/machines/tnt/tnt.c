@@ -1196,6 +1196,69 @@ const builtin_video_desc_t ans_builtin_video = {
     .default_monitor = "vga",
 };
 
+// The Power Macintosh boards' DIMM totals (8500, 9500; the 7500 adds 8 MB):
+// 168-pin DIMMs in 8 slots, interleaved in pairs; 1 GB architectural max.
+// Offered: the totals Hammerhead's four-pair carve maps today (DIMMs of at
+// most 64 MB); larger and odd totals wait on the carve.
+const uint32_t tnt_ram_options_kb[] = {16384,  24576,  32768,  40960,  49152,  57344,  65536,  73728,  81920,  90112,
+                                       98304,  106496, 114688, 122880, 131072, 139264, 147456, 155648, 163840, 172032,
+                                       180224, 188416, 196608, 204800, 212992, 221184, 229376, 237568, 245760, 262144,
+                                       270336, 278528, 286720, 294912, 303104, 311296, 327680, 335872, 344064, 360448,
+                                       393216, 401408, 409600, 425984, 458752, 524288, 0};
+
+// The one-Bandit boards' PCI topology (7500, 8500).  Three sockets on Bandit
+// 1 at IDSEL 13/14/15 — the ROM's own `slot-names` bitmask ($0000E000) on
+// the bandit node, corroborated by Apple's Network Server developer note
+// IDSEL table — with their strapped INTA-D lines on Grand Central
+// externals 23/24/25 (Apple's 9500 external-interrupt table, §1.4).
+// Control is the soldered-down video device the machine names, on the
+// Chaos display bus.
+const pci_slot_decl_t tnt_pci_slots_1bandit[] = {
+    {.slot = 1,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "PCI slot A1",
+     .detail = "A1",
+     .fill_order = 1,
+     .bus = TNT_PCI_BUS_1,
+     .device = 13,
+     .int_line = 23},
+    {.slot = 2,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "PCI slot B1",
+     .detail = "B1",
+     .fill_order = 2,
+     .bus = TNT_PCI_BUS_1,
+     .device = 14,
+     .int_line = 24},
+    {.slot = 3,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "PCI slot C1",
+     .detail = "C1",
+     .fill_order = 3,
+     .bus = TNT_PCI_BUS_1,
+     .device = 15,
+     .int_line = 25},
+    {.slot = 4,
+     .kind = PCI_SLOT_BUILTIN,
+     .label = "Built-in video",
+     .detail = "VCI",
+     .bus = TNT_PCI_BUS_VCI,
+     .device = 11,
+     .int_line = TNT_INT_VBL,
+     .builtin_card_id = "tnt_control"},
+    {0},
+};
+
+// The Network Servers' DIMM totals (500 and 700).  Eight DIMM slots in four interleaved bank pairs (against the 9500's
+// twelve), and a hard 512 MB ceiling that is a ROM DECODE limit, not a
+// Hammerhead one: "Production ROMs through (TBD) August 1996? provide
+// decoding of up to 512 Mbytes" (the Network Server developer note, §5), and the documented failure
+// mode above it is a HANG during the RAM test rather than a clean error.
+// Being less permissive than the silicon is the faithful choice here.
+const uint32_t ans_ram_options_kb[] = {16384,  32768,  49152,  65536,  81920,  98304,  114688, 131072, 147456, 163840,
+                                       180224, 196608, 212992, 229376, 245760, 262144, 278528, 294912, 311296, 327680,
+                                       344064, 360448, 393216, 409600, 425984, 458752, 524288, 0};
+
 // The Shiner backplane -- the PCI topology of BOTH Network Servers, which
 // share one board ("Shiner LE" = 500/132, "Shiner HE" = 700/150).  The two
 // models differ only in clock, L2 size, supply count and drive bays; not one

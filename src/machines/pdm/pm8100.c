@@ -25,10 +25,6 @@ static const uint32_t pm8100_ram_options_kb[] = {
     131072, 139264, 141312, 143360, 145408, 147456, 149504, 151552, 155648, 157696, 159744, 163840, 172032, 174080,
     176128, 180224, 188416, 204800, 206848, 208896, 212992, 221184, 237568, 270336, 0};
 
-// One internal manual-inject SuperDrive behind SWIM3, and no external
-// port — the PDM family has no second bay (Apple, "Power Macintosh
-// Computers" Developer Note, Table 3-7).
-
 // Media attach to the standard Curio bus (SCSI Manager bus 1 on this
 // model); the fast 53CF96 bus scans empty.
 

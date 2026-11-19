@@ -18,10 +18,6 @@
 // each total into its {2,8,32} MB banks (at most two).
 static const uint32_t pm6100_ram_options_kb[] = {8192, 10240, 12288, 16384, 24576, 40960, 73728, 0};
 
-// One internal manual-inject SuperDrive behind SWIM3, and no external
-// port — the PDM family has no second bay (Apple, "Power Macintosh
-// Computers" Developer Note, Table 3-7).
-
 // One standard 5 MB/s bus (the Curio 53C94 cell), internal + external.
 
 static const pdm_board_desc_t pm6100_board = {

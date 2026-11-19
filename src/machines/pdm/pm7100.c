@@ -20,10 +20,6 @@ static const uint32_t pm7100_ram_options_kb[] = {8192,  10240, 12288, 14336, 163
                                                  26624, 28672, 32768, 40960, 43008, 45056,  49152,  57344,
                                                  73728, 75776, 77824, 81920, 90112, 106496, 139264, 0};
 
-// One internal manual-inject SuperDrive behind SWIM3, and no external
-// port — the PDM family has no second bay (Apple, "Power Macintosh
-// Computers" Developer Note, Table 3-7).
-
 // One standard 5 MB/s bus (the Curio 53C94 cell), internal + external.
 
 // Curio's bus: the hard disk bay, a second hard disk bay, the CD-ROM bay.

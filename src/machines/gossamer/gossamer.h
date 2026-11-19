@@ -287,6 +287,10 @@ extern const storage_bus_decl_t gossamer_storage[];
 extern const storage_device_decl_t gossamer_default_storage[];
 extern const builtin_video_desc_t gossamer_builtin_video;
 extern const pci_slot_decl_t gossamer_pci_slots[];
+// Shared by pmg3dt and pmg3mt (gossamer.c): the DIMM totals and the
+// Whisper card's ID EEPROM.
+extern const uint32_t gossamer_ram_options_kb[];
+extern const uint8_t gossamer_whisper_eeprom[16];
 
 // Fill/clear one physical page in the AoS table + SoA fast-path arrays
 // (the tnt_fill_page shape; the PPC MMU owns the user arrays).

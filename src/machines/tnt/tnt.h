@@ -414,6 +414,13 @@ extern const storage_device_decl_t tnt_default_storage[];
 // See the derivation there -- and the five reasons it is not the 9500's.
 extern const pci_slot_decl_t ans_pci_slots[];
 
+// Tables more than one model shares byte for byte (tnt.c): the one-Bandit
+// PCI topology (7500, 8500), the 8500/9500 DIMM totals and the Network
+// Servers' DIMM totals.
+extern const pci_slot_decl_t tnt_pci_slots_1bandit[];
+extern const uint32_t tnt_ram_options_kb[];
+extern const uint32_t ans_ram_options_kb[];
+
 // The Network Servers' shared front backplane on fast/wide 0 (tnt.c), as
 // one storage_bus_decl_t initialiser; the second controller stays per-model
 // -- that is where the bays differ.  And their default devices.
