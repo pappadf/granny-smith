@@ -27,6 +27,7 @@
 
 #include "tnt.h"
 
+#include "byte_store.h"
 #include "checkpoint.h"
 #include "dbdma.h"
 #include "escc_dbdma.h"
@@ -422,67 +423,14 @@ static uint8_t *nvram_store(struct object *self) {
     return st ? st->gc.nvram : NULL;
 }
 
-static DEF_METHOD(nvram_method_peek) {
-    uint8_t *nv = nvram_store(self);
-    if (!nv)
-        return val_err("nvram not available");
-    uint64_t addr = argv[0].u;
-    if (addr >= TNT_NVRAM_SIZE)
-        return val_err("nvram.peek: offset 0x%llX is outside the %u-byte store", (unsigned long long)addr,
-                       TNT_NVRAM_SIZE);
-    return val_uint(1, nv[addr]);
-}
-
-static DEF_METHOD(nvram_method_poke) {
-    uint8_t *nv = nvram_store(self);
-    if (!nv)
-        return val_err("nvram not available");
-    uint64_t addr = argv[0].u;
-    const value_t *bytes = &argv[1];
-    if (bytes->kind != VK_BYTES || !bytes->bytes.p)
-        return val_err("nvram.poke: bytes argument must be VK_BYTES (use the :N width suffix, e.g. 0x80:1)");
-    size_t n = bytes->bytes.n;
-    if (n == 0)
-        return val_err("nvram.poke: bytes argument is empty");
-    if (addr >= TNT_NVRAM_SIZE || addr + n > TNT_NVRAM_SIZE)
-        return val_err("nvram.poke: write of %zu bytes at 0x%llX would overflow the %u-byte store", n,
-                       (unsigned long long)addr, TNT_NVRAM_SIZE);
-    memcpy(nv + addr, bytes->bytes.p, n);
-    return val_none();
-}
-
-static DEF_METHOD(nvram_method_dump) {
-    uint8_t *nv = nvram_store(self);
-    if (!nv)
-        return val_err("nvram not available");
-    uint64_t addr = argv[0].u;
-    uint64_t n = argv[1].u;
-    if (addr >= TNT_NVRAM_SIZE || n == 0 || addr + n > TNT_NVRAM_SIZE)
-        return val_err("nvram.dump: read of %llu bytes at 0x%llX would overflow the %u-byte store",
-                       (unsigned long long)n, (unsigned long long)addr, TNT_NVRAM_SIZE);
-    return val_bytes(nv + addr, (size_t)n);
-}
-
-static DEF_METHOD(nvram_method_snapshot) {
-    uint8_t *nv = nvram_store(self);
-    if (!nv)
-        return val_err("nvram not available");
-    return val_bytes(nv, TNT_NVRAM_SIZE);
-}
-
-// Whole-store restore from a snapshot: how a row seeds one boot's formatted
-// store into another.
-static DEF_METHOD(nvram_method_restore) {
-    uint8_t *nv = nvram_store(self);
-    if (!nv)
-        return val_err("nvram not available");
-    const value_t *bytes = &argv[0];
-    if (bytes->kind != VK_BYTES || bytes->bytes.n != TNT_NVRAM_SIZE || !bytes->bytes.p)
-        return val_err("nvram.restore: expected VK_BYTES of length %u (got len=%zu)", TNT_NVRAM_SIZE,
-                       bytes->kind == VK_BYTES ? bytes->bytes.n : 0);
-    memcpy(nv, bytes->bytes.p, TNT_NVRAM_SIZE);
-    return val_none();
-}
+// peek/poke/dump/snapshot/restore: the shared byte-store methods.
+static const byte_store_ops_t tnt_nvram_ops = {
+    .store = nvram_store,
+    .size = TNT_NVRAM_SIZE,
+    .what = "nvram",
+    .missing = "nvram not available",
+};
+BYTE_STORE_METHODS(nvram_method, tnt_nvram_ops)
 
 // `machine.nvram.clear()` — the battery pull, on every TNT board (the
 // Network Server's `machine.board.clear_nvram()` is the same call).

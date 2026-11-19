@@ -22,6 +22,7 @@ EXTRA_SRCS   := ../../../../src/core/job/seam.c \
                 ../../../../src/core/object/parse.c \
                 ../../../../src/core/object/value.c \
                 ../../../../src/core/object/meta.c \
+                ../../../../src/core/object/byte_store.c \
                 ../../../../src/core/peripherals/irq_controller.c \
                 ../../../../src/core/peripherals/dbdma.c
 include ../../common.mk

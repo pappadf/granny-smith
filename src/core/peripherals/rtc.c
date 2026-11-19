@@ -6,6 +6,7 @@
 
 #include "rtc.h"
 
+#include "byte_store.h"
 #include "checkpoint.h"
 #include "gs_assert.h"
 #include "log.h"
@@ -691,78 +692,32 @@ static const class_desc_t rtc_class = {
 // instance_data is the same rtc_t* the parent uses, set in rtc_init
 // when the child is attached.
 
-static DEF_METHOD(rtc_pram_method_peek) {
+// The PRAM bytes, for the shared byte-store methods.
+static uint8_t *rtc_pram_store(struct object *self) {
     rtc_t *rtc = rtc_from(self);
-    if (!rtc)
-        return val_err("rtc not available");
-    uint64_t addr = argv[0].u;
-    if (addr > 0xFF)
-        return val_err("rtc.pram.peek: addr must be 0..255");
-    value_t v = val_uint(1, rtc_pram_read(rtc, (uint8_t)addr));
-    v.flags |= VFLAG_HEX;
-    return v;
+    return rtc ? rtc->pram : NULL;
 }
 
-static DEF_METHOD(rtc_pram_method_poke) {
-    rtc_t *rtc = rtc_from(self);
-    if (!rtc)
-        return val_err("rtc not available");
-    uint64_t addr = argv[0].u;
-    const value_t *bytes = &argv[1];
-    if (bytes->kind != VK_BYTES || !bytes->bytes.p)
-        return val_err("rtc.pram.poke: bytes argument must be VK_BYTES (use the :N width suffix, e.g. 0xa8:1)");
-    size_t n = bytes->bytes.n;
-    if (n == 0)
-        return val_err("rtc.pram.poke: bytes argument is empty");
-    if (addr > 0xFF || addr + n > 0x100)
-        return val_err("rtc.pram.poke: write of %zu bytes at 0x%02llX would overflow PRAM (256 bytes)", n,
-                       (unsigned long long)addr);
-    for (size_t i = 0; i < n; i++) {
-        if (!rtc_pram_write(rtc, (uint8_t)(addr + i), bytes->bytes.p[i]))
-            return val_err("rtc.pram.poke: PRAM is write-protected");
-    }
-    return val_none();
+// poke and restore honour the write-protect bit, the way a guest's write does.
+static bool rtc_pram_store_write(struct object *self, size_t off, uint8_t v) {
+    return rtc_pram_write(rtc_from(self), (uint8_t)off, v);
 }
 
-static DEF_METHOD(rtc_pram_method_dump) {
-    rtc_t *rtc = rtc_from(self);
-    if (!rtc)
-        return val_err("rtc not available");
-    uint64_t addr = argv[0].u;
-    uint64_t n = argv[1].u;
-    if (addr > 0xFF || n == 0 || addr + n > 0x100)
-        return val_err("rtc.pram.dump: read of %llu bytes at 0x%02llX would overflow PRAM (256 bytes)",
-                       (unsigned long long)n, (unsigned long long)addr);
-    return val_bytes(rtc->pram + addr, (size_t)n);
-}
-
-static DEF_METHOD(rtc_pram_method_snapshot) {
-    rtc_t *rtc = rtc_from(self);
-    if (!rtc)
-        return val_err("rtc not available");
-    return val_bytes(rtc->pram, sizeof(rtc->pram));
-}
-
-// Whole-PRAM restore — used by integration tests that want to seed PRAM
+// peek/poke/dump/snapshot/restore: the shared byte-store methods (byte_store.h).
+// The whole-PRAM restore is used by integration tests that want to seed PRAM
 // with a previously-snapshotted state (typically dumped via `snapshot`
 // after a cold boot, then replayed across `machine.boot` cycles to
 // preserve the boot ROM's validity tokens and slot-PRAM init data —
 // individually replaying 256 `poke` calls is slow).  Honours the
 // write-protect bit the same way per-byte writes do.
-static DEF_METHOD(rtc_pram_method_restore) {
-    rtc_t *rtc = rtc_from(self);
-    if (!rtc)
-        return val_err("rtc not available");
-    const value_t *bytes = &argv[0];
-    if (bytes->kind != VK_BYTES || bytes->bytes.n != 256 || !bytes->bytes.p)
-        return val_err("rtc.pram.restore: expected VK_BYTES of length 256 (got len=%zu)",
-                       bytes->kind == VK_BYTES ? bytes->bytes.n : 0);
-    for (int i = 0; i < 256; i++) {
-        if (!rtc_pram_write(rtc, (uint8_t)i, bytes->bytes.p[i]))
-            return val_err("rtc.pram.restore: PRAM is write-protected");
-    }
-    return val_none();
-}
+static const byte_store_ops_t rtc_pram_ops = {
+    .store = rtc_pram_store,
+    .write = rtc_pram_store_write,
+    .size = 256,
+    .what = "rtc.pram",
+    .missing = "rtc not available",
+};
+BYTE_STORE_METHODS(rtc_pram_method, rtc_pram_ops)
 
 // Stamp both validity tokens that the boot ROM's `_InitUtil` checks
 // at cold-boot (see docs/reference/formats/mac-pram.md §3).  Without these, `_InitUtil` will

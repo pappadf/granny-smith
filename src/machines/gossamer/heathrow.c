@@ -54,6 +54,7 @@
 
 #include "gossamer.h"
 
+#include "byte_store.h"
 #include "checkpoint.h"
 #include "davbus.h"
 #include "dbdma.h"
@@ -739,72 +740,14 @@ static uint8_t *nvram_store(struct object *self) {
     return st ? st->hr.nvram : NULL;
 }
 
-static value_t nvram_method_peek(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    uint8_t *nv = nvram_store(self);
-    if (!nv)
-        return val_err("nvram not available");
-    uint64_t addr = argv[0].u;
-    if (addr >= GOS_NVRAM_SIZE)
-        return val_err("nvram.peek: offset 0x%llX is outside the %u-byte store", (unsigned long long)addr,
-                       GOS_NVRAM_SIZE);
-    return val_uint(1, nv[addr]);
-}
-
-static value_t nvram_method_poke(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    uint8_t *nv = nvram_store(self);
-    if (!nv)
-        return val_err("nvram not available");
-    uint64_t addr = argv[0].u;
-    const value_t *bytes = &argv[1];
-    if (bytes->kind != VK_BYTES || !bytes->bytes.p || bytes->bytes.n == 0)
-        return val_err("nvram.poke: bytes argument must be non-empty VK_BYTES (e.g. 0x80:1)");
-    size_t n = bytes->bytes.n;
-    if (addr >= GOS_NVRAM_SIZE || addr + n > GOS_NVRAM_SIZE)
-        return val_err("nvram.poke: write of %zu bytes at 0x%llX would overflow the %u-byte store", n,
-                       (unsigned long long)addr, GOS_NVRAM_SIZE);
-    memcpy(nv + addr, bytes->bytes.p, n);
-    return val_none();
-}
-
-static value_t nvram_method_dump(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    uint8_t *nv = nvram_store(self);
-    if (!nv)
-        return val_err("nvram not available");
-    uint64_t addr = argv[0].u, n = argv[1].u;
-    if (addr >= GOS_NVRAM_SIZE || n == 0 || addr + n > GOS_NVRAM_SIZE)
-        return val_err("nvram.dump: read of %llu bytes at 0x%llX would overflow the %u-byte store",
-                       (unsigned long long)n, (unsigned long long)addr, GOS_NVRAM_SIZE);
-    return val_bytes(nv + addr, (size_t)n);
-}
-
-static value_t nvram_method_snapshot(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
-    uint8_t *nv = nvram_store(self);
-    if (!nv)
-        return val_err("nvram not available");
-    return val_bytes(nv, GOS_NVRAM_SIZE);
-}
-
-static value_t nvram_method_restore(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    uint8_t *nv = nvram_store(self);
-    if (!nv)
-        return val_err("nvram not available");
-    const value_t *bytes = &argv[0];
-    if (bytes->kind != VK_BYTES || bytes->bytes.n != GOS_NVRAM_SIZE || !bytes->bytes.p)
-        return val_err("nvram.restore: expected VK_BYTES of length %u", GOS_NVRAM_SIZE);
-    memcpy(nv, bytes->bytes.p, GOS_NVRAM_SIZE);
-    return val_none();
-}
+// peek/poke/dump/snapshot/restore: the shared byte-store methods.
+static const byte_store_ops_t gos_nvram_ops = {
+    .store = nvram_store,
+    .size = GOS_NVRAM_SIZE,
+    .what = "nvram",
+    .missing = "nvram not available",
+};
+BYTE_STORE_METHODS(nvram_method, gos_nvram_ops)
 
 static value_t nvram_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
