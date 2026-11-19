@@ -250,9 +250,11 @@ interactions are handled cleanly.
   - `system_swap_in(config_t *, bool restored)`: makes a built machine the
     active one (global, object root, memory-map selection, label,
     `machine_booted`) and destroys the machine it replaces.
-  - `system_destroy(config_t *)`: Deletes the NuBus cards, calls
-    `profile->substrate->teardown(cfg)` (the family delete-chain, reverse
-    order), closes images, and frees the configuration.
+  - `system_destroy(config_t *)`: Deletes the NuBus cards, then stops the
+    scheduler, calls `profile->substrate->teardown(cfg)` (the family's own
+    devices, then the shared `machine_teardown_config_devices` chain) and
+    frees `machine_context` (`machine_teardown_bracket`), closes images, and
+    frees the configuration.
 
 - **Module interconnection via callbacks:**
   - Peripherals use function pointer callbacks for hardware signal routing,
