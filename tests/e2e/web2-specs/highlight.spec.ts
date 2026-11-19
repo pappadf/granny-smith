@@ -8,36 +8,9 @@
 // within 30 ms (the budget the console's 30 ms request delay assumes).
 
 import { test, expect, type Page } from "../helpers/test";
-import * as path from "node:path";
 import { gotoWeb2 } from "../helpers/web2-fs";
 import { CONSOLE_INPUT, focusTerminal } from "../helpers/terminal";
-
-const SE30_ROM = path.join(
-  path.resolve(__dirname, "../../data"),
-  "roms",
-  "iix-iicx-se30-97221136.rom",
-);
-
-async function bootSE30(page: Page): Promise<void> {
-  const [romChooser] = await Promise.all([
-    page.waitForEvent("filechooser"),
-    page.getByRole("button", { name: "Load ROM..." }).click(),
-  ]);
-  await romChooser.setFiles(SE30_ROM);
-  await page.getByRole("button", { name: "New Machine..." }).click();
-  const model = page.locator("#cfg-model");
-  await expect(model.locator('option[value="se30"]')).toHaveCount(1, {
-    timeout: 30_000,
-  });
-  await model.selectOption("se30");
-  await page.locator("#cfg-opt-memory").selectOption("8 MB");
-  await page.getByRole("button", { name: "Start", exact: true }).click();
-  await expect(
-    page.locator(".toast .msg").filter({ hasText: "Machine started" }),
-  ).toBeVisible({
-    timeout: 60_000,
-  });
-}
+import { bootSE30 } from "../helpers/machine";
 
 test("the console highlights paths, and the round trip fits the budget", async ({
   page,

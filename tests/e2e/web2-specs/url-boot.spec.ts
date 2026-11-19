@@ -17,6 +17,7 @@ import { test, expect, type Page } from '../helpers/test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { gsEvalInPage } from '../helpers/web2-eval';
+import { opfsFiles } from '../helpers/upload';
 
 const PLUS_ROM = path.resolve(__dirname, '../../data/roms/plus-v3-4d1f8172.rom');
 const SYSTEM_FD = path.resolve(__dirname, '../../data/systems/System_6_0_8.dsk');
@@ -154,22 +155,6 @@ test('?fd0= naming a floppy inside a Mac archive is stored and inserted', async 
   expect(await gsEvalInPage(page, 'machine.floppy.drive[0].disk.filename')).toMatch(STORED);
   expect((await opfsFiles(page)).filter((p) => p.startsWith('/opfs/upload/'))).toEqual([]);
 });
-
-// Every file under /opfs, from the browser's own view of OPFS.
-async function opfsFiles(page: Page): Promise<string[]> {
-  return page.evaluate(async () => {
-    const out: string[] = [];
-    const walk = async (dir: unknown, prefix: string): Promise<void> => {
-      for await (const [n, h] of (dir as { entries(): AsyncIterable<[string, { kind: string }]> }).entries()) {
-        const p = `${prefix}/${n}`;
-        if (h.kind === 'directory') await walk(h, p);
-        else out.push(p);
-      }
-    };
-    await walk(await navigator.storage.getDirectory(), '/opfs');
-    return out.sort();
-  });
-}
 
 // A download that does not validate as its slot's kind is rejected exactly as
 // the same file dropped on that category is: an 800 KB floppy image is not a

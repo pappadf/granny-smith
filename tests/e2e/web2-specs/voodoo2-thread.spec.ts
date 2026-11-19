@@ -20,36 +20,15 @@
 // window.gsEval), the scheduler-accelerated.spec.ts idiom.
 
 import { test, expect, type Page } from '../helpers/test';
-import * as path from 'node:path';
-import { gotoWeb2 } from '../helpers/web2-fs';
 import { terminalRun as typeLine, terminalEval } from '../helpers/terminal';
+import { STORED_ROM, cfgWrite, hex, storeTntRom, swap32 } from '../helpers/tnt';
 
 // Output is read right after each line: type, submit, then settle.
 const terminalRun = (page: Page, line: string) =>
   typeLine(page, line, { settleMs: 250 });
 
-const DATA = path.resolve(__dirname, '../../data');
-const TNT_ROM = path.join(DATA, 'roms', 'pm7500-pm8500-pm9500-96cd923d.rom');
-// Uploads are stored under the ROM's content id (rom.identify): its header
-// sum plus the ConfigInfo 64-bit sum.
-const STORED_ROM = '/opfs/images/rom/96cd923d-c241cd82bf90797a';
-
-// Bandit 1's config ports are little-endian and machine.memory.poke is a
-// raw big-endian bus view (the tnt-pci-voodoo2 row's idiom), so the
-// literals are byte-swapped here, at the spec level.
-function swap32(v: number): number {
-  return (((v & 0xff) << 24) | ((v & 0xff00) << 8) | ((v >>> 8) & 0xff00) | ((v >>> 24) & 0xff)) >>> 0;
-}
-const hex = (v: number): string => '0x' + (v >>> 0).toString(16).toUpperCase().padStart(8, '0');
-
-// One PCI config-space dword write through Bandit 1's ports: socket A1 is
-// device 13, one-hot IDSEL $00200000.
-async function cfgWrite(page: Page, reg: number, value: number): Promise<void> {
-  await terminalRun(page, `machine.memory.poke.l(0xF2800000, ${hex(swap32(0x00002000 | reg))})`);
-  await terminalRun(page, `machine.memory.poke.l(0xF2C00000, ${hex(swap32(value))})`);
-  await terminalRun(page, `machine.memory.poke.l(0xF2800000, 0)`);
-}
-
+// The card's own registers take byte-swapped literals too (swap32, as
+// config space does).
 const BAR = 0x81000000;
 async function vregWrite(page: Page, off: number, value: number): Promise<void> {
   await terminalRun(page, `machine.memory.poke.l(${hex(BAR + off)}, ${hex(swap32(value))})`);
@@ -59,18 +38,9 @@ test('the Voodoo2 rasterises on a second Web Worker, and the shadow is authorita
   page,
 }) => {
   test.setTimeout(6 * 60 * 1000);
-  await gotoWeb2(page);
-
   // The TNT ROM via the Welcome "Load ROM..." button, stored under its
   // checksum; then a machine of any kind so the Terminal panel is live.
-  const [chooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Load ROM...' }).click(),
-  ]);
-  await chooser.setFiles(TNT_ROM);
-  await expect(
-    page.locator('.toast .msg').filter({ hasText: 'pm7500-pm8500-pm9500-96cd923d.rom added' }),
-  ).toBeVisible({ timeout: 60_000 });
+  await storeTntRom(page);
   await page.getByRole('button', { name: 'New Machine...' }).click();
   const model = page.locator('#cfg-model');
   await expect(model.locator('option[value="pm7500"]')).toHaveCount(1, { timeout: 30_000 });

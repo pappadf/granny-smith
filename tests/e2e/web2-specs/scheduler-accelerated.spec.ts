@@ -25,6 +25,8 @@ import { test, expect, type Page } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
 import { terminalRun as typeLine, terminalEval } from '../helpers/terminal';
+import { DATA } from '../helpers/paths';
+import { uploadRomViaWelcome } from '../helpers/upload';
 
 // Real pacing, not web2's default Faster: it measures pacing itself.
 test.use({ gsSpeed: 'paced' });
@@ -33,7 +35,6 @@ test.use({ gsSpeed: 'paced' });
 const terminalRun = (page: Page, line: string) =>
   typeLine(page, line, { settleMs: 250 });
 
-const DATA = path.resolve(__dirname, '../../data');
 const SE30_ROM = path.join(DATA, 'roms', 'iix-iicx-se30-97221136.rom');
 
 // SE/30: 15.6672 MHz, authentic CPI 4.
@@ -86,11 +87,7 @@ test('Accelerated toolbar mode: faster CPU, real-time timebase', async ({
 
   // SE/30 ROM via the Welcome "Load ROM..." button; built-in video, so no
   // vROM staging and no video-mode plumbing.
-  const [romChooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Load ROM...' }).click(),
-  ]);
-  await romChooser.setFiles(SE30_ROM);
+  await uploadRomViaWelcome(page, SE30_ROM);
 
   // New Machine: SE/30, 8 MB, no media — free-runs at the flashing-? insert
   // prompt, a busy-wait that retires instructions at full rate.

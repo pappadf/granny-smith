@@ -20,8 +20,8 @@ import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
 import { terminalRun, terminalEcho } from '../helpers/terminal';
 import { gsEvalInPage, scratchFiles } from '../helpers/web2-eval';
+import { DATA } from '../helpers/paths';
 
-const DATA = path.resolve(__dirname, '../../data');
 const PLUS_ROM = path.join(DATA, 'roms', 'plus-v3-4d1f8172.rom');
 const SYSTEM_FD = path.join(DATA, 'systems', 'System_6_0_8.dsk');
 // A StuffIt archive in BinHex holding one 400K Disk Copy 4.2 image (with
@@ -290,7 +290,6 @@ test('Open Checkpoint on the Welcome page restores a saved state', async ({ page
   // The page shows the restored machine, not Welcome (#239).
   await expect(page.locator('.welcome-layer')).toHaveCount(0);
 });
-
 
 // Save State of a machine with a disk, re-opened with Open Checkpoint: the
 // consolidated checkpoint carries every disk block inline, and restoring

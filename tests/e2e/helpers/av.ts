@@ -15,6 +15,7 @@
 import { expect, type Page } from "@playwright/test";
 import * as path from "node:path";
 import { gsCallInPage, gsEvalInPage } from "./web2-eval";
+import { uploadRomViaWelcome } from "./upload";
 
 // --- fixtures ---------------------------------------------------------------
 
@@ -74,11 +75,7 @@ export async function startMachine(
   model: string,
   disk?: { file: string; name: string },
 ): Promise<void> {
-  const [romChooser] = await Promise.all([
-    page.waitForEvent("filechooser"),
-    page.getByRole("button", { name: "Load ROM..." }).click(),
-  ]);
-  await romChooser.setFiles(romFile);
+  await uploadRomViaWelcome(page, romFile);
 
   await page.getByRole("button", { name: "New Machine..." }).click();
   const sel = page.locator("#cfg-model");

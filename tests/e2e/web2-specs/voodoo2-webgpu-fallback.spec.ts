@@ -8,7 +8,7 @@
 // must never appear.  A file of its own because launchOptions are per file.
 
 import { test, expect } from "../helpers/test";
-import { BASE_ARGS, bootWithCard } from "../helpers/voodoo2";
+import { BASE_ARGS, bootWithCard } from "../helpers/tnt";
 import { terminalEval } from "../helpers/terminal";
 
 test.use({ launchOptions: { args: BASE_ARGS } });

@@ -20,8 +20,8 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { gotoWeb2, stageOpfsFile, stageOpfsFileStreaming } from '../helpers/web2-fs';
 import { gsEvalInPage, gsCallInPage } from '../helpers/web2-eval';
+import { DATA } from '../helpers/paths';
 
-const DATA = path.resolve(__dirname, '../../data');
 const ROM = path.join(DATA, 'roms/iici-368cadfe.rom');
 const CD = path.join(DATA, 'apps/mactest_pro_68k_feb_1996.iso');
 const GOLDENS = path.resolve(__dirname, '../../integration/iici-mactest-pro');

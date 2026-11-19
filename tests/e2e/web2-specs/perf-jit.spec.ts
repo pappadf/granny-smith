@@ -24,11 +24,13 @@ import { test, expect, type Page } from "@playwright/test";
 import * as path from "node:path";
 import { gotoWeb2, stageOpfsFileStreaming } from "../helpers/web2-fs";
 import { CONSOLE_OUTPUT, terminalRun as typeLine, terminalEval } from "../helpers/terminal";
+import { DATA } from "../helpers/paths";
+import { uploadRomViaWelcome } from "../helpers/upload";
+import { measureOnce, probeSample } from "../helpers/perf";
 
 const terminalRun = (page: Page, line: string) =>
   typeLine(page, line, { settleMs: 250 });
 
-const DATA = path.resolve(__dirname, "../../data");
 const LABEL = process.env.PERF_LABEL ?? "unlabeled";
 const PAIRS = Number(process.env.PERF_PAIRS ?? 3);
 const WINDOW_SECS = Number(process.env.PERF_WINDOW_SECS ?? 8);
@@ -51,31 +53,6 @@ const ROWS: Record<
   },
 };
 
-let probeSeq = 0;
-async function probeSample(
-  page: Page,
-): Promise<{ instr: number; wallNs: number }> {
-  for (let attempt = 0; attempt < 30; attempt++) {
-    const key = `pb${++probeSeq}`;
-    await terminalRun(
-      page,
-      `echo "${key}=\${machine.cpu.instr_count},\${scheduler.host_wall_ns}"`,
-    );
-    await page.waitForTimeout(400);
-    const text = await page.locator(CONSOLE_OUTPUT).innerText();
-    const m = text.match(new RegExp(`${key}=(\\d+),(\\d+)`));
-    if (m) return { instr: Number(m[1]), wallNs: Number(m[2]) };
-  }
-  throw new Error("terminal sample probe never answered");
-}
-
-async function measureOnce(page: Page): Promise<number> {
-  const a = await probeSample(page);
-  await page.waitForTimeout(WINDOW_SECS * 1000);
-  const b = await probeSample(page);
-  return (b.instr - a.instr) / ((b.wallNs - a.wallNs) / 1e9) / 1e6;
-}
-
 for (const machine of MACHINES) {
   test(`perf-jit: ${machine} predecoded vs translation tier (turbo, tracked numbers)`, async ({
     page,
@@ -90,11 +67,7 @@ for (const machine of MACHINES) {
         `/opfs/images/hd/${path.basename(row.hd)}`,
         path.join(DATA, row.hd),
       );
-    const [romChooser] = await Promise.all([
-      page.waitForEvent("filechooser"),
-      page.getByRole("button", { name: "Load ROM..." }).click(),
-    ]);
-    await romChooser.setFiles(path.join(DATA, "roms", row.rom));
+    await uploadRomViaWelcome(page, path.join(DATA, "roms", row.rom));
 
     await page.getByRole("button", { name: "New Machine..." }).click();
     const model = page.locator("#cfg-model");
@@ -134,7 +107,7 @@ for (const machine of MACHINES) {
         await terminalRun(page, `jit.enabled = ${on}`);
         expect(await terminalEval(page, "jit.enabled")).toBe(String(on));
         await page.waitForTimeout(2_000);
-        const mips = await measureOnce(page);
+        const mips = await measureOnce(page, WINDOW_SECS);
         results[exec].push(mips);
         console.log(
           `PERFBENCH label=${LABEL} machine=${machine} exec=${exec} pair=${pair} mips=${mips.toFixed(2)}`,

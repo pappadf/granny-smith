@@ -36,11 +36,11 @@ import * as path from "node:path";
 import { stageOpfsText } from "../helpers/web2-fs";
 import { gsEvalInPage } from "../helpers/web2-eval";
 import { CONSOLE_OUTPUT, terminalRun as typeLine } from "../helpers/terminal";
+import { DATA } from "../helpers/paths";
 
 const terminalRun = (page: Page, line: string) =>
   typeLine(page, line, { settleMs: 250 });
 
-const DATA = path.resolve(__dirname, "../../data");
 const ROM = path.join(DATA, "roms/pmg3dt-pmg3mt-78f57389.rom");
 const DISK = path.join(DATA, "systems/mac_os_x_10_0_3_2gb_g3_minimal_aqua.dmg");
 const SIDECAR = path.join(

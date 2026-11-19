@@ -38,6 +38,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { gotoWeb2, stageOpfsFileStreaming } from '../helpers/web2-fs';
 import { gsCallInPage, gsEvalInPage } from '../helpers/web2-eval';
+import { uploadRomViaWelcome } from '../helpers/upload';
 
 // Real pacing, not web2's default Faster: its re-chime timing is measured
 // at real-time pacing.
@@ -144,11 +145,7 @@ test('pm6100 + Mac OS 8.1 HD boots exactly once — also on a previously-used im
   await gotoWeb2(page);
 
   // Upload the ROM the way the user does: the Welcome "Load ROM..." button.
-  const [chooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Load ROM...' }).click(),
-  ]);
-  await chooser.setFiles(PDM_ROM);
+  await uploadRomViaWelcome(page, PDM_ROM);
   await expect(page.locator('.toast .msg').filter({ hasText: 'added' }).first()).toBeVisible({
     timeout: 120_000,
   });

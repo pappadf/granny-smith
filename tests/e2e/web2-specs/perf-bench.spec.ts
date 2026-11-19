@@ -29,6 +29,9 @@ import { test, expect, type Page } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
 import { terminalRun as typeLine, terminalEval } from '../helpers/terminal';
+import { DATA } from '../helpers/paths';
+import { uploadRomViaWelcome } from '../helpers/upload';
+import { probeSample } from '../helpers/perf';
 
 // Real pacing, not web2's default Faster: it measures pacing itself.
 test.use({ gsSpeed: 'paced' });
@@ -37,7 +40,6 @@ test.use({ gsSpeed: 'paced' });
 const terminalRun = (page: Page, line: string) =>
   typeLine(page, line, { settleMs: 250 });
 
-const DATA = path.resolve(__dirname, '../../data');
 const SE30_ROM = path.join(DATA, 'roms', 'iix-iicx-se30-97221136.rom');
 
 const LABEL = process.env.PERF_LABEL ?? 'unlabeled';
@@ -46,24 +48,6 @@ const WINDOW_SECS = Number(process.env.PERF_WINDOW_SECS ?? 8);
 
 // Atomically sample {instr_count, host_wall_ns} inside the worker via a
 // single echo expansion, keyed so stale terminal echoes can't match.
-let probeSeq = 0;
-async function probeSample(
-  page: Page,
-): Promise<{ instr: number; wallNs: number }> {
-  for (let attempt = 0; attempt < 30; attempt++) {
-    const key = `pb${++probeSeq}`;
-    await terminalRun(
-      page,
-      `echo "${key}=\${machine.cpu.instr_count},\${scheduler.host_wall_ns}"`,
-    );
-    await page.waitForTimeout(400);
-    const text = await page.locator('.console-output').innerText();
-    const m = text.match(new RegExp(`${key}=(\\d+),(\\d+)`));
-    if (m) return { instr: Number(m[1]), wallNs: Number(m[2]) };
-  }
-  throw new Error('terminal sample probe never answered');
-}
-
 // Measure `windows` intervals of WINDOW_SECS and report MIPS per window plus
 // the live multiplier alongside each sample.
 async function measureWindows(
@@ -98,11 +82,7 @@ test('perf-bench: accelerated + turbo throughput (tracked numbers)', async ({
   await gotoWeb2(page);
 
   // SE/30 ROM via the Welcome "Load ROM..." button; built-in video.
-  const [romChooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Load ROM...' }).click(),
-  ]);
-  await romChooser.setFiles(SE30_ROM);
+  await uploadRomViaWelcome(page, SE30_ROM);
 
   // New Machine: SE/30, 8 MB, no media.
   await page.getByRole('button', { name: 'New Machine...' }).click();

@@ -32,6 +32,8 @@ import { test, expect, type Page } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
 import { terminalRun as typeLine, terminalEcho } from '../helpers/terminal';
+import { DATA } from '../helpers/paths';
+import { uploadRomViaWelcome } from '../helpers/upload';
 
 // Real pacing, not web2's default Faster: the splash capture relies on the
 // paced boot sitting at the splash until the spec stops the machine.
@@ -41,7 +43,6 @@ test.use({ gsSpeed: 'paced' });
 const terminalRun = (page: Page, line: string) =>
   typeLine(page, line, { settleMs: 250 });
 
-const DATA = path.resolve(__dirname, '../../data');
 const IICX_ROM = path.join(DATA, 'roms', 'iix-iicx-se30-97221136.rom');
 const JMFB_VROM = path.join(DATA, 'roms', 'mdc-8-24-revb-d1629664.vrom');
 const FD_IMAGE = path.join(DATA, 'systems', 'System_7_0_1.image');
@@ -155,11 +156,7 @@ for (const mode of MODES) {
     await gotoWeb2(page);
     await stageOpfsFile(page, '/opfs/images/vrom/mdc-8-24-revb-d1629664.vrom', JMFB_VROM);
     await stageOpfsFile(page, '/opfs/images/fd/System_7_0_1.image', FD_IMAGE);
-    const [chooser] = await Promise.all([
-      page.waitForEvent('filechooser'),
-      page.getByRole('button', { name: 'Load ROM...' }).click(),
-    ]);
-    await chooser.setFiles(IICX_ROM);
+    await uploadRomViaWelcome(page, IICX_ROM);
 
     // New Machine: IIcx + this test's mode + the System 7.0.1 floppy.
     await page.getByRole('button', { name: 'New Machine...' }).click();

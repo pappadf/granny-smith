@@ -25,8 +25,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { gotoWeb2 } from "../helpers/web2-fs";
 import { gsCallInPage, gsEvalInPage } from "../helpers/web2-eval";
+import { DATA } from "../helpers/paths";
+import { uploadRomViaWelcome } from "../helpers/upload";
 
-const DATA = path.resolve(__dirname, "../../data");
 const IICX_ROM = path.join(DATA, "roms", "iix-iicx-se30-97221136.rom");
 const JMFB_VROM = path.join(DATA, "roms", "mdc-8-24-revb-d1629664.vrom");
 
@@ -83,11 +84,7 @@ test('mid-session vROM upload is offered: "(auto)" boot content-matches it witho
 
   // 2. Upload the IIcx ROM via the Welcome button (autoBootOnRom=false there,
   //    so nothing boots yet). Stored content-addressed under its checksum.
-  const [chooser] = await Promise.all([
-    page.waitForEvent("filechooser"),
-    page.getByRole("button", { name: "Load ROM..." }).click(),
-  ]);
-  await chooser.setFiles(IICX_ROM);
+  await uploadRomViaWelcome(page, IICX_ROM);
   await expect(
     page
       .locator(".toast .msg")

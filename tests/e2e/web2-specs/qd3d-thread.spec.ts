@@ -17,33 +17,16 @@
 // Everything goes through the shipped Terminal panel.
 
 import { test, expect, type Page } from '../helpers/test';
-import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
 import { terminalRun as typeLine, terminalEval } from '../helpers/terminal';
+import { uploadRomViaWelcome } from '../helpers/upload';
+import { STORED_ROM, TNT_ROM, cfgWrite, hex } from '../helpers/tnt';
 
 const terminalRun = (page: Page, line: string) =>
   typeLine(page, line, { settleMs: 250 });
 
-const DATA = path.resolve(__dirname, '../../data');
-const TNT_ROM = path.join(DATA, 'roms', 'pm7500-pm8500-pm9500-96cd923d.rom');
-const STORED_ROM = '/opfs/images/rom/96cd923d-c241cd82bf90797a';
-
-// Bandit 1's config ports are little-endian and machine.memory.poke is a
-// raw big-endian bus view, so config literals are byte-swapped; the card's
-// own BAR and the frame in RAM are big-endian and go out as they are.
-function swap32(v: number): number {
-  return (((v & 0xff) << 24) | ((v & 0xff00) << 8) | ((v >>> 8) & 0xff00) | ((v >>> 24) & 0xff)) >>> 0;
-}
-const hex = (v: number): string => '0x' + (v >>> 0).toString(16).toUpperCase().padStart(8, '0');
-
-// One PCI config-space dword write through Bandit 1's ports: socket A1 is
-// device 13, one-hot IDSEL $00200000.
-async function cfgWrite(page: Page, reg: number, value: number): Promise<void> {
-  await terminalRun(page, `machine.memory.poke.l(0xF2800000, ${hex(swap32(0x00002000 | reg))})`);
-  await terminalRun(page, `machine.memory.poke.l(0xF2C00000, ${hex(swap32(value))})`);
-  await terminalRun(page, `machine.memory.poke.l(0xF2800000, 0)`);
-}
-
+// The card's own BAR and the frame in RAM are big-endian and go out as
+// they are; only Bandit 1's config ports take swapped literals (cfgWrite).
 const put = (page: Page, addr: number, value: number) =>
   terminalRun(page, `machine.memory.poke.l(${hex(addr)}, ${hex(value)})`);
 
@@ -58,11 +41,7 @@ test('the QuickDraw 3D card renders on a Web Worker, and a frame lands when it c
   test.setTimeout(6 * 60 * 1000);
   await gotoWeb2(page);
 
-  const [chooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Load ROM...' }).click(),
-  ]);
-  await chooser.setFiles(TNT_ROM);
+  await uploadRomViaWelcome(page, TNT_ROM);
   await expect(
     page.locator('.toast .msg').filter({ hasText: 'pm7500-pm8500-pm9500-96cd923d.rom added' }),
   ).toBeVisible({ timeout: 60_000 });

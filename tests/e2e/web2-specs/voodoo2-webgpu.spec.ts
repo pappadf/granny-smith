@@ -45,7 +45,7 @@ import {
   composeScript,
   storeTntRom,
   terminalRun,
-} from "../helpers/voodoo2";
+} from "../helpers/tnt";
 
 test.use({ launchOptions: { args: [...BASE_ARGS, ...WEBGPU_ARGS] } });
 
