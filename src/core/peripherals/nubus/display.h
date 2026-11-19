@@ -430,6 +430,23 @@ static inline void display_sync_pixels(display_t *d) {
         d->sync_pixels(d->sync_ctx);
 }
 
+// Mark everything the frontend caches from `d` stale (geometry, pixels,
+// palette and response curve), as a construction or a restore must.
+static inline void display_mark_all_dirty(display_t *d) {
+    d->shape_dirty = true;
+    d->clut_dirty = true;
+    d->fb_dirty = true;
+    d->response_dirty = true;
+}
+
+// Seed a 256-entry palette with an opaque grey ramp, the power-up CLUT that
+// keeps the canvas from being blank before the guest's driver programs one
+// (its first cscSetEntries overwrites it).
+static inline void display_seed_gray_ramp(rgba8_t clut[256]) {
+    for (int i = 0; i < 256; i++)
+        clut[i] = (rgba8_t){.r = (uint8_t)i, .g = (uint8_t)i, .b = (uint8_t)i, .a = 255};
+}
+
 // Blank the visible raster of a fully-populated descriptor to black.
 //
 // Only `bits[0 .. stride*height)` is touched — NOT the whole VRAM

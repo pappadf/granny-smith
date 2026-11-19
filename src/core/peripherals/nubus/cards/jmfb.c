@@ -450,12 +450,7 @@ static void init_power_on_state(jmfb_priv_t *p, const nubus_monitor_t *monitor, 
     // Initial CLUT — a simple grayscale ramp so the canvas isn't blank
     // before the OS programs a palette.  The driver's first cscSetEntries
     // will overwrite this.
-    for (int i = 0; i < 256; i++) {
-        p->clut[i].r = (uint8_t)i;
-        p->clut[i].g = (uint8_t)i;
-        p->clut[i].b = (uint8_t)i;
-        p->clut[i].a = 255;
-    }
+    display_seed_gray_ramp(p->clut);
 }
 
 static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {

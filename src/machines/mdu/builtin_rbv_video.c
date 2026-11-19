@@ -192,19 +192,11 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
     p->display.clut = p->clut; // narrowed to the active window below
     p->display.clut_len = 256;
     p->display.crt_response = NULL; // 13" RGB gamma is near-identity
-    p->display.shape_dirty = true;
-    p->display.clut_dirty = true;
-    p->display.fb_dirty = true;
-    p->display.response_dirty = true;
+    display_mark_all_dirty(&p->display);
 
     // Seed a grayscale ramp so the canvas isn't blank before the OS programs
     // a palette via the VDAC (mirrors jmfb's init ramp).
-    for (int i = 0; i < 256; i++) {
-        p->clut[i].r = (uint8_t)i;
-        p->clut[i].g = (uint8_t)i;
-        p->clut[i].b = (uint8_t)i;
-        p->clut[i].a = 255;
-    }
+    display_seed_gray_ramp(p->clut);
 
     rbv_video_apply_clut_window(p);
 

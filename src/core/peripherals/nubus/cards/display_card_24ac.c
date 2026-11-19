@@ -823,19 +823,11 @@ static void set_poweron_defaults(display_card_24ac_priv_t *p, bool cold) {
     p->display.clut = p->clut;
     p->display.clut_len = 256;
     p->display.crt_response = NULL; // identity until a monitor needs gamma
-    p->display.shape_dirty = true;
-    p->display.clut_dirty = true;
-    p->display.fb_dirty = true;
-    p->display.response_dirty = true;
+    display_mark_all_dirty(&p->display);
 
     // Initial CLUT — grayscale ramp so the canvas isn't blank before the OS
     // programs a palette; the driver's first cscSetEntries overwrites it.
-    for (int i = 0; i < 256; i++) {
-        p->clut[i].r = (uint8_t)i;
-        p->clut[i].g = (uint8_t)i;
-        p->clut[i].b = (uint8_t)i;
-        p->clut[i].a = 255;
-    }
+    display_seed_gray_ramp(p->clut);
 }
 
 static bool video_mode_lookup(const char *id, const nubus_monitor_t **out_monitor, int *out_depth_bpp);
