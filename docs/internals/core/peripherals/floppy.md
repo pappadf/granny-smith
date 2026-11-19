@@ -1,6 +1,7 @@
 # Floppy — the IWM/SWIM controller model (`floppy.c`)
 
-`src/core/peripherals/floppy.c` (with `floppy_gcr.c` and `floppy_swim.c`)
+`src/core/peripherals/floppy.c` (with `floppy_gcr.c` and `floppy_swim.c`;
+the 6-and-2 GCR codec under the track encoder is `src/core/storage/gcr.c`)
 models the Macintosh floppy controller in its IWM-only form (Mac Plus) and
 the SWIM's dual IWM/ISM form (SE/30 and the II family), together with the
 drives behind it. The controller-driven SWIM III and New Age chips have

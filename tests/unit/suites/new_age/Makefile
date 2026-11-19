@@ -15,7 +15,8 @@ TEST_SRCS    := test.c
 TEST_HARNESS := none
 STUBS        := assert
 EXTRA_SRCS   := ../../../../src/core/peripherals/new_age.c \
-                ../../../../src/core/peripherals/floppy_gcr.c
+                ../../../../src/core/peripherals/floppy_gcr.c \
+                ../../../../src/core/storage/gcr.c
 EXTRA_LDFLAGS := -lm
 # The real image_t accessors; the rest of the image layer is faked here
 EXTRA_SRCS += ../../../../src/core/storage/image_access.c

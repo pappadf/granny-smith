@@ -84,6 +84,35 @@ TEST(moof_round_trip_800k) {
     free(tags);
 }
 
+// A MOOF the writer makes is a file other tools read: its bytes are pinned,
+// for an 800K disk with tags and a 400K disk without, by the CRC-32 of the
+// whole file.
+TEST(moof_encode_golden) {
+    static const struct {
+        uint32_t sectors;
+        bool tags;
+        uint32_t want;
+    } cases[] = {
+        {SECTORS_800K, true,  0xD6B36BBAu},
+        {SECTORS_400K, false, 0x6494F05Fu},
+    };
+    for (size_t c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+        uint8_t *data = malloc(cases[c].sectors * 512);
+        uint8_t *tags = cases[c].tags ? malloc(cases[c].sectors * MOOF_TAG_BYTES) : NULL;
+        fill(data, tags, cases[c].sectors, 7);
+        uint8_t *f = NULL;
+        size_t len = 0;
+        ASSERT_EQ_INT(0, moof_encode(data, cases[c].sectors, tags, 0, &f, &len));
+        uint32_t crc = codec_crc32(0, f, len);
+        if (crc != cases[c].want)
+            printf("  case %zu: crc 0x%08X\n", c, crc);
+        ASSERT_EQ_INT((int)crc, (int)cases[c].want);
+        free(f);
+        free(tags);
+        free(data);
+    }
+}
+
 TEST(moof_round_trip_400k_without_tags) {
     uint8_t *data = malloc(SECTORS_400K * 512);
     fill(data, NULL, SECTORS_400K, 2);
@@ -307,6 +336,7 @@ TEST(moof_unwraps_through_the_registry) {
 
 int main(void) {
     RUN(moof_round_trip_800k);
+    RUN(moof_encode_golden);
     RUN(moof_round_trip_400k_without_tags);
     RUN(moof_track_rotated_mid_byte);
     RUN(moof_damage_is_reported);
