@@ -20,6 +20,7 @@
 #include "pci.h"
 
 #include "card.h"
+#include "card_registry.h"
 #include "checkpoint.h"
 #include "config_space.h"
 #include "display.h"
@@ -150,43 +151,11 @@ const pci_card_kind_t *const *pci_card_registry(void) {
 }
 
 const pci_card_kind_t *pci_card_find(const char *id) {
-    if (!id || !*id)
-        return NULL;
-    for (const pci_card_kind_t *const *p = g_card_registry; *p; p++) {
-        if (strcmp((*p)->id, id) == 0)
-            return *p;
-    }
-    return NULL;
-}
-
-// Compare two ids ignoring underscores, so a near-miss typo earns a
-// did-you-mean (the nubus_card_suggest rule).
-static bool ids_match_sans_underscores(const char *a, const char *b) {
-    while (*a == '_')
-        a++;
-    while (*b == '_')
-        b++;
-    while (*a && *b) {
-        if (*a != *b)
-            return false;
-        a++;
-        b++;
-        while (*a == '_')
-            a++;
-        while (*b == '_')
-            b++;
-    }
-    return *a == '\0' && *b == '\0';
+    return card_registry_find((const void *const *)g_card_registry, id);
 }
 
 const char *pci_card_suggest(const char *id) {
-    if (!id || !*id)
-        return NULL;
-    for (const pci_card_kind_t *const *p = g_card_registry; *p; p++) {
-        if (ids_match_sans_underscores((*p)->id, id))
-            return (*p)->id;
-    }
-    return NULL;
+    return card_registry_suggest((const void *const *)g_card_registry, id);
 }
 
 // Card ↔ socket compatibility, COMPUTED from the two declarations: the
@@ -725,15 +694,6 @@ static const char *socket_card_id(const pci_slot_decl_t *s, const slot_opts_t *e
     return s->default_card;
 }
 
-// Format a refusal into the caller's buffer and say no.
-__attribute__((format(printf, 3, 4))) static bool refuse(char *why, size_t len, const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(why, len, fmt, ap);
-    va_end(ap);
-    return false;
-}
-
 bool pci_slot_entry_check(const pci_slot_decl_t *slots, const char *model, const slot_opts_t *e, bool roms_final,
                           char *why, size_t why_len) {
     const pci_slot_decl_t *d = NULL;
@@ -742,53 +702,57 @@ bool pci_slot_entry_check(const pci_slot_decl_t *slots, const char *model, const
             d = s;
     }
     if (!d || d->kind == PCI_SLOT_ABSENT)
-        return refuse(why, why_len, "PCI slot %d on model '%s' takes no card", e->slot, model);
+        return card_refuse(why, why_len, "PCI slot %d on model '%s' takes no card", e->slot, model);
     const pci_card_kind_t *k = NULL;
     bool named = false;
     if (e->empty) {
         if (d->kind != PCI_SLOT_SOCKET)
-            return refuse(why, why_len, "PCI slot %d on model '%s' is built in and cannot be emptied", e->slot, model);
+            return card_refuse(why, why_len, "PCI slot %d on model '%s' is built in and cannot be emptied", e->slot,
+                               model);
     } else if (e->card[0]) {
         k = pci_card_find(e->card);
         if (!k) {
             const char *near = pci_card_suggest(e->card);
             if (near)
-                return refuse(why, why_len, "unknown card id '%s' — did you mean '%s'? (see catalog.pci_cards)",
-                              e->card, near);
-            return refuse(why, why_len, "unknown card id '%s' (see catalog.pci_cards)", e->card);
+                return card_refuse(why, why_len, "unknown card id '%s' — did you mean '%s'? (see catalog.pci_cards)",
+                                   e->card, near);
+            return card_refuse(why, why_len, "unknown card id '%s' (see catalog.pci_cards)", e->card);
         }
         bool fits = d->kind == PCI_SLOT_SOCKET ? pci_card_fits_socket(d, k)
                                                : (d->builtin_card_id && strcmp(d->builtin_card_id, k->id) == 0);
         if (!fits)
-            return refuse(why, why_len, "card '%s' fits no slot on model '%s' (see catalog.profile(\"%s\").pci_slots)",
-                          e->card, model, model);
+            return card_refuse(why, why_len,
+                               "card '%s' fits no slot on model '%s' (see catalog.profile(\"%s\").pci_slots)", e->card,
+                               model, model);
         named = d->kind == PCI_SLOT_SOCKET;
     } else {
         k = pci_card_find(d->kind == PCI_SLOT_SOCKET ? d->default_card : d->builtin_card_id);
     }
     if (e->video_mode[0] || e->custom_mode[0])
-        return refuse(why, why_len, "PCI slot %d takes no video mode (a PCI display card senses its monitor)", e->slot);
+        return card_refuse(why, why_len, "PCI slot %d takes no video mode (a PCI display card senses its monitor)",
+                           e->slot);
     for (int i = 0; i < e->n_options; i++) {
         if (!k || !k->accepts_option || !k->accepts_option(e->options[i].key, e->options[i].value))
-            return refuse(why, why_len, "slot %d's card '%s' does not take option %s=%s", e->slot, k ? k->id : "(none)",
-                          e->options[i].key, e->options[i].value);
+            return card_refuse(why, why_len, "slot %d's card '%s' does not take option %s=%s", e->slot,
+                               k ? k->id : "(none)", e->options[i].key, e->options[i].value);
     }
     if (e->rom[0]) {
         prom_id_t pid;
         if (!prom_identify_card(e->rom, &pid))
-            return refuse(why, why_len,
-                          "prom '%s' is not a recognised PCI expansion ROM (see catalog.proms.identify for what it is "
-                          "instead)",
-                          e->rom);
+            return card_refuse(
+                why, why_len,
+                "prom '%s' is not a recognised PCI expansion ROM (see catalog.proms.identify for what it is "
+                "instead)",
+                e->rom);
         if (!k || strcmp(pid.card_id, pci_card_rom_id(k)) != 0)
-            return refuse(why, why_len, "prom '%s' is for card '%s', not slot %d's '%s'", e->rom, pid.card_id, e->slot,
-                          k ? k->id : "(none)");
+            return card_refuse(why, why_len, "prom '%s' is for card '%s', not slot %d's '%s'", e->rom, pid.card_id,
+                               e->slot, k ? k->id : "(none)");
     }
     if (roms_final && named && k && k->requires_prom &&
         !prom_card_resolvable(pci_card_rom_id(k), e->rom[0] ? e->rom : NULL))
-        return refuse(why, why_len,
-                      "card '%s' (PCI slot %d) needs a PCI expansion ROM but no offered .prom file provides it", k->id,
-                      e->slot);
+        return card_refuse(why, why_len,
+                           "card '%s' (PCI slot %d) needs a PCI expansion ROM but no offered .prom file provides it",
+                           k->id, e->slot);
     return true;
 }
 

@@ -7,6 +7,7 @@
 
 #include "nubus.h"
 #include "card.h"
+#include "card_registry.h"
 #include "checkpoint.h"
 #include "declrom.h"
 #include "display.h"
@@ -82,33 +83,7 @@ const nubus_card_kind_t *const *nubus_card_registry(void) {
 }
 
 const nubus_card_kind_t *nubus_card_find(const char *id) {
-    if (!id)
-        return NULL;
-    for (const nubus_card_kind_t *const *p = g_card_registry; *p; p++) {
-        if (strcmp((*p)->id, id) == 0)
-            return *p;
-    }
-    return NULL;
-}
-
-// Compare two ids ignoring underscores — "8_24gc" for "824gc", "mdc_824"
-// for "mdc_8_24": a typo that close deserves a suggestion.
-static bool ids_match_sans_underscores(const char *a, const char *b) {
-    while (*a == '_')
-        a++;
-    while (*b == '_')
-        b++;
-    while (*a && *b) {
-        if (*a != *b)
-            return false;
-        a++;
-        b++;
-        while (*a == '_')
-            a++;
-        while (*b == '_')
-            b++;
-    }
-    return *a == '\0' && *b == '\0';
+    return card_registry_find((const void *const *)g_card_registry, id);
 }
 
 // Parse "monitor_Nbpp" against a kind's monitor catalogue -- see card.h.
@@ -156,13 +131,7 @@ bool nubus_monitor_mode_lookup(const nubus_monitor_t *list, const char *id, cons
 }
 
 const char *nubus_card_suggest(const char *id) {
-    if (!id || !*id)
-        return NULL;
-    for (const nubus_card_kind_t *const *p = g_card_registry; *p; p++) {
-        if (ids_match_sans_underscores((*p)->id, id))
-            return (*p)->id;
-    }
-    return NULL;
+    return card_registry_suggest((const void *const *)g_card_registry, id);
 }
 
 // Parse a "WxHxD" custom-mode spec into width/height/depth.  Returns true
@@ -294,15 +263,6 @@ void nubus_entry_default_monitor(const nubus_card_kind_t *k, slot_opts_t *e) {
     e->sense = row->sense_code;
 }
 
-// Format a refusal into the caller's buffer and say no.
-__attribute__((format(printf, 3, 4))) static bool refuse(char *why, size_t len, const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(why, len, fmt, ap);
-    va_end(ap);
-    return false;
-}
-
 bool nubus_slot_entry_check(const nubus_slot_decl_t *slots, const char *model, const slot_opts_t *e, bool roms_final,
                             char *why, size_t why_len) {
     const nubus_slot_decl_t *d = NULL;
@@ -311,81 +271,85 @@ bool nubus_slot_entry_check(const nubus_slot_decl_t *slots, const char *model, c
             d = s;
     }
     if (!d || (d->kind != NUBUS_SLOT_SOCKET && d->kind != NUBUS_SLOT_BUILTIN))
-        return refuse(why, why_len, "NuBus slot $%X on model '%s' takes no card", e->slot, model);
+        return card_refuse(why, why_len, "NuBus slot $%X on model '%s' takes no card", e->slot, model);
     const nubus_card_kind_t *k = NULL;
     bool named = false;
     if (e->empty) {
         if (d->kind != NUBUS_SLOT_SOCKET)
-            return refuse(why, why_len, "NuBus slot $%X on model '%s' is built in and cannot be emptied", e->slot,
-                          model);
+            return card_refuse(why, why_len, "NuBus slot $%X on model '%s' is built in and cannot be emptied", e->slot,
+                               model);
     } else if (e->card[0]) {
         k = nubus_card_find(e->card);
         if (!k) {
             const char *near = nubus_card_suggest(e->card);
             if (near)
-                return refuse(why, why_len, "unknown card id '%s' — did you mean '%s'? (see catalog.nubus_cards)",
-                              e->card, near);
-            return refuse(why, why_len, "unknown card id '%s' (see catalog.nubus_cards)", e->card);
+                return card_refuse(why, why_len, "unknown card id '%s' — did you mean '%s'? (see catalog.nubus_cards)",
+                                   e->card, near);
+            return card_refuse(why, why_len, "unknown card id '%s' (see catalog.nubus_cards)", e->card);
         }
         if (!nubus_card_fits_slot(d, k))
-            return refuse(why, why_len, "card '%s' fits no slot on model '%s' (see catalog.profile(\"%s\").cards)",
-                          e->card, model, model);
+            return card_refuse(why, why_len, "card '%s' fits no slot on model '%s' (see catalog.profile(\"%s\").cards)",
+                               e->card, model, model);
         named = d->kind == NUBUS_SLOT_SOCKET;
     } else {
         k = nubus_card_find(d->kind == NUBUS_SLOT_SOCKET ? d->default_card : d->builtin_card_id);
     }
     if (e->substitute && !(k && k->substitute))
-        return refuse(why, why_len, "slot $%X's card '%s' has no substitute ROM", e->slot, k ? k->id : "(none)");
+        return card_refuse(why, why_len, "slot $%X's card '%s' has no substitute ROM", e->slot, k ? k->id : "(none)");
     if (e->substitute && e->rom[0])
-        return refuse(why, why_len, "slot $%X: a ROM file and the substitute ROM cannot both be given", e->slot);
+        return card_refuse(why, why_len, "slot $%X: a ROM file and the substitute ROM cannot both be given", e->slot);
     // The rows the card drives with the ROM it will run.  A boot decides the
     // ROM from the files offered now; a restore's entry already says.
     bool substitute = roms_final ? nubus_entry_substitute(k, e) : e->substitute;
     const nubus_monitor_t *rows = nubus_kind_monitors(k, substitute);
     if (e->video_mode[0]) {
         if (!nubus_video_mode_known(e->video_mode))
-            return refuse(why, why_len, "unknown video-mode id '%s'", e->video_mode);
+            return card_refuse(why, why_len, "unknown video-mode id '%s'", e->video_mode);
         if (!k || !nubus_monitor_mode_lookup(rows, e->video_mode, NULL, NULL))
-            return refuse(why, why_len, "video mode '%s' does not belong to slot $%X's card '%s'%s", e->video_mode,
-                          e->slot, k ? k->id : "(none)", substitute ? " with its substitute ROM" : "");
+            return card_refuse(why, why_len, "video mode '%s' does not belong to slot $%X's card '%s'%s", e->video_mode,
+                               e->slot, k ? k->id : "(none)", substitute ? " with its substitute ROM" : "");
     }
     if (e->custom_mode[0]) {
         const char *bad = NULL;
         uint32_t w = 0, h = 0, depth = 0;
         if (!nubus_custom_mode_parse(e->custom_mode, &w, &h, &depth, &bad))
-            return refuse(why, why_len, "custom_mode '%s' invalid: %s", e->custom_mode, bad);
+            return card_refuse(why, why_len, "custom_mode '%s' invalid: %s", e->custom_mode, bad);
         if (!k || !k->custom_mode_fits)
-            return refuse(why, why_len, "slot $%X's card '%s' takes no custom geometry", e->slot, k ? k->id : "(none)");
+            return card_refuse(why, why_len, "slot $%X's card '%s' takes no custom geometry", e->slot,
+                               k ? k->id : "(none)");
         if (!k->custom_mode_fits(w, h, depth, &bad))
-            return refuse(why, why_len, "custom_mode '%s' on slot $%X's card '%s': %s", e->custom_mode, e->slot, k->id,
-                          bad);
+            return card_refuse(why, why_len, "custom_mode '%s' on slot $%X's card '%s': %s", e->custom_mode, e->slot,
+                               k->id, bad);
     }
     if (e->monitor[0] && strcmp(e->monitor, "none") != 0) {
         bool known = false;
         for (const nubus_monitor_t *m = rows; m && m->id; m++)
             known |= strcmp(m->id, e->monitor) == 0;
         if (!known)
-            return refuse(why, why_len, "monitor '%s' is not one slot $%X's card '%s' drives", e->monitor, e->slot,
-                          k ? k->id : "(none)");
+            return card_refuse(why, why_len, "monitor '%s' is not one slot $%X's card '%s' drives", e->monitor, e->slot,
+                               k ? k->id : "(none)");
     }
     if (e->n_options)
-        return refuse(why, why_len, "slot $%X's card '%s' takes no option '%s'", e->slot, k ? k->id : "(none)",
-                      e->options[0].key);
+        return card_refuse(why, why_len, "slot $%X's card '%s' takes no option '%s'", e->slot, k ? k->id : "(none)",
+                           e->options[0].key);
     if (e->rom[0]) {
         vrom_id_t vid;
         if (!vrom_identify_card(e->rom, &vid))
-            return refuse(why, why_len, "vrom '%s' is not a recognised declaration ROM", e->rom);
+            return card_refuse(why, why_len, "vrom '%s' is not a recognised declaration ROM", e->rom);
         if (!k || strcmp(vid.card_id, k->id) != 0)
-            return refuse(why, why_len, "vrom '%s' is for card '%s', not slot $%X's '%s'", e->rom, vid.card_id, e->slot,
-                          k ? k->id : "(none)");
+            return card_refuse(why, why_len, "vrom '%s' is for card '%s', not slot $%X's '%s'", e->rom, vid.card_id,
+                               e->slot, k ? k->id : "(none)");
     }
     // A card the document named must find a declaration ROM before the
     // running machine is touched: Apple's, or its substitute.  A slot's own
     // default without either fails to build, leaving the slot empty with a log.
-    if (roms_final && named && k && !substitute && vrom_card_catalogued(k->id) &&
+    // The kind says whether it needs one (requires_vrom, PCI's requires_prom
+    // rule), not whether the ROM catalogue happens to list it.
+    if (roms_final && named && k && !substitute && k->requires_vrom &&
         !vrom_card_resolvable(k->id, e->rom[0] ? e->rom : NULL))
-        return refuse(why, why_len, "card '%s' (slot $%X) needs a declaration ROM but no offered vROM file provides it",
-                      k->id, e->slot);
+        return card_refuse(why, why_len,
+                           "card '%s' (slot $%X) needs a declaration ROM but no offered vROM file provides it", k->id,
+                           e->slot);
     return true;
 }
 
