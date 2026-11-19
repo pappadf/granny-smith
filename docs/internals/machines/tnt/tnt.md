@@ -124,7 +124,9 @@ The board model is the chipset skeleton plus the DMA architecture:
   window — *not* its I/O window, which is at the bridge base).  The model populates the interrupt block (`+$20..$2C`), the
   VIA1/Cuda window (`+$16000`, 16 byte-wide registers on `$200` centres),
   both ESCC apertures (`+$12000` legacy / `+$13000` native, one shared
-  Z8530 core), BoxID (`+$1A000`), the banked NVRAM (`+$1D000` bank
+  Z8530 core; only `+$00`–`+$3F` of the native aperture reach the cell,
+  the decode and the ESCC's DBDMA ports being the ones Heathrow uses,
+  `runtime/escc_dbdma.c`), BoxID (`+$1A000`), the banked NVRAM (`+$1D000` bank
   port / `+$1F000` data window on `$10` centres, 8 KB), and the eleven
   DBDMA channel windows (`+$8000+n*$100`).  It also carries AWACS
   (`+$14000`; output on DBDMA channel 8, input on channel 9, which records

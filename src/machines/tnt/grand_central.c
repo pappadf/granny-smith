@@ -29,6 +29,7 @@
 
 #include "checkpoint.h"
 #include "dbdma.h"
+#include "escc_dbdma.h"
 #include "irq_controller.h"
 #include "log.h"
 #include "machine.h"
@@ -788,77 +789,17 @@ void tnt_gc_pci_attach(config_t *cfg, pci_bus_t *bus, checkpoint_t *cp) {
     pci_device_part(cfg, cp, &st->gc_dev, "pci.gc");
 }
 
-// Map an ESCC-aperture offset (+$13000: B ctl +$00 / B data +$10 /
-// A ctl +$20 / A data +$30) onto the SCC cell's classic address pins
-// (A/B on address bit 1, D/C on bit 2 — the legacy-aperture layout the
-// shared model decodes natively).
-static uint32_t escc_pins(uint32_t off) {
-    uint32_t ab = (off >> 5) & 1u; // A channel at +$20
-    uint32_t dc = (off >> 4) & 1u; // data register at +$10
-    return (ab << 1) | (dc << 2);
-}
-
-// --- The ESCC's four DBDMA channels ------------------------------------------
+// --- The ESCC aperture and its four DBDMA channels --------------------------
 //
-// Grand Central gives each SCC channel a transmit and a receive DBDMA
-// channel (4/5 for A, 6/7 for B).  An OUTPUT command hands the port a run
-// of bytes, which go to the channel's data register one at a time -- the
-// same path as a CPU store to it, so local loopback (WR14 LOOP) and the
-// cross-channel cable behave as they do under PIO; an INPUT command asks
-// for what the channel has received, which the port serves from the
-// receive queue and kicks again whenever a data register is written.
-// (Bytes arriving from the host side -- `machine.scc.a.receive` -- reach
-// an INPUT program at its next kick; the diagnostic utility's DMA tests
-// are loopbacks and never wait on that.)  Fitted to the Network Server
-// Diagnostic Utility's serial DMA tests (SccDMA: channel 4 OUTPUT of an
-// 80-byte pattern, channel 5 INPUT of the loopback, byte-for-byte compare).
+// The aperture decode and the DBDMA ports are shared with Heathrow
+// (runtime/escc_dbdma.c).  Grand Central gives each SCC channel a transmit
+// and a receive DBDMA channel: 4/5 for A, 6/7 for B.
 
-#define SCC_DMA_TX(ch) (4u + 2u * (ch))
-#define SCC_DMA_RX(ch) (5u + 2u * (ch))
-
-static uint32_t scc_data_pins(unsigned ch) {
-    // The cell's address pins: A/B on bit 1 (A = 1), D/C on bit 2 -- so
-    // channel 0 (A) data is 6, channel 1 (B) data is 4 (escc_pins).
-    return (ch == 0 ? 2u : 0u) | 4u;
-}
-
-static void scc_dma_kick_rx(config_t *cfg) {
-    tnt_state_t *st = tnt_st(cfg);
-    if (!st->dbdma)
-        return;
-    for (unsigned ch = 0; ch < 2; ch++)
-        if (dbdma_active(st->dbdma, SCC_DMA_RX(ch)))
-            dbdma_kick(st->dbdma, SCC_DMA_RX(ch));
-}
-
-static int scc_port_out(void *ctx, const uint8_t *buf, int len) {
-    tnt_scc_dma_ctx_t *c = (tnt_scc_dma_ctx_t *)ctx;
-    const memory_interface_t *mi = scc_get_memory_interface(c->cfg->scc);
-    for (int n = 0; n < len; n++)
-        mi->write_uint8(c->cfg->scc, scc_data_pins(c->ch), buf[n]);
-    scc_dma_kick_rx(c->cfg);
-    return len;
-}
-
-static int scc_port_in(void *ctx, uint8_t *buf, int len) {
-    tnt_scc_dma_ctx_t *c = (tnt_scc_dma_ctx_t *)ctx;
-    const memory_interface_t *mi = scc_get_memory_interface(c->cfg->scc);
-    int n = 0;
-    while (n < len && scc_channel_rx_pending(c->cfg->scc, c->ch) > 0)
-        buf[n++] = mi->read_uint8(c->cfg->scc, scc_data_pins(c->ch));
-    return n;
-}
+#define SCC_DMA_TX_A 4 // channel A transmit (B transmit is 6)
+#define SCC_DMA_RX_A 5 // channel A receive (B receive is 7)
 
 void tnt_scc_dma_init(config_t *cfg) {
-    tnt_state_t *st = tnt_st(cfg);
-    for (unsigned ch = 0; ch < 2; ch++) {
-        st->scc_dma_ctx[ch].cfg = cfg;
-        st->scc_dma_ctx[ch].ch = ch;
-        dbdma_port_t tx = {.out = scc_port_out, .in = NULL, .s_bits = NULL, .ctx = &st->scc_dma_ctx[ch]};
-        dbdma_port_t rx = {.out = NULL, .in = scc_port_in, .s_bits = NULL, .ctx = &st->scc_dma_ctx[ch]};
-        dbdma_set_port(st->dbdma, SCC_DMA_TX(ch), &tx);
-        dbdma_set_port(st->dbdma, SCC_DMA_RX(ch), &rx);
-    }
+    escc_dbdma_init(&tnt_st(cfg)->escc_dma, cfg, tnt_st(cfg)->dbdma, SCC_DMA_TX_A, SCC_DMA_RX_A);
 }
 
 // One island byte: the guest's read, or an inspection (`peek`) routed to each
@@ -881,7 +822,8 @@ static uint8_t gc_access8(config_t *cfg, uint32_t offset, bool peek) {
         // low offset bits carry the chip's A/B and D/C pins directly.
         return memory_iface_read8(scc_get_memory_interface(cfg->scc), cfg->scc, offset - OFF_SCCLEG, peek);
     case OFF_ESCC:
-        return memory_iface_read8(scc_get_memory_interface(cfg->scc), cfg->scc, escc_pins(offset - OFF_ESCC), peek);
+        // Only the four channel registers (+$00..+$3F) reach the cell
+        return escc_aperture_read(cfg->scc, offset - OFF_ESCC, peek);
     case OFF_NVPORT:
         return tnt_st(cfg)->gc.nvram_bank;
     case OFF_NVDATA:
@@ -956,8 +898,8 @@ void tnt_gc_write8(config_t *cfg, uint32_t offset, uint8_t value) {
         scc_get_memory_interface(cfg->scc)->write_uint8(cfg->scc, offset - OFF_SCCLEG, value);
         return;
     case OFF_ESCC:
-        scc_get_memory_interface(cfg->scc)->write_uint8(cfg->scc, escc_pins(offset - OFF_ESCC), value);
-        scc_dma_kick_rx(cfg);
+        if (!escc_aperture_write(&tnt_st(cfg)->escc_dma, cfg->scc, offset - OFF_ESCC, value))
+            LOG(3, "ESCC +$%03X = $%02X (not a channel register; ignored)", offset - OFF_ESCC, value);
         return;
     case OFF_NVPORT:
         // The bank-select port is ONE byte-wide cell on the $10 centre.

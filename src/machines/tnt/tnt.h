@@ -49,6 +49,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "escc_dbdma.h"
 #include "swim3.h"
 #include "swim3_dbdma.h"
 
@@ -319,13 +320,6 @@ extern const builtin_video_desc_t tnt_builtin_video;
 // checkpoint.  tnt.c holds one.
 #include "scsi_mesh.h"
 
-// The ESCC's DBDMA channels (4/5 = A tx/rx, 6/7 = B tx/rx; grand_central.c):
-// one port context per SCC channel.
-typedef struct tnt_scc_dma_ctx {
-    config_t *cfg;
-    unsigned ch;
-} tnt_scc_dma_ctx_t;
-
 // The MACE Ethernet's register state (tnt_mace.c).  Plain data,
 // checkpointed whole.
 typedef struct tnt_mace {
@@ -371,7 +365,9 @@ typedef struct tnt_state {
     // The on-board MACE Ethernet at +$11000 (tnt_mace.c), Macintosh boards
     // only; checkpointed in the tnt.io part after the floppy ring.
     tnt_mace_t mace;
-    tnt_scc_dma_ctx_t scc_dma_ctx[2]; // the ESCC DBDMA ports' contexts (rebuilt at init)
+    // The ESCC's DBDMA ports (4/5 = A tx/rx, 6/7 = B tx/rx; runtime/
+    // escc_dbdma.c): rebuilt at init, not checkpointed.
+    escc_dbdma_t escc_dma;
     // The Network Server's GBUS island (gbus.c / lcd.c).  Built only for
     // TNT_BOARD_SHINER; inert and unread on the Macintosh boards.
     tnt_gbus_t gbus;

@@ -42,6 +42,7 @@
 #include "ata.h" // the two ATA cells
 #include "checkpoint.h"
 #include "davbus.h" // the DAVbus sound cell (Screamer face)
+#include "escc_dbdma.h"
 #include "machine.h"
 #include "machine_profile.h"
 #include "memory.h"
@@ -220,12 +221,6 @@ typedef struct gos_i2c {
     uint8_t ptr; // current EEPROM byte pointer (last subaddress)
 } gos_i2c_t;
 
-// ESCC DBDMA port contexts (one per SCC channel).
-typedef struct gos_scc_dma_ctx {
-    config_t *cfg;
-    unsigned ch;
-} gos_scc_dma_ctx_t;
-
 // === Family state ===========================================================
 // Callback context of one ATA cell (IRQ, DMA kick, the dma_pump event's
 // source): names its machine and cell.  Owned by the machine's state, so two
@@ -254,7 +249,7 @@ typedef struct gossamer_state {
     // (runtime/swim3_dbdma.c; the ring is checkpointed, the wiring is not).
     swim3_t swim3;
     swim3_dbdma_t fdport;
-    gos_scc_dma_ctx_t scc_dma_ctx[2];
+    escc_dbdma_t escc_dma; // the ESCC's four DBDMA ports (runtime/escc_dbdma.c; rebuilt at init)
     // The two ATA cells (+$20000, +$21000) and the SCSI bus that carries
     // their ATAPI CD-ROMs (machine.atapi): gossamer_ata.c.
     ata_channel_t ata[2];

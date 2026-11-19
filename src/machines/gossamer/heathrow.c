@@ -57,6 +57,7 @@
 #include "checkpoint.h"
 #include "davbus.h"
 #include "dbdma.h"
+#include "escc_dbdma.h"
 #include "irq_controller.h"
 #include "log.h"
 #include "machine.h"
@@ -341,68 +342,14 @@ static void nvram_write(config_t *cfg, uint32_t off, uint8_t value) {
 // ESCC apertures and its DBDMA ports
 // ============================================================
 
-// MacRISC aperture (+$13000: B ctl +$00 / B data +$10 / A ctl +$20 /
-// A data +$30) onto the cell's classic pins (A/B on bit 1, D/C on bit 2).
-static uint32_t escc_pins(uint32_t off) {
-    uint32_t ab = (off >> 5) & 1u;
-    uint32_t dc = (off >> 4) & 1u;
-    return (ab << 1) | (dc << 2);
-}
-
-// Only those four registers (+$00..+$3F) reach the cell; the aperture has
-// others past them.  The Open Transport LocalTalk driver writes $00 then
-// $01 to +$A0 before the frames it sends, and decoding that as A control
-// (bits 5:4 = 2) left channel A's register pointer at 1: the driver's next
-// "select RR3" write on channel A then landed in WR1 as $03, turning on
-// channel A's Tx and External/Status interrupts behind its back.
-static bool escc_is_channel_reg(uint32_t off) {
-    return off < 0x40u;
-}
-
-#define SCC_DMA_TX(ch) (GOS_DMA_SCCA_TX + 2u * (ch))
-#define SCC_DMA_RX(ch) (GOS_DMA_SCCA_RX + 2u * (ch))
-
-static uint32_t scc_data_pins(unsigned ch) {
-    return (ch == 0 ? 2u : 0u) | 4u;
-}
-
-static void scc_dma_kick_rx(config_t *cfg) {
-    gossamer_state_t *st = gos_st(cfg);
-    if (!st->dbdma)
-        return;
-    for (unsigned ch = 0; ch < 2; ch++)
-        if (dbdma_active(st->dbdma, (int)SCC_DMA_RX(ch)))
-            dbdma_kick(st->dbdma, (int)SCC_DMA_RX(ch));
-}
-
-static int scc_port_out(void *ctx, const uint8_t *buf, int len) {
-    gos_scc_dma_ctx_t *c = (gos_scc_dma_ctx_t *)ctx;
-    const memory_interface_t *mi = scc_get_memory_interface(c->cfg->scc);
-    for (int n = 0; n < len; n++)
-        mi->write_uint8(c->cfg->scc, scc_data_pins(c->ch), buf[n]);
-    scc_dma_kick_rx(c->cfg);
-    return len;
-}
-
-static int scc_port_in(void *ctx, uint8_t *buf, int len) {
-    gos_scc_dma_ctx_t *c = (gos_scc_dma_ctx_t *)ctx;
-    const memory_interface_t *mi = scc_get_memory_interface(c->cfg->scc);
-    int n = 0;
-    while (n < len && scc_channel_rx_pending(c->cfg->scc, c->ch) > 0)
-        buf[n++] = mi->read_uint8(c->cfg->scc, scc_data_pins(c->ch));
-    return n;
-}
+// The aperture decode (only the four channel registers +$00..+$3F reach
+// the cell) and the four DBDMA ports are shared with Grand Central
+// (runtime/escc_dbdma.c); Heathrow puts channel A's on GOS_DMA_SCCA_TX/RX
+// and B's two above each.
 
 void gos_scc_dma_init(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
-    for (unsigned ch = 0; ch < 2; ch++) {
-        st->scc_dma_ctx[ch].cfg = cfg;
-        st->scc_dma_ctx[ch].ch = ch;
-        dbdma_port_t tx = {.out = scc_port_out, .in = NULL, .s_bits = NULL, .ctx = &st->scc_dma_ctx[ch]};
-        dbdma_port_t rx = {.out = NULL, .in = scc_port_in, .s_bits = NULL, .ctx = &st->scc_dma_ctx[ch]};
-        dbdma_set_port(st->dbdma, (int)SCC_DMA_TX(ch), &tx);
-        dbdma_set_port(st->dbdma, (int)SCC_DMA_RX(ch), &rx);
-    }
+    escc_dbdma_init(&st->escc_dma, cfg, st->dbdma, (int)GOS_DMA_SCCA_TX, (int)GOS_DMA_SCCA_RX);
 }
 
 // ============================================================
@@ -435,9 +382,7 @@ static uint8_t hr_access8(void *ctx, uint32_t off, bool peek) {
     case HR_SCCLEG:
         return memory_iface_read8(scc_get_memory_interface(cfg->scc), cfg->scc, off - HR_SCCLEG, peek);
     case HR_ESCC:
-        if (!escc_is_channel_reg(off - HR_ESCC))
-            return 0;
-        return memory_iface_read8(scc_get_memory_interface(cfg->scc), cfg->scc, escc_pins(off - HR_ESCC), peek);
+        return escc_aperture_read(cfg->scc, off - HR_ESCC, peek);
     case HR_MESH:
         return peek ? mesh_peek(st->mesh, off - HR_MESH) : mesh_read(st->mesh, off - HR_MESH);
     case HR_BMAC:
@@ -505,12 +450,8 @@ static void hr_write8(void *ctx, uint32_t off, uint8_t value) {
         scc_get_memory_interface(cfg->scc)->write_uint8(cfg->scc, off - HR_SCCLEG, value);
         return;
     case HR_ESCC:
-        if (!escc_is_channel_reg(off - HR_ESCC)) {
+        if (!escc_aperture_write(&st->escc_dma, cfg->scc, off - HR_ESCC, value))
             LOG(3, "ESCC +$%03X = $%02X (not a channel register; ignored)", off - HR_ESCC, value);
-            return;
-        }
-        scc_get_memory_interface(cfg->scc)->write_uint8(cfg->scc, escc_pins(off - HR_ESCC), value);
-        scc_dma_kick_rx(cfg);
         return;
     case HR_MESH:
         mesh_write(st->mesh, off - HR_MESH, value);

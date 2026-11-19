@@ -121,7 +121,8 @@ BMAC's on bank-2 sources 32/33 (`gos_dbdma_source`).
   - only `+$00`–`+$3F` of the `+$13000` aperture reach the cell.  The
     driver writes `$00`, `$01` to `+$A0` before a frame; decoded as A
     control, that left channel A's register pointer at 1, and the driver's
-    next "select RR3" landed in WR1;
+    next "select RR3" landed in WR1 (the decode is shared with Grand
+    Central: `runtime/escc_dbdma.c`);
   - the Tx Underrun/EOM External/Status interrupt (WR15 bit 6), raised
     when the frame has drained from the Tx FIFO, not inside the WR0
     "reset Tx underrun/EOM" write that ends it — the driver sets the flag

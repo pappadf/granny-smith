@@ -243,9 +243,27 @@ const memory_interface_t *via_get_memory_interface(via_t *via) {
     (void)via;
     return &s_stub_if;
 }
+
+// The SCC side records what reaches the cell, so the ESCC aperture's decode
+// (which offsets are channel registers) can be asserted.
+static int s_scc_writes; // stores that reached the cell
+static int s_scc_reads; // loads that reached the cell
+static uint8_t scc_rec_read8(void *d, uint32_t a) {
+    (void)d;
+    (void)a;
+    s_scc_reads++;
+    return 0x5A;
+}
+static void scc_rec_write8(void *d, uint32_t a, uint8_t v) {
+    (void)d;
+    (void)a;
+    (void)v;
+    s_scc_writes++;
+}
+static memory_interface_t s_scc_if = {.read_uint8 = scc_rec_read8, .write_uint8 = scc_rec_write8};
 const memory_interface_t *scc_get_memory_interface(scc_t *scc) {
     (void)scc;
-    return &s_stub_if;
+    return &s_scc_if;
 }
 
 // ============================================================================
@@ -557,6 +575,27 @@ TEST(test_dbdma_island_routing) {
     ASSERT_EQ_INT((int)(reg_read(0x8800 + DBDMA_REG_STATUS) & DBDMA_RUN), 0);
 }
 
+// The ESCC aperture (+$13000) carries the four channel registers at
+// +$00..+$3F and nothing else reaches the cell: Open Transport's LocalTalk
+// driver stores $00, $01 to +$A0, which decoded as channel A control once
+// left the WR pointer at 1 (the Heathrow guard, now shared).
+#define OFF_ESCC_TEST 0x13000u
+TEST(test_escc_aperture_decodes_channel_regs_only) {
+    fixture();
+    s_scc_writes = 0;
+    s_scc_reads = 0;
+    tnt_gc_write8(&s_cfg, OFF_ESCC_TEST + 0xA0u, 0x00);
+    tnt_gc_write8(&s_cfg, OFF_ESCC_TEST + 0xA0u, 0x01);
+    ASSERT_EQ_INT(s_scc_writes, 0);
+    ASSERT_EQ_INT(tnt_gc_read8(&s_cfg, OFF_ESCC_TEST + 0xA0u), 0);
+    ASSERT_EQ_INT(s_scc_reads, 0);
+    // The channel registers themselves still reach the cell
+    tnt_gc_write8(&s_cfg, OFF_ESCC_TEST + 0x20u, 0x09); // A control
+    ASSERT_EQ_INT(s_scc_writes, 1);
+    ASSERT_EQ_INT(tnt_gc_read8(&s_cfg, OFF_ESCC_TEST + 0x30u), 0x5A); // A data
+    ASSERT_EQ_INT(s_scc_reads, 1);
+}
+
 int main(void) {
     RUN(test_mklinux_init_and_ack);
     RUN(test_mode0_pulse_w1c);
@@ -567,5 +606,6 @@ int main(void) {
     RUN(test_nvram_banking);
     RUN(test_boxid);
     RUN(test_dbdma_island_routing);
+    RUN(test_escc_aperture_decodes_channel_regs_only);
     return 0;
 }
