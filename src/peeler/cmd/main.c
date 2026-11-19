@@ -141,23 +141,12 @@ static peel_archive_t *open_unwrapped(const char *path, peel_err_t **err) {
     peel_source_t *src = peel_source_file(path, err);
     if (!src)
         return NULL;
-    peel_archive_t *a = peel_open(src, NULL, NULL, err);
+    peel_source_t *inner = peel_innermost_source(src, PEEL_UNWRAP_RSRC, err);
     peel_source_release(src);
-    for (int depth = 0; a && peel_is_wrapper(a) && depth < 32; depth++) {
-        peel_archive_t *inner = NULL;
-        for (int fork = PEEL_FORK_DATA; fork <= PEEL_FORK_RSRC && !inner; fork++) {
-            peel_err_t *e = NULL;
-            peel_source_t *payload = peel_open_fork(a, 0, fork, &e);
-            if (payload && peel_source_size(payload) > 0)
-                inner = peel_open(payload, NULL, NULL, &e);
-            peel_err_free(e);
-            peel_source_release(payload);
-        }
-        if (!inner)
-            break; // the wrapper's one file is what there is
-        peel_close(a);
-        a = inner;
-    }
+    if (!inner)
+        return NULL;
+    peel_archive_t *a = peel_open(inner, NULL, NULL, err);
+    peel_source_release(inner);
     return a;
 }
 

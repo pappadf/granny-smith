@@ -226,43 +226,15 @@ typedef struct {
 } import_job_t;
 
 // The archive to take a member from: through wrapper layers whose payload
-// is itself an archive (a .sit.hqx), each payload being the compressed --
-// small -- side.  A new reference, or NULL with a message.
+// is itself an archive (a .sit.hqx, or a .sea.bin with the archive in its
+// resource fork), each payload being the compressed -- small -- side.  A new
+// reference, or NULL with a message.
 static peel_source_t *innermost_archive(peel_source_t *src, char *err, size_t cap) {
-    peel_source_t *cur = peel_source_retain(src);
-    for (int depth = 0; depth < 4; depth++) {
-        peel_err_t *pe = NULL;
-        peel_archive_t *a = peel_open(cur, NULL, NULL, &pe);
-        if (!a) {
-            snprintf(err, cap, "not an archive: %s", pe ? peel_err_msg(pe) : "unrecognised");
-            peel_err_free(pe);
-            peel_source_release(cur);
-            return NULL;
-        }
-        if (!peel_is_wrapper(a) || peel_count(a) != 1) {
-            peel_close(a);
-            return cur;
-        }
-        peel_source_t *payload = peel_open_fork(a, 0, PEEL_FORK_DATA, &pe);
-        peel_close(a);
-        if (!payload) {
-            peel_err_free(pe);
-            return cur;
-        }
-        peel_probe_t p;
-        bool inner = false;
-        if (peel_probe_init(&p, payload) == 0) {
-            const peel_format_desc_t *d = peel_identify(&p);
-            inner = d != NULL;
-            peel_probe_free(&p);
-        }
-        if (!inner) {
-            peel_source_release(payload);
-            return cur; // the wrapper's payload is the medium
-        }
-        peel_source_release(cur);
-        cur = payload;
-    }
+    peel_err_t *pe = NULL;
+    peel_source_t *cur = peel_innermost_source(src, PEEL_UNWRAP_RSRC, &pe);
+    if (!cur)
+        snprintf(err, cap, "not an archive: %s", pe ? peel_err_msg(pe) : "unrecognised");
+    peel_err_free(pe);
     return cur;
 }
 

@@ -21,8 +21,8 @@
 LOG_USE_CATEGORY_NAME("image")
 
 // How many wrapper layers are peeled before giving up (a file that detects
-// as a wrapper of itself, forever).
-#define MAX_UNWRAP 8
+// as a wrapper of itself, forever): peeler's one cap.
+#define MAX_UNWRAP PEEL_MAX_WRAP_DEPTH
 
 // ============================================================================
 // DiskCopy 4.2

@@ -317,6 +317,24 @@ peel_buf_t peel_read_fork(peel_archive_t *a, int i, int fork, peel_err_t **err);
 
 void peel_close(peel_archive_t *a);
 
+// The most wrapper layers seen through (a .sit.hqx is one, a .sea.bin.gz
+// two): the one cap for peel_innermost_source, peel()'s wrapper loop and the
+// core's format registry.
+#define PEEL_MAX_WRAP_DEPTH 8
+
+// peel_innermost_source flag: also look for the archive in a wrapper's
+// resource fork when its data fork holds none (a .sea.bin).
+#define PEEL_UNWRAP_RSRC 1
+
+// See through wrapper layers: while `src` opens as a wrapper whose one
+// entry's payload (its data fork, then with PEEL_UNWRAP_RSRC its resource
+// fork) is non-empty and itself opens as an archive, step into the payload.
+// Returns a new reference to the innermost archive's source -- `src` itself
+// when there is no layer to step through, the wrapper itself when its
+// payload is no archive -- or NULL + *err when `src` is not a recognised
+// format at all.
+peel_source_t *peel_innermost_source(peel_source_t *src, int flags, peel_err_t **err);
+
 // === Per-Format Entry Points (Wrappers: buf → buf) ===
 
 // BinHex 4.0 (.hqx) — peel wrapper, return data fork only.

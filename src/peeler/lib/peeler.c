@@ -15,8 +15,9 @@
 // Constants and Macros
 // ============================================================================
 
-// Maximum number of wrapper layers to peel before giving up (guards against
-// degenerate or malicious inputs that detect as wrappers in a loop).
+// Maximum depth of archives nested in archives' members before giving up
+// (guards against degenerate or malicious inputs).  The wrapper layers of
+// one input are capped by PEEL_MAX_WRAP_DEPTH (peeler.h).
 #define MAX_PEEL_DEPTH 32
 
 // ============================================================================
@@ -333,7 +334,7 @@ static peel_file_list_t peel_depth(const uint8_t *src, size_t len, const char *k
     const char *prev_key = NULL;
 
     // Repeatedly strip wrapper layers until an archive or unknown data is found.
-    for (int wrap_depth = 0; wrap_depth < MAX_PEEL_DEPTH; wrap_depth++) {
+    for (int wrap_depth = 0; wrap_depth < PEEL_MAX_WRAP_DEPTH; wrap_depth++) {
         const peel_format_desc_t *fmt = detect_buffer(cur, cur_len);
         if (!fmt) {
             break; // Nothing recognised — fall through to single-file wrap

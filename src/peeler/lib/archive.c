@@ -130,6 +130,56 @@ void peel_close(peel_archive_t *a) {
     archive_unref(a);
 }
 
+// The payload of wrapper `a` (its one entry's fork `fork`) when it is
+// non-empty and opens as an archive itself; NULL otherwise.
+static peel_source_t *wrapper_archive_payload(peel_archive_t *a, int fork) {
+    peel_err_t *e = NULL;
+    peel_source_t *payload = peel_open_fork(a, 0, fork, &e);
+    peel_err_free(e);
+    if (!payload)
+        return NULL;
+    peel_archive_t *inner = NULL;
+    if (peel_source_size(payload) > 0) {
+        e = NULL;
+        inner = peel_open(payload, NULL, NULL, &e);
+        peel_err_free(e);
+    }
+    if (!inner) {
+        peel_source_release(payload);
+        return NULL;
+    }
+    peel_close(inner);
+    return payload;
+}
+
+peel_source_t *peel_innermost_source(peel_source_t *src, int flags, peel_err_t **err) {
+    peel_archive_t *a = peel_open(src, NULL, NULL, err);
+    if (!a)
+        return NULL;
+    peel_source_t *cur = peel_source_retain(src);
+    for (int depth = 0; depth < PEEL_MAX_WRAP_DEPTH && peel_is_wrapper(a) && peel_count(a) == 1; depth++) {
+        // The data fork first; the resource fork only when asked and the
+        // data fork holds no archive.
+        peel_source_t *payload = wrapper_archive_payload(a, PEEL_FORK_DATA);
+        if (!payload && (flags & PEEL_UNWRAP_RSRC))
+            payload = wrapper_archive_payload(a, PEEL_FORK_RSRC);
+        peel_close(a);
+        a = NULL;
+        if (!payload)
+            break; // the wrapper's one file is what there is
+        peel_source_release(cur);
+        cur = payload;
+        peel_err_t *e = NULL;
+        a = peel_open(cur, NULL, NULL, &e);
+        peel_err_free(e);
+        if (!a)
+            break; // opened once already; cannot fail short of memory
+    }
+    if (a)
+        peel_close(a);
+    return cur;
+}
+
 // ============================================================================
 // Accessors
 // ============================================================================
