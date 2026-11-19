@@ -24,19 +24,6 @@
 #include <stdint.h>
 
 // ============================================================================
-// Controller Type Constants
-// ============================================================================
-
-// IWM-only controller (Mac Plus)
-#define FLOPPY_TYPE_IWM 0
-// SWIM dual-mode controller (SE/30)
-#define FLOPPY_TYPE_SWIM 1
-// SWIM III, controller-driven (PDM 6100/7100/8100)
-#define FLOPPY_TYPE_SWIM3 2
-// New Age (µPD72070), controller-driven (Quadra 840AV / Centris 660AV)
-#define FLOPPY_TYPE_NEW_AGE 3
-
-// ============================================================================
 // Drive and Track Geometry
 // ============================================================================
 
