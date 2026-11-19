@@ -22,6 +22,7 @@
 #include "card.h"
 #include "checkpoint.h"
 #include "config_space.h"
+#include "display.h"
 #include "log.h"
 #include "machine_parts.h"
 #include "machine_profile.h" // machine_substrate_t (slot-IRQ routing)
@@ -1100,6 +1101,37 @@ void pci_reset(pci_root_t *root) {
         pci_device_regions_changed(devs[i]);
         if (devs[i]->ops && devs[i]->ops->reset)
             devs[i]->ops->reset(devs[i], root->cfg);
+    }
+}
+
+// The power-cycle default: a device with VRAM comes up as a cold one does --
+// power-on registers, VRAM lost, the raster black -- rather than showing the
+// last session's picture until its ROM redraws (the NuBus default's twin).
+static void pci_device_power_on_default(pci_device_t *dev, config_t *cfg) {
+    uint8_t *vram = NULL;
+    size_t size = dev->ops->vram ? dev->ops->vram(dev, &vram) : 0;
+    if (!size || !vram)
+        return; // nothing the power held
+    // Registers first: the blank below paints the power-on raster
+    if (dev->ops->reset)
+        dev->ops->reset(dev, cfg);
+    memset(vram, 0, size);
+    if (dev->ops->display)
+        display_blank_raster(dev->ops->display(dev));
+}
+
+void pci_power_on(pci_root_t *root) {
+    if (!root)
+        return;
+    pci_device_t *devs[PCI_MAX_TOTAL_DEVICES];
+    int n = pci_collect(root, devs, PCI_MAX_TOTAL_DEVICES);
+    for (int i = 0; i < n; i++) {
+        if (!devs[i]->ops)
+            continue;
+        if (devs[i]->ops->power_on)
+            devs[i]->ops->power_on(devs[i], root->cfg);
+        else
+            pci_device_power_on_default(devs[i], root->cfg);
     }
 }
 

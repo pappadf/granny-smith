@@ -8,6 +8,7 @@
 #include "nubus.h"
 #include "card.h"
 #include "checkpoint.h"
+#include "display.h"
 #include "log.h"
 #include "machine_parts.h"
 #include "machine_profile.h" // machine_substrate_t (slot-IRQ routing)
@@ -695,15 +696,35 @@ void nubus_reset(nubus_bus_t *bus) {
     }
 }
 
-// A power cycle: every card's power_on hook (machine.restart; the /RESET
-// that follows is nubus_reset).
+// The power-cycle default: a card with VRAM comes up as a cold one does --
+// power-on registers, VRAM lost, the raster black -- rather than showing the
+// last session's picture until its ROM redraws.
+static void card_power_on_default(nubus_card_t *card, config_t *cfg) {
+    uint8_t *vram = NULL;
+    size_t size = card->ops->vram ? card->ops->vram(card, &vram) : 0;
+    if (!size || !vram)
+        return; // nothing the power held
+    // Registers first: the blank below paints the power-on raster
+    if (card->ops->reset)
+        card->ops->reset(card, cfg);
+    memset(vram, 0, size);
+    if (card->ops->display)
+        display_blank_raster(card->ops->display(card));
+}
+
+// A power cycle: every card's power_on hook, or the default (machine.restart;
+// the /RESET that follows is nubus_reset).
 void nubus_power_on(nubus_bus_t *bus) {
     if (!bus)
         return;
     for (int i = 0; i < NUBUS_MAX_SLOTS; i++) {
         nubus_card_t *card = bus->cards[i];
-        if (card && card->ops && card->ops->power_on)
+        if (!card || !card->ops)
+            continue;
+        if (card->ops->power_on)
             card->ops->power_on(card, bus->cfg);
+        else
+            card_power_on_default(card, bus->cfg);
     }
 }
 

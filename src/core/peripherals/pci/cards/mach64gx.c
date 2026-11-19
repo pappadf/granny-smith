@@ -3220,6 +3220,13 @@ static display_t *mach64_display(pci_device_t *dev) {
     return &m->display;
 }
 
+// The VRAM a power cycle loses (the bus default, pci_power_on).
+static size_t mach64_vram(pci_device_t *dev, uint8_t **base) {
+    mach64_t *m = (mach64_t *)dev->priv;
+    *base = m ? m->vram : NULL;
+    return m ? m->vram_size : 0;
+}
+
 // ============================================================
 // The vertical-blank interrupt
 // ============================================================
@@ -3509,6 +3516,7 @@ static const pci_device_ops_t mach64_ops = {
     .reset = mach64_reset,
     .name = mach64_name,
     .display = mach64_display,
+    .vram = mach64_vram,
     .on_vbl = mach64_on_vbl,
     .checkpoint_save = mach64_checkpoint_save,
     .checkpoint_restore = mach64_checkpoint_restore,
@@ -3519,6 +3527,7 @@ static const pci_device_ops_t ragepro_ops = {
     .reset = mach64_reset,
     .name = mach64_name,
     .display = mach64_display,
+    .vram = mach64_vram,
     .on_vbl = mach64_on_vbl,
     .cfg_read = ragepro_cfg_read,
     .checkpoint_save = mach64_checkpoint_save,

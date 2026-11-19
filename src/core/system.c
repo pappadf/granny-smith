@@ -338,6 +338,8 @@ void system_machine_power_cycle(void) {
     // is its substrate's power_on).
     if (cfg->nubus)
         nubus_power_on(cfg->nubus);
+    if (cfg->pci)
+        pci_power_on(cfg->pci); // and PCI display devices theirs
     system_machine_reset();
 }
 

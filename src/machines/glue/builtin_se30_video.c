@@ -57,6 +57,23 @@ typedef struct {
 _Static_assert(offsetof(se30_priv_t, display) < offsetof(se30_priv_t, vram),
                "SE/30 built-in video checkpoint range must end before the pointer block");
 
+// === Static helpers =========================================================
+
+// Cold video scans out black, not the white an all-zero 1 bpp buffer gives.
+// Blanks BOTH rasters: VIA1 PA6 picks the buffer and may select the
+// alternate before the OS draws, so blanking only the primary would still
+// flash white.  Raster only — the rest of VRAM is guest-readable memory
+// that is not pixels.
+static void blank_both_rasters(se30_priv_t *p) {
+    display_blank_raster(&p->display);
+    const uint8_t *scanned = p->display.bits;
+    // The other buffer of the two, whichever is being scanned
+    bool primary = scanned == p->vram + SE30_FB_PRIMARY_OFFSET;
+    p->display.bits = p->vram + (primary ? SE30_FB_ALTERNATE_OFFSET : SE30_FB_PRIMARY_OFFSET);
+    display_blank_raster(&p->display);
+    p->display.bits = scanned;
+}
+
 // === Card vtable ============================================================
 
 static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
@@ -114,16 +131,7 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
     p->display.stride = 512 / 8;
     p->display.format = PIXEL_1BPP_MSB;
     p->display.bits = p->vram + SE30_FB_PRIMARY_OFFSET;
-    // Cold boot scans out black, not the white an all-zero 1 bpp buffer gives.
-    // Blank BOTH rasters: VIA1 PA6 picks the buffer and may select the
-    // alternate before the OS draws, so blanking only the primary would still
-    // flash white.  Raster only — the rest of VRAM is guest-readable memory
-    // that is not pixels.
-    display_blank_raster(&p->display);
-    const uint8_t *primary = p->display.bits;
-    p->display.bits = p->vram + SE30_FB_ALTERNATE_OFFSET;
-    display_blank_raster(&p->display);
-    p->display.bits = primary;
+    blank_both_rasters(p);
     p->display.clut = NULL;
     p->display.clut_len = 0;
     p->display.shape_dirty = true;
@@ -131,6 +139,19 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
 
     card->priv = p;
     return 0;
+}
+
+// Power cycle: the slot-$E VRAM is lost, and the card comes up as a cold one
+// does -- both rasters black -- rather than showing the last session's frame.
+// Not the bus default, which blanks only the raster being scanned.
+static void card_power_on(nubus_card_t *card, config_t *cfg) {
+    (void)cfg;
+    se30_priv_t *p = card->priv;
+    if (!p)
+        return;
+    memset(p->vram, 0, SE30_VRAM_SIZE);
+    blank_both_rasters(p);
+    p->display.fb_dirty = true;
 }
 
 static void card_teardown(nubus_card_t *card, config_t *cfg) {
@@ -201,6 +222,7 @@ static const nubus_card_ops_t builtin_se30_video_ops = {
     // VBL from its frame timer (se30_trigger_vbl in se30.c, the board's
     // trigger_vbl), which is where that wiring lives on the real board.
     .on_vbl = NULL,
+    .power_on = card_power_on,
     .display = card_display,
 };
 

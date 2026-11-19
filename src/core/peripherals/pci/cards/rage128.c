@@ -1187,6 +1187,13 @@ static display_t *r128_display(pci_device_t *dev) {
     return (r && r->blank) ? &r->display : NULL;
 }
 
+// The VRAM a power cycle loses (the bus default, pci_power_on).
+static size_t r128_vram(pci_device_t *dev, uint8_t **base) {
+    rage128_t *r = (rage128_t *)dev->priv;
+    *base = r ? r->vram : NULL;
+    return r ? r->vram_size : 0;
+}
+
 // ============================================================
 // Interrupts
 // ============================================================
@@ -1494,6 +1501,7 @@ static const pci_device_ops_t r128_ops = {
     .cfg_write = r128_cfg_write,
     .name = r128_name,
     .display = r128_display,
+    .vram = r128_vram,
     .on_vbl = r128_on_vbl,
     .checkpoint_save = r128_checkpoint_save,
     .checkpoint_restore = r128_checkpoint_restore,

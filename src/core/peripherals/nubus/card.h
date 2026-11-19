@@ -52,8 +52,15 @@ typedef struct nubus_card_ops {
     // Called on a power cycle (machine.restart), before the /RESET that
     // follows it: the card loses what losing power loses -- VRAM -- and
     // comes up showing what a cold card shows.  A warm /RESET (above) keeps
-    // VRAM.  NULL hooks are safe and skipped.
+    // VRAM.  NULL takes the bus default (nubus_power_on): /RESET, zero the
+    // VRAM `vram` reports, and blank the raster -- a card overrides it only
+    // for state beyond that.
     void (*power_on)(nubus_card_t *card, config_t *cfg);
+
+    // The card's own VRAM, for the power-cycle default: its size, with the
+    // buffer in *base.  NULL (or 0) for a card with none, or whose
+    // framebuffer is the machine's main RAM.
+    size_t (*vram)(nubus_card_t *card, uint8_t **base);
 
     // Called from the family VBL trigger (via nubus_tick_vbl) once per
     // VBL.  Cards that drive their own VSync IRQ call nubus_assert_irq()

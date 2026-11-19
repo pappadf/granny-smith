@@ -731,6 +731,13 @@ static display_t *control_pci_display(pci_device_t *dev) {
     return tnt_control_display((config_t *)dev->priv);
 }
 
+// The VRAM a power cycle loses (the bus default, pci_power_on).
+static size_t control_pci_vram(pci_device_t *dev, uint8_t **base) {
+    tnt_state_t *st = tnt_st((config_t *)dev->priv);
+    *base = st->vram;
+    return TNT_VRAM_SIZE;
+}
+
 static const char *control_pci_name(const pci_device_t *dev) {
     (void)dev;
     return "Control";
@@ -744,6 +751,7 @@ static void control_pci_teardown(pci_device_t *dev, config_t *cfg) {
 static const pci_device_ops_t control_pci_ops = {
     .teardown = control_pci_teardown,
     .display = control_pci_display,
+    .vram = control_pci_vram,
     .name = control_pci_name,
 };
 

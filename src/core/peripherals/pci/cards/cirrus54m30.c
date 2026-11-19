@@ -1285,6 +1285,13 @@ static display_t *c54m30_display(pci_device_t *dev) {
     return (c && c->display.width && c->display.height) ? &c->display : NULL;
 }
 
+// The display memory a power cycle loses (the bus default, pci_power_on).
+static size_t c54m30_vram(pci_device_t *dev, uint8_t **base) {
+    c54m30_t *c = (c54m30_t *)dev->priv;
+    *base = c ? c->vram : NULL;
+    return c ? C54M30_VRAM : 0;
+}
+
 static void c54m30_reset(pci_device_t *dev, config_t *cfg) {
     (void)cfg;
     c54m30_t *c = (c54m30_t *)dev->priv;
@@ -1407,6 +1414,7 @@ static void c54m30_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
 
 static const pci_device_ops_t c54m30_ops = {
     .display = c54m30_display,
+    .vram = c54m30_vram,
     .reset = c54m30_reset,
     .teardown = c54m30_teardown,
     .checkpoint_save = c54m30_checkpoint_save,

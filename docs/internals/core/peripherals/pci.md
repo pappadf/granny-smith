@@ -148,6 +148,12 @@ checkpoint carries the slot entries it seated, which a checkpoint restore
 builds the slots from. (`machine.restart` builds nothing: the cards it
 power-cycles are the ones already seated.)
 
+A power cycle (`pci_power_on`, from `system_machine_power_cycle`) runs each
+device's `power_on`, or, for a device without one, the bus default over its
+`vram` hook (`pci_card.h`): reset, zero the VRAM, blank the raster, so a card
+does not keep showing the last session's frame -- the NuBus default's twin
+(`nubus_power_on`).
+
 ## Interrupts
 
 One line per slot: `/INTA`-`/INTD` are strapped together on these

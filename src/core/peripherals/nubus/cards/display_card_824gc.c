@@ -1176,6 +1176,13 @@ static display_t *card_display(nubus_card_t *card) {
     return p ? &p->display : NULL;
 }
 
+// The VRAM a power cycle loses (the bus default, nubus_power_on).
+static size_t card_vram(nubus_card_t *card, uint8_t **base) {
+    display_card_824gc_priv_t *p = card->priv;
+    *base = p ? p->vram : NULL;
+    return p ? GC824_VRAM_SIZE : 0;
+}
+
 // === Checkpoint ==============================================================
 //
 // The scalar state is ONE range (see display_card_824gc_priv.h: field order is
@@ -1347,6 +1354,7 @@ static const nubus_card_ops_t display_card_824gc_ops = {
     .reset = card_reset,
     .on_vbl = card_on_vbl,
     .display = card_display,
+    .vram = card_vram,
 };
 
 // === Factory + kind descriptor ==============================================

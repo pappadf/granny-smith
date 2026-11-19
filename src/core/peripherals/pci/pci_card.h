@@ -59,6 +59,15 @@ typedef struct pci_device_ops {
     void (*teardown)(pci_device_t *dev, config_t *cfg);
     void (*reset)(pci_device_t *dev, config_t *cfg); // PCI RST#
 
+    // A power cycle (machine.restart), ahead of the RST# that follows: the
+    // device loses what losing power loses.  NULL takes the bus default
+    // (pci_power_on): reset, zero the VRAM `vram` reports, blank the raster.
+    // A device overrides it only for state beyond that.
+    void (*power_on)(pci_device_t *dev, config_t *cfg);
+    // The device's own VRAM, for that default: its size, with the buffer in
+    // *base.  NULL (or 0) for a device with none.
+    size_t (*vram)(pci_device_t *dev, uint8_t **base);
+
     // Config space BEYOND the generic header.  The generic layer answers
     // IDs, class, command/status, the BARs, the expansion-ROM BAR and
     // $3C..$3F; a device that owns more (Bandit's $48/$50, a capability

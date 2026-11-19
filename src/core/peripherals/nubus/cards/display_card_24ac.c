@@ -1057,6 +1057,13 @@ static display_t *card_display(nubus_card_t *card) {
     return p ? &p->display : NULL;
 }
 
+// The VRAM a power cycle loses (the bus default, nubus_power_on).
+static size_t card_vram(nubus_card_t *card, uint8_t **base) {
+    display_card_24ac_priv_t *p = card->priv;
+    *base = p ? p->vram : NULL;
+    return p ? DISPLAY_CARD_24AC_VRAM_SIZE : 0;
+}
+
 // === Checkpoint =============================================================
 // VRAM is a private calloc (card_init), not part of the RAM image
 // memory_map_checkpoint saves, so without these a restored machine comes back
@@ -1114,6 +1121,7 @@ static const nubus_card_ops_t display_card_24ac_ops = {
     .reset = card_reset,
     .on_vbl = card_on_vbl,
     .display = card_display,
+    .vram = card_vram,
     .checkpoint_save = card_checkpoint_save,
     .checkpoint_restore = card_checkpoint_restore,
 };
