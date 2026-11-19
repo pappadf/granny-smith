@@ -215,9 +215,10 @@ int atalk_imagewriter_publish(bool on);
 // AppleTalk ImageWriter, a part of each machine, attaches under it.
 struct object *atalk_object(void);
 bool atalk_imagewriter_published(void);
-// The NBP object name ("Virtual ImageWriter"); renaming re-publishes.
+// The NBP object name ("Virtual ImageWriter"); renaming re-publishes.  The
+// name follows NBP's rule (atalk_nbp_name_check); -1 with `err` saying why.
 const char *atalk_imagewriter_name(void);
-int atalk_imagewriter_set_name(const char *name);
+int atalk_imagewriter_set_name(const char *name, char *err, size_t err_len);
 
 // === Printer (object model: `appletalk.printer`) ============================
 

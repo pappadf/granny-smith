@@ -11,6 +11,7 @@
 #include "gs_assert.h"
 #include "laserwriter_job.h"
 #include "log.h"
+#include "pap_server.h"
 #include "platform.h"
 #include "scheduler.h"
 #include "event/event.h"
@@ -30,17 +31,15 @@ LOG_USE_CATEGORY_NAME("pap");
 #define PRINTER_STATUS_OFFLINE   "status: offline" // disabled: not advertised, takes no jobs
 #define PRINTER_STATUS_BUSY      "status: print spooler processing job"
 #define PRINTER_ENTITY_TYPE      "LaserWriter"
-#define PAP_SENDDATA_RETRY_MS    8000u
 #define PAP_SENDDATA_RETRY_LIMIT 12
-#define PAP_SESSION_TIMEOUT_NS   (120ull * 1000000000ull)
-// Gap between a frame the printer has just sent (an OpenReply, a TRel, a
-// reply to the workstation's read) and its next SendData.  A real printer
-// takes far longer between reads; issuing the next request in the same
-// instant as the release of the previous one reached the LaserWriter
-// driver before its write completion had propagated, and it answered the
-// new sequence number with the buffer it had already sent (Inside AppleTalk
-// 2e, ch. 10, "Duplicate filtration": a new number means new data).
-#define PAP_SENDDATA_GAP_NS 10000000ull
+// PAP_SENDDATA_GAP_NS (pap_server.h) is the gap between a frame the printer
+// has just sent (an OpenReply, a TRel, a reply to the workstation's read)
+// and its next SendData.  A real printer takes far longer between reads;
+// issuing the next request in the same instant as the release of the
+// previous one reached the LaserWriter driver before its write completion
+// had propagated, and it answered the new sequence number with the buffer it
+// had already sent (Inside AppleTalk 2e, ch. 10, "Duplicate filtration": a
+// new number means new data).
 // Spool-only builds: after answering a query, the driver may send bare
 // "%%EOF" writes while it decides what to do next; they are ignored while the
 // printer waits for the job.  This many in a row means no job is coming, and
@@ -392,10 +391,7 @@ static int pap_build_status_payload(uint8_t socket_id, uint8_t flow_quantum, uin
                                     size_t out_max) {
     if (!out || out_max < (size_t)(5 + g_printer->status_len))
         return -1;
-    out[0] = socket_id;
-    out[1] = flow_quantum;
-    out[2] = (uint8_t)(result_code >> 8);
-    out[3] = (uint8_t)(result_code & 0xFF);
+    pap_status_prefix(out, socket_id, flow_quantum, result_code);
     out[4] = g_printer->status_len;
     if (g_printer->status_len > 0)
         memcpy(&out[5], g_printer->status_text, g_printer->status_len);
@@ -860,21 +856,6 @@ static void pap_close_request_complete(atp_request_handle_t *handle, atp_request
 static void pap_issue_close_conn(uint8_t conn_id, const atalk_socket_addr_t *addr) {
     if (!addr || addr->socket == 0 || conn_id == 0)
         return;
-    uint8_t user[4] = {conn_id, PAP_FUNC_CLOSE, 0, 0};
-    // Exactly-once, as every PAP request but Tickle is: the workstation's
-    // PAP keeps the CloseConnReply for a retransmission, which an ALO
-    // request would make it act on twice.  The release hint is SendData's.
-    atp_request_params_t params = {.dest = *addr,
-                                   .src_socket = ATALK_HOST_PAP_SOCKET,
-                                   .bitmap = 0x01,
-                                   .mode = ATP_TRANSACTION_XO,
-                                   .trel_timer_hint = 2,
-                                   .user = {0},
-                                   .payload = NULL,
-                                   .payload_len = 0,
-                                   .retry_timeout_ms = 2000,
-                                   .retry_limit = 5};
-    memcpy(params.user, user, sizeof(user));
     pap_close_request_ctx_t *ctx = (pap_close_request_ctx_t *)malloc(sizeof(pap_close_request_ctx_t));
     atp_request_callbacks_t callbacks = {0};
     if (ctx) {
@@ -883,7 +864,8 @@ static void pap_issue_close_conn(uint8_t conn_id, const atalk_socket_addr_t *add
     } else {
         LOG(1, "pap: unable to allocate CloseConn context for conn=%u", (unsigned)conn_id);
     }
-    atp_request_handle_t *handle = atp_request_submit(&params, ctx ? &callbacks : NULL, ctx);
+    atp_request_handle_t *handle =
+        pap_submit_close_conn(addr, ATALK_HOST_PAP_SOCKET, conn_id, ctx ? &callbacks : NULL, ctx);
     if (!handle) {
         LOG(1, "pap: failed to submit CloseConn request for conn=%u", (unsigned)conn_id);
         if (ctx)
@@ -1011,35 +993,12 @@ static bool pap_issue_senddata_request(void) {
         return false;
     }
 
-    uint8_t quantum = g_pap->session.server_flow_quantum ? g_pap->session.server_flow_quantum : PAP_MAX_FLOW_QUANTUM;
-    if (quantum > PAP_MAX_FLOW_QUANTUM)
-        quantum = PAP_MAX_FLOW_QUANTUM;
-    uint8_t bitmap = (quantum >= 8) ? 0xFF : (uint8_t)((1u << quantum) - 1u);
-    if (bitmap == 0)
-        bitmap = 1;
-
-    uint16_t seq = g_pap->session.next_send_seq++;
-    if (g_pap->session.next_send_seq == 0)
-        g_pap->session.next_send_seq = 1;
-
-    uint8_t user[4] = {g_pap->session.conn_id, PAP_FUNC_SENDDATA, (uint8_t)(seq >> 8), (uint8_t)(seq & 0xFF)};
-
-    atp_request_params_t params = {.dest = g_pap->session.client_addr,
-                                   .src_socket = ATALK_HOST_PAP_SOCKET,
-                                   .bitmap = bitmap,
-                                   .mode = ATP_TRANSACTION_XO,
-                                   .trel_timer_hint = 2,
-                                   .user = {0},
-                                   .payload = NULL,
-                                   .payload_len = 0,
-                                   .retry_timeout_ms = PAP_SENDDATA_RETRY_MS,
-                                   .retry_limit = PAP_SENDDATA_RETRY_LIMIT};
-    memcpy(params.user, user, sizeof(user));
-
+    uint16_t seq = pap_take_seq(&g_pap->session.next_send_seq);
     atp_request_callbacks_t callbacks = {.on_response = pap_handle_data_fragment,
                                          .on_complete = pap_handle_data_complete};
-
-    g_pap->session.send_handle = atp_request_submit(&params, &callbacks, &g_pap->session);
+    g_pap->session.send_handle = pap_submit_senddata(&g_pap->session.client_addr, ATALK_HOST_PAP_SOCKET,
+                                                     g_pap->session.conn_id, g_pap->session.server_flow_quantum, seq,
+                                                     PAP_SENDDATA_RETRY_LIMIT, &callbacks, &g_pap->session);
     if (!g_pap->session.send_handle) {
         LOG(1, "pap: failed to submit SendData request");
         pap_session_abort("senddata submit");
@@ -1049,8 +1008,8 @@ static bool pap_issue_senddata_request(void) {
     g_pap->session.awaiting_data = true;
     g_pap->session.inflight_seq = seq;
     pap_session_record_activity();
-    LOG(2, "pap: SendData conn=%u seq=%u bitmap=0x%02X pendingCredits=%u", g_pap->session.conn_id, seq, bitmap,
-        (unsigned)g_pap->session.pending_status_count);
+    LOG(2, "pap: SendData conn=%u seq=%u quantum=%u pendingCredits=%u", g_pap->session.conn_id, seq,
+        (unsigned)g_pap->session.server_flow_quantum, (unsigned)g_pap->session.pending_status_count);
     pap_log_session_state("senddata-issue");
     return true;
 }
@@ -1202,13 +1161,10 @@ static void pap_handle_data_complete(atp_request_handle_t *handle, atp_request_r
     }
 }
 
-// Handles incoming PAP OpenConn requests.  The OpenConnReply's result is
-// zero or PrinterBusy ($FFFF) -- the spec has no other refusal -- and the
-// workstation answers busy by retrying, without end.  So busy is said only
-// when the printer is: a disabled printer stays silent, as one switched off
-// would (it is not advertised either), and a malformed request is dropped;
-// either way the workstation's open times out with an error instead of
-// waiting forever on a printer that will never take the job.
+// Handles incoming PAP OpenConn requests.  Busy is said only when the
+// printer is: a disabled printer stays silent and a malformed request is
+// dropped (pap_open_answerable), so the workstation's open times out with an
+// error instead of waiting forever on a printer that will never take the job.
 static void pap_handle_open(const ddp_header_t *ddp, atp_packet_t *atp) {
     if (!ddp || !atp)
         return;
@@ -1216,12 +1172,9 @@ static void pap_handle_open(const ddp_header_t *ddp, atp_packet_t *atp) {
     uint16_t result = PAP_RESULT_OK;
     bool accepted = false;
 
-    if (!g_printer->enabled) {
-        LOG(2, "pap: OpenConn conn=%u while disabled: no answer", (unsigned)conn_id);
-        return;
-    }
-    if (atp->data_len < 4) {
-        LOG(1, "pap: OpenConn conn=%u with %d bytes of data (4 expected): dropped", (unsigned)conn_id, atp->data_len);
+    if (!pap_open_answerable(g_printer->enabled, atp)) {
+        LOG(2, "pap: OpenConn conn=%u %s: no answer", (unsigned)conn_id,
+            g_printer->enabled ? "malformed (4 bytes of data expected)" : "while disabled");
         return;
     }
     if (g_pap->session.active) {
@@ -1235,11 +1188,7 @@ static void pap_handle_open(const ddp_header_t *ddp, atp_packet_t *atp) {
         g_pap->session.active = true;
         g_pap->session.conn_id = conn_id;
         g_pap->session.client_socket = atp->data[0];
-        // The workstation's flow quantum: 1..8 by spec (one ATP response is
-        // at most eight packets); 0 or more is taken as the maximum.
-        uint8_t quantum = atp->data[1];
-        g_pap->session.client_flow_quantum =
-            (quantum == 0 || quantum > PAP_MAX_FLOW_QUANTUM) ? PAP_MAX_FLOW_QUANTUM : quantum;
+        g_pap->session.client_flow_quantum = pap_open_quantum(atp);
         g_pap->session.server_flow_quantum = PAP_MAX_FLOW_QUANTUM;
         g_pap->session.client_addr.net = ddp->src_net;
         g_pap->session.client_addr.node = ddp->llap.src;
@@ -1292,13 +1241,11 @@ static void pap_handle_send_status(const ddp_header_t *ddp, atp_packet_t *atp) {
     atp_responder_send_simple(ddp, atp, user, payload_len ? payload : NULL, payload_len, false);
 }
 
-// True when a request belongs to the active session: its connection id, from
-// the node and network that opened it.  The id is one byte the workstation
-// chose, so on its own it is anyone's -- a CloseConn with any id ended the
-// active job, and any Tickle kept it alive.
-static bool pap_request_is_session(const ddp_header_t *ddp, const atp_packet_t *atp) {
-    return g_pap->session.active && atp->user[0] == g_pap->session.conn_id &&
-           ddp->llap.src == g_pap->session.client_addr.node && ddp->src_net == g_pap->session.client_addr.net;
+// True when a request belongs to the active session (pap_server.h) -- by
+// connection id alone, a CloseConn with any id ended the active job, and any
+// Tickle kept it alive.
+static bool lw_request_is_session(const ddp_header_t *ddp, const atp_packet_t *atp) {
+    return pap_request_is_session(g_pap->session.active, g_pap->session.conn_id, &g_pap->session.client_addr, ddp, atp);
 }
 
 // Handles PAP CloseConn requests: always acknowledged, and the job ends when
@@ -1307,7 +1254,7 @@ static void pap_handle_close_conn(const ddp_header_t *ddp, atp_packet_t *atp) {
     uint8_t user[4] = {atp->user[0], PAP_FUNC_CLOSE_REPLY, 0, 0};
     LOG(2, "PAP -> Mac CloseReply conn=%u", (unsigned)atp->user[0]);
     atp_responder_send_simple(ddp, atp, user, NULL, 0, false);
-    if (pap_request_is_session(ddp, atp))
+    if (lw_request_is_session(ddp, atp))
         pap_session_finish(true, "client closed", false);
     else
         LOG(2, "pap: CloseConn conn=%u from node %u is not the session's", (unsigned)atp->user[0],
@@ -1317,7 +1264,7 @@ static void pap_handle_close_conn(const ddp_header_t *ddp, atp_packet_t *atp) {
 // Handles PAP SendData requests issued by the workstation to read status text.
 static void pap_handle_status_read(const ddp_header_t *ddp, atp_packet_t *atp) {
     uint8_t conn_id = atp->user[0];
-    bool same_conn = pap_request_is_session(ddp, atp);
+    bool same_conn = lw_request_is_session(ddp, atp);
     if (same_conn)
         pap_session_record_activity();
 
@@ -1376,7 +1323,7 @@ static void pap_handle_status_read(const ddp_header_t *ddp, atp_packet_t *atp) {
 
 // Handles PAP tickle packets to keep the session alive -- its own, only.
 static void pap_handle_tickle(const ddp_header_t *ddp, const atp_packet_t *atp) {
-    if (pap_request_is_session(ddp, atp))
+    if (lw_request_is_session(ddp, atp))
         pap_session_record_activity();
 }
 
@@ -1737,18 +1684,9 @@ void atalk_printer_link_down(void) {
 int atalk_printer_enable(const char *object_name) {
     const char *name = (object_name && *object_name) ? object_name : g_printer->object_name;
     char why[160];
-    if (atalk_nbp_name_check("printer name", name, why, sizeof(why)) != 0) {
+    if (atalk_nbp_rename(&g_printer->nbp_entry, "printer name", name, PRINTER_ENTITY_TYPE, ATALK_HOST_PAP_SOCKET, true,
+                         why, sizeof(why)) != 0) {
         LOG(1, "atalk: %s", why);
-        return -1;
-    }
-    atalk_nbp_service_desc_t desc = {.object = name,
-                                     .type = PRINTER_ENTITY_TYPE,
-                                     .zone = "*",
-                                     .socket = ATALK_HOST_PAP_SOCKET,
-                                     .node = ATALK_HOST_NODE,
-                                     .net = 0};
-    if (atalk_nbp_publish(&g_printer->nbp_entry, &desc) != 0) {
-        LOG(1, "atalk: failed to publish printer '%s'", name);
         return -1;
     }
     if (name != g_printer->object_name)
@@ -1801,18 +1739,11 @@ int atalk_printer_set_enabled(bool enabled, char *err, size_t err_len) {
 int atalk_printer_set_name(const char *name, char *err, size_t err_len) {
     if (err && err_len)
         err[0] = '\0';
-    if (atalk_nbp_name_check("printer name", name, err, err_len) != 0)
+    // Renamed in place while advertised, or recorded for the next enable
+    if (atalk_nbp_rename(&g_printer->nbp_entry, "printer name", name, PRINTER_ENTITY_TYPE, ATALK_HOST_PAP_SOCKET,
+                         g_printer->enabled, err, err_len) != 0)
         return -1;
-    if (!g_printer->enabled) {
-        // Not advertising: record the name for the next enable.
-        snprintf(g_printer->object_name, sizeof(g_printer->object_name), "%s", name);
-        return 0;
-    }
-    if (atalk_printer_enable(name) != 0) { // renames the NBP entry in place, or changes nothing
-        if (err && err_len)
-            snprintf(err, err_len, "the name '%s' is already taken on the network", name);
-        return -1;
-    }
+    snprintf(g_printer->object_name, sizeof(g_printer->object_name), "%s", name);
     return 0;
 }
 

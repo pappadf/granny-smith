@@ -6,6 +6,8 @@ TEST_NAME := pap
 TEST_SRCS := test.c
 TEST_HARNESS := isolated
 EXTRA_SRCS := ../../../../src/core/network/appletalk_printer.c \
+              ../../../../src/core/network/appletalk_nbp_service.c \
+              ../../../../src/core/network/pap_server.c \
               ../../../../src/core/network/laserwriter_job.c \
               ../../../../src/core/event/event.c
 EXTRA_CFLAGS := -DPRINTER_CAPTURE_MAX=64

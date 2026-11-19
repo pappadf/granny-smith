@@ -1176,10 +1176,11 @@ static DEF_GETTER(attr_localtalk_name) {
 }
 
 static DEF_SETTER(attr_localtalk_name_set) {
-    int rc = atalk_imagewriter_set_name(in.s);
+    char err[160];
+    int rc = atalk_imagewriter_set_name(in.s, err, sizeof err);
     value_free(&in);
     if (rc != 0)
-        return val_err("localtalk_name: 1-32 characters, and not a name another printer holds");
+        return val_err("localtalk_name: %s", err);
     return val_none();
 }
 

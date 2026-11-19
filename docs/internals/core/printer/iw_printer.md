@@ -170,6 +170,16 @@ sit on that alert for minutes, and without our Tickles the workstation's
 connection timer ran out after two and its next write failed ("The AppleTalk
 network is not responding").
 
+The protocol pieces it shares with the LaserWriter's server live once in
+`src/core/network/pap_server.c`: the status-reply prefix, the SendData and
+CloseConn requests (CloseConn exactly-once with SendData's release hint,
+retried five times) and the session predicate. So does the OpenConn rule.
+While withdrawn, or for an OpenConn with less than its 4 bytes of data, the
+card stays silent rather than answering PrinterBusy, which the workstation
+would retry without end. `localtalk_name` follows NBP's name rule: 32
+MacRoman characters, MacRoman-encodable. The shared rename helper
+(`atalk_nbp_rename`) reports why a name is refused.
+
 ## 6. Jobs
 
 A job starts with the first byte after idle. It ends after `idle_timeout_ms`
@@ -254,6 +264,7 @@ events under `atalk_imagewriter.*`.
 |---|---|
 | unit `imagewriter` | parser, switches, tabs, pixel-exact columns for every pitch, interleave, opaque graphics, the CAN recovery, pages, perforation skip, colour planes, self ID, the eighth bit, custom characters, ROM glyphs (draft, NLQ passes, proportional widths, the original ImageWriter's), its vertical format unit, PDF structure, determinism and serialisation |
 | unit `scc_port` | the port-device seam: bytes to the device, ready line, RX injection |
+| unit `pap_imagewriter` | the LocalTalk card's PAP server: silent while withdrawn or for a short OpenConn, busy for a second connection, the CloseConn's parameters, the NBP name rule |
 | `lisa-imagewriter` | LOS 3.1 prints the Calculator tape on Serial A; PDF golden |
 | `mac-imagewriter` | a Plus with System 6.0.8 prints Faster, Best (deselected mid-job), Draft, and Faster through the 2 KB buffer on the printer port; PDF goldens |
 | `appletalk-imagewriter` | the same over the LocalTalk card, with paper-out alert and recovery |
