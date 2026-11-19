@@ -879,10 +879,10 @@ static const pci_config_decl_t qd3d_decl = {
 // for the tests and the terminal, as on the Voodoo2.  The default is the
 // worker thread on every build: its output is byte-identical to the
 // normative walker's.  -DGS_QD3D_RASTER_DEFAULT='"sw"' (EXTRA_CFLAGS) makes a
-// build default to the walker; -DGS_QD3D_THREAD_BACKEND=0 compiles the
+// build default to the walker; -DGS_RASTER_THREAD_BACKEND=0 compiles the
 // thread backend out of qd3d_raster.c, and the default follows.
 #ifndef GS_QD3D_RASTER_DEFAULT
-#if defined(GS_QD3D_THREAD_BACKEND) && !GS_QD3D_THREAD_BACKEND
+#if defined(GS_RASTER_THREAD_BACKEND) && !GS_RASTER_THREAD_BACKEND
 #define GS_QD3D_RASTER_DEFAULT "sw"
 #else
 #define GS_QD3D_RASTER_DEFAULT "thread"

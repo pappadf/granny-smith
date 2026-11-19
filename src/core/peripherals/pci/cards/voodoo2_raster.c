@@ -39,18 +39,12 @@
 // for its own proxied main thread — the creator here is a pthread, the
 // browser's main thread spawns the Worker asynchronously, and the first
 // fence simply waits on the queue until it is running.  A build can leave
-// it out entirely with -DGS_V2_THREAD_BACKEND=0 (EXTRA_CFLAGS): no
+// it out entirely with -DGS_RASTER_THREAD_BACKEND=0 (EXTRA_CFLAGS): no
 // pthread code is compiled, raster=thread falls back to the walker
-// with a log line, and the default backend becomes the walker.
-#ifndef GS_V2_THREAD_BACKEND
-#define GS_V2_THREAD_BACKEND 1
-#endif
-#define V2_HAVE_THREAD_BACKEND GS_V2_THREAD_BACKEND
-#if V2_HAVE_THREAD_BACKEND
-#include <pthread.h>
-#include <stdatomic.h>
-#include <time.h>
-#endif
+// with a log line, and the default backend becomes the walker.  The
+// ring, the worker and the knob are the shared raster queue's
+// (raster_queue.h).
+#include "raster_queue.h"
 
 LOG_USE_CATEGORY_NAME("voodoo2");
 
@@ -1452,189 +1446,46 @@ typedef enum v2_backend_kind {
     V2_BACKEND_WEBGPU // the thread backend whose worker translates for the browser's GPU (voodoo2_gpu.c)
 } v2_backend_kind_t;
 
-#if V2_HAVE_THREAD_BACKEND
-// The worker thread and its bounded single-producer/single-consumer
-// ring.  `head` counts commands submitted, `tail` commands RETIRED
-// (executed to completion): head == tail is "everything observed",
-// head - tail == depth is "full".  Both sides sleep on condition
-// variables only when they have announced they are about to (the
-// idle/waiting flags), so the steady state — worker busy, producer
-// ahead — makes no system calls at all.
-typedef struct v2_thread {
-    v2_cmd_t *q;
-    _Atomic uint64_t head, tail;
-    _Atomic int worker_idle; // the worker is (about to be) asleep
-    _Atomic int producer_waiting; // the producer is (about to be) asleep
-    pthread_mutex_t mu;
-    pthread_cond_t cv_work, cv_done;
-    bool stop;
-    bool started;
-    pthread_t thr;
-    // GS_V2_STATS=1: the decomposition printed at teardown — how many
-    // commands, how often the producer fenced and how long it waited,
-    // how often the worker went to sleep, and the worker's own CPU time.
-    uint64_t n_submit, n_sync, n_sync_wait, n_room_wait, n_state_wait, n_worker_sleep;
-    uint64_t wait_ns;
-    double worker_cpu_s;
-} v2_thread_t;
-
-// Monotonic nanoseconds, for the stats.
-static uint64_t v2_now_ns(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
-}
-#endif
-
 struct v2_raster {
     v2_backend_kind_t kind;
     v2_target_t *tgt;
     v2_state_build_fn build;
     void *ctx;
-    // The draw-state ring: a slot is rewritten only once every command
-    // that referenced it has retired (st_seq holds 1 + the sequence
-    // number of the last such command; 0 = never used).
-    v2_draw_state_t *st;
-    uint64_t *st_seq;
-    uint32_t st_cur;
-    bool st_dirty;
-#if V2_HAVE_THREAD_BACKEND
-    v2_thread_t th;
-#endif
+    rq_t rq; // the draw-state ring and, threaded, the worker (raster_queue.h)
     v2_gpu_t *gpu; // the WebGPU translator (V2_BACKEND_WEBGPU only)
     char stats_buf[1024];
 };
 
-#if V2_HAVE_THREAD_BACKEND
-// One iteration of a busy-wait: a pause hint where the ISA has one.
-static inline void v2_cpu_relax(void) {
-#if defined(__x86_64__) || defined(__i386__)
-    __builtin_ia32_pause();
-#elif defined(__aarch64__)
-    __asm__ volatile("yield");
-#else
-    __asm__ volatile("" ::: "memory");
-#endif
+// The producer's state build, as the queue calls it (rq_build_fn).
+static void v2_state_build(void *ctx, void *state) {
+    v2_raster_t *r = (v2_raster_t *)ctx;
+    r->build(r->ctx, (v2_draw_state_t *)state);
 }
 
-// How long a dry worker spins before it sleeps.  The commands are
-// small and arrive in bursts (a triangle every few microseconds of
-// producer time), so a worker that slept on every empty poll would pay
-// a futex wake and a context switch per command — measured: the
-// threaded row took LONGER than the synchronous one.  A short spin
-// catches the next command in the common case; the sleep path is for
-// the genuinely idle stretches (the guest not rendering).
-#define V2_WORKER_SPIN 4096
-
-// The worker: drain the ring, execute in order, retire, sleep when dry.
-static void *v2_worker_main(void *arg) {
-    v2_raster_t *r = (v2_raster_t *)arg;
-    v2_thread_t *th = &r->th;
-    for (;;) {
-        uint64_t t = atomic_load_explicit(&th->tail, memory_order_relaxed);
-        uint64_t h = atomic_load_explicit(&th->head, memory_order_acquire);
-        for (int spin = 0; h == t && spin < V2_WORKER_SPIN; spin++) {
-            v2_cpu_relax();
-            h = atomic_load_explicit(&th->head, memory_order_acquire);
-        }
-        if (h == t) {
-            th->n_worker_sleep++;
-            if (r->gpu)
-                v2_gpu_idle(r->gpu); // publish the open draw range before sleeping
-            pthread_mutex_lock(&th->mu);
-            atomic_store_explicit(&th->worker_idle, 1, memory_order_seq_cst);
-            // Re-check under the lock: a producer that stored head after
-            // our first load either sees worker_idle and signals, or its
-            // store is visible here (Dekker on head/worker_idle).
-            while (atomic_load_explicit(&th->head, memory_order_seq_cst) == t && !th->stop)
-                pthread_cond_wait(&th->cv_work, &th->mu);
-            atomic_store_explicit(&th->worker_idle, 0, memory_order_seq_cst);
-            bool stop = th->stop && atomic_load_explicit(&th->head, memory_order_seq_cst) == t;
-            pthread_mutex_unlock(&th->mu);
-            if (stop) {
-                struct timespec ts = {0, 0}; // stays zero where the clock is unsupported (wasm)
-                clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
-                th->worker_cpu_s = (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
-                return NULL;
-            }
-            continue;
-        }
-        const v2_cmd_t *cmd = &th->q[t & (V2_QUEUE_DEPTH - 1u)];
-        if (r->gpu)
-            v2_gpu_execute(r->gpu, &r->st[cmd->state], r->tgt, cmd);
-        else
-            v2_raster_execute(&r->st[cmd->state], r->tgt, cmd);
-        atomic_store_explicit(&th->tail, t + 1u, memory_order_seq_cst);
-        if (atomic_load_explicit(&th->producer_waiting, memory_order_seq_cst)) {
-            pthread_mutex_lock(&th->mu);
-            pthread_cond_broadcast(&th->cv_done);
-            pthread_mutex_unlock(&th->mu);
-        }
-    }
+// The worker's per-command step (rq_exec_fn): the translator when the
+// WebGPU takeover attached one, else the walker.
+static void v2_worker_exec(void *ctx, const void *cmd) {
+    v2_raster_t *r = (v2_raster_t *)ctx;
+    const v2_cmd_t *c = (const v2_cmd_t *)cmd;
+    v2_draw_state_t *st = rq_state(&r->rq, c->state);
+    if (r->gpu)
+        v2_gpu_execute(r->gpu, st, r->tgt, c);
+    else
+        v2_raster_execute(st, r->tgt, c);
 }
 
-// Block the producer until `tail` reaches at least `want`.
-static void v2_thread_wait_tail(v2_thread_t *th, uint64_t want) {
-    if (atomic_load_explicit(&th->tail, memory_order_acquire) >= want)
-        return;
-    uint64_t t0 = v2_now_ns();
-    pthread_mutex_lock(&th->mu);
-    atomic_store_explicit(&th->producer_waiting, 1, memory_order_seq_cst);
-    while (atomic_load_explicit(&th->tail, memory_order_seq_cst) < want)
-        pthread_cond_wait(&th->cv_done, &th->mu);
-    atomic_store_explicit(&th->producer_waiting, 0, memory_order_seq_cst);
-    pthread_mutex_unlock(&th->mu);
-    th->wait_ns += v2_now_ns() - t0;
+// The worker's step before it sleeps (rq_idle_fn): publish the
+// translator's open draw range.
+static void v2_worker_idle(void *ctx) {
+    v2_raster_t *r = (v2_raster_t *)ctx;
+    if (r->gpu)
+        v2_gpu_idle(r->gpu);
 }
 
+// Starts the worker over the command ring.
 static bool v2_thread_start(v2_raster_t *r) {
-    v2_thread_t *th = &r->th;
-    th->q = (v2_cmd_t *)calloc(V2_QUEUE_DEPTH, sizeof(v2_cmd_t));
-    if (!th->q)
-        return false;
-    atomic_store(&th->head, 0);
-    atomic_store(&th->tail, 0);
-    atomic_store(&th->worker_idle, 0);
-    atomic_store(&th->producer_waiting, 0);
-    pthread_mutex_init(&th->mu, NULL);
-    pthread_cond_init(&th->cv_work, NULL);
-    pthread_cond_init(&th->cv_done, NULL);
-    th->stop = false;
-    if (pthread_create(&th->thr, NULL, v2_worker_main, r) != 0) {
-        free(th->q);
-        th->q = NULL;
-        return false;
-    }
-    th->started = true;
-    return true;
+    return rq_start_thread(&r->rq, sizeof(v2_cmd_t), V2_QUEUE_DEPTH, v2_worker_exec, v2_worker_idle, r);
 }
-
-static void v2_thread_stop(v2_raster_t *r) {
-    v2_thread_t *th = &r->th;
-    if (!th->started)
-        return;
-    v2_thread_wait_tail(th, atomic_load(&th->head));
-    pthread_mutex_lock(&th->mu);
-    th->stop = true;
-    pthread_cond_broadcast(&th->cv_work);
-    pthread_mutex_unlock(&th->mu);
-    pthread_join(th->thr, NULL);
-    const char *stats = getenv("GS_V2_STATS");
-    if (stats && *stats && *stats != '0')
-        LOG(0,
-            "raster=thread stats: %llu commands, %llu syncs (%llu waited), %llu room waits, %llu state waits, "
-            "%.3f s waited total, %llu worker sleeps, worker cpu %.1f s",
-            (unsigned long long)th->n_submit, (unsigned long long)th->n_sync, (unsigned long long)th->n_sync_wait,
-            (unsigned long long)th->n_room_wait, (unsigned long long)th->n_state_wait, (double)th->wait_ns * 1e-9,
-            (unsigned long long)th->n_worker_sleep, th->worker_cpu_s);
-    pthread_mutex_destroy(&th->mu);
-    pthread_cond_destroy(&th->cv_work);
-    pthread_cond_destroy(&th->cv_done);
-    free(th->q);
-    th->q = NULL;
-    th->started = false;
-}
-#endif
 
 v2_raster_t *v2_raster_create(const char *kind, v2_target_t *tgt, v2_state_build_fn build, void *ctx) {
     v2_raster_t *r = (v2_raster_t *)calloc(1, sizeof(*r));
@@ -1643,22 +1494,17 @@ v2_raster_t *v2_raster_create(const char *kind, v2_target_t *tgt, v2_state_build
     r->tgt = tgt;
     r->build = build;
     r->ctx = ctx;
-    r->st = (v2_draw_state_t *)calloc(V2_STATE_SLOTS, sizeof(v2_draw_state_t));
-    r->st_seq = (uint64_t *)calloc(V2_STATE_SLOTS, sizeof(uint64_t));
-    if (!r->st || !r->st_seq) {
-        free(r->st);
-        free(r->st_seq);
+    if (!rq_init(&r->rq, sizeof(v2_draw_state_t), V2_STATE_SLOTS, v2_state_build, r)) {
         free(r);
         return NULL;
     }
-    r->st_dirty = true;
     r->kind = V2_BACKEND_SW;
     v2_watch_init(); // the instrument reads its environment once, here
     v2_dither_tables_init();
     if (kind && strcmp(kind, "null") == 0) {
         r->kind = V2_BACKEND_NULL;
     } else if (kind && strcmp(kind, "thread") == 0) {
-#if V2_HAVE_THREAD_BACKEND
+#if GS_RASTER_THREAD_BACKEND
         if (v2_raster_watch_armed()) {
             LOG(0, "raster=thread refused while GS_V2_WATCH is armed — using the synchronous walker");
         } else if (v2_thread_start(r)) {
@@ -1667,7 +1513,7 @@ v2_raster_t *v2_raster_create(const char *kind, v2_target_t *tgt, v2_state_build
             LOG(0, "raster=thread: could not start the worker thread — using the synchronous walker");
         }
 #else
-        LOG(1, "raster=thread: this build compiled the thread backend out (GS_V2_THREAD_BACKEND=0) — using the "
+        LOG(1, "raster=thread: this build compiled the thread backend out (GS_RASTER_THREAD_BACKEND=0) — using the "
                "synchronous walker");
 #endif
     } else if (kind && strcmp(kind, "webgpu") == 0) {
@@ -1675,7 +1521,7 @@ v2_raster_t *v2_raster_create(const char *kind, v2_target_t *tgt, v2_state_build
         // worker.  The translator attaches the browser's GPU worker (or
         // reports that it cannot); the pthread is started after it, so
         // the worker finds r->gpu set from its first command.
-#if V2_HAVE_THREAD_BACKEND
+#if GS_RASTER_THREAD_BACKEND
         if (v2_raster_watch_armed()) {
             LOG(0, "raster=webgpu refused while GS_V2_WATCH is armed — using the synchronous walker");
         } else {
@@ -1686,7 +1532,7 @@ v2_raster_t *v2_raster_create(const char *kind, v2_target_t *tgt, v2_state_build
                 LOG(0, "raster=webgpu: could not start the worker thread — using the synchronous walker");
         }
 #else
-        LOG(1, "raster=webgpu: this build compiled the thread backend out (GS_V2_THREAD_BACKEND=0) — using the "
+        LOG(1, "raster=webgpu: this build compiled the thread backend out (GS_RASTER_THREAD_BACKEND=0) — using the "
                "synchronous walker");
 #endif
     } else if (kind && strcmp(kind, "sw") != 0) {
@@ -1698,13 +1544,19 @@ v2_raster_t *v2_raster_create(const char *kind, v2_target_t *tgt, v2_state_build
 void v2_raster_destroy(v2_raster_t *r) {
     if (!r)
         return;
-#if V2_HAVE_THREAD_BACKEND
-    if (r->kind == V2_BACKEND_THREAD || r->kind == V2_BACKEND_WEBGPU)
-        v2_thread_stop(r);
-#endif
+    bool threaded = r->rq.threaded;
+    rq_stats_t st;
+    rq_fini(&r->rq, &st); // drains and joins the worker first
+    // GS_V2_STATS=1: the thread backend's decomposition, at teardown
+    const char *stats = getenv("GS_V2_STATS");
+    if (threaded && stats && *stats && *stats != '0')
+        LOG(0,
+            "raster=thread stats: %llu commands, %llu syncs (%llu waited), %llu room waits, %llu state waits, "
+            "%.3f s waited total, %llu worker sleeps, worker cpu %.1f s",
+            (unsigned long long)st.n_submit, (unsigned long long)st.n_sync, (unsigned long long)st.n_sync_wait,
+            (unsigned long long)st.n_room_wait, (unsigned long long)st.n_state_wait, (double)st.wait_ns * 1e-9,
+            (unsigned long long)st.n_worker_sleep, st.worker_cpu_s);
     v2_gpu_destroy(r->gpu); // after the worker joined: the translator's ring is idle
-    free(r->st);
-    free(r->st_seq);
     free(r);
 }
 
@@ -1722,81 +1574,29 @@ const char *v2_raster_name(const v2_raster_t *r) {
 }
 
 void v2_raster_state_dirty(v2_raster_t *r) {
-    r->st_dirty = true;
-}
-
-// Does the backend run the executor on the worker pthread?
-static inline bool v2_uses_thread(const v2_raster_t *r) {
-    return r->kind == V2_BACKEND_THREAD || r->kind == V2_BACKEND_WEBGPU;
+    rq_state_dirty(&r->rq);
 }
 
 void v2_raster_sync(v2_raster_t *r) {
-#if V2_HAVE_THREAD_BACKEND
-    if (v2_uses_thread(r)) {
-        uint64_t h = atomic_load_explicit(&r->th.head, memory_order_relaxed);
-        r->th.n_sync++;
-        if (atomic_load_explicit(&r->th.tail, memory_order_acquire) < h)
-            r->th.n_sync_wait++;
-        v2_thread_wait_tail(&r->th, h);
-    }
-#else
-    (void)r;
-#endif
+    rq_sync(&r->rq);
 }
 
 void v2_raster_submit(v2_raster_t *r, v2_cmd_t *cmd) {
-    uint64_t seq = 0;
-#if V2_HAVE_THREAD_BACKEND
-    if (v2_uses_thread(r))
-        seq = atomic_load_explicit(&r->th.head, memory_order_relaxed);
-#endif
-    if (r->st_dirty) {
-        // Take the next ring slot — after everything that read it has
-        // retired — and let the producer fill it from the live registers.
-        uint32_t next = (r->st_cur + 1u) & (V2_STATE_SLOTS - 1u);
-#if V2_HAVE_THREAD_BACKEND
-        if (v2_uses_thread(r) && r->st_seq[next]) {
-            if (atomic_load_explicit(&r->th.tail, memory_order_acquire) < r->st_seq[next])
-                r->th.n_state_wait++;
-            v2_thread_wait_tail(&r->th, r->st_seq[next]);
-        }
-#endif
-        r->build(r->ctx, &r->st[next]);
-        r->st_cur = next;
-        r->st_dirty = false;
-    }
-    cmd->state = (uint16_t)r->st_cur;
-    r->st_seq[r->st_cur] = seq + 1u;
+    // Charge the command to the current draw state (built now if dirty)
+    cmd->state = (uint16_t)rq_begin(&r->rq);
     switch (r->kind) {
     case V2_BACKEND_NULL:
         if (cmd->kind == V2_CMD_TRIANGLE)
             return; // the null backend draws nothing — fastfill stays: it is the clear path
-        v2_raster_execute(&r->st[r->st_cur], r->tgt, cmd);
+        v2_raster_execute(rq_state(&r->rq, cmd->state), r->tgt, cmd);
         return;
     case V2_BACKEND_SW:
-        v2_raster_execute(&r->st[r->st_cur], r->tgt, cmd);
+        v2_raster_execute(rq_state(&r->rq, cmd->state), r->tgt, cmd);
         return;
     case V2_BACKEND_THREAD:
-    case V2_BACKEND_WEBGPU: {
-#if V2_HAVE_THREAD_BACKEND
-        v2_thread_t *th = &r->th;
-        // Room: the slot we are about to write must have been retired.
-        th->n_submit++;
-        if (seq >= V2_QUEUE_DEPTH) {
-            if (atomic_load_explicit(&th->tail, memory_order_acquire) < seq + 1u - V2_QUEUE_DEPTH)
-                th->n_room_wait++;
-            v2_thread_wait_tail(th, seq + 1u - V2_QUEUE_DEPTH);
-        }
-        th->q[seq & (V2_QUEUE_DEPTH - 1u)] = *cmd;
-        atomic_store_explicit(&th->head, seq + 1u, memory_order_seq_cst);
-        if (atomic_load_explicit(&th->worker_idle, memory_order_seq_cst)) {
-            pthread_mutex_lock(&th->mu);
-            pthread_cond_signal(&th->cv_work);
-            pthread_mutex_unlock(&th->mu);
-        }
-#endif
+    case V2_BACKEND_WEBGPU:
+        rq_enqueue(&r->rq, cmd);
         return;
-    }
     }
 }
 

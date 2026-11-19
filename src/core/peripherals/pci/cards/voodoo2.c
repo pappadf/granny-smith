@@ -471,11 +471,11 @@ static inline uint64_t v2_tsc(void) {
 // the goldens are indifferent and the CPU emulation gets the overlap.
 // -DGS_V2_RASTER_DEFAULT='"sw"' (EXTRA_CFLAGS) makes a build default to
 // the synchronous walker; pci_option="raster=..." overrides per boot.
-// -DGS_V2_THREAD_BACKEND=0 compiles the thread backend out of
+// -DGS_RASTER_THREAD_BACKEND=0 compiles the thread backend out of
 // voodoo2_raster.c; the default then falls back to the walker at
 // create time, but say so here so the default's name is honest too.
 #ifndef GS_V2_RASTER_DEFAULT
-#if defined(GS_V2_THREAD_BACKEND) && !GS_V2_THREAD_BACKEND
+#if defined(GS_RASTER_THREAD_BACKEND) && !GS_RASTER_THREAD_BACKEND
 #define GS_V2_RASTER_DEFAULT "sw"
 #else
 #define GS_V2_RASTER_DEFAULT "thread"

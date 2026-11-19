@@ -11,6 +11,7 @@ TEST_HARNESS  := none
 STUBS         := checkpoint assert
 EXTRA_SRCS    := ../../../../src/core/peripherals/pci/cards/voodoo2.c \
                  ../../../../src/core/peripherals/pci/cards/voodoo2_raster.c \
+                 ../../../../src/core/peripherals/pci/cards/raster_queue.c \
                  ../../../../src/core/peripherals/pci/cards/voodoo2_gpu.c \
                  ../../../../src/core/mailbox/mailbox_ring.c \
                  ../../../../src/core/object/value.c
