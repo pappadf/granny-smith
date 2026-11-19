@@ -26,13 +26,9 @@ exec "$bin" --jobs=inline "$@"
 W
 chmod +x "$out/inline-wrapper.sh"
 
-# Lines that legitimately differ: the heartbeat, the build stamp (the
-# binary relinks between runs), the runner's wrapper label, tmp paths,
-# compile lines from a rebuild, and wall-clock durations.
-filter() {
-    grep -v -E '^# running\.\.\.|^Granny Smith build|^gcc |^\[[0-9]+\] ' \
-        | sed -E 's/ \(valgrind\)//; s#/tmp/[^ ]+#/tmp/X#g; s/[0-9]+(\.[0-9]+)? ?ms/N ms/g'
-}
+# Lines that legitimately differ between the runs (scripts/lib).
+. scripts/lib/compare-filter.sh
+filter() { compare_filter; }
 
 echo "== threaded ($tier tier)"
 make -C tests/integration test TIER="$tier" -j1 2>&1 | filter > "$out/threaded.log" || true

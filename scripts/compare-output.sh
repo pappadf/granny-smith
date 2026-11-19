@@ -34,13 +34,9 @@ exec "$CMP_BIN" "$@" > >(tee -a "$CMP_DIR/$name.stdout") 2> >(tee -a "$CMP_DIR/$
 W
 chmod +x "$out/wrapper.sh"
 
-# Lines that legitimately differ between two builds: the build stamp, the
-# heartbeat, tmp paths and wall-clock durations (the same filters as
-# compare-jobs-inline.sh), and the daemon's PID and port.
-filter() {
-    grep -v -E '^# running\.\.\.|^Granny Smith build|^gcc |^\[[0-9]+\] |^Daemon PID:' \
-        | sed -E 's/ \(valgrind\)//; s#/tmp/[^ ]+#/tmp/X#g; s/[0-9]+(\.[0-9]+)? ?ms/N ms/g; s/(127\.0\.0\.1:|localhost )[0-9]+/\1PORT/g' || true
-}
+# Lines that legitimately differ between two builds (scripts/lib).
+. scripts/lib/compare-filter.sh
+filter() { compare_filter; }
 
 for side in a b; do
     bin=$bin_a
