@@ -2,14 +2,14 @@
 // Copyright (c) pappadf
 
 // mac030_rom_overlay.c
-// The access-triggered ROM-at-zero overlay, shared by the AV and MCU families.
-// See mac030_rom_overlay.h for why one copy replaced two.
+// The ROM-at-zero overlay of the 68030/040 boards, with its two policies.
+// See mac030_rom_overlay.h.
 
 #include "mac030_rom_overlay.h"
 
 #include "cpu.h"
 #include "log.h"
-#include "mac030_glue.h"
+#include "page_fill.h"
 #include "system.h"
 #include "system_internal.h"
 
@@ -35,9 +35,23 @@ void mac030_rom_overlay_drop(mac030_rom_overlay_t *ov) {
     if (!ov->armed)
         return;
     ov->armed = false;
+    if (ov->policy == MAC030_OVERLAY_FOLLOW_LINE) {
+        LOG(2, "%s overlay off: RAM at $00000000 (pc=%08X)", ov->name, cpu_get_pc(ov->cfg->cpu));
+        ov->map_ram(ov->cfg);
+        return;
+    }
     LOG(1, "%s overlay drop: RAM at $00000000, ROM direct in aperture (pc=%08X)", ov->name, cpu_get_pc(ov->cfg->cpu));
     ov->map_ram(ov->cfg);
     mac030_rom_overlay_fill_aperture(ov);
+}
+
+void mac030_rom_overlay_set_line(mac030_rom_overlay_t *ov, bool on) {
+    if (ov->armed == on)
+        return;
+    if (on)
+        mac030_rom_overlay_arm(ov);
+    else
+        mac030_rom_overlay_drop(ov);
 }
 
 // ROM readable at zero; aperture pages routed to the trigger device.
@@ -50,6 +64,10 @@ void mac030_rom_overlay_arm(mac030_rom_overlay_t *ov) {
     // ROM mapped read-only at zero.
     for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++)
         page_fill_68k(p, rom_data + (p << MEM_PAGE_SHIFT), false);
+
+    // A line-following overlay has no trigger: the ROM window stays direct
+    if (ov->policy == MAC030_OVERLAY_FOLLOW_LINE)
+        return;
 
     // Route the aperture through the trigger device: memory_map_add did the
     // page plumbing once, and later arms re-point the pages by hand.
@@ -119,6 +137,7 @@ void mac030_rom_overlay_init(mac030_rom_overlay_t *ov, struct config *cfg, uint3
     ov->rom_end = rom_end;
     ov->map_ram = map_ram;
     ov->name = name;
+    ov->policy = MAC030_OVERLAY_DROP_ON_ACCESS;
     ov->armed = false;
     ov->iface.read_uint8 = overlay_read8;
     ov->iface.read_uint16 = overlay_read16;
@@ -129,4 +148,19 @@ void mac030_rom_overlay_init(mac030_rom_overlay_t *ov, struct config *cfg, uint3
     ov->iface.write_uint8 = overlay_write8;
     ov->iface.write_uint16 = overlay_write16;
     ov->iface.write_uint32 = overlay_write32;
+}
+
+// RAM back at zero under a line-following overlay: the identity map of the
+// pages the overlay covered (ROM size from zero).
+static void overlay_map_ram_identity(struct config *cfg) {
+    uint32_t rom_pages = cfg->machine->rom_size >> MEM_PAGE_SHIFT;
+    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
+    for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++)
+        page_fill_68k(p, ram_base + (p << MEM_PAGE_SHIFT), true);
+}
+
+void mac030_rom_overlay_init_line(mac030_rom_overlay_t *ov, struct config *cfg, const char *name) {
+    // No aperture: rom_base/rom_end stay 0 and the trigger interface unused
+    mac030_rom_overlay_init(ov, cfg, 0, 0, overlay_map_ram_identity, name);
+    ov->policy = MAC030_OVERLAY_FOLLOW_LINE;
 }

@@ -62,7 +62,7 @@ LOG_USE_CATEGORY_NAME("board");
 // ============================================================
 
 static void iici_set_rom_overlay(config_t *cfg, bool overlay) {
-    mac030_glue_set_rom_overlay(cfg, &iici_state(cfg)->rom_overlay, IICI_ROM_START, overlay);
+    mac030_rom_overlay_set_line(&iici_state(cfg)->overlay, overlay);
 }
 
 // ============================================================
@@ -164,8 +164,8 @@ static void iici_memory_layout_init(config_t *cfg) {
     // is Bank A RAM, which the guest reaches through its own PMMU tables.
     mmu_host_regions_fill_pages(st->mmu, page_fill_68k, /*mode24_alias*/ true);
 
-    st->rom_overlay = false;
-    iici_set_rom_overlay(cfg, true);
+    mac030_rom_overlay_init_line(&st->overlay, cfg, cfg->machine->name);
+    mac030_rom_overlay_arm(&st->overlay);
 }
 
 // ============================================================

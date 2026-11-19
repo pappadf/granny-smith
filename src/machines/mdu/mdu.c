@@ -106,7 +106,7 @@ static int mdu_init(config_t *cfg, checkpoint_t *cp) {
 // shared GLUE-family half), plus the RBV, which stands where VIA2 does.
 static void mdu_bus_reset(config_t *cfg) {
     mac030_mdu_state_t *st = mdu_st(cfg);
-    mac030_glue_bus_reset(cfg, &st->rom_overlay, mdu_board(cfg)->desc->rom_base);
+    mac030_glue_bus_reset(cfg, &st->overlay);
     rbv_reset(st->rbv);
 }
 

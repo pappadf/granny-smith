@@ -12,6 +12,7 @@
 #include "asc.h" // asc_mix_t (board speaker fold)
 #include "checkpoint.h"
 #include "mac030_glue_io.h"
+#include "mac030_rom_overlay.h"
 #include "machine_irq.h" // machine_irq_route_t
 #include "memory.h" // memory_interface_t
 #include "page_fill.h" // page_fill_68k / page_clear, the family's page fills
@@ -37,7 +38,7 @@ typedef struct mac030_glue_state {
     struct asc *asc;
     struct floppy *floppy;
 
-    bool rom_overlay; // true = ROM mapped at $00000000
+    mac030_rom_overlay_t overlay; // ROM at $00000000, following VIA1 PA4
     struct mmu_state *mmu; // 68030 PMMU
 
     mac030_glue_io_t glue_io; // device handles for the shared dispatcher
@@ -98,17 +99,11 @@ typedef void (*mac030_fill_fn)(uint32_t page_index, uint8_t *host_ptr, bool writ
 void mac030_map_mirrored(uint32_t start_page, uint32_t window_pages, uint8_t *host, uint32_t size_pages,
                          mac030_fill_fn fill, bool writable);
 
-// Toggle the ROM/RAM overlay at $00000000.  `overlay_flag` points at the
-// machine's own rom_overlay bool; `rom_start` is the machine's ROM region
-// base; ROM offset 0 must be at this address (GLUE and MDU both
-// $40000000 -- the MDU's ROMBase $40800000 is one of the ROM's mirrors).
-void mac030_glue_set_rom_overlay(config_t *cfg, bool *overlay_flag, uint32_t rom_start, bool on);
-
 // Hardware RESET (the board's /RESET net): re-enable the ROM overlay and reset
 // the devices every board shares.  The 68030 PMMU is inside the CPU, not on the
-// net, so it is left to cpu_hardware_reset.  `overlay_flag` points at the
-// machine's rom_overlay bool; `rom_start` is the ROM region base.
-void mac030_glue_bus_reset(config_t *cfg, bool *overlay_flag, uint32_t rom_start);
+// net, so it is left to cpu_hardware_reset.  `overlay` is the machine's
+// line-following ROM overlay.
+void mac030_glue_bus_reset(config_t *cfg, mac030_rom_overlay_t *overlay);
 
 // Construct the GLUE peripheral set shared by se30/iicx/iix in canonical
 // order: ADB, (checkpoint image restore), SCSI (+VIA2), images, ASC (+VIA2),

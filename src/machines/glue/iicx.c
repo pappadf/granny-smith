@@ -68,7 +68,7 @@ static void iicx_via2_output(void *context, uint8_t port, uint8_t output);
 // ============================================================
 
 void iicx_set_rom_overlay(config_t *cfg, bool overlay) {
-    mac030_glue_set_rom_overlay(cfg, &iicx_state(cfg)->rom_overlay, IICX_ROM_START, overlay);
+    mac030_rom_overlay_set_line(&iicx_state(cfg)->overlay, overlay);
 }
 
 // ============================================================
@@ -99,8 +99,8 @@ void iicx_memory_layout_tail(config_t *cfg) {
     // a card framebuffer via a Mode-24 ScrnBase ($00900080).
     mmu_host_regions_fill_pages(st->mmu, page_fill_68k, /*mode24_alias*/ true);
 
-    st->rom_overlay = false;
-    iicx_set_rom_overlay(cfg, true);
+    mac030_rom_overlay_init_line(&st->overlay, cfg, cfg->machine->name);
+    mac030_rom_overlay_arm(&st->overlay);
 }
 
 // ============================================================

@@ -16,6 +16,7 @@
 #define GS_MACHINES_MDU_IO_H
 
 #include "mac030_glue_io.h" // the shared engine (mac030_io_t + mac030_io_*)
+#include "mac030_rom_overlay.h"
 #include "memory.h"
 #include "system_internal.h"
 
@@ -58,7 +59,7 @@ typedef struct mac030_mdu_state {
     struct rbv *rbv; // RBV chip (VIA2 replacement + video control)
     struct nubus_card *video_card; // built-in RBV video pseudo-card
 
-    bool rom_overlay;
+    mac030_rom_overlay_t overlay; // ROM at $00000000, following VIA1 PA4 (line policy)
     struct mmu_state *mmu;
 
     mdu_io_t mdu_io; // device handles for the shared MDU dispatcher

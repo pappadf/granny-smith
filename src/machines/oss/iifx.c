@@ -7,6 +7,7 @@
 #include "appletalk.h"
 #include "config_seed.h"
 #include "mac030_glue.h"
+#include "mac030_rom_overlay.h"
 #include "mac_host_io.h"
 #include "machine.h"
 #include "machine_teardown.h"
@@ -172,7 +173,7 @@ typedef struct iifx_state {
     iop_t *scc_iop;
     iop_t *swim_iop;
 
-    bool rom_overlay;
+    mac030_rom_overlay_t overlay; // ROM at $00000000 until the first ROM-window access
     mmu_state_t *mmu;
 
     const memory_interface_t *via1_iface;
@@ -284,7 +285,6 @@ typedef struct iifx_state {
     bool scsi_dma_tri_state_test;
     bool scsi_dma_fifo_loopback_test;
 
-    memory_interface_t rom_interface;
     memory_interface_t io_interface;
     mac030_io_t iifx_io; // device context for the shared mac030 I/O engine
 } iifx_state_t;
@@ -422,105 +422,27 @@ static void iifx_apply_fmc_rom_invert(config_t *cfg, bool enable) {
     }
 }
 
-// Sets or clears the reset-time ROM overlay at physical zero.
-static void iifx_set_rom_overlay(config_t *cfg, bool overlay) {
-    iifx_state_t *st = iifx_state(cfg);
-    if (st->rom_overlay == overlay)
-        return;
-    st->rom_overlay = overlay;
-
-    uint32_t rom_size = cfg->machine->rom_size;
-    uint32_t rom_pages = rom_size >> MEM_PAGE_SHIFT;
-    uint8_t *rom_data = ram_native_pointer(cfg->memory_map, cfg->ram_size);
-    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
-
-    // Dropping the overlay restores the same wrapped RAM mapping
-    // iifx_memory_layout_init installs (identical to a linear one while
-    // rom_size ≤ ram_size, but keep the two expressions in lock-step).
+// RAM back at zero once the overlay drops: the same wrapped RAM mapping
+// iifx_memory_layout_init installs (identical to a linear one while
+// rom_size <= ram_size, but keep the two expressions in lock-step).
+//
+// The overlay itself is the shared trip-wire (mac030_rom_overlay.h): while
+// armed the $40000000 ROM window sits on its trigger device, so the first
+// genuine ROM access clears the overlay (real OSS behaviour); once cleared
+// the whole window becomes host-backed read-only pages (the ROM image
+// mirrored every rom_size) so the SoA fast path serves ROM fetches.  Leaving
+// the device in place taxed EVERY ROM access with a per-byte function-call
+// dispatch, and Mac OS runs QuickDraw out of ROM: measured on Marathon
+// gameplay, 45% of all accesses were ROM-bound slow-path, costing ~3.6x
+// whole-machine throughput vs the IIcx.  RESET re-arms the trap.  The FMC
+// ROM-invert POST window ($40008000-$4000FFFF) re-points its 8 pages after
+// the drop through page_fill_68k.
+static void iifx_overlay_map_ram(config_t *cfg) {
+    uint32_t rom_pages = cfg->machine->rom_size >> MEM_PAGE_SHIFT;
     uint32_t ram_pages = cfg->ram_size >> MEM_PAGE_SHIFT;
-
-    for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++) {
-        uint8_t *host_ptr = overlay ? rom_data + (p << MEM_PAGE_SHIFT) : ram_base + ((p % ram_pages) << MEM_PAGE_SHIFT);
-        page_fill_68k(p, host_ptr, !overlay);
-    }
-
-    // The $40000000 ROM window doubles as the overlay trip-wire: while the
-    // overlay is armed its pages sit on the rom_interface device so the FIRST
-    // genuine ROM access lands in iifx_rom_read_* and clears the overlay
-    // (real OSS behaviour).  Once cleared the trap has served its purpose —
-    // expose the whole window as host-backed read-only pages (the ROM image
-    // mirrored every rom_size) so the SoA fast path serves ROM fetches.
-    // Leaving the device in place taxed EVERY ROM access with a per-byte
-    // function-call dispatch, and Mac OS runs QuickDraw out of ROM: measured
-    // on Marathon gameplay, 45% of all accesses were ROM-bound slow-path,
-    // costing ~3.6x whole-machine throughput vs the IIcx.  RESET re-arms the
-    // trap.  The FMC ROM-invert POST window ($40008000-$4000FFFF) re-points
-    // its 8 pages after this via the same page_fill_68k path.
-    uint32_t wstart = (uint32_t)(IIFX_ROM_START >> MEM_PAGE_SHIFT);
-    uint32_t wend = (uint32_t)(IIFX_ROM_END >> MEM_PAGE_SHIFT);
-    for (uint32_t p = wstart; p < wend && p < g_page_count; p++) {
-        if (overlay) {
-            page_route_device(p, &st->rom_interface, cfg, (uint32_t)IIFX_ROM_START); // the reset trap
-        } else {
-            uint32_t guest = p << MEM_PAGE_SHIFT;
-            page_fill_68k(p, rom_data + ((guest - (uint32_t)IIFX_ROM_START) % rom_size), false);
-        }
-    }
-}
-
-// Reads one byte from the ROM device; the guest's read drops the overlay, an
-// inspection (`peek`) leaves it.
-static uint8_t iifx_rom_byte(void *ctx, uint32_t addr, bool peek) {
-    config_t *cfg = (config_t *)ctx;
-    if (!peek)
-        iifx_set_rom_overlay(cfg, false);
-    const uint8_t *rom = memory_rom_bytes(cfg->memory_map);
-    uint32_t rom_size = memory_rom_size(cfg->memory_map);
-    if (!rom || rom_size == 0)
-        return 0xff;
-    return rom[addr % rom_size];
-}
-
-static uint8_t iifx_rom_read_uint8(void *ctx, uint32_t addr) {
-    return iifx_rom_byte(ctx, addr, false);
-}
-static uint8_t iifx_rom_peek_uint8(void *ctx, uint32_t addr) {
-    return iifx_rom_byte(ctx, addr, true); // wider peeks compose
-}
-
-// Reads one word from the ROM device.
-static uint16_t iifx_rom_read_uint16(void *ctx, uint32_t addr) {
-    uint16_t hi = iifx_rom_read_uint8(ctx, addr);
-    uint16_t lo = iifx_rom_read_uint8(ctx, addr + 1);
-    return (uint16_t)((hi << 8) | lo);
-}
-
-// Reads one long from the ROM device.
-static uint32_t iifx_rom_read_uint32(void *ctx, uint32_t addr) {
-    uint32_t hi = iifx_rom_read_uint16(ctx, addr);
-    uint32_t lo = iifx_rom_read_uint16(ctx, addr + 2);
-    return (hi << 16) | lo;
-}
-
-// Ignores writes to the ROM device.
-static void iifx_rom_write_uint8(void *ctx, uint32_t addr, uint8_t value) {
-    (void)ctx;
-    (void)addr;
-    (void)value;
-}
-
-// Ignores word writes to the ROM device.
-static void iifx_rom_write_uint16(void *ctx, uint32_t addr, uint16_t value) {
-    (void)ctx;
-    (void)addr;
-    (void)value;
-}
-
-// Ignores long writes to the ROM device.
-static void iifx_rom_write_uint32(void *ctx, uint32_t addr, uint32_t value) {
-    (void)ctx;
-    (void)addr;
-    (void)value;
+    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
+    for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++)
+        page_fill_68k(p, ram_base + ((p % ram_pages) << MEM_PAGE_SHIFT), true);
 }
 
 // Reads one byte from a big-endian 32-bit SCSI DMA register.
@@ -1396,17 +1318,9 @@ static void iifx_memory_layout_init(config_t *cfg) {
     mac030_map_mirrored(0, (ram_pages > window_pages) ? ram_pages : window_pages, ram_base, ram_pages, page_fill_68k,
                         true);
 
-    st->rom_interface = (memory_interface_t){
-        .read_uint8 = iifx_rom_read_uint8,
-        .read_uint16 = iifx_rom_read_uint16,
-        .read_uint32 = iifx_rom_read_uint32,
-        .write_uint8 = iifx_rom_write_uint8,
-        .write_uint16 = iifx_rom_write_uint16,
-        .write_uint32 = iifx_rom_write_uint32,
-        .peek_uint8 = iifx_rom_peek_uint8,
-    };
-    memory_map_add(cfg->memory_map, IIFX_ROM_START, IIFX_ROM_END - IIFX_ROM_START, "ROM switch", &st->rom_interface,
-                   cfg);
+    mac030_rom_overlay_init(&st->overlay, cfg, IIFX_ROM_START, IIFX_ROM_END, iifx_overlay_map_ram, "IIfx");
+    memory_map_add(cfg->memory_map, IIFX_ROM_START, IIFX_ROM_END - IIFX_ROM_START, "ROM switch", &st->overlay.iface,
+                   &st->overlay);
 
     // Reads keep the machID pre-check (above the mirror) then delegate to the
     // shared engine; writes go straight to the engine.  ctx is the engine's
@@ -1426,15 +1340,13 @@ static void iifx_memory_layout_init(config_t *cfg) {
     // slot aliases into the page table (shared helper; see iicx.c).
     mmu_host_regions_fill_pages(st->mmu, page_fill_68k, /*mode24_alias*/ true);
 
-    st->rom_overlay = false;
-    iifx_set_rom_overlay(cfg, true);
+    mac030_rom_overlay_arm(&st->overlay);
 }
 
 // Reasserts reset-time IIfx hardware state.
 static void iifx_bus_reset(config_t *cfg) {
     iifx_state_t *st = iifx_state(cfg);
-    st->rom_overlay = false;
-    iifx_set_rom_overlay(cfg, true);
+    mac030_rom_overlay_arm(&st->overlay);
     system_reset_common_devices(cfg);
     // Both IOPs are on the net (iop_reset cites the F19 theory of operation).
     iop_reset(st->scc_iop);

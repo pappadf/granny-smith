@@ -61,7 +61,7 @@ LOG_USE_CATEGORY_NAME("board");
 // ============================================================
 
 static void iisi_set_rom_overlay(config_t *cfg, bool overlay) {
-    mac030_glue_set_rom_overlay(cfg, &iisi_state(cfg)->rom_overlay, IISI_ROM_START, overlay);
+    mac030_rom_overlay_set_line(&iisi_state(cfg)->overlay, overlay);
 }
 
 // ============================================================
@@ -118,8 +118,8 @@ static void iisi_memory_layout_init(config_t *cfg) {
     // (slot-$E base $FEE08000 / $00E08000 -> physical 0 -> Bank A), and the card
     // renders straight out of Bank A — both resolve via the normal RAM path.
 
-    st->rom_overlay = false;
-    iisi_set_rom_overlay(cfg, true);
+    mac030_rom_overlay_init_line(&st->overlay, cfg, cfg->machine->name);
+    mac030_rom_overlay_arm(&st->overlay);
 }
 
 // ============================================================
@@ -146,7 +146,7 @@ static void iisi_via1_output(void *context, uint8_t port, uint8_t output) {
         // model the MDU's "first high-ROM access turns the overlay off" by
         // disabling it on the first VIA port-A write issued from high ROM (the
         // ROM's INITVIAS, which runs only after the relocation jump).
-        if (st->rom_overlay && cpu_get_pc(cfg->cpu) >= IISI_ROM_START)
+        if (st->overlay.armed && cpu_get_pc(cfg->cpu) >= IISI_ROM_START)
             iisi_set_rom_overlay(cfg, false);
         return;
     }

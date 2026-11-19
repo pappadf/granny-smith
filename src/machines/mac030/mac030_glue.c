@@ -279,25 +279,6 @@ void mac030_map_mirrored(uint32_t start_page, uint32_t window_pages, uint8_t *ho
         fill(start_page + i, host + ((i % size_pages) << MEM_PAGE_SHIFT), writable);
 }
 
-// Toggle the ROM overlay at $00000000.  overlay=true maps the ROM image
-// (read-only); overlay=false restores RAM (writable).  No-op if unchanged.
-void mac030_glue_set_rom_overlay(config_t *cfg, bool *overlay_flag, uint32_t rom_start, bool on) {
-    if (*overlay_flag == on)
-        return;
-    *overlay_flag = on;
-    uint32_t rom_size = cfg->machine->rom_size;
-    uint32_t rom_pages = rom_size >> MEM_PAGE_SHIFT;
-    uint32_t rom_start_page = rom_start >> MEM_PAGE_SHIFT;
-    if (on) {
-        for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++)
-            page_fill_68k(p, g_page_table[rom_start_page + p].host_base, false);
-    } else {
-        uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
-        for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++)
-            page_fill_68k(p, ram_base + (p << MEM_PAGE_SHIFT), true);
-    }
-}
-
 // Hardware RESET: ROM overlay back on, shared devices reset.
 // The GLUE/MDU half of the board's /RESET net: VIA1 goes back to power-on and
 // pulls Overlay high, so the memory controller uses the ROM overlay map
@@ -307,9 +288,8 @@ void mac030_glue_set_rom_overlay(config_t *cfg, bool *overlay_flag, uint32_t rom
 // the net, so an external chip reset must not touch it; that moved to
 // cpu_hardware_reset.  The `mmu` parameter is gone
 // with it.
-void mac030_glue_bus_reset(config_t *cfg, bool *overlay_flag, uint32_t rom_start) {
-    *overlay_flag = false; // force the set_rom_overlay toggle below
-    mac030_glue_set_rom_overlay(cfg, overlay_flag, rom_start, true);
+void mac030_glue_bus_reset(config_t *cfg, mac030_rom_overlay_t *overlay) {
+    mac030_rom_overlay_arm(overlay); // unconditionally: the pages may have changed since
     system_reset_common_devices(cfg);
 }
 
@@ -420,7 +400,7 @@ static int glue_init(config_t *cfg, checkpoint_t *cp) {
 
 static void glue_bus_reset(config_t *cfg) {
     mac030_glue_state_t *st = (mac030_glue_state_t *)cfg->machine_context;
-    mac030_glue_bus_reset(cfg, &st->rom_overlay, glue_board(cfg)->desc->rom_base);
+    mac030_glue_bus_reset(cfg, &st->overlay);
 }
 
 static void glue_teardown(config_t *cfg) {
