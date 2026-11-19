@@ -8,6 +8,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -177,23 +178,56 @@ int file_write_atomic(const char *path, const void *data, size_t len) {
     return file_replace_commit(&a, len == 0 || fwrite(data, 1, len, f) == len);
 }
 
+int open_regular_file(const char *path, uint64_t *size, int64_t *mtime) {
+    if (!path)
+        return -EINVAL;
+    // Non-blocking: a FIFO with no writer would otherwise block in open()
+    // before the type check below could refuse it.  O_CLOEXEC: don't leak
+    // the fd across a hypothetical future fork/exec.
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+    if (fd < 0)
+        return -errno;
+    struct stat st;
+    int rc = 0;
+    if (fstat(fd, &st) != 0)
+        rc = -errno;
+    else if (S_ISDIR(st.st_mode))
+        rc = -EISDIR;
+    else if (!S_ISREG(st.st_mode))
+        rc = -EINVAL;
+    // A regular file reads the same either way; clear the flag so every
+    // later read is the ordinary blocking kind.
+    else if (fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) & ~O_NONBLOCK) != 0)
+        rc = -errno;
+    if (rc != 0) {
+        close(fd);
+        return rc;
+    }
+    if (size)
+        *size = (uint64_t)st.st_size;
+    if (mtime)
+        *mtime = (int64_t)st.st_mtime;
+    return fd;
+}
+
 int read_file(const char *path, size_t cap, uint8_t **out, size_t *out_len) {
     *out = NULL;
     *out_len = 0;
-    FILE *f = fopen(path, "rb");
-    if (!f)
-        return -errno;
-    struct stat st;
-    if (fstat(fileno(f), &st) != 0) {
-        int e = errno;
-        fclose(f);
-        return -e;
-    }
-    if (st.st_size < 0 || (uint64_t)st.st_size > cap) {
-        fclose(f);
+    uint64_t size = 0;
+    int fd = open_regular_file(path, &size, NULL);
+    if (fd < 0)
+        return fd;
+    if (size > cap) {
+        close(fd);
         return -EFBIG;
     }
-    size_t sz = (size_t)st.st_size;
+    FILE *f = fdopen(fd, "rb");
+    if (!f) {
+        int e = errno;
+        close(fd);
+        return -e;
+    }
+    size_t sz = (size_t)size;
     uint8_t *buf = malloc(sz ? sz : 1);
     if (!buf) {
         fclose(f);

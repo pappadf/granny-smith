@@ -96,27 +96,18 @@ source_t *source_host(const char *path, int *err) {
         *err = -EINVAL;
         return NULL;
     }
-    int fd = open(path, O_RDONLY);
+    uint64_t size = 0;
+    int64_t mtime = 0;
+    int fd = open_regular_file(path, &size, &mtime);
     if (fd < 0) {
-        *err = -errno;
-        return NULL;
-    }
-    struct stat st;
-    if (fstat(fd, &st) != 0) {
-        *err = -errno;
-        close(fd);
-        return NULL;
-    }
-    if (!S_ISREG(st.st_mode)) {
-        *err = S_ISDIR(st.st_mode) ? -EISDIR : -EINVAL;
-        close(fd);
+        *err = fd;
         return NULL;
     }
     host_src_t *h = calloc(1, sizeof(*h));
     // The key names the file's content: the canonical path (one spelling for
     // every relative, absolute or symlinked route to it) plus size and mtime.
     char *canon = realpath(path, NULL);
-    char *key = str_printf("%s@%" PRIu64 ":%lld", canon ? canon : path, (uint64_t)st.st_size, (long long)st.st_mtime);
+    char *key = str_printf("%s@%" PRIu64 ":%lld", canon ? canon : path, size, (long long)mtime);
     free(canon);
     if (!h || !key) {
         free(h);
@@ -126,7 +117,7 @@ source_t *source_host(const char *path, int *err) {
         return NULL;
     }
     h->fd = fd;
-    h->size = (uint64_t)st.st_size;
+    h->size = size;
     h->key = key;
     source_t *s = peel_source_new(&host_ops, h, NULL);
     if (!s)

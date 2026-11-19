@@ -53,6 +53,15 @@ int file_replace_commit(file_replace_t *a, bool ok); // 0 or a negative errno
 // The whole of `data` to `path`, replaced atomically.  0 or a negative errno.
 int file_write_atomic(const char *path, const void *data, size_t len);
 
+// The one host-file opener for reading, under source_host, the host VFS
+// backend and read_file: a read-only, close-on-exec descriptor on a regular
+// file, or a negative errno (-EISDIR for a directory, -EINVAL for a FIFO,
+// socket or device).  The open is non-blocking, so a FIFO with no writer is
+// refused instead of hanging the caller; the descriptor it returns blocks as
+// usual.  `size` and `mtime` (either may be NULL) receive the file's length
+// and modification time.
+int open_regular_file(const char *path, uint64_t *size, int64_t *mtime);
+
 // Read all of `path` into a malloc'd buffer (*out; a non-NULL buffer even for
 // an empty file) of *out_len bytes.  A file larger than `cap` is refused
 // with -EFBIG before anything is allocated: every caller states what it will
