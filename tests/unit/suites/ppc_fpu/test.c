@@ -42,37 +42,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int failures, checks;
-
-#define CHECK(cond)                                                                                                    \
-    do {                                                                                                               \
-        checks++;                                                                                                      \
-        if (!(cond)) {                                                                                                 \
-            printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);                                                     \
-            failures++;                                                                                                \
-        }                                                                                                              \
-    } while (0)
-
-#define CHECK_EQ64(got, want)                                                                                          \
-    do {                                                                                                               \
-        checks++;                                                                                                      \
-        uint64_t g_ = (got), w_ = (want);                                                                              \
-        if (g_ != w_) {                                                                                                \
-            printf("FAIL %s:%d: %s = $%016llX, want $%016llX\n", __FILE__, __LINE__, #got, (unsigned long long)g_,     \
-                   (unsigned long long)w_);                                                                            \
-            failures++;                                                                                                \
-        }                                                                                                              \
-    } while (0)
-
-#define CHECK_EQ32(got, want)                                                                                          \
-    do {                                                                                                               \
-        checks++;                                                                                                      \
-        uint32_t g_ = (uint32_t)(got), w_ = (uint32_t)(want);                                                          \
-        if (g_ != w_) {                                                                                                \
-            printf("FAIL %s:%d: %s = $%08X, want $%08X\n", __FILE__, __LINE__, #got, g_, w_);                          \
-            failures++;                                                                                                \
-        }                                                                                                              \
-    } while (0)
+#define TEST_ASSERT_COUNTING
+#include "test_assert.h"
 
 // === Kernel-call helpers ====================================================
 

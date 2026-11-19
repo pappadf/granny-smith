@@ -31,17 +31,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-// The shared harness ships a decimal assertion; every value in this suite is a register or a
-// pixel, so it wants a hexadecimal one.
-#define ASSERT_EQ_HEX(a, b)                                                                                            \
-    do {                                                                                                               \
-        unsigned a_ = (unsigned)(a), b_ = (unsigned)(b);                                                               \
-        if (a_ != b_) {                                                                                                \
-            fprintf(stderr, "[FAIL] %s:%d: %s != %s ($%02X != $%02X)\n", __FILE__, __LINE__, #a, #b, a_, b_);          \
-            exit(1);                                                                                                   \
-        }                                                                                                              \
-    } while (0)
-
 // --- Stubs for the environment pci.c reaches into ---------------------------
 //
 // pci.c's card registry names every registered driver by extern.  This suite links the real

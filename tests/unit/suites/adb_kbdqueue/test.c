@@ -26,15 +26,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define ASSERT_EQ_HEX(a, b)                                                                                            \
-    do {                                                                                                               \
-        unsigned a_ = (unsigned)(a), b_ = (unsigned)(b);                                                               \
-        if (a_ != b_) {                                                                                                \
-            fprintf(stderr, "[FAIL] %s:%d: %s != %s ($%02X != $%02X)\n", __FILE__, __LINE__, #a, #b, a_, b_);          \
-            exit(1);                                                                                                   \
-        }                                                                                                              \
-    } while (0)
-
 // --- The environment adb.c reaches into -------------------------------------
 //
 // None of it is needed to exercise the queue: no VIA (the transport is the IOP
