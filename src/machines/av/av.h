@@ -24,7 +24,7 @@
 //     bus-error on MUNI_Control so the ROM's TestForMUNI clears MUNIExists.
 //   * interrupts: VIA1→1, PSC-VIA2 window→2, MACE→3, PSC-L4→4, PSC-L5→5,
 //     PSC-L6→6, NMI→7, resolved through
-//     mac030_irq_resolve_ipl with the family's own routing table.
+//     machine_irq_update with the family's own routing table.
 //   * NO VIA2 chip, no ASC, no SWIM, no SONIC, no IOPs — the PSC replaces
 //     them all (config_t.via2 stays NULL; the IPL-2 path is the PSC's
 //     VIA2 window).
@@ -179,7 +179,7 @@ void av_via1_shift_out(void *context, uint8_t byte);
 void av_update_ipl(config_t *cfg, int source, bool active);
 
 // The AV family's IRQ routing table (sentinel-terminated; for unit tests).
-const mac030_irq_route_t *av_irq_routes(void);
+const machine_irq_route_t *av_irq_routes(void);
 
 // Overlay control (checkpoint restore / tests); layout arms it by default.
 void av_set_overlay(config_t *cfg, bool on);

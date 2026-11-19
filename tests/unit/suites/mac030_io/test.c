@@ -12,7 +12,7 @@
 // aliases, and each IRQ source raises the right CPU IPL with correct priority.
 // Deterministic, no emulator/ROM/MMU required.
 
-#include "mac030_glue.h" // mac030_irq_route_t, resolver, MAC030_GLUE_IRQ_*
+#include "mac030_glue.h" // machine_irq_route_t, resolver, MAC030_GLUE_IRQ_*
 #include "mac030_glue_io.h" // engine + GLUE table
 #include "mdu_io.h" // MDU table
 #include "test_assert.h"
@@ -435,24 +435,24 @@ TEST(test_validate_flags_a_window_with_no_declared_penalty) {
 // --- IRQ routing ----------------------------------------------------------
 
 TEST(test_irq_single_sources) {
-    const mac030_irq_route_t *routes = mac030_glue_irq_routes();
+    const machine_irq_route_t *routes = mac030_glue_irq_routes();
     ASSERT_TRUE(routes != NULL);
-    ASSERT_EQ_INT(mac030_irq_resolve_ipl(routes, 0), 0); // none active
-    ASSERT_EQ_INT(mac030_irq_resolve_ipl(routes, MAC030_GLUE_IRQ_VIA1), 1);
-    ASSERT_EQ_INT(mac030_irq_resolve_ipl(routes, MAC030_GLUE_IRQ_VIA2), 2);
-    ASSERT_EQ_INT(mac030_irq_resolve_ipl(routes, MAC030_GLUE_IRQ_SCC), 4);
-    ASSERT_EQ_INT(mac030_irq_resolve_ipl(routes, MAC030_GLUE_IRQ_NMI), 7);
+    ASSERT_EQ_INT(machine_irq_resolve_ipl(routes, 0), 0); // none active
+    ASSERT_EQ_INT(machine_irq_resolve_ipl(routes, MAC030_GLUE_IRQ_VIA1), 1);
+    ASSERT_EQ_INT(machine_irq_resolve_ipl(routes, MAC030_GLUE_IRQ_VIA2), 2);
+    ASSERT_EQ_INT(machine_irq_resolve_ipl(routes, MAC030_GLUE_IRQ_SCC), 4);
+    ASSERT_EQ_INT(machine_irq_resolve_ipl(routes, MAC030_GLUE_IRQ_NMI), 7);
 }
 
 TEST(test_irq_priority) {
-    const mac030_irq_route_t *routes = mac030_glue_irq_routes();
+    const machine_irq_route_t *routes = mac030_glue_irq_routes();
     // Highest-priority active source wins.
-    ASSERT_EQ_INT(mac030_irq_resolve_ipl(routes, MAC030_GLUE_IRQ_VIA1 | MAC030_GLUE_IRQ_VIA2), 2);
-    ASSERT_EQ_INT(mac030_irq_resolve_ipl(routes, MAC030_GLUE_IRQ_VIA1 | MAC030_GLUE_IRQ_SCC), 4);
-    ASSERT_EQ_INT(mac030_irq_resolve_ipl(routes, MAC030_GLUE_IRQ_VIA2 | MAC030_GLUE_IRQ_SCC), 4);
-    ASSERT_EQ_INT(mac030_irq_resolve_ipl(routes, MAC030_GLUE_IRQ_NMI | MAC030_GLUE_IRQ_VIA1), 7);
-    ASSERT_EQ_INT(mac030_irq_resolve_ipl(routes, MAC030_GLUE_IRQ_VIA1 | MAC030_GLUE_IRQ_VIA2 | MAC030_GLUE_IRQ_SCC |
-                                                     MAC030_GLUE_IRQ_NMI),
+    ASSERT_EQ_INT(machine_irq_resolve_ipl(routes, MAC030_GLUE_IRQ_VIA1 | MAC030_GLUE_IRQ_VIA2), 2);
+    ASSERT_EQ_INT(machine_irq_resolve_ipl(routes, MAC030_GLUE_IRQ_VIA1 | MAC030_GLUE_IRQ_SCC), 4);
+    ASSERT_EQ_INT(machine_irq_resolve_ipl(routes, MAC030_GLUE_IRQ_VIA2 | MAC030_GLUE_IRQ_SCC), 4);
+    ASSERT_EQ_INT(machine_irq_resolve_ipl(routes, MAC030_GLUE_IRQ_NMI | MAC030_GLUE_IRQ_VIA1), 7);
+    ASSERT_EQ_INT(machine_irq_resolve_ipl(routes, MAC030_GLUE_IRQ_VIA1 | MAC030_GLUE_IRQ_VIA2 | MAC030_GLUE_IRQ_SCC |
+                                                      MAC030_GLUE_IRQ_NMI),
                   7);
 }
 

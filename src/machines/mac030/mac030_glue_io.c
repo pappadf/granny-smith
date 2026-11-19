@@ -11,7 +11,7 @@
 
 #include "mac030_glue_io.h"
 
-#include "mac030_glue.h" // mac030_irq_route_t + MAC030_GLUE_IRQ_*
+#include "mac030_glue.h" // machine_irq_route_t + MAC030_GLUE_IRQ_*
 
 #include "asc.h"
 #include "floppy.h"
@@ -458,7 +458,7 @@ void mac030_glue_io_bind(mac030_io_t *io, config_t *cfg, const struct mac030_boa
 // ============================================================
 
 // Ordered highest-IPL-first: NMI→7, SCC→4, VIA2→2, VIA1→1.
-static const mac030_irq_route_t glue_irq_routes[] = {
+static const machine_irq_route_t glue_irq_routes[] = {
     {MAC030_GLUE_IRQ_NMI,  7},
     {MAC030_GLUE_IRQ_SCC,  4},
     {MAC030_GLUE_IRQ_VIA2, 2},
@@ -466,16 +466,6 @@ static const mac030_irq_route_t glue_irq_routes[] = {
     {0,                    0}, // sentinel
 };
 
-const mac030_irq_route_t *mac030_glue_irq_routes(void) {
+const machine_irq_route_t *mac030_glue_irq_routes(void) {
     return glue_irq_routes;
-}
-
-// Walk an ordered (high→low IPL) routing table; return the IPL of the
-// highest-priority active source, or 0 if none.  Pure; unit-tested.
-int mac030_irq_resolve_ipl(const mac030_irq_route_t *routes, uint32_t irq) {
-    for (; routes->source; routes++) {
-        if (irq & (uint32_t)routes->source)
-            return routes->ipl;
-    }
-    return 0;
 }

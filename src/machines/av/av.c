@@ -261,7 +261,7 @@ static void av_io_bind(mac030_io_t *io, config_t *cfg, const av_board_desc_t *de
 // IRQ routing
 // ============================================================
 
-static const mac030_irq_route_t av_irq_routes_tbl[] = {
+static const machine_irq_route_t av_irq_routes_tbl[] = {
     {AV_IRQ_NMI,  7},
     {AV_IRQ_L6,   6},
     {AV_IRQ_L5,   5},
@@ -272,18 +272,12 @@ static const mac030_irq_route_t av_irq_routes_tbl[] = {
     {0,           0},
 };
 
-const mac030_irq_route_t *av_irq_routes(void) {
+const machine_irq_route_t *av_irq_routes(void) {
     return av_irq_routes_tbl;
 }
 
 void av_update_ipl(config_t *cfg, int source, bool active) {
-    if (active)
-        cfg->rt.irq |= source;
-    else
-        cfg->rt.irq &= ~source;
-    int new_ipl = mac030_irq_resolve_ipl(av_irq_routes_tbl, (uint32_t)cfg->rt.irq);
-    cpu_set_ipl(cfg->cpu, new_ipl);
-    cpu_reschedule(cfg->scheduler);
+    machine_irq_update(cfg, av_irq_routes_tbl, source, active);
 }
 
 // VIA1 interrupt line → IPL 1.

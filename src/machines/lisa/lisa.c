@@ -11,6 +11,7 @@
 
 #include "machine.h"
 #include "machine_checkpoint.h"
+#include "machine_irq.h"
 #include "machine_teardown.h"
 #include "system_internal.h"
 
@@ -220,19 +221,18 @@ static display_t *lisa_display(config_t *cfg) {
 // Set the CPU IPL from the per-level interrupt bitmask.  Lisa sources sit on
 // fixed levels: SCC=6, COPS(VIA1)=2, floppy/parallel(VIA2)/VBL=1.
 static void lisa_update_ipl(config_t *cfg, int level, bool active) {
-    if (active)
-        cfg->rt.irq |= (1u << level);
-    else
-        cfg->rt.irq &= ~(1u << level);
-    int ipl = 0;
-    for (int l = 7; l >= 1; l--) {
-        if (cfg->rt.irq & (1u << l)) {
-            ipl = l;
-            break;
-        }
-    }
-    cpu_set_ipl(cfg->cpu, ipl);
-    cpu_reschedule(cfg->scheduler);
+    // The source bit is the level itself, so the table is the identity
+    static const machine_irq_route_t lisa_irq_routes[] = {
+        {1 << 7, 7},
+        {1 << 6, 6},
+        {1 << 5, 5},
+        {1 << 4, 4},
+        {1 << 3, 3},
+        {1 << 2, 2},
+        {1 << 1, 1},
+        {0,      0}, // sentinel
+    };
+    machine_irq_update(cfg, lisa_irq_routes, 1 << level, active);
 }
 
 // ============================================================
@@ -1164,10 +1164,8 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     cfg->debugger = debug_init();
 
-    if (!checkpoint) {
-        cfg->rt.irq = 0;
-        cpu_set_ipl(cfg->cpu, 0);
-    } else {
+    machine_irq_cold_reset(cfg, checkpoint);
+    if (checkpoint) {
         // Level 1's sub-sources are not checkpointed: recompute each from its
         // device's restored state so cfg->rt.irq agrees with the hardware (#325).
         ls->l1_via2 = (via_get_ifr(cfg->via2) & 0x80) != 0; // VIA2 aggregate IRQ

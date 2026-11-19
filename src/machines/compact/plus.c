@@ -26,6 +26,7 @@
 #include "keyboard.h"
 #include "log.h"
 #include "machine_checkpoint.h"
+#include "machine_irq.h"
 #include "memory.h"
 #include "mmu.h" // tlb_track_page
 #include "mouse.h"
@@ -87,6 +88,14 @@ static void plus_update_ipl(config_t *cfg, int source, bool active);
 // adjacent 68000 families used one signature with opposite meanings.
 #define PLUS_IRQ_VIA (1u << 0)
 #define PLUS_IRQ_SCC (1u << 1)
+
+// The PALs' routing: the SCC on /IPL1 (level 2) wins over the VIA on /IPL0
+// (level 1).
+static const machine_irq_route_t plus_irq_routes[] = {
+    {PLUS_IRQ_SCC, 2},
+    {PLUS_IRQ_VIA, 1},
+    {0,            0}, // sentinel
+};
 
 #define PLUS_SCSI_BASE 0x500000UL
 #define PLUS_SCSI_SIZE 0x100000UL
@@ -400,10 +409,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->debugger = debug_init();
 
     // Initialise IRQ/IPL only for cold boot; on restore, devices already re-assert.
-    if (!checkpoint) {
-        cfg->rt.irq = 0;
-        cpu_set_ipl(cfg->cpu, 0);
-    }
+    machine_irq_cold_reset(cfg, checkpoint);
     return 0;
 }
 
@@ -470,10 +476,6 @@ static void plus_teardown(config_t *cfg) {
 static void plus_update_ipl(config_t *cfg, int source, bool active) {
     int old_irq = cfg->rt.irq;
     int old_ipl = cpu_get_ipl(cfg->cpu);
-    if (active)
-        cfg->rt.irq |= source;
-    else
-        cfg->rt.irq &= ~source;
 
     // Guide to the Macintosh Family Hardware, chapter 3:
     // The interrupt request line from the VIA goes to the PALs,
@@ -482,21 +484,13 @@ static void plus_update_ipl(config_t *cfg, int source, bool active) {
     // and deassert /IPL0 whenever /IPL1 is asserted.
 
     // The SCC on /IPL1 wins over the VIA on /IPL0, exactly as the quote
-    // above describes.  Previously spelled `irq > 1` / `irq == 1`, which is
-    // the same test only because these are the only two sources.
-    uint32_t new_ipl;
-    if (cfg->rt.irq & PLUS_IRQ_SCC)
-        new_ipl = 2;
-    else if (cfg->rt.irq & PLUS_IRQ_VIA)
-        new_ipl = 1;
-    else
-        new_ipl = 0;
-    cpu_set_ipl(cfg->cpu, new_ipl);
+    // above describes (plus_irq_routes).  Previously spelled `irq > 1` /
+    // `irq == 1`, which is the same test only because these are the only two
+    // sources.
+    int new_ipl = machine_irq_update(cfg, plus_irq_routes, source, active);
 
     LOG(1, "plus_update_ipl: source=%d active=%d irq:%d->%d ipl:%d->%d", source, active ? 1 : 0, old_irq, cfg->rt.irq,
         old_ipl, new_ipl);
-
-    cpu_reschedule(cfg->scheduler);
 }
 
 // Plus-specific VIA output callback: routes port changes to floppy, video, sound, RTC
