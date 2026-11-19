@@ -231,12 +231,15 @@ harmless only when the register is not also an input to the restart: A/UX
 1.1's stdio computes a read size with `MOVE.L $4019E4(,D0.L*4),D0`, the
 table page faults, and the restart indexed with `D0 = $FFFFFFFF`
 (`read(fd, buf, -12888)` — `chown: unknown user id root`).  So the MMU
-fault sites in `memory.c` snapshot D0–D7 at the first fault of an
-instruction (`g_fault_dregs`, through the `g_fault_dregs_src` pointer each
-68k sprint prologue sets), and `exception_bus_error_retry()` puts them
-back on the 68020/030 path.  The address registers stay with the per-op
-rollbacks: those restore pre-instruction values, which a snapshot taken at
-the fault would undo.
+fault sites in `memory.c` copy the register file at the first fault of an
+instruction (`g_bus_fault_regs`, D0–D7 then A0–A7, through the
+`g_bus_fault_regfile` pointer that `cpu_run_sprint()` sets outside the
+decoders), and `exception_bus_error_retry()` puts D0–D7 back on the
+030 and 040 paths.  The address registers mostly stay with the per-op
+rollbacks, which restore pre-instruction values a copy taken at the fault
+would undo; the retry takes from the copy only the An writes it can
+recognise (a MOVEA/ADDA/SUBA destination, the stack step of RTS/RTD,
+LINK and UNLK, and an operand's `(An)+`/`-(An)`).
 
 The retry function detects a **double bus error** the way real hardware
 does — not by comparing PCs (legitimate retry loops would false-trigger)

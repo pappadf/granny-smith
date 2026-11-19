@@ -519,10 +519,6 @@ void cpu_attach_mmu_node(cpu_t *cpu, const class_desc_t *cls, void *data) {
 void cpu_delete(cpu_t *cpu) {
     if (!cpu)
         return;
-    if (g_fault_dregs_src == cpu->d) {
-        g_fault_dregs_src = NULL; // the MMU-fault snapshot source (memory.c)
-        g_fault_dregs_valid = false;
-    }
     if (g_bus_fault_regfile == cpu->d)
         g_bus_fault_regfile = NULL; // set per sprint by cpu_run_sprint
     if (cpu->mmu_object) {

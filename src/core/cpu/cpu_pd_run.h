@@ -983,11 +983,6 @@ void PD_RUN_NAME(cpu_t *restrict cpu, uint32_t *instructions) {
     // arrives with the supervisor pair selected whatever its SR says.
     cpu_select_soa(cpu->supervisor);
     g_bus_error_instr_ptr = instructions; // let memory slow paths force exit
-#ifndef CPU_DECODER_IS_68000
-    // MMU faults snapshot D0-D7 for the retry: 68020/030 only, as a 68000 has
-    // no MMU to fault, and its run loop is kept free of the store.
-    g_fault_dregs_src = cpu->d;
-#endif
     cpu_check_interrupt(cpu);
     // The same-PC retry latch is decided here and in write_sr, never per
     // instruction (m68k_bus_error_latch_settle).

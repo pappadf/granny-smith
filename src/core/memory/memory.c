@@ -116,14 +116,6 @@ static inline void bus_fault_snapshot_regs(unsigned size) {
     }
 }
 uint32_t *g_bus_error_instr_ptr = NULL;
-// The running 68k core's data registers (set per sprint), snapshotted at the
-// first MMU fault of an instruction.  Our cores run an instruction to the end
-// with the faulted read yielding a fill value, then deliver a retry frame; the
-// hardware never writes a destination whose operand read faulted, so the
-// retry path restores D0-D7 from this snapshot (exception_bus_error_retry).
-uint32_t *g_fault_dregs_src = NULL;
-uint32_t g_fault_dregs[8];
-bool g_fault_dregs_valid = false;
 // Physical page-fill hook for machines whose page table is NOT owned by a
 // 68k mmu_state_t (the PowerPC families).  memory_map_host_region() routes
 // card-registered host regions through it so their pages land in the
@@ -1167,9 +1159,6 @@ static inline __attribute__((always_inline)) uint32_t read_slow_n(uint32_t addr,
         } else if (!g_bus_error_pending) {
             // MMU fault: invalid descriptor, unmapped physical, permission.
             g_bus_error_pending = true;
-            g_fault_dregs_valid = g_fault_dregs_src != NULL;
-            if (g_fault_dregs_valid)
-                memcpy(g_fault_dregs, g_fault_dregs_src, sizeof g_fault_dregs);
             g_bus_error_address = addr;
             g_bus_error_rw = true; // read
             g_bus_error_fc = supervisor ? 5 : 1;
@@ -1668,9 +1657,6 @@ static inline __attribute__((always_inline)) void write_slow_n(uint32_t addr, ui
         } else if (!g_bus_error_pending) {
             // MMU fault: invalid descriptor, unmapped physical, permission.
             g_bus_error_pending = true;
-            g_fault_dregs_valid = g_fault_dregs_src != NULL;
-            if (g_fault_dregs_valid)
-                memcpy(g_fault_dregs, g_fault_dregs_src, sizeof g_fault_dregs);
             g_bus_error_address = addr;
             g_bus_error_rw = false; // write
             g_bus_error_fc = supervisor ? 5 : 1;
