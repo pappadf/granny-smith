@@ -338,12 +338,7 @@ static const uint32_t iici_ram_options_kb[] = {1024,  2048,  4096,  5120,  8192,
 static const mac030_mdu_board_t iici_board = {
     .desc = &iici_board_desc,
     .via1_output = iici_via1_output,
-    // No VIA1 shift-out routing: adb.c reads the VIA's shift register
-    // directly at each port-B ST transition, because in mode 7 the ADB
-    // transceiver clocks the shift, not the VIA's internal timer, and the
-    // ROM's SR writes during interrupt handling fire the callback
-    // spuriously (BUG-004).  via.c tolerates a NULL here.
-    .via1_shift_out = NULL,
+    .via1_shift_out = NULL, // ADB reads SR itself (BUG-004, mac030_glue.h)
     .build_devices = iici_build_devices,
 };
 

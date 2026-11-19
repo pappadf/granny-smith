@@ -99,6 +99,22 @@ typedef struct mcu_board_desc {
     uint32_t dafb_vram_size;
 } mcu_board_desc_t;
 
+// The .common block every MCU board shares: MCU+DAFB, the 256 MB ROM window
+// at $40000000, the 256 KiB I/O island whose undecoded reads float high (see
+// mac030_glue.h), and slots $1-$E bus-erroring (this board decodes below
+// $F9); only the island's decode table differs.
+#define MCU_BOARD_COMMON(io_ranges_)                                                                                   \
+    {                                                                                                                  \
+        .chipset = "MCU+DAFB",                                                                                         \
+        .rom_base = 0x40000000u,                                                                                       \
+        .rom_end = 0x50000000u,                                                                                        \
+        .io_ranges = (io_ranges_),                                                                                     \
+        .io_mirror_mask = 0x0003FFFFu,                                                                                 \
+        .io_unmapped_read = 0xFF,                                                                                      \
+        .bus_err_lo = 0xF1000000u,                                                                                     \
+        .bus_err_hi = NUBUS_BERR_HI,                                                                                   \
+    }
+
 // Per-machine hooks + data, named by hw_profile_t.board.
 typedef struct mcu_board {
     const mcu_board_desc_t *desc;

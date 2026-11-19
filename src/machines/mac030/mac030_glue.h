@@ -209,6 +209,11 @@ typedef struct mac030_glue_board {
     const mac030_board_desc_t *desc; // hardware data (rom window, io map, slots, bus-error)
 
     void (*via1_output)(void *context, uint8_t port, uint8_t value);
+    // VIA1 shift-out routing, NULL on every ADB board (here, the MDU's and the
+    // MCU's): adb.c reads the VIA's shift register directly at each port-B ST
+    // transition, because in mode 7 the ADB transceiver clocks the shift, not
+    // the VIA's internal timer, and the ROM's SR writes during interrupt
+    // handling fire the callback spuriously (BUG-004).  via.c tolerates NULL.
     void (*via1_shift_out)(void *context, uint8_t byte);
     void (*via2_output)(void *context, uint8_t port, uint8_t value);
     void (*via2_shift_out)(void *context, uint8_t byte);

@@ -190,8 +190,10 @@ static void iicx_setup_id(config_t *cfg) {
     via_input(cfg->via2, 1, 3, 1); // PB3
 }
 
-// IIcx board: GLUE family, three NuBus slots, VIA2 PB2 soft-power.
-static const mac030_board_desc_t iicx_board_desc = {
+// The IIcx and IIx board data (byte-identical): GLUE, the full NuBus bus-error
+// window, the internal speaker on the left channel.  The SE/30 differs (PDS in
+// $E, summed sound).
+const mac030_board_desc_t iicx_iix_board_desc = {
     .chipset = "GLUE",
     .rom_base = 0x40000000UL,
     .rom_end = 0x50000000UL,
@@ -203,15 +205,11 @@ static const mac030_board_desc_t iicx_board_desc = {
     .asc_mix = ASC_MIX_CH_A, // internal speaker takes the left channel
 };
 
+// IIcx board: GLUE family, three NuBus slots, VIA2 PB2 soft-power.
 static const mac030_glue_board_t iicx_board = {
-    .desc = &iicx_board_desc,
+    .desc = &iicx_iix_board_desc,
     .via1_output = iicx_via1_output,
-    // No VIA1 shift-out routing: adb.c reads the VIA's shift register
-    // directly at each port-B ST transition, because in mode 7 the ADB
-    // transceiver clocks the shift, not the VIA's internal timer, and the
-    // ROM's SR writes during interrupt handling fire the callback
-    // spuriously (BUG-004).  via.c tolerates a NULL here.
-    .via1_shift_out = NULL,
+    .via1_shift_out = NULL, // ADB reads SR itself (BUG-004, mac030_glue.h)
     .via2_output = iicx_via2_output,
     .via2_shift_out = mac030_glue_via_shift_out_ignored,
     .setup_id = iicx_setup_id,

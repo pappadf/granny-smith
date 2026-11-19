@@ -107,6 +107,21 @@ typedef struct av_board_desc {
     uint8_t uncached_read_cycles;
 } av_board_desc_t;
 
+// The .common block both AV boards share: YMCA+PSC, the 2 MB ROM window at
+// $40800000, the 256 KiB I/O island (+ the $50F40000 alias), super-slots
+// and slots bus-erroring from $A0000000 (see nubus.h).
+#define AV_BOARD_COMMON                                                                                                \
+    {                                                                                                                  \
+        .chipset = "YMCA+PSC",                                                                                         \
+        .rom_base = 0x40800000u,                                                                                       \
+        .rom_end = 0x40A00000u,                                                                                        \
+        .io_ranges = av_io_ranges,                                                                                     \
+        .io_mirror_mask = 0x0003FFFFu,                                                                                 \
+        .io_unmapped_read = 0xFF,                                                                                      \
+        .bus_err_lo = 0xA0000000u,                                                                                     \
+        .bus_err_hi = NUBUS_BERR_HI,                                                                                   \
+    }
+
 // Decompose `ram` bytes into the board's YMCA banks: the soldered bank,
 // then SIMMs of 4/8/16/32 MB (32 MB = two 16 MB banks), the largest that
 // fit first.  False when the total is no SIMM population of this board.

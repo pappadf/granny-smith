@@ -54,6 +54,9 @@ void iicx_memory_layout_tail(struct config *cfg);
 // both boards take the same SIMMs in the same two banks of four.
 extern const uint32_t iicx_iix_ram_options_kb[];
 
+// The board descriptor the IIcx and IIx share byte for byte (iicx.c).
+extern const mac030_board_desc_t iicx_iix_board_desc;
+
 // (I/O bus penalties now live with the shared dispatcher, mac030_glue_io.c.)
 
 // Address-space constants.

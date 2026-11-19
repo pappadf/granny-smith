@@ -221,17 +221,7 @@ static const nubus_slot_decl_t q700_nubus_slots[] = {
 };
 
 static const mcu_board_desc_t q700_board_desc = {
-    .common =
-        {
-                 .chipset = "MCU+DAFB",
-                 .rom_base = 0x40000000u,
-                 .rom_end = 0x50000000u,
-                 .io_ranges = mcu_q700_io_ranges,
-                 .io_mirror_mask = 0x0003FFFFu, // 256 KiB island
-            .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
-            .bus_err_lo = 0xF1000000u, // slots $1-$E: this board decodes below $F9
-            .bus_err_hi = NUBUS_BERR_HI,
-                 },
+    .common = MCU_BOARD_COMMON(mcu_q700_io_ranges),
     .ram_onboard_size = 0x00400000u, // 4 MB soldered = bank A; SIMM bank B follows
     .ram_bank_count = 2, // 4 MB soldered + one four-SIMM bank
     .via1_pa_model = 0xC0, // Q700 model sense
@@ -243,12 +233,7 @@ static const mcu_board_desc_t q700_board_desc = {
 static const mcu_board_t q700_board = {
     .desc = &q700_board_desc,
     .via1_output = q700_via1_output,
-    // No VIA1 shift-out routing: adb.c reads the VIA's shift register
-    // directly at each port-B ST transition, because in mode 7 the ADB
-    // transceiver clocks the shift, not the VIA's internal timer, and the
-    // ROM's SR writes during interrupt handling fire the callback
-    // spuriously (BUG-004).  via.c tolerates a NULL here.
-    .via1_shift_out = NULL,
+    .via1_shift_out = NULL, // ADB reads SR itself (BUG-004, mac030_glue.h)
     .via2_output = q700_via2_output,
     .build_devices = q700_build_devices,
 };
