@@ -131,6 +131,25 @@ TEST(test_bitwise_ops) {
     value_free(&v);
 }
 
+// Signed arithmetic wraps on the 64-bit pattern, as unsigned does, rather
+// than overflowing (undefined behaviour on int64_t).
+TEST(test_signed_overflow_wraps) {
+    value_t v = eval("-9223372036854775807 - 2");
+    ASSERT_EQ_INT(VK_INT, v.kind);
+    ASSERT_TRUE(v.i == INT64_MAX);
+    value_free(&v);
+
+    v = eval("-4611686018427387904 * 4");
+    ASSERT_EQ_INT(VK_INT, v.kind);
+    ASSERT_TRUE(v.i == 0);
+    value_free(&v);
+
+    v = eval("-1 + -9223372036854775807 + -1");
+    ASSERT_EQ_INT(VK_INT, v.kind);
+    ASSERT_TRUE(v.i == INT64_MAX);
+    value_free(&v);
+}
+
 TEST(test_shift_ops) {
     value_t v = eval("1 << 8");
     ASSERT_EQ_INT(256, (int)v.u);
@@ -839,6 +858,7 @@ int main(void) {
     RUN(test_division_and_modulo);
     RUN(test_bitwise_ops);
     RUN(test_shift_ops);
+    RUN(test_signed_overflow_wraps);
     RUN(test_comparison_ops);
     RUN(test_int_uint_promotion);
     RUN(test_int_to_float_promotion);

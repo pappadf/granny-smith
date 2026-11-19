@@ -1471,6 +1471,7 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char *err
     value_t pa = coerce_to(k, a);
     value_t pb = coerce_to(k, b);
     value_t r = val_none();
+    const char *fail = NULL; // the refusal, when the operation has none
     if (k == NK_FLOAT) {
         double x = pa.f, y = pb.f, z = 0;
         switch (op) {
@@ -1485,98 +1486,30 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char *err
             break;
         case '/':
             if (y == 0) {
-                value_free(&pa);
-                value_free(&pb);
-                NUM_FAIL("division by zero");
+                fail = "division by zero";
+                break;
             }
             z = x / y;
             break;
         case '%':
             // Same refusal as '/': fmod(x, 0) is a NaN, not an answer
             if (y == 0) {
-                value_free(&pa);
-                value_free(&pb);
-                NUM_FAIL("division by zero");
+                fail = "division by zero";
+                break;
             }
             z = fmod(x, y);
             break;
         default:
-            value_free(&pa);
-            value_free(&pb);
-            NUM_FAIL("bad op for float");
+            fail = "bad op for float";
         }
         r = val_float(z);
-    } else if (k == NK_INT) {
-        int64_t x = pa.i, y = pb.i, z = 0;
-        switch (op) {
-        case '+':
-            z = x + y;
-            break;
-        case '-':
-            z = x - y;
-            break;
-        case '*':
-            z = x * y;
-            break;
-        case '/':
-            if (y == 0) {
-                value_free(&pa);
-                value_free(&pb);
-                NUM_FAIL("division by zero");
-            }
-            // INT64_MIN / -1 overflows signed int (UB).
-            if (x == INT64_MIN && y == -1) {
-                value_free(&pa);
-                value_free(&pb);
-                NUM_FAIL("integer overflow in division");
-            }
-            z = x / y;
-            break;
-        case '%':
-            if (y == 0) {
-                value_free(&pa);
-                value_free(&pb);
-                NUM_FAIL("division by zero");
-            }
-            if (x == INT64_MIN && y == -1) {
-                value_free(&pa);
-                value_free(&pb);
-                NUM_FAIL("integer overflow in modulo");
-            }
-            z = x % y;
-            break;
-        case '&':
-            z = x & y;
-            break;
-        case '|':
-            z = x | y;
-            break;
-        case '^':
-            z = x ^ y;
-            break;
-        case '<':
-            if (y < 0 || y >= 64) {
-                value_free(&pa);
-                value_free(&pb);
-                NUM_FAIL("shift count out of range");
-            }
-            z = (int64_t)((uint64_t)x << y); // avoid signed shift UB
-            break;
-        case '>':
-            if (y < 0 || y >= 64) {
-                value_free(&pa);
-                value_free(&pb);
-                NUM_FAIL("shift count out of range");
-            }
-            z = x >> y;
-            break; // arithmetic shift on signed
-        default:
-            value_free(&pa);
-            value_free(&pb);
-            NUM_FAIL("bad op for int");
-        }
-        r = val_int(z);
-    } else { // NK_UINT
+    } else {
+        // NK_INT and NK_UINT share one arm on the 64-bit pattern: + - * and
+        // the bitwise ops and << wrap there (computing them on int64_t was
+        // undefined behaviour on overflow), and the result is reinterpreted
+        // for NK_INT.  Only / % >> and the shift-count check depend on the
+        // sign.
+        bool sgn = (k == NK_INT);
         uint64_t x = pa.u, y = pb.u, z = 0;
         switch (op) {
         case '+':
@@ -1588,22 +1521,6 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char *err
         case '*':
             z = x * y;
             break;
-        case '/':
-            if (y == 0) {
-                value_free(&pa);
-                value_free(&pb);
-                NUM_FAIL("division by zero");
-            }
-            z = x / y;
-            break;
-        case '%':
-            if (y == 0) {
-                value_free(&pa);
-                value_free(&pb);
-                NUM_FAIL("division by zero");
-            }
-            z = x % y;
-            break;
         case '&':
             z = x & y;
             break;
@@ -1613,71 +1530,98 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char *err
         case '^':
             z = x ^ y;
             break;
-        case '<':
-            if (y >= 64) {
-                value_free(&pa);
-                value_free(&pb);
-                NUM_FAIL("shift count out of range");
+        case '/':
+        case '%':
+            if (y == 0) {
+                fail = "division by zero";
+                break;
             }
-            z = x << y;
+            if (!sgn) {
+                z = op == '/' ? x / y : x % y;
+                break;
+            }
+            // INT64_MIN / -1 overflows signed int (UB).
+            if (pa.i == INT64_MIN && pb.i == -1) {
+                fail = op == '/' ? "integer overflow in division" : "integer overflow in modulo";
+                break;
+            }
+            z = (uint64_t)(op == '/' ? pa.i / pb.i : pa.i % pb.i);
             break;
+        case '<':
         case '>':
-            if (y >= 64) {
-                value_free(&pa);
-                value_free(&pb);
-                NUM_FAIL("shift count out of range");
+            if ((sgn && pb.i < 0) || y >= 64) {
+                fail = "shift count out of range";
+                break;
             }
-            z = x >> y;
+            if (op == '<')
+                z = x << y;
+            else
+                z = sgn ? (uint64_t)(pa.i >> y) : x >> y; // arithmetic shift on signed
             break;
         default:
-            value_free(&pa);
-            value_free(&pb);
-            NUM_FAIL("bad op for uint");
+            fail = sgn ? "bad op for int" : "bad op for uint";
         }
-        r = val_uint(0, z);
+        r = sgn ? val_int((int64_t)z) : val_uint(0, z);
     }
-    carry_flags(&r, a, b);
     value_free(&pa);
     value_free(&pb);
+    if (fail)
+        NUM_FAIL(fail);
+    carry_flags(&r, a, b);
     err[0] = '\0';
     return r;
 }
 
 #undef NUM_FAIL
 
-static value_t parse_mul(lex_t *L, const expr_ctx_t *ctx) {
-    value_t a = parse_unary(L, ctx);
-    if (L->err_set || val_is_error(&a))
-        return a;
-    while (1) {
-        lex_skip_ws(L);
-        char op = *L->p;
-        if (op != '*' && op != '/' && op != '%')
-            break;
-        L->p++;
-        value_t b = parse_unary(L, ctx);
-        if (L->err_set || val_is_error(&b)) {
-            value_free(&a);
-            return b;
-        }
-        if (parse_only(ctx)) {
-            // A syntax check computes nothing: no type can be wrong.
-            value_free(&a);
-            value_free(&b);
-            a = parse_only_value();
-            continue;
-        }
-        char err[64] = "";
-        value_t r = numeric_op(&a, &b, op, err, sizeof(err));
-        value_free(&a);
-        value_free(&b);
-        if (val_is_error(&r) && err[0])
-            lex_error(L, "%s", err);
-        a = r;
-        if (val_is_error(&a))
-            return a;
-    }
-    return a;
+// The operator recognisers of the binary levels: each consumes its
+// operator and returns numeric_op's spelling of it, or returns 0 and
+// consumes nothing.
+static char match_mul_op(lex_t *L) {
+    char op = *L->p;
+    if (op != '*' && op != '/' && op != '%')
+        return 0;
+    L->p++;
+    return op;
+}
+
+static char match_add_op(lex_t *L) {
+    char op = *L->p;
+    if (op != '+' && op != '-')
+        return 0;
+    L->p++;
+    return op;
+}
+
+static char match_shift_op(lex_t *L) {
+    if (lex_eat2(L, '<', '<'))
+        return '<';
+    if (lex_eat2(L, '>', '>'))
+        return '>';
+    return 0;
+}
+
+// '&' but not '&&'
+static char match_bitand_op(lex_t *L) {
+    if (L->p[0] != '&' || L->p[1] == '&')
+        return 0;
+    L->p++;
+    return '&';
+}
+
+static char match_bitxor_op(lex_t *L) {
+    if (*L->p != '^')
+        return 0;
+    L->p++;
+    return '^';
+}
+
+// '|' but not '||'
+static char match_bitor_op(lex_t *L) {
+    if (L->p[0] != '|' || L->p[1] == '|')
+        return 0;
+    L->p++;
+    return '|';
 }
 
 // String / list / bytes concat helper for '+'.
@@ -1713,17 +1657,20 @@ static value_t plus_concat(const value_t *a, const value_t *b) {
     return val_err("type error");
 }
 
-static value_t parse_add(lex_t *L, const expr_ctx_t *ctx) {
-    value_t a = parse_mul(L, ctx);
+// One left-associative binary level: `next (op next)*`, op found by
+// `match`.  With `concat`, a '+' whose left operand is a string or bytes
+// concatenates instead of adding (parse_add).
+static value_t parse_binary_level(lex_t *L, const expr_ctx_t *ctx, value_t (*next)(lex_t *, const expr_ctx_t *),
+                                  char (*match)(lex_t *), bool concat) {
+    value_t a = next(L, ctx);
     if (L->err_set || val_is_error(&a))
         return a;
     while (1) {
         lex_skip_ws(L);
-        char op = *L->p;
-        if (op != '+' && op != '-')
+        char op = match(L);
+        if (!op)
             break;
-        L->p++;
-        value_t b = parse_mul(L, ctx);
+        value_t b = next(L, ctx);
         if (L->err_set || val_is_error(&b)) {
             value_free(&a);
             return b;
@@ -1736,7 +1683,7 @@ static value_t parse_add(lex_t *L, const expr_ctx_t *ctx) {
             continue;
         }
         // String/bytes concat with '+'.
-        if (op == '+' && (a.kind == VK_STRING || a.kind == VK_BYTES)) {
+        if (concat && op == '+' && (a.kind == VK_STRING || a.kind == VK_BYTES)) {
             value_t r = plus_concat(&a, &b);
             value_free(&a);
             value_free(&b);
@@ -1760,146 +1707,28 @@ static value_t parse_add(lex_t *L, const expr_ctx_t *ctx) {
     return a;
 }
 
+static value_t parse_mul(lex_t *L, const expr_ctx_t *ctx) {
+    return parse_binary_level(L, ctx, parse_unary, match_mul_op, false);
+}
+
+static value_t parse_add(lex_t *L, const expr_ctx_t *ctx) {
+    return parse_binary_level(L, ctx, parse_mul, match_add_op, true);
+}
+
 static value_t parse_shift(lex_t *L, const expr_ctx_t *ctx) {
-    value_t a = parse_add(L, ctx);
-    if (L->err_set || val_is_error(&a))
-        return a;
-    while (1) {
-        lex_skip_ws(L);
-        char op = 0;
-        if (lex_eat2(L, '<', '<'))
-            op = '<';
-        else if (lex_eat2(L, '>', '>'))
-            op = '>';
-        else
-            break;
-        value_t b = parse_add(L, ctx);
-        if (L->err_set || val_is_error(&b)) {
-            value_free(&a);
-            return b;
-        }
-        if (parse_only(ctx)) {
-            // A syntax check computes nothing: no type can be wrong.
-            value_free(&a);
-            value_free(&b);
-            a = parse_only_value();
-            continue;
-        }
-        char err[64] = "";
-        value_t r = numeric_op(&a, &b, op, err, sizeof(err));
-        value_free(&a);
-        value_free(&b);
-        if (val_is_error(&r) && err[0])
-            lex_error(L, "%s", err);
-        a = r;
-        if (val_is_error(&a))
-            return a;
-    }
-    return a;
+    return parse_binary_level(L, ctx, parse_add, match_shift_op, false);
 }
 
 static value_t parse_bitand(lex_t *L, const expr_ctx_t *ctx) {
-    value_t a = parse_shift(L, ctx);
-    if (L->err_set || val_is_error(&a))
-        return a;
-    while (1) {
-        lex_skip_ws(L);
-        // '&' but not '&&'
-        if (L->p[0] != '&' || L->p[1] == '&')
-            break;
-        L->p++;
-        value_t b = parse_shift(L, ctx);
-        if (L->err_set || val_is_error(&b)) {
-            value_free(&a);
-            return b;
-        }
-        if (parse_only(ctx)) {
-            // A syntax check computes nothing: no type can be wrong.
-            value_free(&a);
-            value_free(&b);
-            a = parse_only_value();
-            continue;
-        }
-        char err[64] = "";
-        value_t r = numeric_op(&a, &b, '&', err, sizeof(err));
-        value_free(&a);
-        value_free(&b);
-        if (val_is_error(&r) && err[0])
-            lex_error(L, "%s", err);
-        a = r;
-        if (val_is_error(&a))
-            return a;
-    }
-    return a;
+    return parse_binary_level(L, ctx, parse_shift, match_bitand_op, false);
 }
 
 static value_t parse_bitxor(lex_t *L, const expr_ctx_t *ctx) {
-    value_t a = parse_bitand(L, ctx);
-    if (L->err_set || val_is_error(&a))
-        return a;
-    while (1) {
-        lex_skip_ws(L);
-        if (*L->p != '^')
-            break;
-        L->p++;
-        value_t b = parse_bitand(L, ctx);
-        if (L->err_set || val_is_error(&b)) {
-            value_free(&a);
-            return b;
-        }
-        if (parse_only(ctx)) {
-            // A syntax check computes nothing: no type can be wrong.
-            value_free(&a);
-            value_free(&b);
-            a = parse_only_value();
-            continue;
-        }
-        char err[64] = "";
-        value_t r = numeric_op(&a, &b, '^', err, sizeof(err));
-        value_free(&a);
-        value_free(&b);
-        if (val_is_error(&r) && err[0])
-            lex_error(L, "%s", err);
-        a = r;
-        if (val_is_error(&a))
-            return a;
-    }
-    return a;
+    return parse_binary_level(L, ctx, parse_bitand, match_bitxor_op, false);
 }
 
 static value_t parse_bitor(lex_t *L, const expr_ctx_t *ctx) {
-    value_t a = parse_bitxor(L, ctx);
-    if (L->err_set || val_is_error(&a))
-        return a;
-    while (1) {
-        lex_skip_ws(L);
-        // '|' but not '||'
-        if (L->p[0] != '|' || L->p[1] == '|')
-            break;
-        L->p++;
-        value_t b = parse_bitxor(L, ctx);
-        if (L->err_set || val_is_error(&b)) {
-            value_free(&a);
-            return b;
-        }
-        if (parse_only(ctx)) {
-            // A syntax check computes nothing: no type can be wrong.
-            value_free(&a);
-            value_free(&b);
-            a = parse_only_value();
-            continue;
-        }
-        char err[64] = "";
-        value_t r = numeric_op(&a, &b, '|', err, sizeof(err));
-        value_free(&a);
-        value_free(&b);
-        if (val_is_error(&r) && err[0])
-            lex_error(L, "%s", err);
-        a = r;
-        if (val_is_error(&a))
-            return a;
-    }
-    return a;
+    return parse_binary_level(L, ctx, parse_bitxor, match_bitor_op, false);
 }
 
 // === Range (`a..b`) =========================================================
