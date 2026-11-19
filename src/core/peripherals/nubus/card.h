@@ -9,6 +9,7 @@
 
 #include "checkpoint.h"
 #include "common.h"
+#include "gsvrom.h" // gsvrom_personality_t, for the substitute the bus seats
 #include "machine_build_opts.h" // slot_opts_t
 #include <stdbool.h>
 #include <stddef.h>
@@ -187,6 +188,20 @@ typedef struct nubus_card_kind {
     // The monitors the substitute ROM drives, when fewer than the card's
     // (the 8•24 GC's carries only its 640 × 480 configuration); NULL: all.
     const nubus_monitor_t *substitute_monitors;
+    // The substitute's monitors when the slot changes them (JMFB's custom
+    // geometry): fills `scratch` (NUBUS_SUBST_MONITORS_MAX entries, sentinel
+    // included) and returns it, or returns NULL for the lists above.
+    const nubus_monitor_t *(*substitute_monitors_for)(const slot_opts_t *opts, nubus_monitor_t *scratch);
+
+    // The declaration ROM the bus seats before ops->init (declrom_seat):
+    // the size of its bus window, 0 for a card that seats none.  The bus
+    // allocates card->declrom, fills it (Apple's ROM, or the substitute
+    // generated with `gsvrom`), and frees it; the card only reads it.
+    uint32_t declrom_bus_size;
+    gsvrom_personality_t gsvrom;
+    // Apple's ROM failing to load runs the substitute instead of leaving the
+    // slot empty: a board's built-in video (the SE/30's) cannot be unseated.
+    bool declrom_falls_back;
     // The card's vtable.  The bus controller allocates the nubus_card_t,
     // fills in ops / bus / slot, and calls ops->init once per populated slot.
     //
@@ -232,6 +247,9 @@ bool nubus_monitor_mode_lookup(const nubus_monitor_t *list, const char *id, cons
 // suffix and the terminator.  One size for what were a 32-byte buffer in one
 // card and 40-byte buffers in the other two.
 #define NUBUS_VIDEO_MODE_ID_MAX 40
+
+// Most entries a substitute_monitors_for scratch list holds, sentinel included.
+#define NUBUS_SUBST_MONITORS_MAX 8
 
 // Registry accessors.  The registry itself is an explicit, NULL-terminated
 // list in nubus.c -- no linker constructors.  nubus_card_find returns NULL

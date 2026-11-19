@@ -137,9 +137,6 @@ struct display_card_24ac_priv {
     display_t display;
     nubus_card_t *card; // back-pointer for IRQ helpers
     uint8_t *vram; // DISPLAY_CARD_24AC_VRAM_SIZE
-    uint8_t *vrom; // 128 KB bus-space declaration ROM
-    char *vrom_path; // path the VROM was loaded from
-    uint32_t vrom_size; // 128 KB; 0 if no VROM loaded
     uint32_t slot_base; // physical bus base (== nubus_slot_base(slot))
 
     // Region contexts (one per registered register/engine region).
@@ -658,21 +655,6 @@ static memory_interface_t s_display_card_24ac_mem_iface = {
 
 // === VROM load ==============================================================
 
-// Load the 24AC declaration ROM through the shared content-driven declrom
-// loader: the slot's own ROM file when the document names one, else the
-// offered candidates (the Format-Block-CRC catalog's preferred revision, then
-// catalog order; see vrom.h), then byteLanes expansion.  Returns true on success.
-static bool load_vrom(display_card_24ac_priv_t *p, const char *rom) {
-    char *path = NULL;
-    if (!declrom_load_vrom_card(p->card, display_card_24ac_kind.id, rom, p->vrom, DISPLAY_CARD_24AC_DECLROM_BUS_SIZE,
-                                &path))
-        return false;
-    free(p->vrom_path);
-    p->vrom_path = path;
-    p->vrom_size = DISPLAY_CARD_24AC_DECLROM_BUS_SIZE;
-    return true;
-}
-
 // bpp → MODE register depth bits (vrom RE depth ladder; no 2-bpp mode).
 static uint8_t modebits_for_format(pixel_format_t f) {
     switch (f) {
@@ -876,43 +858,10 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
         seeded_depth_bpp = 0;
 
     p->vram = calloc(1, DISPLAY_CARD_24AC_VRAM_SIZE);
-    p->vrom = calloc(1, DISPLAY_CARD_24AC_DECLROM_BUS_SIZE);
-    if (!p->vram || !p->vrom) {
-        free(p->vram);
-        free(p->vrom);
+    if (!p->vram) {
         free(p);
         return -1;
     }
-
-    if (opts->substitute) {
-        // The substitute ROM: the GS declaration ROM generated here --
-        // records from the card's monitors[] table, code fragments spliced,
-        // CRC stamped in C; the offer registry is never consulted.
-        declrom_builder_t *bld = gsvrom_generate(GSVROM_BOOGIE, display_card_24ac_kind.monitors);
-        size_t img_size = 0;
-        const uint8_t *img = bld ? declrom_builder_bytes(bld, &img_size) : NULL;
-        if (img && declrom_install_builtin(p->card, display_card_24ac_kind.id, img, img_size, p->vrom,
-                                           DISPLAY_CARD_24AC_DECLROM_BUS_SIZE))
-            p->vrom_size = DISPLAY_CARD_24AC_DECLROM_BUS_SIZE;
-        else
-            LOG(0, "24AC: the substitute declaration ROM failed to generate; declaration ROM is zero-filled");
-        declrom_builder_free(bld);
-    } else if (!load_vrom(p, opts->rom[0] ? opts->rom : NULL)) {
-        // The bus seats Apple's ROM only when it is offered (else the
-        // substitute), so this is a file that went away or a checkpoint whose
-        // ROM is not this card's: the slot stays empty.
-        LOG(0, "24AC: slot $%X: the 24AC declaration ROM could not be loaded", card->slot);
-        free(p->vram);
-        free(p->vrom);
-        free(p);
-        return -1;
-    }
-
-    // Publish the declaration ROM on the generic card handle so the
-    // object-model `slot[N].card.declrom` node reads it without reaching into
-    // card-private state.
-    card->declrom = p->vrom;
-    card->declrom_size = p->vrom_size;
 
     // The monitor on the connector: its seat's row and sense code, or none
     // (every line open, the extended answer "nothing": PrimaryInit turns the
@@ -968,7 +917,8 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
     memory_map_host_region(cfg->memory_map, "display_card_24ac_vram", p->vram, p->slot_base,
                            DISPLAY_CARD_24AC_VRAM_VISIBLE,
                            /*writable*/ true);
-    memory_map_host_region(cfg->memory_map, "display_card_24ac_declrom", p->vrom,
+    // The declaration ROM the bus seated (declrom_seat)
+    memory_map_host_region(cfg->memory_map, "display_card_24ac_declrom", card->declrom,
                            p->slot_base + DISPLAY_CARD_24AC_DECLROM_BUS_OFFSET, DISPLAY_CARD_24AC_DECLROM_BUS_SIZE,
                            /*writable*/ false);
     // 24-bit Memory Manager mode framebuffer alias (mirrors VRAM at
@@ -1018,10 +968,6 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
     if (!p)
         return;
     free(p->vram);
-    // p->vrom is published as card->declrom (for the object-model declrom
-    // node); nubus_delete owns and frees card->declrom after this teardown,
-    // so we must NOT free it here (doing so double-frees).
-    free(p->vrom_path);
     free(p);
     card->priv = NULL;
 }
@@ -1069,8 +1015,8 @@ static size_t card_vram(nubus_card_t *card, uint8_t **base) {
 // memory_map_checkpoint saves, so without these a restored machine comes back
 // with a blank screen and a default palette until the guest redraws.
 //
-// Excluded on purpose: the four pointer members (card, vram, vrom, vrom_path),
-// the construction facts beside them (vrom_size, slot_base), and the six
+// Excluded on purpose: the two pointer members (card, vram), the construction
+// fact beside them (slot_base), and the six
 // reg_ctx_t region bindings at the tail -- each of those holds a back-pointer
 // to this struct and is re-registered with the memory map by card_init, so
 // writing them back from a checkpoint would install stale addresses.
@@ -1266,6 +1212,8 @@ const nubus_card_kind_t display_card_24ac_kind = {
     // crt_response and the GS ROM ships identity gamma.
     .substitute = true,
     .monitors = display_card_24ac_monitors,
+    .declrom_bus_size = DISPLAY_CARD_24AC_DECLROM_BUS_SIZE,
+    .gsvrom = GSVROM_BOOGIE,
     .ops = &display_card_24ac_ops,
     .startup_record = startup_record,
     .attach_objects = display_card_24ac_attach_objects,

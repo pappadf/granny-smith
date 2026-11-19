@@ -832,23 +832,6 @@ static memory_interface_t s_gc824_mem_iface = {
     .peek_uint32 = io_peek32,
 };
 
-// === VROM load ==============================================================
-// Content-driven (Format-Block CRC): loads whichever of the three known GC
-// declaration ROMs (v1.1 64 KB / v1.0 / alpha 32 KB) is actually present —
-// the slot's own ROM file when the document names one (any filename), else
-// the offered candidates in catalog order (see vrom.h).  A 32 KB revision
-// lands in the top half of the 256 KB bus window (the Format Block always
-// ends at the slot top).
-static bool load_vrom(display_card_824gc_priv_t *p, const char *rom) {
-    char *path = NULL;
-    if (!declrom_load_vrom_card(p->card, display_card_824gc_kind.id, rom, p->vrom, GC824_DECLROM_BUS_SIZE, &path))
-        return false;
-    free(p->vrom_path);
-    p->vrom_path = path;
-    p->vrom_size = GC824_DECLROM_BUS_SIZE;
-    return true;
-}
-
 static const nubus_monitor_t display_card_824gc_monitors[]; // fwd
 
 static pixel_format_t format_for_bpp(int bpp) {
@@ -1000,7 +983,6 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
         seeded_depth_bpp = 0;
 
     p->vram = calloc(1, GC824_VRAM_SIZE);
-    p->vrom = calloc(1, GC824_DECLROM_BUS_SIZE);
     p->sram = calloc(1, GC824_SRAM_SIZE);
     p->dram = calloc(1, GC824_DRAM_SIZE);
     p->blank = calloc(1, GC824_DRAM_SIZE);
@@ -1009,10 +991,9 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
     p->gc_blitmask = calloc(1, (size_t)GC824_CLIP_STRIDE * GC824_CLIP_ROWS);
     p->gc_cliprgn = calloc(1, GC824_RGN_MAX);
     p->gc_visrgn = calloc(1, GC824_RGN_MAX);
-    if (!p->vram || !p->vrom || !p->sram || !p->dram || !p->blank || !p->regs || !p->gc_clipmask || !p->gc_blitmask ||
+    if (!p->vram || !p->sram || !p->dram || !p->blank || !p->regs || !p->gc_clipmask || !p->gc_blitmask ||
         !p->gc_cliprgn || !p->gc_visrgn) {
         free(p->vram);
-        free(p->vrom);
         free(p->sram);
         free(p->dram);
         free(p->blank);
@@ -1037,45 +1018,6 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
                                  .card = card,
                                  .tag = "8*24 GC"};
 
-    if (opts->substitute) {
-        // The substitute ROM: the GS declaration ROM generated here -- the
-        // boot family + 32-bit sister family from the substitute's monitor
-        // rows, code fragments (incl. SecondaryInit) spliced, CRC stamped in
-        // C; the offer registry is never consulted.
-        declrom_builder_t *bld = gsvrom_generate(GSVROM_MDCGC, display_card_824gc_kind.substitute_monitors);
-        size_t img_size = 0;
-        const uint8_t *img = bld ? declrom_builder_bytes(bld, &img_size) : NULL;
-        if (img && declrom_install_builtin(p->card, display_card_824gc_kind.id, img, img_size, p->vrom,
-                                           GC824_DECLROM_BUS_SIZE))
-            p->vrom_size = GC824_DECLROM_BUS_SIZE;
-        else
-            LOG(0, "8*24 GC: the substitute declaration ROM failed to generate; declaration ROM is zero-filled");
-        declrom_builder_free(bld);
-    } else if (!load_vrom(p, opts->rom[0] ? opts->rom : NULL)) {
-        // The bus seats Apple's ROM only when it is offered (else the
-        // substitute), so this is a file that went away or a checkpoint whose
-        // ROM is not this card's: the slot stays empty.
-        LOG(0,
-            "8*24 GC: slot $%X: the 8\xe2\x80\xa2"
-            "24 GC declaration ROM could not be loaded",
-            card->slot);
-        free(p->vram);
-        free(p->vrom);
-        free(p->sram);
-        free(p->dram);
-        free(p->blank);
-        free(p->regs);
-        free(p->gc_clipmask);
-        free(p->gc_blitmask);
-        free(p->gc_cliprgn);
-        free(p->gc_visrgn);
-        free(p);
-        return -1;
-    }
-
-    card->declrom = p->vrom;
-    card->declrom_size = p->vrom_size;
-
     // The monitor on the connector: its seat's row and sense code (640×480
     // geometry with none plugged in), and the slot's video-mode depth.  The
     // seeded depth persists in priv (not just PRAM) so set_poweron_defaults
@@ -1097,7 +1039,7 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
     // --- Standard slot space: VRAM, framebuffer alias, declrom, display regs.
     memory_map_host_region(cfg->memory_map, "gc824_vram", p->vram, p->slot_base, GC824_VRAM_SIZE, /*writable*/ true);
     memory_map_host_region_alias(cfg->memory_map, p->slot_base + GC824_FB_ALIAS_OFFSET, p->slot_base);
-    memory_map_host_region(cfg->memory_map, "gc824_declrom", p->vrom, p->slot_base + GC824_DECLROM_BUS_OFFSET,
+    memory_map_host_region(cfg->memory_map, "gc824_declrom", card->declrom, p->slot_base + GC824_DECLROM_BUS_OFFSET,
                            GC824_DECLROM_BUS_SIZE, /*writable*/ false);
     p->ctx_jmfb = (gc_reg_ctx_t){.p = p, .region_base = p->slot_base + GC824_JMFB_BLOCK_OFFSET};
     memory_map_add(cfg->memory_map, p->slot_base + GC824_JMFB_BLOCK_OFFSET, GC824_REGISTER_SIZE, "gc824_jmfb_regs",
@@ -1129,7 +1071,6 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
     if (!p)
         return;
     free(p->vram);
-    // p->vrom is published as card->declrom; nubus_delete owns and frees it.
     free(p->sram);
     free(p->dram);
     free(p->blank);
@@ -1140,7 +1081,6 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
     free(p->gc_visrgn);
     gc824_font_caches_flush(p);
     gc824_pixpats_flush(p, 0);
-    free(p->vrom_path);
     free(p);
     card->priv = NULL;
 }
@@ -1515,6 +1455,8 @@ const nubus_card_kind_t display_card_824gc_kind = {
     .substitute = true,
     .monitors = display_card_824gc_monitors,
     .substitute_monitors = display_card_824gc_substitute_monitors,
+    .declrom_bus_size = GC824_DECLROM_BUS_SIZE,
+    .gsvrom = GSVROM_MDCGC,
     .ops = &display_card_824gc_ops,
     .startup_record = startup_record,
     .attach_objects = display_card_824gc_attach_objects,

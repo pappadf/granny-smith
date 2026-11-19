@@ -170,9 +170,6 @@ struct display_card_824gc_priv {
 
     // --- Display half (standard slot space) ---
     uint8_t *vram; // GC824_VRAM_SIZE
-    uint8_t *vrom; // GC824_DECLROM_BUS_SIZE
-    char *vrom_path;
-    uint32_t vrom_size;
     display_t display;
     jmfb_bind_t jmfb_bind; // what `jmfb` acts on; rebuilt at init, never checkpointed
     // A refused VidComm scanout shows this instead (display_set_scanout);

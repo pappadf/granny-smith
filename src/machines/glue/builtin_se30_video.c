@@ -10,7 +10,8 @@
 //   * 64 KB VRAM at $FEE00000
 //   * 32 KB declaration ROM at $FEFF8000 (Apple's SE/30 onboard-video vROM
 //     when one is offered — found by content via declrom_load_vrom_card —
-//     else the emulator's substitute, the generated GS vROM)
+//     else the emulator's substitute, the generated GS vROM), seated by the
+//     bus before card_init (declrom_seat) and read here as card->declrom
 //   * the display_t exposed via system_display() — 512×342×1bpp, with
 //     `bits` toggled between primary and alternate VRAM offsets when
 //     se30_via1_output reports a VIA1 PA6 change
@@ -49,7 +50,6 @@ typedef struct {
     // its scalar head is checkpointed separately as a display_head_t.
     display_t display;
     uint8_t *vram;
-    uint8_t *vrom;
 } se30_priv_t;
 
 // The layout above is load-bearing.  If this fires, a member moved across the
@@ -82,46 +82,16 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
     if (!p)
         return -1;
     p->vram = calloc(1, SE30_VRAM_SIZE);
-    p->vrom = calloc(1, SE30_VROM_SIZE);
-    if (!p->vram || !p->vrom) {
-        free(p->vram);
-        free(p->vrom);
+    if (!p->vram) {
         free(p);
         return -1;
     }
     (void)cfg;
-    // Apple's ROM, which the bus seats only when it is offered.  A file that
-    // went away, or a checkpoint whose ROM is not this card's, leaves the
-    // SE/30 its substitute rather than no video: the machine around the card
-    // stays whole, and a restore fails on the checkpoint's error.
-    bool substitute = opts->substitute;
-    if (!substitute && !declrom_load_vrom_card(card, builtin_se30_video_kind.id, opts->rom[0] ? opts->rom : NULL,
-                                               p->vrom, SE30_VROM_SIZE, NULL)) {
-        LOG(0, "SE/30 video: the onboard-video declaration ROM could not be loaded; running the substitute");
-        if (cp)
-            checkpoint_set_error(cp);
-        substitute = card->substitute = true;
-    }
-    if (substitute) {
-        // The substitute ROM: the GS declaration ROM generated here -- a full
-        // declaration ROM with a real display driver, records from
-        // builtin_se30_monitors[], code fragments spliced, CRC stamped in C
-        // (docs/internals/core/peripherals/nubus_generic_vrom.md).  The offer
-        // registry is never consulted.
-        declrom_builder_t *bld = gsvrom_generate(GSVROM_SE30, builtin_se30_video_kind.monitors);
-        size_t img_size = 0;
-        const uint8_t *img = bld ? declrom_builder_bytes(bld, &img_size) : NULL;
-        if (!img || !declrom_install_builtin(card, builtin_se30_video_kind.id, img, img_size, p->vrom, SE30_VROM_SIZE))
-            LOG(0, "SE/30 video: the substitute declaration ROM failed to generate; declaration ROM is zero-filled");
-        declrom_builder_free(bld);
-    }
-
-    // Publish it, the way jmfb.c / 24ac.c / 824gc.c all do.  Without this the
-    // object model reported `slot[$E].card.declrom.present == false` on an
-    // SE/30 that has a perfectly good 32 KB declaration ROM.
-    // nubus_delete owns and frees the buffer once it is published here.
-    card->declrom = p->vrom;
-    card->declrom_size = SE30_VROM_SIZE;
+    (void)opts;
+    // The declaration ROM is card->declrom, seated by the bus (declrom_seat):
+    // Apple's when it is offered, else -- or when that file has gone, which
+    // the kind's declrom_falls_back turns into the substitute rather than no
+    // video -- the generated one.
 
     // Populate the display descriptor.  Primary buffer at $8040 is the
     // boot-time selection — VIA1 PA6 will toggle it before the OS draws.
@@ -160,7 +130,6 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
     if (!p)
         return;
     free(p->vram);
-    // p->vrom is published as card->declrom; nubus_delete owns and frees it.
     free(p);
     card->priv = NULL;
 }
@@ -254,6 +223,9 @@ const nubus_card_kind_t builtin_se30_video_kind = {
     .requires_vrom = true,
     .substitute = true,
     .monitors = builtin_se30_monitors,
+    .declrom_bus_size = SE30_VROM_SIZE,
+    .gsvrom = GSVROM_SE30,
+    .declrom_falls_back = true, // a board cannot lose its video: no ROM file runs the substitute
     .ops = &builtin_se30_video_ops,
 };
 
@@ -276,6 +248,5 @@ uint8_t *builtin_se30_video_vram(nubus_card_t *card) {
 }
 
 uint8_t *builtin_se30_video_vrom(nubus_card_t *card) {
-    se30_priv_t *p = card ? card->priv : NULL;
-    return p ? p->vrom : NULL;
+    return card ? card->declrom : NULL;
 }

@@ -70,7 +70,6 @@ typedef struct {
     rgba8_t clut[256]; // the palette by guest pixel value (rebuilt; not saved)
     nubus_card_t *card;
     uint8_t *vram;
-    uint8_t *vrom; // bus-space image of the declaration ROM
     uint8_t *blank; // the black raster a blanked card scans out
     size_t blank_size;
     uint32_t slot_base;
@@ -284,8 +283,8 @@ static memory_interface_t s_toby_iface = {
 // JMFB -- see jmfb.c), and the declaration ROM at the slot top.
 static void map_regions(toby_t *t, config_t *cfg) {
     memory_map_host_region(cfg->memory_map, "toby_vram", t->vram, t->slot_base, TOBY_VRAM_SIZE, true);
-    memory_map_host_region(cfg->memory_map, "toby_declrom", t->vrom, t->slot_base + 0x1000000u - TOBY_DECLROM_BUS_SIZE,
-                           TOBY_DECLROM_BUS_SIZE, false);
+    memory_map_host_region(cfg->memory_map, "toby_declrom", t->card->declrom,
+                           t->slot_base + 0x1000000u - TOBY_DECLROM_BUS_SIZE, TOBY_DECLROM_BUS_SIZE, false);
     memory_map_host_region_alias(cfg->memory_map, t->slot_base + 0x900000u, t->slot_base);
     memory_map_add(cfg->memory_map, t->slot_base + TOBY_TFB_BASE, TOBY_IO_END - TOBY_TFB_BASE, "TFB regs",
                    &s_toby_iface, t);
@@ -306,33 +305,22 @@ static void power_on_registers(toby_t *t) {
 
 static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
     (void)cp;
+    (void)opts;
     toby_t *t = calloc(1, sizeof *t);
     if (!t)
         return -1;
     t->card = card;
     t->slot_base = nubus_slot_base(card->slot);
     t->vram = calloc(1, TOBY_VRAM_SIZE);
-    t->vrom = calloc(1, TOBY_DECLROM_BUS_SIZE);
     t->blank_size = (size_t)(128u << 3) * TOBY_HEIGHT; // the widest stride
     t->blank = calloc(1, t->blank_size);
-    if (!t->vram || !t->vrom || !t->blank) {
+    if (!t->vram || !t->blank) {
         free(t->vram);
-        free(t->vrom);
         free(t->blank);
         free(t);
         return -1;
     }
-    if (!declrom_load_vrom_card(card, mac_ii_video_card_kind.id, opts->rom[0] ? opts->rom : NULL, t->vrom,
-                                TOBY_DECLROM_BUS_SIZE, NULL)) {
-        LOG(0, "TFB: slot $%X: the Macintosh II Video Card declaration ROM could not be loaded", card->slot);
-        free(t->vram);
-        free(t->vrom);
-        free(t->blank);
-        free(t);
-        return -1;
-    }
-    card->declrom = t->vrom;
-    card->declrom_size = TOBY_DECLROM_BUS_SIZE;
+    // The declaration ROM is card->declrom, seated by the bus (declrom_seat)
 
     power_on_registers(t);
     t->display.format = PIXEL_1BPP_MSB;
@@ -354,7 +342,6 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
         return;
     free(t->vram);
     free(t->blank);
-    // t->vrom is published as card->declrom; nubus_delete frees it.
     free(t);
     card->priv = NULL;
 }
@@ -465,6 +452,7 @@ const nubus_card_kind_t mac_ii_video_card_kind = {
     .requires_vrom = true,
     .substitute = false,
     .monitors = toby_monitors,
+    .declrom_bus_size = TOBY_DECLROM_BUS_SIZE,
     .ops = &mac_ii_video_card_ops,
     .startup_record = toby_startup_record,
 };

@@ -144,9 +144,15 @@ Which ROM a card runs is decided once, as the bus seats it
 when Apple's ROM is not offered; Apple's otherwise. The seat records the
 choice (`slot_opts_t.substitute`), the card's name says it ("Macintosh
 Display Card 24AC (substitute ROM)"), and `machine.nubus.slot[N].card.substitute`
-reads it. At `card_init` the card calls `gsvrom_generate` to build the image
-and installs it directly (`declrom_install_builtin`) rather than consulting
-the offer registry. The finished image is laid out exactly like a
+reads it. The bus then seats the ROM itself, before `card_init`
+(`declrom_seat`, for a kind with a `declrom_bus_size`): it allocates
+`card->declrom`, calls `gsvrom_generate` with the kind's `gsvrom`
+personality and monitors (`substitute_monitors`, or the slot's custom list
+from `substitute_monitors_for`) and installs the image directly
+(`declrom_install_builtin`) rather than consulting the offer registry -- or
+loads Apple's, refusing the slot when that fails, except where the kind
+falls back to the substitute (`declrom_falls_back`, the SE/30's built-in
+video). The card only reads `card->declrom`; the bus frees it. The finished image is laid out exactly like a
 file-backed chip — tail-placed at the top of the card's declaration-ROM
 window per its `byteLanes` byte — and the card names it path-lessly, as
 `builtin:<card id>` (`machine.nubus.slot[N].card.declrom.path`, with its CRC

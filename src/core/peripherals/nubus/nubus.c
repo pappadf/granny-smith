@@ -8,6 +8,7 @@
 #include "nubus.h"
 #include "card.h"
 #include "checkpoint.h"
+#include "declrom.h"
 #include "display.h"
 #include "log.h"
 #include "machine_parts.h"
@@ -568,7 +569,10 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
             checkpoint_set_error(cp);
         card->restored_rom.data = rom;
         card->restored_rom.path = rom_path;
-        int rc = card->ops->init(card, cfg, cp, seat);
+        // The bus seats the declaration ROM the card's init reads (and owns it)
+        int rc = -1;
+        if (!kind->declrom_bus_size || declrom_seat(card, kind, seat, cp))
+            rc = card->ops->init(card, cfg, cp, seat);
         card->restored_rom = (rom_image_t){0};
         free(rom);
         free(rom_path);
@@ -583,6 +587,7 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
                 checkpoint_set_error(cp);
             }
             machine_part_cancel(cfg);
+            free(card->declrom);
             free(card->rom_path);
             free(card->rom_chip);
             free(card);
