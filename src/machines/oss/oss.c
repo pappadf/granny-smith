@@ -352,11 +352,8 @@ static const class_desc_t oss_class = {
 };
 
 static void oss_attach_object(oss_t *oss) {
-    oss->object = object_new(&oss_class, oss, "oss");
-    if (!oss->object)
-        return;
-    object_set_order(oss->object, 45); // between the VIAs (40) and the RTC (60)
-    object_attach(machine_object(), oss->object);
+    oss->object =
+        object_attach_new(machine_object(), &oss_class, oss, "oss", NULL, 45); // between the VIAs (40) and the RTC (60)
 }
 
 // The register state oss_init constructs -- shared with oss_power_on, so a

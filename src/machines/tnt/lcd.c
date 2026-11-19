@@ -312,12 +312,7 @@ void tnt_lcd_reset(config_t *cfg) {
 void tnt_lcd_init(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     tnt_lcd_reset(cfg);
-    st->lcd_object = object_new(&tnt_lcd_class, cfg, "lcd");
-    if (st->lcd_object) {
-        object_set_label(st->lcd_object, "Front Panel LCD");
-        object_set_order(st->lcd_object, 121);
-        object_attach(machine_object(), st->lcd_object);
-    }
+    st->lcd_object = object_attach_new(machine_object(), &tnt_lcd_class, cfg, "lcd", "Front Panel LCD", 121);
 }
 
 void tnt_lcd_teardown(config_t *cfg) {

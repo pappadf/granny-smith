@@ -473,12 +473,7 @@ void gos_ata_attach_objects(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
     if (!st || st->ata_object)
         return;
-    st->ata_object = object_new(&ata_class, cfg, "ata");
-    if (st->ata_object) {
-        object_set_label(st->ata_object, "ATA");
-        object_set_order(st->ata_object, 91);
-        object_attach(machine_object(), st->ata_object);
-    }
+    st->ata_object = object_attach_new(machine_object(), &ata_class, cfg, "ata", "ATA", 91);
 }
 
 void gos_ata_detach_objects(config_t *cfg) {

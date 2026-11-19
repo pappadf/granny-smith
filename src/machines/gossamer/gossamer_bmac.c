@@ -263,12 +263,7 @@ void gos_bmac_attach_objects(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
     if (!st || st->bmac_object)
         return;
-    st->bmac_object = object_new(&bmac_class, cfg, "bmac");
-    if (st->bmac_object) {
-        object_set_label(st->bmac_object, "BMAC Ethernet");
-        object_set_order(st->bmac_object, 92);
-        object_attach(machine_object(), st->bmac_object);
-    }
+    st->bmac_object = object_attach_new(machine_object(), &bmac_class, cfg, "bmac", "BMAC Ethernet", 92);
 }
 
 void gos_bmac_detach_objects(config_t *cfg) {

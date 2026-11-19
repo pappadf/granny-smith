@@ -801,11 +801,7 @@ av_psc_t *av_psc_init(config_t *cfg, checkpoint_t *cp) {
         size_t data_size = offsetof(av_psc_t, cfg);
         system_read_checkpoint_data(cp, psc, data_size);
     }
-    psc->object = object_new(&psc_class, psc, "psc");
-    if (psc->object) {
-        object_set_order(psc->object, 45);
-        object_attach(machine_object(), psc->object);
-    }
+    psc->object = object_attach_new(machine_object(), &psc_class, psc, "psc", NULL, 45);
     return psc;
 }
 

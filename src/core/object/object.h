@@ -494,6 +494,13 @@ const char *object_label(struct object *o); // label if set, else name
 void object_set_order(struct object *o, int order);
 int object_order(struct object *o);
 
+// object_new + object_set_label (when `label` is non-NULL) + object_set_order
+// + object_attach to `parent`, the block every hardware node's constructor
+// spells out.  Returns the new object, or NULL (nothing attached) when the
+// allocation fails.
+struct object *object_attach_new(struct object *parent, const class_desc_t *cls, void *instance_data, const char *name,
+                                 const char *label, int order);
+
 // Visibility category for an attached child object. Per-
 // member visibility lives in member_t.flags (M_CAT_*); attached hardware
 // nodes carry it per-object here instead, since they are not declared

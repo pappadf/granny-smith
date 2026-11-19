@@ -887,18 +887,8 @@ void gos_heathrow_attach_objects(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
     if (!st || st->hr_object)
         return;
-    st->hr_object = object_new(&hr_class, cfg, "heathrow");
-    if (st->hr_object) {
-        object_set_label(st->hr_object, "Heathrow");
-        object_set_order(st->hr_object, 45);
-        object_attach(machine_object(), st->hr_object);
-    }
-    st->nvram_object = object_new(&nvram_class, cfg, "nvram");
-    if (st->nvram_object) {
-        object_set_label(st->nvram_object, "NVRAM");
-        object_set_order(st->nvram_object, 46);
-        object_attach(machine_object(), st->nvram_object);
-    }
+    st->hr_object = object_attach_new(machine_object(), &hr_class, cfg, "heathrow", "Heathrow", 45);
+    st->nvram_object = object_attach_new(machine_object(), &nvram_class, cfg, "nvram", "NVRAM", 46);
 }
 
 void gos_heathrow_detach_objects(config_t *cfg) {

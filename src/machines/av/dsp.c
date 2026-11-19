@@ -597,12 +597,7 @@ av_dsp_t *av_dsp_init(config_t *cfg, checkpoint_t *cp) {
 
     scheduler_new_event_type(cfg->scheduler, "dsp", d, "burst", &av_dsp_burst_event);
 
-    d->object = object_new(&av_dsp_class, d, "dsp");
-    if (d->object) {
-        object_set_label(d->object, "DSP3210");
-        object_set_order(d->object, 15);
-        object_attach(machine_object(), d->object);
-    }
+    d->object = object_attach_new(machine_object(), &av_dsp_class, d, "dsp", "DSP3210", 15);
 
     LOG(1, "DSP3210 init (%u Hz, ratio_x256=%u)", dsp_freq, d->ratio_x256);
     return d;

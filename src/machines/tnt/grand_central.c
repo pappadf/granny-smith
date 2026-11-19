@@ -642,18 +642,11 @@ void tnt_gc_attach_object(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     if (!st || st->gc_object)
         return;
-    st->gc_object = object_new(&gc_class, cfg, "gc");
+    st->gc_object = object_attach_new(machine_object(), &gc_class, cfg, "gc", NULL, 45);
     if (!st->gc_object)
         return;
-    object_set_order(st->gc_object, 45);
-    object_attach(machine_object(), st->gc_object);
     // The non-volatile store beside it: machine.nvram.
-    st->nvram_object = object_new(&nvram_class, cfg, "nvram");
-    if (st->nvram_object) {
-        object_set_label(st->nvram_object, "NVRAM");
-        object_set_order(st->nvram_object, 46);
-        object_attach(machine_object(), st->nvram_object);
-    }
+    st->nvram_object = object_attach_new(machine_object(), &nvram_class, cfg, "nvram", "NVRAM", 46);
 }
 
 void tnt_gc_detach_object(config_t *cfg) {

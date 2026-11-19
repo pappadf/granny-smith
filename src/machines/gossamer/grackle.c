@@ -637,12 +637,7 @@ void gos_grackle_attach_objects(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
     if (!st || st->grackle_object)
         return;
-    st->grackle_object = object_new(&grk_class, cfg, "grackle");
-    if (st->grackle_object) {
-        object_set_label(st->grackle_object, "Grackle");
-        object_set_order(st->grackle_object, 44);
-        object_attach(machine_object(), st->grackle_object);
-    }
+    st->grackle_object = object_attach_new(machine_object(), &grk_class, cfg, "grackle", "Grackle", 44);
 }
 
 void gos_grackle_detach_objects(config_t *cfg) {

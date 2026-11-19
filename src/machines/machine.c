@@ -1213,12 +1213,9 @@ static struct object *s_catalog_object = NULL;
 void catalog_init(void) {
     if (s_catalog_object)
         return;
-    s_catalog_object = object_new(&catalog_class, NULL, "catalog");
+    s_catalog_object = object_attach_new(object_root(), &catalog_class, NULL, "catalog", "Catalog", 70);
     if (!s_catalog_object)
         return;
-    object_set_label(s_catalog_object, "Catalog");
-    object_set_order(s_catalog_object, 70);
-    object_attach(object_root(), s_catalog_object);
     vrom_init(s_catalog_object); // catalog.vroms
     prom_init(s_catalog_object); // catalog.proms
 }

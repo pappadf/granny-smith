@@ -493,6 +493,18 @@ void object_set_order(struct object *o, int order) {
         o->order = order;
 }
 
+struct object *object_attach_new(struct object *parent, const class_desc_t *cls, void *instance_data, const char *name,
+                                 const char *label, int order) {
+    struct object *o = object_new(cls, instance_data, name);
+    if (!o)
+        return NULL;
+    if (label)
+        object_set_label(o, label);
+    object_set_order(o, order);
+    object_attach(parent, o);
+    return o;
+}
+
 int object_order(struct object *o) {
     return o ? o->order : 0;
 }

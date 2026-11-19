@@ -488,11 +488,7 @@ rbv_t *rbv_init(rbv_variant_t variant, uint8_t sense3, checkpoint_t *cp) {
         system_read_checkpoint_data(cp, rbv, data_size);
     }
 
-    rbv->object = object_new(&rbv_class, rbv, "rbv");
-    if (rbv->object) {
-        object_set_order(rbv->object, 45); // beside the other controllers
-        object_attach(machine_object(), rbv->object);
-    }
+    rbv->object = object_attach_new(machine_object(), &rbv_class, rbv, "rbv", NULL, 45); // beside the other controllers
     return rbv;
 }
 

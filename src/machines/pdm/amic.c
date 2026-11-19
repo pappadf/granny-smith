@@ -1025,11 +1025,7 @@ void pdm_amic_attach_object(config_t *cfg) {
     pdm_state_t *st = pdm_st(cfg);
     if (!st || st->amic_object)
         return;
-    st->amic_object = object_new(&amic_class, cfg, "amic");
-    if (!st->amic_object)
-        return;
-    object_set_order(st->amic_object, 45);
-    object_attach(machine_object(), st->amic_object);
+    st->amic_object = object_attach_new(machine_object(), &amic_class, cfg, "amic", NULL, 45);
 }
 
 void pdm_amic_detach_object(config_t *cfg) {
