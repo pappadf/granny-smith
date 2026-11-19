@@ -5,6 +5,7 @@
 
 #include "job.h"
 
+#include "work_queue.h"
 #include "io/io_worker.h"
 #include "mailbox/mailbox.h"
 #include "object/value_format.h"
@@ -15,6 +16,7 @@
 #include <string.h>
 
 struct job {
+    wq_item_t link; // first: the job thread's queue (work_queue.h)
     uint32_t client;
     uint32_t req_id;
     char *src;
@@ -32,7 +34,6 @@ struct job {
     // Pending annotations (job_annotate), in order: each is written once
     // the text before its position has been.
     struct job_annot *annot_head, *annot_tail;
-    job_t *next;
 };
 
 // One annotation record waiting for its position in the output stream.
@@ -60,14 +61,20 @@ typedef struct {
     uint32_t defer_req; // the request id of the job the deferred call belongs to
 } emu_call_t;
 
-static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t g_cv_queue = PTHREAD_COND_INITIALIZER; // job thread waits for work
+static void job_run(work_queue_t *q, wq_item_t *item);
+static void wake_emulator(void);
+
+// The job thread: jobs waiting, the one running, and those finished whose
+// result is not yet written, in the order they ran.  Its mutex also guards
+// the jobs' output, g_call and g_cv_call.
+static work_queue_t g_wq = WORK_QUEUE_INIT(job_run, wake_emulator);
 static pthread_cond_t g_cv_call = PTHREAD_COND_INITIALIZER; // job thread waits for its call
-static bool g_thread_running;
-static job_t *g_queue, *g_queue_tail; // waiting
-static job_t *g_active; // on the job thread
-static job_t *g_done; // finished, result not yet written
 static emu_call_t g_call;
+
+// The job on the job thread right now (g_wq.mu, or a racy peek).
+static inline job_t *job_active(void) {
+    return (job_t *)__atomic_load_n(&g_wq.active, __ATOMIC_ACQUIRE);
+}
 static volatile uint32_t *g_wake_word; // the mailbox's REQ_HEAD (the emulator parks on it)
 
 void job_layer_set_wake_word(volatile uint32_t *word) {
@@ -75,7 +82,7 @@ void job_layer_set_wake_word(volatile uint32_t *word) {
 }
 
 bool job_thread_running(void) {
-    return g_thread_running;
+    return g_wq.running;
 }
 
 static void job_free(job_t *j) {
@@ -123,16 +130,16 @@ bool job_output_append(const char *text, size_t len) {
         // The emulator thread, serving a job's call?
         if (!g_call.serving)
             return false;
-        pthread_mutex_lock(&g_mu);
-        j = g_active;
+        pthread_mutex_lock(&g_wq.mu);
+        j = job_active();
         if (j)
             job_append_locked(j, text, len);
-        pthread_mutex_unlock(&g_mu);
+        pthread_mutex_unlock(&g_wq.mu);
         return j != NULL;
     }
-    pthread_mutex_lock(&g_mu);
+    pthread_mutex_lock(&g_wq.mu);
     job_append_locked(j, text, len);
-    pthread_mutex_unlock(&g_mu);
+    pthread_mutex_unlock(&g_wq.mu);
     if (g_wake_word)
         mailbox_notify(g_wake_word);
     return true;
@@ -233,7 +240,7 @@ static job_t *annotation_target_locked(void) {
     job_t *j = job_current();
     if (j)
         return j;
-    return g_call.serving ? g_active : NULL;
+    return g_call.serving ? job_active() : NULL;
 }
 
 // The entries of map `m` as JSON object members, without the braces (tagged
@@ -266,7 +273,7 @@ bool job_annotate(const char *kind, const value_t *fields, const value_t *reduce
     max = max > 16 ? max - 16 : max; // the record header
     struct job_annot *a = (struct job_annot *)calloc(1, sizeof(*a));
     bool placed = false, shortened = false;
-    pthread_mutex_lock(&g_mu);
+    pthread_mutex_lock(&g_wq.mu);
     // The job is resolved once: the ids in the record and the stream it joins
     // are the same job's.
     job_t *j = annotation_target_locked();
@@ -299,7 +306,7 @@ bool job_annotate(const char *kind, const value_t *fields, const value_t *reduce
             placed = true;
         }
     }
-    pthread_mutex_unlock(&g_mu);
+    pthread_mutex_unlock(&g_wq.mu);
     if (!placed)
         free(a);
     vbuf_free(&kjson);
@@ -315,12 +322,12 @@ bool job_annotate(const char *kind, const value_t *fields, const value_t *reduce
 
 // The output every job has pending, to the ring.  Called from the drain.
 static void jobs_flush_output(struct mailbox *m) {
-    pthread_mutex_lock(&g_mu);
-    if (g_active)
-        job_flush_output(m, g_active);
-    for (job_t *j = g_done; j; j = j->next)
-        job_flush_output(m, j);
-    pthread_mutex_unlock(&g_mu);
+    pthread_mutex_lock(&g_wq.mu);
+    if (job_active())
+        job_flush_output(m, job_active());
+    for (wq_item_t *it = g_wq.done; it; it = it->next)
+        job_flush_output(m, (job_t *)it);
+    pthread_mutex_unlock(&g_wq.mu);
 }
 
 // Wakes the emulator thread: it parks on REQ_HEAD when the machine is
@@ -334,69 +341,43 @@ static void wake_emulator(void) {
 
 static void post_call(void (*fn)(void *ud), void *ud);
 
-static void *job_thread_main(void *arg) {
-    (void)arg;
-    for (;;) {
-        pthread_mutex_lock(&g_mu);
-        while (!g_queue)
-            pthread_cond_wait(&g_cv_queue, &g_mu);
-        job_t *j = g_queue;
-        g_queue = j->next;
-        if (!g_queue)
-            g_queue_tail = NULL;
-        j->next = NULL;
-        g_active = j;
-        pthread_mutex_unlock(&g_mu);
-
-        job_seam_set_current(j, j->client, &j->cancel);
-        job_call_take_failure(NULL, 0); // a failure the last job never took is not this one's
-        j->rc = job_glue_run_source(j->src, true);
-        job_seam_set_current(NULL, 0, NULL);
-
-        pthread_mutex_lock(&g_mu);
-        g_active = NULL;
-        j->next = g_done;
-        g_done = j;
-        pthread_mutex_unlock(&g_mu);
-        wake_emulator();
-    }
-    return NULL;
+// One job, on the job thread (work_queue.h runs them in order and files
+// each as done, then wakes the emulator thread).
+static void job_run(work_queue_t *q, wq_item_t *item) {
+    (void)q;
+    job_t *j = (job_t *)item;
+    job_seam_set_current(j, j->client, &j->cancel);
+    job_call_take_failure(NULL, 0); // a failure the last job never took is not this one's
+    j->rc = job_glue_run_source(j->src, true);
+    job_seam_set_current(NULL, 0, NULL);
 }
 
 bool job_thread_start(size_t stack_bytes) {
-    if (g_thread_running)
+    if (g_wq.running)
         return true;
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    if (stack_bytes)
-        pthread_attr_setstacksize(&attr, stack_bytes);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    pthread_t t;
-    int rc = pthread_create(&t, &attr, job_thread_main, NULL);
-    pthread_attr_destroy(&attr);
-    g_thread_running = rc == 0;
-    if (g_thread_running)
-        job_seam_set_poster(post_call);
-    return g_thread_running;
+    if (!wq_start(&g_wq, stack_bytes))
+        return false;
+    job_seam_set_poster(post_call);
+    return true;
 }
 
 // The poster the seam calls from the job thread: hand fn to the emulator
 // thread and wait until it has run (and any mode it started has ended).
 static void post_call(void (*fn)(void *ud), void *ud) {
-    pthread_mutex_lock(&g_mu);
+    pthread_mutex_lock(&g_wq.mu);
     g_call.fn = fn;
     g_call.ud = ud;
     g_call.client = job_current_client();
     g_call.served = false;
     g_call.done = false;
     g_call.pending = true;
-    pthread_mutex_unlock(&g_mu);
+    pthread_mutex_unlock(&g_wq.mu);
     wake_emulator();
-    pthread_mutex_lock(&g_mu);
+    pthread_mutex_lock(&g_wq.mu);
     while (!g_call.done)
-        pthread_cond_wait(&g_cv_call, &g_mu);
+        pthread_cond_wait(&g_cv_call, &g_wq.mu);
     g_call.pending = false;
-    pthread_mutex_unlock(&g_mu);
+    pthread_mutex_unlock(&g_wq.mu);
 }
 
 bool job_serving_call(void) {
@@ -415,30 +396,30 @@ uint32_t job_call_defer(void) {
         g_defer_seq = 1;
     g_call.defer_token = g_defer_seq | 0x80000000u;
     g_call.defer_io = 0;
-    pthread_mutex_lock(&g_mu);
-    g_call.defer_req = g_active ? g_active->req_id : 0;
-    pthread_mutex_unlock(&g_mu);
+    pthread_mutex_lock(&g_wq.mu);
+    g_call.defer_req = job_active() ? job_active()->req_id : 0;
+    pthread_mutex_unlock(&g_wq.mu);
     return g_call.defer_token;
 }
 
 void job_call_bind_io(uint32_t token, uint32_t io_job) {
-    pthread_mutex_lock(&g_mu);
+    pthread_mutex_lock(&g_wq.mu);
     if (g_call.defer_token == token)
         g_call.defer_io = io_job;
-    pthread_mutex_unlock(&g_mu);
+    pthread_mutex_unlock(&g_wq.mu);
 }
 
 uint32_t job_call_request_id(uint32_t token) {
-    pthread_mutex_lock(&g_mu);
+    pthread_mutex_lock(&g_wq.mu);
     uint32_t id = g_call.defer_token == token ? g_call.defer_req : 0;
-    pthread_mutex_unlock(&g_mu);
+    pthread_mutex_unlock(&g_wq.mu);
     return id;
 }
 
 void job_call_complete(uint32_t token, bool ok, const char *json) {
-    pthread_mutex_lock(&g_mu);
+    pthread_mutex_lock(&g_wq.mu);
     if (g_call.defer_token != token) {
-        pthread_mutex_unlock(&g_mu);
+        pthread_mutex_unlock(&g_wq.mu);
         return;
     }
     g_call.defer_token = 0;
@@ -453,13 +434,13 @@ void job_call_complete(uint32_t token, bool ok, const char *json) {
             error[n - 2] = '\0';
         job_seam_note_failure(error);
     }
-    pthread_mutex_unlock(&g_mu);
+    pthread_mutex_unlock(&g_wq.mu);
 }
 
 // --- submission and cancel (any thread) -------------------------------------
 
 bool job_submit_script(uint32_t client, uint32_t req_id, const char *src, size_t len) {
-    if (!g_thread_running)
+    if (!g_wq.running)
         return false;
     job_t *j = (job_t *)calloc(1, sizeof(*j));
     if (!j)
@@ -473,52 +454,47 @@ bool job_submit_script(uint32_t client, uint32_t req_id, const char *src, size_t
     j->src[len] = '\0';
     j->client = client;
     j->req_id = req_id;
-    pthread_mutex_lock(&g_mu);
-    if (g_queue_tail)
-        g_queue_tail->next = j;
-    else
-        g_queue = j;
-    g_queue_tail = j;
-    pthread_cond_signal(&g_cv_queue);
-    pthread_mutex_unlock(&g_mu);
+    wq_push(&g_wq, &j->link);
     return true;
 }
 
+// What a cancel matches: a client's jobs, or one request of it.
+typedef struct {
+    uint32_t client, req_id;
+    bool any_req;
+} cancel_match_t;
+
+static bool cancel_matches(const wq_item_t *item, void *ctx) {
+    const job_t *j = (const job_t *)item;
+    const cancel_match_t *c = ctx;
+    return j->client == c->client && (c->any_req || j->req_id == c->req_id);
+}
+
+// A queued job that is cancelled never starts: it finishes at once.
+static void cancel_queued(wq_item_t *item, void *ctx) {
+    (void)ctx;
+    job_t *j = (job_t *)item;
+    j->cancel = true;
+    j->rc = -1;
+}
+
 static int cancel_matching(uint32_t client, uint32_t req_id, bool any_req) {
-    int n = 0;
-    pthread_mutex_lock(&g_mu);
+    cancel_match_t match = {client, req_id, any_req};
+    pthread_mutex_lock(&g_wq.mu);
     // Queued jobs never start: they finish at once, cancelled.
-    job_t **pp = &g_queue;
-    while (*pp) {
-        job_t *j = *pp;
-        if (j->client == client && (any_req || j->req_id == req_id)) {
-            *pp = j->next;
-            if (g_queue_tail == j)
-                g_queue_tail = NULL;
-            j->cancel = true;
-            j->rc = -1;
-            j->next = g_done;
-            g_done = j;
-            n++;
-            continue;
-        }
-        pp = &j->next;
-    }
-    if (g_queue && !g_queue_tail) {
-        for (job_t *j = g_queue; j; j = j->next)
-            g_queue_tail = j;
-    }
+    int n = wq_cancel_waiting_locked(&g_wq, cancel_matches, cancel_queued, &match);
+    job_t *active = job_active();
     uint32_t stop_mode = 0;
     uint32_t io_job = 0;
-    if (g_active && g_active->client == client && (any_req || g_active->req_id == req_id)) {
-        __atomic_store_n(&g_active->cancel, true, __ATOMIC_RELEASE);
-        stop_mode = g_active->mode_id;
+    if (active && active->client == client && (any_req || active->req_id == req_id)) {
+        __atomic_store_n(&active->cancel, true, __ATOMIC_RELEASE);
+        stop_mode = active->mode_id;
         // A deferred I/O call of the job ends with it too.
         if (g_call.pending && g_call.defer_token)
             io_job = g_call.defer_io;
         n++;
     }
-    pthread_mutex_unlock(&g_mu);
+    pthread_mutex_unlock(&g_wq.mu);
     // The run the job started ends with it; the client's other runs stay.
     if (stop_mode)
         job_glue_stop_mode(client, stop_mode);
@@ -538,9 +514,9 @@ int job_cancel_client(uint32_t client) {
 // --- the emulator thread's side ---------------------------------------------
 
 bool job_layer_has_work(void) {
-    if (__atomic_load_n(&g_call.pending, __ATOMIC_ACQUIRE) || __atomic_load_n(&g_done, __ATOMIC_ACQUIRE) != NULL)
+    if (__atomic_load_n(&g_call.pending, __ATOMIC_ACQUIRE) || __atomic_load_n(&g_wq.done, __ATOMIC_ACQUIRE) != NULL)
         return true;
-    job_t *a = __atomic_load_n(&g_active, __ATOMIC_ACQUIRE);
+    job_t *a = job_active();
     return a && (__atomic_load_n(&a->out_len, __ATOMIC_ACQUIRE) != 0 ||
                  __atomic_load_n(&a->annot_head, __ATOMIC_ACQUIRE) != NULL);
 }
@@ -551,7 +527,7 @@ int job_layer_service(struct mailbox *m) {
     // that might answer them.
     jobs_flush_output(m);
     // 1. A posted call: run it here, as the job's client.
-    pthread_mutex_lock(&g_mu);
+    pthread_mutex_lock(&g_wq.mu);
     bool run_call = g_call.pending && !g_call.served;
     void (*fn)(void *) = g_call.fn;
     void *ud = g_call.ud;
@@ -562,14 +538,14 @@ int job_layer_service(struct mailbox *m) {
     // forever.  Release it unserved, failed as a cancelled deferred call
     // fails, and the job unwinds.  Cancel and service both run on this
     // thread, so a later cancel sees the mode this call records below.
-    if (run_call && g_active && __atomic_load_n(&g_active->cancel, __ATOMIC_ACQUIRE)) {
+    if (run_call && job_active() && __atomic_load_n(&job_active()->cancel, __ATOMIC_ACQUIRE)) {
         job_seam_note_failure("cancelled");
         g_call.served = true;
         g_call.done = true;
         pthread_cond_signal(&g_cv_call);
         run_call = false;
     }
-    pthread_mutex_unlock(&g_mu);
+    pthread_mutex_unlock(&g_wq.mu);
     if (run_call) {
         uint32_t mode_before = job_glue_mode_id();
         uint32_t prev_client = m->client;
@@ -582,35 +558,33 @@ int job_layer_service(struct mailbox *m) {
         jobs_flush_output(m);
         uint32_t mode_after = job_glue_mode_id();
         bool hold = (mode_after != mode_before && job_glue_mode_waits(client)) || g_call.defer_token != 0;
-        pthread_mutex_lock(&g_mu);
-        if (mode_after != mode_before && g_active)
-            g_active->mode_id = mode_after;
+        pthread_mutex_lock(&g_wq.mu);
+        if (mode_after != mode_before && job_active())
+            job_active()->mode_id = mode_after;
         g_call.served = true;
         if (!hold) {
             g_call.done = true;
             pthread_cond_signal(&g_cv_call);
         }
-        pthread_mutex_unlock(&g_mu);
+        pthread_mutex_unlock(&g_wq.mu);
     }
     // 2. A call held for its mode or a deferred answer: release it once the
     // mode has ended and the answer has come.
-    pthread_mutex_lock(&g_mu);
+    pthread_mutex_lock(&g_wq.mu);
     bool held = g_call.pending && g_call.served && !g_call.done;
     client = g_call.client;
     bool deferred_open = g_call.defer_token != 0;
-    pthread_mutex_unlock(&g_mu);
+    pthread_mutex_unlock(&g_wq.mu);
     if (held && !deferred_open && !job_glue_mode_waits(client)) {
-        pthread_mutex_lock(&g_mu);
+        pthread_mutex_lock(&g_wq.mu);
         g_call.done = true;
         pthread_cond_signal(&g_cv_call);
-        pthread_mutex_unlock(&g_mu);
+        pthread_mutex_unlock(&g_wq.mu);
     }
     // 3. Finished jobs: their result is the shell's prompt (what shell.run
     // returned), or an error.
     for (;;) {
-        pthread_mutex_lock(&g_mu);
-        job_t *j = g_done;
-        pthread_mutex_unlock(&g_mu);
+        job_t *j = (job_t *)wq_done_peek(&g_wq);
         if (!j)
             break;
         bool ok;
@@ -622,17 +596,15 @@ int job_layer_service(struct mailbox *m) {
             ok = false;
         }
         // Its output first, then the result (a client sees them in order).
-        pthread_mutex_lock(&g_mu);
+        pthread_mutex_lock(&g_wq.mu);
         bool flushed = job_flush_output(m, j);
-        pthread_mutex_unlock(&g_mu);
+        pthread_mutex_unlock(&g_wq.mu);
         if (!flushed)
             break;
         if (!mailbox_write_result(m, j->req_id, ok, m->out, (uint32_t)strlen(m->out), NULL, 0))
             break; // no room: keep it for the next drain
         written++;
-        pthread_mutex_lock(&g_mu);
-        g_done = j->next;
-        pthread_mutex_unlock(&g_mu);
+        wq_done_pop(&g_wq); // j: the oldest, as peeked
         job_free(j);
     }
     return written;
@@ -651,7 +623,7 @@ bool job_inline_enabled(void) {
 }
 
 void job_inline_after_call(uint32_t mode_before) {
-    if (!g_inline_frame || g_thread_running)
+    if (!g_inline_frame || g_wq.running)
         return;
     uint32_t client = mailbox_serving_client();
     if (!client || job_glue_mode_id() == mode_before)

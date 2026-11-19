@@ -5,6 +5,8 @@
 
 #include "io_worker.h"
 
+#include "work_queue.h"
+
 #include <errno.h>
 #include <pthread.h>
 #include <sched.h>
@@ -16,6 +18,7 @@
 #include <unistd.h>
 
 typedef struct io_job {
+    wq_item_t link; // first: the worker's queue (work_queue.h)
     uint32_t id;
     io_work_fn work; // a function job, else a publish
     void *work_ud;
@@ -30,14 +33,14 @@ typedef struct io_job {
     io_note_fn note;
     void *observer_ud;
     // Progress: the latest values the work reported, and whether the
-    // observer has seen them (g_mu).
+    // observer has seen them (g_wq.mu).
     uint64_t done_n, total_n;
     bool progress_dirty;
-    // Notes in flight, oldest first (g_mu).
+    // Notes in flight, oldest first (g_wq.mu).
     char notes[4][IO_NOTE_MAX];
     int n_notes;
     // Cancel (set by the emulator thread, read by the work) and the last
-    // acknowledged tag (g_mu, g_cv_ack).
+    // acknowledged tag (g_wq.mu, g_cv_ack).
     bool cancel;
     uint32_t acked_tag;
     bool acked;
@@ -45,7 +48,6 @@ typedef struct io_job {
     bool ok;
     double ms;
     char error[160];
-    struct io_job *next;
 } io_job_t;
 
 // The job whose work runs on this thread (the worker, or the caller of
@@ -53,12 +55,12 @@ typedef struct io_job {
 static _Thread_local io_job_t *t_work;
 static pthread_cond_t g_cv_ack = PTHREAD_COND_INITIALIZER;
 
-static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER;
-static bool g_running;
-static io_job_t *g_queue, *g_queue_tail;
-static io_job_t *g_active;
-static io_job_t *g_done;
+static void io_run(work_queue_t *q, wq_item_t *item);
+
+// The worker: jobs waiting, the one running, and those finished whose done
+// callback has not run, in the order they ran.  Its mutex also guards the
+// jobs' progress, notes and acks (g_cv_ack) and g_reports.
+static work_queue_t g_wq = WORK_QUEUE_INIT(io_run, NULL);
 static uint32_t g_next_id = 1;
 static uint32_t g_jobs_done;
 static double g_last_ms;
@@ -123,76 +125,49 @@ static void job_free(io_job_t *j) {
     free(j);
 }
 
-static void *worker_main(void *arg) {
-    (void)arg;
-    for (;;) {
-        pthread_mutex_lock(&g_mu);
-        while (!g_queue)
-            pthread_cond_wait(&g_cv, &g_mu);
-        io_job_t *j = g_queue;
-        g_queue = j->next;
-        if (!g_queue)
-            g_queue_tail = NULL;
-        j->next = NULL;
-        g_active = j;
-        pthread_mutex_unlock(&g_mu);
+// The job whose work the worker runs now (g_wq.mu, or a racy peek).
+static inline io_job_t *io_active(void) {
+    return (io_job_t *)__atomic_load_n(&g_wq.active, __ATOMIC_ACQUIRE);
+}
 
-        double t0 = io_now_ms();
-        int rc;
-        if (__atomic_load_n(&j->cancel, __ATOMIC_ACQUIRE)) {
+// One job, on the worker (work_queue.h runs them in order, files each as
+// done, then calls the waker).
+static void io_run(work_queue_t *q, wq_item_t *item) {
+    (void)q;
+    io_job_t *j = (io_job_t *)item;
+    double t0 = io_now_ms();
+    int rc;
+    if (__atomic_load_n(&j->cancel, __ATOMIC_ACQUIRE)) {
+        snprintf(j->error, sizeof j->error, "cancelled");
+        rc = -ECANCELED;
+    } else {
+        t_work = j;
+        rc = j->work ? j->work(j->work_ud, j->error, sizeof j->error)
+                     : io_write_publish(j->buf, j->len, j->tmp_path, j->final_path, j->error, sizeof j->error);
+        t_work = NULL;
+        if (rc == -ECANCELED && !j->error[0])
             snprintf(j->error, sizeof j->error, "cancelled");
-            rc = -ECANCELED;
-        } else {
-            t_work = j;
-            rc = j->work ? j->work(j->work_ud, j->error, sizeof j->error)
-                         : io_write_publish(j->buf, j->len, j->tmp_path, j->final_path, j->error, sizeof j->error);
-            t_work = NULL;
-            if (rc == -ECANCELED && !j->error[0])
-                snprintf(j->error, sizeof j->error, "cancelled");
-        }
-        j->ok = rc == 0;
-        j->ms = io_now_ms() - t0;
-
-        pthread_mutex_lock(&g_mu);
-        g_active = NULL;
-        // Append, so completions are reported in the order the jobs ran.
-        io_job_t **pp = &g_done;
-        while (*pp)
-            pp = &(*pp)->next;
-        *pp = j;
-        pthread_mutex_unlock(&g_mu);
-        if (g_waker)
-            g_waker();
     }
-    return NULL;
+    j->ok = rc == 0;
+    j->ms = io_now_ms() - t0;
 }
 
 bool io_worker_start(size_t stack_bytes) {
-    if (g_running)
-        return true;
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    if (stack_bytes)
-        pthread_attr_setstacksize(&attr, stack_bytes);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    pthread_t t;
-    int rc = pthread_create(&t, &attr, worker_main, NULL);
-    pthread_attr_destroy(&attr);
-    g_running = rc == 0;
-    return g_running;
+    return wq_start(&g_wq, stack_bytes);
 }
 
 bool io_worker_running(void) {
-    return g_running;
+    return g_wq.running;
 }
 
 void io_worker_set_waker(void (*wake)(void)) {
     g_waker = wake;
+    g_wq.wake = wake; // also after each completion
 }
 
 uint32_t io_submit_publish(const uint8_t *buf, size_t len, const char *tmp_path, const char *final_path,
                            io_done_fn done, void *ud) {
-    if (!g_running)
+    if (!g_wq.running)
         return 0;
     io_job_t *j = (io_job_t *)calloc(1, sizeof(*j));
     if (!j)
@@ -212,21 +187,16 @@ uint32_t io_submit_publish(const uint8_t *buf, size_t len, const char *tmp_path,
 }
 
 static void enqueue(io_job_t *j) {
-    pthread_mutex_lock(&g_mu);
+    wq_lock(&g_wq);
     j->id = g_next_id++;
     if (g_next_id == 0)
         g_next_id = 1;
-    if (g_queue_tail)
-        g_queue_tail->next = j;
-    else
-        g_queue = j;
-    g_queue_tail = j;
-    pthread_cond_signal(&g_cv);
-    pthread_mutex_unlock(&g_mu);
+    wq_unlock(&g_wq);
+    wq_push(&g_wq, &j->link);
 }
 
 uint32_t io_submit_work(io_work_fn work, void *ud, io_done_fn done, void *dud) {
-    if (!g_running || !work)
+    if (!g_wq.running || !work)
         return 0;
     io_job_t *j = (io_job_t *)calloc(1, sizeof(*j));
     if (!j)
@@ -240,7 +210,7 @@ uint32_t io_submit_work(io_work_fn work, void *ud, io_done_fn done, void *dud) {
 }
 
 uint32_t io_submit_job(const io_job_desc_t *d) {
-    if (!g_running || !d || !d->work)
+    if (!g_wq.running || !d || !d->work)
         return 0;
     io_job_t *j = (io_job_t *)calloc(1, sizeof(*j));
     if (!j)
@@ -258,24 +228,24 @@ uint32_t io_submit_job(const io_job_desc_t *d) {
 
 // Progress and notes are reported through the worker's wake, so the
 // emulator thread services them at its next drain.
-static bool g_reports; // progress or notes waiting (g_mu)
+static bool g_reports; // progress or notes waiting (g_wq.mu)
 
 void io_progress(uint64_t done, uint64_t total) {
     io_job_t *j = t_work;
     if (!j)
         return;
-    if (!g_running || !g_active || j != g_active) {
+    if (!g_wq.running || j != io_active()) {
         // Inline: straight to the observer, on this thread.
         if (j->progress)
             j->progress(done, total, j->observer_ud);
         return;
     }
-    pthread_mutex_lock(&g_mu);
+    pthread_mutex_lock(&g_wq.mu);
     j->done_n = done;
     j->total_n = total;
     j->progress_dirty = true;
     g_reports = true;
-    pthread_mutex_unlock(&g_mu);
+    pthread_mutex_unlock(&g_wq.mu);
     if (g_waker)
         g_waker();
 }
@@ -289,19 +259,19 @@ bool io_note(const char *json) {
     io_job_t *j = t_work;
     if (!j || !json || strlen(json) >= IO_NOTE_MAX)
         return false;
-    if (!g_running || !g_active || j != g_active) {
+    if (!g_wq.running || j != io_active()) {
         if (j->note)
             j->note(json, j->observer_ud);
         return true;
     }
-    pthread_mutex_lock(&g_mu);
+    pthread_mutex_lock(&g_wq.mu);
     if (j->n_notes >= (int)(sizeof j->notes / sizeof j->notes[0])) {
-        pthread_mutex_unlock(&g_mu);
+        pthread_mutex_unlock(&g_wq.mu);
         return false;
     }
     snprintf(j->notes[j->n_notes++], IO_NOTE_MAX, "%s", json);
     g_reports = true;
-    pthread_mutex_unlock(&g_mu);
+    pthread_mutex_unlock(&g_wq.mu);
     if (g_waker)
         g_waker();
     return true;
@@ -311,7 +281,7 @@ int io_wait_ack(uint32_t tag, unsigned ms) {
     io_job_t *j = t_work;
     if (!j)
         return -ETIMEDOUT;
-    if (!g_running || !g_active || j != g_active)
+    if (!g_wq.running || j != io_active())
         return -ETIMEDOUT; // inline: nobody can answer while we hold the thread
     struct timeval now;
     gettimeofday(&now, NULL);
@@ -323,7 +293,7 @@ int io_wait_ack(uint32_t tag, unsigned ms) {
         until.tv_nsec -= 1000000000L;
     }
     int rc = 0;
-    pthread_mutex_lock(&g_mu);
+    pthread_mutex_lock(&g_wq.mu);
     for (;;) {
         if (j->acked && (tag == 0 || j->acked_tag == tag)) {
             j->acked = false;
@@ -333,7 +303,7 @@ int io_wait_ack(uint32_t tag, unsigned ms) {
             rc = -ECANCELED;
             break;
         }
-        if (pthread_cond_timedwait(&g_cv_ack, &g_mu, &until) == ETIMEDOUT) {
+        if (pthread_cond_timedwait(&g_cv_ack, &g_wq.mu, &until) == ETIMEDOUT) {
             if (!(j->acked && (tag == 0 || j->acked_tag == tag)))
                 rc = -ETIMEDOUT;
             else
@@ -341,37 +311,39 @@ int io_wait_ack(uint32_t tag, unsigned ms) {
             break;
         }
     }
-    pthread_mutex_unlock(&g_mu);
+    pthread_mutex_unlock(&g_wq.mu);
     return rc;
 }
 
 bool io_worker_cancel(uint32_t id) {
     bool found = false;
-    pthread_mutex_lock(&g_mu);
-    for (io_job_t *j = g_queue; j; j = j->next) {
+    pthread_mutex_lock(&g_wq.mu);
+    for (wq_item_t *it = g_wq.head; it; it = it->next) {
+        io_job_t *j = (io_job_t *)it;
         if (j->id == id) {
             __atomic_store_n(&j->cancel, true, __ATOMIC_RELEASE);
             found = true;
         }
     }
-    if (g_active && g_active->id == id) {
-        __atomic_store_n(&g_active->cancel, true, __ATOMIC_RELEASE);
+    io_job_t *active = io_active();
+    if (active && active->id == id) {
+        __atomic_store_n(&active->cancel, true, __ATOMIC_RELEASE);
         found = true;
     }
     pthread_cond_broadcast(&g_cv_ack);
-    pthread_mutex_unlock(&g_mu);
+    pthread_mutex_unlock(&g_wq.mu);
     return found;
 }
 
 bool io_worker_ack(uint32_t id, uint32_t tag) {
-    pthread_mutex_lock(&g_mu);
-    io_job_t *j = g_active && g_active->id == id ? g_active : NULL;
+    pthread_mutex_lock(&g_wq.mu);
+    io_job_t *j = io_active() && io_active()->id == id ? io_active() : NULL;
     if (j) {
         j->acked = true;
         j->acked_tag = tag;
         pthread_cond_broadcast(&g_cv_ack);
     }
-    pthread_mutex_unlock(&g_mu);
+    pthread_mutex_unlock(&g_wq.mu);
     return j != NULL;
 }
 
@@ -393,18 +365,18 @@ int io_run_inline(const io_job_desc_t *d, char *err, size_t err_cap) {
 // Delivers the active job's progress and notes to its observers.
 static void service_reports(void) {
     for (;;) {
-        pthread_mutex_lock(&g_mu);
+        pthread_mutex_lock(&g_wq.mu);
         if (!g_reports) {
-            pthread_mutex_unlock(&g_mu);
+            pthread_mutex_unlock(&g_wq.mu);
             return;
         }
-        io_job_t *j = g_active;
+        io_job_t *j = io_active();
         // A job that finished before its reports were seen: its records
-        // are on g_done, whose progress/notes are delivered by the
+        // are on the done list, whose progress/notes are delivered by the
         // completion path below (service_job_reports).
         if (!j) {
             g_reports = false;
-            pthread_mutex_unlock(&g_mu);
+            pthread_mutex_unlock(&g_wq.mu);
             return;
         }
         bool prog = j->progress_dirty;
@@ -421,7 +393,7 @@ static void service_reports(void) {
         io_progress_fn pf = j->progress;
         io_note_fn nf = j->note;
         void *oud = j->observer_ud;
-        pthread_mutex_unlock(&g_mu);
+        pthread_mutex_unlock(&g_wq.mu);
         if (prog && pf)
             pf(dn, tn, oud);
         if (has_note && nf)
@@ -443,13 +415,13 @@ static void service_job_reports(io_job_t *j) {
 }
 
 bool io_worker_has_work(void) {
-    return __atomic_load_n(&g_done, __ATOMIC_ACQUIRE) != NULL || __atomic_load_n(&g_reports, __ATOMIC_ACQUIRE);
+    return __atomic_load_n(&g_wq.done, __ATOMIC_ACQUIRE) != NULL || __atomic_load_n(&g_reports, __ATOMIC_ACQUIRE);
 }
 
 bool io_worker_busy(void) {
-    pthread_mutex_lock(&g_mu);
-    bool busy = g_queue || g_active || g_done;
-    pthread_mutex_unlock(&g_mu);
+    wq_lock(&g_wq);
+    bool busy = g_wq.head || g_wq.active || g_wq.done;
+    wq_unlock(&g_wq);
     return busy;
 }
 
@@ -457,11 +429,7 @@ int io_worker_service(void) {
     int n = 0;
     service_reports();
     for (;;) {
-        pthread_mutex_lock(&g_mu);
-        io_job_t *j = g_done;
-        if (j)
-            g_done = j->next;
-        pthread_mutex_unlock(&g_mu);
+        io_job_t *j = (io_job_t *)wq_done_pop(&g_wq);
         if (!j)
             break;
         g_jobs_done++;
@@ -478,9 +446,9 @@ int io_worker_service(void) {
 void io_worker_wait_idle(void) {
     for (;;) {
         io_worker_service();
-        pthread_mutex_lock(&g_mu);
-        bool busy = g_queue || g_active || g_done;
-        pthread_mutex_unlock(&g_mu);
+        wq_lock(&g_wq);
+        bool busy = g_wq.head || g_wq.active || g_wq.done;
+        wq_unlock(&g_wq);
         if (!busy)
             return;
         usleep(500);
