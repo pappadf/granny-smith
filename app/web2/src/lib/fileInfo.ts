@@ -1,6 +1,8 @@
 // The Filesystem tab's Size and Date modified columns: a byte count and a
 // Unix-seconds modification time as short display strings.
 
+import { localStamp } from './time';
+
 const UNITS = ['KB', 'MB', 'GB', 'TB'];
 
 // "512 B", "4.4 KB", "800 KB", "1.4 MB": binary units, one decimal below 10.
@@ -20,10 +22,5 @@ export function formatSize(bytes: number): string {
 // "2026-10-04 14:32" in local time; "" for 0 (unknown).
 export function formatMtime(secs: number): string {
   if (!secs) return '';
-  const d = new Date(secs * 1000);
-  const p = (n: number) => String(n).padStart(2, '0');
-  return (
-    `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
-    `${p(d.getHours())}:${p(d.getMinutes())}`
-  );
+  return localStamp(new Date(secs * 1000));
 }

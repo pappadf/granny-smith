@@ -17,6 +17,8 @@
 // ends the container URL; the rest, percent-decoded, is the member path.  A
 // container as the last segment is just the file.
 
+import { pad2 } from './time';
+
 // Extensions that end a container segment when a member path follows.
 const CONTAINER_EXT = /\.(zip|sit|sea|cpt|hqx|bin)$/i;
 const ZIP_EXT = /\.zip$/i;
@@ -125,9 +127,8 @@ export function planMediaFetch(value: string, base: string): MediaFetchPlan {
 // and time ("hd0_2026-10-04_17-42-05").  A ROM is stored under its own
 // content id whatever it is called (lib/media.ts).
 export function urlMediaName(slot: string, at: Date = new Date()): string {
-  const p = (n: number) => String(n).padStart(2, '0');
-  const date = `${at.getFullYear()}-${p(at.getMonth() + 1)}-${p(at.getDate())}`;
-  const time = `${p(at.getHours())}-${p(at.getMinutes())}-${p(at.getSeconds())}`;
+  const date = `${at.getFullYear()}-${pad2(at.getMonth() + 1)}-${pad2(at.getDate())}`;
+  const time = `${pad2(at.getHours())}-${pad2(at.getMinutes())}-${pad2(at.getSeconds())}`;
   return `${slot}_${date}_${time}`;
 }
 

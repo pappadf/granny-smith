@@ -19,6 +19,7 @@ import {
   resolveCheckpointPrompt,
 } from '@/state/checkpointPrompt.svelte';
 import { showNotification } from '@/state/toasts.svelte';
+import { compactLocalStamp } from '@/lib/time';
 
 export function isResumePending(): boolean {
   return checkpointPrompt.shown;
@@ -70,7 +71,7 @@ export type SaveCheckpointResult =
   { ok: true; name: string } | { ok: false; step: 'save' | 'save to computer'; message: string };
 
 export async function saveCheckpoint(): Promise<SaveCheckpointResult> {
-  const name = `saved-state-${compactTimestamp()}.bin`;
+  const name = `saved-state-${compactLocalStamp()}.bin`;
   // Written in the OPFS scratch area, not the memory-backed /tmp: a machine
   // with a large modified disk would otherwise hold its whole state in the
   // wasm heap while the download is made.  In a directory of its own, so no
@@ -93,14 +94,4 @@ export async function saveCheckpoint(): Promise<SaveCheckpointResult> {
     // the next startup).
     await gsEval('files.rm', [dir]);
   }
-}
-
-// Local-time YYYYMMDD-HHMMSS for a download name.
-function compactTimestamp(): string {
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return (
-    `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-` +
-    `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
-  );
 }

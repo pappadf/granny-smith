@@ -6,6 +6,8 @@
 // the core writes (`machine: {model, ram_bytes}`, the build, the images); the
 // UI adds a `label` to it.
 
+import { localStamp } from './time';
+
 export interface ParsedCheckpointDir {
   id: string;
   created: string;
@@ -22,14 +24,7 @@ export function parseCheckpointDirName(name: string): ParsedCheckpointDir | null
 // "YYYY-MM-DD HH:MM" in local time (with `seconds`, ":SS" too): the one
 // clock the Checkpoints panel shows, in its names and its Date column alike
 // (the stamps are UTC; the names a user creates were local).
-export function formatLocalStamp(d: Date, seconds = false): string {
-  const pad = (n: number) => String(n).padStart(2, '0');
-  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  return (
-    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hm}` +
-    (seconds ? `:${pad(d.getSeconds())}` : '')
-  );
-}
+export const formatLocalStamp = localStamp;
 
 // Format a compact ISO 8601 timestamp (YYYYMMDDTHHMMSSZ) into a human label
 // suitable for the Checkpoints table when no manifest is present.
