@@ -230,7 +230,7 @@ static void part_save_gossamer_board(void *obj, checkpoint_t *cp) {
 // The floppy controller (its plain-data prefix) and its DBDMA byte ring.
 static void part_save_gossamer_swim3(void *obj, checkpoint_t *cp) {
     gossamer_state_t *st = obj;
-    system_write_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
+    swim3_checkpoint(&st->swim3, cp);
     system_write_checkpoint_data(cp, &st->fdport.ring, sizeof(st->fdport.ring));
 }
 
@@ -391,7 +391,7 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
 
     machine_part_begin(cfg, cp, "swim3");
     if (cp) {
-        system_read_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
+        swim3_restore(&st->swim3, cp);
         system_read_checkpoint_data(cp, &st->fdport.ring, sizeof(st->fdport.ring));
         gos_swim3_bind(cfg);
         gos_recompute_irq(cfg);

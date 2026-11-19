@@ -99,6 +99,22 @@ void swim3_bind(swim3_t *sw, struct floppy *fd, struct scheduler *sched, const s
 // backend pointers survive, being wiring rather than state.  See swim3.c.
 void swim3_reset(swim3_t *sw);
 
+// === Checkpointing ===========================================================
+
+struct checkpoint;
+
+// Save the chip's plain-data prefix (everything before `fd`), as one block
+// tagged "swim3".  offsetof, not sizeof: the pointer tail (fd, sched, be) is
+// wiring, and writing it put host pointers in a user-shareable save file and
+// made two saves of the same guest state differ -- which defeats any
+// diff-based checkpoint testing.
+void swim3_checkpoint(const swim3_t *sw, struct checkpoint *cp);
+
+// Read the prefix swim3_checkpoint wrote.  The pointer tail is untouched; the
+// caller still binds it (swim3_bind, through its board's *_swim3_bind) on a
+// freshly allocated chip.
+void swim3_restore(swim3_t *sw, struct checkpoint *cp);
+
 // Register the chip's scheduler event types — at construction
 // (the timer in swim3.c, the transfer engine in swim3_xfer.c).
 void swim3_register_events(swim3_t *sw);

@@ -603,14 +603,7 @@ static void part_save_tnt_io(void *obj, checkpoint_t *cp) {
     tnt_state_t *st = obj;
     system_write_checkpoint_data(cp, &st->gbus, sizeof(st->gbus));
     system_write_checkpoint_data(cp, &st->lcd, sizeof(st->lcd));
-    // offsetof, not sizeof: swim3_t's tail is `struct floppy *fd; struct
-    // scheduler *sched; swim3_backend_t be;` and swim3.h labels it "not
-    // checkpointed; swim3_bind".  Writing the whole struct put host pointers
-    // in a user-shareable save file, and made two saves of the same guest
-    // state differ -- which defeats any diff-based checkpoint testing.  The
-    // restore re-binds through *_swim3_bind either way, so the values were
-    // harmless; the leak and the non-reproducibility were not.
-    system_write_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
+    swim3_checkpoint(&st->swim3, cp); // the plain-data prefix (swim3.h)
     system_write_checkpoint_data(cp, &st->fdport.ring, sizeof(st->fdport.ring));
     system_write_checkpoint_data(cp, &st->mace, sizeof(st->mace));
 }
@@ -851,11 +844,10 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     if (cp) {
         system_read_checkpoint_data(cp, &st->gbus, sizeof(st->gbus));
         system_read_checkpoint_data(cp, &st->lcd, sizeof(st->lcd));
-        // The prefix only; *_swim3_bind re-attaches the pointer tail.
-        system_read_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
+        swim3_restore(&st->swim3, cp); // the prefix; tnt_swim3_bind below wires the tail
         system_read_checkpoint_data(cp, &st->fdport.ring, sizeof(st->fdport.ring));
         system_read_checkpoint_data(cp, &st->mace, sizeof(st->mace));
-        tnt_swim3_bind(cfg); // the restore overwrote the chip's pointer tail
+        tnt_swim3_bind(cfg);
         tnt_gc_recompute(cfg); // mesh/53C94 lines fold into the fabric
     }
     machine_part(cfg, cp, "tnt.io", part_save_tnt_io, st);
