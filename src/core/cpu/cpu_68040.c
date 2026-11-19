@@ -32,6 +32,7 @@ LOG_USE_CATEGORY_NAME("cpu");
 
 // Operand/memory/flag/exception macros shared by all three 68K decoders
 #include "cpu_decoder_macros.h"
+#include "cpu_sprint.h"
 
 #include "cpu_ops.h"
 
@@ -398,13 +399,6 @@ void cpu_reset_to_vector_68040(cpu_t *restrict cpu) {
     cpu->pc = memory_read_uint32(0x00000004); // PC from vector 1 (ROM via overlay)
 }
 
-// Double bus error → HALT → RESET, as on the 030.
-static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restrict cpu) {
-    LOG(1, "Hardware reset (double bus error → HALT → RESET)");
-    system_reset_devices(); // the board's /RESET net; must precede the vector read
-    cpu_reset_to_vector_68040(cpu);
-}
-
 // Generate the cpu_run_68040 decoder function using the shared template.
 // Prologue/epilogue mirror cpu_68030.c; the model checks inside the shared
 // exception helpers select the 040 frame formats (Format $7 access error).
@@ -412,26 +406,8 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restri
 #define CPU_DECODER_ARGS        cpu_t *restrict cpu, uint32_t *instructions
 #define CPU_DECODER_RETURN_TYPE void
 #define CPU_DECODER_PROLOGUE                                                                                           \
-    /* Double bus error recovery: CPU halted → RESET (see cpu_68030.c). */                                           \
-    if (__builtin_expect(cpu->halted, 0)) {                                                                            \
-        cpu->halted = 0;                                                                                               \
-        cpu_hardware_reset_040(cpu);                                                                                   \
-    }                                                                                                                  \
-    /* Set SoA active pointers based on current supervisor mode */                                                     \
-    cpu_select_soa(cpu->supervisor);                                                                                   \
-    g_bus_error_instr_ptr = instructions; /* let memory slow paths force exit */                                       \
-    cpu_check_interrupt(cpu);                                                                                          \
-    /* The same-PC retry latch: decided once per sprint (and in write_sr), */                                          \
-    /* never per instruction -- see m68k_bus_error_latch_settle.           */                                          \
-    if (__builtin_expect(cpu->last_bus_error_pc != 0, 0))                                                              \
-        m68k_bus_error_latch_settle(cpu, instructions);                                                                \
-    /* Capture trace state before execution; clamp to 1 instruction if T1 set */                                       \
-    uint32_t saved_trace_ = cpu->trace;                                                                                \
-    if (__builtin_expect(saved_trace_ & 2, 0))                                                                         \
-        if (*instructions > 1) {                                                                                       \
-            g_sprint_io.unrun_slots += *instructions - 1; /* the rest of the plan is not run */                        \
-            *instructions = 1;                                                                                         \
-        }                                                                                                              \
+    /* Sprint entry (cpu_sprint.h): reset after a double bus fault, T1 sampling */                                     \
+    uint32_t saved_trace = m68k_sprint_enter(cpu, instructions);                                                       \
     /* Saturating burn-down decrement: see cores.md, "The 68K decoder prologue" */                                     \
     while (*instructions > 0) {                                                                                        \
         uint32_t fetch = memory_read_prefetch32(cpu->pc);                                                              \
@@ -442,22 +418,8 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restri
             (*instructions)--;
 #define CPU_DECODER_EPILOGUE                                                                                           \
     }                                                                                                                  \
-    /* Deferred bus error: delivered as a Format $7 access error.  MMU     */                                          \
-    /* descriptor faults use retry semantics (handler maps the page, RTE   */                                          \
-    /* restarts the instruction); plain bus timeouts use skip semantics so */                                          \
-    /* ROM probes advance past the bad access — same split as the 030.     */                                        \
-    if (__builtin_expect(g_bus_error_pending, 0)) {                                                                    \
-        g_bus_error_pending = false;                                                                                   \
-        if (g_bus_error_is_pmmu)                                                                                       \
-            exception_bus_error_retry(cpu, g_bus_error_address, g_bus_error_rw);                                       \
-        else                                                                                                           \
-            exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw, cpu->pc);                                    \
-        cpu_select_soa(cpu->supervisor);                                                                               \
-    } else if (__builtin_expect((saved_trace_ & 2) && (cpu->trace & 2), 0)) {                                          \
-        /* Trace exception: fire if T1 was set at sprint start AND still set now. */                                   \
-        exception(cpu, 0x024, cpu->pc, cpu_get_sr(cpu));                                                               \
-    }                                                                                                                  \
-    cpu_check_interrupt(cpu)
+    /* Sprint exit (cpu_sprint.h): deferred bus error (Format $7), trace */                                            \
+    m68k_sprint_exit(cpu, saved_trace)
 
 #include "cpu_decode.h"
 #undef CPU_DECODER_NAME
@@ -477,7 +439,6 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restri
 #define PD_DECODE_NAME   cpu_pd_decode_68040
 #define PD_TREE_NAME     cpu_pd_tree_68040
 #define PD_CLASSIFY_NAME cpu_pd_classify_68040
-#define PD_HW_RESET(c)   cpu_hardware_reset_040(c)
 #include "cpu_pd_run.h"
 
 // The core's entry point: the predecoded executor when enabled, else the

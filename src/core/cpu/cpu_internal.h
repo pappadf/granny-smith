@@ -1307,7 +1307,7 @@ static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
     cpu->supervisor = new_s;
     cpu->interrupt_mask = (sr >> 8) & 7;
     write_ccr(cpu, sr);
-    // Arm tracing at the right instruction.  The decoders sample _saved_trace
+    // Arm tracing at the right instruction.  The decoders sample saved_trace
     // once per SPRINT, so an instruction that SETS T1 mid-sprint would not
     // start tracing until the next sprint -- potentially thousands of
     // instructions later.  Ending the sprint here makes the next one sample T1

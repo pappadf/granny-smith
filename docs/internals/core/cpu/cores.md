@@ -157,8 +157,15 @@ sprint's entry decides again.  Same semantics, no per-instruction test.
 The three 68K decoders (`cpu_68000.c`, `cpu_68030.c`, `cpu_68040.c`) share
 their operand, memory and exception macros (`cpu_decoder_macros.h`) and
 differ only in the `CPU_DECODER_PROLOGUE` / `CPU_DECODER_EPILOGUE` around the
-`cpu_decode.h` template. Two details of the per-instruction prologue need
-more explanation than fits beside the code.
+`cpu_decode.h` template. The once-per-sprint halves of those are
+`m68k_sprint_enter` and `m68k_sprint_exit` in `cpu_sprint.h`, which the
+predecoded run loop calls too: `always_inline` bodies specialised on the
+including core's `CPU_DECODER_IS_*`, so each core compiles to what it had
+when each spelled them out (the 68000 keeps no trace arm), and
+`m68k_hw_reset` is the one double-bus-fault reset. What stays per core is
+the per-instruction fetch (the 68000's 24-bit PC mask, odd-PC check and
+`ir` latch). Two details of the per-instruction prologue need more
+explanation than fits beside the code.
 
 **Saturating burn-down decrement.** The prologue ends with
 `if (*instructions > 0) (*instructions)--;` rather than a bare decrement.
