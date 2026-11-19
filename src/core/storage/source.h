@@ -44,6 +44,13 @@ typedef peel_tier_t source_tier_t;
 // 32-byte Finder info (FInfo + FXInfo).
 typedef enum { GS_FORK_DATA, GS_FORK_RSRC, GS_FORK_FINFO } source_fork_t;
 
+// The path components that name a file's resource fork and Finder info, and
+// the raw-fork escape under "rsrc", where the VFS synthesises them
+// (image_vfs.h) and in the keys of the sources that hold them.
+#define VFS_FORK_RSRC  "rsrc"
+#define VFS_FORK_FINF  "finf"
+#define VFS_RAW_ESCAPE "_raw"
+
 // Size of the Finder info a GS_FORK_FINFO source holds.
 #define GS_FINDER_INFO_SIZE 32u
 

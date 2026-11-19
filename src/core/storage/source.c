@@ -355,7 +355,7 @@ static source_t *sidecar_fork(const char *path, source_fork_t fork) {
                 uint8_t *copy = calloc(1, keep);
                 if (copy) {
                     memcpy(copy, p, n < keep ? n : keep);
-                    char *key = str_printf("%s/%s", side, fork == GS_FORK_RSRC ? "rsrc" : "finf");
+                    char *key = str_printf("%s/%s", side, fork == GS_FORK_RSRC ? VFS_FORK_RSRC : VFS_FORK_FINF);
                     s = source_memory(copy, keep, true, key);
                     free(key);
                 }
