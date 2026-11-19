@@ -169,6 +169,9 @@ endif
 # support stubs it adds by name.
 COMMON_SRCS := $(filter-out $(foreach s,$(OMIT_STUBS),$(UNIT_ROOT)/support/stub_$(s).c),$(COMMON_SRCS)) \
                $(foreach s,$(STUBS),$(UNIT_ROOT)/support/stub_$(s).c)
+# The GS_ASSERT handlers come with the assert stub: they are the tools'
+# too, so they live outside the unit tree (src/platform/gs_assert_abort.c).
+COMMON_SRCS += $(if $(filter $(UNIT_ROOT)/support/stub_assert.c,$(COMMON_SRCS)),$(EMU_ROOT)/platform/gs_assert_abort.c)
 
 # -- Source and object file collection --
 # All source paths are converted to absolute, then mapped to object

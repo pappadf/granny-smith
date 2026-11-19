@@ -35,7 +35,8 @@ LOCAL_SRCS := disasm.c stubs.c
 CORE_SRCS := $(CORE_CPU_DIR)/cpu_disasm.c $(CORE_CPU_DIR)/dsp3210/dsp3210_disasm.c \
              $(CORE_CPU_DIR)/ppc/ppc_disasm.c \
              $(CORE_DBG_DIR)/mac_traps_data.c \
-             $(DUMP_DIR)/annotate_disasm.c
+             $(DUMP_DIR)/annotate_disasm.c \
+             ../../src/platform/gs_assert_abort.c
 
 .PHONY: all clean
 
