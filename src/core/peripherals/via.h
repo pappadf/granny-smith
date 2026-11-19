@@ -98,6 +98,21 @@ void via_input_sr(via_t *via, uint8_t byte);
 
 void via_input_c(via_t *via, int port, int c, bool value);
 
+// Pulse a control line low then high: one falling-then-rising edge, as the
+// machines' VBL tick drives VIA1 CA1.
+static inline void via_pulse_c(via_t *via, int port, int c) {
+    via_input_c(via, port, c, false); // assert (active low)
+    via_input_c(via, port, c, true); // release
+}
+
+// The 6522 set/clear write convention (IER and its look-alikes in RBV, AMIC
+// and PSC): bit 7 of `value` set sets, clear clears, the bits of
+// `value & mask` in `reg`; returns the new register value.
+static inline uint8_t via_setclr(uint8_t reg, uint8_t value, uint8_t mask) {
+    uint8_t bits = value & mask; // the bits the write names
+    return (value & 0x80) ? (uint8_t)(reg | bits) : (uint8_t)(reg & ~bits);
+}
+
 // Re-drive outputs after initialization of dependent devices (e.g., floppy)
 void via_redrive_outputs(via_t *via);
 

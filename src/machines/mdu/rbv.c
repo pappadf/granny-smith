@@ -41,6 +41,7 @@
 #include "machine.h"
 #include "object.h"
 #include "system.h"
+#include "via.h" // via_setclr
 
 #include <stddef.h>
 #include <stdlib.h>
@@ -335,22 +336,14 @@ static void rbv_write_byte(void *device, uint32_t addr, uint8_t value) {
         return;
     case RV_SENB: {
         // RvSEnb uses the same set/clr-via-bit-7 convention as RvIER.
-        uint8_t bits = value & 0x7Fu;
-        if (value & 0x80u)
-            rbv->reg_senb |= bits;
-        else
-            rbv->reg_senb &= (uint8_t)~bits;
+        rbv->reg_senb = via_setclr(rbv->reg_senb, value, 0x7Fu);
         LOG(3, "write RvSEnb = $%02X -> $%02X", value, rbv->reg_senb);
         rbv_update_irq(rbv);
         return;
     }
     case RV_IER: {
         // Bit 7 selects set (1) vs clear (0) of the named enable bits.
-        uint8_t bits = value & 0x7Fu;
-        if (value & 0x80u)
-            rbv->reg_ier |= bits;
-        else
-            rbv->reg_ier &= (uint8_t)~bits;
+        rbv->reg_ier = via_setclr(rbv->reg_ier, value, 0x7Fu);
         LOG(3, "write RvIER = $%02X -> $%02X", value, rbv->reg_ier);
         rbv_update_irq(rbv);
         return;

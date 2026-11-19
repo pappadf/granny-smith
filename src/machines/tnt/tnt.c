@@ -1000,8 +1000,7 @@ static void tnt_teardown(config_t *cfg) {
 // Also: media insertion polling and the display's re-upload mark (guest
 // CPU writes into VRAM bypass the renderer).
 static void tnt_trigger_vbl(config_t *cfg) {
-    via_input_c(cfg->via1, 0, 0, 0);
-    via_input_c(cfg->via1, 0, 0, 1);
+    via_pulse_c(cfg->via1, 0, 0); // VBL: CA1 low then high
     image_tick_all(cfg);
     tnt_control_host_vbl(cfg);
     pci_tick_vbl(cfg->pci);

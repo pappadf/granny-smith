@@ -724,7 +724,7 @@ static void via_write_uint8(void *v, uint32_t addr, uint8_t value) {
         // it in did not change interrupt behaviour -- update_ifr masks flags to
         // 0x7F -- but via_get_ier() exposed the polluted value, which is what
         // machine.via1.ier prints.
-        via->ier = (value & 0x80) ? (via->ier | (value & 0x7F)) : (via->ier & ~(value & 0x7F));
+        via->ier = via_setclr(via->ier, value, 0x7F);
         update_ifr(via, via->ifr);
         break;
     }

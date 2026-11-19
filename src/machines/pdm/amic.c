@@ -247,16 +247,10 @@ static void via2_write(config_t *cfg, uint32_t off, uint8_t value) {
         // clears are satisfied by the level model).
         break;
     case 0x12: // set/clear convention, writable mask $78
-        if (value & 0x80u)
-            v2->slot_ier |= value & 0x78u;
-        else
-            v2->slot_ier &= (uint8_t) ~(value & 0x78u);
+        v2->slot_ier = via_setclr(v2->slot_ier, value, 0x78u);
         break;
     case 0x13: // writable mask $7B (bit 6 = SCSI-B enable, the HAL's $C8)
-        if (value & 0x80u)
-            v2->dev_ier |= value & 0x7Bu;
-        else
-            v2->dev_ier &= (uint8_t) ~(value & 0x7Bu);
+        v2->dev_ier = via_setclr(v2->dev_ier, value, 0x7Bu);
         break;
     default:
         if (off < 0x08)

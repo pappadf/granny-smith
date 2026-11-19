@@ -835,8 +835,7 @@ static void mcu_restore_private(config_t *cfg, checkpoint_t *cp) {
 // video interrupts come from the Swatch's programmed timing in dafb.c —
 // Traps 9/10 apply to the Swatch IRQs, not this line).
 static void mcu_trigger_vbl(config_t *cfg) {
-    via_input_c(cfg->via1, 0, 0, 0);
-    via_input_c(cfg->via1, 0, 0, 1);
+    via_pulse_c(cfg->via1, 0, 0); // VBL: CA1 low then high
     nubus_tick_vbl(cfg->nubus);
     image_tick_all(cfg);
 }

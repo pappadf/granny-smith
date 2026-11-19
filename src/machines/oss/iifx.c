@@ -1285,8 +1285,7 @@ static void iifx_nubus_slot_irq(config_t *cfg, int slot, bool active) {
 // Pulses the IIfx 60 Hz sources.
 static void iifx_trigger_vbl(config_t *cfg) {
     iifx_state_t *st = iifx_state(cfg);
-    via_input_c(cfg->via1, 0, 0, 0);
-    via_input_c(cfg->via1, 0, 0, 1);
+    via_pulse_c(cfg->via1, 0, 0); // VBL: CA1 low then high
     if (st && st->oss)
         oss_set_source(st->oss, IIFX_OSS_60HZ, true);
     // (Per-IOP periodic state machines run via scheduler_new_cpu_event

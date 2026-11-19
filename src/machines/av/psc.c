@@ -32,6 +32,7 @@
 #include "object.h"
 #include "scheduler.h"
 #include "system.h"
+#include "via.h" // via_setclr
 
 #include <stddef.h>
 #include <stdlib.h>
@@ -238,10 +239,7 @@ void av_psc_via2_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t v
         psc_update_via2_ipl(psc);
         break;
     case 0x1C00:
-        if (value & 0x80)
-            psc->via2_ier |= (uint8_t)(value & 0x7F);
-        else
-            psc->via2_ier &= (uint8_t)~value;
+        psc->via2_ier = via_setclr(psc->via2_ier, value, 0x7F);
         psc_update_via2_ipl(psc);
         break;
     case 0x1E00:
@@ -603,10 +601,7 @@ void av_psc_reg_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t va
             psc_update_level_ipl(psc, level);
         } else if (reg == 4) {
             // Sense-bit enable write.
-            if (value & 0x80)
-                psc->l_ier[level] |= (uint8_t)(value & 0x7F);
-            else
-                psc->l_ier[level] &= (uint8_t)~value;
+            psc->l_ier[level] = via_setclr(psc->l_ier[level], value, 0x7F);
             psc_update_level_ipl(psc, level);
         }
         return;
@@ -662,10 +657,7 @@ void av_psc_reg_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t va
     case 0x21C:
         if ((off & 3) == 0) {
             // dspOverRun: sense-bit convention on bits 0-2.
-            if (value & 0x80)
-                psc->dsp_overrun |= (uint8_t)(value & 0x07);
-            else
-                psc->dsp_overrun &= (uint8_t) ~(value & 0x07);
+            psc->dsp_overrun = via_setclr(psc->dsp_overrun, value, 0x07);
             LOG(2, "dspOverRun write $%02X -> $%02X (pc=%08X)", value, psc->dsp_overrun, cpu_get_pc(cfg->cpu));
             // FRMOVRN (L5 bit 1) is a level view of the sticky bit: it
             // re-latches until the host clears pdspFrameOvr itself.

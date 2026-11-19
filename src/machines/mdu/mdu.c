@@ -242,8 +242,7 @@ void mdu_wire_rbv(config_t *cfg) {
 
 // MDU VBL: single VIA1 CA1 pulse (no VIA2), then fan out to NuBus.
 static void mdu_trigger_vbl(config_t *cfg) {
-    via_input_c(cfg->via1, 0, 0, 0);
-    via_input_c(cfg->via1, 0, 0, 1);
+    via_pulse_c(cfg->via1, 0, 0); // VBL: CA1 low then high
     nubus_tick_vbl(cfg->nubus);
     image_tick_all(cfg);
 }

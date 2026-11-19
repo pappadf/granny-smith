@@ -1021,8 +1021,7 @@ static void av_teardown(config_t *cfg) {
 // level-6 source.
 static void av_trigger_vbl(config_t *cfg) {
     av_state_t *st = av_st(cfg);
-    via_input_c(cfg->via1, 0, 0, 0);
-    via_input_c(cfg->via1, 0, 0, 1);
+    via_pulse_c(cfg->via1, 0, 0); // VBL: CA1 low then high
     if (st && st->psc)
         av_psc_tick60(st->psc);
     if (cfg->nubus)

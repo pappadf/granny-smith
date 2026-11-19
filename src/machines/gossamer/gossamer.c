@@ -480,8 +480,7 @@ static void gossamer_teardown(config_t *cfg) {
 // for a CA1 edge in its init — the TNT/PDM/AV wiring), media polling and
 // the PCI cards' VBL.
 static void gossamer_trigger_vbl(config_t *cfg) {
-    via_input_c(cfg->via1, 0, 0, 0);
-    via_input_c(cfg->via1, 0, 0, 1);
+    via_pulse_c(cfg->via1, 0, 0); // VBL: CA1 low then high
     image_tick_all(cfg);
     pci_tick_vbl(cfg->pci);
 }

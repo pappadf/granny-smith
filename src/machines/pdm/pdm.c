@@ -510,8 +510,7 @@ static void pdm_teardown(config_t *cfg) {
 
 // The AMIC-internal 60.15 Hz tick: VIA1 CA1 pulse.
 static void pdm_trigger_vbl(config_t *cfg) {
-    via_input_c(cfg->via1, 0, 0, 0);
-    via_input_c(cfg->via1, 0, 0, 1);
+    via_pulse_c(cfg->via1, 0, 0); // VBL: CA1 low then high
     image_tick_all(cfg);
     if (cfg->nubus)
         nubus_tick_vbl(cfg->nubus);

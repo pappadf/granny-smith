@@ -566,8 +566,7 @@ static void plus_trigger_vbl(config_t *cfg) {
     plus_state_t *ps = plus_state(cfg);
 
     // Assert then deassert VIA CA1 to signal VBL to the CPU
-    via_input_c(cfg->via1, 0, 0, 0);
-    via_input_c(cfg->via1, 0, 0, 1);
+    via_pulse_c(cfg->via1, 0, 0); // VBL: CA1 low then high
 
     // Advance the sound DMA phase
     if (ps && ps->sound) {
