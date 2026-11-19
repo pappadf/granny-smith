@@ -51,6 +51,7 @@
 #include "scsi_mesh.h"
 #include "slot_tables.h"
 #include "swim3.h"
+#include "swim3_dbdma.h"
 #include "via.h"
 
 #include <stddef.h>
@@ -202,88 +203,23 @@ static void gos_mesh_dbdma_kick(void *ctx) {
 }
 
 // ============================================================
-// SWIM3 glue: +$15000, source $13, DBDMA channel 1 (the tnt/swim3.c
-// shape — the chip, the byte ring and the channel port)
+// SWIM3 glue: +$15000, source $13, DBDMA channel 1 -- the chip, and the
+// byte ring and channel port shared with TNT (runtime/swim3_dbdma.c)
 // ============================================================
 
-static uint32_t ring_count(const gos_fdring_t *r) {
-    return r->tail - r->head;
-}
-
-static bool ring_push(gos_fdring_t *r, uint8_t v) {
-    if (ring_count(r) >= GOS_FDRING_SIZE)
-        return false;
-    r->buf[r->tail % GOS_FDRING_SIZE] = v;
-    r->tail++;
-    return true;
-}
-
-static bool ring_pop(gos_fdring_t *r, uint8_t *v) {
-    if (ring_count(r) == 0)
-        return false;
-    *v = r->buf[r->head % GOS_FDRING_SIZE];
-    r->head++;
-    return true;
-}
-
-static bool fd_dma_running(void *ctx) {
-    return dbdma_active(gos_st((config_t *)ctx)->dbdma, GOS_DMA_SWIM3);
-}
-
-static bool fd_dma_put(void *ctx, uint8_t value) {
-    gossamer_state_t *st = gos_st((config_t *)ctx);
-    if (!dbdma_active(st->dbdma, GOS_DMA_SWIM3) || !ring_push(&st->fdring, value))
-        return false;
-    dbdma_kick(st->dbdma, GOS_DMA_SWIM3);
-    return true;
-}
-
-static bool fd_dma_get(void *ctx, uint8_t *out) {
-    gossamer_state_t *st = gos_st((config_t *)ctx);
-    if (ring_pop(&st->fdring, out))
-        return true;
-    if (!dbdma_active(st->dbdma, GOS_DMA_SWIM3))
-        return false;
-    dbdma_kick(st->dbdma, GOS_DMA_SWIM3);
-    return ring_pop(&st->fdring, out);
-}
-
+// The chip's IRQ pin: Heathrow source $13
 static void fd_set_irq(void *ctx, bool level) {
     gos_set_source((config_t *)ctx, GOS_INT_SWIM3, level);
 }
 
-static int fd_port_out(void *ctx, const uint8_t *buf, int len) {
-    gossamer_state_t *st = gos_st((config_t *)ctx);
-    int n = 0;
-    while (n < len && ring_push(&st->fdring, buf[n]))
-        n++;
-    return n;
-}
-
-static int fd_port_in(void *ctx, uint8_t *buf, int len) {
-    gossamer_state_t *st = gos_st((config_t *)ctx);
-    int n = 0;
-    while (n < len && ring_pop(&st->fdring, &buf[n]))
-        n++;
-    return n;
-}
-
 void gos_swim3_bind(config_t *cfg) {
-    const swim3_backend_t be = {
-        .dma_running = fd_dma_running,
-        .dma_get = fd_dma_get,
-        .dma_put = fd_dma_put,
-        .set_irq = fd_set_irq,
-        .ctx = cfg,
-    };
-    swim3_bind(&gos_st(cfg)->swim3, cfg->floppy, cfg->scheduler, &be);
+    gossamer_state_t *st = gos_st(cfg);
+    swim3_dbdma_bind(&st->fdport, &st->swim3, cfg->floppy, cfg->scheduler);
 }
 
+// Wire the port to DBDMA channel 1 (once, at construction)
 static void gos_swim3_init(config_t *cfg) {
-    gossamer_state_t *st = gos_st(cfg);
-    memset(&st->fdring, 0, sizeof(st->fdring));
-    dbdma_port_t port = {.out = fd_port_out, .in = fd_port_in, .s_bits = NULL, .ctx = cfg};
-    dbdma_set_port(st->dbdma, GOS_DMA_SWIM3, &port);
+    swim3_dbdma_init(&gos_st(cfg)->fdport, gos_st(cfg)->dbdma, GOS_DMA_SWIM3, fd_set_irq, cfg);
 }
 
 // ============================================================
@@ -330,7 +266,7 @@ static void part_save_gossamer_board(void *obj, checkpoint_t *cp) {
 static void part_save_gossamer_swim3(void *obj, checkpoint_t *cp) {
     gossamer_state_t *st = obj;
     system_write_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
-    system_write_checkpoint_data(cp, &st->fdring, sizeof(st->fdring));
+    system_write_checkpoint_data(cp, &st->fdport.ring, sizeof(st->fdport.ring));
 }
 
 static void part_save_gossamer_ata(void *obj, checkpoint_t *cp) {
@@ -527,7 +463,7 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     machine_part_begin(cfg, cp, "swim3");
     if (cp) {
         system_read_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
-        system_read_checkpoint_data(cp, &st->fdring, sizeof(st->fdring));
+        system_read_checkpoint_data(cp, &st->fdport.ring, sizeof(st->fdport.ring));
         gos_swim3_bind(cfg);
         gos_recompute_irq(cfg);
     }

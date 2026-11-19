@@ -50,6 +50,7 @@
 #include <stdint.h>
 
 #include "swim3.h"
+#include "swim3_dbdma.h"
 
 struct av_cuda; // the shared behavioral Cuda model (machines/av/cuda.h)
 struct dbdma; // the DBDMA engine (dbdma.h)
@@ -318,20 +319,12 @@ extern const builtin_video_desc_t tnt_builtin_video;
 // checkpoint.  tnt.c holds one.
 #include "scsi_mesh.h"
 
-// The byte ring between the SWIM3 engine (which pushes/pulls one byte at
-// a time) and DBDMA channel 1 (which moves runs of bytes per descriptor).
 // The ESCC's DBDMA channels (4/5 = A tx/rx, 6/7 = B tx/rx; grand_central.c):
 // one port context per SCC channel.
 typedef struct tnt_scc_dma_ctx {
     config_t *cfg;
     unsigned ch;
 } tnt_scc_dma_ctx_t;
-
-#define TNT_FDRING_SIZE 4096u
-typedef struct tnt_fdring {
-    uint8_t buf[TNT_FDRING_SIZE];
-    uint32_t head, tail; // free-running; count = tail - head
-} tnt_fdring_t;
 
 // The MACE Ethernet's register state (tnt_mace.c).  Plain data,
 // checkpointed whole.
@@ -369,11 +362,12 @@ typedef struct tnt_state {
                                // by the bus: its factory allocated it)
     mesh_t *mesh; // internal fast SCSI (core/peripherals/scsi_mesh.c)
     // The internal SuperDrive: the shared SWIM3 model behind Grand Central
-    // +$15000, fed by DBDMA channel 1 through a byte ring (swim3.c).  Both
-    // are plain data, checkpointed in the tail; the chip's pointer tail is
-    // re-bound after a restore (tnt_swim3_bind).
+    // +$15000, fed by DBDMA channel 1 through the shared byte ring and port
+    // (runtime/swim3_dbdma.c).  The chip's prefix and the ring are plain
+    // data, checkpointed in the tail; the chip's pointer tail is re-bound
+    // after a restore (tnt_swim3_bind), the port's wiring at init.
     swim3_t swim3;
-    tnt_fdring_t fdring;
+    swim3_dbdma_t fdport;
     // The on-board MACE Ethernet at +$11000 (tnt_mace.c), Macintosh boards
     // only; checkpointed in the tnt.io part after the floppy ring.
     tnt_mace_t mace;

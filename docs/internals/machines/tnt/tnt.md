@@ -830,8 +830,11 @@ IRQ pin on Grand Central interrupt 19, and the data path on **DBDMA
 channel 1**.  The engine and the DMA engine meet in the middle — the
 SWIM3 engine *pushes* decoded bytes as a sector passes under the head,
 a DBDMA INPUT command *pulls* up to N bytes from the device port — so a
-4 KB byte ring (`tnt_fdring_t`, checkpointed with the board) sits
+4 KB byte ring (`swim3_dbdma_ring_t`, checkpointed with the board) sits
 between them: reads fill the ring and kick the channel, writes drain it.
+The ring and the DBDMA device port over it are shared with Gossamer's
+Heathrow, which feeds its SWIM3 the same way:
+`src/machines/runtime/swim3_dbdma.c`.
 The ring is emptied when the driver stops the channel (the DBDMA port's
 `stop` hook): a write's OUTPUT command is larger than the sector, so the
 channel tops the ring up past the one stream the chip consumes, and that

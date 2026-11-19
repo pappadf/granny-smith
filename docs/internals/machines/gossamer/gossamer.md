@@ -32,7 +32,9 @@ The shared core models carry the rest: `core/cpu/ppc` with the 750 deltas
 (L2CR, HID1, THRM, the performance monitor — see
 [ppc.md](../../core/cpu/ppc.md)), `core/peripherals/dbdma.c` (thirteen
 channels), `davbus.c` in its Screamer face, `scsi_mesh.c`, `scc.c`,
-`swim3.c`, and the Rage Pro face of `pci/cards/mach64gx.c`.
+`swim3.c` (fed through the SWIM3 byte ring and DBDMA port the TNT boards
+share, `machines/runtime/swim3_dbdma.c`, which empties the ring when the
+driver stops the channel), and the Rage Pro face of `pci/cards/mach64gx.c`.
 
 Sound on this board is the Screamer codec passing through to a TDA7433
 audio processor on the I2C bus, which drives the speaker, the line-out and

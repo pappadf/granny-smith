@@ -47,6 +47,7 @@
 #include "memory.h"
 #include "pci.h"
 #include "swim3.h"
+#include "swim3_dbdma.h"
 #include "system_internal.h"
 
 #include <stdbool.h>
@@ -219,14 +220,6 @@ typedef struct gos_i2c {
     uint8_t ptr; // current EEPROM byte pointer (last subaddress)
 } gos_i2c_t;
 
-// The SWIM3 byte ring between the chip and DBDMA channel 1 (the tnt.c
-// shape).
-#define GOS_FDRING_SIZE 4096u
-typedef struct gos_fdring {
-    uint8_t buf[GOS_FDRING_SIZE];
-    uint32_t head, tail; // free-running; count = tail - head
-} gos_fdring_t;
-
 // ESCC DBDMA port contexts (one per SCC channel).
 typedef struct gos_scc_dma_ctx {
     config_t *cfg;
@@ -257,8 +250,10 @@ typedef struct gossamer_state {
     // channel 8: the register block is checkpointed, the host is wiring.
     davbus_t screamer;
     davbus_host_t screamer_host;
+    // The floppy: the shared SWIM3 model and its DBDMA channel-1 port
+    // (runtime/swim3_dbdma.c; the ring is checkpointed, the wiring is not).
     swim3_t swim3;
-    gos_fdring_t fdring;
+    swim3_dbdma_t fdport;
     gos_scc_dma_ctx_t scc_dma_ctx[2];
     // The two ATA cells (+$20000, +$21000) and the SCSI bus that carries
     // their ATAPI CD-ROMs (machine.atapi): gossamer_ata.c.

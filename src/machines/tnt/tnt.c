@@ -649,7 +649,7 @@ static void part_save_tnt_io(void *obj, checkpoint_t *cp) {
     // restore re-binds through *_swim3_bind either way, so the values were
     // harmless; the leak and the non-reproducibility were not.
     system_write_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
-    system_write_checkpoint_data(cp, &st->fdring, sizeof(st->fdring));
+    system_write_checkpoint_data(cp, &st->fdport.ring, sizeof(st->fdport.ring));
     system_write_checkpoint_data(cp, &st->mace, sizeof(st->mace));
 }
 
@@ -937,7 +937,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
         system_read_checkpoint_data(cp, &st->lcd, sizeof(st->lcd));
         // The prefix only; *_swim3_bind re-attaches the pointer tail.
         system_read_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
-        system_read_checkpoint_data(cp, &st->fdring, sizeof(st->fdring));
+        system_read_checkpoint_data(cp, &st->fdport.ring, sizeof(st->fdport.ring));
         system_read_checkpoint_data(cp, &st->mace, sizeof(st->mace));
         tnt_swim3_bind(cfg); // the restore overwrote the chip's pointer tail
         tnt_gc_recompute(cfg); // mesh/53C94 lines fold into the fabric
