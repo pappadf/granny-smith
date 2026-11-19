@@ -77,8 +77,8 @@ static void hl_print_who(char *out, size_t cap, const char *printer, const char 
 }
 
 // Write a print job's output to <print-dir>/<name>: the one writer under the
-// document and capture sinks.  Returns the path written in `path`, or false
-// with the reason printed (no --print-dir, the directory or file failed).
+// document and capture sinks (the caller has checked --print-dir).  True with
+// the path written in `path`, or false with the reason printed.
 static bool hl_print_write(const char *who, const char *name, const void *data, size_t len, char *path,
                            size_t path_cap) {
     if (mkdir(g_print_dir, 0755) != 0 && errno != EEXIST) {
