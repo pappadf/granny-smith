@@ -404,7 +404,7 @@ static uint32_t rbv_obj_enabled(void *ctx) {
     return ((const rbv_t *)ctx)->reg_ier & 0x7Fu;
 }
 // One line to the CPU: the combined interrupt the IIci and IIsi route to
-// IPL 2, where the VIA2 it replaces sat (iici_rbv_irq / iisi_rbv_irq).
+// IPL 2, where the VIA2 it replaces sat (mdu_rbv_irq).
 static int rbv_obj_ipl(void *ctx) {
     const rbv_t *rbv = (const rbv_t *)ctx;
     return (rbv_compose_ifr(rbv) & rbv->reg_ier & 0x7Fu) ? 2 : 0;

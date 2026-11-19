@@ -169,55 +169,8 @@ static void iici_memory_layout_init(config_t *cfg) {
 }
 
 // ============================================================
-// RBV / SCC / SCSI callbacks
+// VIA1 callbacks (the RBV / SCSI / sound wiring is shared: mdu_wire_rbv)
 // ============================================================
-
-// RBV combined interrupt → 68030 IPL 2 (replaces the IIcx VIA2 source).
-static void iici_rbv_irq(void *context, bool active) {
-    mac030_glue_update_ipl((config_t *)context, IICI_IRQ_RBV, active);
-}
-
-// RBV soft power-off (RvPowerOff falling edge) — stop the scheduler so the
-// headless run exits cleanly, matching the IIcx VIA2 PB2 behaviour.
-static void iici_power_off(void *context) {
-    config_t *cfg = (config_t *)context;
-    LOG(1, "IIci soft power-off (RBV RvPowerOff)");
-    if (cfg->scheduler)
-        scheduler_stop(cfg->scheduler);
-}
-
-// RBV depth change (RvMonP bits 0-2) → reshape the built-in video display.
-// RBV video on/off (RvMonP bit 6) -> blank or unblank the raster.
-static void iici_rbv_blank(void *context, bool video_off) {
-    config_t *cfg = (config_t *)context;
-    iici_state_t *st = iici_state(cfg);
-    builtin_rbv_video_set_blank(st->video_card, video_off);
-}
-
-static void iici_rbv_mode(void *context, int depth_code) {
-    config_t *cfg = (config_t *)context;
-    iici_state_t *st = iici_state(cfg);
-    builtin_rbv_video_set_depth(st->video_card, depth_code);
-}
-
-// SCSI IRQ/DRQ → RBV flag bits (RvSCSIRQ / RvSCSIDRQ).  The IIci routes
-// SCSI through the RBV, not a VIA2 — so we use scsi_set_irq_callback like
-// the IIfx rather than scsi_set_via.
-static void iici_scsi_irq(void *context, bool irq, bool drq) {
-    config_t *cfg = (config_t *)context;
-    iici_state_t *st = iici_state(cfg);
-    if (!st->rbv)
-        return;
-    rbv_set_scsi_irq(st->rbv, irq);
-    rbv_set_scsi_drq(st->rbv, drq);
-}
-
-// ASC interrupt output → RBV sound flag (RvSndIRQ, RvIFR bit 4).  The RBV
-// emulates the VIA2-CB1 dispatch slot the shared OS interrupt code expects
-// (jASCInt = Via2DT+4*ifCB1); level 2 like every VIA2/RBV sound source.
-static void iici_asc_irq(void *context, bool active) {
-    rbv_set_snd_irq((rbv_t *)context, active);
-}
 
 // VIA1 outputs.  Identical to the IIcx: floppy head-select + ROM overlay on
 // port A; ADB shift-state filtering + classic RTC on port B.
@@ -315,7 +268,7 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->scsi = machine_scsi_bus_init(cfg, checkpoint, "scsi");
     scsi_5380_attach(cfg->scsi, checkpoint); // IIci: NCR 5380
     machine_part(cfg, checkpoint, "scsi", part_save_scsi, cfg->scsi);
-    scsi_set_irq_callback(cfg->scsi, iici_scsi_irq, cfg);
+    scsi_set_irq_callback(cfg->scsi, mdu_scsi_irq, cfg); // through the RBV, not a VIA2
 
     machine_part_begin(cfg, checkpoint, "asc");
     st->asc = asc_init(NULL, cfg->scheduler, checkpoint);
@@ -337,11 +290,7 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
         return -1;
     }
     machine_part(cfg, checkpoint, "rbv", part_save_rbv, st->rbv);
-    rbv_set_irq_callback(st->rbv, iici_rbv_irq, cfg);
-    rbv_set_power_off_callback(st->rbv, iici_power_off, cfg);
-    rbv_set_mode_callback(st->rbv, iici_rbv_mode, cfg);
-    rbv_set_blank_callback(st->rbv, iici_rbv_blank, cfg);
-    asc_set_irq_handler(st->asc, iici_asc_irq, st->rbv); // sound IRQ → RvIFR bit 4
+    mdu_wire_rbv(cfg);
 
     st->mmu = mac030_build_mmu(cfg, iici_board_desc.rom_base, iici_board_desc.rom_end);
     if (!st->mmu)

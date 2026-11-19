@@ -19,6 +19,7 @@
 
 #include "adb.h"
 #include "asc.h"
+#include "builtin_rbv_video.h"
 #include "checkpoint.h"
 #include "cpu.h"
 #include "debug.h"
@@ -167,7 +168,7 @@ static void mdu_teardown(config_t *cfg) {
 // exists.  nubus.c once dispatched families like this one through a shared
 // shim that passed `1 << (slot - 9)` as the machine's IRQ SOURCE mask -- but
 // on this family every one of those bits is already spoken for:
-// IICI_IRQ_VIA1/RBV/SCC/NMI are 1<<0 .. 1<<3.  So a card in slot $C asserted
+// MDU_IRQ_VIA1/RBV/SCC/NMI are 1<<0 .. 1<<3.  So a card in slot $C asserted
 // the NMI source and the machine took a level-7 autovector every few
 // instructions forever -- which is what "a 24AC beside the live built-in RBV
 // hangs the boot at Welcome" actually was.  Slot numbering only
@@ -185,6 +186,58 @@ static void mdu_nubus_slot_irq(config_t *cfg, int slot, bool active) {
         rbv_assert_slot_irq(st->rbv, logical);
     else
         rbv_clear_slot_irq(st->rbv, logical);
+}
+
+// ============================================================
+// RBV / SCSI / sound wiring (IIci and IIsi)
+// ============================================================
+
+// RBV combined interrupt -> 68030 IPL 2 (replaces the GLUE VIA2 source).
+static void mdu_rbv_irq(void *context, bool active) {
+    mac030_glue_update_ipl((config_t *)context, MDU_IRQ_RBV, active);
+}
+
+void mdu_power_off(void *context) {
+    config_t *cfg = (config_t *)context;
+    LOG(1, "%s soft power-off", cfg->machine->name);
+    if (cfg->scheduler)
+        scheduler_stop(cfg->scheduler);
+}
+
+// RBV video on/off (RvMonP bit 6) -> blank or unblank the raster.
+static void mdu_rbv_blank(void *context, bool video_off) {
+    builtin_rbv_video_set_blank(mdu_st((config_t *)context)->video_card, video_off);
+}
+
+// RBV depth change (RvMonP bits 0-2) -> reshape the built-in video display.
+static void mdu_rbv_mode(void *context, int depth_code) {
+    builtin_rbv_video_set_depth(mdu_st((config_t *)context)->video_card, depth_code);
+}
+
+void mdu_scsi_irq(void *context, bool irq, bool drq) {
+    mac030_mdu_state_t *st = mdu_st((config_t *)context);
+    // The 5380 is built before the RBV: nothing to flag until it exists
+    if (!st->rbv)
+        return;
+    rbv_set_scsi_irq(st->rbv, irq);
+    rbv_set_scsi_drq(st->rbv, drq);
+}
+
+// ASC interrupt output -> RBV sound flag (RvSndIRQ, RvIFR bit 4).  The RBV
+// emulates the VIA2-CB1 dispatch slot the shared OS interrupt code expects
+// (jASCInt = Via2DT+4*ifCB1); level 2 like every VIA2/RBV sound source.  The
+// V8 mirrors the RBV's VsSndIRQ bit layout.
+static void mdu_asc_irq(void *context, bool active) {
+    rbv_set_snd_irq((rbv_t *)context, active);
+}
+
+void mdu_wire_rbv(config_t *cfg) {
+    mac030_mdu_state_t *st = mdu_st(cfg);
+    rbv_set_irq_callback(st->rbv, mdu_rbv_irq, cfg);
+    rbv_set_power_off_callback(st->rbv, mdu_power_off, cfg);
+    rbv_set_mode_callback(st->rbv, mdu_rbv_mode, cfg);
+    rbv_set_blank_callback(st->rbv, mdu_rbv_blank, cfg);
+    asc_set_irq_handler(st->asc, mdu_asc_irq, st->rbv); // sound IRQ -> RvIFR bit 4
 }
 
 // MDU VBL: single VIA1 CA1 pulse (no VIA2), then fan out to NuBus.

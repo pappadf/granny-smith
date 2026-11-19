@@ -123,52 +123,8 @@ static void iisi_memory_layout_init(config_t *cfg) {
 }
 
 // ============================================================
-// RBV / SCC / SCSI / Egret callbacks
+// VIA1 callbacks (the RBV / SCSI / sound wiring is shared: mdu_wire_rbv)
 // ============================================================
-
-// RBV combined interrupt → 68030 IPL 2.
-static void iisi_rbv_irq(void *context, bool active) {
-    mac030_glue_update_ipl((config_t *)context, IISI_IRQ_RBV, active);
-}
-
-// Soft power-off — from either RBV RvPowerOff or Egret PwrDown.  Stop the
-// scheduler so the headless run exits cleanly.
-static void iisi_power_off(void *context) {
-    config_t *cfg = (config_t *)context;
-    LOG(1, "IIsi soft power-off");
-    if (cfg->scheduler)
-        scheduler_stop(cfg->scheduler);
-}
-
-// RBV depth change (V8MonP bits 0-2) → reshape the built-in video display.
-// RBV video on/off (RvMonP bit 6) -> blank or unblank the raster.
-static void iisi_rbv_blank(void *context, bool video_off) {
-    config_t *cfg = (config_t *)context;
-    iisi_state_t *st = iisi_state(cfg);
-    builtin_rbv_video_set_blank(st->video_card, video_off);
-}
-
-static void iisi_rbv_mode(void *context, int depth_code) {
-    config_t *cfg = (config_t *)context;
-    iisi_state_t *st = iisi_state(cfg);
-    builtin_rbv_video_set_depth(st->video_card, depth_code);
-}
-
-// SCSI IRQ/DRQ → RBV flag bits (RvSCSIRQ / RvSCSIDRQ), as on the IIci.
-static void iisi_scsi_irq(void *context, bool irq, bool drq) {
-    config_t *cfg = (config_t *)context;
-    iisi_state_t *st = iisi_state(cfg);
-    if (!st->rbv)
-        return;
-    rbv_set_scsi_irq(st->rbv, irq);
-    rbv_set_scsi_drq(st->rbv, drq);
-}
-
-// ASC interrupt output → RBV sound flag (RvSndIRQ, RvIFR bit 4), as on the
-// IIci (the V8 mirrors the RBV's VsSndIRQ bit layout).
-static void iisi_asc_irq(void *context, bool active) {
-    rbv_set_snd_irq((rbv_t *)context, active);
-}
 
 // VIA1 outputs.  Port A: floppy head-select (PA5) + ROM overlay (PA4 — an
 // input on the IIsi, so it reads 0 and the first port-A write disables the
@@ -267,7 +223,7 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->scsi = machine_scsi_bus_init(cfg, checkpoint, "scsi");
     scsi_5380_attach(cfg->scsi, checkpoint); // IIsi: NCR 5380
     machine_part(cfg, checkpoint, "scsi", part_save_scsi, cfg->scsi);
-    scsi_set_irq_callback(cfg->scsi, iisi_scsi_irq, cfg);
+    scsi_set_irq_callback(cfg->scsi, mdu_scsi_irq, cfg); // through the RBV, as on the IIci
 
     machine_part_begin(cfg, checkpoint, "asc");
     st->asc = asc_init(NULL, cfg->scheduler, checkpoint);
@@ -288,7 +244,7 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
         return -1;
     }
     machine_part(cfg, checkpoint, "egret", part_save_egret, st->egret);
-    egret_set_power_off_callback(st->egret, iisi_power_off, cfg);
+    egret_set_power_off_callback(st->egret, mdu_power_off, cfg);
 
     // RBV chip in the V8/VISA variant, the built-in port's monitor strapped
     // on its sense lines (7, nothing connected, turns built-in video off).
@@ -299,11 +255,7 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
         return -1;
     }
     machine_part(cfg, checkpoint, "rbv", part_save_rbv, st->rbv);
-    rbv_set_irq_callback(st->rbv, iisi_rbv_irq, cfg);
-    rbv_set_power_off_callback(st->rbv, iisi_power_off, cfg);
-    rbv_set_mode_callback(st->rbv, iisi_rbv_mode, cfg);
-    rbv_set_blank_callback(st->rbv, iisi_rbv_blank, cfg);
-    asc_set_irq_handler(st->asc, iisi_asc_irq, st->rbv); // sound IRQ → RvIFR bit 4
+    mdu_wire_rbv(cfg);
 
     uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
     uint32_t ram_size = cfg->ram_size;
