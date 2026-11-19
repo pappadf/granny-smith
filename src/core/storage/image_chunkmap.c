@@ -44,6 +44,7 @@ typedef struct {
     uint64_t size; // decoded image size
     char *key;
     const char *what; // "ndif" / "udif" / "qcow2", for messages
+    const char *what_upper; // "NDIF" / "UDIF" / "QCOW2", for the open log
 } cm_src_t;
 
 static int cm_add(cm_src_t *m, cm_run_t r) {
@@ -91,6 +92,30 @@ typedef struct {
     const cm_run_t *run;
 } cm_fetch_t;
 
+// Decode one compressed run's stored bytes `in` into `buf` (`cap` bytes, at
+// least the run's out_len): the one dispatch over the formats' decoders.
+// Each keeps its own policy -- an NDIF ADC chunk that runs short is
+// zero-padded, a UDIF chunk must decode to exactly its sectors, a QCOW2
+// cluster to the whole cluster.  0 or a negative errno.
+static int cm_decode_run(const cm_run_t *r, const uint8_t *in, uint8_t *buf, size_t cap) {
+    switch (r->kind) {
+    case RUN_NDIF: {
+        ndif_chunk_t c = {.count = (uint32_t)(r->out_len / CM_SECTOR), .type = (uint8_t)r->type};
+        return ndif_decode_chunk(&c, in, (size_t)r->in_len, buf, cap);
+    }
+    case RUN_UDIF: {
+        udif_chunk_t c = {.type = r->type, .count = r->out_len / CM_SECTOR};
+        return udif_decode_chunk(&c, in, (size_t)r->in_len, buf, cap);
+    }
+    case RUN_QCOW2:
+        // The cluster bits ride in `type`; the last cluster may be cut short.
+        return r->out_len <= cap ? qcow2_decode_cluster(in, (size_t)r->in_len, r->type, buf, (size_t)r->out_len)
+                                 : -EINVAL;
+    default:
+        return -EINVAL; // zero and raw runs never reach the cache
+    }
+}
+
 // Decode one compressed run for the chunk cache.
 static int64_t cm_fetch(void *ctx, uint64_t idx, uint8_t *buf, size_t cap) {
     (void)idx;
@@ -104,21 +129,7 @@ static int64_t cm_fetch(void *ctx, uint64_t idx, uint8_t *buf, size_t cap) {
     }
     int rc = r->in_len ? source_read_exact(f->m->data, r->in_off, in, (size_t)r->in_len) : 0;
     if (rc == 0) {
-        if (r->kind == RUN_NDIF) {
-            ndif_chunk_t c = {.sector = 0,
-                              .count = (uint32_t)(r->out_len / CM_SECTOR),
-                              .type = (uint8_t)r->type,
-                              .offset = 0,
-                              .length = (uint32_t)r->in_len};
-            rc = ndif_decode_chunk(&c, in, (size_t)r->in_len, buf, cap);
-        } else if (r->kind == RUN_QCOW2) {
-            rc = r->out_len <= cap ? qcow2_decode_cluster(in, (size_t)r->in_len, r->type, buf, (size_t)r->out_len)
-                                   : -EINVAL;
-        } else {
-            udif_chunk_t c = {
-                .type = r->type, .sector = 0, .count = r->out_len / CM_SECTOR, .offset = 0, .length = r->in_len};
-            rc = udif_decode_chunk(&c, in, (size_t)r->in_len, buf, cap);
-        }
+        rc = cm_decode_run(r, in, buf, cap);
         if (rc != 0)
             LOG(1, "%s chunk at %llu (type %#x) failed to decode: %d", f->m->what, (unsigned long long)r->out_off,
                 r->type, rc);
@@ -204,18 +215,47 @@ static void cm_close(source_t *s) {
 
 static const source_ops_t cm_ops = {cm_read, cm_size, cm_key, cm_tier, cm_close};
 
-static cm_src_t *cm_new(source_t *data, const char *what) {
+static cm_src_t *cm_new(source_t *data, const char *what, const char *what_upper) {
     cm_src_t *m = calloc(1, sizeof(*m));
     if (!m)
         return NULL;
     m->data = source_retain(data);
     m->what = what;
+    m->what_upper = what_upper;
     m->key = str_printf("%s#%s", source_key(data), what);
     if (!m->key) {
         cm_free(m);
         return NULL;
     }
     return m;
+}
+
+// The run's stored bytes lie inside the data fork of `dsize` bytes (a zero
+// run stores none); checked without a wrapping add.  0 or -EINVAL.
+static int cm_check_bounds(const cm_run_t *r, uint64_t dsize) {
+    if (r->kind != RUN_ZERO && (r->in_off > dsize || r->in_len > dsize - r->in_off))
+        return -EINVAL;
+    return 0;
+}
+
+// The one open tail: sort and check the map built into `m` (when `rc` is
+// still 0) and publish it as a source, or log the failure ("UDIF '<key>':
+// unusable block map (rc)"), free `m` and set *err.  `m` may be NULL when
+// building it ran out of memory.
+static source_t *cm_publish(cm_src_t *m, int rc, const char *map_name, source_t *data, int *err) {
+    if (rc == 0)
+        rc = cm_finish(m);
+    if (rc != 0) {
+        if (m)
+            LOG(1, "%s '%s': unusable %s (%d)", m->what_upper, source_key(data), map_name, rc);
+        cm_free(m);
+        *err = rc;
+        return NULL;
+    }
+    // peel_source_new closes `m` itself on failure.
+    source_t *s = peel_source_new(&cm_ops, m, NULL);
+    *err = s ? 0 : -ENOMEM;
+    return s;
 }
 
 // ============================================================================
@@ -252,7 +292,7 @@ source_t *ndif_source_open(source_t *data, source_t *rsrc, int *err) {
         *err = rc;
         return NULL;
     }
-    cm_src_t *m = cm_new(data, "ndif");
+    cm_src_t *m = cm_new(data, "ndif", "NDIF");
     if (!m) {
         ndif_map_free(map);
         *err = -ENOMEM;
@@ -289,23 +329,13 @@ source_t *ndif_source_open(source_t *data, source_t *rsrc, int *err) {
         } else {
             rc = -ENOTSUP; // KenCode / RLE / LZH / StuffIt chunks
         }
-        if (rc == 0 && r.kind != RUN_ZERO && (r.in_off > dsize || r.in_len > dsize - r.in_off))
-            rc = -EINVAL;
+        if (rc == 0)
+            rc = cm_check_bounds(&r, dsize);
         if (rc == 0)
             rc = cm_add(m, r);
     }
     ndif_map_free(map);
-    if (rc == 0)
-        rc = cm_finish(m);
-    if (rc != 0) {
-        LOG(1, "NDIF '%s': unusable block map (%d)", source_key(data), rc);
-        cm_free(m);
-        *err = rc;
-        return NULL;
-    }
-    source_t *s = peel_source_new(&cm_ops, m, NULL);
-    *err = s ? 0 : -ENOMEM;
-    return s;
+    return cm_publish(m, rc, "block map", data, err);
 }
 
 // ============================================================================
@@ -417,7 +447,7 @@ source_t *udif_source_open_bounded(source_t *data, size_t max_chunk, int *err) {
     if (!max_chunk)
         max_chunk = udif_xml_is_gs_profile(xml, xml_len) ? NDIF_MAX_CHUNK_BYTES : g_inplace_max;
     free(xml);
-    cm_src_t *m = cm_new(data, "udif");
+    cm_src_t *m = cm_new(data, "udif", "UDIF");
     if (!m) {
         udif_map_free(map);
         *err = -ENOMEM;
@@ -460,24 +490,14 @@ source_t *udif_source_open_bounded(source_t *data, size_t max_chunk, int *err) {
                 LOG(1, "UDIF '%s': chunk codec %#x not supported", source_key(data), c->type);
                 rc = -ENOTSUP; // a type no UDIF writer is known to use
             }
-            if (rc == 0 && r.kind != RUN_ZERO && (r.in_off > dsize || r.in_len > dsize - r.in_off))
-                rc = -EINVAL;
+            if (rc == 0)
+                rc = cm_check_bounds(&r, dsize);
             if (rc == 0)
                 rc = cm_add(m, r);
         }
     }
     udif_map_free(map);
-    if (rc == 0)
-        rc = cm_finish(m);
-    if (rc != 0) {
-        LOG(1, "UDIF '%s': unusable block map (%d)", source_key(data), rc);
-        cm_free(m);
-        *err = rc;
-        return NULL;
-    }
-    source_t *s = peel_source_new(&cm_ops, m, NULL);
-    *err = s ? 0 : -ENOMEM;
-    return s;
+    return cm_publish(m, rc, "block map", data, err);
 }
 
 // ============================================================================
@@ -614,7 +634,7 @@ source_t *qcow2_source_open(source_t *data, int *err) {
     }
     uint8_t *l1 = malloc(l1n ? (size_t)l1n * 8u : 1);
     uint8_t *l2 = malloc((size_t)cluster);
-    cm_src_t *m = cm_new(data, "qcow2");
+    cm_src_t *m = cm_new(data, "qcow2", "QCOW2");
     rc = (l1 && l2 && m) ? 0 : -ENOMEM;
     if (rc == 0)
         m->size = h.size;
@@ -635,16 +655,5 @@ source_t *qcow2_source_open(source_t *data, int *err) {
     }
     free(l1);
     free(l2);
-    if (rc == 0)
-        rc = cm_finish(m);
-    if (rc != 0) {
-        if (m)
-            LOG(1, "QCOW2 '%s': unusable cluster map (%d)", source_key(data), rc);
-        cm_free(m);
-        *err = rc;
-        return NULL;
-    }
-    source_t *s = peel_source_new(&cm_ops, m, NULL);
-    *err = s ? 0 : -ENOMEM;
-    return s;
+    return cm_publish(m, rc, "cluster map", data, err);
 }
