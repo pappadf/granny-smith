@@ -23,7 +23,7 @@
   import { LARGE_IMPORT_BYTES, identifyRom, identifyCardRom, type MediaTypeId } from '@/lib/media';
   import { downloadFiles, downloadRawImage } from '@/bus/fsOps';
   import { storedDmgName } from '@/bus/importImage';
-  import { gsEval, gsErrorText, gsEvalWithProgress } from '@/bus/emulator';
+  import { gsEval, gsErrorText, gsEvalWithProgress, isGsObject } from '@/bus/emulator';
   import { startActivity, endActivity, setActivityDetail } from '@/state/activity.svelte';
   import { machine } from '@/state/machine.svelte';
   import IconButton from '@/components/ui/IconButton.svelte';
@@ -312,7 +312,7 @@
         busy[entry.path] = `Compacting · ${pct}`;
         setActivityDetail(pct);
       });
-      if (!r || typeof r !== 'object' || 'error' in (r as object)) {
+      if (!isGsObject(r)) {
         showNotification(`Could not compact '${entry.name}': ${gsErrorText(r)}`, 'error');
         return;
       }

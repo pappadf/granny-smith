@@ -8,7 +8,7 @@
 // the CD-ROM drive of the model's default configuration".  Nothing here
 // knows a bus.
 
-import { gsEval, gsOk, gsErrorText, isGsError } from './emulator';
+import { gsEval, gsOk, gsErrorText, isGsError, isGsObject } from './emulator';
 import type { MediaBay } from './profile';
 import { images, type MountInfo } from '@/state/images.svelte';
 
@@ -36,7 +36,7 @@ export type MediaResult =
   | { ok: false; reason: string; full?: boolean };
 
 function bayResult(kind: 'hd' | 'cd', r: unknown): MediaResult {
-  if (!r || typeof r !== 'object' || isGsError(r)) return { ok: false, reason: gsErrorText(r) };
+  if (!isGsObject(r)) return { ok: false, reason: gsErrorText(r) };
   const bay = r as Partial<MediaBay>;
   return { ok: true, mount: { kind, bus: bay.bus ?? '', drive: bay.id ?? 0 } };
 }

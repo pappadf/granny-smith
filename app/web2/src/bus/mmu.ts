@@ -8,7 +8,7 @@
 // SE/30 fixtures the MMU tabs, and the L:/P: labels next to breakpoints,
 // stack frames and memory rows, used to show as if they were live.
 
-import { gsEval, isGsError, isModuleReady } from './emulator';
+import { gsEval, isGsError, isGsObject, isModuleReady } from './emulator';
 import { fmtHex32 } from '@/lib/hex';
 import type { MmuKind } from '@/state/machine.svelte';
 
@@ -67,7 +67,7 @@ export async function translateAddr(
     addr: addr >>> 0,
     ...modeArgs(supervisor),
   });
-  if (!r || typeof r !== 'object' || isGsError(r)) return null;
+  if (!isGsObject(r)) return null;
   return toTranslation(r as Record<string, unknown>);
 }
 
@@ -113,7 +113,7 @@ export async function walkAddr(
     addr: addr >>> 0,
     ...modeArgs(supervisor, fetch),
   });
-  if (!r || typeof r !== 'object' || isGsError(r)) return null;
+  if (!isGsObject(r)) return null;
   const o = r as Record<string, unknown>;
   const steps = Array.isArray(o.steps) ? o.steps : [];
   return {
