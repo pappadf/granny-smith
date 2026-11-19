@@ -6,5 +6,6 @@ TEST_NAME    := card_registry
 TEST_SRCS    := test.c
 TEST_HARNESS := none
 STUBS        := assert
-EXTRA_SRCS   := ../../../../src/core/peripherals/card_registry.c
+EXTRA_SRCS   := ../../../../src/core/peripherals/card_registry.c \
+                ../../../../src/core/object/value.c
 include ../../common.mk

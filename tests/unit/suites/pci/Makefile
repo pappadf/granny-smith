@@ -10,8 +10,9 @@
 TEST_NAME    := pci
 TEST_SRCS    := test.c
 TEST_HARNESS := none
-STUBS        := checkpoint prom
+STUBS        := assert checkpoint prom
 EXTRA_SRCS   := ../../../../src/core/peripherals/pci/pci.c \
                 ../../../../src/core/peripherals/card_registry.c \
+                ../../../../src/core/object/value.c \
                 ../../../../src/core/peripherals/pci/config_space.c
 include ../../common.mk

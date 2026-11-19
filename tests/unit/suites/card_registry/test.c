@@ -51,10 +51,59 @@ TEST(refuse_formats) {
     ASSERT_TRUE(strcmp(why, "slot 3: no") == 0);
 }
 
+// The list names every registered id, in registry order.
+TEST(list_names_every_id) {
+    value_t v = card_registry_list(reg(), "catalog.test_cards");
+    ASSERT_TRUE(v.kind == VK_LIST && v.list.len == 2);
+    ASSERT_TRUE(strcmp(v.list.items[0].s, "824gc") == 0);
+    ASSERT_TRUE(strcmp(v.list.items[1].s, "mdc_8_24") == 0);
+    value_free(&v);
+}
+
+// Whether the stand-in check below ever saw a ROM path.
+static bool s_saw_rom;
+
+// A stand-in entry check: refuses the card "bad", accepts the rest.
+static bool stub_check(const void *slots, const char *model, const slot_opts_t *e, bool roms_final, char *why,
+                       size_t why_len) {
+    (void)slots;
+    (void)model;
+    (void)roms_final;
+    s_saw_rom |= e->rom[0] != '\0';
+    if (strcmp(e->card, "bad") == 0)
+        return card_refuse(why, why_len, "card '%s' refused", e->card);
+    return true;
+}
+
+// A restored table: good entries pass without their ROM path, the first bad
+// one is named, and a malformed entry is refused before the check sees it.
+TEST(slot_table_check) {
+    slot_opts_t t[4];
+    memset(t, 0, sizeof t);
+    char why[64];
+    s_saw_rom = false;
+    t[1].slot = 1;
+    strcpy(t[1].card, "824gc");
+    strcpy(t[1].rom, "some/file.rom");
+    ASSERT_TRUE(card_slot_table_check(t, 4, stub_check, NULL, "m", why, sizeof why) == -1);
+    ASSERT_TRUE(!s_saw_rom);
+    t[3].slot = 3;
+    strcpy(t[3].card, "bad");
+    ASSERT_TRUE(card_slot_table_check(t, 4, stub_check, NULL, "m", why, sizeof why) == 3);
+    ASSERT_TRUE(strcmp(why, "card 'bad' refused") == 0);
+    // An entry seating a card under another slot's number is malformed
+    t[2].slot = 1;
+    strcpy(t[2].card, "824gc");
+    ASSERT_TRUE(card_slot_table_check(t, 4, stub_check, NULL, "m", why, sizeof why) == 2);
+    ASSERT_TRUE(why[0] == '\0');
+}
+
 int main(void) {
     RUN(find_by_id);
     RUN(suggest_ignores_underscores);
     RUN(refuse_formats);
+    RUN(list_names_every_id);
+    RUN(slot_table_check);
     fprintf(stderr, "card_registry: all tests passed\n");
     return 0;
 }

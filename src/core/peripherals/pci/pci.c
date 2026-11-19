@@ -834,28 +834,26 @@ static bool resolve_card_rom(const pci_card_kind_t *kind, const slot_opts_t *opt
 static void device_part_open(config_t *cfg, checkpoint_t *cp, const char *name, rom_image_t *rom);
 static void device_part_close(config_t *cfg, checkpoint_t *cp, pci_device_t *dev, const char *name);
 
+// The bus's slot-entry check as a card_entry_check_fn.
+static bool slot_entry_check_thunk(const void *slots, const char *model, const slot_opts_t *e, bool roms_final,
+                                   char *why, size_t why_len) {
+    return pci_slot_entry_check(slots, model, e, roms_final, why, why_len);
+}
+
 // A restore's slot table is a file the user supplied: every entry that seats
 // a card goes through the checks machine.boot applies to a document's, bar
 // the PROM file (the card's PROM comes from its own block).  A bad entry
 // fails the restore, naming the slot.
 static bool slot_table_valid(slot_opts_t *entry, const pci_slot_decl_t *slots, const char *model) {
-    for (int n = 0; n < PCI_MAX_SLOTS; n++) {
-        slot_opts_t *e = &entry[n];
-        if (!slot_opts_sanitize(e, n)) {
-            LOG(0, "Error: the checkpoint's PCI slot %d entry is malformed", n);
-            return false;
-        }
-        if (!e->card[0])
-            continue;
-        slot_opts_t check = *e;
-        check.rom[0] = '\0';
-        char why[256];
-        if (!pci_slot_entry_check(slots, model, &check, false, why, sizeof why)) {
-            LOG(0, "Error: the checkpoint's PCI slot %d: %s", n, why);
-            return false;
-        }
-    }
-    return true;
+    char why[256];
+    int n = card_slot_table_check(entry, PCI_MAX_SLOTS, slot_entry_check_thunk, slots, model, why, sizeof why);
+    if (n < 0)
+        return true;
+    if (!why[0])
+        LOG(0, "Error: the checkpoint's PCI slot %d entry is malformed", n);
+    else
+        LOG(0, "Error: the checkpoint's PCI slot %d: %s", n, why);
+    return false;
 }
 
 static void pci_slots_part_save(void *obj, checkpoint_t *cp) {

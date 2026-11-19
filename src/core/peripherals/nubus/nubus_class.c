@@ -7,6 +7,7 @@
 // catalog.nubus_cards, which walks nubus_card_registry().
 
 #include "card.h"
+#include "card_registry.h"
 #include "display.h"
 #include "display_class.h"
 #include "machine_profile.h"
@@ -25,19 +26,7 @@
 // The config dialog populates the per-slot card-type dropdown from it
 // without baking the list into the JS.
 value_t nubus_cards_list(void) {
-    const nubus_card_kind_t *const *reg = nubus_card_registry();
-    size_t n = 0;
-    for (const nubus_card_kind_t *const *p = reg; *p; p++)
-        n++;
-    if (n == 0)
-        return val_list(NULL, 0);
-    value_t *items = (value_t *)calloc(n, sizeof(value_t));
-    if (!items)
-        return val_err("catalog.nubus_cards: out of memory");
-    size_t i = 0;
-    for (const nubus_card_kind_t *const *p = reg; *p; p++)
-        items[i++] = val_str((*p)->id);
-    return val_list(items, n);
+    return card_registry_list((const void *const *)nubus_card_registry(), "catalog.nubus_cards");
 }
 
 // Does any registered card offer this "monitor_Nbpp" id?  Asked of the

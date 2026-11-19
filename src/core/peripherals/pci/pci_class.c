@@ -12,6 +12,7 @@
 // expansion-ROM BAR).  Card-specific children are attached through the
 // KIND's attach_objects() hook, never by identity tests here.
 
+#include "card_registry.h"
 #include "config_space.h"
 #include "machine_profile.h"
 #include "object.h"
@@ -47,19 +48,7 @@ static object_cache_t g_slot_objects = OBJECT_CACHE(&pci_slot_class, "slot");
 
 // Every registered PCI card-driver id, as VK_LIST<VK_STRING> (catalog.pci_cards).
 value_t pci_cards_list(void) {
-    const pci_card_kind_t *const *reg = pci_card_registry();
-    size_t n = 0;
-    for (const pci_card_kind_t *const *p = reg; *p; p++)
-        n++;
-    if (n == 0)
-        return val_list(NULL, 0);
-    value_t *items = (value_t *)calloc(n, sizeof(value_t));
-    if (!items)
-        return val_err("catalog.pci_cards: out of memory");
-    size_t i = 0;
-    for (const pci_card_kind_t *const *p = reg; *p; p++)
-        items[i++] = val_str((*p)->id);
-    return val_list(items, n);
+    return card_registry_list((const void *const *)pci_card_registry(), "catalog.pci_cards");
 }
 
 // === BAR nodes ==============================================================

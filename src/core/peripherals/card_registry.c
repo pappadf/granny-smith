@@ -7,6 +7,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // ============================================================================
@@ -61,6 +62,42 @@ const char *card_registry_suggest(const void *const *registry, const char *id) {
             return kind_id(*p);
     }
     return NULL;
+}
+
+value_t card_registry_list(const void *const *registry, const char *what) {
+    size_t n = 0;
+    for (const void *const *p = registry; p && *p; p++)
+        n++;
+    if (n == 0)
+        return val_list(NULL, 0);
+    value_t *items = (value_t *)calloc(n, sizeof(value_t));
+    if (!items)
+        return val_err("%s: out of memory", what);
+    size_t i = 0;
+    for (const void *const *p = registry; *p; p++)
+        items[i++] = val_str(kind_id(*p));
+    return val_list(items, n);
+}
+
+int card_slot_table_check(slot_opts_t *table, int n_slots, card_entry_check_fn check, const void *slots,
+                          const char *model, char *why, size_t why_len) {
+    for (int n = 0; n < n_slots; n++) {
+        slot_opts_t *e = &table[n];
+        // An entry whose strings or counts are out of range is refused before reading it
+        if (!slot_opts_sanitize(e, n)) {
+            if (why_len)
+                why[0] = '\0';
+            return n;
+        }
+        if (!e->card[0])
+            continue;
+        // The ROM path is a boot-time input; a restore's ROM comes from its block
+        slot_opts_t probe = *e;
+        probe.rom[0] = '\0';
+        if (!check(slots, model, &probe, false, why, why_len))
+            return n;
+    }
+    return -1;
 }
 
 bool card_refuse(char *why, size_t len, const char *fmt, ...) {

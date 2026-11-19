@@ -16,8 +16,18 @@
 
 // === Includes ===
 
+#include "machine_build_opts.h"
+#include "value.h"
+
 #include <stdbool.h>
 #include <stddef.h>
+
+// === Type Definitions ===
+
+// A bus's slot-entry check (nubus_slot_entry_check, pci_slot_entry_check)
+// over its own slot-declaration table, passed as `slots`.
+typedef bool (*card_entry_check_fn)(const void *slots, const char *model, const slot_opts_t *e, bool roms_final,
+                                    char *why, size_t why_len);
 
 // === Operations ===
 
@@ -29,6 +39,18 @@ const void *card_registry_find(const void *const *registry, const char *id);
 // For an unknown-id error: the registered id that differs from `id` only by
 // underscores ("8_24gc" for "824gc"), or NULL.
 const char *card_registry_suggest(const void *const *registry, const char *id);
+
+// Every registered id, as VK_LIST<VK_STRING> (catalog.nubus_cards,
+// catalog.pci_cards); `what` names the attribute in an out-of-memory error.
+value_t card_registry_list(const void *const *registry, const char *what);
+
+// Validates a restored slot table of `n_slots` entries: each is sanitized
+// (slot_opts_sanitize) and, when it seats a card, run through `check` as a
+// boot would, bar the ROM file (a card's ROM comes from its own checkpoint
+// block, not a path).  Returns -1 when every entry holds, else the first bad
+// slot with the reason in `why` ("" for a malformed entry).
+int card_slot_table_check(slot_opts_t *table, int n_slots, card_entry_check_fn check, const void *slots,
+                          const char *model, char *why, size_t why_len);
 
 // Formats a slot-check refusal into `why` and returns false.
 __attribute__((format(printf, 3, 4))) bool card_refuse(char *why, size_t len, const char *fmt, ...);

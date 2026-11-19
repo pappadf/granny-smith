@@ -399,28 +399,26 @@ static bool read_card_rom(checkpoint_t *cp, int slot, uint8_t **out, size_t *siz
     return !checkpoint_has_error(cp);
 }
 
+// The bus's slot-entry check as a card_entry_check_fn.
+static bool slot_entry_check_thunk(const void *slots, const char *model, const slot_opts_t *e, bool roms_final,
+                                   char *why, size_t why_len) {
+    return nubus_slot_entry_check(slots, model, e, roms_final, why, why_len);
+}
+
 // A restore's slot table is a file the user supplied: every entry that seats
 // a card goes through the checks machine.boot applies to a document's, bar
 // the ROM file (the card's ROM comes from its own block, not from a path).  A
 // bad entry fails the restore, naming the slot.
 static bool slot_table_valid(slot_opts_t *seated, const nubus_slot_decl_t *slots, const char *model) {
-    for (int n = 0; n < NUBUS_MAX_SLOTS; n++) {
-        slot_opts_t *e = &seated[n];
-        if (!slot_opts_sanitize(e, n)) {
-            LOG(0, "Error: the checkpoint's NuBus slot $%X entry is malformed", n);
-            return false;
-        }
-        if (!e->card[0])
-            continue;
-        slot_opts_t check = *e;
-        check.rom[0] = '\0';
-        char why[256];
-        if (!nubus_slot_entry_check(slots, model, &check, false, why, sizeof why)) {
-            LOG(0, "Error: the checkpoint's NuBus slot $%X: %s", n, why);
-            return false;
-        }
-    }
-    return true;
+    char why[256];
+    int n = card_slot_table_check(seated, NUBUS_MAX_SLOTS, slot_entry_check_thunk, slots, model, why, sizeof why);
+    if (n < 0)
+        return true;
+    if (!why[0])
+        LOG(0, "Error: the checkpoint's NuBus slot $%X entry is malformed", n);
+    else
+        LOG(0, "Error: the checkpoint's NuBus slot $%X: %s", n, why);
+    return false;
 }
 
 static void nubus_slots_part_save(void *obj, checkpoint_t *cp) {
