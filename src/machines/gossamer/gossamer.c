@@ -697,10 +697,7 @@ static void gossamer_seed(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
     if (!st)
         return;
-    mac_seed_xpram_sysparam(st->hr.nvram + OF_NVRAM_XPRAM, cfg, of_nvram_defaults_g3.pram);
-    int id = mac_seed_startup_scsi_id(cfg, "scsi");
-    if (id != -2)
-        of_nvram_set_startup_scsi(st->hr.nvram, id, &of_nvram_defaults_g3);
+    mac_seed_of_nvram(st->hr.nvram, cfg, &of_nvram_defaults_g3);
     if (gos_rom_is_rev_c(cfg)) {
         for (size_t i = 0; i < sizeof gos_osx_patch / sizeof gos_osx_patch[0]; i++) {
             const char *err = of_nvram_setenv(st->hr.nvram, gos_osx_patch[i][0], gos_osx_patch[i][1]);
@@ -720,13 +717,7 @@ static void gossamer_seed(config_t *cfg) {
                 LOG(0, "boot-device %s: %s", dev, err);
         }
     }
-    // The configuration's own Open Firmware variables ("nvram"), last, so
-    // its boot-device wins over the record above.  machine_config_resolve
-    // set each on a factory store already; a failure here is a bug.
-    const char *bad = NULL;
-    const char *err = of_nvram_setenv_packed(st->hr.nvram, cfg->build_opts.n_of_vars, cfg->build_opts.of_vars, &bad);
-    if (err)
-        LOG(0, "configuration nvram %s: %s", bad, err);
+    mac_seed_of_config_vars(st->hr.nvram, cfg); // last: its boot-device wins
 }
 
 const machine_substrate_t gossamer_substrate = {
