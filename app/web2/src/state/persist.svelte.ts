@@ -21,47 +21,13 @@ import { microphone } from './microphone.svelte';
 import { recent } from './recent.svelte';
 import { parseRecent } from '@/lib/recentMachines';
 import type { ImageCategory } from '@/bus/types';
-
-const KEYS = {
-  // The original keys: plain values.
-  skin: 'gs-skin',
-  panelPos: 'gs-panel-pos',
-  panelSize: 'gs-panel-size',
-  // View-state keys, each in a `{v, data}` envelope.
-  debugSections: 'gs-debug-sections',
-  debugSectionsModel: 'gs-debug-sections-model',
-  debugMemory: 'gs-debug-memory',
-  debugMmu: 'gs-debug-mmu',
-  logsAutoscroll: 'gs-logs-autoscroll',
-  fsExpanded: 'gs-fs-expanded',
-  imagesCollapsed: 'gs-images-collapsed',
-  checkpointsSort: 'gs-checkpoints-sort',
-  micDevice: 'gs-mic-device',
-  recentMachines: 'gs-recent-machines',
-} as const;
+import { KEYS, readLS, writeLS } from '@/lib/storage';
 
 const VERSION = 1;
 
 interface Envelope<T> {
   v: number;
   data: T;
-}
-
-function readLS(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function writeLS(key: string, value: string | null): void {
-  try {
-    if (value === null) localStorage.removeItem(key);
-    else localStorage.setItem(key, value);
-  } catch {
-    // localStorage unavailable (private mode, quota) — silently skip.
-  }
 }
 
 // Read a {v, data} envelope. Returns null on missing / malformed /

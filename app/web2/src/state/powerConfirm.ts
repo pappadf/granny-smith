@@ -6,23 +6,17 @@
 
 import { askConfirmWithOptOut } from './dialogs.svelte';
 import { machine } from './machine.svelte';
+import { KEYS, readLS, writeLS } from '@/lib/storage';
 
-const OPT_OUT_KEY = 'gs-confirm-power-off';
+const OPT_OUT_KEY = KEYS.confirmPowerOff;
 
 function optedOut(): boolean {
-  try {
-    return localStorage.getItem(OPT_OUT_KEY) === '1';
-  } catch {
-    return false;
-  }
+  return readLS(OPT_OUT_KEY) === '1';
 }
 
 function rememberOptOut(): void {
-  try {
-    localStorage.setItem(OPT_OUT_KEY, '1');
-  } catch {
-    // localStorage unavailable (private mode, quota) -- ask again next time.
-  }
+  // localStorage unavailable (private mode, quota): asked again next time.
+  writeLS(OPT_OUT_KEY, '1');
 }
 
 export type PowerAction = 'shutdown' | 'restart';

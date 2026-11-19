@@ -4,10 +4,11 @@
   import Link from '../ui/Link.svelte';
   import { urlBoot } from '@/state/urlBoot.svelte';
   import { machine } from '@/state/machine.svelte';
+  import { KEYS } from '@/lib/storage';
 
   // Bump the version suffix to re-prompt users after a significant
   // update (e.g. moving from preview to GA).
-  const DISMISS_KEY = 'gs-preview-notice-dismissed-v1';
+  const DISMISS_KEY = KEYS.previewNoticeDismissed;
   const LEGACY_URL = 'https://pappadf.github.io/gs-pages/';
 
   let open = $state(false);

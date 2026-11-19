@@ -41,6 +41,7 @@ import { showNotification } from '@/state/toasts.svelte';
 import { installEvalHookForAutomation, installUiHookForAutomation } from '@/bus/testHook';
 import { diagnoseGraphics, rendererFailure } from '@/lib/gpuDiagnostics';
 import { renderWebGLErrorPage, renderStartupErrorPage } from '@/lib/webglErrorPage';
+import { KEYS } from '@/lib/storage';
 
 // A deploy replaces every hashed file.  A page still running the previous
 // build (its script cached) then asks for files that are gone -- a skin's
@@ -67,7 +68,7 @@ applyUrlSkin(new URLSearchParams(window.location.search));
 applyAppearance();
 
 try {
-  if (!localStorage.getItem('gs-panel-pos')) {
+  if (!localStorage.getItem(KEYS.panelPos)) {
     layout.panelPos = autoPickPanelPos(window.innerWidth, window.innerHeight);
   }
 } catch {

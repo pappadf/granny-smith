@@ -28,6 +28,7 @@ import {
   type ZipMember,
 } from '@/lib/remoteAfp';
 import { slug } from '@/lib/fileName';
+import { KEYS, readLS } from '@/lib/storage';
 
 interface VolumeSpec {
   name: string; // as the Chooser lists it (max 27 characters)
@@ -62,7 +63,7 @@ export const INTERNET_ARCHIVE: ServerSpec = {
 
 // The user's settings, in localStorage under SETTINGS_KEY (JSON):
 //   { "disabled": true }   no remote server
-export const SETTINGS_KEY = 'gs-remote-afp';
+export const SETTINGS_KEY = KEYS.remoteAfp;
 
 interface Settings {
   disabled?: boolean;
@@ -70,7 +71,7 @@ interface Settings {
 
 function readSettings(): Settings {
   try {
-    const raw = localStorage.getItem(SETTINGS_KEY);
+    const raw = readLS(SETTINGS_KEY);
     const s = raw ? (JSON.parse(raw) as unknown) : null;
     return s && typeof s === 'object' ? (s as Settings) : {};
   } catch {

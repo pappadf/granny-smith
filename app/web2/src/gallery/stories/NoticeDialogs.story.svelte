@@ -5,6 +5,7 @@
   import { checkpointPrompt } from '@/state/checkpointPrompt.svelte';
   import { printer } from '@/state/printer.svelte';
   import type { StoryProps } from '../registry';
+  import { KEYS } from '@/lib/storage';
 
   let { variant }: StoryProps = $props();
 
@@ -24,7 +25,7 @@
   // The preview notice shows itself unless a past visit dismissed it.
   if (v === 'preview') {
     try {
-      localStorage.removeItem('gs-preview-notice-dismissed-v1');
+      localStorage.removeItem(KEYS.previewNoticeDismissed);
     } catch {
       // No storage: the notice shows anyway.
     }

@@ -5,8 +5,9 @@
 // underneath the right directory.
 
 import { utcCompactStamp } from './time';
+import { KEYS, readLS, writeLS } from './storage';
 
-const KEY = 'gs.checkpoint.machine';
+const KEY = KEYS.checkpointMachine;
 
 export interface MachineIdentity {
   id: string;
@@ -27,7 +28,7 @@ export function nowStamp(): string {
 
 function read(): MachineIdentity | null {
   try {
-    const raw = localStorage.getItem(KEY);
+    const raw = readLS(KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<MachineIdentity>;
     if (parsed && typeof parsed.id === 'string' && typeof parsed.created === 'string') {
@@ -40,11 +41,7 @@ function read(): MachineIdentity | null {
 }
 
 function write(m: MachineIdentity): void {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(m));
-  } catch {
-    // Private mode / quota — silently fall through.
-  }
+  writeLS(KEY, JSON.stringify(m));
 }
 
 // Return the existing machine record, minting one (and persisting it) if none.
