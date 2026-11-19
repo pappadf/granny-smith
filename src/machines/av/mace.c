@@ -29,15 +29,19 @@ LOG_USE_CATEGORY_NAME("mace");
 
 #define AV_MACE_REGS 32 // $000-$1F0 on a $10 stride
 
-// Register indices (offset >> 4).
+// Register indices (offset >> 4), the Am79C940 map
+// (docs/reference/machines/av/mace.md §2.1, the one tnt_mace.c uses).  These
+// used to sit one to eight slots off it -- BIUCC 12, FIFOCC 13, PLSCC 15 and
+// the chip ID at 24/25 (MPC and a reserved slot) -- so a read of registers
+// 16/17 found latched zero instead of the chip ID.
 #define MACE_IR       8 // interrupt register, read-to-clear
 #define MACE_IMR      9 // interrupt mask (1 = masked)
 #define MACE_PR       10 // poll register
-#define MACE_BIUCC    12 // bus interface unit config
-#define MACE_FIFOCC   13 // FIFO config
-#define MACE_PLSCC    15 // PLS config
-#define MACE_CHIPIDLO 24 // chip ID low byte
-#define MACE_CHIPIDHI 25 // chip ID high byte
+#define MACE_BIUCC    11 // bus interface unit config
+#define MACE_FIFOCC   12 // FIFO config
+#define MACE_PLSCC    14 // PLS config
+#define MACE_CHIPIDLO 16 // chip ID low byte
+#define MACE_CHIPIDHI 17 // chip ID high byte
 
 // Am79C940 revision the Curio integrates (chip-ID register).
 #define MACE_CHIPID 0x0940
