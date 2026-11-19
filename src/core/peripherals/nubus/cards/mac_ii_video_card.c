@@ -439,7 +439,7 @@ static bool toby_startup_record(const slot_opts_t *e, uint8_t rec[8]) {
     int depth = 0;
     if (!e->video_mode[0] || !nubus_monitor_mode_lookup(toby_monitors, e->video_mode, &row, &depth))
         return false;
-    uint8_t sp_depth = depth == 2 ? 0x81 : depth == 4 ? 0x82 : depth == 8 ? 0x83 : 0x80;
+    uint8_t sp_depth = nubus_spdepth_for_bpp(depth, 0x80);
     const uint8_t r[8] = {0x00, 0x05, sp_depth, 0x80, 0x80, 0, 0, 0};
     memcpy(rec, r, sizeof r);
     return true;

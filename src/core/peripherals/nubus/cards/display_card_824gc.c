@@ -852,24 +852,6 @@ static pixel_format_t format_for_bpp(int bpp) {
         return PIXEL_8BPP;
     }
 }
-static uint8_t spdepth_for_bpp(int bpp) {
-    switch (bpp) {
-    case 1:
-        return 0x80;
-    case 2:
-        return 0x81;
-    case 4:
-        return 0x82;
-    case 8:
-        return 0x83;
-    case 16:
-        return 0x84;
-    case 32:
-        return 0x85;
-    default:
-        return 0x83;
-    }
-}
 
 // === Card vtable ============================================================
 
@@ -1478,7 +1460,8 @@ static bool startup_record(const slot_opts_t *e, uint8_t rec[8]) {
     int depth = 0;
     if (!e->video_mode[0] || !video_mode_lookup(e->video_mode, &row, &depth))
         return false;
-    const uint8_t r[8] = {0x00, 0x2C, spdepth_for_bpp(depth), row->srsrc_sister, row->srsrc_sister, 0, 0, 0};
+    uint8_t sp_depth = nubus_spdepth_for_bpp(depth, 0x83);
+    const uint8_t r[8] = {0x00, 0x2C, sp_depth, row->srsrc_sister, row->srsrc_sister, 0, 0, 0};
     memcpy(rec, r, sizeof r);
     return true;
 }

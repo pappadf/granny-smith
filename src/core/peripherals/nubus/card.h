@@ -243,6 +243,30 @@ typedef struct nubus_card_kind {
 bool nubus_monitor_mode_lookup(const nubus_monitor_t *list, const char *id, const nubus_monitor_t **out_monitor,
                                int *out_depth_bpp);
 
+// The Slot Manager's spDepth for a pixel depth: $80 + log2(bpp) for the
+// 1/2/4/8/16/32 bpp modes, as the startup-mode record's savedMode byte
+// carries it (docs/reference/formats/mac-pram.md §6).  `fallback` answers
+// any other depth (no catalogue row offers one).  The 24AC numbers its modes
+// its own way (savedmode_for_bpp) and does not use this.
+static inline uint8_t nubus_spdepth_for_bpp(int bpp, uint8_t fallback) {
+    switch (bpp) {
+    case 1:
+        return 0x80;
+    case 2:
+        return 0x81;
+    case 4:
+        return 0x82;
+    case 8:
+        return 0x83;
+    case 16:
+        return 0x84;
+    case 32:
+        return 0x85;
+    default:
+        return fallback;
+    }
+}
+
 // The widest video-mode id any catalogue can name, plus room for the "_32bpp"
 // suffix and the terminator.  One size for what were a 32-byte buffer in one
 // card and 40-byte buffers in the other two.
