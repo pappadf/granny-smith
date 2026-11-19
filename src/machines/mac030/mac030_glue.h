@@ -48,7 +48,8 @@ typedef struct mac030_glue_state {
     // generate a signal called /SLOTIRQ.  This signal is connected to the CA1
     // input of VIA2."  It is a LEVEL, and it can include sources the bus
     // knows nothing about -- which is why the bus's `umbrella_edge` was the
-    // wrong abstraction.
+    // wrong abstraction.  Not saved: a restore derives it from the VIA2 pins
+    // (slot_irq.h).
     uint8_t slot_pa_mask;
 
     bool soft_power_armed; // IIcx soft-power detect (unused on se30/iix)

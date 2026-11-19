@@ -37,6 +37,7 @@
 #include "scheduler.h"
 #include "scsi.h"
 #include "scsi_53c96.h"
+#include "slot_irq.h"
 #include "sonic.h"
 #include "via.h"
 
@@ -495,13 +496,7 @@ void mcu_io_bind(mac030_io_t *io, config_t *cfg, const mcu_board_desc_t *desc, v
 // (DAFB video = PA6, SONIC = PA0, NuBus slots A-E = PA1-PA5).
 
 void mcu_slot_irq_source(config_t *cfg, int pa_bit, bool active) {
-    mcu_state_t *st = mcu_st(cfg);
-    if (pa_bit < 0 || pa_bit > 6)
-        return;
-    uint8_t bit = (uint8_t)(1u << pa_bit);
-    st->slot_pa_mask = active ? (st->slot_pa_mask | bit) : (st->slot_pa_mask & (uint8_t)~bit);
-    via_input(cfg->via2, /*port A*/ 0, pa_bit, active ? 0 : 1); // active-low line
-    via_input_c(cfg->via2, /*CA1*/ 0, 0, st->slot_pa_mask ? 0 : 1); // /SLOTIRQ = OR of sources
+    slot_irq_source(cfg->via2, &mcu_st(cfg)->slot_pa_mask, pa_bit, active);
 }
 
 // ============================================================
@@ -821,10 +816,8 @@ static void mcu_restore_private(config_t *cfg, checkpoint_t *cp) {
     if (!overlay)
         mcu_set_overlay(cfg, false);
     // Re-drive the /SLOTIRQ PA lines + the CA1 aggregate from the restored
-    // mask (sources 0-6; build parked them at the inactive level).
-    for (int bit = 0; bit <= 6; bit++)
-        via_input(cfg->via2, 0, bit, (st->slot_pa_mask >> bit) & 1 ? 0 : 1);
-    via_input_c(cfg->via2, 0, 0, st->slot_pa_mask ? 0 : 1);
+    // mask (build parked them at the inactive level).
+    slot_irq_redrive(cfg->via2, st->slot_pa_mask);
     // Tower wire-ORs: VIA2 CB2 (dual 53C96) and the level-4 SCC source
     // (chip INT | SCC IOP host INT) resume at their save-time levels.
     if (st->scsi96_ext)

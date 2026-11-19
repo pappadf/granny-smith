@@ -29,6 +29,7 @@
 #include "scc.h"
 #include "scheduler.h"
 #include "scsi.h"
+#include "slot_irq.h"
 #include "via.h"
 
 #include <assert.h>
@@ -212,6 +213,11 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
     cfg->via2 = via_init(NULL, cfg->scheduler, via_ff, "via2", board->via2_output, board->via2_shift_out,
                          mac030_glue_via2_irq, cfg, cp);
     machine_part(cfg, cp, "via2", part_save_via, cfg->via2);
+    // The family saves no /SLOTIRQ mask: a restore derives it from the VIA2
+    // port-A pins it just read, or a source still requesting at save time
+    // would drop out of the OR on the next other source's deassert.
+    if (cp)
+        st->slot_pa_mask = slot_irq_mask_from_via(cfg->via2);
     rtc_set_via(cfg->rtc, cfg->via1);
 
     board->setup_id(cfg);
@@ -413,18 +419,12 @@ void mac030_glue_update_ipl(config_t *cfg, int source, bool active) {
 // mask, and the MCU was right -- its aggregate includes DAFB on PA6 and SONIC
 // on PA0, sources the NuBus controller knows nothing about.  The SE/30's
 // built-in video is the same shape.  A bus that cannot see every contributor
-// cannot compute the edge.
-//
-// /SLOTIRQ is a LEVEL: "routed through an OR gate ... connected to the CA1
-// input of VIA2" (Quadra 700 and 900 developer notes).
+// cannot compute the edge.  The OR itself is shared with the MCU (slot_irq.h).
 void mac030_glue_slot_irq_source(config_t *cfg, int pa_bit, bool active) {
     mac030_glue_state_t *st = (mac030_glue_state_t *)cfg->machine_context;
-    if (!st || pa_bit < 0 || pa_bit > 6)
+    if (!st)
         return;
-    uint8_t bit = (uint8_t)(1u << pa_bit);
-    st->slot_pa_mask = active ? (st->slot_pa_mask | bit) : (st->slot_pa_mask & (uint8_t)~bit);
-    via_input(cfg->via2, /*port A*/ 0, pa_bit, active ? 0 : 1); // active-low line
-    via_input_c(cfg->via2, /*CA1*/ 0, 0, st->slot_pa_mask ? 0 : 1); // /SLOTIRQ = OR of sources
+    slot_irq_source(cfg->via2, &st->slot_pa_mask, pa_bit, active);
 }
 
 void mac030_glue_nubus_slot_irq(config_t *cfg, int slot, bool active) {
