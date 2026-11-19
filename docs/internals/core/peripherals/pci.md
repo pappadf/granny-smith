@@ -303,6 +303,16 @@ the Apple Accelerated PCI Graphics Card
 (`src/core/peripherals/pci/cards/mach64gx.c`), which boots System 7.6 to a
 desktop on a Power Macintosh 9500.
 
+The expansion ROM is the bus's, not the card's: for a kind with
+`requires_prom`, `pci_seat_slots` resolves it before the factory runs (the
+image the slot's checkpoint block carries on a restore, else
+`prom_load_card` for `pci_card_rom_id(kind)`), leaves the slot empty with a
+log when nothing resolves, hands the image to the factory as its `rom`
+argument and keeps it as `dev->rom`. A device that declares a ROM BAR
+(`decl->rom_size`) and backs it with nothing of its own gets the bus's
+default face over `dev->rom`: big-endian bytes, `$FF` past the image, writes
+logged and ignored.
+
 The **ROM-less socket-card path** is exercised for real by the 3dfx Voodoo2
 (`cards/voodoo2.c`, `docs/internals/core/peripherals/pci/cards/voodoo2.md`):
 `rom_size = 0` and `requires_prom = false` were always legal (no-ROM cards

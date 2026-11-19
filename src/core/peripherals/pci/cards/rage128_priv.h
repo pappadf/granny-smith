@@ -323,7 +323,6 @@ typedef struct rage128 {
     memory_interface_t aper_if; // BAR0
     memory_interface_t io_if; // BAR1
     memory_interface_t regs_if; // BAR2
-    memory_interface_t rom_if; // expansion ROM
 
     // Scanout, rebuilt from the CRTC registers whenever one moves.
     display_t display;

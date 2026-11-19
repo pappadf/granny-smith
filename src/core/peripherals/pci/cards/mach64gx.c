@@ -584,8 +584,6 @@ typedef struct mach64 {
     uint8_t clut[256][3];
     ramdac_seq_t pal; // palette address (RS 000 write / 011 read) and R/G/B phase
 
-    // Expansion ROM (owned by pci_device_t.rom; this is the backing iface)
-    memory_interface_t rom_if;
     memory_interface_t aper_if; // BAR0: framebuffer + the register alias
     memory_interface_t io_if; // the sparse I/O face
 
@@ -2811,42 +2809,6 @@ static void bio_write32(void *ctx, uint32_t offset, uint32_t value) {
 }
 
 // ============================================================
-// The expansion ROM (config $30)
-// ============================================================
-// A plain big-endian byte array.  The declared size is the physical 32 KB
-// chip, which also covers the shorter image the PCI Data Structure
-// declares; reads past the image return $FF, as an unprogrammed chip does.
-
-static uint8_t rom_read8(void *ctx, uint32_t offset) {
-    mach64_t *m = (mach64_t *)ctx;
-    if (!m->dev->rom || offset >= m->dev->rom_size)
-        return 0xFFu;
-    return m->dev->rom[offset];
-}
-
-static uint16_t rom_read16(void *ctx, uint32_t offset) {
-    return (uint16_t)((rom_read8(ctx, offset) << 8) | rom_read8(ctx, offset + 1));
-}
-
-static uint32_t rom_read32(void *ctx, uint32_t offset) {
-    return ((uint32_t)rom_read8(ctx, offset) << 24) | ((uint32_t)rom_read8(ctx, offset + 1) << 16) |
-           ((uint32_t)rom_read8(ctx, offset + 2) << 8) | rom_read8(ctx, offset + 3);
-}
-
-static void rom_write8(void *ctx, uint32_t offset, uint8_t value) {
-    (void)ctx;
-    LOG(2, "Mach64: write to the expansion ROM at +$%04X = $%02X — ignored (it is a ROM)", offset, value);
-}
-
-static void rom_write16(void *ctx, uint32_t offset, uint16_t value) {
-    rom_write8(ctx, offset, (uint8_t)(value >> 8));
-}
-
-static void rom_write32(void *ctx, uint32_t offset, uint32_t value) {
-    rom_write8(ctx, offset, (uint8_t)(value >> 24));
-}
-
-// ============================================================
 // Scanout position
 // ============================================================
 
@@ -3841,35 +3803,10 @@ static pci_device_t *mach64_factory(int slot_index, config_t *cfg, const rom_ima
     m->cfg = cfg;
     m->io_base = MACH64_IO_BASE_DEFAULT;
 
-    // The card is useless without its own firmware: Open Firmware runs the
-    // FCode to build the node, and Mac OS loads the ndrv the same image
-    // publishes.  A card the document named that cannot resolve one has
-    // already failed machine.boot's validation; reaching here with nothing
-    // means a slot DEFAULT could not resolve, which degrades to an empty
-    // slot with a log rather than killing the boot.
-    // A restore hands back the ROM the card ran, from its checkpoint.
-    uint8_t *prom = NULL;
-    size_t prom_size = 0;
-    char *prom_path = NULL;
-    if (rom && rom->data && rom->size) {
-        prom = (uint8_t *)malloc(rom->size);
-        if (prom) {
-            memcpy(prom, rom->data, rom->size);
-            prom_size = rom->size;
-        }
-    }
-    if (!prom && !prom_load_card("mach64_gx", opts->rom[0] ? opts->rom : NULL, &prom, &prom_size, &prom_path)) {
-        LOG(0,
-            "slot %d: no expansion ROM available for the Mach64 GX — the card cannot enumerate "
-            "without its own FCode, so the slot is left empty",
-            slot_index);
-        free(m);
-        free(dev);
-        return NULL;
-    }
-    dev->rom = prom;
-    dev->rom_size = prom_size;
-    free(prom_path);
+    // The expansion ROM the card runs is the bus's (requires_prom): resolved
+    // before this factory and kept as dev->rom, with the bus's default
+    // ROM-BAR face over it.
+    size_t prom_size = rom ? rom->size : 0;
 
     const char *vram = slot_opts_option(opts, "vram");
     m->vram_size = vram ? mach64_vram_by_id(vram) : MACH64_VRAM_2MB;
@@ -3880,7 +3817,6 @@ static pci_device_t *mach64_factory(int slot_index, config_t *cfg, const rom_ima
         free(m->vram);
         free(m->blank);
         free(m->compose);
-        free(dev->rom);
         free(m);
         free(dev);
         return NULL;
@@ -3913,15 +3849,8 @@ static pci_device_t *mach64_factory(int slot_index, config_t *cfg, const rom_ima
     m->aper_if.peek_uint8 = aper_peek8;
     m->aper_if.peek_uint16 = aper_peek16;
     m->aper_if.peek_uint32 = aper_peek32;
-    m->rom_if.read_uint8 = rom_read8;
-    m->rom_if.read_uint16 = rom_read16;
-    m->rom_if.read_uint32 = rom_read32;
-    m->rom_if.write_uint8 = rom_write8;
-    m->rom_if.write_uint16 = rom_write16;
-    m->rom_if.write_uint32 = rom_write32;
 
     pci_bar_backing_iface(dev, MACH64_BAR_APER, &m->aper_if, m);
-    pci_bar_backing_iface(dev, PCI_ROM_BAR_INDEX, &m->rom_if, m);
     // The sparse I/O register file: not a BAR, a strapped decode.  Only
     // addresses congruent to the strapped base modulo 1024 are ours.
     pci_device_add_fixed_region(dev, PCI_SPACE_IO, 0, MACH64_IO_SPAN, MACH64_IO_MATCH_MASK, m->io_base, &m->io_if, m);

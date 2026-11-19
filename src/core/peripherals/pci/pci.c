@@ -792,6 +792,79 @@ bool pci_slot_entry_check(const pci_slot_decl_t *slots, const char *model, const
     return true;
 }
 
+// ============================================================================
+// The expansion ROM
+// ============================================================================
+// A card whose kind requires_prom runs its own FCode: the bus resolves it
+// before the card is built (the image its checkpoint carries on a restore,
+// else the slot's file or the offered candidates) and owns it as dev->rom.
+// A device that declares a ROM BAR and backs it with nothing of its own gets
+// the default face below: dev->rom as big-endian bytes, $FF past the image
+// (an unprogrammed chip), writes ignored.  Reads have no side effects, so
+// there is no peek.
+
+static uint8_t rom_bar_read8(void *ctx, uint32_t off) {
+    const pci_device_t *dev = (const pci_device_t *)ctx;
+    if (!dev->rom || off >= dev->rom_size)
+        return 0xFFu;
+    return dev->rom[off];
+}
+
+static uint16_t rom_bar_read16(void *ctx, uint32_t off) {
+    return (uint16_t)((rom_bar_read8(ctx, off) << 8) | rom_bar_read8(ctx, off + 1u));
+}
+
+static uint32_t rom_bar_read32(void *ctx, uint32_t off) {
+    return ((uint32_t)rom_bar_read16(ctx, off) << 16) | rom_bar_read16(ctx, off + 2u);
+}
+
+static void rom_bar_write8(void *ctx, uint32_t off, uint8_t v) {
+    const pci_device_t *dev = (const pci_device_t *)ctx;
+    LOG(2, "slot %d: write to the expansion ROM at +$%05X = $%02X — ignored (it is a ROM)", dev->slot_index, off, v);
+}
+
+static void rom_bar_write16(void *ctx, uint32_t off, uint16_t v) {
+    rom_bar_write8(ctx, off, (uint8_t)(v >> 8));
+}
+
+static void rom_bar_write32(void *ctx, uint32_t off, uint32_t v) {
+    rom_bar_write8(ctx, off, (uint8_t)(v >> 24));
+}
+
+// The default ROM-BAR face (see above).
+static const memory_interface_t pci_rom_bar_iface = {
+    .read_uint8 = rom_bar_read8,
+    .read_uint16 = rom_bar_read16,
+    .read_uint32 = rom_bar_read32,
+    .write_uint8 = rom_bar_write8,
+    .write_uint16 = rom_bar_write16,
+    .write_uint32 = rom_bar_write32,
+};
+
+// The expansion ROM a requires_prom kind runs, into *out (malloc'd, the
+// caller's): the restored image when the checkpoint carried one, else the
+// slot's file or the offered candidates.  False when none resolves.
+static bool resolve_card_rom(const pci_card_kind_t *kind, const slot_opts_t *opts, const rom_image_t *restored,
+                             rom_image_t *out) {
+    *out = (rom_image_t){0};
+    if (restored && restored->data && restored->size) {
+        uint8_t *copy = (uint8_t *)malloc(restored->size);
+        if (!copy)
+            return false;
+        memcpy(copy, restored->data, restored->size);
+        out->data = copy;
+        out->size = restored->size;
+        return true;
+    }
+    uint8_t *buf = NULL;
+    size_t size = 0;
+    if (!prom_load_card(pci_card_rom_id(kind), opts->rom[0] ? opts->rom : NULL, &buf, &size, NULL))
+        return false;
+    out->data = buf;
+    out->size = size;
+    return true;
+}
+
 // A device's checkpoint part, opened before it is built and closed after
 // (defined with the part's save, below).
 static void device_part_open(config_t *cfg, checkpoint_t *cp, const char *name, rom_image_t *rom);
@@ -930,8 +1003,34 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
             // A slot the document says nothing about builds with the card's
             // defaults.
             slot_opts_t none = {.slot = s->slot, .sense = MACHINE_SENSE_NONE};
-            pci_device_t *dev = kind->factory(s->slot, root->cfg, rom.data ? &rom : NULL, entry ? entry : &none);
+            const slot_opts_t *opts = entry ? entry : &none;
+            // A card that runs its own FCode is useless without it: Open
+            // Firmware runs it to build the node, and Mac OS loads the ndrv
+            // the same image publishes.  A card the document named that cannot
+            // resolve one has already failed machine.boot's validation;
+            // reaching here with nothing means a slot DEFAULT could not
+            // resolve, which degrades to an empty slot with a log rather than
+            // killing the boot.
+            rom_image_t prom = {0};
+            pci_device_t *dev = NULL;
+            if (kind->requires_prom && !resolve_card_rom(kind, opts, &rom, &prom))
+                LOG(0,
+                    "slot %d: no expansion ROM available for the %s — the card cannot enumerate without its own "
+                    "FCode, so the slot is left empty",
+                    s->slot, kind->display_name ? kind->display_name : kind->id);
+            else
+                dev = kind->factory(s->slot, root->cfg, kind->requires_prom ? &prom : (rom.data ? &rom : NULL), opts);
             free((void *)rom.data);
+            if (dev && prom.data) {
+                // The bus owns the ROM the card runs (pci_root_delete frees it)
+                dev->rom = (uint8_t *)prom.data;
+                dev->rom_size = prom.size;
+                prom.data = NULL;
+            }
+            free((void *)prom.data);
+            // A declared ROM BAR the device backs with nothing: the default face
+            if (dev && dev->decl && dev->decl->rom_size && dev->backing[PCI_ROM_BAR_INDEX].kind == PCI_BACKING_NONE)
+                pci_bar_backing_iface(dev, PCI_ROM_BAR_INDEX, &pci_rom_bar_iface, dev);
             if (!dev) {
                 LOG(1, "slot %d card factory '%s' returned NULL", s->slot, kind->id);
                 if (cp) {

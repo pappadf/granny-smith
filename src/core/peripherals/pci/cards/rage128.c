@@ -788,33 +788,6 @@ static void aper_write32(void *ctx, uint32_t off, uint32_t v) {
     aper_write16(ctx, off + 2u, (uint16_t)v);
 }
 
-// ============================================================
-// The expansion ROM
-// ============================================================
-
-static uint8_t rom_read8(void *ctx, uint32_t off) {
-    rage128_t *r = (rage128_t *)ctx;
-    if (!r->dev->rom || off >= r->dev->rom_size)
-        return 0xFFu;
-    return r->dev->rom[off];
-}
-static uint16_t rom_read16(void *ctx, uint32_t off) {
-    return (uint16_t)((rom_read8(ctx, off) << 8) | rom_read8(ctx, off + 1u));
-}
-static uint32_t rom_read32(void *ctx, uint32_t off) {
-    return ((uint32_t)rom_read16(ctx, off) << 16) | rom_read16(ctx, off + 2u);
-}
-static void rom_write8(void *ctx, uint32_t off, uint8_t v) {
-    (void)ctx;
-    LOG(2, "Rage 128: write to the expansion ROM at +$%05X = $%02X — ignored", off, v);
-}
-static void rom_write16(void *ctx, uint32_t off, uint16_t v) {
-    rom_write8(ctx, off, (uint8_t)(v >> 8));
-}
-static void rom_write32(void *ctx, uint32_t off, uint32_t v) {
-    rom_write8(ctx, off, (uint8_t)(v >> 24));
-}
-
 // Stamp out the read_*/peek_* pairs around a face's rd8/16/32.
 #define R128_READ_FACE(face)                                                                                           \
     static uint8_t face##_read8(void *c, uint32_t a) {                                                                 \
@@ -1798,30 +1771,10 @@ static pci_device_t *r128_build(int slot_index, config_t *cfg, const rom_image_t
     r->dev = dev;
     r->cfg = cfg;
 
-    // The card cannot enumerate without its own FCode (see mach64gx.c for
-    // why a missing ROM degrades to an empty slot rather than a failed boot).
-    uint8_t *prom = NULL;
-    size_t prom_size = 0;
-    char *prom_path = NULL;
-    if (rom && rom->data && rom->size) {
-        prom = (uint8_t *)malloc(rom->size);
-        if (prom) {
-            memcpy(prom, rom->data, rom->size);
-            prom_size = rom->size;
-        }
-    }
-    if (!prom && !prom_load_card("rage128", opts->rom[0] ? opts->rom : NULL, &prom, &prom_size, &prom_path)) {
-        LOG(0,
-            "slot %d: no expansion ROM available for the Rage 128 — the card cannot enumerate without its own "
-            "FCode, so the slot is left empty",
-            slot_index);
-        free(r);
-        free(dev);
-        return NULL;
-    }
-    dev->rom = prom;
-    dev->rom_size = prom_size;
-    free(prom_path);
+    // The expansion ROM the card runs is the bus's (requires_prom): resolved
+    // before this factory and kept as dev->rom, with the bus's default
+    // ROM-BAR face over it.
+    size_t prom_size = rom ? rom->size : 0;
 
     const char *memory = slot_opts_option(opts, "memory");
     r->vram_size = memory ? r128_memory_by_id(memory) : R128_VRAM_16MB;
@@ -1832,7 +1785,6 @@ static pci_device_t *r128_build(int slot_index, config_t *cfg, const rom_image_t
         free(r->vram);
         free(r->blank);
         free(r->compose);
-        free(dev->rom);
         free(r);
         free(dev);
         return NULL;
@@ -1871,17 +1823,10 @@ static pci_device_t *r128_build(int slot_index, config_t *cfg, const rom_image_t
                                       .peek_uint8 = aper_peek8,
                                       .peek_uint16 = aper_peek16,
                                       .peek_uint32 = aper_peek32};
-    r->rom_if = (memory_interface_t){.read_uint8 = rom_read8,
-                                     .read_uint16 = rom_read16,
-                                     .read_uint32 = rom_read32,
-                                     .write_uint8 = rom_write8,
-                                     .write_uint16 = rom_write16,
-                                     .write_uint32 = rom_write32};
 
     pci_bar_backing_iface(dev, R128_BAR_APER, &r->aper_if, r);
     pci_bar_backing_iface(dev, R128_BAR_IO, &r->io_if, r);
     pci_bar_backing_iface(dev, R128_BAR_REGS, &r->regs_if, r);
-    pci_bar_backing_iface(dev, PCI_ROM_BAR_INDEX, &r->rom_if, r);
 
     // The rasteriser: WebGPU where the host has a GPU worker to attach,
     // the software walker otherwise (and always natively).
