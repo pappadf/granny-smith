@@ -31,10 +31,9 @@
 #define AWACS_R1_SPEAKER_MUTE   0x0080u
 #define AWACS_R1_HEADPHONE_MUTE 0x0200u
 
-// D/A attenuation ladder: 4-bit code, 0 = loudest, -1.5 dB per step, as
-// x65536 gains (the ASCO 2300 ladder — identical to Singer's; the chime
-// volume law (7-vol)*2 rides on it).
-extern const uint32_t awacs_atten_x65536[16];
+// The D/A attenuation ladder (4-bit code, 0 = loudest, -1.5 dB per step; the
+// chime volume law (7-vol)*2 rides on it) is audio_atten_1p5db_x65536 in
+// audio_out.h, shared with the AV Singer.
 
 // The speaker output path ("volume C", register 4: left code in bits
 // 9:6, right in 3:0) plus the register-1 speaker mute, as x65536 gains.

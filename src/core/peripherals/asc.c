@@ -311,15 +311,6 @@ static uint32_t asc_rate_hz(const asc_t *asc) {
     return asc_rate_table[asc->clock_rate & 3];
 }
 
-// Saturates a 32-bit mix result to int16
-static int16_t sat16(int32_t v) {
-    if (v > INT16_MAX)
-        return INT16_MAX;
-    if (v < INT16_MIN)
-        return INT16_MIN;
-    return (int16_t)v;
-}
-
 // Flushes the pending push batch to the shared host audio stream
 static void asc_flush(asc_t *asc) {
     if (asc->out_count <= 0)
@@ -368,8 +359,8 @@ static void asc_produce_frame(asc_t *asc, int16_t *left, int16_t *right) {
         // Advance phase accumulator by the voice's frequency increment
         asc->wave_phase[v] = (asc->wave_phase[v] + asc->wave_incr[v]) & PHASE_MASK;
     }
-    *left = sat16(pair[0] << 7);
-    *right = sat16(pair[1] << 7);
+    *left = audio_sat16(pair[0] << 7);
+    *right = audio_sat16(pair[1] << 7);
 }
 
 // Scheduler callback: the ASC sample-rate producer. One frame per tick of

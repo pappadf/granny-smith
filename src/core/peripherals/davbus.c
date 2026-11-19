@@ -84,10 +84,6 @@ static void davbus_gains(const davbus_host_t *h, uint32_t *gl, uint32_t *gr, boo
         h->post_gains(h->post_ctx, gl, gr, mute);
 }
 
-static int16_t clamp16(int32_t v) {
-    return (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
-}
-
 // Render whole frames from the port byte stream into the host stream:
 // 16-bit interleaved stereo, big-endian unless the byte-swap register
 // says little, through the codec's and the family's output gains.
@@ -105,8 +101,8 @@ static void awacs_render(davbus_host_t *h, const uint8_t *bytes, uint32_t nframe
         if (!mute) {
             l = (int16_t)(le ? (f[1] << 8) | f[0] : (f[0] << 8) | f[1]);
             r = (int16_t)(le ? (f[3] << 8) | f[2] : (f[2] << 8) | f[3]);
-            l = clamp16((int32_t)(((int64_t)l * (int64_t)gl) >> 16));
-            r = clamp16((int32_t)(((int64_t)r * (int64_t)gr) >> 16));
+            l = audio_sat16((int32_t)(((int64_t)l * (int64_t)gl) >> 16));
+            r = audio_sat16((int32_t)(((int64_t)r * (int64_t)gr) >> 16));
         }
         h->stage[i * 2] = l;
         h->stage[i * 2 + 1] = r;
@@ -118,8 +114,7 @@ static void awacs_render(davbus_host_t *h, const uint8_t *bytes, uint32_t nframe
             w->peak = ar;
     }
     uint32_t rate = awacs_rate(w);
-    if (audio_out_rate() != rate)
-        audio_out_set_rate(rate);
+    audio_out_ensure_rate(rate);
     audio_out_push(h->stage, (int)nframes, 7); // attenuation already applied
     w->frames_pushed += nframes;
 }

@@ -135,10 +135,9 @@ static void awacs_render_half(config_t *cfg, uint32_t half) {
             a->snd_peak = ar;
     }
     uint32_t rate = awacs_rate(a);
-    if (audio_out_rate() != rate)
-        audio_out_set_rate(rate);
+    audio_out_ensure_rate(rate);
     audio_out_push(st->snd_stage, (int)frames, 7); // attenuation already applied
-    a->snd_halves++;
+    a->snd_frames += frames; // sample frames, the unit machine.sound.frames is in
 }
 
 // Sound-out half-buffer completion: render the half that just finished,
@@ -328,7 +327,7 @@ static bool pdm_snd_in_enabled(void *ctx) {
 
 static uint64_t pdm_snd_frames(void *ctx) {
     pdm_amic_t *a = snd_amic_ctx(ctx);
-    return a ? a->snd_halves : 0;
+    return a ? a->snd_frames : 0;
 }
 
 static int32_t pdm_snd_peak(void *ctx) {

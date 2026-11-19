@@ -150,7 +150,7 @@ typedef struct pdm_amic {
     // ever addressed by PDM software.
     uint16_t codec[8];
     double snd_half_start_ns; // when the in-flight output half began playing
-    uint32_t snd_halves; // output half-buffers rendered since power-on
+    uint64_t snd_frames; // output sample frames rendered since power-on (machine.sound.frames)
     int32_t snd_peak; // loudest |sample| pushed to the host since power-on
     uint64_t snd_underruns; // half-buffers the guest never consumed (machine.sound.overruns)
 } pdm_amic_t;

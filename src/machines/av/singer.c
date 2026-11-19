@@ -61,7 +61,7 @@ typedef enum {
 
 struct av_singer {
     // --- plain data (checkpointed up to `cfg`) ---
-    uint64_t frames; // frame ticks serviced since power-on
+    uint64_t frames; // output sample frames pushed since power-on (machine.sound.frames)
     uint32_t overruns; // frame boundaries that passed unserviced
     uint32_t open_rate; // rate the host stream was opened at
     uint16_t last_com; // previous sndComCtl (edge-triggered logging)
@@ -176,11 +176,6 @@ static uint32_t singer_size(av_singer_t *s) {
 // The frame engine
 // ============================================================
 
-// D/A attenuation ladder: 1.5 dB steps as x65536 gains.
-static const uint32_t singer_atten_x65536[16] = {
-    65536, 55142, 46396, 39037, 32846, 27636, 23253, 19565, 16462, 13851, 11654, 9806, 8250, 6942, 5841, 4915,
-};
-
 // A/D gain ladder (singerCtl bits 12-19): the same 1.5 dB
 // steps upwards, 0 dB to +22.5 dB.  The driver's `singerCtlInit` selects
 // +7.5 dB on both channels, and the speech front end's AGC drives this
@@ -194,8 +189,8 @@ static const uint32_t singer_adgain_x65536[16] = {
 // applied — the capture sink then records exactly what the codec drives.
 static void singer_stage_output(av_singer_t *s, uint32_t base, uint32_t nframes) {
     uint32_t ctl = av_psc_snd_read32(singer_st(s)->psc, 0x04); // singerCtl
-    uint32_t gl = singer_atten_x65536[(ctl >> 8) & 15]; // pLeftAtten
-    uint32_t gr = singer_atten_x65536[(ctl >> 4) & 15]; // pRightAtten
+    uint32_t gl = audio_atten_1p5db_x65536[(ctl >> 8) & 15]; // pLeftAtten
+    uint32_t gr = audio_atten_1p5db_x65536[(ctl >> 4) & 15]; // pRightAtten
     bool mute = (ctl & (1u << 22)) != 0;
     for (uint32_t i = 0; i < nframes; i++) {
         uint32_t addr = base + i * 4;
@@ -252,11 +247,7 @@ static void singer_ain_dither(av_singer_t *s, uint32_t nframes) {
         h *= 1274126177u;
         h ^= h >> 16;
         int32_t v = (int32_t)s->stage[i] + (int32_t)(h % 3u) - 1; // -1, 0, +1
-        if (v > 32767)
-            v = 32767;
-        if (v < -32768)
-            v = -32768;
-        s->stage[i] = (int16_t)v;
+        s->stage[i] = audio_sat16(v);
     }
 }
 
@@ -295,12 +286,7 @@ static void singer_ain_pull(av_singer_t *s, uint32_t nframes, uint32_t rate) {
     }
     if (s->ain_gain != 100) {
         for (uint32_t i = 0; i < nframes * 2; i++) {
-            int32_t v = (int32_t)s->stage[i] * s->ain_gain / 100;
-            if (v > 32767)
-                v = 32767;
-            if (v < -32768)
-                v = -32768;
-            s->stage[i] = (int16_t)v;
+            s->stage[i] = audio_sat16((int32_t)s->stage[i] * s->ain_gain / 100);
         }
     }
     singer_ain_dither(s, nframes);
@@ -591,10 +577,9 @@ static void singer_fill_input(av_singer_t *s, uint32_t base, uint32_t nframes) {
 
     if (agl != 65536 || agr != 65536) {
         for (uint32_t i = 0; i < nframes; i++) {
-            int64_t l = ((int64_t)s->stage[i * 2] * agl) >> 16;
-            int64_t r = ((int64_t)s->stage[i * 2 + 1] * agr) >> 16;
-            s->stage[i * 2] = (int16_t)(l > 32767 ? 32767 : l < -32768 ? -32768 : l);
-            s->stage[i * 2 + 1] = (int16_t)(r > 32767 ? 32767 : r < -32768 ? -32768 : r);
+            // A gain of at most +22.5 dB keeps the int16 product inside int32
+            s->stage[i * 2] = audio_sat16((int32_t)(((int64_t)s->stage[i * 2] * agl) >> 16));
+            s->stage[i * 2 + 1] = audio_sat16((int32_t)(((int64_t)s->stage[i * 2 + 1] * agr) >> 16));
         }
     }
     if (base != s->dbg_in_base || nframes != s->dbg_in_frames || singer_rate(s) != s->dbg_in_rate ||
@@ -634,10 +619,10 @@ static void singer_frame_event(void *source, uint64_t data) {
 
     if (com & SND_OUT_EN) {
         uint32_t base = av_psc_snd_read32(st->psc, 0x14) + half * size * 4; // sndOutBase
-        if (audio_out_rate() != rate)
-            audio_out_set_rate(rate);
+        audio_out_ensure_rate(rate);
         singer_stage_output(s, base, size);
         audio_out_push(s->stage, (int)size, 7);
+        s->frames += size; // sample frames, the unit machine.sound.frames is in
     }
     if (com & SND_IN_EN) {
         uint32_t base = av_psc_snd_read32(st->psc, 0x10) + half * size * 4; // sndInBase
@@ -672,8 +657,6 @@ static void singer_frame_event(void *source, uint64_t data) {
         if (st->dsp)
             av_dsp_ext1_tick(st->dsp);
     }
-
-    s->frames++;
 
     // Next boundary of the absolute formula (re-reads rate/size next tick
     // so reprogramming takes effect at a frame edge, like the hardware).

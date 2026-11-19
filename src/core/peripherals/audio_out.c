@@ -22,6 +22,11 @@
 
 LOG_USE_CATEGORY_NAME("audio");
 
+// The 1.5 dB D/A attenuation ladder the codec engines share (audio_out.h).
+const uint32_t audio_atten_1p5db_x65536[16] = {
+    65536, 55142, 46396, 39037, 32846, 27636, 23253, 19565, 16462, 13851, 11654, 9806, 8250, 6942, 5841, 4915,
+};
+
 // Forward declaration — class descriptor is at the bottom of the file.
 static const class_desc_t audio_capture_class;
 
