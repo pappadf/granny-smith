@@ -40,7 +40,7 @@ fpu_state_t *fpu_init(void) {
     memset(fpu, 0, sizeof(fpu_state_t));
     // Hardware reset: data registers are non-signaling NaNs (MC68882UM §2.2)
     for (int i = 0; i < 8; i++)
-        fpu->fp[i] = (float80_reg_t){0x7FFF, 0xFFFFFFFFFFFFFFFFULL};
+        fpu->fp[i] = FP80_QNAN;
     return fpu;
 }
 
@@ -573,6 +573,23 @@ int fpu_fsave(fpu_state_t *fpu, uint32_t addr) {
     return 4 + FSAVE_IDLE_SIZE;
 }
 
+// A FRESTORE of the null frame: the reset function (MC68882UM §6.4.2.1),
+// from the idle/busy phase only.  Once the FPU is in the reset phase
+// (hardware reset, a null restore, or an FSAVE) the programmer's model is
+// left alone (see fpu_frestore); the 68040 path follows the same discipline.
+static void fpu_null_reset(fpu_state_t *fpu) {
+    if (fpu->initialized) {
+        for (int i = 0; i < 8; i++)
+            fpu->fp[i] = FP80_QNAN;
+        fpu->fpcr = 0;
+        fpu->fpsr = 0;
+        fpu->fpiar = 0;
+    }
+    fpu->pre_exc_mask = 0;
+    fpu->exceptional_operand = FP80_ZERO;
+    fpu->initialized = false;
+}
+
 // Read FRESTORE state frame from memory. Returns total frame size in bytes,
 // or -1 for a frame that is not this part's (the caller's format error).
 int fpu_frestore(fpu_state_t *fpu, uint32_t addr) {
@@ -598,16 +615,7 @@ int fpu_frestore(fpu_state_t *fpu, uint32_t addr) {
         // 68882, and the 68882 idle frame carries no data registers to bring
         // it back.  The m68k-sail model resets unconditionally (its FSAVE
         // always writes a null frame); see the m68k_vectors exclusions.
-        if (fpu->initialized) {
-            for (int i = 0; i < 8; i++)
-                fpu->fp[i] = (float80_reg_t){0x7FFF, 0xFFFFFFFFFFFFFFFFULL};
-            fpu->fpcr = 0;
-            fpu->fpsr = 0;
-            fpu->fpiar = 0;
-        }
-        fpu->pre_exc_mask = 0;
-        fpu->exceptional_operand = FP80_ZERO;
-        fpu->initialized = false;
+        fpu_null_reset(fpu);
         return 4;
     }
 
@@ -661,16 +669,7 @@ int fpu_frestore040(fpu_state_t *fpu, uint32_t addr) {
     if (version == 0) {
         // Null frame: the reset state, from the idle/busy phase only (same
         // discipline and evidence as the 6888x path above).
-        if (fpu->initialized) {
-            for (int i = 0; i < 8; i++)
-                fpu->fp[i] = (float80_reg_t){0x7FFF, 0xFFFFFFFFFFFFFFFFULL};
-            fpu->fpcr = 0;
-            fpu->fpsr = 0;
-            fpu->fpiar = 0;
-        }
-        fpu->pre_exc_mask = 0;
-        fpu->exceptional_operand = FP80_ZERO;
-        fpu->initialized = false;
+        fpu_null_reset(fpu);
         return 4;
     }
 
@@ -1581,6 +1580,24 @@ static void fpu_update_accrued(fpu_state_t *fpu) {
         fpu->fpsr |= FPACC_INEX;
 }
 
+// The vector of the highest-priority enabled exception (MC68882UM §6.1:
+// BSUN > SNAN > OPERR > OVFL > UNFL > DZ > INEX); `enabled` is non-zero
+static uint32_t fpu_exc_vector(uint32_t enabled) {
+    if (enabled & FPEXC_BSUN)
+        return FPVEC_BSUN;
+    if (enabled & FPEXC_SNAN)
+        return FPVEC_SNAN;
+    if (enabled & FPEXC_OPERR)
+        return FPVEC_OPERR;
+    if (enabled & FPEXC_OVFL)
+        return FPVEC_OVFL;
+    if (enabled & FPEXC_UNFL)
+        return FPVEC_UNFL;
+    if (enabled & FPEXC_DZ)
+        return FPVEC_DZ;
+    return FPVEC_INEX;
+}
+
 // Check FPSR exception status against FPCR enables; take exception if match
 bool fpu_check_exceptions(cpu_t *cpu, fpu_state_t *fpu) {
     // FPCR bits 15:8 enable; FPSR bits 15:8 status — same positions
@@ -1595,21 +1612,7 @@ bool fpu_check_exceptions(cpu_t *cpu, fpu_state_t *fpu) {
         return false;
 
     // Select highest-priority exception vector
-    uint32_t vector;
-    if (enabled & FPEXC_BSUN)
-        vector = FPVEC_BSUN;
-    else if (enabled & FPEXC_SNAN)
-        vector = FPVEC_SNAN;
-    else if (enabled & FPEXC_OPERR)
-        vector = FPVEC_OPERR;
-    else if (enabled & FPEXC_OVFL)
-        vector = FPVEC_OVFL;
-    else if (enabled & FPEXC_UNFL)
-        vector = FPVEC_UNFL;
-    else if (enabled & FPEXC_DZ)
-        vector = FPVEC_DZ;
-    else
-        vector = FPVEC_INEX;
+    uint32_t vector = fpu_exc_vector(enabled);
 
     LOG(3, "fpu exception: vector=$%02X fpsr=$%08X fpcr=$%08X", vector, fpu->fpsr, fpu->fpcr);
 
@@ -1638,21 +1641,7 @@ bool fpu_pre_instruction_check(cpu_t *cpu, fpu_state_t *fpu, bool conditional) {
         return false;
 
     // Select highest-priority exception vector
-    uint32_t vector;
-    if (enabled & FPEXC_BSUN)
-        vector = FPVEC_BSUN;
-    else if (enabled & FPEXC_SNAN)
-        vector = FPVEC_SNAN;
-    else if (enabled & FPEXC_OPERR)
-        vector = FPVEC_OPERR;
-    else if (enabled & FPEXC_OVFL)
-        vector = FPVEC_OVFL;
-    else if (enabled & FPEXC_UNFL)
-        vector = FPVEC_UNFL;
-    else if (enabled & FPEXC_DZ)
-        vector = FPVEC_DZ;
-    else
-        vector = FPVEC_INEX;
+    uint32_t vector = fpu_exc_vector(enabled);
 
     LOG(3, "fpu pre-instruction exception: vector=$%02X fpsr=$%08X fpcr=$%08X", vector, fpu->fpsr, fpu->fpcr);
 
