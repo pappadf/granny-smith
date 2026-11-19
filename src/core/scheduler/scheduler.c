@@ -1575,6 +1575,23 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
             GS_ASSERT(s->cpu_events->timestamp + max_overshoot_cycles(s) >= s->saved.cpu_cycles);
         }
 
+        // Fire any events that are now due.  This comes BEFORE the debugger
+        // probe, not after it: a breakpoint stop leaves the loop, and an
+        // event the instruction just ran past (one-instruction overshoot,
+        // allowed above) would otherwise stay queued behind cpu_cycles --
+        // a stopped machine with a head event in the past, which every
+        // strict check below and the next run's entry check reject (#419).
+        // It is also the state the next instruction runs in, so a breakpoint
+        // condition or a logpoint message sees what the CPU will see.
+        process_event_queue(&s->cpu_events, s->saved.cpu_cycles);
+
+        // Strict now, not relaxed as above: process_event_queue fires every
+        // event due at or before cpu_cycles -- including any a callback or a
+        // periodic re-arm queued at or before it -- so whatever is left is
+        // in the future, and a callback cannot have scheduled into the past.
+        if (s->cpu_events != NULL)
+            GS_ASSERT(s->cpu_events->timestamp >= s->saved.cpu_cycles);
+
         // Handle debugger single-step
         if (debugger_active) {
             if (debug_break_and_trace()) {
@@ -1585,16 +1602,6 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
                 break;
             }
         }
-
-        // Fire any events that are now due
-        process_event_queue(&s->cpu_events, s->saved.cpu_cycles);
-
-        // Strict now, not relaxed as above: process_event_queue fires every
-        // event due at or before cpu_cycles -- including any a callback or a
-        // periodic re-arm queued at or before it -- so whatever is left is
-        // in the future, and a callback cannot have scheduled into the past.
-        if (s->cpu_events != NULL)
-            GS_ASSERT(s->cpu_events->timestamp >= s->saved.cpu_cycles);
 
         if (!s->saved.running) {
             reconcile_sprint(s);

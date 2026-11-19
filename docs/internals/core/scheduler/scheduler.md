@@ -581,6 +581,10 @@ while (remaining_cycles > 0) {
 
     // 4. Fire events due at or before the new cpu_cycles
     process_event_queue(&cpu_events, cpu_cycles);
+
+    // 5. Debugger probe (breakpoints, logpoints, watchpoints) -- after step 4,
+    //    so a breakpoint stop never leaves an overdue event queued (#419)
+    if (debugger_active && debug_break_and_trace()) break;
 }
 ```
 
