@@ -127,7 +127,6 @@ typedef struct mcu_state {
     struct iop *scc_iop; // SCC behind an Apple PIC/IOP at island $C000
     struct iop *swim_iop; // SWIM/ADB behind the second IOP at island $1E000
     struct scsi_53c96 *scsi96_ext; // second 53C96 — external bus (regs $F402, pdma $F502)
-    struct scsi *scsi_ext; // external SCSI bus (no default devices in v1)
     uint8_t scc_irq_or; // level-4 requesters: bit0 = SCC chip, bit1 = SCC IOP host INT
     uint8_t scsi_irq_or; // VIA2 CB2 requesters: bit0 = internal 53C96, bit1 = external
 

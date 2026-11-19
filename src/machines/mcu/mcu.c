@@ -693,6 +693,11 @@ static void mcu_bus_reset(config_t *cfg) {
         st->bus_mmu->enabled = false;
         mmu_invalidate_tlb(st->bus_mmu);
     }
+    // The 53C96 chips are on /RESET as on PDM and TNT: their configuration
+    // and FIFO clear (the buses themselves are reset by the shared chain).
+    // scsi96_ext is NULL on the Q700.
+    scsi_53c96_reset(st->scsi96);
+    scsi_53c96_reset(st->scsi96_ext);
     system_reset_common_devices(cfg);
 }
 
@@ -718,9 +723,9 @@ static void mcu_teardown(config_t *cfg) {
             scsi_53c96_delete(st->scsi96_ext);
             st->scsi96_ext = NULL;
         }
-        if (st->scsi_ext) {
-            scsi_delete(st->scsi_ext);
-            st->scsi_ext = NULL;
+        if (cfg->scsi2) {
+            scsi_delete(cfg->scsi2);
+            cfg->scsi2 = NULL;
         }
         if (st->sonic) {
             sonic_delete(st->sonic);

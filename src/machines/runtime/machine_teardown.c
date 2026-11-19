@@ -31,6 +31,12 @@ void machine_teardown_config_devices(config_t *cfg) {
         scsi_delete(cfg->scsi);
         cfg->scsi = NULL;
     }
+    // A family that orders its second bus against its own devices frees it
+    // itself (TNT, MCU); this catches the rest.
+    if (cfg->scsi2) {
+        scsi_delete(cfg->scsi2);
+        cfg->scsi2 = NULL;
+    }
     // NULL on the single-VIA machines (MDU, OSS, AV, and both PowerPC
     // families) -- they simply pass through.
     if (cfg->via2) {

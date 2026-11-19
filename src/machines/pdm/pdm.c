@@ -553,7 +553,7 @@ static void pdm_bus_reset(config_t *cfg) {
     st->icr_sources = 0;
     pdm_hmc_remap(cfg);
     pdm_video_update(cfg); // blanked power-on raster follows the reset regs
-    system_reset_common_devices(cfg); // scsi/scsi2, NuBus, PCI -- the same net
+    system_reset_common_devices(cfg); // scsi, NuBus, PCI -- the same net
 }
 
 static void pdm_teardown(config_t *cfg) {

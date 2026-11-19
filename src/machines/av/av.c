@@ -951,6 +951,9 @@ static void av_bus_reset(config_t *cfg) {
     // The floppy CONTROLLER; cfg->floppy (the drive and its media) is reset
     // by the shared chain.
     av_new_age_reset(st->fdc);
+    // The 53C96 is on /RESET as on PDM and TNT: its configuration and FIFO
+    // clear (the bus itself is reset by the shared chain).
+    scsi_53c96_reset(st->scsi96);
     system_reset_common_devices(cfg);
 }
 

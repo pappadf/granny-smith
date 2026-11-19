@@ -640,7 +640,11 @@ The two channels are separate namespaces in the object model:
 `machine.scsi` is channel 0 (bays 0-3, Open Firmware's `disk0`..`disk3`)
 and `machine.scsi2` is channel 1 (bays 4-6, plus the 700's two rear
 drives). This is the first machine here where a SCSI id does not identify a
-device on its own, and `scsi_init_named` exists for it.
+device on its own, and `scsi_init_named` exists for it.  The second bus is
+`cfg->scsi2` (as on the Quadra 900/950), so the shared media path
+(`system_media_*_std`, `MEDIA_BUS_SCSI2`) and the shared /RESET
+(`system_reset_common_devices`) reach it as they reach `cfg->scsi`: a
+restart clears a PREVENT lock on the 53C94's CD-ROM drive.
 
 The bays say where a drive physically sits, not which IDs a channel has:
 either channel takes a drive at any ID 0-6 (7 is the 53C825A's own). An ID

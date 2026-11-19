@@ -358,15 +358,16 @@ void system_machine_power_cycle(void) {
 void system_reset_common_devices(config_t *cfg) {
     if (!cfg)
         return;
-    // NOTE: no second SCSI bus here.  The Network Servers have one, but there
-    // is no `cfg->scsi2` field -- config_t carries one `scsi`, and the ANS's
-    // second bus lives in the TNT state, so its family bus_reset is where it
-    // belongs.
     if (cfg->scsi)
         // A reset condition on the wire: the bus goes free and every target
         // returns to its power-on state (scsi_bus_reset, called from
         // scsi_reset); on a 5380 machine the chip's registers clear too.
         scsi_reset_pin(cfg->scsi);
+    // The second bus is on the same net: a CD the OS locked with PREVENT
+    // ALLOW MEDIUM REMOVAL on the 7500/8500/9500's 53C94 bus is released by
+    // a restart, as on the first.
+    if (cfg->scsi2)
+        scsi_reset_pin(cfg->scsi2);
     // Both VIAs: on the net per the Guide's destination list, and the reason
     // the ROM overlay comes back (VIA1's Overlay output goes high when the
     // chip resets).  via2 is NULL on the single-VIA machines.
@@ -1663,7 +1664,7 @@ bool system_attach_scsi_cdrom(struct config *restrict config, struct scsi *bus, 
 
 // === Media attach ===========================================================
 //
-// The standard substrate implementation over cfg->floppy + cfg->scsi, bound
+// The standard substrate implementation over cfg->floppy + cfg->scsi/scsi2, bound
 // into every Mac substrate's vtable (the Lisa implements its own: parallel
 // FDC + ProFile).  It hands an opened image to the same device paths a fresh
 // mount uses, minus the open-by-path step.
@@ -1671,6 +1672,19 @@ bool system_attach_scsi_cdrom(struct config *restrict config, struct scsi *bus, 
 // Attach one opened medium to the running machine.  Returns 0 on success
 // (the machine owns the handle), <0 when the medium cannot be attached (the
 // caller must close the handle).
+// The machine-level SCSI bus a media bus names (machine.scsi, machine.scsi2),
+// or NULL for any other bus kind or a machine without it.
+static scsi_t *media_scsi_bus(config_t *cfg, media_bus_t bus) {
+    switch (bus) {
+    case MEDIA_BUS_SCSI:
+        return cfg->scsi;
+    case MEDIA_BUS_SCSI2:
+        return cfg->scsi2;
+    default:
+        return NULL;
+    }
+}
+
 int system_media_attach_std(config_t *cfg, const media_slot_t *slot) {
     switch (slot->bus) {
     case MEDIA_BUS_FLOPPY:
@@ -1679,7 +1693,8 @@ int system_media_attach_std(config_t *cfg, const media_slot_t *slot) {
         config_add_image(cfg, slot->img);
         return 0;
     case MEDIA_BUS_SCSI:
-        return system_media_attach_scsi_bus(cfg, cfg->scsi, slot);
+    case MEDIA_BUS_SCSI2:
+        return system_media_attach_scsi_bus(cfg, media_scsi_bus(cfg, slot->bus), slot);
     case MEDIA_BUS_CARD: {
         media_slot_t on_card = *slot;
         on_card.unit = slot->unit % CARD_SCSI_IDS; // the SCSI id on that card's bus
@@ -1753,7 +1768,8 @@ bool system_media_present_std(config_t *cfg, media_bus_t bus, int unit) {
     case MEDIA_BUS_FLOPPY:
         return sys_fd_is_inserted(cfg, unit);
     case MEDIA_BUS_SCSI:
-        return system_media_present_scsi_bus(cfg->scsi, unit);
+    case MEDIA_BUS_SCSI2:
+        return system_media_present_scsi_bus(media_scsi_bus(cfg, bus), unit);
     case MEDIA_BUS_CARD:
         return system_media_present_scsi_bus(system_card_scsi_bus(cfg, unit), unit % CARD_SCSI_IDS);
     default:
@@ -1766,7 +1782,8 @@ int system_media_eject_std(config_t *cfg, media_bus_t bus, int unit) {
     case MEDIA_BUS_FLOPPY:
         return (cfg->floppy && unit >= 0 && floppy_drive_eject(cfg->floppy, (unsigned)unit)) ? 0 : -1;
     case MEDIA_BUS_SCSI:
-        return system_media_eject_scsi_bus(cfg->scsi, unit);
+    case MEDIA_BUS_SCSI2:
+        return system_media_eject_scsi_bus(media_scsi_bus(cfg, bus), unit);
     case MEDIA_BUS_CARD:
         return system_media_eject_scsi_bus(system_card_scsi_bus(cfg, unit), unit % CARD_SCSI_IDS);
     default:
@@ -1777,7 +1794,7 @@ int system_media_eject_std(config_t *cfg, media_bus_t bus, int unit) {
 image_t *system_media_image_std(config_t *cfg, media_bus_t bus, int unit) {
     if (bus == MEDIA_BUS_CARD)
         return system_media_image_scsi_bus(system_card_scsi_bus(cfg, unit), unit % CARD_SCSI_IDS);
-    return bus == MEDIA_BUS_SCSI ? system_media_image_scsi_bus(cfg->scsi, unit) : NULL;
+    return system_media_image_scsi_bus(media_scsi_bus(cfg, bus), unit);
 }
 
 image_t *system_media_image(config_t *cfg, media_bus_t bus, int unit) {

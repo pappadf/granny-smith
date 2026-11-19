@@ -208,13 +208,13 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     // TNT already does it this way (tnt.c: "scsi2"), and scsi.h documents the
     // second-bus case; the Q900 predates the helper and was never converted.
     machine_part_begin(cfg, cp, "scsi2");
-    st->scsi_ext = machine_scsi_bus_init(cfg, cp, "scsi2");
-    machine_part(cfg, cp, "scsi2", part_save_scsi, st->scsi_ext);
+    cfg->scsi2 = machine_scsi_bus_init(cfg, cp, "scsi2");
+    machine_part(cfg, cp, "scsi2", part_save_scsi, cfg->scsi2);
     machine_part_begin(cfg, cp, "scsi96_ext");
     st->scsi96_ext = scsi_53c96_init(cfg->scheduler, 25000000, cp);
     machine_part(cfg, cp, "scsi96_ext", part_save_scsi96, st->scsi96_ext);
     scsi_53c96_set_irq_callback(st->scsi96_ext, q900_scsi96_ext_irq, cfg);
-    scsi_53c96_attach_bus(st->scsi96_ext, st->scsi_ext);
+    scsi_53c96_attach_bus(st->scsi96_ext, cfg->scsi2);
 
     // SONIC Ethernet (20 MHz-class part on the Q900; no wire in v1).
     machine_part_begin(cfg, cp, "sonic");

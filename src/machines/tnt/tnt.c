@@ -539,8 +539,7 @@ static void tnt_scsi0_port_init(config_t *cfg) {
 // — and channel 1 gets the second one.  A Macintosh board seats neither
 // card and this does nothing.
 static void tnt_fwscsi_attach(config_t *cfg) {
-    tnt_state_t *st = tnt_st(cfg);
-    struct scsi *bus[2] = {cfg->scsi, st->scsi2};
+    struct scsi *bus[2] = {cfg->scsi, cfg->scsi2};
     for (const pci_slot_decl_t *d = cfg->machine->pci_slots; d && d->slot; d++) {
         // A 53C825A card in a socket brings its own bus (machine_card_scsi_buses).
         if (d->kind == PCI_SLOT_SOCKET)
@@ -894,8 +893,8 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // it as `machine.scsi2`.  On the Macintosh boards `machine.scsi2` is
     // the 53C94's bus instead (below), so every board has one.
     machine_part_begin(cfg, cp, "scsi2");
-    st->scsi2 = machine_scsi_bus_init(cfg, cp, "scsi2");
-    machine_part(cfg, cp, "scsi2", part_save_scsi, st->scsi2);
+    cfg->scsi2 = machine_scsi_bus_init(cfg, cp, "scsi2");
+    machine_part(cfg, cp, "scsi2", part_save_scsi, cfg->scsi2);
     machine_part_begin(cfg, cp, "scsi96");
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp); // 25 MHz (OF clock-frequency)
     machine_part(cfg, cp, "scsi96", part_save_scsi96, st->scsi96);
@@ -904,7 +903,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // connector ("a SCSI bus for external SCSI devices and for the internal
     // CD-ROM drive", Power Macintosh 7500/8500 Developer Note, S3)
     if (tnt_board(cfg)->kind == TNT_BOARD_MAC)
-        scsi_53c96_attach_bus(st->scsi96, st->scsi2);
+        scsi_53c96_attach_bus(st->scsi96, cfg->scsi2);
     if (tnt_board(cfg)->has_mesh) {
         // MESH is a controller like any other: the machine builds it, tells it
         // where its interrupt goes and which bus it drives, and registers its
@@ -1050,9 +1049,9 @@ static void tnt_teardown(config_t *cfg) {
     // the PCI root, which system_destroy frees before this runs.  DBDMA still
     // goes after the floppy and before the SCC whose channels it serves, and
     // Cuda still goes before the via1, rtc and adb it was handed at init.
-    if (st && st->scsi2) {
-        scsi_delete(st->scsi2);
-        st->scsi2 = NULL;
+    if (cfg->scsi2) {
+        scsi_delete(cfg->scsi2);
+        cfg->scsi2 = NULL;
     }
     if (st && st->dbdma) {
         dbdma_delete(st->dbdma);
@@ -1089,41 +1088,6 @@ static void tnt_trigger_vbl(config_t *cfg) {
     image_tick_all(cfg);
     tnt_control_host_vbl(cfg);
     pci_tick_vbl(cfg->pci);
-}
-
-// Media attach, with the Network Servers' SECOND SCSI bus: on a Shiner a
-// medium in a rear bay is on `machine.scsi2`.
-static int tnt_media_attach(config_t *cfg, const media_slot_t *slot) {
-    if (slot->bus == MEDIA_BUS_SCSI2) {
-        tnt_state_t *st = tnt_st(cfg);
-        return system_media_attach_scsi_bus(cfg, st ? st->scsi2 : NULL, slot);
-    }
-    return system_media_attach_std(cfg, slot);
-}
-
-// The runtime attach/eject verbs' view of the same second bus.
-static bool tnt_media_present(config_t *cfg, media_bus_t bus, int unit) {
-    if (bus == MEDIA_BUS_SCSI2) {
-        tnt_state_t *st = tnt_st(cfg);
-        return system_media_present_scsi_bus(st ? st->scsi2 : NULL, unit);
-    }
-    return system_media_present_std(cfg, bus, unit);
-}
-
-static image_t *tnt_media_image(config_t *cfg, media_bus_t bus, int unit) {
-    if (bus == MEDIA_BUS_SCSI2) {
-        tnt_state_t *st = tnt_st(cfg);
-        return system_media_image_scsi_bus(st ? st->scsi2 : NULL, unit);
-    }
-    return system_media_image_std(cfg, bus, unit);
-}
-
-static int tnt_media_eject(config_t *cfg, media_bus_t bus, int unit) {
-    if (bus == MEDIA_BUS_SCSI2) {
-        tnt_state_t *st = tnt_st(cfg);
-        return system_media_eject_scsi_bus(st ? st->scsi2 : NULL, unit);
-    }
-    return system_media_eject_std(cfg, bus, unit);
 }
 
 // A PCI slot's strapped INTA-D line.  The slot table names the Grand
@@ -1456,8 +1420,8 @@ const machine_substrate_t tnt_substrate = {
     .input_key = mac_input_key,
     .input_mouse_move = mac_input_mouse_move,
     .input_mouse_button = mac_input_mouse_button,
-    .media_attach = tnt_media_attach,
-    .media_present = tnt_media_present,
-    .media_eject = tnt_media_eject,
-    .media_image = tnt_media_image,
+    .media_attach = system_media_attach_std,
+    .media_present = system_media_present_std,
+    .media_eject = system_media_eject_std,
+    .media_image = system_media_image_std,
 };
