@@ -11,6 +11,7 @@
 // object-model shell and OPFS are all live without an emulated machine.
 
 import { defineConfig } from '@playwright/test';
+import serialSpecs from './serial-specs.json';
 
 const PORT = 18090;
 
@@ -21,22 +22,8 @@ const PORT = 18090;
 // context, so its own OPFS).  CI runs the two projects one after the other
 // (`--project=parallel`, then `--project=serial`), so the serial specs
 // never overlap anything.
-const SERIAL = [
-  'iifx-aux3-realtime.spec.ts',
-  'scheduler-accelerated.spec.ts',
-  'perf-bench.spec.ts',
-  'perf-headbase.spec.ts',
-  'perf-jit.spec.ts',
-  'perf-osx-interactive.spec.ts',
-  'perf-quake3-gpu.spec.ts',
-  'av-camera.spec.ts',
-  'av-microphone.spec.ts',
-  'av-sound-record.spec.ts',
-  'av-speech-recognition.spec.ts',
-  'checkpoint-stall.spec.ts',
-  'copy-jitter.spec.ts',
-  'highlight.spec.ts',
-];
+// The list is serial-specs.json, which scripts/e2e-shard.py reads too.
+const SERIAL: string[] = serialSpecs;
 const WORKERS = Number(process.env.GS_E2E_WORKERS ?? 1);
 
 export default defineConfig({

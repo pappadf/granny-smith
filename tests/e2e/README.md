@@ -218,7 +218,8 @@ the pacing, or that feeds real-time media into the guest, opts out with
 
 `playwright.web2.config.ts` has two projects.  `serial` holds the specs that
 must not share the machine with another running emulator (its `SERIAL`
-list: pacing, wall-clock jitter, real-time media) and runs one at a time;
+list, `serial-specs.json`: pacing, wall-clock jitter, real-time media) and
+runs one at a time;
 `parallel` holds the rest and runs `GS_E2E_WORKERS` specs at once (default
 1; CI uses 3).  Each test has its own browser context, so its own OPFS.
 CI runs `--project=parallel` and then `--project=serial` on each shard, so
