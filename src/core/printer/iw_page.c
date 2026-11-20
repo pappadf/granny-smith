@@ -8,6 +8,7 @@
 
 #include "codec.h"
 #include "common.h"
+#include "vbuf.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -159,16 +160,12 @@ bool iw_page_emit(const iw_page_t *p, pdf_writer_t *w, const uint8_t palette[16]
 
 // Append `n` bytes to a growing buffer.
 static bool put(uint8_t **buf, size_t *len, size_t *cap, const void *data, size_t n) {
-    if (*len + n > *cap) {
-        size_t c = *cap ? *cap : 256;
-        while (c < *len + n)
-            c *= 2;
-        uint8_t *b = realloc(*buf, c);
-        if (!b)
-            return false;
-        *buf = b;
-        *cap = c;
-    }
+    if (n == 0)
+        return true;
+    uint8_t *b = gs_grow(*buf, cap, *len + n, 1, 256);
+    if (!b)
+        return false;
+    *buf = b;
     memcpy(*buf + *len, data, n);
     *len += n;
     return true;

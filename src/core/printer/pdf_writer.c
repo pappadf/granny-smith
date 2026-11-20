@@ -14,6 +14,7 @@
 
 #include "codec.h"
 #include "common.h"
+#include "vbuf.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -36,9 +37,11 @@ typedef struct {
 struct pdf_writer {
     pdf_buf_t out; // the document so far
     size_t *offsets; // offsets[n] = byte offset of object n (0 = unused)
-    uint32_t n_objects, cap_objects; // highest object number + 1, capacity
+    uint32_t n_objects; // highest object number + 1
+    size_t cap_objects; // offsets[] capacity
     uint32_t *page_objs; // the Page object of each page
-    uint32_t n_pages, cap_pages;
+    uint32_t n_pages;
+    size_t cap_pages; // page_objs[] capacity
     char *title;
     char *producer;
 };
@@ -47,18 +50,16 @@ struct pdf_writer {
 static bool buf_reserve(pdf_buf_t *b, size_t more) {
     if (b->failed)
         return false;
-    if (b->len + more <= b->cap)
-        return true;
-    size_t cap = b->cap ? b->cap : 4096;
-    while (cap < b->len + more)
-        cap *= 2;
-    uint8_t *p = realloc(b->p, cap);
+    if (more > SIZE_MAX - b->len) {
+        b->failed = true; // the length itself overflows
+        return false;
+    }
+    uint8_t *p = gs_grow(b->p, &b->cap, b->len + more, 1, 4096);
     if (!p) {
         b->failed = true;
         return false;
     }
     b->p = p;
-    b->cap = cap;
     return true;
 }
 
@@ -121,17 +122,14 @@ static void buf_put_string(pdf_buf_t *b, const char *s) {
 
 // Allocate the next object number.
 static uint32_t new_object(pdf_writer_t *w) {
-    if (w->n_objects >= w->cap_objects) {
-        uint32_t cap = w->cap_objects ? w->cap_objects * 2 : 32;
-        size_t *o = realloc(w->offsets, cap * sizeof(*o));
-        if (!o) {
-            w->out.failed = true;
-            return 0;
-        }
-        memset(o + w->cap_objects, 0, (cap - w->cap_objects) * sizeof(*o));
-        w->offsets = o;
-        w->cap_objects = cap;
+    size_t old_cap = w->cap_objects;
+    size_t *o = gs_grow(w->offsets, &w->cap_objects, (size_t)w->n_objects + 1, sizeof(*o), 32);
+    if (!o) {
+        w->out.failed = true;
+        return 0;
     }
+    memset(o + old_cap, 0, (w->cap_objects - old_cap) * sizeof(*o)); // new objects have no offset yet
+    w->offsets = o;
     return w->n_objects++;
 }
 
@@ -223,16 +221,12 @@ static bool add_image_page(pdf_writer_t *w, double width_pt, double height_pt, u
     buf_printf(&w->out, "/Resources << /XObject << /Im0 %u 0 R >> >> /Contents %u 0 R >>\nendobj\n", (unsigned)img,
                (unsigned)content);
 
-    if (w->n_pages >= w->cap_pages) {
-        uint32_t c = w->cap_pages ? w->cap_pages * 2 : 8;
-        uint32_t *p = realloc(w->page_objs, c * sizeof(*p));
-        if (!p) {
-            w->out.failed = true;
-            return false;
-        }
-        w->page_objs = p;
-        w->cap_pages = c;
+    uint32_t *p = gs_grow(w->page_objs, &w->cap_pages, (size_t)w->n_pages + 1, sizeof(*p), 8);
+    if (!p) {
+        w->out.failed = true;
+        return false;
     }
+    w->page_objs = p;
     w->page_objs[w->n_pages++] = page;
     return !w->out.failed;
 }
