@@ -60,6 +60,11 @@ static inline int16_t audio_sat16(int32_t v) {
     return (int16_t)(v > INT16_MAX ? INT16_MAX : v < INT16_MIN ? INT16_MIN : v);
 }
 
+// The same for a float sample on the int16 scale (truncated toward zero).
+static inline int16_t audio_sat16f(float v) {
+    return (int16_t)(v < -32768.0f ? -32768.0f : (v > 32767.0f ? 32767.0f : v));
+}
+
 // The 1.5 dB-per-step D/A attenuation ladder as x65536 gains (0 = loudest,
 // 15 = -22.5 dB): the ASCO 2300 / AWACS codec's and the AV Singer's, the
 // same sixteen values.
