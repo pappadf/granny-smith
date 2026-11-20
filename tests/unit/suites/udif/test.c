@@ -592,7 +592,7 @@ TEST(udif_decode_zlib_chunk) {
     // must fail rather than yield a half-filled sector.
     udif_chunk_t two = {.type = UDIF_CHUNK_ZLIB, .sector = 0, .count = 2, .offset = 0, .length = slen};
     uint8_t big[1024] = {0};
-    ASSERT_EQ_INT(-EINVAL, udif_decode_chunk(&two, stream, slen, big, sizeof(big)));
+    ASSERT_EQ_INT(-EIO, udif_decode_chunk(&two, stream, slen, big, sizeof(big)));
     free(stream);
 }
 
@@ -624,8 +624,8 @@ static const vector_t *find_vector(const char *name) {
 }
 
 // Every compressed chunk type decodes through its codec; a stream that
-// decodes to other than the chunk's sectors, or that is corrupt, is
-// malformed (-EINVAL); a codec feature not implemented is -ENOTSUP.
+// decodes to other than the chunk's sectors, or that is corrupt, is an I/O
+// error (-EIO, codec_errno); a codec feature not implemented is -ENOTSUP.
 TEST(udif_decode_compressed_chunks) {
     static const struct {
         uint32_t type;
@@ -644,15 +644,16 @@ TEST(udif_decode_compressed_chunks) {
         ASSERT_EQ_INT(0, udif_decode_chunk(&c, v->enc, v->enc_len, dst, v->len));
         ASSERT_EQ_INT(0, memcmp(dst, want, v->len));
         // A sector more, or one fewer, than the stream holds.
+        // Corrupt data either way: an I/O error (codec_errno), not a bad argument.
         c.count++;
-        ASSERT_EQ_INT(-EINVAL, udif_decode_chunk(&c, v->enc, v->enc_len, dst, v->len + 512));
+        ASSERT_EQ_INT(-EIO, udif_decode_chunk(&c, v->enc, v->enc_len, dst, v->len + 512));
         c.count -= 2;
-        ASSERT_EQ_INT(-EINVAL, udif_decode_chunk(&c, v->enc, v->enc_len, dst, v->len));
+        ASSERT_EQ_INT(-EIO, udif_decode_chunk(&c, v->enc, v->enc_len, dst, v->len));
         // Garbage in place of the stream.
         c.count++;
         uint8_t junk[64];
         memset(junk, 0x5A, sizeof(junk));
-        ASSERT_EQ_INT(-EINVAL, udif_decode_chunk(&c, junk, sizeof(junk), dst, v->len));
+        ASSERT_EQ_INT(-EIO, udif_decode_chunk(&c, junk, sizeof(junk), dst, v->len));
         free(dst);
         free(want);
     }

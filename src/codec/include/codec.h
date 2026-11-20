@@ -71,6 +71,15 @@ extern "C" {
 // A short static description of a CODEC_ERR_* code.
 const char *codec_strerror(int64_t rc);
 
+// The negative errno a CODEC_ERR_* code means, for a caller whose own
+// contract is negative errno (the storage layer's chunk decoders): 0 for a
+// result >= 0; -ENOMEM, -EINVAL (ARG) and -ENOTSUP (UNSUPPORTED) as named;
+// -EIO for a stream that does not decode (DATA, TRUNCATED, OVERFLOW,
+// CHECKSUM) or whose input could not be read (INPUT).  The CODEC_ERR_*
+// numbers overlap errno's (CODEC_ERR_TRUNCATED is -2, -ENOENT on Linux), so
+// a codec code is never returned as an errno without passing through here.
+int codec_errno(int64_t rc);
+
 // === Codecs ===
 
 typedef enum {

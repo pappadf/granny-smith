@@ -353,11 +353,9 @@ int udif_decode_chunk(const udif_chunk_t *chunk, const uint8_t *src, size_t src_
     if (codec < 0 || !src)
         return -EINVAL;
     int64_t got = codec_decode((codec_id_t)codec, src, src_len, dst, need);
-    if (got == CODEC_ERR_UNSUPPORTED)
-        return -ENOTSUP;
-    if (got == CODEC_ERR_NOMEM)
-        return -ENOMEM;
+    if (got < 0)
+        return codec_errno(got); // a stream that does not decode is -EIO
     // The chunk's sector count states the exact decoded size, so a short or
-    // long result means the stream and the map disagree.
-    return got == (int64_t)need ? 0 : -EINVAL;
+    // long result means the stream and the map disagree: corrupt, as above.
+    return got == (int64_t)need ? 0 : -EIO;
 }

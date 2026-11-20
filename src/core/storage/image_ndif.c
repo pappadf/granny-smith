@@ -184,8 +184,10 @@ int ndif_decode_chunk(const ndif_chunk_t *chunk, const uint8_t *src, size_t src_
         size_t got = 0;
         int rc = codec_dec_run(d, dst, need, &got);
         codec_dec_free(d);
-        if (rc != 1 && rc != CODEC_ERR_TRUNCATED)
-            return -EINVAL;
+        if (rc < 0 && rc != CODEC_ERR_TRUNCATED)
+            return codec_errno(rc);
+        if (rc == 0)
+            return -EIO; // decodes past the chunk's sectors: corrupt
         if (got < need)
             memset(dst + got, 0, need - got);
         return 0;

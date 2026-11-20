@@ -123,8 +123,9 @@ int udif_chunk_codec(uint32_t type);
 // `dst_len` the output (must be >= chunk->count * 512).  Handles ZERO,
 // IGNORE, RAW and every compressed type (udif_chunk_codec).  0 on success;
 // -ENOTSUP for a stream using a codec feature not implemented (a randomised
-// bzip2 block, an xz filter other than LZMA2), -ENOMEM, or -EINVAL for a
-// malformed chunk or one that decodes to other than count * 512 bytes.
+// bzip2 block, an xz filter other than LZMA2), -ENOMEM, -EIO for a stream
+// that does not decode or decodes to other than count * 512 bytes (corrupt
+// data: codec_errno), or -EINVAL for bad arguments or an unknown chunk type.
 int udif_decode_chunk(const udif_chunk_t *chunk, const uint8_t *src, size_t src_len, uint8_t *dst, size_t dst_len);
 
 // A table's decoded bytes are checked against udif_table_t::checksum with

@@ -51,6 +51,12 @@ an archive member a read at a time. A run returns 1 once the stream has
 ended and every byte of it has been produced, 0 while more remains (only
 ever with the buffer full), or a negative `CODEC_ERR_*` code after the
 bytes before the fault; `codec_dec_message()` says why in a few words.
+The `CODEC_ERR_*` numbers overlap errno's (`CODEC_ERR_TRUNCATED` is -2,
+`-ENOENT` on Linux), so a caller whose own contract is negative errno
+translates through `codec_errno()`: `NOMEM`, `ARG` and `UNSUPPORTED` become
+`-ENOMEM`, `-EINVAL` and `-ENOTSUP`, and every stream that does not decode
+`-EIO`. The storage layer's chunk decoders (UDIF, NDIF, QCOW2) are those
+callers.
 `codec_dec_read(d, out, cap)` and `codec_dec_read_alloc(d, max, ...)` run a
 decoder to the end of its stream (into a fixed buffer it must end within,
 or a growing one), leaving it and its message the caller's; `codec_decode`
