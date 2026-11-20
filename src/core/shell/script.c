@@ -25,6 +25,7 @@
 #include "shell_internal.h"
 #include "shell_var.h"
 #include "status.h"
+#include "storage_util.h"
 #include "syntax.h"
 #include "value.h"
 
@@ -955,6 +956,10 @@ void script_expr_ctx(expr_ctx_t *out) {
 // Per thread: a job on the job thread and an inline script on the emulator
 // thread (a breakpoint action, shell.eval) each have their own chain.
 #define INCLUDE_MAX_DEPTH 16
+
+// Largest script file read (`include`, script_run_file): far past any
+// real script, short of reading a disk image by mistake.
+#define SCRIPT_FILE_MAX (16u << 20)
 static _Thread_local char *g_include_stack[INCLUDE_MAX_DEPTH];
 static _Thread_local int g_include_depth = 0;
 
@@ -1115,27 +1120,6 @@ static char *include_resolve(const char *path) {
     return r;
 }
 
-// Read a whole file into a malloc'd NUL-terminated buffer; NULL on error.
-static char *slurp_script_file(const char *path) {
-    FILE *f = fopen(path, "r");
-    if (!f)
-        return NULL;
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (size < 0)
-        size = 0;
-    char *src = (char *)malloc((size_t)size + 1);
-    if (!src) {
-        fclose(f);
-        return NULL;
-    }
-    size_t got = fread(src, 1, (size_t)size, f);
-    src[got] = '\0';
-    fclose(f);
-    return src;
-}
-
 // Parse + execute one script file with the include stack maintained —
 // the shared engine behind `include` and script_run_file(). Returns the
 // terminating signal (SIG_NONE on success) with a one-line diagnostic
@@ -1154,9 +1138,10 @@ static exec_sig_t include_exec_file(const char *path, char **err) {
             return SIG_ERROR;
         }
     }
-    char *src = slurp_script_file(path);
-    if (!src) {
-        *err = format_msg("cannot open '%s'", path);
+    char *src = NULL;
+    int rc = read_text_file(path, SCRIPT_FILE_MAX, &src, NULL);
+    if (rc != 0) {
+        *err = format_msg("cannot open '%s': %s", path, strerror(-rc));
         return SIG_ERROR;
     }
     char perr[SCRIPT_ERR_MAX];

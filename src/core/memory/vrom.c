@@ -17,6 +17,7 @@
 #include "declrom.h" // structural recognition of generated GS images
 #include "offer_registry.h"
 #include "out.h"
+#include "storage_util.h"
 
 #include "log.h"
 #include "machine_profile.h"
@@ -191,13 +192,10 @@ static enum vrom_id_result vrom_identify_core(const char *path, vrom_id_t *out, 
         return VROM_ID_UNREADABLE;
     if (size != VROM_CHIP_4K && size != VROM_CHIP_32K && size != VROM_CHIP_64K)
         return VROM_ID_WRONG_SIZE;
-    uint8_t *img = malloc(size);
-    if (!img)
-        return VROM_ID_UNREADABLE;
-    FILE *f = fopen(path, "rb");
-    bool read_ok = f && fread(img, 1, size, f) == size;
-    if (f)
-        fclose(f);
+    uint8_t *img = NULL;
+    size_t got = 0;
+    // The chip as stat sized it: a file that changed under us is unreadable
+    bool read_ok = read_file(path, size, &img, &got) == 0 && got == size;
     enum vrom_id_result r = read_ok ? vrom_identify_image(img, size, out, out_crc) : VROM_ID_UNREADABLE;
     free(img);
     return r;

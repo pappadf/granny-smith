@@ -33,6 +33,7 @@
 #include "scheduler.h"
 #include "shell.h"
 #include "shell_var.h"
+#include "storage_util.h"
 #include "system.h"
 #include "system_internal.h"
 #include "value.h"
@@ -1473,6 +1474,9 @@ static int framebuffer_check_exportable(const display_t *d, const char *verb) {
     return 0;
 }
 
+// Largest PNG load_png_to_rgba reads.
+#define PNG_FILE_MAX (64u << 20)
+
 // Load a PNG file and decode it to packed RGBA (8 bits per channel, 4
 // bytes per pixel, no filter bytes).  Used by screen.match's
 // RGBA-vs-RGBA comparison path; works with any PNG color type that
@@ -1480,27 +1484,14 @@ static int framebuffer_check_exportable(const display_t *d, const char *verb) {
 // might have produced (grayscale, RGB).  `out_rgba` must be at least
 // `expected_width * expected_height * 4` bytes.  Returns 0 / -1.
 static int load_png_to_rgba(const char *filename, int expected_width, int expected_height, uint8_t *out_rgba) {
-    FILE *fp = fopen(filename, "rb");
-    if (!fp) {
-        out_printf("Error: Cannot open '%s' for reading.\n", filename);
+    uint8_t *file_data = NULL;
+    size_t file_size = 0;
+    // A reference screenshot is a few MB at most
+    int rc = read_file(filename, PNG_FILE_MAX, &file_data, &file_size);
+    if (rc != 0) {
+        out_printf("Error: Cannot read '%s': %s.\n", filename, strerror(-rc));
         return -1;
     }
-    fseek(fp, 0, SEEK_END);
-    long file_size = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-    uint8_t *file_data = malloc(file_size);
-    if (!file_data) {
-        fclose(fp);
-        out_printf("Error: Out of memory.\n");
-        return -1;
-    }
-    if (fread(file_data, 1, file_size, fp) != (size_t)file_size) {
-        free(file_data);
-        fclose(fp);
-        out_printf("Error: Failed to read file.\n");
-        return -1;
-    }
-    fclose(fp);
 
     static const uint8_t png_sig[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
     if (file_size < 8 || memcmp(file_data, png_sig, 8) != 0) {

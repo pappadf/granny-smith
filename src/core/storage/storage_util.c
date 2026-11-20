@@ -212,7 +212,9 @@ int open_regular_file(const char *path, uint64_t *size, int64_t *mtime) {
     return fd;
 }
 
-int read_file(const char *path, size_t cap, uint8_t **out, size_t *out_len) {
+// read_file and read_text_file: the whole of `path` into a buffer `pad`
+// bytes longer than the file (zeroed), the size first checked against `cap`.
+static int read_file_padded(const char *path, size_t cap, size_t pad, uint8_t **out, size_t *out_len) {
     *out = NULL;
     *out_len = 0;
     uint64_t size = 0;
@@ -230,7 +232,7 @@ int read_file(const char *path, size_t cap, uint8_t **out, size_t *out_len) {
         return -e;
     }
     size_t sz = (size_t)size;
-    uint8_t *buf = malloc(sz ? sz : 1);
+    uint8_t *buf = malloc(sz + pad ? sz + pad : 1);
     if (!buf) {
         fclose(f);
         return -ENOMEM;
@@ -241,9 +243,22 @@ int read_file(const char *path, size_t cap, uint8_t **out, size_t *out_len) {
         free(buf);
         return -EIO;
     }
+    memset(buf + sz, 0, pad);
     *out = buf;
     *out_len = sz;
     return 0;
+}
+
+int read_file(const char *path, size_t cap, uint8_t **out, size_t *out_len) {
+    return read_file_padded(path, cap, 0, out, out_len);
+}
+
+int read_text_file(const char *path, size_t cap, char **out, size_t *out_len) {
+    size_t len = 0;
+    int rc = read_file_padded(path, cap, 1, (uint8_t **)out, &len);
+    if (out_len)
+        *out_len = len;
+    return rc;
 }
 
 int json_escape(const char *src, char *dst, size_t cap) {

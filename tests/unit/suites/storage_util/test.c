@@ -113,6 +113,28 @@ TEST(test_read_file_is_capped) {
     ASSERT_EQ_INT(0, rm_tree(g_root));
 }
 
+// The text form: NUL-terminated, same cap, and a directory is an error
+// rather than an empty read.
+TEST(test_read_text_file) {
+    fresh_root();
+    char *p = str_printf("%s/t", g_root);
+    write_file(p, "echo 1\n");
+    char *text = NULL;
+    size_t len = 0;
+    ASSERT_EQ_INT(0, read_text_file(p, 7, &text, &len));
+    ASSERT_TRUE(len == 7 && strcmp(text, "echo 1\n") == 0);
+    free(text);
+    ASSERT_EQ_INT(-EFBIG, read_text_file(p, 6, &text, NULL));
+    ASSERT_TRUE(text == NULL);
+    write_file(p, "");
+    ASSERT_EQ_INT(0, read_text_file(p, 6, &text, NULL));
+    ASSERT_TRUE(text && text[0] == '\0');
+    free(text);
+    ASSERT_EQ_INT(-EISDIR, read_text_file(g_root, 6, &text, NULL));
+    free(p);
+    ASSERT_EQ_INT(0, rm_tree(g_root));
+}
+
 // A file replaced whole or not at all: a commit that failed -- or was told
 // the writes failed -- leaves the old file and no temporary behind.
 TEST(test_atomic_write_replaces_whole_or_not_at_all) {
@@ -192,6 +214,7 @@ int main(void) {
     RUN(test_mkdir_p_and_parents);
     RUN(test_rm_tree_does_not_follow_symlinks);
     RUN(test_read_file_is_capped);
+    RUN(test_read_text_file);
     RUN(test_json_escape);
     RUN(test_json_fputs);
     RUN(test_atomic_write_replaces_whole_or_not_at_all);

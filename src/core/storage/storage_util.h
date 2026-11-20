@@ -68,6 +68,10 @@ int open_regular_file(const char *path, uint64_t *size, int64_t *mtime);
 // accept.  0 or a negative errno.
 int read_file(const char *path, size_t cap, uint8_t **out, size_t *out_len);
 
+// The same for text: *out is NUL-terminated (the terminator not counted in
+// *out_len, which may be NULL).  Same cap and errors.
+int read_text_file(const char *path, size_t cap, char **out, size_t *out_len);
+
 // JSON-escape `src` (the body of a string literal, no quotes) into `dst`
 // with the one escape set (json_escape.h): quote, backslash, \b \f \n \r
 // \t, and any other control byte as \u00XX.

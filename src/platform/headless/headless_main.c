@@ -32,6 +32,7 @@
 #include "scsi.h"
 #include "shell.h"
 #include "shell_var.h"
+#include "storage_util.h"
 #include "system.h"
 #include "vrom.h"
 #include "event/event.h"
@@ -172,35 +173,6 @@ static void install_signal(int sig, void (*handler)(int)) {
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART;
     sigaction(sig, &sa, NULL);
-}
-
-// The whole of a small text file, NUL-terminated, for the caller to free; NULL
-// when it cannot be read.
-static char *read_text_file(const char *path) {
-    FILE *f = fopen(path, "rb");
-    if (!f)
-        return NULL;
-    char *buf = NULL;
-    size_t len = 0, cap = 0;
-    for (;;) {
-        if (len + 4096 + 1 > cap) {
-            cap = cap ? cap * 2 : 8192;
-            char *nb = realloc(buf, cap);
-            if (!nb) {
-                free(buf);
-                fclose(f);
-                return NULL;
-            }
-            buf = nb;
-        }
-        size_t n = fread(buf + len, 1, 4096, f);
-        len += n;
-        if (n < 4096)
-            break;
-    }
-    fclose(f);
-    buf[len] = '\0';
-    return buf;
 }
 
 // Print usage information
@@ -1378,8 +1350,8 @@ int main(int argc, char *argv[]) {
     // its storage, and fd1= / two fd= ask for the second floppy position.
     char *config_text = NULL;
     if (config_arg && *config_arg && *config_arg != '{') {
-        config_text = read_text_file(config_arg);
-        if (!config_text) {
+        // A machine configuration document is a few KB
+        if (read_text_file(config_arg, 1u << 20, &config_text, NULL) != 0) {
             fprintf(stderr, "Error: cannot read config=%s\n", config_arg);
             goto out;
         }

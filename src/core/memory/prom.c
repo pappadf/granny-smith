@@ -19,12 +19,14 @@
 #include "common.h"
 #include "offer_registry.h"
 #include "out.h"
+#include "storage_util.h"
 
 #include "log.h"
 #include "machine_profile.h"
 #include "object.h"
 #include "value.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -141,34 +143,6 @@ static bool prom_plausible_size(size_t size) {
     return (size & (size - 1)) == 0;
 }
 
-// Read the whole file.  Expansion ROMs are at most 256 KB, so there is no
-// partial-read path worth having.
-static uint8_t *prom_read_file(const char *path, size_t *out_size) {
-    *out_size = 0;
-    struct stat st;
-    if (stat(path, &st) != 0 || st.st_size <= 0)
-        return NULL;
-    size_t size = (size_t)st.st_size;
-    if (size > PROM_MAX_SIZE)
-        return NULL; // refuse to slurp something that cannot be a ROM
-    FILE *f = fopen(path, "rb");
-    if (!f)
-        return NULL;
-    uint8_t *buf = (uint8_t *)malloc(size);
-    if (!buf) {
-        fclose(f);
-        return NULL;
-    }
-    bool ok = fread(buf, 1, size, f) == size;
-    fclose(f);
-    if (!ok) {
-        free(buf);
-        return NULL;
-    }
-    *out_size = size;
-    return buf;
-}
-
 // Structural validation, in the order that makes a rejection informative.
 // Every gate must pass before the identity is trusted: an unrecognised blob
 // is DROPPED with a log, never guessed at.
@@ -240,8 +214,14 @@ prom_id_result_t prom_identify_detail(const char *path, prom_id_t *out, size_t *
         return PROM_ID_UNREADABLE;
 
     size_t size = 0;
-    uint8_t *buf = prom_read_file(path, &size);
-    if (!buf) {
+    uint8_t *buf = NULL;
+    // Refuse to slurp something that cannot be a ROM; an empty file is none
+    int rc = read_file(path, PROM_MAX_SIZE, &buf, &size);
+    if (rc == 0 && size == 0) {
+        free(buf);
+        rc = -EIO;
+    }
+    if (rc != 0) {
         // Distinguish "cannot read" from "present but implausible": a file
         // that exists and is simply the wrong size is not an error.
         struct stat st;
@@ -387,8 +367,9 @@ bool prom_load_card(const char *card_id, const char *rom, uint8_t **out_buf, siz
         if (!path)
             break;
         size_t size = 0;
-        uint8_t *buf = prom_read_file(path, &size);
-        if (!buf) {
+        uint8_t *buf = NULL;
+        if (read_file(path, PROM_MAX_SIZE, &buf, &size) != 0 || size == 0) {
+            free(buf);
             // The file was readable when it was offered and is not now.
             LOG(0, "prom_load_card('%s'): '%s' can no longer be read; trying the next candidate", card_id, path);
             continue;
