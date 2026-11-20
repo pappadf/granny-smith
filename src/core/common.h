@@ -3,9 +3,10 @@
 
 // common.h
 // Small project-local helpers with no better home: the unaligned byte-order
-// accessors and the four-character-code converters.  Charter: only
-// header-only helpers that are genuinely used across subsystems and depend on
-// nothing but <stdint.h>/<stdbool.h>.  Not a place for module types, status
+// accessors, the four-character-code converters, GS_ARRAY_LEN, hex digits,
+// the Mac epoch and FNV-1a.  Charter: only header-only helpers that are
+// genuinely used across subsystems and depend on nothing but
+// <stdint.h>/<stdbool.h>/<stddef.h>.  Not a place for module types, status
 // codes (status.h), assertions (gs_assert.h) or libc bundles -- a TU includes
 // the libc headers it uses itself.
 
