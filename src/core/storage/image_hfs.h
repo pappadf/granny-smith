@@ -79,8 +79,8 @@ typedef struct hfs_volume hfs_volume_t;
 // disk at which the volume starts (0 for a bare floppy; start_block*512 for
 // an APM partition).  `partition_byte_size` caps reads.  Returns NULL on any
 // error (not HFS, malformed catalog, OOM).
-struct peel_source;
-hfs_volume_t *hfs_open_source(struct peel_source *src, uint64_t partition_byte_offset, uint64_t partition_byte_size);
+typedef struct peel_source source_t; // source.h's byte source, without peeler.h
+hfs_volume_t *hfs_open_source(source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size);
 
 // Release a volume and all cached state.  Safe on NULL.
 void hfs_close(hfs_volume_t *vol);

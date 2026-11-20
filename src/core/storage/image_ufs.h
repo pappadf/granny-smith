@@ -57,16 +57,16 @@ typedef struct ufs_dirent {
     uint32_t mtime; // di_mtime, Unix seconds
 } ufs_dirent_t;
 
-struct peel_source;
+typedef struct peel_source source_t; // source.h's byte source, without peeler.h
 
 // Open a UFS volume over a byte source holding the disk (retained by the
 // volume).  Returns NULL on not-UFS / malformed superblock / OOM.
-ufs_volume_t *ufs_open_source(struct peel_source *src, uint64_t partition_byte_offset, uint64_t partition_byte_size);
+ufs_volume_t *ufs_open_source(source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size);
 
 // Cheap probe: does byte offset `partition_byte_offset + UFS_SBOFF` look
 // like a UFS superblock?  Reads only the 4-byte magic.  True on a
 // big-endian FS_MAGIC -- what A/UX writes and all ufs_open_source accepts.
-bool ufs_probe_source(struct peel_source *src, uint64_t partition_byte_offset, uint64_t partition_byte_size);
+bool ufs_probe_source(source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size);
 
 // Release the volume and all cached state.  Safe on NULL.
 void ufs_close(ufs_volume_t *vol);

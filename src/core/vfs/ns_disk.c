@@ -642,7 +642,7 @@ static source_t *disk_open(ns_t *ns, const char *path, source_fork_t fork, int *
     f->fork = fork;
     f->size = fork == GS_FORK_RSRC ? e.rsrc_size : e.size;
     f->key = key;
-    source_t *s = peel_source_new(&file_ops, f, NULL);
+    source_t *s = source_new(&file_ops, f, NULL);
     *err = s ? 0 : -ENOMEM;
     return s;
 }

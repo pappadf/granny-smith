@@ -79,8 +79,8 @@ bool image_apm_probe_magic(const uint8_t *block1);
 apm_table_t *image_apm_parse(image_t *img, const char **errmsg);
 
 // The same over a byte source holding the disk.
-struct peel_source;
-apm_table_t *image_apm_parse_source(struct peel_source *src, const char **errmsg);
+typedef struct peel_source source_t; // source.h's byte source, without peeler.h
+apm_table_t *image_apm_parse_source(source_t *src, const char **errmsg);
 
 // Parse APM directly from a contiguous byte buffer.  Exposed for unit
 // tests that want to exercise the parser without dragging in the full

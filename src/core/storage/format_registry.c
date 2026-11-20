@@ -211,7 +211,7 @@ static int lisaem_unwrap(const format_probe_t *p, source_t **data, source_t **rs
     }
     // The file is the parent: retained for the view's life, and its poll
     // serves a remote file's "not yet".
-    *data = peel_source_new(&lisaem_ops, m, p->data);
+    *data = source_new(&lisaem_ops, m, p->data);
     return *data ? 0 : -ENOMEM;
 }
 

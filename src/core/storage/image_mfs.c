@@ -54,7 +54,7 @@ static void mfs_name(const uint8_t *mac, size_t len, char *out, size_t cap) {
 // Open
 // ============================================================================
 
-bool mfs_probe_source(struct peel_source *src, uint64_t off, uint64_t size) {
+bool mfs_probe_source(source_t *src, uint64_t off, uint64_t size) {
     uint8_t sig[2];
     if (!src || size < MFS_MDB_OFF + MFS_BLOCK || source_read_exact(src, off + MFS_MDB_OFF, sig, 2) != 0)
         return false;
@@ -127,7 +127,7 @@ static int mfs_read_dir(mfs_volume_t *v, uint16_t start, uint16_t blocks, uint16
     return 0;
 }
 
-mfs_volume_t *mfs_open_source(struct peel_source *src, uint64_t off, uint64_t size) {
+mfs_volume_t *mfs_open_source(source_t *src, uint64_t off, uint64_t size) {
     uint8_t mdb[MFS_MAP_OFF];
     if (!mfs_probe_source(src, off, size) || source_read_exact(src, off + MFS_MDB_OFF, mdb, sizeof(mdb)) != 0)
         return NULL;

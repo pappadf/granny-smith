@@ -89,7 +89,7 @@ static void slash_to_colon(char *s) {
 // Open
 // ============================================================================
 
-bool iso_probe_source(struct peel_source *src, uint64_t off, uint64_t size) {
+bool iso_probe_source(source_t *src, uint64_t off, uint64_t size) {
     uint8_t vd[8];
     if (!src || size < ISO9660_VD_OFF + ISO_SECTOR || source_read_exact(src, off + ISO9660_VD_OFF, vd, sizeof(vd)) != 0)
         return false;
@@ -193,7 +193,7 @@ static bool record_finder_info(const uint8_t *r, size_t rlen, uint32_t *type, ui
     return true;
 }
 
-iso_volume_t *iso_open_source(struct peel_source *src, uint64_t off, uint64_t size) {
+iso_volume_t *iso_open_source(source_t *src, uint64_t off, uint64_t size) {
     if (!iso_probe_source(src, off, size))
         return NULL;
     iso_volume_t *v = calloc(1, sizeof(*v));

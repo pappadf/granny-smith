@@ -114,7 +114,7 @@ static int work_extract(io_leaf_t *j) {
 
 typedef struct {
     udif_writer_t *w;
-    uint64_t expected; // the fork's declared length (PEEL_SIZE_UNKNOWN if not)
+    uint64_t expected; // the fork's declared length (GS_SIZE_UNKNOWN if not)
     uint64_t written;
     uint8_t tail[IMPORT_TAIL]; // the last bytes written, at tail_off
     uint64_t tail_off;
@@ -122,7 +122,7 @@ typedef struct {
     int err; // the writer's error, or -ECANCELED
 } import_sink_t;
 
-static int64_t isink_read(peel_source_t *s, uint64_t off, void *buf, size_t len) {
+static int64_t isink_read(source_t *s, uint64_t off, void *buf, size_t len) {
     import_sink_t *k = s->ctx;
     if (off < k->tail_off || off >= k->tail_off + k->tail_len)
         return off >= k->written ? 0 : -EIO; // gone into the writer
@@ -132,35 +132,35 @@ static int64_t isink_read(peel_source_t *s, uint64_t off, void *buf, size_t len)
     return (int64_t)n;
 }
 
-static uint64_t isink_size(peel_source_t *s) {
+static uint64_t isink_size(source_t *s) {
     import_sink_t *k = s->ctx;
-    return k->expected == PEEL_SIZE_UNKNOWN ? k->written : k->expected;
+    return k->expected == GS_SIZE_UNKNOWN ? k->written : k->expected;
 }
 
-static const char *isink_key(peel_source_t *s) {
+static const char *isink_key(source_t *s) {
     (void)s;
     return "archive-import-sink";
 }
 
-static peel_tier_t isink_tier(peel_source_t *s) {
+static source_tier_t isink_tier(source_t *s) {
     (void)s;
-    return PEEL_TIER_STREAM;
+    return GS_TIER_STREAM;
 }
 
-static void isink_close(peel_source_t *s) {
+static void isink_close(source_t *s) {
     (void)s; // the context belongs to the import
 }
 
-static const peel_source_ops_t isink_ops = {isink_read, isink_size, isink_key, isink_tier, isink_close, NULL};
+static const source_ops_t isink_ops = {isink_read, isink_size, isink_key, isink_tier, isink_close, NULL};
 
-static peel_source_t *isink_create(void *ctx, const char *key, uint64_t expected_len) {
+static source_t *isink_create(void *ctx, const char *key, uint64_t expected_len) {
     (void)key;
     import_sink_t *k = ctx;
     k->expected = expected_len;
-    return peel_source_new(&isink_ops, k, NULL);
+    return source_new(&isink_ops, k, NULL);
 }
 
-static int64_t isink_write(peel_source_t *s, uint64_t off, const void *buf, size_t len) {
+static int64_t isink_write(source_t *s, uint64_t off, const void *buf, size_t len) {
     import_sink_t *k = s->ctx;
     if (off != k->written || k->err)
         return -1;
@@ -189,11 +189,11 @@ static int64_t isink_write(peel_source_t *s, uint64_t off, const void *buf, size
     }
     k->written += len;
     k->tail_off = k->written - k->tail_len;
-    io_report_progress(k->written, k->expected == PEEL_SIZE_UNKNOWN ? 0 : k->expected);
+    io_report_progress(k->written, k->expected == GS_SIZE_UNKNOWN ? 0 : k->expected);
     return (int64_t)len;
 }
 
-static void isink_commit(peel_source_t *s) {
+static void isink_commit(source_t *s) {
     (void)s;
 }
 
@@ -229,9 +229,9 @@ typedef struct {
 // is itself an archive (a .sit.hqx, or a .sea.bin with the archive in its
 // resource fork), each payload being the compressed -- small -- side.  A new
 // reference, or NULL with a message.
-static peel_source_t *innermost_archive(peel_source_t *src, char *err, size_t cap) {
+static source_t *innermost_archive(source_t *src, char *err, size_t cap) {
     peel_err_t *pe = NULL;
-    peel_source_t *cur = peel_innermost_source(src, PEEL_UNWRAP_RSRC, &pe);
+    source_t *cur = peel_innermost_source(src, PEEL_UNWRAP_RSRC, &pe);
     if (!cur)
         snprintf(err, cap, "not an archive: %s", pe ? peel_err_msg(pe) : "unrecognised");
     peel_err_free(pe);
@@ -251,7 +251,7 @@ static int work_archive_import(io_leaf_t *j) {
         snprintf(j->err, sizeof j->err, "cannot open '%s'", j->a);
         return -ENOENT;
     }
-    peel_source_t *arc = innermost_archive(src, j->err, sizeof j->err);
+    source_t *arc = innermost_archive(src, j->err, sizeof j->err);
     source_release(src);
     if (!arc)
         return -EINVAL;
@@ -279,9 +279,9 @@ static int work_archive_import(io_leaf_t *j) {
         // An NDIF image's block map is its resource fork, which a UDIF's
         // payload cannot carry: that one is extracted (forks kept) instead.
         if (peel_entry(a, pick)->rsrc_len > 0) {
-            peel_source_t *rf = peel_open_fork(a, pick, PEEL_FORK_RSRC, &pe);
+            source_t *rf = peel_open_fork(a, pick, PEEL_FORK_RSRC, &pe);
             ndif = rf && ndif_source_detect(rf);
-            peel_source_release(rf);
+            source_release(rf);
         }
     }
     if (a)
@@ -289,13 +289,13 @@ static int work_archive_import(io_leaf_t *j) {
     peel_err_free(pe);
     if (ndif) {
         snprintf(j->err, sizeof j->err, "'%.200s' is a Disk Copy 6 (NDIF) image: extract it instead", u->member);
-        peel_source_release(arc);
+        source_release(arc);
         return -ENOTSUP;
     }
     if (pick < 0) {
         snprintf(j->err, sizeof j->err, u->want ? "\"%s\" is not in the archive" : "the archive holds no file%s",
                  u->want ? u->want : "");
-        peel_source_release(arc);
+        source_release(arc);
         return -ENOENT;
     }
 
@@ -308,14 +308,14 @@ static int work_archive_import(io_leaf_t *j) {
         k->w = udif_writer_open(j->b, &o, j->err, sizeof j->err);
     if (!k || !k->w) {
         free(k);
-        peel_source_release(arc);
+        source_release(arc);
         return -EIO;
     }
     a = peel_open(arc, &import_sink_ops, k, &pe);
-    peel_source_t *fork = a ? peel_open_fork(a, pick, PEEL_FORK_DATA, &pe) : NULL;
+    source_t *fork = a ? peel_open_fork(a, pick, PEEL_FORK_DATA, &pe) : NULL;
     int rc = fork ? 0 : -EIO;
-    uint64_t len = fork ? peel_source_size(fork) : 0;
-    if (fork && peel_source_tier(fork) == PEEL_TIER_RANDOM) {
+    uint64_t len = fork ? source_size(fork) : 0;
+    if (fork && source_tier(fork) == GS_TIER_RANDOM) {
         // Stored: a view of the archive; copy it across.
         uint8_t *buf = malloc(1u << 20);
         rc = buf ? 0 : -ENOMEM;
@@ -325,7 +325,7 @@ static int work_archive_import(io_leaf_t *j) {
                 break;
             }
             size_t n = len - at < (1u << 20) ? (size_t)(len - at) : (1u << 20);
-            if (peel_source_read_exact(fork, at, buf, n) != 0)
+            if (source_read_exact(fork, at, buf, n) != 0)
                 rc = -EIO;
             else
                 rc = udif_writer_append(k->w, buf, n);
@@ -337,16 +337,16 @@ static int work_archive_import(io_leaf_t *j) {
         // Compressed: one byte at the end drives the whole decode through
         // the sink, a piece at a time.
         uint8_t last;
-        if (peel_source_read(fork, len - 1, &last, 1) != 1)
+        if (source_read(fork, len - 1, &last, 1) != 1)
             rc = k->err ? k->err : -EIO;
     }
     if (rc == 0 && k->err)
         rc = k->err;
-    peel_source_release(fork);
+    source_release(fork);
     if (a)
         peel_close(a);
     peel_err_free(pe);
-    peel_source_release(arc);
+    source_release(arc);
     if (rc == 0)
         rc = udif_writer_finish(k->w, &u->st);
     else

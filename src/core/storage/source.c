@@ -119,7 +119,7 @@ source_t *source_host(const char *path, int *err) {
     h->fd = fd;
     h->size = size;
     h->key = key;
-    source_t *s = peel_source_new(&host_ops, h, NULL);
+    source_t *s = source_new(&host_ops, h, NULL);
     if (!s)
         *err = -ENOMEM;
     return s;
@@ -152,7 +152,7 @@ static int64_t pad_read(source_t *s, uint64_t off, void *buf, size_t len) {
     if (len > p->size - off)
         len = (size_t)(p->size - off);
     if (off < p->psize) // the parent's own bytes (a short read is the caller's to resume)
-        return peel_source_read(s->parent, off, buf, len < p->psize - off ? len : (size_t)(p->psize - off));
+        return source_read(s->parent, off, buf, len < p->psize - off ? len : (size_t)(p->psize - off));
     memset(buf, 0, len);
     uint64_t lo = off > p->patch_off ? off : p->patch_off;
     uint64_t hi = off + len < p->patch_off + p->patch_len ? off + len : p->patch_off + p->patch_len;
@@ -170,7 +170,7 @@ static const char *pad_key(source_t *s) {
 }
 
 static source_tier_t pad_tier(source_t *s) {
-    return peel_source_tier(s->parent);
+    return source_tier(s->parent);
 }
 
 static void pad_close(source_t *s) {
@@ -187,7 +187,7 @@ static const source_ops_t pad_ops = {pad_read, pad_size, pad_key, pad_tier, pad_
 source_t *source_pad(source_t *parent, uint64_t size, uint64_t patch_off, const void *patch, size_t patch_len) {
     if (!parent)
         return NULL;
-    uint64_t psize = peel_source_size(parent);
+    uint64_t psize = source_size(parent);
     if (size <= psize ||
         (patch_len && (!patch || patch_off < psize || patch_off > size || patch_len > size - patch_off)))
         return NULL;
@@ -198,7 +198,7 @@ source_t *source_pad(source_t *parent, uint64_t size, uint64_t patch_off, const 
     p->psize = psize;
     p->patch_off = patch_off;
     p->patch_len = patch_len;
-    const char *pk = peel_source_key(parent);
+    const char *pk = source_key(parent);
     p->key = str_printf("%s#pad%" PRIu64, pk ? pk : "", size);
     p->patch = patch_len ? malloc(patch_len) : NULL;
     if (!p->key || (patch_len && !p->patch)) {
@@ -207,7 +207,7 @@ source_t *source_pad(source_t *parent, uint64_t size, uint64_t patch_off, const 
     }
     if (patch_len)
         memcpy(p->patch, patch, patch_len);
-    return peel_source_new(&pad_ops, p, parent);
+    return source_new(&pad_ops, p, parent);
 }
 
 // ============================================================================

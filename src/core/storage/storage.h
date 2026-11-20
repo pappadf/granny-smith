@@ -44,14 +44,14 @@ extern "C" {
 typedef struct storage_t storage_t;
 
 // A byte source (source.h); storage reads its base through one.
-struct peel_source;
+typedef struct peel_source source_t; // source.h's byte source, without peeler.h
 
 // Configuration passed to storage_new().
 typedef struct {
     // The original image, read-only: any byte source -- a host file, a view
     // past a DiskCopy header, an NDIF chunk map, a member of an archive.
     // storage_new takes its own reference.  NULL for a blank disk.
-    struct peel_source *base;
+    source_t *base;
     const char *delta_path; // Path to delta file (read-write, created if missing)
     const char *journal_path; // Path to preimage journal (created if missing)
     uint64_t block_count; // Number of logical blocks

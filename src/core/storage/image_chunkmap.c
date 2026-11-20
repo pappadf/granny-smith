@@ -249,8 +249,8 @@ static source_t *cm_publish(cm_src_t *m, int rc, const char *map_name, source_t 
         *err = rc;
         return NULL;
     }
-    // peel_source_new closes `m` itself on failure.
-    source_t *s = peel_source_new(&cm_ops, m, NULL);
+    // source_new closes `m` itself on failure.
+    source_t *s = source_new(&cm_ops, m, NULL);
     *err = s ? 0 : -ENOMEM;
     return s;
 }

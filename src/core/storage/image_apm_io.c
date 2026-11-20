@@ -36,7 +36,7 @@ apm_table_t *image_apm_parse(image_t *img, const char **errmsg) {
     return table;
 }
 
-apm_table_t *image_apm_parse_source(struct peel_source *src, const char **errmsg) {
+apm_table_t *image_apm_parse_source(source_t *src, const char **errmsg) {
     if (!src) {
         if (errmsg)
             *errmsg = image_apm_err_nil;

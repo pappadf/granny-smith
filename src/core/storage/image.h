@@ -108,8 +108,8 @@ const char *image_open_error(void);
 
 // The same over forks already open (the VFS mounting a file it holds).
 // `name` is what image_get_filename reports.
-struct peel_source;
-image_t *image_open_readonly_source(const char *name, struct peel_source *data, struct peel_source *rsrc);
+typedef struct peel_source source_t; // source.h's byte source, without peeler.h
+image_t *image_open_readonly_source(const char *name, source_t *data, source_t *rsrc);
 
 // Create a new writable image instance.  The image subsystem mints an opaque
 // 16-hex-char id internally and creates two files at <delta_dir>/<id>.delta
