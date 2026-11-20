@@ -569,8 +569,6 @@ void tnt_gbus_init(config_t *cfg) {
 void tnt_gbus_teardown(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     if (st && st->board_object) {
-        object_detach(st->board_object);
-        object_delete(st->board_object);
-        st->board_object = NULL;
+        object_destroy(&st->board_object);
     }
 }

@@ -340,10 +340,7 @@ host_input_t *host_input_init(struct config *cfg, struct scheduler *scheduler) {
 void host_input_delete(host_input_t *hi) {
     if (!hi)
         return;
-    if (hi->node) {
-        object_detach(hi->node);
-        object_delete(hi->node);
-    }
+    object_destroy(&hi->node);
     // Typing still in flight dies with the machine it was aimed at.
     if (hi->sched)
         scheduler_forget_source(hi->sched, hi);

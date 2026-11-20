@@ -858,10 +858,7 @@ void iw_printer_delete(iw_printer_t *p) {
     if (p->scheduler)
         scheduler_forget_source(p->scheduler, p);
     port_attach(p, false);
-    if (p->object) {
-        object_detach(p->object);
-        object_delete(p->object);
-    }
+    object_destroy(&p->object);
     iw_interp_free(&p->interp);
     pdf_writer_free(p->pdf);
     byteq_free(&p->input);

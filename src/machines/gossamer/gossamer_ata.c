@@ -479,8 +479,6 @@ void gos_ata_attach_objects(config_t *cfg) {
 void gos_ata_detach_objects(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
     if (st && st->ata_object) {
-        object_detach(st->ata_object);
-        object_delete(st->ata_object);
-        st->ata_object = NULL;
+        object_destroy(&st->ata_object);
     }
 }

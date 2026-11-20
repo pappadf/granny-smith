@@ -257,8 +257,6 @@ void gos_bmac_attach_objects(config_t *cfg) {
 void gos_bmac_detach_objects(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
     if (st && st->bmac_object) {
-        object_detach(st->bmac_object);
-        object_delete(st->bmac_object);
-        st->bmac_object = NULL;
+        object_destroy(&st->bmac_object);
     }
 }

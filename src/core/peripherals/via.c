@@ -1056,21 +1056,9 @@ void via_delete(via_t *via) {
     // of it is torn down.
     scheduler_forget_source(via->scheduler, via);
 
-    if (via->port_b_object) {
-        object_detach(via->port_b_object);
-        object_delete(via->port_b_object);
-        via->port_b_object = NULL;
-    }
-    if (via->port_a_object) {
-        object_detach(via->port_a_object);
-        object_delete(via->port_a_object);
-        via->port_a_object = NULL;
-    }
-    if (via->object) {
-        object_detach(via->object);
-        object_delete(via->object);
-        via->object = NULL;
-    }
+    object_destroy(&via->port_b_object);
+    object_destroy(&via->port_a_object);
+    object_destroy(&via->object);
     free(via);
 }
 

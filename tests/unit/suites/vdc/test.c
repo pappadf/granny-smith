@@ -236,6 +236,10 @@ struct object *object_new(const class_desc_t *cls, void *instance_data, const ch
 void object_delete(struct object *o) {
     (void)o;
 }
+void object_destroy(struct object **slot) {
+    if (slot)
+        *slot = NULL;
+}
 void object_attach(struct object *parent, struct object *child) {
     (void)parent;
     (void)child;

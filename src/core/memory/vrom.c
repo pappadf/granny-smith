@@ -402,10 +402,6 @@ void vrom_init(struct object *parent) {
 }
 
 void vrom_delete(void) {
-    if (s_vrom_object) {
-        object_detach(s_vrom_object);
-        object_delete(s_vrom_object);
-        s_vrom_object = NULL;
-    }
+    object_destroy(&s_vrom_object);
     vrom_offer_clear();
 }

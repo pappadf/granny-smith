@@ -519,21 +519,9 @@ void cpu_delete(cpu_t *cpu) {
         return;
     if (g_bus_fault_regfile == cpu->d)
         g_bus_fault_regfile = NULL; // set per sprint by cpu_run_sprint
-    if (cpu->mmu_object) {
-        object_detach(cpu->mmu_object);
-        object_delete(cpu->mmu_object);
-        cpu->mmu_object = NULL;
-    }
-    if (cpu->fpu_object) {
-        object_detach(cpu->fpu_object);
-        object_delete(cpu->fpu_object);
-        cpu->fpu_object = NULL;
-    }
-    if (cpu->cpu_object) {
-        object_detach(cpu->cpu_object);
-        object_delete(cpu->cpu_object);
-        cpu->cpu_object = NULL;
-    }
+    object_destroy(&cpu->mmu_object);
+    object_destroy(&cpu->fpu_object);
+    object_destroy(&cpu->cpu_object);
     if (cpu->fpu) {
         fpu_free((fpu_state_t *)cpu->fpu);
         cpu->fpu = NULL;

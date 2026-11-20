@@ -121,6 +121,5 @@ void display_detach_video_node(struct object *video) {
     // object_delete frees only the node it is given -- it would orphan the
     // child, one leaked object per machine.boot.  Caught by ASan on a
     // pm9500 boot, where Control attaches one of these.
-    object_detach(video);
-    object_delete_tree(video);
+    object_destroy(&video);
 }

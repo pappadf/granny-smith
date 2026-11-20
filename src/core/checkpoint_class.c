@@ -174,9 +174,5 @@ void checkpoint_init(void) {
 }
 
 void checkpoint_delete(void) {
-    if (s_checkpoint_object) {
-        object_detach(s_checkpoint_object);
-        object_delete(s_checkpoint_object);
-        s_checkpoint_object = NULL;
-    }
+    object_destroy(&s_checkpoint_object);
 }

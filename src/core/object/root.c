@@ -403,10 +403,7 @@ void root_uninstall(void) {
     shell_funcs_uninstall();
     for (int i = g_stub_count - 1; i >= 0; i--) {
         struct object *o = g_stubs[i];
-        if (o) {
-            object_detach(o);
-            object_delete(o);
-        }
+        object_destroy(&o);
         g_stubs[i] = NULL;
     }
     g_stub_count = 0;

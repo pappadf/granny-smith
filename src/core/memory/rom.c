@@ -510,9 +510,5 @@ void rom_init(void) {
 }
 
 void rom_delete(void) {
-    if (s_rom_object) {
-        object_detach(s_rom_object);
-        object_delete(s_rom_object);
-        s_rom_object = NULL;
-    }
+    object_destroy(&s_rom_object);
 }

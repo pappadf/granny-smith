@@ -642,8 +642,6 @@ void gos_grackle_attach_objects(config_t *cfg) {
 void gos_grackle_detach_objects(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
     if (st && st->grackle_object) {
-        object_detach(st->grackle_object);
-        object_delete(st->grackle_object);
-        st->grackle_object = NULL;
+        object_destroy(&st->grackle_object);
     }
 }

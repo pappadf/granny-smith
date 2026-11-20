@@ -512,10 +512,6 @@ void prom_init(struct object *parent) {
 }
 
 void prom_delete(void) {
-    if (s_prom_object) {
-        object_detach(s_prom_object);
-        object_delete(s_prom_object);
-        s_prom_object = NULL;
-    }
+    object_destroy(&s_prom_object);
     prom_offer_clear();
 }

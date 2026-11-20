@@ -447,10 +447,8 @@ void oss_power_on(oss_t *oss) {
 }
 
 void oss_delete(oss_t *oss) {
-    if (oss && oss->object) {
-        object_detach(oss->object);
-        object_delete(oss->object);
-    }
+    if (oss)
+        object_destroy(&oss->object);
     free(oss);
 }
 

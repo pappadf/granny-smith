@@ -188,7 +188,6 @@ void sound_object_delete(struct object *obj) {
     // repeatedly (boot-config does it 28 times) those stale children
     // accumulate with dangling parents.  object_delete_tree is post-order and
     // takes the subtree.
-    object_detach(obj);
-    object_delete_tree(obj);
+    object_destroy(&obj);
     free(copy);
 }

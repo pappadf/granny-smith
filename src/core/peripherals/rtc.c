@@ -546,16 +546,8 @@ void rtc_delete(rtc_t *rtc) {
     // of it is torn down.
     scheduler_forget_source(rtc->scheduler, rtc);
     LOG(1, "rtc_delete: freeing rtc seconds=%u", rtc->seconds);
-    if (rtc->pram_object) {
-        object_detach(rtc->pram_object);
-        object_delete(rtc->pram_object);
-        rtc->pram_object = NULL;
-    }
-    if (rtc->object) {
-        object_detach(rtc->object);
-        object_delete(rtc->object);
-        rtc->object = NULL;
-    }
+    object_destroy(&rtc->pram_object);
+    object_destroy(&rtc->object);
     free(rtc);
 }
 

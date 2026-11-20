@@ -653,14 +653,10 @@ void tnt_gc_attach_object(config_t *cfg) {
 void tnt_gc_detach_object(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     if (st && st->nvram_object) {
-        object_detach(st->nvram_object);
-        object_delete(st->nvram_object);
-        st->nvram_object = NULL;
+        object_destroy(&st->nvram_object);
     }
     if (st && st->gc_object) {
-        object_detach(st->gc_object);
-        object_delete(st->gc_object);
-        st->gc_object = NULL;
+        object_destroy(&st->gc_object);
     }
 }
 

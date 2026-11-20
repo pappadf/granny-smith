@@ -525,10 +525,8 @@ void rbv_reset(rbv_t *rbv) {
 }
 
 void rbv_delete(rbv_t *rbv) {
-    if (rbv && rbv->object) {
-        object_detach(rbv->object);
-        object_delete(rbv->object);
-    }
+    if (rbv)
+        object_destroy(&rbv->object);
     free(rbv);
 }
 

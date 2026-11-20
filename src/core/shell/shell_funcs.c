@@ -114,10 +114,7 @@ static const class_desc_t functions_class = {
 static void func_free(script_func_t *f) {
     if (!f)
         return;
-    if (f->entry_obj) {
-        object_detach(f->entry_obj);
-        object_delete(f->entry_obj);
-    }
+    object_destroy(&f->entry_obj);
     for (int i = 0; i < f->n_params; i++)
         free(f->params[i]);
     free(f->params);
@@ -160,11 +157,7 @@ int shell_func_remove(const char *name) {
             f->removed = true;
             // The entry object goes now (the tree is this thread's); the
             // body waits for the last activation.
-            if (f->entry_obj) {
-                object_detach(f->entry_obj);
-                object_delete(f->entry_obj);
-                f->entry_obj = NULL;
-            }
+            object_destroy(&f->entry_obj);
             bool free_now = f->refs == 0;
             job_tables_unlock();
             if (free_now)
@@ -352,15 +345,7 @@ void shell_funcs_uninstall(void) {
     // shell stub by root_uninstall); keep the function definitions —
     // like bindings, they are process state, not machine state.
     for (script_func_t *f = g_funcs; f; f = f->next) {
-        if (f->entry_obj) {
-            object_detach(f->entry_obj);
-            object_delete(f->entry_obj);
-            f->entry_obj = NULL;
-        }
+        object_destroy(&f->entry_obj);
     }
-    if (g_functions_obj) {
-        object_detach(g_functions_obj);
-        object_delete(g_functions_obj);
-        g_functions_obj = NULL;
-    }
+    object_destroy(&g_functions_obj);
 }

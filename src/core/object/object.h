@@ -330,6 +330,12 @@ void object_delete(struct object *o);
 // runs before its wrapper memory is freed.
 void object_delete_tree(struct object *o);
 
+// Tear down a node you own and clear the pointer you keep it in:
+// object_delete_tree(*slot), then *slot = NULL; a no-op on NULL.  The
+// cascade takes its attached children, so destroy a child whose pointer is
+// stored elsewhere before its parent (or clear that pointer too).
+void object_destroy(struct object **slot);
+
 // Per-object destructor, run by object_delete / object_delete_tree just
 // before the wrapper memory is freed (after invalidators fire and the meta
 // node is released). The substrate always frees the object wrapper itself;

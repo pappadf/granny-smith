@@ -894,13 +894,9 @@ void gos_heathrow_attach_objects(config_t *cfg) {
 void gos_heathrow_detach_objects(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
     if (st && st->nvram_object) {
-        object_detach(st->nvram_object);
-        object_delete(st->nvram_object);
-        st->nvram_object = NULL;
+        object_destroy(&st->nvram_object);
     }
     if (st && st->hr_object) {
-        object_detach(st->hr_object);
-        object_delete(st->hr_object);
-        st->hr_object = NULL;
+        object_destroy(&st->hr_object);
     }
 }

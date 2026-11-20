@@ -318,8 +318,6 @@ void tnt_lcd_init(config_t *cfg) {
 void tnt_lcd_teardown(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     if (st && st->lcd_object) {
-        object_detach(st->lcd_object);
-        object_delete(st->lcd_object);
-        st->lcd_object = NULL;
+        object_destroy(&st->lcd_object);
     }
 }

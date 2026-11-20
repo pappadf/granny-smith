@@ -1246,21 +1246,9 @@ void floppy_delete(floppy_t *floppy) {
             floppy->drive_objects[i] = NULL;
         }
     }
-    if (floppy->drives_object) {
-        object_detach(floppy->drives_object);
-        object_delete(floppy->drives_object);
-        floppy->drives_object = NULL;
-    }
-    if (floppy->controller_object) {
-        object_detach(floppy->controller_object);
-        object_delete(floppy->controller_object);
-        floppy->controller_object = NULL;
-    }
-    if (floppy->object) {
-        object_detach(floppy->object);
-        object_delete(floppy->object);
-        floppy->object = NULL;
-    }
+    object_destroy(&floppy->drives_object);
+    object_destroy(&floppy->controller_object);
+    object_destroy(&floppy->object);
 
     // Flush and free track data for both drives
     for (int d = 0; d < NUM_DRIVES; d++) {

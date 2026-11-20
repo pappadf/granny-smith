@@ -1683,16 +1683,8 @@ void scsi_delete(scsi_t *scsi) {
             scsi->device_objects[i] = NULL;
         }
     }
-    if (scsi->devices_object) {
-        object_detach(scsi->devices_object);
-        object_delete(scsi->devices_object);
-        scsi->devices_object = NULL;
-    }
-    if (scsi->bus_object) {
-        object_detach(scsi->bus_object);
-        object_delete(scsi->bus_object);
-        scsi->bus_object = NULL;
-    }
+    object_destroy(&scsi->devices_object);
+    object_destroy(&scsi->bus_object);
     // Only the instance mounted at `machine.scsi` displaced the static
     // singleton on the way in (see the `primary` gate in scsi_init_named), so
     // only that instance may restore it on the way out.  A machine with a
@@ -1702,11 +1694,7 @@ void scsi_delete(scsi_t *scsi) {
     // shadow a live bus for whatever teardown order happens to run next.
     bool primary = scsi->object && strcmp(object_name(scsi->object), "scsi") == 0;
 
-    if (scsi->object) {
-        object_detach(scsi->object);
-        object_delete(scsi->object);
-        scsi->object = NULL;
-    }
+    object_destroy(&scsi->object);
     if (scsi->buf.data) {
         free(scsi->buf.data);
         scsi->buf.data = NULL;
@@ -2426,9 +2414,7 @@ void scsi_class_register(void) {
 static void scsi_static_detach(void) {
     if (!s_scsi_static_object)
         return;
-    object_detach(s_scsi_static_object);
-    object_delete(s_scsi_static_object);
-    s_scsi_static_object = NULL;
+    object_destroy(&s_scsi_static_object);
 }
 
 static const member_t scsi_members[] = {

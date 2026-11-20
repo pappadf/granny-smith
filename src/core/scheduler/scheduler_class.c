@@ -300,8 +300,5 @@ struct object *scheduler_object_new(struct scheduler *s) {
 }
 
 void scheduler_object_delete(struct object *obj) {
-    if (!obj)
-        return;
-    object_detach(obj);
-    object_delete(obj);
+    object_delete(obj); // detaches, and is NULL-safe
 }

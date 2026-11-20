@@ -1990,21 +1990,9 @@ void scc_delete(scc_t *scc) {
     // of it is torn down.
     scheduler_forget_source(scc->scheduler, scc);
     // Tear down object-tree nodes in reverse order (children first).
-    if (scc->channel_b) {
-        object_detach(scc->channel_b);
-        object_delete(scc->channel_b);
-        scc->channel_b = NULL;
-    }
-    if (scc->channel_a) {
-        object_detach(scc->channel_a);
-        object_delete(scc->channel_a);
-        scc->channel_a = NULL;
-    }
-    if (scc->object) {
-        object_detach(scc->object);
-        object_delete(scc->object);
-        scc->object = NULL;
-    }
+    object_destroy(&scc->channel_b);
+    object_destroy(&scc->channel_a);
+    object_destroy(&scc->object);
     // Close the ports' output files
     for (int ch = 0; ch < 2; ch++) {
         if (scc->port[ch].out)

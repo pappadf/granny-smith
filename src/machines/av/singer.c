@@ -1197,14 +1197,8 @@ av_singer_t *av_singer_init(config_t *cfg, checkpoint_t *cp) {
 void av_singer_delete(av_singer_t *s) {
     if (!s)
         return;
-    if (s->ain_cap_object) {
-        object_detach(s->ain_cap_object);
-        object_delete(s->ain_cap_object);
-    }
-    if (s->ain_object) {
-        object_detach(s->ain_object);
-        object_delete(s->ain_object);
-    }
+    object_destroy(&s->ain_cap_object);
+    object_destroy(&s->ain_object);
     if (s->object) {
         // The sound node only: sound_object_delete() takes the malloc'd surface
         // copy and the attached detail child with it, which object_delete()

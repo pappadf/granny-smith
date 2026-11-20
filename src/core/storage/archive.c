@@ -516,9 +516,5 @@ void archive_init(struct object *parent) {
 }
 
 void archive_delete(void) {
-    if (s_archive_object) {
-        object_detach(s_archive_object);
-        object_delete(s_archive_object);
-        s_archive_object = NULL;
-    }
+    object_destroy(&s_archive_object);
 }

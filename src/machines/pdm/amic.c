@@ -1031,9 +1031,7 @@ void pdm_amic_attach_object(config_t *cfg) {
 void pdm_amic_detach_object(config_t *cfg) {
     pdm_state_t *st = pdm_st(cfg);
     if (st && st->amic_object) {
-        object_detach(st->amic_object);
-        object_delete(st->amic_object);
-        st->amic_object = NULL;
+        object_destroy(&st->amic_object);
     }
 }
 

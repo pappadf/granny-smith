@@ -1091,21 +1091,9 @@ void ppc_delete(ppc_t *p) {
     memory_lines_drop_all(&p->dlines);
     // The decrementer event carries `p`; only the live re-arm path removed it.
     scheduler_forget_source(p->scheduler, p);
-    if (p->fpu_object) {
-        object_detach(p->fpu_object);
-        object_delete(p->fpu_object);
-        p->fpu_object = NULL;
-    }
-    if (p->mmu_object) {
-        object_detach(p->mmu_object);
-        object_delete(p->mmu_object);
-        p->mmu_object = NULL;
-    }
-    if (p->cpu_object) {
-        object_detach(p->cpu_object);
-        object_delete(p->cpu_object);
-        p->cpu_object = NULL;
-    }
+    object_destroy(&p->fpu_object);
+    object_destroy(&p->mmu_object);
+    object_destroy(&p->cpu_object);
     free(p);
 }
 

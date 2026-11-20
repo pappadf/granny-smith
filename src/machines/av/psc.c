@@ -808,10 +808,8 @@ av_psc_t *av_psc_init(config_t *cfg, checkpoint_t *cp) {
 }
 
 void av_psc_delete(av_psc_t *psc) {
-    if (psc && psc->object) {
-        object_detach(psc->object);
-        object_delete(psc->object);
-    }
+    if (psc)
+        object_destroy(&psc->object);
     free(psc);
 }
 

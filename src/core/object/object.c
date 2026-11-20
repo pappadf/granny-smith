@@ -219,6 +219,14 @@ void object_delete_tree(struct object *o) {
     object_delete(o);
 }
 
+void object_destroy(struct object **slot) {
+    if (!slot || !*slot)
+        return;
+    // object_delete detaches, so no caller needs its own object_detach
+    object_delete_tree(*slot);
+    *slot = NULL;
+}
+
 void object_set_destructor(struct object *o, object_dtor_fn dtor) {
     if (o)
         o->dtor = dtor;

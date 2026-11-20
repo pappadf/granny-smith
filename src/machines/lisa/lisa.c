@@ -1171,26 +1171,10 @@ static void lisa_teardown(config_t *cfg) {
             object_delete(ls0->fd_drive_obj);
             ls0->fd_drive_obj = NULL;
         }
-        if (ls0->fd_drives_obj) {
-            object_detach(ls0->fd_drives_obj);
-            object_delete(ls0->fd_drives_obj);
-            ls0->fd_drives_obj = NULL;
-        }
-        if (ls0->fd_obj) {
-            object_detach(ls0->fd_obj);
-            object_delete(ls0->fd_obj);
-            ls0->fd_obj = NULL;
-        }
-        if (ls0->hd_obj) {
-            object_detach(ls0->hd_obj);
-            object_delete(ls0->hd_obj);
-            ls0->hd_obj = NULL;
-        }
-        if (ls0->power_obj) {
-            object_detach(ls0->power_obj);
-            object_delete(ls0->power_obj);
-            ls0->power_obj = NULL;
-        }
+        object_destroy(&ls0->fd_drives_obj);
+        object_destroy(&ls0->fd_obj);
+        object_destroy(&ls0->hd_obj);
+        object_destroy(&ls0->power_obj);
     }
     if (ls0 && ls0->profile) {
         lisa_profile_delete(ls0->profile);

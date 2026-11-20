@@ -608,10 +608,7 @@ av_dsp_t *av_dsp_init(config_t *cfg, checkpoint_t *cp) {
 void av_dsp_delete(av_dsp_t *d) {
     if (!d)
         return;
-    if (d->object) {
-        object_detach(d->object);
-        object_delete(d->object);
-    }
+    object_destroy(&d->object);
     if (d->cfg)
         scheduler_forget_source(d->cfg->scheduler, d);
     free(d->core);

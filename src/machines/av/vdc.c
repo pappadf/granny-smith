@@ -553,10 +553,7 @@ av_vdc_t *av_vdc_init(config_t *cfg, checkpoint_t *cp) {
 void av_vdc_delete(av_vdc_t *vdc) {
     if (!vdc)
         return;
-    if (vdc->object) {
-        object_detach(vdc->object);
-        object_delete(vdc->object);
-    }
+    object_destroy(&vdc->object);
     if (vdc->cfg)
         scheduler_forget_source(vdc->cfg->scheduler, vdc);
     free(vdc->file_frame);

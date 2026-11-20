@@ -1945,41 +1945,13 @@ void debug_cleanup(debug_t *debug) {
     // Tear down object-tree nodes before any of the underlying storage
     // is freed (entry objects fired by object_delete reference the
     // breakpoint_t / logpoint_t state). Children first, then root.
-    if (debug->mac_globals_object) {
-        object_detach(debug->mac_globals_object);
-        object_delete(debug->mac_globals_object);
-        debug->mac_globals_object = NULL;
-    }
-    if (debug->find_object) {
-        object_detach(debug->find_object);
-        object_delete(debug->find_object);
-        debug->find_object = NULL;
-    }
-    if (debug->mac_object) {
-        object_detach(debug->mac_object);
-        object_delete(debug->mac_object);
-        debug->mac_object = NULL;
-    }
-    if (debug->lp_collection_object) {
-        object_detach(debug->lp_collection_object);
-        object_delete(debug->lp_collection_object);
-        debug->lp_collection_object = NULL;
-    }
-    if (debug->wp_collection_object) {
-        object_detach(debug->wp_collection_object);
-        object_delete(debug->wp_collection_object);
-        debug->wp_collection_object = NULL;
-    }
-    if (debug->bp_collection_object) {
-        object_detach(debug->bp_collection_object);
-        object_delete(debug->bp_collection_object);
-        debug->bp_collection_object = NULL;
-    }
-    if (debug->object) {
-        object_detach(debug->object);
-        object_delete(debug->object);
-        debug->object = NULL;
-    }
+    object_destroy(&debug->mac_globals_object);
+    object_destroy(&debug->find_object);
+    object_destroy(&debug->mac_object);
+    object_destroy(&debug->lp_collection_object);
+    object_destroy(&debug->wp_collection_object);
+    object_destroy(&debug->bp_collection_object);
+    object_destroy(&debug->object);
 
     // Free all breakpoints — via free_breakpoint() so the entry object
     // and condition string go with them (the same discipline every other
