@@ -30,6 +30,7 @@
 #include "log.h"
 #include "machine.h"
 #include "object.h"
+#include "object_order.h"
 #include "scheduler.h"
 #include "system.h"
 #include "via.h" // via_setclr
@@ -803,7 +804,7 @@ av_psc_t *av_psc_init(config_t *cfg, checkpoint_t *cp) {
     if (cp) {
         checkpoint_load_prefix(cp, psc, av_psc_t);
     }
-    psc->object = object_attach_new(machine_object(), &psc_class, psc, "psc", NULL, 45);
+    psc->object = object_attach_new(machine_object(), &psc_class, psc, "psc", NULL, OBJ_ORDER_IO_CONTROLLER);
     return psc;
 }
 

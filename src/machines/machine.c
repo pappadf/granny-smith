@@ -16,6 +16,7 @@
 #include "machine_parts.h"
 #include "nubus.h"
 #include "object.h"
+#include "object_order.h"
 #include "out.h"
 #include "platform.h"
 #include "prom.h"
@@ -1152,7 +1153,7 @@ struct object *machine_object(void) {
     if (!s_machine_object) {
         s_machine_object = object_new(&machine_class, NULL, "machine");
         if (s_machine_object) {
-            object_set_order(s_machine_object, 0); // machine sorts first under the root
+            object_set_order(s_machine_object, OBJ_ORDER_MACHINE); // machine sorts first under the root
             object_set_domain(s_machine_object, OBJ_DOMAIN_MACHINE);
             object_attach(object_root(), s_machine_object);
         }
@@ -1213,7 +1214,7 @@ static struct object *s_catalog_object = NULL;
 void catalog_init(void) {
     if (s_catalog_object)
         return;
-    s_catalog_object = object_attach_new(object_root(), &catalog_class, NULL, "catalog", "Catalog", 70);
+    s_catalog_object = object_attach_new(object_root(), &catalog_class, NULL, "catalog", "Catalog", OBJ_ORDER_CATALOG);
     if (!s_catalog_object)
         return;
     vrom_init(s_catalog_object); // catalog.vroms

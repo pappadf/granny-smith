@@ -212,7 +212,7 @@ Example implementation section comment:
 
 ### Device module conventions
 
-Three rules that had been re-derived from scratch in four different files
+Rules that had been re-derived from scratch in four different files
 before anyone wrote them down. The first is stated in full in
 [`../core/storage/checkpointing.md`](../internals/core/checkpointing.md) under
 "Struct layout guideline"; it is repeated here because that is not where
@@ -258,6 +258,17 @@ See `src/core/gs_assert.h` for the first two.
 `GS_ASSERT` vanish under `GS_FAST` (the shipped build sets `-DGS_FAST
 -DNDEBUG`), and `gs_assert_fail` returns anyway, so neither one prevents the
 overrun it appears to guard.
+
+**4. Tree placement: a named order weight, and one facade rule.**
+A node attached under the root or the machine node takes its display weight
+from `src/core/object/object_order.h` (`OBJ_ORDER_*`), never a literal, and
+no two nodes that can be siblings share one: siblings of equal weight fall to
+attach order, which a checkpoint load need not repeat.  Children inside one
+device keep local small numbers.  `object_attach_new(parent, cls, data, name,
+label, order)` is the constructor's one call for new + label + order +
+attach.  A process-wide facade (a node that exists with or without a
+machine) is a `<module>_class_register()` called from `core_init`, declared
+in `src/core/core_singletons.h`.
 
 ---
 

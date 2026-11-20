@@ -12,6 +12,7 @@
 #include "scheduler_internal.h"
 
 #include "object.h"
+#include "object_order.h"
 #include "system.h"
 #include "value.h"
 
@@ -292,8 +293,7 @@ static const class_desc_t scheduler_class = {
 struct object *scheduler_object_new(struct scheduler *s) {
     struct object *obj = object_new(&scheduler_class, s, "scheduler");
     if (obj) {
-        object_set_order(obj, 10); // root order: machine 0, scheduler 10, checkpoint 20, files 30, debug 40, log
-                                   // 50, shell 60, catalog 70, appletalk 100
+        object_set_order(obj, OBJ_ORDER_SCHEDULER); // the root's order is object_order.h's table
         object_attach(object_root(), obj);
     }
     return obj;

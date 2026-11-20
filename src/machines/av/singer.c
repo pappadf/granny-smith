@@ -28,6 +28,7 @@
 #include "machine_profile.h"
 #include "mmu.h"
 #include "object.h"
+#include "object_order.h"
 #include "platform_hooks.h"
 #include "scheduler.h"
 #include "sound_surface.h"
@@ -1181,7 +1182,7 @@ av_singer_t *av_singer_init(config_t *cfg, checkpoint_t *cp) {
     s->ain_object = object_new(&av_audioin_class, s, "audioin");
     if (s->ain_object) {
         object_set_label(s->ain_object, "Audio In");
-        object_set_order(s->ain_object, 126);
+        object_set_order(s->ain_object, OBJ_ORDER_AUDIO_IN);
         object_attach(machine_object(), s->ain_object);
         s->ain_cap_object = object_new(&av_audioin_capture_class, s, "capture");
         if (s->ain_cap_object) {

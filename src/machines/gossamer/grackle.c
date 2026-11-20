@@ -49,6 +49,7 @@
 #include "log.h"
 #include "machine.h"
 #include "object.h"
+#include "object_order.h"
 #include "page_fill.h"
 #include "pci.h"
 #include "ppc.h"
@@ -636,7 +637,8 @@ void gos_grackle_attach_objects(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
     if (!st || st->grackle_object)
         return;
-    st->grackle_object = object_attach_new(machine_object(), &grk_class, cfg, "grackle", "Grackle", 44);
+    st->grackle_object =
+        object_attach_new(machine_object(), &grk_class, cfg, "grackle", "Grackle", OBJ_ORDER_HOST_BRIDGE);
 }
 
 void gos_grackle_detach_objects(config_t *cfg) {

@@ -19,6 +19,7 @@
 #include "machine_profile.h"
 #include "memory.h"
 #include "object.h"
+#include "object_order.h"
 #include "system.h"
 #include "value.h"
 
@@ -504,7 +505,7 @@ void rom_init(void) {
     s_rom_object = object_new(&rom_class, NULL, "rom");
     if (s_rom_object) {
         object_set_label(s_rom_object, "ROM");
-        object_set_order(s_rom_object, 30);
+        object_set_order(s_rom_object, OBJ_ORDER_ROM);
         object_attach(machine_object(), s_rom_object);
     }
 }

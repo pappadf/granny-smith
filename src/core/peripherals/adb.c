@@ -24,6 +24,7 @@
 #include "machine_profile.h"
 #include "mouse.h"
 #include "object.h"
+#include "object_order.h"
 #include "system.h"
 #include "value.h"
 
@@ -1780,7 +1781,7 @@ struct object *adb_bus_object(void) {
         s_adb_object = object_new(&adb_class, NULL, "adb");
         if (s_adb_object) {
             object_set_label(s_adb_object, "ADB");
-            object_set_order(s_adb_object, 70);
+            object_set_order(s_adb_object, OBJ_ORDER_ADB);
             object_attach(machine_object(), s_adb_object);
         }
     }

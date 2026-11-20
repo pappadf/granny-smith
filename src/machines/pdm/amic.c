@@ -22,6 +22,7 @@
 #include "log.h"
 #include "machine.h"
 #include "object.h"
+#include "object_order.h"
 #include "ppc.h"
 #include "scc.h"
 #include "scheduler.h"
@@ -1025,7 +1026,7 @@ void pdm_amic_attach_object(config_t *cfg) {
     pdm_state_t *st = pdm_st(cfg);
     if (!st || st->amic_object)
         return;
-    st->amic_object = object_attach_new(machine_object(), &amic_class, cfg, "amic", NULL, 45);
+    st->amic_object = object_attach_new(machine_object(), &amic_class, cfg, "amic", NULL, OBJ_ORDER_IO_CONTROLLER);
 }
 
 void pdm_amic_detach_object(config_t *cfg) {

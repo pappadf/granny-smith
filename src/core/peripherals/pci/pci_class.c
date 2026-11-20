@@ -16,6 +16,7 @@
 #include "config_space.h"
 #include "machine_profile.h"
 #include "object.h"
+#include "object_order.h"
 #include "pci.h"
 #include "root.h"
 #include "system_internal.h"
@@ -360,7 +361,7 @@ static void pci_root_install(struct config *cfg) {
     if (!bus)
         return;
     object_set_label(bus, "PCI");
-    object_set_order(bus, 101);
+    object_set_order(bus, OBJ_ORDER_PCI);
     struct object *slots = root_attach_stub(bus, object_collection_new(&pci_slots, cfg, "slot"));
     if (slots) {
         object_set_label(slots, "Slots");

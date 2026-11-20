@@ -29,6 +29,7 @@
 #include "mmu.h"
 #include "nubus.h"
 #include "object.h"
+#include "object_order.h"
 #include "pci.h"
 #include "scheduler.h"
 #include "shell.h"
@@ -1895,7 +1896,7 @@ debug_t *debug_init(void) {
     // must not touch either.
     debug->object = object_new(&debug_class, debug, "debug");
     if (debug->object) {
-        object_set_order(debug->object, 40);
+        object_set_order(debug->object, OBJ_ORDER_DEBUG);
         debug->bp_collection_object = object_new(&bp_collection_class, debug, "breakpoints");
         if (debug->bp_collection_object)
             object_attach(debug->object, debug->bp_collection_object);
@@ -3895,7 +3896,7 @@ void screen_class_register(void) {
     s_screen_object = object_new(&screen_class, NULL, "screen");
     if (s_screen_object) {
         object_set_label(s_screen_object, "Screen");
-        object_set_order(s_screen_object, 120);
+        object_set_order(s_screen_object, OBJ_ORDER_SCREEN);
         object_attach(machine_object(), s_screen_object);
     }
 }

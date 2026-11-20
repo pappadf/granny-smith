@@ -36,6 +36,7 @@
 #include "log.h"
 #include "machine_profile.h"
 #include "object.h"
+#include "object_order.h"
 #include "platform_hooks.h"
 #include "scheduler.h"
 #include "system.h"
@@ -537,7 +538,7 @@ av_vdc_t *av_vdc_init(config_t *cfg, checkpoint_t *cp) {
     vdc->object = object_new(&videoin_class, vdc, "videoin");
     if (vdc->object) {
         object_set_label(vdc->object, "Video In");
-        object_set_order(vdc->object, 125);
+        object_set_order(vdc->object, OBJ_ORDER_VIDEO_IN);
         object_attach(machine_object(), vdc->object);
     }
 

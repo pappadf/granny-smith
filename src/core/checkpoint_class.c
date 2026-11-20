@@ -10,6 +10,7 @@
 #include "checkpoint.h"
 
 #include "object.h"
+#include "object_order.h"
 #include "platform_hooks.h"
 #include "status.h"
 #include "system.h"
@@ -168,7 +169,7 @@ void checkpoint_init(void) {
         return;
     s_checkpoint_object = object_new(&checkpoint_class, NULL, "checkpoint");
     if (s_checkpoint_object) {
-        object_set_order(s_checkpoint_object, 20);
+        object_set_order(s_checkpoint_object, OBJ_ORDER_CHECKPOINT);
         object_attach(object_root(), s_checkpoint_object);
     }
 }

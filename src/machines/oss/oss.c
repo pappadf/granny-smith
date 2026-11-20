@@ -10,6 +10,7 @@
 #include "irq_controller.h"
 #include "machine.h"
 #include "object.h"
+#include "object_order.h"
 #include "regfile.h"
 #include "scheduler.h"
 #include "system.h"
@@ -352,8 +353,8 @@ static const class_desc_t oss_class = {
 };
 
 static void oss_attach_object(oss_t *oss) {
-    oss->object =
-        object_attach_new(machine_object(), &oss_class, oss, "oss", NULL, 45); // between the VIAs (40) and the RTC (60)
+    oss->object = object_attach_new(machine_object(), &oss_class, oss, "oss", NULL,
+                                    OBJ_ORDER_IO_CONTROLLER); // between the VIAs and the RTC
 }
 
 // The register state oss_init constructs -- shared with oss_power_on, so a

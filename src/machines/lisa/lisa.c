@@ -30,6 +30,7 @@
 #include "log.h"
 #include "memory.h"
 #include "object.h"
+#include "object_order.h"
 #include "scc.h"
 #include "scheduler.h"
 #include "system.h"
@@ -701,7 +702,7 @@ static const class_desc_t lisa_fd_class = {
 static void lisa_register_floppy_object(config_t *cfg) {
     lisa_state_t *ls = lisa_state(cfg);
     (void)lisa_fd_members;
-    ls->fd_obj = object_attach_new(machine_object(), &lisa_fd_class, cfg, "floppy", "Floppy", 80);
+    ls->fd_obj = object_attach_new(machine_object(), &lisa_fd_class, cfg, "floppy", "Floppy", OBJ_ORDER_FLOPPY);
     if (!ls->fd_obj)
         return;
     // Named "drive" (singular) to match the standard floppy collection
@@ -909,7 +910,7 @@ static void lisa_register_profile_object(config_t *cfg) {
     // "profile" would be shadowed by the machine class's `profile` *method*
     // (the resolver finds members before attached children). The ProFile is
     // the Lisa's hard disk, so machine.hd reads correctly.
-    ls->hd_obj = object_attach_new(machine_object(), &lisa_hd_class, cfg, "hd", "ProFile", 90);
+    ls->hd_obj = object_attach_new(machine_object(), &lisa_hd_class, cfg, "hd", "ProFile", OBJ_ORDER_PROFILE);
 }
 
 // ============================================================
@@ -940,7 +941,7 @@ static const class_desc_t lisa_power_class = {
 
 static void lisa_register_power_object(config_t *cfg) {
     lisa_state_t *ls = lisa_state(cfg);
-    ls->power_obj = object_attach_new(machine_object(), &lisa_power_class, cfg, "power", "Power", 130);
+    ls->power_obj = object_attach_new(machine_object(), &lisa_power_class, cfg, "power", "Power", OBJ_ORDER_POWER);
 }
 
 // ============================================================

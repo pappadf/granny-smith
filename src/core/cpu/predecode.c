@@ -12,6 +12,7 @@
 
 #include "memory.h"
 #include "object.h"
+#include "object_order.h"
 #include "value.h"
 #ifdef PD_PROFILE
 #include "scheduler.h"
@@ -948,7 +949,7 @@ void predecode_object_install(void) {
         object_set_label(s_predecode_object, "Predecode");
         // Beside `pacing`: another host-side execution setting, and like it
         // an advanced node in a tree.
-        object_set_order(s_predecode_object, 22);
+        object_set_order(s_predecode_object, OBJ_ORDER_PREDECODE);
         object_set_category(s_predecode_object, M_CAT_ADVANCED);
         object_attach(object_root(), s_predecode_object);
     }

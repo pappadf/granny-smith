@@ -11,6 +11,7 @@
 #include "gs_assert.h"
 #include "log.h"
 #include "object.h"
+#include "object_order.h"
 #include "system.h"
 #include "system_internal.h"
 #include "value.h"
@@ -527,7 +528,7 @@ rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint, 
     rtc->object = object_new(&rtc_class, rtc, "rtc");
     if (rtc->object) {
         object_set_label(rtc->object, "RTC");
-        object_set_order(rtc->object, 60);
+        object_set_order(rtc->object, OBJ_ORDER_RTC);
         object_attach(machine_object(), rtc->object);
         rtc->pram_object = object_new(&rtc_pram_class, rtc, "pram");
         if (rtc->pram_object) {

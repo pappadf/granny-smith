@@ -38,6 +38,7 @@
 #include "machine_profile.h"
 #include "mmu.h"
 #include "object.h"
+#include "object_order.h"
 #include "scheduler.h"
 #include "system.h"
 #include "value.h"
@@ -599,7 +600,7 @@ av_dsp_t *av_dsp_init(config_t *cfg, checkpoint_t *cp) {
 
     scheduler_new_event_type(cfg->scheduler, "dsp", d, "burst", &av_dsp_burst_event);
 
-    d->object = object_attach_new(machine_object(), &av_dsp_class, d, "dsp", "DSP3210", 15);
+    d->object = object_attach_new(machine_object(), &av_dsp_class, d, "dsp", "DSP3210", OBJ_ORDER_DSP);
 
     LOG(1, "DSP3210 init (%u Hz, ratio_x256=%u)", dsp_freq, d->ratio_x256);
     return d;

@@ -48,6 +48,7 @@
 #include "common.h"
 #include "memory.h"
 #include "object.h"
+#include "object_order.h"
 #include "predecode.h"
 #include "scheduler.h"
 #include "value.h"
@@ -6029,7 +6030,7 @@ void ppc_jit_object_install(void) {
     s_jit_object = object_new(&jit_class, NULL, "jit");
     if (s_jit_object) {
         object_set_label(s_jit_object, "JIT");
-        object_set_order(s_jit_object, 23);
+        object_set_order(s_jit_object, OBJ_ORDER_JIT);
         object_set_category(s_jit_object, M_CAT_ADVANCED);
         object_attach(object_root(), s_jit_object);
     }

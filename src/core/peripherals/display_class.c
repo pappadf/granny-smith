@@ -7,6 +7,7 @@
 #include "display_class.h"
 
 #include "machine_profile.h"
+#include "object_order.h"
 
 static display_fb_node_t *fb_node(struct object *self) {
     return (display_fb_node_t *)object_data(self);
@@ -103,7 +104,7 @@ struct object *display_attach_video_node(display_fb_node_t *node, const char *la
     if (!video)
         return NULL;
     object_set_label(video, label ? label : "Video");
-    object_set_order(video, 120);
+    object_set_order(video, OBJ_ORDER_VIDEO);
     struct object *fb = object_new(&display_fb_class, node, "framebuffer");
     if (fb) {
         object_set_label(fb, "Framebuffer");

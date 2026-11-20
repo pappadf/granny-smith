@@ -31,6 +31,7 @@
 #include "log.h"
 #include "machine.h"
 #include "object.h"
+#include "object_order.h"
 #include "regfile.h"
 #include "scheduler.h"
 #include "scsi.h"
@@ -473,7 +474,7 @@ void gos_ata_attach_objects(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
     if (!st || st->ata_object)
         return;
-    st->ata_object = object_attach_new(machine_object(), &ata_class, cfg, "ata", "ATA", 91);
+    st->ata_object = object_attach_new(machine_object(), &ata_class, cfg, "ata", "ATA", OBJ_ORDER_ATA);
 }
 
 void gos_ata_detach_objects(config_t *cfg) {

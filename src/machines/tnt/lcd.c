@@ -63,6 +63,7 @@
 
 #include "log.h"
 #include "object.h"
+#include "object_order.h"
 #include "value.h"
 
 #include <stdio.h>
@@ -312,7 +313,7 @@ void tnt_lcd_reset(config_t *cfg) {
 void tnt_lcd_init(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     tnt_lcd_reset(cfg);
-    st->lcd_object = object_attach_new(machine_object(), &tnt_lcd_class, cfg, "lcd", "Front Panel LCD", 121);
+    st->lcd_object = object_attach_new(machine_object(), &tnt_lcd_class, cfg, "lcd", "Front Panel LCD", OBJ_ORDER_LCD);
 }
 
 void tnt_lcd_teardown(config_t *cfg) {

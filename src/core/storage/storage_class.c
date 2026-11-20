@@ -33,6 +33,7 @@
 #include "image_volume.h"
 #include "image_wrap.h"
 #include "object.h"
+#include "object_order.h"
 #include "platform_hooks.h"
 #include "root.h"
 #include "shell.h"
@@ -2211,7 +2212,7 @@ void files_init(void) {
     if (!g_files_object)
         return;
     object_set_label(g_files_object, "Files");
-    object_set_order(g_files_object, 30);
+    object_set_order(g_files_object, OBJ_ORDER_FILES);
     object_attach(object_root(), g_files_object);
     struct object *mounts = object_collection_new(&files_mounts, NULL, "mounts");
     if (mounts) {

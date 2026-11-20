@@ -16,6 +16,7 @@
 #include "memory.h"
 #include "mmu040.h"
 #include "object.h"
+#include "object_order.h"
 #include "predecode.h"
 #include "scheduler.h"
 #include "status.h"
@@ -454,7 +455,7 @@ cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
     cpu->cpu_object = object_new(&cpu_class, cpu, "cpu");
     if (cpu->cpu_object) {
         object_set_label(cpu->cpu_object, "CPU");
-        object_set_order(cpu->cpu_object, 10);
+        object_set_order(cpu->cpu_object, OBJ_ORDER_CPU);
         object_attach(machine_object(), cpu->cpu_object);
         if (cpu->fpu) {
             cpu->fpu_object = object_new(&fpu_class, cpu->fpu, "fpu");

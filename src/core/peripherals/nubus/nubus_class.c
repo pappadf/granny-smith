@@ -13,6 +13,7 @@
 #include "machine_profile.h"
 #include "nubus.h"
 #include "object.h"
+#include "object_order.h"
 #include "root.h"
 #include "system_internal.h"
 #include "value.h"
@@ -320,7 +321,7 @@ static void nubus_root_install(struct config *cfg) {
     if (!bus)
         return;
     object_set_label(bus, "NuBus");
-    object_set_order(bus, 100);
+    object_set_order(bus, OBJ_ORDER_NUBUS);
     struct object *slots = root_attach_stub(bus, object_collection_new(&nubus_slots, cfg, "slot"));
     if (slots) {
         object_set_label(slots, "Slots");

@@ -15,6 +15,7 @@
 #include "gs_assert.h"
 #include "log.h"
 #include "object.h"
+#include "object_order.h"
 #include "platform.h"
 #include "system.h"
 #include "system_internal.h"
@@ -968,7 +969,7 @@ via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, uint8_t
     // from the object's instance_data.
     via->object = object_new(&via_class, via, name ? name : "via");
     if (via->object) {
-        object_set_order(via->object, 40); // via1/via2 tiebreak on attach order
+        object_set_order(via->object, OBJ_ORDER_VIA); // via1/via2 tiebreak on attach order
         object_attach(machine_object(), via->object);
         via->port_a_object = object_new(&via_port_a_class, via, "port_a");
         if (via->port_a_object)

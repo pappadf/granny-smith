@@ -63,6 +63,7 @@
 #include "log.h"
 #include "machine.h"
 #include "object.h"
+#include "object_order.h"
 #include "of_nvram.h"
 #include "pci.h"
 #include "ppc.h"
@@ -887,8 +888,9 @@ void gos_heathrow_attach_objects(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
     if (!st || st->hr_object)
         return;
-    st->hr_object = object_attach_new(machine_object(), &hr_class, cfg, "heathrow", "Heathrow", 45);
-    st->nvram_object = object_attach_new(machine_object(), &nvram_class, cfg, "nvram", "NVRAM", 46);
+    st->hr_object =
+        object_attach_new(machine_object(), &hr_class, cfg, "heathrow", "Heathrow", OBJ_ORDER_IO_CONTROLLER);
+    st->nvram_object = object_attach_new(machine_object(), &nvram_class, cfg, "nvram", "NVRAM", OBJ_ORDER_NVRAM);
 }
 
 void gos_heathrow_detach_objects(config_t *cfg) {

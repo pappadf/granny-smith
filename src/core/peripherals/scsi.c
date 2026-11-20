@@ -22,6 +22,7 @@ value_t io_leaf_export_image(struct image *img, const char *dest, const char *co
 #include "image.h"
 #include "log.h"
 #include "object.h"
+#include "object_order.h"
 #include "platform.h"
 #include "scheduler.h"
 #include "scsi_internal.h"
@@ -1423,7 +1424,7 @@ scsi_t *scsi_init_named(struct scheduler *sched, checkpoint_t *checkpoint, const
     scsi->object = object_new(&scsi_class, scsi, primary ? "scsi" : name);
     if (scsi->object) {
         object_set_label(scsi->object, primary ? "SCSI" : name);
-        object_set_order(scsi->object, primary ? 90 : 91);
+        object_set_order(scsi->object, primary ? OBJ_ORDER_SCSI : OBJ_ORDER_SCSI_SECONDARY);
         object_attach(machine_object(), scsi->object);
         scsi->bus_object = object_new(&scsi_bus_class, scsi, "bus");
         if (scsi->bus_object) {
@@ -2414,7 +2415,7 @@ void scsi_class_register(void) {
     s_scsi_static_object = object_new(&scsi_static_class, NULL, "scsi");
     if (s_scsi_static_object) {
         object_set_label(s_scsi_static_object, "SCSI");
-        object_set_order(s_scsi_static_object, 90);
+        object_set_order(s_scsi_static_object, OBJ_ORDER_SCSI);
         object_attach(machine_object(), s_scsi_static_object);
     }
 }

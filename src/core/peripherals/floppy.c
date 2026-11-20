@@ -16,6 +16,7 @@ static void floppy_notify_present(int drive, bool present);
 #include "gs_assert.h"
 #include "memory.h"
 #include "object.h"
+#include "object_order.h"
 #include "platform.h"
 #include "shell.h"
 #include "system.h"
@@ -1157,7 +1158,7 @@ floppy_t *floppy_init(floppy_type_t type, memory_map_t *map, struct scheduler *s
     floppy->object = object_new(&floppy_class, floppy, "floppy");
     if (floppy->object) {
         object_set_label(floppy->object, "Floppy");
-        object_set_order(floppy->object, 80);
+        object_set_order(floppy->object, OBJ_ORDER_FLOPPY);
         object_attach(machine_object(), floppy->object);
         floppy->controller_object = object_new(&floppy_controller_class, floppy, "controller");
         if (floppy->controller_object) {

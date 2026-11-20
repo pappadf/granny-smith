@@ -35,6 +35,7 @@
 #include "log.h"
 #include "machine.h"
 #include "object.h"
+#include "object_order.h"
 #include "of_nvram.h"
 #include "pci.h"
 #include "ppc.h"
@@ -643,11 +644,11 @@ void tnt_gc_attach_object(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     if (!st || st->gc_object)
         return;
-    st->gc_object = object_attach_new(machine_object(), &gc_class, cfg, "gc", NULL, 45);
+    st->gc_object = object_attach_new(machine_object(), &gc_class, cfg, "gc", NULL, OBJ_ORDER_IO_CONTROLLER);
     if (!st->gc_object)
         return;
     // The non-volatile store beside it: machine.nvram.
-    st->nvram_object = object_attach_new(machine_object(), &nvram_class, cfg, "nvram", "NVRAM", 46);
+    st->nvram_object = object_attach_new(machine_object(), &nvram_class, cfg, "nvram", "NVRAM", OBJ_ORDER_NVRAM);
 }
 
 void tnt_gc_detach_object(config_t *cfg) {

@@ -208,8 +208,8 @@ with any attached subtree.
 
 ### The root
 
-The root's children, in their fixed order (`object_set_order`), fall in three
-domains:
+The root's children, in their fixed order (`object_set_order`, with the
+weights named in `src/core/object/object_order.h`), fall in three domains:
 
 | Order | Node | Domain | Holds |
 |---|---|---|---|

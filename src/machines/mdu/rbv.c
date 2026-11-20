@@ -40,6 +40,7 @@
 #include "log.h"
 #include "machine.h"
 #include "object.h"
+#include "object_order.h"
 #include "system.h"
 #include "via.h" // via_setclr
 
@@ -490,7 +491,8 @@ rbv_t *rbv_init(rbv_variant_t variant, uint8_t sense3, checkpoint_t *cp) {
         checkpoint_load_prefix(cp, rbv, rbv_t);
     }
 
-    rbv->object = object_attach_new(machine_object(), &rbv_class, rbv, "rbv", NULL, 45); // beside the other controllers
+    rbv->object = object_attach_new(machine_object(), &rbv_class, rbv, "rbv", NULL,
+                                    OBJ_ORDER_IO_CONTROLLER); // beside the other controllers
     return rbv;
 }
 

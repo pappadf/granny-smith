@@ -11,6 +11,7 @@
 #include "gs_assert.h"
 #include "log.h"
 #include "object.h"
+#include "object_order.h"
 #include "platform.h"
 #include "scheduler.h"
 #include "system.h"
@@ -1872,7 +1873,7 @@ scc_t *scc_init(memory_map_t *map, struct scheduler *scheduler, scc_irq_fn irq_c
     scc->object = object_new(&scc_class, scc, "scc");
     if (scc->object) {
         object_set_label(scc->object, "SCC");
-        object_set_order(scc->object, 50);
+        object_set_order(scc->object, OBJ_ORDER_SCC);
         object_attach(machine_object(), scc->object);
         // instance_data is the CHANNEL, not the chip: that is what lets one
         // member table serve both children.  No free hazard from handing out

@@ -20,6 +20,7 @@
 #include "log.h"
 #include "machine_profile.h"
 #include "object.h"
+#include "object_order.h"
 #include "ppc_disasm.h"
 #include "predecode.h"
 #include "scheduler.h"
@@ -1057,7 +1058,7 @@ ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
     p->cpu_object = object_new(&ppc_cpu_class, p, "cpu");
     if (p->cpu_object) {
         object_set_label(p->cpu_object, "CPU");
-        object_set_order(p->cpu_object, 10);
+        object_set_order(p->cpu_object, OBJ_ORDER_CPU);
         object_attach(machine_object(), p->cpu_object);
         // machine.cpu.mmu: the translation debug window.
         p->mmu_object = object_new(&ppc_mmu_class, p, "mmu");

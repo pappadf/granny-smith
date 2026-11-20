@@ -14,6 +14,7 @@
 #include "log.h"
 #include "machine.h"
 #include "object.h"
+#include "object_order.h"
 
 #include <stdio.h>
 
@@ -251,7 +252,8 @@ void gos_bmac_attach_objects(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
     if (!st || st->bmac_object)
         return;
-    st->bmac_object = object_attach_new(machine_object(), &bmac_class, cfg, "bmac", "BMAC Ethernet", 92);
+    st->bmac_object =
+        object_attach_new(machine_object(), &bmac_class, cfg, "bmac", "BMAC Ethernet", OBJ_ORDER_ETHERNET);
 }
 
 void gos_bmac_detach_objects(config_t *cfg) {
