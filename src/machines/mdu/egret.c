@@ -32,6 +32,7 @@
 #include "egret.h"
 
 #include "adb.h"
+#include "adb_mcu_link.h"
 #include "checkpoint.h"
 #include "log.h"
 #include "rtc.h"
@@ -51,12 +52,7 @@ LOG_USE_CATEGORY_NAME("egret");
 #define PB_VIAFULL (1u << 4) // PB4 viaFull — host "byte serviced" (host output)
 #define PB_SYSSES  (1u << 5) // PB5 sysSes  — host "transaction in progress" (host output)
 
-// === Egret packet types (EgretEqu.h) =======================================
-
-#define PKT_ADB    0x00 // adbPkt
-#define PKT_PSEUDO 0x01 // pseudoPkt
-#define PKT_ERROR  0x02 // errorPkt
-#define PKT_TICK   0x03 // tickPkt — 1-second tick
+// Packet types and the ADB response flags are adb_mcu_link.h's (ADB_MCU_*).
 
 // === Pseudo-command codes (EgretEqu.h) ======================================
 
@@ -75,11 +71,6 @@ LOG_USE_CATEGORY_NAME("egret");
 #define CMD_SETAUTOP   0x14 // SetAutopoll — set autopoll rate (ms)
 #define CMD_RDAUTOP    0x16 // RdAutoRate  — read autopoll rate (ms)
 #define CMD_WR1SECMODE 0x1B // Wr1SecMode  — 1-second-interrupt mode
-
-// === ADB response status flags (EgretEqu.h) =================================
-
-#define EG_FLAG_TIMEOUT  (1u << 1) // EgTimeOut  — addressed device had no data
-#define EG_FLAG_AUTOPOLL (1u << 6) // EgAutoPoll — data came from an auto-poll
 
 // Auto-poll cadence (~11 ms matches the real Egret / VIA-path poll).
 // 1-second tick cadence.
@@ -154,12 +145,9 @@ struct egret {
     // protocol has no sync, so that half does not carry over.
     bool resend_pending;
     // The auto-poll packet waiting for the link to the host, built when an
-    // ADB Talk completes (egret_adb_service); whether a Talk is running, when
-    // the last one started, and the host's poll period in ms (0: default).
-    uint8_t ap_pkt[EG_TX_MAX];
-    int ap_len;
-    bool adb_talk_pending;
-    double adb_talk_start_ns;
+    // ADB Talk completes (egret_adb_service), and the Talk's state; then the
+    // host's poll period in ms (0: default).
+    adb_mcu_autopoll_t ap;
     uint8_t autopoll_ms;
 
     // --- pointers / callbacks (not checkpointed) ---
@@ -251,7 +239,7 @@ static void egret_send_timeout_event(void *source, uint64_t data) {
         return;
     eg->state = EG_IDLE;
     egret_set_xcvr(eg, true);
-    if (eg->tx_buf[1] == PKT_TICK) {
+    if (eg->tx_buf[1] == ADB_MCU_PKT_TICK) {
         LOG(2, "tick unclaimed by host - transport reset to idle, tick dropped");
         return;
     }
@@ -285,38 +273,13 @@ static void egret_resend_event(void *source, uint64_t data) {
     egret_send_progress(eg);
 }
 
-// Lay down the 4-byte response header [attn, pktType, flags, cmd].
-static int egret_put_header(egret_t *eg, uint8_t pkt_type, uint8_t flags, uint8_t cmd) {
-    eg->tx_buf[0] = 0x00; // attention byte (discarded by the host)
-    eg->tx_buf[1] = pkt_type;
-    eg->tx_buf[2] = flags;
-    eg->tx_buf[3] = cmd;
-    return 4;
-}
-
 // Process a completed ADB command packet (rx = [adbPkt, adbCmd, listen...]):
 // run it against the ADB device state machine and build the reply packet.
 static void egret_process_adb(egret_t *eg) {
-    uint8_t cmd = (eg->rx_len >= 2) ? eg->rx_buf[1] : 0;
-    uint8_t out[8];
-    int out_len = 0;
-    bool replied = false;
-    // Clamp here, the way egret_process_pseudo does fifteen lines down: a
-    // truncated packet (rx_len 0 or 1) otherwise passes -2 or -1 as the
-    // length.  adb_iop_transact absorbs it, but the guard belongs at the
-    // call site so both paths in this file read the same way.
-    int data_len = eg->rx_len - 2;
-    if (data_len < 0)
-        data_len = 0;
-    if (eg->adb)
-        replied = adb_iop_transact(eg->adb, cmd, &eg->rx_buf[2], data_len, out, &out_len);
-
-    uint8_t flags = replied ? 0 : EG_FLAG_TIMEOUT;
-    int n = egret_put_header(eg, PKT_ADB, flags, cmd);
-    for (int i = 0; i < out_len && n < EG_TX_MAX; i++)
-        eg->tx_buf[n++] = out[i];
-    eg->tx_len = n;
-    LOG(3, "ADB cmd $%02X -> %d bytes%s", cmd, out_len, replied ? "" : " (no device)");
+    bool replied;
+    int out_len;
+    eg->tx_len = adb_mcu_adb_reply(eg->adb, eg->rx_buf, eg->rx_len, eg->tx_buf, EG_TX_MAX, &replied, &out_len);
+    LOG(3, "ADB cmd $%02X -> %d bytes%s", eg->tx_buf[3], out_len, replied ? "" : " (no device)");
     egret_begin_send(eg);
 }
 
@@ -328,7 +291,7 @@ static void egret_process_pseudo(egret_t *eg) {
     if (data_len < 0)
         data_len = 0;
 
-    int n = egret_put_header(eg, PKT_PSEUDO, 0, cmd);
+    int n = adb_mcu_put_header(eg->tx_buf, ADB_MCU_PKT_PSEUDO, 0, cmd);
 
     switch (cmd) {
     case CMD_RDTIME: {
@@ -420,7 +383,7 @@ static void egret_process_pseudo(egret_t *eg) {
     case CMD_RESET:
         eg->autopoll_enabled = false;
         eg->onesec_enabled = false;
-        eg->ap_len = 0; // a waiting auto-poll packet is asynchronous data: dropped
+        eg->ap.len = 0; // a waiting auto-poll packet is asynchronous data: dropped
         break;
     case CMD_WRDFAC:
     case CMD_NOP:
@@ -435,19 +398,19 @@ static void egret_process_pseudo(egret_t *eg) {
 // Dispatch a completed command packet by its packet-type byte.
 static void egret_process_command(egret_t *eg) {
     eg->resend_pending = false; // a new command supersedes a stale reply
-    uint8_t pkt_type = (eg->rx_len >= 1) ? eg->rx_buf[0] : PKT_PSEUDO;
+    uint8_t pkt_type = (eg->rx_len >= 1) ? eg->rx_buf[0] : ADB_MCU_PKT_PSEUDO;
     LOG(4, "command pkt type=$%02X len=%d", pkt_type, eg->rx_len);
     switch (pkt_type) {
-    case PKT_ADB:
+    case ADB_MCU_PKT_ADB:
         egret_process_adb(eg);
         break;
-    case PKT_PSEUDO:
+    case ADB_MCU_PKT_PSEUDO:
         egret_process_pseudo(eg);
         break;
     default:
         // Unknown packet type: acknowledge with a header-only pseudo response
         // so the host's reader does not hang.
-        eg->tx_len = egret_put_header(eg, PKT_PSEUDO, 0, (eg->rx_len >= 2) ? eg->rx_buf[1] : 0);
+        eg->tx_len = adb_mcu_put_header(eg->tx_buf, ADB_MCU_PKT_PSEUDO, 0, (eg->rx_len >= 2) ? eg->rx_buf[1] : 0);
         egret_begin_send(eg);
         break;
     }
@@ -534,7 +497,7 @@ static void egret_tick_event(void *source, uint64_t data) {
     egret_t *eg = (egret_t *)source;
     if (eg->onesec_enabled && egret_try_unsolicited(eg)) {
         eg->tx_buf[0] = 0x00; // attention
-        eg->tx_buf[1] = PKT_TICK;
+        eg->tx_buf[1] = ADB_MCU_PKT_TICK;
         eg->tx_len = 2;
         egret_begin_send(eg);
     }
@@ -545,62 +508,33 @@ static void egret_tick_event(void *source, uint64_t data) {
 // while auto-poll is on and a device has data, Egret runs a Talk R0 -- at
 // once on a quiet bus, else a poll period after the last -- and when it
 // completes, the reply becomes an unsolicited adbPkt with the EgAutoPoll flag
-// set, which waits in ap_pkt until the link to the host is free.  One packet
+// set, which waits in `ap` until the link to the host is free.  One packet
 // at a time; nothing runs on a quiet bus.
 //
 // Called whenever one of those conditions may have changed: a device got
 // data (egret_adb_data), the host turned auto-poll on, a Talk completed, or
 // the link went free (egret_finish_tx).
 static void egret_adb_service(egret_t *eg) {
-    if (eg->ap_len) {
-        // A reaped reply waiting to be re-presented goes first.
+    if (eg->ap.len) {
+        // A reaped reply waiting to be re-presented goes first; a busy link
+        // leaves the packet waiting for the next call (Egret retries).
         if (egret_try_unsolicited(eg) && !eg->resend_pending) {
-            memcpy(eg->tx_buf, eg->ap_pkt, (size_t)eg->ap_len);
-            eg->tx_len = eg->ap_len;
-            eg->ap_len = 0;
+            memcpy(eg->tx_buf, eg->ap.pkt, (size_t)eg->ap.len);
+            eg->tx_len = eg->ap.len;
+            eg->ap.len = 0;
             egret_begin_send(eg);
         }
         return;
     }
-    if (!eg->autopoll_enabled || !eg->adb || eg->adb_talk_pending)
-        return;
-    // The device-selection rules live in adb.c, shared with Cuda and the SWIM
-    // IOP.  Egret implements neither WrDevList nor RdDevList, so it has no
-    // host-supplied enable bitmap: 0 means every address is eligible, and the
-    // scan finds the devices wherever Listen R3 has most recently moved them.
-    uint64_t talk_ns = adb_autopoll_talk_ns(eg->adb, 0);
-    if (!talk_ns)
-        return; // no device has data
-    // The Talk starts once the host's poll period is up since the last one.
-    uint64_t period = eg->autopoll_ms ? (uint64_t)eg->autopoll_ms * 1000000ULL : ADB_POLL_PERIOD_NS;
-    double now = scheduler_time_ns(eg->sched);
-    uint64_t wait = adb_poll_wait_ns(now, eg->adb_talk_start_ns, period);
-    eg->adb_talk_start_ns = now + (double)wait;
-    eg->adb_talk_pending = true;
-    scheduler_new_cpu_event(eg->sched, &egret_adb_talk_event, eg, 0, 0, wait + talk_ns);
+    adb_mcu_autopoll_arm(&eg->ap, eg->autopoll_enabled, eg->adb, eg->sched, eg->autopoll_ms, &egret_adb_talk_event, eg);
 }
 
 // The auto-poll Talk has completed: the reply is Egret's to pass on.
 static void egret_adb_talk_event(void *source, uint64_t data) {
     (void)data;
     egret_t *eg = (egret_t *)source;
-    eg->adb_talk_pending = false;
-    if (!eg->autopoll_enabled || !eg->adb || eg->ap_len)
-        return; // turned off meanwhile: the data stays in the device
-    uint8_t cmd;
-    uint8_t out[8];
-    int out_len = 0;
-    if (adb_autopoll_next(eg->adb, 0, &cmd, out, &out_len)) {
-        int n = 0;
-        eg->ap_pkt[n++] = 0x00; // attention byte
-        eg->ap_pkt[n++] = PKT_ADB;
-        eg->ap_pkt[n++] = EG_FLAG_AUTOPOLL;
-        eg->ap_pkt[n++] = cmd;
-        for (int i = 0; i < out_len && n < EG_TX_MAX; i++)
-            eg->ap_pkt[n++] = out[i];
-        eg->ap_len = n;
-    }
-    egret_adb_service(eg);
+    if (adb_mcu_autopoll_collect(&eg->ap, eg->autopoll_enabled, eg->adb))
+        egret_adb_service(eg);
 }
 
 // A device has new data (adb_set_data_hook).

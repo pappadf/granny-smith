@@ -6,5 +6,6 @@ TEST_SRCS    := test.c
 # mocks, so assert is the only support stub linked in.
 TEST_HARNESS := none
 STUBS        := assert
-EXTRA_SRCS   := ../../../../src/machines/mdu/egret.c
+EXTRA_SRCS   := ../../../../src/machines/mdu/egret.c \
+                ../../../../src/core/peripherals/adb_mcu_link.c
 include ../../common.mk

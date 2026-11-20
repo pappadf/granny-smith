@@ -19,7 +19,14 @@ where the rejected-command list,
 the exact PRAM geometry and the handshake polarities below come from.
 
 Forked from [mdu/egret.c](../../../../src/machines/mdu/egret.c) and diverged;
-Egret stays where it is, since it already crosses family lines.
+Egret stays where it is, since it already crosses family lines. What the two
+still share verbatim lives in
+[adb_mcu_link.c](../../../../src/core/peripherals/adb_mcu_link.c): the packet
+types and ADB flags, the response header, the reply to an ADB command packet,
+and the auto-poll Talk scheduling and packet build (`adb_mcu_autopoll_t`). The
+transport, its timing and sync, the pseudo-command tables, the error packet
+for an unknown type and the busy-link policy for a parked auto-poll packet
+stay per chip — they are firmware differences.
 
 ## Transport
 

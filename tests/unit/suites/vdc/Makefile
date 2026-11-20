@@ -12,5 +12,6 @@ TEST_HARNESS := none
 STUBS        := memory checkpoint display_class
 EXTRA_SRCS   := ../../../../src/machines/av/vdc.c \
                 ../../../../src/machines/av/civic.c \
-                ../../../../src/machines/av/cuda.c
+                ../../../../src/machines/av/cuda.c \
+                ../../../../src/core/peripherals/adb_mcu_link.c
 include ../../common.mk
