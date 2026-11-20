@@ -11,7 +11,7 @@ int peel_reader_init(peel_reader_t *r, peel_source_t *src) {
     r->src = src;
     r->size = peel_source_size(src);
     r->buf = malloc(PEEL_READER_WINDOW);
-    return r->buf ? 0 : -12;
+    return r->buf ? 0 : -ENOMEM;
 }
 
 void peel_reader_free(peel_reader_t *r) {

@@ -393,7 +393,7 @@ int format_probe_init(format_probe_t *p, source_t *data, source_t *rsrc) {
     memset(p, 0, sizeof(*p));
     int rc = peel_probe_init(&p->p, data);
     if (rc != 0)
-        return rc == -5 ? -EIO : rc;
+        return rc; // a negative errno (peeler.h)
     p->data = data;
     p->rsrc = rsrc;
     return 0;

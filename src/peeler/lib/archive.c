@@ -349,19 +349,19 @@ typedef struct {
 } decode_src_t;
 
 // Write `n` decoded bytes to the sink; the fork has ended when `done`.
-// 0, or -5 (the fork is longer or shorter than it declared, or the sink
+// 0, or -EIO (the fork is longer or shorter than it declared, or the sink
 // failed).
 static int decode_put(decode_src_t *d, const uint8_t *buf, size_t n, bool done) {
     if (d->exact && n > d->len - d->produced)
-        return -5; // longer than it declared
+        return -EIO; // longer than it declared
     if (n && d->a->sink->write(d->sink, d->produced, buf, n) != (int64_t)n)
-        return -5;
+        return -EIO;
     d->produced += n;
     if (done) {
         if (!d->exact)
             d->len = d->produced; // the size, earned
         else if (d->produced != d->len)
-            return -5; // the fork ran dry before its declared length
+            return -EIO; // the fork ran dry before its declared length
         d->a->sink->commit(d->sink);
         d->committed = true;
     }
@@ -374,7 +374,7 @@ static int decode_whole(decode_src_t *d) {
     peel_buf_t b = d->a->fmt->decode(d->a, d->entry, d->fork, &err);
     if (err) {
         peel_err_free(err);
-        return -5;
+        return -EIO;
     }
     int rc = decode_put(d, b.data, b.size, true);
     peel_free(&b);
@@ -384,17 +384,17 @@ static int decode_whole(decode_src_t *d) {
 // Drive the decoder until the sink holds `want` bytes or the fork ends.
 static int decode_fill(decode_src_t *d, uint64_t want) {
     if (d->failed)
-        return -5;
+        return -EIO;
     if (!d->sink) {
         d->sink = d->a->sink->create(d->a->sink_ctx, d->key, d->exact ? d->len : PEEL_SIZE_UNKNOWN);
         if (!d->sink) {
             d->failed = true;
-            return -12;
+            return -ENOMEM;
         }
     }
     if (!d->committed && !d->dec && decode_whole(d) != 0) {
         d->failed = true;
-        return -5;
+        return -EIO;
     }
     uint8_t chunk[65536];
     while (!d->committed && d->produced < want) {
@@ -403,7 +403,7 @@ static int decode_fill(decode_src_t *d, uint64_t want) {
         int rc = codec_dec_run(d->dec, chunk, sizeof(chunk), &n);
         if (rc < 0 || decode_put(d, chunk, n, rc == 1) != 0) {
             d->failed = true; // a corrupt fork, one that is not the size it declared, or the sink failed
-            return -5;
+            return -EIO;
         }
     }
     if (d->committed && d->dec) {

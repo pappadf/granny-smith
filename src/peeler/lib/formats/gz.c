@@ -281,19 +281,19 @@ typedef struct {
     uint8_t cbuf[GZ_BGZF_MAX_BLOCK];
 } bgzf_src_t;
 
-// Inflate block `b` into s->buf.  0 or -5.
+// Inflate block `b` into s->buf.  0 or -EIO.
 static int bgzf_load(bgzf_src_t *s, size_t b) {
     if (s->cur == b)
         return 0;
     const bgzf_block_t *blk = &s->blocks[b];
     if (blk->csize > sizeof(s->cbuf) || peel_source_read_exact(s->src, blk->coff, s->cbuf, blk->csize) != 0)
-        return -5;
+        return -EIO;
     gz_header_t h;
     if (gz_parse_header(s->cbuf, blk->csize, &h) != 0 || h.header_len + 8 > blk->csize)
-        return -5;
+        return -EIO;
     // One member: CODEC_GZIP checks its CRC-32 and size.
     if (codec_decode(CODEC_GZIP, s->cbuf, blk->csize, s->buf, sizeof(s->buf)) != (int64_t)blk->usize)
-        return -5;
+        return -EIO;
     s->cur = b;
     return 0;
 }

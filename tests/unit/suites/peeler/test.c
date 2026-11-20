@@ -1168,7 +1168,7 @@ TEST(test_sit_fork_crc_is_checked_when_complete) {
     uint8_t buf[16];
     ASSERT_EQ_INT(0, peel_source_read_exact(f, 0, buf, sizeof(buf)));
     uint8_t *all = malloc(n);
-    ASSERT_TRUE(peel_source_read_exact(f, 0, all, n) != 0);
+    ASSERT_EQ_INT(-EIO, peel_source_read_exact(f, 0, all, n)); // a corrupt fork is an I/O error
     free(all);
     peel_source_release(f);
     peel_close(ar);
@@ -1182,6 +1182,19 @@ TEST(test_sit_fork_crc_is_checked_when_complete) {
     free(packed);
     free(raw);
     free(wrong);
+}
+
+// The source layer's failures are <errno.h> codes (peeler.h): a short source
+// is -EIO and a missing one -EINVAL, whatever numbers the host gives them.
+TEST(test_source_failures_are_negative_errno) {
+    static const uint8_t bytes[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    peel_source_t *src = peel_source_memory(bytes, sizeof bytes, false);
+    uint8_t buf[16];
+    ASSERT_EQ_INT(0, peel_source_read_exact(src, 0, buf, 8));
+    ASSERT_EQ_INT(-EIO, peel_source_read_exact(src, 4, buf, 8)); // runs off the end
+    ASSERT_EQ_INT(-EINVAL, (int)peel_source_read(NULL, 0, buf, 1));
+    ASSERT_EQ_INT(-EAGAIN, PEEL_EAGAIN);
+    peel_source_release(src);
 }
 
 // Drive a fork's decoder one byte at a time, then in odd sizes, and compare
@@ -1275,6 +1288,7 @@ int main(void) {
     RUN(test_sit5_lzw_widening_and_clear);
     RUN(test_sit_fork_decodes_progressively);
     RUN(test_sit_fork_crc_is_checked_when_complete);
+    RUN(test_source_failures_are_negative_errno);
     RUN(test_cpt_decoder_resumes_byte_by_byte);
     zipgz_tests();
     fprintf(stderr, "All peeler tests passed\n");

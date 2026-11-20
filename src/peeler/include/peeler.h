@@ -14,12 +14,18 @@ extern "C" {
 
 // === Includes ===
 
+#include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
 // === Error Handling ===
 
+// A call that returns an int status returns 0 (or a count) on success and a
+// negative errno on failure, spelled with the <errno.h> names (-EIO,
+// -ENOMEM, -EINVAL, ...) and never as numbers: the numbers differ between
+// hosts (EIO is 5 on Linux, 29 under Emscripten), so a literal would mean a
+// different error on each.  A call that can say more returns a peel_err_t.
 // Opaque error object.  NULL means no error.
 typedef struct peel_err peel_err_t;
 
@@ -148,10 +154,11 @@ typedef enum {
     PEEL_TIER_WHOLE, // must be fully decoded before the first read
 } peel_tier_t;
 
-// read() returns bytes read, 0 at EOF, or a negative errno-style code.
-// PEEL_EAGAIN means "not yet" (a remote source whose bytes are still in
-// flight): the caller waits with peel_source_poll and reads again.
-#define PEEL_EAGAIN (-11)
+// read() returns bytes read, 0 at EOF, or a negative errno.  PEEL_EAGAIN
+// means "not yet" (a remote source whose bytes are still in flight): the
+// caller waits with peel_source_poll and reads again.  It is -EAGAIN, so a
+// "not yet" that escapes reads as one wherever it surfaces.
+#define PEEL_EAGAIN (-EAGAIN)
 
 typedef struct {
     int64_t (*read)(peel_source_t *s, uint64_t off, void *buf, size_t len);
@@ -193,7 +200,7 @@ peel_tier_t peel_source_tier(peel_source_t *s);
 int peel_source_poll(peel_source_t *s, int timeout_ms);
 
 // Read exactly `len` bytes at `off` (looping over short reads, and waiting
-// out PEEL_EAGAIN with peel_source_poll).  0, or a negative code (-5 for a
+// out PEEL_EAGAIN with peel_source_poll).  0, or a negative code (-EIO for a
 // short source; PEEL_EAGAIN if "not yet" persists without any progress).
 int peel_source_read_exact(peel_source_t *s, uint64_t off, void *buf, size_t len);
 

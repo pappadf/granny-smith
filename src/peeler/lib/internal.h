@@ -108,7 +108,7 @@ typedef struct {
     size_t len; // valid bytes in buf
 } peel_reader_t;
 
-// 0 or -12.  Does not retain `src`: the reader lives inside a call.
+// 0 or -ENOMEM.  Does not retain `src`: the reader lives inside a call.
 int peel_reader_init(peel_reader_t *r, peel_source_t *src);
 void peel_reader_free(peel_reader_t *r);
 

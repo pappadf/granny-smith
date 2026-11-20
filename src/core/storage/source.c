@@ -257,8 +257,7 @@ bool source_key_same_source(const char *saved, const char *now) {
 }
 
 int source_read_exact(source_t *s, uint64_t off, void *buf, size_t len) {
-    int rc = peel_source_read_exact(s, off, buf, len);
-    return rc == -5 ? -EIO : rc; // peeler's "short" is EIO's value; keep errno spelling
+    return peel_source_read_exact(s, off, buf, len); // the peeler's codes are negative errno already
 }
 
 int source_read_all(source_t *s, size_t max, uint8_t **out, size_t *out_len) {
