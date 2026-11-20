@@ -273,7 +273,8 @@ The duplication is concrete, not notional: `dsp3210_disassemble` and
 `exec_insn` carry **36 `case` labels each, in identical order**, behind the
 same three-step preamble (`op6 = w >> 26`, then `opcode_is_illegal(op6)`, then
 the `w >> 29` DA-class dispatch). `opcode_is_illegal` is **14 byte-identical
-lines** in both, as are `bits()` and `sext16()`. Four helper pairs
+lines** in both. (`bits()`, `sext16()` and the CAU register-code map are
+shared now, in `dsp3210_fields.h`.) Four helper pairs
 (`dis_da`/`exec_da`, `dis_ca_alu_reg`/`exec_alu_reg`,
 `dis_ca_alu_imm`/`exec_alu_imm`, `dis_ca_move`/`exec_move`) and several operand
 tables are hand-synchronised. Nothing but the `dsp3210_disasm` unit suite stops

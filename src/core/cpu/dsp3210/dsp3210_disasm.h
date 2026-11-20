@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 /*
- * dsp3210_dis.h — reference disassembler for the AT&T DSP3210
+ * dsp3210_disasm.h — reference disassembler for the AT&T DSP3210
  *
  * Sources of truth:
  *   - AT&T "DSP3210 Information Manual", chapters 4 (instruction set) and

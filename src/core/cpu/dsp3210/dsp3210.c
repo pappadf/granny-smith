@@ -20,56 +20,17 @@
  */
 
 #include "dsp3210.h"
+#include "dsp3210_fields.h"
 
 #include <math.h>
 #include <string.h>
 
 /* ------------------------------------------------------------------ */
-/* field helpers                                                       */
+/* CAU register-code mapping: the shared table (dsp3210_fields.h)      */
 
-static uint32_t bits(uint32_t w, int hi, int lo) {
-    return (w >> lo) & ((hi - lo == 31) ? 0xFFFFFFFFu : ((1u << (hi - lo + 1)) - 1u));
-}
-
-static int32_t sext16(uint32_t v) {
-    return (int32_t)(int16_t)(v & 0xFFFFu);
-}
-
-/* ------------------------------------------------------------------ */
-/* CAU register-code mapping (IM Table 10-2; deliberately discontinuous:
- * pc = 15, r15-r19 = 17-21, -n/+n = 22/23, r20-r22 = 24-26, pcsh = 30) */
-
-enum { RK_ZERO, RK_REG, RK_PC, RK_PCSH, RK_PLUS, RK_MINUS, RK_RES };
-
-typedef struct {
-    uint8_t kind;
-    uint8_t idx;
-} regcode;
-
-static regcode rc_decode(unsigned code) {
-    regcode rc = {RK_RES, 0};
-    code &= 31;
-    if (code == 0) {
-        rc.kind = RK_ZERO;
-    } else if (code <= 14) {
-        rc.kind = RK_REG;
-        rc.idx = (uint8_t)code;
-    } else if (code == 15) {
-        rc.kind = RK_PC;
-    } else if (code >= 17 && code <= 21) {
-        rc.kind = RK_REG;
-        rc.idx = (uint8_t)(code - 2);
-    } else if (code == 22) {
-        rc.kind = RK_MINUS;
-    } else if (code == 23) {
-        rc.kind = RK_PLUS;
-    } else if (code >= 24 && code <= 26) {
-        rc.kind = RK_REG;
-        rc.idx = (uint8_t)(code - 4);
-    } else if (code == 30) {
-        rc.kind = RK_PCSH;
-    }
-    return rc;
+// The kind and register index of a 5-bit CAU register code
+static inline dsp_rc_t rc_decode(unsigned code) {
+    return k_dsp_rc[code & 31];
 }
 
 /*
@@ -80,7 +41,7 @@ static regcode rc_decode(unsigned code) {
  * Reserved codes read as 0 (hardware behaviour undocumented).
  */
 static uint32_t opval(dsp3210_t *s, unsigned code) {
-    regcode rc = rc_decode(code);
+    dsp_rc_t rc = rc_decode(code);
     switch (rc.kind) {
     case RK_REG:
         return s->r[rc.idx];
@@ -104,7 +65,7 @@ static uint32_t opval(dsp3210_t *s, unsigned code) {
  * branch (documented deviation for an undefined encoding).
  */
 static void regw(dsp3210_t *s, unsigned code, uint32_t v) {
-    regcode rc = rc_decode(code);
+    dsp_rc_t rc = rc_decode(code);
     switch (rc.kind) {
     case RK_REG:
         s->r[rc.idx] = v;
@@ -732,21 +693,6 @@ dsp3210_acc dsp3210_acc_from_double(double v) {
         r.e = (int16_t)e;
     }
     return r;
-}
-
-/* legacy helpers, kept so rigs and tests can build against either core */
-double dsp3210_dsp32_to_double(uint32_t w) {
-    return dsp3210_acc_double(dsp3210_acc_unpack(w));
-}
-
-uint32_t dsp3210_double_to_dsp32(double v) {
-    if (v != 0.0 && isfinite(v)) {
-        int exp;
-        frexp(v, &exp);
-        if (exp - 1 + 128 > 255) /* saturate [IM §8.2.4.1] */
-            return v > 0 ? 0x7FFFFFFFu : 0x800000FFu;
-    }
-    return dsp3210_acc_pack(dsp3210_acc_from_double(v));
 }
 
 /* ---- the multiplier: exact 25x25 -> 50-bit signed product ---- */
