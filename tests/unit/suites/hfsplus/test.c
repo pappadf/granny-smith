@@ -325,6 +325,34 @@ TEST(test_bad_signature_rejected) {
     ASSERT_TRUE(hfs_open(DUMMY, 0, IMG_SIZE) == NULL);
 }
 
+// A malformed catalog record is dropped and counted, not lost silently.
+// Only the classic HFS catalog walker counted (and logged) them; the HFS+
+// walkers dropped them with no trace.
+TEST(test_malformed_catalog_record_is_counted) {
+    build_volume(0x482B);
+    size_t n1 = 2u * BLK;
+    size_t hello = (size_t)((g_img[n1 + BLK - 8] << 8) | g_img[n1 + BLK - 7]); // R3's offset
+    w16(n1 + hello, 3); // keyLength 3: shorter than parentID + nameLength
+    hfs_volume_t *vol = hfs_open(DUMMY, 0, IMG_SIZE);
+    ASSERT_TRUE(vol != NULL);
+    ASSERT_EQ_INT(1, (int)hfs_malformed_records(vol));
+    hfs_dirent_t de;
+    const char *hello_path[] = {"Hello"};
+    ASSERT_EQ_INT(-ENOENT, hfs_lookup(vol, hello_path, 1, &de));
+    const char *sub[] = {"Sub"};
+    ASSERT_EQ_INT(0, hfs_lookup(vol, sub, 1, &de)); // its neighbours survive
+    hfs_close(vol);
+}
+
+// A well-formed volume reports none.
+TEST(test_clean_volume_has_no_malformed_records) {
+    build_volume(0x482B);
+    hfs_volume_t *vol = hfs_open(DUMMY, 0, IMG_SIZE);
+    ASSERT_TRUE(vol != NULL);
+    ASSERT_EQ_INT(0, (int)hfs_malformed_records(vol));
+    hfs_close(vol);
+}
+
 // ---- The shared partition reader (image_part.c) ---------------------------
 
 // A byte range that straddles a block boundary comes back exactly.
@@ -353,6 +381,8 @@ int main(void) {
     RUN(test_lookup_nested_and_missing);
     RUN(test_hfsx_signature_accepted);
     RUN(test_bad_signature_rejected);
+    RUN(test_malformed_catalog_record_is_counted);
+    RUN(test_clean_volume_has_no_malformed_records);
     RUN(test_read_bytes_unaligned);
     RUN(test_read_partition_refuses_a_wrapping_range);
     fprintf(stderr, "All hfsplus tests passed.\n");

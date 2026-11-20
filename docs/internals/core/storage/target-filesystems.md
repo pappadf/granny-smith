@@ -190,6 +190,14 @@ into `vol->records[]`. Lookups then scan that list; root directory is
 resource fork descriptors, and the 32-byte Finder info (16 `FInfo` + 16
 `FXInfo`).
 
+All four B-trees (HFS and HFS+ catalog and Extents Overflow) go through one
+walker, `hfs_btree_walk_leaves()`: it owns the forward-link cycle bound, the
+leaf-kind check and the record-offset table, and hands each record to the
+tree's parser. A record that is out of its node or that the parser rejects is
+dropped, counted (`hfs_malformed_records()`), and logged once per tree — e.g.
+"HFS+ catalog: 1 malformed record(s) skipped; the files they describe will not
+be found".
+
 ### Forks and the Extents Overflow file
 
 A `hfs_fork_t` carries the logical size, three inline extents, and the

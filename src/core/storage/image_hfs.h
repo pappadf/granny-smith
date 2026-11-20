@@ -90,6 +90,11 @@ void hfs_close(hfs_volume_t *vol);
 // Retrieve the on-disk volume name (UTF-8).  Valid for the volume's lifetime.
 const char *hfs_volume_name(const hfs_volume_t *vol);
 
+// How many B-tree leaf records (catalog and extents overflow) the open
+// dropped as malformed; each tree also logs its count.  The files or
+// extents they describe are not reachable.
+size_t hfs_malformed_records(const hfs_volume_t *vol);
+
 // Look up a file or folder by path components (UTF-8).  `nc == 0` returns the
 // root folder record.  Returns 0 on hit and populates *out, -ENOENT on miss,
 // or a negated errno on error.
