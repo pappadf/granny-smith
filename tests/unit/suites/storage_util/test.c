@@ -219,6 +219,22 @@ TEST(test_path_helpers) {
     ASSERT_TRUE(!path_join(out, sizeof out, "/dir", "state.checkpoint")); // would cut to "/dir/state.chec"
 }
 
+// random_bytes fills every byte asked for (more than getentropy's 256 a
+// call), and two draws differ.
+TEST(test_random_bytes) {
+    uint8_t a[300], b[300];
+    memset(a, 0, sizeof a);
+    memset(b, 0, sizeof b);
+    random_bytes(a, sizeof a);
+    random_bytes(b, sizeof b);
+    ASSERT_TRUE(memcmp(a, b, sizeof a) != 0);
+    int zero_tail = 1;
+    for (size_t i = 256; i < sizeof a; i++)
+        zero_tail &= a[i] == 0;
+    ASSERT_TRUE(!zero_tail);
+    random_bytes(a, 0); // nothing asked, nothing written
+}
+
 // The FILE* form writes the same escapes, quoted.
 TEST(test_json_fputs) {
     char buf[64] = {0};
@@ -238,6 +254,7 @@ int main(void) {
     RUN(test_json_escape);
     RUN(test_json_fputs);
     RUN(test_path_helpers);
+    RUN(test_random_bytes);
     RUN(test_atomic_write_replaces_whole_or_not_at_all);
     fprintf(stderr, "All storage_util tests passed\n");
     return 0;

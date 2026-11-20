@@ -18,6 +18,7 @@
 #include <strings.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 #if defined(_WIN32)
@@ -260,6 +261,45 @@ int read_text_file(const char *path, size_t cap, char **out, size_t *out_len) {
     if (out_len)
         *out_len = len;
     return rc;
+}
+
+void random_bytes(void *out, size_t n) {
+    uint8_t *b = (uint8_t *)out;
+    size_t got = 0;
+#if !defined(_WIN32)
+    // getentropy hands out at most 256 bytes a call
+    while (got < n) {
+        size_t k = n - got > 256 ? 256 : n - got;
+        if (getentropy(b + got, k) != 0)
+            break;
+        got += k;
+    }
+    if (got < n) {
+        int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+        if (fd >= 0) {
+            while (got < n) {
+                ssize_t r = read(fd, b + got, n - got);
+                if (r <= 0)
+                    break;
+                got += (size_t)r;
+            }
+            close(fd);
+        }
+    }
+#endif
+    if (got == n)
+        return;
+    // No entropy source: pid, time and a per-process counter, stirred with
+    // xorshift, so ids minted in one process still differ
+    static uint64_t ctr;
+    uint64_t x =
+        ((uint64_t)getpid() << 32) ^ (uint64_t)time(NULL) ^ (++ctr * 0x9E3779B97F4A7C15ull) ^ (uint64_t)(uintptr_t)out;
+    for (; got < n; got++) {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        b[got] = (uint8_t)(x >> 24);
+    }
 }
 
 bool path_has_ext(const char *path, const char *ext) {

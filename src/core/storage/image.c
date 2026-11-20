@@ -170,42 +170,9 @@ void image_close(image_t *image) {
 // instance ids and as scratch-name salt.  `out` holds 16 chars + NUL; the
 // [static 17] lets the compiler reject a smaller buffer at the call site.
 static void mint_random_hex_id(char out[static 17]) {
-    uint8_t bytes[8] = {0};
-    bool got = false;
-#if !defined(_WIN32)
-    int fd = open("/dev/urandom", O_RDONLY);
-    if (fd >= 0) {
-        ssize_t n = read(fd, bytes, sizeof(bytes));
-        close(fd);
-        if (n == (ssize_t)sizeof(bytes))
-            got = true;
-    }
-#endif
-    if (!got) {
-        // Fallback: combine PID + time + a counter for uniqueness within a
-        // process even if /dev/urandom is unavailable.  Unique only while
-        // ids are minted on one thread (the emulator's; the counter is a
-        // plain static) -- two threads minting in the same second could
-        // collide.
-        static uint32_t ctr = 0;
-        uint32_t pid = (uint32_t)getpid();
-        uint32_t now = (uint32_t)time(NULL);
-        uint32_t c = ++ctr;
-        bytes[0] = (uint8_t)(pid);
-        bytes[1] = (uint8_t)(pid >> 8);
-        bytes[2] = (uint8_t)(pid >> 16);
-        bytes[3] = (uint8_t)(pid >> 24);
-        bytes[4] = (uint8_t)(now ^ c);
-        bytes[5] = (uint8_t)((now >> 8) ^ (c >> 8));
-        bytes[6] = (uint8_t)((now >> 16) ^ (c >> 16));
-        bytes[7] = (uint8_t)((now >> 24) ^ (c >> 24));
-    }
-    for (size_t i = 0; i < 8; i++) {
-        static const char hex[] = "0123456789abcdef";
-        out[i * 2] = hex[bytes[i] >> 4];
-        out[i * 2 + 1] = hex[bytes[i] & 0xf];
-    }
-    out[16] = '\0';
+    uint8_t bytes[8];
+    random_bytes(bytes, sizeof bytes);
+    hex_encode(out, bytes, sizeof bytes, false);
 }
 
 // Give `image` ghost sidecars: a delta and a journal under a fresh id in the

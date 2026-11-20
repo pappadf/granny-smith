@@ -519,21 +519,8 @@ static char *build_plist(const udif_writer_t *w, size_t *out_len) {
 
 // 16 random bytes for the segment ID (a v4 UUID).
 static void random_uuid(uint8_t out[16]) {
-    bool got = false;
-    int fd = open("/dev/urandom", O_RDONLY);
-    if (fd >= 0) {
-        got = read(fd, out, 16) == 16;
-        close(fd);
-    }
-    if (!got) {
-        uint64_t x = (uint64_t)time(NULL) ^ ((uint64_t)(uintptr_t)out << 17) ^ (uint64_t)getpid();
-        for (int i = 0; i < 16; i++) {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            out[i] = (uint8_t)x;
-        }
-    }
+    random_bytes(out, 16);
+    // RFC 4122 version 4 (random), variant 1
     out[6] = (uint8_t)((out[6] & 0x0F) | 0x40);
     out[8] = (uint8_t)((out[8] & 0x3F) | 0x80);
 }

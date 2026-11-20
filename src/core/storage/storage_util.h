@@ -72,6 +72,11 @@ int read_file(const char *path, size_t cap, uint8_t **out, size_t *out_len);
 // *out_len, which may be NULL).  Same cap and errors.
 int read_text_file(const char *path, size_t cap, char **out, size_t *out_len);
 
+// Fill `out` with `n` unpredictable bytes: getentropy, else /dev/urandom,
+// else a pid/time/counter mix that is at least unique within the process
+// (ids and UUIDs that must not collide, not keys).  Never fails.
+void random_bytes(void *out, size_t n);
+
 // True when `path` ends in `ext` (".dmg"), ignoring case: the rule for
 // media and output file names a user types.
 bool path_has_ext(const char *path, const char *ext);
