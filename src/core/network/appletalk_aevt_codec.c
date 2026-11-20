@@ -22,6 +22,7 @@
 
 #include "log.h"
 #include "value.h"
+#include "vbuf.h"
 
 #include <ctype.h>
 #include <stdarg.h>
@@ -1024,94 +1025,58 @@ value_t aevt_parse_text(const char *text, char *err, size_t err_len) {
 // Operations — rendering back to text
 // ============================================================================
 
-typedef struct {
-    char *buf;
-    size_t len;
-    size_t cap;
-    bool bad;
-} sb_t;
-
-static void sb_add(sb_t *s, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
-
-static void sb_add(sb_t *s, const char *fmt, ...) {
-    if (s->bad)
-        return;
-    va_list ap;
-    va_start(ap, fmt);
-    int need = vsnprintf(NULL, 0, fmt, ap);
-    va_end(ap);
-    if (need < 0) {
-        s->bad = true;
-        return;
-    }
-    if (s->len + (size_t)need + 1 > s->cap) {
-        size_t cap = s->cap ? s->cap : 128;
-        while (cap < s->len + (size_t)need + 1)
-            cap *= 2;
-        char *grown = (char *)realloc(s->buf, cap);
-        if (!grown) {
-            s->bad = true;
-            return;
-        }
-        s->buf = grown;
-        s->cap = cap;
-    }
-    va_start(ap, fmt);
-    vsnprintf(s->buf + s->len, s->cap - s->len, fmt, ap);
-    va_end(ap);
-    s->len += (size_t)need;
-}
+// The text accumulates in a vbuf_t; its sticky `oom` marks a failed render.
 
 // A code is written bare when it is identifier-safe, quoted otherwise.
-static void sb_fourcc(sb_t *s, const char *code) {
+static void sb_fourcc(vbuf_t *s, const char *code) {
     bool safe = code && *code;
     for (const char *p = code; safe && *p; p++)
         if (!(isalnum((unsigned char)*p) || *p == '_'))
             safe = false;
     if (safe)
-        sb_add(s, "%s", code);
+        vbuf_appendf(s, "%s", code);
     else
-        sb_add(s, "'%s'", code ? code : "");
+        vbuf_appendf(s, "'%s'", code ? code : "");
 }
 
-static void sb_quoted(sb_t *s, const char *text) {
-    sb_add(s, "\"");
+static void sb_quoted(vbuf_t *s, const char *text) {
+    vbuf_appendf(s, "\"");
     for (const char *p = text ? text : ""; *p; p++) {
         if (*p == '"' || *p == '\\')
-            sb_add(s, "\\%c", *p);
+            vbuf_appendf(s, "\\%c", *p);
         else
-            sb_add(s, "%c", *p);
+            vbuf_appendf(s, "%c", *p);
     }
-    sb_add(s, "\"");
+    vbuf_appendf(s, "\"");
 }
 
-static void sb_desc(sb_t *s, const value_t *leaf);
+static void sb_desc(vbuf_t *s, const value_t *leaf);
 
-static void sb_params(sb_t *s, const value_t *map) {
+static void sb_params(vbuf_t *s, const value_t *map) {
     for (size_t i = 0; i < map->map.len; i++) {
         if (i)
-            sb_add(s, ", ");
+            vbuf_appendf(s, ", ");
         sb_fourcc(s, map->map.entries[i].key);
-        sb_add(s, ":");
+        vbuf_appendf(s, ":");
         sb_desc(s, &map->map.entries[i].val);
     }
 }
 
-static void sb_desc(sb_t *s, const value_t *leaf) {
+static void sb_desc(vbuf_t *s, const value_t *leaf) {
     const value_t *tv = value_map_get(leaf, "type");
     const char *type = val_as_str(tv);
     const value_t *hex = value_map_get(leaf, "hex");
     const value_t *data = value_map_get(leaf, "data");
     if (!type) {
-        sb_add(s, "null()");
+        vbuf_appendf(s, "null()");
         return;
     }
     if (hex) {
-        sb_add(s, "hex(");
+        vbuf_appendf(s, "hex(");
         sb_fourcc(s, type);
-        sb_add(s, ", ");
+        vbuf_appendf(s, ", ");
         sb_quoted(s, val_as_str(hex));
-        sb_add(s, ")");
+        vbuf_appendf(s, ")");
         return;
     }
     if (!strcmp(type, "TEXT") && data) {
@@ -1119,70 +1084,70 @@ static void sb_desc(sb_t *s, const value_t *leaf) {
         return;
     }
     if ((!strcmp(type, "long") || !strcmp(type, "shor") || !strcmp(type, "magn") || !strcmp(type, "comp")) && data) {
-        sb_add(s, "%lld", (long long)val_as_i64(data, NULL));
+        vbuf_appendf(s, "%lld", (long long)val_as_i64(data, NULL));
         return;
     }
     if (!strcmp(type, "true"))
-        return sb_add(s, "true");
+        return vbuf_appendf(s, "true");
     if (!strcmp(type, "fals"))
-        return sb_add(s, "false");
+        return vbuf_appendf(s, "false");
     if (!strcmp(type, "bool") && data)
-        return sb_add(s, "%s", val_as_bool(data) ? "true" : "false");
+        return vbuf_appendf(s, "%s", val_as_bool(data) ? "true" : "false");
     if (!strcmp(type, "null") || !strcmp(type, "msng"))
-        return sb_add(s, "null()");
+        return vbuf_appendf(s, "null()");
     if ((!strcmp(type, "type") || !strcmp(type, "enum")) && data) {
-        sb_add(s, "%s(", type);
+        vbuf_appendf(s, "%s(", type);
         sb_fourcc(s, val_as_str(data));
-        sb_add(s, ")");
+        vbuf_appendf(s, ")");
         return;
     }
     if (!strcmp(type, "list") && data && data->kind == VK_LIST) {
-        sb_add(s, "[");
+        vbuf_appendf(s, "[");
         for (size_t i = 0; i < data->list.len; i++) {
             if (i)
-                sb_add(s, ", ");
+                vbuf_appendf(s, ", ");
             sb_desc(s, &data->list.items[i]);
         }
-        sb_add(s, "]");
+        vbuf_appendf(s, "]");
         return;
     }
     if (data && data->kind == VK_MAP) {
-        sb_add(s, "%s{", !strcmp(type, "obj ") ? "obj" : "rec");
+        vbuf_appendf(s, "%s{", !strcmp(type, "obj ") ? "obj" : "rec");
         sb_params(s, data);
-        sb_add(s, "}");
+        vbuf_appendf(s, "}");
         return;
     }
     // Nothing better to say: name the type and leave the body empty.
-    sb_add(s, "hex(");
+    vbuf_appendf(s, "hex(");
     sb_fourcc(s, type);
-    sb_add(s, ", \"\")");
+    vbuf_appendf(s, ", \"\")");
 }
 
 char *aevt_render_text(const value_t *event) {
     char class4[5], id4[5];
     if (!aevt_event_codes(event, class4, id4))
         return NULL;
-    sb_t s = {0};
+    vbuf_t s = {0};
     sb_fourcc(&s, class4);
-    sb_add(&s, "/");
+    vbuf_appendf(&s, "/");
     sb_fourcc(&s, id4);
-    sb_add(&s, "{");
+    vbuf_appendf(&s, "{");
     bool first = true;
     for (size_t i = 0; i < event->map.len; i++) {
         const char *key = event->map.entries[i].key;
         if (!strcmp(key, "class") || !strcmp(key, "id") || !strcmp(key, "attrs"))
             continue;
         if (!first)
-            sb_add(&s, ", ");
+            vbuf_appendf(&s, ", ");
         first = false;
         sb_fourcc(&s, key);
-        sb_add(&s, ":");
+        vbuf_appendf(&s, ":");
         sb_desc(&s, &event->map.entries[i].val);
     }
-    sb_add(&s, "}");
-    if (s.bad) {
-        free(s.buf);
+    vbuf_appendf(&s, "}");
+    if (s.oom) {
+        vbuf_free(&s);
         return NULL;
     }
-    return s.buf ? s.buf : strdup("");
+    return vbuf_take(&s);
 }

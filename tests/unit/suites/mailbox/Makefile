@@ -21,6 +21,6 @@ EXTRA_SRCS   := ../../../../src/core/mailbox/mailbox.c \
                 ../../../../src/core/object/object.c \
                 ../../../../src/core/object/parse.c \
                 ../../../../src/core/object/value.c \
-                ../../../../src/core/object/value_format.c
+                ../../../../src/core/object/value_format.c ../../../../src/core/vbuf.c
 EXTRA_CFLAGS := -DGS_MBX_REQ_BYTES=4096u -DGS_MBX_EVT_BYTES=4096u
 include ../../common.mk

@@ -19,24 +19,14 @@
 #define GS_OBJECT_VALUE_FORMAT_H
 
 #include "value.h"
+#include "vbuf.h" // vbuf_t, re-exported: the renderers write into one
 
+#include <stdbool.h>
 #include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-// A growable text buffer.  Zero-initialise, append, then free `p`.
-typedef struct {
-    char *p;
-    size_t len;
-    size_t cap;
-} vbuf_t;
-
-void vbuf_append(vbuf_t *b, const char *s, size_t n);
-void vbuf_append_str(vbuf_t *b, const char *s); // NUL-terminated; NULL appends nothing
-void vbuf_appendf(vbuf_t *b, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
-void vbuf_free(vbuf_t *b);
 
 // `n` bytes of `s` JSON-escaped (json_escape.h), the body of a string
 // literal without its quotes: a length-bounded chunk of output text.
