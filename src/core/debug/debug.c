@@ -3850,12 +3850,12 @@ static const member_t screen_members[] = {
      .name = "match",
      .flags = M_CAT_ADVANCED,
      .doc = "Compare the framebuffer against a reference PNG (true if identical); optional "
-            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_match_args, .nargs = 13, .result = VK_BOOL, .fn = screen_method_match}},
+            "(top, left, bottom, right) excludes a region from the compare", .method = {METHOD_ARGS(screen_match_args), .result = VK_BOOL, .fn = screen_method_match}},
     {.kind = MK_METHOD,
      .name = "matches",
      .flags = M_CAT_ADVANCED,
      .doc = "Non-fatal `match`: true/false without aborting, artifacts, or output (polling primitive); optional "
-            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_match_args, .nargs = 13, .result = VK_BOOL, .fn = screen_method_matches}},
+            "(top, left, bottom, right) excludes a region from the compare", .method = {METHOD_ARGS(screen_match_args), .result = VK_BOOL, .fn = screen_method_matches}},
     {.kind = MK_METHOD,
      .name = "match_or_save",
      .flags = M_CAT_ADVANCED,

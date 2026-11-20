@@ -951,24 +951,19 @@ void ppc_reset(ppc_t *p) {
 
 // === `$reg` aliases (main-CPU privilege per cores.md) =======================
 
-static void register_alias_or_warn(const char *name, const char *path) {
-    char err[160];
-    if (alias_register_builtin(name, path, err, sizeof(err)) != STATUS_OK)
-        LOG(0, "ppc: built-in alias '$%s' → '%s' rejected: %s", name, path, err);
-}
-
+// Register the PPC `$reg` aliases (alias_register_builtin_or_log logs a rejection)
 static void register_ppc_aliases(void) {
-    register_alias_or_warn("pc", "machine.cpu.pc");
-    register_alias_or_warn("lr", "machine.cpu.lr");
-    register_alias_or_warn("ctr", "machine.cpu.ctr");
-    register_alias_or_warn("cr", "machine.cpu.cr");
-    register_alias_or_warn("msr", "machine.cpu.msr");
-    register_alias_or_warn("xer", "machine.cpu.xer");
+    alias_register_builtin_or_log("ppc", "pc", "machine.cpu.pc");
+    alias_register_builtin_or_log("ppc", "lr", "machine.cpu.lr");
+    alias_register_builtin_or_log("ppc", "ctr", "machine.cpu.ctr");
+    alias_register_builtin_or_log("ppc", "cr", "machine.cpu.cr");
+    alias_register_builtin_or_log("ppc", "msr", "machine.cpu.msr");
+    alias_register_builtin_or_log("ppc", "xer", "machine.cpu.xer");
     for (int i = 0; i < 32; i++) {
         char name[8], path[24];
         snprintf(name, sizeof(name), "r%d", i);
         snprintf(path, sizeof(path), "machine.cpu.r%d", i);
-        register_alias_or_warn(name, path);
+        alias_register_builtin_or_log("ppc", name, path);
     }
 }
 

@@ -116,6 +116,11 @@ void arg_doc_text(const arg_decl_t *a, char *buf, size_t size);
 // A NULL-terminated example list for member_t.examples.
 #define EXAMPLES(...) ((const char *const[]){__VA_ARGS__, NULL})
 
+// A method's argument table and its count, counted from the table itself:
+// `.method = {METHOD_ARGS(foo_args), ...}`.  A literal `.nargs` that falls
+// behind the table makes the binder silently ignore the new argument.
+#define METHOD_ARGS(tbl) .args = (tbl), .nargs = (int)(sizeof(tbl) / sizeof((tbl)[0]))
+
 // A required string argument naming a VFS path.
 #define ARG_PATH(arg_name, arg_doc)                                                                                    \
     {.name = (arg_name), .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = (arg_doc)}

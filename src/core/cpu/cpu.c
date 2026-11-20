@@ -362,41 +362,36 @@ bool cpu_is_supervisor(cpu_t *restrict cpu) {
 // idempotent (alias.c returns 0 on a re-registration with the same
 // target), so calling these from every cpu_init is safe.
 
-static void register_alias_or_warn(const char *name, const char *path) {
-    char err[160];
-    if (alias_register_builtin(name, path, err, sizeof(err)) != STATUS_OK)
-        LOG(0, "cpu: built-in alias '$%s' → '%s' rejected: %s", name, path, err);
-}
-
+// Register the 68K `$reg` aliases (alias_register_builtin_or_log logs a rejection)
 static void register_cpu_aliases(void) {
-    register_alias_or_warn("pc", "machine.cpu.pc");
-    register_alias_or_warn("sr", "machine.cpu.sr");
-    register_alias_or_warn("ccr", "machine.cpu.ccr");
-    register_alias_or_warn("ssp", "machine.cpu.ssp");
-    register_alias_or_warn("usp", "machine.cpu.usp");
-    register_alias_or_warn("msp", "machine.cpu.msp");
-    register_alias_or_warn("vbr", "machine.cpu.vbr");
-    register_alias_or_warn("sp", "machine.cpu.sp");
+    alias_register_builtin_or_log("cpu", "pc", "machine.cpu.pc");
+    alias_register_builtin_or_log("cpu", "sr", "machine.cpu.sr");
+    alias_register_builtin_or_log("cpu", "ccr", "machine.cpu.ccr");
+    alias_register_builtin_or_log("cpu", "ssp", "machine.cpu.ssp");
+    alias_register_builtin_or_log("cpu", "usp", "machine.cpu.usp");
+    alias_register_builtin_or_log("cpu", "msp", "machine.cpu.msp");
+    alias_register_builtin_or_log("cpu", "vbr", "machine.cpu.vbr");
+    alias_register_builtin_or_log("cpu", "sp", "machine.cpu.sp");
     static const char *const dnames[] = {"d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7"};
     static const char *const anames[] = {"a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7"};
     for (int i = 0; i < 8; i++) {
         char path[24];
         snprintf(path, sizeof(path), "machine.cpu.%s", dnames[i]);
-        register_alias_or_warn(dnames[i], path);
+        alias_register_builtin_or_log("cpu", dnames[i], path);
         snprintf(path, sizeof(path), "machine.cpu.%s", anames[i]);
-        register_alias_or_warn(anames[i], path);
+        alias_register_builtin_or_log("cpu", anames[i], path);
     }
 }
 
 static void register_fpu_aliases(void) {
-    register_alias_or_warn("fpcr", "machine.cpu.fpu.fpcr");
-    register_alias_or_warn("fpsr", "machine.cpu.fpu.fpsr");
-    register_alias_or_warn("fpiar", "machine.cpu.fpu.fpiar");
+    alias_register_builtin_or_log("cpu", "fpcr", "machine.cpu.fpu.fpcr");
+    alias_register_builtin_or_log("cpu", "fpsr", "machine.cpu.fpu.fpsr");
+    alias_register_builtin_or_log("cpu", "fpiar", "machine.cpu.fpu.fpiar");
     static const char *const fpnames[] = {"fp0", "fp1", "fp2", "fp3", "fp4", "fp5", "fp6", "fp7"};
     for (int i = 0; i < 8; i++) {
         char path[32];
         snprintf(path, sizeof(path), "machine.cpu.fpu.%s", fpnames[i]);
-        register_alias_or_warn(fpnames[i], path);
+        alias_register_builtin_or_log("cpu", fpnames[i], path);
     }
 }
 
@@ -1339,7 +1334,7 @@ static const arg_decl_t mmu68k_peek_args[DEBUG_MMU_PEEK_NARGS] =
      .name = "peek",                                                                                                   \
      .examples = EXAMPLES("machine.cpu.mmu.peek 0x40800000", "machine.cpu.mmu.peek 0x400 2 physical"),                                                                          \
      .doc = "Read memory, logical (through the MMU) or physical; side-effect-free",                                    \
-     .method = {.args = mmu68k_peek_args, .nargs = DEBUG_MMU_PEEK_NARGS, .result = VK_UINT, .fn = mmu68k_method_peek}}
+     .method = {METHOD_ARGS(mmu68k_peek_args), .result = VK_UINT, .fn = mmu68k_method_peek}}
 // clang-format on
 
 static const member_t mmu_members[] = {
