@@ -123,8 +123,10 @@ to an `apm_fs_kind`, case-insensitively:
   exceeds ~64 entries.
 - A per-entry signature mismatch or buffer exhaustion stops the walk and returns
   the **partial** table rather than rejecting the whole map.
-- `image_apm_parse` reads up to **257 blocks (~128 KB)** in a single
-  `disk_read_data`, capped to the image size so small fixtures still work.
+- `image_apm_parse_source` reads up to **257 blocks (~128 KB)** in a single
+  read, capped to the source size so small fixtures still work.
+  `image_apm_parse(img)` refuses an image whose geometry is not 512-byte blocks
+  (a Lisa ProFile's 532) and otherwise runs the same scan over `image_source(img)`.
 
 **Key types** (`image_apm.h`):
 
@@ -159,7 +161,8 @@ Extents Overflow walker.
 
 ### Opening a volume
 
-`hfs_open(image_t *img, uint64_t partition_byte_offset, uint64_t partition_byte_size)`:
+`hfs_open_source(source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size)`
+(an image's disk comes through `image_source(img)`):
 
 - `partition_byte_offset` is `0` for a bare floppy, or `start_block * 512` for an
   APM partition. `partition_byte_size` caps every read.
@@ -217,7 +220,7 @@ typedef struct hfs_fork {
 1. **Inline extents** — the three extents from the catalog record are applied
    first (an `APPLY_EXTENT` helper reads the overlapping slice of each).
 2. **Extents Overflow (EO) file** — if the request spills past the inline
-   coverage, the reader chases EO records. At `hfs_open` time the EO file is
+   coverage, the reader chases EO records. At open time the EO file is
    loaded from `drXTFlSize`/`drXTExtRec` and its leaf chain is parsed into a flat
    sorted list `vol->xt_records[]`. Each EO leaf record is keyed by a 7-byte key
    `forkType(1) + fileNumber(4) + startBlock(2)` and supplies 3 more extents.
@@ -258,7 +261,7 @@ typedef struct hfs_fork {
 ### HFS API (`image_hfs.h`)
 
 ```c
-hfs_volume_t *hfs_open(image_t *img, uint64_t part_off, uint64_t part_size);
+hfs_volume_t *hfs_open_source(source_t *src, uint64_t part_off, uint64_t part_size);
 void          hfs_close(hfs_volume_t *vol);
 const char   *hfs_volume_name(const hfs_volume_t *vol);
 
@@ -279,10 +282,10 @@ int hfs_read_fork(hfs_volume_t *vol, const hfs_fork_t *fork,
   partitions inside an APM image, bare HFS+/HFSX volumes, and HFS+ embedded
   in a classic HFS wrapper (`drEmbedSigWord`).
 - Data fork, resource fork, and the 32-byte Finder info are all readable.
-- HFS and HFS+ share one handle: `hfs_open` sniffs the signature at volume
+- HFS and HFS+ share one handle: `hfs_open_source` sniffs the signature at volume
   offset 1024 (`BD`, `H+`, `HX`) and routes to the classic or the Plus parser
   (8 inline extents, UTF-16 names).
-- The walker reads through a byte source (`hfs_open_source`), so a volume
+- The walker reads through a byte source, so a volume
   may be a partition of a host image, a file inside another volume, or an
   archive member ([../vfs/namespace.md](../vfs/namespace.md)).
 - The catalog and EO files are themselves loaded via their *own* three inline
@@ -299,11 +302,11 @@ int hfs_read_fork(hfs_volume_t *vol, const hfs_fork_t *fork,
 **Source:** `src/core/storage/image_ufs.{c,h}`. Read-only UFS-1 walker targeting
 A/UX 3.0.x.
 
-- `ufs_open(img, partition_byte_offset, partition_byte_size)` reads the **BSD FFS
+- `ufs_open_source(src, partition_byte_offset, partition_byte_size)` reads the **BSD FFS
   superblock at offset 8192** (`UFS_SBOFF`) and validates `FS_MAGIC`
   (`0x011954`), big-endian only: A/UX writes big-endian on 68k, and
-  `ufs_probe` (the cheap pre-check, reading only the 4-byte magic) accepts
-  exactly what `ufs_open` can open.
+  `ufs_probe_source` (the cheap pre-check, reading only the 4-byte magic) accepts
+  exactly what `ufs_open_source` can open.
 - Targets the `Apple_UNIX_SVR2` APM entries a period A/UX install writes.
 - **Inode layout is 4.3BSD-Tahoe**: the 32-bit `di_size` lives at inode offset
   **12** (not 8) — Tahoe used `quad_t val[0]` for `di_rdev` and `val[1]` for
@@ -318,8 +321,8 @@ A/UX 3.0.x.
 ### UFS API (`image_ufs.h`)
 
 ```c
-bool          ufs_probe(image_t *img, uint64_t part_off, uint64_t part_size);
-ufs_volume_t *ufs_open (image_t *img, uint64_t part_off, uint64_t part_size);
+bool          ufs_probe_source(source_t *src, uint64_t part_off, uint64_t part_size);
+ufs_volume_t *ufs_open_source (source_t *src, uint64_t part_off, uint64_t part_size);
 void          ufs_close(ufs_volume_t *vol);
 
 int ufs_lookup(ufs_volume_t *vol, const char *const *components, size_t nc,
@@ -442,7 +445,7 @@ it for a disk image:
   volume** by `volume_sniff_source` (`image_volume.c`), the classifier the
   format registry's disk detector and `files.probe` use too, so a disk the
   registry claims is one this open accepts (a UFS magic counts big-endian
-  only, as `ufs_open` reads it). A bare
+  only, as `ufs_open_source` reads it). A bare
   volume gets a synthetic `partition1` covering the whole image, so the rest
   of the code treats it uniformly. If nothing matches → `-ENOTDIR` ("not a
   recognised image").

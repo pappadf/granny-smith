@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // image_ufs.h
-// Read-only UFS-1 walker.  Given an image_t plus the byte offset and size of
+// Read-only UFS-1 walker.  Given a byte source plus the byte offset and size of
 // a partition, opens the BSD FFS superblock, caches the parameters needed
 // for inode and block address math, and exposes path-lookup, directory
 // enumerate, and file-read entry points for the image_vfs backend.
@@ -57,17 +57,15 @@ typedef struct ufs_dirent {
     uint32_t mtime; // di_mtime, Unix seconds
 } ufs_dirent_t;
 
+struct peel_source;
+
+// Open a UFS volume over a byte source holding the disk (retained by the
+// volume).  Returns NULL on not-UFS / malformed superblock / OOM.
+ufs_volume_t *ufs_open_source(struct peel_source *src, uint64_t partition_byte_offset, uint64_t partition_byte_size);
+
 // Cheap probe: does byte offset `partition_byte_offset + UFS_SBOFF` look
 // like a UFS superblock?  Reads only the 4-byte magic.  True on a
-// big-endian FS_MAGIC -- what A/UX writes and all ufs_open accepts.
-bool ufs_probe(image_t *img, uint64_t partition_byte_offset, uint64_t partition_byte_size);
-
-// Open a UFS volume.  Returns NULL on not-UFS / malformed superblock / OOM.
-ufs_volume_t *ufs_open(image_t *img, uint64_t partition_byte_offset, uint64_t partition_byte_size);
-
-// The same over a byte source holding the disk (retained by the volume).
-struct peel_source;
-ufs_volume_t *ufs_open_source(struct peel_source *src, uint64_t partition_byte_offset, uint64_t partition_byte_size);
+// big-endian FS_MAGIC -- what A/UX writes and all ufs_open_source accepts.
 bool ufs_probe_source(struct peel_source *src, uint64_t partition_byte_offset, uint64_t partition_byte_size);
 
 // Release the volume and all cached state.  Safe on NULL.

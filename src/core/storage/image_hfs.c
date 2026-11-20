@@ -13,7 +13,7 @@
 //
 // HFS and HFS+ share the snapshot machinery (the flat cat_rec_t / xt_rec
 // arrays, lookup, readdir, and the extent-walking fork reader); only the
-// on-disk parse differs.  hfs_open sniffs the signature at volume+1024 and
+// on-disk parse differs.  hfs_open_source sniffs the signature at volume+1024 and
 // dispatches to open_classic (MDB-based, MacRoman names, 16-bit allocation
 // blocks) or open_plus (Volume-Header-based, UTF-16 names, 32-bit
 // allocation blocks, 8 inline fork extents).  See Apple TN1150 for the
@@ -191,7 +191,7 @@ struct hfs_volume {
     char volume_name[256]; // UTF-8; sized to hold a full HFS+ name
     cat_rec_t *records;
     size_t n_records;
-    // Extents Overflow snapshot.  Loaded eagerly at hfs_open time using
+    // Extents Overflow snapshot.  Loaded eagerly at open time using
     // the EO file's own inline extents (drXTExtRec in the MDB); the EO
     // file is small enough in practice (usually < 8 KB) that walking it
     // linearly per lookup is fine.  When the EO file *itself* is
@@ -459,7 +459,7 @@ static int hfs_cat_leaf_rec(void *ctx, const uint8_t *rec, size_t rec_size) {
 
 // ---- Extents Overflow file --------------------------------------------------
 //
-// Loads the EO file's three inline extents into memory at hfs_open time
+// Loads the EO file's three inline extents into memory at open time
 // (the same compromise as the catalog file — the EO file's own
 // fragmentation past 3 extents falls through unreached, but in practice
 // the EO file is tiny).  Walks its leaf chain and builds a flat sorted
@@ -1074,13 +1074,6 @@ static hfs_volume_t *open_plus(source_t *src, uint64_t partition_byte_offset, ui
 }
 
 // ---- Public API -----------------------------------------------------------
-
-hfs_volume_t *hfs_open(image_t *img, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
-    source_t *src = image_source(img);
-    hfs_volume_t *vol = hfs_open_source(src, partition_byte_offset, partition_byte_size);
-    source_release(src); // the volume holds its own reference
-    return vol;
-}
 
 hfs_volume_t *hfs_open_source(source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
     if (!src || partition_byte_size < HFS_MDB_OFF_IN_VOL + 512)

@@ -221,9 +221,17 @@ static void build_volume(uint16_t sig) {
 // A non-NULL dummy image handle; disk_read_data ignores it.
 static image_t *const DUMMY = (image_t *)1;
 
+// Open the fixture through the image's byte source, as storage_class does.
+static hfs_volume_t *open_fixture(void) {
+    source_t *src = image_source(DUMMY);
+    hfs_volume_t *vol = hfs_open_source(src, 0, IMG_SIZE);
+    source_release(src); // the volume holds its own reference
+    return vol;
+}
+
 TEST(test_open_and_volume_name) {
     build_volume(0x482B); // "H+"
-    hfs_volume_t *vol = hfs_open(DUMMY, 0, IMG_SIZE);
+    hfs_volume_t *vol = open_fixture();
     ASSERT_TRUE(vol != NULL);
     ASSERT_EQ_INT(0, strcmp(hfs_volume_name(vol), "TestVol"));
     hfs_close(vol);
@@ -231,7 +239,7 @@ TEST(test_open_and_volume_name) {
 
 TEST(test_readdir_root) {
     build_volume(0x482B);
-    hfs_volume_t *vol = hfs_open(DUMMY, 0, IMG_SIZE);
+    hfs_volume_t *vol = open_fixture();
     ASSERT_TRUE(vol != NULL);
 
     hfs_dir_iter_t *it = hfs_opendir_cnid(vol, HFS_ROOT_ID);
@@ -265,7 +273,7 @@ TEST(test_readdir_root) {
 
 TEST(test_lookup_and_read_fork) {
     build_volume(0x482B);
-    hfs_volume_t *vol = hfs_open(DUMMY, 0, IMG_SIZE);
+    hfs_volume_t *vol = open_fixture();
     ASSERT_TRUE(vol != NULL);
 
     const char *path[] = {"Hello"};
@@ -292,7 +300,7 @@ TEST(test_lookup_and_read_fork) {
 
 TEST(test_lookup_nested_and_missing) {
     build_volume(0x482B);
-    hfs_volume_t *vol = hfs_open(DUMMY, 0, IMG_SIZE);
+    hfs_volume_t *vol = open_fixture();
     ASSERT_TRUE(vol != NULL);
 
     // "Sub" resolves as an (empty) directory.
@@ -312,7 +320,7 @@ TEST(test_lookup_nested_and_missing) {
 
 TEST(test_hfsx_signature_accepted) {
     build_volume(0x4858); // "HX"
-    hfs_volume_t *vol = hfs_open(DUMMY, 0, IMG_SIZE);
+    hfs_volume_t *vol = open_fixture();
     ASSERT_TRUE(vol != NULL);
     ASSERT_EQ_INT(0, strcmp(hfs_volume_name(vol), "TestVol"));
     hfs_close(vol);
@@ -322,7 +330,7 @@ TEST(test_bad_signature_rejected) {
     build_volume(0x482B);
     g_img[1024] = 'X'; // corrupt the signature word
     g_img[1025] = 'Y';
-    ASSERT_TRUE(hfs_open(DUMMY, 0, IMG_SIZE) == NULL);
+    ASSERT_TRUE(open_fixture() == NULL);
 }
 
 // A malformed catalog record is dropped and counted, not lost silently.
@@ -333,7 +341,7 @@ TEST(test_malformed_catalog_record_is_counted) {
     size_t n1 = 2u * BLK;
     size_t hello = (size_t)((g_img[n1 + BLK - 8] << 8) | g_img[n1 + BLK - 7]); // R3's offset
     w16(n1 + hello, 3); // keyLength 3: shorter than parentID + nameLength
-    hfs_volume_t *vol = hfs_open(DUMMY, 0, IMG_SIZE);
+    hfs_volume_t *vol = open_fixture();
     ASSERT_TRUE(vol != NULL);
     ASSERT_EQ_INT(1, (int)hfs_malformed_records(vol));
     hfs_dirent_t de;
@@ -347,7 +355,7 @@ TEST(test_malformed_catalog_record_is_counted) {
 // A well-formed volume reports none.
 TEST(test_clean_volume_has_no_malformed_records) {
     build_volume(0x482B);
-    hfs_volume_t *vol = hfs_open(DUMMY, 0, IMG_SIZE);
+    hfs_volume_t *vol = open_fixture();
     ASSERT_TRUE(vol != NULL);
     ASSERT_EQ_INT(0, (int)hfs_malformed_records(vol));
     hfs_close(vol);

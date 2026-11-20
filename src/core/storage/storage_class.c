@@ -688,6 +688,7 @@ static DEF_METHOD(files_method_partitions) {
     size_t len = 0, cap = 0;
     uint64_t size = disk_size(img);
     apm_table_t *table = image_apm_parse(img, NULL);
+    source_t *src = table ? image_source(img) : NULL;
     for (uint32_t i = 0; table && i < table->n_partitions; i++) {
         const apm_partition_t *p = &table->partitions[i];
         if (p->fs_kind != APM_FS_HFS)
@@ -695,7 +696,7 @@ static DEF_METHOD(files_method_partitions) {
         const char *fs = partition_volume_kind(img, size, p);
         if (!fs)
             continue; // an Apple_HFS entry with no volume in it
-        hfs_volume_t *vol = hfs_open(img, p->start_block * APM_BLOCK_SIZE, p->size_blocks * APM_BLOCK_SIZE);
+        hfs_volume_t *vol = hfs_open_source(src, p->start_block * APM_BLOCK_SIZE, p->size_blocks * APM_BLOCK_SIZE);
         const char *vname = vol ? hfs_volume_name(vol) : NULL;
         value_map_builder_t *b = val_map_new();
         val_map_put(b, "partition", val_uint(4, p->index));
@@ -708,6 +709,7 @@ static DEF_METHOD(files_method_partitions) {
             hfs_close(vol);
         val_list_push(&items, &len, &cap, val_map_finish(b));
     }
+    source_release(src);
     image_apm_free(table);
     image_close(img);
     return val_list(items, len);

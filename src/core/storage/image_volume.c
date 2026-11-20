@@ -42,7 +42,7 @@ static uint16_t header_sig(const uint8_t *head, size_t len, uint64_t size) {
 }
 
 // A UFS superblock: the magic, big-endian -- the order A/UX writes and
-// ufs_open reads -- in a volume as large as ufs_open needs.
+// ufs_open_source reads -- in a volume as large as it needs.
 static bool is_ufs(const uint8_t *head, size_t len, uint64_t size) {
     if (size < UFS_SBOFF + 2048 || len < UFS_SBOFF + UFS_SB_MAGIC_OFF + 4)
         return false;

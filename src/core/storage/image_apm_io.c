@@ -8,6 +8,7 @@
 
 #include "image.h"
 #include "image_apm.h"
+#include "image_part.h"
 #include "source.h"
 
 #include <stdlib.h>
@@ -20,43 +21,18 @@ apm_table_t *image_apm_parse(image_t *img, const char **errmsg) {
     }
 
     // A partition map is in 512-byte blocks; an image opened with another
-    // geometry (a Lisa ProFile's 532) has none, and disk_read_data would
-    // assert on the 512-based read below.
+    // geometry (a Lisa ProFile's 532) has none, and disk_read_data, under
+    // the image's byte source, would assert on the 512-based read.  The
+    // rest is the source scan.
     if (disk_block_size(img) != APM_BLOCK_SIZE) {
         if (errmsg)
             *errmsg = image_apm_err_read;
         return NULL;
     }
 
-    // Read enough blocks to cover any plausible APM.  257 blocks = ~128KB
-    // accommodates the largest partition map we will accept (256 entries
-    // + block 0).  Cap to the image size so small fixtures work, in whole
-    // blocks: disk_read_data reads nothing else.
-    size_t scan_bytes = (size_t)(256 + 1) * APM_BLOCK_SIZE;
-    uint64_t img_size = disk_size(img);
-    if (scan_bytes > img_size)
-        scan_bytes = (size_t)(img_size - img_size % APM_BLOCK_SIZE);
-    if (scan_bytes < 2 * APM_BLOCK_SIZE) {
-        if (errmsg)
-            *errmsg = image_apm_err_read;
-        return NULL;
-    }
-
-    uint8_t *buf = malloc(scan_bytes);
-    if (!buf) {
-        if (errmsg)
-            *errmsg = image_apm_err_alloc;
-        return NULL;
-    }
-    if (disk_read_data(img, 0, buf, scan_bytes) != scan_bytes) {
-        free(buf);
-        if (errmsg)
-            *errmsg = image_apm_err_read;
-        return NULL;
-    }
-
-    apm_table_t *table = image_apm_parse_buffer(buf, scan_bytes, errmsg);
-    free(buf);
+    source_t *src = image_source(img);
+    apm_table_t *table = image_apm_parse_source(src, errmsg);
+    source_release(src);
     return table;
 }
 
@@ -66,7 +42,10 @@ apm_table_t *image_apm_parse_source(struct peel_source *src, const char **errmsg
             *errmsg = image_apm_err_nil;
         return NULL;
     }
-    // The same scan as image_apm_parse: up to 257 blocks, in whole blocks.
+    // Read enough blocks to cover any plausible APM.  257 blocks = ~128KB
+    // accommodates the largest partition map we will accept (256 entries
+    // + block 0).  Cap to the image size so small fixtures work, in whole
+    // blocks.
     uint64_t size = source_size(src);
     size_t scan_bytes = (size_t)(256 + 1) * APM_BLOCK_SIZE;
     if (scan_bytes > size)
