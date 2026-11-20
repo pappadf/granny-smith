@@ -8,6 +8,7 @@
 #include "common.h"
 #include "json_escape.h"
 #include "log.h"
+#include "spsc_index.h"
 #include "io/io_worker.h"
 #include "job/job.h"
 
@@ -480,7 +481,7 @@ bool mailbox_emit(mailbox_t *m, uint32_t kind, const char *json) {
     // logging at full speed) must leave room for state events and answers
     if (kind == GS_MBX_EVT_LOG) {
         uint32_t tail = mbx_load(m->evt.ctrl, m->evt.tail_word);
-        if (m->evt.size - (m->evt.wr - tail) < m->evt.size / 2u + MBX_PAD8(len)) {
+        if (spsc_room(m->evt.size, m->evt.wr, tail) < m->evt.size / 2u + MBX_PAD8(len)) {
             stat_add(m, GS_MBX_C_STAT_DROPPED, 1);
             return false;
         }

@@ -7,9 +7,11 @@
 // writer each (the producer owns HEAD, the consumer owns TAIL), a
 // power-of-two size, and the slot of a counter being `counter & (size - 1)`
 // -- the same function of the same integer on both sides, across the 2^32
-// wrap too.  Bytes for the record rings (mailbox_ring.h), samples for the
-// audio and microphone rings, commands for the Voodoo2 raster thread: the
-// unit differs, the arithmetic does not.
+// wrap too.  Users: the mailbox record rings (mailbox_ring.c: the shell
+// mailbox, the LaserWriter transport and the Voodoo2/Rage128 GPU worker
+// rings; mailbox.c's log quota) and the wasm microphone ring
+// (em_mic_ring.c).  The Voodoo2 and QD3D raster command rings keep their
+// own _Atomic uint64_t counters, which this uint32_t API does not fit.
 //
 // Nothing here is atomic: the caller loads the other side's counter with
 // acquire semantics and publishes its own with release (or seq_cst) and
