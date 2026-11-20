@@ -149,9 +149,6 @@
 // ISM FIFO capacity
 #define ISM_FIFO_SIZE 2
 
-// CRC-CCITT initial value
-#define CRC_INIT 0xFFFF
-
 // IWM->ISM mode switch: expected bit-6 pattern in 4 consecutive mode writes
 extern const uint8_t ISM_SWITCH_PATTERN[4];
 

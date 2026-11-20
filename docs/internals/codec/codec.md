@@ -163,7 +163,7 @@ framework they are written on is `lib/codec_internal.h`:
 | `codec_check_t` | a stated checksum over the decoded bytes, verified at the end |
 | `codec_enc_t` | an encoder, its state reused across inputs (§1.2) |
 | `codec_id_t` | `COPY`, `DEFLATE`, `ZLIB`, `GZIP`, `ADC`, `BZIP2`, `LZFSE`, `XZ`, `LZMA_ALONE`, `RLE90`, `RLE90_BINHEX`, `BINHEX`, `SIT2`, `SIT3`, `SIT13`, `SIT15`, `CPT_RLE`, `CPT_LZH`, `DCMP`, `GSRLE` |
-| `codec_crc32`, `codec_crc32_zeros`, `codec_crc32_msb`, `codec_crc64`, `codec_adler32`, `codec_crc16_xmodem`, `codec_crc16_arc` | CRC-32 (reflected; zero runs in O(log n)), CRC-32 MSB-first (bzip2), CRC-64/XZ, Adler-32, CRC-16/XMODEM (BinHex, MacBinary), CRC-16/ARC (StuffIt); constant tables, slice-by-8 for the CRC-32s, callable from any thread |
+| `codec_crc32`, `codec_crc32_zeros`, `codec_crc32_msb`, `codec_crc64`, `codec_adler32`, `codec_crc16_xmodem`, `codec_crc16_xmodem_byte`, `codec_crc16_arc` | CRC-32 (reflected; zero runs in O(log n); also the BMAC multicast hash), CRC-32 MSB-first (bzip2), CRC-64/XZ, Adler-32, CRC-16/XMODEM (BinHex, MacBinary; per byte for the SWIM ISM and the MFM field CRC), CRC-16/ARC (StuffIt); constant tables, slice-by-8 for the CRC-32s, callable from any thread |
 
 | File | |
 |---|---|

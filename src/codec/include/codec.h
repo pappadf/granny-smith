@@ -277,6 +277,11 @@ uint32_t codec_adler32(uint32_t adler, const void *data, size_t len);
 // BinHex and MacBinary use it.  Chains: a result seeds the next call.
 uint16_t codec_crc16_xmodem(uint16_t crc, const void *data, size_t len);
 
+// One byte of CRC-16/XMODEM, for a per-byte hardware model (the SWIM ISM,
+// which seeds 0xFFFF and resets on each mark byte itself).  The same
+// register codec_crc16_xmodem keeps.
+uint16_t codec_crc16_xmodem_byte(uint16_t crc, uint8_t b);
+
 // CRC-16/ARC (reflected polynomial 0xA001, initial 0, no final XOR), as
 // StuffIt checks a fork with it.  Chains like codec_crc16_xmodem.
 uint16_t codec_crc16_arc(uint16_t crc, const void *data, size_t len);

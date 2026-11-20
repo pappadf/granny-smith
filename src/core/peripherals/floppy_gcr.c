@@ -6,6 +6,8 @@
 // These functions are used by both IWM and SWIM code paths.
 
 #include "floppy_internal.h"
+
+#include "codec.h"
 #include "gs_assert.h"
 #include "log.h"
 #include "memory.h"
@@ -541,15 +543,6 @@ int floppy_index_signal(floppy_index_mode_t mode, double now_ns, double rev_ns, 
 
 // === MFM sector layout (floppy_geometry.h) ==================================
 
-#define MFM_CRC_INIT 0xFFFFu
-
-static uint16_t mfm_crc_byte(uint16_t crc, uint8_t byte) {
-    crc ^= (uint16_t)byte << 8;
-    for (int i = 0; i < 8; i++)
-        crc = (crc & 0x8000) ? (uint16_t)((crc << 1) ^ 0x1021) : (uint16_t)(crc << 1);
-    return crc;
-}
-
 void floppy_mfm_emit_sector(floppy_mfm_emit_fn emit, void *ctx, int track, int side, int sector, const uint8_t *data,
                             int gap3_len, bool emit_crc) {
     if (!emit)
@@ -565,11 +558,10 @@ void floppy_mfm_emit_sector(floppy_mfm_emit_fn emit, void *ctx, int track, int s
     for (int i = 0; i < 4; i++)
         emit(ctx, hdr[i], false);
     if (emit_crc) {
-        uint16_t crc = MFM_CRC_INIT;
-        crc = mfm_crc_byte(crc, 0xA1);
-        crc = mfm_crc_byte(crc, 0xFE);
-        for (int i = 0; i < 4; i++)
-            crc = mfm_crc_byte(crc, hdr[i]);
+        // One $A1 after the seed: the ISM resets its CRC on each mark byte,
+        // so only the last of the three counts (floppy_swim.c)
+        const uint8_t id[6] = {0xA1, 0xFE, hdr[0], hdr[1], hdr[2], hdr[3]};
+        uint16_t crc = codec_crc16_xmodem(FLOPPY_MFM_CRC_INIT, id, sizeof id);
         emit(ctx, (uint8_t)(crc >> 8), false);
         emit(ctx, (uint8_t)(crc & 0xFF), false);
     }
@@ -585,11 +577,9 @@ void floppy_mfm_emit_sector(floppy_mfm_emit_fn emit, void *ctx, int track, int s
     for (int i = 0; i < 512; i++)
         emit(ctx, data[i], false);
     if (emit_crc) {
-        uint16_t crc = MFM_CRC_INIT;
-        crc = mfm_crc_byte(crc, 0xA1);
-        crc = mfm_crc_byte(crc, 0xFB);
-        for (int i = 0; i < 512; i++)
-            crc = mfm_crc_byte(crc, data[i]);
+        static const uint8_t mark[2] = {0xA1, 0xFB};
+        uint16_t crc = codec_crc16_xmodem(FLOPPY_MFM_CRC_INIT, mark, sizeof mark);
+        crc = codec_crc16_xmodem(crc, data, 512);
         emit(ctx, (uint8_t)(crc >> 8), false);
         emit(ctx, (uint8_t)(crc & 0xFF), false);
     }

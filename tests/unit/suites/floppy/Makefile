@@ -23,4 +23,6 @@ EXTRA_CFLAGS  = -I$(EMU_ROOT)/core/peripherals -I$(EMU_ROOT)/core/storage
 EXTRA_SRCS += ../../../../src/core/storage/image_access.c
 # The SWIM, for its ISM write capture: driven through its register interface
 EXTRA_SRCS += ../../../../src/core/peripherals/floppy_swim.c
+# Its CRC and the MFM layout's: codec_crc16_xmodem
+EXTRA_SRCS += ../../../../src/codec/lib/checksum.c
 include ../../common.mk

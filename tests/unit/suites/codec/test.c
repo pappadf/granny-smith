@@ -993,6 +993,15 @@ TEST(checksums_match_check_values) {
         ASSERT_TRUE(codec_crc16_arc(codec_crc16_arc(0, s, k), s + k, 9 - k) == 0xBB3D);
     }
     ASSERT_TRUE(codec_crc32(0, NULL, 0) == 0 && codec_crc64(0, NULL, 0) == 0);
+    // The per-byte form keeps the same register; CRC-16/IBM-3740 (XMODEM's
+    // polynomial seeded 0xFFFF, the MFM field CRC) over the check string
+    uint16_t x = 0, ibm = 0xFFFF;
+    for (size_t k = 0; k < 9; k++) {
+        x = codec_crc16_xmodem_byte(x, (uint8_t)s[k]);
+        ibm = codec_crc16_xmodem_byte(ibm, (uint8_t)s[k]);
+    }
+    ASSERT_TRUE(x == 0x31C3);
+    ASSERT_TRUE(ibm == 0x29B1 && codec_crc16_xmodem(0xFFFF, s, 9) == 0x29B1);
 }
 
 // ---- dispatch ------------------------------------------------------------

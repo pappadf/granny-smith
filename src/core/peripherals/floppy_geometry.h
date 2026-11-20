@@ -184,6 +184,11 @@ int floppy_index_signal(floppy_index_mode_t mode, double now_ns, double rev_ns, 
 // these two chose, so preserving each caller's behaviour is the honest option
 // until a source settles it.  It remains an open question.
 
+// The MFM ID/data-field CRC (CRC-16/XMODEM, codec_crc16_xmodem) starts from
+// this value, reset on each mark byte: the SWIM ISM's checker and this
+// layout's emitter both.
+#define FLOPPY_MFM_CRC_INIT 0xFFFFu
+
 // Emits one byte of the layout.  `is_mark` marks the $A1/$C2 bytes written
 // with a missing clock transition.
 typedef void (*floppy_mfm_emit_fn)(void *ctx, uint8_t byte, bool is_mark);

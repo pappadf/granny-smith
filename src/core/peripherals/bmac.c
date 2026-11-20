@@ -133,22 +133,12 @@ static void station(const bmac_t *b, uint8_t mac[6]) {
 }
 
 // The multicast hash: the drivers' bmac_crc / mace_crc (CRC-32, polynomial
-// $04C11DB7, register MSB first, each address byte fed LSB first), low six
-// bits, bit-reversed.
+// $04C11DB7, register MSB first, each address byte fed LSB first, seeded
+// all-ones), low six bits, bit-reversed.  That register is the bit-reversed
+// complement of the reflected CRC-32 the FCS uses, so its low six bits
+// reversed are the top six bits of ~codec_crc32.
 static int hash_index(const uint8_t *da) {
-    uint32_t crc = 0xFFFFFFFFu;
-    for (int i = 0; i < 6; i++) {
-        uint8_t d = da[i];
-        for (int k = 0; k < 8; k++) {
-            bool hi = (crc & 0x80000000u) != 0;
-            crc <<= 1;
-            if (hi ^ (d & 1u))
-                crc ^= 0x04C11DB7u;
-            d >>= 1;
-        }
-    }
-    uint8_t six = (uint8_t)(crc & 0x3Fu);
-    return bitrev8(six) >> 2;
+    return (int)((~codec_crc32(0, da, 6)) >> 26);
 }
 
 // Linux and Apple's init put hash bits 0-15 in HASH3; Apple's multicast
