@@ -1192,8 +1192,15 @@ void image_checkpoint(const image_t *image, checkpoint_t *checkpoint) {
 
     // Persist the instance path so a future restore can reopen the same delta
     // directory without relying on adjacent-to-base sidecars.  None
-    // (length 0) for read-only / ghost mounts.
-    checkpoint_write_string(checkpoint, (image->writable && image->instance_path) ? image->instance_path : NULL);
+    // (length 0) for read-only / ghost mounts.  Written here rather than
+    // through checkpoint_write_string: the path names this run's own storage
+    // cache, and the checkpoint decoders (scripts/lib/gscheckpoint.py,
+    // is_storage_block) skip it as host bookkeeping by its writer's file.
+    const char *instance = (image->writable && image->instance_path) ? image->instance_path : "";
+    uint32_t instance_len = *instance ? (uint32_t)(strlen(instance) + 1) : 0;
+    system_write_checkpoint_data(checkpoint, &instance_len, sizeof(instance_len));
+    if (instance_len)
+        system_write_checkpoint_data(checkpoint, instance, instance_len);
 
     // The key of the source the path opened (source.h): a restore that
     // reuses the base checks it is still the same bytes -- the same file,
