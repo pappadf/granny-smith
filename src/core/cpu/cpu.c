@@ -35,6 +35,11 @@ static const class_desc_t mmu_class;
 static const class_desc_t mmu040_class;
 LOG_USE_CATEGORY_NAME("cpu");
 
+// The checkpointed plain-data prefixes: cpu_t up to its first host pointer,
+// and the 68040 MMU register file up to its bus backlink (a host pointer).
+CHECKPOINT_PREFIX(cpu_t, mmu);
+CHECKPOINT_PREFIX(mmu040_state_t, bus);
+
 // Declare decoder functions (defined in cpu_68000.c, cpu_68030.c, cpu_68040.c)
 void cpu_run_68000(cpu_t *restrict cpu, uint32_t *instructions);
 void cpu_run_68030(cpu_t *restrict cpu, uint32_t *instructions);
@@ -408,18 +413,11 @@ cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
 
     // Load from checkpoint if provided
     if (checkpoint) {
-        // The stream carries the whole struct, including the SAVE-TIME
-        // pointer fields. NULL them all so the bindings below (and
-        // cpu_attach_mmu, whose idempotence guard tests mmu_object) are
-        // rebuilt for THIS machine — a stale non-NULL pointer here made
-        // teardown free another machine's objects after a same-process
-        // restore (double free) and left machine.cpu.mmu unbound.
-        system_read_checkpoint_data(checkpoint, cpu, offsetof(struct cpu, mmu));
-        cpu->mmu = NULL;
-        cpu->fpu = NULL;
-        cpu->cpu_object = NULL;
-        cpu->fpu_object = NULL;
-        cpu->mmu_object = NULL;
+        // The stream carries the plain-data prefix only, so the pointer
+        // fields stay NULL from the memset above and the bindings below
+        // (and cpu_attach_mmu, whose idempotence guard tests mmu_object)
+        // are built for THIS machine.
+        checkpoint_load_prefix(checkpoint, cpu, cpu_t);
     } else {
         cpu->cpu_model = cpu_model;
         // Initial PC and SSP will be loaded from reset vectors after ROM is loaded
@@ -447,10 +445,9 @@ cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
     if (cpu->cpu_model == CPU_MODEL_68040) {
         cpu->mmu = mmu040_init();
         if (checkpoint && cpu->mmu) {
-            system_read_checkpoint_data(checkpoint, cpu->mmu, sizeof(mmu040_state_t));
-            // The bus backlink is a save-time pointer; machine init
-            // re-establishes it via mmu_attach_mmu040 after restore.
-            ((mmu040_state_t *)cpu->mmu)->bus = NULL;
+            // The register file without the bus backlink, which machine
+            // init establishes via mmu_attach_mmu040 after restore.
+            checkpoint_load_prefix(checkpoint, cpu->mmu, mmu040_state_t);
         }
     }
 
@@ -559,11 +556,13 @@ void cpu_checkpoint(cpu_t *restrict cpu, checkpoint_t *checkpoint) {
     // void *fpu and the three object bindings -- whose bytes are meaningless
     // in a stream and differ run to run, so they also made checkpoints
     // non-deterministic.  offsetof ends the blob at the first of them.
-    system_write_checkpoint_data(checkpoint, cpu, offsetof(struct cpu, mmu));
+    checkpoint_save_prefix(checkpoint, cpu, cpu_t);
     // 68040: the on-chip MMU register file follows the cpu_t blob (the 030
-    // PMMU is machine-owned and checkpointed by the machine instead).
+    // PMMU is machine-owned and checkpointed by the machine instead).  Its
+    // prefix, not sizeof: the struct ends in the host-side bus backlink,
+    // which made every Quadra/AV checkpoint differ run to run.
     if (cpu->cpu_model == CPU_MODEL_68040 && cpu->mmu)
-        system_write_checkpoint_data(checkpoint, cpu->mmu, sizeof(mmu040_state_t));
+        checkpoint_save_prefix(checkpoint, cpu->mmu, mmu040_state_t);
     // The FP register file is guest state and was never saved at all: every
     // restore silently resumed against a zeroed FPU, so guest arithmetic came
     // back wrong rather than merely non-deterministic.  fpu_state_t is pure

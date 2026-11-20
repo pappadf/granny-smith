@@ -225,7 +225,10 @@ the whole value region in one block and no host address ever reaches the
 stream. The checkpoint stream is positional and carries no version field — a
 build-ID mismatch is rejected outright — so **layout is free to change, but a
 save and its restore must land in the same commit.** Mark the boundary in the
-struct with a comment; several modules already do.
+struct with a comment; several modules already do.  Name it once with
+`CHECKPOINT_PREFIX(dev_t, first_pointer)` (`src/core/checkpoint.h`) and save
+and restore it with `checkpoint_save_prefix` / `checkpoint_load_prefix`,
+which also tag the block with the type's name.
 
 **2. `scheduler_forget_source` in destructors, and nowhere else.**
 Every `*_delete` that owns a scheduler-visible object calls it before `free`.

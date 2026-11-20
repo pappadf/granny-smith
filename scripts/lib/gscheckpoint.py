@@ -147,13 +147,13 @@ def looks_like_host_pointer(v):
 
 def diff_block(fname, da, db, mask_build_stamp=False):
     """Offsets where two same-identity, same-size blocks differ, masked."""
-    # The 68040 MMU register file (cpu.c's second block, 48 bytes): MMUSR
-    # at +0x1c mirrors the LAST table walk (mmu040.c publishes it on every
+    # The 68040 MMU register file (cpu.c's second block, its prefix up to
+    # the bus backlink: 40 bytes, 36 on wasm32): MMUSR at +0x1c mirrors the LAST table walk (mmu040.c publishes it on every
     # walk, not only on PTEST), and which accesses walk depends on the
     # fast-path fill state, which the code-page marks change.  The guest
     # only reads it from a bus-error handler, where both executors walked
     # the same faulting address, so the word is not part of the timeline.
-    mmusr = range(0x1C, 0x20) if (fname.endswith("cpu.c") and len(da) == 48) else range(0)
+    mmusr = range(0x1C, 0x20) if (fname.endswith("cpu.c") and len(da) in (36, 40)) else range(0)
     stamps = [m.span() for m in BUILD_STAMP_RE.finditer(da)] if mask_build_stamp else []
     bad = []
     n = len(da)

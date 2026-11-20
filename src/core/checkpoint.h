@@ -112,6 +112,22 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
 #define system_read_checkpoint_data(...)  CP_SELECT_4(__VA_ARGS__, CP_READ_TAGGED, CP_READ_PLAIN)(__VA_ARGS__)
 #define system_write_checkpoint_data(...) CP_SELECT_4(__VA_ARGS__, CP_WRITE_TAGGED, CP_WRITE_PLAIN)(__VA_ARGS__)
 
+// === Plain-data prefixes ===
+//
+// A device struct puts its plain data first and its pointers last
+// (STYLE_GUIDE, "Device module conventions"), so the bytes before the first
+// pointer are saved as one block.  Name that boundary once, beside the
+// struct:
+//     CHECKPOINT_PREFIX(via_t, scheduler);
+// and save and restore it under the type's name as its tag:
+//     checkpoint_save_prefix(cp, via, via_t);
+//     checkpoint_load_prefix(cp, via, via_t);
+// The tag means a swapped equal-sized restore is caught (see the tag note
+// above), and no host pointer reaches the stream.
+#define CHECKPOINT_PREFIX(type, member)     enum { type##_cp_prefix = offsetof(type, member) }
+#define checkpoint_save_prefix(cp, p, type) system_write_checkpoint_data((cp), (p), (size_t)type##_cp_prefix, #type)
+#define checkpoint_load_prefix(cp, p, type) system_read_checkpoint_data((cp), (p), (size_t)type##_cp_prefix, #type)
+
 // === Bounded reads from an untrusted stream ===
 //
 // A checkpoint is a user-supplied file and the build-ID gate is not a defence

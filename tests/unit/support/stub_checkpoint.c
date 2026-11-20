@@ -23,14 +23,30 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
     (void)line;
 }
 
+// What a suite asked to see of the writes (stub_checkpoint_capture): the
+// bytes of every block, concatenated, up to the buffer's size.
+static uint8_t *s_capture;
+static size_t s_capture_cap, s_capture_len;
+
+void stub_checkpoint_capture(uint8_t *buf, size_t cap) {
+    s_capture = buf;
+    s_capture_cap = cap;
+    s_capture_len = 0;
+}
+
+size_t stub_checkpoint_captured(void) {
+    return s_capture_len;
+}
+
 void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data, size_t size, const char *tag,
                                       const char *file, int line) {
     (void)checkpoint;
     (void)tag;
-    (void)data;
-    (void)size;
     (void)file;
     (void)line;
+    // Capture, when a suite asked to
+    for (size_t i = 0; s_capture && i < size && s_capture_len < s_capture_cap; i++)
+        s_capture[s_capture_len++] = ((const uint8_t *)data)[i];
 }
 
 bool checkpoint_has_error(checkpoint_t *checkpoint) {
