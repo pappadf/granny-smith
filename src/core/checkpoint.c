@@ -1001,13 +1001,13 @@ bool checkpoint_close(checkpoint_t *checkpoint) {
             g_quick_in_flight = true;
         } else {
             char err[160];
-            double t0 = io_now_ms();
+            double t0 = host_time_ms();
             int rc = io_write_publish(checkpoint->buf, checkpoint->buf_used, g_publish_tmp, final, err, sizeof err);
             if (rc != 0) {
                 LOG(0, "Error: quick checkpoint write failed: %s", err);
                 checkpoint->error = true;
             }
-            quick_written(rc == 0, io_now_ms() - t0, rc == 0 ? NULL : err, NULL);
+            quick_written(rc == 0, host_time_ms() - t0, rc == 0 ? NULL : err, NULL);
         }
         g_publish_final[0] = '\0';
     }

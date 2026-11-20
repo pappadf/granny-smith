@@ -147,9 +147,6 @@ bool io_worker_ack(uint32_t id, uint32_t tag);
 // and returns its result.
 int io_run_inline(const io_job_desc_t *d, char *err, size_t err_cap);
 
-// Wall clock in milliseconds (for timing a publish).
-double io_now_ms(void);
-
 // Statistics: jobs completed, and how long the last one took.
 uint32_t io_worker_jobs_done(void);
 double io_worker_last_ms(void);

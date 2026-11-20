@@ -7,6 +7,8 @@
 
 #include "raster_queue.h"
 
+#include "platform.h" // host_time_ns
+
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -29,13 +31,6 @@
 // ============================================================================
 
 #if GS_RASTER_THREAD_BACKEND
-// Monotonic nanoseconds, for the stats.
-static uint64_t rq_now_ns(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
-}
-
 // One iteration of a busy-wait: a pause hint where the ISA has one.
 static inline void rq_cpu_relax(void) {
 #if defined(__x86_64__) || defined(__i386__)
@@ -189,14 +184,14 @@ void rq_wait_tail(rq_t *q, uint64_t want) {
 #if GS_RASTER_THREAD_BACKEND
     if (atomic_load_explicit(&q->tail, memory_order_acquire) >= want)
         return;
-    uint64_t t0 = rq_now_ns();
+    uint64_t t0 = host_time_ns();
     pthread_mutex_lock(&q->mu);
     atomic_store_explicit(&q->producer_waiting, 1, memory_order_seq_cst);
     while (atomic_load_explicit(&q->tail, memory_order_seq_cst) < want)
         pthread_cond_wait(&q->cv_done, &q->mu);
     atomic_store_explicit(&q->producer_waiting, 0, memory_order_seq_cst);
     pthread_mutex_unlock(&q->mu);
-    q->stats.wait_ns += rq_now_ns() - t0;
+    q->stats.wait_ns += host_time_ns() - t0;
 #else
     (void)q;
     (void)want;

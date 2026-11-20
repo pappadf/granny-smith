@@ -5,6 +5,7 @@
 
 #include "io_worker.h"
 
+#include "platform.h" // host_time_ms
 #include "work_queue.h"
 
 #include <errno.h>
@@ -65,12 +66,6 @@ static uint32_t g_next_id = 1;
 static uint32_t g_jobs_done;
 static double g_last_ms;
 static void (*g_waker)(void);
-
-double io_now_ms(void) {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (double)tv.tv_sec * 1000.0 + (double)tv.tv_usec / 1000.0;
-}
 
 int io_write_publish(const uint8_t *buf, size_t len, const char *tmp_path, const char *final_path, char *err,
                      size_t err_cap) {
@@ -135,7 +130,7 @@ static inline io_job_t *io_active(void) {
 static void io_run(work_queue_t *q, wq_item_t *item) {
     (void)q;
     io_job_t *j = (io_job_t *)item;
-    double t0 = io_now_ms();
+    double t0 = host_time_ms(); // monotonic: a wall-clock step is no duration
     int rc;
     if (__atomic_load_n(&j->cancel, __ATOMIC_ACQUIRE)) {
         snprintf(j->error, sizeof j->error, "cancelled");
@@ -149,7 +144,7 @@ static void io_run(work_queue_t *q, wq_item_t *item) {
             snprintf(j->error, sizeof j->error, "cancelled");
     }
     j->ok = rc == 0;
-    j->ms = io_now_ms() - t0;
+    j->ms = host_time_ms() - t0;
 }
 
 bool io_worker_start(size_t stack_bytes) {
