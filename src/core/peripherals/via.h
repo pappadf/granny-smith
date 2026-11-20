@@ -10,6 +10,7 @@
 // === Includes ===
 #include "checkpoint.h"
 #include "common.h"
+#include "irq_line.h"
 #include "memory.h"
 #include "scheduler.h"
 
@@ -26,7 +27,7 @@ typedef struct via via_t;
 // to route outputs to different destinations.
 typedef void (*via_output_fn)(void *context, uint8_t port, uint8_t value);
 typedef void (*via_shift_out_fn)(void *context, uint8_t byte);
-typedef void (*via_irq_fn)(void *context, bool active);
+typedef irq_fn via_irq_fn;
 
 // Optional per-instance port-A data hooks (used by the Lisa parallel hard disk,
 // whose ProFile/Widget controller clocks a byte over port A on every access).

@@ -18,6 +18,7 @@
 #define IOP_H
 
 #include "checkpoint.h"
+#include "irq_line.h"
 #include "memory.h"
 
 #include <stdbool.h>
@@ -75,7 +76,7 @@ typedef struct iop iop_t;
 
 // Called when an IOP's `hint` line to OSS changes state.  The callback's
 // job is to translate this into an OSS source-pending change.
-typedef void (*iop_irq_fn)(void *context, bool active);
+typedef irq_fn iop_irq_fn;
 
 // Creates an IOP bridge for one of the two IIfx IOPs.
 //

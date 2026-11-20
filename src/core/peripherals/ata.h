@@ -17,6 +17,8 @@
 #ifndef GS_CORE_PERIPHERALS_ATA_H
 #define GS_CORE_PERIPHERALS_ATA_H
 
+#include "irq_line.h"
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -60,7 +62,7 @@ typedef enum ata_dev_kind {
     ATA_DEV_ATAPI, // ATAPI CD-ROM (a device on the channel's SCSI back end)
 } ata_dev_kind_t;
 
-typedef void (*ata_irq_fn)(void *ctx, bool level);
+typedef irq_fn ata_irq_fn;
 typedef void (*ata_dma_kick_fn)(void *ctx);
 
 // One device on the channel.  Each device holds its own copy of the task

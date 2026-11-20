@@ -17,6 +17,7 @@
 #define SCSI_53C96_H
 
 #include "checkpoint.h"
+#include "irq_line.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -27,7 +28,7 @@ struct scsi;
 typedef struct scsi_53c96 scsi_53c96_t;
 
 // INT output callback (level; wired to VIA2 CB2 on the Quadras).
-typedef void (*scsi_53c96_irq_cb)(void *context, bool active);
+typedef irq_fn scsi_53c96_irq_cb;
 
 // Create a controller instance.  `clock_hz` scales the selection time-out
 // (register value × 8192 × clock-conversion / clock).

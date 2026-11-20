@@ -124,9 +124,7 @@ struct dafb {
     bool timing_valid;
 
     // Video IRQ output
-    dafb_irq_cb irq_cb;
-    void *irq_ctx;
-    bool irq_line;
+    irq_line_t irq;
 };
 
 // ============================================================
@@ -137,11 +135,7 @@ static void update_irq(dafb_t *dafb) {
     uint32_t enable = dafb->regs[SWATCH_INTR_ENABLE >> 2];
     uint32_t status = dafb->regs[SWATCH_INTR_STATUS >> 2];
     bool active = (enable & status & 0x7u) != 0;
-    if (active != dafb->irq_line) {
-        dafb->irq_line = active;
-        if (dafb->irq_cb)
-            dafb->irq_cb(dafb->irq_ctx, active);
-    }
+    irq_line_set(&dafb->irq, active);
 }
 
 // ============================================================
@@ -759,11 +753,11 @@ dafb_t *dafb_init(uint32_t vram_size, uint8_t monitor, checkpoint_t *cp) {
         else
             reconfigure(dafb);
         // ...and the INTERRUPT LEVEL, which is derived from the register file
-        // exactly as the descriptor is.  `irq_line` is not in the stream (it
+        // exactly as the descriptor is.  `irq.level` is not in the stream (it
         // is an output, not state), so it starts false; a checkpoint taken
         // with SWATCH_INTR_STATUS & _ENABLE non-zero has to re-assert it here,
-        // or the level is lost -- and update_irq's `active != irq_line` edge
-        // filter means a later status change may not re-raise it either.  The
+        // or the level is lost -- and irq_line_set's edge filter means a
+        // later status change may not re-raise it either.  The
         // Quadra's whole VBL chain hangs off this level.
         update_irq(dafb);
     }
@@ -818,10 +812,8 @@ void dafb_checkpoint(dafb_t *dafb, checkpoint_t *cp) {
 void dafb_set_irq_callback(dafb_t *dafb, dafb_irq_cb cb, void *context) {
     if (!dafb)
         return;
-    dafb->irq_cb = cb;
-    dafb->irq_ctx = context;
-    if (cb)
-        cb(context, dafb->irq_line);
+    irq_line_bind(&dafb->irq, cb, context);
+    irq_line_force(&dafb->irq, dafb->irq.level);
 }
 
 // Apple maps the extended-sense monitors into the bottom of the normal sense
@@ -904,9 +896,7 @@ void dafb_reset(dafb_t *dafb) {
     ramdac_seq_init(&dafb->dac, 0);
     dafb->clock_hz = 0;
     dafb->timing_valid = false;
-    dafb->irq_line = false;
-    if (dafb->irq_cb)
-        dafb->irq_cb(dafb->irq_ctx, false);
+    irq_line_force(&dafb->irq, false); // reset drops the line, told unconditionally
     // ...and the presentation state that is DERIVED from those registers.
     // Zeroing the register file is not a reset of the chip if the descriptor
     // it produced survives.  The Swatch comes out of /RESET with sync off,
