@@ -8,6 +8,7 @@
 #include "checkpoint.h"
 #include "cpu.h"
 #include "log.h"
+#include "ring.h"
 #include "system.h"
 #include "system_internal.h"
 
@@ -49,8 +50,7 @@ struct mouse {
     // `button_queue` and apply one hold apart (mouse_button_event).
     bool button; // the level on PB3 now (true = pressed)
     double button_since_ns; // when that level was applied
-    bool button_queue[MOUSE_BUTTON_QUEUE];
-    int button_head, button_count;
+    RING(bool, MOUSE_BUTTON_QUEUE) button_queue;
 
     /* Pointers last */
     struct scheduler *scheduler; // Event scheduler (CPU-cycle aligned)
@@ -197,12 +197,11 @@ static void mouse_button_apply(mouse_t *m, bool button) {
 static void mouse_button_event(void *source, uint64_t data) {
     (void)data;
     mouse_t *m = source;
-    if (m->button_count == 0)
+    if (ring_empty(&m->button_queue))
         return;
-    mouse_button_apply(m, m->button_queue[m->button_head]);
-    m->button_head = (m->button_head + 1) % MOUSE_BUTTON_QUEUE;
-    m->button_count--;
-    if (m->button_count)
+    mouse_button_apply(m, ring_at(&m->button_queue, 0));
+    ring_drop(&m->button_queue);
+    if (!ring_empty(&m->button_queue))
         scheduler_new_cpu_event(m->scheduler, &mouse_button_event, m, 0, 0, MOUSE_BUTTON_HOLD_NS);
 }
 
@@ -210,19 +209,18 @@ static void mouse_button_event(void *source, uint64_t data) {
 // inside its hold (or behind others already waiting) queues, so a press and
 // release quicker than a VBL reach the ROM as a press and then a release.
 void mouse_update(mouse_t *restrict m, bool button, int dx, int dy) {
-    bool latest =
-        m->button_count ? m->button_queue[(m->button_head + m->button_count - 1) % MOUSE_BUTTON_QUEUE] : m->button;
+    bool latest = ring_empty(&m->button_queue) ? m->button : ring_back(&m->button_queue);
     if (button != latest) {
         double held = scheduler_time_ns(m->scheduler) - m->button_since_ns;
-        if (m->button_count == 0 && held >= (double)MOUSE_BUTTON_HOLD_NS) {
+        if (ring_empty(&m->button_queue) && held >= (double)MOUSE_BUTTON_HOLD_NS) {
             mouse_button_apply(m, button);
-        } else if (m->button_count < MOUSE_BUTTON_QUEUE) {
-            if (m->button_count == 0) {
+        } else if (!ring_full(&m->button_queue)) {
+            if (ring_empty(&m->button_queue)) {
                 // The first in line waits out what is left of the current hold
                 uint64_t wait = (uint64_t)((double)MOUSE_BUTTON_HOLD_NS - held);
                 scheduler_new_cpu_event(m->scheduler, &mouse_button_event, m, 0, 0, wait ? wait : 1);
             }
-            m->button_queue[(m->button_head + m->button_count++) % MOUSE_BUTTON_QUEUE] = button;
+            (void)ring_push(&m->button_queue, button); // room checked above
         }
     }
     mouse_motion(m, dx, dy);
@@ -255,9 +253,8 @@ mouse_t *mouse_init(struct scheduler *scheduler, scc_t *scc, via_t *restrict via
         checkpoint_load_prefix(checkpoint, mouse, mouse_t);
         // The button queue's cursors come from a file the user supplies and
         // index the ring: out of range, the queued levels are dropped
-        if (mouse->button_head < 0 || mouse->button_head >= MOUSE_BUTTON_QUEUE || mouse->button_count < 0 ||
-            mouse->button_count > MOUSE_BUTTON_QUEUE)
-            mouse->button_head = mouse->button_count = 0;
+        if (!ring_valid(&mouse->button_queue))
+            ring_clear(&mouse->button_queue);
     }
 
     return mouse;
@@ -270,7 +267,7 @@ bool mouse_input_pending(const mouse_t *mouse) {
         return false;
     // A level still inside its hold has not been committed by the ROM yet
     bool holding = scheduler_time_ns(mouse->scheduler) - mouse->button_since_ns < (double)MOUSE_BUTTON_HOLD_NS;
-    return mouse->pending_x != 0 || mouse->pending_y != 0 || mouse->button_count > 0 || holding;
+    return mouse->pending_x != 0 || mouse->pending_y != 0 || !ring_empty(&mouse->button_queue) || holding;
 }
 
 // Free resources associated with a mouse instance

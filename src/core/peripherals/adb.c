@@ -25,6 +25,7 @@
 #include "mouse.h"
 #include "object.h"
 #include "object_order.h"
+#include "ring.h"
 #include "system.h"
 #include "value.h"
 
@@ -139,6 +140,13 @@ typedef struct {
     bool srq_enabled;
 } adb_device_t;
 
+// One mouse event queued behind an unreported button change: the button
+// level and the motion that came with it
+struct adb_mouse_ev {
+    bool button;
+    int dx, dy;
+};
+
 // Full ADB transceiver state; plain data placed first so the checkpoint
 // boundary at offsetof(adb_t, via) works correctly (same pattern as keyboard.c)
 struct adb {
@@ -187,11 +195,7 @@ struct adb {
     // the motion that came with it (more motion at the same level merges
     // into the tail).  Empty whenever the host polls faster than the input
     // changes, which keeps the single-state behaviour exactly.
-    struct {
-        bool button;
-        int dx, dy;
-    } mouse_queue[MOUSE_QUEUE_SIZE];
-    int mouse_queue_head, mouse_queue_count;
+    RING(struct adb_mouse_ev, MOUSE_QUEUE_SIZE) mouse_queue;
     // The host has read Register 1 while the mouse is in handler $04: its
     // driver knows the extended format, so reports may use the wide deltas.
     // MkLinux DR3 selects handler $04 for its middle and right buttons but
@@ -670,7 +674,7 @@ static void adb_reset(adb_t *adb) {
     adb->mouse_button = false;
     adb->mouse_data_pending = false;
     adb->mouse_button_unreported = false;
-    adb->mouse_queue_head = adb->mouse_queue_count = 0;
+    ring_clear(&adb->mouse_queue);
     adb->mouse_ext_identified = false;
     adb->last_poll_addr = MOUSE_DEFAULT_ADDR;
 
@@ -708,10 +712,9 @@ static void flush_device(adb_t *adb, uint8_t addr) {
         // switch's state, not buffered input, so the next report (on motion)
         // still carries it.  For the same reason the queued events' motion
         // is dropped but the switch ends at the level the last one left.
-        if (adb->mouse_queue_count) {
-            int last = (adb->mouse_queue_head + adb->mouse_queue_count - 1) % MOUSE_QUEUE_SIZE;
-            adb->mouse_button = adb->mouse_queue[last].button;
-            adb->mouse_queue_head = adb->mouse_queue_count = 0;
+        if (!ring_empty(&adb->mouse_queue)) {
+            adb->mouse_button = ring_back(&adb->mouse_queue).button;
+            ring_clear(&adb->mouse_queue);
         }
         adb->mouse_button_unreported = false;
         adb->mouse_data_pending = false;
@@ -746,14 +749,13 @@ static void prepare_kbd_reply(adb_t *adb) {
 static void prepare_mouse_reply(adb_t *adb) {
     // The last report carried the button's level: the next queued event, if
     // any, is what this report says
-    if (!adb->mouse_button_unreported && adb->mouse_queue_count) {
-        int i = adb->mouse_queue_head;
-        adb->mouse_button_unreported = adb->mouse_queue[i].button != adb->mouse_button;
-        adb->mouse_button = adb->mouse_queue[i].button;
-        adb->mouse_dx += adb->mouse_queue[i].dx;
-        adb->mouse_dy += adb->mouse_queue[i].dy;
-        adb->mouse_queue_head = (i + 1) % MOUSE_QUEUE_SIZE;
-        adb->mouse_queue_count--;
+    if (!adb->mouse_button_unreported && !ring_empty(&adb->mouse_queue)) {
+        struct adb_mouse_ev ev = ring_at(&adb->mouse_queue, 0);
+        adb->mouse_button_unreported = ev.button != adb->mouse_button;
+        adb->mouse_button = ev.button;
+        adb->mouse_dx += ev.dx;
+        adb->mouse_dy += ev.dy;
+        ring_drop(&adb->mouse_queue);
     }
     adb->mouse_reply_unreported = adb->mouse_button_unreported;
     adb->mouse_button_unreported = false;
@@ -800,7 +802,7 @@ static void prepare_mouse_reply(adb_t *adb) {
 
     // Clear the pending flag if all deltas have been consumed and no queued
     // event waits for the next report
-    if (remain_dy == 0 && remain_dx == 0 && adb->mouse_queue_count == 0)
+    if (remain_dy == 0 && remain_dx == 0 && ring_empty(&adb->mouse_queue))
         adb->mouse_data_pending = false;
 }
 
@@ -1338,9 +1340,8 @@ adb_t *adb_init(via_t *via, struct scheduler *scheduler, checkpoint_t *checkpoin
         checkpoint_load_prefix(checkpoint, adb, adb_t);
         // The mouse queue's cursors index its ring and come from a file the
         // user supplies: out of range, the queued events are dropped
-        if (adb->mouse_queue_head < 0 || adb->mouse_queue_head >= MOUSE_QUEUE_SIZE || adb->mouse_queue_count < 0 ||
-            adb->mouse_queue_count > MOUSE_QUEUE_SIZE)
-            adb->mouse_queue_head = adb->mouse_queue_count = 0;
+        if (!ring_valid(&adb->mouse_queue))
+            ring_clear(&adb->mouse_queue);
         // vADBInt was restored as part of the VIA checkpoint; no extra call needed
     } else {
         // Cold boot: no pending data, so deassert SRQ (vADBInt high)
@@ -1591,9 +1592,9 @@ void adb_keyboard_event(adb_t *adb, key_event_t event, int key) {
 // The button level the host last asked for: the newest queued event's, or the
 // current one when nothing is queued.
 static bool mouse_latest_button(const adb_t *adb) {
-    if (adb->mouse_queue_count == 0)
+    if (ring_empty(&adb->mouse_queue))
         return adb->mouse_button;
-    return adb->mouse_queue[(adb->mouse_queue_head + adb->mouse_queue_count - 1) % MOUSE_QUEUE_SIZE].button;
+    return ring_back(&adb->mouse_queue).button;
 }
 
 // Records a host mouse event: updates accumulated deltas and current button
@@ -1609,21 +1610,18 @@ void adb_mouse_event(adb_t *adb, bool button, int dx, int dy) {
     LOG(3, "adb_mouse_event: button=%d dx=%d dy=%d", button, dx, dy);
 
     bool button_changed = (button != mouse_latest_button(adb));
-    if (adb->mouse_queue_count || (button_changed && adb->mouse_button_unreported)) {
-        int tail;
-        if (adb->mouse_queue_count && (!button_changed || adb->mouse_queue_count == MOUSE_QUEUE_SIZE)) {
+    if (!ring_empty(&adb->mouse_queue) || (button_changed && adb->mouse_button_unreported)) {
+        if (!ring_empty(&adb->mouse_queue) && (!button_changed || ring_full(&adb->mouse_queue))) {
             // Same level (or no room): more motion for the newest event
-            tail = (adb->mouse_queue_head + adb->mouse_queue_count - 1) % MOUSE_QUEUE_SIZE;
-            adb->mouse_queue[tail].button = button;
-            adb->mouse_queue[tail].dx += dx;
-            adb->mouse_queue[tail].dy += dy;
+            struct adb_mouse_ev *tail = &ring_back(&adb->mouse_queue);
+            tail->button = button;
+            tail->dx += dx;
+            tail->dy += dy;
         } else {
-            tail = (adb->mouse_queue_head + adb->mouse_queue_count++) % MOUSE_QUEUE_SIZE;
-            adb->mouse_queue[tail].button = button;
-            adb->mouse_queue[tail].dx = dx;
-            adb->mouse_queue[tail].dy = dy;
+            (void)ring_push(&adb->mouse_queue, ((struct adb_mouse_ev){.button = button, .dx = dx, .dy = dy}));
         }
-        LOG(3, "adb_mouse_event: queued behind an unreported button change (%d waiting)", adb->mouse_queue_count);
+        LOG(3, "adb_mouse_event: queued behind an unreported button change (%u waiting)",
+            ring_count(&adb->mouse_queue));
         adb->mouse_data_pending = true;
         device_data_arrived(adb);
         return;
@@ -1666,9 +1664,9 @@ void adb_mouse_move(adb_t *adb, int dx, int dy) {
 void adb_mouse_pending(const adb_t *adb, int *dx, int *dy) {
     int sx = adb ? adb->mouse_dx : 0, sy = adb ? adb->mouse_dy : 0;
     // Motion still queued behind a button change counts too
-    for (int n = 0; adb && n < adb->mouse_queue_count; n++) {
-        sx += adb->mouse_queue[(adb->mouse_queue_head + n) % MOUSE_QUEUE_SIZE].dx;
-        sy += adb->mouse_queue[(adb->mouse_queue_head + n) % MOUSE_QUEUE_SIZE].dy;
+    for (unsigned n = 0; adb && n < ring_count(&adb->mouse_queue); n++) {
+        sx += ring_at(&adb->mouse_queue, n).dx;
+        sy += ring_at(&adb->mouse_queue, n).dy;
     }
     if (dx)
         *dx = sx;
@@ -1684,7 +1682,7 @@ bool adb_keyboard_input_pending(const adb_t *adb) {
 // True while host mouse input waits for the guest: motion or a button
 // change not yet carried by a Talk R0, or events queued behind one.
 bool adb_mouse_input_pending(const adb_t *adb) {
-    return adb && (adb->mouse_data_pending || adb->mouse_queue_count > 0);
+    return adb && (adb->mouse_data_pending || !ring_empty(&adb->mouse_queue));
 }
 
 // IOP-based ADB transaction (Macintosh IIfx).  See adb.h for the protocol
