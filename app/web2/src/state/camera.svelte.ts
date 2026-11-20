@@ -28,8 +28,9 @@ import {
   CAM_W_SLOT_BYTES,
   CAM_W_SLOT_OFF,
   CAM_W_WIDTH,
-  shmBlockOk,
+  lazyShmBlock,
 } from '@/bus/shmLayout';
+import { coalesced } from '@/lib/serialize';
 import { machine } from './machine.svelte';
 import { showNotification } from './toasts.svelte';
 
@@ -65,12 +66,27 @@ let pumpStop: (() => void) | null = null;
 
 // The block's address arrives while the module is still starting, so it is
 // read (and checked) on first use.
-let announcedPtr = 0;
-let layoutChecked = false;
+const block = lazyShmBlock({
+  magic: CAM_MAGIC,
+  version: CAM_VERSION,
+  onMismatch() {
+    // Leave the camera off, and say why.
+    console.error('[camera] frame transport layout not recognised; camera disabled');
+    showNotification(
+      'Camera unavailable: this emulator build has a different frame layout',
+      'error',
+    );
+  },
+  onClaim(i32, w) {
+    slotOff = Atomics.load(i32, w + CAM_W_SLOT_OFF);
+    slotBytes = Atomics.load(i32, w + CAM_W_SLOT_BYTES);
+    shmW = Atomics.load(i32, w + CAM_W_WIDTH);
+    shmH = Atomics.load(i32, w + CAM_W_HEIGHT);
+  },
+});
 
 export function onVideoInReady(ptr: number): void {
-  announcedPtr = ptr;
-  layoutChecked = false;
+  block.announce(ptr);
   shmPtr = 0;
 }
 
@@ -78,26 +94,8 @@ export function onVideoInReady(ptr: number): void {
 // found to be the layout this build speaks; null otherwise.
 function transport(): ReturnType<typeof getModuleHeap> {
   const heap = getModuleHeap();
-  if (!heap || !announcedPtr) return null;
-  if (!layoutChecked) {
-    layoutChecked = true;
-    if (!shmBlockOk(heap.i32, announcedPtr, CAM_MAGIC, CAM_VERSION)) {
-      // A core from another build: writing through a guessed layout would
-      // corrupt the heap. Say so, and leave the camera off.
-      console.error('[camera] frame transport layout not recognised; camera disabled');
-      showNotification(
-        'Camera unavailable: this emulator build has a different frame layout',
-        'error',
-      );
-      return null;
-    }
-    const w = announcedPtr >> 2;
-    slotOff = Atomics.load(heap.i32, w + CAM_W_SLOT_OFF);
-    slotBytes = Atomics.load(heap.i32, w + CAM_W_SLOT_BYTES);
-    shmW = Atomics.load(heap.i32, w + CAM_W_WIDTH);
-    shmH = Atomics.load(heap.i32, w + CAM_W_HEIGHT);
-    shmPtr = announcedPtr;
-  }
+  if (!heap) return null;
+  shmPtr = block.claim(heap.i32);
   return shmPtr ? heap : null;
 }
 
@@ -211,22 +209,8 @@ function stopStream(): void {
 // stream across the getUserMedia await, each acquired one, and each started
 // a pump -- the first camera was never stopped, its light stayed on, and two
 // pumps wrote the slots.
-let syncing: Promise<void> | null = null;
-async function syncStream(): Promise<void> {
-  // Coalesce: a call arriving mid-flight waits for the in-flight one, then
-  // re-reconciles, so the final state always matches the latest intent.
-  while (syncing) {
-    const inFlight = syncing;
-    await inFlight;
-    if (syncing === inFlight) break;
-  }
-  syncing = syncStreamInner();
-  try {
-    await syncing;
-  } finally {
-    syncing = null;
-  }
-}
+// lib/serialize.ts coalesces them: the final run matches the latest intent.
+const syncStream = coalesced(() => syncStreamInner());
 
 async function syncStreamInner(): Promise<void> {
   const want = camera.enabled && camera.guestActive;
