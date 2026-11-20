@@ -45,6 +45,7 @@
 #include "ppc_softfp.h"
 
 #include "breadcrumb.h"
+#include "common.h"
 #include "memory.h"
 #include "object.h"
 #include "predecode.h"
@@ -4601,10 +4602,10 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
     static uint64_t sigs[JIT_MAX_CHUNKS], sigws[JIT_MAX_CHUNKS];
     static uint32_t nwords[JIT_MAX_CHUNKS], lastu[JIT_MAX_CHUNKS];
     static uint8_t cpages[JIT_MAX_CHUNKS][JIT_REGION_PAGES / 8];
-#define MIX(c_, v_)  (sigs[c_] = (sigs[c_] ^ (uint64_t)(v_)) * 1099511628211ull)
-#define MIXW(c_, v_) (sigws[c_] = (sigws[c_] ^ (uint64_t)(v_)) * 1099511628211ull)
+#define MIX(c_, v_)  (sigs[c_] = (sigs[c_] ^ (uint64_t)(v_)) * FNV1A64_PRIME)
+#define MIXW(c_, v_) (sigws[c_] = (sigws[c_] ^ (uint64_t)(v_)) * FNV1A64_PRIME)
     for (uint32_t ci = 0; ci < nchunks; ci++) {
-        sigs[ci] = sigws[ci] = 1469598103934665603ull;
+        sigs[ci] = sigws[ci] = FNV1A64_INIT;
         nwords[ci] = 0;
         lastu[ci] = ~0u;
         memset(cpages[ci], 0, sizeof cpages[ci]);
