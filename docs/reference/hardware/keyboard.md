@@ -100,7 +100,9 @@ nothing to go stale and the answer survives a checkpoint restore for free —
 the events are restored, so the instant is too.
 
 A call **refuses** a line longer than the machine's keyboard queue can hold,
-rather than letting the queue's drop-oldest overflow silently eat its head.
+rather than letting the queue's overflow policy eat part of it (both queues
+keep releases and refuse presses when full, so a long line would lose
+characters).
 The budget is **per machine**, declared by the substrate as
 `key_queue_bytes`: the ADB ring and the Plus's M0110A queue are both 128
 bytes and a character costs two of them (four when shifted), so 96; the

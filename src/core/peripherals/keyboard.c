@@ -35,6 +35,11 @@ LOG_USE_CATEGORY_NAME("keyboard");
 
 #define NULL_RESPONSE 0x7B
 
+// The keypad prefix, and the Shift key's key-down code that also prefixes
+// the keypad's uppercase keys (Guide 2e p.283)
+#define KEYPAD_PREFIX   0x79
+#define SHIFT_DOWN_CODE 0x71
+
 // Keyboard protocol response delay: the keyboard waits before sending its response.
 // One serial bit takes ~330µs on the keyboard line. The keyboard typically waits
 // at least 8 bit-times (~2.64ms) after receiving a command before responding.
@@ -61,24 +66,71 @@ struct keyboard {
     via_t *via; // VIA for shift register communication
 };
 
-// Adds a byte to the keyboard transmit queue
+// The ring index after `i`
+static unsigned int queue_next(unsigned int i) {
+    return (i + 1 == QUEUE_SIZE) ? 0 : i + 1;
+}
+
+// Bytes waiting in the transmit queue
+static unsigned int queue_count(const keyboard_t *keyboard) {
+    return (keyboard->queue.head + QUEUE_SIZE - keyboard->queue.tail) % QUEUE_SIZE;
+}
+
+// Free slots in the transmit queue (one slot stays empty to tell full from empty)
+static unsigned int queue_room(const keyboard_t *keyboard) {
+    return QUEUE_SIZE - 1 - queue_count(keyboard);
+}
+
+// Adds a byte to the keyboard transmit queue; the caller has checked for room
 static void enqueue(keyboard_t *keyboard, uint8_t byte) {
-    unsigned int head = keyboard->queue.head + 1;
-
-    if (head == QUEUE_SIZE)
-        head = 0; // wrap
-
-    if (head == keyboard->queue.tail) {
-        // Queue full: drop oldest (so we preserve recent transitions, especially key-up)
-        // Advance tail one element to make room.
-        LOG(1, "queue overflow – dropping oldest byte to insert new one");
-        keyboard->queue.tail++;
-        if (keyboard->queue.tail == QUEUE_SIZE)
-            keyboard->queue.tail = 0;
-    }
-
+    GS_ASSERT(queue_room(keyboard) > 0);
     keyboard->queue.buf[keyboard->queue.head] = byte;
-    keyboard->queue.head = head;
+    keyboard->queue.head = queue_next(keyboard->queue.head);
+}
+
+// Length of the key-transition sequence that starts at ring index `i`: the
+// code, preceded by the keypad prefix ($79), itself preceded by the Shift
+// prefix ($71 / $F1) for keypad + * / =.  A Shift not followed by $79 is the
+// Shift key's own transition, one byte.
+static unsigned int seq_len_at(const keyboard_t *keyboard, unsigned int i) {
+    unsigned int n = 1;
+    uint8_t b = keyboard->queue.buf[i];
+    unsigned int j = queue_next(i);
+    if ((b == SHIFT_DOWN_CODE || b == (SHIFT_DOWN_CODE | 0x80)) && j != keyboard->queue.head &&
+        keyboard->queue.buf[j] == KEYPAD_PREFIX) {
+        n++;
+        b = KEYPAD_PREFIX;
+        j = queue_next(j);
+    }
+    if (b == KEYPAD_PREFIX && j != keyboard->queue.head)
+        n++;
+    return n;
+}
+
+// Removes `n` bytes at ring index `idx`, closing the gap
+static void queue_remove(keyboard_t *keyboard, unsigned int idx, unsigned int n) {
+    unsigned int dst = idx, src = (idx + n) % QUEUE_SIZE;
+    while (src != keyboard->queue.head) {
+        keyboard->queue.buf[dst] = keyboard->queue.buf[src];
+        dst = queue_next(dst);
+        src = queue_next(src);
+    }
+    keyboard->queue.head = dst;
+}
+
+// Drops the oldest queued key PRESS, its prefixes with it; false when every
+// queued transition is a release
+static bool queue_drop_oldest_press(keyboard_t *keyboard) {
+    for (unsigned int i = keyboard->queue.tail; i != keyboard->queue.head;) {
+        unsigned int n = seq_len_at(keyboard, i);
+        unsigned int last = (i + n - 1) % QUEUE_SIZE;
+        if (!(keyboard->queue.buf[last] & 0x80)) {
+            queue_remove(keyboard, i, n);
+            return true;
+        }
+        i = (i + n) % QUEUE_SIZE;
+    }
+    return false;
 }
 
 static uint8_t dequeue(keyboard_t *keyboard) {
@@ -175,21 +227,59 @@ static void keyboard_tx_callback(void *source, uint64_t data) {
     }
 }
 
-// Queues a key event byte or sends immediately if Mac is waiting
-static void add_key_event(keyboard_t *keyboard, uint8_t key) {
-    LOG(2, "add_key_event: key=0x%02X, tx_pending=%d, queue_empty=%d", key, keyboard->tx_pending,
-        queue_empty(keyboard));
+// Queues a command response, refusing it (rather than displacing a queued
+// key transition) when the queue is full
+static void enqueue_response(keyboard_t *keyboard, uint8_t byte) {
+    if (queue_room(keyboard) == 0) {
+        LOG(1, "queue full, refusing response 0x%02X", byte);
+        return;
+    }
+    enqueue(keyboard, byte);
+}
 
-    // If Mac is waiting and nothing queued, send immediately
+// Queues one key transition -- its prefixes and its code, `n` bytes -- or
+// sends the first byte at once if the Mac is waiting.
+//
+// WHICH BYTES GO WHEN THE QUEUE IS FULL is adb.c's kbd_enqueue policy: a
+// dropped RELEASE leaves the Mac holding a key it never sees let go (a stuck
+// Shift shifts every later key), a dropped press costs one character.  So a
+// release always gets in, at the cost of the oldest queued press, and a
+// press that will not fit is refused.  Unlike ADB, a Plus transition can be
+// several bytes ($71 $79 code), so the policy works on whole transitions: a
+// prefix is never separated from its code.  (This used to drop the oldest
+// BYTE, which could be a queued release or half of a keypad sequence.)
+static void add_key_sequence(keyboard_t *keyboard, const uint8_t *seq, unsigned int n) {
+    LOG(2, "add_key_sequence: code=0x%02X (%u bytes), tx_pending=%d, queue_empty=%d", seq[n - 1], n,
+        keyboard->tx_pending, queue_empty(keyboard));
+    bool release = (seq[n - 1] & 0x80) != 0;
+
+    // If Mac is waiting and nothing queued, send the first byte immediately
     if (keyboard->tx_pending && queue_empty(keyboard)) {
-        LOG(2, "add_key_event: sending immediately to via");
-        tx_to_via(keyboard, key);
+        LOG(2, "add_key_sequence: sending immediately to via");
+        tx_to_via(keyboard, seq[0]);
         keyboard->tx_pending = false;
         remove_event(keyboard->scheduler, &keyboard_timeout_callback, (void *)keyboard);
-    } else {
-        LOG(2, "add_key_event: enqueueing for later");
-        enqueue(keyboard, key);
+        seq++;
+        n--;
     }
+    if (n == 0)
+        return;
+
+    // Make room: a release displaces the oldest queued presses; a press waits for nobody
+    while (queue_room(keyboard) < n) {
+        if (!release) {
+            LOG(1, "queue full, refusing key-down 0x%02X rather than displace a queued release", seq[n - 1]);
+            return;
+        }
+        if (!queue_drop_oldest_press(keyboard)) {
+            LOG(1, "queue full of releases, refusing 0x%02X", seq[n - 1]);
+            return;
+        }
+        LOG(1, "queue full, dropped the oldest key-down to make room for release 0x%02X", seq[n - 1]);
+    }
+    LOG(2, "add_key_sequence: enqueueing for later");
+    for (unsigned int i = 0; i < n; i++)
+        enqueue(keyboard, seq[i]);
 }
 
 // Processes a key event from the host and converts to Mac keyboard protocol
@@ -390,10 +480,12 @@ void keyboard_update(keyboard_t *keyboard, key_event_t event, int host_key) {
     // Plus sends on release of keypad + * /.  The plus-keyboard test asserts
     // Shift's KeyMap bit is clear afterwards, which catches a stuck latch
     // whichever way the real hardware behaved.
+    uint8_t seq[3];
+    unsigned int n = 0;
     if (prefix == PREFIX_SHIFT_KEYPAD)
-        add_key_event(keyboard, (event == key_up) ? 0xF1 : 0x71);
+        seq[n++] = (event == key_up) ? (SHIFT_DOWN_CODE | 0x80) : SHIFT_DOWN_CODE;
     if (prefix != PREFIX_NONE)
-        add_key_event(keyboard, 0x79);
+        seq[n++] = KEYPAD_PREFIX;
 
     // Set key-up flag in bit 7
     if (event == key_up)
@@ -402,7 +494,8 @@ void keyboard_update(keyboard_t *keyboard, key_event_t event, int host_key) {
     LOG(2, "keyboard_update: ADB 0x%02X -> raw 0x%02X (%s)", host_key, raw_code,
         (raw_code & 0x80) ? "key_up" : "key_down");
 
-    add_key_event(keyboard, raw_code);
+    seq[n++] = raw_code;
+    add_key_sequence(keyboard, seq, n);
 }
 
 // Resets keyboard state including queue and pressed key tracking
@@ -440,11 +533,11 @@ void keyboard_input(keyboard_t *keyboard, uint8_t byte) {
     case CMD_MODEL_NUMBER:
         LOG(2, "keyboard_input: MODEL_NUMBER command, responding 0x%02X", MODEL_NUMBER);
         reset(keyboard);
-        enqueue(keyboard, MODEL_NUMBER);
+        enqueue_response(keyboard, MODEL_NUMBER);
         break;
     case CMD_TEST:
         LOG(2, "keyboard_input: TEST command, responding ACK 0x%02X", TEST_ACK_RESPONSE);
-        enqueue(keyboard, TEST_ACK_RESPONSE);
+        enqueue_response(keyboard, TEST_ACK_RESPONSE);
         break;
     default:
         LOG(1, "keyboard_input: unsupported command 0x%02X", byte);
