@@ -376,7 +376,6 @@ static void atp_timers_init(atalk_conn_t *c);
 static void atp_reset(atalk_conn_t *c, bool teardown);
 // Logging category function used by LOG() macro; provided by LOG_USE_CATEGORY_NAME later
 static log_category_t *log_local_category(void);
-static void log_hex(log_category_t *cat, int level, const char *tag, const uint8_t *data, size_t len);
 static log_category_t *llap_log_category(void);
 static log_category_t *atp_log_category(void);
 #define LOG_LLAP(level, fmt, ...) LOG_WITH(llap_log_category(), (level), (fmt), ##__VA_ARGS__)
@@ -550,7 +549,7 @@ static void llap_wire_send(atalk_conn_t *c, const uint8_t *buf, size_t total) {
     // the RTS timer, which does not pass through llap_send again.
     if (!c->enabled)
         return;
-    log_hex(llap_log_category(), 11, "LLAP tx dump", buf, total);
+    log_hex(llap_log_category(), 11, "LLAP tx dump", buf, total, 0);
     c->stats.llap_tx++;
     if (c->scc)
         scc_sdlc_send(c->scc, (uint8_t *)buf, total);
@@ -652,7 +651,7 @@ static void llap_in(atalk_conn_t *c, const uint8_t *buf, size_t len) {
     llap_wire_note_peer_frame(c, len);
 
     // LLAP rx hexdump at high verbosity
-    log_hex(llap_log_category(), 11, "LLAP rx dump", buf, len);
+    log_hex(llap_log_category(), 11, "LLAP rx dump", buf, len, 0);
 
     switch (header.type) {
 
@@ -1079,7 +1078,7 @@ static int ddp_send(atalk_conn_t *c, const ddp_header_t *header, const uint8_t *
     memcpy(&buffer[5], data, (size_t)size);
 
     LOG_INDENT(4);
-    log_hex(log_local_category(), 9, "DDP tx dump", buffer, length);
+    log_hex(log_local_category(), 9, "DDP tx dump", buffer, length, 0);
     LOG_INDENT(-4);
 
     c->stats.ddp_out++;
@@ -1211,7 +1210,7 @@ static void ddp_short_in(atalk_conn_t *c, llap_header_t *llap, const uint8_t *bu
 
     LOG_INDENT(4);
     // Full DDP hexdump at high verbosity (includes 5-byte header + payload)
-    log_hex(log_local_category(), 9, "DDP rx dump", buf, len);
+    log_hex(log_local_category(), 9, "DDP rx dump", buf, len, 0);
     ddp_in(c, &ddp, buf + 5, len - 5);
     LOG_INDENT(-4);
 }
@@ -1303,70 +1302,6 @@ static log_category_t *atp_log_category(void) {
     if (!cat)
         cat = log_register_category("atp");
     return cat;
-}
-
-// --------------- Hex dump helper for high-verbosity diagnostics ---------------
-// Emit a multi-line hex dump with ASCII gutter to the AppleTalk log category
-// One LOG call per 16-byte row: a log record is capped at 512 bytes
-// (log_vemit), so a whole frame does not fit in one.  The rows are only
-// formatted when the category would print them.
-static void log_hex(log_category_t *cat, int level, const char *tag, const uint8_t *data, size_t len) {
-    if (!log_would_log(cat, level))
-        return;
-    if (!data || len == 0) {
-        LOG_WITH(cat, level, "%s: <empty>", tag ? tag : "HEX");
-        return;
-    }
-    // Build per-line hex with ASCII gutter (16 bytes per line)
-    char hexbuf[3 * 16 + 2 + 1]; // "XX " * 16 + space after 8 + NUL
-    char asciibuf[16 + 1]; // 16 chars + NUL
-
-    for (size_t off = 0; off < len; off += 16) {
-        size_t n = (len - off) < 16 ? (len - off) : 16;
-
-        // Hex field
-        size_t hp = 0;
-        for (size_t i = 0; i < 16; i++) {
-            size_t left = sizeof(hexbuf) - hp;
-            if (i < n) {
-                if (left <= 1) {
-                    hexbuf[sizeof(hexbuf) - 1] = '\0';
-                    break;
-                }
-                int wrote = snprintf(&hexbuf[hp], left, "%02X ", data[off + i]);
-                if (wrote < 0) {
-                    hexbuf[hp] = '\0';
-                    break;
-                }
-                size_t adv = (size_t)wrote;
-                if (adv >= left) { // truncated; keep NUL and stop
-                    hp = sizeof(hexbuf) - 1;
-                    hexbuf[hp] = '\0';
-                    break;
-                }
-                hp += adv;
-            } else {
-                // Pad alignment when fewer than 16 bytes this row
-                if (left >= 4) {
-                    hexbuf[hp++] = ' ';
-                    hexbuf[hp++] = ' ';
-                    hexbuf[hp++] = ' ';
-                }
-            }
-            if (i == 7 && hp < sizeof(hexbuf) - 1)
-                hexbuf[hp++] = ' ';
-        }
-        hexbuf[hp] = '\0';
-
-        // ASCII gutter
-        for (size_t i = 0; i < n; i++) {
-            unsigned char c = data[off + i];
-            asciibuf[i] = (c >= 32 && c <= 126) ? (char)c : '.';
-        }
-        asciibuf[n] = '\0';
-
-        LOG_WITH(cat, level, "%04" PRIx64 ": %s | %s", (uint64_t)off, hexbuf, asciibuf);
-    }
 }
 
 // =============================== NBP (Name Binding Protocol) ===============================

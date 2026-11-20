@@ -447,6 +447,64 @@ _Static_assert(sizeof(k_indent_spaces) == LOG_MAX_INDENT_SPACES + 1, "indent sou
 
 // Emits a log line using a va_list.
 // Final form: "[name] level [@count] [PC=...] <indent>message\n"
+void log_hex(const log_category_t *cat, int level, const char *tag, const void *data, size_t len, size_t max) {
+    if (!log_would_log(cat, level))
+        return;
+    const uint8_t *b = (const uint8_t *)data;
+    tag = tag ? tag : "HEX";
+    if (!b || len == 0) {
+        log_emit(cat, level, "%s: <empty>", tag);
+        return;
+    }
+    static const char digits[] = "0123456789ABCDEF";
+    if (max) {
+        // One line: the first `max` bytes, then an ellipsis for the rest
+        size_t n = len < max ? len : max;
+        char *line = malloc(3 * n + 8);
+        if (!line)
+            return;
+        size_t o = 0;
+        for (size_t i = 0; i < n; i++) {
+            line[o++] = digits[b[i] >> 4];
+            line[o++] = digits[b[i] & 15];
+            if (i + 1 < n)
+                line[o++] = ' ';
+        }
+        if (n < len)
+            o += (size_t)snprintf(line + o, 8, " \u2026");
+        line[o] = '\0';
+        log_emit(cat, level, "%s (%zu bytes): %s", tag, len, line);
+        free(line);
+        return;
+    }
+    // Rows of 16: "XX " per byte (blank past the end), a gap after the 8th,
+    // then the bytes as ASCII
+    for (size_t off = 0; off < len; off += 16) {
+        size_t n = (len - off) < 16 ? (len - off) : 16;
+        char hexbuf[3 * 16 + 1 + 1], asciibuf[16 + 1];
+        size_t hp = 0;
+        for (size_t i = 0; i < 16; i++) {
+            if (i < n) {
+                hexbuf[hp++] = digits[b[off + i] >> 4];
+                hexbuf[hp++] = digits[b[off + i] & 15];
+            } else {
+                hexbuf[hp++] = ' ';
+                hexbuf[hp++] = ' ';
+            }
+            hexbuf[hp++] = ' ';
+            if (i == 7)
+                hexbuf[hp++] = ' ';
+        }
+        hexbuf[hp] = '\0';
+        for (size_t i = 0; i < n; i++) {
+            uint8_t c = b[off + i];
+            asciibuf[i] = (c >= 32 && c <= 126) ? (char)c : '.';
+        }
+        asciibuf[n] = '\0';
+        log_emit(cat, level, "%04zx: %s | %s", off, hexbuf, asciibuf);
+    }
+}
+
 void log_vemit(const log_category_t *cat, int level, const char *fmt, va_list ap) {
     // Same gate as the LOG macros, so a direct call honours the level too
     // (a missing category is treated as disabled)

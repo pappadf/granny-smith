@@ -62,6 +62,8 @@ Header is minimal and C‑friendly. All symbols prefixed with `log_` or `LOG_`.
   - `void log_emit(const log_category_t* cat, int level, const char* fmt, ...)`
     - `printf`‑style, `__attribute__((format(printf,3,4)))` when available.
   - `void log_vemit(const log_category_t* cat, int level, const char* fmt, va_list ap)`
+  - `void log_hex(const log_category_t* cat, int level, const char* tag, const void* data, size_t len, size_t max)`
+    - A hex dump, formatted only when `level` would print: `max == 0` is one record per 16-byte row (offset, hex, ASCII gutter); `max > 0` is one line of the first `max` bytes.
 
 - Macros for zero‑overhead disable
   - Implicit category (preferred, simplest call site): `LOG(level, fmt, ...)` — uses the file’s implicit category (see below).

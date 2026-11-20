@@ -1348,16 +1348,8 @@ static void pap_socket_request_handler(const ddp_header_t *ddp, atp_packet_t *re
             request->tid, request->bitmap, request->data_len, detail);
     }
 
-    if (request->data_len > 0) {
-        char hex[64];
-        int hpos = 0;
-        int hlimit = request->data_len > 16 ? 16 : request->data_len;
-        for (int i = 0; i < hlimit && hpos < (int)sizeof(hex) - 4; i++)
-            hpos += snprintf(&hex[hpos], sizeof(hex) - hpos, "%02X ", request->data[i]);
-        if (hlimit < request->data_len && hpos < (int)sizeof(hex) - 2)
-            hpos += snprintf(&hex[hpos], sizeof(hex) - hpos, "...");
-        LOG(10, "PAP <- Mac data[%d]: %s", request->data_len, hex);
-    }
+    if (request->data_len > 0)
+        log_hex(log_local_category(), 10, "PAP <- Mac data", request->data, (size_t)request->data_len, 16);
 
     LOG_INDENT(4);
     switch (func) {

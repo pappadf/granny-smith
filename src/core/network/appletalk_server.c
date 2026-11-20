@@ -56,21 +56,9 @@ LOG_USE_CATEGORY_NAME("afp");
 
 // Emit a short hex dump at LOG level 2 for AFP request/response payloads
 void afp_log_hex(const char *label, const uint8_t *buf, int len) {
-    (void)label; // only read by LOG(), which the unit harness compiles out
-    if (!buf || len <= 0)
-        return;
-    char line[AFP_LOG_HEX_MAX * 3 + 5];
-    int pos = 0;
-    int cap = (int)(sizeof(line) - 4);
-    int limit = len;
-    if (limit > AFP_LOG_HEX_MAX)
-        limit = AFP_LOG_HEX_MAX;
-    for (int i = 0; i < limit && pos < cap; i++) {
-        pos += snprintf(&line[pos], (size_t)(cap - pos), "%02X%s", buf[i], (i + 1 == limit) ? "" : " ");
-    }
-    if (limit < len && pos < cap)
-        snprintf(&line[pos], (size_t)(sizeof(line) - pos), " …");
-    LOG(2, "%s (%d bytes): %s", label ? label : "AFP hex", len, line);
+    // Gated: formatted only when level 2 prints (FPEnumerate calls this on
+    // every request and reply)
+    log_hex(log_local_category(), 2, label ? label : "AFP hex", buf, len > 0 ? (size_t)len : 0, AFP_LOG_HEX_MAX);
 }
 
 // ============================================================================
