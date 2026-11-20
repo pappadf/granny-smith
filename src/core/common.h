@@ -21,9 +21,9 @@
 // === Unaligned byte-order accessors =========================================
 // For on-disk and on-wire structures, which are read at arbitrary offsets:
 // HFS catalog records, AFP reply blocks, APM partition entries, DBDMA
-// descriptors.  Contrast memory.h's LOAD_BE*/STORE_BE*, which cast the
-// pointer and so require natural alignment — use those for register
-// windows, these for buffers.
+// descriptors.  memory.h's LOAD_BE*/STORE_BE* are these same macros under
+// the name that marks a guest-memory access (RAM, ROM, VRAM, register
+// windows); there is no alignment difference between the two spellings.
 //
 // Macros, not static inline: at -Og (the `make debug` build) a static
 // inline helper is NOT reliably inlined — measured, it emitted a real call

@@ -102,6 +102,8 @@ arbiter treat the fault as its own and skip the demand fill.
 The emulated Motorola 68000 is big-endian. The `LOAD_BE*` and `STORE_BE*`
 macros use `__builtin_bswap*` intrinsics to convert between the host byte order
 (little-endian on x86/ARM) and big-endian storage in the guest memory buffer.
+They are `common.h`'s `RD_BE*`/`WR_BE*` under a guest-memory name (a
+`__builtin_memcpy` load or store plus a byte swap, so any alignment is fine).
 
 ## Page Table Population
 

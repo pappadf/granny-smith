@@ -159,7 +159,7 @@ static void sound_scan_batch_event(void *source, uint64_t data);
 static void sound_scan_batch(sound_t *sound) {
     if (sound->enabled) {
         for (int i = 0; i < SCAN_BATCH_WORDS; i++) {
-            uint8_t b = BE16(sound->buffer[sound->scan_idx]) >> 8;
+            uint8_t b = LOAD_BE16(&sound->buffer[sound->scan_idx]) >> 8;
             sound->out_buf[sound->out_count++] = (int16_t)(((int)b - 128) << 8);
             if (sound->out_count >= SOUND_PUSH_BATCH)
                 sound_flush(sound);

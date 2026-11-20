@@ -27,33 +27,17 @@
 // code is byte-identical on aarch64 (gcc), x86-64 (clang) and wasm32 (emcc),
 // for every width, loads and stores; on wasm the only delta is that the
 // alignment hint becomes honest (p2align=0) instead of a false claim of
-// natural alignment.  For on-disk and on-wire buffers, common.h's
-// RD_BE*/WR_BE* remain the byte-wise spelling.
+// natural alignment.  These are common.h's RD_BE*/WR_BE* under the name that
+// marks a guest-memory access: one family, one expansion.  (They used to
+// route through static inline memory_load_host* helpers; gcc and emcc both
+// inline those at -Og, but the macros need no such reliance.)
 #define LOAD_BE8(p)  (*(const uint8_t *)(p))
-#define LOAD_BE16(p) (__builtin_bswap16(memory_load_host16(p)))
-#define LOAD_BE32(p) (__builtin_bswap32(memory_load_host32(p)))
+#define LOAD_BE16(p) RD_BE16(p)
+#define LOAD_BE32(p) RD_BE32(p)
 
 #define STORE_BE8(p, v)  (*(uint8_t *)(p) = (uint8_t)(v))
-#define STORE_BE16(p, v) memory_store_host16((p), __builtin_bswap16((uint16_t)(v)))
-#define STORE_BE32(p, v) memory_store_host32((p), __builtin_bswap32((uint32_t)(v)))
-
-// Alignment-agnostic host-memory primitives behind the macros above.
-static inline uint16_t memory_load_host16(const void *p) {
-    uint16_t v;
-    __builtin_memcpy(&v, p, sizeof v);
-    return v;
-}
-static inline uint32_t memory_load_host32(const void *p) {
-    uint32_t v;
-    __builtin_memcpy(&v, p, sizeof v);
-    return v;
-}
-static inline void memory_store_host16(void *p, uint16_t v) {
-    __builtin_memcpy(p, &v, sizeof v);
-}
-static inline void memory_store_host32(void *p, uint32_t v) {
-    __builtin_memcpy(p, &v, sizeof v);
-}
+#define STORE_BE16(p, v) WR_BE16((p), (v))
+#define STORE_BE32(p, v) WR_BE32((p), (v))
 
 // === Type Definitions ===
 struct mmu_state;

@@ -1304,10 +1304,8 @@ void run_cmd(scsi_t *scsi) {
         // address for a medium with no blocks, so report block zero: it claims
         // the least that can be claimed, and every read of it is refused by the
         // range check anyway.
-        uint32_t last_lba = BE32(sz > 0 ? (uint32_t)sz - 1 : 0u);
-        uint32_t be_blk_sz = BE32((uint32_t)blk_sz);
-        memcpy(scsi->buf.data, &last_lba, 4);
-        memcpy(scsi->buf.data + 4, &be_blk_sz, 4);
+        WR_BE32(scsi->buf.data, sz > 0 ? (uint32_t)sz - 1 : 0u);
+        WR_BE32(scsi->buf.data + 4, (uint32_t)blk_sz);
 
         break;
     }
