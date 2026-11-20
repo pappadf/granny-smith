@@ -609,13 +609,7 @@ static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
         return;
     system_write_checkpoint_data(cp, p->vram, JMFB_VRAM_SIZE);
     checkpoint_save_prefix(cp, p, jmfb_priv_t);
-    {
-        // Fixed widths, not a raw struct prefix: the prefix carried a bare
-        // pixel_format_t, whose size is implementation-defined (see
-        // display.h).
-        display_head_t head = display_head_of(&p->display);
-        system_write_checkpoint_data(cp, &head, sizeof head);
-    }
+    display_head_save(cp, &p->display);
 }
 
 static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
@@ -624,11 +618,7 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
         return;
     system_read_checkpoint_data(cp, p->vram, JMFB_VRAM_SIZE);
     checkpoint_load_prefix(cp, p, jmfb_priv_t);
-    {
-        display_head_t head;
-        system_read_checkpoint_data(cp, &head, sizeof head);
-        display_head_apply(&p->display, &head);
-    }
+    display_head_restore(cp, &p->display);
 
     // stride, width and the scan base are all derived from row_words,
     // video_base and the restored format -- and the restore must land on a
@@ -640,10 +630,7 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
     // display.bits still points into p->vram (card_init set it and the buffer
     // has not moved), but everything the frontend caches about this display is
     // now stale.
-    p->display.shape_dirty = true;
-    p->display.clut_dirty = true;
-    p->display.fb_dirty = true;
-    p->display.response_dirty = true;
+    display_mark_all_dirty(&p->display);
 }
 
 static const nubus_card_ops_t mdc_8_24_ops = {

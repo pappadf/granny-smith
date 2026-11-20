@@ -8,4 +8,6 @@ TEST_SRCS    := test.c
 TEST_HARNESS := isolated
 OMIT_STUBS   := shell memory debugger peripherals
 EXTRA_SRCS   := ../../../../src/machines/mdu/builtin_rbv_video.c
+# The display head checkpoint block the card saves
+EXTRA_SRCS += ../../../../src/core/peripherals/nubus/display.c
 include ../../common.mk

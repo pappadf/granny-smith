@@ -150,13 +150,7 @@ static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
         return;
     system_write_checkpoint_data(cp, p->vram, SE30_VRAM_SIZE);
     checkpoint_save_prefix(cp, p, se30_priv_t);
-    {
-        // Fixed widths, not a raw struct prefix: the prefix carried a bare
-        // pixel_format_t, whose size is implementation-defined (see
-        // display.h).
-        display_head_t head = display_head_of(&p->display);
-        system_write_checkpoint_data(cp, &head, sizeof head);
-    }
+    display_head_save(cp, &p->display);
 }
 
 static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
@@ -165,20 +159,13 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
         return;
     system_read_checkpoint_data(cp, p->vram, SE30_VRAM_SIZE);
     checkpoint_load_prefix(cp, p, se30_priv_t);
-    {
-        display_head_t head;
-        system_read_checkpoint_data(cp, &head, sizeof head);
-        display_head_apply(&p->display, &head);
-    }
+    display_head_restore(cp, &p->display);
     // Re-point the scanout at the restored buffer: the VIA redrive that
     // follows reaches select_buffer, which early-returns on an unchanged
     // main_buf and would leave init's primary-buffer pointer in place.
     p->display.bits = p->vram + (p->main_buf ? SE30_FB_PRIMARY_OFFSET : SE30_FB_ALTERNATE_OFFSET);
 
-    p->display.shape_dirty = true;
-    p->display.clut_dirty = true;
-    p->display.fb_dirty = true;
-    p->display.response_dirty = true;
+    display_mark_all_dirty(&p->display);
 }
 
 static const nubus_card_ops_t builtin_se30_video_ops = {

@@ -270,13 +270,7 @@ static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
     if (!p->fb_external)
         system_write_checkpoint_data(cp, p->fb, BUILTIN_RBV_VRAM_SIZE);
     checkpoint_save_prefix(cp, p, rbv_video_priv_t);
-    {
-        // Fixed widths, not a raw struct prefix: the prefix carried a bare
-        // pixel_format_t, whose size is implementation-defined (see
-        // display.h).
-        display_head_t head = display_head_of(&p->display);
-        system_write_checkpoint_data(cp, &head, sizeof head);
-    }
+    display_head_save(cp, &p->display);
 }
 
 static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
@@ -286,11 +280,7 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
     if (!p->fb_external)
         system_read_checkpoint_data(cp, p->fb, BUILTIN_RBV_VRAM_SIZE);
     checkpoint_load_prefix(cp, p, rbv_video_priv_t);
-    {
-        display_head_t head;
-        system_read_checkpoint_data(cp, &head, sizeof head);
-        display_head_apply(&p->display, &head);
-    }
+    display_head_restore(cp, &p->display);
 
     // The CLUT window depends on the restored depth, so recompute it.
     rbv_video_apply_clut_window(p);
@@ -300,10 +290,7 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
     rbv_video_apply_scanout(p);
 
     // Everything the frontend caches about this display is now stale.
-    p->display.shape_dirty = true;
-    p->display.clut_dirty = true;
-    p->display.fb_dirty = true;
-    p->display.response_dirty = true;
+    display_mark_all_dirty(&p->display);
 }
 
 static const nubus_card_ops_t builtin_rbv_video_ops = {

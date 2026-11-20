@@ -867,10 +867,7 @@ static void set_poweron_defaults(display_card_824gc_priv_t *p) {
     p->display.clut = p->clut;
     p->display.clut_len = 256;
     p->display.crt_response = NULL;
-    p->display.shape_dirty = true;
-    p->display.clut_dirty = true;
-    p->display.fb_dirty = true;
-    p->display.response_dirty = true;
+    display_mark_all_dirty(&p->display);
 
     // Accelerator: cold, no firmware.  DRAM/SRAM buffers keep their contents
     // (the ROM re-downloads the firmware on reboot).
@@ -1104,13 +1101,7 @@ static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
     if (!p)
         return;
     checkpoint_save_prefix(cp, p, display_card_824gc_priv_t);
-    {
-        // Fixed widths, not a raw struct prefix: the prefix carried a bare
-        // pixel_format_t, whose size is implementation-defined (see
-        // display.h).
-        display_head_t head = display_head_of(&p->display);
-        system_write_checkpoint_data(cp, &head, sizeof head);
-    }
+    display_head_save(cp, &p->display);
 
     system_write_checkpoint_data(cp, p->vram, GC824_VRAM_SIZE);
     system_write_checkpoint_data(cp, p->sram, GC824_SRAM_SIZE);
@@ -1138,11 +1129,7 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
     if (!p)
         return;
     checkpoint_load_prefix(cp, p, display_card_824gc_priv_t);
-    {
-        display_head_t head;
-        system_read_checkpoint_data(cp, &head, sizeof head);
-        display_head_apply(&p->display, &head);
-    }
+    display_head_restore(cp, &p->display);
 
     system_read_checkpoint_data(cp, p->vram, GC824_VRAM_SIZE);
     system_read_checkpoint_data(cp, p->sram, GC824_SRAM_SIZE);
@@ -1178,10 +1165,7 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
     jmfb_apply_scanout(&p->jmfb, &p->jmfb_bind);
     gc824_clip_rebuild(p); // masks derive from the restored regions
 
-    p->display.shape_dirty = true;
-    p->display.clut_dirty = true;
-    p->display.fb_dirty = true;
-    p->display.response_dirty = true;
+    display_mark_all_dirty(&p->display);
 }
 
 static const nubus_card_ops_t display_card_824gc_ops = {

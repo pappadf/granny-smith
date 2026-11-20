@@ -685,10 +685,7 @@ static void dafb_poweron_display(dafb_t *dafb, bool cold) {
         display_blank_raster(&dafb->display);
     dafb->display.clut = dafb->clut;
     dafb->display.clut_len = 256;
-    dafb->display.shape_dirty = true;
-    dafb->display.clut_dirty = true;
-    dafb->display.fb_dirty = true;
-    dafb->display.response_dirty = true;
+    display_mark_all_dirty(&dafb->display);
     for (int i = 0; i < 256; i++) {
         dafb->clut[i].r = dafb->clut[i].g = dafb->clut[i].b = (uint8_t)i;
         dafb->clut[i].a = 255;

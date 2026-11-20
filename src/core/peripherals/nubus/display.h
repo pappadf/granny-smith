@@ -299,7 +299,8 @@ static inline const char *display_format_name(pixel_format_t format) {
 // The fix is still worth having: it stops the trap arming itself the day
 // checkpoints become portable between the wasm and native builds.
 //
-// Fixed widths throughout, so the layout is the same on every target.
+// Fixed widths throughout, so the layout is the same on every target.  The
+// producers write it through display_head_save / display_head_restore.
 typedef struct display_head {
     uint32_t width, height, stride;
     uint32_t par_w, par_h;
@@ -345,6 +346,15 @@ static inline void display_head_apply(display_t *d, const display_head_t *h) {
         break;
     }
 }
+
+struct checkpoint;
+
+// Save the head of `d` as one fixed-width block, tag "display.head"
+// (display.c: this header stays free of checkpoint.h).
+void display_head_save(struct checkpoint *cp, const display_t *d);
+
+// Read what display_head_save wrote and apply it to `d`.
+void display_head_restore(struct checkpoint *cp, display_t *d);
 
 // One pixel of a row, as RGB.
 //
