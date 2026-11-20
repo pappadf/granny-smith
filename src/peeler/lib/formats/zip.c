@@ -48,17 +48,6 @@
 // The largest AppleDouble companion folded in at open (they are read then).
 #define ZIP_MAX_APPLEDOUBLE (16u * 1024u * 1024u)
 
-// Little-endian readers (zip is the one little-endian format here).
-static uint16_t le16(const uint8_t *p) {
-    return (uint16_t)(p[0] | p[1] << 8);
-}
-static uint32_t le32(const uint8_t *p) {
-    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
-}
-static uint64_t le64(const uint8_t *p) {
-    return (uint64_t)le32(p) | (uint64_t)le32(p + 4) << 32;
-}
-
 // ============================================================================
 // Types
 // ============================================================================
@@ -97,9 +86,9 @@ static int64_t find_eocd(const uint8_t *tail, size_t len, uint64_t size) {
         return -1;
     size_t lo = len > ZIP_EOCD_MAXSCAN ? len - ZIP_EOCD_MAXSCAN : 0;
     for (size_t i = len - ZIP_EOCD_LEN + 1; i-- > lo;) {
-        if (le32(tail + i) != ZIP_EOCD_SIG)
+        if (codec_le32(tail + i) != ZIP_EOCD_SIG)
             continue;
-        uint16_t comment = le16(tail + i + 20);
+        uint16_t comment = codec_le16(tail + i + 20);
         if (i + ZIP_EOCD_LEN + comment == len)
             return (int64_t)(size - len + i);
     }
@@ -213,35 +202,36 @@ static int zip_locate_cd(peel_archive_t *a, const peel_probe_t *p, uint64_t *cd_
         return -1;
     }
     const uint8_t *r = p->tail + (size_t)((uint64_t)eocd - (p->size - p->tail_len));
-    if (le16(r + 4) != 0 || le16(r + 6) != 0) {
+    if (codec_le16(r + 4) != 0 || codec_le16(r + 6) != 0) {
         *err = make_err("ZIP: multi-disk archives are not supported");
         return -1;
     }
-    uint64_t n = le16(r + 10), size = le32(r + 12), off = le32(r + 16);
+    uint64_t n = codec_le16(r + 10), size = codec_le32(r + 12), off = codec_le32(r + 16);
     uint64_t records_end = (uint64_t)eocd; // where the central directory must end
     if (n == 0xFFFF || size == 0xFFFFFFFFu || off == 0xFFFFFFFFu) {
         // Zip64: a locator just before the EOCD points at the Zip64 record.
         uint8_t loc[ZIP64_LOC_LEN], rec[ZIP64_EOCD_LEN];
         if ((uint64_t)eocd < ZIP64_LOC_LEN ||
-            zip_read_at(a, p, (uint64_t)eocd - ZIP64_LOC_LEN, loc, sizeof(loc)) != 0 || le32(loc) != ZIP64_LOC_SIG) {
+            zip_read_at(a, p, (uint64_t)eocd - ZIP64_LOC_LEN, loc, sizeof(loc)) != 0 ||
+            codec_le32(loc) != ZIP64_LOC_SIG) {
             *err = make_err("ZIP: Zip64 locator missing");
             return -1;
         }
-        uint64_t rec_off = le64(loc + 8);
+        uint64_t rec_off = codec_le64(loc + 8);
         // The record sits right before the locator; trust its position over
         // the stated offset when a stub was prepended.
         uint64_t rec_at = (uint64_t)eocd - ZIP64_LOC_LEN - ZIP64_EOCD_LEN;
         if ((uint64_t)eocd < ZIP64_LOC_LEN + ZIP64_EOCD_LEN || zip_read_at(a, p, rec_at, rec, sizeof(rec)) != 0 ||
-            le32(rec) != ZIP64_EOCD_SIG) {
+            codec_le32(rec) != ZIP64_EOCD_SIG) {
             rec_at = rec_off;
-            if (zip_read_at(a, p, rec_at, rec, sizeof(rec)) != 0 || le32(rec) != ZIP64_EOCD_SIG) {
+            if (zip_read_at(a, p, rec_at, rec, sizeof(rec)) != 0 || codec_le32(rec) != ZIP64_EOCD_SIG) {
                 *err = make_err("ZIP: Zip64 end of central directory record missing");
                 return -1;
             }
         }
-        n = le64(rec + 32);
-        size = le64(rec + 40);
-        off = le64(rec + 48);
+        n = codec_le64(rec + 32);
+        size = codec_le64(rec + 40);
+        off = codec_le64(rec + 48);
         records_end = rec_at;
     }
     if (size > records_end) {
@@ -288,9 +278,9 @@ static void zip_fold_appledouble(peel_archive_t *a, zip_priv_t *z) {
         peel_entry_t *te = &a->entries[t];
         zip_slot_t *ts = &z->slots[t];
         if (ad.finder && ad.finder_len >= 10) {
-            te->mac_type = rd32be(ad.finder);
-            te->mac_creator = rd32be(ad.finder + 4);
-            te->finder_flags = rd16be(ad.finder + 8);
+            te->mac_type = codec_be32(ad.finder);
+            te->mac_creator = codec_be32(ad.finder + 4);
+            te->finder_flags = codec_be16(ad.finder + 8);
         }
         free(ts->ad_buf);
         ts->ad_buf = buf.data; // owned now
@@ -352,44 +342,44 @@ static int zip_open(peel_archive_t *a, const peel_probe_t *p, peel_err_t **err) 
     }
     uint64_t pos = 0;
     for (uint64_t k = 0; k < count; k++) {
-        if (cd_size - pos < ZIP_CEN_LEN || le32(cd + pos) != ZIP_CEN_SIG) {
+        if (cd_size - pos < ZIP_CEN_LEN || codec_le32(cd + pos) != ZIP_CEN_SIG) {
             free(cd);
             *err = make_err("ZIP: corrupt central directory record %llu", (unsigned long long)k);
             return -1;
         }
         const uint8_t *c = cd + pos;
-        uint16_t nlen = le16(c + 28), xlen = le16(c + 30), clen = le16(c + 32);
+        uint16_t nlen = codec_le16(c + 28), xlen = codec_le16(c + 30), clen = codec_le16(c + 32);
         if ((uint64_t)ZIP_CEN_LEN + nlen + xlen + clen > cd_size - pos) {
             free(cd);
             *err = make_err("ZIP: central directory record %llu overruns", (unsigned long long)k);
             return -1;
         }
         zip_member_t *m = &z->members[z->n_members];
-        m->flags = le16(c + 8);
-        m->method = le16(c + 10);
-        m->crc = le32(c + 16);
-        m->csize = le32(c + 20);
-        m->usize = le32(c + 24);
-        uint64_t local = le32(c + 42);
+        m->flags = codec_le16(c + 8);
+        m->method = codec_le16(c + 10);
+        m->crc = codec_le32(c + 16);
+        m->csize = codec_le32(c + 20);
+        m->usize = codec_le32(c + 24);
+        uint64_t local = codec_le32(c + 42);
         // Zip64 extra field: the 32-bit fields that saturated, in order.
         const uint8_t *x = c + ZIP_CEN_LEN + nlen, *xend = x + xlen;
         while (xend - x >= 4) {
-            uint16_t id = le16(x), sz = le16(x + 2);
+            uint16_t id = codec_le16(x), sz = codec_le16(x + 2);
             const uint8_t *d = x + 4;
             if (sz > xend - d)
                 break;
             if (id == 0x0001) {
                 const uint8_t *q = d, *qend = d + sz;
                 if (m->usize == 0xFFFFFFFFu && qend - q >= 8) {
-                    m->usize = le64(q);
+                    m->usize = codec_le64(q);
                     q += 8;
                 }
                 if (m->csize == 0xFFFFFFFFu && qend - q >= 8) {
-                    m->csize = le64(q);
+                    m->csize = codec_le64(q);
                     q += 8;
                 }
                 if (local == 0xFFFFFFFFu && qend - q >= 8)
-                    local = le64(q);
+                    local = codec_le64(q);
             }
             x = d + sz;
         }
@@ -413,7 +403,7 @@ static int zip_open(peel_archive_t *a, const peel_probe_t *p, peel_err_t **err) 
             goto oom;
         snprintf(e->path, sizeof(e->path), "%s", path);
         e->is_dir = is_dir;
-        e->mtime = dos_to_unix(le16(c + 14), le16(c + 12));
+        e->mtime = dos_to_unix(codec_le16(c + 14), codec_le16(c + 12));
         if (is_dir)
             continue;
         s->member = member;
@@ -442,11 +432,11 @@ oom:
 // Where member `m`'s data starts, from its local header.  0 or -1 + *err.
 static int zip_data_start(peel_archive_t *a, const zip_member_t *m, uint64_t *out, peel_err_t **err) {
     uint8_t h[ZIP_LOC_LEN];
-    if (peel_source_read_exact(a->src, m->local_off, h, sizeof(h)) != 0 || le32(h) != ZIP_LOC_SIG) {
+    if (peel_source_read_exact(a->src, m->local_off, h, sizeof(h)) != 0 || codec_le32(h) != ZIP_LOC_SIG) {
         *err = make_err("ZIP: bad local header at offset %llu", (unsigned long long)m->local_off);
         return -1;
     }
-    uint64_t start = m->local_off + ZIP_LOC_LEN + le16(h + 26) + le16(h + 28);
+    uint64_t start = m->local_off + ZIP_LOC_LEN + codec_le16(h + 26) + codec_le16(h + 28);
     uint64_t size = peel_source_size(a->src);
     if (start > size || m->csize > size - start) {
         *err = make_err("ZIP: member data extends past archive end");

@@ -9,6 +9,7 @@
 #define PEELER_INTERNAL_H
 
 #include "codec.h"
+#include "codec_bytes.h" // byte order: codec_be16/32, codec_le16/32/64, codec_wr_*
 #include "peeler.h"
 
 #include <stdarg.h>
@@ -26,20 +27,6 @@ peel_err_t *make_err(const char *fmt, ...)
     __attribute__((format(printf, 1, 2)))
 #endif
     ;
-
-// ============================================================================
-// Big-Endian Read Helpers
-// ============================================================================
-
-// Read a big-endian 16-bit unsigned integer from a byte pointer.
-static inline uint16_t rd16be(const uint8_t *p) {
-    return (uint16_t)((uint16_t)p[0] << 8 | (uint16_t)p[1]);
-}
-
-// Read a big-endian 32-bit unsigned integer from a byte pointer.
-static inline uint32_t rd32be(const uint8_t *p) {
-    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | (uint32_t)p[3];
-}
 
 // ============================================================================
 // Limits -- the one place peeler's size and depth caps live
@@ -79,24 +66,6 @@ void peel_append_segment(char *dst, size_t cap, size_t *pos, const uint8_t *name
 // lengths read from the archive; this is the one check they all use.
 static inline bool peel_extent_fits(size_t off, uint64_t len, size_t total) {
     return off <= total && len <= (uint64_t)(total - off);
-}
-
-// ============================================================================
-// Big-Endian Write Helpers
-// ============================================================================
-
-// Write a 16-bit value in big-endian byte order.
-static inline void wr16be(uint8_t *p, uint16_t v) {
-    p[0] = (uint8_t)(v >> 8);
-    p[1] = (uint8_t)(v);
-}
-
-// Write a 32-bit value in big-endian byte order.
-static inline void wr32be(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v >> 24);
-    p[1] = (uint8_t)(v >> 16);
-    p[2] = (uint8_t)(v >> 8);
-    p[3] = (uint8_t)(v);
 }
 
 // ============================================================================

@@ -216,9 +216,9 @@ static void tar_fold_appledouble(peel_archive_t *a) {
         if (ad_detect(buf, (size_t)e->data_len) && ad_parse(buf, (size_t)e->data_len, &ad) == 0) {
             peel_entry_t *te = &a->entries[t];
             if (ad.finder && ad.finder_len >= 10) {
-                te->mac_type = rd32be(ad.finder);
-                te->mac_creator = rd32be(ad.finder + 4);
-                te->finder_flags = rd16be(ad.finder + 8);
+                te->mac_type = codec_be32(ad.finder);
+                te->mac_creator = codec_be32(ad.finder + 4);
+                te->finder_flags = codec_be16(ad.finder + 8);
             }
             if (ad.rsrc && ad.rsrc_len) {
                 te->rsrc_off = e->data_off + (uint64_t)(ad.rsrc - buf);

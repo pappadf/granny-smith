@@ -151,8 +151,11 @@ framework they are written on is `lib/codec_internal.h`:
   the formats whose codes a lookup table would mishandle (StuffIt 13's
   absent symbols take code values, and its codes reach 31 bits) or are
   rare (Compact Pro). The fast formats build lookup tables of their own.
-- Byte order (`codec_le32`, `codec_be16`, ...) and every checksum
-  (`checksum.c`) come from one place, never a private copy.
+- Byte order (`codec_le32`, `codec_be16`, `codec_wr_le64`, ...) and every
+  checksum (`checksum.c`) come from one place, never a private copy. The
+  byte-order helpers are the public header-only `include/codec_bytes.h`,
+  which peeler's formats use too, so the libraries have one family of
+  their own beside core's `RD_*`/`WR_*`.
 
 ## 2. Key types & files
 

@@ -188,11 +188,11 @@ static int hqx_layout(const uint8_t *text, size_t len, hqx_layout_t *L, peel_err
     L->name[n] = '\0';
     // hqx.md § 6.3 — type at 2+n, creator at 6+n, flags at 10+n, data
     // length at 12+n, resource length at 16+n.
-    L->mac_type = rd32be(buf + 2 + n);
-    L->mac_creator = rd32be(buf + 6 + n);
-    L->finder_flags = rd16be(buf + 10 + n);
-    L->data_len = rd32be(buf + 12 + n);
-    L->rsrc_len = rd32be(buf + 16 + n);
+    L->mac_type = codec_be32(buf + 2 + n);
+    L->mac_creator = codec_be32(buf + 6 + n);
+    L->finder_flags = codec_be16(buf + 10 + n);
+    L->data_len = codec_be32(buf + 12 + n);
+    L->rsrc_len = codec_be32(buf + 16 + n);
     return 0;
 }
 
