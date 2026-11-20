@@ -41,10 +41,10 @@ readback). The transfer counter is lazy/counter-driven — there is no
 holding buffer.
 
 The 68K islands (MCU, AV) reach the chip as plain device rows
-(`MAC030_DEV_SCSI96` / `MAC030_DEV_SCSI96_EXT`) through
+(`BOARD_DEV_SCSI96` / `BOARD_DEV_SCSI96_EXT`) through
 `scsi_53c96_get_memory_interface()`: the register window decodes with
-`MAC030_IO_STRIDE_16` (A3-A0 on A7-A4) to sub-offsets 0-15, and the
-aperture is a `MAC030_IO_FIXED` row at sub-offset `SCSI_53C96_PDMA_SUB`.
+`BOARD_IO_STRIDE_16` (A3-A0 on A7-A4) to sub-offsets 0-15, and the
+aperture is a `BOARD_IO_FIXED` row at sub-offset `SCSI_53C96_PDMA_SUB`.
 
 ## Behaviours the Mac software pins
 

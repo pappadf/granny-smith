@@ -61,7 +61,7 @@ this, family level.)
 - **Interrupts**: VIA1→IPL 1, the PSC-VIA2
   window→IPL 2 (**SCSI and floppy arrive here**, not at the PSC level
   registers), MACE→3, SCC/Singer/DMA-complete→4, DSP→5, 60.15 Hz→6, NMI→7.
-  The family instantiates the shared `mac030_irq_resolve_ipl` engine with its
+  The family instantiates the shared `machine_irq_update` engine with its
   own routing table ([av.md](../../../reference/machines/av/av.md) §5.1).
 
 ## YMCA (memory controller, `$50F30400`)

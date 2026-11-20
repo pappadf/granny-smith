@@ -170,12 +170,12 @@ signalling a bus error (`memory_signal_bus_error`) all count.  The usual shape
 is one register-read function taking `bool peek`, with each side effect
 guarded by `if (!peek)`, so the two paths cannot drift apart (#159).
 
-An I/O island that fronts several chips (the mac030 island engine, PDM's
+An I/O island that fronts several chips (the board_io island engine, PDM's
 AMIC, TNT's Grand Central, Gossamer's Heathrow) has a peek of its own that
 routes an inspection to each chip's peek: `memory_iface_read8` for a chip
 behind a `memory_interface_t`, the chip's `_peek` sibling function
 (`scsi_53c96_peek`, `mesh_peek`, `swim3_peek`, ...) otherwise, and on the
-mac030 engine a handler row's `peek_fn`, set wherever its `read_fn` has a
+board_io engine a handler row's `peek_fn`, set wherever its `read_fn` has a
 side effect.
 
 `memory.poke` is a real write, with the write's effect on the device, but it
@@ -381,7 +381,7 @@ without a check on the fast path.
 | DBDMA channels | `tnt.c`, `gossamer.c` memcpy paths | `memory_host_written` |
 | 53C8xx SCRIPTS engine | `scripts53c8xx.c` | `memory_host_written` |
 | IIfx / IOP DMA | `iifx.c`, `iop_swim.c` | `memory_host_written` |
-| Mac II / 030 glue mirrors | `mac030_glue.c` | `memory_write_fill` for the aliases; stores notify |
+| Mac II / 030 glue mirrors | `glue.c`, `m68k_board.c` | `memory_write_fill` for the aliases; stores notify |
 
 - **PowerPC user mode.** The user SoA tables are filled *logically*
   (`user_soa_fill`), and a store whose write fill the marks refuse falls

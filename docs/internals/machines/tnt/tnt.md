@@ -130,7 +130,7 @@ The board model is the chipset skeleton plus the DMA architecture:
   port / `+$1F000` data window on `$10` centres, 8 KB), and the eleven
   DBDMA channel windows (`+$8000+n*$100`).  The byte-wide cells decode
   through a range table (`gc_io_ranges`) on the shared I/O engine
-  (`machines/mac030/mac030_io.c`); the board deltas — MESH on the
+  (`machines/runtime/board_io.c`); the board deltas — MESH on the
   Macintosh boards only, MACE and the GBUS blocks on one side each — are
   row guards (`present`), so a block and its guard are written once for
   reads and writes.  The little-endian longword blocks keep their own
