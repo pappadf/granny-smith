@@ -107,12 +107,7 @@ void iop_complete_xmt(iop_t *iop, int slot) {
 // ============================================================================
 
 static uint32_t iop_fnv1a32(const uint8_t *data, size_t n) {
-    uint32_t h = 0x811c9dc5u;
-    for (size_t i = 0; i < n; i++) {
-        h ^= data[i];
-        h *= 0x01000193u;
-    }
-    return h;
+    return fnv1a32(FNV1A32_INIT, data, n);
 }
 
 // Verify IOP RAM contents after a RUN-bit 0→1 transition matches the

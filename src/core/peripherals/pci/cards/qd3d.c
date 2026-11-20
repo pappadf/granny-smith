@@ -576,9 +576,8 @@ static void frame_output(qd3d_t *q) {
     if (dma_load(q))
         LOG(1, "frame %u: control program ended with output descriptors left ($%08X)", q->frames, q->dma.next - 16);
     if (log_would_log(log_local_category(), 3)) {
-        uint32_t hash = 2166136261u; // FNV-1a over the frame's pixels: a cheap identity for comparisons
-        for (size_t i = 0; i < t->out_len; i++)
-            hash = (hash ^ t->out[i]) * 16777619u;
+        // FNV-1a over the frame's pixels: a cheap identity for comparisons
+        uint32_t hash = fnv1a32(FNV1A32_INIT, t->out, t->out_len);
         LOG(3, "frame %u: %u records, %llu objects, %llu pixels, hash %08X", q->frames, q->frame_records,
             (unsigned long long)q->frame_objects, (unsigned long long)q->frame_pixels, hash);
     }

@@ -292,11 +292,7 @@ static char *cp_read_block_fname(checkpoint_t *checkpoint) {
 // single machine uses, and a collision costs a missed diagnostic rather than
 // wrong behaviour -- the size check still stands behind it.
 static uint32_t cp_tag_hash(const char *name) {
-    uint32_t h = 2166136261u;
-    for (const unsigned char *p = (const unsigned char *)name; *p; p++) {
-        h ^= (uint32_t)*p;
-        h *= 16777619u;
-    }
+    uint32_t h = fnv1a32_str(FNV1A32_INIT, name);
     return h ? h : 1u; // 0 is reserved for "unchecked"
 }
 

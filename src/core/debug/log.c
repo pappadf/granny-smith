@@ -9,6 +9,8 @@
 // each line (the debug trace) comes in through log_set_context_hooks
 // (installed by log_context.c).
 
+#include "common.h" // fnv1a32_str
+
 #include <errno.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -74,10 +76,7 @@ static int clamp_indent(int spaces) {
 
 // FNV-1a hash of a category name, for the lookup table
 static uint32_t name_hash(const char *name) {
-    uint32_t h = 2166136261u;
-    for (const unsigned char *p = (const unsigned char *)name; *p; p++)
-        h = (h ^ *p) * 16777619u;
-    return h;
+    return fnv1a32_str(FNV1A32_INIT, name);
 }
 
 // Returns the table slot holding `name`, or the empty slot where it would go

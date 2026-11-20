@@ -60,10 +60,7 @@ static const char *comp_strdup(struct completion *out, const char *s) {
 
 // FNV-1a hash of a candidate string, for the dedup index.
 static uint32_t comp_hash(const char *s) {
-    uint32_t h = 2166136261u;
-    for (const unsigned char *p = (const unsigned char *)s; *p; p++)
-        h = (h ^ *p) * 16777619u; // fold in one byte
-    return h;
+    return fnv1a32_str(FNV1A32_INIT, s);
 }
 
 // Slot of `cand` in the dedup index: the slot holding an equal item, or the

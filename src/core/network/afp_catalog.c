@@ -135,10 +135,7 @@ static long slot_of(afp_catalog_t *cat, uint32_t cnid) {
 // in case, and each needs its own CNID.
 
 static uint32_t child_hash(uint32_t parent, const char *name) {
-    uint32_t h = 2166136261u ^ (parent * 2654435761u); // FNV-1a, seeded with the parent
-    for (const unsigned char *p = (const unsigned char *)name; *p; p++)
-        h = (h ^ *p) * 16777619u;
-    return h;
+    return fnv1a32_str(FNV1A32_INIT ^ (parent * 2654435761u), name); // FNV-1a, seeded with the parent
 }
 
 static uint32_t *child_bucket(afp_catalog_t *cat, uint32_t parent, const char *name) {

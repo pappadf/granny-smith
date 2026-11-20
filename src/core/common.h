@@ -12,8 +12,9 @@
 #ifndef COMMON_H
 #define COMMON_H
 
-// What the helpers below use (uint*_t, bool); nothing else
+// What the helpers below use (uint*_t, bool, size_t); nothing else
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 // === Unaligned byte-order accessors =========================================
@@ -73,6 +74,43 @@ static inline uint32_t fourcc_value(const char *s) {
         v = (v << 8) | (ended ? (uint8_t)' ' : (uint8_t)s[i]);
     }
     return v;
+}
+
+// FNV-1a, 32- and 64-bit: a hash `h` (start from FNV1A32_INIT /
+// FNV1A64_INIT) continued over `n` bytes, or over a C string.  Standard
+// FNV-1a, so values that reach a file (checkpoint block tags, the AFP remote
+// cache names) are the published algorithm's.  Callers hashing whole words
+// rather than bytes (the GPU texture keys, the PPC JIT signatures) keep their
+// own loops with these constants.
+#define FNV1A32_INIT  2166136261u
+#define FNV1A32_PRIME 16777619u
+#define FNV1A64_INIT  14695981039346656037ull
+#define FNV1A64_PRIME 1099511628211ull
+
+static inline uint32_t fnv1a32(uint32_t h, const void *p, size_t n) {
+    const uint8_t *b = (const uint8_t *)p;
+    for (size_t i = 0; i < n; i++)
+        h = (h ^ b[i]) * FNV1A32_PRIME;
+    return h;
+}
+
+static inline uint32_t fnv1a32_str(uint32_t h, const char *s) {
+    for (const uint8_t *b = (const uint8_t *)s; *b; b++)
+        h = (h ^ *b) * FNV1A32_PRIME;
+    return h;
+}
+
+static inline uint64_t fnv1a64(uint64_t h, const void *p, size_t n) {
+    const uint8_t *b = (const uint8_t *)p;
+    for (size_t i = 0; i < n; i++)
+        h = (h ^ b[i]) * FNV1A64_PRIME;
+    return h;
+}
+
+static inline uint64_t fnv1a64_str(uint64_t h, const char *s) {
+    for (const uint8_t *b = (const uint8_t *)s; *b; b++)
+        h = (h ^ *b) * FNV1A64_PRIME;
+    return h;
 }
 
 #endif // COMMON_H

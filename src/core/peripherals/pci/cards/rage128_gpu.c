@@ -746,13 +746,13 @@ static uint32_t tex_raw(rage128_t *r, uint32_t fmt, uint32_t base, uint32_t lw, 
 }
 
 static uint64_t tex_hash(rage128_t *r, const tex_unit_t *u, uint32_t top) {
-    uint64_t h = 1469598103934665603ull;
+    uint64_t h = FNV1A64_INIT; // FNV-1a over the texels, word by word
     for (uint32_t lev = 0; lev <= top; lev++) {
         uint32_t base, bytes, w, hh;
         tex_level(u, lev, &base, &bytes, &w, &hh);
         for (uint32_t a = 0; a < bytes; a += 4) {
             h ^= tex_mem(r, base + a, bytes - a >= 4 ? 4 : bytes - a);
-            h *= 1099511628211ull;
+            h *= FNV1A64_PRIME;
         }
     }
     return h;
@@ -868,12 +868,12 @@ static uint32_t tex_resolve(r128_gpu_t *g, const tex_unit_t *u) {
 #define TEX_KEY_MATCHES(t)                                                                                             \
     ((t)->id && (t)->fmt == u->fmt && (t)->lpitch == u->lpitch && (t)->lheight == u->lheight && (t)->top == top &&     \
      !memcmp((t)->off, offs, sizeof(offs)))
-    uint32_t h = 2166136261u; // FNV-1a over the key
+    uint32_t h = FNV1A32_INIT; // FNV-1a over the key, word by word
     uint32_t key[4] = {u->fmt, u->lpitch, u->lheight, top};
     for (int i = 0; i < 4; i++)
-        h = (h ^ key[i]) * 16777619u;
+        h = (h ^ key[i]) * FNV1A32_PRIME;
     for (int i = 0; i < 11; i++)
-        h = (h ^ offs[i]) * 16777619u;
+        h = (h ^ offs[i]) * FNV1A32_PRIME;
     uint16_t *hint = &g->tex_hint[(h ^ (h >> 16)) & (R128GPU_TEX_HINTS - 1)];
     if (TEX_KEY_MATCHES(&g->tex[*hint]))
         e = &g->tex[*hint];
