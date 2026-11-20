@@ -128,6 +128,17 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
 #define checkpoint_save_prefix(cp, p, type) system_write_checkpoint_data((cp), (p), (size_t)type##_cp_prefix, #type)
 #define checkpoint_load_prefix(cp, p, type) system_read_checkpoint_data((cp), (p), (size_t)type##_cp_prefix, #type)
 
+// === Field lists ===
+//
+// A save and its restore that walk the same fields are written once, as an
+// X-macro over the direction (lisa_mmu.c's LISA_MMU_CP_FIELDS is the model):
+//     #define DEV_CP_FIELDS(OP, cp, d) CP_FIELD(OP, cp, (d)->a); CP_FIELD(OP, cp, (d)->b)
+//     DEV_CP_FIELDS(system_write_checkpoint_data, cp, d);   // save
+//     DEV_CP_FIELDS(system_read_checkpoint_data, cp, d);    // restore
+// Restore-only fixups go after the list, never between its entries.
+#define CP_FIELD(OP, cp, lv) OP((cp), &(lv), sizeof(lv))
+#define CP_ARRAY(OP, cp, a)  OP((cp), (a), sizeof(a))
+
 // === Bounded reads from an untrusted stream ===
 //
 // A checkpoint is a user-supplied file and the build-ID gate is not a defence

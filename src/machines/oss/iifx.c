@@ -1390,14 +1390,19 @@ static void part_save_oss(void *obj, checkpoint_t *cp) {
     oss_checkpoint(obj, cp);
 }
 
-// The SCSI DMA engine's registers, which live in the machine state.
+// The SCSI DMA engine's registers, which live in the machine state: one
+// list for the save and the restore (checkpoint.h, "Field lists").
+#define IIFX_SCSI_DMA_CP_FIELDS(OP, cp, st)                                                                            \
+    CP_FIELD(OP, cp, (st)->scsi_dma_ctrl);                                                                             \
+    CP_FIELD(OP, cp, (st)->scsi_dma_count);                                                                            \
+    CP_FIELD(OP, cp, (st)->scsi_dma_addr);                                                                             \
+    CP_FIELD(OP, cp, (st)->scsi_dma_watchdog_reload);                                                                  \
+    CP_FIELD(OP, cp, (st)->scsi_dma_fifo_word)
+
+// Save the SCSI DMA engine's registers.
 static void part_save_scsi_dma(void *obj, checkpoint_t *cp) {
     iifx_state_t *st = obj;
-    system_write_checkpoint_data(cp, &st->scsi_dma_ctrl, sizeof(st->scsi_dma_ctrl));
-    system_write_checkpoint_data(cp, &st->scsi_dma_count, sizeof(st->scsi_dma_count));
-    system_write_checkpoint_data(cp, &st->scsi_dma_addr, sizeof(st->scsi_dma_addr));
-    system_write_checkpoint_data(cp, &st->scsi_dma_watchdog_reload, sizeof(st->scsi_dma_watchdog_reload));
-    system_write_checkpoint_data(cp, &st->scsi_dma_fifo_word, sizeof(st->scsi_dma_fifo_word));
+    IIFX_SCSI_DMA_CP_FIELDS(system_write_checkpoint_data, cp, st);
 }
 
 // Initializes a Macintosh IIfx machine.
@@ -1506,11 +1511,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     machine_part_begin(cfg, checkpoint, "scsi_dma");
     if (checkpoint) {
-        system_read_checkpoint_data(checkpoint, &st->scsi_dma_ctrl, sizeof(st->scsi_dma_ctrl));
-        system_read_checkpoint_data(checkpoint, &st->scsi_dma_count, sizeof(st->scsi_dma_count));
-        system_read_checkpoint_data(checkpoint, &st->scsi_dma_addr, sizeof(st->scsi_dma_addr));
-        system_read_checkpoint_data(checkpoint, &st->scsi_dma_watchdog_reload, sizeof(st->scsi_dma_watchdog_reload));
-        system_read_checkpoint_data(checkpoint, &st->scsi_dma_fifo_word, sizeof(st->scsi_dma_fifo_word));
+        IIFX_SCSI_DMA_CP_FIELDS(system_read_checkpoint_data, checkpoint, st);
     }
     machine_part(cfg, checkpoint, "scsi_dma", part_save_scsi_dma, st);
     machine_part_pmmu(cfg, checkpoint, st->mmu, cfg->via1, NULL);
