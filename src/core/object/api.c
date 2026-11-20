@@ -189,10 +189,7 @@ int object_eval(const char *path, const char *args_json, char *out_buf, size_t o
                 named[i].name = arg_names[i];
                 named[i].value = argv[i];
             }
-            value_t bound[OBJ_BIND_MAX_ARGS];
-            int bound_n = 0;
-            value_t err = node_bind_args(n, 0, NULL, argc, named, bound, &bound_n);
-            v = val_is_error(&err) ? err : node_call(n, bound_n, bound);
+            v = node_call_named(n, 0, NULL, argc, named);
         }
     } else if (n.member && n.member->kind == MK_METHOD) {
         v = node_call(n, argc, argv);

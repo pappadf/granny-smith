@@ -542,6 +542,13 @@ void object_each_attached(struct object *o, void (*fn)(struct object *parent, st
 void object_each_attached_ordered(struct object *o, void (*fn)(struct object *parent, struct object *child, void *ud),
                                   void *ud);
 
+// The names of `o`'s class members of `kind`, as a VK_LIST of VK_STRING;
+// MK_CHILD also appends the attached children, in display order
+// (object_each_attached_ordered).  An error on OOM, never a short list.
+// The one body behind root objects()/attributes()/methods() and
+// meta.children/attributes/methods.
+value_t object_member_names(struct object *o, member_kind_t kind);
+
 // Linear lookup of a member by name. Returns NULL if not found.
 const member_t *class_find_member(const class_desc_t *cls, const char *name);
 
@@ -650,6 +657,11 @@ typedef struct {
 // on success, VK_ERROR on a binding error.
 value_t node_bind_args(node_t n, int pos_argc, const value_t *pos_argv, int named_n, const named_arg_t *named,
                        value_t *out_argv, int *out_argc);
+
+// Call the method at `n` with positional and named arguments: binds when
+// `named` is given (refusing more than OBJ_BIND_MAX_ARGS named ones), then
+// node_call; a NULL `named` is a plain node_call.  The arguments stay the caller's, as with node_bind_args.
+value_t node_call_named(node_t n, int argc, const value_t *argv, int named_n, const named_arg_t *named);
 
 // Single-segment descent. Used by the resolver and by the completer.
 node_t node_child(node_t n, const char *segment);

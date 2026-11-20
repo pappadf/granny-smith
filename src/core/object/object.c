@@ -601,6 +601,45 @@ void object_each_attached_ordered(struct object *o, void (*fn)(struct object *pa
         fn(o, buf[i], ud);
 }
 
+// The growing name list object_member_names builds
+typedef struct {
+    value_t *items;
+    size_t len;
+    size_t cap;
+    bool oom; // a push failed; the list must not be returned short
+} member_names_acc_t;
+
+// Append `name` (NULL is skipped), noting a failed push
+static void member_names_push(member_names_acc_t *acc, const char *name) {
+    if (name && !val_list_push(&acc->items, &acc->len, &acc->cap, val_str(name)))
+        acc->oom = true;
+}
+
+// object_each_attached_ordered visitor: collect the child's name
+static void member_names_collect(struct object *parent, struct object *child, void *ud) {
+    (void)parent;
+    member_names_push((member_names_acc_t *)ud, object_name(child));
+}
+
+value_t object_member_names(struct object *o, member_kind_t kind) {
+    member_names_acc_t acc = {0};
+    const class_desc_t *cls = o ? object_class(o) : NULL;
+    for (size_t i = 0; cls && i < cls->n_members; i++)
+        if (cls->members[i].kind == kind)
+            member_names_push(&acc, cls->members[i].name);
+    // Children also include the runtime-attached ones, in display order
+    if (o && kind == MK_CHILD)
+        object_each_attached_ordered(o, member_names_collect, &acc);
+    if (acc.oom) {
+        // A truncated schema reads as the complete one: error instead
+        for (size_t i = 0; i < acc.len; i++)
+            value_free(&acc.items[i]);
+        free(acc.items);
+        return val_err("out of memory");
+    }
+    return val_list(acc.items, acc.len);
+}
+
 const member_t *class_find_member(const class_desc_t *cls, const char *name) {
     if (!cls || !name || !cls->members)
         return NULL;
@@ -2378,6 +2417,18 @@ static void format_declared_names(char *buf, size_t buf_size, const arg_decl_t *
             break;
         pos += (size_t)wrote;
     }
+}
+
+value_t node_call_named(node_t n, int argc, const value_t *argv, int named_n, const named_arg_t *named) {
+    // Positional only: the call validates its own arguments
+    if (!named)
+        return node_call(n, argc, argv);
+    if (named_n > OBJ_BIND_MAX_ARGS)
+        return val_err("too many named arguments (limit %d)", OBJ_BIND_MAX_ARGS);
+    value_t bound[OBJ_BIND_MAX_ARGS];
+    int bound_n = 0;
+    value_t err = node_bind_args(n, argc, argv, named_n, named, bound, &bound_n);
+    return val_is_error(&err) ? err : node_call(n, bound_n, bound);
 }
 
 value_t node_bind_args(node_t n, int pos_argc, const value_t *pos_argv, int named_n, const named_arg_t *named,

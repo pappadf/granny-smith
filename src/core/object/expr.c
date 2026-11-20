@@ -610,6 +610,18 @@ static bool parse_call_args(lex_t *L, const expr_ctx_t *ctx, value_t **out_argv,
     return true;
 }
 
+// View parsed named arguments as the binder's named_arg_t (borrowing the
+// names and values).  False when there are more than OBJ_BIND_MAX_ARGS.
+static bool named_args_view(const call_named_t *named, int named_n, named_arg_t out[OBJ_BIND_MAX_ARGS]) {
+    if (named_n > OBJ_BIND_MAX_ARGS)
+        return false;
+    for (int i = 0; i < named_n; i++) {
+        out[i].name = named[i].name;
+        out[i].value = named[i].value;
+    }
+    return true;
+}
+
 // Invoke the method at node `n` with an already-open call-args list
 // (cursor just past `(`). Shared by the path and binding primaries.
 static value_t call_node_with_args(lex_t *L, const expr_ctx_t *ctx, node_t n) {
@@ -618,28 +630,12 @@ static value_t call_node_with_args(lex_t *L, const expr_ctx_t *ctx, node_t n) {
     int argc = 0, named_n = 0;
     if (!parse_call_args(L, ctx, &argv, &argc, &named, &named_n))
         return val_err("bad call");
+    named_arg_t nb[OBJ_BIND_MAX_ARGS];
     value_t r;
-    if (named_n > 0) {
-        named_arg_t nb[OBJ_BIND_MAX_ARGS];
-        if (named_n > OBJ_BIND_MAX_ARGS) {
-            free_call_args(argv, argc, named, named_n);
-            return val_err("too many named arguments");
-        }
-        for (int i = 0; i < named_n; i++) {
-            nb[i].name = named[i].name;
-            nb[i].value = named[i].value;
-        }
-        value_t bound[OBJ_BIND_MAX_ARGS];
-        int bound_n = 0;
-        value_t err = node_bind_args(n, argc, argv, named_n, nb, bound, &bound_n);
-        if (val_is_error(&err)) {
-            free_call_args(argv, argc, named, named_n);
-            return err;
-        }
-        r = node_call(n, bound_n, bound);
-    } else {
-        r = node_call(n, argc, argv);
-    }
+    if (!named_args_view(named, named_n, nb))
+        r = val_err("too many named arguments (limit %d)", OBJ_BIND_MAX_ARGS);
+    else
+        r = node_call_named(n, argc, argv, named_n, named_n > 0 ? nb : NULL);
     free_call_args(argv, argc, named, named_n);
     return r;
 }
@@ -1234,15 +1230,10 @@ static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
                 if (g_func_hook && strchr(path_buf, '.') == NULL) {
                     named_arg_t nb[OBJ_BIND_MAX_ARGS];
                     value_t r;
-                    if (named_n > OBJ_BIND_MAX_ARGS) {
-                        r = val_err("too many named arguments");
-                    } else {
-                        for (int i = 0; i < named_n; i++) {
-                            nb[i].name = named[i].name;
-                            nb[i].value = named[i].value;
-                        }
+                    if (!named_args_view(named, named_n, nb))
+                        r = val_err("too many named arguments (limit %d)", OBJ_BIND_MAX_ARGS);
+                    else
                         r = g_func_hook(g_func_hook_ud, path_buf, argc, argv, named_n, nb);
-                    }
                     free_call_args(argv, argc, named, named_n);
                     return r;
                 }

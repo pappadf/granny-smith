@@ -1309,8 +1309,6 @@ static bool resolve_path_head(const char **p, const expr_ctx_t *ectx, node_t *ou
 
 // --- argument mode ----------------------------------------------------------
 
-#define CMD_MAX_ARGS_V2 16
-
 // Extract a bare word token: maximal run up to unescaped whitespace.
 // Backslash escapes the next character. Returns malloc'd text.
 static char *scan_bare_word(const char **p) {
@@ -1474,9 +1472,9 @@ static value_t parse_arg_value(const char **p, const expr_ctx_t *ectx, bool raw_
 // Parse the argument tail of a command (positional then named), then
 // dispatch. `fn` selects a user function instead of a tree node.
 static value_t exec_command_tail(const char *p, const expr_ctx_t *ectx, node_t node, script_func_t *fn) {
-    value_t vals[CMD_MAX_ARGS_V2];
-    char named_names[CMD_MAX_ARGS_V2][OBJ_IDENT_MAX + 1];
-    named_arg_t named[CMD_MAX_ARGS_V2];
+    value_t vals[OBJ_BIND_MAX_ARGS];
+    char named_names[OBJ_BIND_MAX_ARGS][OBJ_IDENT_MAX + 1];
+    named_arg_t named[OBJ_BIND_MAX_ARGS];
     int pos_n = 0, named_n = 0, total = 0;
     value_t result = val_none();
 
@@ -1484,8 +1482,8 @@ static value_t exec_command_tail(const char *p, const expr_ctx_t *ectx, node_t n
         p = skip_sp(p);
         if (*p == '\0')
             break;
-        if (total >= CMD_MAX_ARGS_V2) {
-            result = val_err("too many arguments (max %d)", CMD_MAX_ARGS_V2);
+        if (total >= OBJ_BIND_MAX_ARGS) {
+            result = val_err("too many arguments (max %d)", OBJ_BIND_MAX_ARGS);
             goto out;
         }
         // Named argument: IDENT '=' VALUE, no spaces at '='.
@@ -1538,17 +1536,7 @@ static value_t exec_command_tail(const char *p, const expr_ctx_t *ectx, node_t n
     if (fn) {
         result = shell_func_call(fn, pos_n, vals, named_n, named);
     } else if (node.member && node.member->kind == MK_METHOD) {
-        if (named_n > 0) {
-            value_t bound[OBJ_BIND_MAX_ARGS];
-            int bound_n = 0;
-            value_t err = node_bind_args(node, pos_n, vals, named_n, named, bound, &bound_n);
-            if (val_is_error(&err))
-                result = err;
-            else
-                result = node_call(node, bound_n, bound);
-        } else {
-            result = node_call(node, pos_n, vals);
-        }
+        result = node_call_named(node, pos_n, vals, named_n, named_n > 0 ? named : NULL);
     } else if (total == 0) {
         // Bare non-method path: attribute / object / collection read.
         result = node_get(node);
