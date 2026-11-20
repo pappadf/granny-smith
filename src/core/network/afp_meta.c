@@ -30,7 +30,7 @@
 
 // Host (Unix) seconds -> AFP time, clamped into the 32-bit wire field.
 uint32_t afp_meta_time_from_unix(int64_t unix_secs) {
-    int64_t v = unix_secs + 2082844800LL; // 1970 -> 1904
+    int64_t v = unix_to_mac64(unix_secs);
     if (v < 0)
         return 0;
     if (v > (int64_t)UINT32_MAX)
@@ -43,7 +43,7 @@ uint32_t afp_meta_time_from_unix(int64_t unix_secs) {
 int64_t afp_meta_time_to_unix(uint32_t afp_secs) {
     if (afp_secs == AFP_DATE_NEVER)
         return 0;
-    return (int64_t)afp_secs - 2082844800LL;
+    return mac_to_unix64(afp_secs);
 }
 
 // AFP time (1904 epoch) -> AppleDouble DATES entry (signed secs from 2000).

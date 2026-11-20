@@ -63,10 +63,6 @@ struct rtc {
 
 static const class_desc_t rtc_pram_class;
 
-// diff between mac (1904) and unix (1970) epochs
-// precalculated using any online epoch converter
-#define MAC_TO_UNIX_EPOCH 2082844800
-
 #define RTC_IS_READ(cmd)     ((cmd) & 0x80)
 #define RTC_IS_EXTENDED(cmd) (((cmd) >> 3 & 0x0F) == 7)
 
@@ -399,7 +395,7 @@ static uint32_t wall_clock_seconds(void) {
     // Promote to 64 bits before the cast so the wrap point is visible (Mac
     // epoch in 1904 + Unix epoch overflowing uint32_t in 2040): the explicit
     // 64-bit add documents the assumption, the (uint32_t) cast is the wrap.
-    return (uint32_t)((int64_t)now + offset + MAC_TO_UNIX_EPOCH);
+    return (uint32_t)unix_to_mac64((int64_t)now + offset);
 }
 
 void rtc_set_via(rtc_t *restrict rtc, via_t *via) {
@@ -612,20 +608,20 @@ static DEF_SETTER(rtc_attr_time_set) {
         long long parsed = strtoll(in.s, &endp, 10);
         if (endp && endp != in.s && *endp == '\0') {
             // Reject negatives and values that would overflow the 32-bit Mac
-            // seconds counter after the epoch shift. UINT32_MAX - MAC_TO_UNIX_EPOCH
+            // seconds counter after the epoch shift. UINT32_MAX - MAC_EPOCH_UNIX_OFFSET
             // corresponds to early 2040, the Mac-counter wraparound point.
-            if (parsed < 0 || (uint64_t)parsed > (UINT32_MAX - (uint64_t)MAC_TO_UNIX_EPOCH)) {
+            if (parsed < 0 || (uint64_t)parsed > (UINT32_MAX - (uint64_t)MAC_EPOCH_UNIX_OFFSET)) {
                 value_free(&in);
                 return val_err("rtc.time: epoch out of range (0 ≤ unix < 2040)");
             }
-            mac_seconds = (uint32_t)((uint64_t)parsed + MAC_TO_UNIX_EPOCH);
+            mac_seconds = (uint32_t)((uint64_t)parsed + MAC_EPOCH_UNIX_OFFSET);
             resolved = true;
         } else {
             struct tm tm = {0};
             if (strptime(in.s, "%Y-%m-%dT%H:%M:%S", &tm)) {
                 time_t t = timegm(&tm);
-                if (t != (time_t)-1 && t >= 0 && (uint64_t)t <= (UINT32_MAX - (uint64_t)MAC_TO_UNIX_EPOCH)) {
-                    mac_seconds = (uint32_t)((uint64_t)t + MAC_TO_UNIX_EPOCH);
+                if (t != (time_t)-1 && t >= 0 && (uint64_t)t <= (UINT32_MAX - (uint64_t)MAC_EPOCH_UNIX_OFFSET)) {
+                    mac_seconds = (uint32_t)((uint64_t)t + MAC_EPOCH_UNIX_OFFSET);
                     resolved = true;
                 }
             }

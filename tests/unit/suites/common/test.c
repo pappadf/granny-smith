@@ -52,7 +52,18 @@ TEST(hex_digit_and_encode) {
     ASSERT_TRUE(out[0] == '\0');
 }
 
+// The Mac epoch: 1904-01-01 is Unix -2082844800, 1970-01-01 is Mac
+// 2082844800, and 2000-01-01 (946684800) is the AppleDouble epoch.
+TEST(mac_epoch_round_trips) {
+    ASSERT_TRUE(mac_to_unix64(0) == -2082844800LL);
+    ASSERT_TRUE(mac_to_unix64(2082844800u) == 0);
+    ASSERT_TRUE(unix_to_mac64(946684800) == 3029529600LL);
+    ASSERT_TRUE(mac_to_unix64(UINT32_MAX) == 2212122495LL); // the 2040 wrap
+    ASSERT_TRUE(unix_to_mac64(mac_to_unix64(123456789u)) == 123456789LL);
+}
+
 int main(void) {
+    RUN(mac_epoch_round_trips);
     RUN(array_len_counts_elements);
     RUN(fnv1a_matches_published_vectors);
     RUN(hex_digit_and_encode);

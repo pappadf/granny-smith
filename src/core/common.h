@@ -98,6 +98,19 @@ static inline void hex_encode(char *out, const uint8_t *in, size_t n, bool upper
     out[2 * n] = '\0';
 }
 
+// The Mac epoch: seconds from 1904-01-01 (the Mac's clock, HFS and AFP
+// dates) to 1970-01-01 (Unix).  The conversions do not clamp: a caller keeps
+// its own policy for dates outside the other side's range.
+#define MAC_EPOCH_UNIX_OFFSET 2082844800u
+
+static inline int64_t mac_to_unix64(uint32_t mac) {
+    return (int64_t)mac - MAC_EPOCH_UNIX_OFFSET;
+}
+
+static inline int64_t unix_to_mac64(int64_t unix_secs) {
+    return unix_secs + MAC_EPOCH_UNIX_OFFSET;
+}
+
 // FNV-1a, 32- and 64-bit: a hash `h` (start from FNV1A32_INIT /
 // FNV1A64_INIT) continued over `n` bytes, or over a C string.  Standard
 // FNV-1a, so values that reach a file (checkpoint block tags, the AFP remote

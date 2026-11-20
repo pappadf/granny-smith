@@ -64,13 +64,10 @@ typedef struct fs_ops {
                 size_t *nread);
 } fs_ops_t;
 
-// Seconds from the Mac epoch (1904-01-01) to the Unix one.
-#define MAC_TO_UNIX_EPOCH 2082844800u
-
 // A Mac (1904-based) date as Unix seconds; 0 -- unknown -- for an unset date
 // or one before 1970, which Unix seconds cannot carry.
 static uint32_t mac_to_unix(uint32_t mac) {
-    return mac > MAC_TO_UNIX_EPOCH ? mac - MAC_TO_UNIX_EPOCH : 0;
+    return mac > MAC_EPOCH_UNIX_OFFSET ? (uint32_t)mac_to_unix64(mac) : 0;
 }
 
 static void hfs_entry(const hfs_dirent_t *d, fs_entry_t *out) {
