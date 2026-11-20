@@ -7,6 +7,7 @@
 // of order -- then the same volume made corrupt in the ways a reader must
 // refuse rather than trust.
 
+#include "common.h"
 #include "image_mfs.h"
 #include "source.h"
 #include "test_assert.h"
@@ -25,15 +26,6 @@
 #define DIR_BLOCKS 2
 
 static uint8_t vol[VOL_BLOCKS * 512];
-
-static void put16(uint8_t *p, uint16_t v) {
-    p[0] = (uint8_t)(v >> 8);
-    p[1] = (uint8_t)v;
-}
-static void put32(uint8_t *p, uint32_t v) {
-    put16(p, (uint16_t)(v >> 16));
-    put16(p + 2, (uint16_t)v);
-}
 
 // Set allocation block n's map entry (12 bits, two entries in three bytes).
 static void map_set(uint32_t n, uint16_t next) {
@@ -61,14 +53,14 @@ static size_t dir_entry(uint8_t *blk, size_t p, const char *name, uint32_t fnum,
     e[0] = 0x80;
     memcpy(e + 2, type, 4);
     memcpy(e + 6, creator, 4);
-    put16(e + 10, 0x0100);
-    put32(e + 18, fnum);
-    put16(e + 22, dstart);
-    put32(e + 24, dlen);
-    put32(e + 28, (dlen + ALLOC_SIZE - 1) / ALLOC_SIZE * ALLOC_SIZE);
-    put16(e + 32, rstart);
-    put32(e + 34, rlen);
-    put32(e + 38, (rlen + ALLOC_SIZE - 1) / ALLOC_SIZE * ALLOC_SIZE);
+    WR_BE16(e + 10, 0x0100);
+    WR_BE32(e + 18, fnum);
+    WR_BE16(e + 22, dstart);
+    WR_BE32(e + 24, dlen);
+    WR_BE32(e + 28, (dlen + ALLOC_SIZE - 1) / ALLOC_SIZE * ALLOC_SIZE);
+    WR_BE16(e + 32, rstart);
+    WR_BE32(e + 34, rlen);
+    WR_BE32(e + 38, (rlen + ALLOC_SIZE - 1) / ALLOC_SIZE * ALLOC_SIZE);
     size_t n = strlen(name);
     e[50] = (uint8_t)n;
     memcpy(e + 51, name, n);
@@ -84,13 +76,13 @@ static uint8_t pattern(size_t i) {
 static void build(void) {
     memset(vol, 0, sizeof(vol));
     uint8_t *mdb = vol + 1024;
-    put16(mdb + 0, MFS_SIG);
-    put16(mdb + 12, 2); // files
-    put16(mdb + 14, DIR_ST);
-    put16(mdb + 16, DIR_BLOCKS);
-    put16(mdb + 18, N_ALLOC);
-    put32(mdb + 20, ALLOC_SIZE);
-    put16(mdb + 28, ALLOC_ST);
+    WR_BE16(mdb + 0, MFS_SIG);
+    WR_BE16(mdb + 12, 2); // files
+    WR_BE16(mdb + 14, DIR_ST);
+    WR_BE16(mdb + 16, DIR_BLOCKS);
+    WR_BE16(mdb + 18, N_ALLOC);
+    WR_BE32(mdb + 20, ALLOC_SIZE);
+    WR_BE16(mdb + 28, ALLOC_ST);
     mdb[36] = 4;
     memcpy(mdb + 37, "Test", 4);
     map_set(2, 5);
@@ -165,7 +157,7 @@ TEST(test_mfs_broken_chains_are_refused) {
     build();
     map_set(3, 2); // 2 -> 5 -> 3 -> 2 -> ...
     uint8_t *dir = vol + DIR_ST * 512;
-    put32(dir + 24, 40000); // and a fork longer than the volume
+    WR_BE32(dir + 24, 40000); // and a fork longer than the volume
     source_t *s = src();
     mfs_volume_t *v = mfs_open_source(s, 0, sizeof(vol));
     ASSERT_TRUE(v != NULL);
@@ -192,7 +184,7 @@ TEST(test_mfs_broken_chains_are_refused) {
 // block, does not open.
 TEST(test_mfs_bad_volumes_do_not_open) {
     build();
-    put16(vol + 1024 + 18, 4000); // more allocation blocks than the volume holds
+    WR_BE16(vol + 1024 + 18, 4000); // more allocation blocks than the volume holds
     source_t *s = src();
     ASSERT_TRUE(mfs_open_source(s, 0, sizeof(vol)) == NULL);
     source_release(s);

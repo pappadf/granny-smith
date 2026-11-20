@@ -5,6 +5,7 @@
 // pulling in the full image/storage stack.  The VFS tests exercise the
 // host backend against a temporary sandbox directory.
 
+#include "common.h"
 #include "image_apm.h"
 #include "test_assert.h"
 #include "vfs.h"
@@ -72,34 +73,20 @@ static void write_file(const char *path, const void *data, size_t size) {
 // APM builders
 // ============================================================================
 
-// Write a big-endian uint16 into a byte buffer.
-static void put_be16(uint8_t *p, uint16_t v) {
-    p[0] = (uint8_t)(v >> 8);
-    p[1] = (uint8_t)v;
-}
-
-// Write a big-endian uint32 into a byte buffer.
-static void put_be32(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v >> 24);
-    p[1] = (uint8_t)(v >> 16);
-    p[2] = (uint8_t)(v >> 8);
-    p[3] = (uint8_t)v;
-}
-
 // Fill in one APM entry at buf (512 bytes expected).
 static void build_apm_entry(uint8_t *buf, uint32_t map_block_count, uint32_t start_block, uint32_t size_blocks,
                             const char *name, const char *type) {
     memset(buf, 0, 512);
-    put_be16(buf + 0x00, 0x504D); // "PM"
-    put_be16(buf + 0x02, 0x0000); // pmSigPad
-    put_be32(buf + 0x04, map_block_count); // pmMapBlkCnt
-    put_be32(buf + 0x08, start_block); // pmPyPartStart
-    put_be32(buf + 0x0C, size_blocks); // pmPartBlkCnt
+    WR_BE16(buf + 0x00, 0x504D); // "PM"
+    WR_BE16(buf + 0x02, 0x0000); // pmSigPad
+    WR_BE32(buf + 0x04, map_block_count); // pmMapBlkCnt
+    WR_BE32(buf + 0x08, start_block); // pmPyPartStart
+    WR_BE32(buf + 0x0C, size_blocks); // pmPartBlkCnt
     if (name)
         strncpy((char *)(buf + 0x10), name, 32);
     if (type)
         strncpy((char *)(buf + 0x30), type, 32);
-    put_be32(buf + 0x58, 0); // pmPartStatus
+    WR_BE32(buf + 0x58, 0); // pmPartStatus
 }
 
 // Build a synthetic 3-partition APM image in `out` (must hold >= 4*512 bytes).
@@ -169,13 +156,13 @@ TEST(apm_probe_magic) {
     // All zeros: no signature.
     ASSERT_TRUE(!image_apm_probe_magic(buf));
     // Signature but zero map count: rejected.
-    put_be16(buf + 0x00, 0x504D);
+    WR_BE16(buf + 0x00, 0x504D);
     ASSERT_TRUE(!image_apm_probe_magic(buf));
     // Valid.
-    put_be32(buf + 0x04, 9);
+    WR_BE32(buf + 0x04, 9);
     ASSERT_TRUE(image_apm_probe_magic(buf));
     // Absurd map count: rejected.
-    put_be32(buf + 0x04, 1000);
+    WR_BE32(buf + 0x04, 1000);
     ASSERT_TRUE(!image_apm_probe_magic(buf));
 }
 

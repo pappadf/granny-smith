@@ -9,6 +9,7 @@
 // a stale CRC -- and check what the reader makes of each.
 
 #include "codec.h"
+#include "common.h"
 #include "format_registry.h"
 #include "image_moof.h"
 #include "test_assert.h"
@@ -21,21 +22,6 @@
 
 #define SECTORS_800K 1600
 #define SECTORS_400K 800
-
-static uint16_t rd16(const uint8_t *p) {
-    return (uint16_t)(p[0] | p[1] << 8);
-}
-static uint32_t rd32(const uint8_t *p) {
-    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
-}
-static void wr16(uint8_t *p, uint16_t v) {
-    p[0] = (uint8_t)v;
-    p[1] = (uint8_t)(v >> 8);
-}
-static void wr32(uint8_t *p, uint32_t v) {
-    for (int i = 0; i < 4; i++)
-        p[i] = (uint8_t)(v >> (8 * i));
-}
 
 // Deterministic sector and tag contents.
 static void fill(uint8_t *data, uint8_t *tags, uint32_t sectors, uint32_t seed) {
@@ -50,7 +36,7 @@ static void fill(uint8_t *data, uint8_t *tags, uint32_t sectors, uint32_t seed) 
 
 // Restamp the header CRC after an edit.
 static void restamp(uint8_t *f, size_t len) {
-    wr32(f + 8, codec_crc32(0, f + MOOF_HEADER_SIZE, len - MOOF_HEADER_SIZE));
+    WR_LE32(f + 8, codec_crc32(0, f + MOOF_HEADER_SIZE, len - MOOF_HEADER_SIZE));
 }
 
 // The TRK record (start block, block count, bit count) of track `t`, side `s`.
@@ -144,8 +130,8 @@ TEST(moof_track_rotated_mid_byte) {
     size_t len = 0;
     ASSERT_EQ_INT(0, moof_encode(data, SECTORS_800K, NULL, 0, &f, &len));
     uint8_t *rec = trk_of(f, 0, 0);
-    uint8_t *bits = f + (size_t)rd16(rec) * 512;
-    uint32_t n = rd32(rec + 4);
+    uint8_t *bits = f + (size_t)RD_LE16(rec) * 512;
+    uint32_t n = RD_LE32(rec + 4);
     uint8_t *copy = calloc(1, (n + 7) / 8);
     for (uint32_t i = 0; i < n; i++) {
         uint32_t from = (i + 3000 * 8 + 5) % n; // ~3000 bytes in, plus five cells
@@ -178,10 +164,10 @@ TEST(moof_damage_is_reported) {
     // Flip one data nibble deep inside track 40, side 0's first sector:
     // swap a codeword for another so it still decodes.
     uint8_t *rec = trk_of(f, 40, 0);
-    uint8_t *bits = f + (size_t)rd16(rec) * 512;
+    uint8_t *bits = f + (size_t)RD_LE16(rec) * 512;
     // Find the first data prologue D5 AA AD byte-aligned in the writer's output
     // (the writer's sync bytes are 10 cells, so search bit by bit).
-    uint32_t n = rd32(rec + 4), at = 0;
+    uint32_t n = RD_LE32(rec + 4), at = 0;
     for (uint32_t i = 0; i + 24 < n; i++) {
         uint32_t v = 0;
         for (int k = 0; k < 24; k++)
@@ -205,7 +191,7 @@ TEST(moof_damage_is_reported) {
         ASSERT_EQ_INT(0, d.data[i]);
     moof_disk_free(&d);
     // A CRC of zero means "not computed".
-    wr32(f + 8, 0);
+    WR_LE32(f + 8, 0);
     ASSERT_EQ_INT(0, moof_decode(f, len, &d));
     ASSERT_TRUE(!d.crc_mismatch);
     moof_disk_free(&d);
@@ -221,8 +207,8 @@ TEST(moof_flux_track) {
     size_t len = 0;
     ASSERT_EQ_INT(0, moof_encode(data, SECTORS_400K, NULL, 0, &f, &len));
     uint8_t *rec = trk_of(f, 0, 0);
-    const uint8_t *bits = f + (size_t)rd16(rec) * 512;
-    uint32_t n = rd32(rec + 4);
+    const uint8_t *bits = f + (size_t)RD_LE16(rec) * 512;
+    uint32_t n = RD_LE32(rec + 4);
     // Ticks between transitions (16 per cell, a little jitter), 255 = more.
     uint8_t *flux = malloc(n * 2);
     size_t nf = 0;
@@ -256,17 +242,17 @@ TEST(moof_flux_track) {
     memcpy(f + flux_at, flux, nf);
     free(flux);
     uint8_t *frec = f + 256 + 8 * 80; // the first unused TRK record
-    wr16(frec, (uint16_t)(flux_at / 512));
-    wr16(frec + 2, (uint16_t)fblocks);
-    wr32(frec + 4, (uint32_t)nf); // flux: a byte count
+    WR_LE16(frec, (uint16_t)(flux_at / 512));
+    WR_LE16(frec + 2, (uint16_t)fblocks);
+    WR_LE32(frec + 4, (uint32_t)nf); // flux: a byte count
     memcpy(f + chunk_at, "FLUX", 4);
-    wr32(f + chunk_at + 4, 160);
+    WR_LE32(f + chunk_at + 4, 160);
     memset(f + chunk_at + 8, 0xFF, 160);
     f[chunk_at + 8] = 80; // track 0, side 0
     f[88] = 0xFF; // and nothing in TMAP
-    wr16(f + 20 + 40, (uint16_t)(chunk_at / 512)); // FLUX block
-    wr16(f + 20 + 42, (uint16_t)fblocks); // largest flux track
-    wr32(f + 252, (uint32_t)(chunk_at - 256)); // TRKS now ends at the FLUX chunk
+    WR_LE16(f + 20 + 40, (uint16_t)(chunk_at / 512)); // FLUX block
+    WR_LE16(f + 20 + 42, (uint16_t)fblocks); // largest flux track
+    WR_LE32(f + 252, (uint32_t)(chunk_at - 256)); // TRKS now ends at the FLUX chunk
     restamp(f, nlen);
     moof_disk_t d;
     ASSERT_EQ_INT(0, moof_decode(f, nlen, &d));
