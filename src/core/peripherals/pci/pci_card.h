@@ -34,6 +34,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 struct config;
 struct checkpoint;
@@ -160,9 +161,21 @@ struct pci_device {
     size_t rom_size;
     pci_bar_backing_t backing[PCI_BAR_SLOTS]; // BARs 0..5 + the ROM BAR
     pci_fixed_region_t fixed[PCI_FIXED_REGIONS]; // non-BAR strapped decode
+    bool priv_owned; // `priv` was allocated by the bus (kind priv_size); freed after teardown
 };
 
-// Per-card constructor.  The bus controller calls this once per populated
+// Per-card initialiser: the NuBus-style construction hook.  The bus allocates
+// the device (and `priv`, when the kind declares priv_size), sets ops, decl,
+// slot_index and bus, resets the generic header, then calls this with what
+// the boot document says about the slot (`opts`, never NULL) and, for a card
+// with one, its expansion ROM (see pci_card_factory_fn).  So the device is
+// whole -- it can raise its slot interrupt -- while it is built.  Returns 0
+// on success; on failure the hook frees only what it allocated itself, and
+// the bus drops the device.  A kind with priv_size 0 sets `priv` here.
+typedef int (*pci_card_init_fn)(pci_device_t *dev, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts);
+
+// Per-card constructor (the older form; used when a kind has no `init`).
+// The bus controller calls this once per populated
 // slot during pci_seat_slots(), with what the boot document says about the
 // slot (`opts`, never NULL; empty fields mean the card's defaults): its
 // options and its expansion-ROM file.  On a restore `rom` is the expansion
@@ -224,6 +237,14 @@ typedef struct pci_card_kind {
     // is exactly why the UI hint is separate.)
     const char *card_class;
     const struct nubus_monitor *monitors; // display cards only; NULL otherwise
+    // Construction.  A kind declares its vtable, its config-header
+    // declaration, the size of its private state and an `init` hook, and
+    // the bus builds the device (pci_card_construct).  `factory` is the
+    // older form, used only when `init` is NULL.
+    const pci_device_ops_t *ops;
+    const pci_config_decl_t *decl;
+    size_t priv_size; // bytes of zeroed `priv` the bus allocates; 0 = init sets priv
+    pci_card_init_fn init;
     pci_card_factory_fn factory;
 
     // The options a user is offered, DECLARED so a frontend can render a
@@ -258,7 +279,7 @@ typedef struct pci_card_kind {
     const char *variant_of;
     // What makes it the variant: the options the base card is built with
     // when the slot's entry does not name them itself (key NULL ends the
-    // list).  A variant has no factory or options of its own -- the bus
+    // list).  A variant has no init or options of its own -- the bus
     // builds the base kind with these merged in, and validates the slot's
     // options against the base.
     const struct pci_option_default *variant_defaults;
@@ -298,5 +319,56 @@ const pci_card_kind_t *const *pci_card_registry(void);
 // For unknown-id error messages: the registered id that differs from `id`
 // only by underscores, or NULL.
 const char *pci_card_suggest(const char *id);
+
+// Build a device of kind `k` the way the bus seats one: through its `init`
+// hook (allocating the device and its priv_size bytes of `priv`, setting ops,
+// decl, slot_index and bus and resetting the header first), else through its
+// `factory`.  NULL on failure.  `bus` may be NULL (a unit test's bare card);
+// pci_bus_add_device sets it either way.
+static inline pci_device_t *pci_card_construct(const pci_card_kind_t *k, pci_bus_t *bus, int slot_index, config_t *cfg,
+                                               const rom_image_t *rom, const slot_opts_t *opts) {
+    if (!k->init) {
+        pci_device_t *dev = k->factory ? k->factory(slot_index, cfg, rom, opts) : NULL;
+        if (dev)
+            dev->slot_index = slot_index;
+        return dev;
+    }
+    pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
+    if (!dev)
+        return NULL;
+    if (k->priv_size) {
+        dev->priv = calloc(1, k->priv_size);
+        if (!dev->priv) {
+            free(dev);
+            return NULL;
+        }
+        dev->priv_owned = true;
+    }
+    dev->ops = k->ops;
+    dev->decl = k->decl;
+    dev->slot_index = slot_index;
+    dev->bus = bus;
+    pci_cfg_reset(dev); // power-on header state, including status_reset
+    if (k->init(dev, cfg, rom, opts) != 0) {
+        if (dev->priv_owned)
+            free(dev->priv);
+        free(dev);
+        return NULL;
+    }
+    return dev;
+}
+
+// Release a device the bus built: its teardown, its expansion ROM, the
+// `priv` the bus allocated for it, and the device itself.
+static inline void pci_device_free(pci_device_t *dev, config_t *cfg) {
+    if (!dev)
+        return;
+    if (dev->ops && dev->ops->teardown)
+        dev->ops->teardown(dev, cfg);
+    free(dev->rom);
+    if (dev->priv_owned)
+        free(dev->priv);
+    free(dev);
+}
 
 #endif // PCI_CARD_H

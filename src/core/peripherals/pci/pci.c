@@ -1009,7 +1009,7 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
             }
             // A variant is built by the card it is a variant of.
             const pci_card_kind_t *builder = pci_card_base(kind);
-            if (!builder || !builder->factory)
+            if (!builder || (!builder->init && !builder->factory))
                 continue;
             if (s->slot < 0 || s->slot >= PCI_MAX_SLOTS) {
                 LOG(0, "slot %d out of range; ignored", s->slot);
@@ -1049,8 +1049,9 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
                     s->slot, kind->display_name ? kind->display_name : kind->id);
             else {
                 slot_opts_t merged;
-                dev = builder->factory(s->slot, root->cfg, kind->requires_prom ? &prom : (rom.data ? &rom : NULL),
-                                       variant_opts(kind, opts, &merged));
+                dev = pci_card_construct(builder, bus, s->slot, root->cfg,
+                                         kind->requires_prom ? &prom : (rom.data ? &rom : NULL),
+                                         variant_opts(kind, opts, &merged));
             }
             free((void *)rom.data);
             if (dev && prom.data) {
@@ -1072,7 +1073,6 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
                 machine_part_cancel(root->cfg);
                 continue;
             }
-            dev->slot_index = s->slot;
             pci_bus_add_device(bus, dev, s->device);
             if (pci_bus_device(bus, s->device) != dev) {
                 // The IDSEL was already taken (a slot table that names one
@@ -1081,10 +1081,8 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
                 LOG(0, "slot %d: device %d on bus %d is already seated; '%s' dropped", s->slot, s->device, s->bus,
                     kind->id);
                 machine_part_cancel(root->cfg);
-                if (dev->ops && dev->ops->teardown)
-                    dev->ops->teardown(dev, root->cfg);
-                free(dev->rom);
-                free(dev);
+                dev->bus = NULL; // never seated
+                pci_device_free(dev, root->cfg);
                 continue;
             }
             bus->owns[s->device] = true; // our factory made it; we free it
@@ -1114,12 +1112,10 @@ void pci_root_delete(pci_root_t *root) {
             pci_device_t *dev = bus->dev[d];
             if (!dev)
                 continue;
-            if (dev->ops && dev->ops->teardown)
+            if (bus->owns[d])
+                pci_device_free(dev, bus->cfg); // teardown, ROM, bus-allocated priv, the device
+            else if (dev->ops && dev->ops->teardown)
                 dev->ops->teardown(dev, bus->cfg);
-            if (bus->owns[d]) {
-                free(dev->rom);
-                free(dev);
-            }
             bus->dev[d] = NULL;
         }
         g_pci_decode_gen++;

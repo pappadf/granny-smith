@@ -150,14 +150,13 @@ static pci_device_t *seat(void) {
     memset(&s_profile, 0, sizeof(s_profile));
     s_fb_if = s_io_if = s_vga_if = NULL;
     s_cycles = 0;
-    pci_device_t *dev = cirrus_54m30_kind.factory(1, &s_cfg, NULL, &(slot_opts_t){.slot = 1});
+    pci_device_t *dev = pci_card_construct(&cirrus_54m30_kind, NULL, 1, &s_cfg, NULL, &(slot_opts_t){.slot = 1});
     ASSERT_TRUE(dev && s_fb_if && s_io_if && s_vga_if);
     return dev;
 }
 
 static void unseat(pci_device_t *dev) {
-    dev->ops->teardown(dev, &s_cfg);
-    free(dev); // the bus owns the wrapper
+    pci_device_free(dev, &s_cfg); // what the bus does with a device it built
 }
 
 // --- The legacy VGA ports, as the guest reaches them ------------------------

@@ -794,9 +794,7 @@ static void qd3d_teardown(pci_device_t *dev, config_t *cfg) {
         return;
     scheduler_forget_source(q->cfg->scheduler, q);
     q3_raster_destroy(q->raster); // fences and joins the worker before the target goes
-    q3_target_free(&q->tgt);
-    free(q);
-    dev->priv = NULL;
+    q3_target_free(&q->tgt); // `q` itself is the bus's (priv_size)
 }
 
 static const char *qd3d_name(const pci_device_t *dev) {
@@ -905,37 +903,28 @@ static const memory_interface_t qd3d_bar_iface = {
     .peek_uint32 = bar_read32,
 };
 
-static pci_device_t *qd3d_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
+// The bus has allocated `dev` and its qd3d_t and reset the header.
+static int qd3d_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     (void)rom;
-    pci_device_t *dev = calloc(1, sizeof(*dev));
-    qd3d_t *q = calloc(1, sizeof(*q));
-    if (!dev || !q || !q3_target_init(&q->tgt, q->tex)) {
-        free(q);
-        free(dev);
-        return NULL;
-    }
+    qd3d_t *q = (qd3d_t *)dev->priv;
+    if (!q3_target_init(&q->tgt, q->tex))
+        return -1;
     const char *raster = slot_opts_option(opts, "raster");
     q->raster = q3_raster_create(raster ? raster : GS_QD3D_RASTER_DEFAULT, &q->tgt, build_state, q);
     if (!q->raster) {
         q3_target_free(&q->tgt);
-        free(q);
-        free(dev);
-        return NULL;
+        return -1;
     }
     q->dev = dev;
     q->cfg = cfg;
-    dev->ops = &qd3d_ops;
-    dev->decl = &qd3d_decl;
-    dev->priv = q;
-    pci_cfg_reset(dev);
 
     pci_bar_backing_iface(dev, 0, &qd3d_bar_iface, q);
 
     scheduler_new_event_type(cfg->scheduler, "qd3d", q, "frame-done", frame_done_event);
     q->port_state = PORT_HEADER;
-    LOG(1, "seated in slot %d (revision %u, %u texels), raster backend %s", slot_index, QD3D_REVISION, QD3D_TEX_TEXELS,
-        q3_raster_name(q->raster));
-    return dev;
+    LOG(1, "seated in slot %d (revision %u, %u texels), raster backend %s", dev->slot_index, QD3D_REVISION,
+        QD3D_TEX_TEXELS, q3_raster_name(q->raster));
+    return 0;
 }
 
 // ============================================================
@@ -1062,7 +1051,10 @@ const pci_card_kind_t qd3d_kind = {
     .display_name = "Apple QuickDraw 3D Accelerator Card",
     .attach = PCI_ATTACH_PCI,
     .card_class = "other",
-    .factory = qd3d_factory,
+    .ops = &qd3d_ops,
+    .decl = &qd3d_decl,
+    .priv_size = sizeof(qd3d_t),
+    .init = qd3d_init,
     .accepts_option = qd3d_accepts_option,
     .attach_objects = qd3d_attach_objects,
 };

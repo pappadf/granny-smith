@@ -3309,9 +3309,7 @@ static void mach64_teardown(pci_device_t *dev, config_t *cfg) {
         return;
     free(m->vram);
     free(m->blank);
-    free(m->compose);
-    free(m);
-    dev->priv = NULL;
+    free(m->compose); // `m` itself is the bus's (priv_size)
 }
 
 // ============================================================
@@ -3744,24 +3742,15 @@ MEMORY_IFACE(bio); // Rage Pro BAR1: block-decoded I/O, dword = offset / 4
 // Rage Pro BAR2: block 1 at +0, block 0 at +$400; takes castouts whole
 static const memory_interface_t aux_iface = {MEMORY_IFACE_FIELDS(aux), .write_line = aux_write_line};
 
-static pci_device_t *mach64_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
-    pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
-    mach64_t *m = (mach64_t *)calloc(1, sizeof(*m));
-    if (!dev || !m) {
-        free(dev);
-        free(m);
-        return NULL;
-    }
-    dev->ops = &mach64_ops;
-    dev->decl = &mach64gx_decl;
-    dev->priv = m;
-    pci_cfg_reset(dev); // power-on header state, including status_reset
+// The bus has allocated `dev` and its mach64_t and reset the header.
+static int mach64_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
+    mach64_t *m = (mach64_t *)dev->priv;
     m->dev = dev;
     m->cfg = cfg;
     m->io_base = MACH64_IO_BASE_DEFAULT;
 
     // The expansion ROM the card runs is the bus's (requires_prom): resolved
-    // before this factory and kept as dev->rom, with the bus's default
+    // before this hook and kept as dev->rom, with the bus's default
     // ROM-BAR face over it.
     size_t prom_size = rom ? rom->size : 0;
 
@@ -3773,9 +3762,7 @@ static pci_device_t *mach64_factory(int slot_index, config_t *cfg, const rom_ima
         free(m->vram);
         free(m->blank);
         free(m->compose);
-        free(m);
-        free(dev);
-        return NULL;
+        return -1;
     }
 
     // The strapped monitor: the slot's monitor= option if the document gave
@@ -3792,9 +3779,9 @@ static pci_device_t *mach64_factory(int slot_index, config_t *cfg, const rom_ima
     // addresses congruent to the strapped base modulo 1024 are ours.
     pci_device_add_fixed_region(dev, PCI_SPACE_IO, 0, MACH64_IO_SPAN, MACH64_IO_MATCH_MASK, m->io_base, &io_iface, m);
 
-    LOG(1, "Mach64: seated in slot %d: %u MB VRAM, monitor '%s' (primary sense %u), %zu-byte expansion ROM", slot_index,
-        m->vram_size >> 20, m->mon->id, m->mon->primary, prom_size);
-    return dev;
+    LOG(1, "Mach64: seated in slot %d: %u MB VRAM, monitor '%s' (primary sense %u), %zu-byte expansion ROM",
+        dev->slot_index, m->vram_size >> 20, m->mon->id, m->mon->primary, prom_size);
+    return 0;
 }
 
 const pci_card_kind_t mach64_gx_kind = {
@@ -3804,7 +3791,10 @@ const pci_card_kind_t mach64_gx_kind = {
     .requires_prom = true,
     .card_class = "display",
     .monitors = mach64_monitors,
-    .factory = mach64_factory,
+    .ops = &mach64_ops,
+    .decl = &mach64gx_decl,
+    .priv_size = sizeof(mach64_t),
+    .init = mach64_init,
     .options = mach64_options,
     .accepts_option = mach64_accepts_option,
     .attach_objects = mach64_attach_objects,
@@ -3861,19 +3851,10 @@ bool mach64_ragepro_monitor_sense(const char *id, uint8_t *out_sense) {
     return false;
 }
 
-static pci_device_t *ragepro_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
+// The bus has allocated `dev` and its mach64_t and reset the header.
+static int ragepro_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     (void)rom;
-    pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
-    mach64_t *m = (mach64_t *)calloc(1, sizeof(*m));
-    if (!dev || !m) {
-        free(dev);
-        free(m);
-        return NULL;
-    }
-    dev->ops = &ragepro_ops;
-    dev->decl = &ragepro_decl;
-    dev->priv = m;
-    pci_cfg_reset(dev);
+    mach64_t *m = (mach64_t *)dev->priv;
     m->dev = dev;
     m->cfg = cfg;
     m->gp = true;
@@ -3890,9 +3871,7 @@ static pci_device_t *ragepro_factory(int slot_index, config_t *cfg, const rom_im
         free(m->vram);
         free(m->blank);
         free(m->compose);
-        free(m);
-        free(dev);
-        return NULL;
+        return -1;
     }
     m->mon = &mach64_sense[opts && opts->sense < RAGEPRO_MONITORS ? opts->sense : 0];
     mach64_reset(dev, cfg);
@@ -3901,9 +3880,9 @@ static pci_device_t *ragepro_factory(int slot_index, config_t *cfg, const rom_im
     pci_bar_backing_iface(dev, RAGEPRO_BAR_IO, &bio_iface, m);
     pci_bar_backing_iface(dev, RAGEPRO_BAR_AUX, &aux_iface, m);
 
-    LOG(1, "Rage Pro: seated at slot %d: %u MB SGRAM, monitor '%s' (primary sense %u)", slot_index, m->vram_size >> 20,
-        m->mon->id, m->mon->primary);
-    return dev;
+    LOG(1, "Rage Pro: seated at slot %d: %u MB SGRAM, monitor '%s' (primary sense %u)", dev->slot_index,
+        m->vram_size >> 20, m->mon->id, m->mon->primary);
+    return 0;
 }
 
 const pci_card_kind_t ati_rage_pro_kind = {
@@ -3911,6 +3890,9 @@ const pci_card_kind_t ati_rage_pro_kind = {
     .display_name = "Built-in video",
     .attach = PCI_ATTACH_BUILTIN,
     .card_class = "display",
-    .factory = ragepro_factory,
+    .ops = &ragepro_ops,
+    .decl = &ragepro_decl,
+    .priv_size = sizeof(mach64_t),
+    .init = ragepro_init,
     .attach_objects = mach64_attach_objects,
 };

@@ -862,6 +862,79 @@ TEST(test_slot_walk_seats_the_documents_entries) {
     cfg->build_opts = machine_build_opts_default();
 }
 
+// A card that raises its slot interrupt while it is built (a power-on
+// pending interrupt, say).  Through a factory the device has no slot and no
+// bus until the factory returns, so the request is dropped -- the bug class
+// NuBus's card.h documents for its old factories.  Through `init` the bus
+// has already made the device whole.
+static int g_init_calls;
+static size_t g_init_priv_bytes; // how much zeroed priv the hook was handed
+static int irq_at_build_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
+    (void)cfg, (void)rom, (void)opts;
+    g_init_calls++;
+    uint8_t *p = (uint8_t *)dev->priv;
+    g_init_priv_bytes = 0;
+    while (p && g_init_priv_bytes < 64 && p[g_init_priv_bytes] == 0)
+        g_init_priv_bytes++;
+    pci_assert_irq(dev);
+    return 0;
+}
+static pci_device_t *irq_at_build_factory(int slot_index, config_t *cfg, const rom_image_t *rom,
+                                          const slot_opts_t *opts) {
+    pci_device_t *d = counting_factory(slot_index, cfg, rom, opts);
+    pci_assert_irq(d);
+    return d;
+}
+static const pci_card_kind_t g_init_kind = {.id = "init_card",
+                                            .attach = PCI_ATTACH_PCI,
+                                            .ops = &test_ops,
+                                            .decl = &test_decl,
+                                            .priv_size = 64,
+                                            .init = irq_at_build_init};
+static const pci_card_kind_t g_failing_init_kind = {.id = "failing_card", .attach = PCI_ATTACH_PCI};
+static const pci_card_kind_t g_old_factory_kind = {
+    .id = "old_card", .attach = PCI_ATTACH_PCI, .factory = irq_at_build_factory};
+
+static int fail_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
+    (void)dev, (void)cfg, (void)rom, (void)opts;
+    return -1;
+}
+
+TEST(test_init_hook_builds_a_whole_device) {
+    config_t *cfg = test_cfg();
+    pci_root_t *root = pci_root_create(cfg);
+    pci_bus_t *bus = pci_bus_create(root, "test", 0);
+    slot_opts_t opts = {.slot = 3};
+
+    g_slot_irqs = 0;
+    g_init_calls = 0;
+    pci_device_t *dev = pci_card_construct(&g_init_kind, bus, 3, cfg, NULL, &opts);
+    ASSERT_TRUE(dev != NULL);
+    ASSERT_EQ_INT(g_init_calls, 1);
+    ASSERT_TRUE(dev->ops == &test_ops && dev->decl == &test_decl);
+    ASSERT_TRUE(dev->priv_owned && g_init_priv_bytes == 64); // zeroed, sized by the kind
+    ASSERT_EQ_INT(g_slot_irqs, 1); // raised while it was built...
+    ASSERT_EQ_INT(g_last_irq_slot, 3); // ...for its own slot
+    pci_device_free(dev, cfg);
+
+    // The factory form cannot: the request is dropped.
+    g_slot_irqs = 0;
+    dev = pci_card_construct(&g_old_factory_kind, bus, 3, cfg, NULL, &opts);
+    ASSERT_TRUE(dev != NULL);
+    ASSERT_EQ_INT(dev->slot_index, 3); // known only once the factory returned
+    ASSERT_EQ_INT(g_slot_irqs, 0);
+    pci_device_free(dev, cfg);
+
+    // A failing hook leaves nothing behind (ASan's leak check is the judge).
+    pci_card_kind_t failing = g_failing_init_kind;
+    failing.ops = &test_ops;
+    failing.decl = &test_decl;
+    failing.priv_size = 32;
+    failing.init = fail_init;
+    ASSERT_TRUE(pci_card_construct(&failing, bus, 3, cfg, NULL, &opts) == NULL);
+    pci_root_delete(root);
+}
+
 // The generic option check: an advertised value needs no card code, a key or
 // value the kind does not advertise is the card's accepts_option to answer,
 // and a variant answers with its base card's options.
@@ -1129,6 +1202,7 @@ int main(void) {
     RUN(test_large_prefetchable_bar);
     RUN(test_bus_master_dma);
     RUN(test_option_check_is_data_driven);
+    RUN(test_init_hook_builds_a_whole_device);
     RUN(test_variant_builds_the_base_with_its_defaults);
     fprintf(stderr, "pci: all tests passed\n");
     return 0;

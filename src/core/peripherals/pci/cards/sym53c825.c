@@ -591,25 +591,20 @@ sym53c8xx_t *sym53c8xx_from_device(pci_device_t *dev) {
 }
 
 // Which channel a seated instance is.  The machine's slot table names the
-// same card kind twice, at IDSEL 17 and 18, so the factory derives the
-// channel from the slot it was asked for rather than from a global counter
-// — restarts and checkpoint restores then reproduce the same assignment.
-static pci_device_t *sym825_factory_for(int slot_index, config_t *cfg, int channel) {
-    pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
+// same card kind twice, at IDSEL 17 and 18, so each kind's hook passes its
+// channel rather than counting instances globally — restarts and checkpoint
+// restores then reproduce the same assignment.  The engine allocates its own
+// state (priv_size 0), so this sets `priv`.
+static int sym825_init_for(pci_device_t *dev, config_t *cfg, int channel) {
+    int slot_index = dev->slot_index;
     char owner[24];
     // A slot card's events are named for its slot, the board's for their channel.
     if (channel < 0)
         snprintf(owner, sizeof owner, "53c825-slot%d", slot_index);
     sym53c8xx_t *s = channel < 0 ? sym53c8xx_new_named(cfg, channel, owner) : sym53c8xx_new(cfg, channel);
-    if (!dev || !s) {
-        free(dev);
-        sym53c8xx_delete(s);
-        return NULL;
-    }
-    dev->ops = &sym825_ops;
-    dev->decl = &sym825_decl;
+    if (!s)
+        return -1;
     dev->priv = s;
-    pci_cfg_reset(dev);
     s->dev = dev;
     // What the device is called: the board's channel, or the slot a card is in.
     if (channel < 0)
@@ -639,24 +634,22 @@ static pci_device_t *sym825_factory_for(int slot_index, config_t *cfg, int chann
 
     LOG(1, "seated in slot %d as fast/wide channel %d (revision $%02X, %s-endian strapping)", slot_index, channel,
         SYM825_REVISION, s->big_endian ? "big" : "little");
-    return dev;
+    return 0;
 }
 
-static pci_device_t *sym825_ch0_factory(int slot_index, config_t *cfg, const rom_image_t *rom,
-                                        const slot_opts_t *opts) {
+static int sym825_ch0_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     (void)opts;
     (void)rom;
-    return sym825_factory_for(slot_index, cfg, 0);
+    return sym825_init_for(dev, cfg, 0);
 }
 
-static pci_device_t *sym825_ch1_factory(int slot_index, config_t *cfg, const rom_image_t *rom,
-                                        const slot_opts_t *opts) {
+static int sym825_ch1_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     (void)opts;
     (void)rom;
-    return sym825_factory_for(slot_index, cfg, 1);
+    return sym825_init_for(dev, cfg, 1);
 }
 
-// Two kinds rather than one, because a card kind's factory takes no channel
+// Two kinds rather than one, because a card kind's init takes no channel
 // argument and the two controllers are genuinely distinct devices on the
 // board — different IDSELs, different Grand Central lines, different drive
 // bays.  Both are BUILTIN: soldered down, instantiable only where a
@@ -666,7 +659,9 @@ const pci_card_kind_t sym53c825_ch0_kind = {
     .display_name = "Fast and wide SCSI-2 controller (channel 0)",
     .attach = PCI_ATTACH_BUILTIN,
     .card_class = "scsi",
-    .factory = sym825_ch0_factory,
+    .ops = &sym825_ops,
+    .decl = &sym825_decl,
+    .init = sym825_ch0_init,
 };
 
 const pci_card_kind_t sym53c825_ch1_kind = {
@@ -674,7 +669,9 @@ const pci_card_kind_t sym53c825_ch1_kind = {
     .display_name = "Fast and wide SCSI-2 controller (channel 1)",
     .attach = PCI_ATTACH_BUILTIN,
     .card_class = "scsi",
-    .factory = sym825_ch1_factory,
+    .ops = &sym825_ops,
+    .decl = &sym825_decl,
+    .init = sym825_ch1_init,
 };
 
 // The same chip on a PCI card, for any machine's socket: a SCSI host
@@ -683,11 +680,10 @@ const pci_card_kind_t sym53c825_ch1_kind = {
 // Windows NT's symc810.sys -- drives it.  It brings its own SCSI bus, which
 // the machine builds as "pci_<slot>" once the card is seated
 // (machine_card_scsi_buses) and hands over here.
-static pci_device_t *sym825_socket_factory(int slot_index, config_t *cfg, const rom_image_t *rom,
-                                           const slot_opts_t *opts) {
+static int sym825_socket_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     (void)opts;
     (void)rom;
-    return sym825_factory_for(slot_index, cfg, -1);
+    return sym825_init_for(dev, cfg, -1);
 }
 
 // Take the bus the machine built for this card.
@@ -700,6 +696,8 @@ const pci_card_kind_t sym53c825_kind = {
     .display_name = "Symbios 53C825A SCSI card",
     .attach = PCI_ATTACH_PCI,
     .card_class = "scsi",
-    .factory = sym825_socket_factory,
+    .ops = &sym825_ops,
+    .decl = &sym825_decl,
+    .init = sym825_socket_init,
     .attach_scsi_bus = sym825_attach_scsi_bus,
 };

@@ -225,7 +225,7 @@ static void rig_setup(void) {
     // Bandit reverses its eight byte lanes for a little-endian client.
     pci_bus_set_lane_reverse(g_bus, true);
 
-    g_dev = cirrus_54m30_kind.factory(0, &g_cfg, NULL, &(slot_opts_t){.slot = 1});
+    g_dev = pci_card_construct(&cirrus_54m30_kind, g_bus, 0, &g_cfg, NULL, &(slot_opts_t){.slot = 1});
     ASSERT_TRUE(g_dev != NULL);
     pci_bus_add_device(g_bus, g_dev, 15);
 
@@ -250,7 +250,10 @@ static void rig_setup(void) {
 }
 
 static void rig_teardown(void) {
-    pci_root_delete(g_root);
+    pci_root_delete(g_root); // tears the card down; the rig seated it, so the rig frees it
+    if (g_dev && g_dev->priv_owned)
+        free(g_dev->priv);
+    free(g_dev);
     g_root = NULL;
     g_bus = NULL;
     g_dev = NULL;

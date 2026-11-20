@@ -2606,9 +2606,7 @@ static void v2_teardown(pci_device_t *dev, config_t *cfg) {
     free(v->fb_ram);
     free(v->scanout);
     for (int t = 0; t < V2_NUM_TMUS; t++)
-        free(v->tex_ram[t]);
-    free(v);
-    dev->priv = NULL;
+        free(v->tex_ram[t]); // `v` itself is the bus's (priv_size)
 }
 
 static const char *v2_name(const pci_device_t *dev) {
@@ -3443,21 +3441,12 @@ static bool v2_accepts_option(const char *key, const char *value) {
 // The one BAR face; the card rides beside the table at the mapping.
 MEMORY_IFACE(v2_bar);
 
-// The card's factory.  The WebGPU variant kind is built here too, with its
+// The card's initialiser: the bus has allocated `dev` and its voodoo2_t and
+// reset the header.  The WebGPU variant kind is built here too, with its
 // raster=webgpu default merged into `opts` by the bus.
-static pci_device_t *v2_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
+static int v2_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     (void)rom;
-    pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
-    voodoo2_t *v = (voodoo2_t *)calloc(1, sizeof(*v));
-    if (!dev || !v) {
-        free(dev);
-        free(v);
-        return NULL;
-    }
-    dev->ops = &v2_ops;
-    dev->decl = &v2_decl;
-    dev->priv = v;
-    pci_cfg_reset(dev); // power-on header state, including status_reset
+    voodoo2_t *v = (voodoo2_t *)dev->priv;
     v->dev = dev;
     v->cfg = cfg;
 
@@ -3488,18 +3477,16 @@ static pci_device_t *v2_factory(int slot_index, config_t *cfg, const rom_image_t
         free(v->scanout);
         free(v->tex_ram[0]);
         free(v->tex_ram[1]);
-        free(v);
-        free(dev);
-        return NULL;
+        return -1;
     }
 
     v2_reset(dev, cfg);
 
     pci_bar_backing_iface(dev, 0, &v2_bar_iface, v);
 
-    LOG(1, "seated in slot %d: 4 MB framebuffer + 2 x %u MB texture (%u MB board), raster backend %s", slot_index,
+    LOG(1, "seated in slot %d: 4 MB framebuffer + 2 x %u MB texture (%u MB board), raster backend %s", dev->slot_index,
         v->tex_size >> 20, (V2_FB_SIZE + 2u * v->tex_size) >> 20, v2_raster_name(v->raster));
-    return dev;
+    return 0;
 }
 
 // The WebGPU variant: the same card, rasterised by the host's GPU unless
@@ -3544,7 +3531,10 @@ const pci_card_kind_t voodoo2_kind = {
                         // never retire a machine's builtin-fallback video
     .monitors = NULL, // it drives a monitor, but it is not the machine's
                       // display device
-    .factory = v2_factory,
+    .ops = &v2_ops,
+    .decl = &v2_decl,
+    .priv_size = sizeof(voodoo2_t),
+    .init = v2_init,
     .options = v2_options,
     .accepts_option = v2_accepts_option,
     .attach_objects = v2_attach_objects,

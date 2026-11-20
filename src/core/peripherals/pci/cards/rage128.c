@@ -1351,9 +1351,7 @@ static void r128_teardown(pci_device_t *dev, config_t *cfg) {
     free(r->walk_dec);
     free(r->walk_raw);
     free(r->walk_done);
-    free(r->st_cache);
-    free(r);
-    dev->priv = NULL;
+    free(r->st_cache); // `r` itself is the bus's (priv_size)
 }
 
 // ============================================================
@@ -1720,25 +1718,16 @@ MEMORY_IFACE(aper);
 MEMORY_IFACE(io);
 MEMORY_IFACE(regs);
 
-// The card's factory.  The WebGPU variant kind is built here too, with its
+// The card's initialiser: the bus has allocated `dev` and its rage128_t and
+// reset the header.  The WebGPU variant kind is built here too, with its
 // raster=webgpu default merged into `opts` by the bus.
-static pci_device_t *r128_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
-    pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
-    rage128_t *r = (rage128_t *)calloc(1, sizeof(*r));
-    if (!dev || !r) {
-        free(dev);
-        free(r);
-        return NULL;
-    }
-    dev->ops = &r128_ops;
-    dev->decl = &rage128_decl;
-    dev->priv = r;
-    pci_cfg_reset(dev);
+static int r128_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
+    rage128_t *r = (rage128_t *)dev->priv;
     r->dev = dev;
     r->cfg = cfg;
 
     // The expansion ROM the card runs is the bus's (requires_prom): resolved
-    // before this factory and kept as dev->rom, with the bus's default
+    // before this hook and kept as dev->rom, with the bus's default
     // ROM-BAR face over it.
     size_t prom_size = rom ? rom->size : 0;
 
@@ -1750,9 +1739,7 @@ static pci_device_t *r128_factory(int slot_index, config_t *cfg, const rom_image
         free(r->vram);
         free(r->blank);
         free(r->compose);
-        free(r);
-        free(dev);
-        return NULL;
+        return -1;
     }
 
     const char *monitor = slot_opts_option(opts, "monitor");
@@ -1780,10 +1767,10 @@ static pci_device_t *r128_factory(int slot_index, config_t *cfg, const rom_image
         }
     }
 
-    LOG(1, "Rage 128: seated in slot %d: %u MB VRAM, monitor '%s', %zu-byte expansion ROM, %s rasteriser", slot_index,
-        r->vram_size >> 20, r->mon->id, prom_size, r->gpu ? "WebGPU" : "software");
+    LOG(1, "Rage 128: seated in slot %d: %u MB VRAM, monitor '%s', %zu-byte expansion ROM, %s rasteriser",
+        dev->slot_index, r->vram_size >> 20, r->mon->id, prom_size, r->gpu ? "WebGPU" : "software");
     watch_add_reporter(r128_watch_report, r);
-    return dev;
+    return 0;
 }
 
 // The WebGPU variant: the same card, its 3D drawn by the host GPU unless
@@ -1802,7 +1789,10 @@ const pci_card_kind_t rage128_kind = {
     .requires_prom = true,
     .card_class = "display",
     .monitors = r128_monitors,
-    .factory = r128_factory,
+    .ops = &r128_ops,
+    .decl = &rage128_decl,
+    .priv_size = sizeof(rage128_t),
+    .init = r128_init,
     .options = r128_options,
     .accepts_option = r128_accepts_option,
     .attach_objects = r128_attach_objects,

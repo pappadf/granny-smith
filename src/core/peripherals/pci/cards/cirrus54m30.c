@@ -1342,9 +1342,7 @@ static void c54m30_teardown(pci_device_t *dev, config_t *cfg) {
     c54m30_t *c = (c54m30_t *)dev->priv;
     if (!c)
         return;
-    free(c->vram);
-    free(c);
-    dev->priv = NULL;
+    free(c->vram); // `c` itself is the bus's (priv_size)
 }
 
 static void c54m30_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
@@ -1425,22 +1423,14 @@ MEMORY_IFACE(fb);
 MEMORY_IFACE(io);
 MEMORY_IFACE(vga);
 
-static pci_device_t *c54m30_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
+// The bus has allocated `dev` and its c54m30_t and reset the header.
+static int c54m30_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     (void)rom;
     (void)opts;
-    pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
-    c54m30_t *c = (c54m30_t *)calloc(1, sizeof(*c));
+    c54m30_t *c = (c54m30_t *)dev->priv;
     uint8_t *vram = (uint8_t *)calloc(1, C54M30_VRAM);
-    if (!dev || !c || !vram) {
-        free(dev);
-        free(c);
-        free(vram);
-        return NULL;
-    }
-    dev->ops = &c54m30_ops;
-    dev->decl = &c54m30_decl;
-    dev->priv = c;
-    pci_cfg_reset(dev);
+    if (!vram)
+        return -1;
     c->dev = dev;
     c->cfg = cfg;
     c->vram = vram;
@@ -1455,8 +1445,8 @@ static pci_device_t *c54m30_factory(int slot_index, config_t *cfg, const rom_ima
     // card does not decode.
     pci_device_add_fixed_region(dev, PCI_SPACE_IO, C54M30_VGA_IO_BASE, C54M30_VGA_IO_SPAN, 0, 0, &vga_iface, c);
 
-    LOG(1, "54M30: seated in slot %d: %u KB display memory, no interrupt line", slot_index, C54M30_VRAM >> 10);
-    return dev;
+    LOG(1, "54M30: seated in slot %d: %u KB display memory, no interrupt line", dev->slot_index, C54M30_VRAM >> 10);
+    return 0;
 }
 
 // The framebuffer node, shared with every other display source
@@ -1514,7 +1504,10 @@ const pci_card_kind_t cirrus_54m30_kind = {
     .display_name = "Cirrus Logic 54M30 VGA card",
     .attach = PCI_ATTACH_PCI,
     .card_class = "display",
-    .factory = c54m30_factory,
+    .ops = &c54m30_ops,
+    .decl = &c54m30_decl,
+    .priv_size = sizeof(c54m30_t),
+    .init = c54m30_init,
     .attach_objects = c54m30_attach_objects,
     .monitors = c54m30_monitors,
 };

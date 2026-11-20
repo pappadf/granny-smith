@@ -760,29 +760,22 @@ static const pci_device_ops_t control_pci_ops = {
 // The card kind.  Control is soldered down, so it attaches BUILTIN and is
 // instantiable only where a machine's slot table names it — it can never
 // be offered on a socket (pci_card_fits_socket).
-static pci_device_t *control_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
-    (void)slot_index;
+// The device's state is the machine's own (priv_size 0: `priv` is cfg).
+static int control_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     (void)rom;
     tnt_state_t *st = tnt_st(cfg);
-    pci_device_t *dev = calloc(1, sizeof(*dev));
-    if (!dev)
-        return NULL;
-    dev->ops = &control_pci_ops;
-    dev->decl = &control_decl;
     dev->priv = cfg;
-    pci_cfg_reset(dev);
     st->control_dev = dev;
     tnt_control_register_events(cfg);
     if (tnt_control_init(cfg, opts->sense) != 0) {
-        // The PCI layer logs and skips a NULL factory return, so the machine
+        // The PCI layer logs and skips a failed build, so the machine
         // comes up without built-in video rather than dereferencing NULL
         // framebuffers on the first scanout.
         st->control_dev = NULL;
-        free(dev);
-        return NULL;
+        return -1;
     }
     tnt_control_reset(cfg);
-    return dev;
+    return 0;
 }
 
 // Its stock monitor, as a card row: what the 9500's stand-in senses when no
@@ -799,7 +792,9 @@ const pci_card_kind_t tnt_control_kind = {
     .attach = PCI_ATTACH_BUILTIN,
     .card_class = "display",
     .monitors = control_stock_monitor,
-    .factory = control_factory,
+    .ops = &control_pci_ops,
+    .decl = &control_decl,
+    .init = control_init,
 };
 
 // ============================================================

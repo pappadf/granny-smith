@@ -135,7 +135,21 @@ connected to (`pci_connected_display`).
 is touched — the card fits (`pci_card_fits_socket`), the kind accepts each
 option (`pci_card_accepts_option`), the PROM identifies as the card's — and puts the
 result in `cfg->build_opts`. `pci_seat_slots` seats each socket from its
-entry, else its `default_card`, and hands the factory its slot's entry.
+entry, else its `default_card`, and hands the card its slot's entry.
+
+The bus builds the device (`pci_card_construct`), the way NuBus builds its
+cards: a kind declares its vtable (`ops`), its config-header declaration
+(`decl`), the size of its private state (`priv_size`) and an `init` hook.
+The bus allocates the `pci_device_t` and `priv_size` zeroed bytes of `priv`,
+sets `ops`, `decl`, `slot_index` and `bus`, resets the generic header, and
+only then calls `init` -- so a card is a whole device while it is built and
+can raise its slot interrupt. A failing `init` frees only what it
+allocated; the bus drops the device. On teardown the bus frees the `priv`
+it allocated (`pci_device_free`), so a card's `teardown` releases only its
+own buffers. A kind whose state the bus does not allocate (Control, whose
+state is the machine's; the 53C825A, whose engine allocates its own) leaves
+`priv_size` 0 and sets `priv` in `init`. The older `factory` form is still
+honoured for a kind with no `init`.
 
 Card-specific object children go through the kind's `attach_objects()`
 hook, and options through `accepts_option()`, so the generic layer never
@@ -304,10 +318,10 @@ the Apple Accelerated PCI Graphics Card
 desktop on a Power Macintosh 9500.
 
 The expansion ROM is the bus's, not the card's: for a kind with
-`requires_prom`, `pci_seat_slots` resolves it before the factory runs (the
+`requires_prom`, `pci_seat_slots` resolves it before the card is built (the
 image the slot's checkpoint block carries on a restore, else
 `prom_load_card` for `pci_card_rom_id(kind)`), leaves the slot empty with a
-log when nothing resolves, hands the image to the factory as its `rom`
+log when nothing resolves, hands the image to `init` as its `rom`
 argument and keeps it as `dev->rom`. A device that declares a ROM BAR
 (`decl->rom_size`) and backs it with nothing of its own gets the bus's
 default face over `dev->rom`: big-endian bytes, `$FF` past the image, writes
@@ -342,7 +356,7 @@ the card `pci_card=` names (a `slots=` entry carries them for any slot).
 The generic layer only splits them; each pair is checked before the boot
 begins (`pci_card_accepts_option`), and one the card does not accept
 rejects the boot, so no card identity reaches the boot path and a typo is
-never silently the default. The factory reads its options from its slot's
+never silently the default. The card reads its options from its slot's
 entry (`slot_opts_option`), or, for an option whose values carry a
 `payloads` row (a VRAM size), `pci_card_option_payload`, which also
 resolves the option's default.
@@ -359,7 +373,7 @@ debugging because it senses its monitor for itself; the Voodoo2's hidden
 A **variant** kind (`rage128_webgpu`, `voodoo2_webgpu`) is a stored id for
 one of its base card's option values, not a card of its own: it names the
 base (`variant_of`) and the options that make it the variant
-(`variant_defaults`, `raster=webgpu`), and has no factory or options. The
+(`variant_defaults`, `raster=webgpu`), and has no `init` or options. The
 bus validates its options against the base card and builds the base kind
 with the defaults merged into a copy of the slot's entry wherever the entry
 does not name the option itself; the slot keeps the variant's kind, so a
