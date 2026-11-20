@@ -13,7 +13,6 @@
 #include "debug_mmu.h"
 #include "fpu.h"
 #include "fpu_internal.h"
-#include "log.h"
 #include "memory.h"
 #include "mmu040.h"
 #include "object.h"
@@ -33,7 +32,6 @@ static const class_desc_t cpu_class;
 static const class_desc_t fpu_class;
 static const class_desc_t mmu_class;
 static const class_desc_t mmu040_class;
-LOG_USE_CATEGORY_NAME("cpu");
 
 // The checkpointed plain-data prefixes: cpu_t up to its first host pointer,
 // and the 68040 MMU register file up to its bus backlink (a host pointer).
