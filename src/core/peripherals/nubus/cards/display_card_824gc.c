@@ -1077,71 +1077,22 @@ static size_t card_vram(nubus_card_t *card, uint8_t **base) {
 // against ~4 MB for vram+dram+sram combined would be absurd.
 #define GC824_CKPT_PAGE 4096u
 
-static void ckpt_save_sparse(checkpoint_t *cp, const uint8_t *buf, uint32_t size) {
-    uint32_t pages = size / GC824_CKPT_PAGE, live = 0;
-    for (uint32_t i = 0; i < pages; i++) {
-        const uint8_t *pg = buf + (size_t)i * GC824_CKPT_PAGE;
-        for (uint32_t b = 0; b < GC824_CKPT_PAGE; b++)
-            if (pg[b]) {
-                live++;
-                break;
-            }
-    }
-    system_write_checkpoint_data(cp, &live, sizeof(live));
-    for (uint32_t i = 0; i < pages; i++) {
-        const uint8_t *pg = buf + (size_t)i * GC824_CKPT_PAGE;
-        uint32_t b = 0;
-        while (b < GC824_CKPT_PAGE && !pg[b])
-            b++;
-        if (b == GC824_CKPT_PAGE)
-            continue;
-        system_write_checkpoint_data(cp, &i, sizeof(i));
-        system_write_checkpoint_data(cp, (void *)(uintptr_t)pg, GC824_CKPT_PAGE);
-    }
-}
-
-static void ckpt_restore_sparse(checkpoint_t *cp, uint8_t *buf, uint32_t size) {
-    memset(buf, 0, size); // pages absent from the stream are zero by definition
-    uint32_t live = 0;
-    system_read_checkpoint_data(cp, &live, sizeof(live));
-    for (uint32_t n = 0; n < live; n++) {
-        uint32_t i = 0;
-        system_read_checkpoint_data(cp, &i, sizeof(i));
-        if ((uint64_t)i * GC824_CKPT_PAGE + GC824_CKPT_PAGE > size)
-            return; // a short/again-corrupt stream must not write past the buffer
-        system_read_checkpoint_data(cp, buf + (size_t)i * GC824_CKPT_PAGE, GC824_CKPT_PAGE);
-    }
-}
-
-// A host-keyed cache entry: {key, size, bytes}.  Serialised, NOT flushed --
+// A host-keyed cache entry: {key, blob}.  Serialised, NOT flushed --
 // see the note in display_card_824gc_priv.h.
 static void ckpt_save_cache(checkpoint_t *cp, uint32_t key, uint32_t size, const uint8_t *data) {
-    if (!data)
-        size = 0;
     system_write_checkpoint_data(cp, &key, sizeof(key));
-    system_write_checkpoint_data(cp, &size, sizeof(size));
-    if (size)
-        system_write_checkpoint_data(cp, (void *)(uintptr_t)data, size);
+    checkpoint_write_blob(cp, data, size, NULL);
 }
 
 // The caches hold copies of data the guest keeps in the card's DRAM, so no
-// entry is larger than it; the count bounds what the file may ask us to
+// entry is larger than it; the cap bounds what the file may ask us to
 // allocate.
 static uint8_t *ckpt_restore_cache(checkpoint_t *cp, uint32_t *key, uint32_t *size, uint8_t *old) {
     free(old);
     system_read_checkpoint_data(cp, key, sizeof(*key));
-    if (!checkpoint_read_count(cp, size, GC824_DRAM_SIZE, "8*24 GC cache bytes") || !*size) {
+    uint8_t *d = checkpoint_read_blob(cp, GC824_DRAM_SIZE, size, "8*24 GC cache bytes");
+    if (!d)
         *key = 0;
-        *size = 0;
-        return NULL;
-    }
-    uint8_t *d = (uint8_t *)calloc(1, *size);
-    if (!d) {
-        *key = 0;
-        *size = 0;
-        return NULL;
-    }
-    system_read_checkpoint_data(cp, d, *size);
     return d;
 }
 
@@ -1161,7 +1112,7 @@ static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, p->vram, GC824_VRAM_SIZE);
     system_write_checkpoint_data(cp, p->sram, GC824_SRAM_SIZE);
     system_write_checkpoint_data(cp, p->dram, GC824_DRAM_SIZE);
-    ckpt_save_sparse(cp, p->regs, GC824_REGS_SIZE);
+    checkpoint_write_sparse(cp, p->regs, GC824_REGS_SIZE, GC824_CKPT_PAGE);
 
     for (int i = 0; i < 4; i++) {
         const struct gc_pixpat *pp = &p->gc_pixpats[i];
@@ -1193,7 +1144,7 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
     system_read_checkpoint_data(cp, p->vram, GC824_VRAM_SIZE);
     system_read_checkpoint_data(cp, p->sram, GC824_SRAM_SIZE);
     system_read_checkpoint_data(cp, p->dram, GC824_DRAM_SIZE);
-    ckpt_restore_sparse(cp, p->regs, GC824_REGS_SIZE);
+    checkpoint_read_sparse(cp, p->regs, GC824_REGS_SIZE, GC824_CKPT_PAGE);
 
     for (int i = 0; i < 4; i++) {
         struct gc_pixpat *pp = &p->gc_pixpats[i];

@@ -51,6 +51,13 @@ LOG_USE_CATEGORY_NAME("singer");
 // always programs 240; the register is 16-bit).
 #define SINGER_MAX_FRAMES 0x4000u
 
+// Largest WAV the microphone source loads, in stereo frames (an hour at
+// 48 kHz): the bound a checkpoint restore holds the stored length to.
+#define SINGER_WAV_MAX_FRAMES (48000u * 3600u)
+
+// Bytes per loaded WAV frame: interleaved stereo int16
+#define SINGER_WAV_FRAME_BYTES (2u * (uint32_t)sizeof(int16_t))
+
 // Host audio source selection (machine.audioin.source).
 typedef enum {
     AIN_SRC_NONE = 0, // no microphone (default; input records silence)
@@ -740,6 +747,11 @@ static int singer_load_wav(av_singer_t *s, const char *path) {
         return -1;
     }
     uint32_t nframes = data_len / (channels * 2u);
+    // Longer than a checkpoint would take back: refuse it here instead
+    if (nframes > SINGER_WAV_MAX_FRAMES) {
+        fclose(fp);
+        return -1;
+    }
     int16_t *buf = malloc((size_t)nframes * 2 * sizeof(int16_t));
     uint8_t *raw = malloc(data_len);
     if (!buf || !raw) {
@@ -1120,16 +1132,17 @@ av_singer_t *av_singer_init(config_t *cfg, checkpoint_t *cp) {
     if (cp) {
         size_t data_size = offsetof(av_singer_t, cfg);
         system_read_checkpoint_data(cp, s, data_size);
-        if (s->wav_frames) {
-            s->wav = malloc((size_t)s->wav_frames * 2 * sizeof(int16_t));
-            if (s->wav) {
-                system_read_checkpoint_data(cp, s->wav, (size_t)s->wav_frames * 2 * sizeof(int16_t));
-            } else {
-                // The unread block would misalign every later read: refuse
-                // the load, and leave no length without its buffer.
-                s->wav_frames = 0;
-                checkpoint_set_error(cp);
-            }
+        // The WAV's length is the blob's, bounded, not the prefix's word
+        uint32_t bytes = 0;
+        s->wav =
+            (int16_t *)checkpoint_read_blob(cp, SINGER_WAV_MAX_FRAMES * SINGER_WAV_FRAME_BYTES, &bytes, "singer.wav");
+        s->wav_frames = bytes / SINGER_WAV_FRAME_BYTES;
+        if (bytes % SINGER_WAV_FRAME_BYTES || s->wav_pos > s->wav_frames) {
+            // A torn frame or a cursor past the end is not what the save wrote
+            free(s->wav);
+            s->wav = NULL;
+            s->wav_frames = 0;
+            checkpoint_set_error(cp);
         }
     }
 
@@ -1212,6 +1225,5 @@ void av_singer_checkpoint(av_singer_t *s, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, s, data_size);
     // The loaded WAV is state (a restore must keep producing the same
     // samples); the host microphone is checkpoint-ephemeral.
-    if (s->wav_frames && s->wav)
-        system_write_checkpoint_data(cp, s->wav, (size_t)s->wav_frames * 2 * sizeof(int16_t));
+    checkpoint_write_blob(cp, s->wav, s->wav ? s->wav_frames * SINGER_WAV_FRAME_BYTES : 0, "singer.wav");
 }

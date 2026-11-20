@@ -725,34 +725,6 @@ static void interp_setup(iw_printer_t *p) {
     iw_interp_init(&p->interp, &p->set.icfg, &hooks);
 }
 
-// Read a length-prefixed blob from a checkpoint; *out malloc'd (NULL for 0).
-static bool read_blob(checkpoint_t *cp, uint8_t **out, size_t *len, uint32_t max, const char *what) {
-    uint32_t n = 0;
-    *out = NULL;
-    *len = 0;
-    if (!checkpoint_read_count(cp, &n, max, what))
-        return false;
-    if (!n)
-        return true;
-    uint8_t *b = malloc(n);
-    if (!b) {
-        checkpoint_set_error(cp);
-        return false;
-    }
-    system_read_checkpoint_data(cp, b, n, what);
-    *out = b;
-    *len = n;
-    return !checkpoint_has_error(cp);
-}
-
-// Write a length-prefixed blob.
-static void write_blob(checkpoint_t *cp, const uint8_t *data, size_t len, const char *what) {
-    uint32_t n = (uint32_t)len;
-    system_write_checkpoint_data(cp, &n, sizeof(n));
-    if (n)
-        system_write_checkpoint_data(cp, data, n, what);
-}
-
 // Restore everything iw_printer_checkpoint wrote.
 static void restore(iw_printer_t *p, checkpoint_t *cp) {
     uint32_t version = 0;
@@ -778,31 +750,29 @@ static void restore(iw_printer_t *p, checkpoint_t *cp) {
     // The sheet's geometry follows the restored form length
     iw_interp_reconfigure(&p->interp);
     uint8_t *blob;
-    size_t len;
+    uint32_t len;
     // The sheet in progress
-    if (read_blob(cp, &blob, &len, 64u * 1024u * 1024u, "iwpage")) {
-        if (!iw_page_deserialise(&p->interp.page, blob, len))
-            checkpoint_set_error(cp);
-        free(blob);
-    }
+    blob = checkpoint_read_blob(cp, 64u * 1024u * 1024u, &len, "iwpage");
+    if (!checkpoint_has_error(cp) && !iw_page_deserialise(&p->interp.page, blob, len))
+        checkpoint_set_error(cp);
+    free(blob);
     // The document so far
-    if (read_blob(cp, &blob, &len, 256u * 1024u * 1024u, "iwpdf")) {
-        if (len) {
-            p->pdf = pdf_writer_deserialise(blob, len);
-            if (!p->pdf)
-                checkpoint_set_error(cp);
-        }
-        free(blob);
+    blob = checkpoint_read_blob(cp, 256u * 1024u * 1024u, &len, "iwpdf");
+    if (len) {
+        p->pdf = pdf_writer_deserialise(blob, len);
+        if (!p->pdf)
+            checkpoint_set_error(cp);
     }
+    free(blob);
     // Queued input and the capture
-    if (read_blob(cp, &blob, &len, IW_INPUT_MAX, "iwin")) {
+    blob = checkpoint_read_blob(cp, IW_INPUT_MAX, &len, "iwin");
+    if (len)
         byteq_append(&p->input, blob, len, IW_INPUT_MAX);
-        free(blob);
-    }
-    if (read_blob(cp, &blob, &len, IW_CAPTURE_MAX, "iwcap")) {
+    free(blob);
+    blob = checkpoint_read_blob(cp, IW_CAPTURE_MAX, &len, "iwcap");
+    if (len)
         byteq_append(&p->capture, blob, len, IW_CAPTURE_MAX);
-        free(blob);
-    }
+    free(blob);
 }
 
 // Build a printer: the machine's serial one, or (`network`) the AppleTalk
@@ -911,16 +881,16 @@ void iw_printer_checkpoint(iw_printer_t *p, checkpoint_t *cp) {
     size_t len = 0;
     if (!iw_page_serialise(&p->interp.page, &blob, &len))
         checkpoint_set_error(cp);
-    write_blob(cp, blob, len, "iwpage");
+    checkpoint_write_blob(cp, blob, (uint32_t)len, "iwpage");
     free(blob);
     blob = NULL;
     len = 0;
     if (p->pdf && !pdf_writer_serialise(p->pdf, &blob, &len))
         checkpoint_set_error(cp);
-    write_blob(cp, blob, len, "iwpdf");
+    checkpoint_write_blob(cp, blob, (uint32_t)len, "iwpdf");
     free(blob);
-    write_blob(cp, byteq_data(&p->input), byteq_len(&p->input), "iwin");
-    write_blob(cp, byteq_data(&p->capture), byteq_len(&p->capture), "iwcap");
+    checkpoint_write_blob(cp, byteq_data(&p->input), (uint32_t)byteq_len(&p->input), "iwin");
+    checkpoint_write_blob(cp, byteq_data(&p->capture), (uint32_t)byteq_len(&p->capture), "iwcap");
 }
 
 // --- Object model --------------------------------------------------------------------

@@ -98,6 +98,12 @@ void checkpoint_set_error(checkpoint_t *checkpoint) {
     s_cp_error = true;
 }
 
+// Whether a restore has flagged the stream
+bool checkpoint_has_error(checkpoint_t *checkpoint) {
+    (void)checkpoint;
+    return s_cp_error;
+}
+
 // ============================================================
 // A checkpoint stream in memory
 // ============================================================
@@ -690,8 +696,9 @@ TEST(a_hostile_image_name_length_is_refused_at_the_count) {
     setup();
     s_cp_len = s_cp_pos = 0;
     ata_checkpoint_save(&s_ch, NULL);
-    // The first unit's name length follows the prefix and the sector buffer
-    size_t at = offsetof(ata_channel_t, buf) + ATA_BUF_SIZE + s_ch.atapi_resp_len;
+    // The first unit's name length follows the prefix, the sector buffer and
+    // the (empty) ATAPI response blob
+    size_t at = offsetof(ata_channel_t, buf) + ATA_BUF_SIZE + sizeof(uint32_t) + s_ch.atapi_resp_len;
     uint32_t len;
     memcpy(&len, s_cp + at, sizeof len);
     ASSERT_EQ_INT(len, strlen("hd.img") + 1);
@@ -702,6 +709,21 @@ TEST(a_hostile_image_name_length_is_refused_at_the_count) {
     ASSERT_TRUE(s_ch.img[0] == NULL);
     // Nothing larger than the channel's own buffer was asked for
     ASSERT_TRUE(s_cp_max_read <= ATA_BUF_SIZE);
+    s_cp_error = false;
+    teardown();
+}
+
+// The ATAPI response's length in the POD prefix is the file's word: a
+// hostile one must not drive the allocation or the read.
+TEST(a_hostile_atapi_response_length_drives_no_read) {
+    setup();
+    s_cp_len = s_cp_pos = 0;
+    ata_checkpoint_save(&s_ch, NULL);
+    uint32_t len = 0xFFFFFFF0u;
+    memcpy(s_cp + offsetof(ata_channel_t, atapi_resp_len), &len, sizeof len);
+    restore_fresh();
+    ASSERT_TRUE(s_cp_max_read <= ATA_BUF_SIZE);
+    ASSERT_TRUE(s_ch.atapi_resp_len == 0 && s_ch.atapi_resp == NULL);
     s_cp_error = false;
     teardown();
 }
@@ -727,6 +749,7 @@ int main(void) {
     RUN(atapi_check_condition_reports_the_sense_key);
     RUN(a_checkpoint_mid_read_resumes_the_stream);
     RUN(a_hostile_image_name_length_is_refused_at_the_count);
+    RUN(a_hostile_atapi_response_length_drives_no_read);
     free(s_cp);
     printf("All ata tests passed\n");
     return 0;

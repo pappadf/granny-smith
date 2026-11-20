@@ -367,10 +367,8 @@ static void nubus_card_part_save(void *obj, checkpoint_t *cp) {
     nubus_card_t *card = obj;
     bool file_backed = card->rom_chip && card->rom_chip_size;
     checkpoint_write_string(cp, file_backed ? card->rom_path : NULL);
-    uint32_t size = file_backed ? (uint32_t)card->rom_chip_size : 0;
-    system_write_checkpoint_data(cp, &size, sizeof size, "card.rom");
-    if (size)
-        system_write_checkpoint_data(cp, card->rom_chip, size, "card.rom");
+    checkpoint_write_blob(cp, file_backed ? card->rom_chip : NULL, file_backed ? (uint32_t)card->rom_chip_size : 0,
+                          "card.rom");
     if (card->ops->checkpoint_save)
         card->ops->checkpoint_save(card, cp);
 }
@@ -382,21 +380,13 @@ static bool read_card_rom(checkpoint_t *cp, int slot, uint8_t **out, size_t *siz
     *size = 0;
     *path = checkpoint_read_string(cp, CHECKPOINT_MAX_PATH, "card ROM path");
     uint32_t n = 0;
-    system_read_checkpoint_data(cp, &n, sizeof n, "card.rom");
-    if (checkpoint_has_error(cp))
-        return false;
-    if (!n)
-        return true;
-    if (n > CARD_ROM_MAX) {
-        LOG(0, "Error: the checkpoint's slot $%X card ROM is %u bytes (at most %u)", slot, n, CARD_ROM_MAX);
+    *out = checkpoint_read_blob(cp, CARD_ROM_MAX, &n, "card.rom");
+    *size = n;
+    if (checkpoint_has_error(cp)) {
+        LOG(0, "Error: the checkpoint's slot $%X card ROM block is malformed", slot);
         return false;
     }
-    *out = malloc(n);
-    if (!*out)
-        return false;
-    system_read_checkpoint_data(cp, *out, n, "card.rom");
-    *size = n;
-    return !checkpoint_has_error(cp);
+    return true;
 }
 
 // The bus's slot-entry check as a card_entry_check_fn.

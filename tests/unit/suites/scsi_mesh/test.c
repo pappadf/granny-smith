@@ -106,6 +106,12 @@ image_t *images_find(const image_list_t *images, const char *name) {
 void checkpoint_set_error(checkpoint_t *checkpoint) {
     (void)checkpoint;
 }
+
+// No restore here flags the stream
+bool checkpoint_has_error(checkpoint_t *checkpoint) {
+    (void)checkpoint;
+    return false;
+}
 int system_hd_attach(const char *path, int scsi_id) {
     (void)path, (void)scsi_id;
     return -1;

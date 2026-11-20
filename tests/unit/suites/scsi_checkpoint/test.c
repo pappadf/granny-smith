@@ -104,6 +104,12 @@ void checkpoint_set_error(checkpoint_t *checkpoint) {
     (void)checkpoint;
     g_cp_errors++;
 }
+
+// Whether a restore has flagged the stream
+bool checkpoint_has_error(checkpoint_t *checkpoint) {
+    (void)checkpoint;
+    return g_cp_errors != 0;
+}
 int system_hd_attach(const char *path, int scsi_id) {
     (void)path, (void)scsi_id;
     return -1;

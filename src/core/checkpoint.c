@@ -359,6 +359,87 @@ char *checkpoint_read_string(checkpoint_t *checkpoint, uint32_t max, const char 
     return buf;
 }
 
+void checkpoint_write_blob(checkpoint_t *checkpoint, const void *data, uint32_t len, const char *tag) {
+    // No bytes to write means an empty blob, whatever the caller claimed
+    if (!data)
+        len = 0;
+    system_write_checkpoint_data(checkpoint, &len, sizeof(len), tag);
+    if (len)
+        system_write_checkpoint_data(checkpoint, data, len, tag);
+}
+
+uint8_t *checkpoint_read_blob(checkpoint_t *checkpoint, uint32_t max, uint32_t *len, const char *what) {
+    uint32_t n = 0;
+    *len = 0;
+    // The length carries the blob's tag too, so it is checked like the bytes
+    system_read_checkpoint_data(checkpoint, &n, sizeof(n), what);
+    if (checkpoint_has_error(checkpoint) || n == 0)
+        return NULL;
+    if (n > max) {
+        LOG(0, "Error: checkpoint claims a %u-byte %s (cap %u); refusing the restore", n, what ? what : "blob", max);
+        checkpoint_set_error(checkpoint);
+        return NULL;
+    }
+    uint8_t *buf = (uint8_t *)malloc(n);
+    if (!buf) {
+        // The bytes stay unread, so the stream is out of step: fail it here
+        LOG(0, "Error: out of memory reading a %u-byte %s from checkpoint", n, what ? what : "blob");
+        checkpoint_set_error(checkpoint);
+        return NULL;
+    }
+    system_read_checkpoint_data(checkpoint, buf, n, what);
+    if (checkpoint_has_error(checkpoint)) {
+        free(buf);
+        return NULL;
+    }
+    *len = n;
+    return buf;
+}
+
+// True when the `page` bytes at `pg` are all zero
+static bool cp_page_is_zero(const uint8_t *pg, uint32_t page) {
+    for (uint32_t b = 0; b < page; b++)
+        if (pg[b])
+            return false;
+    return true;
+}
+
+void checkpoint_write_sparse(checkpoint_t *checkpoint, const uint8_t *buf, size_t size, uint32_t page) {
+    uint32_t pages = (uint32_t)(size / page), live = 0;
+    // The count goes first, so the reader can bound it before the pages
+    for (uint32_t i = 0; i < pages; i++)
+        if (!cp_page_is_zero(buf + (size_t)i * page, page))
+            live++;
+    system_write_checkpoint_data(checkpoint, &live, sizeof(live));
+    for (uint32_t i = 0; i < pages; i++) {
+        const uint8_t *pg = buf + (size_t)i * page;
+        if (cp_page_is_zero(pg, page))
+            continue;
+        system_write_checkpoint_data(checkpoint, &i, sizeof(i));
+        system_write_checkpoint_data(checkpoint, pg, page);
+    }
+}
+
+void checkpoint_read_sparse(checkpoint_t *checkpoint, uint8_t *buf, size_t size, uint32_t page) {
+    memset(buf, 0, size); // pages absent from the stream are zero by definition
+    uint32_t pages = (uint32_t)(size / page), live = 0;
+    if (!checkpoint_read_count(checkpoint, &live, pages, "sparse pages"))
+        return;
+    for (uint32_t n = 0; n < live; n++) {
+        uint32_t i = 0;
+        system_read_checkpoint_data(checkpoint, &i, sizeof(i));
+        if (checkpoint_has_error(checkpoint))
+            return;
+        // An index past the buffer is a corrupt stream, not a page to skip
+        if (i >= pages) {
+            LOG(0, "Error: checkpoint names sparse page %u of %u; refusing the restore", i, pages);
+            checkpoint_set_error(checkpoint);
+            return;
+        }
+        system_read_checkpoint_data(checkpoint, buf + (size_t)i * page, page);
+    }
+}
+
 // === Block I/O ===
 
 // Read a data block with size validation, source metadata, and RLE decompression

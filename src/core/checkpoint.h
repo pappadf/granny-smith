@@ -137,6 +137,25 @@ char *checkpoint_read_string(checkpoint_t *checkpoint, uint32_t max, const char 
 // counting the NUL.  NULL and "" both write length 0 (and read back as NULL).
 void checkpoint_write_string(checkpoint_t *checkpoint, const char *s);
 
+// A `uint32 length + bytes` blob; both carry `tag` (may be NULL).
+void checkpoint_write_blob(checkpoint_t *checkpoint, const void *data, uint32_t len, const char *tag);
+
+// Read what checkpoint_write_blob wrote, bounded by `max`: a malloc'd copy
+// (caller frees) and its length in *len.  NULL with *len = 0 for an empty
+// blob and for a refused one (over `max`, OOM, short read -- each flags the
+// checkpoint; check checkpoint_has_error() to tell them apart).  `what`
+// names the blob in the diagnostic and is its tag.
+uint8_t *checkpoint_read_blob(checkpoint_t *checkpoint, uint32_t max, uint32_t *len, const char *what);
+
+// A fixed-size buffer that is mostly zero, as only its non-zero `page`-byte
+// pages: `uint32 count`, then per page `uint32 index + page bytes`.
+void checkpoint_write_sparse(checkpoint_t *checkpoint, const uint8_t *buf, size_t size, uint32_t page);
+
+// Read what checkpoint_write_sparse wrote into `buf` (zeroed first: absent
+// pages are zero).  A count over size/page or an index past the buffer flags
+// the checkpoint and stops.
+void checkpoint_read_sparse(checkpoint_t *checkpoint, uint8_t *buf, size_t size, uint32_t page);
+
 // === File Serialization (content or reference mode) ===
 
 // Writes a file to the checkpoint (either embedded or as reference)

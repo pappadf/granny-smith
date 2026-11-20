@@ -1035,8 +1035,7 @@ int ata_dma_out(void *ctx, const uint8_t *buf, int len) {
 void ata_checkpoint_save(ata_channel_t *ch, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, ch, offsetof(ata_channel_t, buf));
     system_write_checkpoint_data(cp, ch->buf, ATA_BUF_SIZE);
-    if (ch->atapi_resp_len)
-        system_write_checkpoint_data(cp, ch->atapi_resp, ch->atapi_resp_len);
+    checkpoint_write_blob(cp, ch->atapi_resp, ch->atapi_resp ? ch->atapi_resp_len : 0, "ata.resp");
     for (int u = 0; u < 2; u++)
         checkpoint_write_image_ref(cp, ch->img[u]);
 }
@@ -1045,16 +1044,13 @@ void ata_checkpoint_restore(ata_channel_t *ch, checkpoint_t *cp, const image_lis
     free_resp(ch);
     system_read_checkpoint_data(cp, ch, offsetof(ata_channel_t, buf));
     system_read_checkpoint_data(cp, ch->buf, ATA_BUF_SIZE);
-    if (ch->atapi_resp_len) {
-        ch->atapi_resp = (uint8_t *)malloc(ch->atapi_resp_len);
-        if (ch->atapi_resp) {
-            system_read_checkpoint_data(cp, ch->atapi_resp, ch->atapi_resp_len);
-        } else {
-            uint8_t tmp;
-            for (uint32_t i = 0; i < ch->atapi_resp_len; i++)
-                system_read_checkpoint_data(cp, &tmp, 1);
-            ch->atapi_resp_len = 0;
-        }
+    // The response's length is the blob's, bounded as a PACKET command
+    // bounds it, not the prefix's word
+    ch->atapi_resp = checkpoint_read_blob(cp, ATAPI_RESP_MAX, &ch->atapi_resp_len, "ata.resp");
+    if (ch->atapi_resp_pos > ch->atapi_resp_len) {
+        // A cursor past the response is not what the save wrote
+        free_resp(ch);
+        checkpoint_set_error(cp);
     }
     for (int u = 0; u < 2; u++) {
         char what[24];

@@ -1085,10 +1085,7 @@ static int pci_collect(pci_root_t *root, pci_device_t **out, int max) {
 // restores the card it was saved with whatever PROM files the host offers now.
 static void pci_device_part_save(void *obj, checkpoint_t *cp) {
     pci_device_t *dev = obj;
-    uint32_t size = dev->rom ? (uint32_t)dev->rom_size : 0;
-    system_write_checkpoint_data(cp, &size, sizeof size, "pci.rom");
-    if (size)
-        system_write_checkpoint_data(cp, dev->rom, size, "pci.rom");
+    checkpoint_write_blob(cp, dev->rom, dev->rom ? (uint32_t)dev->rom_size : 0, "pci.rom");
     system_write_checkpoint_data(cp, &dev->cfg, sizeof(dev->cfg), "pci.cfg");
     if (dev->ops && dev->ops->checkpoint_save)
         dev->ops->checkpoint_save(dev, cp);
@@ -1102,20 +1099,7 @@ static void device_part_open(config_t *cfg, checkpoint_t *cp, const char *name, 
     if (!cp)
         return;
     uint32_t size = 0;
-    system_read_checkpoint_data(cp, &size, sizeof size, "pci.rom");
-    if (checkpoint_has_error(cp) || !size)
-        return;
-    if (size > DEVICE_ROM_MAX) {
-        LOG(0, "Error: the checkpoint's '%s' expansion ROM is %u bytes (at most %u)", name, size, DEVICE_ROM_MAX);
-        checkpoint_set_error(cp);
-        return;
-    }
-    uint8_t *data = malloc(size);
-    if (!data) {
-        checkpoint_set_error(cp);
-        return;
-    }
-    system_read_checkpoint_data(cp, data, size, "pci.rom");
+    uint8_t *data = checkpoint_read_blob(cp, DEVICE_ROM_MAX, &size, "pci.rom");
     *rom = (rom_image_t){.data = data, .size = size};
 }
 

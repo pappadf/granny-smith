@@ -567,6 +567,82 @@ TEST(bounded_string_refuses_over_cap) {
     cp_unlink();
 }
 
+// A blob round-trips, and one over its cap is refused at the length.
+TEST(bounded_blob_round_trips_and_refuses_over_cap) {
+    cp_unlink();
+    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED);
+    ASSERT_TRUE(cp != NULL);
+    checkpoint_write_blob(cp, "rom!", 4, "rom");
+    checkpoint_write_blob(cp, NULL, 9, "none"); // no data: an empty blob
+    checkpoint_write_blob(cp, "0123456789", 10, "big");
+    checkpoint_close(cp);
+
+    cp = checkpoint_open_read(CP_PATH);
+    ASSERT_TRUE(cp != NULL);
+    uint32_t len = 99;
+    uint8_t *b = checkpoint_read_blob(cp, 4, &len, "rom");
+    ASSERT_TRUE(b != NULL && len == 4 && memcmp(b, "rom!", 4) == 0);
+    free(b);
+    b = checkpoint_read_blob(cp, 4, &len, "none");
+    ASSERT_TRUE(b == NULL && len == 0);
+    ASSERT_EQ_INT(checkpoint_has_error(cp), 0);
+    b = checkpoint_read_blob(cp, 4, &len, "big"); // 10 bytes against a cap of 4
+    ASSERT_TRUE(b == NULL && len == 0);
+    ASSERT_EQ_INT(checkpoint_has_error(cp), 1);
+    checkpoint_close(cp);
+    cp_unlink();
+}
+
+// Sparse pages round-trip, and a page index past the buffer fails the stream
+// instead of returning quietly (the 8*24 GC copy returned without a word, so
+// the next block misread).
+TEST(sparse_pages_round_trip_and_refuse_a_bad_index) {
+    enum { PAGE = 64, PAGES = 8 };
+    static uint8_t buf[PAGE * PAGES], got[PAGE * PAGES];
+    memset(buf, 0, sizeof buf);
+    buf[PAGE * 2 + 5] = 0x5A;
+    buf[PAGE * 7] = 0xA5;
+    cp_unlink();
+    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED);
+    ASSERT_TRUE(cp != NULL);
+    checkpoint_write_sparse(cp, buf, sizeof buf, PAGE);
+    // A hand-made stream: one page, index 9 of 8
+    uint32_t live = 1, idx = 9;
+    system_write_checkpoint_data(cp, &live, sizeof live);
+    system_write_checkpoint_data(cp, &idx, sizeof idx);
+    system_write_checkpoint_data(cp, buf, PAGE);
+    checkpoint_close(cp);
+
+    cp = checkpoint_open_read(CP_PATH);
+    ASSERT_TRUE(cp != NULL);
+    memset(got, 0xFF, sizeof got);
+    checkpoint_read_sparse(cp, got, sizeof got, PAGE);
+    ASSERT_EQ_INT(checkpoint_has_error(cp), 0);
+    ASSERT_EQ_INT(memcmp(got, buf, sizeof buf), 0);
+    checkpoint_read_sparse(cp, got, sizeof got, PAGE);
+    ASSERT_EQ_INT(checkpoint_has_error(cp), 1);
+    checkpoint_close(cp);
+    cp_unlink();
+}
+
+// A sparse count over the buffer's page count is refused before any page.
+TEST(sparse_page_count_is_bounded) {
+    enum { PAGE = 64, PAGES = 8 };
+    static uint8_t got[PAGE * PAGES];
+    cp_unlink();
+    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED);
+    ASSERT_TRUE(cp != NULL);
+    uint32_t live = 0xFFFFFFFFu;
+    system_write_checkpoint_data(cp, &live, sizeof live);
+    checkpoint_close(cp);
+    cp = checkpoint_open_read(CP_PATH);
+    ASSERT_TRUE(cp != NULL);
+    checkpoint_read_sparse(cp, got, sizeof got, PAGE);
+    ASSERT_EQ_INT(checkpoint_has_error(cp), 1);
+    checkpoint_close(cp);
+    cp_unlink();
+}
+
 // The filename length in its own right: it is in the v2 BLOCK HEADER, below the
 // system_read_checkpoint_data layer the helpers above sit on, so it has its own
 // bounded reader and needs its own test.  The block header stores the save
@@ -747,6 +823,9 @@ int main(void) {
     RUN(bounded_count_refuses_over_cap);
     RUN(bounded_string_terminates_what_the_writer_did_not);
     RUN(bounded_string_refuses_over_cap);
+    RUN(bounded_blob_round_trips_and_refuses_over_cap);
+    RUN(sparse_pages_round_trip_and_refuse_a_bad_index);
+    RUN(sparse_page_count_is_bounded);
     RUN(block_header_filename_length_is_bounded);
     RUN(matching_tags_round_trip);
     RUN(swapped_same_sized_blocks_fail_by_name);
