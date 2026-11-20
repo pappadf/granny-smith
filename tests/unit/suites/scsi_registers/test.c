@@ -433,6 +433,111 @@ TEST(a_completed_command_leaves_no_staged_bytes) {
     scsi_delete(scsi);
 }
 
+// ============================================================
+// MESSAGE OUT through the shared message session
+// ============================================================
+
+// Select TARGET and run TEST UNIT READY to STATUS, then raise ATN under the
+// ACK of the status byte: the target answers with MESSAGE OUT.  `first` is the
+// first message byte, latched in ODR before ACK drops; `atn` says whether the
+// initiator still holds ATN (more bytes to come) when it does.
+static scsi_t *enter_message_out(uint8_t first, bool atn) {
+    scsi_t *scsi = attach_disk();
+    wr(scsi, ODR, 1 << TARGET | 1 << 7);
+    wr(scsi, ICR, ICR_SEL);
+    wr(scsi, ICR, ICR_SEL | ICR_BSY);
+    wr(scsi, ICR, ICR_SEL);
+    for (int i = 0; i < 6; i++) {
+        wr(scsi, ODR, 0x00);
+        wr(scsi, ICR, ICR_DB | ICR_ACK);
+        wr(scsi, ICR, ICR_DB);
+    }
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_status);
+    wr(scsi, ICR, ICR_ACK); // ACK the status byte: REQ drops
+    wr(scsi, ICR, ICR_ACK | ICR_ATN); // ...and ATN under it: the target goes to MESSAGE OUT
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_message_out);
+    wr(scsi, ODR, first);
+    wr(scsi, ICR, atn ? (ICR_DB | ICR_ATN) : ICR_DB); // ACK released: the target takes the byte
+    return scsi;
+}
+
+// One more MESSAGE OUT byte over the REQ/ACK handshake.  The initiator drops
+// ATN before the ACK of the LAST byte (SCSI-2 5.1.9), which is how the target
+// knows the message is over.
+static void message_out_byte(scsi_t *scsi, uint8_t byte, bool last) {
+    uint8_t atn = last ? 0 : ICR_ATN;
+    wr(scsi, ODR, byte);
+    wr(scsi, ICR, ICR_DB | atn);
+    wr(scsi, ICR, ICR_DB | atn | ICR_ACK);
+    wr(scsi, ICR, ICR_DB | atn);
+}
+
+// Read one MESSAGE IN byte over the REQ/ACK handshake.
+static uint8_t message_in_byte(scsi_t *scsi) {
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_message_in);
+    uint8_t b = rd(scsi, CDR);
+    wr(scsi, ICR, ICR_ACK);
+    wr(scsi, ICR, 0);
+    return b;
+}
+
+// A single-byte message completes the command with GOOD status, as it always
+// did: the 5380 path has no other use for one.
+TEST(message_out_single_byte_completes_with_good_status) {
+    scsi_t *scsi = enter_message_out(0x80, false); // IDENTIFY, LUN 0
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_status);
+    ASSERT_EQ_INT(rd(scsi, CDR), 0x00); // GOOD
+    scsi_delete(scsi);
+}
+
+// ABORT ($06) and BUS DEVICE RESET ($0C) release the bus.
+TEST(message_out_abort_goes_bus_free) {
+    scsi_t *scsi = enter_message_out(0x06, false);
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_bus_free);
+    scsi_delete(scsi);
+    scsi = enter_message_out(0x0C, false);
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_bus_free);
+    scsi_delete(scsi);
+}
+
+// An extended message is several bytes long, and the target keeps MESSAGE OUT
+// while ATN says more are coming.  The 5380 path used to decode each byte on
+// its own: the $01 that opens an SDTR was "unhandled -- complete with GOOD
+// status", so the target walked off to STATUS after the first byte and the
+// other four landed in the wrong phase.  MESH and the 53C8xx always ran the
+// whole message through scsi_msgsession; now the 5380 does too, and the
+// target answers the SDTR -- asynchronous, offset 0, the only transfer mode a
+// 5380 has -- before completing.
+TEST(message_out_sdtr_is_collected_and_answered) {
+    scsi_t *scsi = enter_message_out(0x01, true); // EXTENDED ...
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_message_out); // ...more to come
+    message_out_byte(scsi, 0x03, false); // length
+    message_out_byte(scsi, 0x01, false); // SDTR
+    message_out_byte(scsi, 0x19, false); // period 100 ns
+    message_out_byte(scsi, 0x0F, true); // offset 15, the last byte
+    ASSERT_EQ_INT(message_in_byte(scsi), 0x01); // EXTENDED
+    ASSERT_EQ_INT(message_in_byte(scsi), 0x03);
+    ASSERT_EQ_INT(message_in_byte(scsi), 0x01); // SDTR
+    ASSERT_EQ_INT(message_in_byte(scsi), 0x19); // the period stands
+    ASSERT_EQ_INT(message_in_byte(scsi), 0x00); // offset 0: asynchronous
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_status);
+    ASSERT_EQ_INT(rd(scsi, CDR), 0x00); // GOOD
+    ASSERT_EQ_INT(scsi->chip5380->msg.out_len, 0); // the session is spent
+    scsi_delete(scsi);
+}
+
+// An extended message nobody implements is rejected (SCSI-2 6.6.2), not
+// swallowed.
+TEST(message_out_unknown_extended_message_is_rejected) {
+    scsi_t *scsi = enter_message_out(0x01, true);
+    message_out_byte(scsi, 0x02, false); // length 2
+    message_out_byte(scsi, 0x7F, false); // a vendor code
+    message_out_byte(scsi, 0x00, true);
+    ASSERT_EQ_INT(message_in_byte(scsi), 0x07); // MESSAGE REJECT
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_status);
+    scsi_delete(scsi);
+}
+
 int main(void) {
     make_disk();
     RUN(phase_wire_bits_match_ansi_table_5_1);
@@ -450,6 +555,10 @@ int main(void) {
     RUN(test_select_with_no_target_bit_goes_free);
     RUN(test_empty_cdrom_drive_answers_selection);
     RUN(test_select_of_absent_id_goes_free);
+    RUN(message_out_single_byte_completes_with_good_status);
+    RUN(message_out_abort_goes_bus_free);
+    RUN(message_out_sdtr_is_collected_and_answered);
+    RUN(message_out_unknown_extended_message_is_rejected);
     unlink(g_path);
     printf("All scsi_registers tests passed\n");
     return 0;

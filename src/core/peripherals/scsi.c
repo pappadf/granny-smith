@@ -467,6 +467,7 @@ void scsi_5380_bus_freed(scsi_t *bus) {
     if (!chip)
         return;
     chip->end_of_dma = false;
+    scsi_msg_reset(&chip->msg); // no message conversation survives a disconnect
 }
 
 // One byte of a bus-master DATA OUT, through this chip's handshake model.
@@ -502,6 +503,63 @@ void scsi_5380_dma_push_byte(scsi_t *bus, uint8_t byte) {
 // ============================================================================
 // Memory Interface
 // ============================================================================
+
+// What a 5380 can agree to in a negotiation: it has no synchronous mode at
+// all (every transfer is REQ/ACK interlocked), so an SDTR is answered with
+// offset 0, asynchronous, at whatever period was offered; and it is narrow.
+static const scsi_msg_caps_t SCSI_5380_MSG_CAPS = {.min_period = 0, .max_offset = 0, .wide = false};
+
+// The ACK ending a MESSAGE OUT byte's handshake: the target takes the byte
+// from ODR into the message session (scsi_msgsession.c, the one MESH and the
+// 53C8xx use).  While ATN stays asserted the initiator has more to send, so
+// the target asks for the next byte; once ATN is dropped (before the last
+// byte's ACK, SCSI-2 5.1.9) the message is over and the session parses it.
+//
+// This used to decode each byte on its own -- IDENTIFY, ABORT/BUS DEVICE
+// RESET, "anything else completes with GOOD status" -- so the $01 that opens
+// an extended message ended the command after its first byte.
+static void message_out_ack(scsi_t *scsi) {
+    scsi_5380_t *chip = scsi->chip5380;
+    if (!scsi_msg_collect(&chip->msg, chip->reg.odr))
+        LOG(1, "scsi: MESSAGE OUT byte $%02X dropped (message too long)", chip->reg.odr);
+    if (chip->reg.icr & ICR_ATN) {
+        scsi->bus.req = true; // more to come
+        return;
+    }
+    scsi_msg_result_t r;
+    scsi_msg_complete(&chip->msg, &SCSI_5380_MSG_CAPS, &r);
+    if (r.abort) {
+        phase_free(scsi); // ABORT / BUS DEVICE RESET: the target lets go of the bus
+        return;
+    }
+    if (r.incomplete)
+        LOG(1, "scsi: MESSAGE OUT ended mid extended message (%u bytes) -- ignored", chip->msg.out_len);
+    uint8_t reply;
+    if (scsi_msg_next(&chip->msg, &reply)) {
+        phase_message_in(scsi, reply); // the target answers (SDTR, WDTR, MESSAGE REJECT)
+        return;
+    }
+    // Nothing to answer (an IDENTIFY, a NO OPERATION...): the command
+    // completes with GOOD status, as the 5380 path always has.
+    scsi_msg_reset(&chip->msg);
+    phase_status(scsi, STATUS_GOOD);
+}
+
+// The ACK ending a MESSAGE IN byte: the next byte of a reply to MESSAGE OUT,
+// GOOD status once the reply is out, or -- COMMAND COMPLETE accepted -- bus
+// free.
+static void message_in_ack(scsi_t *scsi) {
+    scsi_5380_t *chip = scsi->chip5380;
+    uint8_t next;
+    if (scsi_msg_next(&chip->msg, &next)) {
+        phase_message_in(scsi, next);
+    } else if (chip->msg.in_n) {
+        scsi_msg_reset(&chip->msg);
+        phase_status(scsi, STATUS_GOOD);
+    } else {
+        phase_free(scsi);
+    }
+}
 
 // Write to the initiator command register
 static void write_icr(scsi_t *scsi, uint8_t val) {
@@ -591,24 +649,10 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
         } else if (scsi->bus.phase == scsi_status)
             phase_message_in(scsi, MSG_CMD_COMPLETE);
         else if (scsi->bus.phase == scsi_message_in)
-            phase_free(scsi);
-        else if (scsi->bus.phase == scsi_message_out) {
-            // Process the message byte received from the initiator.
-            uint8_t msg = scsi->chip5380->reg.odr;
-            if (msg >= 0x80) {
-                // IDENTIFY: LUN in bits 0-2, disconnect privilege in bit 6.
-                // Both branches of the saved_phase test currently complete with
-                // STATUS_GOOD; the dispatch is kept as a hook for future
-                // phase-specific message handling.
-                phase_status(scsi, STATUS_GOOD);
-            } else if (msg == 0x06 || msg == 0x0C) {
-                // ABORT or BUS DEVICE RESET: go bus free
-                phase_free(scsi);
-            } else {
-                // Unhandled message — complete with GOOD status
-                phase_status(scsi, STATUS_GOOD);
-            }
-        } else if (scsi->bus.phase == scsi_data_in) {
+            message_in_ack(scsi);
+        else if (scsi->bus.phase == scsi_message_out)
+            message_out_ack(scsi);
+        else if (scsi->bus.phase == scsi_data_in) {
             if (scsi->buf.size == 0)
                 phase_status(scsi, STATUS_GOOD);
             else

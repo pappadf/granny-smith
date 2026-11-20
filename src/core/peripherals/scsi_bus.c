@@ -363,7 +363,7 @@ void phase_message_out(scsi_t *scsi) {
 // Transition SCSI bus to status phase
 void phase_status(scsi_t *scsi, uint8_t status) {
     assert(scsi->bus.phase == scsi_command || scsi->bus.phase == scsi_data_in || scsi->bus.phase == scsi_data_out ||
-           scsi->bus.phase == scsi_message_out);
+           scsi->bus.phase == scsi_message_out || scsi->bus.phase == scsi_message_in);
 
     bool was_data_in = (scsi->bus.phase == scsi_data_in);
 
@@ -401,9 +401,10 @@ void phase_status(scsi_t *scsi, uint8_t status) {
     scsi_5380_entered_status(scsi, was_data_in);
 }
 
-// Transition SCSI bus to message-in phase
+// Transition SCSI bus to message-in phase: COMMAND COMPLETE after STATUS, or
+// a byte of the target's reply to a MESSAGE OUT (the 5380's message session)
 void phase_message_in(scsi_t *scsi, uint8_t message) {
-    assert(scsi->bus.phase == scsi_status);
+    assert(scsi->bus.phase == scsi_status || scsi->bus.phase == scsi_message_out || scsi->bus.phase == scsi_message_in);
 
     scsi->bus.phase = scsi_message_in;
     scsi->bus.req = scsi->bus.bsy = true;

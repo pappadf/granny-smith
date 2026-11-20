@@ -17,6 +17,7 @@ S := ../../../../src/core
 EXTRA_SRCS   := $(S)/job/seam.c \
                 $(S)/peripherals/scsi.c \
                 $(S)/peripherals/scsi_bus.c \
+                $(S)/peripherals/scsi_msgsession.c \
                 $(S)/event/event.c \
                 $(S)/peripherals/scsi_cdrom.c \
                 $(S)/storage/image.c \
