@@ -13,8 +13,8 @@
 // mirrors the device block every $20000 bytes, as implemented by the GLUE
 // ASIC (344S0602).
 
-#include "mac030_glue.h"
-#include "mac030_glue_io.h"
+#include "glue_io.h"
+#include "m68k_board.h"
 #include "machine.h"
 #include "slot_tables.h"
 #include "system_internal.h" // full config_t definition
@@ -49,9 +49,9 @@
 
 // SE/30 I/O region: 256 MB, mirrored every $20000
 // (I/O window offsets + the dispatcher are shared with IIcx/IIx — see
-// mac030_glue_io.c.)
+// glue_io.c.)
 
-// Interrupt source bits: the family's MAC030_GLUE_IRQ_* (mac030_glue.h).
+// Interrupt source bits: the family's M68K_BOARD_IRQ_* (m68k_board.h).
 
 // SE/30 Video RAM: 64 KB at logical $FEE00000 (NuBus slot E, offset $E00000)
 #define SE30_VRAM_BASE 0xFEE00000UL
@@ -89,10 +89,10 @@
 // SE/30-specific state
 // ============================================================
 
-// SE/30 state is the unified GLUE state struct (mac030_glue.h).  The SE/30
+// SE/30 state is the unified GLUE state struct (m68k_board.h).  The SE/30
 // uses the vram/vrom/video_card members for its slot-$E built-in video and
 // leaves the IIcx soft-power members unused.
-typedef mac030_glue_state_t se30_state_t;
+typedef glue_state_t se30_state_t;
 
 // Helper: return the SE/30-specific state from a config handle
 static inline se30_state_t *se30_state(config_t *cfg) {
@@ -120,7 +120,7 @@ static void se30_via1_output(void *context, uint8_t port, uint8_t output);
 // On reset, ROM is overlaid at $00000000 for the initial vector fetch.
 // The ROM boot code disables the overlay by writing 0 to VIA1 PA4.
 static void se30_set_rom_overlay(config_t *cfg, bool overlay) {
-    mac030_rom_overlay_set_line(&se30_state(cfg)->overlay, overlay);
+    m68k_board_overlay_set_line(&se30_state(cfg)->overlay, overlay);
 }
 
 // ============================================================
@@ -131,8 +131,8 @@ static void se30_set_rom_overlay(config_t *cfg, bool overlay) {
 // ============================================================
 // I/O dispatcher
 // ============================================================
-// Shared with IIcx/IIx — see mac030_glue_io.c.  se30_init fills a
-// mac030_glue_io_t and registers it as the I/O region's context.
+// Shared with IIcx/IIx — see glue_io.c.  se30_init fills a
+// board_io_t and registers it as the I/O region's context.
 
 // ============================================================
 // Memory layout
@@ -146,7 +146,7 @@ static void se30_set_rom_overlay(config_t *cfg, bool overlay) {
 // VROM: $FEFF8000-$FEFFFFFF (32 KB, read-only, declaration ROM)
 // ROM overlay at $00000000 is active on reset.
 // The SE/30's share of the memory layout: its built-in video.  RAM, the ROM
-// window and the I/O dispatcher are the family's (mac030_glue_memory_layout);
+// window and the I/O dispatcher are the family's (glue_memory_layout);
 // this is the part only a machine with a framebuffer on the board has.
 static void se30_memory_layout_tail(config_t *cfg) {
     se30_state_t *se30 = se30_state(cfg);
@@ -176,8 +176,8 @@ static void se30_memory_layout_tail(config_t *cfg) {
     }
 
     // --- ROM overlay: map ROM at $00000000 on reset ---
-    mac030_rom_overlay_init_line(&se30->overlay, cfg, cfg->machine->name);
-    mac030_rom_overlay_arm(&se30->overlay);
+    m68k_board_overlay_init_line(&se30->overlay, cfg, cfg->machine->name);
+    m68k_board_overlay_arm(&se30->overlay);
 }
 
 // ============================================================
@@ -221,7 +221,7 @@ static void se30_via1_output(void *context, uint8_t port, uint8_t output) {
         // vSync request: the video driver's interrupt handler acks each
         // VBL by pulsing it high, and a driver that closes leaves it high.
         if (output & 0x40)
-            mac030_glue_slot_irq_source(cfg, /*PA5 = slot $E*/ 5, false);
+            glue_slot_irq_source(cfg, /*PA5 = slot $E*/ 5, false);
     }
 }
 
@@ -279,7 +279,7 @@ static void se30_trigger_vbl(config_t *cfg) {
     // leaves it high; raising the request anyway reached the ROM's slot
     // dispatcher with no handler in SlotQDT -- SysError 51, a Sad Mac.
     if (se30_vsync_irq_enabled(cfg))
-        mac030_glue_slot_irq_source(cfg, /*PA5 = slot $E*/ 5, true);
+        glue_slot_irq_source(cfg, /*PA5 = slot $E*/ 5, true);
     mac_vbl_pulse(cfg->via1);
 
     // Deassert slot $E after the vertical blanking interval ends.
@@ -304,7 +304,7 @@ static void se30_vbl_slot_deassert(void *context, uint64_t data) {
     // Through the aggregate, exactly as the assert was: poking VIA2 port A
     // directly would clear the pin but leave the chipset's /SLOTIRQ mask
     // holding, so CA1 would stay asserted with no source behind it.
-    mac030_glue_slot_irq_source(cfg, 5, false);
+    glue_slot_irq_source(cfg, 5, false);
 }
 
 // ============================================================
@@ -349,7 +349,7 @@ static const nubus_slot_decl_t se30_slots[] = {
 // After nubus_init: borrow the slot-$E card's VRAM/VROM and wire them into the
 // memory map at both their TT-identity bases and their page-table-mapped
 // physical aliases, so the PMMU and the I/O dispatcher resolve the apertures.
-// TT1 itself is set by mac030_glue_init right after the PMMU is built (the SE/30
+// TT1 itself is set by glue_init right after the PMMU is built (the SE/30
 // ROM never writes TT registers; the GLUE chip routes $F0-$FF to NuBus, and TT1
 // identity-maps that for supervisor FCs so phys_to_host resolves the VRAM).
 static void se30_post_nubus(config_t *cfg) {
@@ -379,28 +379,28 @@ static void se30_post_nubus(config_t *cfg) {
 }
 
 // Restore the card-owned VRAM/VROM bytes from a checkpoint (before the shared
-// MMU-register restore that mac030_glue_init performs).
+// MMU-register restore that glue_init performs).
 
 // SE/30 board: GLUE family with built-in slot-$E video; bus-error window covers
 // only slots $9..$D (slot $E is the mapped built-in video).
-static const mac030_board_desc_t se30_board_desc = {
+static const m68k_board_desc_t se30_board_desc = {
     .chipset = "GLUE",
     .rom_base = 0x40000000UL,
     .rom_end = 0x50000000UL,
-    .io_ranges = glue_io_ranges,
-    .io_mirror_mask = MAC030_GLUE_IO_MIRROR,
-    .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
+    .io_ranges = glue_io_ranges_tbl,
+    .io_mirror_mask = GLUE_IO_MIRROR,
+    .io_unmapped_read = 0xFF, // undecoded island reads float high (see m68k_board.h)
     .bus_err_lo = NUBUS_BERR_LO,
     .bus_err_hi = NUBUS_BERR_HI_EXCL_SLOT_E, // the PDS lives in $E
     .asc_mix = ASC_MIX_SUM, // SE/30 board sums both channels to the speaker
 };
 
-static const mac030_glue_board_t se30_board = {
+static const glue_board_t se30_board = {
     .desc = &se30_board_desc,
     .via1_output = se30_via1_output,
-    .via1_shift_out = NULL, // ADB reads SR itself (BUG-004, mac030_glue.h)
-    .via2_output = mac030_glue_via_output_ignored,
-    .via2_shift_out = mac030_glue_via_shift_out_ignored,
+    .via1_shift_out = NULL, // ADB reads SR itself (BUG-004, m68k_board.h)
+    .via2_output = glue_via_output_ignored,
+    .via2_shift_out = glue_via_shift_out_ignored,
     .setup_id = se30_setup_id,
     .memory_layout_tail = se30_memory_layout_tail,
     .pre_devices = se30_pre_devices,
@@ -417,7 +417,7 @@ static const mac030_glue_board_t se30_board = {
 // hooks -- a per-machine workaround for a generic mechanism that was missing.
 // builtin_se30_video.c implements the ordinary NuBus card checkpoint ops now,
 // so the shared nubus_checkpoint_save/_restore carry them and both hooks are
-// gone from mac030_glue_board_t.
+// gone from glue_board_t.
 
 // ============================================================
 // Machine descriptor
@@ -451,8 +451,8 @@ const hw_profile_t machine_se30 = {
 
     // 32-bit address space
     .address_bits = 32,
-    .ram_default = MAC030_GLUE_RAM_DEFAULT, // 8 MB (matches dialog RAM default)
-    .ram_max = MAC030_GLUE_RAM_MAX, // 128 MB
+    .ram_default = GLUE_RAM_DEFAULT, // 8 MB (matches dialog RAM default)
+    .ram_max = GLUE_RAM_MAX, // 128 MB
     .rom_size = 0x040000, // 256 KB
 
     // Configuration-dialog shape

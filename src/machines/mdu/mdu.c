@@ -5,17 +5,17 @@
 // The one MDU+RBV-family substrate — see mdu.h.  IIci and IIsi share this; the
 // reset/teardown/checkpoint/VBL lifecycle is the former per-machine clones,
 // unified (the only IIci/IIsi delta is the IIsi's Egret, handled by an
-// `if (st->egret)` — IIci leaves egret NULL in the unified mac030_mdu_state_t).
+// `if (st->egret)` — IIci leaves egret NULL in the unified mdu_state_t).
 
 #include "mdu.h"
 #include "appletalk.h"
 #include "log.h"
 
 #include "config_seed.h"
-#include "mac030_glue.h" // shared core/finish/reset/irq/build_mmu + board desc
+#include "m68k_board.h" // shared core/finish/reset/irq/build_mmu + board desc
 #include "mac_host_io.h" // mac_fd_*/mac_input_*
 #include "machine_teardown.h" // the shared config_t-owned delete chain
-#include "mdu_io.h" // mac030_mdu_state_t + mdu_io_bind
+#include "mdu_io.h" // mdu_state_t + mdu_io_bind
 
 #include "adb.h"
 #include "asc.h"
@@ -44,16 +44,16 @@
 // The machine-level category every family substrate logs under (915a7ea).
 LOG_USE_CATEGORY_NAME("board");
 
-static inline const mac030_mdu_board_t *mdu_board(config_t *cfg) {
-    return (const mac030_mdu_board_t *)cfg->machine->board;
+static inline const mdu_board_t *mdu_board(config_t *cfg) {
+    return (const mdu_board_t *)cfg->machine->board;
 }
 
-static inline mac030_mdu_state_t *mdu_st(config_t *cfg) {
-    return (mac030_mdu_state_t *)cfg->machine_context;
+static inline mdu_state_t *mdu_st(config_t *cfg) {
+    return (mdu_state_t *)cfg->machine_context;
 }
 
-int mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *board) {
-    mac030_mdu_state_t *st = calloc(1, sizeof(*st));
+int mdu_init(config_t *cfg, checkpoint_t *cp, const mdu_board_t *board) {
+    mdu_state_t *st = calloc(1, sizeof(*st));
     if (!st) {
         LOG(0, "Error: out of memory allocating the machine state for %s", cfg->machine->name);
         return -1;
@@ -63,10 +63,10 @@ int mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *b
     // Shared II-family core (memory_map, cpu-from-profile, scheduler) + RTC + SCC +
     // VIA1.  Note: no VIA2 (the RBV replaces it), and rtc_set_via is left to the
     // machine (IIci bit-bangs the RTC on VIA1; the IIsi drives it via Egret).
-    mac030_build_core(cfg, board->desc, cp);
+    m68k_board_build_core(cfg, board->desc, cp);
     machine_part_irq(cfg, cp);
 
-    mac030_build_lowspeed(cfg, cp, NULL); // NULL: the family-default SCC IRQ
+    m68k_board_build_lowspeed(cfg, cp, NULL); // NULL: the family-default SCC IRQ
 
     // Derived from the CPU clock, not hardcoded: this substrate serves the
     // 25 MHz IIci and the 20 MHz IIsi, so a single literal is wrong for one of
@@ -75,7 +75,7 @@ int mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *b
     // VIA timer test overshoot its interrupt-count window.
     machine_part_begin(cfg, cp, "via1");
     cfg->via1 = via_init(NULL, cfg->scheduler, via_freq_factor_for_clock(cfg->machine->freq), "via1",
-                         board->via1_output, board->via1_shift_out, mac030_glue_via1_irq, cfg, cp);
+                         board->via1_output, board->via1_shift_out, m68k_board_via1_irq, cfg, cp);
     machine_part(cfg, cp, "via1", part_save_via, cfg->via1);
     // Exact-rational phi2: the integer divisor above rounds, and on this
     // substrate that rounding is not negligible -- the IIsi lands 1.80% slow, the IIci 0.27%.  via_set_exact_clock
@@ -88,7 +88,7 @@ int mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *b
     if (board->build_devices(cfg, cp) != 0)
         return -1;
 
-    mac030_glue_finish(cfg, cp, &st->mdu_io);
+    m68k_board_finish(cfg, cp, &st->mdu_io);
     return 0;
 }
 
@@ -96,8 +96,8 @@ void part_save_rbv(void *obj, checkpoint_t *cp) {
     rbv_checkpoint(obj, cp);
 }
 
-static int mdu_init(config_t *cfg, checkpoint_t *cp) {
-    if (mac030_mdu_init(cfg, cp, mdu_board(cfg)) != 0)
+static int mdu_substrate_init(config_t *cfg, checkpoint_t *cp) {
+    if (mdu_init(cfg, cp, mdu_board(cfg)) != 0)
         return -1;
     return 0;
 }
@@ -105,8 +105,8 @@ static int mdu_init(config_t *cfg, checkpoint_t *cp) {
 // The MDU board's /RESET net: the overlay and the common devices (the
 // shared GLUE-family half), plus the RBV, which stands where VIA2 does.
 static void mdu_bus_reset(config_t *cfg) {
-    mac030_mdu_state_t *st = mdu_st(cfg);
-    mac030_glue_bus_reset(cfg, &st->overlay);
+    mdu_state_t *st = mdu_st(cfg);
+    m68k_board_bus_reset(cfg, &st->overlay);
     rbv_reset(st->rbv);
 }
 
@@ -120,7 +120,7 @@ static void mdu_power_on(config_t *cfg) {
 // mmu → asc, then the shared chain from floppy and adb on (machine_teardown.h).
 // Egret goes before the adb it was handed.
 static void mdu_teardown(config_t *cfg) {
-    mac030_mdu_state_t *st = mdu_st(cfg);
+    mdu_state_t *st = mdu_st(cfg);
     if (st) {
         if (st->egret) {
             egret_delete(st->egret);
@@ -162,7 +162,7 @@ static void mdu_teardown(config_t *cfg) {
 // RvSInt numbering is logical: 0 is the built-in video (RvIRQ0, bit 6) and
 // 1..6 are RvIRQ1..6, so NuBus $9..$E map to 1..6.
 static void mdu_nubus_slot_irq(config_t *cfg, int slot, bool active) {
-    mac030_mdu_state_t *st = mdu_st(cfg);
+    mdu_state_t *st = mdu_st(cfg);
     if (!st || !st->rbv || slot < 0x9 || slot > 0xE)
         return;
     int logical = slot - 0x8;
@@ -178,7 +178,7 @@ static void mdu_nubus_slot_irq(config_t *cfg, int slot, bool active) {
 
 // RBV combined interrupt -> 68030 IPL 2 (replaces the GLUE VIA2 source).
 static void mdu_rbv_irq(void *context, bool active) {
-    mac030_glue_update_ipl((config_t *)context, MDU_IRQ_RBV, active);
+    m68k_board_update_ipl((config_t *)context, MDU_IRQ_RBV, active);
 }
 
 void mdu_power_off(void *context) {
@@ -199,7 +199,7 @@ static void mdu_rbv_mode(void *context, int depth_code) {
 }
 
 void mdu_scsi_irq(void *context, bool irq, bool drq) {
-    mac030_mdu_state_t *st = mdu_st((config_t *)context);
+    mdu_state_t *st = mdu_st((config_t *)context);
     // The 5380 is built before the RBV: nothing to flag until it exists
     if (!st->rbv)
         return;
@@ -216,7 +216,7 @@ static void mdu_asc_irq(void *context, bool active) {
 }
 
 void mdu_wire_rbv(config_t *cfg) {
-    mac030_mdu_state_t *st = mdu_st(cfg);
+    mdu_state_t *st = mdu_st(cfg);
     rbv_set_irq_callback(st->rbv, mdu_rbv_irq, cfg);
     rbv_set_power_off_callback(st->rbv, mdu_power_off, cfg);
     rbv_set_mode_callback(st->rbv, mdu_rbv_mode, cfg);
@@ -270,7 +270,7 @@ const builtin_video_desc_t mdu_builtin_video_iisi = {
 };
 
 const machine_substrate_t mdu_substrate = {
-    .init = mdu_init,
+    .init = mdu_substrate_init,
     .bus_reset = mdu_bus_reset,
     .power_on = mdu_power_on,
     .teardown = mdu_teardown,

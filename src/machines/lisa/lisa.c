@@ -972,7 +972,7 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part(cfg, checkpoint, "memory", part_save_memory, cfg->memory_map);
 
     // The profile is the source of truth for the CPU model, as it is for the
-    // clock below and as mac030_build_core states for the II families.  Both
+    // clock below and as m68k_board_build_core states for the II families.  Both
     // profiles behind this substrate declare 68000, so this reads back exactly
     // what the constant said -- but system_create derives cfg->cpu_arch from
     // the profile unconditionally, so a profile that ever disagreed with a

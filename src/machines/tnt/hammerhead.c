@@ -234,7 +234,7 @@ void tnt_hh_init(config_t *cfg) {
     // Three things were wrong with it: emulated
     // hardware behaviour depended on the process environment, so a run was
     // not reproducible; it contradicted the rule that a machine's facts come
-    // from its profile (mac030_glue.h:57-60, ARCHITECTURE.md:492); and
+    // from its profile (m68k_board.h, ARCHITECTURE.md); and
     // `l2cfg_sticky` lived inside st->hh, which tnt_checkpoint_save writes
     // whole -- so the flag ESCAPED INTO THE CHECKPOINT and a file saved with
     // the variable set restored the sticky behaviour on a machine that never

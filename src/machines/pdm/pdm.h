@@ -20,10 +20,10 @@
 #ifndef GS_MACHINES_PDM_H
 #define GS_MACHINES_PDM_H
 
+#include "board_io.h" // board_io_t, the island decode engine
 #include "display.h"
 #include "display_class.h"
 #include "display_ramdac.h"
-#include "mac030_io.h" // mac030_io_t, the island decode engine
 #include "machine.h"
 #include "memory.h"
 #include "nubus.h" // struct nubus_slot_decl, for the shared slot table below
@@ -263,7 +263,7 @@ typedef struct pdm_state {
     memory_interface_t bart_reg_interface; // $F0000000 BART register file
     // AMIC's island decode (amic.c): its range table bound to this machine's
     // VIA and SCC.  Host pointers, rebuilt at init, never checkpointed.
-    mac030_io_t amic_io;
+    board_io_t amic_io;
 
     // Derived presentation state, never checkpointed
     pdm_video_t video; // scanout descriptor (ariel.c)

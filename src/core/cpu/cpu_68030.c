@@ -416,7 +416,7 @@ void cpu_reset_to_vector_68030(cpu_t *restrict cpu) {
 
     // The PMMU is INSIDE the 68030, so its reset belongs here and not on the
     // board's /RESET net.  The family bus_reset handlers used to clear it --
-    // mac030_glue_reset took an `mmu` argument for exactly this -- which put
+    // the 68k board reset took an `mmu` argument for exactly this -- which put
     // CPU-internal state on the wrong side of the package boundary, the only
     // line the hardware actually draws.  The 68040 equivalent was already on
     // this side, in cpu_hardware_reset_040.

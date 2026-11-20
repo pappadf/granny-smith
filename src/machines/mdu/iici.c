@@ -21,10 +21,10 @@
 //     RvMonP via a mode callback.
 //   * ADB / RTC use the classic VIA1 path (no Egret) — identical to IIcx.
 
-#include "mac030_glue.h"
+#include "m68k_board.h"
 #include "machine.h"
 #include "machine_checkpoint.h"
-#include "mdu.h" // mdu_substrate + mac030_mdu_board_t
+#include "mdu.h" // mdu_substrate + mdu_board_t
 #include "slot_tables.h"
 #include "system_internal.h"
 
@@ -62,7 +62,7 @@ LOG_USE_CATEGORY_NAME("board");
 // ============================================================
 
 static void iici_set_rom_overlay(config_t *cfg, bool overlay) {
-    mac030_rom_overlay_set_line(&iici_state(cfg)->overlay, overlay);
+    m68k_board_overlay_set_line(&iici_state(cfg)->overlay, overlay);
 }
 
 // ============================================================
@@ -135,10 +135,10 @@ static void iici_memory_layout_init(config_t *cfg) {
     iici_split_ram_banks(ram_size, &bank_a_size, &bank_b_size);
 
     uint8_t *bank_b = ram_base + bank_a_size;
-    mac030_map_mirrored(0, IICI_BANK_B_PHYS >> MEM_PAGE_SHIFT, ram_base, bank_a_size >> MEM_PAGE_SHIFT, page_fill_68k,
-                        true);
-    mac030_map_mirrored(IICI_BANK_B_PHYS >> MEM_PAGE_SHIFT, IICI_BANK_WINDOW >> MEM_PAGE_SHIFT, bank_b,
-                        bank_b_size >> MEM_PAGE_SHIFT, page_fill_68k, true);
+    m68k_board_map_mirrored(0, IICI_BANK_B_PHYS >> MEM_PAGE_SHIFT, ram_base, bank_a_size >> MEM_PAGE_SHIFT,
+                            page_fill_68k, true);
+    m68k_board_map_mirrored(IICI_BANK_B_PHYS >> MEM_PAGE_SHIFT, IICI_BANK_WINDOW >> MEM_PAGE_SHIFT, bank_b,
+                            bank_b_size >> MEM_PAGE_SHIFT, page_fill_68k, true);
 
     // Teach the PMMU-side physical resolver the same two-bank layout so
     // table walks and TLB fills resolve Bank B (no-op when bank_b_size == 0
@@ -155,7 +155,7 @@ static void iici_memory_layout_init(config_t *cfg) {
         }
     }
 
-    mac030_io_fill_interface(&st->io_interface);
+    board_io_fill_interface(&st->io_interface);
     memory_map_add(cfg->memory_map, IICI_IO_BASE, IICI_IO_SIZE, "I/O", &st->io_interface, &st->mdu_io);
 
     // Wire any registered host regions (a socketed card's VRAM) and their
@@ -164,8 +164,8 @@ static void iici_memory_layout_init(config_t *cfg) {
     // is Bank A RAM, which the guest reaches through its own PMMU tables.
     mmu_host_regions_fill_pages(st->mmu, page_fill_68k, /*mode24_alias*/ true);
 
-    mac030_rom_overlay_init_line(&st->overlay, cfg, cfg->machine->name);
-    mac030_rom_overlay_arm(&st->overlay);
+    m68k_board_overlay_init_line(&st->overlay, cfg, cfg->machine->name);
+    m68k_board_overlay_arm(&st->overlay);
 }
 
 // ============================================================
@@ -215,13 +215,13 @@ static const nubus_slot_decl_t iici_slots[] = {
 // The IIci board descriptor: MDU+RBV hardware data, consumed
 // at init by the shared helpers.  ROM repeating through $4xxxxxxx; the 18-bit $40000 I/O
 // mirror; the shared MDU window table.
-static const mac030_board_desc_t iici_board_desc = {
+static const m68k_board_desc_t iici_board_desc = {
     .chipset = "MDU+RBV",
     .rom_base = IICI_ROM_START,
     .rom_end = IICI_ROM_END,
     .io_ranges = mdu_io_ranges_tbl,
     .io_mirror_mask = 0x0003FFFFUL,
-    .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
+    .io_unmapped_read = 0xFF, // undecoded island reads float high (see m68k_board.h)
     // NuBus expansion slots $9..$E bus-error on unmapped reads.  The built-in
     // video's $FBxxxxxx screen base is logical only: the guest's tables send
     // it to Bank A before this physical range is consulted.
@@ -238,8 +238,8 @@ static const mac030_board_desc_t iici_board_desc = {
 // Init / Teardown
 // ============================================================
 
-// IIci device construction (mac030_mdu_board_t.build_devices): everything after
-// the shared core/RTC/SCC/VIA1 prefix and before mac030_glue_finish.
+// IIci device construction (mdu_board_t.build_devices): everything after
+// the shared core/RTC/SCC/VIA1 prefix and before m68k_board_finish.
 static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     iici_state_t *st = iici_state(cfg);
     // The IIci bit-bangs the RTC on VIA1 (classic transceiver path).
@@ -289,9 +289,9 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part(cfg, checkpoint, "rbv", part_save_rbv, st->rbv);
     mdu_wire_rbv(cfg);
 
-    st->mmu = mac030_build_mmu(cfg, iici_board_desc.rom_base, iici_board_desc.rom_end);
+    st->mmu = m68k_board_build_mmu(cfg, iici_board_desc.rom_base, iici_board_desc.rom_end);
     if (!st->mmu)
-        return -1; // mac030_build_mmu reported the reason
+        return -1; // m68k_board_build_mmu reported the reason
     // No TT1 preset (the GLUE machines identity-map NuBus $F0-$FF with one).
     // Reset leaves TT0/TT1 disabled and this ROM never loads them, so its
     // tables govern slot space -- and they map the built-in video's screen
@@ -332,10 +332,10 @@ static const uint32_t iici_ram_options_kb[] = {1024,  2048,  4096,  5120,  8192,
 
 // IIci board: the shared mdu_substrate reads its data descriptor + VIA1 hooks
 // + the device-construction body.
-static const mac030_mdu_board_t iici_board = {
+static const mdu_board_t iici_board = {
     .desc = &iici_board_desc,
     .via1_output = iici_via1_output,
-    .via1_shift_out = NULL, // ADB reads SR itself (BUG-004, mac030_glue.h)
+    .via1_shift_out = NULL, // ADB reads SR itself (BUG-004, m68k_board.h)
     .build_devices = iici_build_devices,
 };
 

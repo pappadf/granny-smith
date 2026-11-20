@@ -8,7 +8,7 @@
 # -Wall -Wextra on every C build, minus one: -Wmissing-field-initializers
 # objects to positional initializers that stop before a struct's last
 # fields, and the I/O range and display timing tables are written that way
-# on purpose (mac030_io_range_t keeps its optional fields last "so
+# on purpose (board_io_range_t keeps its optional fields last "so
 # positional initializers stay valid").  WERROR=1 (set in CI) makes every
 # warning an error; it applies to compilation only, never to the link.
 WARN_CFLAGS := -std=gnu11 -Wall -Wextra -Wno-missing-field-initializers

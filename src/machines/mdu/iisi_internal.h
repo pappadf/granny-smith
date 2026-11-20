@@ -32,7 +32,7 @@ struct nubus_card;
 
 // IIsi state is the unified MDU+RBV state struct (mdu_io.h).  The IIsi uses
 // the egret companion.
-typedef mac030_mdu_state_t iisi_state_t;
+typedef mdu_state_t iisi_state_t;
 
 static inline iisi_state_t *iisi_state(config_t *cfg) {
     return (iisi_state_t *)cfg->machine_context;

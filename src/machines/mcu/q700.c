@@ -142,7 +142,7 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     // Bus-side physical resolver for the 040 walker: RAM at 0 through the
     // full 1 GiB aperture, the 1 MiB ROM mirroring through its window.
-    st->bus_mmu = mac030_build_bus_mmu040(cfg, 0x40000000u, desc->common.rom_base, desc->common.rom_end);
+    st->bus_mmu = m68k_board_build_bus_mmu040(cfg, 0x40000000u, desc->common.rom_base, desc->common.rom_end);
     if (!st->bus_mmu)
         return -1;
 
@@ -186,7 +186,7 @@ static const mcu_board_desc_t q700_board_desc = {
 static const mcu_board_t q700_board = {
     .desc = &q700_board_desc,
     .via1_output = q700_via1_output,
-    .via1_shift_out = NULL, // ADB reads SR itself (BUG-004, mac030_glue.h)
+    .via1_shift_out = NULL, // ADB reads SR itself (BUG-004, m68k_board.h)
     .via2_output = q700_via2_output,
     .build_devices = q700_build_devices,
 };

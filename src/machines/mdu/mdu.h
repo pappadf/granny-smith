@@ -4,7 +4,7 @@
 // mdu.h
 // The one MDU+RBV-family substrate:
 // the IIci and IIsi both bind `mdu_substrate`.  Their per-machine deltas live
-// in a mac030_mdu_board_t (named via hw_profile_t.board) — the board's data
+// in a mdu_board_t (named via hw_profile_t.board) — the board's data
 // descriptor, its VIA1 callbacks, and one build_devices hook that does the
 // machine-specific device construction (straps, ADB/Egret companion, SCSI,
 // ASC, SWIM, RBV, MMU, NuBus video, I/O bind, memory layout).  The shared
@@ -18,14 +18,14 @@
 #include "machine_profile.h" // machine_substrate_t
 #include "system_internal.h"
 
-struct mac030_board_desc;
+struct m68k_board_desc;
 
 // An MDU machine = its board descriptor (data) + VIA1 callbacks + a single
 // device-construction hook.  (Unlike GLUE there is no VIA2; the RBV replaces
 // it, and the companion — Egret on IIsi — plus the 2-bank RAM live inside
 // build_devices, which is the machine-specific body.)
-typedef struct mac030_mdu_board {
-    const struct mac030_board_desc *desc; // rom window, io map, slots, bus-error
+typedef struct mdu_board {
+    const struct m68k_board_desc *desc; // rom window, io map, slots, bus-error
 
     void (*via1_output)(void *context, uint8_t port, uint8_t value);
     void (*via1_shift_out)(void *context, uint8_t byte);
@@ -34,12 +34,12 @@ typedef struct mac030_mdu_board {
     // straps, ADB/Egret, SCSI, ASC, SWIM, RBV, MMU (+ any 2-bank), NuBus video,
     // mdu_io_bind, bus-error range, memory layout, and the checkpoint restore.
     int (*build_devices)(config_t *cfg, checkpoint_t *cp);
-} mac030_mdu_board_t;
+} mdu_board_t;
 
 // The shared MDU init: allocate the unified state, build the II-family core +
 // RTC/SCC/VIA1, run the board's build_devices, then finish.  An MDU machine's
 // substrate is just &mdu_substrate; this is what its init resolves to.
-int mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *board);
+int mdu_init(config_t *cfg, checkpoint_t *cp, const mdu_board_t *board);
 
 // The one MDU+RBV-family substrate (IIci + IIsi).
 extern const machine_substrate_t mdu_substrate;
@@ -48,9 +48,9 @@ extern const builtin_video_desc_t mdu_builtin_video_iici;
 extern const builtin_video_desc_t mdu_builtin_video_iisi;
 
 // IRQ source bits in cfg->rt.irq, routed by the GLUE table
-// (mac030_glue_update_ipl): the RBV at level 2 replaces the GLUE VIA2 and
+// (m68k_board_update_ipl): the RBV at level 2 replaces the GLUE VIA2 and
 // carries the combined slot/SCSI/sound IFR.  The same values as
-// MAC030_GLUE_IRQ_*; the IIsi's Egret rides VIA1's shift-register
+// M68K_BOARD_IRQ_*; the IIsi's Egret rides VIA1's shift-register
 // interrupt, so it needs no source of its own.
 #define MDU_IRQ_VIA1 (1 << 0)
 #define MDU_IRQ_RBV  (1 << 1)

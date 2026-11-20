@@ -1112,7 +1112,7 @@ void floppy_swim_write(floppy_t *floppy, unsigned reg, uint8_t byte) {
 //
 // `addr` here is a REGISTER INDEX (0-15), not a bus address.  Whoever owns the
 // window maps addresses onto it: the GLUE/MDU/MCU I/O tables via
-// MAC030_IO_STRIDE_512 (the chip's A0-A3 are wired to A9-A12), and the IIfx /
+// BOARD_IO_STRIDE_512 (the chip's A0-A3 are wired to A9-A12), and the IIfx /
 // Q900 IOP via swim_bypass_addr() (2-byte centres from +$20).  This file used
 // to bake the SE/30's `(addr >> 9) & 0x0F` in, which is why every register
 // aliased to index 0 through the IOP bypass.

@@ -224,7 +224,7 @@ def row_pdm_nubus_empty() {
 
     # The Ethernet ID PROM ($50F08000) and MACE ($50F0A000) windows are
     # declared in the AMIC decode with nothing behind them yet.  They read 0,
-    # NOT the $FF that was once proposed for them and that the five mac030
+    # NOT the $FF that was once proposed for them and that the five 68k II/Quadra
     # families float to: floating them high breaks mklinux-boot's pm7100 row,
     # which stops reaching the login screen because MkLinux probes for Ethernet
     # here and an all-ones ID PROM is a different answer from an empty one.

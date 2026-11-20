@@ -5,8 +5,8 @@
 // The construction prefix every PowerPC Macintosh family shares (PDM, TNT,
 // Gossamer): the memory map, the CPU and the scheduler on the PPC seam; the
 // low-speed spine (RTC, SCC, AppleTalk, ImageWriter, VIA1); and ADB with the
-// behavioral Cuda on that VIA1.  The 68k twin is mac030_build_core /
-// mac030_build_lowspeed (mac030_glue.c).
+// behavioral Cuda on that VIA1.  The 68k twin is m68k_board_build_core /
+// m68k_board_build_lowspeed (m68k_board.c).
 //
 // Each step registers its checkpoint parts as it builds them, with the same
 // names in the same order the families used, so a checkpoint's layout is

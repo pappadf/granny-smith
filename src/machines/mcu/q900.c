@@ -111,7 +111,7 @@ static void q900_scsi96_ext_irq(void *context, bool active) {
 static void q900_scc_irq_update(config_t *cfg, int bit, bool active) {
     mcu_state_t *st = mcu_st(cfg);
     st->scc_irq_or = active ? (st->scc_irq_or | (uint8_t)(1u << bit)) : (st->scc_irq_or & (uint8_t) ~(1u << bit));
-    mac030_glue_update_ipl(cfg, MAC030_GLUE_IRQ_SCC, st->scc_irq_or != 0);
+    m68k_board_update_ipl(cfg, M68K_BOARD_IRQ_SCC, st->scc_irq_or != 0);
 }
 
 void q900_scc_irq(void *context, bool active) {
@@ -238,17 +238,17 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     // Bus-side physical resolver for the 040 walker: RAM at 0 through the
     // full 1 GiB aperture, the 1 MiB ROM mirroring through its window.
-    st->bus_mmu = mac030_build_bus_mmu040(cfg, 0x40000000u, desc->common.rom_base, desc->common.rom_end);
+    st->bus_mmu = m68k_board_build_bus_mmu040(cfg, 0x40000000u, desc->common.rom_base, desc->common.rom_end);
     if (!st->bus_mmu)
         return -1;
 
     // Bind the I/O island (tower decode: IOP apertures + dual SCSI), then
     // hook the IOP host interfaces the shared table routes to.
     mcu_io_bind(&st->io, cfg, desc, st->asc, cfg->floppy);
-    st->io.handle[MAC030_DEV_SCC_IOP] = st->scc_iop;
-    st->io.iface[MAC030_DEV_SCC_IOP] = iop_get_memory_interface(st->scc_iop);
-    st->io.handle[MAC030_DEV_SWIM_IOP] = st->swim_iop;
-    st->io.iface[MAC030_DEV_SWIM_IOP] = iop_get_memory_interface(st->swim_iop);
+    st->io.handle[BOARD_DEV_SCC_IOP] = st->scc_iop;
+    st->io.iface[BOARD_DEV_SCC_IOP] = iop_get_memory_interface(st->scc_iop);
+    st->io.handle[BOARD_DEV_SWIM_IOP] = st->swim_iop;
+    st->io.iface[BOARD_DEV_SWIM_IOP] = iop_get_memory_interface(st->swim_iop);
     mcu_memory_layout(cfg);
 
     mcu_private_part(cfg, cp);

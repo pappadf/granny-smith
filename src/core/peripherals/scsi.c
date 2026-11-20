@@ -1274,7 +1274,7 @@ CHECKPOINT_PREFIX(scsi_t, buf);
 // their decode puts it.  This function used to take a memory map and register
 // $500000/$100000 in it -- a Macintosh Plus address hard-coded inside
 // src/core, which every other 5380 machine already bypassed by doing its own
-// decode (mac030_glue_io.c, mdu_io.c, iifx.c).
+// decode (glue_io.c, mdu_io.c, iifx.c).
 scsi_5380_t *scsi_5380_attach(scsi_t *bus, checkpoint_t *checkpoint) {
     if (!bus)
         return NULL;

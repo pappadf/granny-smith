@@ -7,7 +7,7 @@
 // {DRQ,REG,BLIND} / ASC / SWIM / VDAC / RBV, 18-bit $40000 mirror) — the IIsi
 // dispatcher was a 0-substantive-diff prefix-rename of the IIci's.
 //
-// The decode runs on the shared mac030 I/O engine (mac030_glue_io.h): this file
+// The decode runs on the shared board_io engine (glue_io.h): this file
 // just supplies the MDU window table + mirror + device set via mdu_io_bind.
 // Unlike GLUE there is no VIA2 window — the RBV ($26000) replaces it — and a
 // Bt450 VDAC ($24000) fronts the built-in RBV video card.
@@ -15,8 +15,8 @@
 #ifndef GS_MACHINES_MDU_IO_H
 #define GS_MACHINES_MDU_IO_H
 
-#include "mac030_glue_io.h" // the shared engine (mac030_io_t + mac030_io_*)
-#include "mac030_rom_overlay.h"
+#include "glue_io.h" // the shared engine (board_io_t + board_io_*)
+#include "m68k_board_overlay.h"
 #include "memory.h"
 #include "system_internal.h"
 
@@ -34,35 +34,35 @@ struct mmu_state;
 // The MDU dispatch context is the shared engine's context; this file installs
 // the MDU table + mirror + devices into it.  (The IIci/IIsi state struct names
 // its field's type mdu_io_t.)
-typedef mac030_io_t mdu_io_t;
+typedef board_io_t mdu_io_t;
 
-struct mac030_board_desc;
+struct m68k_board_desc;
 
 // Cache the MDU device interfaces and install the board's window table + mirror
 // + unmapped-read value.
-void mdu_io_bind(mdu_io_t *io, config_t *cfg, const struct mac030_board_desc *desc, void *asc, void *floppy, void *rbv,
+void mdu_io_bind(mdu_io_t *io, config_t *cfg, const struct m68k_board_desc *desc, void *asc, void *floppy, void *rbv,
                  struct nubus_card *video_card);
 
 // The MDU family's ordered window table (sentinel-terminated).  Exposed for the
 // address-map unit test and for MDU machines' board descriptors.
-extern const mac030_io_range_t mdu_io_ranges_tbl[];
-const mac030_io_range_t *mdu_io_ranges(void);
+extern const board_io_range_t mdu_io_ranges_tbl[];
+const board_io_range_t *mdu_io_ranges(void);
 
 // Unified MDU+RBV machine state — the single struct shared by the IIci and
 // IIsi (mirrors the GLUE-family unification).  Superset: the IIsi uses egret;
 // the IIci leaves egret NULL.
-typedef struct mac030_mdu_state {
+typedef struct mdu_state {
     struct asc *asc; // (the adb and floppy are cfg->adb / cfg->floppy)
     struct egret *egret; // IIsi companion (ADB/RTC/PRAM/power); NULL on IIci
     struct rbv *rbv; // RBV chip (VIA2 replacement + video control)
     struct nubus_card *video_card; // built-in RBV video pseudo-card
 
-    mac030_rom_overlay_t overlay; // ROM at $00000000, following VIA1 PA4 (line policy)
+    m68k_board_overlay_t overlay; // ROM at $00000000, following VIA1 PA4 (line policy)
     struct mmu_state *mmu;
 
     mdu_io_t mdu_io; // device handles for the shared MDU dispatcher
 
     memory_interface_t io_interface; // registered at the $50000000 I/O region
-} mac030_mdu_state_t;
+} mdu_state_t;
 
 #endif // GS_MACHINES_MDU_IO_H

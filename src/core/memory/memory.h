@@ -217,7 +217,7 @@ void memory_map_host_region_alias(memory_map_t *m, uint32_t alias_phys_base, uin
 //   * DECODED but unpopulated ("light-shaded: decoded but might not be
 //     used") — the decoder acknowledges anyway, the cycle completes, and the
 //     data bus floats to the pull-ups.  Reads return $FF; NO fault.  This is
-//     what mac030_board_desc_t.io_unmapped_read models.
+//     what m68k_board_desc_t.io_unmapped_read models.
 //   * NOT DECODED ("unshaded") — nothing acknowledges, the watchdog times
 //     out, bus error.  This is what bus_err_lo/bus_err_hi model for whole
 //     regions, and what THIS function models for an individual device window

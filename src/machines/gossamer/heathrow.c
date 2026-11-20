@@ -360,7 +360,7 @@ void gos_scc_dma_init(config_t *cfg) {
 // ============================================================
 
 // One row per register block, read / peek / write side by side, walked by the
-// shared I/O engine (mac030_io.h).
+// shared I/O engine (board_io.h).
 
 // A byte store to a block that only answers reads: nothing latches it.
 static void hr_open_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
@@ -425,9 +425,9 @@ static void hr_mesh_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_
 }
 
 // BMAC Ethernet (gossamer_bmac.c), byte face.
-MAC030_IO_ROW_READ(hr_bmac_read, gos_bmac_read8)
-MAC030_IO_ROW_READ(hr_bmac_peek, gos_bmac_peek8)
-MAC030_IO_ROW_WRITE(hr_bmac_write, gos_bmac_write8)
+BOARD_IO_ROW_READ(hr_bmac_read, gos_bmac_read8)
+BOARD_IO_ROW_READ(hr_bmac_peek, gos_bmac_peek8)
+BOARD_IO_ROW_WRITE(hr_bmac_write, gos_bmac_write8)
 
 // The ESCC aperture: only the four channel registers (+$00..+$3F) reach the
 // cell (runtime/escc_dbdma.c).
@@ -483,51 +483,51 @@ static void hr_ata_write8(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_
 }
 
 // The NVRAM window: byte j at +j*$10.
-MAC030_IO_ROW_READ(hr_nvram_read, nvram_read)
-MAC030_IO_ROW_WRITE(hr_nvram_write, nvram_write)
+BOARD_IO_ROW_READ(hr_nvram_read, nvram_read)
+BOARD_IO_ROW_WRITE(hr_nvram_write, nvram_write)
 
 // Heathrow's byte-wide island map.  No bus penalty on any row (the island is
 // untimed).  The legacy SCC aperture's low offset bits carry the chip's A/B
 // and D/C pins directly, so it is a plain device route.
 //
 //   base         end            device           pen xform  rd wr  read_fn  write_fn  name
-static const mac030_io_range_t hr_io_ranges[] = {
-    {0x00000u, HR_CTRL, 0, 0, MAC030_IO_NORMAL, 0, 0, hr_ints_read8, hr_ints_write8, "ints"},
-    {HR_CTRL, 0x00040u, 0, 0, MAC030_IO_NORMAL, 0, 0, hr_ctrl_read8, hr_ctrl_write8, "ctrl"},
-    {HR_DBDMA, HR_DBDMA_END, 0, 0, MAC030_IO_NORMAL, 0, 0, hr_dbdma_read8, hr_open_write, "dbdma"},
-    {HR_MESH, HR_MESH + 0x1000u, 0, 0, MAC030_IO_NORMAL, 0, 0, hr_mesh_read, hr_mesh_write, "mesh",
+static const board_io_range_t hr_io_ranges[] = {
+    {0x00000u, HR_CTRL, 0, 0, BOARD_IO_NORMAL, 0, 0, hr_ints_read8, hr_ints_write8, "ints"},
+    {HR_CTRL, 0x00040u, 0, 0, BOARD_IO_NORMAL, 0, 0, hr_ctrl_read8, hr_ctrl_write8, "ctrl"},
+    {HR_DBDMA, HR_DBDMA_END, 0, 0, BOARD_IO_NORMAL, 0, 0, hr_dbdma_read8, hr_open_write, "dbdma"},
+    {HR_MESH, HR_MESH + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, hr_mesh_read, hr_mesh_write, "mesh",
      .peek_fn = hr_mesh_peek},
-    {HR_BMAC, HR_BMAC + 0x1000u, 0, 0, MAC030_IO_NORMAL, 0, 0, hr_bmac_read, hr_bmac_write, "bmac",
+    {HR_BMAC, HR_BMAC + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, hr_bmac_read, hr_bmac_write, "bmac",
      .peek_fn = hr_bmac_peek},
-    {HR_SCCLEG, HR_SCCLEG + 0x1000u, MAC030_DEV_SCC, 0, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc_legacy"},
-    {HR_ESCC, HR_ESCC + 0x1000u, 0, 0, MAC030_IO_NORMAL, 0, 0, hr_escc_read, hr_escc_write, "escc",
+    {HR_SCCLEG, HR_SCCLEG + 0x1000u, BOARD_DEV_SCC, 0, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scc_legacy"},
+    {HR_ESCC, HR_ESCC + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, hr_escc_read, hr_escc_write, "escc",
      .peek_fn = hr_escc_peek},
-    {HR_DAVBUS, HR_DAVBUS + 0x1000u, 0, 0, MAC030_IO_NORMAL, 0, 0, hr_davbus_read8, hr_open_write, "davbus"},
-    {HR_SWIM3, HR_SWIM3 + 0x1000u, 0, 0, MAC030_IO_STRIDE_16, 0, 0, hr_swim3_read, hr_swim3_write, "swim3",
+    {HR_DAVBUS, HR_DAVBUS + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, hr_davbus_read8, hr_open_write, "davbus"},
+    {HR_SWIM3, HR_SWIM3 + 0x1000u, 0, 0, BOARD_IO_STRIDE_16, 0, 0, hr_swim3_read, hr_swim3_write, "swim3",
      .peek_fn = hr_swim3_peek},
-    {HR_VIA, HR_VIA + 0x2000u, MAC030_DEV_VIA1, 0, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "via1"},
-    {GOS_HR_ATA0, GOS_HR_ATA_END, 0, 0, MAC030_IO_NORMAL, 0, 0, hr_ata_read8, hr_ata_write8, "ata",
+    {HR_VIA, HR_VIA + 0x2000u, BOARD_DEV_VIA1, 0, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "via1"},
+    {GOS_HR_ATA0, GOS_HR_ATA_END, 0, 0, BOARD_IO_NORMAL, 0, 0, hr_ata_read8, hr_ata_write8, "ata",
      .peek_fn = hr_ata_peek8},
-    {HR_NVRAM, HR_NVRAM_END, 0, 0, MAC030_IO_NORMAL, 0, 0, hr_nvram_read, hr_nvram_write, "nvram"},
+    {HR_NVRAM, HR_NVRAM_END, 0, 0, BOARD_IO_NORMAL, 0, 0, hr_nvram_read, hr_nvram_write, "nvram"},
     {0}, // sentinel: end == 0
 };
 
 // Install Heathrow's byte decode table and bind its VIA and SCC rows.
 static void hr_io_bind(config_t *cfg) {
-    mac030_io_t *io = &gos_st(cfg)->hr_io;
+    board_io_t *io = &gos_st(cfg)->hr_io;
     // Undecoded island space reads 0, as it always has here.
-    mac030_io_install_table(io, cfg, hr_io_ranges, GOS_HEATHROW_SIZE - 1u, 0);
+    board_io_install_table(io, cfg, hr_io_ranges, GOS_HEATHROW_SIZE - 1u, 0);
     io->untimed = true;
-    mac030_io_bind_dev(io, MAC030_DEV_VIA1, cfg->via1, via_get_memory_interface(cfg->via1));
-    mac030_io_bind_dev(io, MAC030_DEV_SCC, cfg->scc, scc_get_memory_interface(cfg->scc));
-    mac030_io_validate(io, cfg->machine->id);
+    board_io_bind_dev(io, BOARD_DEV_VIA1, cfg->via1, via_get_memory_interface(cfg->via1));
+    board_io_bind_dev(io, BOARD_DEV_SCC, cfg->scc, scc_get_memory_interface(cfg->scc));
+    board_io_validate(io, cfg->machine->id);
 }
 
 // One island byte: the guest's read, or an inspection (`peek`) routed to each
 // chip's side-effect-free peek.
 static uint8_t hr_access8(void *ctx, uint32_t off, bool peek) {
-    mac030_io_t *io = &gos_st((config_t *)ctx)->hr_io;
-    return peek ? mac030_io_peek_uint8(io, off) : mac030_io_read_uint8(io, off);
+    board_io_t *io = &gos_st((config_t *)ctx)->hr_io;
+    return peek ? board_io_peek_uint8(io, off) : board_io_read_uint8(io, off);
 }
 
 static uint8_t hr_read8(void *ctx, uint32_t off) {
@@ -538,7 +538,7 @@ static uint8_t hr_peek8(void *ctx, uint32_t off) {
 }
 
 static void hr_write8(void *ctx, uint32_t off, uint8_t value) {
-    mac030_io_write_uint8(&gos_st((config_t *)ctx)->hr_io, off, value);
+    board_io_write_uint8(&gos_st((config_t *)ctx)->hr_io, off, value);
 }
 
 // 32-bit access: the little-endian register blocks.  `value` at this edge

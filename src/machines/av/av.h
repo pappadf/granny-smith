@@ -19,7 +19,7 @@
 //     that drive RAM bank mapping.
 //   * CPU-ID register $5FFFFFFC reading $A55A2830, not writable.
 //   * the I/O island at $50F00000-$50F3FFFF with its non-serialized alias at
-//     $50F40000 (mirror mask $3FFFF), run on the shared mac030 I/O engine.
+//     $50F40000 (mirror mask $3FFFF), run on the shared board_io engine.
 //   * MUNI NuBus bridge latches; a 660AV without the NuBus adapter must
 //     bus-error on MUNI_Control so the ROM's TestForMUNI clears MUNIExists.
 //   * interrupts: VIA1→1, PSC-VIA2 window→2, MACE→3, PSC-L4→4, PSC-L5→5,
@@ -33,9 +33,9 @@
 #define GS_MACHINES_AV_H
 
 #include "checkpoint.h"
-#include "mac030_glue.h" // shared core builder + IRQ resolver + fill_page
-#include "mac030_glue_io.h" // the shared I/O dispatch engine
-#include "mac030_rom_overlay.h"
+#include "glue_io.h" // the shared I/O dispatch engine
+#include "m68k_board.h" // shared core builder + IRQ resolver + fill_page
+#include "m68k_board_overlay.h"
 #include "memory.h"
 #include "system_internal.h"
 
@@ -89,9 +89,9 @@ struct scsi_53c96;
 // The AV-family board descriptor: per-machine hardware data consumed by the
 // shared substrate (parallel to mcu_board_desc_t).
 typedef struct av_board_desc {
-    // The eight fields the shared 68k code reads -- see mac030_board_desc_t.
+    // The eight fields the shared 68k code reads -- see m68k_board_desc_t.
     // Embedded, not repeated: one definition, one place to document it.
-    mac030_board_desc_t common;
+    m68k_board_desc_t common;
     uint8_t strap_nibble; // YMCA machine-ID straps ($F 840AV, $B 660AV)
     bool muni_present; // false → bus-error on MUNI_Control (660AV default)
     // The memory the board carries: RAM soldered on as YMCA bank 0 (0 =
@@ -147,10 +147,10 @@ typedef struct av_state {
     struct av_mace *mace; // MACE Ethernet register stub
     struct scsi_53c96 *scsi96; // NCR 53C96 inside Curio
 
-    mac030_rom_overlay_t overlay; // ROM-at-zero until the aperture is touched
+    m68k_board_overlay_t overlay; // ROM-at-zero until the aperture is touched
     struct mmu_state *bus_mmu; // bus-side resolver; 040 walker regs on the CPU
 
-    mac030_io_t io; // device handles for the shared I/O engine
+    board_io_t io; // device handles for the shared I/O engine
 
     // YMCA register file: one latched bit per register.  Strap
     // registers read the board's ID nibble instead of the latch.
@@ -177,7 +177,7 @@ extern const builtin_video_desc_t av_builtin_video_q840av;
 extern const builtin_video_desc_t av_builtin_video_q660av;
 
 // AV I/O window table (exposed for the address-map unit test).
-extern const mac030_io_range_t av_io_ranges[];
+extern const board_io_range_t av_io_ranges[];
 
 // Shared device construction for both leaves (the boards differ only in
 // their descriptor data).  Referenced from each leaf's av_board_t.
@@ -209,7 +209,7 @@ void av_new_age_delete(av_new_age_t *fdc);
 void av_new_age_checkpoint(av_new_age_t *fdc, checkpoint_t *cp);
 void av_new_age_reset(av_new_age_t *fdc); // the board's /RESET net
 uint8_t av_new_age_read(config_t *cfg, uint32_t win_off, uint32_t addr);
-// The same register without popping the result FIFO (mac030_io_range_t.peek_fn).
+// The same register without popping the result FIFO (board_io_range_t.peek_fn).
 uint8_t av_new_age_peek(config_t *cfg, uint32_t win_off, uint32_t addr);
 void av_new_age_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
 

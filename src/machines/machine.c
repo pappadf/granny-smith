@@ -413,7 +413,7 @@ static DEF_GETTER(attr_machine_ram) {
 // IPL from it, and neither was readable from anywhere: an investigation
 // could see a controller's own view through machine.<chip> and the CPU's
 // behaviour, with the step between them invisible.  The bit meanings are
-// per family (MAC030_GLUE_IRQ_* and the family equivalents), which is why
+// per family (M68K_BOARD_IRQ_* and the family equivalents), which is why
 // this is a bitmap and not an enum.
 static DEF_GETTER(attr_machine_irq) {
     config_t *cfg = system_running();

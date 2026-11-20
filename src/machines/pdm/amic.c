@@ -1048,26 +1048,26 @@ void pdm_amic_init(config_t *cfg) {
 // Island decode ($50F00000-$50F3FFFF)
 // ============================================================
 // One row per register block, read / peek / write side by side, walked by the
-// shared I/O engine (mac030_io.h).  The blocks decode on 4 KB granules; a
+// shared I/O engine (board_io.h).  The blocks decode on 4 KB granules; a
 // block that spans two granules (the 6522 maps, SWIM3's $200-stride file,
 // the DMA register file) is one row of 8 KB.
 
 // The chip faces, as handler rows.
-MAC030_IO_ROW_READ(amic_awacs_read, pdm_awacs_read)
-MAC030_IO_ROW_WRITE(amic_awacs_write, pdm_awacs_write)
-MAC030_IO_ROW_READ(amic_swim3_read, pdm_swim3_read)
-MAC030_IO_ROW_READ(amic_swim3_peek, pdm_swim3_peek)
-MAC030_IO_ROW_WRITE(amic_swim3_write, pdm_swim3_write)
-MAC030_IO_ROW_READ(amic_ariel_read, pdm_ariel_read)
-MAC030_IO_ROW_READ(amic_ariel_peek, pdm_ariel_peek)
-MAC030_IO_ROW_WRITE(amic_ariel_write, pdm_ariel_write)
-MAC030_IO_ROW_READ(amic_video_read, pdm_video_ctl_read)
-MAC030_IO_ROW_WRITE(amic_video_write, pdm_video_ctl_write)
-MAC030_IO_ROW_READ(amic_icr_read, icr_read)
-MAC030_IO_ROW_WRITE(amic_icr_write, icr_write)
-MAC030_IO_ROW_READ(amic_dma_read, dma_read)
-MAC030_IO_ROW_WRITE(amic_dma_write, dma_write)
-MAC030_IO_ROW_WRITE(amic_via2_write, via2_write)
+BOARD_IO_ROW_READ(amic_awacs_read, pdm_awacs_read)
+BOARD_IO_ROW_WRITE(amic_awacs_write, pdm_awacs_write)
+BOARD_IO_ROW_READ(amic_swim3_read, pdm_swim3_read)
+BOARD_IO_ROW_READ(amic_swim3_peek, pdm_swim3_peek)
+BOARD_IO_ROW_WRITE(amic_swim3_write, pdm_swim3_write)
+BOARD_IO_ROW_READ(amic_ariel_read, pdm_ariel_read)
+BOARD_IO_ROW_READ(amic_ariel_peek, pdm_ariel_peek)
+BOARD_IO_ROW_WRITE(amic_ariel_write, pdm_ariel_write)
+BOARD_IO_ROW_READ(amic_video_read, pdm_video_ctl_read)
+BOARD_IO_ROW_WRITE(amic_video_write, pdm_video_ctl_write)
+BOARD_IO_ROW_READ(amic_icr_read, icr_read)
+BOARD_IO_ROW_WRITE(amic_icr_write, icr_write)
+BOARD_IO_ROW_READ(amic_dma_read, dma_read)
+BOARD_IO_ROW_WRITE(amic_dma_write, dma_write)
+BOARD_IO_ROW_WRITE(amic_via2_write, via2_write)
 
 // The Curio 53C94 (chip 0) and the 8100's 53CF96 (chip 1).
 static uint8_t amic_scsia_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
@@ -1120,7 +1120,7 @@ static void amic_diag_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint
 // behind them yet.  The two defines stay (Grand Central's OFF_EPROM is the
 // candidate IPI doorbell for multi-processor work, and MACE is a stub until a
 // real model lands); the obvious alternative to reading 0 is to float them to
-// $FF the way io_unmapped_read does on the five mac030 families.
+// $FF the way io_unmapped_read does on the five 68k II/Quadra families.
 //
 // THE CORPUS SAYS OTHERWISE, and it was measured: these windows are live
 // traffic, not dead decode -- the EPROM read once and MACE read 10 times and
@@ -1146,47 +1146,47 @@ static void amic_empty_write(config_t *cfg, uint32_t win_off, uint32_t addr, uin
 // device route.
 //
 //   base       end                 device           pen xform        rd wr  read_fn  write_fn  name
-static const mac030_io_range_t amic_io_ranges[] = {
-    {OFF_VIA1, OFF_VIA1 + 0x2000, MAC030_DEV_VIA1, 0, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "via1"},
-    {OFF_SCC, OFF_SCC + 0x1000, MAC030_DEV_SCC, 0, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
-    {OFF_EPROM, OFF_EPROM + 0x1000, 0, 0, MAC030_IO_NORMAL, 0, 0, amic_empty_read, amic_empty_write, "eprom"},
-    {OFF_MACE, OFF_MACE + 0x1000, 0, 0, MAC030_IO_NORMAL, 0, 0, amic_empty_read, amic_empty_write, "mace"},
-    {OFF_SCSIA, OFF_SCSIA + 0x1000, 0, 0, MAC030_IO_NORMAL, 0, 0, amic_scsia_read, amic_scsia_write, "scsi_a",
+static const board_io_range_t amic_io_ranges[] = {
+    {OFF_VIA1, OFF_VIA1 + 0x2000, BOARD_DEV_VIA1, 0, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "via1"},
+    {OFF_SCC, OFF_SCC + 0x1000, BOARD_DEV_SCC, 0, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
+    {OFF_EPROM, OFF_EPROM + 0x1000, 0, 0, BOARD_IO_NORMAL, 0, 0, amic_empty_read, amic_empty_write, "eprom"},
+    {OFF_MACE, OFF_MACE + 0x1000, 0, 0, BOARD_IO_NORMAL, 0, 0, amic_empty_read, amic_empty_write, "mace"},
+    {OFF_SCSIA, OFF_SCSIA + 0x1000, 0, 0, BOARD_IO_NORMAL, 0, 0, amic_scsia_read, amic_scsia_write, "scsi_a",
      .peek_fn = amic_scsia_peek},
-    {OFF_SCSIB, OFF_SCSIB + 0x1000, 0, 0, MAC030_IO_NORMAL, 0, 0, amic_scsib_read, amic_scsib_write, "scsi_b",
+    {OFF_SCSIB, OFF_SCSIB + 0x1000, 0, 0, BOARD_IO_NORMAL, 0, 0, amic_scsib_read, amic_scsib_write, "scsi_b",
      .peek_fn = amic_scsib_peek},
-    {OFF_SOUND, OFF_SOUND + 0x1000, 0, 0, MAC030_IO_NORMAL, 0, 0, amic_awacs_read, amic_awacs_write, "sound"},
-    {OFF_SWIM3, OFF_SWIM3 + 0x2000, 0, 0, MAC030_IO_NORMAL, 0, 0, amic_swim3_read, amic_swim3_write, "swim3",
+    {OFF_SOUND, OFF_SOUND + 0x1000, 0, 0, BOARD_IO_NORMAL, 0, 0, amic_awacs_read, amic_awacs_write, "sound"},
+    {OFF_SWIM3, OFF_SWIM3 + 0x2000, 0, 0, BOARD_IO_NORMAL, 0, 0, amic_swim3_read, amic_swim3_write, "swim3",
      .peek_fn = amic_swim3_peek},
-    {OFF_ARIEL, OFF_ARIEL + 0x1000, 0, 0, MAC030_IO_NORMAL, 0, 0, amic_ariel_read, amic_ariel_write, "ariel",
+    {OFF_ARIEL, OFF_ARIEL + 0x1000, 0, 0, BOARD_IO_NORMAL, 0, 0, amic_ariel_read, amic_ariel_write, "ariel",
      .peek_fn = amic_ariel_peek},
-    {OFF_VIA2, OFF_VIA2 + 0x2000, 0, 0, MAC030_IO_NORMAL, 0, 0, amic_via2_read, amic_via2_write, "via2",
+    {OFF_VIA2, OFF_VIA2 + 0x2000, 0, 0, BOARD_IO_NORMAL, 0, 0, amic_via2_read, amic_via2_write, "via2",
      .peek_fn = amic_via2_peek},
-    {OFF_VIDEO, OFF_VIDEO + 0x1000, 0, 0, MAC030_IO_NORMAL, 0, 0, amic_video_read, amic_video_write, "video"},
-    {OFF_ICR, OFF_ICR + 0x1000, 0, 0, MAC030_IO_NORMAL, 0, 0, amic_icr_read, amic_icr_write, "icr"},
-    {OFF_DIAG, OFF_DIAG + 0x1000, 0, 0, MAC030_IO_NORMAL, 0, 0, amic_diag_read, amic_diag_write, "diag"},
-    {OFF_DMA, OFF_DMA + 0x2000, 0, 0, MAC030_IO_NORMAL, 0, 0, amic_dma_read, amic_dma_write, "dma"},
+    {OFF_VIDEO, OFF_VIDEO + 0x1000, 0, 0, BOARD_IO_NORMAL, 0, 0, amic_video_read, amic_video_write, "video"},
+    {OFF_ICR, OFF_ICR + 0x1000, 0, 0, BOARD_IO_NORMAL, 0, 0, amic_icr_read, amic_icr_write, "icr"},
+    {OFF_DIAG, OFF_DIAG + 0x1000, 0, 0, BOARD_IO_NORMAL, 0, 0, amic_diag_read, amic_diag_write, "diag"},
+    {OFF_DMA, OFF_DMA + 0x2000, 0, 0, BOARD_IO_NORMAL, 0, 0, amic_dma_read, amic_dma_write, "dma"},
     {0}, // sentinel: end == 0
 };
 
 void pdm_amic_io_bind(config_t *cfg) {
-    mac030_io_t *io = &pdm_st(cfg)->amic_io;
+    board_io_t *io = &pdm_st(cfg)->amic_io;
     // Undecoded island space reads 0, as it always has here (see the EPROM note).
-    mac030_io_install_table(io, cfg, amic_io_ranges, PDM_AMIC_ISLAND_SIZE - 1u, 0);
+    board_io_install_table(io, cfg, amic_io_ranges, PDM_AMIC_ISLAND_SIZE - 1u, 0);
     io->untimed = true;
-    mac030_io_bind_dev(io, MAC030_DEV_VIA1, cfg->via1, via_get_memory_interface(cfg->via1));
-    mac030_io_bind_dev(io, MAC030_DEV_SCC, cfg->scc, scc_get_memory_interface(cfg->scc));
-    mac030_io_validate(io, cfg->machine->id);
+    board_io_bind_dev(io, BOARD_DEV_VIA1, cfg->via1, via_get_memory_interface(cfg->via1));
+    board_io_bind_dev(io, BOARD_DEV_SCC, cfg->scc, scc_get_memory_interface(cfg->scc));
+    board_io_validate(io, cfg->machine->id);
 }
 
 uint8_t pdm_amic_read(config_t *cfg, uint32_t offset) {
-    return mac030_io_read_uint8(&pdm_st(cfg)->amic_io, offset);
+    return board_io_read_uint8(&pdm_st(cfg)->amic_io, offset);
 }
 
 uint8_t pdm_amic_peek(config_t *cfg, uint32_t offset) {
-    return mac030_io_peek_uint8(&pdm_st(cfg)->amic_io, offset);
+    return board_io_peek_uint8(&pdm_st(cfg)->amic_io, offset);
 }
 
 void pdm_amic_write(config_t *cfg, uint32_t offset, uint8_t value) {
-    mac030_io_write_uint8(&pdm_st(cfg)->amic_io, offset, value);
+    board_io_write_uint8(&pdm_st(cfg)->amic_io, offset, value);
 }

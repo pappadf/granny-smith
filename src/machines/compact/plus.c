@@ -81,7 +81,7 @@ static void plus_update_ipl(config_t *cfg, int source, bool active);
 // Video buffer helper (Plus-specific address constants)
 // ============================================================
 
-// Interrupt source bits in cfg->rt.irq, matching the MAC030_GLUE_IRQ_* /
+// Interrupt source bits in cfg->rt.irq, matching the M68K_BOARD_IRQ_* /
 // AV_IRQ_* convention.  These are a source MASK, not an IPL level: the PALs
 // derive the level from the set of asserted sources (plus_update_ipl).  The
 // Lisa's identically-named lisa_update_ipl() really does take a level, so two
@@ -262,7 +262,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
         plus_set_rom_overlay(cfg, true);
 
     // The profile is the source of truth for the CPU model, as it is for the
-    // clock below and as mac030_build_core states for the II families.  Both
+    // clock below and as m68k_board_build_core states for the II families.  Both
     // profiles behind this substrate declare 68000, so this reads back exactly
     // what the constant said -- but system_create derives cfg->cpu_arch from
     // the profile unconditionally, so a profile that ever disagreed with a
@@ -319,7 +319,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
                          plus_via_output, plus_via_shift_out, plus_via_irq, cfg, checkpoint);
     machine_part(cfg, checkpoint, "via1", part_save_via, cfg->via1);
     // The RTC's data line rides VIA1 PB0: wired right after the VIA is built,
-    // the same position as the GLUE family (mac030_glue_init).
+    // the same position as the GLUE family (glue_init).
     rtc_set_via(cfg->rtc, cfg->via1);
 
     machine_part_begin(cfg, checkpoint, "sound");
@@ -358,7 +358,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     // scsi_5380_attach() used to do this itself, from inside src/core, with
     // this address compiled into the chip model.  Every other 5380 machine
     // already took scsi_get_memory_interface() and placed it with its own
-    // decode (mac030_glue_io.c, mdu_io.c, iifx.c); the Plus now does the same.
+    // decode (glue_io.c, mdu_io.c, iifx.c); the Plus now does the same.
     memory_map_add(cfg->memory_map, PLUS_SCSI_BASE, PLUS_SCSI_SIZE, "scsi",
                    (memory_interface_t *)scsi_get_memory_interface(cfg->scsi), cfg->scsi);
 
@@ -458,7 +458,7 @@ static void plus_teardown(config_t *cfg) {
 
 // Plus-specific interrupt routing: set/clear one PLUS_IRQ_* source bit and
 // re-derive the CPU IPL -- the same (cfg, source, active) shape as
-// mac030_glue_update_ipl.
+// m68k_board_update_ipl.
 static void plus_update_ipl(config_t *cfg, int source, bool active) {
     int old_irq = cfg->rt.irq;
     int old_ipl = cpu_get_ipl(cfg->cpu);

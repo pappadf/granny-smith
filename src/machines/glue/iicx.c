@@ -17,11 +17,11 @@
 //   * Sound-jack-detect via VIA2 PB6 (`v2SndJck`) — input only.
 //   * No buffer-select handling on VIA1 PA6 (no built-in framebuffer).
 //
-// The family-shared lifecycle + I/O dispatch live in mac030/ (the GLUE
-// substrate); this file is the IIcx's per-machine deltas (board descriptor +
+// The family-shared lifecycle + I/O dispatch live in m68k_board.c and glue_io.c
+// (the GLUE substrate); this file is the IIcx's per-machine deltas (board descriptor +
 // VIA/ID hooks) on top of it.  iix.c reuses these via iicx_internal.h.
 
-#include "mac030_glue.h"
+#include "m68k_board.h"
 #include "machine.h"
 #include "slot_tables.h"
 #include "system_internal.h" // full config_t
@@ -55,7 +55,7 @@ LOG_USE_CATEGORY_NAME("board");
 //
 // Most address-space and IRQ constants live in iicx_internal.h so iix.c
 // reuses them.  The I/O window offsets + dispatch now live with the shared
-// GLUE dispatcher (mac030_glue_io.c).
+// GLUE dispatcher (glue_io.c).
 
 // ============================================================
 // Forward declarations
@@ -68,14 +68,14 @@ static void iicx_via2_output(void *context, uint8_t port, uint8_t output);
 // ============================================================
 
 void iicx_set_rom_overlay(config_t *cfg, bool overlay) {
-    mac030_rom_overlay_set_line(&iicx_state(cfg)->overlay, overlay);
+    m68k_board_overlay_set_line(&iicx_state(cfg)->overlay, overlay);
 }
 
 // ============================================================
 // I/O dispatcher
 // ============================================================
 // The GLUE I/O dispatcher is shared with SE/30 and IIx — see
-// mac030_glue_io.c.  This machine fills a mac030_glue_io_t at init and
+// glue_io.c.  This machine fills a board_io_t at init and
 // registers it as the I/O region's device context.
 
 // ============================================================
@@ -84,7 +84,7 @@ void iicx_set_rom_overlay(config_t *cfg, bool overlay) {
 
 // The IIcx/IIx share of the memory layout: NuBus cards' host-backed regions.
 // RAM, the ROM window and the I/O dispatcher are the family's
-// (mac030_glue_memory_layout); these two machines differ from the SE/30 only
+// (glue_memory_layout); these two machines differ from the SE/30 only
 // in having card slots instead of a framebuffer on the board.
 void iicx_memory_layout_tail(config_t *cfg) {
     iicx_state_t *st = iicx_state(cfg);
@@ -99,8 +99,8 @@ void iicx_memory_layout_tail(config_t *cfg) {
     // a card framebuffer via a Mode-24 ScrnBase ($00900080).
     mmu_host_regions_fill_pages(st->mmu, page_fill_68k, /*mode24_alias*/ true);
 
-    mac030_rom_overlay_init_line(&st->overlay, cfg, cfg->machine->name);
-    mac030_rom_overlay_arm(&st->overlay);
+    m68k_board_overlay_init_line(&st->overlay, cfg, cfg->machine->name);
+    m68k_board_overlay_arm(&st->overlay);
 }
 
 // ============================================================
@@ -192,25 +192,25 @@ static void iicx_setup_id(config_t *cfg) {
 // The IIcx and IIx board data (byte-identical): GLUE, the full NuBus bus-error
 // window, the internal speaker on the left channel.  The SE/30 differs (PDS in
 // $E, summed sound).
-const mac030_board_desc_t iicx_iix_board_desc = {
+const m68k_board_desc_t iicx_iix_board_desc = {
     .chipset = "GLUE",
     .rom_base = 0x40000000UL,
     .rom_end = 0x50000000UL,
-    .io_ranges = glue_io_ranges,
-    .io_mirror_mask = MAC030_GLUE_IO_MIRROR,
-    .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
+    .io_ranges = glue_io_ranges_tbl,
+    .io_mirror_mask = GLUE_IO_MIRROR,
+    .io_unmapped_read = 0xFF, // undecoded island reads float high (see m68k_board.h)
     .bus_err_lo = NUBUS_BERR_LO,
     .bus_err_hi = NUBUS_BERR_HI,
     .asc_mix = ASC_MIX_CH_A, // internal speaker takes the left channel
 };
 
 // IIcx board: GLUE family, three NuBus slots, VIA2 PB2 soft-power.
-static const mac030_glue_board_t iicx_board = {
+static const glue_board_t iicx_board = {
     .desc = &iicx_iix_board_desc,
     .via1_output = iicx_via1_output,
-    .via1_shift_out = NULL, // ADB reads SR itself (BUG-004, mac030_glue.h)
+    .via1_shift_out = NULL, // ADB reads SR itself (BUG-004, m68k_board.h)
     .via2_output = iicx_via2_output,
-    .via2_shift_out = mac030_glue_via_shift_out_ignored,
+    .via2_shift_out = glue_via_shift_out_ignored,
     .setup_id = iicx_setup_id,
     .memory_layout_tail = iicx_memory_layout_tail,
 };
@@ -233,8 +233,8 @@ const hw_profile_t machine_iicx = {
     .mmu_kind = MMU_68030_PMMU,
 
     .address_bits = 32,
-    .ram_default = MAC030_GLUE_RAM_DEFAULT,
-    .ram_max = MAC030_GLUE_RAM_MAX,
+    .ram_default = GLUE_RAM_DEFAULT,
+    .ram_max = GLUE_RAM_MAX,
     .rom_size = 0x040000, // 256 KB
 
     .ram_options = iicx_iix_ram_options_kb,

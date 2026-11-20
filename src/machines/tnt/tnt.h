@@ -35,13 +35,13 @@
 #define GS_MACHINES_TNT_H
 
 #include "awacs.h" // shared ASCO codec semantics (core/peripherals/)
+#include "board_io.h" // board_io_t, the island decode engine
 #include "checkpoint.h"
 #include "davbus.h" // the DAVbus sound cell (core/peripherals/)
 #include "display.h"
 #include "display_class.h" // scanout descriptor (control.c presents through it)
 #include "display_ramdac.h" // the RaDACal palette ports
 #include "gbus.h" // the ANS GBUS island: board registers, keyswitch, LCD
-#include "mac030_io.h" // mac030_io_t, the island decode engine
 #include "machine.h"
 #include "machine_profile.h"
 #include "memory.h"
@@ -390,7 +390,7 @@ typedef struct tnt_state {
     // Grand Central's byte decode (grand_central.c): its range table bound
     // to this machine's VIA and SCC.  Host pointers, rebuilt at init, never
     // checkpointed.
-    mac030_io_t gc_io;
+    board_io_t gc_io;
     memory_interface_t hh_interface; // $F8000000 register window
     memory_interface_t chaos_probe_interface; // unclaimed Chaos window (logged)
     memory_interface_t control_regs_if; // Control BAR $14 (register block)

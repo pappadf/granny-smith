@@ -20,10 +20,10 @@
 // Everything else (MDU I/O map, RBV interrupt → IPL 2, soft power-off, SCSI via
 // RBV, Mode-24 framebuffer aliasing) matches the IIci.
 
-#include "mac030_glue.h"
+#include "m68k_board.h"
 #include "machine.h"
 #include "machine_checkpoint.h"
-#include "mdu.h" // mdu_substrate + mac030_mdu_board_t
+#include "mdu.h" // mdu_substrate + mdu_board_t
 #include "slot_tables.h"
 #include "system_internal.h"
 
@@ -61,7 +61,7 @@ LOG_USE_CATEGORY_NAME("board");
 // ============================================================
 
 static void iisi_set_rom_overlay(config_t *cfg, bool overlay) {
-    mac030_rom_overlay_set_line(&iisi_state(cfg)->overlay, overlay);
+    m68k_board_overlay_set_line(&iisi_state(cfg)->overlay, overlay);
 }
 
 // ============================================================
@@ -91,14 +91,14 @@ static void iisi_memory_layout_init(config_t *cfg) {
     // (the boot ROM sizes a bank by that wrap).  This static (MMU-off) page table
     // models the physical map the ROM probes before it builds its PMMU tree.
     uint32_t bank_a_pages = IISI_BANK_A_SIZE >> MEM_PAGE_SHIFT; // 1 MB / 4 KB = 256
-    mac030_map_mirrored(0, IISI_BANK_B_PHYS >> MEM_PAGE_SHIFT, ram_base, bank_a_pages, page_fill_68k, true);
+    m68k_board_map_mirrored(0, IISI_BANK_B_PHYS >> MEM_PAGE_SHIFT, ram_base, bank_a_pages, page_fill_68k, true);
 
     uint8_t *bank_b = ram_base + IISI_BANK_A_SIZE;
     uint32_t bank_b_size = (ram_size > IISI_BANK_A_SIZE) ? (ram_size - IISI_BANK_A_SIZE) : 0;
     uint32_t bank_b_pages = bank_b_size >> MEM_PAGE_SHIFT;
     uint32_t bank_b_start_page = IISI_BANK_B_PHYS >> MEM_PAGE_SHIFT;
     uint32_t bank_b_window_pages = IISI_BANK_WINDOW >> MEM_PAGE_SHIFT;
-    mac030_map_mirrored(bank_b_start_page, bank_b_window_pages, bank_b, bank_b_pages, page_fill_68k, true);
+    m68k_board_map_mirrored(bank_b_start_page, bank_b_window_pages, bank_b, bank_b_pages, page_fill_68k, true);
 
     uint32_t rom_pages = rom_size >> MEM_PAGE_SHIFT;
     uint32_t rom_start_page = IISI_ROM_START >> MEM_PAGE_SHIFT;
@@ -110,7 +110,7 @@ static void iisi_memory_layout_init(config_t *cfg) {
         }
     }
 
-    mac030_io_fill_interface(&st->io_interface);
+    board_io_fill_interface(&st->io_interface);
     memory_map_add(cfg->memory_map, IISI_IO_BASE, IISI_IO_SIZE, "I/O", &st->io_interface, &st->mdu_io);
 
     // No separate VRAM aperture to wire: the on-board frame buffer IS the bottom
@@ -118,8 +118,8 @@ static void iisi_memory_layout_init(config_t *cfg) {
     // (slot-$E base $FEE08000 / $00E08000 -> physical 0 -> Bank A), and the card
     // renders straight out of Bank A — both resolve via the normal RAM path.
 
-    mac030_rom_overlay_init_line(&st->overlay, cfg, cfg->machine->name);
-    mac030_rom_overlay_arm(&st->overlay);
+    m68k_board_overlay_init_line(&st->overlay, cfg, cfg->machine->name);
+    m68k_board_overlay_arm(&st->overlay);
 }
 
 // ============================================================
@@ -176,14 +176,14 @@ static const nubus_slot_decl_t iisi_slots[] = {
 // The IIsi board descriptor: MDU+RBV hardware data, consumed
 // at init by the shared helpers.  Shares the MDU window table + 18-bit mirror
 // with the IIci; ROM repeating through $4xxxxxxx (ROMBase $40800000).  (The IIsi's two-bank RAM layout is set up
-// in iisi_init after mac030_build_mmu — it isn't board-descriptor data.)
-static const mac030_board_desc_t iisi_board_desc = {
+// in iisi_init after m68k_board_build_mmu — it isn't board-descriptor data.)
+static const m68k_board_desc_t iisi_board_desc = {
     .chipset = "MDU+RBV",
     .rom_base = IISI_ROM_START,
     .rom_end = IISI_ROM_END,
     .io_ranges = mdu_io_ranges_tbl,
     .io_mirror_mask = 0x0003FFFFUL,
-    .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
+    .io_unmapped_read = 0xFF, // undecoded island reads float high (see m68k_board.h)
     // No addressable card in slot $E (built-in video is main DRAM mapped by
     // the OS), so the $FExxxxxx slot aperture legitimately bus-errors.
     .bus_err_lo = NUBUS_BERR_LO,
@@ -194,8 +194,8 @@ static const mac030_board_desc_t iisi_board_desc = {
 // Init / Teardown
 // ============================================================
 
-// IIsi device construction (mac030_mdu_board_t.build_devices): everything after
-// the shared core/RTC/SCC/VIA1 prefix and before mac030_glue_finish.  No
+// IIsi device construction (mdu_board_t.build_devices): everything after
+// the shared core/RTC/SCC/VIA1 prefix and before m68k_board_finish.  No
 // rtc_set_via — the IIsi drives the RTC through Egret, not the VIA1 transceiver.
 static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     iisi_state_t *st = iisi_state(cfg);
@@ -257,11 +257,11 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
 
     uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
     uint32_t ram_size = cfg->ram_size;
-    st->mmu = mac030_build_mmu(cfg, iisi_board_desc.rom_base, iisi_board_desc.rom_end);
+    st->mmu = m68k_board_build_mmu(cfg, iisi_board_desc.rom_base, iisi_board_desc.rom_end);
     if (!st->mmu)
-        return -1; // mac030_build_mmu reported the reason
+        return -1; // m68k_board_build_mmu reported the reason
     // TT1 identity-maps NuBus space $F0-$FF for supervisor FCs (same as IIci).
-    st->mmu->tt1 = st->mmu->tt1_board = MAC030_TT1_NUBUS_SUPER; // from power-on
+    st->mmu->tt1 = st->mmu->tt1_board = M68K_BOARD_TT1_NUBUS_SUPER; // from power-on
 
     // Two physical RAM banks (Developer Note §3.2/§3.3): Bank A is the soldered
     // 1 MB at physical 0 (its bottom is the video frame buffer); Bank B is the
@@ -309,7 +309,7 @@ static const uint32_t iisi_ram_options_kb[] = {1024, 2048, 3072, 5120, 9216, 174
 
 // IIsi board: the shared mdu_substrate reads its data descriptor + VIA1 hooks
 // + the device-construction body (Egret + 2-bank RAM live inside build_devices).
-static const mac030_mdu_board_t iisi_board = {
+static const mdu_board_t iisi_board = {
     .desc = &iisi_board_desc,
     .via1_output = iisi_via1_output,
     .via1_shift_out = iisi_via1_shift_out,

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// mac030_glue.c
-// Shared GLUE-family lifecycle leaves — see mac030_glue.h.
+// m68k_board.c
+// The 68k II/Quadra board runtime and the GLUE family it grew from — see
+// m68k_board.h.
 
-#include "mac030_glue.h"
+#include "m68k_board.h"
 
 #include "appletalk.h"
 #include "config_seed.h"
@@ -40,8 +41,7 @@
 LOG_USE_CATEGORY_NAME("system");
 
 // Construct the GLUE peripheral set in canonical order — see header.
-int mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_state_t *st,
-                                  const mac030_board_desc_t *desc) {
+int glue_build_peripherals(config_t *cfg, checkpoint_t *cp, glue_state_t *st, const m68k_board_desc_t *desc) {
     machine_part_begin(cfg, cp, "adb");
     cfg->adb = adb_init(cfg->via1, cfg->scheduler, cp);
     machine_part(cfg, cp, "adb", part_save_adb, cfg->adb);
@@ -67,12 +67,12 @@ int mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_s
         floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
     machine_part(cfg, cp, "floppy", part_save_floppy, cfg->floppy);
 
-    mac030_glue_io_bind(&st->glue_io, cfg, desc, st->asc, cfg->floppy);
+    glue_io_bind(&st->glue_io, cfg, desc, st->asc, cfg->floppy);
     return 0;
 }
 
 // Create + attach the 68030 PMMU over a board's ROM window — see header.
-struct mmu_state *mac030_build_mmu(config_t *cfg, uint32_t rom_base, uint32_t rom_end) {
+struct mmu_state *m68k_board_build_mmu(config_t *cfg, uint32_t rom_base, uint32_t rom_end) {
     uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
     uint32_t ram_size = cfg->ram_size;
     uint8_t *rom_data = ram_native_pointer(cfg->memory_map, ram_size);
@@ -80,7 +80,7 @@ struct mmu_state *mac030_build_mmu(config_t *cfg, uint32_t rom_base, uint32_t ro
     mmu_state_t *mmu = mmu_init(ram_base, ram_size, cfg->machine->ram_max, rom_data, rom_size, rom_base, rom_end);
     if (!mmu) {
         LOG(0, "Error: out of memory constructing the PMMU");
-        return NULL; // mac030_build_mmu returns the MMU, not a status
+        return NULL; // m68k_board_build_mmu returns the MMU, not a status
     }
     // Set both, always together: the fault hook runs on the map's PMMU and
     // the 68030 bus-error path reads cpu->mmu (asserted equal there).
@@ -89,7 +89,8 @@ struct mmu_state *mac030_build_mmu(config_t *cfg, uint32_t rom_base, uint32_t ro
     return mmu;
 }
 
-struct mmu_state *mac030_build_bus_mmu040(config_t *cfg, uint32_t ram_aperture, uint32_t rom_base, uint32_t rom_end) {
+struct mmu_state *m68k_board_build_bus_mmu040(config_t *cfg, uint32_t ram_aperture, uint32_t rom_base,
+                                              uint32_t rom_end) {
     uint32_t ram_size = cfg->ram_size;
     uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
     uint8_t *rom_data = ram_native_pointer(cfg->memory_map, ram_size); // the ROM follows RAM
@@ -115,10 +116,10 @@ struct mmu_state *mac030_build_bus_mmu040(config_t *cfg, uint32_t ram_aperture, 
 // entries for NuBus cards' host-backed regions.  Both then arm the overlay.
 //
 // The ROM window comes from the board descriptor, which already carried it
-// for mac030_build_mmu — so the duplicated per-machine #defines are gone.
+// for m68k_board_build_mmu — so the duplicated per-machine #defines are gone.
 // I/O is the $10000000 window immediately above the ROM window on all three.
-void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc) {
-    mac030_glue_state_t *st = glue_st(cfg);
+void glue_memory_layout(config_t *cfg, const m68k_board_desc_t *desc) {
+    glue_state_t *st = glue_st(cfg);
 
     uint32_t ram_size = cfg->ram_size;
     uint32_t rom_size = cfg->machine->rom_size;
@@ -153,8 +154,8 @@ void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc) {
     }
 
     // --- I/O dispatcher, the window directly above the ROM window ---
-    mac030_io_fill_interface(&st->io_interface);
-    memory_map_add(cfg->memory_map, desc->rom_end, MAC030_GLUE_IO_SIZE, "I/O", &st->io_interface, &st->glue_io);
+    board_io_fill_interface(&st->io_interface);
+    memory_map_add(cfg->memory_map, desc->rom_end, GLUE_IO_SIZE, "I/O", &st->io_interface, &st->glue_io);
 }
 
 // Build the low-speed spine every 68k family shares: the RTC, the SCC at the
@@ -167,12 +168,12 @@ void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc) {
 // `scc_irq` is the only genuine per-family variation at this level; the VIAs
 // below it differ enough (one or two, different hooks, different IRQ sinks)
 // that they stay with each family.
-void mac030_build_lowspeed(config_t *cfg, checkpoint_t *cp, void (*scc_irq)(void *, bool)) {
+void m68k_board_build_lowspeed(config_t *cfg, checkpoint_t *cp, void (*scc_irq)(void *, bool)) {
     machine_part_begin(cfg, cp, "rtc");
     cfg->rtc = rtc_init(cfg->scheduler, cp, true, cfg->machine->pram);
     machine_part(cfg, cp, "rtc", part_save_rtc, cfg->rtc);
     machine_part_begin(cfg, cp, "scc");
-    cfg->scc = scc_init(NULL, cfg->scheduler, scc_irq ? scc_irq : mac030_glue_scc_irq, cfg, cp);
+    cfg->scc = scc_init(NULL, cfg->scheduler, scc_irq ? scc_irq : m68k_board_scc_irq, cfg, cp);
     machine_part(cfg, cp, "scc", part_save_scc, cfg->scc);
     // 7.8336 MHz PCLK (C8M) / 3.6864 MHz RTxC -- the same pair on every 68k Mac.
     scc_set_clocks(cfg->scc, 7833600, 3686400);
@@ -183,11 +184,11 @@ void mac030_build_lowspeed(config_t *cfg, checkpoint_t *cp, void (*scc_irq)(void
 }
 
 // Finish init: debugger, scheduler start, cold-boot IRQ/IPL reset.
-void mac030_glue_finish(config_t *cfg, checkpoint_t *cp, const mac030_io_t *io) {
+void m68k_board_finish(config_t *cfg, checkpoint_t *cp, const board_io_t *io) {
     // Every family's I/O table is checked here, once the machine is fully
     // built.  This is a parameter rather than a lookup so a new family cannot
-    // quietly skip it -- see mac030_io_validate.
-    mac030_io_validate(io, cfg->machine->id);
+    // quietly skip it -- see board_io_validate.
+    board_io_validate(io, cfg->machine->id);
     cfg->debugger = debug_init();
     machine_irq_cold_reset(cfg, cp);
 }
@@ -197,20 +198,20 @@ void mac030_glue_finish(config_t *cfg, checkpoint_t *cp, const mac030_io_t *io) 
 // hooks.  TT1 is uniform across the GLUE family ($F0..$FF supervisor identity);
 // it is set right after the PMMU is built (no MMU walk happens during
 // construction, so the exact moment is immaterial).
-int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t *board) {
-    mac030_glue_state_t *st = calloc(1, sizeof(*st));
+int glue_init(config_t *cfg, checkpoint_t *cp, const glue_board_t *board) {
+    glue_state_t *st = calloc(1, sizeof(*st));
     if (!st) {
         LOG(0, "Error: out of memory allocating the machine state for %s", cfg->machine->name);
         return -1;
     }
     cfg->machine_context = st;
 
-    mac030_build_core(cfg, board->desc, cp);
+    m68k_board_build_core(cfg, board->desc, cp);
     if (board->pre_devices)
         board->pre_devices(cfg);
     machine_part_irq(cfg, cp);
 
-    mac030_build_lowspeed(cfg, cp, NULL); // NULL: the family-default SCC IRQ
+    m68k_board_build_lowspeed(cfg, cp, NULL); // NULL: the family-default SCC IRQ
 
     // Derived, not the literal 20 this used to pass.  Every GLUE machine is
     // 15.6672 MHz so the number is unchanged -- but 20 was exactly the stale
@@ -221,11 +222,11 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
     uint8_t via_ff = via_freq_factor_for_clock(cfg->machine->freq);
     machine_part_begin(cfg, cp, "via1");
     cfg->via1 = via_init(NULL, cfg->scheduler, via_ff, "via1", board->via1_output, board->via1_shift_out,
-                         mac030_glue_via1_irq, cfg, cp);
+                         m68k_board_via1_irq, cfg, cp);
     machine_part(cfg, cp, "via1", part_save_via, cfg->via1);
     machine_part_begin(cfg, cp, "via2");
     cfg->via2 = via_init(NULL, cfg->scheduler, via_ff, "via2", board->via2_output, board->via2_shift_out,
-                         mac030_glue_via2_irq, cfg, cp);
+                         m68k_board_via2_irq, cfg, cp);
     machine_part(cfg, cp, "via2", part_save_via, cfg->via2);
     // The family saves no /SLOTIRQ mask: a restore derives it from the VIA2
     // port-A pins it just read, or a source still requesting at save time
@@ -236,32 +237,32 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
 
     board->setup_id(cfg);
 
-    if (mac030_glue_build_peripherals(cfg, cp, st, board->desc) != 0)
+    if (glue_build_peripherals(cfg, cp, st, board->desc) != 0)
         return -1;
 
-    st->mmu = mac030_build_mmu(cfg, board->desc->rom_base, board->desc->rom_end);
+    st->mmu = m68k_board_build_mmu(cfg, board->desc->rom_base, board->desc->rom_end);
     if (!st->mmu)
-        return -1; // mac030_build_mmu reported the reason
-    st->mmu->tt1 = st->mmu->tt1_board = MAC030_TT1_NUBUS_SUPER;
+        return -1; // m68k_board_build_mmu reported the reason
+    st->mmu->tt1 = st->mmu->tt1_board = M68K_BOARD_TT1_NUBUS_SUPER;
 
     cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, cp);
     if (board->post_nubus)
         board->post_nubus(cfg);
 
-    mac030_glue_memory_layout(cfg, board->desc);
+    glue_memory_layout(cfg, board->desc);
     if (board->memory_layout_tail)
         board->memory_layout_tail(cfg);
 
     // VIA2 drives GLUE outputs too: re-driven once the PMMU is bound
     machine_part_pmmu(cfg, cp, st->mmu, cfg->via1, cfg->via2);
 
-    mac030_glue_finish(cfg, cp, &st->glue_io);
+    m68k_board_finish(cfg, cp, &st->glue_io);
     return 0;
 }
 
 // Build the shared II-family construction prefix.  Reads the CPU model from
 // the profile (single source of truth), not a hardcoded constant.
-void mac030_build_core(config_t *cfg, const struct mac030_board_desc *desc, checkpoint_t *cp) {
+void m68k_board_build_core(config_t *cfg, const struct m68k_board_desc *desc, checkpoint_t *cp) {
     // The board's NuBus bus-error window is part of the bus it builds.
     const memory_bus_err_window_t bus_err = {.lo = desc->bus_err_lo, .hi = desc->bus_err_hi};
     machine_part_begin(cfg, cp, "memory");
@@ -288,8 +289,8 @@ void mac030_build_core(config_t *cfg, const struct mac030_board_desc *desc, chec
     g_uncached_read_cycles = 0; // a board that prices uncached reads sets it after this
 }
 
-void mac030_map_mirrored(uint32_t start_page, uint32_t window_pages, uint8_t *host, uint32_t size_pages,
-                         mac030_fill_fn fill, bool writable) {
+void m68k_board_map_mirrored(uint32_t start_page, uint32_t window_pages, uint8_t *host, uint32_t size_pages,
+                             m68k_board_fill_fn fill, bool writable) {
     if (size_pages == 0)
         return; // a bank smaller than one page decodes nothing
     for (uint32_t i = 0; i < window_pages && start_page + i < g_page_count; i++)
@@ -305,42 +306,42 @@ void mac030_map_mirrored(uint32_t start_page, uint32_t window_pages, uint8_t *ho
 // the net, so an external chip reset must not touch it; that moved to
 // cpu_hardware_reset.  The `mmu` parameter is gone
 // with it.
-void mac030_glue_bus_reset(config_t *cfg, mac030_rom_overlay_t *overlay) {
-    mac030_rom_overlay_arm(overlay); // unconditionally: the pages may have changed since
+void m68k_board_bus_reset(config_t *cfg, m68k_board_overlay_t *overlay) {
+    m68k_board_overlay_arm(overlay); // unconditionally: the pages may have changed since
     system_reset_common_devices(cfg);
 }
 
 // A VIA output the board does not observe.
-void mac030_glue_via_output_ignored(void *context, uint8_t port, uint8_t output) {
+void glue_via_output_ignored(void *context, uint8_t port, uint8_t output) {
     (void)context;
     (void)port;
     (void)output;
 }
 
 // A VIA shift-out the board does not observe.
-void mac030_glue_via_shift_out_ignored(void *context, uint8_t byte) {
+void glue_via_shift_out_ignored(void *context, uint8_t byte) {
     (void)context;
     (void)byte;
 }
 
 // Shared IRQ callbacks — route a device's interrupt line to the CPU IPL.
-void mac030_glue_scc_irq(void *context, bool active) {
-    mac030_glue_update_ipl((config_t *)context, MAC030_GLUE_IRQ_SCC, active);
+void m68k_board_scc_irq(void *context, bool active) {
+    m68k_board_update_ipl((config_t *)context, M68K_BOARD_IRQ_SCC, active);
 }
-void mac030_glue_via1_irq(void *context, bool active) {
-    mac030_glue_update_ipl((config_t *)context, MAC030_GLUE_IRQ_VIA1, active);
+void m68k_board_via1_irq(void *context, bool active) {
+    m68k_board_update_ipl((config_t *)context, M68K_BOARD_IRQ_VIA1, active);
 }
-void mac030_glue_via2_irq(void *context, bool active) {
-    mac030_glue_update_ipl((config_t *)context, MAC030_GLUE_IRQ_VIA2, active);
+void m68k_board_via2_irq(void *context, bool active) {
+    m68k_board_update_ipl((config_t *)context, M68K_BOARD_IRQ_VIA2, active);
 }
 
 // Set/clear an IRQ source bit and re-derive the CPU IPL.  The routing itself
-// is the data-driven glue_irq_routes table (mac030_glue_io.c) run by the
+// is the data-driven glue_irq_routes table (glue_io.c) run by the
 // shared engine (machine_irq.h).
-void mac030_glue_update_ipl(config_t *cfg, int source, bool active) {
+void m68k_board_update_ipl(config_t *cfg, int source, bool active) {
     int old_irq = cfg->rt.irq;
-    int new_ipl = machine_irq_update(cfg, mac030_glue_irq_routes(), source, active);
-    LOG(2, "mac030_glue_update_ipl: source=%d active=%d irq:%d->%d ipl->%d", source, active ? 1 : 0, old_irq,
+    int new_ipl = machine_irq_update(cfg, m68k_board_irq_routes(), source, active);
+    LOG(2, "m68k_board_update_ipl: source=%d active=%d irq:%d->%d ipl->%d", source, active ? 1 : 0, old_irq,
         cfg->rt.irq, new_ipl);
 }
 
@@ -358,18 +359,18 @@ void mac030_glue_update_ipl(config_t *cfg, int source, bool active) {
 // on PA0, sources the NuBus controller knows nothing about.  The SE/30's
 // built-in video is the same shape.  A bus that cannot see every contributor
 // cannot compute the edge.  The OR itself is shared with the MCU (slot_irq.h).
-void mac030_glue_slot_irq_source(config_t *cfg, int pa_bit, bool active) {
-    mac030_glue_state_t *st = glue_st(cfg);
+void glue_slot_irq_source(config_t *cfg, int pa_bit, bool active) {
+    glue_state_t *st = glue_st(cfg);
     if (!st)
         return;
     slot_irq_source(cfg->via2, &st->slot_pa_mask, pa_bit, active);
 }
 
-void mac030_glue_nubus_slot_irq(config_t *cfg, int slot, bool active) {
+void glue_nubus_slot_irq(config_t *cfg, int slot, bool active) {
     int pa_bit = slot - 0x9;
     if (pa_bit < 0 || pa_bit > 5)
         return;
-    mac030_glue_slot_irq_source(cfg, pa_bit, active);
+    glue_slot_irq_source(cfg, pa_bit, active);
 }
 
 // ============================================================
@@ -377,26 +378,26 @@ void mac030_glue_nubus_slot_irq(config_t *cfg, int slot, bool active) {
 // ============================================================
 //
 // SE/30, IIcx and IIx all bind this one substrate.  Each machine's deltas live
-// in its mac030_glue_board_t (reached via cfg->machine->board) + its profile;
+// in its glue_board_t (reached via cfg->machine->board) + its profile;
 // the per-machine init/reset/teardown/checkpoint clones are gone.
 
-static inline const mac030_glue_board_t *glue_board(config_t *cfg) {
-    return (const mac030_glue_board_t *)cfg->machine->board;
+static inline const glue_board_t *glue_board(config_t *cfg) {
+    return (const glue_board_t *)cfg->machine->board;
 }
 
-static int glue_init(config_t *cfg, checkpoint_t *cp) {
-    if (mac030_glue_init(cfg, cp, glue_board(cfg)) != 0)
+static int glue_substrate_init(config_t *cfg, checkpoint_t *cp) {
+    if (glue_init(cfg, cp, glue_board(cfg)) != 0)
         return -1;
     return 0;
 }
 
 static void glue_bus_reset(config_t *cfg) {
-    mac030_glue_state_t *st = glue_st(cfg);
-    mac030_glue_bus_reset(cfg, &st->overlay);
+    glue_state_t *st = glue_st(cfg);
+    m68k_board_bus_reset(cfg, &st->overlay);
 }
 
 static void glue_teardown(config_t *cfg) {
-    mac030_glue_state_t *st = glue_st(cfg);
+    glue_state_t *st = glue_st(cfg);
     if (st) {
         // Borrowed slot-$E video pointers (SE/30 only; already NULL on IIcx/IIx).
         // system_destroy ran nubus_delete first, so the card buffer is gone.
@@ -424,7 +425,7 @@ void mac_vbl_pulse(struct via *via) {
 }
 
 static void glue_trigger_vbl(config_t *cfg) {
-    const mac030_glue_board_t *board = glue_board(cfg);
+    const glue_board_t *board = glue_board(cfg);
     if (board->trigger_vbl) {
         board->trigger_vbl(cfg); // SE/30: built-in slot-$E video VBL
         return;
@@ -445,12 +446,12 @@ static void glue_trigger_vbl(config_t *cfg) {
 }
 
 const machine_substrate_t glue_substrate = {
-    .init = glue_init,
+    .init = glue_substrate_init,
     .bus_reset = glue_bus_reset,
     .teardown = glue_teardown,
     .seed = mac_seed_rtc_pram,
     .trigger_vbl = glue_trigger_vbl,
-    .nubus_slot_irq = mac030_glue_nubus_slot_irq,
+    .nubus_slot_irq = glue_nubus_slot_irq,
     MAC_SUBSTRATE_HOST_IO,
     MAC_SUBSTRATE_MEDIA_STD,
 };

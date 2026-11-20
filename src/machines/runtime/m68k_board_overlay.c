@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// mac030_rom_overlay.c
+// m68k_board_overlay.c
 // The ROM-at-zero overlay of the 68030/040 boards, with its two policies.
-// See mac030_rom_overlay.h.
+// See m68k_board_overlay.h.
 
-#include "mac030_rom_overlay.h"
+#include "m68k_board_overlay.h"
 
 #include "cpu.h"
 #include "log.h"
@@ -16,12 +16,12 @@
 LOG_USE_CATEGORY_NAME("board");
 
 // Base of the ROM image inside the RAM+ROM allocation.
-static uint8_t *overlay_rom_data(const mac030_rom_overlay_t *ov) {
+static uint8_t *overlay_rom_data(const m68k_board_overlay_t *ov) {
     return ram_native_pointer(ov->cfg->memory_map, ov->cfg->ram_size);
 }
 
 // Point the aperture at direct ROM pages, mirroring the image across it.
-void mac030_rom_overlay_fill_aperture(const mac030_rom_overlay_t *ov) {
+void m68k_board_overlay_fill_aperture(const m68k_board_overlay_t *ov) {
     uint32_t rom_pages = ov->cfg->machine->rom_size >> MEM_PAGE_SHIFT;
     uint8_t *rom_data = overlay_rom_data(ov);
     uint32_t start_page = ov->rom_base >> MEM_PAGE_SHIFT;
@@ -31,31 +31,31 @@ void mac030_rom_overlay_fill_aperture(const mac030_rom_overlay_t *ov) {
 }
 
 // RAM at zero, aperture direct.  Idempotent.
-void mac030_rom_overlay_drop(mac030_rom_overlay_t *ov) {
+void m68k_board_overlay_drop(m68k_board_overlay_t *ov) {
     if (!ov->armed)
         return;
     ov->armed = false;
-    if (ov->policy == MAC030_OVERLAY_FOLLOW_LINE) {
+    if (ov->policy == M68K_BOARD_OVERLAY_FOLLOW_LINE) {
         LOG(2, "%s overlay off: RAM at $00000000 (pc=%08X)", ov->name, cpu_get_pc(ov->cfg->cpu));
         ov->map_ram(ov->cfg);
         return;
     }
     LOG(1, "%s overlay drop: RAM at $00000000, ROM direct in aperture (pc=%08X)", ov->name, cpu_get_pc(ov->cfg->cpu));
     ov->map_ram(ov->cfg);
-    mac030_rom_overlay_fill_aperture(ov);
+    m68k_board_overlay_fill_aperture(ov);
 }
 
-void mac030_rom_overlay_set_line(mac030_rom_overlay_t *ov, bool on) {
+void m68k_board_overlay_set_line(m68k_board_overlay_t *ov, bool on) {
     if (ov->armed == on)
         return;
     if (on)
-        mac030_rom_overlay_arm(ov);
+        m68k_board_overlay_arm(ov);
     else
-        mac030_rom_overlay_drop(ov);
+        m68k_board_overlay_drop(ov);
 }
 
 // ROM readable at zero; aperture pages routed to the trigger device.
-void mac030_rom_overlay_arm(mac030_rom_overlay_t *ov) {
+void m68k_board_overlay_arm(m68k_board_overlay_t *ov) {
     uint32_t rom_pages = ov->cfg->machine->rom_size >> MEM_PAGE_SHIFT;
     uint8_t *rom_data = overlay_rom_data(ov);
 
@@ -66,7 +66,7 @@ void mac030_rom_overlay_arm(mac030_rom_overlay_t *ov) {
         page_fill_68k(p, rom_data + (p << MEM_PAGE_SHIFT), false);
 
     // A line-following overlay has no trigger: the ROM window stays direct
-    if (ov->policy == MAC030_OVERLAY_FOLLOW_LINE)
+    if (ov->policy == M68K_BOARD_OVERLAY_FOLLOW_LINE)
         return;
 
     // Route the aperture through the trigger device: memory_map_add did the
@@ -79,19 +79,19 @@ void mac030_rom_overlay_arm(mac030_rom_overlay_t *ov) {
 
 // Trigger-device handlers: any access drops the overlay and completes from the
 // ROM image.  `offset` is relative to the aperture base.
-static inline uint8_t *overlay_rom_ptr(const mac030_rom_overlay_t *ov, uint32_t offset) {
+static inline uint8_t *overlay_rom_ptr(const m68k_board_overlay_t *ov, uint32_t offset) {
     return overlay_rom_data(ov) + (offset % ov->cfg->machine->rom_size);
 }
 
 static uint8_t overlay_read8(void *ctx, uint32_t offset) {
-    mac030_rom_overlay_t *ov = (mac030_rom_overlay_t *)ctx;
-    mac030_rom_overlay_drop(ov);
+    m68k_board_overlay_t *ov = (m68k_board_overlay_t *)ctx;
+    m68k_board_overlay_drop(ov);
     return overlay_rom_ptr(ov, offset)[0];
 }
 
 // An inspection reads the ROM byte without throwing the switch.
 static uint8_t overlay_peek8(void *ctx, uint32_t offset) {
-    return overlay_rom_ptr((mac030_rom_overlay_t *)ctx, offset)[0]; // wider peeks compose
+    return overlay_rom_ptr((m68k_board_overlay_t *)ctx, offset)[0]; // wider peeks compose
 }
 
 // Composed from byte reads so every byte wraps within the mirror
@@ -117,7 +117,7 @@ static uint32_t overlay_read32(void *ctx, uint32_t offset) {
 
 static void overlay_write8(void *ctx, uint32_t offset, uint8_t value) {
     (void)value;
-    mac030_rom_overlay_drop((mac030_rom_overlay_t *)ctx); // a write also triggers the switch
+    m68k_board_overlay_drop((m68k_board_overlay_t *)ctx); // a write also triggers the switch
     LOG(2, "ROM aperture write $%X ignored", offset);
 }
 
@@ -130,14 +130,14 @@ static void overlay_write32(void *ctx, uint32_t offset, uint32_t value) {
 }
 
 // Fill in `ov` and its trigger interface.  Does not arm.
-void mac030_rom_overlay_init(mac030_rom_overlay_t *ov, struct config *cfg, uint32_t rom_base, uint32_t rom_end,
+void m68k_board_overlay_init(m68k_board_overlay_t *ov, struct config *cfg, uint32_t rom_base, uint32_t rom_end,
                              void (*map_ram)(struct config *cfg), const char *name) {
     ov->cfg = cfg;
     ov->rom_base = rom_base;
     ov->rom_end = rom_end;
     ov->map_ram = map_ram;
     ov->name = name;
-    ov->policy = MAC030_OVERLAY_DROP_ON_ACCESS;
+    ov->policy = M68K_BOARD_OVERLAY_DROP_ON_ACCESS;
     ov->armed = false;
     ov->iface.read_uint8 = overlay_read8;
     ov->iface.read_uint16 = overlay_read16;
@@ -159,8 +159,8 @@ static void overlay_map_ram_identity(struct config *cfg) {
         page_fill_68k(p, ram_base + (p << MEM_PAGE_SHIFT), true);
 }
 
-void mac030_rom_overlay_init_line(mac030_rom_overlay_t *ov, struct config *cfg, const char *name) {
+void m68k_board_overlay_init_line(m68k_board_overlay_t *ov, struct config *cfg, const char *name) {
     // No aperture: rom_base/rom_end stay 0 and the trigger interface unused
-    mac030_rom_overlay_init(ov, cfg, 0, 0, overlay_map_ram_identity, name);
-    ov->policy = MAC030_OVERLAY_FOLLOW_LINE;
+    m68k_board_overlay_init(ov, cfg, 0, 0, overlay_map_ram_identity, name);
+    ov->policy = M68K_BOARD_OVERLAY_FOLLOW_LINE;
 }

@@ -5,7 +5,7 @@
 // PUBLIC machine descriptor + capability types.  This is the one machine-
 // subsystem header the platform-agnostic core is allowed to include
 // (system.c / system_internal.h store and read a `const hw_profile_t *`).  The
-// machine *implementation* headers (mac030/…, glue/…, mdu/…, oss/…, lisa/…,
+// machine *implementation* headers (glue/…, mdu/…, oss/…, lisa/…,
 // runtime/…, the per-machine _internal.h) are off-limits to core — a CI
 // layering check enforces that.
 //
@@ -539,8 +539,8 @@ typedef struct hw_profile {
     const char *(*of_nvram_check)(int n, const char *packed, const char **bad);
 
     // "Bespoke substrate" is not "bespoke machine": every II-class 68k family,
-    // the IIfx included, builds through mac030_build_core +
-    // mac030_build_lowspeed (the Plus and the Lisa build their own core), and
+    // the IIfx included, builds through m68k_board_build_core +
+    // m68k_board_build_lowspeed (the Plus and the Lisa build their own core), and
     // every family tears down through machine_teardown_config_devices.  What a family keeps for itself is what
     // its hardware actually does differently -- for the IIfx, the OSS
     // interrupt controller, the FMC ROM-invert POST window, the SCSI DMA
@@ -551,7 +551,7 @@ typedef struct hw_profile {
     // interprets.  Typed by convention: the family
     // substrate casts it to its concrete type.  NULL where a substrate serves
     // exactly one machine and can therefore reach its data directly (Plus,
-    // IIfx).  The IIfx does define a mac030_board_desc_t of its own -- it
+    // IIfx).  The IIfx does define a m68k_board_desc_t of its own -- it
     // simply has no second machine to vary against, so routing it through here
     // would add a cast without adding sharing.
     //

@@ -744,7 +744,7 @@ void tnt_scc_dma_init(config_t *cfg) {
 // --- Island byte decode ------------------------------------------------------
 //
 // One row per register block, read / peek / write side by side, walked by the
-// shared I/O engine (mac030_io.h).  The board deltas (the Network Servers'
+// shared I/O engine (board_io.h).  The board deltas (the Network Servers'
 // GBUS blocks, the Macintosh boards' MESH and MACE) are row guards, so each
 // block and its guard are written once for both directions.
 
@@ -802,9 +802,9 @@ static void gc_scsi_write(config_t *cfg, uint32_t reg, uint32_t addr, uint8_t va
 }
 
 // MACE: thirty-two byte-wide registers on $10 centres (tnt_mace.c).
-MAC030_IO_ROW_READ(gc_mace_read, tnt_mace_read)
-MAC030_IO_ROW_READ(gc_mace_peek, tnt_mace_peek)
-MAC030_IO_ROW_WRITE(gc_mace_write, tnt_mace_write)
+BOARD_IO_ROW_READ(gc_mace_read, tnt_mace_read)
+BOARD_IO_ROW_READ(gc_mace_peek, tnt_mace_peek)
+BOARD_IO_ROW_WRITE(gc_mace_write, tnt_mace_write)
 
 // The ESCC aperture: only the four channel registers (+$00..+$3F) reach the
 // cell (runtime/escc_dbdma.c).
@@ -823,9 +823,9 @@ static void gc_escc_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_
 }
 
 // SWIM3: sixteen byte-wide registers on $10 centres (swim3.c).
-MAC030_IO_ROW_READ(gc_swim3_read, tnt_swim3_read)
-MAC030_IO_ROW_READ(gc_swim3_peek, tnt_swim3_peek)
-MAC030_IO_ROW_WRITE(gc_swim3_write, tnt_swim3_write)
+BOARD_IO_ROW_READ(gc_swim3_read, tnt_swim3_read)
+BOARD_IO_ROW_READ(gc_swim3_peek, tnt_swim3_peek)
+BOARD_IO_ROW_WRITE(gc_swim3_write, tnt_swim3_write)
 
 // MESH, the internal-bus SCSI controller.
 static uint8_t gc_mesh_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
@@ -867,13 +867,13 @@ static uint8_t gc_boxid_read8(config_t *cfg, uint32_t win_off, uint32_t addr) {
 }
 
 // RaDACal colormap bank (control.c).
-MAC030_IO_ROW_READ(gc_rad_read, tnt_control_rad_read)
-MAC030_IO_ROW_READ(gc_rad_peek, tnt_control_rad_peek)
-MAC030_IO_ROW_WRITE(gc_rad_write, tnt_control_rad_write)
+BOARD_IO_ROW_READ(gc_rad_read, tnt_control_rad_read)
+BOARD_IO_ROW_READ(gc_rad_peek, tnt_control_rad_peek)
+BOARD_IO_ROW_WRITE(gc_rad_write, tnt_control_rad_write)
 
 // GBUS device 3: the ANS front-panel LCD and timebase enable (lcd.c).
-MAC030_IO_ROW_READ(gc_lcd_read, tnt_lcd_read8)
-MAC030_IO_ROW_WRITE(gc_lcd_write, tnt_lcd_write8)
+BOARD_IO_ROW_READ(gc_lcd_read, tnt_lcd_read8)
+BOARD_IO_ROW_WRITE(gc_lcd_write, tnt_lcd_write8)
 
 // The NVRAM bank-select port reads back the selected bank.
 static uint8_t gc_nvport_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
@@ -897,8 +897,8 @@ static void gc_nvport_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint
 }
 
 // The NVRAM data window: byte j at +j*$10 of the selected bank.
-MAC030_IO_ROW_READ(gc_nvdata_read, nvram_read)
-MAC030_IO_ROW_WRITE(gc_nvdata_write, nvram_write)
+BOARD_IO_ROW_READ(gc_nvdata_read, nvram_read)
+BOARD_IO_ROW_WRITE(gc_nvdata_write, nvram_write)
 
 // Grand Central's byte-wide island map.  The little-endian longword blocks
 // (the interrupt registers, AWACS) answer 32-bit cycles only (gc_access32);
@@ -908,55 +908,55 @@ MAC030_IO_ROW_WRITE(gc_nvdata_write, nvram_write)
 // chip's A/B and D/C pins directly, so it is a plain device route.
 //
 //   base         end                  device           pen xform  rd wr  read_fn  write_fn  name
-static const mac030_io_range_t gc_io_ranges[] = {
-    {OFF_DBDMA, OFF_DBDMA_END, 0, 0, MAC030_IO_NORMAL, 0, 0, gc_dbdma_read8, gc_open_write, "dbdma"},
-    {OFF_SCSI0, OFF_SCSI0 + 0x1000u, 0, 0, MAC030_IO_STRIDE_16, 0, 0, gc_scsi_read, gc_scsi_write, "scsi0",
+static const board_io_range_t gc_io_ranges[] = {
+    {OFF_DBDMA, OFF_DBDMA_END, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_dbdma_read8, gc_open_write, "dbdma"},
+    {OFF_SCSI0, OFF_SCSI0 + 0x1000u, 0, 0, BOARD_IO_STRIDE_16, 0, 0, gc_scsi_read, gc_scsi_write, "scsi0",
      .peek_fn = gc_scsi_peek},
-    {OFF_MACE, OFF_MACE + 0x1000u, 0, 0, MAC030_IO_NORMAL, 0, 0, gc_mace_read, gc_mace_write, "mace",
+    {OFF_MACE, OFF_MACE + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_mace_read, gc_mace_write, "mace",
      .peek_fn = gc_mace_peek, .present = gc_no_gbus},
-    {OFF_SCCLEG, OFF_SCCLEG + 0x1000u, MAC030_DEV_SCC, 0, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc_legacy"},
-    {OFF_ESCC, OFF_ESCC + 0x1000u, 0, 0, MAC030_IO_NORMAL, 0, 0, gc_escc_read, gc_escc_write, "escc",
+    {OFF_SCCLEG, OFF_SCCLEG + 0x1000u, BOARD_DEV_SCC, 0, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scc_legacy"},
+    {OFF_ESCC, OFF_ESCC + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_escc_read, gc_escc_write, "escc",
      .peek_fn = gc_escc_peek},
-    {OFF_SWIM3, OFF_SWIM3 + 0x1000u, 0, 0, MAC030_IO_NORMAL, 0, 0, gc_swim3_read, gc_swim3_write, "swim3",
+    {OFF_SWIM3, OFF_SWIM3 + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_swim3_read, gc_swim3_write, "swim3",
      .peek_fn = gc_swim3_peek},
     // VIA1/Cuda: 16 regs at stride $200 span the 8 KB window
-    {OFF_VIA, OFF_VIA + 0x2000u, MAC030_DEV_VIA1, 0, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "via1"},
-    {OFF_MESH, OFF_MESH + 0x1000u, 0, 0, MAC030_IO_NORMAL, 0, 0, gc_mesh_read, gc_mesh_write, "mesh",
+    {OFF_VIA, OFF_VIA + 0x2000u, BOARD_DEV_VIA1, 0, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "via1"},
+    {OFF_MESH, OFF_MESH + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_mesh_read, gc_mesh_write, "mesh",
      .peek_fn = gc_mesh_peek, .present = gc_has_mesh},
-    {OFF_EPROM, OFF_EPROM + 0x1000u, 0, 0, MAC030_IO_NORMAL, 0, 0, gc_gbus_read, gc_gbus_write, "eprom",
+    {OFF_EPROM, OFF_EPROM + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_gbus_read, gc_gbus_write, "eprom",
      .peek_fn = gc_gbus_peek, .present = gc_has_gbus},
-    {OFF_BOXID, OFF_BOXID + 0x1000u, 0, 0, MAC030_IO_NORMAL, 0, 0, gc_boxid_read8, gc_open_write, "boxid"},
-    {OFF_RADACAL, OFF_RADACAL + 0x1000u, 0, 0, MAC030_IO_NORMAL, 0, 0, gc_rad_read, gc_rad_write, "radacal",
+    {OFF_BOXID, OFF_BOXID + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_boxid_read8, gc_open_write, "boxid"},
+    {OFF_RADACAL, OFF_RADACAL + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_rad_read, gc_rad_write, "radacal",
      .peek_fn = gc_rad_peek},
-    {OFF_LCDGB, OFF_LCDGB + 0x1000u, 0, 0, MAC030_IO_NORMAL, 0, 0, gc_lcd_read, gc_lcd_write, "lcd",
+    {OFF_LCDGB, OFF_LCDGB + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_lcd_read, gc_lcd_write, "lcd",
      .present = gc_has_gbus},
-    {OFF_NVPORT, OFF_NVPORT + 0x1000u, 0, 0, MAC030_IO_NORMAL, 0, 0, gc_nvport_read, gc_nvport_write, "nvram_port"},
-    {OFF_BREG2, OFF_BREG2 + 0x1000u, 0, 0, MAC030_IO_NORMAL, 0, 0, gc_gbus_read, gc_gbus_write, "breg2",
+    {OFF_NVPORT, OFF_NVPORT + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_nvport_read, gc_nvport_write, "nvram_port"},
+    {OFF_BREG2, OFF_BREG2 + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_gbus_read, gc_gbus_write, "breg2",
      .peek_fn = gc_gbus_peek, .present = gc_has_gbus},
-    {OFF_NVDATA, OFF_NVDATA + 0x1000u, 0, 0, MAC030_IO_NORMAL, 0, 0, gc_nvdata_read, gc_nvdata_write, "nvram_data"},
+    {OFF_NVDATA, OFF_NVDATA + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_nvdata_read, gc_nvdata_write, "nvram_data"},
     {0}, // sentinel: end == 0
 };
 
 void tnt_gc_io_bind(config_t *cfg) {
-    mac030_io_t *io = &tnt_st(cfg)->gc_io;
+    board_io_t *io = &tnt_st(cfg)->gc_io;
     // Undecoded island space reads 0, as it always has here.
-    mac030_io_install_table(io, cfg, gc_io_ranges, TNT_GC_ISLAND_SIZE - 1u, 0);
+    board_io_install_table(io, cfg, gc_io_ranges, TNT_GC_ISLAND_SIZE - 1u, 0);
     io->untimed = true;
-    mac030_io_bind_dev(io, MAC030_DEV_VIA1, cfg->via1, via_get_memory_interface(cfg->via1));
-    mac030_io_bind_dev(io, MAC030_DEV_SCC, cfg->scc, scc_get_memory_interface(cfg->scc));
-    mac030_io_validate(io, cfg->machine->id);
+    board_io_bind_dev(io, BOARD_DEV_VIA1, cfg->via1, via_get_memory_interface(cfg->via1));
+    board_io_bind_dev(io, BOARD_DEV_SCC, cfg->scc, scc_get_memory_interface(cfg->scc));
+    board_io_validate(io, cfg->machine->id);
 }
 
 uint8_t tnt_gc_read8(config_t *cfg, uint32_t offset) {
-    return mac030_io_read_uint8(&tnt_st(cfg)->gc_io, offset);
+    return board_io_read_uint8(&tnt_st(cfg)->gc_io, offset);
 }
 
 uint8_t tnt_gc_peek8(config_t *cfg, uint32_t offset) {
-    return mac030_io_peek_uint8(&tnt_st(cfg)->gc_io, offset);
+    return board_io_peek_uint8(&tnt_st(cfg)->gc_io, offset);
 }
 
 void tnt_gc_write8(config_t *cfg, uint32_t offset, uint8_t value) {
-    mac030_io_write_uint8(&tnt_st(cfg)->gc_io, offset, value);
+    board_io_write_uint8(&tnt_st(cfg)->gc_io, offset, value);
 }
 
 // 32-bit access: the LE register blocks.  `value` at this boundary is the

@@ -226,7 +226,7 @@ bool scsi_53c96_dreq(struct scsi_53c96 *c) {
     return false;
 }
 
-// --- The shared island engine (mac030_io.c) charges bus penalties (Grand
+// --- The shared island engine (board_io.c) charges bus penalties (Grand
 // Central's rows charge none; a zero cpi_x256 makes memory_io_penalty a no-op
 // besides) and can signal a bus error (Grand Central declares no bus-error
 // span, so that is never called) ---

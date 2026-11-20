@@ -35,7 +35,7 @@ typedef struct nubus_bus nubus_bus_t;
 // dispatch while the composition above it stays fixed after construction.
 typedef struct system_runtime {
     // Active interrupt-source bitmask; the bits are the family's own
-    // (PLUS_IRQ_*, MAC030_GLUE_IRQ_*, AV_IRQ_*, the Lisa's levels, OSS).
+    // (PLUS_IRQ_*, M68K_BOARD_IRQ_*, AV_IRQ_*, the Lisa's levels, OSS).
     uint32_t irq;
 } system_runtime_t;
 

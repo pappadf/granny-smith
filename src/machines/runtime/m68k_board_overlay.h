@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// mac030_rom_overlay.h
+// m68k_board_overlay.h
 // The ROM-at-zero overlay of the 68030/040 boards, one object with a policy
 // for how it goes away:
-//   MAC030_OVERLAY_DROP_ON_ACCESS  the AV, MCU and IIfx: the first access to
+//   M68K_BOARD_OVERLAY_DROP_ON_ACCESS  the AV, MCU and IIfx: the first access to
 //                                  the ROM aperture drops it (a trip-wire)
-//   MAC030_OVERLAY_FOLLOW_LINE     GLUE and MDU: it follows VIA1's Overlay
+//   M68K_BOARD_OVERLAY_FOLLOW_LINE     GLUE and MDU: it follows VIA1's Overlay
 //                                  output (PA4), set by the board's VIA code
 
-#ifndef MAC030_ROM_OVERLAY_H
-#define MAC030_ROM_OVERLAY_H
+#ifndef GS_MACHINES_RUNTIME_M68K_BOARD_OVERLAY_H
+#define GS_MACHINES_RUNTIME_M68K_BOARD_OVERLAY_H
 
 #include "common.h"
 #include "memory.h"
@@ -39,44 +39,44 @@ struct config;
 
 // How the overlay goes away (see above).
 typedef enum {
-    MAC030_OVERLAY_DROP_ON_ACCESS,
-    MAC030_OVERLAY_FOLLOW_LINE,
-} mac030_overlay_policy_t;
+    M68K_BOARD_OVERLAY_DROP_ON_ACCESS,
+    M68K_BOARD_OVERLAY_FOLLOW_LINE,
+} m68k_board_overlay_policy_t;
 
-typedef struct mac030_rom_overlay {
+typedef struct m68k_board_overlay {
     struct config *cfg;
     uint32_t rom_base; // aperture start, from the board descriptor
     uint32_t rom_end; // aperture end (exclusive)
     void (*map_ram)(struct config *cfg); // the family's RAM-at-zero mapping
     const char *name; // log prefix, e.g. "AV" or "MCU"
-    mac030_overlay_policy_t policy;
+    m68k_board_overlay_policy_t policy;
     memory_interface_t iface; // the trigger device while armed (DROP_ON_ACCESS)
     bool armed; // checkpointed by the MCU substrate; GLUE/MDU re-derive it from VIA1
-} mac030_rom_overlay_t;
+} m68k_board_overlay_t;
 
 // Fill in `ov` and its trigger interface.  Does not arm; call _arm after the
 // aperture has been registered with memory_map_add(&ov->iface, ov).
-void mac030_rom_overlay_init(mac030_rom_overlay_t *ov, struct config *cfg, uint32_t rom_base, uint32_t rom_end,
+void m68k_board_overlay_init(m68k_board_overlay_t *ov, struct config *cfg, uint32_t rom_base, uint32_t rom_end,
                              void (*map_ram)(struct config *cfg), const char *name);
 
 // Fill in `ov` for the FOLLOW_LINE policy (GLUE, MDU): no trigger device and
 // no aperture of its own; RAM at zero is the identity map of the overlaid
 // pages.  Does not arm.
-void mac030_rom_overlay_init_line(mac030_rom_overlay_t *ov, struct config *cfg, const char *name);
+void m68k_board_overlay_init_line(m68k_board_overlay_t *ov, struct config *cfg, const char *name);
 
 // ROM readable (read-only) at zero; under DROP_ON_ACCESS the aperture pages
 // are routed to the trigger device.  Cold boot and hardware RESET both arm.
-void mac030_rom_overlay_arm(mac030_rom_overlay_t *ov);
+void m68k_board_overlay_arm(m68k_board_overlay_t *ov);
 
 // RAM at zero; under DROP_ON_ACCESS the aperture pages become direct ROM.
 // Idempotent.
-void mac030_rom_overlay_drop(mac030_rom_overlay_t *ov);
+void m68k_board_overlay_drop(m68k_board_overlay_t *ov);
 
 // FOLLOW_LINE: the board's Overlay line changed -- arm while it is high, drop
 // when it falls.  No-op while the level is unchanged.
-void mac030_rom_overlay_set_line(mac030_rom_overlay_t *ov, bool on);
+void m68k_board_overlay_set_line(m68k_board_overlay_t *ov, bool on);
 
 // Point the aperture at direct ROM pages, mirroring the image across it.
-void mac030_rom_overlay_fill_aperture(const mac030_rom_overlay_t *ov);
+void m68k_board_overlay_fill_aperture(const m68k_board_overlay_t *ov);
 
-#endif // MAC030_ROM_OVERLAY_H
+#endif // GS_MACHINES_RUNTIME_M68K_BOARD_OVERLAY_H

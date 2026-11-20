@@ -40,10 +40,10 @@
 #define GS_MACHINES_GOSSAMER_H
 
 #include "ata.h" // the two ATA cells
+#include "board_io.h" // board_io_t, the island decode engine
 #include "checkpoint.h"
 #include "davbus.h" // the DAVbus sound cell (Screamer face)
 #include "escc_dbdma.h"
-#include "mac030_io.h" // mac030_io_t, the island decode engine
 #include "machine.h"
 #include "machine_profile.h"
 #include "memory.h"
@@ -274,7 +274,7 @@ typedef struct gossamer_state {
     // Heathrow's byte decode (heathrow.c): its range table bound to this
     // machine's VIA and SCC.  Host pointers, rebuilt at init, never
     // checkpointed.
-    mac030_io_t hr_io;
+    board_io_t hr_io;
 } gossamer_state_t;
 
 static inline gossamer_state_t *gos_st(config_t *cfg) {

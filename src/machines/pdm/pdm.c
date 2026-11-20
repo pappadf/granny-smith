@@ -409,7 +409,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     machine_part(cfg, cp, "ariel.monitor", part_save_ariel_monitor, st);
     pdm_awacs_init(cfg);
 
-    // Finish: the debugger (the mac030_glue_finish shape).
+    // Finish: the debugger (the m68k_board_finish shape).
     cfg->debugger = debug_init();
 
     // Fresh boot: start the free-running VBL raster (a restore rebinds

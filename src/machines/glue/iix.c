@@ -15,7 +15,7 @@
 //   * Otherwise identical: same VIA1 callbacks, same I/O dispatcher,
 //     same memory layout, same VBL trigger.
 
-#include "mac030_glue.h"
+#include "m68k_board.h"
 #include "machine.h"
 #include "slot_tables.h"
 #include "system_internal.h"
@@ -72,12 +72,12 @@ static void iix_setup_id(config_t *cfg) {
 }
 
 // IIx board: GLUE family, six NuBus slots, no soft-power / sound-jack.
-static const mac030_glue_board_t iix_board = {
+static const glue_board_t iix_board = {
     .desc = &iicx_iix_board_desc, // shared with the IIcx (iicx.c)
     .via1_output = iicx_via1_output,
-    .via1_shift_out = NULL, // ADB reads SR itself (BUG-004, mac030_glue.h)
-    .via2_output = mac030_glue_via_output_ignored,
-    .via2_shift_out = mac030_glue_via_shift_out_ignored,
+    .via1_shift_out = NULL, // ADB reads SR itself (BUG-004, m68k_board.h)
+    .via2_output = glue_via_output_ignored,
+    .via2_shift_out = glue_via_shift_out_ignored,
     .setup_id = iix_setup_id,
     .memory_layout_tail = iicx_memory_layout_tail,
 };
@@ -95,8 +95,8 @@ const hw_profile_t machine_iix = {
     .mmu_kind = MMU_68030_PMMU,
 
     .address_bits = 32,
-    .ram_default = MAC030_GLUE_RAM_DEFAULT,
-    .ram_max = MAC030_GLUE_RAM_MAX,
+    .ram_default = GLUE_RAM_DEFAULT,
+    .ram_max = GLUE_RAM_MAX,
     .rom_size = 0x040000, // 256 KB
 
     .ram_options = iicx_iix_ram_options_kb, // shared, 5120 included (iicx.c)
