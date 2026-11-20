@@ -133,7 +133,7 @@ the screen while it holds the output, whichever device the monitor is
 connected to (`pci_connected_display`).
 `machine_slots_resolve` validates every entry before the running machine
 is touched — the card fits (`pci_card_fits_socket`), the kind accepts each
-option (`accepts_option`), the PROM identifies as the card's — and puts the
+option (`pci_card_accepts_option`), the PROM identifies as the card's — and puts the
 result in `cfg->build_opts`. `pci_seat_slots` seats each socket from its
 entry, else its `default_card`, and hands the factory its slot's entry.
 
@@ -339,18 +339,31 @@ exist on these machines).
 
 `machine.boot`'s `pci_option="key=value[,key=value]"` carries options to
 the card `pci_card=` names (a `slots=` entry carries them for any slot).
-The generic layer only splits them; each pair is offered to the kind's
-`accepts_option()` hook before the boot begins, and one the card does not
-accept rejects the boot, so no card identity reaches the boot path and a
-typo is never silently the default. The factory reads its options from its
-slot's entry (`slot_opts_option`).
+The generic layer only splits them; each pair is checked before the boot
+begins (`pci_card_accepts_option`), and one the card does not accept
+rejects the boot, so no card identity reaches the boot path and a typo is
+never silently the default. The factory reads its options from its slot's
+entry (`slot_opts_option`), or, for an option whose values carry a
+`payloads` row (a VRAM size), `pci_card_option_payload`, which also
+resolves the option's default.
 
 A kind also DECLARES the options a user should be offered
 (`pci_card_kind_t.options`), and `catalog.profile` publishes them, so a
 frontend can render a control per option without knowing which card it is.
-Declaring is separate from accepting: a card may still take keys it does
-not advertise (the Mach64 GX accepts `monitor=` for debugging but offers
-only `vram=`, because it senses its monitor for itself).
+The declaration is also the validation: a value an advertised option lists
+is accepted with no card code. Only what the card does not advertise goes
+to the kind's `accepts_option()` hook (the Mach64 GX's `monitor=`, kept for
+debugging because it senses its monitor for itself; the Voodoo2's hidden
+`raster=sw|null` and `memory=`).
+
+A **variant** kind (`rage128_webgpu`, `voodoo2_webgpu`) is a stored id for
+one of its base card's option values, not a card of its own: it names the
+base (`variant_of`) and the options that make it the variant
+(`variant_defaults`, `raster=webgpu`), and has no factory or options. The
+bus validates its options against the base card and builds the base kind
+with the defaults merged into a copy of the slot's entry wherever the entry
+does not name the option itself; the slot keeps the variant's kind, so a
+checkpoint stores the same id.
 
 A PCI display card's video MODE is a different matter and still has no
 path: `video_mode=` is NuBus sugar and a PCI slot entry takes no `mode=`

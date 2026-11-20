@@ -3426,29 +3426,27 @@ static void v2_attach_objects(pci_device_t *dev, struct object *card_node) {
 // Options, factory, and the card kind
 // ============================================================
 
-// No ADVERTISED options: the two the card accepts — the board memory
-// and the rasteriser — are not choices a user should have to make.
-// Nothing needs the 8 MB board, and the rasteriser is the difference
-// between the two REGISTERED KINDS below: "voodoo2" draws exactly on its
-// worker thread, "voodoo2_webgpu" on the host GPU.  Both keys stay
+// One ADVERTISED option, the rasteriser (v2_options below).  The board
+// memory is not a choice a user should have to make -- nothing needs the
+// 8 MB board -- and neither are the rasteriser's other backends; they stay
 // accepted through pci_option for the tests and the terminal:
-// memory=8m|12m, raster=thread|sw|null|webgpu.
+// memory=8m|12m, raster=thread|sw|null.
 
 static bool v2_accepts_option(const char *key, const char *value) {
     if (strcmp(key, "memory") == 0)
         return strcmp(value, "8m") == 0 || strcmp(value, "12m") == 0;
     if (strcmp(key, "raster") == 0)
-        return strcmp(value, "thread") == 0 || strcmp(value, "sw") == 0 || strcmp(value, "null") == 0 ||
-               strcmp(value, "webgpu") == 0;
+        return strcmp(value, "thread") == 0 || strcmp(value, "sw") == 0 || strcmp(value, "null") == 0;
     return false;
 }
 
 // The one BAR face; the card rides beside the table at the mapping.
 MEMORY_IFACE(v2_bar);
 
-// The one builder both kinds share; they differ only in the rasteriser used
-// when the document names none (`default_raster`).
-static pci_device_t *v2_build(int slot_index, config_t *cfg, const slot_opts_t *opts, const char *default_raster) {
+// The card's factory.  The WebGPU variant kind is built here too, with its
+// raster=webgpu default merged into `opts` by the bus.
+static pci_device_t *v2_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
+    (void)rom;
     pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
     voodoo2_t *v = (voodoo2_t *)calloc(1, sizeof(*v));
     if (!dev || !v) {
@@ -3477,7 +3475,7 @@ static pci_device_t *v2_build(int slot_index, config_t *cfg, const slot_opts_t *
     v->tgt.tex[0] = v->tex_ram[0];
     v->tgt.tex[1] = v->tex_ram[1];
     const char *raster = slot_opts_option(opts, "raster");
-    v->raster = v2_raster_create(raster ? raster : default_raster, &v->tgt, v2_build_state, v);
+    v->raster = v2_raster_create(raster ? raster : V2_DEFAULT_RASTER, &v->tgt, v2_build_state, v);
     {
         const char *st = getenv("GS_V2_STATS");
         s_prod_stats = st && *st && *st != '0';
@@ -3504,26 +3502,17 @@ static pci_device_t *v2_build(int slot_index, config_t *cfg, const slot_opts_t *
     return dev;
 }
 
-static pci_device_t *v2_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
-    (void)rom;
-    return v2_build(slot_index, cfg, opts, V2_DEFAULT_RASTER);
-}
-
 // The WebGPU variant: the same card, rasterised by the host's GPU unless
 // the boot document named a rasteriser itself.  Falls back to the exact
 // thread backend at creation where no GPU worker attaches (a checkpoint
 // restored without WebGPU, a native build), which regs.raster reports.
-static pci_device_t *v2_webgpu_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
-    (void)rom;
-    return v2_build(slot_index, cfg, opts, "webgpu");
-}
-
 // Offered only where a WebGPU device exists (the page writes the answer
 // before it reports ready, so no boot or catalog read precedes it);
 // registered everywhere so the id resolves regardless.
-static bool v2_webgpu_offered(void) {
-    return platform_v2gpu_available();
-}
+static const pci_option_default_t v2_webgpu_defaults[] = {
+    {"raster", "webgpu"},
+    {NULL,     NULL    },
+};
 
 // The rasteriser is the one option a user is offered: the emulator's own
 // (software) or the host GPU's, where the host has one.  WebGPU is a way of
@@ -3568,10 +3557,8 @@ const pci_card_kind_t voodoo2_webgpu_kind = {
     .requires_prom = false,
     .card_class = "3d",
     .monitors = NULL,
-    .factory = v2_webgpu_factory,
-    .options = NULL,
-    .accepts_option = v2_accepts_option,
     .attach_objects = v2_attach_objects,
-    .offered = v2_webgpu_offered,
+    .offered = platform_v2gpu_available,
     .variant_of = "voodoo2", // its "Rendering: WebGPU" option
+    .variant_defaults = v2_webgpu_defaults,
 };

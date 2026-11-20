@@ -3466,11 +3466,13 @@ static const pci_device_ops_t ragepro_ops = {
 // 109-31600-00 expansion module.
 static const char *const mach64_vram_values[] = {"2m", "4m", NULL};
 static const char *const mach64_vram_labels[] = {"2 MB", "4 MB (expansion module)", NULL};
+static const uint32_t mach64_vram_sizes[] = {MACH64_VRAM_2MB, MACH64_VRAM_4MB}; // 4m: the 109-31600-00 module
 static const pci_card_option_t mach64_options[] = {
     {.key = "vram",
      .label = "Video memory",
      .values = mach64_vram_values,
      .labels = mach64_vram_labels,
+     .payloads = mach64_vram_sizes,
      .default_value = "2m"},
     {.key = NULL},
 };
@@ -3484,20 +3486,11 @@ static const mach64_monitor_sense_t *mach64_monitor_by_id(const char *value) {
     return NULL;
 }
 
-// The VRAM a `vram=` option selects, or 0 when `value` is not a size.
-static uint32_t mach64_vram_by_id(const char *value) {
-    if (strcmp(value, "2m") == 0)
-        return MACH64_VRAM_2MB;
-    if (strcmp(value, "4m") == 0)
-        return MACH64_VRAM_4MB; // the 109-31600-00 expansion module
-    return 0;
-}
-
+// The one key beyond the advertised vram= (which the generic check takes from
+// mach64_options): a strapped monitor=.
 static bool mach64_accepts_option(const char *key, const char *value) {
     if (strcmp(key, "monitor") == 0)
         return mach64_monitor_by_id(value) != NULL;
-    if (strcmp(key, "vram") == 0)
-        return mach64_vram_by_id(value) != 0;
     return false;
 }
 
@@ -3772,8 +3765,7 @@ static pci_device_t *mach64_factory(int slot_index, config_t *cfg, const rom_ima
     // ROM-BAR face over it.
     size_t prom_size = rom ? rom->size : 0;
 
-    const char *vram = slot_opts_option(opts, "vram");
-    m->vram_size = vram ? mach64_vram_by_id(vram) : MACH64_VRAM_2MB;
+    m->vram_size = pci_card_option_payload(mach64_options, opts, "vram", MACH64_VRAM_2MB);
     m->vram = (uint8_t *)calloc(1, m->vram_size);
     m->blank = (uint8_t *)calloc(1, m->vram_size);
     m->compose = (uint8_t *)calloc(1, m->vram_size);

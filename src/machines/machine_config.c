@@ -2057,7 +2057,7 @@ static value_t apply_displays(const hw_profile_t *p, const doc_t *d, machine_bui
                     if (strcmp(m->id, given) == 0 && m->monitor && strcmp(m->monitor, x->monitor) == 0)
                         row_id = NULL;
             }
-            if (row_id && k && k->accepts_option && k->accepts_option("monitor", row_id)) {
+            if (row_id && k && pci_card_accepts_option(k, "monitor", row_id)) {
                 slot_option_t *o = NULL;
                 for (int n = 0; n < e->n_options && !o; n++)
                     if (strcmp(e->options[n].key, "monitor") == 0)

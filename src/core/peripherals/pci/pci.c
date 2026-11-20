@@ -158,6 +158,71 @@ const char *pci_card_suggest(const char *id) {
     return card_registry_suggest((const void *const *)g_card_registry, id);
 }
 
+const pci_card_kind_t *pci_card_base(const pci_card_kind_t *k) {
+    const pci_card_kind_t *base = k && k->variant_of ? pci_card_find(k->variant_of) : NULL;
+    return base ? base : k;
+}
+
+// The row of `options` for `key`, or NULL.
+static const pci_card_option_t *option_row(const pci_card_option_t *options, const char *key) {
+    for (const pci_card_option_t *o = options; o && o->key; o++) {
+        if (strcmp(o->key, key) == 0)
+            return o;
+    }
+    return NULL;
+}
+
+// The index of `value` among `row`'s values, or -1.
+static int option_value_index(const pci_card_option_t *row, const char *value) {
+    for (int i = 0; row && row->values && row->values[i]; i++) {
+        if (strcmp(row->values[i], value) == 0)
+            return i;
+    }
+    return -1;
+}
+
+bool pci_card_accepts_option(const pci_card_kind_t *k, const char *key, const char *value) {
+    k = pci_card_base(k);
+    if (!k)
+        return false;
+    if (option_value_index(option_row(k->options, key), value) >= 0)
+        return true; // an advertised value
+    return k->accepts_option && k->accepts_option(key, value);
+}
+
+uint32_t pci_card_option_payload(const pci_card_option_t *options, const slot_opts_t *opts, const char *key,
+                                 uint32_t fallback) {
+    const pci_card_option_t *row = option_row(options, key);
+    if (!row || !row->payloads)
+        return fallback;
+    const char *value = slot_opts_option(opts, key);
+    int i = option_value_index(row, value ? value : row->default_value);
+    if (i < 0)
+        i = option_value_index(row, row->default_value); // validated already; belt and braces
+    return i >= 0 ? row->payloads[i] : fallback;
+}
+
+// The entry a variant's base card is built from: `opts` with each of the
+// variant's defaults the entry does not name itself added.  `opts` itself
+// for a kind that is no variant.
+static const slot_opts_t *variant_opts(const pci_card_kind_t *kind, const slot_opts_t *opts, slot_opts_t *scratch) {
+    if (!kind->variant_defaults)
+        return opts;
+    *scratch = *opts;
+    for (const pci_option_default_t *d = kind->variant_defaults; d->key; d++) {
+        if (slot_opts_option(scratch, d->key))
+            continue; // the document chose it
+        if (scratch->n_options >= SLOT_OPTIONS_MAX) {
+            LOG(0, "slot %d: no room for the %s default %s=%s", opts->slot, kind->id, d->key, d->value);
+            continue;
+        }
+        slot_option_t *o = &scratch->options[scratch->n_options++];
+        snprintf(o->key, sizeof o->key, "%s", d->key);
+        snprintf(o->value, sizeof o->value, "%s", d->value);
+    }
+    return scratch;
+}
+
 // Card ↔ socket compatibility, COMPUTED from the two declarations: the
 // slot must be a user-configurable socket and the kind must attach through
 // a genuine PCI connector.  Builtin devices (the conservative zero
@@ -732,7 +797,7 @@ bool pci_slot_entry_check(const pci_slot_decl_t *slots, const char *model, const
         return card_refuse(why, why_len, "PCI slot %d takes no video mode (a PCI display card senses its monitor)",
                            e->slot);
     for (int i = 0; i < e->n_options; i++) {
-        if (!k || !k->accepts_option || !k->accepts_option(e->options[i].key, e->options[i].value))
+        if (!pci_card_accepts_option(k, e->options[i].key, e->options[i].value))
             return card_refuse(why, why_len, "slot %d's card '%s' does not take option %s=%s", e->slot,
                                k ? k->id : "(none)", e->options[i].key, e->options[i].value);
     }
@@ -942,7 +1007,9 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
             case PCI_SLOT_ABSENT:
                 continue;
             }
-            if (!kind || !kind->factory)
+            // A variant is built by the card it is a variant of.
+            const pci_card_kind_t *builder = pci_card_base(kind);
+            if (!builder || !builder->factory)
                 continue;
             if (s->slot < 0 || s->slot >= PCI_MAX_SLOTS) {
                 LOG(0, "slot %d out of range; ignored", s->slot);
@@ -980,8 +1047,11 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
                     "slot %d: no expansion ROM available for the %s — the card cannot enumerate without its own "
                     "FCode, so the slot is left empty",
                     s->slot, kind->display_name ? kind->display_name : kind->id);
-            else
-                dev = kind->factory(s->slot, root->cfg, kind->requires_prom ? &prom : (rom.data ? &rom : NULL), opts);
+            else {
+                slot_opts_t merged;
+                dev = builder->factory(s->slot, root->cfg, kind->requires_prom ? &prom : (rom.data ? &rom : NULL),
+                                       variant_opts(kind, opts, &merged));
+            }
             free((void *)rom.data);
             if (dev && prom.data) {
                 // The bus owns the ROM the card runs (pci_root_delete frees it)

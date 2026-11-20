@@ -181,6 +181,12 @@ typedef enum pci_attach {
     PCI_ATTACH_PCI, // standard 33 MHz 5 V slot — universal
 } pci_attach_t;
 
+// One option a variant kind defaults (pci_card_kind_t.variant_defaults).
+typedef struct pci_option_default {
+    const char *key; // NULL ends the list
+    const char *value;
+} pci_option_default_t;
+
 // Per-driver descriptor — one static instance per registered driver,
 // listed in pci.c's explicit registry array.
 // One user-selectable card option, and the values it takes.  `values` is a
@@ -193,6 +199,10 @@ typedef struct pci_card_option {
     const char *label; // "Video memory"
     const char *const *values; // {"2m", "4m", NULL}
     const char *const *labels; // {"2 MB", "4 MB (expansion module)", NULL}
+    // What each value means to the card (a VRAM size, say), alongside
+    // `values`; NULL when the card reads the id itself.  See
+    // pci_card_option_payload.
+    const uint32_t *payloads; // {2 << 20, 4 << 20}
     const char *default_value;
     // Is `value` offered on this host right now?  NULL means every value is.
     // A value that needs a host facility (the Voodoo2's WebGPU rendering)
@@ -216,19 +226,19 @@ typedef struct pci_card_kind {
     const struct nubus_monitor *monitors; // display cards only; NULL otherwise
     pci_card_factory_fn factory;
 
-    // What accepts_option() will accept, DECLARED so a frontend can render a
-    // control for it without knowing what card this is.  Sentinel-
+    // The options a user is offered, DECLARED so a frontend can render a
+    // control for each without knowing what card this is.  Sentinel-
     // terminated (an entry whose key is NULL ends the list); NULL means the
-    // card takes no options a user should be offered.  The card is still
-    // free to accept keys it does not advertise — this is the offered set,
-    // not the accepted set.
+    // card takes no options a user should be offered.  An advertised value is
+    // accepted by the generic check (pci_card_accepts_option) with no card
+    // code; this is the offered set, not the whole accepted set.
     const struct pci_card_option *options;
 
-    // Does the kind take option key=value?  machine_boot_apply asks before
-    // the running machine is touched, so the factory only ever sees options
-    // it accepts.  NULL: the kind takes no options.  Like attach_objects
-    // below, a seam through the KIND, so the generic layer never tests card
-    // identity.
+    // Does the kind take an option key=value it does NOT advertise above (a
+    // debugging key, or a hidden value of an advertised one)?  The generic
+    // check asks it only after the advertised values.  NULL: nothing beyond
+    // them.  Like attach_objects below, a seam through the KIND, so the
+    // generic layer never tests card identity.
     bool (*accepts_option)(const char *key, const char *value);
     void (*attach_objects)(pci_device_t *dev, struct object *card_node);
 
@@ -246,6 +256,12 @@ typedef struct pci_card_kind {
     // Voodoo2's "Rendering" option).  catalog.profile lists only the card it
     // names; the kind stays registered so a document or checkpoint may name it.
     const char *variant_of;
+    // What makes it the variant: the options the base card is built with
+    // when the slot's entry does not name them itself (key NULL ends the
+    // list).  A variant has no factory or options of its own -- the bus
+    // builds the base kind with these merged in, and validates the slot's
+    // options against the base.
+    const struct pci_option_default *variant_defaults;
 
     // A card that brings its own SCSI bus (a 53C825A in a socket): the
     // machine builds the bus, "pci_<slot>", after the slot walk and hands it
@@ -263,6 +279,20 @@ static inline const char *pci_card_rom_id(const pci_card_kind_t *k) {
 
 // Registry accessors.  The registry is an explicit list in pci.c.
 const pci_card_kind_t *pci_card_find(const char *id);
+
+// The kind that builds `k`: the card a variant names, else `k` itself.
+const pci_card_kind_t *pci_card_base(const pci_card_kind_t *k);
+
+// Does `k` take option key=value?  True when the base kind advertises the
+// value among its options, else whatever its accepts_option says.
+bool pci_card_accepts_option(const pci_card_kind_t *k, const char *key, const char *value);
+
+// The payload (pci_card_option_t.payloads) of the value the slot's entry
+// names for option `key` of `options`, else that of the option's default.
+// The value was validated before the boot, so every id resolves; `fallback`
+// is returned only when `options` has no `key` row with payloads.
+uint32_t pci_card_option_payload(const pci_card_option_t *options, const slot_opts_t *opts, const char *key,
+                                 uint32_t fallback);
 const pci_card_kind_t *const *pci_card_registry(void);
 
 // For unknown-id error messages: the registered id that differs from `id`

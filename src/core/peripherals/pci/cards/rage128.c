@@ -1455,6 +1455,7 @@ static const pci_device_ops_t r128_ops = {
 
 static const char *const r128_memory_values[] = {"16m", "32m", NULL};
 static const char *const r128_memory_labels[] = {"16 MB (Rage Orion, Xclaim VR 128)", "32 MB (Nexus 128)", NULL};
+static const uint32_t r128_memory_sizes[] = {R128_VRAM_16MB, R128_VRAM_32MB};
 // The rasteriser: the emulator's own (exact, the default) or the host
 // GPU's, where the host has one (the WebGPU takeover, rage128_gpu.c).
 static const char *const r128_raster_values[] = {"sw", "webgpu", NULL};
@@ -1474,6 +1475,7 @@ static const pci_card_option_t r128_options[] = {
      .label = "Video memory",
      .values = r128_memory_values,
      .labels = r128_memory_labels,
+     .payloads = r128_memory_sizes,
      .default_value = "16m"},
     {.key = "raster",
      .label = "Rendering",
@@ -1491,21 +1493,11 @@ static const r128_monitor_t *r128_monitor_by_id(const char *value) {
     return NULL;
 }
 
-static uint32_t r128_memory_by_id(const char *value) {
-    if (strcmp(value, "16m") == 0)
-        return R128_VRAM_16MB;
-    if (strcmp(value, "32m") == 0)
-        return R128_VRAM_32MB;
-    return 0;
-}
-
+// The keys beyond the advertised memory= and raster= (which the generic check
+// takes from r128_options).
 static bool r128_accepts_option(const char *key, const char *value) {
     if (strcmp(key, "monitor") == 0)
         return r128_monitor_by_id(value) != NULL;
-    if (strcmp(key, "memory") == 0)
-        return r128_memory_by_id(value) != 0;
-    if (strcmp(key, "raster") == 0)
-        return strcmp(value, "sw") == 0 || strcmp(value, "webgpu") == 0;
     // Not advertised: when the takeover engages — on a 3D draw into a
     // screen-shaped surface (auto), or on any 3D draw (always, the tests).
     if (strcmp(key, "gpu") == 0)
@@ -1728,10 +1720,9 @@ MEMORY_IFACE(aper);
 MEMORY_IFACE(io);
 MEMORY_IFACE(regs);
 
-// The one builder both kinds share; they differ only in the rasteriser used
-// when the document names none.
-static pci_device_t *r128_build(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts,
-                                const char *default_raster) {
+// The card's factory.  The WebGPU variant kind is built here too, with its
+// raster=webgpu default merged into `opts` by the bus.
+static pci_device_t *r128_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
     rage128_t *r = (rage128_t *)calloc(1, sizeof(*r));
     if (!dev || !r) {
@@ -1751,8 +1742,7 @@ static pci_device_t *r128_build(int slot_index, config_t *cfg, const rom_image_t
     // ROM-BAR face over it.
     size_t prom_size = rom ? rom->size : 0;
 
-    const char *memory = slot_opts_option(opts, "memory");
-    r->vram_size = memory ? r128_memory_by_id(memory) : R128_VRAM_16MB;
+    r->vram_size = pci_card_option_payload(r128_options, opts, "memory", R128_VRAM_16MB);
     r->vram = (uint8_t *)calloc(1, r->vram_size);
     r->blank = (uint8_t *)calloc(1, r->vram_size);
     r->compose = (uint8_t *)calloc(1, r->vram_size);
@@ -1779,7 +1769,7 @@ static pci_device_t *r128_build(int slot_index, config_t *cfg, const rom_image_t
     // the software walker otherwise (and always natively).
     const char *raster = slot_opts_option(opts, "raster");
     if (!raster)
-        raster = default_raster;
+        raster = "sw"; // r128_options' default
     if (strcmp(raster, "webgpu") == 0) {
         const char *policy = slot_opts_option(opts, "gpu");
         r->gpu =
@@ -1796,22 +1786,14 @@ static pci_device_t *r128_build(int slot_index, config_t *cfg, const rom_image_t
     return dev;
 }
 
-static pci_device_t *r128_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
-    return r128_build(slot_index, cfg, rom, opts, "sw");
-}
-
 // The WebGPU variant: the same card, its 3D drawn by the host GPU unless
 // the boot document named a rasteriser itself.  Falls back to the
 // software rasteriser at creation where no GPU worker attaches (a native
 // build, a checkpoint restored without WebGPU), which regs.raster reports.
-static pci_device_t *r128_webgpu_factory(int slot_index, config_t *cfg, const rom_image_t *rom,
-                                         const slot_opts_t *opts) {
-    return r128_build(slot_index, cfg, rom, opts, "webgpu");
-}
-
-static bool r128_webgpu_offered(void) {
-    return platform_v2gpu_available();
-}
+static const pci_option_default_t r128_webgpu_defaults[] = {
+    {"raster", "webgpu"},
+    {NULL,     NULL    },
+};
 
 const pci_card_kind_t rage128_kind = {
     .id = "rage128",
@@ -1833,10 +1815,8 @@ const pci_card_kind_t rage128_webgpu_kind = {
     .requires_prom = true,
     .card_class = "display",
     .monitors = r128_monitors,
-    .factory = r128_webgpu_factory,
-    .options = NULL,
-    .accepts_option = r128_accepts_option,
     .attach_objects = r128_attach_objects,
-    .offered = r128_webgpu_offered,
+    .offered = platform_v2gpu_available,
     .variant_of = "rage128", // its "Rendering: WebGPU" option
+    .variant_defaults = r128_webgpu_defaults,
 };

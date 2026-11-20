@@ -74,19 +74,40 @@ const pci_card_kind_t sym53c825_ch1_kind = {.id = "sym53c825_1",
                                             .card_class = "scsi"};
 // ...and the ROM-less Voodoo2 (cards/voodoo2.c) — the first socket card
 // with requires_prom FALSE, kept that way here so socket-fit rows cover
-// a card with no ROM requirement.
+// a card with no ROM requirement.  It carries the real card's shape of
+// options (an advertised raster=, a hidden memory=, payloads on the
+// advertised one) so the generic option check and the variant merge are
+// pinned against it.
+static const char *const v2_stub_raster_values[] = {"thread", "webgpu", NULL};
+static const uint32_t v2_stub_raster_payloads[] = {1, 2};
+static const pci_card_option_t v2_stub_options[] = {
+    {.key = "raster", .values = v2_stub_raster_values, .payloads = v2_stub_raster_payloads, .default_value = "thread"},
+    {.key = NULL},
+};
+static bool v2_stub_accepts_option(const char *key, const char *value) {
+    return strcmp(key, "memory") == 0 && strcmp(value, "8m") == 0;
+}
 const pci_card_kind_t voodoo2_kind = {.id = "voodoo2",
                                       .display_name = "3dfx Voodoo2",
                                       .attach = PCI_ATTACH_PCI,
                                       .requires_prom = false,
-                                      .card_class = "3d"};
+                                      .card_class = "3d",
+                                      .factory = counting_factory,
+                                      .options = v2_stub_options,
+                                      .accepts_option = v2_stub_accepts_option};
 // ...and its WebGPU variant: the same card, registered everywhere (a boot
 // document or a checkpoint may name it) and offered only with a device.
+static const pci_option_default_t v2_stub_webgpu_defaults[] = {
+    {"raster", "webgpu"},
+    {NULL,     NULL    }
+};
 const pci_card_kind_t voodoo2_webgpu_kind = {.id = "voodoo2_webgpu",
                                              .display_name = "3dfx Voodoo2 (WebGPU)",
                                              .attach = PCI_ATTACH_PCI,
                                              .requires_prom = false,
-                                             .card_class = "3d"};
+                                             .card_class = "3d",
+                                             .variant_of = "voodoo2",
+                                             .variant_defaults = v2_stub_webgpu_defaults};
 
 // ...and the ATI Rage 128 GL (cards/rage128.c), a second socket card with a
 // real ROM requirement.
@@ -731,6 +752,7 @@ TEST(test_slot_interrupts) {
 static int g_factory_calls;
 static int g_factory_slots[8];
 static const char *g_factory_vram[8]; // each call's vram= option, or NULL
+static char g_factory_raster[8][16]; // each call's raster= option, or ""
 
 static pci_device_t *counting_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     (void)cfg;
@@ -738,6 +760,8 @@ static pci_device_t *counting_factory(int slot_index, config_t *cfg, const rom_i
     if (g_factory_calls < 8) {
         g_factory_slots[g_factory_calls] = slot_index;
         g_factory_vram[g_factory_calls] = slot_opts_option(opts, "vram");
+        const char *raster = slot_opts_option(opts, "raster");
+        snprintf(g_factory_raster[g_factory_calls], sizeof g_factory_raster[0], "%s", raster ? raster : "");
     }
     g_factory_calls++;
     pci_device_t *d = (pci_device_t *)calloc(1, sizeof(pci_device_t));
@@ -834,6 +858,62 @@ TEST(test_slot_walk_seats_the_documents_entries) {
     ASSERT_EQ_INT(g_factory_calls, 1);
     ASSERT_EQ_INT(g_factory_slots[0], 3); // only the document's card
     ASSERT_TRUE(pci_slot_device(root, 1) == NULL);
+    pci_root_delete(root);
+    cfg->build_opts = machine_build_opts_default();
+}
+
+// The generic option check: an advertised value needs no card code, a key or
+// value the kind does not advertise is the card's accepts_option to answer,
+// and a variant answers with its base card's options.
+TEST(test_option_check_is_data_driven) {
+    ASSERT_TRUE(pci_card_accepts_option(&voodoo2_kind, "raster", "webgpu")); // advertised
+    ASSERT_TRUE(pci_card_accepts_option(&voodoo2_kind, "memory", "8m")); // accepts_option
+    ASSERT_TRUE(!pci_card_accepts_option(&voodoo2_kind, "raster", "bogus"));
+    ASSERT_TRUE(!pci_card_accepts_option(&voodoo2_kind, "vram", "4m"));
+    ASSERT_TRUE(pci_card_accepts_option(&voodoo2_webgpu_kind, "raster", "thread")); // the base's
+    ASSERT_TRUE(pci_card_accepts_option(&voodoo2_webgpu_kind, "memory", "8m"));
+    ASSERT_TRUE(!pci_card_accepts_option(NULL, "raster", "thread"));
+    ASSERT_TRUE(pci_card_base(&voodoo2_webgpu_kind) == &voodoo2_kind);
+    ASSERT_TRUE(pci_card_base(&voodoo2_kind) == &voodoo2_kind);
+
+    // The payload of the named value, else the default's; the fallback only
+    // for a key with no payload row.
+    slot_opts_t e = {.slot = 1, .n_options = 1, .options = {{"raster", "webgpu"}}};
+    slot_opts_t none = {.slot = 1};
+    ASSERT_EQ_INT(pci_card_option_payload(v2_stub_options, &e, "raster", 99), 2);
+    ASSERT_EQ_INT(pci_card_option_payload(v2_stub_options, &none, "raster", 99), 1);
+    ASSERT_EQ_INT(pci_card_option_payload(v2_stub_options, &e, "memory", 99), 99);
+}
+
+// A variant kind is built by its base card's factory with its defaults merged
+// in -- unless the slot's entry names the option itself -- and the slot keeps
+// the variant's identity.
+TEST(test_variant_builds_the_base_with_its_defaults) {
+    config_t *cfg = test_cfg();
+    static const pci_slot_decl_t slots[] = {
+        {.slot = 1, .kind = PCI_SLOT_SOCKET, .label = "A1", .bus = 0, .device = 13},
+        {.slot = 2, .kind = PCI_SLOT_SOCKET, .label = "B1", .bus = 0, .device = 14},
+        {.slot = 3, .kind = PCI_SLOT_SOCKET, .label = "C1", .bus = 0, .device = 15},
+        {0},
+    };
+    cfg->build_opts = machine_build_opts_default();
+    cfg->build_opts.n_slots = 3;
+    cfg->build_opts.slots[0] = (slot_opts_t){.slot = 1, .card = "voodoo2_webgpu"};
+    cfg->build_opts.slots[1] =
+        (slot_opts_t){.slot = 2, .card = "voodoo2_webgpu", .n_options = 1, .options = {{"raster", "thread"}}};
+    cfg->build_opts.slots[2] = (slot_opts_t){.slot = 3, .card = "voodoo2"};
+    pci_root_t *root = pci_root_create(cfg);
+    pci_bus_create(root, "test", 0);
+    pci_init(root, slots);
+    g_factory_calls = 0;
+    pci_seat_slots(root, NULL);
+    ASSERT_EQ_INT(g_factory_calls, 3);
+    ASSERT_TRUE(strcmp(g_factory_raster[0], "webgpu") == 0); // the variant's default
+    ASSERT_TRUE(strcmp(g_factory_raster[1], "thread") == 0); // the document's choice stands
+    ASSERT_TRUE(strcmp(g_factory_raster[2], "") == 0); // the base card: nothing merged
+    ASSERT_TRUE(pci_slot_kind(root, 1) == &voodoo2_webgpu_kind);
+    ASSERT_TRUE(pci_slot_kind(root, 3) == &voodoo2_kind);
+    ASSERT_EQ_INT(cfg->build_opts.slots[0].n_options, 0); // the document is not rewritten
     pci_root_delete(root);
     cfg->build_opts = machine_build_opts_default();
 }
@@ -1048,6 +1128,8 @@ int main(void) {
     RUN(test_capability_pointer);
     RUN(test_large_prefetchable_bar);
     RUN(test_bus_master_dma);
+    RUN(test_option_check_is_data_driven);
+    RUN(test_variant_builds_the_base_with_its_defaults);
     fprintf(stderr, "pci: all tests passed\n");
     return 0;
 }
