@@ -75,11 +75,7 @@ static bool buf_put_utf8(char **buf, size_t *len, size_t *cap, uint32_t cp) {
 static int32_t hex4(const char *p) {
     int32_t v = 0;
     for (int i = 0; i < 4; i++) {
-        char h = p[i];
-        int d = (h >= '0' && h <= '9')   ? h - '0'
-                : (h >= 'a' && h <= 'f') ? 10 + h - 'a'
-                : (h >= 'A' && h <= 'F') ? 10 + h - 'A'
-                                         : -1;
+        int d = hex_digit(p[i]); // also stops at the NUL of a short escape
         if (d < 0)
             return -1;
         v = (v << 4) | d;

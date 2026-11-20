@@ -34,54 +34,48 @@ static bool buf_append_char(char **buf, size_t *len, size_t *cap, char c) {
     return true;
 }
 
-// Decode a single \-escape starting at *p (which points at the '\').
-// Advances *p past the escape and writes the resulting byte into *out.
-// Returns false on a malformed escape.
-static bool decode_escape(const char **p, char *out) {
+bool parse_decode_escape(const char **p, char *out, bool allow_dollar) {
     if ((*p)[0] != '\\')
         return false;
     char c = (*p)[1];
     switch (c) {
     case 'n':
         *out = '\n';
-        *p += 2;
-        return true;
+        break;
     case 't':
         *out = '\t';
-        *p += 2;
-        return true;
+        break;
     case 'r':
         *out = '\r';
-        *p += 2;
-        return true;
+        break;
     case '0':
         *out = '\0';
-        *p += 2;
-        return true;
+        break;
     case '\\':
-        *out = '\\';
-        *p += 2;
-        return true;
     case '"':
-        *out = '"';
-        *p += 2;
-        return true;
     case '\'':
-        *out = '\'';
-        *p += 2;
-        return true;
+        *out = c;
+        break;
+    case '$':
+        // Only where `$` would otherwise start a splice
+        if (!allow_dollar)
+            return false;
+        *out = '$';
+        break;
     case 'x': {
         // \xHH
-        if (!isxdigit((unsigned char)(*p)[2]) || !isxdigit((unsigned char)(*p)[3]))
+        int hi = hex_digit((*p)[2]), lo = hi < 0 ? -1 : hex_digit((*p)[3]);
+        if (lo < 0)
             return false;
-        char hex[3] = {(*p)[2], (*p)[3], 0};
-        *out = (char)strtoul(hex, NULL, 16);
+        *out = (char)(hi << 4 | lo);
         *p += 4;
         return true;
     }
     default:
         return false;
     }
+    *p += 2;
+    return true;
 }
 
 value_t parse_string_literal(const char **p) {
@@ -93,7 +87,7 @@ value_t parse_string_literal(const char **p) {
     while (*q && *q != '"') {
         if (*q == '\\') {
             char c = 0;
-            if (!decode_escape(&q, &c)) {
+            if (!parse_decode_escape(&q, &c, false)) {
                 free(buf);
                 return val_err("bad string escape");
             }

@@ -195,15 +195,10 @@ static value_t decode_collection(rd_t *r, const uint8_t *data, int len, bool key
 
 // Uppercase hex of a descriptor's raw bytes, the `hex` body of §6.1.
 static value_t hex_of(const uint8_t *data, int len) {
-    static const char DIGITS[] = "0123456789ABCDEF";
     char *hex = (char *)malloc((size_t)len * 2 + 1);
     if (!hex)
         return val_err("out of memory");
-    for (int i = 0; i < len; i++) {
-        hex[i * 2] = DIGITS[data[i] >> 4];
-        hex[i * 2 + 1] = DIGITS[data[i] & 0x0F];
-    }
-    hex[len * 2] = '\0';
+    hex_encode(hex, data, (size_t)len, true);
     value_t v = val_str(hex);
     free(hex);
     return v;
@@ -480,16 +475,6 @@ static void wr_fourcc(wr_t *w, const char *code) {
     wr_bytes(w, buf, 4);
 }
 
-static int hex_nibble(char c) {
-    if (c >= '0' && c <= '9')
-        return c - '0';
-    if (c >= 'a' && c <= 'f')
-        return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F')
-        return c - 'A' + 10;
-    return -1;
-}
-
 static void encode_leaf_body(wr_t *w, const value_t *leaf, int depth);
 
 // A descriptor: type, length, data, pad.  The length is backfilled once the
@@ -556,7 +541,7 @@ static void encode_leaf_body(wr_t *w, const value_t *leaf, int depth) {
             return;
         }
         for (size_t i = 0; i < n; i += 2) {
-            int hi = hex_nibble(h[i]), lo = hex_nibble(h[i + 1]);
+            int hi = hex_digit(h[i]), lo = hex_digit(h[i + 1]);
             if (hi < 0 || lo < 0) {
                 wr_fail(w, "'%c%c' is not a hex byte", h[i], h[i + 1]);
                 return;
@@ -948,13 +933,8 @@ static value_t tx_desc(tx_t *t, int depth) {
         body[6] = (uint8_t)n;
         memcpy(&body[7], name, n);
         free(name);
-        static const char DIGITS[] = "0123456789ABCDEF";
         char hex[sizeof(body) * 2 + 1];
-        for (size_t i = 0; i < sizeof(body); i++) {
-            hex[i * 2] = DIGITS[body[i] >> 4];
-            hex[i * 2 + 1] = DIGITS[body[i] & 0x0F];
-        }
-        hex[sizeof(body) * 2] = '\0';
+        hex_encode(hex, body, sizeof(body), true);
         value_map_builder_t *b = val_map_new();
         val_map_put(b, "type", val_str("fss "));
         val_map_put(b, "hex", val_str(hex));

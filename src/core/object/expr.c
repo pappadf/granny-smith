@@ -2455,48 +2455,13 @@ static value_t interp_walk(const char *src, const expr_ctx_t *ctx, bool decode_e
     while (*p) {
         if (decode_escapes && p[0] == '\\' && p[1]) {
             char c2 = 0;
-            switch (p[1]) {
-            case 'n':
-                c2 = '\n';
-                break;
-            case 't':
-                c2 = '\t';
-                break;
-            case 'r':
-                c2 = '\r';
-                break;
-            case '0':
-                c2 = '\0';
-                break;
-            case '\\':
-                c2 = '\\';
-                break;
-            case '"':
-                c2 = '"';
-                break;
-            case '\'':
-                c2 = '\'';
-                break;
-            case '$':
-                c2 = '$';
-                break;
-            case 'x': {
-                if (isxdigit((unsigned char)p[2]) && isxdigit((unsigned char)p[3])) {
-                    char hex[3] = {p[2], p[3], 0};
-                    c2 = (char)strtoul(hex, NULL, 16);
-                    buf_append(&out, &len, &cap, &c2, 1);
-                    p += 4;
-                    continue;
-                }
+            if (!parse_decode_escape(&p, &c2, true)) {
                 free(out);
-                return val_err("bad \\x escape in string");
-            }
-            default:
-                free(out);
+                if (p[1] == 'x')
+                    return val_err("bad \\x escape in string");
                 return val_err("bad escape '\\%c' in string", p[1]);
             }
             buf_append(&out, &len, &cap, &c2, 1);
-            p += 2;
             continue;
         }
         if (p[0] == '$' && (isalpha((unsigned char)p[1]) || p[1] == '_')) {

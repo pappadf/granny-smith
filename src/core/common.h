@@ -76,6 +76,28 @@ static inline uint32_t fourcc_value(const char *s) {
     return v;
 }
 
+// The value of hex digit `c` (either case), or -1 when it is not one.
+static inline int hex_digit(int c) {
+    if (c >= '0' && c <= '9')
+        return c - '0';
+    if (c >= 'a' && c <= 'f')
+        return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F')
+        return c - 'A' + 10;
+    return -1;
+}
+
+// `n` bytes as 2n hex digits (upper or lower case) into `out`, which must
+// hold 2n + 1: NUL-terminated.
+static inline void hex_encode(char *out, const uint8_t *in, size_t n, bool upper) {
+    const char *digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+    for (size_t i = 0; i < n; i++) {
+        out[2 * i] = digits[in[i] >> 4];
+        out[2 * i + 1] = digits[in[i] & 0xF];
+    }
+    out[2 * n] = '\0';
+}
+
 // FNV-1a, 32- and 64-bit: a hash `h` (start from FNV1A32_INIT /
 // FNV1A64_INIT) continued over `n` bytes, or over a C string.  Standard
 // FNV-1a, so values that reach a file (checkpoint block tags, the AFP remote

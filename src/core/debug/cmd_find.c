@@ -31,12 +31,9 @@
 static bool parse_hex_byte(const char *tok, uint8_t *byte_out) {
     if (!tok || !tok[0] || !tok[1] || tok[2] != '\0')
         return false;
-    int hi = 0, lo = 0;
-    // Decode high nibble
-    if (!isxdigit((unsigned char)tok[0]) || !isxdigit((unsigned char)tok[1]))
+    int hi = hex_digit(tok[0]), lo = hex_digit(tok[1]);
+    if (hi < 0 || lo < 0)
         return false;
-    hi = (tok[0] <= '9') ? (tok[0] - '0') : (tolower((unsigned char)tok[0]) - 'a' + 10);
-    lo = (tok[1] <= '9') ? (tok[1] - '0') : (tolower((unsigned char)tok[1]) - 'a' + 10);
     *byte_out = (uint8_t)((hi << 4) | lo);
     return true;
 }

@@ -32,9 +32,30 @@ TEST(fnv1a_matches_published_vectors) {
     ASSERT_TRUE(fnv1a32_str(FNV1A32_INIT, "\xe9") == fnv1a32(FNV1A32_INIT, "\xe9", 1));
 }
 
+// hex_digit reads either case and refuses everything else; hex_encode writes
+// two digits a byte in the case asked for, terminated.
+TEST(hex_digit_and_encode) {
+    ASSERT_EQ_INT(0, hex_digit('0'));
+    ASSERT_EQ_INT(9, hex_digit('9'));
+    ASSERT_EQ_INT(10, hex_digit('a'));
+    ASSERT_EQ_INT(15, hex_digit('F'));
+    ASSERT_EQ_INT(-1, hex_digit('g'));
+    ASSERT_EQ_INT(-1, hex_digit('\0'));
+    ASSERT_EQ_INT(-1, hex_digit(0xE9));
+    static const uint8_t bytes[] = {0x00, 0x9F, 0xA5, 0xFF};
+    char out[2 * sizeof bytes + 1];
+    hex_encode(out, bytes, sizeof bytes, false);
+    ASSERT_TRUE(strcmp(out, "009fa5ff") == 0);
+    hex_encode(out, bytes, sizeof bytes, true);
+    ASSERT_TRUE(strcmp(out, "009FA5FF") == 0);
+    hex_encode(out, bytes, 0, true);
+    ASSERT_TRUE(out[0] == '\0');
+}
+
 int main(void) {
     RUN(array_len_counts_elements);
     RUN(fnv1a_matches_published_vectors);
+    RUN(hex_digit_and_encode);
     fprintf(stderr, "All common tests passed\n");
     return 0;
 }
