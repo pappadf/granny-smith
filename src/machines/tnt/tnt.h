@@ -41,6 +41,7 @@
 #include "display_class.h" // scanout descriptor (control.c presents through it)
 #include "display_ramdac.h" // the RaDACal palette ports
 #include "gbus.h" // the ANS GBUS island: board registers, keyswitch, LCD
+#include "mac030_io.h" // mac030_io_t, the island decode engine
 #include "machine.h"
 #include "machine_profile.h"
 #include "memory.h"
@@ -386,6 +387,10 @@ typedef struct tnt_state {
 
     // Memory interfaces registered with the map
     memory_interface_t gc_interface; // $F3000000 island (128 KB)
+    // Grand Central's byte decode (grand_central.c): its range table bound
+    // to this machine's VIA and SCC.  Host pointers, rebuilt at init, never
+    // checkpointed.
+    mac030_io_t gc_io;
     memory_interface_t hh_interface; // $F8000000 register window
     memory_interface_t chaos_probe_interface; // unclaimed Chaos window (logged)
     memory_interface_t control_regs_if; // Control BAR $14 (register block)
@@ -530,6 +535,9 @@ void tnt_control_host_vbl(config_t *cfg);
 void tnt_gc_init(config_t *cfg); // power-on state (NVRAM contents survive)
 // Seat Grand Central's config presence at device 16 on Bandit 1's bus.
 void tnt_gc_pci_attach(config_t *cfg, pci_bus_t *bus, checkpoint_t *cp);
+// Install Grand Central's byte decode table and bind its VIA and SCC rows;
+// once, at construction, after cfg->via1 and cfg->scc exist.
+void tnt_gc_io_bind(config_t *cfg);
 // Island dispatch ($F3000000, offsets 0..$1FFFF).  Byte-wide cells decode
 // bytes only; the 32-bit LE registers (interrupt block, BoxID) decode
 // longwords only.

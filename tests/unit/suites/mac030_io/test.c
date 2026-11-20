@@ -335,27 +335,27 @@ TEST(test_decode_miss_is_recorded_once_per_4k) {
     probe_io_init(&io, k_probe_ranges, PROBE_MIRROR);
 
     ASSERT_EQ_INT(mac030_io_read_uint8(&io, 0x50F00000u), 0xFF); // unwired: below the window
-    ASSERT_EQ_INT((uint32_t)io.miss_logged_read, 0x1u); // 4K #0
-    ASSERT_EQ_INT((uint32_t)io.miss_logged_write, 0x0u); // reads and writes count apart
+    ASSERT_EQ_INT((uint32_t)io.miss_logged_read[0], 0x1u); // 4K #0
+    ASSERT_EQ_INT((uint32_t)io.miss_logged_write[0], 0x0u); // reads and writes count apart
 
     mac030_io_read_uint8(&io, 0x50F00FFFu); // same 4K: no second bit
-    ASSERT_EQ_INT((uint32_t)io.miss_logged_read, 0x1u);
+    ASSERT_EQ_INT((uint32_t)io.miss_logged_read[0], 0x1u);
 
     mac030_io_read_uint8(&io, 0x50F03000u); // 4K #3
-    ASSERT_EQ_INT((uint32_t)io.miss_logged_read, 0x9u);
+    ASSERT_EQ_INT((uint32_t)io.miss_logged_read[0], 0x9u);
 
     mac030_io_write_uint8(&io, 0x50F03000u, 0x11); // same 4K, other direction
-    ASSERT_EQ_INT((uint32_t)io.miss_logged_write, 0x8u);
+    ASSERT_EQ_INT((uint32_t)io.miss_logged_write[0], 0x8u);
 
     // A hit inside the handler window records nothing.
     mac030_io_read_uint8(&io, 0x50F01004u);
-    ASSERT_EQ_INT((uint32_t)io.miss_logged_read, 0x9u);
+    ASSERT_EQ_INT((uint32_t)io.miss_logged_read[0], 0x9u);
 
     // Per instance, not per process: a second board starts clean.
     mac030_io_t io2;
     probe_io_init(&io2, k_probe_ranges, PROBE_MIRROR);
     mac030_io_read_uint8(&io2, 0x50F00000u);
-    ASSERT_EQ_INT((uint32_t)io2.miss_logged_read, 0x1u);
+    ASSERT_EQ_INT((uint32_t)io2.miss_logged_read[0], 0x1u);
 }
 
 // The index must not require any particular table order.  The IIfx nests a

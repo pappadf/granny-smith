@@ -443,7 +443,8 @@ reset to zero.
 | `src/core/scheduler/scheduler.c` | Sprint loop, event queue, cycle accounting, VBL timing |
 | `src/core/memory/memory.h` | `memory_io_penalty()` inline, penalty globals |
 | `src/core/memory/memory.c` | Penalty global definitions, slow-path device dispatch |
-| `src/machines/mac030/mac030_glue_io.c` | The 030-family I/O dispatcher with per-device penalty constants |
+| `src/machines/mac030/mac030_io.c` | The I/O-island dispatch engine that charges each window's penalty |
+| `src/machines/mac030/mac030_glue_io.c` | The GLUE family's window table with its per-device penalty constants |
 | `docs/internals/core/scheduler/scheduler.md` | Detailed scheduler internals (sprint model, event lifecycle) |
 
 ## See Also

@@ -1044,116 +1044,149 @@ void pdm_amic_init(config_t *cfg) {
     a->floppy.addr = 0x15000u; // floppy DMA address reset value
 }
 
-// One island byte: the guest's read, or an inspection (`peek`) routed to each
-// chip's side-effect-free peek.
-static uint8_t amic_access(config_t *cfg, uint32_t offset, bool peek) {
-    uint32_t block = offset & 0x3F000u;
-    switch (block) {
-    case OFF_VIA1:
-    case OFF_VIA1 + 0x1000:
-        return memory_iface_read8(via_get_memory_interface(cfg->via1), cfg->via1, offset, peek);
-    case OFF_SCC:
-        // ESCC in Curio: +0 bCtl / +2 aCtl / +4 bData / +6 aData — the
-        // low offset bits carry the chip's A/B and D/C pins directly.
-        return memory_iface_read8(scc_get_memory_interface(cfg->scc), cfg->scc, offset - OFF_SCC, peek);
-    case OFF_SCSIA:
-        return pdm_scsi_io_read(cfg, 0, offset - OFF_SCSIA, peek);
-    case OFF_SCSIB:
-        return pdm_scsi_io_read(cfg, 1, offset - OFF_SCSIB, peek);
-    case OFF_SOUND:
-        return pdm_awacs_read(cfg, offset - OFF_SOUND);
-    case OFF_SWIM3:
-    case OFF_SWIM3 + 0x1000: // 16 registers at stride $200 span both blocks
-        return peek ? pdm_swim3_peek(cfg, offset - OFF_SWIM3) : pdm_swim3_read(cfg, offset - OFF_SWIM3);
-    case OFF_ARIEL:
-        return peek ? pdm_ariel_peek(cfg, offset - OFF_ARIEL) : pdm_ariel_read(cfg, offset - OFF_ARIEL);
-    case OFF_VIA2:
-    case OFF_VIA2 + 0x1000: // classic-VIA-stride aliases of the bank
-        return via2_read(cfg, offset - OFF_VIA2, peek);
-    case OFF_VIDEO:
-        return pdm_video_ctl_read(cfg, offset - OFF_VIDEO);
-    case OFF_ICR:
-        return icr_read(cfg, offset - OFF_ICR);
-    case OFF_DIAG:
-        return 0x01u; // bit 0 must read 1 or boot detours to the ROM monitor
-    case OFF_DMA:
-    case OFF_DMA + 0x1000:
-        return dma_read(cfg, offset - OFF_DMA);
-    case OFF_EPROM:
-    case OFF_MACE:
-        // Declared in the decode, nothing behind them yet.  The two defines
-        // stay (Grand Central's OFF_EPROM is the candidate IPI doorbell for
-        // multi-processor work, and MACE is a stub until a real model lands);
-        // the obvious alternative to reading 0 is to float them to $FF the
-        // way io_unmapped_read does on the five mac030 families.
-        //
-        // THE CORPUS SAYS OTHERWISE, and it was measured: these windows are
-        // live traffic, not dead decode -- the EPROM read once and MACE read
-        // 10 times and written 40 times per suite-pdm run.  Floating them
-        // high passes suite-pdm but breaks mklinux-boot's pm7100 row, which
-        // no longer reaches the login screen: MkLinux probes for Ethernet
-        // here and an all-ones ID PROM is a different answer from an empty
-        // one.  So they read 0, deliberately, until better evidence about
-        // the PDM address map says otherwise.
-        return 0;
-    default:
-        LOG(2, "read of unwired island offset $%05X", offset);
-        return 0;
-    }
+// ============================================================
+// Island decode ($50F00000-$50F3FFFF)
+// ============================================================
+// One row per register block, read / peek / write side by side, walked by the
+// shared I/O engine (mac030_io.h).  The blocks decode on 4 KB granules; a
+// block that spans two granules (the 6522 maps, SWIM3's $200-stride file,
+// the DMA register file) is one row of 8 KB.
+
+// The chip faces, as handler rows.
+MAC030_IO_ROW_READ(amic_awacs_read, pdm_awacs_read)
+MAC030_IO_ROW_WRITE(amic_awacs_write, pdm_awacs_write)
+MAC030_IO_ROW_READ(amic_swim3_read, pdm_swim3_read)
+MAC030_IO_ROW_READ(amic_swim3_peek, pdm_swim3_peek)
+MAC030_IO_ROW_WRITE(amic_swim3_write, pdm_swim3_write)
+MAC030_IO_ROW_READ(amic_ariel_read, pdm_ariel_read)
+MAC030_IO_ROW_READ(amic_ariel_peek, pdm_ariel_peek)
+MAC030_IO_ROW_WRITE(amic_ariel_write, pdm_ariel_write)
+MAC030_IO_ROW_READ(amic_video_read, pdm_video_ctl_read)
+MAC030_IO_ROW_WRITE(amic_video_write, pdm_video_ctl_write)
+MAC030_IO_ROW_READ(amic_icr_read, icr_read)
+MAC030_IO_ROW_WRITE(amic_icr_write, icr_write)
+MAC030_IO_ROW_READ(amic_dma_read, dma_read)
+MAC030_IO_ROW_WRITE(amic_dma_write, dma_write)
+MAC030_IO_ROW_WRITE(amic_via2_write, via2_write)
+
+// The Curio 53C94 (chip 0) and the 8100's 53CF96 (chip 1).
+static uint8_t amic_scsia_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)addr;
+    return pdm_scsi_io_read(cfg, 0, win_off, false);
+}
+static uint8_t amic_scsia_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)addr;
+    return pdm_scsi_io_read(cfg, 0, win_off, true);
+}
+static void amic_scsia_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)addr;
+    pdm_scsi_io_write(cfg, 0, win_off, value);
+}
+static uint8_t amic_scsib_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)addr;
+    return pdm_scsi_io_read(cfg, 1, win_off, false);
+}
+static uint8_t amic_scsib_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)addr;
+    return pdm_scsi_io_read(cfg, 1, win_off, true);
+}
+static void amic_scsib_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)addr;
+    pdm_scsi_io_write(cfg, 1, win_off, value);
+}
+
+// The pseudo-VIA2 bank, with its classic-VIA-stride aliases (see via2_read).
+static uint8_t amic_via2_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)addr;
+    return via2_read(cfg, win_off, false);
+}
+static uint8_t amic_via2_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)addr;
+    return via2_read(cfg, win_off, true);
+}
+
+// The diagnostic port: bit 0 must read 1 or boot detours to the ROM monitor.
+static uint8_t amic_diag_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)cfg, (void)win_off, (void)addr;
+    return 0x01u;
+}
+
+// Writes to the diagnostic port are acknowledged and dropped.
+static void amic_diag_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)cfg, (void)win_off, (void)addr, (void)value;
+}
+
+// The Ethernet ID PROM and MACE blocks: declared in the decode, nothing
+// behind them yet.  The two defines stay (Grand Central's OFF_EPROM is the
+// candidate IPI doorbell for multi-processor work, and MACE is a stub until a
+// real model lands); the obvious alternative to reading 0 is to float them to
+// $FF the way io_unmapped_read does on the five mac030 families.
+//
+// THE CORPUS SAYS OTHERWISE, and it was measured: these windows are live
+// traffic, not dead decode -- the EPROM read once and MACE read 10 times and
+// written 40 times per suite-pdm run.  Floating them high passes suite-pdm but
+// breaks mklinux-boot's pm7100 row, which no longer reaches the login screen:
+// MkLinux probes for Ethernet here and an all-ones ID PROM is a different
+// answer from an empty one.  So they read 0, deliberately, until better
+// evidence about the PDM address map says otherwise.
+static uint8_t amic_empty_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)cfg, (void)win_off, (void)addr;
+    return 0;
+}
+
+// A write to a declared-but-empty block: nothing latches it.
+static void amic_empty_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)cfg, (void)win_off;
+    LOG(2, "write of unwired island offset $%05X = $%02X", addr, value);
+}
+
+// AMIC's island map.  No bus penalty on any row (the island is untimed).  The
+// ESCC in Curio is +0 bCtl / +2 aCtl / +4 bData / +6 aData: the low offset
+// bits carry the chip's A/B and D/C pins directly, so the SCC row is a plain
+// device route.
+//
+//   base       end                 device           pen xform        rd wr  read_fn  write_fn  name
+static const mac030_io_range_t amic_io_ranges[] = {
+    {OFF_VIA1, OFF_VIA1 + 0x2000, MAC030_DEV_VIA1, 0, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "via1"},
+    {OFF_SCC, OFF_SCC + 0x1000, MAC030_DEV_SCC, 0, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
+    {OFF_EPROM, OFF_EPROM + 0x1000, 0, 0, MAC030_IO_NORMAL, 0, 0, amic_empty_read, amic_empty_write, "eprom"},
+    {OFF_MACE, OFF_MACE + 0x1000, 0, 0, MAC030_IO_NORMAL, 0, 0, amic_empty_read, amic_empty_write, "mace"},
+    {OFF_SCSIA, OFF_SCSIA + 0x1000, 0, 0, MAC030_IO_NORMAL, 0, 0, amic_scsia_read, amic_scsia_write, "scsi_a",
+     .peek_fn = amic_scsia_peek},
+    {OFF_SCSIB, OFF_SCSIB + 0x1000, 0, 0, MAC030_IO_NORMAL, 0, 0, amic_scsib_read, amic_scsib_write, "scsi_b",
+     .peek_fn = amic_scsib_peek},
+    {OFF_SOUND, OFF_SOUND + 0x1000, 0, 0, MAC030_IO_NORMAL, 0, 0, amic_awacs_read, amic_awacs_write, "sound"},
+    {OFF_SWIM3, OFF_SWIM3 + 0x2000, 0, 0, MAC030_IO_NORMAL, 0, 0, amic_swim3_read, amic_swim3_write, "swim3",
+     .peek_fn = amic_swim3_peek},
+    {OFF_ARIEL, OFF_ARIEL + 0x1000, 0, 0, MAC030_IO_NORMAL, 0, 0, amic_ariel_read, amic_ariel_write, "ariel",
+     .peek_fn = amic_ariel_peek},
+    {OFF_VIA2, OFF_VIA2 + 0x2000, 0, 0, MAC030_IO_NORMAL, 0, 0, amic_via2_read, amic_via2_write, "via2",
+     .peek_fn = amic_via2_peek},
+    {OFF_VIDEO, OFF_VIDEO + 0x1000, 0, 0, MAC030_IO_NORMAL, 0, 0, amic_video_read, amic_video_write, "video"},
+    {OFF_ICR, OFF_ICR + 0x1000, 0, 0, MAC030_IO_NORMAL, 0, 0, amic_icr_read, amic_icr_write, "icr"},
+    {OFF_DIAG, OFF_DIAG + 0x1000, 0, 0, MAC030_IO_NORMAL, 0, 0, amic_diag_read, amic_diag_write, "diag"},
+    {OFF_DMA, OFF_DMA + 0x2000, 0, 0, MAC030_IO_NORMAL, 0, 0, amic_dma_read, amic_dma_write, "dma"},
+    {0}, // sentinel: end == 0
+};
+
+void pdm_amic_io_bind(config_t *cfg) {
+    mac030_io_t *io = &pdm_st(cfg)->amic_io;
+    // Undecoded island space reads 0, as it always has here (see the EPROM note).
+    mac030_io_install_table(io, cfg, amic_io_ranges, PDM_AMIC_ISLAND_SIZE - 1u, 0);
+    io->untimed = true;
+    mac030_io_bind_dev(io, MAC030_DEV_VIA1, cfg->via1, via_get_memory_interface(cfg->via1));
+    mac030_io_bind_dev(io, MAC030_DEV_SCC, cfg->scc, scc_get_memory_interface(cfg->scc));
+    mac030_io_validate(io, cfg->machine->id);
 }
 
 uint8_t pdm_amic_read(config_t *cfg, uint32_t offset) {
-    return amic_access(cfg, offset, false);
+    return mac030_io_read_uint8(&pdm_st(cfg)->amic_io, offset);
 }
 
 uint8_t pdm_amic_peek(config_t *cfg, uint32_t offset) {
-    return amic_access(cfg, offset, true);
+    return mac030_io_peek_uint8(&pdm_st(cfg)->amic_io, offset);
 }
 
 void pdm_amic_write(config_t *cfg, uint32_t offset, uint8_t value) {
-    uint32_t block = offset & 0x3F000u;
-    switch (block) {
-    case OFF_VIA1:
-    case OFF_VIA1 + 0x1000:
-        via_get_memory_interface(cfg->via1)->write_uint8(cfg->via1, offset, value);
-        return;
-    case OFF_SCC:
-        scc_get_memory_interface(cfg->scc)->write_uint8(cfg->scc, offset - OFF_SCC, value);
-        return;
-    case OFF_SCSIA:
-        pdm_scsi_io_write(cfg, 0, offset - OFF_SCSIA, value);
-        return;
-    case OFF_SCSIB:
-        pdm_scsi_io_write(cfg, 1, offset - OFF_SCSIB, value);
-        return;
-    case OFF_SOUND:
-        pdm_awacs_write(cfg, offset - OFF_SOUND, value);
-        return;
-    case OFF_SWIM3:
-    case OFF_SWIM3 + 0x1000: // 16 registers at stride $200 span both blocks
-        pdm_swim3_write(cfg, offset - OFF_SWIM3, value);
-        return;
-    case OFF_ARIEL:
-        pdm_ariel_write(cfg, offset - OFF_ARIEL, value);
-        return;
-    case OFF_VIA2:
-    case OFF_VIA2 + 0x1000:
-        via2_write(cfg, offset - OFF_VIA2, value);
-        return;
-    case OFF_VIDEO:
-        pdm_video_ctl_write(cfg, offset - OFF_VIDEO, value);
-        return;
-    case OFF_ICR:
-        icr_write(cfg, offset - OFF_ICR, value);
-        return;
-    case OFF_DIAG:
-        return;
-    case OFF_DMA:
-    case OFF_DMA + 0x1000:
-        dma_write(cfg, offset - OFF_DMA, value);
-        return;
-    default:
-        LOG(2, "write of unwired island offset $%05X = $%02X", offset, value);
-        return;
-    }
+    mac030_io_write_uint8(&pdm_st(cfg)->amic_io, offset, value);
 }

@@ -727,6 +727,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // Board state + memory map.
     tnt_hh_init(cfg);
     tnt_gc_init(cfg);
+    tnt_gc_io_bind(cfg); // the island byte decode; construction only, not on reset
     tnt_gc_attach_object(cfg); // machine.gc; construction only, not on reset
     // The Network Server's GBUS island — built before the memory layout so
     // the LCD is answering from the very first POST write.  That ordering is

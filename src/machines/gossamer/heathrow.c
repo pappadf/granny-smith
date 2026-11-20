@@ -359,56 +359,175 @@ void gos_scc_dma_init(config_t *cfg) {
 // Island dispatch
 // ============================================================
 
+// One row per register block, read / peek / write side by side, walked by the
+// shared I/O engine (mac030_io.h).
+
+// A byte store to a block that only answers reads: nothing latches it.
+static void hr_open_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)cfg, (void)win_off;
+    LOG(1, "byte write of unwired Heathrow offset +$%05X = $%02X", addr, value);
+}
+
+// The two interrupt banks (+$10 bank 2, +$20 bank 1), byte j of each
+// little-endian register; +$00..+$0F decodes nothing and reads 0.
+static uint8_t hr_ints_read8(config_t *cfg, uint32_t off, uint32_t addr) {
+    (void)addr;
+    if (off < HR_INTS2)
+        return 0;
+    int b = (off < HR_INTS1) ? 1 : 0;
+    uint32_t base = b ? HR_INTS2 : HR_INTS1;
+    return le_lane8(int_read(cfg, b, (off - base) & 0xCu), off);
+}
+
+// A byte store into an interrupt register merges into its current value
+// (only the mask holds one; the others are strobes).
+static void hr_ints_write8(config_t *cfg, uint32_t off, uint32_t addr, uint8_t value) {
+    (void)addr;
+    if (off < HR_INTS2)
+        return;
+    int b = (off < HR_INTS1) ? 1 : 0;
+    uint32_t base = b ? HR_INTS2 : HR_INTS1;
+    uint32_t reg = (off - base) & 0xCu;
+    uint32_t cur = (reg == INT_MASK) ? gos_st(cfg)->hr.mask[b] : 0;
+    le_lane8_set(&cur, off, value);
+    int_write(cfg, b, reg, cur);
+}
+
+// The byte-accessible control block (+$30..+$3F), addressed by island offset.
+static uint8_t hr_ctrl_read8(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)addr;
+    return ctrl_read8(cfg, HR_CTRL + win_off);
+}
+static void hr_ctrl_write8(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)addr;
+    ctrl_write8(cfg, HR_CTRL + win_off, value);
+}
+
+// Byte k of a DBDMA channel's little-endian register.
+static uint8_t hr_dbdma_read8(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)addr;
+    uint32_t v = dbdma_reg_read(gos_st(cfg)->dbdma, (int)(win_off >> 8), win_off & 0xFCu);
+    return le_lane8(v, win_off);
+}
+
+// MESH, the internal SCSI controller.
+static uint8_t hr_mesh_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)addr;
+    return mesh_read(gos_st(cfg)->mesh, win_off);
+}
+static uint8_t hr_mesh_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)addr;
+    return mesh_peek(gos_st(cfg)->mesh, win_off);
+}
+static void hr_mesh_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)addr;
+    mesh_write(gos_st(cfg)->mesh, win_off, value);
+}
+
+// BMAC Ethernet (gossamer_bmac.c), byte face.
+MAC030_IO_ROW_READ(hr_bmac_read, gos_bmac_read8)
+MAC030_IO_ROW_READ(hr_bmac_peek, gos_bmac_peek8)
+MAC030_IO_ROW_WRITE(hr_bmac_write, gos_bmac_write8)
+
+// The ESCC aperture: only the four channel registers (+$00..+$3F) reach the
+// cell (runtime/escc_dbdma.c).
+static uint8_t hr_escc_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)addr;
+    return escc_aperture_read(cfg->scc, win_off, false);
+}
+static uint8_t hr_escc_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)addr;
+    return escc_aperture_read(cfg->scc, win_off, true);
+}
+static void hr_escc_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)addr;
+    if (!escc_aperture_write(&gos_st(cfg)->escc_dma, cfg->scc, win_off, value))
+        LOG(3, "ESCC +$%03X = $%02X (not a channel register; ignored)", win_off, value);
+}
+
+// Byte k of a DAVbus (Screamer) little-endian register; the block answers
+// byte stores only as longwords (hr_write32).
+static uint8_t hr_davbus_read8(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)addr;
+    uint32_t v = davbus_read32(&gos_st(cfg)->screamer_host, win_off & ~3u);
+    return le_lane8(v, win_off);
+}
+
+// SWIM3: sixteen byte-wide registers on $10 centres (the row's STRIDE_16
+// hands over the register number).
+static uint8_t hr_swim3_read(config_t *cfg, uint32_t reg, uint32_t addr) {
+    (void)addr;
+    return swim3_read(&gos_st(cfg)->swim3, reg);
+}
+static uint8_t hr_swim3_peek(config_t *cfg, uint32_t reg, uint32_t addr) {
+    (void)addr;
+    return swim3_peek(&gos_st(cfg)->swim3, reg);
+}
+static void hr_swim3_write(config_t *cfg, uint32_t reg, uint32_t addr, uint8_t value) {
+    (void)addr;
+    swim3_write(&gos_st(cfg)->swim3, reg, value);
+}
+
+// The two ATA cells (gossamer_ata.c), which decode by island offset.
+static uint8_t hr_ata_read8(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)addr;
+    return gos_ata_read8(cfg, GOS_HR_ATA0 + win_off);
+}
+static uint8_t hr_ata_peek8(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)addr;
+    return gos_ata_peek8(cfg, GOS_HR_ATA0 + win_off);
+}
+static void hr_ata_write8(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)addr;
+    gos_ata_write8(cfg, GOS_HR_ATA0 + win_off, value);
+}
+
+// The NVRAM window: byte j at +j*$10.
+MAC030_IO_ROW_READ(hr_nvram_read, nvram_read)
+MAC030_IO_ROW_WRITE(hr_nvram_write, nvram_write)
+
+// Heathrow's byte-wide island map.  No bus penalty on any row (the island is
+// untimed).  The legacy SCC aperture's low offset bits carry the chip's A/B
+// and D/C pins directly, so it is a plain device route.
+//
+//   base         end            device           pen xform  rd wr  read_fn  write_fn  name
+static const mac030_io_range_t hr_io_ranges[] = {
+    {0x00000u, HR_CTRL, 0, 0, MAC030_IO_NORMAL, 0, 0, hr_ints_read8, hr_ints_write8, "ints"},
+    {HR_CTRL, 0x00040u, 0, 0, MAC030_IO_NORMAL, 0, 0, hr_ctrl_read8, hr_ctrl_write8, "ctrl"},
+    {HR_DBDMA, HR_DBDMA_END, 0, 0, MAC030_IO_NORMAL, 0, 0, hr_dbdma_read8, hr_open_write, "dbdma"},
+    {HR_MESH, HR_MESH + 0x1000u, 0, 0, MAC030_IO_NORMAL, 0, 0, hr_mesh_read, hr_mesh_write, "mesh",
+     .peek_fn = hr_mesh_peek},
+    {HR_BMAC, HR_BMAC + 0x1000u, 0, 0, MAC030_IO_NORMAL, 0, 0, hr_bmac_read, hr_bmac_write, "bmac",
+     .peek_fn = hr_bmac_peek},
+    {HR_SCCLEG, HR_SCCLEG + 0x1000u, MAC030_DEV_SCC, 0, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc_legacy"},
+    {HR_ESCC, HR_ESCC + 0x1000u, 0, 0, MAC030_IO_NORMAL, 0, 0, hr_escc_read, hr_escc_write, "escc",
+     .peek_fn = hr_escc_peek},
+    {HR_DAVBUS, HR_DAVBUS + 0x1000u, 0, 0, MAC030_IO_NORMAL, 0, 0, hr_davbus_read8, hr_open_write, "davbus"},
+    {HR_SWIM3, HR_SWIM3 + 0x1000u, 0, 0, MAC030_IO_STRIDE_16, 0, 0, hr_swim3_read, hr_swim3_write, "swim3",
+     .peek_fn = hr_swim3_peek},
+    {HR_VIA, HR_VIA + 0x2000u, MAC030_DEV_VIA1, 0, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "via1"},
+    {GOS_HR_ATA0, GOS_HR_ATA_END, 0, 0, MAC030_IO_NORMAL, 0, 0, hr_ata_read8, hr_ata_write8, "ata",
+     .peek_fn = hr_ata_peek8},
+    {HR_NVRAM, HR_NVRAM_END, 0, 0, MAC030_IO_NORMAL, 0, 0, hr_nvram_read, hr_nvram_write, "nvram"},
+    {0}, // sentinel: end == 0
+};
+
+// Install Heathrow's byte decode table and bind its VIA and SCC rows.
+static void hr_io_bind(config_t *cfg) {
+    mac030_io_t *io = &gos_st(cfg)->hr_io;
+    // Undecoded island space reads 0, as it always has here.
+    mac030_io_install_table(io, cfg, hr_io_ranges, GOS_HEATHROW_SIZE - 1u, 0);
+    io->untimed = true;
+    mac030_io_bind_dev(io, MAC030_DEV_VIA1, cfg->via1, via_get_memory_interface(cfg->via1));
+    mac030_io_bind_dev(io, MAC030_DEV_SCC, cfg->scc, scc_get_memory_interface(cfg->scc));
+    mac030_io_validate(io, cfg->machine->id);
+}
+
 // One island byte: the guest's read, or an inspection (`peek`) routed to each
 // chip's side-effect-free peek.
 static uint8_t hr_access8(void *ctx, uint32_t off, bool peek) {
-    config_t *cfg = (config_t *)ctx;
-    gossamer_state_t *st = gos_st(cfg);
-    if (off < HR_CTRL) {
-        int b = (off < HR_INTS1) ? 1 : 0;
-        uint32_t base = b ? HR_INTS2 : HR_INTS1;
-        if (off >= HR_INTS2)
-            return le_lane8(int_read(cfg, b, (off - base) & 0xCu), off);
-        return 0;
-    }
-    if (off < 0x40u)
-        return ctrl_read8(cfg, off);
-    if (off >= HR_NVRAM && off < HR_NVRAM_END)
-        return nvram_read(cfg, off - HR_NVRAM);
-    if (off >= GOS_HR_ATA0 && off < GOS_HR_ATA_END)
-        return peek ? gos_ata_peek8(cfg, off) : gos_ata_read8(cfg, off);
-    uint32_t block = off & 0xFF000u;
-    switch (block) {
-    case HR_VIA:
-    case HR_VIA + 0x1000u:
-        return memory_iface_read8(via_get_memory_interface(cfg->via1), cfg->via1, off - HR_VIA, peek);
-    case HR_SCCLEG:
-        return memory_iface_read8(scc_get_memory_interface(cfg->scc), cfg->scc, off - HR_SCCLEG, peek);
-    case HR_ESCC:
-        return escc_aperture_read(cfg->scc, off - HR_ESCC, peek);
-    case HR_MESH:
-        return peek ? mesh_peek(st->mesh, off - HR_MESH) : mesh_read(st->mesh, off - HR_MESH);
-    case HR_BMAC:
-        return peek ? gos_bmac_peek8(cfg, off - HR_BMAC) : gos_bmac_read8(cfg, off - HR_BMAC);
-    case HR_SWIM3: {
-        unsigned reg = ((off - HR_SWIM3) >> 4) & 15u;
-        return peek ? swim3_peek(&st->swim3, reg) : swim3_read(&st->swim3, reg);
-    }
-    default:
-        break;
-    }
-    if (off >= HR_DBDMA && off < HR_DBDMA_END) {
-        int chan = (int)((off - HR_DBDMA) >> 8);
-        uint32_t v = dbdma_reg_read(st->dbdma, chan, off & 0xFCu);
-        return le_lane8(v, off); // byte k of the LE register
-    }
-    if ((off & 0xFF000u) == HR_DAVBUS) {
-        uint32_t v = davbus_read32(&st->screamer_host, (off - HR_DAVBUS) & ~3u);
-        return le_lane8(v, off);
-    }
-    if (!peek)
-        LOG(1, "byte read of unwired Heathrow offset +$%05X", off);
-    return 0;
+    mac030_io_t *io = &gos_st((config_t *)ctx)->hr_io;
+    return peek ? mac030_io_peek_uint8(io, off) : mac030_io_read_uint8(io, off);
 }
 
 static uint8_t hr_read8(void *ctx, uint32_t off) {
@@ -419,57 +538,7 @@ static uint8_t hr_peek8(void *ctx, uint32_t off) {
 }
 
 static void hr_write8(void *ctx, uint32_t off, uint8_t value) {
-    config_t *cfg = (config_t *)ctx;
-    gossamer_state_t *st = gos_st(cfg);
-    if (off < HR_CTRL) {
-        if (off >= HR_INTS2) {
-            int b = (off < HR_INTS1) ? 1 : 0;
-            uint32_t base = b ? HR_INTS2 : HR_INTS1;
-            uint32_t reg = (off - base) & 0xCu;
-            uint32_t cur = (reg == INT_MASK) ? st->hr.mask[b] : 0;
-            le_lane8_set(&cur, off, value);
-            int_write(cfg, b, reg, cur);
-        }
-        return;
-    }
-    if (off < 0x40u) {
-        ctrl_write8(cfg, off, value);
-        return;
-    }
-    if (off >= HR_NVRAM && off < HR_NVRAM_END) {
-        nvram_write(cfg, off - HR_NVRAM, value);
-        return;
-    }
-    if (off >= GOS_HR_ATA0 && off < GOS_HR_ATA_END) {
-        gos_ata_write8(cfg, off, value);
-        return;
-    }
-    uint32_t block = off & 0xFF000u;
-    switch (block) {
-    case HR_VIA:
-    case HR_VIA + 0x1000u:
-        via_get_memory_interface(cfg->via1)->write_uint8(cfg->via1, off - HR_VIA, value);
-        return;
-    case HR_SCCLEG:
-        scc_get_memory_interface(cfg->scc)->write_uint8(cfg->scc, off - HR_SCCLEG, value);
-        return;
-    case HR_ESCC:
-        if (!escc_aperture_write(&st->escc_dma, cfg->scc, off - HR_ESCC, value))
-            LOG(3, "ESCC +$%03X = $%02X (not a channel register; ignored)", off - HR_ESCC, value);
-        return;
-    case HR_MESH:
-        mesh_write(st->mesh, off - HR_MESH, value);
-        return;
-    case HR_BMAC:
-        gos_bmac_write8(cfg, off - HR_BMAC, value);
-        return;
-    case HR_SWIM3:
-        swim3_write(&st->swim3, ((off - HR_SWIM3) >> 4) & 15u, value);
-        return;
-    default:
-        break;
-    }
-    LOG(1, "byte write of unwired Heathrow offset +$%05X = $%02X", off, value);
+    mac030_io_write_uint8(&gos_st((config_t *)ctx)->hr_io, off, value);
 }
 
 // 32-bit access: the little-endian register blocks.  `value` at this edge
@@ -599,6 +668,7 @@ static const pci_device_ops_t hr_pci_ops = {
 
 void gos_heathrow_pci_attach(config_t *cfg, checkpoint_t *cp) {
     gossamer_state_t *st = gos_st(cfg);
+    hr_io_bind(cfg);
     st->heathrow_if.read_uint8 = hr_read8;
     st->heathrow_if.read_uint16 = hr_read16;
     st->heathrow_if.read_uint32 = hr_read32;

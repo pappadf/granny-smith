@@ -43,6 +43,7 @@
 #include "checkpoint.h"
 #include "davbus.h" // the DAVbus sound cell (Screamer face)
 #include "escc_dbdma.h"
+#include "mac030_io.h" // mac030_io_t, the island decode engine
 #include "machine.h"
 #include "machine_profile.h"
 #include "memory.h"
@@ -270,6 +271,10 @@ typedef struct gossamer_state {
     memory_interface_t intack_if; // $FEF00000
     memory_interface_t board_if; // $FF000000 bank-1 page
     memory_interface_t heathrow_if; // BAR0 backing
+    // Heathrow's byte decode (heathrow.c): its range table bound to this
+    // machine's VIA and SCC.  Host pointers, rebuilt at init, never
+    // checkpointed.
+    mac030_io_t hr_io;
 } gossamer_state_t;
 
 static inline gossamer_state_t *gos_st(config_t *cfg) {

@@ -23,6 +23,7 @@
 #include "display.h"
 #include "display_class.h"
 #include "display_ramdac.h"
+#include "mac030_io.h" // mac030_io_t, the island decode engine
 #include "machine.h"
 #include "memory.h"
 #include "nubus.h" // struct nubus_slot_decl, for the shared slot table below
@@ -260,6 +261,9 @@ typedef struct pdm_state {
     memory_interface_t id_interface; // $5FFFF000 machine-ID page
     memory_interface_t wait_interface; // page-0 wait-state forwarder
     memory_interface_t bart_reg_interface; // $F0000000 BART register file
+    // AMIC's island decode (amic.c): its range table bound to this machine's
+    // VIA and SCC.  Host pointers, rebuilt at init, never checkpointed.
+    mac030_io_t amic_io;
 
     // Derived presentation state, never checkpointed
     pdm_video_t video; // scanout descriptor (ariel.c)
@@ -295,10 +299,16 @@ uint32_t pdm_id_read32(void *ctx, uint32_t offset);
 
 // === amic.c =================================================================
 
+// AMIC answers the first 256 KB of the $50F00000 island; HMC the rest.
+#define PDM_AMIC_ISLAND_SIZE 0x40000u
+
 void pdm_amic_init(config_t *cfg);
 void pdm_amic_register_events(config_t *cfg); // at construction
 void pdm_amic_start_vbl(config_t *cfg); // fresh boot: free-running raster
-uint8_t pdm_amic_read(config_t *cfg, uint32_t offset); // island offsets < $40000
+// Install AMIC's island decode table and bind its VIA and SCC rows; once, at
+// construction, after cfg->via1 and cfg->scc exist.
+void pdm_amic_io_bind(config_t *cfg);
+uint8_t pdm_amic_read(config_t *cfg, uint32_t offset); // island offsets < PDM_AMIC_ISLAND_SIZE
 uint8_t pdm_amic_peek(config_t *cfg, uint32_t offset); // the same, side-effect-free
 void pdm_amic_write(config_t *cfg, uint32_t offset, uint8_t value);
 // Recompute the ICR source levels and drive the 601 EXT line (level-

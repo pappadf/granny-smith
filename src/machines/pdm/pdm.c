@@ -106,23 +106,23 @@ const struct nubus_slot_decl pdm_nubus_slots_cde[] = {
 
 static uint8_t pdm_io_read8(void *ctx, uint32_t offset) {
     config_t *cfg = (config_t *)ctx;
-    if (offset >= 0x40000u)
-        return pdm_hmc_read(cfg, offset - 0x40000u);
+    if (offset >= PDM_AMIC_ISLAND_SIZE)
+        return pdm_hmc_read(cfg, offset - PDM_AMIC_ISLAND_SIZE);
     return pdm_amic_read(cfg, offset);
 }
 
 // An inspection: each chip's peek, nothing on the island changed.
 static uint8_t pdm_io_peek8(void *ctx, uint32_t offset) {
     config_t *cfg = (config_t *)ctx;
-    if (offset >= 0x40000u)
-        return pdm_hmc_peek(cfg, offset - 0x40000u);
+    if (offset >= PDM_AMIC_ISLAND_SIZE)
+        return pdm_hmc_peek(cfg, offset - PDM_AMIC_ISLAND_SIZE);
     return pdm_amic_peek(cfg, offset);
 }
 
 static void pdm_io_write8(void *ctx, uint32_t offset, uint8_t value) {
     config_t *cfg = (config_t *)ctx;
-    if (offset >= 0x40000u)
-        pdm_hmc_write(cfg, offset - 0x40000u, value);
+    if (offset >= PDM_AMIC_ISLAND_SIZE)
+        pdm_hmc_write(cfg, offset - PDM_AMIC_ISLAND_SIZE, value);
     else
         pdm_amic_write(cfg, offset, value);
 }
@@ -368,6 +368,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // Board state + memory map.
     pdm_hmc_init(cfg);
     pdm_amic_init(cfg);
+    pdm_amic_io_bind(cfg); // the island decode; construction only, not on reset
     pdm_amic_attach_object(cfg); // machine.amic; construction only, not on reset
     pdm_amic_register_events(cfg);
     pdm_awacs_register_events(cfg);

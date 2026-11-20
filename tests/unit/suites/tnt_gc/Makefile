@@ -4,8 +4,9 @@
 # initialisation sequence and events-driven acknowledge (clear mode 0),
 # the NanoKernel's $80000000 ifMode1Clear acknowledge and the mode-1
 # output-latch semantics the boot debugging established, the
-# banked two-aperture NVRAM, BoxID byte/longword composition, and the
-# island's little-endian DBDMA register routing.
+# banked two-aperture NVRAM, BoxID byte/longword composition, the
+# island's little-endian DBDMA register routing, and the board-guarded rows
+# of its byte decode (MESH, the GBUS LCD).
 
 TEST_NAME    := tnt_gc
 TEST_SRCS    := test.c
@@ -14,6 +15,7 @@ STUBS        := machine_object assert checkpoint
 EXTRA_SRCS   := ../../../../src/core/job/seam.c \
               ../../../../src/core/peripherals/dma_mem.c \
                 ../../../../src/machines/tnt/grand_central.c \
+                ../../../../src/machines/mac030/mac030_io.c \
                 ../../../../src/machines/runtime/escc_dbdma.c \
                 ../../../../src/machines/runtime/of_nvram.c \
                 ../../../../src/machines/runtime/pram_defaults.c \

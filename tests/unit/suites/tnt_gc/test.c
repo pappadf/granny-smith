@@ -110,7 +110,7 @@ void pci_cfg_reset(pci_device_t *dev) {
 uint8_t mesh_read(struct mesh *m, uint32_t offset) {
     (void)m;
     (void)offset;
-    return 0;
+    return 0x4D; // a mark: the board-guard test tells a decoded MESH from open bus
 }
 uint8_t mesh_peek(struct mesh *m, uint32_t offset) {
     return mesh_read(m, offset); // the stubs have no side effects to avoid
@@ -201,7 +201,7 @@ void tnt_mace_write(config_t *cfg, uint32_t off, uint8_t value) {
 uint8_t tnt_lcd_read8(config_t *cfg, uint32_t offset) {
     (void)cfg;
     (void)offset;
-    return 0;
+    return 0x1C; // a mark: the board-guard test tells a decoded LCD from open bus
 }
 void tnt_lcd_write8(config_t *cfg, uint32_t offset, uint8_t value) {
     (void)cfg;
@@ -224,6 +224,17 @@ void scsi_53c96_write(struct scsi_53c96 *c, uint32_t reg, uint8_t value) {
 bool scsi_53c96_dreq(struct scsi_53c96 *c) {
     (void)c;
     return false;
+}
+
+// --- The shared island engine (mac030_io.c) charges bus penalties (Grand
+// Central's rows charge none; a zero cpi_x256 makes memory_io_penalty a no-op
+// besides) and can signal a bus error (Grand Central declares no bus-error
+// span, so that is never called) ---
+sprint_io_t g_sprint_io;
+void memory_signal_bus_error(uint32_t addr, bool write) {
+    (void)addr;
+    (void)write;
+    ASSERT_TRUE(false);
 }
 
 // --- VIA/SCC apertures are not exercised here; the island dispatch
@@ -313,6 +324,7 @@ static void fixture(void) {
     dbdma_set_irq_hook(s_st.dbdma, dbdma_irq, &s_cfg);
     memset(s_mem, 0, sizeof(s_mem));
     tnt_gc_init(&s_cfg);
+    tnt_gc_io_bind(&s_cfg); // the island byte decode (the machine does this once at construction)
     tnt_gc_recompute(&s_cfg);
     s_line = -1;
     s_line_edges = 0;
@@ -596,6 +608,25 @@ TEST(test_escc_aperture_decodes_channel_regs_only) {
     ASSERT_EQ_INT(s_scc_reads, 1);
 }
 
+// The board deltas are row guards on the island table: the MESH aperture
+// decodes only where the board has MESH, the GBUS LCD only on a Network
+// Server, and an absent block reads the island's open-bus 0.  Asked per
+// access, so flipping the board flags takes effect at once.
+TEST(test_board_guards) {
+    fixture();
+    s_board.has_mesh = true;
+    s_board.has_gbus = false;
+    ASSERT_EQ_INT(tnt_gc_read8(&s_cfg, 0x18000u), 0x4D); // MESH decoded
+    ASSERT_EQ_INT(tnt_gc_peek8(&s_cfg, 0x18010u), 0x4D);
+    ASSERT_EQ_INT(tnt_gc_read8(&s_cfg, 0x1C000u), 0); // no GBUS: the LCD block floats
+    s_board.has_mesh = false;
+    s_board.has_gbus = true;
+    ASSERT_EQ_INT(tnt_gc_read8(&s_cfg, 0x18000u), 0); // no MESH on a Network Server
+    ASSERT_EQ_INT(tnt_gc_read8(&s_cfg, 0x1C000u), 0x1C); // the LCD answers
+    s_board.has_mesh = false;
+    s_board.has_gbus = false;
+}
+
 int main(void) {
     RUN(test_mklinux_init_and_ack);
     RUN(test_mode0_pulse_w1c);
@@ -607,5 +638,6 @@ int main(void) {
     RUN(test_boxid);
     RUN(test_dbdma_island_routing);
     RUN(test_escc_aperture_decodes_channel_regs_only);
+    RUN(test_board_guards);
     return 0;
 }
