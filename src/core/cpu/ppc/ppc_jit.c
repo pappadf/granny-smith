@@ -2205,6 +2205,76 @@ static void emit_cr_bit(uint32_t n) {
 
 #define RD(off) GPR((off) >> 2) // an entry's register byte offset -> its local
 
+// A D-form effective address, rA|0 + d, onto the stack (b = rA's entry
+// offset, JX_RA0 for rA = 0)
+static void emit_ea_d(uint32_t b, uint32_t d) {
+    if (b == JX_RA0)
+        iconst(d);
+    else {
+        lget(RD(b));
+        iconst(d);
+        op(W_ADD);
+    }
+}
+
+// An X-form effective address, rA|0 + rB, onto the stack
+static void emit_ea_x(uint32_t b, uint32_t c) {
+    if (b == JX_RA0)
+        iconst(0);
+    else
+        lget(RD(b));
+    lget(RD(c));
+    op(W_ADD);
+}
+
+// The BO decrement-CTR and CR-bit tests of bc / bclr / bcctr (ppc_do_bc):
+// leaves the branch condition on the stack and returns true, or returns
+// false (nothing pushed) when BO makes the branch unconditional
+static bool emit_bo_test(uint32_t bo, uint32_t bi) {
+    bool test = false;
+    if (!(bo & 4u)) { // decrement CTR, test it
+        lget(L_CTR);
+        iconst(1);
+        op(W_SUB);
+        ltee(L_CTR);
+        if (bo & 2u)
+            op(W_EQZ);
+        else {
+            iconst(0);
+            op(W_NE);
+        }
+        test = true;
+    }
+    if (!(bo & 16u)) { // the CR bit
+        emit_cr_bit(bi);
+        if (!(bo & 8u))
+            op(W_EQZ);
+        if (test)
+            op(W_AND);
+        test = true;
+    }
+    return test;
+}
+
+// A branch to itself takes a slot instead of folding: under the "target is
+// this instruction" condition on the stack, trade the fold the block
+// counted for the slot it reserved
+static void emit_self_branch_refund(void) {
+    op(W_IF);
+    put(BT_VOID);
+    g_depth++;
+    lget(L_BUDGET);
+    iconst(1);
+    op(W_SUB);
+    lset(L_BUDGET);
+    lget(L_FOLDS);
+    iconst(1);
+    op(W_ADD);
+    lset(L_FOLDS);
+    op(W_END);
+    g_depth--;
+}
+
 // Nonzero on the stack when a BAT was written since the last context
 // synchronization (the copies ppc_context_sync publishes differ)
 static void emit_bat_pending(void) {
@@ -2737,13 +2807,7 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
     case PPD_LBZU: {
         bool upd = (id == PPD_LWZU || id == PPD_LHZU || id == PPD_LHAU || id == PPD_LBZU);
         uint32_t size = (id == PPD_LWZ || id == PPD_LWZU) ? 4 : (id == PPD_LBZ || id == PPD_LBZU) ? 1 : 2;
-        if (b == JX_RA0)
-            iconst(c);
-        else {
-            lget(RD(b));
-            iconst(c);
-            op(W_ADD);
-        }
+        emit_ea_d(b, c);
         emit_load(size, id == PPD_LHA || id == PPD_LHAU);
         lset(L_T3);
         if (upd) { // as the handler: the update first, then the loaded value
@@ -2764,13 +2828,7 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
         uint32_t size = (id == PPD_STW || id == PPD_STWU) ? 4 : (id == PPD_STB || id == PPD_STBU) ? 1 : 2;
         lget(RD(a));
         lset(L_T3);
-        if (b == JX_RA0)
-            iconst(c);
-        else {
-            lget(RD(b));
-            iconst(c);
-            op(W_ADD);
-        }
+        emit_ea_d(b, c);
         emit_store(size, true, upd ? (int)(b >> 2) : -1);
         if (upd) { // after the store: rS == rA stores the old value
             lget(L_EA);
@@ -2831,19 +2889,7 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
         // counted a fold; trade it for the slot it reserved
         iconst(ipc);
         op(W_EQ);
-        op(W_IF);
-        put(BT_VOID);
-        g_depth++;
-        lget(L_BUDGET);
-        iconst(1);
-        op(W_SUB);
-        lset(L_BUDGET);
-        lget(L_FOLDS);
-        iconst(1);
-        op(W_ADD);
-        lset(L_FOLDS);
-        op(W_END);
-        g_depth--;
+        emit_self_branch_refund();
         emit_goto_npc();
         return;
     case JX_MCRXR: { // CR field a = XER[0:3]; those XER bits clear (OP_MCRXR)
@@ -2953,12 +2999,7 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
         // is held and always drops it (ppc_do_stwcx); reserve_addr records
         // the EA (OP_LWARX).
         bool st = id == JX_STWCX;
-        if (b == JX_RA0)
-            iconst(0);
-        else
-            lget(RD(b));
-        lget(RD(c));
-        op(W_ADD);
+        emit_ea_x(b, c);
         lset(L_EA);
         emit_access_test(4, st);
         lget(L_EA);
@@ -3114,13 +3155,7 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
         // fault partway -- leaves at the instruction for ppc_do_lmw/stmw.
         bool store = id == JX_STMW;
         uint32_t n = 32 - a;
-        if (b == JX_RA0)
-            iconst(c);
-        else {
-            lget(RD(b));
-            iconst(c);
-            op(W_ADD);
-        }
+        emit_ea_d(b, c);
         lset(L_EA);
         emit_access_test(4, store);
         lget(L_EA);
@@ -3173,28 +3208,7 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
         return;
     }
     case JX_BC: { // a = BO, b = BI, c = the raw word (ppc_do_bc)
-        bool test = false;
-        if (!(a & 4u)) { // decrement CTR, test it
-            lget(L_CTR);
-            iconst(1);
-            op(W_SUB);
-            ltee(L_CTR);
-            if (a & 2u)
-                op(W_EQZ);
-            else {
-                iconst(0);
-                op(W_NE);
-            }
-            test = true;
-        }
-        if (!(a & 16u)) { // the CR bit
-            emit_cr_bit(b);
-            if (!(a & 8u))
-                op(W_EQZ);
-            if (test)
-                op(W_AND);
-            test = true;
-        }
+        bool test = emit_bo_test(a, b);
         if (c & 1u) {
             iconst(ipc + 4);
             lset(L_LR);
@@ -3219,28 +3233,7 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
         iconst(~3u);
         op(W_AND);
         lset(L_NPC);
-        bool test = false;
-        if (!(a & 4u)) { // decrement CTR, test it
-            lget(L_CTR);
-            iconst(1);
-            op(W_SUB);
-            ltee(L_CTR);
-            if (a & 2u)
-                op(W_EQZ);
-            else {
-                iconst(0);
-                op(W_NE);
-            }
-            test = true;
-        }
-        if (!(a & 16u)) { // the CR bit
-            emit_cr_bit(b);
-            if (!(a & 8u))
-                op(W_EQZ);
-            if (test)
-                op(W_AND);
-            test = true;
-        }
+        bool test = emit_bo_test(a, b);
         if (c) {
             iconst(ipc + 4);
             lset(L_LR);
@@ -3254,19 +3247,7 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
         lget(L_NPC);
         iconst(ipc);
         op(W_EQ);
-        op(W_IF);
-        put(BT_VOID);
-        g_depth++;
-        lget(L_BUDGET);
-        iconst(1);
-        op(W_SUB);
-        lset(L_BUDGET);
-        lget(L_FOLDS);
-        iconst(1);
-        op(W_ADD);
-        lset(L_FOLDS);
-        op(W_END);
-        g_depth--;
+        emit_self_branch_refund();
         emit_goto_npc();
         if (test) {
             op(W_END);
@@ -3379,12 +3360,7 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
     case JX_LBZUX: {
         bool upd = (id == JX_LWZUX || id == JX_LHZUX || id == JX_LHAUX || id == JX_LBZUX);
         uint32_t size = (id == JX_LWZX || id == JX_LWZUX) ? 4 : (id == JX_LBZX || id == JX_LBZUX) ? 1 : 2;
-        if (b == JX_RA0)
-            iconst(0);
-        else
-            lget(RD(b));
-        lget(RD(c));
-        op(W_ADD);
+        emit_ea_x(b, c);
         emit_load(size, id == JX_LHAX || id == JX_LHAUX);
         lset(L_T3);
         if (upd) { // the update first, then the loaded value (OP_LWZUX)
@@ -3405,12 +3381,7 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
         uint32_t size = (id == JX_STWX || id == JX_STWUX) ? 4 : (id == JX_STBX || id == JX_STBUX) ? 1 : 2;
         lget(RD(a));
         lset(L_T3);
-        if (b == JX_RA0)
-            iconst(0);
-        else
-            lget(RD(b));
-        lget(RD(c));
-        op(W_ADD);
+        emit_ea_x(b, c);
         emit_store(size, true, upd ? (int)(b >> 2) : -1);
         if (upd) { // after the store: rS == rA stores the old value
             lget(L_EA);
@@ -3488,12 +3459,7 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
         emit_stfd();
         return;
     case JX_LWBRX: // the word, little-endian
-        if (b == JX_RA0)
-            iconst(0);
-        else
-            lget(RD(b));
-        lget(RD(c));
-        op(W_ADD);
+        emit_ea_x(b, c);
         emit_load(4, false);
         emit_bswap32();
         lset(RD(a));
@@ -3502,21 +3468,11 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
         lget(RD(a));
         emit_bswap32();
         lset(L_T3);
-        if (b == JX_RA0)
-            iconst(0);
-        else
-            lget(RD(b));
-        lget(RD(c));
-        op(W_ADD);
+        emit_ea_x(b, c);
         emit_store(4, true, -1);
         return;
     case JX_DCBZ: // ppc_jit_dcbz(ea): 1 when it did nothing (leave at the instruction)
-        if (b == JX_RA0)
-            iconst(0);
-        else
-            lget(RD(b));
-        lget(RD(c));
-        op(W_ADD);
+        emit_ea_x(b, c);
         iconst(0);
         iconst(0);
         op(W_CALL);
