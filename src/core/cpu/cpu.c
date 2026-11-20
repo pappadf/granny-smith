@@ -741,58 +741,42 @@ static cpu_t *cpu_from(struct object *self) {
 
 static DEF_GETTER(attr_cpu_pc) {
     cpu_t *cpu = cpu_from(self);
-    value_t v = val_uint(4, cpu_get_pc(cpu));
-    v.flags |= VFLAG_HEX;
-    return v;
+    return val_uint(4, cpu_get_pc(cpu));
 }
 
 static DEF_GETTER(attr_cpu_sr) {
     cpu_t *cpu = cpu_from(self);
-    value_t v = val_uint(2, cpu_get_sr(cpu));
-    v.flags |= VFLAG_HEX;
-    return v;
+    return val_uint(2, cpu_get_sr(cpu));
 }
 
 static DEF_GETTER(attr_cpu_ccr) {
     cpu_t *cpu = cpu_from(self);
-    value_t v = val_uint(1, cpu_get_sr(cpu) & 0xFFu);
-    v.flags |= VFLAG_HEX;
-    return v;
+    return val_uint(1, cpu_get_sr(cpu) & 0xFFu);
 }
 
 static DEF_GETTER(attr_cpu_ssp) {
     cpu_t *cpu = cpu_from(self);
-    value_t v = val_uint(4, cpu_get_ssp(cpu));
-    v.flags |= VFLAG_HEX;
-    return v;
+    return val_uint(4, cpu_get_ssp(cpu));
 }
 
 static DEF_GETTER(attr_cpu_usp) {
     cpu_t *cpu = cpu_from(self);
-    value_t v = val_uint(4, cpu_get_usp(cpu));
-    v.flags |= VFLAG_HEX;
-    return v;
+    return val_uint(4, cpu_get_usp(cpu));
 }
 
 static DEF_GETTER(attr_cpu_msp) {
     cpu_t *cpu = cpu_from(self);
-    value_t v = val_uint(4, cpu_get_msp(cpu));
-    v.flags |= VFLAG_HEX;
-    return v;
+    return val_uint(4, cpu_get_msp(cpu));
 }
 
 static DEF_GETTER(attr_cpu_vbr) {
     cpu_t *cpu = cpu_from(self);
-    value_t v = val_uint(4, cpu_get_vbr(cpu));
-    v.flags |= VFLAG_HEX;
-    return v;
+    return val_uint(4, cpu_get_vbr(cpu));
 }
 
 static DEF_GETTER(attr_cpu_sp) {
     cpu_t *cpu = cpu_from(self);
-    value_t v = val_uint(4, cpu_get_an(cpu, 7));
-    v.flags |= VFLAG_HEX;
-    return v;
+    return val_uint(4, cpu_get_an(cpu, 7));
 }
 
 // D0-D7 and A0-A7 share one getter/setter pair: the member's user_data holds
@@ -800,9 +784,7 @@ static DEF_GETTER(attr_cpu_sp) {
 static DEF_GETTER(attr_cpu_reg) {
     cpu_t *cpu = cpu_from(self);
     int n = (int)(uintptr_t)m->attr.user_data;
-    value_t v = val_uint(4, n < 8 ? cpu_get_dn(cpu, n) : cpu_get_an(cpu, n - 8));
-    v.flags |= VFLAG_HEX;
-    return v;
+    return val_uint(4, n < 8 ? cpu_get_dn(cpu, n) : cpu_get_an(cpu, n - 8));
 }
 
 static DEF_SETTER(set_cpu_reg) {
@@ -1014,33 +996,6 @@ static fpu_state_t *fpu_from(struct object *self) {
     return (fpu_state_t *)object_data(self);
 }
 
-static DEF_GETTER(attr_fpu_fpcr) {
-    fpu_state_t *fpu = fpu_from(self);
-    if (!fpu)
-        return val_err("fpu not present");
-    value_t v = val_uint(4, fpu->fpcr);
-    v.flags |= VFLAG_HEX;
-    return v;
-}
-
-static DEF_GETTER(attr_fpu_fpsr) {
-    fpu_state_t *fpu = fpu_from(self);
-    if (!fpu)
-        return val_err("fpu not present");
-    value_t v = val_uint(4, fpu->fpsr);
-    v.flags |= VFLAG_HEX;
-    return v;
-}
-
-static DEF_GETTER(attr_fpu_fpiar) {
-    fpu_state_t *fpu = fpu_from(self);
-    if (!fpu)
-        return val_err("fpu not present");
-    value_t v = val_uint(4, fpu->fpiar);
-    v.flags |= VFLAG_HEX;
-    return v;
-}
-
 // FP0..FP7: 80-bit extended precision. Expose the raw register bytes
 // as VK_BYTES (10 bytes) so the formatter can hex-dump it and tests
 // can compare bit-for-bit. Conversion to a host double is lossy and
@@ -1079,17 +1034,17 @@ static const member_t fpu_members[] = {
          .name = "fpcr",
          .flags = M_CAT_ADVANCED,
          .doc = "Floating-point control register: rounding mode, rounding precision, and the exception enables",
-         .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_fpu_fpcr, .set = NULL}                                                                                                                   },
+         .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, OBJ_U32_GET(fpu_state_t, fpcr), .set = NULL}                                                                                                                   },
     {.kind = MK_ATTR,
          .name = "fpsr",
          .flags = M_CAT_ADVANCED,
          .doc = "Floating-point status register: condition codes, quotient byte, and the accrued/current exception bytes",
-         .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_fpu_fpsr, .set = NULL}                                                                                                                   },
+         .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, OBJ_U32_GET(fpu_state_t, fpsr), .set = NULL}                                                                                                                   },
     {.kind = MK_ATTR,
          .name = "fpiar",
          .flags = M_CAT_ADVANCED,
          .doc =
-         "Address of the last floating-point instruction that could take an exception — where a trap handler resumes",   .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_fpu_fpiar, .set = NULL}},
+         "Address of the last floating-point instruction that could take an exception — where a trap handler resumes",   .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, OBJ_U32_GET(fpu_state_t, fpiar), .set = NULL}},
 };
 
 static const class_desc_t fpu_class = {
@@ -1110,76 +1065,39 @@ static mmu_state_t *mmu_from(struct object *self) {
     return (mmu_state_t *)object_data(self);
 }
 
-static DEF_GETTER(attr_mmu_tc) {
-    mmu_state_t *mmu = mmu_from(self);
-    if (!mmu)
-        return val_err("mmu not present");
-    value_t v = val_uint(4, mmu->tc);
-    v.flags |= VFLAG_HEX;
-    return v;
-}
-
 static DEF_GETTER(attr_mmu_crp_hi) {
     mmu_state_t *mmu = mmu_from(self);
     if (!mmu)
         return val_err("mmu not present");
-    value_t v = val_uint(4, (uint32_t)(mmu->crp >> 32));
-    v.flags |= VFLAG_HEX;
-    return v;
+    return val_uint(4, (uint32_t)(mmu->crp >> 32));
 }
 
 static DEF_GETTER(attr_mmu_crp_lo) {
     mmu_state_t *mmu = mmu_from(self);
     if (!mmu)
         return val_err("mmu not present");
-    value_t v = val_uint(4, (uint32_t)(mmu->crp & 0xFFFFFFFF));
-    v.flags |= VFLAG_HEX;
-    return v;
+    return val_uint(4, (uint32_t)(mmu->crp & 0xFFFFFFFF));
 }
 
 static DEF_GETTER(attr_mmu_srp_hi) {
     mmu_state_t *mmu = mmu_from(self);
     if (!mmu)
         return val_err("mmu not present");
-    value_t v = val_uint(4, (uint32_t)(mmu->srp >> 32));
-    v.flags |= VFLAG_HEX;
-    return v;
+    return val_uint(4, (uint32_t)(mmu->srp >> 32));
 }
 
 static DEF_GETTER(attr_mmu_srp_lo) {
     mmu_state_t *mmu = mmu_from(self);
     if (!mmu)
         return val_err("mmu not present");
-    value_t v = val_uint(4, (uint32_t)(mmu->srp & 0xFFFFFFFF));
-    v.flags |= VFLAG_HEX;
-    return v;
-}
-
-static DEF_GETTER(attr_mmu_tt0) {
-    mmu_state_t *mmu = mmu_from(self);
-    if (!mmu)
-        return val_err("mmu not present");
-    value_t v = val_uint(4, mmu->tt0);
-    v.flags |= VFLAG_HEX;
-    return v;
-}
-
-static DEF_GETTER(attr_mmu_tt1) {
-    mmu_state_t *mmu = mmu_from(self);
-    if (!mmu)
-        return val_err("mmu not present");
-    value_t v = val_uint(4, mmu->tt1);
-    v.flags |= VFLAG_HEX;
-    return v;
+    return val_uint(4, (uint32_t)(mmu->srp & 0xFFFFFFFF));
 }
 
 static DEF_GETTER(attr_mmu_mmusr) {
     mmu_state_t *mmu = mmu_from(self);
     if (!mmu)
         return val_err("mmu not present");
-    value_t v = val_uint(4, mmu->mmusr);
-    v.flags |= VFLAG_HEX;
-    return v;
+    return val_uint(4, mmu->mmusr);
 }
 
 static DEF_GETTER(attr_mmu_enabled) {
@@ -1429,7 +1347,7 @@ static const member_t mmu_members[] = {
      .name = "tc",
      .flags = M_CAT_ADVANCED,
      .doc = "Translation control: the enable bit, page size, and the initial-shift/table-index split",
-     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_mmu_tc, .set = NULL}},
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, OBJ_U32_GET(mmu_state_t, tc), .set = NULL}},
     {.kind = MK_ATTR,
      .name = "crp_hi",
      .flags = M_CAT_ADVANCED,
@@ -1454,12 +1372,12 @@ static const member_t mmu_members[] = {
      .name = "tt0",
      .flags = M_CAT_ADVANCED,
      .doc = "Transparent translation register 0 — an address range that bypasses the page tables entirely",
-     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_mmu_tt0, .set = NULL}},
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, OBJ_U32_GET(mmu_state_t, tt0), .set = NULL}},
     {.kind = MK_ATTR,
      .name = "tt1",
      .flags = M_CAT_ADVANCED,
      .doc = "Transparent translation register 1 — the second such range",
-     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_mmu_tt1, .set = NULL}},
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, OBJ_U32_GET(mmu_state_t, tt1), .set = NULL}},
     {.kind = MK_ATTR,
      .name = "mmusr",
      .flags = M_CAT_ADVANCED,
@@ -1500,27 +1418,6 @@ static mmu040_state_t *mmu040_from(struct object *self) {
     return (mmu040_state_t *)object_data(self);
 }
 
-// One read-only hex attribute getter per 32-bit register field.
-#define MMU040_HEX_ATTR(field)                                                                                         \
-    static value_t attr_mmu040_##field(struct object *self, const member_t *m) {                                       \
-        (void)m;                                                                                                       \
-        mmu040_state_t *mmu = mmu040_from(self);                                                                       \
-        if (!mmu)                                                                                                      \
-            return val_err("mmu not present");                                                                         \
-        value_t v = val_uint(4, mmu->field);                                                                           \
-        v.flags |= VFLAG_HEX;                                                                                          \
-        return v;                                                                                                      \
-    }
-
-MMU040_HEX_ATTR(tc)
-MMU040_HEX_ATTR(itt0)
-MMU040_HEX_ATTR(itt1)
-MMU040_HEX_ATTR(dtt0)
-MMU040_HEX_ATTR(dtt1)
-MMU040_HEX_ATTR(urp)
-MMU040_HEX_ATTR(srp)
-MMU040_HEX_ATTR(mmusr)
-
 static DEF_GETTER(attr_mmu040_enabled) {
     mmu040_state_t *mmu = mmu040_from(self);
     if (!mmu)
@@ -1533,42 +1430,42 @@ static const member_t mmu040_members[] = {
      .name = "tc",
      .flags = M_CAT_ADVANCED,
      .doc = "Translation control: enable bit and page size (4K or 8K); the 68040 has no configurable table split",
-     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_mmu040_tc, .set = NULL}},
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, OBJ_U32_GET(mmu040_state_t, tc), .set = NULL}},
     {.kind = MK_ATTR,
      .name = "itt0",
      .flags = M_CAT_ADVANCED,
      .doc = "Instruction transparent translation register 0 — an instruction-fetch range that bypasses the tables",
-     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_mmu040_itt0, .set = NULL}},
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, OBJ_U32_GET(mmu040_state_t, itt0), .set = NULL}},
     {.kind = MK_ATTR,
      .name = "itt1",
      .flags = M_CAT_ADVANCED,
      .doc = "Instruction transparent translation register 1",
-     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_mmu040_itt1, .set = NULL}},
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, OBJ_U32_GET(mmu040_state_t, itt1), .set = NULL}},
     {.kind = MK_ATTR,
      .name = "dtt0",
      .flags = M_CAT_ADVANCED,
      .doc = "Data transparent translation register 0 — a data-access range that bypasses the tables",
-     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_mmu040_dtt0, .set = NULL}},
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, OBJ_U32_GET(mmu040_state_t, dtt0), .set = NULL}},
     {.kind = MK_ATTR,
      .name = "dtt1",
      .flags = M_CAT_ADVANCED,
      .doc = "Data transparent translation register 1",
-     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_mmu040_dtt1, .set = NULL}},
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, OBJ_U32_GET(mmu040_state_t, dtt1), .set = NULL}},
     {.kind = MK_ATTR,
      .name = "urp",
      .flags = M_CAT_ADVANCED,
      .doc = "User root pointer — physical address of the root table used in user mode",
-     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_mmu040_urp, .set = NULL}},
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, OBJ_U32_GET(mmu040_state_t, urp), .set = NULL}},
     {.kind = MK_ATTR,
      .name = "srp",
      .flags = M_CAT_ADVANCED,
      .doc = "Supervisor root pointer — physical address of the root table used in supervisor mode",
-     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_mmu040_srp, .set = NULL}},
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, OBJ_U32_GET(mmu040_state_t, srp), .set = NULL}},
     {.kind = MK_ATTR,
      .name = "mmusr",
      .flags = M_CAT_ADVANCED,
      .doc = "Status of the last PTEST: physical address plus the resident, write-protected and transparent bits",
-     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_mmu040_mmusr, .set = NULL}},
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, OBJ_U32_GET(mmu040_state_t, mmusr), .set = NULL}},
     {.kind = MK_ATTR,
      .name = "enabled",
      .doc = "Nonzero when TC's enable bit is set and translation is actually in effect",

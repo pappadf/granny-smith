@@ -63,6 +63,12 @@ flags (`VFLAG_HEX`, `VFLAG_VOLATILE`, `VFLAG_SENSITIVE`, `VFLAG_PATH`, …). Err
 in-band: a `value_t` of kind `VK_ERROR` carries a string message rather
 than relying on a separate return channel or out-pointer.
 
+An attribute is read one way, `object_attr_get`: its getter, then the
+member's `presentation_flags` merged onto the value.  `node_get` and the
+REPL's object and list tables all go through it, so a getter returns a
+plain value and never sets a flag its member declares, and the REPL prints
+a `VFLAG_SENSITIVE` value as `<sensitive>`.
+
 Ownership is single-owner: the receiver of a `value_t` owns it and
 must call `value_free` (which is safe on every kind, including the
 inline ones). Heap-owning kinds (`VK_STRING`, `VK_BYTES`, `VK_ERROR`,

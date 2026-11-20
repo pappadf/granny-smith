@@ -404,6 +404,19 @@ DEF_GETTER(obj_u64_field_get) {
     return obj_u64_at(object_data(self), m);
 }
 
+value_t obj_u32_at(const void *block, const member_t *m) {
+    if (!block)
+        return val_uint(4, 0);
+    size_t offset = (size_t)(uintptr_t)m->attr.user_data;
+    uint32_t v;
+    memcpy(&v, (const uint8_t *)block + offset, sizeof(v));
+    return val_uint(4, v);
+}
+
+DEF_GETTER(obj_u32_field_get) {
+    return obj_u32_at(object_data(self), m);
+}
+
 struct object *object_parent(struct object *o) {
     return o ? o->parent : NULL;
 }
@@ -2191,29 +2204,33 @@ static void assert_return_matches(const typed_slot_t *slot, const value_t *out, 
 }
 #endif
 
+value_t object_attr_get(struct object *o, const member_t *m) {
+    if (!m || m->kind != MK_ATTR)
+        return val_err("not an attribute");
+    if (!m->attr.get)
+        return val_err("attribute '%s' has no getter", m->name);
+    value_t v = m->attr.get(o, m);
+    // Propagate display flags from the slot's presentation_flags
+    // (VFLAG_HEX/VFLAG_DEC/VFLAG_BIN/VFLAG_VOLATILE/VFLAG_SENSITIVE) onto the
+    // value so formatters see the intent without consulting the
+    // descriptor separately.
+    v.flags |= m->attr.presentation_flags;
+#ifndef NDEBUG
+    typed_slot_t slot;
+    slot_from_attr(&slot, m);
+    assert_return_matches(&slot, &v, "attr.get");
+#endif
+    return v;
+}
+
 static value_t node_get_here(node_t n) {
     if (!node_valid(n))
         return val_err("invalid node");
     if (!n.member)
         return val_obj(n.obj); // points at the object itself
     switch (n.member->kind) {
-    case MK_ATTR: {
-        if (!n.member->attr.get)
-            return val_err("attribute '%s' has no getter", n.member->name);
-        value_t v = n.member->attr.get(n.obj, n.member);
-        // Propagate display flags from the slot's presentation_flags
-        // (VFLAG_HEX/VFLAG_DEC/VFLAG_BIN/VFLAG_VOLATILE/VFLAG_SENSITIVE) onto the
-        // value so formatters see the intent without consulting the
-        // descriptor separately.
-        // and does not propagate (it controls writability, not display).
-        v.flags |= n.member->attr.presentation_flags;
-#ifndef NDEBUG
-        typed_slot_t slot;
-        slot_from_attr(&slot, n.member);
-        assert_return_matches(&slot, &v, "attr.get");
-#endif
-        return v;
-    }
+    case MK_ATTR:
+        return object_attr_get(n.obj, n.member);
     case MK_METHOD:
         return val_err("'%s' is a method; use a call form", n.member->name);
     case MK_CHILD: {

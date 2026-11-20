@@ -484,6 +484,27 @@ value_t obj_u64_field_get(struct object *self, const member_t *m);
     }
 #define OBJ_U64_FIELD(block_type, field, doc_text) OBJ_U64_FIELD_WITH(block_type, field, doc_text, obj_u64_field_get)
 
+// The same for a uint32_t field (a register file): a 4-byte VK_UINT read at
+// the member's offset, 0 when the object has no block.  OBJ_U32_GET is the
+// .attr fragment, for a member table that spells out its other fields;
+// OBJ_U32_FIELD a whole read-only member with its presentation flags.  The
+// field must be 32 bits wide (checked at compile time).
+value_t obj_u32_at(const void *block, const member_t *m);
+value_t obj_u32_field_get(struct object *self, const member_t *m);
+
+#define OBJ_U32_OFFSET(block_type, field)                                                                              \
+    (offsetof(block_type, field) + 0 * sizeof(char[sizeof(((block_type *)0)->field) == 4 ? 1 : -1]))
+#define OBJ_U32_GET(block_type, field)                                                                                 \
+    .get = obj_u32_field_get, .user_data = (const void *)(uintptr_t)OBJ_U32_OFFSET(block_type, field)
+#define OBJ_U32_FIELD(block_type, field, doc_text, pflags)                                                             \
+    {                                                                                                                  \
+        .kind = MK_ATTR, .name = #field, .doc = doc_text, .attr = {                                                    \
+            .type = VK_UINT,                                                                                           \
+            .presentation_flags = (pflags),                                                                            \
+            OBJ_U32_GET(block_type, field)                                                                             \
+        }                                                                                                              \
+    }
+
 // === Display label & ordering ================================================
 //
 // An object's `name` is its stable path segment (`machine`); its `label`
@@ -622,6 +643,13 @@ node_t object_resolve(struct object *root, const char *path);
 // otherwise hands ownership to the attribute's setter (see attr_set_fn).
 // Callers must not free `v` afterwards.
 value_t node_get(node_t n);
+
+// Read attribute `m` of `o` the one way: its getter, then the slot's
+// presentation_flags (VFLAG_HEX, VFLAG_SENSITIVE, ...) merged onto the value,
+// then (debug builds) the declared-type check.  node_get and every shell
+// listing read through it, so a getter never sets a flag its member
+// already declares.  On the calling thread (node_get marshals).
+value_t object_attr_get(struct object *o, const member_t *m);
 value_t node_set(node_t n, value_t v);
 value_t node_call(node_t n, int argc, const value_t *argv);
 
