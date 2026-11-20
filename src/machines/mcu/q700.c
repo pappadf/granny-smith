@@ -186,7 +186,7 @@ static const mcu_board_desc_t q700_board_desc = {
 static const mcu_board_t q700_board = {
     .desc = &q700_board_desc,
     .via1_output = q700_via1_output,
-    .via1_shift_out = NULL, // ADB reads SR itself (BUG-004, m68k_board.h)
+    .via1_shift_out = NULL, // ADB reads SR itself (BUG-004, glue.h)
     .via2_output = q700_via2_output,
     .build_devices = q700_build_devices,
 };

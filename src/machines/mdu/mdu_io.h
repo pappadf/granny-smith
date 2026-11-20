@@ -7,7 +7,7 @@
 // {DRQ,REG,BLIND} / ASC / SWIM / VDAC / RBV, 18-bit $40000 mirror) — the IIsi
 // dispatcher was a 0-substantive-diff prefix-rename of the IIci's.
 //
-// The decode runs on the shared board_io engine (glue_io.h): this file
+// The decode runs on the shared board_io engine (m68k_board_io.h): this file
 // just supplies the MDU window table + mirror + device set via mdu_io_bind.
 // Unlike GLUE there is no VIA2 window — the RBV ($26000) replaces it — and a
 // Bt450 VDAC ($24000) fronts the built-in RBV video card.
@@ -15,7 +15,7 @@
 #ifndef GS_MACHINES_MDU_IO_H
 #define GS_MACHINES_MDU_IO_H
 
-#include "glue_io.h" // the shared engine (board_io_t + board_io_*)
+#include "m68k_board_io.h" // the shared engine (board_io_t + board_io_*)
 #include "m68k_board_overlay.h"
 #include "memory.h"
 #include "system_internal.h"

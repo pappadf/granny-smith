@@ -6,14 +6,14 @@
 // GLUE-driven I/O map, share dual-VIA / 68030 / Universal-ROM peripherals,
 // and only diverge in a handful of decisions: slot table, machine-ID bits,
 // soft-power policy, sound-jack policy.  iix.c reuses iicx.c's internals via
-// this header; the family-shared lifecycle lives in m68k_board.c (the GLUE
+// this header; the family-shared lifecycle lives in glue.c (the GLUE
 // substrate) on the 68k board runtime (runtime/m68k_board*, board_io).
 
 #ifndef IICX_INTERNAL_H
 #define IICX_INTERNAL_H
 
 #include "common.h"
-#include "m68k_board.h"
+#include "glue.h"
 #include "memory.h"
 #include "mmu.h"
 #include "system_internal.h" // for config_t.machine_context
@@ -24,7 +24,7 @@ struct adb;
 struct asc;
 struct floppy;
 
-// IIcx/IIx state is the unified GLUE state struct (m68k_board.h).  The IIcx
+// IIcx/IIx state is the unified GLUE state struct (glue.h).  The IIcx
 // uses soft_power_armed for its PB2 soft-power detector; both machines leave
 // the SE/30 vram/vrom/video_card members NULL.
 typedef glue_state_t iicx_state_t;

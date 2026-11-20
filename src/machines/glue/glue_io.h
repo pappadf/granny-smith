@@ -2,15 +2,8 @@
 // Copyright (c) pappadf
 
 // glue_io.h
-// The 68k board-descriptor face of the I/O engine (board_io.h) plus the GLUE
-// family's tables.
-//
-// The engine walks an ordered, sentinel-terminated table of
-// `board_io_range_t` windows -- the address map expressed as DATA rather than
-// a hand-written if-ladder.  GLUE (SE/30, IIcx, IIx) and MDU+RBV (IIci, IIsi)
-// both use it, each installing its own range table + mirror mask + device set
-// into a `board_io_t` at bind time.  This makes the address map directly
-// unit-testable and kills the formerly cloned ~600-line dispatchers.
+// The GLUE family's tables for the I/O engine (board_io.h), installed through
+// the board-descriptor face (m68k_board_io.h).
 
 #ifndef GS_MACHINES_GLUE_GLUE_IO_H
 #define GS_MACHINES_GLUE_GLUE_IO_H
@@ -28,14 +21,6 @@
 #define GLUE_IO_MIRROR 0x0001FFFFUL
 
 struct m68k_board_desc;
-
-// Install a board's window table, mirror mask, unmapped-read value and
-// bus-error span (board_io_install_table plus the descriptor's window base
-// and io_berr_*), clearing every device slot.  Every 68k family bind opens
-// with this; the family then
-// fills only the slots its own chips occupy.  Pass the shared base descriptor
-// (`&desc->common` for the families that wrap it).
-void m68k_board_io_install(board_io_t *io, struct config *cfg, const struct m68k_board_desc *desc);
 
 // --- The GLUE family's tables ----------------------------------------------
 

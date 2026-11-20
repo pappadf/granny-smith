@@ -6,6 +6,7 @@ TEST_NAME    := board_io
 TEST_SRCS    := test.c
 TEST_HARNESS := none
 EXTRA_SRCS   := ../../../../src/machines/runtime/board_io.c \
+                ../../../../src/machines/runtime/m68k_board_io.c \
                 ../../../../src/machines/glue/glue_io.c \
                 ../../../../src/machines/mdu/mdu_io.c
 include ../../common.mk

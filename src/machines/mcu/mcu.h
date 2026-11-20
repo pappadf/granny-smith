@@ -23,8 +23,8 @@
 #define GS_MACHINES_MCU_H
 
 #include "checkpoint.h"
-#include "glue_io.h" // the shared I/O dispatch engine
 #include "m68k_board.h" // shared core builder + IRQ resolver + fill_page
+#include "m68k_board_io.h" // the shared I/O dispatch engine, board-descriptor face
 #include "m68k_board_overlay.h"
 #include "memory.h"
 #include "system_internal.h"

@@ -17,11 +17,11 @@
 //   * Sound-jack-detect via VIA2 PB6 (`v2SndJck`) — input only.
 //   * No buffer-select handling on VIA1 PA6 (no built-in framebuffer).
 //
-// The family-shared lifecycle + I/O dispatch live in m68k_board.c and glue_io.c
+// The family-shared lifecycle + I/O dispatch live in glue.c and glue_io.c
 // (the GLUE substrate); this file is the IIcx's per-machine deltas (board descriptor +
 // VIA/ID hooks) on top of it.  iix.c reuses these via iicx_internal.h.
 
-#include "m68k_board.h"
+#include "glue.h"
 #include "machine.h"
 #include "slot_tables.h"
 #include "system_internal.h" // full config_t
@@ -208,7 +208,7 @@ const m68k_board_desc_t iicx_iix_board_desc = {
 static const glue_board_t iicx_board = {
     .desc = &iicx_iix_board_desc,
     .via1_output = iicx_via1_output,
-    .via1_shift_out = NULL, // ADB reads SR itself (BUG-004, m68k_board.h)
+    .via1_shift_out = NULL, // ADB reads SR itself (BUG-004, glue.h)
     .via2_output = iicx_via2_output,
     .via2_shift_out = glue_via_shift_out_ignored,
     .setup_id = iicx_setup_id,

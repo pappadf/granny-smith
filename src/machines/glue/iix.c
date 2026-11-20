@@ -15,7 +15,7 @@
 //   * Otherwise identical: same VIA1 callbacks, same I/O dispatcher,
 //     same memory layout, same VBL trigger.
 
-#include "m68k_board.h"
+#include "glue.h"
 #include "machine.h"
 #include "slot_tables.h"
 #include "system_internal.h"
@@ -75,7 +75,7 @@ static void iix_setup_id(config_t *cfg) {
 static const glue_board_t iix_board = {
     .desc = &iicx_iix_board_desc, // shared with the IIcx (iicx.c)
     .via1_output = iicx_via1_output,
-    .via1_shift_out = NULL, // ADB reads SR itself (BUG-004, m68k_board.h)
+    .via1_shift_out = NULL, // ADB reads SR itself (BUG-004, glue.h)
     .via2_output = glue_via_output_ignored,
     .via2_shift_out = glue_via_shift_out_ignored,
     .setup_id = iix_setup_id,

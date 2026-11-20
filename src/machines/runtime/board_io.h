@@ -8,7 +8,7 @@
 //
 // It is family-neutral.  The 68k II families (GLUE, MDU+RBV, OSS, MCU, AV)
 // install their tables through m68k_board_io_install() and a board descriptor
-// (glue_io.h); the PowerPC I/O islands (PDM's AMIC, TNT's Grand
+// (m68k_board_io.h); the PowerPC I/O islands (PDM's AMIC, TNT's Grand
 // Central, Gossamer's Heathrow) install theirs with board_io_install_table().
 // Each register block is declared once, with its read, peek and write side
 // on the same row, so the read and write decodes cannot drift apart.
@@ -202,7 +202,7 @@ void board_io_fill_interface(memory_interface_t *iface);
 
 // Install a window table, mirror mask and unmapped-read value, clear every
 // device slot, and build the page index.  No bus-error span, window base 0,
-// timed.  The board-descriptor form (m68k_board_io_install, glue_io.h)
+// timed.  The board-descriptor form (m68k_board_io_install, m68k_board_io.h)
 // opens with this; the PowerPC islands call it directly.
 void board_io_install_table(board_io_t *io, struct config *cfg, const board_io_range_t *ranges, uint32_t mirror_mask,
                             uint8_t unmapped_read);

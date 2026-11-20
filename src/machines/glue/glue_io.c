@@ -2,15 +2,15 @@
 // Copyright (c) pappadf
 
 // glue_io.c
-// The 68k board-descriptor install for the I/O engine (board_io.c) and the
-// GLUE family's dispatch tables.  GLUE (here) and MDU+RBV (mdu_io.c) each
-// install their own table + mirror + device set.  The decode, per-window bus
-// penalties, and IRQ priority are the SE/30 / IIcx logic verbatim (those were
+// The GLUE family's dispatch tables for the I/O engine (board_io.c).  GLUE
+// (here) and MDU+RBV (mdu_io.c) each install their own table + mirror +
+// device set through the board descriptor (m68k_board_io.c).  The decode and
+// per-window bus penalties are the SE/30 / IIcx logic verbatim (those were
 // byte- and behaviour-identical); only the dispatch is table-driven.
 
 #include "glue_io.h"
 
-#include "m68k_board.h" // machine_irq_route_t + M68K_BOARD_IRQ_* + m68k_board_desc_t
+#include "m68k_board.h" // m68k_board_desc_t + m68k_board_io_install
 
 #include "asc.h"
 #include "floppy.h"
@@ -19,17 +19,6 @@
 #include "via.h"
 
 #include <stdbool.h>
-
-// The descriptor form of board_io_install_table: the table, mirror and
-// unmapped value, plus the window base and the bus-error span.
-void m68k_board_io_install(board_io_t *io, config_t *cfg, const struct m68k_board_desc *desc) {
-    board_io_install_table(io, cfg, desc->io_ranges, desc->io_mirror_mask, desc->io_unmapped_read);
-    io->window_base = desc->rom_end;
-    if (desc->io_berr_hi > desc->io_berr_lo) {
-        io->berr_lo = desc->io_berr_lo;
-        io->berr_hi = desc->io_berr_hi;
-    }
-}
 
 // ============================================================
 // GLUE family tables
@@ -76,21 +65,4 @@ void glue_io_bind(board_io_t *io, config_t *cfg, const struct m68k_board_desc *d
     board_io_bind_dev(io, BOARD_DEV_SCSI, cfg->scsi, scsi_get_memory_interface(cfg->scsi));
     board_io_bind_dev(io, BOARD_DEV_ASC, asc, asc_get_memory_interface((asc_t *)asc));
     board_io_bind_dev(io, BOARD_DEV_FLOPPY, floppy, floppy_get_memory_interface((floppy_t *)floppy));
-}
-
-// ============================================================
-// IRQ→IPL routing (the GLUE family's second dispatch table)
-// ============================================================
-
-// Ordered highest-IPL-first: NMI→7, SCC→4, VIA2→2, VIA1→1.
-static const machine_irq_route_t glue_irq_routes[] = {
-    {M68K_BOARD_IRQ_NMI,  7},
-    {M68K_BOARD_IRQ_SCC,  4},
-    {M68K_BOARD_IRQ_VIA2, 2},
-    {M68K_BOARD_IRQ_VIA1, 1},
-    {0,                   0}, // sentinel
-};
-
-const machine_irq_route_t *m68k_board_irq_routes(void) {
-    return glue_irq_routes;
 }

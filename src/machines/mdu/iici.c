@@ -335,7 +335,7 @@ static const uint32_t iici_ram_options_kb[] = {1024,  2048,  4096,  5120,  8192,
 static const mdu_board_t iici_board = {
     .desc = &iici_board_desc,
     .via1_output = iici_via1_output,
-    .via1_shift_out = NULL, // ADB reads SR itself (BUG-004, m68k_board.h)
+    .via1_shift_out = NULL, // ADB reads SR itself (BUG-004, glue.h)
     .build_devices = iici_build_devices,
 };
 

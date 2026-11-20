@@ -13,8 +13,8 @@
 // mirrors the device block every $20000 bytes, as implemented by the GLUE
 // ASIC (344S0602).
 
+#include "glue.h"
 #include "glue_io.h"
-#include "m68k_board.h"
 #include "machine.h"
 #include "slot_tables.h"
 #include "system_internal.h" // full config_t definition
@@ -89,7 +89,7 @@
 // SE/30-specific state
 // ============================================================
 
-// SE/30 state is the unified GLUE state struct (m68k_board.h).  The SE/30
+// SE/30 state is the unified GLUE state struct (glue.h).  The SE/30
 // uses the vram/vrom/video_card members for its slot-$E built-in video and
 // leaves the IIcx soft-power members unused.
 typedef glue_state_t se30_state_t;
@@ -398,7 +398,7 @@ static const m68k_board_desc_t se30_board_desc = {
 static const glue_board_t se30_board = {
     .desc = &se30_board_desc,
     .via1_output = se30_via1_output,
-    .via1_shift_out = NULL, // ADB reads SR itself (BUG-004, m68k_board.h)
+    .via1_shift_out = NULL, // ADB reads SR itself (BUG-004, glue.h)
     .via2_output = glue_via_output_ignored,
     .via2_shift_out = glue_via_shift_out_ignored,
     .setup_id = se30_setup_id,
