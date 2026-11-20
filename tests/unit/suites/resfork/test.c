@@ -622,6 +622,35 @@ TEST(test_dcmp2_greggy_bitmapped) {
     free(out);
 }
 
+TEST(test_dcmp2_greggy_bitmapped_tail) {
+    // A full all-literal run (bitmap 0x00), then a 2-word final run
+    // (bitmap 0x80: one table index, one raw word), then the odd byte:
+    // actual_size 21 = 10 words + 1.  Covers the final-run decoder.
+    uint8_t payload[] = {
+        0xA8, 0x9F, 0x65, 0x72, 0x00, 0x12, 0x09, 0x00, 0x00, 0x00, 0x00, 0x15, // actual_size = 21 bytes
+        0x00, 0x02, // dcmp_id = 2
+        0x00, 0x00, // slop
+        0x00, // byte_table_size
+        0x02, // compress_flags: bitmappedData
+        0x00, // bitmap: 8 raw words
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+        0x80, // bitmap of the last 2 words: first compressed, second raw
+        0x04, // -> static[0x04] = 0x4E75
+        0xAB, 0xCD, // raw word
+        0x7E, // the odd trailing byte
+    };
+    size_t out_len = 0;
+    uint8_t *out = dcmp_decode(payload, sizeof(payload), &out_len, NULL);
+    ASSERT_TRUE(out != NULL);
+    ASSERT_EQ_INT(21, (int)out_len);
+    uint8_t expected[21] = {
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+        0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x4E, 0x75, 0xAB, 0xCD, 0x7E,
+    };
+    ASSERT_EQ_INT(0, memcmp(out, expected, 21));
+    free(out);
+}
+
 TEST(test_dcmp_zero_pads_short_streams) {
     // actual_size = 10 but the stream emits 4 bytes before 0xFF — the
     // remaining 6 bytes must come back as zeros so callers see a buffer
@@ -799,6 +828,7 @@ int main(void) {
     RUN(test_dcmp_rejects_wrong_dcmp_id);
     RUN(test_dcmp2_greggy_static_nonbitmapped);
     RUN(test_dcmp2_greggy_bitmapped);
+    RUN(test_dcmp2_greggy_bitmapped_tail);
     RUN(test_dcmp_zero_pads_short_streams);
     RUN(test_dcmp_huge_actual_size_is_refused);
     RUN(test_dcmp_size_bound_is_exact);
