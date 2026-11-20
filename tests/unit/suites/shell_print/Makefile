@@ -14,5 +14,6 @@ EXTRA_SRCS   := ../../../../src/core/shell/shell.c \
                 ../../../../src/core/object/value.c \
                 ../../../../src/core/object/meta.c \
                 ../../../../src/core/object/parse.c \
-                ../../../../src/core/object/value_format.c
+                ../../../../src/core/object/value_format.c \
+                ../../../../src/core/vbuf.c
 include ../../common.mk
