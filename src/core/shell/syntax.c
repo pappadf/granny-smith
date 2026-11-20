@@ -11,14 +11,6 @@
 
 // === Characters ===============================================================
 
-static bool ident_start(char c) {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
-}
-
-static bool ident_char(char c) {
-    return ident_start(c) || (c >= '0' && c <= '9');
-}
-
 static bool blank(char c) {
     return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f';
 }
@@ -32,7 +24,7 @@ static const char *skip_ws(const char *p, const char *end) {
 
 // The end of the identifier at p.
 static const char *ident_end(const char *p, const char *end) {
-    while (p < end && ident_char(*p))
+    while (p < end && script_ident_char(*p))
         p++;
     return p;
 }
@@ -43,7 +35,7 @@ static const char *kw_at(const char *p, const char *end, const char *kw) {
     size_t n = strlen(kw);
     if ((size_t)(end - p) < n || strncmp(p, kw, n) != 0)
         return NULL;
-    if (p + n < end && ident_char(p[n]))
+    if (p + n < end && script_ident_char(p[n]))
         return NULL;
     return p + n;
 }
@@ -53,39 +45,12 @@ static bool single_eq(const char *p, const char *end) {
     return p < end && *p == '=' && !(p + 1 < end && p[1] == '=');
 }
 
-// Quote state for the bracket and comment scans: the parser's rule, where a
-// backslash escapes the next byte inside and outside quotes.
-typedef struct {
-    char quote; // 0, '"' or '\''
-    bool esc;
-} quote_state_t;
-
-// Advance the quote state over c.
-static void quote_step(quote_state_t *q, char c) {
-    if (q->esc) {
-        q->esc = false;
-        return;
-    }
-    if (c == '\\') {
-        q->esc = true;
-        return;
-    }
-    if (q->quote) {
-        if (c == q->quote)
-            q->quote = 0;
-        return;
-    }
-    if (c == '"' || c == '\'')
-        q->quote = c;
-}
-
-// The first unquoted `c` in [p, end), or NULL.
-static const char *find_unquoted(const char *p, const char *end, char c) {
-    quote_state_t q = {0};
+const char *script_find_unquoted(const char *p, const char *end, char c) {
+    script_quote_t q = {0};
     for (; p < end; p++) {
         if (!q.quote && !q.esc && *p == c)
             return p;
-        quote_step(&q, *p);
+        script_quote_step(&q, *p);
     }
     return NULL;
 }
@@ -93,7 +58,7 @@ static const char *find_unquoted(const char *p, const char *end, char c) {
 // === Lexers ===================================================================
 
 const char *script_bracket_close(const char *open, const char *end) {
-    quote_state_t q = {0};
+    script_quote_t q = {0};
     int depth = 0;
     for (const char *r = open; r < end; r++) {
         if (!q.quote && !q.esc) {
@@ -102,7 +67,7 @@ const char *script_bracket_close(const char *open, const char *end) {
             else if (*r == ']' && --depth == 0)
                 return r;
         }
-        quote_step(&q, *r);
+        script_quote_step(&q, *r);
     }
     return NULL;
 }
@@ -111,12 +76,12 @@ const char *script_path_end(const char *p, const char *end) {
     const char *q = p;
     if (q < end && *q == '$')
         q++;
-    if (q >= end || !ident_start(*q))
+    if (q >= end || !script_ident_start(*q))
         return p;
     q = ident_end(q, end);
     for (;;) {
         // `.seg` (a digit is a segment too: `drives.0`).
-        if (q + 1 < end && q[0] == '.' && ident_char(q[1])) {
+        if (q + 1 < end && q[0] == '.' && script_ident_char(q[1])) {
             q = ident_end(q + 1, end);
             continue;
         }
@@ -140,7 +105,7 @@ const char *script_arg_end(const char *p, const char *end, bool *open) {
     if (open)
         *open = false;
     // `name=` prefix.
-    if (p < end && ident_start(*p)) {
+    if (p < end && script_ident_start(*p)) {
         const char *e = ident_end(p, end);
         if (single_eq(e, end))
             p = e + 1;
@@ -176,7 +141,7 @@ const char *script_arg_end(const char *p, const char *end, bool *open) {
     }
     if (c == '(') {
         // A parenthesised expression: to the matching `)`, quote-aware.
-        quote_state_t q = {0};
+        script_quote_t q = {0};
         int depth = 0;
         for (const char *r = p; r < end; r++) {
             if (!q.quote && !q.esc) {
@@ -185,7 +150,7 @@ const char *script_arg_end(const char *p, const char *end, bool *open) {
                 else if (*r == ')' && --depth == 0)
                     return r + 1;
             }
-            quote_step(&q, *r);
+            script_quote_step(&q, *r);
         }
         if (open)
             *open = true;
@@ -211,7 +176,7 @@ const char *script_arg_end(const char *p, const char *end, bool *open) {
 }
 
 const char *script_comment_start(const char *line, const char *end) {
-    return find_unquoted(line, end, '#');
+    return script_find_unquoted(line, end, '#');
 }
 
 // === Classifier ===============================================================
@@ -235,7 +200,7 @@ static void invalid(script_stmt_t *out, const char *msg) {
 // shape holds.  True when it does.
 static bool decl_shape(script_stmt_t *out, const char *after, const char *end) {
     const char *q = skip_ws(after, end);
-    if (q >= end || !ident_start(*q))
+    if (q >= end || !script_ident_start(*q))
         return false;
     out->name = q;
     out->name_end = ident_end(q, end);
@@ -301,7 +266,7 @@ void script_classify(const char *text, const char *end, script_stmt_t *out) {
             keyword_stmt(out, blocks[i].kind, p, after, end);
             // `for NAME` and `def NAME`: the name being bound.
             if ((blocks[i].kind == SCRIPT_STMT_FOR || blocks[i].kind == SCRIPT_STMT_DEF) && out->rest < end &&
-                ident_start(*out->rest)) {
+                script_ident_start(*out->rest)) {
                 out->name = out->rest;
                 out->name_end = ident_end(out->rest, end);
             }
@@ -313,7 +278,7 @@ void script_classify(const char *text, const char *end, script_stmt_t *out) {
     if ((after = kw_at(p, end, "let"))) {
         keyword_stmt(out, SCRIPT_STMT_LET, p, after, end);
         const char *q = out->rest;
-        if (q >= end || !ident_start(*q))
+        if (q >= end || !script_ident_start(*q))
             invalid(out, "let: expected a name");
         else if (!decl_shape(out, after, end))
             invalid(out, "let: expected '=' after name");
@@ -356,7 +321,7 @@ void script_classify(const char *text, const char *end, script_stmt_t *out) {
     }
 
     // A path or binding head: assignment, call form, bare path or command.
-    if ((*p == '$' && p + 1 < end && ident_start(p[1])) || ident_start(*p)) {
+    if ((*p == '$' && p + 1 < end && script_ident_start(p[1])) || script_ident_start(*p)) {
         const char *q = script_path_end(p, end);
         out->head = p;
         if (!q) {
@@ -413,7 +378,7 @@ void script_line_split(const char *line, const char *end, script_line_t *out) {
     script_classify(e, e, &out->body);
     if (!block_kind(out->stmt.kind))
         return;
-    const char *brace = find_unquoted(p, e, '{');
+    const char *brace = script_find_unquoted(p, e, '{');
     if (!brace)
         return;
     // The header ends at the brace.
