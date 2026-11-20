@@ -10,6 +10,7 @@
 #include "cpu.h"
 #include "gs_assert.h"
 #include "log.h"
+#include "memory_iface_sized.h"
 #include "object.h"
 #include "object_order.h"
 #include "platform.h"
@@ -1226,20 +1227,10 @@ static uint8_t peek_uint8(void *s, uint32_t addr) {
     return reg_read(s, addr, true);
 }
 
-// SCC registers are byte-only; wide reads come from misaligned guest code
-// (a buggy driver, a debugger probe, etc.). Log and return floating-bus 0xFF*
-// rather than aborting.
-static uint16_t scc_read_uint16(void *scc, uint32_t addr) {
-    (void)scc;
-    LOG(1, "scc: word read at 0x%08X — SCC is byte-only, returning 0xFFFF", addr);
-    return 0xFFFF;
-}
-
-static uint32_t scc_read_uint32(void *scc, uint32_t addr) {
-    (void)scc;
-    LOG(1, "scc: long read at 0x%08X — SCC is byte-only, returning 0xFFFFFFFF", addr);
-    return 0xFFFFFFFFu;
-}
+// SCC registers are byte-only; wide accesses come from misaligned guest code
+// (a buggy driver, a debugger probe, etc.): open bus, logged, rather than
+// aborting -- and a peek reads it silently.
+MEMORY_IFACE_OPEN_BUS_WIDE(scc_wide, "SCC")
 
 // write access from cpu bus
 static void scc_write_uint8(void *s, uint32_t addr, uint8_t value) {
@@ -1400,17 +1391,6 @@ static void scc_write_uint8(void *s, uint32_t addr, uint8_t value) {
         }
     } break;
     }
-}
-
-// Wide writes — same rationale as the wide-read helpers: log and drop.
-static void scc_write_uint16(void *scc, uint32_t addr, uint16_t value) {
-    (void)scc;
-    LOG(1, "scc: word write at 0x%08X = 0x%04X — SCC is byte-only, ignored", addr, value);
-}
-
-static void scc_write_uint32(void *scc, uint32_t addr, uint32_t value) {
-    (void)scc;
-    LOG(1, "scc: long write at 0x%08X = 0x%08X — SCC is byte-only, ignored", addr, value);
 }
 
 // True once the guest has put channel B into SDLC mode, i.e. once its
@@ -1798,13 +1778,8 @@ CHECKPOINT_PREFIX(scc_channel_t, scc);
 static const memory_interface_t scc_iface = {
     .read_uint8 = read_uint8,
     .peek_uint8 = peek_uint8,
-    .read_uint16 = scc_read_uint16,
-    .read_uint32 = scc_read_uint32,
-    .peek_uint16 = scc_read_uint16, // floating bus: no side effect
-    .peek_uint32 = scc_read_uint32,
     .write_uint8 = scc_write_uint8,
-    .write_uint16 = scc_write_uint16,
-    .write_uint32 = scc_write_uint32,
+    MEMORY_IFACE_OPEN_BUS_WIDE_FIELDS(scc_wide),
 };
 
 scc_t *scc_init(memory_map_t *map, struct scheduler *scheduler, scc_irq_fn irq_cb, void *cb_context,

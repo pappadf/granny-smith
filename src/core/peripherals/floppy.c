@@ -9,6 +9,7 @@
 #include "floppy.h"
 #include "floppy_internal.h"
 #include "log.h"
+#include "memory_iface_sized.h"
 #include "event/event.h"
 
 static void floppy_notify_present(int drive, bool present);
@@ -976,29 +977,7 @@ static uint8_t iwm_peek_uint8(void *floppy, uint32_t addr) {
 // than aborting, so any guest executing `move.w $D80000,d0`, buggy or hostile,
 // halted the emulator and surfaced in CI as an unexplained hang.  Log it and
 // return open bus, as grand_central.c does.
-static uint16_t iwm_read_uint16(void *floppy, uint32_t addr) {
-    (void)floppy;
-    LOG(1, "IWM: 16-bit access at 0x%08X is not decoded; reading open bus", addr);
-    return 0xFFFF;
-}
-
-static uint32_t iwm_read_uint32(void *floppy, uint32_t addr) {
-    (void)floppy;
-    LOG(1, "IWM: 32-bit access at 0x%08X is not decoded; reading open bus", addr);
-    return 0xFFFFFFFFu;
-}
-
-// The wide reads' open bus, without their log lines.
-static uint16_t iwm_peek_uint16(void *floppy, uint32_t addr) {
-    (void)floppy;
-    (void)addr;
-    return 0xFFFF;
-}
-static uint32_t iwm_peek_uint32(void *floppy, uint32_t addr) {
-    (void)floppy;
-    (void)addr;
-    return 0xFFFFFFFFu;
-}
+MEMORY_IFACE_OPEN_BUS_WIDE(iwm_wide, "IWM")
 
 // Memory interface handler for 8-bit writes to IWM address space
 static void iwm_write_uint8(void *floppy, uint32_t addr, uint8_t value) {
@@ -1011,29 +990,12 @@ static void iwm_write_uint8(void *floppy, uint32_t addr, uint8_t value) {
     floppy_iwm_write(s, (addr >> 9) & 0x0F, value);
 }
 
-static void iwm_write_uint16(void *floppy, uint32_t addr, uint16_t value) {
-    (void)floppy;
-    (void)value;
-    LOG(1, "IWM: 16-bit write at 0x%08X is not decoded; dropped", addr);
-}
-
-static void iwm_write_uint32(void *floppy, uint32_t addr, uint32_t value) {
-    (void)floppy;
-    (void)value;
-    LOG(1, "IWM: 32-bit write at 0x%08X is not decoded; dropped", addr);
-}
-
 // The IWM's register window; every controller shares it
 static const memory_interface_t iwm_iface = {
     .read_uint8 = iwm_read_uint8,
-    .read_uint16 = iwm_read_uint16,
-    .read_uint32 = iwm_read_uint32,
     .peek_uint8 = iwm_peek_uint8,
-    .peek_uint16 = iwm_peek_uint16,
-    .peek_uint32 = iwm_peek_uint32,
     .write_uint8 = iwm_write_uint8,
-    .write_uint16 = iwm_write_uint16,
-    .write_uint32 = iwm_write_uint32,
+    MEMORY_IFACE_OPEN_BUS_WIDE_FIELDS(iwm_wide),
 };
 
 // Sets up the IWM memory interface callbacks on the floppy controller

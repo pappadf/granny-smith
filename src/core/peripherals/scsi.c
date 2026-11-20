@@ -19,6 +19,7 @@
 #include "io_leaf.h"
 #include "log.h"
 #include "medium_export.h"
+#include "memory_iface_sized.h"
 #include "object.h"
 #include "object_order.h"
 #include "platform.h"
@@ -974,33 +975,9 @@ static uint8_t peek_uint8(void *s, uint32_t addr) {
     return reg_read(s, addr, true);
 }
 
-// Read a 16-bit word from SCSI controller. The NCR 5380 is byte-only; wide
-// reads come from buggy drivers or debugger probes. Log and return a safe
-// floating-bus value rather than aborting.
-static uint16_t read_uint16(void *scsi, uint32_t addr) {
-    (void)scsi;
-    LOG(1, "scsi: word read at 0x%08X — NCR 5380 is byte-only, returning 0xFFFF", addr);
-    return 0xFFFF;
-}
-
-// Read a 32-bit longword from SCSI controller — same byte-only rationale.
-static uint32_t read_uint32(void *scsi, uint32_t addr) {
-    (void)scsi;
-    LOG(1, "scsi: long read at 0x%08X — NCR 5380 is byte-only, returning 0xFFFFFFFF", addr);
-    return 0xFFFFFFFFu;
-}
-
-// The wide reads' floating-bus values, without their log lines.
-static uint16_t peek_uint16(void *scsi, uint32_t addr) {
-    (void)scsi;
-    (void)addr;
-    return 0xFFFF;
-}
-static uint32_t peek_uint32(void *scsi, uint32_t addr) {
-    (void)scsi;
-    (void)addr;
-    return 0xFFFFFFFFu;
-}
+// The NCR 5380 is byte-only; wide accesses come from buggy drivers or
+// debugger probes: open bus, logged, rather than aborting.
+MEMORY_IFACE_OPEN_BUS_WIDE(scsi_wide, "NCR 5380")
 
 // ============================================================================
 // scsi_odr_auto_handshake_byte() — shared body for "byte arrives at ODR
@@ -1234,17 +1211,6 @@ static void write_uint8(void *s, uint32_t addr, uint8_t value) {
     }
 }
 
-// Wide writes — same byte-only rationale as the wide-read helpers.
-static void write_uint16(void *scsi, uint32_t addr, uint16_t value) {
-    (void)scsi;
-    LOG(1, "scsi: word write at 0x%08X = 0x%04X — NCR 5380 is byte-only, ignored", addr, value);
-}
-
-static void write_uint32(void *scsi, uint32_t addr, uint32_t value) {
-    (void)scsi;
-    LOG(1, "scsi: long write at 0x%08X = 0x%08X — NCR 5380 is byte-only, ignored", addr, value);
-}
-
 // ============================================================================
 // Lifecycle: Constructor
 // ============================================================================
@@ -1275,14 +1241,9 @@ scsi_5380_t *scsi_5380_attach(scsi_t *bus, checkpoint_t *checkpoint) {
     bus->chip5380 = chip;
 
     chip->memory_interface.read_uint8 = &read_uint8;
-    chip->memory_interface.read_uint16 = &read_uint16;
-    chip->memory_interface.read_uint32 = &read_uint32;
     chip->memory_interface.peek_uint8 = &peek_uint8;
-    chip->memory_interface.peek_uint16 = &peek_uint16;
-    chip->memory_interface.peek_uint32 = &peek_uint32;
     chip->memory_interface.write_uint8 = &write_uint8;
-    chip->memory_interface.write_uint16 = &write_uint16;
-    chip->memory_interface.write_uint32 = &write_uint32;
+    MEMORY_IFACE_SET_OPEN_BUS_WIDE(&chip->memory_interface, scsi_wide);
 
     // The DRQ service is this chip's event, so its type is registered as the
     // chip is attached -- before the event queue is restored, which may hold

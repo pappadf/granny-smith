@@ -11,6 +11,7 @@
 #include "gs_assert.h"
 #include "log.h"
 #include "memory.h"
+#include "memory_iface_sized.h"
 #include "system.h"
 
 #include <assert.h>
@@ -1131,45 +1132,11 @@ static uint8_t swim_peek_uint8(void *ctx, uint32_t addr) {
 // than aborting, so any guest executing `move.w $D80000,d0`, buggy or hostile,
 // halted the emulator and surfaced in CI as an unexplained hang.  Log it and
 // return open bus, as grand_central.c does.
-static uint16_t swim_read_uint16(void *ctx, uint32_t addr) {
-    (void)ctx;
-    LOG(1, "SWIM: 16-bit access at 0x%08X is not decoded; reading open bus", addr);
-    return 0xFFFF;
-}
-
-static uint32_t swim_read_uint32(void *ctx, uint32_t addr) {
-    (void)ctx;
-    LOG(1, "SWIM: 32-bit access at 0x%08X is not decoded; reading open bus", addr);
-    return 0xFFFFFFFFu;
-}
-
-// The wide reads' open bus, without their log lines.
-static uint16_t swim_peek_uint16(void *ctx, uint32_t addr) {
-    (void)ctx;
-    (void)addr;
-    return 0xFFFF;
-}
-static uint32_t swim_peek_uint32(void *ctx, uint32_t addr) {
-    (void)ctx;
-    (void)addr;
-    return 0xFFFFFFFFu;
-}
+MEMORY_IFACE_OPEN_BUS_WIDE(swim_wide, "SWIM")
 
 // Memory interface handler for 8-bit writes
 static void swim_write_uint8(void *ctx, uint32_t addr, uint8_t value) {
     floppy_swim_write((floppy_t *)ctx, addr, value);
-}
-
-static void swim_write_uint16(void *ctx, uint32_t addr, uint16_t value) {
-    (void)ctx;
-    (void)value;
-    LOG(1, "SWIM: 16-bit write at 0x%08X is not decoded; dropped", addr);
-}
-
-static void swim_write_uint32(void *ctx, uint32_t addr, uint32_t value) {
-    (void)ctx;
-    (void)value;
-    LOG(1, "SWIM: 32-bit write at 0x%08X is not decoded; dropped", addr);
 }
 
 // ============================================================================
@@ -1193,14 +1160,9 @@ void floppy_swim_motor_spinup_callback(void *source, uint64_t data) {
 // The SWIM's register window; every controller shares it
 static const memory_interface_t swim_iface = {
     .read_uint8 = swim_read_uint8,
-    .read_uint16 = swim_read_uint16,
-    .read_uint32 = swim_read_uint32,
     .peek_uint8 = swim_peek_uint8,
-    .peek_uint16 = swim_peek_uint16,
-    .peek_uint32 = swim_peek_uint32,
     .write_uint8 = swim_write_uint8,
-    .write_uint16 = swim_write_uint16,
-    .write_uint32 = swim_write_uint32,
+    MEMORY_IFACE_OPEN_BUS_WIDE_FIELDS(swim_wide),
 };
 
 // Sets up SWIM memory interface callbacks and ISM initial state.
