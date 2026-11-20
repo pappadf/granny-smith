@@ -39,11 +39,7 @@ static const class_desc_t floppy_controller_class;
 #include <string.h>
 
 #include "image.h"
-
-// The I/O-job export (io_leaf.h).  Weak: a unit suite of the controller
-// alone links no I/O leaves and exports here and now.
-value_t io_leaf_export_image(struct image *img, const char *dest, const char *codec, const char *what)
-    __attribute__((weak));
+#include "medium_export.h"
 
 LOG_USE_CATEGORY_NAME("floppy");
 
@@ -1665,11 +1661,7 @@ static DEF_METHOD(floppy_disk_method_export) {
     if (!img)
         return val_err("disk.export: no disk inserted");
     const char *codec = argc > 1 && argv[1].kind == VK_STRING ? argv[1].s : NULL;
-    if (io_leaf_export_image)
-        return io_leaf_export_image(img, argv[0].s, codec, "disk.export");
-    if (image_export_to_codec(img, argv[0].s, codec) != 0)
-        return val_err("disk.export: failed to write '%s' (refuses to overwrite an existing file)", argv[0].s);
-    return val_bool(true);
+    return medium_export_image(img, argv[0].s, codec, "disk.export");
 }
 
 static const arg_decl_t floppy_disk_export_args[] = {

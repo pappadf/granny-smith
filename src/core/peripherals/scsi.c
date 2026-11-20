@@ -12,15 +12,13 @@
 #include "image_part.h"
 #include "out.h"
 
-#include "io_leaf.h"
-
-value_t io_leaf_export_image(struct image *img, const char *dest, const char *codec, const char *what)
-    __attribute__((weak));
 #include "checkpoint.h"
 #include "drive_catalog.h"
 #include "gs_assert.h"
 #include "image.h"
+#include "io_leaf.h"
 #include "log.h"
+#include "medium_export.h"
 #include "object.h"
 #include "object_order.h"
 #include "platform.h"
@@ -1984,15 +1982,7 @@ static DEF_METHOD(scsi_image_method_export) {
     if (!img)
         return val_err("image.export: no medium present in this device");
     const char *codec = argc > 1 && argv[1].kind == VK_STRING ? argv[1].s : NULL;
-    // An I/O job: the disk is snapshotted and write-locked here, streamed
-    // to the file on the I/O worker, and the answer comes when it is done.
-    // (Weak: a unit suite of the controller alone links no I/O leaves and
-    // exports here and now.)
-    if (io_leaf_export_image)
-        return io_leaf_export_image(img, argv[0].s, codec, "image.export");
-    if (image_export_to_codec(img, argv[0].s, codec) != 0)
-        return val_err("image.export: failed to write '%s' (refuses to overwrite an existing file)", argv[0].s);
-    return val_bool(true);
+    return medium_export_image(img, argv[0].s, codec, "image.export"); // an I/O job (medium_export.h)
 }
 
 // `eject()` — proxy to the owning device's eject.
