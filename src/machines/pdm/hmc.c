@@ -32,6 +32,7 @@
 #include "log.h"
 #include "page_fill.h"
 #include "ppc.h"
+#include "regfile.h"
 
 #include <string.h>
 
@@ -336,7 +337,7 @@ uint8_t pdm_id_read8(void *ctx, uint32_t offset) {
     config_t *cfg = (config_t *)ctx;
     if (offset >= 0xFFCu) {
         uint32_t id = 0xA55A0000u | pdm_board(cfg)->machine_id;
-        return (uint8_t)(id >> (8 * (3 - (offset & 3))));
+        return be_lane8(id, offset);
     }
     return 0;
 }

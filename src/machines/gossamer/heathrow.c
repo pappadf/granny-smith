@@ -367,7 +367,7 @@ static uint8_t hr_access8(void *ctx, uint32_t off, bool peek) {
         int b = (off < HR_INTS1) ? 1 : 0;
         uint32_t base = b ? HR_INTS2 : HR_INTS1;
         if (off >= HR_INTS2)
-            return (uint8_t)(int_read(cfg, b, (off - base) & 0xCu) >> (8 * (off & 3u)));
+            return le_lane8(int_read(cfg, b, (off - base) & 0xCu), off);
         return 0;
     }
     if (off < 0x40u)
@@ -399,11 +399,11 @@ static uint8_t hr_access8(void *ctx, uint32_t off, bool peek) {
     if (off >= HR_DBDMA && off < HR_DBDMA_END) {
         int chan = (int)((off - HR_DBDMA) >> 8);
         uint32_t v = dbdma_reg_read(st->dbdma, chan, off & 0xFCu);
-        return (uint8_t)(v >> (8 * (off & 3u))); // byte k of the LE register
+        return le_lane8(v, off); // byte k of the LE register
     }
     if ((off & 0xFF000u) == HR_DAVBUS) {
         uint32_t v = davbus_read32(&st->screamer_host, (off - HR_DAVBUS) & ~3u);
-        return (uint8_t)(v >> (8 * (off & 3u)));
+        return le_lane8(v, off);
     }
     if (!peek)
         LOG(1, "byte read of unwired Heathrow offset +$%05X", off);

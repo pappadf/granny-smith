@@ -38,6 +38,7 @@
 #include "of_nvram.h"
 #include "pci.h"
 #include "ppc.h"
+#include "regfile.h"
 #include "scc.h"
 #include "scsi_53c96.h"
 #include "via.h"
@@ -752,7 +753,7 @@ static uint8_t gc_access8(config_t *cfg, uint32_t offset, bool peek) {
         // Manager reads channel 0's device status bits (s0-s7) this way
         int chan = (int)((offset - OFF_DBDMA) >> 8);
         uint32_t reg = dbdma_reg_read(tnt_st(cfg)->dbdma, chan, offset & 0xFCu);
-        return (uint8_t)(reg >> (8 * (offset & 3u)));
+        return le_lane8(reg, offset);
     }
     switch (block) {
     case OFF_VIA:
@@ -773,7 +774,7 @@ static uint8_t gc_access8(config_t *cfg, uint32_t offset, bool peek) {
         // Byte j of the little-endian register (the ROM reads it both as
         // lwbrx and byte-wise).  On the Network Servers this is Board
         // Register 1 and the ROM reads bytes +0 and +1 only.
-        uint8_t b = (uint8_t)(tnt_gc_boxid(cfg) >> (8 * (offset & 3u)));
+        uint8_t b = le_lane8(tnt_gc_boxid(cfg), offset);
         LOG(3, "BoxID byte read +%u -> $%02X", offset & 3u, b);
         return b;
     }

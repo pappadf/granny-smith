@@ -333,7 +333,7 @@ static void addr_write32(void *ctx, uint32_t offset, uint32_t value) {
 // The straight view of the port (see the address port for the pattern).
 static uint8_t data_raw_read8(tnt_bandit_t *b, uint32_t offset) {
     uint32_t v = config_read(b);
-    uint8_t byte = (uint8_t)(v >> (8 * (offset & 3u)));
+    uint8_t byte = le_lane8(v, offset);
     LOG(3, "$%08X config data[%u] -> $%02X (addr $%08X)", b->base, offset & 7u, byte, b->cfg_addr);
     return byte;
 }

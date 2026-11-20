@@ -31,6 +31,7 @@
 #include "nubus.h"
 #include "oss.h"
 #include "pram_defaults.h"
+#include "regfile.h"
 #include "rom.h"
 #include "rtc.h"
 #include "scc.h"
@@ -443,17 +444,6 @@ static void iifx_overlay_map_ram(config_t *cfg) {
         page_fill_68k(p, ram_base + ((p % ram_pages) << MEM_PAGE_SHIFT), true);
 }
 
-// Reads one byte from a big-endian 32-bit SCSI DMA register.
-static uint8_t iifx_read_reg32_byte(uint32_t value, uint32_t addr) {
-    return (uint8_t)(value >> ((3u - (addr & 3u)) * 8u));
-}
-
-// Writes one byte into a big-endian 32-bit SCSI DMA register.
-static void iifx_write_reg32_byte(uint32_t *reg, uint32_t addr, uint8_t value) {
-    uint32_t shift = (3u - (addr & 3u)) * 8u;
-    *reg = (*reg & ~(0xffu << shift)) | ((uint32_t)value << shift);
-}
-
 // ============================================================================
 // IIfx SCSI DMA controller — Apple 343S0064-A spec-compliant model
 // ============================================================================
@@ -715,15 +705,15 @@ static uint8_t iifx_scsidma_read_uint8(config_t *cfg, uint32_t offset, bool peek
     }
     if (off >= SCSIDMA_DCTRL && off < SCSIDMA_DCTRL + 4) {
         uint32_t v = iifx_scsidma_read_ctrl_status(st, cfg->scsi);
-        return iifx_read_reg32_byte(v, off);
+        return be_lane8(v, off);
     }
     if (off >= SCSIDMA_DCNT && off < SCSIDMA_DCNT + 4)
-        return iifx_read_reg32_byte(st->scsi_dma_count, off);
+        return be_lane8(st->scsi_dma_count, off);
     if (off >= SCSIDMA_DADDR && off < SCSIDMA_DADDR + 4)
-        return iifx_read_reg32_byte(st->scsi_dma_addr, off);
+        return be_lane8(st->scsi_dma_addr, off);
     if (off >= SCSIDMA_DTIME && off < SCSIDMA_DTIME + 4) {
         // Reading $140 clears the watchdog IRQ latch (spec §19.3).
-        uint8_t v = iifx_read_reg32_byte(st->scsi_dma_watchdog_reload, off);
+        uint8_t v = be_lane8(st->scsi_dma_watchdog_reload, off);
         if ((off & 3) == 3 && st->scsi_dma_watchdog_irq_latch && !peek) {
             st->scsi_dma_watchdog_irq_latch = false;
             iifx_scsidma_update_int(cfg);
@@ -731,7 +721,7 @@ static uint8_t iifx_scsidma_read_uint8(config_t *cfg, uint32_t offset, bool peek
         return v;
     }
     if (off >= SCSIDMA_FIFO && off < SCSIDMA_FIFO + 4)
-        return iifx_read_reg32_byte(st->scsi_dma_fifo_word, off);
+        return be_lane8(st->scsi_dma_fifo_word, off);
     return 0;
 }
 
@@ -757,15 +747,15 @@ static void iifx_scsidma_write_uint8(config_t *cfg, uint32_t offset, uint8_t val
                 st->scsi_dma_ctrl, st->scsi_dma_addr);
         } else if ((off & 0xff0) == SCSIDMA_DCTRL && (off & 3) == 3) {
             uint32_t composed = st->scsi_dma_ctrl;
-            iifx_write_reg32_byte(&composed, off, value);
+            be_lane8_set(&composed, off, value);
             LOG(9, "REG W i=%llu $080 = $%08x  pc=$%08x", ic, composed, cpu_get_pc(cfg->cpu));
         } else if ((off & 0xff0) == SCSIDMA_DCNT && (off & 3) == 3) {
             uint32_t composed = st->scsi_dma_count;
-            iifx_write_reg32_byte(&composed, off, value);
+            be_lane8_set(&composed, off, value);
             LOG(9, "REG W i=%llu $0c0 = $%08x  pc=$%08x", ic, composed, cpu_get_pc(cfg->cpu));
         } else if ((off & 0xff0) == SCSIDMA_DADDR && (off & 3) == 3) {
             uint32_t composed = st->scsi_dma_addr_latch;
-            iifx_write_reg32_byte(&composed, off, value);
+            be_lane8_set(&composed, off, value);
             LOG(9, "REG W i=%llu $100 = $%08x  pc=$%08x", ic, composed, cpu_get_pc(cfg->cpu));
         }
     }
@@ -825,14 +815,14 @@ static void iifx_scsidma_write_uint8(config_t *cfg, uint32_t offset, uint8_t val
         // is an artifact of our I/O dispatch, so we treat the cumulative
         // byte writes as overlays on the stored value.
         uint32_t composed = st->scsi_dma_ctrl;
-        iifx_write_reg32_byte(&composed, off, value);
+        be_lane8_set(&composed, off, value);
         iifx_scsidma_write_ctrl(cfg, composed);
         return;
     }
     if (off >= SCSIDMA_DCNT && off < SCSIDMA_DCNT + 4) {
         // sDCNT — direct-access counter (ERS §6.6.3): CPU writes
         // load the counter, per-byte transfer decrements it.
-        iifx_write_reg32_byte(&st->scsi_dma_count, off, value);
+        be_lane8_set(&st->scsi_dma_count, off, value);
         if ((off & 3) == 3) {
             scsidma_fifo_clear(st);
             if (st->scsi_dma_count != 0 && (st->scsi_dma_ctrl & SCSIDMA_DMAEN))
@@ -848,14 +838,14 @@ static void iifx_scsidma_write_uint8(config_t *cfg, uint32_t offset, uint8_t val
         // byte during the transfer.  Reads of $100 return the live counter
         // (scsi_dma_addr).  The driver writes a fresh address per scatter-
         // gather segment, so each segment loads its own destination.
-        iifx_write_reg32_byte(&st->scsi_dma_addr_latch, off, value);
+        be_lane8_set(&st->scsi_dma_addr_latch, off, value);
         if ((off & 3) == 3)
             scsidma_fifo_clear(st);
         iifx_scsidma_pump(cfg);
         return;
     }
     if (off >= SCSIDMA_DTIME && off < SCSIDMA_DTIME + 4) {
-        iifx_write_reg32_byte(&st->scsi_dma_watchdog_reload, off, value);
+        be_lane8_set(&st->scsi_dma_watchdog_reload, off, value);
         // Writing $140 loads the watchdog counter and clears its IRQ
         // latch (spec §19.3). We don't actively tick the counter
         // (DMA bytes complete synchronously here, so the watchdog
@@ -871,7 +861,7 @@ static void iifx_scsidma_write_uint8(config_t *cfg, uint32_t offset, uint8_t val
         // $180 writes are ignored unless FIFO loopback test mode is
         // active (spec §5.4 / §7.3).
         if (st->scsi_dma_fifo_loopback_test)
-            iifx_write_reg32_byte(&st->scsi_dma_fifo_word, off, value);
+            be_lane8_set(&st->scsi_dma_fifo_word, off, value);
         return;
     }
 }
@@ -1125,12 +1115,12 @@ static void iifx_io_bind(mac030_io_t *io, config_t *cfg, iifx_state_t *st, const
 // special case and use the engine directly (see the substrate registration).
 static uint8_t iifx_io_read_uint8(void *ctx, uint32_t addr) {
     if (addr >= 0x0ffffffc) // machine-ID register at the top of the I/O space
-        return iifx_read_reg32_byte(0xa55a000d, addr);
+        return be_lane8(0xa55a000d, addr);
     return mac030_io_read_uint8(ctx, addr);
 }
 static uint8_t iifx_io_peek_uint8(void *ctx, uint32_t addr) {
     if (addr >= 0x0ffffffc)
-        return iifx_read_reg32_byte(0xa55a000d, addr);
+        return be_lane8(0xa55a000d, addr);
     return mac030_io_peek_uint8(ctx, addr); // wider peeks compose
 }
 static uint16_t iifx_io_read_uint16(void *ctx, uint32_t addr) {

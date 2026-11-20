@@ -27,6 +27,7 @@
 #include "display_class.h"
 #include "display_ramdac.h"
 #include "log.h"
+#include "regfile.h"
 #include "scheduler.h"
 #include "system.h"
 #include "system_internal.h" // full config_t, for cfg->build_opts
@@ -586,7 +587,7 @@ static uint32_t dafb_read32(void *ctx, uint32_t offset) {
     return reg_read(ctx, offset, false);
 }
 static uint8_t dafb_read8(void *ctx, uint32_t offset) {
-    return (uint8_t)(reg_read(ctx, offset, false) >> (8 * (3 - (offset & 3))));
+    return be_lane8(reg_read(ctx, offset, false), offset);
 }
 static uint16_t dafb_read16(void *ctx, uint32_t offset) {
     return (uint16_t)(reg_read(ctx, offset & ~1u, false) >> (8 * (2 - (offset & 2))));
@@ -595,7 +596,7 @@ static uint32_t dafb_peek32(void *ctx, uint32_t offset) {
     return reg_read(ctx, offset, true);
 }
 static uint8_t dafb_peek8(void *ctx, uint32_t offset) {
-    return (uint8_t)(reg_read(ctx, offset, true) >> (8 * (3 - (offset & 3))));
+    return be_lane8(reg_read(ctx, offset, true), offset);
 }
 static uint16_t dafb_peek16(void *ctx, uint32_t offset) {
     return (uint16_t)(reg_read(ctx, offset & ~1u, true) >> (8 * (2 - (offset & 2))));
@@ -636,8 +637,7 @@ static void dafb_write_lanes(dafb_t *dafb, uint32_t offset, const uint8_t *bytes
         uint32_t v = dafb->regs[off >> 2];
         // Absorb every remaining byte that lands in THIS longword.
         while (i < n && reg_off(offset + (uint32_t)i) == off) {
-            uint32_t shift = 8u * (3u - ((offset + (uint32_t)i) & 3u));
-            v = (v & ~(0xFFu << shift)) | ((uint32_t)bytes[i] << shift);
+            be_lane8_set(&v, offset + (uint32_t)i, bytes[i]);
             i++;
         }
         dafb->regs[off >> 2] = v;

@@ -730,7 +730,7 @@ static void mach64_dac_write_lane(mach64_t *m, uint32_t lane, uint8_t value);
 static uint8_t mach64_reg_read_lane(mach64_t *m, int dw, uint32_t lane, bool peek) {
     if (dw == DW_DAC_REGS)
         return mach64_dac_read_lane(m, lane, peek);
-    return (uint8_t)(mach64_reg_read(m, dw, peek) >> (8u * (lane & 3u)));
+    return le_lane8(mach64_reg_read(m, dw, peek), lane);
 }
 
 static void mach64_reg_write_lane(mach64_t *m, int dw, uint32_t lane, uint8_t value) {
@@ -1582,7 +1582,7 @@ static bool mach64_mono_bit(mach64_t *m, const mach64_op_t *op, uint32_t x, uint
         // what makes a dithered fill line up across separate operations.
         uint32_t r = y & 7u;
         uint32_t word = (r < 4u) ? m->reg[DW_PAT_REG0] : m->reg[DW_PAT_REG1];
-        uint32_t byte = (word >> (8u * (r & 3u))) & 0xFFu;
+        uint32_t byte = le_lane8(word, r);
         return ((byte >> (7u - (x & 7u))) & 1u) != 0;
     }
     case DP_MONO_BLIT: {
@@ -2601,7 +2601,7 @@ static uint8_t aper_rd8(void *ctx, uint32_t offset, bool peek) {
     if (at == MACH64_APER_REGS)
         return mach64_reg_read_lane(m, (int)((offset & 0x3FFu) >> 2), offset & 3u, peek);
     if (at == MACH64_APER_REGS1)
-        return (uint8_t)(m->reg1[(offset & 0x3FFu) >> 2] >> (8u * (offset & 3u)));
+        return le_lane8(m->reg1[(offset & 0x3FFu) >> 2], offset);
     return m->vram[at];
 }
 
@@ -2710,7 +2710,7 @@ static uint8_t aux_rd8(void *ctx, uint32_t offset, bool peek) {
     mach64_t *m = (mach64_t *)ctx;
     offset &= RAGEPRO_BAR2_DECODE;
     if (offset < 0x400u)
-        return (uint8_t)(m->reg1[offset >> 2] >> (8u * (offset & 3u)));
+        return le_lane8(m->reg1[offset >> 2], offset);
     return mach64_reg_read_lane(m, (int)((offset & 0x3FFu) >> 2), offset & 3u, peek);
 }
 

@@ -340,7 +340,7 @@ static uint8_t data_read8(config_t *cfg, uint32_t offset) {
     if (!cfg_decode(&st->grackle, &dev, &fn, &reg))
         return 0xFF;
     uint32_t v = pci_bus_cfg_read(st->bus, dev, fn, reg);
-    return (uint8_t)(v >> (8 * (offset & 3u)));
+    return le_lane8(v, offset);
 }
 
 static void data_write8(config_t *cfg, uint32_t offset, uint8_t value) {

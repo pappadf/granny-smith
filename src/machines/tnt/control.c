@@ -919,7 +919,7 @@ void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
 static uint8_t regs_read8(void *ctx, uint32_t offset) {
     // Byte lane of the LE register (lane j = value bits 8j+7:8j).
     config_t *cfg = (config_t *)ctx;
-    return (uint8_t)(control_reg_read(cfg, offset & ~3u) >> (8u * (offset & 3u)));
+    return le_lane8(control_reg_read(cfg, offset & ~3u), offset);
 }
 
 static uint16_t regs_read16(void *ctx, uint32_t offset) {
