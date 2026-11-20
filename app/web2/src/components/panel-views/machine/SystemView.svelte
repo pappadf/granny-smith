@@ -18,8 +18,9 @@
     type Level,
     type SysRow,
   } from '@/lib/systemRows';
-  import type { ArgInfo, MemberInfo } from '@/bus/systemTree';
-  import { gsEval, isGsError, gsErrorText, whenModuleReady } from '@/bus/emulator';
+  import { writeMember, callMember, type ArgInfo, type MemberInfo } from '@/bus/systemTree';
+  import { isGsError, gsErrorText, whenModuleReady } from '@/bus/emulator';
+  import { imageFileName, exportImage } from '@/bus/media';
   import { invalidate, onMembersChanged } from '@/bus/memberStore';
   import { TreeState } from '@/lib/treeState.svelte';
   import { machine } from '@/state/machine.svelte';
@@ -141,7 +142,7 @@
       endEdit();
       return null;
     }
-    const res = await gsEval(row.path, [c.value]);
+    const res = await writeMember(row.path, c.value);
     if (isGsError(res)) return gsErrorText(res);
     consoleEcho(assignStatement(row.path, c.value, row.type));
     endEdit();
@@ -208,7 +209,7 @@
 
   async function run(p: Pending, args: unknown[]): Promise<string | null> {
     const call = `${p.path}.${p.method.name}`;
-    const res = await gsEval(call, args);
+    const res = await callMember(call, args);
     if (isGsError(res)) {
       showNotification(`${p.method.verb ?? p.method.name}: ${gsErrorText(res)}`, 'error');
       return gsErrorText(res);
@@ -260,8 +261,7 @@
   // streams it from storage, so the bytes never enter the wasm heap or the JS
   // heap either.
   async function saveImage(target: string) {
-    const suggested = (await gsEval(`${target}.filename`)) as string;
-    const base = (typeof suggested === 'string' && suggested) || 'disk.img';
+    const base = (await imageFileName(target)) || 'disk.img';
     const name = await askText({
       title: 'Save image as',
       label: 'File name',
@@ -272,7 +272,7 @@
 
     const dest = `${EXPORT_DIR}/${sanitizeName(name)}`;
     showNotification(`Exporting to ${dest}…`, 'info');
-    const ok = await gsEval(`${target}.export`, [dest]);
+    const ok = await exportImage(target, dest);
     if (ok !== true) {
       // The core's reason (an existing file, a full disk), in the toast:
       // nothing reaches the console (S1018-77).

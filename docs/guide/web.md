@@ -563,7 +563,11 @@ State lives under [`app/web2/src/state/`](../../app/web2/src/state/) —
 each `*.svelte.ts` file owns a `$state` slice (`machine`, `layout`,
 `debug`, `appearance`, `logs`, `images`, `uploads`, `toasts`, …). The bus
 layer at [`app/web2/src/bus/`](../../app/web2/src/bus/) wraps every
-`gsEval` call site.
+`gsEval` call site: a component asks the bus module that owns the domain
+(`bus/vfs`, `bus/media`, `bus/checkpoint`, `bus/debug`, `bus/systemTree`,
+…), and an ESLint rule (`no-restricted-imports` in
+`app/web2/eslint.config.js`) refuses a `gsEval` or `gsEvalWithProgress`
+import under `components/`.
 
 ## SYSTEM tab
 

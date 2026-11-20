@@ -385,3 +385,9 @@ export async function restart(): Promise<void> {
   await restartEmulator();
   bumpDebugRefresh();
 }
+
+// An auxiliary core's run state (`machine.<name>.state`), or null.
+export async function auxCoreState(name: string): Promise<string | null> {
+  const s = await gsEval(`machine.${name}.state`);
+  return typeof s === 'string' ? s : null;
+}

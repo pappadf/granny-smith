@@ -289,3 +289,10 @@ function normalise(r: Partial<MachineProfile>): MachineProfile {
     },
   };
 }
+
+// The models the core can build, in its family order (catalog.models);
+// null when it does not answer with a list.
+export async function catalogModels(): Promise<string[] | null> {
+  const order = await gsEval('catalog.models').catch(() => null);
+  return Array.isArray(order) ? order.filter((m): m is string => typeof m === 'string') : null;
+}

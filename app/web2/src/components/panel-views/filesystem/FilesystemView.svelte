@@ -19,9 +19,14 @@
     type ProgressFn,
   } from '@/bus/fsOps';
   import { isExpandable, isInImageSpace, listViaVfs } from '@/lib/diskImage';
-  import { MEDIA_TYPES } from '@/lib/media';
-  import { gsEval } from '@/bus/emulator';
-  import { mountImage, insertFloppy, imageInUseUnder } from '@/bus/media';
+  import {
+    mountImage,
+    insertFloppy,
+    imageInUseUnder,
+    machineCreated,
+    identifyFloppy,
+    validateMedium,
+  } from '@/bus/media';
   import {
     CD_DIR,
     CHECKPOINT_DIR,
@@ -510,10 +515,9 @@
   // offered as a floppy only.  Anything else, as each of hard disk and CD
   // the core accepts.
   async function mediaItems(target: string): Promise<ContextMenuItem[]> {
-    if ((await gsEval('machine.created')) !== true) return [];
-    const density = await gsEval('machine.floppy.identify', [target]);
-    const valid = async (id: 'hd' | 'cdrom') =>
-      (await MEDIA_TYPES[id].validate(target, gsEval)).valid;
+    if (!(await machineCreated())) return [];
+    const density = await identifyFloppy(target);
+    const valid = (id: 'hd' | 'cdrom') => validateMedium(id, target);
     const items: ContextMenuItem[] = [];
     if (typeof density === 'string' && density) {
       items.push({ label: 'Insert into floppy drive', action: () => attachMedium(target, 'fd') });
