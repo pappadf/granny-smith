@@ -45,6 +45,8 @@ typedef enum {
     MAC030_DEV_SCC_IOP, // OSS only (IIfx SCC I/O processor)
     MAC030_DEV_SWIM_IOP, // OSS only (IIfx SWIM I/O processor)
     MAC030_DEV_OSS, // OSS only (the OSS interrupt/glue controller)
+    MAC030_DEV_SCSI96, // MCU/AV: the (first) NCR 53C96, registers + pseudo-DMA
+    MAC030_DEV_SCSI96_EXT, // Q900/Q950 only: the second (external-bus) 53C96
     MAC030_DEV_COUNT,
 } mac030_dev_t;
 
@@ -57,6 +59,8 @@ typedef enum {
                           // window: the chip's A0-A3 are wired to A9-A12.  A
                           // wiring fact, declared as data, exactly like
                           // MAC030_IO_MASK_A0 above.
+    MAC030_IO_STRIDE_16, // sub = ((offset - base) >> 4) & 0x0F — the 53C96
+                         // register window: A3-A0 wired to A7-A4.
 } mac030_io_xform_t;
 
 // One decoded I/O window.  The engine walks an ordered, sentinel-terminated

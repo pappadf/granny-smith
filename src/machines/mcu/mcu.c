@@ -274,76 +274,17 @@ static void mcu_sonic_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint
         sonic_reg_write(st->sonic, off >> 2, (uint16_t)((st->sonic_byte2 << 8) | value));
 }
 
-// --- NCR 53C96 ($5000F000; registers on a 16-byte spacing) ---
-
-static uint8_t mcu_scsi_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
-    (void)win_off; // this window's handler decodes from addr itself
-    return scsi_53c96_read(mcu_st(cfg)->scsi96, (addr & 0xFFu) >> 4);
-}
-static uint8_t mcu_scsi_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
-    (void)win_off, (void)addr;
-    return scsi_53c96_peek(mcu_st(cfg)->scsi96, (addr & 0xFFu) >> 4);
-}
-
-static void mcu_scsi_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
-    (void)win_off; // this window's handler decodes from addr itself
-    scsi_53c96_write(mcu_st(cfg)->scsi96, (addr & 0xFFu) >> 4, value);
-}
-
-// --- SCSI 0 pseudo-DMA aperture ($5000F100): the TurboSCSI payload port.
-// The engine byte-decomposes 16-bit accesses, so the byte hooks carry both
-// widths in wire order (big-endian high byte first).
-
-static uint8_t mcu_scsi_pdma_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
-    (void)win_off; // this window's handler decodes from addr itself
-    (void)addr;
-    return scsi_53c96_pdma_read8(mcu_st(cfg)->scsi96);
-}
-static uint8_t mcu_scsi_pdma_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
-    (void)win_off, (void)addr;
-    return scsi_53c96_pdma_peek8(mcu_st(cfg)->scsi96);
-}
-
-static void mcu_scsi_pdma_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
-    (void)win_off; // this window's handler decodes from addr itself
-    (void)addr;
-    scsi_53c96_pdma_write8(mcu_st(cfg)->scsi96, value);
-}
-
-// --- Second NCR 53C96 (towers; regs at $5000F402 on 16-byte spacing and
+// --- NCR 53C96 ($5000F000; registers on a 16-byte spacing) and its
+// pseudo-DMA aperture ($5000F100, the TurboSCSI payload port) are device rows
+// (MAC030_DEV_SCSI96, MAC030_IO_STRIDE_16 / MAC030_IO_FIXED).  The engine
+// byte-decomposes 16-bit pDMA accesses, so the byte port carries both widths
+// in wire order (big-endian high byte first).
+//
+// Second NCR 53C96 (towers; regs at $5000F402 on 16-byte spacing and
 // pseudo-DMA at $5000F502 — UniversalTables.a OrwellDecoderTable "2nd
-// (external) SCSI96"; the pdma alias matches current MAME).  The
-// same (offset >> 4) register decode as bus 0 serves the +2 byte lane.
-
-static uint8_t mcu_scsi_ext_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
-    (void)win_off; // this window's handler decodes from addr itself
-    return scsi_53c96_read(mcu_st(cfg)->scsi96_ext, (addr & 0xFFu) >> 4);
-}
-static uint8_t mcu_scsi_ext_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
-    (void)win_off, (void)addr;
-    return scsi_53c96_peek(mcu_st(cfg)->scsi96_ext, (addr & 0xFFu) >> 4);
-}
-
-static void mcu_scsi_ext_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
-    (void)win_off; // this window's handler decodes from addr itself
-    scsi_53c96_write(mcu_st(cfg)->scsi96_ext, (addr & 0xFFu) >> 4, value);
-}
-
-static uint8_t mcu_scsi_ext_pdma_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
-    (void)win_off; // this window's handler decodes from addr itself
-    (void)addr;
-    return scsi_53c96_pdma_read8(mcu_st(cfg)->scsi96_ext);
-}
-static uint8_t mcu_scsi_ext_pdma_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
-    (void)win_off, (void)addr;
-    return scsi_53c96_pdma_peek8(mcu_st(cfg)->scsi96_ext);
-}
-
-static void mcu_scsi_ext_pdma_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
-    (void)win_off; // this window's handler decodes from addr itself
-    (void)addr;
-    scsi_53c96_pdma_write8(mcu_st(cfg)->scsi96_ext, value);
-}
+// (external) SCSI96"; the pdma alias matches current MAME): rows on
+// MAC030_DEV_SCSI96_EXT.  The same 16-byte register stride serves the +2
+// byte lane.
 
 // --- YANCC ($50028000) — the system-bus/NuBus bridge register file.
 // The register address is Apple-documented, its width and bits are not:
@@ -430,10 +371,9 @@ const mac030_io_range_t mcu_q700_io_ranges[] = {
     {0x0A000, 0x0B100, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_sonic_read, mcu_sonic_write, "sonic"},
     {0x0C000, 0x0E000, MAC030_DEV_SCC, MCU_SCC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
     {0x0E000, 0x0F000, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_reg_read, mcu_reg_write, "mcu"},
-    {0x0F000, 0x0F100, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_scsi_read, mcu_scsi_write, "scsi_53c96",
-     .peek_fn = mcu_scsi_peek},
-    {0x0F100, 0x0F102, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_scsi_pdma_read, mcu_scsi_pdma_write, "scsi_pdma",
-     .peek_fn = mcu_scsi_pdma_peek},
+    {0x0F000, 0x0F100, MAC030_DEV_SCSI96, MCU_IO_PENALTY, MAC030_IO_STRIDE_16, 0, 0, NULL, NULL, "scsi_53c96"},
+    {0x0F100, 0x0F102, MAC030_DEV_SCSI96, MCU_IO_PENALTY, MAC030_IO_FIXED, SCSI_53C96_PDMA_SUB, SCSI_53C96_PDMA_SUB,
+     NULL, NULL, "scsi_pdma"},
     {0x14000, 0x16000, MAC030_DEV_ASC, MCU_ASC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "easc"},
     {0x1E000, 0x20000, MAC030_DEV_FLOPPY, MCU_SWIM_IO_PENALTY, MAC030_IO_STRIDE_512, 0, 0, NULL, NULL, "swim"},
     {0x28000, 0x2A000, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_yancc_read, mcu_yancc_write, "yancc",
@@ -460,14 +400,12 @@ const mac030_io_range_t mcu_q900_io_ranges[] = {
     {0x0A000, 0x0B100, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_sonic_read, mcu_sonic_write, "sonic"},
     {0x0C000, 0x0E000, MAC030_DEV_SCC_IOP, MCU_IOP_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc_iop"},
     {0x0E000, 0x0F000, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_reg_read, mcu_reg_write, "mcu"},
-    {0x0F000, 0x0F100, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_scsi_read, mcu_scsi_write, "scsi_53c96",
-     .peek_fn = mcu_scsi_peek},
-    {0x0F100, 0x0F102, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_scsi_pdma_read, mcu_scsi_pdma_write, "scsi_pdma",
-     .peek_fn = mcu_scsi_pdma_peek},
-    {0x0F400, 0x0F500, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_scsi_ext_read, mcu_scsi_ext_write, "scsi1_53c96",
-     .peek_fn = mcu_scsi_ext_peek},
-    {0x0F500, 0x0F510, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_scsi_ext_pdma_read, mcu_scsi_ext_pdma_write,
-     "scsi1_pdma", .peek_fn = mcu_scsi_ext_pdma_peek},
+    {0x0F000, 0x0F100, MAC030_DEV_SCSI96, MCU_IO_PENALTY, MAC030_IO_STRIDE_16, 0, 0, NULL, NULL, "scsi_53c96"},
+    {0x0F100, 0x0F102, MAC030_DEV_SCSI96, MCU_IO_PENALTY, MAC030_IO_FIXED, SCSI_53C96_PDMA_SUB, SCSI_53C96_PDMA_SUB,
+     NULL, NULL, "scsi_pdma"},
+    {0x0F400, 0x0F500, MAC030_DEV_SCSI96_EXT, MCU_IO_PENALTY, MAC030_IO_STRIDE_16, 0, 0, NULL, NULL, "scsi1_53c96"},
+    {0x0F500, 0x0F510, MAC030_DEV_SCSI96_EXT, MCU_IO_PENALTY, MAC030_IO_FIXED, SCSI_53C96_PDMA_SUB, SCSI_53C96_PDMA_SUB,
+     NULL, NULL, "scsi1_pdma"},
     {0x14000, 0x16000, MAC030_DEV_ASC, MCU_ASC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "easc"},
     {0x1E000, 0x20000, MAC030_DEV_SWIM_IOP, MCU_IOP_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "swim_iop"},
     {0x28000, 0x2A000, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_yancc_read, mcu_yancc_write, "yancc",
@@ -482,6 +420,10 @@ void mcu_io_bind(mac030_io_t *io, config_t *cfg, const mcu_board_desc_t *desc, v
     mac030_io_bind_dev(io, MAC030_DEV_SCC, cfg->scc, scc_get_memory_interface(cfg->scc));
     mac030_io_bind_dev(io, MAC030_DEV_ASC, asc, asc_get_memory_interface((asc_t *)asc));
     mac030_io_bind_dev(io, MAC030_DEV_FLOPPY, floppy, floppy_get_memory_interface((floppy_t *)floppy));
+    mcu_state_t *st = mcu_st(cfg);
+    mac030_io_bind_dev(io, MAC030_DEV_SCSI96, st->scsi96, scsi_53c96_get_memory_interface());
+    if (st->scsi96_ext) // towers only
+        mac030_io_bind_dev(io, MAC030_DEV_SCSI96_EXT, st->scsi96_ext, scsi_53c96_get_memory_interface());
 }
 
 // ============================================================

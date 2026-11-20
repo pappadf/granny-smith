@@ -85,6 +85,8 @@ static inline uint32_t io_sub_offset(const mac030_io_range_t *r, uint32_t offset
         return is_read ? r->read_off : r->write_off;
     case MAC030_IO_STRIDE_512:
         return ((offset - r->base) >> 9) & 0x0Fu;
+    case MAC030_IO_STRIDE_16:
+        return ((offset - r->base) >> 4) & 0x0Fu;
     case MAC030_IO_NORMAL:
     default:
         return offset - r->base;
@@ -286,10 +288,19 @@ void mac030_io_fill_interface(memory_interface_t *iface) {
 
 // Names for the validation diagnostic, indexed by mac030_dev_t.
 static const char *const mac030_dev_names[MAC030_DEV_COUNT] = {
-    [MAC030_DEV_VIA1] = "VIA1",         [MAC030_DEV_VIA2] = "VIA2", [MAC030_DEV_SCC] = "SCC",
-    [MAC030_DEV_SCSI] = "SCSI",         [MAC030_DEV_ASC] = "ASC",   [MAC030_DEV_FLOPPY] = "FLOPPY",
-    [MAC030_DEV_RBV] = "RBV",           [MAC030_DEV_VDAC] = "VDAC", [MAC030_DEV_SCC_IOP] = "SCC_IOP",
-    [MAC030_DEV_SWIM_IOP] = "SWIM_IOP", [MAC030_DEV_OSS] = "OSS",
+    [MAC030_DEV_VIA1] = "VIA1",
+    [MAC030_DEV_VIA2] = "VIA2",
+    [MAC030_DEV_SCC] = "SCC",
+    [MAC030_DEV_SCSI] = "SCSI",
+    [MAC030_DEV_ASC] = "ASC",
+    [MAC030_DEV_FLOPPY] = "FLOPPY",
+    [MAC030_DEV_RBV] = "RBV",
+    [MAC030_DEV_VDAC] = "VDAC",
+    [MAC030_DEV_SCC_IOP] = "SCC_IOP",
+    [MAC030_DEV_SWIM_IOP] = "SWIM_IOP",
+    [MAC030_DEV_OSS] = "OSS",
+    [MAC030_DEV_SCSI96] = "SCSI96",
+    [MAC030_DEV_SCSI96_EXT] = "SCSI96_EXT",
 };
 
 // Build the page index from the table: for each 4 KB page of the island, the

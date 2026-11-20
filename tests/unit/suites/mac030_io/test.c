@@ -23,6 +23,7 @@
 #include "rbv.h"
 #include "scc.h"
 #include "scsi.h"
+#include "scsi_53c96.h" // SCSI_53C96_PDMA_SUB
 #include "via.h"
 
 #include <stdint.h>
@@ -234,6 +235,49 @@ static void probe_io_init(mac030_io_t *io, const mac030_io_range_t *ranges, uint
     mac030_board_desc_t desc = {
         .chipset = "probe", .io_ranges = ranges, .io_mirror_mask = mirror, .io_unmapped_read = 0xFF};
     mac030_io_install(io, NULL, &desc);
+}
+
+// A stub 53C96 device row: records the sub-offset each byte access reaches.
+static uint32_t g_s96_sub;
+static int g_s96_writes;
+static uint8_t s96_read(void *dev, uint32_t sub) {
+    (void)dev;
+    g_s96_sub = sub;
+    return (uint8_t)sub;
+}
+static void s96_write(void *dev, uint32_t sub, uint8_t v) {
+    (void)dev, (void)v;
+    g_s96_sub = sub;
+    g_s96_writes++;
+}
+static const memory_interface_t k_s96_iface = {.read_uint8 = s96_read, .write_uint8 = s96_write};
+
+// The MCU/AV 53C96 rows: registers on a 16-byte stride (and the +2 byte lane
+// of the Q900's second chip), the pseudo-DMA port a fixed sub-offset.
+static const mac030_io_range_t k_s96_ranges[] = {
+    {0x0F000, 0x0F100, MAC030_DEV_SCSI96, 2, MAC030_IO_STRIDE_16, 0, 0, NULL, NULL, "scsi_53c96"},
+    {0x0F100, 0x0F102, MAC030_DEV_SCSI96, 2, MAC030_IO_FIXED, SCSI_53C96_PDMA_SUB, SCSI_53C96_PDMA_SUB, NULL, NULL,
+     "scsi_pdma"},
+    {0x0F400, 0x0F500, MAC030_DEV_SCSI96_EXT, 2, MAC030_IO_STRIDE_16, 0, 0, NULL, NULL, "scsi1_53c96"},
+    {0},
+};
+
+TEST(test_scsi96_rows_decode_register_stride_and_pdma_port) {
+    mac030_io_t io;
+    probe_io_init(&io, k_s96_ranges, 0x0003FFFFu);
+    static int chip0, chip1; // distinct handles
+    mac030_io_bind_dev(&io, MAC030_DEV_SCSI96, &chip0, &k_s96_iface);
+    mac030_io_bind_dev(&io, MAC030_DEV_SCSI96_EXT, &chip1, &k_s96_iface);
+    for (unsigned reg = 0; reg < 16; reg++) {
+        ASSERT_EQ_INT(mac030_io_read_uint8(&io, 0x50F0F000u + (reg << 4)), (int)reg);
+        ASSERT_EQ_INT(mac030_io_read_uint8(&io, 0x50F0F402u + (reg << 4)), (int)reg); // +2 lane
+    }
+    mac030_io_write_uint8(&io, 0x50F0F030u, 0x11);
+    ASSERT_EQ_INT(g_s96_sub, 3u);
+    ASSERT_EQ_INT(mac030_io_read_uint8(&io, 0x50F0F101u), (int)SCSI_53C96_PDMA_SUB);
+    mac030_io_write_uint8(&io, 0x50F0F100u, 0x22);
+    ASSERT_EQ_INT(g_s96_sub, SCSI_53C96_PDMA_SUB);
+    ASSERT_EQ_INT(g_s96_writes, 2);
 }
 
 TEST(test_handler_row_gets_engine_decoded_sub_offset) {
@@ -461,6 +505,7 @@ int main(void) {
     RUN(test_swim_window_decodes_register_index);
     RUN(test_mdu_addr_map);
     RUN(test_handler_row_gets_engine_decoded_sub_offset);
+    RUN(test_scsi96_rows_decode_register_stride_and_pdma_port);
     RUN(test_wide_access_straddling_a_window_edge_redecodes);
     RUN(test_page_index_agrees_with_linear_decode_everywhere);
     RUN(test_nested_window_keeps_first_match_wins);

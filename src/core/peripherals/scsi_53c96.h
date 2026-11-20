@@ -24,6 +24,7 @@
 
 struct scheduler;
 struct scsi;
+struct memory_interface;
 
 typedef struct scsi_53c96 scsi_53c96_t;
 
@@ -91,5 +92,12 @@ void scsi_53c96_dma_short_transfer(scsi_53c96_t *c);
 // It is a no-op unless all three say the target quit mid-read with DREQ still
 // up, and the chip checks its own transfer mode on top of that.
 void scsi_53c96_dma_end_if_short(scsi_53c96_t *c, int moved, bool mem_to_scsi, bool phase_ok);
+
+// The chip as an I/O island's device row: sub-offsets 0..15 are the register
+// file (the island's own stride already divided out), SCSI_53C96_PDMA_SUB is
+// the pseudo-DMA port.  Byte slots only -- the island decomposes wider
+// accesses -- and a peek has none of the read's side effects.
+#define SCSI_53C96_PDMA_SUB 0x10u
+const struct memory_interface *scsi_53c96_get_memory_interface(void);
 
 #endif // SCSI_53C96_H

@@ -957,3 +957,39 @@ void scsi_53c96_dma_short_transfer(scsi_53c96_t *c) {
     c->xfer_mode = XFER_IDLE;
     post_interrupt(c, IR_BUS_SERVICE);
 }
+
+// ============================================================
+// Memory interface (an I/O island's device row)
+// ============================================================
+
+// Register file at sub-offsets 0..15, pseudo-DMA port at SCSI_53C96_PDMA_SUB.
+static uint8_t iface_read8(void *dev, uint32_t sub) {
+    scsi_53c96_t *c = (scsi_53c96_t *)dev;
+    return sub == SCSI_53C96_PDMA_SUB ? scsi_53c96_pdma_read8(c) : scsi_53c96_read(c, sub & 0x0Fu);
+}
+
+// The same byte without the read's side effects.
+static uint8_t iface_peek8(void *dev, uint32_t sub) {
+    scsi_53c96_t *c = (scsi_53c96_t *)dev;
+    return sub == SCSI_53C96_PDMA_SUB ? scsi_53c96_pdma_peek8(c) : scsi_53c96_peek(c, sub & 0x0Fu);
+}
+
+// A byte write to a register or to the pseudo-DMA port.
+static void iface_write8(void *dev, uint32_t sub, uint8_t value) {
+    scsi_53c96_t *c = (scsi_53c96_t *)dev;
+    if (sub == SCSI_53C96_PDMA_SUB)
+        scsi_53c96_pdma_write8(c, value);
+    else
+        scsi_53c96_write(c, sub & 0x0Fu, value);
+}
+
+// Byte slots only: the islands that front this chip decompose wider accesses.
+static const memory_interface_t scsi_53c96_iface = {
+    .read_uint8 = iface_read8,
+    .write_uint8 = iface_write8,
+    .peek_uint8 = iface_peek8,
+};
+
+const memory_interface_t *scsi_53c96_get_memory_interface(void) {
+    return &scsi_53c96_iface;
+}

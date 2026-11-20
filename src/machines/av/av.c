@@ -215,24 +215,15 @@ static void av_cpuid_write32(void *ctx, uint32_t offset, uint32_t value) {
 // way the IIfx table has always charged its handler rows.
 #define AV_IO_PENALTY 2
 
-// 53C96 window handlers (defined with the SCSI wiring below).
-static uint8_t av_scsi_read(config_t *cfg, uint32_t win_off, uint32_t addr);
-static void av_scsi_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
-static uint8_t av_scsi_pdma_read(config_t *cfg, uint32_t win_off, uint32_t addr);
-static void av_scsi_pdma_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
-static uint8_t av_scsi_peek(config_t *cfg, uint32_t win_off, uint32_t addr);
-static uint8_t av_scsi_pdma_peek(config_t *cfg, uint32_t win_off, uint32_t addr);
-
 //   base     end      device            penalty          xform            rd wr  rd_fn/wr_fn      name
 const mac030_io_range_t av_io_ranges[] = {
     {0x00000, 0x02000, MAC030_DEV_VIA1, AV_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},
     {0x02000, 0x04000, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_psc_via2_read, av_psc_via2_write, "psc_via2"},
     {0x04000, 0x08000, MAC030_DEV_SCC, AV_SCC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
     {0x08000, 0x08080, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_mace_prom_read, av_mace_prom_write, "mac_prom"},
-    {0x18000, 0x18100, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_scsi_read, av_scsi_write, "scsi_53c96",
-     .peek_fn = av_scsi_peek},
-    {0x18100, 0x18200, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_scsi_pdma_read, av_scsi_pdma_write, "scsi_rdma",
-     .peek_fn = av_scsi_pdma_peek},
+    {0x18000, 0x18100, MAC030_DEV_SCSI96, AV_IO_PENALTY, MAC030_IO_STRIDE_16, 0, 0, NULL, NULL, "scsi_53c96"},
+    {0x18100, 0x18200, MAC030_DEV_SCSI96, AV_IO_PENALTY, MAC030_IO_FIXED, SCSI_53C96_PDMA_SUB, SCSI_53C96_PDMA_SUB,
+     NULL, NULL, "scsi_rdma"},
     {0x1C000, 0x1C200, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_mace_read, av_mace_write, "mace",
      .peek_fn = av_mace_peek},
     {0x2A000, 0x2A200, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_new_age_read, av_new_age_write, "new_age",
@@ -255,6 +246,7 @@ static void av_io_bind(mac030_io_t *io, config_t *cfg, const av_board_desc_t *de
     if (cfg->scc) {
         mac030_io_bind_dev(io, MAC030_DEV_SCC, cfg->scc, scc_get_memory_interface(cfg->scc));
     }
+    mac030_io_bind_dev(io, MAC030_DEV_SCSI96, av_st(cfg)->scsi96, scsi_53c96_get_memory_interface());
 }
 
 // ============================================================
@@ -317,38 +309,10 @@ static void av_nubus_slot_irq(config_t *cfg, int slot, bool active) {
 // handler).  The chip IRQ is level-sensitive into the PSC-VIA2 window,
 // bits 3 and mirror 0.
 
-static uint8_t av_scsi_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
-    (void)win_off; // this window's handler decodes from addr itself
-    return scsi_53c96_read(av_st(cfg)->scsi96, (addr & 0xFFu) >> 4);
-}
-static uint8_t av_scsi_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
-    (void)win_off, (void)addr;
-    return scsi_53c96_peek(av_st(cfg)->scsi96, (addr & 0xFFu) >> 4);
-}
-
-static void av_scsi_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
-    (void)win_off; // this window's handler decodes from addr itself
-    scsi_53c96_write(av_st(cfg)->scsi96, (addr & 0xFFu) >> 4, value);
-}
-
-// Curio's rDMA pseudo-DMA port at +$100: the ROM's boot-time SCSI Manager
-// (SCSIMgrHWPSC.a) streams 16-bit words through it — the engine
+// The register window and Curio's rDMA pseudo-DMA port at +$100 are device
+// rows on MAC030_DEV_SCSI96 (see av_io_ranges).  The ROM's boot-time SCSI
+// Manager (SCSIMgrHWPSC.a) streams 16-bit words through the port — the engine
 // byte-decomposes them, and byte order equals wire order.
-static uint8_t av_scsi_pdma_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
-    (void)win_off; // this window's handler decodes from addr itself
-    (void)addr;
-    return scsi_53c96_pdma_read8(av_st(cfg)->scsi96);
-}
-static uint8_t av_scsi_pdma_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
-    (void)win_off, (void)addr;
-    return scsi_53c96_pdma_peek8(av_st(cfg)->scsi96);
-}
-
-static void av_scsi_pdma_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
-    (void)win_off; // this window's handler decodes from addr itself
-    (void)addr;
-    scsi_53c96_pdma_write8(av_st(cfg)->scsi96, value);
-}
 
 // The chip INT drives ONLY the CB2-position bit (3).  Bit 0 is nominally
 // a "SCSI mirror", but driving it as a second interrupt source feeds the
