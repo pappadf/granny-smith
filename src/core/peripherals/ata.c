@@ -62,13 +62,9 @@ bool ata_intrq(const ata_channel_t *ch) {
     return ch->enabled && d->kind != ATA_DEV_NONE && d->intrq && !(ch->devctl & ATA_DC_NIEN);
 }
 
+// Drives INTRQ from the selected device; the consumer hears edges only
 static void update_line(ata_channel_t *ch) {
-    bool level = ata_intrq(ch);
-    if (level == (ch->line != 0))
-        return;
-    ch->line = level ? 1 : 0;
-    if (ch->irq)
-        ch->irq(ch->irq_ctx, level);
+    irq_line_set(&ch->irq, ata_intrq(ch));
 }
 
 static void post_intrq(ata_channel_t *ch, ata_dev_t *d) {
@@ -132,8 +128,7 @@ void ata_channel_free(ata_channel_t *ch) {
 }
 
 void ata_set_irq(ata_channel_t *ch, ata_irq_fn fn, void *ctx) {
-    ch->irq = fn;
-    ch->irq_ctx = ctx;
+    irq_line_bind(&ch->irq, fn, ctx);
 }
 
 void ata_set_dma_kick(ata_channel_t *ch, ata_dma_kick_fn fn, void *ctx) {
@@ -1065,5 +1060,5 @@ void ata_checkpoint_restore(ata_channel_t *ch, checkpoint_t *cp, const image_lis
             ch->dev[u].kind = ATA_DEV_NONE;
     // The line is whatever the restored state drives; the owner's restored
     // interrupt controller already holds the matching source level.
-    ch->line = ata_intrq(ch) ? 1 : 0;
+    ch->irq.level = ata_intrq(ch);
 }

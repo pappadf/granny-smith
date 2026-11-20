@@ -128,13 +128,11 @@ struct sonic {
     bool in_reset; // CR.RST latched
     bool rx_enabled; // receiver on (CR.RXEN/RXDIS)
     bool timer_on; // watchdog running (CR.ST/STP) — value is static in this model
-    bool irq_line; // current INT output level
 
     uint8_t rba_seq, pkt_seq; // RSC halves (datasheet 3.4.3.2)
 
     // === Pointers last (not checkpointed; see sonic_checkpoint) ===
-    sonic_irq_cb irq_cb;
-    void *irq_ctx;
+    irq_line_t irq; // INT out; its level is checkpointed after the prefix
     dma_mem_port_t mem; // guest-physical port (dma_mem.h)
 };
 
@@ -187,12 +185,7 @@ static void field_write(sonic_t *s, uint32_t addr, uint16_t value) {
 // ============================================================
 
 static void update_irq(sonic_t *s) {
-    bool line = (s->reg[R_ISR] & s->reg[R_IMR]) != 0;
-    if (line == s->irq_line)
-        return;
-    s->irq_line = line;
-    if (s->irq_cb)
-        s->irq_cb(s->irq_ctx, line);
+    irq_line_set(&s->irq, (s->reg[R_ISR] & s->reg[R_IMR]) != 0);
 }
 
 static void raise_isr(sonic_t *s, uint16_t bits) {
@@ -536,15 +529,11 @@ void sonic_hard_reset(sonic_t *s) {
     // rx_place is `rbwc < 0`, which is never true, so a driver that never
     // programs EOBC would fill the RBA past its end instead of switching.
     s->reg[R_EOBC] = 0x02F8;
-    if (s->irq_line) {
-        s->irq_line = false;
-        if (s->irq_cb)
-            s->irq_cb(s->irq_ctx, false);
-    }
+    irq_line_set(&s->irq, false);
 }
 
 // The checkpointed plain-data prefix, up to the first host pointer
-CHECKPOINT_PREFIX(sonic_t, irq_cb);
+CHECKPOINT_PREFIX(sonic_t, irq);
 
 sonic_t *sonic_init(checkpoint_t *cp) {
     sonic_t *s = calloc(1, sizeof(*s));
@@ -559,6 +548,7 @@ sonic_t *sonic_init(checkpoint_t *cp) {
         // put three host pointers (irq_cb, irq_ctx and the dma_mem_port_t's
         // internals) into every save file.
         checkpoint_load_prefix(cp, s, sonic_t);
+        CP_FIELD(system_read_checkpoint_data, cp, s->irq.level); // the INT level last driven
     }
     return s;
 }
@@ -571,13 +561,13 @@ void sonic_checkpoint(sonic_t *s, checkpoint_t *cp) {
     // Up to the first pointer.  This was the last whole-struct checkpoint
     // write in the tree.
     checkpoint_save_prefix(cp, s, sonic_t);
+    CP_FIELD(system_write_checkpoint_data, cp, s->irq.level);
 }
 
 void sonic_set_irq_callback(sonic_t *s, sonic_irq_cb cb, void *context) {
-    s->irq_cb = cb;
-    s->irq_ctx = context;
-    if (cb && s->irq_line)
-        cb(context, true); // re-drive the level after (re)binding
+    irq_line_bind(&s->irq, cb, context);
+    if (s->irq.level)
+        irq_line_force(&s->irq, true); // re-drive the level after (re)binding
 }
 
 void sonic_set_memory_port(sonic_t *s, const dma_mem_port_t *port) {

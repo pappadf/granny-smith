@@ -78,7 +78,6 @@ struct bmac {
     uint8_t srom_do;
 
     bool link_down;
-    bool irq_level;
 
     // Transmit: the frame being assembled from OUTPUT_MORE/LAST pieces.
     uint8_t tx_buf[FRAME_MAX];
@@ -99,8 +98,7 @@ struct bmac {
     int last_tx_len;
 
     // === Pointers last (not checkpointed) ===
-    bmac_irq_fn irq;
-    void *irq_ctx;
+    irq_line_t irq; // INT out; its level is checkpointed after the prefix
     dbdma_t *dbdma;
 };
 
@@ -114,13 +112,9 @@ static uint8_t bitrev8(uint8_t v) {
     return (uint8_t)(((v & 0xAAu) >> 1) | ((v & 0x55u) << 1));
 }
 
+// Drives INT from the unmasked status bits; the consumer hears edges only
 static void update_irq(bmac_t *b) {
-    bool level = (b->reg[R(BMAC_STATUS)] & ~b->reg[R(BMAC_INTDISABLE)]) != 0;
-    if (level == b->irq_level)
-        return;
-    b->irq_level = level;
-    if (b->irq)
-        b->irq(b->irq_ctx, level);
+    irq_line_set(&b->irq, (b->reg[R(BMAC_STATUS)] & ~b->reg[R(BMAC_INTDISABLE)]) != 0);
 }
 
 static void station(const bmac_t *b, uint8_t mac[6]) {
@@ -485,8 +479,12 @@ bmac_t *bmac_init(checkpoint_t *cp, const uint8_t mac[6]) {
     // (several guest seconds idle at "Initializing network").
     b->link_down = true;
     bmac_reset(b);
-    if (cp)
+    if (cp) {
         checkpoint_load_prefix(cp, b, bmac_t);
+        // The level the consumer last heard, so the next edge is filtered
+        // against it exactly as before the save
+        CP_FIELD(system_read_checkpoint_data, cp, b->irq.level);
+    }
     return b;
 }
 
@@ -496,11 +494,11 @@ void bmac_delete(bmac_t *b) {
 
 void bmac_checkpoint(bmac_t *b, checkpoint_t *cp) {
     checkpoint_save_prefix(cp, b, bmac_t);
+    CP_FIELD(system_write_checkpoint_data, cp, b->irq.level);
 }
 
 void bmac_set_irq(bmac_t *b, bmac_irq_fn fn, void *ctx) {
-    b->irq = fn;
-    b->irq_ctx = ctx;
+    irq_line_bind(&b->irq, fn, ctx);
 }
 
 void bmac_attach_dbdma(bmac_t *b, dbdma_t *d, int tx_chan, int rx_chan) {
