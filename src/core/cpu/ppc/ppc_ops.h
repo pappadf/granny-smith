@@ -537,46 +537,9 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 // stfiwx (604): store the FPR's low word untouched (PEM stfiwx page).
 #define OP_STFIWX     OP(M604(); FP(); EA_X(); CHKA_ST(ea, 4, (uint32_t)p->fpr[RT]); STV(32))
 
-// --- FP moves / FPSCR / compares (bodies in ppc_fpu.c); CR1 record on Rc ---
+// --- FP register-to-register leaves (ppc_ops_fp.h); CR1 record on Rc ---
 #define REC1()        if (PPC_RC(iw)) ppc_set_cr_field(p, 1, p->fpscr >> 28)
-#define OP_FCMPU      OP(FP(); ppc_fcmp(p, iw, false))
-#define OP_FCMPO      OP(FP(); ppc_fcmp(p, iw, true))
-#define OP_FMR        OP(FP(); p->fpr[RT] = p->fpr[RB]; REC1())
-#define OP_FNEG       OP(FP(); p->fpr[RT] = p->fpr[RB] ^ 0x8000000000000000ull; REC1())
-#define OP_FABS       OP(FP(); p->fpr[RT] = p->fpr[RB] & 0x7FFFFFFFFFFFFFFFull; REC1())
-#define OP_FNABS      OP(FP(); p->fpr[RT] = p->fpr[RB] | 0x8000000000000000ull; REC1())
-#define OP_MFFS       OP(FP(); p->fpr[RT] = 0xFFFFFFFF00000000ull | p->fpscr; REC1()) // 601UM Table 3-15: frD[0-31] = $FFFFFFFF
-#define OP_MTFSF      OP(FP(); ppc_do_mtfsf(p, iw))
-#define OP_MTFSFI     OP(FP(); ppc_do_mtfsfi(p, iw))
-#define OP_MTFSB0     OP(FP(); ppc_do_mtfsb(p, iw, false))
-#define OP_MTFSB1     OP(FP(); ppc_do_mtfsb(p, iw, true))
-#define OP_MCRFS      OP(FP(); ppc_do_mcrfs(p, iw))
-
-// --- FP arithmetic: the integer-kernel datapath (ppc_softfp.c) ---
-#define OP_FRSP       OP(FP(); ppc_do_frsp(p, iw))
-#define OP_FCTIW      OP(FP(); ppc_do_fctiw(p, iw, false))
-#define OP_FCTIWZ     OP(FP(); ppc_do_fctiw(p, iw, true))
-#define OP_FDIV       OP(FP(); ppc_fp_arith(p, iw, PPC_SF_DIV, false))
-#define OP_FSUB       OP(FP(); ppc_fp_arith(p, iw, PPC_SF_SUB, false))
-#define OP_FADD       OP(FP(); ppc_fp_arith(p, iw, PPC_SF_ADD, false))
-#define OP_FMUL       OP(FP(); ppc_fp_arith(p, iw, PPC_SF_MUL, false))
-#define OP_FMSUB      OP(FP(); ppc_fp_arith(p, iw, PPC_SF_MSUB, false))
-#define OP_FMADD      OP(FP(); ppc_fp_arith(p, iw, PPC_SF_MADD, false))
-#define OP_FNMSUB     OP(FP(); ppc_fp_arith(p, iw, PPC_SF_NMSUB, false))
-#define OP_FNMADD     OP(FP(); ppc_fp_arith(p, iw, PPC_SF_NMADD, false))
-#define OP_FDIVS      OP(FP(); ppc_fp_arith(p, iw, PPC_SF_DIV, true))
-#define OP_FSUBS      OP(FP(); ppc_fp_arith(p, iw, PPC_SF_SUB, true))
-#define OP_FADDS      OP(FP(); ppc_fp_arith(p, iw, PPC_SF_ADD, true))
-#define OP_FMULS      OP(FP(); ppc_fp_arith(p, iw, PPC_SF_MUL, true))
-#define OP_FMSUBS     OP(FP(); ppc_fp_arith(p, iw, PPC_SF_MSUB, true))
-#define OP_FMADDS     OP(FP(); ppc_fp_arith(p, iw, PPC_SF_MADD, true))
-#define OP_FNMSUBS    OP(FP(); ppc_fp_arith(p, iw, PPC_SF_NMSUB, true))
-#define OP_FNMADDS    OP(FP(); ppc_fp_arith(p, iw, PPC_SF_NMADD, true))
-
-// --- 604 optional-FP group (fsqrt stays illegal: not implemented on 604) ---
-#define OP_FSEL       OP(M604(); FP(); ppc_do_fsel(p, iw))
-#define OP_FRES       OP(M604(); FP(); ppc_do_fres(p, iw))
-#define OP_FRSQRTE    OP(M604(); FP(); ppc_do_frsqrte(p, iw))
+#include "ppc_ops_fp.h"
 
 #define OP_ILLEGAL    OP(ppc_illegal_op(p, iw))
 

@@ -370,7 +370,12 @@ instructions.
 ### 3.3 Translation
 
 `translate()` classifies the chunk's words with the predecoded tier's
-classifier, plus the translator's own shapes (`jit_classify`): every
+classifier, plus the translator's own shapes (`ppc_jit_classify.h`, the
+decode tree's fourth instantiation: its leaves return the translator's
+ids, so a form the interpreter rejects -- an invalid BO, a reserved field
+set on a row that checks it -- is never translated; the hand classifier
+it replaced translated `bc`/`bclr`/`bcctr` with an invalid BO and the
+`addme`/`addze`/`subfme`/`subfze`/`neg` forms with rB set): every
 `bc` form the T0 ids leave out (linking, decrementing with a condition),
 conditional, decrementing and linking `bclr`/`bcctr`, the X-form loads and
 stores, the XO-form carrying, extended and OE add/subtract family, the
@@ -412,8 +417,9 @@ FPRF ±zero), with IEEE's signed-zero rules, which round to nearest shares
 with the kernel (a product of two nonzero factors that underflows to zero
 still leaves); any check that fails, and every other arithmetic or move with
 Rc clear, and `fcmpu`/`fcmpo`, call an imported helper (`ppc_jit_fp`)
-that runs the interpreter's own routines, so results and FPSCR are the
-predecoded loop's either way; it declines (leave at the instruction)
+that runs the interpreter's own leaves (`ppc_execute_fp`, the decode tree
+with only the FP register-to-register leaves of `ppc_ops_fp.h` live), so
+results and FPSCR are the predecoded loop's either way; it declines (leave at the instruction)
 when FP is unavailable or an FP exception is enabled, and a compare
 returns its CR field for the translation's CR local.  A compare with
 ordered operands (no NaN) runs inline instead, as `ppc_fcmp`'s ordered

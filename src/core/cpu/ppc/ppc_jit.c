@@ -81,402 +81,14 @@ static uint32_t g_trace; // jit.trace: print every entry and exit (debugging)
 
 #include <emscripten.h>
 
-// The predecoded tier's classifier (ppc_run.c): the translator treats as
-// translatable exactly the shapes the predecoded loop specializes (T0).
-uint16_t ppc_pd_classify_word(uint32_t iw, uint32_t ipc, uint32_t page_lo, pd_entry_t *e);
-
-// Shapes the predecoded loop leaves generic (T1) but the translator handles
-// from the raw word, with ids of its own above the T0 range:
-//   JX_BC               every bc form the T0 ids are not (linking,
-//                       decrementing with a condition): a = BO, b = BI,
-//                       c = the raw word
-//   JX_BCLR, JX_BCCTR   every bclr/bcctr form the T0 BLR/BCTR are not
-//                       (conditional, decrementing, linking): a = BO, b = BI,
-//                       c = LK
-//   JX_MFMSR .. JX_ARITH  the MSR and time base moves, lwarx/stwcx., and
-//                       the divides, high multiplies, eqv and sraw (the
-//                       Mac OS X kernel's untranslated core; fields at
-//                       their enum entries)
-//   JX_LMW, JX_STMW     load/store multiple word: a = rT/rS (the number),
-//                       b = rA offset (JX_RA0: rA = 0), c = the displacement
-//   JX_LWZX ..          the X-form loads and stores: a = rT/rS offset,
-//                       b = rA offset (JX_RA0: rA = 0, the non-update forms
-//                       only), c = rB offset
-//   JX_ADDX             the XO-form add/subtract family the T0 ids leave
-//                       out (carrying, extended, OE): a = rT offset, b = rA
-//                       offset, c = rB offset | kind << 8 | OE << 16 | Rc << 17
-// and the D-form loads and stores with rA = 0 keep their T0 ids with
-// b = JX_RA0.
-#define JX_RA0 0xFFu
-enum { // JX_ADDX kinds: rT = (subf ? ~rA : rA) + operand + carry-in
-    AK_ADD, // rB, 0
-    AK_ADDC, // rB, 0, sets CA
-    AK_ADDE, // rB, CA, sets CA
-    AK_ADDME, // -1, CA, sets CA
-    AK_ADDZE, // 0, CA, sets CA
-    AK_SUBF, // rB, 1
-    AK_SUBFC, // rB, 1, sets CA
-    AK_SUBFE, // rB, CA, sets CA
-    AK_SUBFME, // -1, CA, sets CA
-    AK_SUBFZE, // 0, CA, sets CA
-    AK_NEG, // 0 - rA
-};
-enum { // JX_ARITH kinds (OE clear)
-    XK_DIVW, // rT = rA / rB (signed; 0 on division by zero or overflow, ppc_do_divw)
-    XK_DIVWU, // rT = rA / rB (unsigned; 0 on division by zero)
-    XK_MULHW, // rT = high word of rA * rB (signed)
-    XK_MULHWU, // the same, unsigned
-    XK_EQV, // rA = ~(rS ^ rB)
-    XK_SRAW, // rA = rS >> rB (algebraic), sets CA (ppc_do_sraw)
-};
-enum {
-    JX_BCLR = PPD_END,
-    JX_BCCTR,
-    JX_BC,
-    JX_MCRXR, // a = crfD
-    JX_MFSPR, // a = rT offset, c = the ppc_t field (a plain supervisor SPR)
-    JX_MTSPR, // a = rS offset, c = the ppc_t field
-    JX_MFMSR, // a = rT offset
-    JX_MTMSR, // a = rS offset
-    JX_MFTB, // a = rT offset, c = 1 for TBU
-    JX_LWARX, // a = rT offset, b = rA offset (JX_RA0: rA = 0), c = rB offset
-    JX_STWCX, // a = rS offset, b and c as lwarx
-    JX_ARITH, // a = dest offset, b and c & 0xFF the sources' offsets, c >> 8 the kind, c >> 16 Rc
-    JX_LMW,
-    JX_STMW,
-    JX_LWZX,
-    JX_LWZUX,
-    JX_LHZX,
-    JX_LHZUX,
-    JX_LHAX,
-    JX_LHAUX,
-    JX_LBZX,
-    JX_LBZUX,
-    JX_STWX,
-    JX_STWUX,
-    JX_STHX,
-    JX_STHUX,
-    JX_STBX,
-    JX_STBUX,
-    JX_ADDX,
-    // Floating point (not the 601's: T=1 segments and its alignment rules
-    // stay with the predecoded loop).  The loads and stores: a = frT/frS
-    // (the number), b = rA offset (JX_RA0: rA = 0), c = the displacement
-    // (D-form) or rB offset (X-form).
-    JX_LFS,
-    JX_LFSU,
-    JX_LFD,
-    JX_LFDU,
-    JX_STFS,
-    JX_STFSU,
-    JX_STFD,
-    JX_LFSX,
-    JX_LFSUX,
-    JX_LFDX,
-    JX_LFDUX,
-    JX_STFSX,
-    JX_STFSUX,
-    JX_STFDX,
-    JX_LWBRX, // a = rT offset, b = rA offset (JX_RA0), c = rB offset
-    JX_STWBRX, // a = rS offset, b and c as lwbrx
-    JX_FP, // FP arithmetic and moves, Rc clear, through ppc_jit_fp: c = the word
-    JX_FCMP, // fcmpu / fcmpo through ppc_jit_fp: a = crfD, c = the word
-    JX_DCBZ, // dcbz through ppc_jit_dcbz: b = rA offset (JX_RA0: rA = 0), c = rB offset
-    JX_END
-};
-_Static_assert(JX_END < 65536, "translator id space overflow");
-
-// An FP arithmetic or move word (op 59/63, Rc clear) ppc_jit_fp runs: the
-// forms the decoder executes (ppc_decode.h), reserved fields as it checks
-// them; the compares, FPSCR moves and record forms stay with the
-// predecoded loop (they write CR or read FPSCR).
-static bool jit_fp_form(uint32_t iw) {
-    uint32_t op = iw >> 26, xo5 = (iw >> 1) & 31u, xo10 = (iw >> 1) & 0x3FFu;
-    uint32_t ra = (iw >> 16) & 31u, rb = (iw >> 11) & 31u, rc = (iw >> 6) & 31u;
-    if (op == 63) {
-        switch (xo10) {
-        case 72: // fmr fneg fabs fnabs frsp fctiw fctiwz
-        case 40:
-        case 264:
-        case 136:
-        case 12:
-        case 14:
-        case 15:
-            return true;
-        case 0: // fcmpu fcmpo mffs mtfsf mtfsfi mtfsb0 mtfsb1 mcrfs
-        case 32:
-        case 583:
-        case 711:
-        case 134:
-        case 70:
-        case 38:
-        case 64:
-            return false;
-        default:
-            break;
-        }
-    }
-    switch (xo5) {
-    case 18: // fdiv fsub fadd: FRC reserved
-    case 20:
-    case 21:
-        return rc == 0;
-    case 25: // fmul: FRB reserved
-        return rb == 0;
-    case 28: // fmsub fmadd fnmsub fnmadd
-    case 29:
-    case 30:
-    case 31:
-        return true;
-    case 23: // fsel (604)
-        return op == 63;
-    case 24: // fres (604)
-        return op == 59 && ra == 0 && rc == 0;
-    case 26: // frsqrte (604)
-        return op == 63 && ra == 0 && rc == 0;
-    default:
-        return false;
-    }
-}
+// The translator's classifier: the predecoded tier's T0 shapes plus the
+// translator's own, from the decode tree (ppc_jit_classify.h)
+#include "ppc_jit_classify.h"
 
 static bool jit_unit_is601(void); // the unit being translated runs on a 601 (U)
 
-// The predecoded classifier, plus the translator's own shapes
 static uint16_t jit_classify(uint32_t iw, uint32_t ipc, uint32_t page_lo, pd_entry_t *e) {
-    uint16_t id = ppc_pd_classify_word(iw, ipc, page_lo, e);
-    if (id > PPD_FIRST && id < PPD_END)
-        return id;
-    uint32_t op = iw >> 26, xo = (iw >> 1) & 0x3FFu;
-    uint32_t rt = (iw >> 21) & 31u, ra = (iw >> 16) & 31u, rb = (iw >> 11) & 31u;
-    if (op == 16) {
-        *e = (pd_entry_t){.a = (uint8_t)rt, .b = (uint8_t)ra, .c = iw};
-        return JX_BC;
-    }
-    if (op == 19 && (xo == 16 || xo == 528)) {
-        *e = (pd_entry_t){.a = (uint8_t)rt, .b = (uint8_t)ra, .c = iw & 1u};
-        return xo == 16 ? JX_BCLR : JX_BCCTR;
-    }
-    if (op >= 32 && op <= 45 && !(op & 1u) && ra == 0) { // lwz lbz stw stb lhz lha sth with rA = 0
-        static const uint16_t dform[14] = {PPD_LWZ, 0,       PPD_LBZ, 0,       PPD_STW, 0,       PPD_STB,
-                                           0,       PPD_LHZ, 0,       PPD_LHA, 0,       PPD_STH, 0};
-        *e = (pd_entry_t){.a = PPD_GOFF(rt), .b = JX_RA0, .c = (uint32_t)(int32_t)(int16_t)iw};
-        return dform[op - 32];
-    }
-    if (op == 31) { // XO-form add/subtract
-        int kind = -1;
-        switch (xo & 0x1FFu) {
-        case 266:
-            kind = AK_ADD;
-            break;
-        case 10:
-            kind = AK_ADDC;
-            break;
-        case 138:
-            kind = AK_ADDE;
-            break;
-        case 234:
-            kind = AK_ADDME;
-            break;
-        case 202:
-            kind = AK_ADDZE;
-            break;
-        case 40:
-            kind = AK_SUBF;
-            break;
-        case 8:
-            kind = AK_SUBFC;
-            break;
-        case 136:
-            kind = AK_SUBFE;
-            break;
-        case 232:
-            kind = AK_SUBFME;
-            break;
-        case 200:
-            kind = AK_SUBFZE;
-            break;
-        case 104:
-            kind = AK_NEG;
-            break;
-        }
-        if (kind >= 0) {
-            *e = (pd_entry_t){.a = PPD_GOFF(rt),
-                              .b = PPD_GOFF(ra),
-                              .c = PPD_GOFF(rb) | (uint32_t)kind << 8 | ((iw >> 10) & 1u) << 16 | (iw & 1u) << 17};
-            return JX_ADDX;
-        }
-    }
-    if (op == 31 && xo == 512 && !(iw & 0x007FF800u & ~0x03800000u)) { // mcrxr
-        *e = (pd_entry_t){.a = (uint8_t)((iw >> 23) & 7u)};
-        return JX_MCRXR;
-    }
-    if (op == 31 && (xo == 339 || xo == 467)) { // mfspr / mtspr of a plain supervisor SPR
-        uint32_t n = ra | rb << 5, off;
-        switch (n) {
-        case 18:
-            off = offsetof(ppc_t, dsisr);
-            break;
-        case 19:
-            off = offsetof(ppc_t, dar);
-            break;
-        case 26:
-            off = offsetof(ppc_t, srr0);
-            break;
-        case 27:
-            off = offsetof(ppc_t, srr1);
-            break;
-        case 272:
-        case 273:
-        case 274:
-        case 275:
-            off = offsetof(ppc_t, sprg) + 4 * (n - 272);
-            break;
-        default:
-            return id;
-        }
-        *e = (pd_entry_t){.a = PPD_GOFF(rt), .c = off};
-        return xo == 339 ? JX_MFSPR : JX_MTSPR;
-    }
-    if (id == T1_MFMSR || id == T1_MTMSR) {
-        *e = (pd_entry_t){.a = PPD_GOFF(rt)};
-        return id == T1_MFMSR ? JX_MFMSR : JX_MTMSR;
-    }
-    if (id == T1_MFTB) { // TBL or TBU (any other number is illegal: left to C)
-        uint32_t n = ra | rb << 5;
-        if (n != 268 && n != 269)
-            return id;
-        *e = (pd_entry_t){.a = PPD_GOFF(rt), .c = n - 268};
-        return JX_MFTB;
-    }
-    if (id == T1_LWARX || id == T1_STWCX_DOT) {
-        *e = (pd_entry_t){.a = PPD_GOFF(rt), .b = ra ? PPD_GOFF(ra) : JX_RA0, .c = PPD_GOFF(rb)};
-        return id == T1_LWARX ? JX_LWARX : JX_STWCX;
-    }
-    if ((id == T1_DIVW || id == T1_DIVWU || id == T1_MULHW || id == T1_MULHWU) && !(iw & 0x400u)) {
-        uint32_t k = id == T1_DIVW ? XK_DIVW : id == T1_DIVWU ? XK_DIVWU : id == T1_MULHW ? XK_MULHW : XK_MULHWU;
-        *e = (pd_entry_t){.a = PPD_GOFF(rt), .b = PPD_GOFF(ra), .c = PPD_GOFF(rb) | k << 8 | (iw & 1u) << 16};
-        return JX_ARITH;
-    }
-    if (id == T1_EQV || id == T1_SRAW) {
-        uint32_t k = id == T1_EQV ? XK_EQV : XK_SRAW;
-        *e = (pd_entry_t){.a = PPD_GOFF(ra), .b = PPD_GOFF(rt), .c = PPD_GOFF(rb) | k << 8 | (iw & 1u) << 16};
-        return JX_ARITH;
-    }
-    if (!jit_unit_is601() && op >= 48 && op <= 54) { // lfs lfsu lfd lfdu stfs stfsu stfd
-        static const uint16_t fdform[7] = {JX_LFS, JX_LFSU, JX_LFD, JX_LFDU, JX_STFS, JX_STFSU, JX_STFD};
-        if ((op & 1u) && op != 54 && ra == 0)
-            return id; // an update form with rA = 0 (invalid): left to the predecoded loop
-        *e = (pd_entry_t){.a = (uint8_t)rt, .b = ra ? PPD_GOFF(ra) : JX_RA0, .c = (uint32_t)(int32_t)(int16_t)iw};
-        return fdform[op - 48];
-    }
-    if (!jit_unit_is601() && op == 63 && (xo == 0 || xo == 32)) { // fcmpu / fcmpo
-        *e = (pd_entry_t){.a = (uint8_t)(rt >> 2), .c = iw};
-        return JX_FCMP;
-    }
-    if (!jit_unit_is601() && (op == 59 || op == 63) && !(iw & 1u) && jit_fp_form(iw)) {
-        *e = (pd_entry_t){.c = iw};
-        return JX_FP;
-    }
-    if (op == 46 || op == 47) { // lmw / stmw
-        *e = (pd_entry_t){.a = (uint8_t)rt, .b = ra ? PPD_GOFF(ra) : JX_RA0, .c = (uint32_t)(int32_t)(int16_t)iw};
-        return op == 46 ? JX_LMW : JX_STMW;
-    }
-    if (op != 31 || (iw & 1u))
-        return id;
-    if (xo == 1014 && !jit_unit_is601()) { // dcbz (a reserved rT is the decoder's illegal form)
-        if (rt)
-            return id;
-        *e = (pd_entry_t){.b = ra ? PPD_GOFF(ra) : JX_RA0, .c = PPD_GOFF(rb)};
-        return JX_DCBZ;
-    }
-    uint16_t x;
-    bool upd = false;
-    switch (xo) {
-    case 23:
-        x = JX_LWZX;
-        break;
-    case 55:
-        x = JX_LWZUX, upd = true;
-        break;
-    case 279:
-        x = JX_LHZX;
-        break;
-    case 311:
-        x = JX_LHZUX, upd = true;
-        break;
-    case 343:
-        x = JX_LHAX;
-        break;
-    case 375:
-        x = JX_LHAUX, upd = true;
-        break;
-    case 87:
-        x = JX_LBZX;
-        break;
-    case 119:
-        x = JX_LBZUX, upd = true;
-        break;
-    case 151:
-        x = JX_STWX;
-        break;
-    case 183:
-        x = JX_STWUX, upd = true;
-        break;
-    case 407:
-        x = JX_STHX;
-        break;
-    case 439:
-        x = JX_STHUX, upd = true;
-        break;
-    case 215:
-        x = JX_STBX;
-        break;
-    case 247:
-        x = JX_STBUX, upd = true;
-        break;
-    case 534:
-        x = JX_LWBRX;
-        break;
-    case 662:
-        x = JX_STWBRX;
-        break;
-    default:
-        if (jit_unit_is601())
-            return id;
-        switch (xo) {
-        case 535:
-            x = JX_LFSX;
-            break;
-        case 567:
-            x = JX_LFSUX, upd = true;
-            break;
-        case 599:
-            x = JX_LFDX;
-            break;
-        case 631:
-            x = JX_LFDUX, upd = true;
-            break;
-        case 663:
-            x = JX_STFSX;
-            break;
-        case 695:
-            x = JX_STFSUX, upd = true;
-            break;
-        case 727:
-            x = JX_STFDX;
-            break;
-        default:
-            return id;
-        }
-        if (upd && ra == 0)
-            return id;
-        *e = (pd_entry_t){.a = (uint8_t)rt, .b = ra ? PPD_GOFF(ra) : JX_RA0, .c = PPD_GOFF(rb)};
-        return x;
-    }
-    if (upd && ra == 0)
-        return id; // the 601's r0-inhibited update: left to the predecoded loop
-    *e = (pd_entry_t){.a = PPD_GOFF(rt), .b = ra ? PPD_GOFF(ra) : JX_RA0, .c = PPD_GOFF(rb)};
-    return x;
+    return ppc_jit_classify(iw, ipc, page_lo, jit_unit_is601(), e);
 }
 
 // === 1. WebAssembly byte writer =============================================
@@ -1628,26 +1240,11 @@ static void emit_stfd(void) {
 
 static uint32_t g_fp_slow; // the depth of the inline path's $slow block
 
-// The `fp` slot of a fast-path FP kind (sf_op), or -1 (the helper only)
-static int fp_inline_op(uint32_t iw) {
-    switch ((iw >> 1) & 31u) {
-    case 21:
-        return PPC_SF_ADD;
-    case 20:
-        return PPC_SF_SUB;
-    case 25:
-        return PPC_SF_MUL;
-    case 29:
-        return PPC_SF_MADD;
-    case 28:
-        return PPC_SF_MSUB;
-    case 31:
-        return PPC_SF_NMADD;
-    case 30:
-        return PPC_SF_NMSUB;
-    default:
-        return -1;
-    }
+// The `fp` slot of a fast-path FP kind (sf_op), or -1 (the helper only):
+// a JX_FP kind (ppc_jit_classify.h) that is an arithmetic op other than a
+// divide
+static int fp_inline_op(uint32_t kind) {
+    return kind <= PPC_SF_NMSUB && kind != PPC_SF_DIV ? (int)kind : -1;
 }
 
 static void br_slow_if(void) {
@@ -1731,7 +1328,7 @@ static void emit_fp_check(uint32_t iw, uint32_t mode) {
 }
 
 static void emit_fp_inline(uint32_t iw, int fop) {
-    bool single = (iw >> 26) == 59;
+    bool single = PPC_OPCD(iw) == 59;
     uint32_t rt = PPC_RT(iw), ra = PPC_RA(iw), rb = PPC_RB(iw), rc = PPC_FRC(iw);
     bool has_b = fop != PPC_SF_MUL, has_c = fop != PPC_SF_ADD && fop != PPC_SF_SUB;
     if (g_trace == 17)
@@ -1970,10 +1567,9 @@ static void emit_fp_inline(uint32_t iw, int fop) {
 // frA >= 0 (so -0 too) ? frC : frB, a NaN frA giving frB.  Returns false
 // for any other word.  (On Quake III's demo these were 16 % of the helper's
 // calls, every one of them a call for a few bit operations.)
-static bool emit_fp_move_inline(uint32_t iw) {
-    uint32_t xo10 = (iw >> 1) & 0x3FFu;
-    bool sel = ((iw >> 1) & 31u) == 23;
-    if ((iw >> 26) != 63 || (!sel && xo10 != 72 && xo10 != 40 && xo10 != 264 && xo10 != 136))
+static bool emit_fp_move_inline(uint32_t kind, uint32_t iw) {
+    bool sel = kind == JF_FSEL;
+    if (!sel && kind != JF_FMR && kind != JF_FNEG && kind != JF_FABS && kind != JF_FNABS)
         return false;
     op(W_BLOCK); // $done
     put(BT_VOID);
@@ -2003,13 +1599,13 @@ static bool emit_fp_move_inline(uint32_t iw) {
     } else {
         lget(L_P);
         mem(W_I64_LOAD, 3, offsetof(ppc_t, fpr) + 8u * PPC_RB(iw));
-        if (xo10 == 40) { // fneg
+        if (kind == JF_FNEG) {
             i64const(0x8000000000000000ull);
             op(W_I64_XOR);
-        } else if (xo10 == 264) { // fabs
+        } else if (kind == JF_FABS) {
             i64const(0x7FFFFFFFFFFFFFFFull);
             op(W_I64_AND);
-        } else if (xo10 == 136) { // fnabs
+        } else if (kind == JF_FNABS) {
             i64const(0x8000000000000000ull);
             op(W_I64_OR);
         }
@@ -2039,8 +1635,8 @@ static bool emit_fp_move_inline(uint32_t iw) {
 // and the guards' misses take the helper (VXCVI, the saturations).
 // Returns false for any other word.  (15 % of the helper's calls on Quake
 // III's demo: its float-to-int casts.)
-static bool emit_fctiwz_inline(uint32_t iw) {
-    if ((iw >> 26) != 63 || ((iw >> 1) & 0x3FFu) != 15)
+static bool emit_fctiwz_inline(uint32_t kind, uint32_t iw) {
+    if (kind != JF_FCTIWZ)
         return false;
     op(W_BLOCK); // $done
     put(BT_VOID);
@@ -3260,7 +2856,7 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
     case JX_ADDX: { // a = rT, b = rA, c = rB | kind << 8 | OE << 16 | Rc << 17 (ppc_add_body)
         uint32_t kind = (c >> 8) & 0xFFu, rb = c & 0xFFu;
         bool oe = (c >> 16) & 1u, rc = (c >> 17) & 1u;
-        if (kind == AK_NEG) {
+        if (kind == ADDK_NEG) {
             lget(RD(b));
             lset(L_T3);
             iconst(0);
@@ -3274,20 +2870,20 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
                 lset(L_T2); // the overflow, 0/1
             }
         } else {
-            bool subf = kind >= AK_SUBF;
-            uint32_t k = subf ? kind - AK_SUBF : kind; // the add form
+            bool subf = kind >= ADDK_SUBF;
+            uint32_t k = subf ? kind - ADDK_SUBF : kind; // the add form
             lget(RD(b));
             if (subf) {
                 iconst(~0u);
                 op(W_XOR);
             }
             lset(L_T3); // the first operand
-            if (k == AK_ADD || k == AK_ADDC || k == AK_ADDE)
+            if (k == ADDK_ADD || k == ADDK_ADDC || k == ADDK_ADDE)
                 lget(RD(rb));
             else
-                iconst(k == AK_ADDME ? ~0u : 0u);
+                iconst(k == ADDK_ADDME ? ~0u : 0u);
             lset(L_EA); // the second (a scratch here)
-            if (k == AK_ADDE || k == AK_ADDME || k == AK_ADDZE) {
+            if (k == ADDK_ADDE || k == ADDK_ADDME || k == ADDK_ADDZE) {
                 lget(L_XER);
                 iconst(29);
                 op(W_SHR_U);
@@ -3302,7 +2898,7 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
             lget(L_T2);
             op(W_ADD);
             lset(L_T1); // the sum
-            if (k != AK_ADD) { // CA: the carry out of the 64-bit sum
+            if (k != ADDK_ADD) { // CA: the carry out of the 64-bit sum
                 lget(L_T3);
                 op(W_EXTEND_U);
                 lget(L_EA);
@@ -3482,11 +3078,11 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
         emit_deopt_if();
         return;
     case JX_FP: // ppc_jit_fp: 1 when it did nothing (leave at the instruction)
-        if (fp_inline_op(c) >= 0) {
-            emit_fp_inline(c, fp_inline_op(c));
+        if (fp_inline_op(a) >= 0) {
+            emit_fp_inline(c, fp_inline_op(a));
             return;
         }
-        if (emit_fp_move_inline(c) || emit_fctiwz_inline(c))
+        if (emit_fp_move_inline(a, c) || emit_fctiwz_inline(a, c))
             return;
         iconst(c);
         iconst(0);
@@ -5203,10 +4799,11 @@ int32_t ppc_jit_dcbz(uint32_t ea, uint32_t unused1, uint32_t unused2) {
 // FP arithmetic and moves from translated code (JX_FP): what the decoder
 // runs for the word, or 1 -- nothing done, leave at it -- when FP is
 // unavailable or an FP exception is enabled (the predecoded loop raises
-// what is due).  The form was checked at translation (jit_fp_form), and Rc
-// is clear, so CR, which the translation holds in a local, is untouched.
-// `mode` 1 is a compare (JX_FCMP): ppc_fcmp, its CR field returned as
-// 0x10 | field for the translation to merge into its CR.
+// what is due): the decode tree's FP leaves (ppc_execute_fp).  The word is
+// one the translator's classifier hands over (ppc_jit_classify.h), Rc
+// clear, so CR, which the translation holds in a local, is untouched.
+// `mode` 1 is a compare (JX_FCMP): its CR field returned as 0x10 | field
+// for the translation to merge into its CR.
 EMSCRIPTEN_KEEPALIVE int32_t ppc_jit_fp(uint32_t iw, uint32_t mode, uint32_t unused);
 // jit.trace = 14: the FP helper's calls by opcode (op << 10 | the extended
 // opcode; the five-bit one for A-forms), printed at jit.trace = 15 -- what
@@ -5217,10 +4814,10 @@ static struct {
 // An arithmetic word's operands, why the inline path left it: 1 a zero
 // operand, 2 another special one (denormal, infinity, NaN), 0 neither (the
 // exponent envelope's edges, a double-rounding tie, a long product)
-static uint32_t fph_reason(const ppc_t *p, uint32_t iw) {
-    uint32_t xo5 = (iw >> 1) & 31u, r = 0;
+static uint32_t fph_reason(const ppc_t *p, uint32_t iw, uint32_t kind) {
+    uint32_t r = 0;
     uint32_t regs[3] = {PPC_RA(iw), PPC_RB(iw), PPC_FRC(iw)};
-    bool use[3] = {true, xo5 != 25, xo5 == 25 || xo5 >= 28};
+    bool use[3] = {true, kind != PPC_SF_MUL, kind == PPC_SF_MUL || kind >= PPC_SF_MADD};
     for (int i = 0; i < 3; i++) {
         if (!use[i])
             continue;
@@ -5234,10 +4831,12 @@ static uint32_t fph_reason(const ppc_t *p, uint32_t iw) {
     return r;
 }
 static void fph_note(uint32_t iw) {
-    uint32_t op = iw >> 26, xo5 = (iw >> 1) & 31u; // A-forms: op 59, and op 63 with xo5 >= 18
-    uint32_t key = op << 10 | (op == 59 || xo5 >= 18 ? xo5 : (iw >> 1) & 0x3FFu);
-    if (fp_inline_op(iw) >= 0)
-        key |= (1u + fph_reason(g_wa_p, iw)) << 16; // 1 other, 2 zero, 3 special
+    uint32_t op = PPC_OPCD(iw), xo5 = PPC_XO5(iw); // A-forms: op 59, and op 63 with xo5 >= 18
+    uint32_t key = op << 10 | (op == 59 || xo5 >= 18 ? xo5 : PPC_XO10(iw));
+    pd_entry_t e;
+    uint32_t kind = ppc_jit_classify(iw, 0, 0, false, &e) == JX_FP ? e.a : ~0u; // (a compare: no kind)
+    if (fp_inline_op(kind) >= 0)
+        key |= (1u + fph_reason(g_wa_p, iw, kind)) << 16; // 1 other, 2 zero, 3 special
     for (uint32_t h = (key * 2654435761u) >> 24, j = 0; j < 256; j++, h = (h + 1) & 255u)
         if (!g_fph[h].n || g_fph[h].key == key) {
             g_fph[h].key = key;
@@ -5315,77 +4914,13 @@ int32_t ppc_jit_fp(uint32_t iw, uint32_t mode, uint32_t unused) {
         return 1;
     if (mode == 1) {
         uint32_t cr = p->cr, sh = 28u - 4u * PPC_CRFD(iw);
-        ppc_fcmp(p, iw, ((iw >> 1) & 0x3FFu) == 32);
+        if (ppc_execute_fp(p, iw))
+            return 1;
         uint32_t field = (p->cr >> sh) & 0xFu;
         p->cr = cr; // the translation's CR local is the live one
         return (int32_t)(0x10u | field);
     }
-    bool single = (iw >> 26) == 59;
-    if (!single) {
-        uint64_t *t = &p->fpr[PPC_RT(iw)], b = p->fpr[PPC_RB(iw)];
-        switch ((iw >> 1) & 0x3FFu) {
-        case 72: // fmr
-            *t = b;
-            return 0;
-        case 40: // fneg
-            *t = b ^ 0x8000000000000000ull;
-            return 0;
-        case 264: // fabs
-            *t = b & 0x7FFFFFFFFFFFFFFFull;
-            return 0;
-        case 136: // fnabs
-            *t = b | 0x8000000000000000ull;
-            return 0;
-        case 12:
-            ppc_do_frsp(p, iw);
-            return 0;
-        case 14:
-            ppc_do_fctiw(p, iw, false);
-            return 0;
-        case 15:
-            ppc_do_fctiw(p, iw, true);
-            return 0;
-        default:
-            break;
-        }
-    }
-    switch ((iw >> 1) & 31u) {
-    case 18:
-        ppc_fp_arith(p, iw, PPC_SF_DIV, single);
-        return 0;
-    case 20:
-        ppc_fp_arith(p, iw, PPC_SF_SUB, single);
-        return 0;
-    case 21:
-        ppc_fp_arith(p, iw, PPC_SF_ADD, single);
-        return 0;
-    case 25:
-        ppc_fp_arith(p, iw, PPC_SF_MUL, single);
-        return 0;
-    case 28:
-        ppc_fp_arith(p, iw, PPC_SF_MSUB, single);
-        return 0;
-    case 29:
-        ppc_fp_arith(p, iw, PPC_SF_MADD, single);
-        return 0;
-    case 30:
-        ppc_fp_arith(p, iw, PPC_SF_NMSUB, single);
-        return 0;
-    case 31:
-        ppc_fp_arith(p, iw, PPC_SF_NMADD, single);
-        return 0;
-    case 23:
-        ppc_do_fsel(p, iw);
-        return 0;
-    case 24:
-        ppc_do_fres(p, iw);
-        return 0;
-    case 26:
-        ppc_do_frsqrte(p, iw);
-        return 0;
-    default:
-        return 1;
-    }
+    return ppc_execute_fp(p, iw) ? 1 : 0;
 }
 
 EMSCRIPTEN_KEEPALIVE int32_t ppc_jit_code_store(uint32_t ea, uint32_t value, uint32_t size);

@@ -37,7 +37,9 @@ drift out of sync and each cross-checks the other.
 | `ppc.c` | lifecycle, checkpoint, exception machinery, SPR file, `machine.cpu` object class, `$` aliases |
 | `ppc_decode.h` | **the shared decode tree** — an include-guard-free template configured via `PPC_DECODER_*` macros with one `OP_`-prefixed leaf per instruction; carries the validity rules (BO forms, the reserved fields of the rows that check them, `sc` and its 601-only POWER forms) so both includers agree by construction |
 | `ppc_ops.h` | the emulator's overloads: factored bodies (carry/overflow, compares, branch conditions, alignment) + the one-liner `OP_` table |
-| `ppc_run.c` | multi-statement instruction bodies (branches, divides, strings), the `ppc_execute` instantiation, sprint loop |
+| `ppc_ops_fp.h` | the FP register-to-register `OP_` leaves (moves, FPSCR moves, compares, arithmetic), included by `ppc_ops.h` and again by `ppc_run.c` for `ppc_execute_fp` |
+| `ppc_run.c` | multi-statement instruction bodies (branches, divides, strings), the `ppc_execute` instantiation, sprint loop, the predecoded loop and classifier, and `ppc_execute_fp` (the tree with only the FP leaves live, for the translation tier's FP helper) |
+| `ppc_jit_classify.h` | the tree's fourth instantiation: the translation tier's classifier (`ppc_jit.c`, see [ppc/ppc_jit.md](ppc/ppc_jit.md)); host code, so the `ppc_jit_classify` unit suite runs it natively |
 | `ppc_mmu.c` | the 601 MMU front end: T=1 segments, 601 BATs, hashed page table search, the translation caches and their invalidation (see below) |
 | `ppc_fpu.c` | FP bodies: single↔double conversions, compares, the FPSCR-instruction write rules, and the arithmetic wrappers (writeback/CR1/precise-trap delivery) |
 | `ppc_softfp.c/.h` | **the FPU arithmetic kernel**: integer-only IEEE 754 with the full FPSCR status model — pure functions of (operands, FPSCR), dependency-free (the `ppc_disasm` precedent) |
