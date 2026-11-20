@@ -2360,6 +2360,33 @@ static const arg_decl_t scsi_attach_args[] = {
     {.name = "id", .kind = VK_INT, .doc = "SCSI bus index 0..6"},
 };
 
+// The members that need no live bus: the drive catalog and the image
+// identification helpers, shared by the pre-machine singleton
+// (scsi_static_members) and the per-machine class (scsi_members).
+// clang-format off
+#define SCSI_CATALOG_MEMBERS                                                                                           \
+    {.kind = MK_ATTR,                                                                                                  \
+     .name = "hd_models",                                                                                              \
+     .doc = "Known SCSI HD model catalog: [{label, vendor, product, size}] maps",                                      \
+     .flags = M_CAT_ADVANCED,                                                                                          \
+     .attr = {.type = VK_LIST, .get = scsi_attr_hd_models, .set = NULL}},                                              \
+        {.kind = MK_METHOD,                                                                                            \
+         .name = "identify_hd",                                                                                        \
+         .flags = M_CAT_ADVANCED,                                                                                      \
+         .doc = "True if the file looks like a SCSI HD image",                                                         \
+         .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_hd}},             \
+        {.kind = MK_METHOD,                                                                                            \
+         .name = "identify_cdrom",                                                                                     \
+         .flags = M_CAT_ADVANCED,                                                                                      \
+         .doc = "True if the file looks like a CD-ROM image",                                                          \
+         .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_cdrom}},          \
+        {.kind = MK_METHOD,                                                                                            \
+         .name = "identify_iso",                                                                                       \
+         .flags = M_CAT_ADVANCED,                                                                                      \
+         .doc = "True if the image holds an ISO 9660 volume",                                                          \
+         .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_iso}}
+// clang-format on
+
 // Subset of `scsi_members` that doesn't depend on a live bus instance:
 // the drive catalog plus the two file-identification helpers. The static
 // singleton in `s_scsi_static_object` is mounted at root by
@@ -2367,26 +2394,7 @@ static const arg_decl_t scsi_attach_args[] = {
 // HD / CD-ROM upload validation) resolve `scsi.identify_hd` /
 // `scsi.identify_cdrom` without needing a machine on the tree.
 static const member_t scsi_static_members[] = {
-    {.kind = MK_ATTR,
-     .name = "hd_models",
-     .doc = "Known SCSI HD model catalog: [{label, vendor, product, size}] maps",
-     .flags = M_CAT_ADVANCED,
-     .attr = {.type = VK_LIST, .get = scsi_attr_hd_models, .set = NULL}                                },
-    {.kind = MK_METHOD,
-     .name = "identify_hd",
-     .flags = M_CAT_ADVANCED,
-     .doc = "True if the file looks like a SCSI HD image",
-     .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_hd}   },
-    {.kind = MK_METHOD,
-     .name = "identify_cdrom",
-     .flags = M_CAT_ADVANCED,
-     .doc = "True if the file looks like a CD-ROM image",
-     .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_cdrom}},
-    {.kind = MK_METHOD,
-     .name = "identify_iso",
-     .flags = M_CAT_ADVANCED,
-     .doc = "True if the image holds an ISO 9660 volume",
-     .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_iso}  },
+    SCSI_CATALOG_MEMBERS,
 };
 
 static const class_desc_t scsi_static_class = {
@@ -2423,26 +2431,7 @@ static const member_t scsi_members[] = {
      .doc = "Loopback test card / passive terminator",
      .flags = 0,
      .attr = {.type = VK_BOOL, .get = scsi_attr_loopback_get, .set = scsi_attr_loopback_set}            },
-    {.kind = MK_ATTR,
-     .name = "hd_models",
-     .doc = "Known SCSI HD model catalog: [{label, vendor, product, size}] maps",
-     .flags = M_CAT_ADVANCED,
-     .attr = {.type = VK_LIST, .get = scsi_attr_hd_models, .set = NULL}                                 },
-    {.kind = MK_METHOD,
-     .name = "identify_hd",
-     .flags = M_CAT_ADVANCED,
-     .doc = "True if the file looks like a SCSI HD image",
-     .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_hd}    },
-    {.kind = MK_METHOD,
-     .name = "identify_cdrom",
-     .flags = M_CAT_ADVANCED,
-     .doc = "True if the file looks like a CD-ROM image",
-     .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_cdrom} },
-    {.kind = MK_METHOD,
-     .name = "identify_iso",
-     .flags = M_CAT_ADVANCED,
-     .doc = "True if the image holds an ISO 9660 volume",
-     .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_iso}   },
+    SCSI_CATALOG_MEMBERS,
     {.kind = MK_METHOD,
      .name = "attach_hd",
      .examples = EXAMPLES("machine.scsi.attach_hd \"/opfs/images/hd/data.img\" 1"),
