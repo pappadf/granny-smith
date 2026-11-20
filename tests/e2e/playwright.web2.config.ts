@@ -51,7 +51,7 @@ export default defineConfig({
     // root. Do NOT use `git rev-parse --show-toplevel` — CI containers trip
     // git's "dubious ownership" guard, emptying the $(...) so `make ui2` runs
     // in the wrong directory ("No rule to make target 'ui2'").
-    command: `bash -c 'cd ../.. && make ui2 && exec python3 tests/e2e/test_server.py --root app/web2/dist --port ${PORT}'`,
+    command: `bash -c 'cd ../.. && make ui2 && exec python3 scripts/dev_server.py --root app/web2/dist --port ${PORT} --host 0.0.0.0 --strict-port'`,
     cwd: __dirname,
     url: `http://localhost:${PORT}/index.html`,
     reuseExistingServer: !process.env.CI,

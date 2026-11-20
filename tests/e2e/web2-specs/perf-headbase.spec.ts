@@ -332,7 +332,7 @@ let baseServer: ChildProcess | undefined;
 
 test.beforeAll(async () => {
   if (!BASE_DIST) return;
-  baseServer = spawn('python3', [path.join(__dirname, '..', 'test_server.py'), '--root', BASE_DIST, '--port', String(BASE_PORT)], {
+  baseServer = spawn('python3', [path.join(__dirname, '..', '..', '..', 'scripts', 'dev_server.py'), '--root', BASE_DIST, '--port', String(BASE_PORT), '--host', '0.0.0.0', '--strict-port'], {
     stdio: 'ignore',
   });
   // Up when it answers.

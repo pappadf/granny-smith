@@ -23,8 +23,6 @@ tests/e2e/
 ├── playwright.gallery.config.ts     # UI gallery screenshots (gallery/), Vite dev server
 ├── package.json                     # Node dependencies (Playwright)
 ├── tsconfig.json
-├── test_server.py                   # COOP/COEP-enabled static server (web2 + webkit configs)
-├── scripts/prod-smoke-server.mjs    # Subpath server without COI headers (prod-smoke)
 │
 ├── web2-specs/                      # Main functional suite (playwright.web2.config.ts)
 │   ├── afp-remote.spec.ts               # An archive.org volume of "Internet Archive" mounted, fetched and unpacked on System 6

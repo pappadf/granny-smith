@@ -446,7 +446,8 @@ ui2-check-dist:
 # environment GitHub Pages provides. Requires Playwright + chromium
 # already installed via tests/e2e/ (`cd tests/e2e && npm ci &&
 # npx playwright install chromium`). The webServer block in the
-# config starts scripts/prod-smoke-server.mjs automatically.
+# config starts scripts/dev_server.py (--subpath, --no-coi-headers)
+# automatically.
 ui2-prod-smoke: ui2 ui2-check-dist
 	cd tests/e2e && npx playwright test --config=playwright.prod-smoke.config.ts
 
