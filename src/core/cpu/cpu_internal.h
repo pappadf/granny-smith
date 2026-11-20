@@ -22,6 +22,38 @@
 #include <stdlib.h>
 #include <string.h>
 
+// 68K exception vector offsets from VBR (vector number x 4; MC68030UM Table
+// 8-1, MC68040UM Table 8-1).  The FPU's own vectors are FPVEC_* in fpu.c.
+#define M68K_VEC_BUS        0x008u // 2: bus error / access fault
+#define M68K_VEC_ADDR       0x00Cu // 3: address error
+#define M68K_VEC_ILLEGAL    0x010u // 4: illegal instruction (also BKPT)
+#define M68K_VEC_ZERODIV    0x014u // 5: integer divide by zero
+#define M68K_VEC_CHK        0x018u // 6: CHK, CHK2
+#define M68K_VEC_TRAPV      0x01Cu // 7: TRAPV, TRAPcc, cpTRAPcc
+#define M68K_VEC_PRIV       0x020u // 8: privilege violation
+#define M68K_VEC_TRACE      0x024u // 9: trace
+#define M68K_VEC_LINEA      0x028u // 10: line 1010 emulator
+#define M68K_VEC_LINEF      0x02Cu // 11: line 1111 emulator
+#define M68K_VEC_FORMAT     0x038u // 14: format error
+#define M68K_VEC_SPURIOUS   0x060u // 24: spurious interrupt; autovectors 1-7 follow
+#define M68K_VEC_TRAP0      0x080u // 32: TRAP #0; TRAP #n follow
+#define M68K_VEC_MMU_CONFIG 0x0E0u // 56: MMU configuration error
+
+// 68K model predicates.  A decoder translation unit that only ever runs one
+// model folds them to constants: the 68000 core and the 040 core.  The 030
+// unit (whose reset half also serves the 68000) and the shared units
+// (cpu.c, fpu.c) compare the model, relying on 68000 < 68030 < 68040.
+#if defined(CPU_DECODER_IS_68040)
+#define CPU_IS_020PLUS(cpu) 1
+#define CPU_IS_68040(cpu)   1
+#elif defined(CPU_DECODER_IS_68000)
+#define CPU_IS_020PLUS(cpu) 0
+#define CPU_IS_68040(cpu)   0
+#else
+#define CPU_IS_020PLUS(cpu) ((cpu)->cpu_model >= CPU_MODEL_68030)
+#define CPU_IS_68040(cpu)   ((cpu)->cpu_model >= CPU_MODEL_68040)
+#endif
+
 // CPU internal state
 struct cpu {
 
@@ -170,7 +202,7 @@ static inline uint32_t ea_index_value(cpu_t *restrict cpu, uint16_t ext_word) {
     // shift is deliberately unsigned: scaling the two's-complement index
     // modulo 2^32 is exactly the hardware's address arithmetic, with no
     // signed-overflow question for a large negative index.
-    if (cpu->cpu_model >= CPU_MODEL_68030) {
+    if (CPU_IS_020PLUS(cpu)) {
         int scale = (ext_word >> 9) & 3;
         v <<= scale;
     }
@@ -282,7 +314,7 @@ static __attribute__((noinline)) uint32_t calculate_ea_slow(cpu_t *restrict cpu,
     case 6: // (d8,An,Xn) or 68020+ full extension word
     {
         uint16_t ext = fetch_16(cpu, increment);
-        if ((ext & 0x0100) && cpu->cpu_model >= CPU_MODEL_68030) {
+        if ((ext & 0x0100) && CPU_IS_020PLUS(cpu)) {
             // Full extension word (bit 8 = 1): 68020+ complex addressing
             return calculate_ea_full(cpu, ext, cpu->a[reg], increment);
         }
@@ -306,7 +338,7 @@ static __attribute__((noinline)) uint32_t calculate_ea_slow(cpu_t *restrict cpu,
         {
             uint32_t pc = cpu->pc;
             uint16_t ext = fetch_16(cpu, increment);
-            if ((ext & 0x0100) && cpu->cpu_model >= CPU_MODEL_68030) {
+            if ((ext & 0x0100) && CPU_IS_020PLUS(cpu)) {
                 // Full extension word (bit 8 = 1): 68020+ PC-relative complex addressing
                 return calculate_ea_full(cpu, ext, pc, increment);
             }
@@ -668,7 +700,7 @@ static inline void movem_from_register(cpu_t *restrict cpu, uint16_t opcode, int
             addr -= step;
             // 68030 stores An-step when An is the predecrement base register
             uint32_t val = cpu->a[r];
-            if (cpu->cpu_model >= CPU_MODEL_68030 && r == an)
+            if (CPU_IS_020PLUS(cpu) && r == an)
                 val -= step;
             if (bits == 16)
                 cpu_dwrite16(cpu, addr, val);
@@ -722,7 +754,7 @@ static inline uint8_t abcd(cpu_t *restrict cpu, uint8_t xx, uint8_t yy) {
     uint8_t corr = (bc | dc) & 0x88;
     uint8_t rr = ss + corr - (corr >> 2);
     // V is "undefined" per PRM; 68030+ clears it, 68000 computes from result (Spritesmind formula)
-    cpu->overflow = (cpu->cpu_model >= CPU_MODEL_68030) ? 0 : (~ss & rr & 0x80) >> 7;
+    cpu->overflow = CPU_IS_020PLUS(cpu) ? 0 : (~ss & rr & 0x80) >> 7;
     cpu->extend = cpu->carry = ((bc | (ss & ~rr)) & 0x80) >> 7;
     cpu->negative = rr >> 7;
     // Z is sticky across a multi-precision chain: cleared by any non-zero
@@ -737,7 +769,7 @@ static inline uint8_t sbcd(cpu_t *restrict cpu, uint8_t xx, uint8_t yy) {
     uint8_t bc = ((~xx & yy) | ((~xx | yy) & dd)) & 0x88;
     uint8_t rr = dd - bc + (bc >> 2);
     // V is "undefined" per PRM; 68030+ clears it, 68000 computes from result (Spritesmind formula)
-    cpu->overflow = (cpu->cpu_model >= CPU_MODEL_68030) ? 0 : (dd & ~rr & 0x80) >> 7;
+    cpu->overflow = CPU_IS_020PLUS(cpu) ? 0 : (dd & ~rr & 0x80) >> 7;
     cpu->extend = cpu->carry = ((bc | (~dd & rr)) & 0x80) >> 7;
     cpu->negative = rr >> 7;
     // Sticky Z, as in abcd
@@ -808,11 +840,11 @@ static inline void cpu_select_soa(bool supervisor) {
 static inline void enter_exception_supervisor(cpu_t *restrict cpu) {
     if (!cpu->supervisor) {
         cpu->usp = cpu->a[7];
-        cpu->a[7] = (cpu->m && cpu->cpu_model >= CPU_MODEL_68030) ? cpu->msp : cpu->ssp;
+        cpu->a[7] = (cpu->m && CPU_IS_020PLUS(cpu)) ? cpu->msp : cpu->ssp;
         cpu->supervisor = 1;
         cpu->m = 0; // exceptions always switch to ISP (M=0)
         cpu_select_soa(true);
-    } else if (cpu->m && cpu->cpu_model >= CPU_MODEL_68030) {
+    } else if (cpu->m && CPU_IS_020PLUS(cpu)) {
         // In supervisor+master mode: switch to ISP for the exception frame
         cpu->msp = cpu->a[7];
         cpu->a[7] = cpu->ssp;
@@ -842,11 +874,11 @@ static inline void exception(cpu_t *restrict cpu, uint32_t vector, uint32_t pc, 
     // Trace all exceptions (bus errors have their own dedicated path with richer info;
     // this records generic exceptions — illegal instruction, privilege violation,
     // trace, TRAPs, FPU, interrupts, etc. — that otherwise go untracked).
-    if (vector != 0x008)
+    if (vector != M68K_VEC_BUS)
         exc_trace_record(vector, cpu->instruction_pc, pc, 0, 0, cpu->vbr, sr, 0, 0);
     enter_exception_supervisor(cpu);
 
-    if (cpu->cpu_model >= CPU_MODEL_68030) {
+    if (CPU_IS_020PLUS(cpu)) {
         // Determine frame format from exception vector number
         uint32_t vec_num = vector / 4;
         int format = 0;
@@ -857,7 +889,7 @@ static inline void exception(cpu_t *restrict cpu, uint32_t vector, uint32_t pc, 
         // instruction address stands in for it (documented divergence).
         if (vec_num == 5 || vec_num == 6 || vec_num == 7 || vec_num == 9 || (vec_num >= 48 && vec_num <= 54)) {
             format = 2;
-            if (cpu->cpu_model >= CPU_MODEL_68040 && vec_num >= 48 && vec_num <= 54)
+            if (CPU_IS_68040(cpu) && vec_num >= 48 && vec_num <= 54)
                 format = 3;
         }
 
@@ -973,7 +1005,7 @@ static inline void bus_error_double_fault(cpu_t *restrict cpu, uint32_t faulting
     cpu->halted = 1;
     g_bus_error_pending = false;
     memory_end_sprint(g_bus_error_instr_ptr);
-    exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, format, kind);
+    exc_trace_record(M68K_VEC_BUS, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, format, kind);
 }
 
 // Bus error with retry semantics for MMU-enabled OS kernels (A/UX).
@@ -1060,7 +1092,7 @@ static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *res
     if (cpu->cpu_model == CPU_MODEL_68000) {
         format = 0;
         push_group0_frame_68000(cpu, saved_pc, saved_sr, fault_addr, rw, fc, false);
-    } else if (cpu->cpu_model >= CPU_MODEL_68040) {
+    } else if (CPU_IS_68040(cpu)) {
         format = 0x7;
         push_access_error_frame_040(cpu, saved_pc, saved_sr, fault_addr, rw, fc, g_bus_error_is_pmmu);
     } else {
@@ -1071,7 +1103,7 @@ static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *res
         bus_error_double_fault(cpu, faulting_pc, saved_pc, fault_addr, rw, saved_sr, format, 1);
         return;
     }
-    cpu->pc = memory_read_uint32(cpu->vbr + 0x008);
+    cpu->pc = memory_read_uint32(cpu->vbr + M68K_VEC_BUS);
     if (g_bus_error_pending) {
         bus_error_double_fault(cpu, faulting_pc, saved_pc, fault_addr, rw, saved_sr, format, 2);
         return;
@@ -1079,7 +1111,7 @@ static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *res
     cpu->trace = 0;
     // (Retry: saved_pc == faulting_pc always, so the 68000 path's same-PC
     // tracking reset in exception_bus_error never applies here.)
-    exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, format, 0);
+    exc_trace_record(M68K_VEC_BUS, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, format, 0);
 }
 
 // Raise a bus error with skip semantics (68030 Format $B frame, 68040 format
@@ -1124,7 +1156,7 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
     uint16_t fc = (uint16_t)(g_bus_error_fc & 0x7);
 
     if (cpu->cpu_model == CPU_MODEL_68000) {
-        uint32_t vec = addr_err ? 0x00Cu : 0x008u;
+        uint32_t vec = addr_err ? M68K_VEC_ADDR : M68K_VEC_BUS;
         push_group0_frame_68000(cpu, saved_pc, saved_sr, fault_addr, rw, fc, addr_err);
         if (g_bus_error_pending) {
             bus_error_double_fault(cpu, faulting_pc, saved_pc, fault_addr, rw, saved_sr, 0, 1);
@@ -1146,7 +1178,7 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
     // next instruction; the deferred fault is delivered after the faulting
     // instruction completed, matching the $B path below).
     uint16_t format;
-    if (cpu->cpu_model >= CPU_MODEL_68040) {
+    if (CPU_IS_68040(cpu)) {
         format = 0x7;
         push_access_error_frame_040(cpu, saved_pc, saved_sr, fault_addr, rw, fc, g_bus_error_is_pmmu);
     } else {
@@ -1161,7 +1193,7 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
         return;
     }
 
-    cpu->pc = memory_read_uint32(cpu->vbr + 0x008);
+    cpu->pc = memory_read_uint32(cpu->vbr + M68K_VEC_BUS);
     if (g_bus_error_pending) {
         bus_error_double_fault(cpu, faulting_pc, saved_pc, fault_addr, rw, saved_sr, format, 2);
         return;
@@ -1176,7 +1208,7 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
     if (saved_pc != faulting_pc)
         cpu->last_bus_error_pc = 0;
 
-    exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, format, 0);
+    exc_trace_record(M68K_VEC_BUS, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, format, 0);
 }
 
 // Check if a pending interrupt should be serviced.  Level 7 is non-maskable on
@@ -1195,7 +1227,7 @@ static inline void cpu_check_interrupt(cpu_t *restrict cpu) {
         if (cpu->ipl == 7)
             cpu->nmi_edge = 0;
         cpu->interrupt_mask = cpu->ipl;
-        exception(cpu, 0x60 + 4 * cpu->ipl, cpu->pc, sr); // vector includes VBR on 68030
+        exception(cpu, M68K_VEC_SPURIOUS + 4 * cpu->ipl, cpu->pc, sr); // vector includes VBR on 68030
     }
 }
 
@@ -1216,7 +1248,7 @@ static inline void cpu_check_interrupt(cpu_t *restrict cpu) {
 static inline void m68k_bus_error_latch_settle(cpu_t *restrict cpu, uint32_t *instructions) {
     if (cpu->supervisor || g_bus_error_pending)
         return;
-    uint32_t pc = cpu->cpu_model >= CPU_MODEL_68030 ? cpu->pc : (cpu->pc & 0x00FFFFFFu);
+    uint32_t pc = CPU_IS_020PLUS(cpu) ? cpu->pc : (cpu->pc & 0x00FFFFFFu);
     if (pc != cpu->last_bus_error_pc)
         cpu->last_bus_error_pc = 0;
     else if (instructions && *instructions > 1) {
@@ -1228,7 +1260,7 @@ static inline void m68k_bus_error_latch_settle(cpu_t *restrict cpu, uint32_t *in
 static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
     bool new_s = (sr >> 13) & 1;
 
-    if (cpu->cpu_model >= CPU_MODEL_68030) {
+    if (CPU_IS_020PLUS(cpu)) {
         bool old_s = cpu->supervisor;
         bool new_m = (sr >> 12) & 1;
         if (cpu->supervisor) {
@@ -1331,24 +1363,24 @@ static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
 
 // Exception helpers
 static inline void exception_divide_by_zero(cpu_t *restrict cpu) {
-    exception(cpu, 0x14, cpu->pc, cpu_get_sr(cpu));
+    exception(cpu, M68K_VEC_ZERODIV, cpu->pc, cpu_get_sr(cpu));
 }
 static inline void chk_exception(cpu_t *restrict cpu) {
-    exception(cpu, 0x18, cpu->pc, cpu_get_sr(cpu));
+    exception(cpu, M68K_VEC_CHK, cpu->pc, cpu_get_sr(cpu));
 }
 static inline void trapv(cpu_t *restrict cpu) {
-    exception(cpu, 0x1c, cpu->pc, cpu_get_sr(cpu));
+    exception(cpu, M68K_VEC_TRAPV, cpu->pc, cpu_get_sr(cpu));
 }
 static inline void privilege_violation(cpu_t *restrict cpu) {
     // MC68030UM 8.1.6: the saved PC is the first word of the violating instruction.
-    exception(cpu, 0x020, cpu->instruction_pc, cpu_get_sr(cpu));
+    exception(cpu, M68K_VEC_PRIV, cpu->instruction_pc, cpu_get_sr(cpu));
 }
 static inline void trap(cpu_t *restrict cpu, int trap_num) {
-    exception(cpu, 0x080 + trap_num * 4, cpu->pc, cpu_get_sr(cpu));
+    exception(cpu, M68K_VEC_TRAP0 + trap_num * 4, cpu->pc, cpu_get_sr(cpu));
 }
 static inline void a_trap(cpu_t *restrict cpu) {
     // MC68030UM 8.1.5: the saved PC is the address of the unimplemented instruction.
-    exception(cpu, 0x28, cpu->instruction_pc, cpu_get_sr(cpu));
+    exception(cpu, M68K_VEC_LINEA, cpu->instruction_pc, cpu_get_sr(cpu));
 }
 // MC68000 code-fetch bus error: the prefetch that faulted left the PC advanced
 // past the start of the control-transfer instruction that branched into the
@@ -1467,7 +1499,7 @@ static inline void f_trap(cpu_t *restrict cpu, uint16_t opcode) {
         return;
     }
     // MC68030UM 8.1.5: the saved PC is the address of the F-line instruction.
-    exception(cpu, 0x2C, cpu->instruction_pc, cpu_get_sr(cpu));
+    exception(cpu, M68K_VEC_LINEF, cpu->instruction_pc, cpu_get_sr(cpu));
 }
 
 // Advance cpu->pc past EA extension words (68030 exception path only).
@@ -1522,7 +1554,7 @@ static inline void skip_ea_extension_words(cpu_t *restrict cpu, int mode, int re
 // Raise illegal instruction exception (vector 4).
 // Stacked PC points to the first word of the illegal instruction (per M68000 PRM).
 static inline void illegal_instruction(cpu_t *restrict cpu) {
-    exception(cpu, 0x010, cpu->instruction_pc, cpu_get_sr(cpu));
+    exception(cpu, M68K_VEC_ILLEGAL, cpu->instruction_pc, cpu_get_sr(cpu));
 }
 
 #endif // CPU_INTERNAL_H

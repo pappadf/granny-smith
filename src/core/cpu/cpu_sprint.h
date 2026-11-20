@@ -116,7 +116,7 @@ static inline __attribute__((always_inline)) void m68k_sprint_exit(cpu_t *restri
     else if (__builtin_expect((saved_trace & 2) && (cpu->trace & 2), 0)) {
         // Trace: T1 set at sprint start and still set now (for SR-modifying
         // instructions, the new T1, M68000 PRM 6.3.10)
-        exception(cpu, 0x024, cpu->pc, cpu_get_sr(cpu));
+        exception(cpu, M68K_VEC_TRACE, cpu->pc, cpu_get_sr(cpu));
     }
 #endif
     (void)saved_trace;

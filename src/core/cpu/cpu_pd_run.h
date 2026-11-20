@@ -870,7 +870,7 @@ static inline void pd_movem_from_regs_predec(cpu_t *restrict cpu, uint16_t mask,
         if (mask & (1 << i)) {
             addr -= (uint32_t)step;
             uint32_t val = cpu->a[7 - i];
-            if (cpu->cpu_model >= CPU_MODEL_68030 && (7 - i) == an)
+            if (CPU_IS_020PLUS(cpu) && (7 - i) == an)
                 val -= (uint32_t)step; // 030+: An-step when An is the base
             if (bits == 16)
                 WRITE16(addr, (uint16_t)val);

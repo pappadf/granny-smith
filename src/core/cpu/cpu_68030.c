@@ -104,7 +104,7 @@ static void pmove_root(cpu_t *cpu, mmu_state_t *mmu, uint32_t ea_mode, uint32_t 
         // would be wrong).  The flush was being skipped by the
         // early break, leaving ATC entries from the old root.
         mmu_invalidate_tlb(mmu);
-        exception(cpu, 0xE0, cpu->pc, cpu_get_sr(cpu));
+        exception(cpu, M68K_VEC_MMU_CONFIG, cpu->pc, cpu_get_sr(cpu));
         return;
     }
     if (!fd)
@@ -225,7 +225,7 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                             // entries built under the old TC.
                             mmu->enabled = false;
                             mmu_invalidate_tlb(mmu);
-                            exception(cpu, 0xE0, cpu->pc, cpu_get_sr(cpu));
+                            exception(cpu, M68K_VEC_MMU_CONFIG, cpu->pc, cpu_get_sr(cpu));
                             break;
                         }
                     }

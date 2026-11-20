@@ -2564,7 +2564,7 @@ void fpu_general_op(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uint16_t ext_
     // not defined and fall through to the unimplemented-opcode path below.
     // FMOVECR (top3 = 2, source specifier 7) keeps its 7-bit ROM offset.
     unsigned op_prec = 0;
-    if (cpu->cpu_model >= CPU_MODEL_68040 && (top3 == 0 || (top3 == 2 && src_spec != 7))) {
+    if (CPU_IS_68040(cpu) && (top3 == 0 || (top3 == 2 && src_spec != 7))) {
         unsigned base;
         if (fpu_op_rounded_040(op, &base, &op_prec))
             op = base;

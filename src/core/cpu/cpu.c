@@ -328,7 +328,7 @@ uint16_t cpu_get_sr(cpu_t *restrict cpu) {
     uint16_t sr = read_ccr(cpu);
 
     sr |= (cpu->trace >> 1 & 1) << 15; // T1 -- bit 1 of cpu->trace on every model
-    if (cpu->cpu_model >= CPU_MODEL_68030) {
+    if (CPU_IS_020PLUS(cpu)) {
         sr |= (cpu->trace & 1) << 14; // T0 (does not exist below the 030)
         if (cpu->m)
             sr |= 1 << 12;
