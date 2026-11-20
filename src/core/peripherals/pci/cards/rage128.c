@@ -892,6 +892,19 @@ static uint32_t r128_cursor_pixel(const rage128_t *r, uint32_t rgb, uint32_t bpp
     return rgb & 0xFFFFFFu;
 }
 
+// One row of the AND/XOR cursor (AND plane, then XOR plane, 8 bytes each):
+// AND set and XOR clear is transparent, both set inverts, AND clear draws
+// colour XOR.
+static void r128_cursor_row(const void *ctx, uint32_t row, uint8_t *codes) {
+    const uint8_t *line = (const uint8_t *)ctx + row * CUR_LINE_BYTES;
+    for (uint32_t col = 0; col < CUR_SIZE; col++) {
+        uint32_t bit = 7u - (col & 7u);
+        uint32_t and_bit = (line[col >> 3] >> bit) & 1u;
+        uint32_t xor_bit = (line[8 + (col >> 3)] >> bit) & 1u;
+        codes[col] = and_bit ? (xor_bit ? DISPLAY_CURSOR_INVERT : DISPLAY_CURSOR_TRANSPARENT) : (uint8_t)xor_bit;
+    }
+}
+
 // Overlay the cursor on `compose`, which holds the frame in display order.
 static void r128_draw_cursor(rage128_t *r, uint32_t bpp) {
     uint32_t src = r128_vram_wrap(r, r->reg[R_CUR_OFFSET / 4] & 0x1FFFFF0u);
@@ -903,28 +916,8 @@ static void r128_draw_cursor(rage128_t *r, uint32_t bpp) {
     uint32_t ox = CUR_OFF_H(off), oy = CUR_OFF_V(off);
     uint32_t clr[2] = {r128_cursor_pixel(r, r->reg[R_CUR_CLR0 / 4], bpp),
                        r128_cursor_pixel(r, r->reg[R_CUR_CLR1 / 4], bpp)};
-    uint32_t stride = r->display.stride, width = r->display.width, height = r->display.height;
-    for (uint32_t row = oy; row < CUR_SIZE; row++) {
-        uint32_t y = py + (row - oy);
-        if (y >= height)
-            break;
-        const uint8_t *line = r->vram + src + row * CUR_LINE_BYTES;
-        for (uint32_t col = ox; col < CUR_SIZE; col++) {
-            uint32_t x = px + (col - ox);
-            if (x >= width)
-                break;
-            uint32_t bit = 7u - (col & 7u);
-            uint32_t and_bit = (line[col >> 3] >> bit) & 1u;
-            uint32_t xor_bit = (line[8 + (col >> 3)] >> bit) & 1u;
-            if (and_bit && !xor_bit)
-                continue; // transparent
-            uint8_t *at = r->compose + (size_t)y * stride + (size_t)x * bpp;
-            for (uint32_t i = 0; i < bpp; i++) {
-                uint32_t shift = 8u * (bpp - 1u - i);
-                at[i] = and_bit ? (uint8_t)~at[i] : (uint8_t)(clr[xor_bit] >> shift);
-            }
-        }
-    }
+    display_cursor_overlay(r->compose, r->display.stride, r->display.width, r->display.height, bpp, px, py, ox, oy,
+                           CUR_SIZE, r128_cursor_row, r->vram + src, clr);
 }
 
 bool r128_cursor_image(rage128_t *r, uint32_t img[64 * 64], int32_t *x, int32_t *y) {

@@ -74,11 +74,46 @@ TEST(test_8bpp_uses_the_clut_and_no_table) {
     ASSERT_EQ_INT(30, rgba[2]);
 }
 
+// A cursor whose row r reads: col 0 colour 0, col 1 colour 1, col 2
+// transparent, col 3 invert, the rest transparent.
+static void test_cursor_row(const void *ctx, uint32_t row, uint8_t *codes) {
+    (void)ctx, (void)row;
+    memset(codes, DISPLAY_CURSOR_TRANSPARENT, 64);
+    codes[0] = DISPLAY_CURSOR_CLR0;
+    codes[1] = DISPLAY_CURSOR_CLR1;
+    codes[3] = DISPLAY_CURSOR_INVERT;
+}
+
+// The shared cursor clip walk: colours land big-endian in the frame's
+// depth, transparent leaves the frame, invert flips its bytes, the
+// definition offset shifts the cursor, and the frame's edges clip it.
+TEST(test_cursor_overlay_codes_offset_and_clip) {
+    uint8_t frame[4 * 3 * 2]; // 4 x 3 pixels at 16 bpp
+    memset(frame, 0x5A, sizeof frame);
+    const uint32_t clr[2] = {0x1234, 0xABCD};
+    // Definition (0,0) at frame (1,1): cols 0..2 of the definition fit.
+    display_cursor_overlay(frame, 8, 4, 3, 2, 1, 1, 0, 0, 64, test_cursor_row, NULL, clr);
+    ASSERT_EQ_INT(frame[1 * 8 + 2], 0x12); // (1,1) colour 0, high byte first
+    ASSERT_EQ_INT(frame[1 * 8 + 3], 0x34);
+    ASSERT_EQ_INT(frame[1 * 8 + 4], 0xAB); // (2,1) colour 1
+    ASSERT_EQ_INT(frame[1 * 8 + 5], 0xCD);
+    ASSERT_EQ_INT(frame[1 * 8 + 6], 0x5A); // (3,1) transparent; col 3 is clipped
+    ASSERT_EQ_INT(frame[0 * 8 + 2], 0x5A); // row 0 untouched
+    ASSERT_EQ_INT(frame[2 * 8 + 2], 0x12); // row 2 drawn, then the bottom edge
+    // An offset of 3 makes the visible cursor start at the invert column.
+    memset(frame, 0x5A, sizeof frame);
+    display_cursor_overlay(frame, 8, 4, 3, 2, 0, 0, 3, 0, 64, test_cursor_row, NULL, clr);
+    ASSERT_EQ_INT(frame[0], 0xA5); // (0,0) inverted
+    ASSERT_EQ_INT(frame[1], 0xA5);
+    ASSERT_EQ_INT(frame[2], 0x5A); // the rest transparent
+}
+
 int main(void) {
     fill_invert();
     RUN(test_32bpp_channels_go_through_the_table);
     RUN(test_16bpp_expands_then_looks_up);
     RUN(test_8bpp_uses_the_clut_and_no_table);
+    RUN(test_cursor_overlay_codes_offset_and_clip);
     printf("[PASS] All display_dac tests passed\n");
     return 0;
 }

@@ -2949,6 +2949,24 @@ static void mach64_present(mach64_t *m) {
 
 // Build the hardware-cursor composite: the frame, with the cursor the
 // last frame latched drawn over it
+// What the cursor row decoder reads: the definition in VRAM, in the cursor
+// engine's own byte order.
+typedef struct {
+    const uint8_t *vram;
+    uint32_t src; // the definition's VRAM offset
+    uint32_t swap; // byte-address XOR into the big-endian view
+} mach64_cursor_src_t;
+
+// One row of the 2-bit cursor: 0/1 colour, 2 transparent, 3 invert -- the
+// DISPLAY_CURSOR_* codes as they are.
+static void mach64_cursor_row(const void *ctx, uint32_t row, uint8_t *codes) {
+    const mach64_cursor_src_t *c = (const mach64_cursor_src_t *)ctx;
+    for (uint32_t col = 0; col < CUR_SIZE; col++) {
+        uint8_t byte = c->vram[(c->src + row * CUR_LINE_BYTES + (col >> 2)) ^ c->swap];
+        codes[col] = (uint8_t)((byte >> (2u * (col & 3u))) & 3u);
+    }
+}
+
 static void mach64_compose(mach64_t *m) {
     m->compose_stale = false;
     uint32_t bpp = mach64_bytes_per_pixel(m);
@@ -3011,27 +3029,9 @@ static void mach64_compose(mach64_t *m) {
     // pixel.  At 8 bpp the two agree; at 32 bpp, read straight, each dword's
     // four bytes of 2-bit pixels come out reversed and the arrow is drawn in
     // shuffled 4-pixel pieces.
-    uint32_t swap = m->gp ? mach64_aper_swap(m) : 0;
-
-    for (uint32_t row = oy; row < CUR_SIZE; row++) {
-        uint32_t y = py + (row - oy);
-        if (y >= height)
-            break;
-        for (uint32_t col = ox; col < CUR_SIZE; col++) {
-            uint32_t x = px + (col - ox);
-            if (x >= width)
-                break;
-            uint8_t byte = m->vram[(src + row * CUR_LINE_BYTES + (col >> 2)) ^ swap];
-            uint32_t v = (byte >> (2u * (col & 3u))) & 3u;
-            if (v == 2u)
-                continue; // transparent
-            uint8_t *at = m->compose + (size_t)y * stride + (size_t)x * bpp;
-            for (uint32_t i = 0; i < bpp; i++) {
-                uint32_t shift = 8u * (bpp - 1u - i);
-                at[i] = (v == 3u) ? (uint8_t)~at[i] : (uint8_t)(clr[v] >> shift);
-            }
-        }
-    }
+    mach64_cursor_src_t cur = {.vram = m->vram, .src = src, .swap = m->gp ? mach64_aper_swap(m) : 0};
+    display_cursor_overlay(m->compose, stride, width, height, bpp, px, py, ox, oy, CUR_SIZE, mach64_cursor_row, &cur,
+                           clr);
 }
 
 static void mach64_update(mach64_t *m) {

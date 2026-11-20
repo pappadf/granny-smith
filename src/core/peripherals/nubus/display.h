@@ -258,6 +258,26 @@ static inline uint32_t display_nearest_index(const rgba8_t clut[256], uint32_t r
     return best;
 }
 
+// One hardware-cursor pixel, as a cursor's row decoder reports it.
+#define DISPLAY_CURSOR_CLR0        0 // colour 0
+#define DISPLAY_CURSOR_CLR1        1 // colour 1
+#define DISPLAY_CURSOR_TRANSPARENT 2 // the frame shows through
+#define DISPLAY_CURSOR_INVERT      3 // the frame's bytes inverted
+
+// Decode row `row` of a cursor definition into codes[0..size-1]
+// (DISPLAY_CURSOR_*): the per-chip half of a hardware-cursor overlay.
+typedef void (*display_cursor_row_fn)(const void *ctx, uint32_t row, uint8_t *codes);
+
+// Overlay a size x size hardware cursor on a composite frame `dst` (`stride`
+// bytes a row, `width` x `height` pixels of `bpp` bytes, big-endian): the
+// definition's pixel (ox, oy) lands at frame (px, py), and the walk stops at
+// the frame's right and bottom edges.  `clr` holds the two colours already in
+// the frame's own pixel format.  The clip walk shared by the Mach64 and the
+// Rage 128; how a definition encodes its pixels is the decoder's (size <= 64).
+void display_cursor_overlay(uint8_t *dst, uint32_t stride, uint32_t width, uint32_t height, uint32_t bpp, uint32_t px,
+                            uint32_t py, uint32_t ox, uint32_t oy, uint32_t size, display_cursor_row_fn decode,
+                            const void *ctx, const uint32_t clr[2]);
+
 // The shell-facing name of a format.  One spelling, so machine.screen and a
 // card's framebuffer node cannot disagree about what the guest is running.
 static inline const char *display_format_name(pixel_format_t format) {
