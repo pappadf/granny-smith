@@ -24,6 +24,7 @@
 
 #include "ppc_pd_ids.h"
 #include "ppc_softfp.h" // the PPC_SF_ op enum the JX_FP kinds extend
+#include "ppc_spr.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -96,7 +97,7 @@ enum {
     JX_BCCTR,
     JX_BC,
     JX_MCRXR, // a = crfD
-    JX_MFSPR, // a = rT offset, c = the ppc_t field (a plain supervisor SPR)
+    JX_MFSPR, // a = rT offset, c = the ppc_t field (a plain supervisor SPR, ppc_spr.h)
     JX_MTSPR, // a = rS offset, c = the ppc_t field
     JX_MFMSR, // a = rT offset
     JX_MTMSR, // a = rS offset
@@ -164,40 +165,49 @@ static inline uint8_t jx_base(uint32_t iw) {
     return PPC_RA(iw) ? PPD_GOFF(PPC_RA(iw)) : (uint8_t)JX_RA0;
 }
 
-// The SPR number: the two 5-bit halves swapped (601UM mfspr page)
-static inline uint32_t jx_spr_number(uint32_t iw) {
-    return PPC_RA(iw) | PPC_RB(iw) << 5;
-}
-
-// mfspr / mtspr of a plain supervisor SPR: DSISR, DAR, SRR0/1, SPRG0-3,
-// fields of ppc_t with no side effect (in a user-mode region they raise the
-// privilege exception, so translatable() keeps them in C there)
+// mfspr / mtspr of a plain supervisor SPR the translator moves: the
+// PPC_SPR_JIT rows of the SPR table (ppc_spr.h), fields of ppc_t with no
+// side effect (in a user-mode region they raise the privilege exception,
+// so translatable() keeps them in C there)
 static inline uint16_t jx_cls_spr(const jit_cls_t *c, uint32_t iw, uint16_t id, uint16_t t1) {
-    uint32_t n = jx_spr_number(iw), off;
-    switch (n) {
-    case 18:
-        off = offsetof(ppc_t, dsisr);
+    uint32_t off;
+    switch (PPC_SPR_NUMBER(iw)) {
+#define JX_SPR_PLAIN(n_, field_, flags_)                                                                               \
+    case n_:                                                                                                           \
+        if (!((flags_) & PPC_SPR_JIT))                                                                                 \
+            return t1;                                                                                                 \
+        off = offsetof(ppc_t, field_);                                                                                 \
         break;
-    case 19:
-        off = offsetof(ppc_t, dar);
-        break;
-    case 26:
-        off = offsetof(ppc_t, srr0);
-        break;
-    case 27:
-        off = offsetof(ppc_t, srr1);
-        break;
-    case 272:
-    case 273:
-    case 274:
-    case 275:
-        off = offsetof(ppc_t, sprg) + 4 * (n - 272);
-        break;
+#define JX_SPR_OWN(n_, field_, flags_)
+#define JX_SPR_NO(n_, field_, flags_)
+// (a row the translator moves is PLAIN both ways: its mtspr kind must be too)
+#define X(n_, name_, mf_, mt_, field_, flags_, models_) JX_SPR_##mf_(n_, field_, flags_)
+        PPC_SPRS(X)
+#undef X
+#undef JX_SPR_PLAIN
+#undef JX_SPR_OWN
+#undef JX_SPR_NO
     default:
         return t1;
     }
     return jx_emit(c, id, PPD_GOFF(PPC_RT(iw)), 0, off);
 }
+
+// The table's translator rows: supervisor-only, every model, a plain field
+// both ways (mfspr and mtspr then raise nothing but the privilege
+// exception, which a supervisor region cannot take)
+#define JX_SPR_KIND_PLAIN 1
+#define JX_SPR_KIND_OWN   0
+#define JX_SPR_KIND_NO    0
+#define X(n_, name_, mf_, mt_, field_, flags_, models_)                                                                \
+    _Static_assert(!((flags_) & PPC_SPR_JIT) || (((flags_) & PPC_SPR_PRIV) && (models_) == PPC_SPR_MALL &&             \
+                                                 JX_SPR_KIND_##mf_ && JX_SPR_KIND_##mt_),                              \
+                   "SPR " #n_ ": the translator moves only plain supervisor SPRs every model has");
+PPC_SPRS(X)
+#undef X
+#undef JX_SPR_KIND_PLAIN
+#undef JX_SPR_KIND_OWN
+#undef JX_SPR_KIND_NO
 
 // D-form integer access with rA = 0 (the T0 ids take rA != 0)
 #define JX_D_RA0(T0, T1)                                                                                               \
@@ -309,7 +319,7 @@ static inline uint16_t jx_cls_spr(const jit_cls_t *c, uint32_t iw, uint16_t id, 
 #define OP_MTMSR  return jx_emit(ctx, JX_MTMSR, PPD_GOFF(PPC_RT(iw)), 0, 0)
 // mftb: TBL or TBU (any other number is illegal: left to C)
 #undef OP_MFTB
-#define OP_MFTB   return (jx_spr_number(iw) == 268 || jx_spr_number(iw) == 269) ? jx_emit(ctx, JX_MFTB, PPD_GOFF(PPC_RT(iw)), 0, jx_spr_number(iw) - 268) : T1_MFTB
+#define OP_MFTB   return (PPC_SPR_NUMBER(iw) == 268 || PPC_SPR_NUMBER(iw) == 269) ? jx_emit(ctx, JX_MFTB, PPD_GOFF(PPC_RT(iw)), 0, PPC_SPR_NUMBER(iw) - 268) : T1_MFTB
 // the reservation pair
 #undef OP_LWARX
 #define OP_LWARX  return jx_emit(ctx, JX_LWARX, PPD_GOFF(PPC_RT(iw)), jx_base(iw), PPD_GOFF(PPC_RB(iw)))

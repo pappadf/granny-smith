@@ -16,6 +16,7 @@
 #include "ppc_disasm.h"
 
 #include "ppc_fields.h"
+#include "ppc_spr.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -36,138 +37,16 @@ static void invalid(ppc_insn *o) {
     snprintf(o->text, sizeof(o->text), ".long\t$%08X", (unsigned)o->word);
 }
 
-// SPR name per the 601 encoding tables (10-4/10-5) and the 604 additions
-// (604UM Table 2-43 + the OEA set); NULL if unknown.
+// SPR name per the 601 encoding tables (10-4/10-5), the 604 additions
+// (604UM Table 2-43 + the OEA set) and the 750's: the name column of the
+// SPR table (ppc_spr.h), every model's; NULL if unknown.
 static const char *spr_name(uint32_t n) {
     switch (n) {
-    case 0:
-        return "mq";
-    case 1:
-        return "xer";
-    case 4:
-        return "rtcu";
-    case 5:
-        return "rtcl";
-    case 6:
-        return "dec"; // POWER user-read encoding
-    case 8:
-        return "lr";
-    case 9:
-        return "ctr";
-    case 18:
-        return "dsisr";
-    case 19:
-        return "dar";
-    case 20:
-        return "rtcu"; // write encoding
-    case 21:
-        return "rtcl";
-    case 22:
-        return "dec";
-    case 25:
-        return "sdr1";
-    case 26:
-        return "srr0";
-    case 27:
-        return "srr1";
-    case 272:
-        return "sprg0";
-    case 273:
-        return "sprg1";
-    case 274:
-        return "sprg2";
-    case 275:
-        return "sprg3";
-    case 282:
-        return "ear";
-    case 284:
-        return "tbl"; // 604 write encoding (reads via mftb)
-    case 285:
-        return "tbu";
-    case 287:
-        return "pvr";
-    case 528:
-        return "ibat0u";
-    case 529:
-        return "ibat0l";
-    case 530:
-        return "ibat1u";
-    case 531:
-        return "ibat1l";
-    case 532:
-        return "ibat2u";
-    case 533:
-        return "ibat2l";
-    case 534:
-        return "ibat3u";
-    case 535:
-        return "ibat3l";
-    case 536:
-        return "dbat0u"; // 604 split file
-    case 537:
-        return "dbat0l";
-    case 538:
-        return "dbat1u";
-    case 539:
-        return "dbat1l";
-    case 540:
-        return "dbat2u";
-    case 541:
-        return "dbat2l";
-    case 542:
-        return "dbat3u";
-    case 543:
-        return "dbat3l";
-    case 936:
-        return "ummcr0"; // 750 user-level monitor mirrors (750UM Table 2-49)
-    case 937:
-        return "upmc1";
-    case 938:
-        return "upmc2";
-    case 939:
-        return "usia";
-    case 940:
-        return "ummcr1";
-    case 941:
-        return "upmc3";
-    case 942:
-        return "upmc4";
-    case 952:
-        return "mmcr0"; // 604 performance monitor group
-    case 953:
-        return "pmc1";
-    case 954:
-        return "pmc2";
-    case 955:
-        return "sia";
-    case 956:
-        return "mmcr1"; // 750 additions to the monitor group
-    case 957:
-        return "pmc3";
-    case 958:
-        return "pmc4";
-    case 959:
-        return "sda";
-    case 1008:
-        return "hid0";
-    case 1009:
-        return "hid1";
-    case 1010:
-        return "iabr";
-    case 1013:
-        return "dabr";
-    case 1017:
-        return "l2cr"; // 750 implementation registers
-    case 1019:
-        return "ictc";
-    case 1020:
-        return "thrm1";
-    case 1021:
-        return "thrm2";
-    case 1022:
-        return "thrm3";
-    case 1023:
-        return "pir";
+#define X(n_, name_, mf_, mt_, field_, flags_, models_)                                                                \
+    case n_:                                                                                                           \
+        return name_;
+        PPC_SPRS(X)
+#undef X
     default:
         return NULL;
     }
@@ -266,7 +145,7 @@ static void dis_xform_mem(ppc_insn *o, uint32_t w, const char *mnem, int fp) {
 // mfspr/mtspr with the model SPR names; the canonical short forms for the
 // user SPRs (mflr/mtctr/...); MQ/RTC encodings flagged 601-specific.
 static void dis_spr(ppc_insn *o, uint32_t w, int is_mf) {
-    uint32_t n = ((w >> 16) & 0x1Fu) | (((w >> 11) & 0x1Fu) << 5);
+    uint32_t n = PPC_SPR_NUMBER(w);
     const char *name = spr_name(n);
     if (name && (n == 1 || n == 8 || n == 9)) {
         emitf(o, "%s%s\tr%u", is_mf ? "mf" : "mt", name, (unsigned)PPC_RT(w));
@@ -289,7 +168,7 @@ static void dis_spr(ppc_insn *o, uint32_t w, int is_mf) {
 
 // mftb/mftbu simplified mnemonics per the TBR number (604-only encoding).
 static void dis_mftb(ppc_insn *o, uint32_t w) {
-    uint32_t n = ((w >> 16) & 0x1Fu) | (((w >> 11) & 0x1Fu) << 5);
+    uint32_t n = PPC_SPR_NUMBER(w);
     o->is_604 = 1;
     if (n == 268)
         emitf(o, "mftb\tr%u", (unsigned)PPC_RT(w));

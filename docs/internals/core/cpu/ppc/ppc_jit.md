@@ -380,8 +380,9 @@ it replaced translated `bc`/`bclr`/`bcctr` with an invalid BO and the
 conditional, decrementing and linking `bclr`/`bcctr`, the X-form loads and
 stores, the XO-form carrying, extended and OE add/subtract family, the
 D-form accesses with rA = 0, `lmw`/`stmw` (one test for the whole transfer: word-aligned, inside one page, the page's SoA entry present -- anything else leaves at the instruction for the C forms), `mcrxr`, and `mfspr`/`mtspr` of the plain
-supervisor SPRs (DSISR, DAR, SRR0/1, SPRG0-3: fields of `ppc_t` with no
-side effect; in a user-mode region they raise a program interrupt, so
+supervisor SPRs (DSISR, DAR, SRR0/1, SPRG0-3, the `PPC_SPR_JIT` rows of
+`ppc_spr.h`, which a static assertion holds to supervisor-only, every model
+and a plain field both ways: fields of `ppc_t` with no side effect; in a user-mode region they raise a program interrupt, so
 they stay in C there).  For a kernel that runs translated (Mac OS X):
 `mfmsr`; `mtmsr` when only bits nothing translated depends on change
 (EE, RI, FP, ME, FE0/FE1, PM) and no BAT write is pending -- any other

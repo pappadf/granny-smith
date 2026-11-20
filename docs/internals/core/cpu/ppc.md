@@ -35,6 +35,7 @@ drift out of sync and each cross-checks the other.
 | `ppc.h` | public surface: `ppc_t` (opaque), init/reset/run, sched-if and debug-if adapters, external-interrupt line |
 | `ppc_internal.h` | the `ppc_t` state (POD, pointers last), MSR/XER/vector constants, field macros, shared inline helpers |
 | `ppc.c` | lifecycle, checkpoint, exception machinery, SPR file, `machine.cpu` object class, `$` aliases |
+| `ppc_spr.h` | **the SPR table**: one X-macro row per SPR number (name, what mfspr and mtspr do with it, its `ppc_t` field, privilege, models); `ppc_mfspr`/`ppc_mtspr`'s plain arms, the disassembler's SPR names, the translator's SPR set and the SPR attributes' slots are generated from it, and the `ppc_750` suite checks the rows against the hand-written arms; dependency-free |
 | `ppc_decode.h` | **the shared decode tree** — an include-guard-free template configured via `PPC_DECODER_*` macros with one `OP_`-prefixed leaf per instruction; carries the validity rules (BO forms, the reserved fields of the rows that check them, `sc` and its 601-only POWER forms) so both includers agree by construction |
 | `ppc_ops.h` | the emulator's overloads: factored bodies (carry/overflow, compares, branch conditions, alignment) + the one-liner `OP_` table |
 | `ppc_ops_fp.h` | the FP register-to-register `OP_` leaves (moves, FPSCR moves, compares, arithmetic), included by `ppc_ops.h` and again by `ppc_run.c` for `ppc_execute_fp` |
