@@ -807,7 +807,7 @@ static peel_buf_t sit_decode_fork(peel_archive_t *a, int i, int fork, peel_err_t
     const sit_entry_t *se = &priv->entries.items[i];
     const sit_fork_info_t *fi = fork == PEEL_FORK_RSRC ? &se->rsrc_fork : &se->data_fork;
     codec_dec_t *d = sit_fork_decoder(fi, a->src, err);
-    return d ? peel_decoder_drain(d, fi->raw_len, "SIT", err) : (peel_buf_t){0};
+    return d ? peel_decoder_drain(d, fi->raw_len, "SIT", NULL, NULL, err) : (peel_buf_t){0};
 }
 
 static codec_dec_t *sit_decoder(peel_archive_t *a, int i, int fork, peel_err_t **err) {

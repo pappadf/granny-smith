@@ -229,6 +229,33 @@ peel_entry_t *peel_archive_add(peel_archive_t *a) {
     return e;
 }
 
+int peel_archive_ensure_parents(peel_archive_t *a, const char *path, int (*on_add)(void *ctx), void *ctx) {
+    char buf[512];
+    snprintf(buf, sizeof(buf), "%s", path);
+    for (char *slash = strchr(buf, '/'); slash; slash = strchr(slash + 1, '/')) {
+        *slash = '\0'; // buf is now this ancestor's path
+        if (peel_lookup(a, buf) < 0) {
+            peel_entry_t *d = peel_archive_add(a);
+            if (!d)
+                return -1;
+            snprintf(d->path, sizeof(d->path), "%s", buf);
+            d->is_dir = true;
+            if (on_add && on_add(ctx) != 0)
+                return -1;
+        }
+        *slash = '/';
+    }
+    return 0;
+}
+
+void peel_entry_set_finder(peel_entry_t *e, const ad_file_t *ad) {
+    if (ad->finder && ad->finder_len >= 10) {
+        e->mac_type = codec_be32(ad->finder);
+        e->mac_creator = codec_be32(ad->finder + 4);
+        e->finder_flags = codec_be16(ad->finder + 8);
+    }
+}
+
 uint8_t *peel_archive_read(peel_archive_t *a, uint64_t off, uint64_t len, const char *what, peel_err_t **err) {
     uint64_t size = peel_source_size(a->src);
     if (off > size || len > size - off) {
@@ -260,7 +287,8 @@ void peel_fork_key(peel_archive_t *a, int i, int fork, char *out, size_t cap) {
 // Draining a decoder into a buffer
 // ============================================================================
 
-peel_buf_t peel_decoder_drain(codec_dec_t *d, uint64_t len, const char *what, peel_err_t **err) {
+peel_buf_t peel_decoder_drain(codec_dec_t *d, uint64_t len, const char *what, peel_drain_describe_fn describe,
+                              void *ctx, peel_err_t **err) {
     *err = NULL;
     const char *sep = what ? ": " : "";
     what = what ? what : "";
@@ -278,12 +306,15 @@ peel_buf_t peel_decoder_drain(codec_dec_t *d, uint64_t len, const char *what, pe
     }
     int64_t n = codec_dec_read(d, out, (size_t)len);
     if (n != (int64_t)len) {
-        if (n >= 0)
+        peel_err_t *named = (n < 0 && describe) ? describe(n, d, ctx) : NULL; // in the format's words
+        if (named)
+            *err = named;
+        else if (n >= 0)
             *err = make_err("%s%sfork decoded to %lld of %llu bytes", what, sep, (long long)n, (unsigned long long)len);
         else if (n == CODEC_ERR_OVERFLOW && !*codec_dec_message(d))
             *err = make_err("%s%sfork decodes to more than its %llu bytes", what, sep, (unsigned long long)len);
         else
-            *err = make_err("%s%s%s", what, sep, codec_dec_message(d));
+            *err = make_err("%s%s%s", what, sep, *codec_dec_message(d) ? codec_dec_message(d) : codec_strerror(n));
         codec_dec_free(d);
         free(out);
         return (peel_buf_t){0};

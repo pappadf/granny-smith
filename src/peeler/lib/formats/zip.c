@@ -155,24 +155,9 @@ static zip_slot_t *slot_add(zip_priv_t *z) {
     return s;
 }
 
-// Make sure every ancestor folder of `path` is an entry (zips often list
-// only files).  0 or -1.
-static int ensure_parents(peel_archive_t *a, zip_priv_t *z, const char *path) {
-    char buf[512];
-    snprintf(buf, sizeof(buf), "%s", path);
-    for (char *slash = strchr(buf, '/'); slash; slash = strchr(slash + 1, '/')) {
-        *slash = '\0';
-        if (peel_lookup(a, buf) < 0) {
-            peel_entry_t *e = peel_archive_add(a);
-            zip_slot_t *s = e ? slot_add(z) : NULL;
-            if (!s)
-                return -1;
-            snprintf(e->path, sizeof(e->path), "%s", buf);
-            e->is_dir = true;
-        }
-        *slash = '/';
-    }
-    return 0;
+// peel_archive_ensure_parents' hook: each folder added gets its slot.
+static int add_parent_slot(void *ctx) {
+    return slot_add(ctx) ? 0 : -1;
 }
 
 // ============================================================================
@@ -277,11 +262,7 @@ static void zip_fold_appledouble(peel_archive_t *a, zip_priv_t *z) {
         }
         peel_entry_t *te = &a->entries[t];
         zip_slot_t *ts = &z->slots[t];
-        if (ad.finder && ad.finder_len >= 10) {
-            te->mac_type = codec_be32(ad.finder);
-            te->mac_creator = codec_be32(ad.finder + 4);
-            te->finder_flags = codec_be16(ad.finder + 8);
-        }
+        peel_entry_set_finder(te, &ad);
         free(ts->ad_buf);
         ts->ad_buf = buf.data; // owned now
         ts->rsrc = ad.rsrc;
@@ -392,7 +373,8 @@ static int zip_open(peel_archive_t *a, const peel_probe_t *p, peel_err_t **err) 
         if (!zip_path(name, nlen, path, sizeof(path)))
             continue; // an empty name: nothing to list
         int member = z->n_members++;
-        if (ensure_parents(a, z, path) != 0)
+        // Zips often list only files: every ancestor folder becomes an entry.
+        if (peel_archive_ensure_parents(a, path, add_parent_slot, z) != 0)
             goto oom;
         int existing = peel_lookup(a, path);
         if (existing >= 0 && a->entries[existing].is_dir && is_dir)

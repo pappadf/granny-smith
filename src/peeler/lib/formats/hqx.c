@@ -218,31 +218,26 @@ static codec_dec_t *hqx_fork_decoder(const hqx_layout_t *L, int fork, const uint
     return hqx_stream(text + L->payload, len - L->payload, NULL, 0, 0, &o, err);
 }
 
+// BinHex's own names for the two failures a fork's CRC and length catch;
+// `ctx` is the fork's name.
+static peel_err_t *hqx_describe(int64_t rc, codec_dec_t *d, void *ctx) {
+    (void)d;
+    const char *name = ctx;
+    if (rc == CODEC_ERR_CHECKSUM)
+        return make_err("BinHex: %s fork CRC mismatch", name);
+    if (rc == CODEC_ERR_TRUNCATED)
+        return make_err("BinHex: premature end of stream in the %s fork", name);
+    return NULL;
+}
+
 // Decode a fork whole through its decoder.  hqx.md § 6.6 — an empty fork
 // still has its CRC checked.
 static peel_buf_t hqx_read_fork(codec_dec_t *d, const hqx_layout_t *L, int fork, peel_err_t **err) {
     const char *name = fork == PEEL_FORK_RSRC ? "resource" : "data";
-    size_t len = fork == PEEL_FORK_RSRC ? L->rsrc_len : L->data_len;
-    uint8_t *out = malloc(len ? len : 1);
-    int64_t n = out ? codec_dec_read(d, out, len) : CODEC_ERR_NOMEM;
-    if (n != (int64_t)len) {
-        if (n == CODEC_ERR_CHECKSUM)
-            *err = make_err("BinHex: %s fork CRC mismatch", name);
-        else if (n == CODEC_ERR_TRUNCATED)
-            *err = make_err("BinHex: premature end of stream in the %s fork", name);
-        else
-            *err =
-                make_err("BinHex: %s fork: %s", name, *codec_dec_message(d) ? codec_dec_message(d) : codec_strerror(n));
-        codec_dec_free(d);
-        free(out);
-        return (peel_buf_t){0};
-    }
-    codec_dec_free(d);
-    if (len == 0) {
-        free(out);
-        return (peel_buf_t){0};
-    }
-    return (peel_buf_t){.data = out, .size = len, .owned = true};
+    char what[32];
+    snprintf(what, sizeof(what), "BinHex: %s fork", name);
+    return peel_decoder_drain(d, fork == PEEL_FORK_RSRC ? L->rsrc_len : L->data_len, what, hqx_describe, (void *)name,
+                              err);
 }
 
 // ============================================================================

@@ -215,11 +215,7 @@ static void tar_fold_appledouble(peel_archive_t *a) {
         ad_file_t ad;
         if (ad_detect(buf, (size_t)e->data_len) && ad_parse(buf, (size_t)e->data_len, &ad) == 0) {
             peel_entry_t *te = &a->entries[t];
-            if (ad.finder && ad.finder_len >= 10) {
-                te->mac_type = codec_be32(ad.finder);
-                te->mac_creator = codec_be32(ad.finder + 4);
-                te->finder_flags = codec_be16(ad.finder + 8);
-            }
+            peel_entry_set_finder(te, &ad);
             if (ad.rsrc && ad.rsrc_len) {
                 te->rsrc_off = e->data_off + (uint64_t)(ad.rsrc - buf);
                 te->rsrc_len = te->rsrc_packed = ad.rsrc_len;
@@ -236,24 +232,6 @@ static void tar_fold_appledouble(peel_archive_t *a) {
         if (a->entries[i].path[0])
             a->entries[w++] = a->entries[i];
     a->count = w;
-}
-
-// Add any folder above `path` the archive did not list.  0 or -1.
-static int tar_parents(peel_archive_t *a, const char *path) {
-    char buf[512];
-    snprintf(buf, sizeof(buf), "%s", path);
-    for (char *slash = strchr(buf, '/'); slash; slash = strchr(slash + 1, '/')) {
-        *slash = '\0';
-        if (peel_lookup(a, buf) < 0) {
-            peel_entry_t *d = peel_archive_add(a);
-            if (!d)
-                return -1;
-            snprintf(d->path, sizeof(d->path), "%s", buf);
-            d->is_dir = true;
-        }
-        *slash = '/';
-    }
-    return 0;
 }
 
 static int tar_open(peel_archive_t *a, const peel_probe_t *p, peel_err_t **err) {
@@ -362,7 +340,7 @@ static int tar_open(peel_archive_t *a, const peel_probe_t *p, peel_err_t **err) 
             rc = -1;
             break;
         }
-        if (tar_parents(a, path) != 0) {
+        if (peel_archive_ensure_parents(a, path, NULL, NULL) != 0) {
             *err = make_err("TAR: out of memory");
             rc = -1;
             break;

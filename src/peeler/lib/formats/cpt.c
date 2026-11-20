@@ -390,7 +390,7 @@ static peel_buf_t cpt_decode_fork(peel_archive_t *a, int i, int fork, peel_err_t
     codec_dec_t *d = cpt_decoder(a, i, fork, err);
     if (!d)
         return (peel_buf_t){0};
-    return peel_decoder_drain(d, fork == PEEL_FORK_RSRC ? e->rsrc_uncomp : e->data_uncomp, "CPT", err);
+    return peel_decoder_drain(d, fork == PEEL_FORK_RSRC ? e->rsrc_uncomp : e->data_uncomp, "CPT", NULL, NULL, err);
 }
 
 static void cpt_close(peel_archive_t *a) {
