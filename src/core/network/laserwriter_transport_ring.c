@@ -38,6 +38,13 @@
 // it); it is the one printer title limit.
 _Static_assert(LWRING_TITLE_MAX == PRINTER_TITLE_MAX, "LWRING_TITLE_MAX is PRINTER_TITLE_MAX");
 
+// Likewise the framing: the protocol header spells it LWRING_* for the page's
+// mirror, and mbx_reserve frames with MBX_*.  They are one framing.
+_Static_assert(LWRING_HDR_BYTES == MBX_HDR_BYTES && LWRING_R_PAD == MBX_R_PAD, "LWRING_* framing is MBX_*");
+_Static_assert(LWRING_PAD8(0) == MBX_PAD8(0) && LWRING_PAD8(1) == MBX_PAD8(1) && LWRING_PAD8(13) == MBX_PAD8(13) &&
+                   LWRING_PAD8(16) == MBX_PAD8(16),
+               "LWRING_PAD8 is MBX_PAD8");
+
 LOG_USE_CATEGORY_NAME("laserwriter");
 
 // ============================================================================
