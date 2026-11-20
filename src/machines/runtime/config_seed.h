@@ -35,9 +35,13 @@ void mac_seed_rtc_pram(struct config *cfg);
 // there is the family's own of_nvram_set_startup_scsi.
 void mac_seed_xpram_sysparam(uint8_t xpram[256], const struct config *cfg, const pram_defaults_t *pram);
 
-// The startup SCSI ID the configuration names on bus `bus_id`, -1 for "no
-// default" (or a device on another bus), -2 when the configuration says
-// nothing (keep the factory record).
+// mac_seed_startup_scsi_id's two answers that are not an ID (sentinels,
+// not errors).
+#define SEED_STARTUP_NONE  (-1) // "no default", or a device on another bus
+#define SEED_STARTUP_UNSET (-2) // the configuration says nothing: keep the factory record
+
+// The startup SCSI ID the configuration names on bus `bus_id`,
+// SEED_STARTUP_NONE or SEED_STARTUP_UNSET.
 int mac_seed_startup_scsi_id(const struct config *cfg, const char *bus_id);
 
 struct of_nvram_defaults;

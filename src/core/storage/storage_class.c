@@ -1613,7 +1613,7 @@ static const arg_decl_t files_path_arg_optional[] = {
 // with no browser says so.
 static DEF_METHOD(files_method_download) {
     int rc = platform_download(argv[0].s);
-    if (rc == -2)
+    if (rc == PLATFORM_E_UNSUPPORTED)
         return val_err("download: not supported on this platform");
     return val_bool(rc == 0);
 }

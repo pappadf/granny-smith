@@ -9,17 +9,22 @@
 // models "this host has none of it" -- no camera, no GPU worker, no
 // auto-checkpoint loop -- and a platform that has the thing links a strong
 // definition of the same name.  A default that is asked to DO something it
-// cannot answers -2 ("not supported on this platform"); 0 is success and
-// other negative values are failures of a platform that tried.  The `gs_`
+// cannot answers PLATFORM_E_UNSUPPORTED ("not supported on this platform");
+// 0 is success and other negative values are failures of a platform that
+// tried.  The `gs_`
 // prefix marks a hook of this contract (Granny Smith's platform surface);
 // core-owned functions use `system_`.
 
 #ifndef PLATFORM_HOOKS_H
 #define PLATFORM_HOOKS_H
 
+#include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+// A weak default's "this platform has none of it" (once a literal -2).
+#define PLATFORM_E_UNSUPPORTED (-ENOTSUP)
 
 // A new machine has become the active one (boot or restore).  The host
 // re-bases its samples of the machine and announces what it shows of it; the
@@ -39,12 +44,12 @@ bool platform_storage_persistent(void);
 
 // Background auto-checkpoint state.  The wasm platform overrides the weak
 // defaults to read/write its live flag; a platform with no auto-checkpoint
-// loop (headless) reads false and refuses the set (-2, "not supported").
+// loop (headless) reads false and refuses the set (PLATFORM_E_UNSUPPORTED).
 bool platform_checkpoint_auto_get(void);
 int platform_checkpoint_auto_set(bool enabled);
 
 // Platform-specific entry points used by typed root methods: the weak default
-// answers -2 ("not supported on this platform"), and the platform that has
+// answers PLATFORM_E_UNSUPPORTED, and the platform that has
 // the thing overrides it.  0 on success.
 //
 //   platform_quit()                — request emulator shutdown.  Headless sets
