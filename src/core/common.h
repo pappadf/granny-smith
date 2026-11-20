@@ -46,6 +46,13 @@
 #define WR_LE16(p, v) ((void)__builtin_memcpy((p), &(uint16_t){(uint16_t)(v)}, 2))
 #define WR_LE32(p, v) ((void)__builtin_memcpy((p), &(uint32_t){(uint32_t)(v)}, 4))
 
+// The number of elements of an array -- an array, not a pointer: a
+// pointer passed by mistake is refused at compile time (the GNU builtins
+// tell an array from a pointer to its first element).
+#define GS_ARRAY_LEN(a)                                                                                                \
+    (sizeof(a) / sizeof((a)[0]) +                                                                                      \
+     0 * sizeof(char[1 - 2 * __builtin_types_compatible_p(__typeof__(a), __typeof__(&(a)[0]))]))
+
 // Four-character codes (OSType, ResType, an Apple event's class and ID): four
 // bytes on the wire, read as a big-endian uint32; as text, those characters and
 // a NUL.  A code shorter than four is padded with spaces, as the Mac pads one.
