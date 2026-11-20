@@ -42,14 +42,6 @@ struct mfs_volume {
     int n_files;
 };
 
-// A Mac name (MacRoman, `len` bytes) as the VFS shows it: UTF-8, '/' as ':'.
-static void mfs_name(const uint8_t *mac, size_t len, char *out, size_t cap) {
-    macroman_to_utf8(mac, len, out, cap);
-    for (char *p = out; *p; p++)
-        if (*p == '/')
-            *p = ':';
-}
-
 // ============================================================================
 // Open
 // ============================================================================
@@ -120,7 +112,7 @@ static int mfs_read_dir(mfs_volume_t *v, uint16_t start, uint16_t blocks, uint16
             f->rsrc_len = RD_BE32(e + 34);
             f->created = RD_BE32(e + 42);
             f->modified = RD_BE32(e + 46);
-            mfs_name(e + 51, nlen, f->name, sizeof(f->name));
+            mac_name_to_vfs(e + 51, nlen, f->name, sizeof(f->name));
             p += (len + 1) & ~(size_t)1; // entries are word aligned
         }
     }
@@ -141,7 +133,7 @@ mfs_volume_t *mfs_open_source(source_t *src, uint64_t off, uint64_t size) {
     v->n_alloc = RD_BE16(mdb + 18);
     v->alloc_size = RD_BE32(mdb + 20);
     v->alloc_start = RD_BE16(mdb + 28);
-    mfs_name(mdb + 37, mdb[36] <= 27 ? mdb[36] : 27, v->name, sizeof(v->name));
+    mac_name_to_vfs(mdb + 37, mdb[36] <= 27 ? mdb[36] : 27, v->name, sizeof(v->name));
     // The geometry must fit the volume: allocation blocks of whole sectors,
     // all of them inside it.
     bool ok = v->alloc_size >= MFS_BLOCK && v->alloc_size % MFS_BLOCK == 0 && v->n_alloc > 0 &&
@@ -178,29 +170,9 @@ const mfs_dirent_t *mfs_entry(const mfs_volume_t *vol, int i) {
     return (i >= 0 && i < vol->n_files) ? &vol->files[i] : NULL;
 }
 
-// Names compare case-insensitively over ASCII, a Mac '/' (shown ':')
-// matching either.
-static bool mfs_name_eq(const char *a, const char *b) {
-    for (;; a++, b++) {
-        unsigned char ca = (unsigned char)*a, cb = (unsigned char)*b;
-        if (ca >= 'a' && ca <= 'z')
-            ca -= 32;
-        if (cb >= 'a' && cb <= 'z')
-            cb -= 32;
-        if (ca == '/')
-            ca = ':';
-        if (cb == '/')
-            cb = ':';
-        if (ca != cb)
-            return false;
-        if (!ca)
-            return true;
-    }
-}
-
 int mfs_lookup(const mfs_volume_t *vol, const char *name, mfs_dirent_t *out) {
     for (int i = 0; i < vol->n_files; i++) {
-        if (mfs_name_eq(vol->files[i].name, name)) {
+        if (mac_name_eq(vol->files[i].name, name)) {
             *out = vol->files[i];
             return 0;
         }

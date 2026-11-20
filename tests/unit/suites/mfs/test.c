@@ -127,6 +127,25 @@ TEST(test_mfs_lists_files_and_finder_info) {
     source_release(s);
 }
 
+// Names match as on HFS: case-blind over the Latin-1 letters MacRoman
+// shares, so "CAFÉ" finds "café".  MFS's own fold covered ASCII only.
+TEST(test_mfs_lookup_folds_accented_letters) {
+    build();
+    uint8_t *e = vol + DIR_ST * 512 + 58; // the second entry ("Second")
+    e[50] = 4;
+    memcpy(e + 51, "Caf\x8E", 4); // MacRoman 0x8E is é
+    source_t *s = src();
+    mfs_volume_t *v = mfs_open_source(s, 0, sizeof(vol));
+    ASSERT_TRUE(v != NULL);
+    ASSERT_TRUE(strcmp(mfs_entry(v, 1)->name, "Caf\xC3\xA9") == 0); // UTF-8 é
+    mfs_dirent_t f;
+    ASSERT_EQ_INT(0, mfs_lookup(v, "CAF\xC3\x89", &f)); // É
+    ASSERT_EQ_INT(18, (int)f.fnum);
+    ASSERT_EQ_INT(-ENOENT, mfs_lookup(v, "CAFE", &f)); // diacriticals stay significant
+    mfs_close(v);
+    source_release(s);
+}
+
 // Forks follow their allocation chains, out of order, across block edges.
 TEST(test_mfs_reads_forks_through_the_chain) {
     build();
@@ -211,6 +230,7 @@ TEST(test_mfs_bad_volumes_do_not_open) {
 
 int main(void) {
     RUN(test_mfs_lists_files_and_finder_info);
+    RUN(test_mfs_lookup_folds_accented_letters);
     RUN(test_mfs_reads_forks_through_the_chain);
     RUN(test_mfs_broken_chains_are_refused);
     RUN(test_mfs_bad_volumes_do_not_open);

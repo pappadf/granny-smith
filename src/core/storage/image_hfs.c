@@ -602,62 +602,6 @@ static int collect_catalog_records(hfs_volume_t *vol, const uint8_t *cat_buf, si
 
 // ---- Comparison / lookup --------------------------------------------------
 
-// HFS filenames compare case-insensitively (the native comparison folds
-// via the Macintosh Roman case table; ASCII-only volumes see plain toupper).
-// Fold a single byte for case-insensitive HFS comparison.  Also maps
-// '/' (HFS-legal in filenames) and ':' (Unix-side stand-in we expose
-// via the VFS) to the same canonical value so a file named
-// "MacTest cx/ci" on disk can be addressed as ".../MacTest cx:ci"
-// through Unix-style "/"-separated paths.  See `fill_dirent` for the
-// matching outbound swap.
-static uint8_t hfs_fold_byte(uint8_t c) {
-    if (c >= 'a' && c <= 'z')
-        c -= 32;
-    if (c == '/' || c == ':')
-        c = ':';
-    return c;
-}
-
-// Fold a byte of a UTF-8 name, `prev` the byte before it.  ASCII as
-// hfs_fold_byte; a Latin-1 letter (U+00E0..U+00FE but U+00F7, which is
-// 0xC3 then 0xA0..0xBE) to its capital (0xC3 then 0x80..0x9E), so "café"
-// finds "CAFÉ" as the Finder would.  Upper and lower case of these letters
-// are the same length in UTF-8, so the names still compare byte for byte.
-// The MacRoman letters outside Latin-1 (œ, ÿ) and the rest of Unicode are
-// not folded.
-static uint8_t fold_utf8_byte(uint8_t prev, uint8_t c) {
-    if (prev == 0xC3 && c >= 0xA0 && c <= 0xBE && c != 0xB7)
-        return (uint8_t)(c - 0x20);
-    return hfs_fold_byte(c);
-}
-
-static int ci_compare_name(const uint8_t *a, size_t la, const uint8_t *b, size_t lb) {
-    size_t n = la < lb ? la : lb;
-    for (size_t i = 0; i < n; i++) {
-        uint8_t ca = fold_utf8_byte(i ? a[i - 1] : 0, a[i]);
-        uint8_t cb = fold_utf8_byte(i ? b[i - 1] : 0, b[i]);
-        if (ca != cb)
-            return (int)ca - (int)cb;
-    }
-    if (la != lb)
-        return (la < lb) ? -1 : 1;
-    return 0;
-}
-
-// Compare a record's stored UTF-8 name against a supplied UTF-8 component.
-// Matching is case-insensitive over ASCII and the Latin-1 letters MacRoman
-// shares (see fold_utf8_byte; the rest of Unicode is compared exactly),
-// with the HFS↔Unix '/' ↔ ':' equivalence
-// applied symmetrically so a name containing a slash on disk can be matched
-// via a colon-separated path component on the way in.
-static bool name_matches(const char *stored_utf8, const char *input_utf8) {
-    size_t a = strlen(stored_utf8);
-    size_t b = strlen(input_utf8);
-    if (a != b)
-        return false;
-    return ci_compare_name((const uint8_t *)stored_utf8, a, (const uint8_t *)input_utf8, b) == 0;
-}
-
 // Populate a VFS-facing dirent from an internal record.
 static void fill_dirent(const cat_rec_t *r, hfs_dirent_t *out) {
     memset(out, 0, sizeof(*out));
@@ -665,7 +609,7 @@ static void fill_dirent(const cat_rec_t *r, hfs_dirent_t *out) {
     // HFS↔Unix path-separator swap: HFS allows '/' in filenames and
     // uses ':' as the on-disk separator.  Our VFS uses '/' as the
     // path separator, so we expose any '/' bytes in HFS names as ':'
-    // instead — symmetric with the comparison fold in hfs_fold_byte().
+    // instead — symmetric with the comparison fold in mac_name_eq().
     // Callers that need the literal on-disk name can pull it from the
     // raw record; this is the VFS-facing view.
     for (char *p = out->name; *p; p++) {
@@ -1138,7 +1082,7 @@ static const cat_rec_t *find_child(const hfs_volume_t *vol, uint32_t parent_cnid
         const cat_rec_t *r = &vol->records[i];
         if (r->parent_cnid != parent_cnid)
             continue;
-        if (name_matches(r->name, name))
+        if (mac_name_eq(r->name, name))
             return r;
     }
     return NULL;

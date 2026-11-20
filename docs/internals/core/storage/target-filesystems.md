@@ -250,10 +250,12 @@ typedef struct hfs_fork {
   - **Outbound** (`fill_dirent`): `/` bytes in an HFS name surface through the
     VFS as `:` — so a file named `MacTest cx/ci` on disk lists as
     `MacTest cx:ci`.
-  - **Inbound** (`hfs_fold_byte`): catalog-name comparison folds `/` and `:` to
-    the same canonical byte (alongside the ASCII case fold), applied
-    symmetrically in both the B-tree comparison and the UTF-8 fallback. A path
-    component containing `:` therefore matches the on-disk name containing `/`.
+  - **Inbound** (`mac_name_eq`, `macroman.c`): name comparison folds `/` and `:` to
+    the same canonical byte, alongside the case fold (ASCII and the Latin-1
+    letters MacRoman shares, so `café` finds `CAFÉ`; diacriticals stay
+    significant), applied to both names. A path component containing `:`
+    therefore matches the on-disk name containing `/`. MFS shows and matches
+    names the same way (`mac_name_to_vfs`, `mac_name_eq`).
 
   There is no aliasing risk: `:` cannot legally appear in an on-disk HFS name, so
   the mapping is one-way unambiguous, and names without `/` are unaffected.
@@ -345,7 +347,7 @@ block at block 2 (`drSigWord` `0xD2D7`), the allocation block map packed
 the Finder kept those in its Desktop file -- so a bare MFS volume is a
 synthetic `partition1` whose root holds every file. Both forks and the 16
 bytes of Finder info (`flUsrWds`) are served; names are MacRoman shown as
-UTF-8 with `/` as `:`, as for HFS. The directory and the map are read at
+UTF-8 with `/` as `:` and matched as on HFS (`mac_name_to_vfs`, `mac_name_eq`). The directory and the map are read at
 open; a fork read walks its allocation chain and refuses a block met twice,
 so a corrupt map with a cycle in it is an error, never the same bytes again.
 
