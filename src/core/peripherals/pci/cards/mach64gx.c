@@ -564,8 +564,6 @@ typedef struct mach64 {
     bool gp;
     uint32_t reg1[256]; // register block 1 (overlay, scaler, 3D setup): latches
     uint8_t pll[64]; // the PLL register file behind CLOCK_CNTL
-    memory_interface_t aux_if; // BAR2: block 1 at +0, block 0 at +$400
-    memory_interface_t bio_if; // BAR1: block-decoded I/O, dword = offset / 4
 
     uint8_t *vram;
     uint32_t vram_size;
@@ -584,9 +582,6 @@ typedef struct mach64 {
     uint8_t dac_pixel_mask; // RS 010
     uint8_t clut[256][3];
     ramdac_seq_t pal; // palette address (RS 000 write / 011 read) and R/G/B phase
-
-    memory_interface_t aper_if; // BAR0: framebuffer + the register alias
-    memory_interface_t io_if; // the sparse I/O face
 
     // Scanout.  The descriptor is rebuilt from the CRTC registers whenever
     // one of them moves; `blank` is the black stub shown while the raster
@@ -2399,29 +2394,6 @@ static bool mach64_engine_write(mach64_t *m, int dw, uint32_t value) {
 // Byte order is the card's own: the register value is little-endian, so
 // lane j of an address carries value bits 8j+7:8j.
 
-// Each register face reads through one `<face>_rd8/16/32(ctx, addr, peek)`;
-// this stamps out the guest's read_* (peek false) and the inspection's
-// peek_* (memory_interface_t) around them.
-#define MACH64_READ_FACE(face)                                                                                         \
-    static uint8_t face##_read8(void *ctx, uint32_t a) {                                                               \
-        return face##_rd8(ctx, a, false);                                                                              \
-    }                                                                                                                  \
-    static uint16_t face##_read16(void *ctx, uint32_t a) {                                                             \
-        return face##_rd16(ctx, a, false);                                                                             \
-    }                                                                                                                  \
-    static uint32_t face##_read32(void *ctx, uint32_t a) {                                                             \
-        return face##_rd32(ctx, a, false);                                                                             \
-    }                                                                                                                  \
-    static uint8_t face##_peek8(void *ctx, uint32_t a) {                                                               \
-        return face##_rd8(ctx, a, true);                                                                               \
-    }                                                                                                                  \
-    static uint16_t face##_peek16(void *ctx, uint32_t a) {                                                             \
-        return face##_rd16(ctx, a, true);                                                                              \
-    }                                                                                                                  \
-    static uint32_t face##_peek32(void *ctx, uint32_t a) {                                                             \
-        return face##_rd32(ctx, a, true);                                                                              \
-    }
-
 static uint8_t io_rd8(void *ctx, uint32_t addr, bool peek) {
     mach64_t *m = (mach64_t *)ctx;
     int dw = io_dword_for_select(addr >> 10);
@@ -2463,7 +2435,7 @@ static uint32_t io_rd32(void *ctx, uint32_t addr, bool peek) {
     }
     return MACH64_LE32(mach64_reg_read(m, dw, peek));
 }
-MACH64_READ_FACE(io)
+MEMORY_READ_FACE(io)
 
 static void io_write32(void *ctx, uint32_t addr, uint32_t value) {
     mach64_t *m = (mach64_t *)ctx;
@@ -2663,7 +2635,7 @@ static uint32_t aper_rd32(void *ctx, uint32_t offset, bool peek) {
     return ((uint32_t)m->vram[at] << 24) | ((uint32_t)m->vram[vram_wrap(m, at + 1)] << 16) |
            ((uint32_t)m->vram[vram_wrap(m, at + 2)] << 8) | m->vram[vram_wrap(m, at + 3)];
 }
-MACH64_READ_FACE(aper)
+MEMORY_READ_FACE(aper)
 
 static void aper_write32(void *ctx, uint32_t offset, uint32_t value) {
     mach64_t *m = (mach64_t *)ctx;
@@ -2742,7 +2714,7 @@ static uint32_t aux_rd32(void *ctx, uint32_t offset, bool peek) {
     }
     return MACH64_LE32(mach64_reg_read(m, (int)((offset & 0x3FFu) >> 2), peek));
 }
-MACH64_READ_FACE(aux)
+MEMORY_READ_FACE(aux)
 
 static void aux_write32(void *ctx, uint32_t offset, uint32_t value) {
     mach64_t *m = (mach64_t *)ctx;
@@ -2797,7 +2769,7 @@ static void bio_write16(void *ctx, uint32_t offset, uint16_t value) {
 static uint32_t bio_rd32(void *ctx, uint32_t offset, bool peek) {
     return MACH64_LE32(mach64_reg_read((mach64_t *)ctx, (int)((offset & 0xFFu) >> 2), peek));
 }
-MACH64_READ_FACE(bio)
+MEMORY_READ_FACE(bio)
 
 static void bio_write32(void *ctx, uint32_t offset, uint32_t value) {
     mach64_reg_write((mach64_t *)ctx, (int)((offset & 0xFFu) >> 2), MACH64_LE32(value));
@@ -3770,6 +3742,15 @@ static void mach64_attach_objects(pci_device_t *dev, struct object *card_node) {
 // The factory and the card kind
 // ============================================================
 
+// The card's register faces.  One table each serves every instance: the
+// card is passed beside it at every mapping.
+MEMORY_IFACE(io); // the sparse I/O face
+MEMORY_IFACE(aper); // BAR0: framebuffer + the register alias
+MEMORY_IFACE(bio); // Rage Pro BAR1: block-decoded I/O, dword = offset / 4
+
+// Rage Pro BAR2: block 1 at +0, block 0 at +$400; takes castouts whole
+static const memory_interface_t aux_iface = {MEMORY_IFACE_FIELDS(aux), .write_line = aux_write_line};
+
 static pci_device_t *mach64_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
     mach64_t *m = (mach64_t *)calloc(1, sizeof(*m));
@@ -3814,29 +3795,10 @@ static pci_device_t *mach64_factory(int slot_index, config_t *cfg, const rom_ima
 
     mach64_reset(dev, cfg);
 
-    m->io_if.read_uint8 = io_read8;
-    m->io_if.read_uint16 = io_read16;
-    m->io_if.read_uint32 = io_read32;
-    m->io_if.write_uint8 = io_write8;
-    m->io_if.write_uint16 = io_write16;
-    m->io_if.write_uint32 = io_write32;
-    m->io_if.peek_uint8 = io_peek8;
-    m->io_if.peek_uint16 = io_peek16;
-    m->io_if.peek_uint32 = io_peek32;
-    m->aper_if.read_uint8 = aper_read8;
-    m->aper_if.read_uint16 = aper_read16;
-    m->aper_if.read_uint32 = aper_read32;
-    m->aper_if.write_uint8 = aper_write8;
-    m->aper_if.write_uint16 = aper_write16;
-    m->aper_if.write_uint32 = aper_write32;
-    m->aper_if.peek_uint8 = aper_peek8;
-    m->aper_if.peek_uint16 = aper_peek16;
-    m->aper_if.peek_uint32 = aper_peek32;
-
-    pci_bar_backing_iface(dev, MACH64_BAR_APER, &m->aper_if, m);
+    pci_bar_backing_iface(dev, MACH64_BAR_APER, &aper_iface, m);
     // The sparse I/O register file: not a BAR, a strapped decode.  Only
     // addresses congruent to the strapped base modulo 1024 are ours.
-    pci_device_add_fixed_region(dev, PCI_SPACE_IO, 0, MACH64_IO_SPAN, MACH64_IO_MATCH_MASK, m->io_base, &m->io_if, m);
+    pci_device_add_fixed_region(dev, PCI_SPACE_IO, 0, MACH64_IO_SPAN, MACH64_IO_MATCH_MASK, m->io_base, &io_iface, m);
 
     LOG(1, "Mach64: seated in slot %d: %u MB VRAM, monitor '%s' (primary sense %u), %zu-byte expansion ROM", slot_index,
         m->vram_size >> 20, m->mon->id, m->mon->primary, prom_size);
@@ -3943,37 +3905,9 @@ static pci_device_t *ragepro_factory(int slot_index, config_t *cfg, const rom_im
     m->mon = &mach64_sense[opts && opts->sense < RAGEPRO_MONITORS ? opts->sense : 0];
     mach64_reset(dev, cfg);
 
-    m->aper_if.read_uint8 = aper_read8;
-    m->aper_if.read_uint16 = aper_read16;
-    m->aper_if.read_uint32 = aper_read32;
-    m->aper_if.write_uint8 = aper_write8;
-    m->aper_if.write_uint16 = aper_write16;
-    m->aper_if.write_uint32 = aper_write32;
-    m->aper_if.peek_uint8 = aper_peek8;
-    m->aper_if.peek_uint16 = aper_peek16;
-    m->aper_if.peek_uint32 = aper_peek32;
-    m->aux_if.read_uint8 = aux_read8;
-    m->aux_if.read_uint16 = aux_read16;
-    m->aux_if.read_uint32 = aux_read32;
-    m->aux_if.write_uint8 = aux_write8;
-    m->aux_if.write_uint16 = aux_write16;
-    m->aux_if.write_uint32 = aux_write32;
-    m->aux_if.peek_uint8 = aux_peek8;
-    m->aux_if.peek_uint16 = aux_peek16;
-    m->aux_if.peek_uint32 = aux_peek32;
-    m->aux_if.write_line = aux_write_line;
-    m->bio_if.read_uint8 = bio_read8;
-    m->bio_if.read_uint16 = bio_read16;
-    m->bio_if.read_uint32 = bio_read32;
-    m->bio_if.write_uint8 = bio_write8;
-    m->bio_if.write_uint16 = bio_write16;
-    m->bio_if.write_uint32 = bio_write32;
-    m->bio_if.peek_uint8 = bio_peek8;
-    m->bio_if.peek_uint16 = bio_peek16;
-    m->bio_if.peek_uint32 = bio_peek32;
-    pci_bar_backing_iface(dev, MACH64_BAR_APER, &m->aper_if, m);
-    pci_bar_backing_iface(dev, RAGEPRO_BAR_IO, &m->bio_if, m);
-    pci_bar_backing_iface(dev, RAGEPRO_BAR_AUX, &m->aux_if, m);
+    pci_bar_backing_iface(dev, MACH64_BAR_APER, &aper_iface, m);
+    pci_bar_backing_iface(dev, RAGEPRO_BAR_IO, &bio_iface, m);
+    pci_bar_backing_iface(dev, RAGEPRO_BAR_AUX, &aux_iface, m);
 
     LOG(1, "Rage Pro: seated at slot %d: %u MB SGRAM, monitor '%s' (primary sense %u)", slot_index, m->vram_size >> 20,
         m->mon->id, m->mon->primary);

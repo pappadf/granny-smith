@@ -320,10 +320,6 @@ typedef struct rage128 {
     uint8_t edid[128];
     r128_ddc_t ddc;
 
-    memory_interface_t aper_if; // BAR0
-    memory_interface_t io_if; // BAR1
-    memory_interface_t regs_if; // BAR2
-
     // Scanout, rebuilt from the CRTC registers whenever one moves.
     display_t display;
     display_fb_node_t fb_node;

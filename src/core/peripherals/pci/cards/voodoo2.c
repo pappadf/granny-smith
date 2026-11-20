@@ -442,8 +442,6 @@ typedef struct voodoo2 {
     bool warned_cfg_unknown;
     bool warned_tex_read;
     bool warned_cmdfifo;
-
-    memory_interface_t bar_if;
 } voodoo2_t;
 
 // GS_V2_STATS=1 — the producer side of the decomposition: TSC ticks
@@ -2427,24 +2425,8 @@ static uint8_t v2_bar_rd8(voodoo2_t *v, uint32_t off, bool peek) {
     return 0xFFu;
 }
 
-static uint8_t v2_bar_read8(void *ctx, uint32_t off) {
-    return v2_bar_rd8(ctx, off, false);
-}
-static uint16_t v2_bar_read16(void *ctx, uint32_t off) {
-    return v2_bar_rd16(ctx, off, false);
-}
-static uint32_t v2_bar_read32(void *ctx, uint32_t off) {
-    return v2_bar_rd32(ctx, off, false);
-}
-static uint8_t v2_bar_peek8(void *ctx, uint32_t off) {
-    return v2_bar_rd8(ctx, off, true);
-}
-static uint16_t v2_bar_peek16(void *ctx, uint32_t off) {
-    return v2_bar_rd16(ctx, off, true);
-}
-static uint32_t v2_bar_peek32(void *ctx, uint32_t off) {
-    return v2_bar_rd32(ctx, off, true);
-}
+// The guest's read_* and the debugger's peek_* around the BAR's rd8/16/32
+MEMORY_READ_FACE(v2_bar)
 
 static void v2_bar_write8(void *ctx, uint32_t off, uint8_t data) {
     voodoo2_t *v = (voodoo2_t *)ctx;
@@ -3461,6 +3443,9 @@ static bool v2_accepts_option(const char *key, const char *value) {
     return false;
 }
 
+// The one BAR face; the card rides beside the table at the mapping.
+MEMORY_IFACE(v2_bar);
+
 // The one builder both kinds share; they differ only in the rasteriser used
 // when the document names none (`default_raster`).
 static pci_device_t *v2_build(int slot_index, config_t *cfg, const slot_opts_t *opts, const char *default_raster) {
@@ -3512,16 +3497,7 @@ static pci_device_t *v2_build(int slot_index, config_t *cfg, const slot_opts_t *
 
     v2_reset(dev, cfg);
 
-    v->bar_if.read_uint8 = v2_bar_read8;
-    v->bar_if.read_uint16 = v2_bar_read16;
-    v->bar_if.read_uint32 = v2_bar_read32;
-    v->bar_if.write_uint8 = v2_bar_write8;
-    v->bar_if.write_uint16 = v2_bar_write16;
-    v->bar_if.write_uint32 = v2_bar_write32;
-    v->bar_if.peek_uint8 = v2_bar_peek8;
-    v->bar_if.peek_uint16 = v2_bar_peek16;
-    v->bar_if.peek_uint32 = v2_bar_peek32;
-    pci_bar_backing_iface(dev, 0, &v->bar_if, v);
+    pci_bar_backing_iface(dev, 0, &v2_bar_iface, v);
 
     LOG(1, "seated in slot %d: 4 MB framebuffer + 2 x %u MB texture (%u MB board), raster backend %s", slot_index,
         v->tex_size >> 20, (V2_FB_SIZE + 2u * v->tex_size) >> 20, v2_raster_name(v->raster));

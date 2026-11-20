@@ -788,29 +788,10 @@ static void aper_write32(void *ctx, uint32_t off, uint32_t v) {
     aper_write16(ctx, off + 2u, (uint16_t)v);
 }
 
-// Stamp out the read_*/peek_* pairs around a face's rd8/16/32.
-#define R128_READ_FACE(face)                                                                                           \
-    static uint8_t face##_read8(void *c, uint32_t a) {                                                                 \
-        return face##_rd8(c, a, false);                                                                                \
-    }                                                                                                                  \
-    static uint16_t face##_read16(void *c, uint32_t a) {                                                               \
-        return face##_rd16(c, a, false);                                                                               \
-    }                                                                                                                  \
-    static uint32_t face##_read32(void *c, uint32_t a) {                                                               \
-        return face##_rd32(c, a, false);                                                                               \
-    }                                                                                                                  \
-    static uint8_t face##_peek8(void *c, uint32_t a) {                                                                 \
-        return face##_rd8(c, a, true);                                                                                 \
-    }                                                                                                                  \
-    static uint16_t face##_peek16(void *c, uint32_t a) {                                                               \
-        return face##_rd16(c, a, true);                                                                                \
-    }                                                                                                                  \
-    static uint32_t face##_peek32(void *c, uint32_t a) {                                                               \
-        return face##_rd32(c, a, true);                                                                                \
-    }
-R128_READ_FACE(regs)
-R128_READ_FACE(io)
-R128_READ_FACE(aper)
+// The guest's read_* and the debugger's peek_* around each face's rd8/16/32
+MEMORY_READ_FACE(regs)
+MEMORY_READ_FACE(io)
+MEMORY_READ_FACE(aper)
 
 // ============================================================
 // Scanout — the CRTC registers become a display_t
@@ -1741,6 +1722,12 @@ static void r128_sync_pixels(void *ctx) {
         r128_present(r);
 }
 
+// The card's three register faces (BAR0 aperture, BAR1 I/O, BAR2
+// registers).  One table each serves every card; the card rides beside it.
+MEMORY_IFACE(aper);
+MEMORY_IFACE(io);
+MEMORY_IFACE(regs);
+
 // The one builder both kinds share; they differ only in the rasteriser used
 // when the document names none.
 static pci_device_t *r128_build(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts,
@@ -1784,37 +1771,9 @@ static pci_device_t *r128_build(int slot_index, config_t *cfg, const rom_image_t
 
     r128_reset(dev, cfg);
 
-    r->regs_if = (memory_interface_t){.read_uint8 = regs_read8,
-                                      .read_uint16 = regs_read16,
-                                      .read_uint32 = regs_read32,
-                                      .write_uint8 = regs_write8,
-                                      .write_uint16 = regs_write16,
-                                      .write_uint32 = regs_write32,
-                                      .peek_uint8 = regs_peek8,
-                                      .peek_uint16 = regs_peek16,
-                                      .peek_uint32 = regs_peek32};
-    r->io_if = (memory_interface_t){.read_uint8 = io_read8,
-                                    .read_uint16 = io_read16,
-                                    .read_uint32 = io_read32,
-                                    .write_uint8 = io_write8,
-                                    .write_uint16 = io_write16,
-                                    .write_uint32 = io_write32,
-                                    .peek_uint8 = io_peek8,
-                                    .peek_uint16 = io_peek16,
-                                    .peek_uint32 = io_peek32};
-    r->aper_if = (memory_interface_t){.read_uint8 = aper_read8,
-                                      .read_uint16 = aper_read16,
-                                      .read_uint32 = aper_read32,
-                                      .write_uint8 = aper_write8,
-                                      .write_uint16 = aper_write16,
-                                      .write_uint32 = aper_write32,
-                                      .peek_uint8 = aper_peek8,
-                                      .peek_uint16 = aper_peek16,
-                                      .peek_uint32 = aper_peek32};
-
-    pci_bar_backing_iface(dev, R128_BAR_APER, &r->aper_if, r);
-    pci_bar_backing_iface(dev, R128_BAR_IO, &r->io_if, r);
-    pci_bar_backing_iface(dev, R128_BAR_REGS, &r->regs_if, r);
+    pci_bar_backing_iface(dev, R128_BAR_APER, &aper_iface, r);
+    pci_bar_backing_iface(dev, R128_BAR_IO, &io_iface, r);
+    pci_bar_backing_iface(dev, R128_BAR_REGS, &regs_iface, r);
 
     // The rasteriser: WebGPU where the host has a GPU worker to attach,
     // the software walker otherwise (and always natively).

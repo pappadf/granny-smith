@@ -197,9 +197,6 @@ typedef struct c54m30 {
     uint32_t scan_start; // byte offset the scanout starts at (after the fall-back)
     display_t display;
     rgba8_t clut[256]; // the palette materialised for the renderer
-    memory_interface_t fb_if;
-    memory_interface_t io_if;
-    memory_interface_t vga_if; // the fixed legacy $3B0-$3DF block
     c54m30_blt_t blt; // the BitBLT engine's only state that outlives a register write
     uint32_t win_logged; // accesses to the legacy-window mirror logged loudly so far
     display_fb_node_t fb_node; // instance data for the shared framebuffer class
@@ -1422,6 +1419,12 @@ static const pci_device_ops_t c54m30_ops = {
     .name = c54m30_name,
 };
 
+// The card's faces: the BAR0 framebuffer, the BAR1 registers and the fixed
+// legacy $3B0-$3DF block.  One table each serves every card.
+MEMORY_IFACE(fb);
+MEMORY_IFACE(io);
+MEMORY_IFACE(vga);
+
 static pci_device_t *c54m30_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     (void)rom;
     (void)opts;
@@ -1442,44 +1445,15 @@ static pci_device_t *c54m30_factory(int slot_index, config_t *cfg, const rom_ima
     c->cfg = cfg;
     c->vram = vram;
 
-    c->fb_if.read_uint8 = fb_read8;
-    c->fb_if.read_uint16 = fb_read16;
-    c->fb_if.read_uint32 = fb_read32;
-    c->fb_if.write_uint8 = fb_write8;
-    c->fb_if.write_uint16 = fb_write16;
-    c->fb_if.write_uint32 = fb_write32;
-    c->fb_if.peek_uint8 = fb_peek8;
-    c->fb_if.peek_uint16 = fb_peek16;
-    c->fb_if.peek_uint32 = fb_peek32;
-    c->io_if.read_uint8 = io_read8;
-    c->io_if.read_uint16 = io_read16;
-    c->io_if.read_uint32 = io_read32;
-    c->io_if.write_uint8 = io_write8;
-    c->io_if.write_uint16 = io_write16;
-    c->io_if.write_uint32 = io_write32;
-    c->io_if.peek_uint8 = io_peek8;
-    c->io_if.peek_uint16 = io_peek16;
-    c->io_if.peek_uint32 = io_peek32;
-
-    c->vga_if.read_uint8 = vga_read8;
-    c->vga_if.read_uint16 = vga_read16;
-    c->vga_if.read_uint32 = vga_read32;
-    c->vga_if.write_uint8 = vga_write8;
-    c->vga_if.write_uint16 = vga_write16;
-    c->vga_if.write_uint32 = vga_write32;
-    c->vga_if.peek_uint8 = vga_peek8;
-    c->vga_if.peek_uint16 = vga_peek16;
-    c->vga_if.peek_uint32 = vga_peek32;
-
     c54m30_reset(dev, cfg);
 
-    pci_bar_backing_iface(dev, C54M30_BAR_FB, &c->fb_if, c);
-    pci_bar_backing_iface(dev, C54M30_BAR_IO, &c->io_if, c);
+    pci_bar_backing_iface(dev, C54M30_BAR_FB, &fb_iface, c);
+    pci_bar_backing_iface(dev, C54M30_BAR_IO, &io_iface, c);
     // The legacy VGA block: a contiguous strapped claim (match mask 0), not
     // a BAR.  Faking a BAR for it would be worse than doing nothing —
     // Open Firmware would size it, assign it, and invent an address the
     // card does not decode.
-    pci_device_add_fixed_region(dev, PCI_SPACE_IO, C54M30_VGA_IO_BASE, C54M30_VGA_IO_SPAN, 0, 0, &c->vga_if, c);
+    pci_device_add_fixed_region(dev, PCI_SPACE_IO, C54M30_VGA_IO_BASE, C54M30_VGA_IO_SPAN, 0, 0, &vga_iface, c);
 
     LOG(1, "54M30: seated in slot %d: %u KB display memory, no interrupt line", slot_index, C54M30_VRAM >> 10);
     return dev;

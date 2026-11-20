@@ -188,7 +188,6 @@ typedef struct qd3d {
     // ---- runtime only ----
     pci_device_t *dev;
     config_t *cfg;
-    memory_interface_t bar_if;
     qd3d_dma_t dma;
     q3_target_t tgt; // the renderer's own state (qd3d_raster.h)
     q3_raster_t *raster; // where the renderer runs: sw, null or thread
@@ -893,6 +892,19 @@ static bool qd3d_accepts_option(const char *key, const char *value) {
     return false;
 }
 
+// The one BAR face.  Reads have no side effect, so the peeks are the reads.
+static const memory_interface_t qd3d_bar_iface = {
+    .read_uint8 = bar_read8,
+    .read_uint16 = bar_read16,
+    .read_uint32 = bar_read32,
+    .write_uint8 = bar_write8,
+    .write_uint16 = bar_write16,
+    .write_uint32 = bar_write32,
+    .peek_uint8 = bar_read8,
+    .peek_uint16 = bar_read16,
+    .peek_uint32 = bar_read32,
+};
+
 static pci_device_t *qd3d_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     (void)rom;
     pci_device_t *dev = calloc(1, sizeof(*dev));
@@ -917,16 +929,7 @@ static pci_device_t *qd3d_factory(int slot_index, config_t *cfg, const rom_image
     dev->priv = q;
     pci_cfg_reset(dev);
 
-    q->bar_if.read_uint8 = bar_read8;
-    q->bar_if.read_uint16 = bar_read16;
-    q->bar_if.read_uint32 = bar_read32;
-    q->bar_if.write_uint8 = bar_write8;
-    q->bar_if.write_uint16 = bar_write16;
-    q->bar_if.write_uint32 = bar_write32;
-    q->bar_if.peek_uint8 = bar_read8;
-    q->bar_if.peek_uint16 = bar_read16;
-    q->bar_if.peek_uint32 = bar_read32;
-    pci_bar_backing_iface(dev, 0, &q->bar_if, q);
+    pci_bar_backing_iface(dev, 0, &qd3d_bar_iface, q);
 
     scheduler_new_event_type(cfg->scheduler, "qd3d", q, "frame-done", frame_done_event);
     q->port_state = PORT_HEADER;
