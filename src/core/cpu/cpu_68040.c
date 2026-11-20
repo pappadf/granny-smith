@@ -23,6 +23,7 @@
 #define CPU_DECODER_IS_68040 1
 
 #include "cpu_internal.h"
+#include "cpu_movec.h"
 #include "fpu.h"
 #include "mmu040.h"
 
@@ -55,84 +56,55 @@ LOG_USE_CATEGORY_NAME("cpu");
 
 // MOVEC Rc,Rn — returns 1 on success, 0 after raising illegal instruction.
 static int cpu_movec040_rc_rn(cpu_t *cpu) {
-    uint16_t ext = fetch_16(cpu, true);
-    uint32_t da = (ext >> 15) & 1u;
-    uint32_t rn = (ext >> 12) & 7u;
-    uint16_t rc = ext & 0x0FFFu;
+    movec_ext_t x = movec_ext(cpu);
     mmu040_state_t *mmu = CPU_MMU040(cpu);
     uint32_t val = 0;
-    switch (rc) {
-    case 0x000:
-        val = cpu->sfc;
-        break;
-    case 0x001:
-        val = cpu->dfc;
-        break;
-    case 0x002:
-        val = cpu->cacr;
-        break;
-    case 0x003:
-        val = mmu ? mmu->tc : 0;
-        break;
-    case 0x004:
-        val = mmu ? mmu->itt0 : 0;
-        break;
-    case 0x005:
-        val = mmu ? mmu->itt1 : 0;
-        break;
-    case 0x006:
-        val = mmu ? mmu->dtt0 : 0;
-        break;
-    case 0x007:
-        val = mmu ? mmu->dtt1 : 0;
-        break;
-    case 0x800:
-        val = cpu->usp;
-        break;
-    case 0x801:
-        val = cpu->vbr;
-        break;
-    case 0x803:
-        val = cpu->m ? cpu->a[7] : cpu->msp;
-        break;
-    case 0x804:
-        val = cpu->m ? cpu->ssp : cpu->a[7];
-        break;
-    case 0x805:
-        val = mmu ? mmu->mmusr : 0;
-        break;
-    case 0x806:
-        val = mmu ? mmu->urp : 0;
-        break;
-    case 0x807:
-        val = mmu ? mmu->srp : 0;
-        break;
-    default: // includes 030-only CAAR ($802)
-        illegal_instruction(cpu);
-        return 0;
+    if (!movec_common_read(cpu, x.rc, &val)) {
+        switch (x.rc) {
+        case 0x002:
+            val = cpu->cacr;
+            break;
+        case 0x003:
+            val = mmu ? mmu->tc : 0;
+            break;
+        case 0x004:
+            val = mmu ? mmu->itt0 : 0;
+            break;
+        case 0x005:
+            val = mmu ? mmu->itt1 : 0;
+            break;
+        case 0x006:
+            val = mmu ? mmu->dtt0 : 0;
+            break;
+        case 0x007:
+            val = mmu ? mmu->dtt1 : 0;
+            break;
+        case 0x805:
+            val = mmu ? mmu->mmusr : 0;
+            break;
+        case 0x806:
+            val = mmu ? mmu->urp : 0;
+            break;
+        case 0x807:
+            val = mmu ? mmu->srp : 0;
+            break;
+        default: // includes 030-only CAAR ($802)
+            illegal_instruction(cpu);
+            return 0;
+        }
     }
-    if (da)
-        cpu->a[rn] = val;
-    else
-        cpu->d[rn] = val;
+    *x.rn = val;
     return 1;
 }
 
 // MOVEC Rn,Rc — returns 1 on success, 0 after raising illegal instruction.
 static int cpu_movec040_rn_rc(cpu_t *cpu) {
-    uint16_t ext = fetch_16(cpu, true);
-    uint32_t da = (ext >> 15) & 1u;
-    uint32_t rn = (ext >> 12) & 7u;
-    uint16_t rc = ext & 0x0FFFu;
+    movec_ext_t x = movec_ext(cpu);
     mmu040_state_t *mmu = CPU_MMU040(cpu);
-    uint32_t val = da ? cpu->a[rn] : cpu->d[rn];
-    switch (rc) {
-    case 0x000:
-        cpu->sfc = val & 7u;
-        break;
-    case 0x001:
-        cpu->dfc = val & 7u;
-        break;
+    uint32_t val = *x.rn;
+    if (movec_common_write(cpu, x.rc, val))
+        return 1;
+    switch (x.rc) {
     case 0x002:
         // 68040 CACR: DE (bit 31) and IE (bit 15) are the only writable bits
         cpu->cacr = val & 0x80008000u;
@@ -155,24 +127,6 @@ static int cpu_movec040_rn_rc(cpu_t *cpu) {
     case 0x007:
         if (mmu)
             mmu040_set_ttr(mmu, &mmu->dtt1, val);
-        break;
-    case 0x800:
-        cpu->usp = val;
-        break;
-    case 0x801:
-        cpu->vbr = val;
-        break;
-    case 0x803:
-        if (cpu->m)
-            cpu->a[7] = val;
-        else
-            cpu->msp = val;
-        break;
-    case 0x804:
-        if (!cpu->m)
-            cpu->a[7] = val;
-        else
-            cpu->ssp = val;
         break;
     case 0x805:
         if (mmu)
