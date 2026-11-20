@@ -543,6 +543,9 @@ void sonic_hard_reset(sonic_t *s) {
     }
 }
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(sonic_t, irq_cb);
+
 sonic_t *sonic_init(checkpoint_t *cp) {
     sonic_t *s = calloc(1, sizeof(*s));
     if (!s)
@@ -555,7 +558,7 @@ sonic_t *sonic_init(checkpoint_t *cp) {
         // but only because the WRITE below was equally wide, and that write
         // put three host pointers (irq_cb, irq_ctx and the dma_mem_port_t's
         // internals) into every save file.
-        system_read_checkpoint_data(cp, s, offsetof(sonic_t, irq_cb));
+        checkpoint_load_prefix(cp, s, sonic_t);
     }
     return s;
 }
@@ -567,7 +570,7 @@ void sonic_delete(sonic_t *s) {
 void sonic_checkpoint(sonic_t *s, checkpoint_t *cp) {
     // Up to the first pointer.  This was the last whole-struct checkpoint
     // write in the tree.
-    system_write_checkpoint_data(cp, s, offsetof(sonic_t, irq_cb));
+    checkpoint_save_prefix(cp, s, sonic_t);
 }
 
 void sonic_set_irq_callback(sonic_t *s, sonic_irq_cb cb, void *context) {

@@ -1386,6 +1386,9 @@ void sym53c8xx_attach_bus(sym53c8xx_t *s, struct scsi *bus) {
         s->bus = bus;
 }
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(sym53c8xx_t, running);
+
 void sym53c8xx_checkpoint_save(sym53c8xx_t *s, checkpoint_t *cp) {
     if (!s || !cp)
         return;
@@ -1395,13 +1398,13 @@ void sym53c8xx_checkpoint_save(sym53c8xx_t *s, checkpoint_t *cp) {
     //
     // This used to name six members by hand and lost everything else.  See
     // sym53c8xx.h for what sits below the line and why.
-    system_write_checkpoint_data(cp, s, offsetof(sym53c8xx_t, running));
+    checkpoint_save_prefix(cp, s, sym53c8xx_t);
 }
 
 void sym53c8xx_checkpoint_restore(sym53c8xx_t *s, checkpoint_t *cp) {
     if (!s || !cp)
         return;
-    system_read_checkpoint_data(cp, s, offsetof(sym53c8xx_t, running));
+    checkpoint_load_prefix(cp, s, sym53c8xx_t);
 
     // The engine comes back HALTED with DSP intact, whatever it was doing.
     // running is always false at save time anyway (it lives only inside

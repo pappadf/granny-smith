@@ -1304,6 +1304,9 @@ static void adb_idle_talk_event(void *source, uint64_t data) {
 // Lifecycle: Constructor
 // ============================================================================
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(adb_t, via);
+
 // Allocates and initialises an ADB controller instance, optionally from a checkpoint
 adb_t *adb_init(via_t *via, struct scheduler *scheduler, checkpoint_t *checkpoint) {
     adb_t *adb = (adb_t *)malloc(sizeof(adb_t));
@@ -1331,8 +1334,7 @@ adb_t *adb_init(via_t *via, struct scheduler *scheduler, checkpoint_t *checkpoin
 
     if (checkpoint) {
         // Restore plain-data state; pointers are re-filled above
-        size_t data_size = offsetof(adb_t, via);
-        system_read_checkpoint_data(checkpoint, adb, data_size, "adb");
+        checkpoint_load_prefix(checkpoint, adb, adb_t);
         // The mouse queue's cursors index its ring and come from a file the
         // user supplies: out of range, the queued events are dropped
         if (adb->mouse_queue_head < 0 || adb->mouse_queue_head >= MOUSE_QUEUE_SIZE || adb->mouse_queue_count < 0 ||
@@ -1402,8 +1404,7 @@ void adb_delete(adb_t *adb) {
 void adb_checkpoint(adb_t *restrict adb, checkpoint_t *checkpoint) {
     if (!adb || !checkpoint)
         return;
-    size_t data_size = offsetof(adb_t, via);
-    system_write_checkpoint_data(checkpoint, adb, data_size, "adb");
+    checkpoint_save_prefix(checkpoint, adb, adb_t);
 }
 
 // ============================================================================

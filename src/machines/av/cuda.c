@@ -1142,6 +1142,9 @@ static void cuda_adb_data(void *ctx) {
 
 // === Lifecycle ==============================================================
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(av_cuda_t, via1);
+
 av_cuda_t *av_cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, struct scheduler *sched, checkpoint_t *cp,
                         bool mode3_clock) {
     av_cuda_t *cuda = (av_cuda_t *)calloc(1, sizeof(*cuda));
@@ -1163,8 +1166,7 @@ av_cuda_t *av_cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, stru
     cuda->onesec_mode = 0;
 
     if (cp) {
-        size_t data_size = offsetof(av_cuda_t, via1);
-        system_read_checkpoint_data(cp, cuda, data_size);
+        checkpoint_load_prefix(cp, cuda, av_cuda_t);
     }
 
     if (cuda->via1)
@@ -1235,8 +1237,7 @@ void av_cuda_delete(av_cuda_t *cuda) {
 void av_cuda_checkpoint(av_cuda_t *cuda, checkpoint_t *cp) {
     if (!cuda || !cp)
         return;
-    size_t data_size = offsetof(av_cuda_t, via1);
-    system_write_checkpoint_data(cp, cuda, data_size);
+    checkpoint_save_prefix(cp, cuda, av_cuda_t);
 }
 
 void av_cuda_attach_vdc(av_cuda_t *cuda, struct av_vdc *vdc) {

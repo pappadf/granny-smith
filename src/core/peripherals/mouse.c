@@ -233,6 +233,9 @@ void mouse_move(mouse_t *restrict m, int dx, int dy) {
     mouse_motion(m, dx, dy);
 }
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(mouse_t, scheduler);
+
 // Allocates and initializes a mouse instance with default timing state
 mouse_t *mouse_init(struct scheduler *scheduler, scc_t *scc, via_t *restrict via, checkpoint_t *checkpoint) {
     mouse_t *mouse = (mouse_t *)malloc(sizeof(mouse_t));
@@ -249,8 +252,7 @@ mouse_t *mouse_init(struct scheduler *scheduler, scc_t *scc, via_t *restrict via
 
     // Load from checkpoint if provided
     if (checkpoint) {
-        size_t data_size = offsetof(mouse_t, scheduler);
-        system_read_checkpoint_data(checkpoint, mouse, data_size);
+        checkpoint_load_prefix(checkpoint, mouse, mouse_t);
         // The button queue's cursors come from a file the user supplies and
         // index the ring: out of range, the queued levels are dropped
         if (mouse->button_head < 0 || mouse->button_head >= MOUSE_BUTTON_QUEUE || mouse->button_count < 0 ||
@@ -287,6 +289,5 @@ void mouse_checkpoint(mouse_t *restrict mouse, checkpoint_t *checkpoint) {
     // Save mouse state
     if (!mouse || !checkpoint)
         return;
-    size_t data_size = offsetof(mouse_t, scheduler);
-    system_write_checkpoint_data(checkpoint, mouse, data_size);
+    checkpoint_save_prefix(checkpoint, mouse, mouse_t);
 }

@@ -1096,11 +1096,14 @@ static uint8_t *ckpt_restore_cache(checkpoint_t *cp, uint32_t *key, uint32_t *si
     return d;
 }
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(display_card_824gc_priv_t, card);
+
 static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
     display_card_824gc_priv_t *p = card ? card->priv : NULL;
     if (!p)
         return;
-    system_write_checkpoint_data(cp, p, offsetof(struct display_card_824gc_priv, card));
+    checkpoint_save_prefix(cp, p, display_card_824gc_priv_t);
     {
         // Fixed widths, not a raw struct prefix: the prefix carried a bare
         // pixel_format_t, whose size is implementation-defined (see
@@ -1134,7 +1137,7 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
     display_card_824gc_priv_t *p = card ? card->priv : NULL;
     if (!p)
         return;
-    system_read_checkpoint_data(cp, p, offsetof(struct display_card_824gc_priv, card));
+    checkpoint_load_prefix(cp, p, display_card_824gc_priv_t);
     {
         display_head_t head;
         system_read_checkpoint_data(cp, &head, sizeof head);

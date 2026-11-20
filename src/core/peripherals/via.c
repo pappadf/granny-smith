@@ -873,6 +873,9 @@ void via_reset(via_t *restrict via) {
     LOG(1, "via_reset: registers cleared, timers stopped (counters kept)");
 }
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(via_t, scheduler);
+
 // Initialize a new VIA instance with callbacks and optional checkpoint restoration
 via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, uint8_t freq_factor, const char *name,
                 via_output_fn output_cb, via_shift_out_fn shift_cb, via_irq_fn irq_cb, void *cb_context,
@@ -944,8 +947,7 @@ via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, uint8_t
 
     // Load from checkpoint if provided
     if (checkpoint) {
-        size_t data_size = offsetof(via_t, scheduler);
-        system_read_checkpoint_data(checkpoint, via, data_size);
+        checkpoint_load_prefix(checkpoint, via, via_t);
 
         // After restoring raw register bits, recompute aggregated IFR bit 7 and
         // re-drive the CPU IRQ line based on IER/IFR state.
@@ -1080,8 +1082,7 @@ void via_delete(via_t *via) {
 void via_checkpoint(via_t *restrict via, checkpoint_t *checkpoint) {
     if (!via || !checkpoint)
         return;
-    size_t data_size = offsetof(via_t, scheduler);
-    system_write_checkpoint_data(checkpoint, via, data_size);
+    checkpoint_save_prefix(checkpoint, via, via_t);
 }
 
 // ============================================================================

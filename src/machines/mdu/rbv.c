@@ -460,6 +460,9 @@ static const class_desc_t rbv_class = {
     .n_members = sizeof(rbv_members) / sizeof(rbv_members[0]),
 };
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(rbv_t, memory_interface);
+
 rbv_t *rbv_init(rbv_variant_t variant, uint8_t sense3, checkpoint_t *cp) {
     rbv_t *rbv = (rbv_t *)calloc(1, sizeof(*rbv));
     if (!rbv)
@@ -484,8 +487,7 @@ rbv_t *rbv_init(rbv_variant_t variant, uint8_t sense3, checkpoint_t *cp) {
     };
 
     if (cp) {
-        size_t data_size = offsetof(rbv_t, memory_interface);
-        system_read_checkpoint_data(cp, rbv, data_size);
+        checkpoint_load_prefix(cp, rbv, rbv_t);
     }
 
     rbv->object = object_attach_new(machine_object(), &rbv_class, rbv, "rbv", NULL, 45); // beside the other controllers
@@ -533,8 +535,7 @@ void rbv_delete(rbv_t *rbv) {
 void rbv_checkpoint(rbv_t *rbv, checkpoint_t *cp) {
     if (!rbv || !cp)
         return;
-    size_t data_size = offsetof(rbv_t, memory_interface);
-    system_write_checkpoint_data(cp, rbv, data_size);
+    checkpoint_save_prefix(cp, rbv, rbv_t);
 }
 
 // === Wiring =================================================================

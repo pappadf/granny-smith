@@ -1026,6 +1026,9 @@ static const char *ppc_pd_id_name(uint16_t id) {
     return "?";
 }
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(ppc_t, cpu_object);
+
 ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
     ppc_t *p = (ppc_t *)malloc(sizeof(ppc_t));
     if (!p)
@@ -1040,7 +1043,7 @@ ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
         // The bindings below are then rebuilt for THIS machine (the cpu.c
         // same-process-restore double-free precedent).
         memset(p, 0, sizeof(ppc_t));
-        system_read_checkpoint_data(checkpoint, p, offsetof(struct ppc, cpu_object));
+        checkpoint_load_prefix(checkpoint, p, ppc_t);
         p->tick_mul = p->tick_div = 0;
         g_mem_lines = p->dlines.count ? &p->dlines : NULL;
         // The MMU caches are derived state and refill lazily; the T-bit
@@ -1117,7 +1120,7 @@ void ppc_checkpoint(ppc_t *restrict p, checkpoint_t *checkpoint) {
     // checkpoint testing.  Measured: four 4-byte runs at 8-byte stride,
     // exactly cpu_object/fpu_object/mmu_object/scheduler.  cpu.c's 68k
     // checkpoint stops short of its pointers the same way.
-    system_write_checkpoint_data(checkpoint, p, offsetof(struct ppc, cpu_object));
+    checkpoint_save_prefix(checkpoint, p, ppc_t);
 }
 
 // === Scheduler adapter (the main-CPU seam) ==================================

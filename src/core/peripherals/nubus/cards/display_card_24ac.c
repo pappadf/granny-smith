@@ -964,6 +964,9 @@ static size_t card_vram(nubus_card_t *card, uint8_t **base) {
     return p ? DISPLAY_CARD_24AC_VRAM_SIZE : 0;
 }
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(display_card_24ac_priv_t, display);
+
 // === Checkpoint =============================================================
 // VRAM is a private calloc (card_init), not part of the RAM image
 // memory_map_checkpoint saves, so without these a restored machine comes back
@@ -982,7 +985,7 @@ static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
     if (!p)
         return;
     system_write_checkpoint_data(cp, p->vram, DISPLAY_CARD_24AC_VRAM_SIZE);
-    system_write_checkpoint_data(cp, p, offsetof(struct display_card_24ac_priv, display));
+    checkpoint_save_prefix(cp, p, display_card_24ac_priv_t);
     {
         // Fixed widths, not a raw struct prefix: the prefix carried a bare
         // pixel_format_t, whose size is implementation-defined (see
@@ -997,7 +1000,7 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
     if (!p)
         return;
     system_read_checkpoint_data(cp, p->vram, DISPLAY_CARD_24AC_VRAM_SIZE);
-    system_read_checkpoint_data(cp, p, offsetof(struct display_card_24ac_priv, display));
+    checkpoint_load_prefix(cp, p, display_card_24ac_priv_t);
     {
         display_head_t head;
         system_read_checkpoint_data(cp, &head, sizeof head);

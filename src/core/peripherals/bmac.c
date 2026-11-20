@@ -471,6 +471,9 @@ void bmac_reset(bmac_t *b) {
     update_irq(b);
 }
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(bmac_t, irq);
+
 bmac_t *bmac_init(checkpoint_t *cp, const uint8_t mac[6]) {
     bmac_t *b = calloc(1, sizeof(*b));
     if (!b)
@@ -483,7 +486,7 @@ bmac_t *bmac_init(checkpoint_t *cp, const uint8_t mac[6]) {
     b->link_down = true;
     bmac_reset(b);
     if (cp)
-        system_read_checkpoint_data(cp, b, offsetof(bmac_t, irq));
+        checkpoint_load_prefix(cp, b, bmac_t);
     return b;
 }
 
@@ -492,7 +495,7 @@ void bmac_delete(bmac_t *b) {
 }
 
 void bmac_checkpoint(bmac_t *b, checkpoint_t *cp) {
-    system_write_checkpoint_data(cp, b, offsetof(bmac_t, irq));
+    checkpoint_save_prefix(cp, b, bmac_t);
 }
 
 void bmac_set_irq(bmac_t *b, bmac_irq_fn fn, void *ctx) {

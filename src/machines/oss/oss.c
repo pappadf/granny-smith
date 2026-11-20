@@ -397,6 +397,9 @@ static void oss_set_power_on_defaults(oss_t *oss) {
     oss->level[14] = 7;
 }
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(oss_t, memory_interface);
+
 oss_t *oss_init(oss_irq_fn irq_cb, oss_control_fn control_cb, void *context, struct scheduler *scheduler,
                 checkpoint_t *checkpoint) {
     oss_t *oss = calloc(1, sizeof(*oss));
@@ -421,7 +424,7 @@ oss_t *oss_init(oss_irq_fn irq_cb, oss_control_fn control_cb, void *context, str
 
     if (checkpoint) {
         // Mirrors oss_checkpoint: one blob, so the two halves cannot drift.
-        system_read_checkpoint_data(checkpoint, oss, offsetof(oss_t, memory_interface), "oss");
+        checkpoint_load_prefix(checkpoint, oss, oss_t);
     }
 
     oss_attach_object(oss);
@@ -462,7 +465,7 @@ void oss_delete(oss_t *oss) {
 void oss_checkpoint(oss_t *oss, checkpoint_t *checkpoint) {
     if (!oss || !checkpoint)
         return;
-    system_write_checkpoint_data(checkpoint, oss, offsetof(oss_t, memory_interface), "oss");
+    checkpoint_save_prefix(checkpoint, oss, oss_t);
 }
 
 // Returns the OSS memory interface.

@@ -681,6 +681,9 @@ void cops_delete(cops_t *c) {
     free(c);
 }
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(cops_t, via1);
+
 // Save the COPS's plain-data region: the response FIFO and its indices, the
 // CRDY phase, the command/mouse state and the warp target.  None of it is
 // re-derived by the reset handshake -- a restored Lisa without this comes up
@@ -691,12 +694,12 @@ void cops_delete(cops_t *c) {
 void cops_checkpoint(cops_t *c, checkpoint_t *cp) {
     if (!c || !cp)
         return;
-    system_write_checkpoint_data(cp, c, offsetof(cops_t, via1));
+    checkpoint_save_prefix(cp, c, cops_t);
 }
 
 // The mirror, called from cops_init while constructing.
 static void cops_restore(cops_t *c, checkpoint_t *cp) {
     if (!c || !cp)
         return;
-    system_read_checkpoint_data(cp, c, offsetof(cops_t, via1));
+    checkpoint_load_prefix(cp, c, cops_t);
 }

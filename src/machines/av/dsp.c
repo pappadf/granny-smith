@@ -561,6 +561,9 @@ static const class_desc_t av_dsp_class = {
 // Lifecycle
 // ============================================================
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(av_dsp_t, cfg);
+
 av_dsp_t *av_dsp_init(config_t *cfg, checkpoint_t *cp) {
     av_dsp_t *d = calloc(1, sizeof(*d));
     if (!d)
@@ -583,8 +586,7 @@ av_dsp_t *av_dsp_init(config_t *cfg, checkpoint_t *cp) {
     dsp3210_reset(d->core, 0); // processor-mode straps
 
     if (cp) {
-        size_t data_size = offsetof(av_dsp_t, cfg);
-        system_read_checkpoint_data(cp, d, data_size);
+        checkpoint_load_prefix(cp, d, av_dsp_t);
         system_read_checkpoint_data(cp, d->core, DSP3210_CHECKPOINT_SIZE);
     }
 
@@ -619,7 +621,6 @@ void av_dsp_delete(av_dsp_t *d) {
 void av_dsp_checkpoint(av_dsp_t *d, checkpoint_t *cp) {
     if (!d || !cp)
         return;
-    size_t data_size = offsetof(av_dsp_t, cfg);
-    system_write_checkpoint_data(cp, d, data_size);
+    checkpoint_save_prefix(cp, d, av_dsp_t);
     system_write_checkpoint_data(cp, d->core, DSP3210_CHECKPOINT_SIZE);
 }

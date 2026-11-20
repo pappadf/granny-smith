@@ -805,13 +805,16 @@ static const char *qd3d_name(const pci_device_t *dev) {
     return "QuickDraw 3D Accelerator";
 }
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(qd3d_t, dev);
+
 // The plain-data head, then the output of a frame still in flight (its
 // pixels reach host memory only when it completes): a byte count and the
 // bytes.
 static void qd3d_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
     qd3d_t *q = (qd3d_t *)dev->priv;
     q3_raster_sync(q->raster);
-    system_write_checkpoint_data(cp, q, offsetof(qd3d_t, dev));
+    checkpoint_save_prefix(cp, q, qd3d_t);
     uint32_t len = q->irq_pending ? (uint32_t)q->tgt.out_len : 0u;
     system_write_checkpoint_data(cp, &len, sizeof(len));
     if (len)
@@ -822,7 +825,7 @@ static void qd3d_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     qd3d_t *q = (qd3d_t *)dev->priv;
     uint32_t irq = 0, len = 0;
     q3_raster_sync(q->raster);
-    system_read_checkpoint_data(cp, q, offsetof(qd3d_t, dev));
+    checkpoint_load_prefix(cp, q, qd3d_t);
     system_read_checkpoint_data(cp, &len, sizeof(len));
     q->tgt.out_len = 0;
     q->tgt.out_failed = false;

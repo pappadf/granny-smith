@@ -1032,8 +1032,11 @@ int ata_dma_out(void *ctx, const uint8_t *buf, int len) {
 
 // ---- checkpoint ------------------------------------------------------------------
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(ata_channel_t, buf);
+
 void ata_checkpoint_save(ata_channel_t *ch, checkpoint_t *cp) {
-    system_write_checkpoint_data(cp, ch, offsetof(ata_channel_t, buf));
+    checkpoint_save_prefix(cp, ch, ata_channel_t);
     system_write_checkpoint_data(cp, ch->buf, ATA_BUF_SIZE);
     checkpoint_write_blob(cp, ch->atapi_resp, ch->atapi_resp ? ch->atapi_resp_len : 0, "ata.resp");
     for (int u = 0; u < 2; u++)
@@ -1042,7 +1045,7 @@ void ata_checkpoint_save(ata_channel_t *ch, checkpoint_t *cp) {
 
 void ata_checkpoint_restore(ata_channel_t *ch, checkpoint_t *cp, const image_list_t *images) {
     free_resp(ch);
-    system_read_checkpoint_data(cp, ch, offsetof(ata_channel_t, buf));
+    checkpoint_load_prefix(cp, ch, ata_channel_t);
     system_read_checkpoint_data(cp, ch->buf, ATA_BUF_SIZE);
     // The response's length is the blob's, bounded as a PACKET command
     // bounds it, not the prefix's word

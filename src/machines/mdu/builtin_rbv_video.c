@@ -248,6 +248,9 @@ static display_t *card_display(nubus_card_t *card) {
     return p ? &p->display : NULL;
 }
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(rbv_video_priv_t, display);
+
 // Save/restore the card's own display state.
 //
 // The RBV *chip* registers ride along in rbv_checkpoint(), but nothing covered
@@ -266,7 +269,7 @@ static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
     // already covered by the RAM image; only a card-owned buffer needs saving.
     if (!p->fb_external)
         system_write_checkpoint_data(cp, p->fb, BUILTIN_RBV_VRAM_SIZE);
-    system_write_checkpoint_data(cp, p, offsetof(rbv_video_priv_t, display));
+    checkpoint_save_prefix(cp, p, rbv_video_priv_t);
     {
         // Fixed widths, not a raw struct prefix: the prefix carried a bare
         // pixel_format_t, whose size is implementation-defined (see
@@ -282,7 +285,7 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
         return;
     if (!p->fb_external)
         system_read_checkpoint_data(cp, p->fb, BUILTIN_RBV_VRAM_SIZE);
-    system_read_checkpoint_data(cp, p, offsetof(rbv_video_priv_t, display));
+    checkpoint_load_prefix(cp, p, rbv_video_priv_t);
     {
         display_head_t head;
         system_read_checkpoint_data(cp, &head, sizeof head);

@@ -418,6 +418,9 @@ static void iop_write_uint32(void *device, uint32_t addr, uint32_t value) {
 //  Lifecycle
 // ============================================================================
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(iop_t, behavior);
+
 iop_t *iop_init(iop_kind_t kind, const memory_interface_t *bypass_iface, void *bypass_device, iop_irq_fn irq_cb,
                 void *context, struct scheduler *scheduler, checkpoint_t *checkpoint) {
     iop_t *iop = calloc(1, sizeof(*iop));
@@ -445,7 +448,7 @@ iop_t *iop_init(iop_kind_t kind, const memory_interface_t *bypass_iface, void *b
 
     if (checkpoint) {
         // Mirrors iop_checkpoint: one blob, host_irq included.
-        system_read_checkpoint_data(checkpoint, iop, offsetof(iop_t, behavior), "iop");
+        checkpoint_load_prefix(checkpoint, iop, iop_t);
         if (iop->behavior->on_restore)
             iop->behavior->on_restore(iop);
     }
@@ -515,7 +518,7 @@ void iop_delete(iop_t *iop) {
 void iop_checkpoint(iop_t *iop, checkpoint_t *checkpoint) {
     if (!iop || !checkpoint)
         return;
-    system_write_checkpoint_data(checkpoint, iop, offsetof(iop_t, behavior), "iop");
+    checkpoint_save_prefix(checkpoint, iop, iop_t);
 }
 
 const memory_interface_t *iop_get_memory_interface(iop_t *iop) {

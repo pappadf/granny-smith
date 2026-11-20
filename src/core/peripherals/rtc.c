@@ -472,6 +472,9 @@ void rtc_pram_reset(rtc_t *rtc) {
     LOG(1, "PRAM reset to its defaults");
 }
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(rtc_t, via);
+
 rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint, bool extended,
                 const pram_defaults_t *defaults) {
     rtc_t *rtc = (rtc_t *)malloc(sizeof(rtc_t));
@@ -506,8 +509,7 @@ rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint, 
     // Load from checkpoint if provided. Read a single contiguous block containing
     // the plain-data members of rtc_t (everything before the first pointer).
     if (checkpoint) {
-        size_t data_size = offsetof(rtc_t, via);
-        system_read_checkpoint_data(checkpoint, rtc, data_size);
+        checkpoint_load_prefix(checkpoint, rtc, rtc_t);
         // Do NOT schedule the default one-second event here; it is restored
         // from the scheduler's checkpointed event queue once the machine is built.
         LOG(1, "rtc_init: restored from checkpoint");
@@ -561,8 +563,7 @@ void rtc_checkpoint(rtc_t *restrict rtc, checkpoint_t *checkpoint) {
     if (!rtc || !checkpoint)
         return;
     // Write the contiguous plain-data portion of rtc_t in a single operation.
-    size_t data_size = offsetof(rtc_t, via);
-    system_write_checkpoint_data(checkpoint, rtc, data_size);
+    checkpoint_save_prefix(checkpoint, rtc, rtc_t);
 }
 
 // === Object-model class descriptor =========================================

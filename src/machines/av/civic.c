@@ -692,6 +692,9 @@ static uint64_t civic_fb_base(void *owner) {
     return (uint64_t)(cv->display.bits - cv->vram);
 }
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(av_civic_t, cfg);
+
 av_civic_t *av_civic_init(config_t *cfg, checkpoint_t *cp) {
     av_civic_t *cv = calloc(1, sizeof(*cv));
     if (!cv)
@@ -717,8 +720,7 @@ av_civic_t *av_civic_init(config_t *cfg, checkpoint_t *cp) {
     cv->sense = cfg->build_opts.builtin_sense;
 
     if (cp) {
-        size_t data_size = offsetof(av_civic_t, cfg);
-        system_read_checkpoint_data(cp, cv, data_size);
+        checkpoint_load_prefix(cp, cv, av_civic_t);
         system_read_checkpoint_data(cp, cv->vram, AV_CIVIC_VRAM_SIZE);
     }
 
@@ -796,8 +798,7 @@ void av_civic_delete(av_civic_t *cv) {
 void av_civic_checkpoint(av_civic_t *cv, checkpoint_t *cp) {
     if (!cv || !cp)
         return;
-    size_t data_size = offsetof(av_civic_t, cfg);
-    system_write_checkpoint_data(cp, cv, data_size);
+    checkpoint_save_prefix(cp, cv, av_civic_t);
     system_write_checkpoint_data(cp, cv->vram, AV_CIVIC_VRAM_SIZE);
 }
 

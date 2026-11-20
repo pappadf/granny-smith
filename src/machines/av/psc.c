@@ -792,14 +792,16 @@ static const class_desc_t psc_class = {
     .n_members = sizeof(psc_members) / sizeof(psc_members[0]),
 };
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(av_psc_t, cfg);
+
 av_psc_t *av_psc_init(config_t *cfg, checkpoint_t *cp) {
     av_psc_t *psc = calloc(1, sizeof(*psc));
     if (!psc)
         return NULL;
     psc->cfg = cfg;
     if (cp) {
-        size_t data_size = offsetof(av_psc_t, cfg);
-        system_read_checkpoint_data(cp, psc, data_size);
+        checkpoint_load_prefix(cp, psc, av_psc_t);
     }
     psc->object = object_attach_new(machine_object(), &psc_class, psc, "psc", NULL, 45);
     return psc;
@@ -816,6 +818,5 @@ void av_psc_delete(av_psc_t *psc) {
 void av_psc_checkpoint(av_psc_t *psc, checkpoint_t *cp) {
     if (!psc || !cp)
         return;
-    size_t data_size = offsetof(av_psc_t, cfg);
-    system_write_checkpoint_data(cp, psc, data_size);
+    checkpoint_save_prefix(cp, psc, av_psc_t);
 }

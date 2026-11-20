@@ -503,6 +503,9 @@ static const class_desc_t videoin_class = {
 // Lifecycle
 // ============================================================
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(av_vdc_t, cfg);
+
 av_vdc_t *av_vdc_init(config_t *cfg, checkpoint_t *cp) {
     av_vdc_t *vdc = calloc(1, sizeof(*vdc));
     if (!vdc)
@@ -515,8 +518,7 @@ av_vdc_t *av_vdc_init(config_t *cfg, checkpoint_t *cp) {
     }
 
     if (cp) {
-        size_t data_size = offsetof(av_vdc_t, cfg);
-        system_read_checkpoint_data(cp, vdc, data_size);
+        checkpoint_load_prefix(cp, vdc, av_vdc_t);
         if (vdc->src_mode == VDC_SRC_FILE) {
             vdc->file_frame = malloc((size_t)AV_VDC_SRC_W * AV_VDC_SRC_H * 4);
             if (vdc->file_frame)
@@ -565,8 +567,7 @@ void av_vdc_delete(av_vdc_t *vdc) {
 void av_vdc_checkpoint(av_vdc_t *vdc, checkpoint_t *cp) {
     if (!vdc || !cp)
         return;
-    size_t data_size = offsetof(av_vdc_t, cfg);
-    system_write_checkpoint_data(cp, vdc, data_size);
+    checkpoint_save_prefix(cp, vdc, av_vdc_t);
     // The loaded source frame is state (a restore must keep producing the
     // same pixels); the webcam is host-ephemeral and outside scope.
     if (vdc->src_mode == VDC_SRC_FILE && vdc->file_frame)

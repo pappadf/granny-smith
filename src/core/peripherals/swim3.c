@@ -449,10 +449,13 @@ void swim3_write(swim3_t *sw, unsigned reg, uint8_t value) {
 
 // === Checkpointing ===========================================================
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(swim3_t, fd);
+
 void swim3_checkpoint(const swim3_t *sw, checkpoint_t *cp) {
-    system_write_checkpoint_data(cp, sw, offsetof(swim3_t, fd), "swim3"); // the prefix only
+    checkpoint_save_prefix(cp, sw, swim3_t); // the prefix only
 }
 
 void swim3_restore(swim3_t *sw, checkpoint_t *cp) {
-    system_read_checkpoint_data(cp, sw, offsetof(swim3_t, fd), "swim3"); // the prefix only
+    checkpoint_load_prefix(cp, sw, swim3_t); // the prefix only
 }

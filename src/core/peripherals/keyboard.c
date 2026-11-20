@@ -551,6 +551,9 @@ void keyboard_input(keyboard_t *keyboard, uint8_t byte) {
     }
 }
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(keyboard_t, scheduler);
+
 // Creates and initializes a keyboard instance
 keyboard_t *keyboard_init(struct scheduler *scheduler, scc_t *scc, via_t *via, checkpoint_t *checkpoint) {
     keyboard_t *keyboard = (keyboard_t *)malloc(sizeof(keyboard_t));
@@ -570,8 +573,7 @@ keyboard_t *keyboard_init(struct scheduler *scheduler, scc_t *scc, via_t *via, c
 
     // Load from checkpoint if provided
     if (checkpoint) {
-        size_t data_size = offsetof(keyboard_t, scheduler);
-        system_read_checkpoint_data(checkpoint, keyboard, data_size);
+        checkpoint_load_prefix(checkpoint, keyboard, keyboard_t);
     }
 
     return keyboard;
@@ -593,6 +595,5 @@ void keyboard_checkpoint(keyboard_t *restrict keyboard, checkpoint_t *checkpoint
         return;
 
     // Save keyboard state (plain data portion only)
-    size_t data_size = offsetof(keyboard_t, scheduler);
-    system_write_checkpoint_data(checkpoint, keyboard, data_size);
+    checkpoint_save_prefix(checkpoint, keyboard, keyboard_t);
 }

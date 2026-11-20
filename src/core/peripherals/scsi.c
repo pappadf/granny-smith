@@ -1254,6 +1254,10 @@ static void write_uint32(void *scsi, uint32_t addr, uint32_t value) {
 // Attaching the NCR 5380 to a bus
 // ============================================================================
 
+// The checkpointed plain-data prefixes, up to the first host pointer
+CHECKPOINT_PREFIX(scsi_5380_t, bus);
+CHECKPOINT_PREFIX(scsi_t, buf);
+
 // Give this bus a 5380, and hand back the chip.
 //
 // Where the chip answers in the address space is the MACHINE's business, not
@@ -1293,7 +1297,7 @@ scsi_5380_t *scsi_5380_attach(scsi_t *bus, checkpoint_t *checkpoint) {
         // The chip's plain-data block, matching the single write in
         // scsi_checkpoint.  Stops at the runtime pointers -- see
         // scsi_internal.h.
-        system_read_checkpoint_data(checkpoint, chip, offsetof(scsi_5380_t, bus));
+        checkpoint_load_prefix(checkpoint, chip, scsi_5380_t);
         // Re-drive the restored pin levels into the machine's wiring.
         scsi_update_irq(bus);
         scsi_update_drq(bus);
@@ -1349,7 +1353,7 @@ scsi_t *scsi_init_named(struct scheduler *sched, checkpoint_t *checkpoint, const
         //
         // buf.data was allocated above and everything from buf onward is a
         // pointer, so the block stops there.
-        system_read_checkpoint_data(checkpoint, scsi, offsetof(scsi_t, buf));
+        checkpoint_load_prefix(checkpoint, scsi, scsi_t);
 
         for (int i = 0; i < 8; i++) {
             // Backward compat: default HD values for old checkpoints missing
@@ -1744,7 +1748,7 @@ void scsi_checkpoint(scsi_t *restrict scsi, checkpoint_t *checkpoint) {
     // default_block_size were all silently dropped by the old loop, so a
     // checkpoint taken between a CHECK CONDITION and the driver's REQUEST
     // SENSE restored as NO SENSE.
-    system_write_checkpoint_data(checkpoint, scsi, offsetof(scsi_t, buf));
+    checkpoint_save_prefix(checkpoint, scsi, scsi_t);
 
     // The medium in each slot, by name.  The image itself is re-opened on
     // restore; only the filename is meaningful across processes.
@@ -1767,7 +1771,7 @@ void scsi_checkpoint(scsi_t *restrict scsi, checkpoint_t *checkpoint) {
     // for the bus, then scsi_5380_attach for the chip).  A machine either has a
     // 5380 or does not, deterministically per model, so the two always agree.
     if (scsi->chip5380)
-        system_write_checkpoint_data(checkpoint, scsi->chip5380, offsetof(scsi_5380_t, bus));
+        checkpoint_save_prefix(checkpoint, scsi->chip5380, scsi_5380_t);
 }
 
 // === Object-model class descriptors =========================================

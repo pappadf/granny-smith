@@ -1790,6 +1790,9 @@ void scc_reset(scc_t *restrict scc) {
     update_irqs(scc);
 }
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(scc_channel_t, scc);
+
 scc_t *scc_init(memory_map_t *map, struct scheduler *scheduler, scc_irq_fn irq_cb, void *cb_context,
                 checkpoint_t *checkpoint) {
     scc_t *scc = (scc_t *)malloc(sizeof(scc_t));
@@ -1834,11 +1837,10 @@ scc_t *scc_init(memory_map_t *map, struct scheduler *scheduler, scc_irq_fn irq_c
     // If a checkpoint is provided, restore channel plain-data (everything up to the
     // embedded scc pointer inside scc_channel_t). The scc_channel_t.scc pointer will be re-linked below.
     if (checkpoint) {
-        size_t ch_data_size = offsetof(scc_channel_t, scc);
         // One block per channel, mirroring the save (see scc_checkpoint for
-        // why this is not a single ch_data_size * 2 read).
+        // why this is not a single two-channel read).
         for (int i = 0; i < 2; i++)
-            system_read_checkpoint_data(checkpoint, &scc->ch[i], ch_data_size);
+            checkpoint_load_prefix(checkpoint, &scc->ch[i], scc_channel_t);
 
         uint8_t loopback = 0;
         system_read_checkpoint_data(checkpoint, &loopback, sizeof(loopback));
@@ -2033,9 +2035,8 @@ void scc_checkpoint(scc_t *restrict scc, checkpoint_t *checkpoint) {
     //
     // Per channel, the two are the same number only when the prefix happens
     // to fill the struct, so the loop is the form that cannot drift.
-    size_t ch_data_size = offsetof(scc_channel_t, scc);
     for (int i = 0; i < 2; i++)
-        system_write_checkpoint_data(checkpoint, &scc->ch[i], ch_data_size);
+        checkpoint_save_prefix(checkpoint, &scc->ch[i], scc_channel_t);
 
     // The external loopback cable.  It sits outside the per-channel
     // blocks because it is a property of the two ports TOGETHER, and it was

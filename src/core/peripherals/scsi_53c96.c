@@ -663,6 +663,9 @@ void scsi_53c96_write(scsi_53c96_t *c, uint32_t reg, uint8_t value) {
     }
 }
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(scsi_53c96_t, sched);
+
 scsi_53c96_t *scsi_53c96_init(struct scheduler *sched, uint32_t clock_hz, checkpoint_t *cp) {
     scsi_53c96_t *c = (scsi_53c96_t *)calloc(1, sizeof(scsi_53c96_t));
     if (!c)
@@ -673,7 +676,7 @@ scsi_53c96_t *scsi_53c96_init(struct scheduler *sched, uint32_t clock_hz, checkp
         // Read straight into the chip: the block stops before `sched`, so the
         // pointers this calloc left NULL stay NULL and are re-bound by the
         // machine (scsi_53c96_attach_bus, scsi_53c96_set_irq_callback).
-        system_read_checkpoint_data(cp, c, offsetof(scsi_53c96_t, sched));
+        checkpoint_load_prefix(cp, c, scsi_53c96_t);
         c->xfer_mode = XFER_IDLE; // a mid-transfer restore is not modelled
     }
     // The machine's clock wins over whatever the checkpoint carried: it is a
@@ -717,7 +720,7 @@ void scsi_53c96_checkpoint(scsi_53c96_t *c, checkpoint_t *cp) {
     // produced different files and "save, save again, diff" could not be used
     // to verify anything.  The struct was already ordered for this; only the
     // bound was wrong.
-    system_write_checkpoint_data(cp, c, offsetof(scsi_53c96_t, sched));
+    checkpoint_save_prefix(cp, c, scsi_53c96_t);
 }
 
 void scsi_53c96_set_irq_callback(scsi_53c96_t *c, scsi_53c96_irq_cb cb, void *context) {

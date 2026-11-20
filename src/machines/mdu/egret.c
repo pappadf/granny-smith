@@ -610,6 +610,9 @@ static void egret_adb_data(void *ctx) {
 
 // === Lifecycle ==============================================================
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(egret_t, via1);
+
 egret_t *egret_init(struct via *via1, struct rtc *rtc, struct adb *adb, struct scheduler *sched, checkpoint_t *cp) {
     egret_t *eg = (egret_t *)calloc(1, sizeof(*eg));
     if (!eg)
@@ -629,8 +632,7 @@ egret_t *egret_init(struct via *via1, struct rtc *rtc, struct adb *adb, struct s
     eg->autopoll_enabled = false;
 
     if (cp) {
-        size_t data_size = offsetof(egret_t, via1);
-        system_read_checkpoint_data(cp, eg, data_size);
+        checkpoint_load_prefix(cp, eg, egret_t);
     }
 
     // Drive the idle xcvrSes level onto PB3 and prime the port-B shadow.
@@ -669,8 +671,7 @@ void egret_delete(egret_t *eg) {
 void egret_checkpoint(egret_t *eg, checkpoint_t *cp) {
     if (!eg || !cp)
         return;
-    size_t data_size = offsetof(egret_t, via1);
-    system_write_checkpoint_data(cp, eg, data_size);
+    checkpoint_save_prefix(cp, eg, egret_t);
 }
 
 // === Configuration / object-model helpers ===================================

@@ -136,6 +136,9 @@ static display_t *card_display(nubus_card_t *card) {
     return p ? &p->display : NULL;
 }
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(se30_priv_t, display);
+
 // === Checkpoint ==============================================================
 //
 // This card owns the SE/30's slot-$E VRAM, saved here.  Its declaration ROM
@@ -146,7 +149,7 @@ static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
     if (!p)
         return;
     system_write_checkpoint_data(cp, p->vram, SE30_VRAM_SIZE);
-    system_write_checkpoint_data(cp, p, offsetof(se30_priv_t, display));
+    checkpoint_save_prefix(cp, p, se30_priv_t);
     {
         // Fixed widths, not a raw struct prefix: the prefix carried a bare
         // pixel_format_t, whose size is implementation-defined (see
@@ -161,7 +164,7 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
     if (!p)
         return;
     system_read_checkpoint_data(cp, p->vram, SE30_VRAM_SIZE);
-    system_read_checkpoint_data(cp, p, offsetof(se30_priv_t, display));
+    checkpoint_load_prefix(cp, p, se30_priv_t);
     {
         display_head_t head;
         system_read_checkpoint_data(cp, &head, sizeof head);

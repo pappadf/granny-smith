@@ -1118,6 +1118,9 @@ static uint64_t av_snd_overruns(void *ctx) {
 // Lifecycle
 // ============================================================
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(av_singer_t, cfg);
+
 av_singer_t *av_singer_init(config_t *cfg, checkpoint_t *cp) {
     av_singer_t *s = calloc(1, sizeof(*s));
     if (!s)
@@ -1130,8 +1133,7 @@ av_singer_t *av_singer_init(config_t *cfg, checkpoint_t *cp) {
     }
 
     if (cp) {
-        size_t data_size = offsetof(av_singer_t, cfg);
-        system_read_checkpoint_data(cp, s, data_size);
+        checkpoint_load_prefix(cp, s, av_singer_t);
         // The WAV's length is the blob's, bounded, not the prefix's word
         uint32_t bytes = 0;
         s->wav =
@@ -1221,8 +1223,7 @@ void av_singer_delete(av_singer_t *s) {
 void av_singer_checkpoint(av_singer_t *s, checkpoint_t *cp) {
     if (!s || !cp)
         return;
-    size_t data_size = offsetof(av_singer_t, cfg);
-    system_write_checkpoint_data(cp, s, data_size);
+    checkpoint_save_prefix(cp, s, av_singer_t);
     // The loaded WAV is state (a restore must keep producing the same
     // samples); the host microphone is checkpoint-ephemeral.
     checkpoint_write_blob(cp, s->wav, s->wav ? s->wav_frames * SINGER_WAV_FRAME_BYTES : 0, "singer.wav");

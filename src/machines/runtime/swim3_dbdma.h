@@ -69,8 +69,9 @@ void swim3_dbdma_init(swim3_dbdma_t *p, struct dbdma *dbdma, int chan, void (*se
                       void *irq_ctx);
 
 // Bind the shared SWIM3 model to this port (its DMA backend) and to the
-// floppy and scheduler.  At construction and again after a restore, which
-// overwrites the chip's pointer tail.
+// floppy and scheduler.  At construction and again after a restore (which
+// reads only the chip's plain-data prefix; the bind is what a fresh chip
+// needs).
 void swim3_dbdma_bind(swim3_dbdma_t *p, swim3_t *chip, struct floppy *fd, struct scheduler *sched);
 
 #endif // GS_MACHINES_RUNTIME_SWIM3_DBDMA_H

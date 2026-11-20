@@ -387,12 +387,15 @@ static display_t *card_display(nubus_card_t *card) {
     return t ? &t->display : NULL;
 }
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(toby_t, display);
+
 static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
     toby_t *t = card ? card->priv : NULL;
     if (!t)
         return;
     system_write_checkpoint_data(cp, t->vram, TOBY_VRAM_SIZE);
-    system_write_checkpoint_data(cp, t, offsetof(toby_t, display));
+    checkpoint_save_prefix(cp, t, toby_t);
 }
 
 static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
@@ -400,7 +403,7 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
     if (!t)
         return;
     system_read_checkpoint_data(cp, t->vram, TOBY_VRAM_SIZE);
-    system_read_checkpoint_data(cp, t, offsetof(toby_t, display));
+    checkpoint_load_prefix(cp, t, toby_t);
     if (t->vint_pending)
         nubus_assert_irq(card);
     apply_scanout(t);
