@@ -95,6 +95,57 @@ static inline uint32_t ppc_subf_body(ppc_t *p, uint32_t a, uint32_t b, uint32_t 
     return ppc_add_body(p, ~a, b, cin, set_ca, oe);
 }
 
+// === Integer ALU results ======================================================
+// The pure results the switch core's OP_* and the predecoded T0 PPD_B_*
+// bodies compute from different operand sources (GPR(RT) against
+// PPD_R(e.b)); scalar static inlines, so each expands to the same code at
+// either site.
+
+// slw: a shift amount with bit 5 set (32-63) clears the result
+static inline __attribute__((always_inline)) uint32_t ppc_alu_slw(uint32_t s, uint32_t b) {
+    return (b & 0x20u) ? 0 : (s << (b & 31u));
+}
+
+// srw: as slw, shifting right
+static inline __attribute__((always_inline)) uint32_t ppc_alu_srw(uint32_t s, uint32_t b) {
+    return (b & 0x20u) ? 0 : (s >> (b & 31u));
+}
+
+// cntlzw: 32 for a zero operand (__builtin_clz(0) is undefined)
+static inline __attribute__((always_inline)) uint32_t ppc_alu_cntlzw(uint32_t s) {
+    return s ? (uint32_t)__builtin_clz(s) : 32u;
+}
+
+// extsb: sign-extend the low byte
+static inline __attribute__((always_inline)) uint32_t ppc_alu_extsb(uint32_t s) {
+    return (uint32_t)(int32_t)(int8_t)s;
+}
+
+// extsh: sign-extend the low halfword
+static inline __attribute__((always_inline)) uint32_t ppc_alu_extsh(uint32_t s) {
+    return (uint32_t)(int32_t)(int16_t)s;
+}
+
+// srawi: arithmetic shift right by an immediate; CA is set when a negative
+// operand shifts out any 1 bits
+static inline __attribute__((always_inline)) uint32_t ppc_alu_srawi(ppc_t *p, uint32_t s, uint32_t n) {
+    ppc_set_ca(p, ((int32_t)s < 0) && n != 0 && (s & ((1u << n) - 1u)) != 0);
+    return (uint32_t)((int32_t)s >> n);
+}
+
+// rlwinm / rlwnm: rotate left, then AND with the MB..ME mask
+static inline __attribute__((always_inline)) uint32_t ppc_alu_rlwinm(uint32_t s, uint32_t sh, uint32_t mb,
+                                                                     uint32_t me) {
+    return ppc_rotl(s, sh) & ppc_mask(mb, me);
+}
+
+// rlwimi: rotate left, then insert under the MB..ME mask into a
+static inline __attribute__((always_inline)) uint32_t ppc_alu_rlwimi(uint32_t s, uint32_t a, uint32_t sh, uint32_t mb,
+                                                                     uint32_t me) {
+    uint32_t m = ppc_mask(mb, me);
+    return (ppc_rotl(s, sh) & m) | (a & ~m);
+}
+
 // === Compares ===============================================================
 
 static inline void ppc_set_cr_field(ppc_t *p, uint32_t crf, uint32_t bits4) {
@@ -289,10 +340,10 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 #define OP_MCRF       OP(ppc_set_cr_field(p, PPC_CRFD(iw), ppc_get_cr_field(p, PPC_CRFS(iw))))
 
 // --- rotates ---
-#define OP_RLWIMI     OP(uint32_t m_ = ppc_mask(PPC_MB(iw), PPC_ME(iw)); RECA((ppc_rotl(GPR(RT), RB) & m_) | (GPR(RA) & ~m_)))
-#define OP_RLWINM     OP(RECA(ppc_rotl(GPR(RT), RB) & ppc_mask(PPC_MB(iw), PPC_ME(iw))))
+#define OP_RLWIMI     OP(RECA(ppc_alu_rlwimi(GPR(RT), GPR(RA), RB, PPC_MB(iw), PPC_ME(iw))))
+#define OP_RLWINM     OP(RECA(ppc_alu_rlwinm(GPR(RT), RB, PPC_MB(iw), PPC_ME(iw))))
 #define OP_RLMI       OP(M601(); uint32_t m_ = ppc_mask(PPC_MB(iw), PPC_ME(iw)); RECA((ppc_rotl(GPR(RT), GPR(RB) & 31u) & m_) | (GPR(RA) & ~m_)))
-#define OP_RLWNM      OP(RECA(ppc_rotl(GPR(RT), GPR(RB) & 31u) & ppc_mask(PPC_MB(iw), PPC_ME(iw))))
+#define OP_RLWNM      OP(RECA(ppc_alu_rlwinm(GPR(RT), GPR(RB) & 31u, PPC_MB(iw), PPC_ME(iw))))
 
 // --- logical immediates ---
 #define OP_ORI        OP(GPR(RA) = GPR(RT) | UIMM16)
@@ -338,15 +389,15 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 #define OP_NAND       OP(RECA(~(GPR(RT) & GPR(RB))))
 #define OP_NOR        OP(RECA(~(GPR(RT) | GPR(RB))))
 #define OP_EQV        OP(RECA(~(GPR(RT) ^ GPR(RB))))
-#define OP_EXTSB      OP(RECA((uint32_t)(int32_t)(int8_t)GPR(RT)))
-#define OP_EXTSH      OP(RECA((uint32_t)(int32_t)(int16_t)GPR(RT)))
-#define OP_CNTLZW     OP(RECA(GPR(RT) ? (uint32_t)__builtin_clz(GPR(RT)) : 32u))
+#define OP_EXTSB      OP(RECA(ppc_alu_extsb(GPR(RT))))
+#define OP_EXTSH      OP(RECA(ppc_alu_extsh(GPR(RT))))
+#define OP_CNTLZW     OP(RECA(ppc_alu_cntlzw(GPR(RT))))
 
 // --- architectural shifts ---
-#define OP_SLW        OP(RECA((GPR(RB) & 0x20u) ? 0 : (GPR(RT) << (GPR(RB) & 31u))))
-#define OP_SRW        OP(RECA((GPR(RB) & 0x20u) ? 0 : (GPR(RT) >> (GPR(RB) & 31u))))
+#define OP_SLW        OP(RECA(ppc_alu_slw(GPR(RT), GPR(RB))))
+#define OP_SRW        OP(RECA(ppc_alu_srw(GPR(RT), GPR(RB))))
 #define OP_SRAW       OP(ppc_do_sraw(p, iw))
-#define OP_SRAWI      OP(uint32_t n_ = RB, s_ = GPR(RT); ppc_set_ca(p, ((int32_t)s_ < 0) && n_ != 0 && (s_ & ((1u << n_) - 1u)) != 0); RECA((uint32_t)((int32_t)s_ >> n_)))
+#define OP_SRAWI      OP(RECA(ppc_alu_srawi(p, GPR(RT), RB)))
 
 // --- POWER shift-with-MQ family (601UM chapter-10 POWER pages) ---
 #define OP_MASKG      OP(M601(); RECA(ppc_mask(GPR(RT) & 31u, GPR(RB) & 31u)))
