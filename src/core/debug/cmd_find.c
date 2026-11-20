@@ -218,50 +218,31 @@ static DEF_METHOD(find_method_long) {
 // alone failed with "missing argument 'start'".
 static const value_t find_def_start = {.kind = VK_UINT, .u = 0};
 
+// The optional `start` / `end` scan range every find method takes after its
+// needle
+#define FIND_RANGE_ARGS                                                                                                \
+    {.name = "start",                                                                                                  \
+     .kind = VK_UINT,                                                                                                  \
+     .validation_flags = OBJ_ARG_OPTIONAL,                                                                             \
+     .presentation_flags = VFLAG_HEX,                                                                                  \
+     .default_value = &find_def_start,                                                                                 \
+     .doc = "Scan start address"},                                                                                     \
+    {                                                                                                                  \
+        .name = "end", .kind = VK_UINT, .validation_flags = OBJ_ARG_OPTIONAL, .presentation_flags = VFLAG_HEX,         \
+        .doc = "Scan end address, inclusive", .default_doc = "the address mask"                                        \
+    }
+
 static const arg_decl_t find_str_args[] = {
     {.name = "text", .kind = VK_STRING, .doc = "Search text"},
-    {.name = "start",
-     .kind = VK_UINT,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .presentation_flags = VFLAG_HEX,
-     .default_value = &find_def_start,
-     .doc = "Scan start address"},
-    {.name = "end",
-     .kind = VK_UINT,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .presentation_flags = VFLAG_HEX,
-     .doc = "Scan end address, inclusive",
-     .default_doc = "the address mask"},
+    FIND_RANGE_ARGS,
 };
 static const arg_decl_t find_bytes_args[] = {
     {.name = "hex", .kind = VK_STRING, .doc = "Space-separated hex bytes (\"4E 71\")"},
-    {.name = "start",
-     .kind = VK_UINT,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .presentation_flags = VFLAG_HEX,
-     .default_value = &find_def_start,
-     .doc = "Scan start address"},
-    {.name = "end",
-     .kind = VK_UINT,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .presentation_flags = VFLAG_HEX,
-     .doc = "Scan end address, inclusive",
-     .default_doc = "the address mask"},
+    FIND_RANGE_ARGS,
 };
 static const arg_decl_t find_int_args[] = {
     {.name = "value", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "Integer value to search for"},
-    {.name = "start",
-     .kind = VK_UINT,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .presentation_flags = VFLAG_HEX,
-     .default_value = &find_def_start,
-     .doc = "Scan start address"},
-    {.name = "end",
-     .kind = VK_UINT,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .presentation_flags = VFLAG_HEX,
-     .doc = "Scan end address, inclusive",
-     .default_doc = "the address mask"},
+    FIND_RANGE_ARGS,
 };
 
 static const member_t find_members[] = {

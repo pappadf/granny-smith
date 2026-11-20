@@ -3788,107 +3788,33 @@ static struct object *screen_source_lookup(struct object *self, const char *name
 static const arg_decl_t screen_save_args[] = {
     {.name = "path", .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = "Output PNG path (must end in .png)"},
 };
+// The four grouped, optional edges of one exclude region: `sfx` suffixes the
+// names ("", "2", "3"), `lead` starts the docs ("Exclude", "Second exclude")
+#define EXCLUDE_RECT_ARGS(sfx, lead)                                                                                   \
+    {.name = "top" sfx,                                                                                                \
+     .kind = VK_INT,                                                                                                   \
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,                                                           \
+     .doc = lead "-region top edge"},                                                                                  \
+        {.name = "left" sfx,                                                                                           \
+         .kind = VK_INT,                                                                                               \
+         .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,                                                       \
+         .doc = lead "-region left edge"},                                                                             \
+        {.name = "bottom" sfx,                                                                                         \
+         .kind = VK_INT,                                                                                               \
+         .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,                                                       \
+         .doc = lead "-region bottom edge"},                                                                           \
+    {                                                                                                                  \
+        .name = "right" sfx, .kind = VK_INT, .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,                   \
+        .doc = lead "-region right edge"                                                                               \
+    }
+
+// screen.match and screen.matches: a reference PNG and up to three exclude
+// regions (one table: the two methods take the same arguments)
 static const arg_decl_t screen_match_args[] = {
     {.name = "reference", .kind = VK_STRING, .doc = "Reference PNG path"},
-    {.name = "top",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Exclude-region top edge"},
-    {.name = "left",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Exclude-region left edge"},
-    {.name = "bottom",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Exclude-region bottom edge"},
-    {.name = "right",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Exclude-region right edge"},
-    {.name = "top2",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Second exclude-region top edge"},
-    {.name = "left2",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Second exclude-region left edge"},
-    {.name = "bottom2",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Second exclude-region bottom edge"},
-    {.name = "right2",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Second exclude-region right edge"},
-    {.name = "top3",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Third exclude-region top edge"},
-    {.name = "left3",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Third exclude-region left edge"},
-    {.name = "bottom3",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Third exclude-region bottom edge"},
-    {.name = "right3",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Third exclude-region right edge"},
-};
-static const arg_decl_t screen_matches_args[] = {
-    {.name = "reference", .kind = VK_STRING, .doc = "Reference PNG path"},
-    {.name = "top",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Exclude-region top edge"},
-    {.name = "left",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Exclude-region left edge"},
-    {.name = "bottom",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Exclude-region bottom edge"},
-    {.name = "right",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Exclude-region right edge"},
-    {.name = "top2",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Second exclude-region top edge"},
-    {.name = "left2",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Second exclude-region left edge"},
-    {.name = "bottom2",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Second exclude-region bottom edge"},
-    {.name = "right2",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Second exclude-region right edge"},
-    {.name = "top3",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Third exclude-region top edge"},
-    {.name = "left3",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Third exclude-region left edge"},
-    {.name = "bottom3",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Third exclude-region bottom edge"},
-    {.name = "right3",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Third exclude-region right edge"},
+    EXCLUDE_RECT_ARGS("", "Exclude"),
+    EXCLUDE_RECT_ARGS("2", "Second exclude"),
+    EXCLUDE_RECT_ARGS("3", "Third exclude"),
 };
 static const arg_decl_t screen_match_or_save_args[] = {
     {.name = "reference", .kind = VK_STRING, .doc = "Reference PNG path"},
@@ -3967,7 +3893,7 @@ static const member_t screen_members[] = {
      .name = "matches",
      .flags = M_CAT_ADVANCED,
      .doc = "Non-fatal `match`: true/false without aborting, artifacts, or output (polling primitive); optional "
-            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_matches_args, .nargs = 13, .result = VK_BOOL, .fn = screen_method_matches}},
+            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_match_args, .nargs = 13, .result = VK_BOOL, .fn = screen_method_matches}},
     {.kind = MK_METHOD,
      .name = "match_or_save",
      .flags = M_CAT_ADVANCED,
