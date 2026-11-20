@@ -12,6 +12,7 @@
 #include "debug.h"
 #include "debug_mmu.h"
 #include "fpu.h"
+#include "fpu_internal.h"
 #include "log.h"
 #include "memory.h"
 #include "mmu040.h"
@@ -644,41 +645,14 @@ static void cpu_dbgif_regs(void *ctx, struct value_map_builder *regs) {
     val_map_put(regs, "ssp", val_int((int64_t)cpu_get_ssp(cpu)));
 }
 
-// Side-effect-free conversion of an 80-bit extended-precision register
-// to a host double for display. The FPU's own fpu_to_double helper sets
-// inexact / SNaN bits in fpsr — we don't want that for an observer that
-// just reads register state. Precision loss in normal range is fine for
-// human-readable display; tests/tools that need bit-exact bytes can
-// consume the hex form instead.
+// Side-effect-free conversion of an 80-bit extended-precision register to
+// a host double for display: the FPU's own fpu_to_double (which normalizes
+// unnormals and rounds), run on a zeroed scratch state so it rounds to
+// nearest whatever the live FPCR says, and the inexact / SNaN bits it sets
+// land in the scratch FPSR, not the observed one.
 static double fp80_to_display_double(float80_reg_t f) {
-    int sign = fp80_sign(f);
-    uint16_t exp = fp80_exp(f);
-    if (exp == 0 && f.mantissa == 0)
-        return sign ? -0.0 : 0.0;
-    if (exp == 0x7FFF) {
-        if (f.mantissa == 0 || (f.mantissa & ~(1ULL << 63)) == 0)
-            return sign ? -((double)1.0 / 0.0) : ((double)1.0 / 0.0);
-        return (double)0.0 / 0.0;
-    }
-    int32_t true_exp = (int32_t)exp - 16383;
-    if (true_exp > 1023)
-        return sign ? -((double)1.0 / 0.0) : ((double)1.0 / 0.0);
-    if (true_exp < -1074)
-        return sign ? -0.0 : 0.0;
-    uint64_t mant52;
-    int double_exp;
-    if (true_exp >= -1022) {
-        mant52 = (f.mantissa >> 11) & 0x000FFFFFFFFFFFFFULL;
-        double_exp = true_exp + 1023;
-    } else {
-        // Subnormal in double precision.
-        int shift = -1022 - true_exp;
-        if (shift >= 53)
-            return sign ? -0.0 : 0.0;
-        mant52 = (f.mantissa >> (11 + shift)) & 0x000FFFFFFFFFFFFFULL;
-        double_exp = 0;
-    }
-    uint64_t bits = ((uint64_t)sign << 63) | ((uint64_t)double_exp << 52) | mant52;
+    fpu_state_t scratch = {0};
+    uint64_t bits = fpu_to_double(&scratch, f);
     double result;
     memcpy(&result, &bits, sizeof(result));
     return result;

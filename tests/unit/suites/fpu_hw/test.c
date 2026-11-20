@@ -46,6 +46,7 @@
 #include "harness.h"
 #include "memory.h"
 #include "test_assert.h"
+#include "value.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -551,6 +552,44 @@ TEST(fdiv_wide_divisor_is_correctly_rounded) {
     ASSERT_EQ_INT(FPEXC_INEX2, exc());
 }
 
+// ---------------------------------------------------------------------------
+// debug.frame's decimal rendering
+// ---------------------------------------------------------------------------
+
+// The "val" string debug.frame shows for FP1 holding `v`
+static void frame_fp1_val(float80_reg_t v, char *out, size_t cap) {
+    g_fpu->fp[1] = v;
+    cpu_debug_if_t dif = cpu_debug_if(g_cpu);
+    value_map_builder_t *b = val_map_new();
+    ASSERT_TRUE(dif.fpu(dif.ctx, b));
+    value_t m = val_map_finish(b);
+    const value_t *fp = value_map_get(&m, "fp");
+    ASSERT_TRUE(fp && fp->kind == VK_LIST && fp->list.len == 8);
+    const value_t *val = value_map_get(&fp->list.items[1], "val");
+    ASSERT_TRUE(val && val->kind == VK_STRING);
+    snprintf(out, cap, "%s", val->s);
+    value_free(&m);
+}
+
+TEST(frame_displays_unnormals_and_rounds_without_touching_fpsr) {
+    char buf[64];
+    // An unnormal 0.5 (exponent of 1.0, J bit clear) is 0.5, not 1.5
+    frame_fp1_val(x80(0x3FFF, 0x4000000000000000ULL), buf, sizeof(buf));
+    ASSERT_TRUE(strcmp(buf, "0.5") == 0);
+    // Above the half-way point past the double's LSB rounds up to nearest
+    // instead of truncating to 1
+    frame_fp1_val(x80(0x3FFF, 0x8000000000000401ULL), buf, sizeof(buf));
+    ASSERT_TRUE(strcmp(buf, "1.0000000000000002") == 0);
+    // The conversion's inexact bit never reaches the live FPSR, and the
+    // live rounding mode does not apply
+    g_fpu->fpsr = 0;
+    g_fpu->fpcr = RZ;
+    frame_fp1_val(x80(0x3FFF, 0x8000000000000401ULL), buf, sizeof(buf));
+    ASSERT_TRUE(strcmp(buf, "1.0000000000000002") == 0);
+    ASSERT_EQ_INT(0, g_fpu->fpsr);
+    g_fpu->fpcr = 0;
+}
+
 int main(void) {
     test_context_t *ctx = test_harness_init();
     if (!ctx) {
@@ -595,6 +634,7 @@ int main(void) {
     RUN(packed_load_nondecimal_digits_not_detected);
     RUN(fdiv_final_remainder_bit_is_sticky);
     RUN(fdiv_wide_divisor_is_correctly_rounded);
+    RUN(frame_displays_unnormals_and_rounds_without_touching_fpsr);
 
     test_harness_destroy(ctx);
     printf("[fpu_hw] all tests passed\n");
