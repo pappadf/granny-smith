@@ -758,6 +758,107 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
 // === Handle Management ===
 
 // Open a checkpoint file for reading (auto-detects v2 or v3 format)
+// Read a checkpoint's header -- the signature, then the build ID that
+// follows it in both formats -- and check the ID against this build.  *version
+// receives the format version (0 when the signature is not one).  `loud`
+// selects checkpoint_open_read's diagnostics (level 0, both IDs on a
+// mismatch) over checkpoint_check_build_id's quieter ones (level 1).
+static checkpoint_build_t read_header(FILE *f, const char *filename, bool loud, char *version) {
+    char magic[CHECKPOINT_MAGIC_LEN];
+    char file_build_id[BUILD_ID_LEN + 1];
+    *version = 0;
+    if (fread(magic, 1, CHECKPOINT_MAGIC_LEN, f) != CHECKPOINT_MAGIC_LEN) {
+        if (loud)
+            LOG(0, "Error: %s is not a valid checkpoint (too short)", filename);
+        else
+            LOG(1, "%s: too short to be a checkpoint", filename);
+        return CHECKPOINT_BUILD_UNREADABLE;
+    }
+    *version = checkpoint_signature_version(magic);
+    if (loud && *version != CHECKPOINT_VERSION_V3 && *version != CHECKPOINT_VERSION_V2) {
+        LOG(0, "Error: %s is not a valid Granny Smith checkpoint (bad signature)", filename);
+        return CHECKPOINT_BUILD_UNREADABLE;
+    }
+    if (fread(file_build_id, 1, BUILD_ID_LEN, f) != BUILD_ID_LEN) {
+        if (loud)
+            LOG(0, "Error: Failed to read build ID from %s", filename);
+        else
+            LOG(1, "%s: too short to be a checkpoint", filename);
+        return CHECKPOINT_BUILD_UNREADABLE;
+    }
+    file_build_id[BUILD_ID_LEN] = '\0';
+    if (!*version) {
+        LOG(1, "%s: not a checkpoint this build reads (bad signature)", filename);
+        return CHECKPOINT_BUILD_UNREADABLE;
+    }
+    // Validate the build ID against the running application
+    if (memcmp(file_build_id, build_id_get(), BUILD_ID_LEN) != 0) {
+        if (loud) {
+            LOG(0, "Error: Checkpoint build ID mismatch in %s", filename);
+            LOG(0, "  checkpoint: %s", file_build_id);
+            LOG(0, "  current:    %s", build_id_get());
+        } else {
+            LOG(1, "%s: saved by another build", filename);
+        }
+        return CHECKPOINT_BUILD_MISMATCH;
+    }
+    return CHECKPOINT_BUILD_MATCH;
+}
+
+// Read a v3 (quick) payload -- sizes, then the compressed bytes -- into cp->buf
+static bool read_quick_payload(checkpoint_t *cp, const char *filename) {
+    uint64_t uncompressed_size = 0, compressed_size = 0;
+    if (fread(&uncompressed_size, 1, sizeof(uncompressed_size), cp->file) != sizeof(uncompressed_size)) {
+        LOG(0, "Error: Failed to read v3 uncompressed size from %s", filename);
+        return false;
+    }
+    if (fread(&compressed_size, 1, sizeof(compressed_size), cp->file) != sizeof(compressed_size)) {
+        LOG(0, "Error: Failed to read v3 compressed size from %s", filename);
+        return false;
+    }
+    if (compressed_size > CHECKPOINT_MAX_ALLOC || uncompressed_size > CHECKPOINT_MAX_ALLOC) {
+        LOG(0, "Error: v3 size header (%llu / %llu) exceeds CHECKPOINT_MAX_ALLOC (%zu)",
+            (unsigned long long)uncompressed_size, (unsigned long long)compressed_size, (size_t)CHECKPOINT_MAX_ALLOC);
+        return false;
+    }
+    // Allocate and read compressed data
+    uint8_t *comp_buf = (uint8_t *)malloc((size_t)compressed_size);
+    if (!comp_buf) {
+        LOG(0, "Error: Out of memory for v3 decompression (%llu bytes)", (unsigned long long)compressed_size);
+        return false;
+    }
+    if (fread(comp_buf, 1, (size_t)compressed_size, cp->file) != (size_t)compressed_size) {
+        LOG(0, "Error: Failed to read v3 compressed data from %s", filename);
+        free(comp_buf);
+        return false;
+    }
+    // Allocate decompressed buffer and decode
+    cp->buf = (uint8_t *)malloc((size_t)uncompressed_size);
+    if (!cp->buf) {
+        LOG(0, "Error: Out of memory for v3 decompressed data (%llu bytes)", (unsigned long long)uncompressed_size);
+        free(comp_buf);
+        return false;
+    }
+    // If compressed_size == uncompressed_size, data is uncompressed (RLE disabled)
+    if (compressed_size == uncompressed_size) {
+        memcpy(cp->buf, comp_buf, (size_t)uncompressed_size);
+    } else if (codec_decode(CODEC_GSRLE, comp_buf, (size_t)compressed_size, cp->buf, (size_t)uncompressed_size) !=
+               (int64_t)uncompressed_size) {
+        // RLE-compressed data that does not decode to its claimed size
+        LOG(0, "Error: v3 RLE decompression failed for %s", filename);
+        free(comp_buf);
+        free(cp->buf);
+        cp->buf = NULL;
+        return false;
+    }
+    free(comp_buf);
+    cp->buf_cap = (size_t)uncompressed_size;
+    cp->buf_used = (size_t)uncompressed_size;
+    cp->buf_pos = 0;
+    cp->buf_owned = true;
+    return true;
+}
+
 checkpoint_t *checkpoint_open_read(const char *filename) {
     // A restore builds a machine beside the running one; on a large machine
     // the idle quick-save buffer (RAM-sized) is what would not fit beside
@@ -787,140 +888,31 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
     cp->final_path = NULL;
     cp->tmp_path = NULL;
 
-    // Read magic signature to detect format version
-    char magic[CHECKPOINT_MAGIC_LEN];
-    size_t got = fread(magic, 1, CHECKPOINT_MAGIC_LEN, cp->file);
-    if (got != CHECKPOINT_MAGIC_LEN) {
-        LOG(0, "Error: %s is not a valid checkpoint (too short)", filename);
-        fclose(cp->file);
-        free(cp);
-        return NULL;
-    }
-
-    char version = checkpoint_signature_version(magic);
+    // The signature and the build ID, the same for both formats
+    char version = 0;
+    if (read_header(cp->file, filename, true, &version) != CHECKPOINT_BUILD_MATCH)
+        goto fail;
     if (version == CHECKPOINT_VERSION_V3) {
-        // v3 quick format: read build ID, then sizes, decompress entire payload into buffer
-        char file_build_id[BUILD_ID_LEN + 1];
-        got = fread(file_build_id, 1, BUILD_ID_LEN, cp->file);
-        if (got != BUILD_ID_LEN) {
-            LOG(0, "Error: Failed to read build ID from %s", filename);
-            fclose(cp->file);
-            free(cp);
-            return NULL;
-        }
-        file_build_id[BUILD_ID_LEN] = '\0';
-        // Validate build ID matches the running application
-        if (memcmp(file_build_id, build_id_get(), BUILD_ID_LEN) != 0) {
-            LOG(0, "Error: Checkpoint build ID mismatch in %s", filename);
-            LOG(0, "  checkpoint: %s", file_build_id);
-            LOG(0, "  current:    %s", build_id_get());
-            fclose(cp->file);
-            free(cp);
-            return NULL;
-        }
-        uint64_t uncompressed_size = 0, compressed_size = 0;
-        got = fread(&uncompressed_size, 1, sizeof(uncompressed_size), cp->file);
-        if (got != sizeof(uncompressed_size)) {
-            LOG(0, "Error: Failed to read v3 uncompressed size from %s", filename);
-            fclose(cp->file);
-            free(cp);
-            return NULL;
-        }
-        got = fread(&compressed_size, 1, sizeof(compressed_size), cp->file);
-        if (got != sizeof(compressed_size)) {
-            LOG(0, "Error: Failed to read v3 compressed size from %s", filename);
-            fclose(cp->file);
-            free(cp);
-            return NULL;
-        }
-        if (compressed_size > CHECKPOINT_MAX_ALLOC || uncompressed_size > CHECKPOINT_MAX_ALLOC) {
-            LOG(0, "Error: v3 size header (%llu / %llu) exceeds CHECKPOINT_MAX_ALLOC (%zu)",
-                (unsigned long long)uncompressed_size, (unsigned long long)compressed_size,
-                (size_t)CHECKPOINT_MAX_ALLOC);
-            fclose(cp->file);
-            free(cp);
-            return NULL;
-        }
-        // Allocate and read compressed data
-        uint8_t *comp_buf = (uint8_t *)malloc((size_t)compressed_size);
-        if (!comp_buf) {
-            LOG(0, "Error: Out of memory for v3 decompression (%llu bytes)", (unsigned long long)compressed_size);
-            fclose(cp->file);
-            free(cp);
-            return NULL;
-        }
-        got = fread(comp_buf, 1, (size_t)compressed_size, cp->file);
-        if (got != (size_t)compressed_size) {
-            LOG(0, "Error: Failed to read v3 compressed data from %s", filename);
-            free(comp_buf);
-            fclose(cp->file);
-            free(cp);
-            return NULL;
-        }
-        // Allocate decompressed buffer and decode
-        cp->buf = (uint8_t *)malloc((size_t)uncompressed_size);
-        if (!cp->buf) {
-            LOG(0, "Error: Out of memory for v3 decompressed data (%llu bytes)", (unsigned long long)uncompressed_size);
-            free(comp_buf);
-            fclose(cp->file);
-            free(cp);
-            return NULL;
-        }
-        // If compressed_size == uncompressed_size, data is uncompressed (RLE disabled)
-        if (compressed_size == uncompressed_size) {
-            memcpy(cp->buf, comp_buf, (size_t)uncompressed_size);
-        } else {
-            // RLE-compressed data: decode
-            if (codec_decode(CODEC_GSRLE, comp_buf, (size_t)compressed_size, cp->buf, (size_t)uncompressed_size) !=
-                (int64_t)uncompressed_size) {
-                LOG(0, "Error: v3 RLE decompression failed for %s", filename);
-                free(comp_buf);
-                free(cp->buf);
-                fclose(cp->file);
-                free(cp);
-                return NULL;
-            }
-        }
-        free(comp_buf);
-        cp->buf_cap = (size_t)uncompressed_size;
-        cp->buf_used = (size_t)uncompressed_size;
-        cp->buf_pos = 0;
-        cp->buf_owned = true;
+        // v3 quick format: the whole payload is decompressed into the buffer
+        if (!read_quick_payload(cp, filename))
+            goto fail;
         // Close the file early; all data is in the buffer
         fclose(cp->file);
         cp->file = NULL;
         cp->kind = CHECKPOINT_KIND_QUICK;
-    } else if (version == CHECKPOINT_VERSION_V2) {
-        // v2 consolidated format: read build ID, model ID, then per-block streaming from file
-        char file_build_id[BUILD_ID_LEN + 1];
-        got = fread(file_build_id, 1, BUILD_ID_LEN, cp->file);
-        if (got != BUILD_ID_LEN) {
-            LOG(0, "Error: Failed to read build ID from %s", filename);
-            fclose(cp->file);
-            free(cp);
-            return NULL;
-        }
-        file_build_id[BUILD_ID_LEN] = '\0';
-        // Validate build ID matches the running application
-        if (memcmp(file_build_id, build_id_get(), BUILD_ID_LEN) != 0) {
-            LOG(0, "Error: Checkpoint build ID mismatch in %s", filename);
-            LOG(0, "  checkpoint: %s", file_build_id);
-            LOG(0, "  current:    %s", build_id_get());
-            fclose(cp->file);
-            free(cp);
-            return NULL;
-        }
-        cp->kind = CHECKPOINT_KIND_CONSOLIDATED;
     } else {
-        LOG(0, "Error: %s is not a valid Granny Smith checkpoint (bad signature)", filename);
-        fclose(cp->file);
-        free(cp);
-        return NULL;
+        // v2 consolidated format: per-block streaming from the file
+        cp->kind = CHECKPOINT_KIND_CONSOLIDATED;
     }
 
     cp->is_writing = false;
     cp->error = false;
     return cp;
+
+fail:
+    fclose(cp->file);
+    free(cp);
+    return NULL;
 }
 
 // Open a checkpoint file for writing
@@ -1453,26 +1445,10 @@ checkpoint_build_t checkpoint_check_build_id(const char *filename) {
     FILE *f = fopen(filename, "rb");
     if (!f)
         return CHECKPOINT_BUILD_UNREADABLE;
-
-    // Signature, then the build ID (immediately follows it in both formats)
-    char magic[CHECKPOINT_MAGIC_LEN];
-    char file_build_id[BUILD_ID_LEN];
-    bool whole = fread(magic, 1, CHECKPOINT_MAGIC_LEN, f) == CHECKPOINT_MAGIC_LEN &&
-                 fread(file_build_id, 1, BUILD_ID_LEN, f) == BUILD_ID_LEN;
+    char version = 0;
+    checkpoint_build_t r = read_header(f, filename, false, &version);
     fclose(f);
-    if (!whole) {
-        LOG(1, "%s: too short to be a checkpoint", filename);
-        return CHECKPOINT_BUILD_UNREADABLE;
-    }
-    if (!checkpoint_signature_version(magic)) {
-        LOG(1, "%s: not a checkpoint this build reads (bad signature)", filename);
-        return CHECKPOINT_BUILD_UNREADABLE;
-    }
-    if (memcmp(file_build_id, build_id_get(), BUILD_ID_LEN) != 0) {
-        LOG(1, "%s: saved by another build", filename);
-        return CHECKPOINT_BUILD_MISMATCH;
-    }
-    return CHECKPOINT_BUILD_MATCH;
+    return r;
 }
 
 bool checkpoint_validate_build_id(const char *filename) {
