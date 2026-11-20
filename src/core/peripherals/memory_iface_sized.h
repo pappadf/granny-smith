@@ -27,7 +27,7 @@
 
 // === Macros ===
 
-// Defines `static memory_interface_t name` over a device context `ctx_t`:
+// Defines `static const memory_interface_t name` over a device context `ctx_t`:
 //   uint32_t rd(ctx_t *ctx, uint32_t addr, unsigned width, bool peek)
 //   void     wr(ctx_t *ctx, uint32_t addr, uint32_t value, unsigned width)
 // with width 1, 2 or 4 and the value in the low `width` bytes.
@@ -59,7 +59,7 @@
     static void name##_write32(void *dev, uint32_t addr, uint32_t value) {                                             \
         wr((ctx_t *)dev, addr, value, 4);                                                                              \
     }                                                                                                                  \
-    static memory_interface_t name = {                                                                                 \
+    static const memory_interface_t name = {                                                                           \
         .read_uint8 = name##_read8,                                                                                    \
         .read_uint16 = name##_read16,                                                                                  \
         .read_uint32 = name##_read32,                                                                                  \

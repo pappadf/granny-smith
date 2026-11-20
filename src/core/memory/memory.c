@@ -2217,7 +2217,7 @@ void memory_host_written(const uint8_t *host, uint32_t len) {
 // ============================================================================
 
 // Add a memory-mapped device to the memory map (linked list + page table)
-void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
+void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, const memory_interface_t *iface,
                     void *device) {
     // Add to linked list (for memory_map_print / memory_map_remove)
     mapping_t *map = (mapping_t *)calloc(1, sizeof(mapping_t));

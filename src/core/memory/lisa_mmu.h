@@ -91,7 +91,7 @@ void lisa_mmu_checkpoint_restore(lisa_mmu_t *m, checkpoint_t *cp);
 // device's physical range so later steps (VIA, SCC, floppy, Widget) can hook
 // in.  `base`/`size` are physical I/O addresses; reads/writes are dispatched
 // with the offset already subtracted (addr - base), matching memory_interface.
-void lisa_mmu_map_io(lisa_mmu_t *m, uint32_t phys_base, uint32_t size, memory_interface_t *iface, void *dev);
+void lisa_mmu_map_io(lisa_mmu_t *m, uint32_t phys_base, uint32_t size, const memory_interface_t *iface, void *dev);
 
 // Current video framebuffer physical base, derived from the Video Address
 // Latch ($00E800): the latch holds A15-A20, i.e. base = latch << 15, masked

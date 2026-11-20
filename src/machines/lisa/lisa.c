@@ -288,7 +288,7 @@ static void lisa_via_write32(void *dev, uint32_t off, uint32_t v) {
     lisa_via_write8(dev, off, (uint8_t)v);
 }
 
-static memory_interface_t lisa_via_iface = {
+static const memory_interface_t lisa_via_iface = {
     .read_uint8 = lisa_via_read8,
     .read_uint16 = lisa_via_read16,
     .read_uint32 = lisa_via_read32,
@@ -471,7 +471,7 @@ static void lisa_fdc_io_write16(void *dev, uint32_t off, uint16_t v) {
 static void lisa_fdc_io_write32(void *dev, uint32_t off, uint32_t v) {
     lisa_fdc_write32((lisa_fdc_t *)dev, off, v);
 }
-static memory_interface_t lisa_fdc_iface = {
+static const memory_interface_t lisa_fdc_iface = {
     .read_uint8 = lisa_fdc_io_read8,
     .read_uint16 = lisa_fdc_io_read16,
     .read_uint32 = lisa_fdc_io_read32,

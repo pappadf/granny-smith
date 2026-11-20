@@ -755,7 +755,7 @@ bool floppy_is_inserted(floppy_t *floppy, int drive) {
 
 // Get the memory-mapped I/O interface for machine-level address decode
 const memory_interface_t *floppy_get_memory_interface(floppy_t *floppy) {
-    return &floppy->memory_interface;
+    return floppy->memory_interface;
 }
 
 // === Read-only views for the object model ===================================
@@ -1026,19 +1026,23 @@ static void iwm_write_uint32(void *floppy, uint32_t addr, uint32_t value) {
     LOG(1, "IWM: 32-bit write at 0x%08X is not decoded; dropped", addr);
 }
 
+// The IWM's register window; every controller shares it
+static const memory_interface_t iwm_iface = {
+    .read_uint8 = iwm_read_uint8,
+    .read_uint16 = iwm_read_uint16,
+    .read_uint32 = iwm_read_uint32,
+    .peek_uint8 = iwm_peek_uint8,
+    .peek_uint16 = iwm_peek_uint16,
+    .peek_uint32 = iwm_peek_uint32,
+    .write_uint8 = iwm_write_uint8,
+    .write_uint16 = iwm_write_uint16,
+    .write_uint32 = iwm_write_uint32,
+};
+
 // Sets up the IWM memory interface callbacks on the floppy controller
 static void floppy_iwm_setup(floppy_t *floppy, memory_map_t *map) {
-    floppy->memory_interface.read_uint8 = &iwm_read_uint8;
-    floppy->memory_interface.read_uint16 = &iwm_read_uint16;
-    floppy->memory_interface.read_uint32 = &iwm_read_uint32;
-    floppy->memory_interface.peek_uint8 = &iwm_peek_uint8;
-    floppy->memory_interface.peek_uint16 = &iwm_peek_uint16;
-    floppy->memory_interface.peek_uint32 = &iwm_peek_uint32;
-    floppy->memory_interface.write_uint8 = &iwm_write_uint8;
-    floppy->memory_interface.write_uint16 = &iwm_write_uint16;
-    floppy->memory_interface.write_uint32 = &iwm_write_uint32;
-
-    memory_map_add(map, 0x00d80000, 0x00080000, "floppy", &floppy->memory_interface, floppy);
+    floppy->memory_interface = &iwm_iface;
+    memory_map_add(map, 0x00d80000, 0x00080000, "floppy", &iwm_iface, floppy);
 }
 
 // Initializes a floppy controller of the given type and maps it to memory

@@ -105,7 +105,7 @@ void memory_signal_bus_error(uint32_t addr, bool write) {
     (void)write;
 }
 
-void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
+void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, const memory_interface_t *iface,
                     void *device) {
     (void)mem;
     (void)addr;

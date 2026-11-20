@@ -223,7 +223,7 @@ value_t val_bool(bool b) {
 }
 
 // --- memory map / checkpoint: unused paths (asc_init gets map == NULL) ---
-void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
+void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, const memory_interface_t *iface,
                     void *device) {
     (void)mem;
     (void)addr;

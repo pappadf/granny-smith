@@ -79,6 +79,42 @@ static inline uint8_t memory_iface_read8(const memory_interface_t *m, void *dev,
     return m->read_uint8 ? m->read_uint8(dev, addr) : 0xFF;
 }
 
+// A register face that reads through one `<face>_rd8/16/32(ctx, addr, peek)`:
+// stamps out the guest's `<face>_read8/16/32` (peek false) and the
+// inspection's `<face>_peek8/16/32` (peek true) around them.
+#define MEMORY_READ_FACE(face)                                                                                         \
+    static uint8_t face##_read8(void *ctx, uint32_t a) {                                                               \
+        return face##_rd8(ctx, a, false);                                                                              \
+    }                                                                                                                  \
+    static uint16_t face##_read16(void *ctx, uint32_t a) {                                                             \
+        return face##_rd16(ctx, a, false);                                                                             \
+    }                                                                                                                  \
+    static uint32_t face##_read32(void *ctx, uint32_t a) {                                                             \
+        return face##_rd32(ctx, a, false);                                                                             \
+    }                                                                                                                  \
+    static uint8_t face##_peek8(void *ctx, uint32_t a) {                                                               \
+        return face##_rd8(ctx, a, true);                                                                               \
+    }                                                                                                                  \
+    static uint16_t face##_peek16(void *ctx, uint32_t a) {                                                             \
+        return face##_rd16(ctx, a, true);                                                                              \
+    }                                                                                                                  \
+    static uint32_t face##_peek32(void *ctx, uint32_t a) {                                                             \
+        return face##_rd32(ctx, a, true);                                                                              \
+    }
+
+// The designated initialisers of a face's nine width handlers
+// (`<face>_read8/16/32`, `<face>_write8/16/32`, `<face>_peek8/16/32`), for a
+// `static const memory_interface_t` that adds members of its own (write_line).
+#define MEMORY_IFACE_FIELDS(face)                                                                                      \
+    .read_uint8 = face##_read8, .read_uint16 = face##_read16, .read_uint32 = face##_read32,                            \
+    .write_uint8 = face##_write8, .write_uint16 = face##_write16, .write_uint32 = face##_write32,                      \
+    .peek_uint8 = face##_peek8, .peek_uint16 = face##_peek16, .peek_uint32 = face##_peek32
+
+// Defines `static const memory_interface_t <face>_iface` over the face's nine
+// width handlers.  The context is passed beside the table at every mapping
+// (memory_map_add, pci_bar_backing_iface), so one table serves every instance.
+#define MEMORY_IFACE(face) static const memory_interface_t face##_iface = {MEMORY_IFACE_FIELDS(face)}
+
 struct memory;
 typedef struct memory memory_map_t;
 
@@ -145,7 +181,7 @@ void memory_map_checkpoint(memory_map_t *restrict mem, checkpoint_t *checkpoint)
 
 // === Operations ===
 
-void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
+void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, const memory_interface_t *iface,
                     void *device);
 
 // Register a host-backed region on the physical bus map.  `writable`

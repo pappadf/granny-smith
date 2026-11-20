@@ -319,7 +319,7 @@ static void io_write32(void *dev, uint32_t addr, uint32_t val) {
     io_write16(dev, addr + 2, (uint16_t)(val & 0xFFFFu));
 }
 
-static memory_interface_t s_jmfb_mem_iface = {
+static const memory_interface_t s_jmfb_mem_iface = {
     .read_uint8 = io_read8,
     .read_uint16 = io_read16,
     .read_uint32 = io_read32,

@@ -261,7 +261,7 @@ static void io_write32(void *dev, uint32_t addr, uint32_t val) {
     io_write(dev, addr, val);
 }
 
-static memory_interface_t s_toby_iface = {
+static const memory_interface_t s_toby_iface = {
     .read_uint8 = io_read8,
     .read_uint16 = io_read16,
     .read_uint32 = io_read32,

@@ -132,7 +132,6 @@ struct via {
     /* Pointers and interfaces last */
     struct scheduler *scheduler;
     memory_map_t *memory_map;
-    memory_interface_t memory_interface;
 
     // Per-instance callback routing for output signals and interrupts
     via_output_fn output_cb;
@@ -876,6 +875,18 @@ void via_reset(via_t *restrict via) {
 // The checkpointed plain-data prefix, up to the first host pointer
 CHECKPOINT_PREFIX(via_t, scheduler);
 
+// The VIA's register window; every instance shares it (the chip rides
+// beside it at the mapping)
+static const memory_interface_t via_iface = {
+    .read_uint8 = via_read_uint8,
+    .read_uint16 = via_read_uint16,
+    .read_uint32 = via_read_uint32,
+    .peek_uint8 = via_peek_uint8, // wider peeks compose
+    .write_uint8 = via_write_uint8,
+    .write_uint16 = via_write_uint16,
+    .write_uint32 = via_write_uint32,
+};
+
 // Initialize a new VIA instance with callbacks and optional checkpoint restoration
 via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, uint8_t freq_factor, const char *name,
                 via_output_fn output_cb, via_shift_out_fn shift_cb, via_irq_fn irq_cb, void *cb_context,
@@ -896,15 +907,6 @@ via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, uint8_t
     via->shift_cb = shift_cb;
     via->irq_cb = irq_cb;
     via->cb_context = cb_context;
-
-    via->memory_interface.read_uint8 = &via_read_uint8;
-    via->memory_interface.read_uint16 = &via_read_uint16;
-    via->memory_interface.read_uint32 = &via_read_uint32;
-    via->memory_interface.peek_uint8 = &via_peek_uint8; // wider peeks compose
-
-    via->memory_interface.write_uint8 = &via_write_uint8;
-    via->memory_interface.write_uint16 = &via_write_uint16;
-    via->memory_interface.write_uint32 = &via_write_uint32;
 
     // Both ports idle high, and so do all four control lines.  This is the
     // 6522 at power-on with the pull-ups every Macintosh board fits: nothing
@@ -943,7 +945,7 @@ via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, uint8_t
 
     // Register with memory map if provided (NULL = machine handles registration)
     if (map)
-        memory_map_add(map, 0x00E80000, 0x00080000, "via", &via->memory_interface, via);
+        memory_map_add(map, 0x00E80000, 0x00080000, "via", &via_iface, via);
 
     // Load from checkpoint if provided
     if (checkpoint) {
@@ -985,7 +987,8 @@ via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, uint8_t
 
 // Return the VIA's memory-mapped I/O interface for machine-level address decode
 const memory_interface_t *via_get_memory_interface(via_t *via) {
-    return &via->memory_interface;
+    (void)via; // one table serves every instance
+    return &via_iface;
 }
 
 // === Read-only views for the object model ===================================

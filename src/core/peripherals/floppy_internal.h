@@ -269,7 +269,7 @@ struct floppy {
     // === Pointers (not checkpointed) ===
     image_t *disk[NUM_DRIVES]; // disk image pointers
     struct scheduler *scheduler; // scheduler for timed events
-    memory_interface_t memory_interface; // memory interface
+    const memory_interface_t *memory_interface; // the controller's register window (IWM or SWIM)
 
     // Object-tree binding — lifetime tied to floppy_init / floppy_delete.
     struct object *object; // top-level floppy node

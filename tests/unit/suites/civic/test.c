@@ -107,7 +107,7 @@ void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host, ui
     (void)size;
     (void)writable;
 }
-void memory_map_add(memory_map_t *m, uint32_t base, uint32_t size, const char *name, memory_interface_t *iface,
+void memory_map_add(memory_map_t *m, uint32_t base, uint32_t size, const char *name, const memory_interface_t *iface,
                     void *ctx) {
     (void)m;
     (void)base;

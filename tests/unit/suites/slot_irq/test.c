@@ -76,7 +76,7 @@ uint64_t scheduler_cpu_cycles(scheduler_t *sch) {
 // machine does: through the memory_interface_t via_init registers here.
 static memory_interface_t *s_iface;
 static void *s_device;
-void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
+void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, const memory_interface_t *iface,
                     void *device) {
     (void)mem;
     (void)addr;

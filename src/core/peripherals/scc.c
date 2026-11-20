@@ -160,7 +160,6 @@ struct scc {
 
     struct scheduler *scheduler;
     memory_map_t *memory_map;
-    memory_interface_t memory_interface;
 
     // Per-instance IRQ callback routing
     scc_irq_fn irq_cb;
@@ -1793,6 +1792,20 @@ void scc_reset(scc_t *restrict scc) {
 // The checkpointed plain-data prefix, up to the first host pointer
 CHECKPOINT_PREFIX(scc_channel_t, scc);
 
+// The SCC's register window; every instance shares it (the chip rides
+// beside it at the mapping)
+static const memory_interface_t scc_iface = {
+    .read_uint8 = read_uint8,
+    .peek_uint8 = peek_uint8,
+    .read_uint16 = scc_read_uint16,
+    .read_uint32 = scc_read_uint32,
+    .peek_uint16 = scc_read_uint16, // floating bus: no side effect
+    .peek_uint32 = scc_read_uint32,
+    .write_uint8 = scc_write_uint8,
+    .write_uint16 = scc_write_uint16,
+    .write_uint32 = scc_write_uint32,
+};
+
 scc_t *scc_init(memory_map_t *map, struct scheduler *scheduler, scc_irq_fn irq_cb, void *cb_context,
                 checkpoint_t *checkpoint) {
     scc_t *scc = (scc_t *)malloc(sizeof(scc_t));
@@ -1806,20 +1819,9 @@ scc_t *scc_init(memory_map_t *map, struct scheduler *scheduler, scc_irq_fn irq_c
     scc->irq_cb = irq_cb;
     scc->cb_context = cb_context;
 
-    scc->memory_interface.read_uint8 = &read_uint8;
-    scc->memory_interface.peek_uint8 = &peek_uint8;
-    scc->memory_interface.read_uint16 = &scc_read_uint16;
-    scc->memory_interface.read_uint32 = &scc_read_uint32;
-    scc->memory_interface.peek_uint16 = &scc_read_uint16; // floating bus: no side effect
-    scc->memory_interface.peek_uint32 = &scc_read_uint32;
-
-    scc->memory_interface.write_uint8 = &scc_write_uint8;
-    scc->memory_interface.write_uint16 = &scc_write_uint16;
-    scc->memory_interface.write_uint32 = &scc_write_uint32;
-
     // Register with memory map if provided (NULL = machine handles registration)
     if (map)
-        memory_map_add(map, 0x00800000, 0x00400000, "SCC", &scc->memory_interface, scc);
+        memory_map_add(map, 0x00800000, 0x00400000, "SCC", &scc_iface, scc);
 
     scc->pclk_hz = 0;
     scc->rtxc_hz = 0;
@@ -1896,7 +1898,8 @@ void scc_set_clocks(scc_t *restrict scc, uint32_t pclk_hz, uint32_t rtxc_hz) {
 
 // Return the SCC memory-mapped I/O interface for machine-level address decode
 const memory_interface_t *scc_get_memory_interface(scc_t *scc) {
-    return &scc->memory_interface;
+    (void)scc; // one table serves every instance
+    return &scc_iface;
 }
 
 // Enable or disable external loopback (cable between port A and port B)

@@ -1190,6 +1190,19 @@ void floppy_swim_motor_spinup_callback(void *source, uint64_t data) {
     LOG(3, "Drive %d: Motor spin-up complete, now ready", drive_index);
 }
 
+// The SWIM's register window; every controller shares it
+static const memory_interface_t swim_iface = {
+    .read_uint8 = swim_read_uint8,
+    .read_uint16 = swim_read_uint16,
+    .read_uint32 = swim_read_uint32,
+    .peek_uint8 = swim_peek_uint8,
+    .peek_uint16 = swim_peek_uint16,
+    .peek_uint32 = swim_peek_uint32,
+    .write_uint8 = swim_write_uint8,
+    .write_uint16 = swim_write_uint16,
+    .write_uint32 = swim_write_uint32,
+};
+
 // Sets up SWIM memory interface callbacks and ISM initial state.
 // `map` is always NULL: every SWIM machine decodes its own window and reaches
 // the chip through floppy_get_memory_interface().  The parameter stays for
@@ -1203,15 +1216,7 @@ void floppy_swim_setup(floppy_t *floppy, memory_map_t *map) {
     floppy->mfm_cur_side = 0;
 
     // Set up memory interface
-    floppy->memory_interface.read_uint8 = &swim_read_uint8;
-    floppy->memory_interface.read_uint16 = &swim_read_uint16;
-    floppy->memory_interface.read_uint32 = &swim_read_uint32;
-    floppy->memory_interface.peek_uint8 = &swim_peek_uint8;
-    floppy->memory_interface.peek_uint16 = &swim_peek_uint16;
-    floppy->memory_interface.peek_uint32 = &swim_peek_uint32;
-    floppy->memory_interface.write_uint8 = &swim_write_uint8;
-    floppy->memory_interface.write_uint16 = &swim_write_uint16;
-    floppy->memory_interface.write_uint32 = &swim_write_uint32;
+    floppy->memory_interface = &swim_iface;
 
     (void)map;
 }
