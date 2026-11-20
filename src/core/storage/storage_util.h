@@ -72,6 +72,20 @@ int read_file(const char *path, size_t cap, uint8_t **out, size_t *out_len);
 // *out_len, which may be NULL).  Same cap and errors.
 int read_text_file(const char *path, size_t cap, char **out, size_t *out_len);
 
+// True when `path` ends in `ext` (".dmg"), ignoring case: the rule for
+// media and output file names a user types.
+bool path_has_ext(const char *path, const char *ext);
+
+// True when `s` ends in exactly `suffix`: the rule for internal file names
+// the emulator itself writes (".tmp", ".delta", ".rsrc").
+bool path_has_suffix(const char *s, const char *suffix);
+
+// `dir` and `leaf` joined with exactly one '/', however many trailing
+// slashes `dir` and leading slashes `leaf` have (a lone "/" stays the root),
+// into `out`.  False when it does not fit `cap` -- a truncated path names a
+// different file, so a caller must not use it.
+bool path_join(char *out, size_t cap, const char *dir, const char *leaf);
+
 // JSON-escape `src` (the body of a string literal, no quotes) into `dst`
 // with the one escape set (json_escape.h): quote, backslash, \b \f \n \r
 // \t, and any other control byte as \u00XX.

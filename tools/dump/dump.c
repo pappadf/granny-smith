@@ -315,7 +315,10 @@ static int dump_pef_fragments(rfork_t *rf, const uint8_t *data, size_t data_len,
         size_t len = members[i].length;
         char sub[32], dir[PATH_MAX], label[PATH_MAX];
         pef_dir_name(i, n, sub, sizeof(sub));
-        snprintf(dir, sizeof(dir), "%s/%s", dst_dir, sub);
+        if (!path_join(dir, sizeof(dir), dst_dir, sub)) {
+            fprintf(stderr, "dump: output path under '%s' too long\n", dst_dir);
+            return -1;
+        }
         if (members[i].name[0])
             snprintf(label, sizeof(label), "%s [fragment %s]", src_label, members[i].name);
         else

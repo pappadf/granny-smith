@@ -94,7 +94,10 @@ static int pd_write_blob(const char *path, const void *bytes, size_t len) {
 // fopen for writing, with a message on failure.
 static FILE *pd_open(const char *dir, const char *name) {
     char path[PATH_MAX];
-    snprintf(path, sizeof(path), "%s/%s", dir, name);
+    if (!path_join(path, sizeof(path), dir, name)) {
+        fprintf(stderr, "re: output path '%s/%s' too long\n", dir, name);
+        return NULL;
+    }
     FILE *fp = fopen(path, "wb");
     if (!fp)
         fprintf(stderr, "re: cannot create '%s': %s\n", path, strerror(errno));

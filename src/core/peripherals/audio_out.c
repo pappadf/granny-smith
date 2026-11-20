@@ -13,12 +13,12 @@
 #include "object.h"
 #include "out.h"
 #include "platform.h"
+#include "storage_util.h"
 #include "value.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 
 LOG_USE_CATEGORY_NAME("audio");
 
@@ -400,8 +400,7 @@ static DEF_METHOD(capture_method_start) {
 static DEF_METHOD(capture_method_stop) {
     const char *path = (argc >= 1 && argv[0].s && *argv[0].s) ? argv[0].s : NULL;
     if (path) {
-        size_t n = strlen(path);
-        if (n < 4 || strcasecmp(path + n - 4, ".wav") != 0)
+        if (!path_has_ext(path, ".wav"))
             return val_err("sound.capture.stop: path must end in .wav (got '%s')", path);
     }
     if (!audio_out_capture_active())

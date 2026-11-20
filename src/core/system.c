@@ -770,8 +770,7 @@ static int do_create_hd(const char *path, const char *size_str) {
     // A .dmg is a UDIF of one zero run -- a couple of KB however large the
     // disk; any other name is a raw file of the full size (which the browser
     // charges in full).
-    size_t plen = strlen(path);
-    bool udif = plen >= 4 && strcasecmp(path + plen - 4, ".dmg") == 0;
+    bool udif = path_has_ext(path, ".dmg");
     int rc = udif ? image_create_empty_udif(path, size) : image_create_empty(path, size);
     if (rc != 0) {
         out_printf("hd create: failed to create image: %s\n", path);
@@ -1042,21 +1041,21 @@ static int clear_checkpoint_files(void) {
         const char *name = entry->d_name;
         if (!name || name[0] == '.')
             continue;
-        size_t len = strlen(name);
         bool match = false;
         if (strcmp(name, "state.checkpoint") == 0)
             match = true;
-        else if (len >= 4 && strcmp(name + len - 4, ".tmp") == 0)
+        else if (path_has_suffix(name, ".tmp"))
             match = true;
-        else if (len >= 11 && strcmp(name + len - 11, ".checkpoint") == 0)
+        else if (path_has_suffix(name, ".checkpoint"))
             match = true; // legacy
         else if (strstr(name, ".complete") || strstr(name, ".pending"))
             match = true; // legacy
-        else if ((len >= 6 && strcmp(name + len - 6, ".delta") == 0) ||
-                 (len >= 8 && strcmp(name + len - 8, ".journal") == 0))
+        else if (path_has_suffix(name, ".delta") || path_has_suffix(name, ".journal"))
             match = true; // an image delta or journal, unless still open below
         if (match) {
-            snprintf(path, sizeof(path), "%s/%s", dir_path, name);
+            // A path cut short names some other file: never unlink that
+            if (!path_join(path, sizeof(path), dir_path, name))
+                continue;
             if (image_file_in_use(path))
                 continue;
             if (unlink(path) == 0)
@@ -1101,7 +1100,8 @@ int system_find_media(const char *dir_path, const char *dest) {
         if (entry->d_name[0] == '.')
             continue;
         char full[1024];
-        snprintf(full, sizeof(full), "%s/%s", dir_path, entry->d_name);
+        if (!path_join(full, sizeof(full), dir_path, entry->d_name))
+            continue; // too long to name exactly
         struct stat st;
         if (stat(full, &st) != 0 || !S_ISREG(st.st_mode))
             continue;

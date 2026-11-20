@@ -98,7 +98,7 @@ bool afp_meta_is_hidden(const char *name) {
     size_t n = strlen(name);
     if (n >= 2 && name[0] == '.' && name[1] == '_')
         return true;
-    if (n >= 5 && strcmp(name + n - 5, ".rsrc") == 0)
+    if (path_has_suffix(name, ".rsrc"))
         return true;
     if (strcmp(name, AFP_CONTROL_DIR) == 0)
         return true;

@@ -199,6 +199,26 @@ TEST(test_json_escape) {
     ASSERT_TRUE(strcmp(out, "\\r\\u001f\x7f\xc3\xa9/\\u000b") == 0);
 }
 
+// Suffix checks (one ignoring case, one exact) and the join: one separator
+// however the parts are slashed, and a path that does not fit refused
+// rather than cut into the name of some other file.
+TEST(test_path_helpers) {
+    ASSERT_TRUE(path_has_ext("disk.DMG", ".dmg"));
+    ASSERT_TRUE(!path_has_ext("disk.dmgx", ".dmg"));
+    ASSERT_TRUE(!path_has_ext("dmg", ".dmg"));
+    ASSERT_TRUE(path_has_suffix("a.tmp", ".tmp"));
+    ASSERT_TRUE(!path_has_suffix("a.TMP", ".tmp"));
+    char out[16];
+    ASSERT_TRUE(path_join(out, sizeof out, "/a/b//", "//c"));
+    ASSERT_TRUE(strcmp(out, "/a/b/c") == 0);
+    ASSERT_TRUE(path_join(out, sizeof out, "/", "c"));
+    ASSERT_TRUE(strcmp(out, "/c") == 0);
+    ASSERT_TRUE(path_join(out, sizeof out, "", "c"));
+    ASSERT_TRUE(strcmp(out, "/c") == 0);
+    ASSERT_TRUE(path_join(out, sizeof out, "/dir", "12345678")); // 14 bytes: fits
+    ASSERT_TRUE(!path_join(out, sizeof out, "/dir", "state.checkpoint")); // would cut to "/dir/state.chec"
+}
+
 // The FILE* form writes the same escapes, quoted.
 TEST(test_json_fputs) {
     char buf[64] = {0};
@@ -217,6 +237,7 @@ int main(void) {
     RUN(test_read_text_file);
     RUN(test_json_escape);
     RUN(test_json_fputs);
+    RUN(test_path_helpers);
     RUN(test_atomic_write_replaces_whole_or_not_at_all);
     fprintf(stderr, "All storage_util tests passed\n");
     return 0;

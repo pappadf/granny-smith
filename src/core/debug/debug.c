@@ -3587,8 +3587,7 @@ static DEF_METHOD(screen_method_save) {
     const char *path = argv[0].s;
     if (!*path)
         return val_err("screen.save: empty path");
-    size_t n = strlen(path);
-    if (n < 4 || strcasecmp(path + n - 4, ".png") != 0)
+    if (!path_has_ext(path, ".png"))
         return val_err("screen.save: path must end in .png (got '%s')", path);
     const display_t *d = system_display_synced();
     if (!d || !d->bits)

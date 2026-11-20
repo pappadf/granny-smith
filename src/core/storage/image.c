@@ -35,7 +35,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -808,12 +807,6 @@ struct image_export {
     uint8_t disk_format;
     uint8_t format_byte;
 };
-
-// True when `path` ends in `ext` (case-insensitive).
-static bool path_has_ext(const char *path, const char *ext) {
-    size_t n = strlen(path), e = strlen(ext);
-    return n > e && strcasecmp(path + n - e, ext) == 0;
-}
 
 // DiskCopy 4.2's disk-format code for a floppy kind, or -1 for anything else.
 static int dc42_disk_format(enum image_type t) {

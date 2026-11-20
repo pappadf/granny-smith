@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -259,6 +260,27 @@ int read_text_file(const char *path, size_t cap, char **out, size_t *out_len) {
     if (out_len)
         *out_len = len;
     return rc;
+}
+
+bool path_has_ext(const char *path, const char *ext) {
+    size_t n = strlen(path), e = strlen(ext);
+    return n >= e && strcasecmp(path + n - e, ext) == 0;
+}
+
+bool path_has_suffix(const char *s, const char *suffix) {
+    size_t n = strlen(s), e = strlen(suffix);
+    return n >= e && strcmp(s + n - e, suffix) == 0;
+}
+
+bool path_join(char *out, size_t cap, const char *dir, const char *leaf) {
+    size_t dlen = strlen(dir);
+    while (dlen > 1 && dir[dlen - 1] == '/')
+        dlen--; // keep a lone "/" (the root) intact
+    bool has_sep = dlen > 0 && dir[dlen - 1] == '/';
+    while (leaf[0] == '/')
+        leaf++;
+    int n = snprintf(out, cap, "%.*s%s%s", (int)dlen, dir, has_sep ? "" : "/", leaf);
+    return n >= 0 && (size_t)n < cap;
 }
 
 int json_escape(const char *src, char *dst, size_t cap) {
