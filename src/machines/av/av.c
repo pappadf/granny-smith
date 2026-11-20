@@ -842,13 +842,18 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
 // Substrate lifecycle
 // ============================================================
 
+// The substrate-private part after its leading overlay flag (which is
+// restored into a local and applied through av_set_overlay): YMCA and MUNI.
+#define AV_PRIVATE_CP_FIELDS(OP, cp, st)                                                                               \
+    CP_ARRAY(OP, cp, (st)->ymca_regs);                                                                                 \
+    CP_FIELD(OP, cp, (st)->muni_intcntrl);                                                                             \
+    CP_FIELD(OP, cp, (st)->muni_control)
+
 // The substrate-private part: the overlay flag, YMCA and MUNI.
 static void part_save_av_private(void *obj, checkpoint_t *cp) {
     av_state_t *st = obj;
-    system_write_checkpoint_data(cp, &st->overlay.armed, sizeof(st->overlay.armed));
-    system_write_checkpoint_data(cp, st->ymca_regs, sizeof(st->ymca_regs));
-    system_write_checkpoint_data(cp, &st->muni_intcntrl, sizeof(st->muni_intcntrl));
-    system_write_checkpoint_data(cp, &st->muni_control, sizeof(st->muni_control));
+    CP_FIELD(system_write_checkpoint_data, cp, st->overlay.armed);
+    AV_PRIVATE_CP_FIELDS(system_write_checkpoint_data, cp, st);
 }
 
 static int av_init(config_t *cfg, checkpoint_t *cp) {
@@ -897,10 +902,8 @@ static int av_init(config_t *cfg, checkpoint_t *cp) {
     bool overlay = true;
     machine_part_begin(cfg, cp, "av");
     if (cp) {
-        system_read_checkpoint_data(cp, &overlay, sizeof(overlay));
-        system_read_checkpoint_data(cp, st->ymca_regs, sizeof(st->ymca_regs));
-        system_read_checkpoint_data(cp, &st->muni_intcntrl, sizeof(st->muni_intcntrl));
-        system_read_checkpoint_data(cp, &st->muni_control, sizeof(st->muni_control));
+        CP_FIELD(system_read_checkpoint_data, cp, overlay);
+        AV_PRIVATE_CP_FIELDS(system_read_checkpoint_data, cp, st);
     }
     machine_part(cfg, cp, "av", part_save_av_private, st);
     if (cp) {

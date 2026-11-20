@@ -115,6 +115,13 @@ void swim3_checkpoint(const swim3_t *sw, struct checkpoint *cp);
 // freshly allocated chip.
 void swim3_restore(swim3_t *sw, struct checkpoint *cp);
 
+// The prefix as an entry of a board's CP_FIELD list (checkpoint.h): OP is
+// system_write_checkpoint_data or system_read_checkpoint_data, and picks
+// swim3_checkpoint or swim3_restore.
+#define SWIM3_CP(OP, cp, sw)                          SWIM3_CP_##OP((cp), (sw))
+#define SWIM3_CP_system_write_checkpoint_data(cp, sw) swim3_checkpoint((sw), (cp))
+#define SWIM3_CP_system_read_checkpoint_data(cp, sw)  swim3_restore((sw), (cp))
+
 // Register the chip's scheduler event types — at construction
 // (the timer in swim3.c, the transfer engine in swim3_xfer.c).
 void swim3_register_events(swim3_t *sw);

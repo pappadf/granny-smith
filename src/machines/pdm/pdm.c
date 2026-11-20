@@ -274,13 +274,17 @@ static void pdm_scc_irq(void *context, bool active) {
 
 // The substrate-private part: the HMC config, the AMIC register file, the
 // SWIM3's plain-data prefix, the ICR sources and BART.
+#define PDM_PRIVATE_CP_FIELDS(OP, cp, st)                                                                              \
+    CP_FIELD(OP, cp, (st)->hmc);                                                                                       \
+    CP_FIELD(OP, cp, (st)->amic);                                                                                      \
+    SWIM3_CP(OP, cp, &(st)->swim3); /* the plain-data prefix; the bind wires the tail */                               \
+    CP_FIELD(OP, cp, (st)->icr_sources);                                                                               \
+    CP_FIELD(OP, cp, (st)->bart)
+
+// Saves the substrate-private part.
 static void part_save_pdm_private(void *obj, checkpoint_t *cp) {
     pdm_state_t *st = obj;
-    system_write_checkpoint_data(cp, &st->hmc, sizeof(st->hmc));
-    system_write_checkpoint_data(cp, &st->amic, sizeof(st->amic));
-    swim3_checkpoint(&st->swim3, cp); // the plain-data prefix (swim3.h)
-    system_write_checkpoint_data(cp, &st->icr_sources, sizeof(st->icr_sources));
-    system_write_checkpoint_data(cp, &st->bart, sizeof(st->bart));
+    PDM_PRIVATE_CP_FIELDS(system_write_checkpoint_data, cp, st);
 }
 
 // Ariel's identity part: the monitor strapped to the built-in port.
@@ -376,12 +380,8 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // plain data; derived mappings are rebuilt below.
     machine_part_begin(cfg, cp, "pdm");
     if (cp) {
-        system_read_checkpoint_data(cp, &st->hmc, sizeof(st->hmc));
-        system_read_checkpoint_data(cp, &st->amic, sizeof(st->amic));
-        swim3_restore(&st->swim3, cp); // the prefix; the bind wires the tail
+        PDM_PRIVATE_CP_FIELDS(system_read_checkpoint_data, cp, st);
         pdm_swim3_bind(cfg);
-        system_read_checkpoint_data(cp, &st->icr_sources, sizeof(st->icr_sources));
-        system_read_checkpoint_data(cp, &st->bart, sizeof(st->bart));
         pdm_hmc_remap(cfg);
         via_redrive_outputs(cfg->via1);
         pdm_amic_recompute(cfg);

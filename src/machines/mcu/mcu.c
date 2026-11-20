@@ -789,19 +789,26 @@ void mcu_apply_via1_model_sense(config_t *cfg, const mcu_board_desc_t *desc) {
 // The substrate-private part: overlay flag + Orwell config/bank starts + the
 // YANCC register file + the /SLOTIRQ aggregate mask + the in-flight SONIC
 // write latch + the tower wire-OR IRQ masks (zero on the Q700).
+//
+// The overlay flag leads the part; it is restored into a local and applied
+// through mcu_set_overlay, so it stays out of the field list.  The YANCC
+// log-once bitmap travels with the registers it guards; without it a
+// restore re-logs every YANCC register the guest had already touched.
+#define MCU_PRIVATE_CP_FIELDS(OP, cp, st)                                                                              \
+    CP_FIELD(OP, cp, (st)->orwell_cfg);                                                                                \
+    CP_ARRAY(OP, cp, (st)->bank_start);                                                                                \
+    CP_ARRAY(OP, cp, (st)->yancc_regs);                                                                                \
+    CP_FIELD(OP, cp, (st)->yancc_touched);                                                                             \
+    CP_FIELD(OP, cp, (st)->slot_pa_mask);                                                                              \
+    CP_FIELD(OP, cp, (st)->sonic_byte2);                                                                               \
+    CP_FIELD(OP, cp, (st)->scc_irq_or);                                                                                \
+    CP_FIELD(OP, cp, (st)->scsi_irq_or)
+
+// Saves the substrate-private part.
 static void part_save_mcu_private(void *obj, checkpoint_t *cp) {
     mcu_state_t *st = obj;
-    system_write_checkpoint_data(cp, &st->overlay.armed, sizeof(st->overlay.armed));
-    system_write_checkpoint_data(cp, &st->orwell_cfg, sizeof(st->orwell_cfg));
-    system_write_checkpoint_data(cp, st->bank_start, sizeof(st->bank_start));
-    system_write_checkpoint_data(cp, st->yancc_regs, sizeof(st->yancc_regs));
-    // The log-once bitmap travels with the registers it guards; without it a
-    // restore re-logs every YANCC register the guest had already touched.
-    system_write_checkpoint_data(cp, &st->yancc_touched, sizeof(st->yancc_touched));
-    system_write_checkpoint_data(cp, &st->slot_pa_mask, sizeof(st->slot_pa_mask));
-    system_write_checkpoint_data(cp, &st->sonic_byte2, sizeof(st->sonic_byte2));
-    system_write_checkpoint_data(cp, &st->scc_irq_or, sizeof(st->scc_irq_or));
-    system_write_checkpoint_data(cp, &st->scsi_irq_or, sizeof(st->scsi_irq_or));
+    CP_FIELD(system_write_checkpoint_data, cp, st->overlay.armed);
+    MCU_PRIVATE_CP_FIELDS(system_write_checkpoint_data, cp, st);
 }
 
 // The substrate-private part, read on a restore -- then the derived
@@ -821,15 +828,8 @@ void mcu_private_part(config_t *cfg, checkpoint_t *cp) {
 static void mcu_restore_private(config_t *cfg, checkpoint_t *cp) {
     mcu_state_t *st = mcu_st(cfg);
     bool overlay = false;
-    system_read_checkpoint_data(cp, &overlay, sizeof(overlay));
-    system_read_checkpoint_data(cp, &st->orwell_cfg, sizeof(st->orwell_cfg));
-    system_read_checkpoint_data(cp, st->bank_start, sizeof(st->bank_start));
-    system_read_checkpoint_data(cp, st->yancc_regs, sizeof(st->yancc_regs));
-    system_read_checkpoint_data(cp, &st->yancc_touched, sizeof(st->yancc_touched)); // mirrors the save above
-    system_read_checkpoint_data(cp, &st->slot_pa_mask, sizeof(st->slot_pa_mask));
-    system_read_checkpoint_data(cp, &st->sonic_byte2, sizeof(st->sonic_byte2));
-    system_read_checkpoint_data(cp, &st->scc_irq_or, sizeof(st->scc_irq_or));
-    system_read_checkpoint_data(cp, &st->scsi_irq_or, sizeof(st->scsi_irq_or));
+    CP_FIELD(system_read_checkpoint_data, cp, overlay);
+    MCU_PRIVATE_CP_FIELDS(system_read_checkpoint_data, cp, st);
     // The layout armed the overlay; a post-overlay snapshot drops it.
     if (!overlay)
         mcu_set_overlay(cfg, false);

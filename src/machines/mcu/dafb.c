@@ -710,6 +710,20 @@ static void dafb_present_blanked(dafb_t *dafb) {
 
 static void dafb_set_monitor_sense(dafb_t *dafb, uint8_t code);
 
+// The chip's checkpointed state, one list for dafb_checkpoint and the
+// restore in dafb_init: registers, CLUT, DAC, the clock registers, VRAM
+// (vram_size is the construction's, so both sides agree) and the blank flag.
+#define DAFB_CP_FIELDS(OP, cp, d)                                                                                      \
+    CP_ARRAY(OP, cp, (d)->regs);                                                                                       \
+    CP_ARRAY(OP, cp, (d)->clut);                                                                                       \
+    CP_FIELD(OP, cp, (d)->dac);                                                                                        \
+    CP_FIELD(OP, cp, (d)->pcbr0);                                                                                      \
+    CP_FIELD(OP, cp, (d)->pcbr1);                                                                                      \
+    CP_ARRAY(OP, cp, (d)->clk_reg);                                                                                    \
+    CP_FIELD(OP, cp, (d)->clock_hz);                                                                                   \
+    OP((cp), (d)->vram, (d)->vram_size);                                                                               \
+    CP_FIELD(OP, cp, (d)->blanked)
+
 dafb_t *dafb_init(uint32_t vram_size, uint8_t monitor, checkpoint_t *cp) {
     dafb_t *dafb = (dafb_t *)calloc(1, sizeof(dafb_t));
     if (!dafb)
@@ -734,15 +748,7 @@ dafb_t *dafb_init(uint32_t vram_size, uint8_t monitor, checkpoint_t *cp) {
     dafb_poweron_display(dafb, /*cold*/ true);
 
     if (cp) {
-        system_read_checkpoint_data(cp, dafb->regs, sizeof(dafb->regs));
-        system_read_checkpoint_data(cp, dafb->clut, sizeof(dafb->clut));
-        system_read_checkpoint_data(cp, &dafb->dac, sizeof(dafb->dac));
-        system_read_checkpoint_data(cp, &dafb->pcbr0, sizeof(dafb->pcbr0));
-        system_read_checkpoint_data(cp, &dafb->pcbr1, sizeof(dafb->pcbr1));
-        system_read_checkpoint_data(cp, dafb->clk_reg, sizeof(dafb->clk_reg));
-        system_read_checkpoint_data(cp, &dafb->clock_hz, sizeof(dafb->clock_hz));
-        system_read_checkpoint_data(cp, dafb->vram, vram_size);
-        system_read_checkpoint_data(cp, &dafb->blanked, sizeof(dafb->blanked));
+        DAFB_CP_FIELDS(system_read_checkpoint_data, cp, dafb);
         // Still between a /RESET and the ROM's mode set: stay blanked rather
         // than letting reconfigure() un-blank on registers half programmed.
         if (dafb->blanked)
@@ -795,15 +801,7 @@ void dafb_delete(dafb_t *dafb) {
 void dafb_checkpoint(dafb_t *dafb, checkpoint_t *cp) {
     if (!dafb || !cp)
         return;
-    system_write_checkpoint_data(cp, dafb->regs, sizeof(dafb->regs));
-    system_write_checkpoint_data(cp, dafb->clut, sizeof(dafb->clut));
-    system_write_checkpoint_data(cp, &dafb->dac, sizeof(dafb->dac));
-    system_write_checkpoint_data(cp, &dafb->pcbr0, sizeof(dafb->pcbr0));
-    system_write_checkpoint_data(cp, &dafb->pcbr1, sizeof(dafb->pcbr1));
-    system_write_checkpoint_data(cp, dafb->clk_reg, sizeof(dafb->clk_reg));
-    system_write_checkpoint_data(cp, &dafb->clock_hz, sizeof(dafb->clock_hz));
-    system_write_checkpoint_data(cp, dafb->vram, dafb->vram_size);
-    system_write_checkpoint_data(cp, &dafb->blanked, sizeof(dafb->blanked));
+    DAFB_CP_FIELDS(system_write_checkpoint_data, cp, dafb);
 }
 
 void dafb_set_irq_callback(dafb_t *dafb, dafb_irq_cb cb, void *context) {

@@ -210,20 +210,24 @@ void gos_nvram_clear(config_t *cfg) {
 
 // Checkpoint parts of the board's own (machine_parts.h).
 // Grackle, Heathrow, the I2C bus and the Screamer registers.
+#define GOSSAMER_BOARD_CP_FIELDS(OP, cp, st)                                                                           \
+    CP_FIELD(OP, cp, (st)->grackle.cfg);                                                                               \
+    CP_FIELD(OP, cp, (st)->grackle.cfg_addr);                                                                          \
+    CP_FIELD(OP, cp, (st)->hr);                                                                                        \
+    CP_FIELD(OP, cp, (st)->i2c);                                                                                       \
+    CP_FIELD(OP, cp, (st)->screamer)
+
+// Saves the board's own part.
 static void part_save_gossamer_board(void *obj, checkpoint_t *cp) {
     gossamer_state_t *st = obj;
-    system_write_checkpoint_data(cp, &st->grackle.cfg, sizeof(st->grackle.cfg));
-    system_write_checkpoint_data(cp, &st->grackle.cfg_addr, sizeof(st->grackle.cfg_addr));
-    system_write_checkpoint_data(cp, &st->hr, sizeof(st->hr));
-    system_write_checkpoint_data(cp, &st->i2c, sizeof(st->i2c));
-    system_write_checkpoint_data(cp, &st->screamer, sizeof(st->screamer));
+    GOSSAMER_BOARD_CP_FIELDS(system_write_checkpoint_data, cp, st);
 }
 
 // The floppy controller (its plain-data prefix) and its DBDMA byte ring.
 static void part_save_gossamer_swim3(void *obj, checkpoint_t *cp) {
     gossamer_state_t *st = obj;
     swim3_checkpoint(&st->swim3, cp);
-    system_write_checkpoint_data(cp, &st->fdport.ring, sizeof(st->fdport.ring));
+    CP_FIELD(system_write_checkpoint_data, cp, st->fdport.ring);
 }
 
 static void part_save_gossamer_ata(void *obj, checkpoint_t *cp) {
@@ -341,12 +345,8 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     // The board's own state.
     machine_part_begin(cfg, cp, "gossamer");
     if (cp) {
-        system_read_checkpoint_data(cp, &st->grackle.cfg, sizeof(st->grackle.cfg));
-        system_read_checkpoint_data(cp, &st->grackle.cfg_addr, sizeof(st->grackle.cfg_addr));
-        gos_grackle_remap(cfg);
-        system_read_checkpoint_data(cp, &st->hr, sizeof(st->hr));
-        system_read_checkpoint_data(cp, &st->i2c, sizeof(st->i2c));
-        system_read_checkpoint_data(cp, &st->screamer, sizeof(st->screamer));
+        GOSSAMER_BOARD_CP_FIELDS(system_read_checkpoint_data, cp, st);
+        gos_grackle_remap(cfg); // reads only the Grackle fields
     }
     machine_part(cfg, cp, "gossamer", part_save_gossamer_board, st);
     // Every PCI device read its config header with its own part; its decode
@@ -384,7 +384,7 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     machine_part_begin(cfg, cp, "swim3");
     if (cp) {
         swim3_restore(&st->swim3, cp);
-        system_read_checkpoint_data(cp, &st->fdport.ring, sizeof(st->fdport.ring));
+        CP_FIELD(system_read_checkpoint_data, cp, st->fdport.ring);
         gos_swim3_bind(cfg);
         gos_recompute_irq(cfg);
     }

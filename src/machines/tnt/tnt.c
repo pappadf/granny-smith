@@ -570,34 +570,48 @@ void tnt_nvram_clear(config_t *cfg) {
 
 // Checkpoint parts of the TNT board's own (machine_parts.h).
 // Hammerhead, Grand Central and the bridges' mode registers.
+#define TNT_BOARD_CP_FIELDS(OP, cp, st)                                                                                \
+    CP_FIELD(OP, cp, (st)->hh);                                                                                        \
+    CP_FIELD(OP, cp, (st)->gc);                                                                                        \
+    for (int i_ = 0; i_ < (st)->bridge_count; i_++) {                                                                  \
+        CP_FIELD(OP, cp, (st)->bridge[i_].cfg_addr);                                                                   \
+        CP_FIELD(OP, cp, (st)->bridge[i_].mode_select);                                                                \
+    }
+
+// Saves the board's own part.
 static void part_save_tnt_board(void *obj, checkpoint_t *cp) {
     tnt_state_t *st = obj;
-    system_write_checkpoint_data(cp, &st->hh, sizeof(st->hh));
-    system_write_checkpoint_data(cp, &st->gc, sizeof(st->gc));
-    for (int i = 0; i < st->bridge_count; i++) {
-        system_write_checkpoint_data(cp, &st->bridge[i].cfg_addr, sizeof(st->bridge[i].cfg_addr));
-        system_write_checkpoint_data(cp, &st->bridge[i].mode_select, sizeof(st->bridge[i].mode_select));
-    }
+    TNT_BOARD_CP_FIELDS(system_write_checkpoint_data, cp, st);
 }
 
-// AWACS and Control, with Control's VRAM where the board has Control.
+// AWACS and Control, with Control's VRAM where the board has Control.  A
+// Network Server's video is a PCI card in a socket, so `vram` is NULL and
+// the block is absent on both sides.
+#define TNT_AV_CP_FIELDS(OP, cp, st)                                                                                   \
+    CP_FIELD(OP, cp, (st)->awacs);                                                                                     \
+    CP_FIELD(OP, cp, (st)->control);                                                                                   \
+    if ((st)->vram)                                                                                                    \
+    OP((cp), (st)->vram, TNT_VRAM_SIZE)
+
+// Saves AWACS, Control and Control's VRAM.
 static void part_save_tnt_av(void *obj, checkpoint_t *cp) {
     tnt_state_t *st = obj;
-    system_write_checkpoint_data(cp, &st->awacs, sizeof(st->awacs));
-    system_write_checkpoint_data(cp, &st->control, sizeof(st->control));
-    if (st->vram)
-        system_write_checkpoint_data(cp, st->vram, TNT_VRAM_SIZE);
+    TNT_AV_CP_FIELDS(system_write_checkpoint_data, cp, st);
 }
 
 // The GBUS island (Network Servers only; zeroed and unread elsewhere), and
-// the floppy controller with its DBDMA byte ring.
+// the floppy controller (its plain-data prefix) with its DBDMA byte ring.
+#define TNT_IO_CP_FIELDS(OP, cp, st)                                                                                   \
+    CP_FIELD(OP, cp, (st)->gbus);                                                                                      \
+    CP_FIELD(OP, cp, (st)->lcd);                                                                                       \
+    SWIM3_CP(OP, cp, &(st)->swim3);                                                                                    \
+    CP_FIELD(OP, cp, (st)->fdport.ring);                                                                               \
+    CP_FIELD(OP, cp, (st)->mace)
+
+// Saves the GBUS island, the floppy controller and the MACE.
 static void part_save_tnt_io(void *obj, checkpoint_t *cp) {
     tnt_state_t *st = obj;
-    system_write_checkpoint_data(cp, &st->gbus, sizeof(st->gbus));
-    system_write_checkpoint_data(cp, &st->lcd, sizeof(st->lcd));
-    swim3_checkpoint(&st->swim3, cp); // the plain-data prefix (swim3.h)
-    system_write_checkpoint_data(cp, &st->fdport.ring, sizeof(st->fdport.ring));
-    system_write_checkpoint_data(cp, &st->mace, sizeof(st->mace));
+    TNT_IO_CP_FIELDS(system_write_checkpoint_data, cp, st);
 }
 
 static int tnt_init(config_t *cfg, checkpoint_t *cp) {
@@ -739,13 +753,8 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // line is recomputed below.
     machine_part_begin(cfg, cp, "tnt");
     if (cp) {
-        system_read_checkpoint_data(cp, &st->hh, sizeof(st->hh));
-        tnt_hh_remap(cfg);
-        system_read_checkpoint_data(cp, &st->gc, sizeof(st->gc));
-        for (int i = 0; i < st->bridge_count; i++) {
-            system_read_checkpoint_data(cp, &st->bridge[i].cfg_addr, sizeof(st->bridge[i].cfg_addr));
-            system_read_checkpoint_data(cp, &st->bridge[i].mode_select, sizeof(st->bridge[i].mode_select));
-        }
+        TNT_BOARD_CP_FIELDS(system_read_checkpoint_data, cp, st);
+        tnt_hh_remap(cfg); // reads only the Hammerhead's fields
         tnt_bandit_modes_restored(cfg); // the buses are rebuilt, not restored
     }
     machine_part(cfg, cp, "tnt", part_save_tnt_board, st);
@@ -755,18 +764,12 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
         pci_replay_decode(cfg->pci);
     machine_part_begin(cfg, cp, "tnt.av");
     if (cp) {
-        system_read_checkpoint_data(cp, &st->awacs, sizeof(st->awacs));
         // Control's registers.  The monitor strap is not chip state: it was
         // set at construction from the slot entry (tnt_control_init), and
         // the saved copy does not replace it.
         uint8_t mon_grounded = st->control.mon_grounded;
-        system_read_checkpoint_data(cp, &st->control, sizeof(st->control));
+        TNT_AV_CP_FIELDS(system_read_checkpoint_data, cp, st);
         st->control.mon_grounded = mon_grounded;
-        // Control's VRAM is only there on a board that has Control.  A
-        // Network Server's video is a PCI card in a socket, so `st->vram`
-        // is NULL and the block is absent on both sides.
-        if (st->vram)
-            system_read_checkpoint_data(cp, st->vram, TNT_VRAM_SIZE);
     }
     machine_part(cfg, cp, "tnt.av", part_save_tnt_av, st);
     if (cp) {
@@ -834,12 +837,8 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
 
     machine_part_begin(cfg, cp, "tnt.io");
     if (cp) {
-        system_read_checkpoint_data(cp, &st->gbus, sizeof(st->gbus));
-        system_read_checkpoint_data(cp, &st->lcd, sizeof(st->lcd));
-        swim3_restore(&st->swim3, cp); // the prefix; tnt_swim3_bind below wires the tail
-        system_read_checkpoint_data(cp, &st->fdport.ring, sizeof(st->fdport.ring));
-        system_read_checkpoint_data(cp, &st->mace, sizeof(st->mace));
-        tnt_swim3_bind(cfg);
+        TNT_IO_CP_FIELDS(system_read_checkpoint_data, cp, st);
+        tnt_swim3_bind(cfg); // wires the SWIM3's pointer tail
         tnt_gc_recompute(cfg); // mesh/53C94 lines fold into the fabric
     }
     machine_part(cfg, cp, "tnt.io", part_save_tnt_io, st);
