@@ -72,6 +72,19 @@ bool platform_video_in_connected(void);
 int platform_video_in_frame(uint8_t *rgba);
 void platform_video_in_state(bool active);
 
+// The host's one wake primitive for the shared-memory transports (the
+// mailbox, the LaserWriter ring, the GPU takeovers): the page's workers
+// park in Atomics.waitAsync on a control word, and the core wakes them
+// after it publishes.  `platform_wake` wakes every waiter on `word`;
+// `platform_wait` blocks the CALLING thread until *word != expect or
+// `timeout_ms` passes (0 when woken, negative on a timeout).  The weak
+// defaults model a host with no such waiter: wake is a no-op, and wait
+// returns -1 at once (timed out).  The wasm build overrides both (em_main.c)
+// and routes its mailbox_notify / laserwriter_ring_notify /
+// platform_v2gpu_notify / platform_v2gpu_wait through them.
+void platform_wake(volatile uint32_t *word);
+int platform_wait(volatile uint32_t *word, uint32_t expect, uint32_t timeout_ms);
+
 // Host GPU-transport seam for the Voodoo2's WebGPU takeover
 // (voodoo2_gpu.c): the browser build attaches a GPU worker to a shared
 // region in the wasm heap and wakes it through Atomics; the defaults

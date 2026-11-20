@@ -645,7 +645,7 @@ static void draw(void) {
 
 static void hide_overlay(void) {
     // clang-format off
-    MAIN_THREAD_ASYNC_EM_ASM({ if (typeof Module.onVoodooGpuOverlay === 'function') Module.onVoodooGpuOverlay(0); });
+    MAIN_THREAD_ASYNC_EM_ASM({ if (typeof Module.onGpuOverlay === 'function') Module.onGpuOverlay(0); });
     // clang-format on
 }
 

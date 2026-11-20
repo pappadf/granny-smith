@@ -154,11 +154,12 @@ transports, installed at module construction:
   — the Singer's capture gate, and the file `machine.audioin.inject` just
   fed the guest (the page plays it aloud too); see
   [../machines/av/singer.md](../internals/machines/av/singer.md).
-- **`Module.onVoodooGpuOverlay(visible)`** — whether the Voodoo2
-  takeover's overlay canvas should show.
+- **`Module.onGpuOverlay(visible)`** — whether the GPU takeovers'
+  overlay canvas should show (0 hides the Voodoo2's and the Rage 128's).
 
-- **`Module.onVoodooGpuAttach(ctrl, bytes)` / `onVoodooGpuDetach(ctrl)`**
-  — the Voodoo2 WebGPU takeover (`raster=webgpu`,
+- **`Module.onGpuAttach(ctrl, bytes)` / `onGpuDetach(ctrl)`**
+  — a WebGPU takeover; `bus/emulator.ts` routes each to its card by the
+  control block's magic.  For the Voodoo2 (`raster=webgpu`,
   [`src/platform/wasm/em_gpu.c`](../../src/platform/wasm/em_gpu.c)): the
   emulator's raster pthread allocated a control block + op ring +
   readback area at `ctrl` in the shared heap and wants the page's GPU

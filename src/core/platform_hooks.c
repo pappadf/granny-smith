@@ -67,6 +67,18 @@ __attribute__((weak)) void platform_video_in_state(bool active) {
     (void)active;
 }
 
+// Shared-memory wake seam (platform_hooks.h): no waiter on a native host.
+__attribute__((weak)) void platform_wake(volatile uint32_t *word) {
+    (void)word;
+}
+
+__attribute__((weak)) int platform_wait(volatile uint32_t *word, uint32_t expect, uint32_t timeout_ms) {
+    (void)word;
+    (void)expect;
+    (void)timeout_ms;
+    return -1;
+}
+
 // Host GPU-transport seam (platform_hooks.h): no GPU on a native host.
 __attribute__((weak)) bool platform_v2gpu_available(void) {
     return false;

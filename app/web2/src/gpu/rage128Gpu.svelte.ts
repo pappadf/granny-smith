@@ -6,13 +6,13 @@
 // (voodoo2Gpu.svelte.ts), and the core reads that answer for both cards.
 //
 // The core's transport seam is shared with the Voodoo2 (platform_v2gpu_* in
-// platform_hooks.h; Module.onVoodooGpuAttach in em_gpu.c): emulator.ts routes an
+// platform_hooks.h; Module.onGpuAttach in em_gpu.c): emulator.ts routes an
 // attach here when the control block's MAGIC is the Rage 128's.
 //
 // The overlay: `#screen3d-r128` sits over `#screen` and is shown after the
 // worker's first present following a MODE(on) record, and hidden by the
 // display path once the canvas underneath holds a fresh frame (em_video.c
-// → Module.onVoodooGpuOverlay(0), which hides every GPU overlay).
+// → Module.onGpuOverlay(0), which hides every GPU overlay).
 
 import { attachSharedWorker, getModule, heapBuffer, setGpuUnavailable } from '@/bus/emulator';
 import { showNotification } from '@/state/toasts.svelte';

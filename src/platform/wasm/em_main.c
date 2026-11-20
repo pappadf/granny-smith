@@ -397,9 +397,21 @@ bool job_glue_unbounded_waits(uint32_t client) {
     return false;
 }
 
+// The host's one wake primitive (platform_hooks.h): every waiter on
+// `word` -- a page worker's Atomics.waitAsync, or a pthread's futex wait.
+void platform_wake(volatile uint32_t *word) {
+    emscripten_futex_wake(word, INT_MAX);
+}
+
+// Blocks the calling pthread until *word != expect or the timeout
+// (platform_hooks.h): 0 when woken, negative otherwise.
+int platform_wait(volatile uint32_t *word, uint32_t expect, uint32_t timeout_ms) {
+    return emscripten_futex_wait(word, expect, (double)timeout_ms);
+}
+
 // The page parks in Atomics.waitAsync on READY and EVT_HEAD.
 void mailbox_notify(volatile uint32_t *word) {
-    emscripten_atomic_notify((void *)word, INT_MAX);
+    platform_wake(word);
 }
 
 static double mailbox_now_us(void) {
@@ -454,7 +466,7 @@ static int mailbox_idle_wait(void) {
             continue;
         }
         uint32_t seen = mbx_load(g_mailbox.ctrl, GS_MBX_C_REQ_HEAD);
-        emscripten_futex_wait(&g_mailbox.ctrl[GS_MBX_C_REQ_HEAD], seen, GS_MAILBOX_IDLE_SLICE_MS);
+        platform_wait(&g_mailbox.ctrl[GS_MBX_C_REQ_HEAD], seen, GS_MAILBOX_IDLE_SLICE_MS);
         emscripten_current_thread_process_queued_calls();
         mailbox_heartbeat(&g_mailbox);
     }
@@ -729,7 +741,7 @@ static void js_log_stdout_sink(const char *line, void *user) {
 
 // The bridge allocated its control block at `ctrl_addr` (emulation
 // pthread): ask the page to start the worker and attach it, the way
-// em_gpu.c reaches Module.onVoodooGpuAttach.  The library version names
+// em_gpu.c reaches Module.onGpuAttach.  The library version names
 // the module file the page fetches (platen-<version>.js, laserwriter.mk).
 void laserwriter_ring_attach_requested(uintptr_t ctrl_addr) {
     static const char version[] = GS_PLATEN_VERSION;
@@ -742,7 +754,7 @@ void laserwriter_ring_attach_requested(uintptr_t ctrl_addr) {
 
 // Wakes the worker parked in Atomics.waitAsync on a control word.
 void laserwriter_ring_notify(volatile uint32_t *addr) {
-    emscripten_futex_wake(addr, INT_MAX);
+    platform_wake(addr);
 }
 
 // ============================================================================

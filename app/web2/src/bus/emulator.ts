@@ -37,8 +37,9 @@ import {
 } from '@/gpu/rage128Gpu.svelte';
 
 // The core's GPU transport seam is one for both 3D takeovers (platform_v2gpu_*,
-// em_gpu.c): an attach goes to the worker whose MAGIC its control block
-// carries, and the display path's "hide the overlay" covers both.
+// em_gpu.c; Module.onGpuAttach / onGpuDetach / onGpuOverlay): an attach goes
+// to the worker whose MAGIC its control block carries, and the display
+// path's "hide the overlay" covers both.
 function onGpuAttach(ctrl: number): void {
   if (isRage128Ctrl(ctrl)) onRage128GpuAttach(ctrl);
   else onVoodooGpuAttach(ctrl);
@@ -137,9 +138,9 @@ interface EmscriptenModuleConfig {
   onAudioInReady?(ptr: number): void;
   onAudioInState?(active: boolean): void;
   onAudioInInjected?(path: string): void;
-  onVoodooGpuAttach?(ctrl: number, bytes: number): void;
-  onVoodooGpuDetach?(ctrl: number): void;
-  onVoodooGpuOverlay?(visible: number): void;
+  onGpuAttach?(ctrl: number, bytes: number): void;
+  onGpuDetach?(ctrl: number): void;
+  onGpuOverlay?(visible: number): void;
   onPrinterAttach?(ctrl: number, version: string): void;
   // The audio-out AudioWorklet module (em_audio.c addModule()s it).
   gsAudioWorkletUrl?: string;
@@ -274,9 +275,9 @@ async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
     onAudioInReady,
     onAudioInState,
     onAudioInInjected,
-    onVoodooGpuAttach: onGpuAttach,
-    onVoodooGpuDetach: onGpuDetach,
-    onVoodooGpuOverlay: onGpuOverlay,
+    onGpuAttach,
+    onGpuDetach,
+    onGpuOverlay,
     onPrinterAttach,
     gsAudioWorkletUrl,
     gsAudioTargetLatency: audioTargetLatencyFromQuery(window.location.search),

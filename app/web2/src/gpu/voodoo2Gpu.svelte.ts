@@ -1,8 +1,8 @@
 // The page side of the Voodoo2 WebGPU takeover: starts the GPU worker
 // once with the overlay canvas, answers the core's availability
 // question through the bridge, and relays the core's attach/detach
-// requests (Module.onVoodooGpuAttach / onVoodooGpuDetach, fired from
-// em_gpu.c) to the worker.  The worker then talks to the emulator
+// requests (Module.onGpuAttach / onGpuDetach, fired from em_gpu.c and
+// routed here by bus/emulator.ts) to the worker.  The worker then talks to the emulator
 // through shared memory only; this module never sees a frame.
 //
 // The overlay: `#screen3d` sits over `#screen` and is shown exactly
@@ -114,7 +114,7 @@ export function whenVoodooGpuReady(timeoutMs: number): Promise<boolean> {
   });
 }
 
-// Module.onVoodooGpuAttach: the core allocated a shared region at
+// Module.onGpuAttach: the core allocated a shared region at
 // `ctrl`; hand the worker the wasm memory and the address.
 export function onVoodooGpuAttach(ctrl: number): void {
   const mod = getModule();
@@ -128,7 +128,7 @@ export function onVoodooGpuAttach(ctrl: number): void {
   attachSharedWorker(worker, ctrl, '__v2gpu');
 }
 
-// Module.onVoodooGpuOverlay(0): the display path drew a fresh frame on
+// Module.onGpuOverlay(0): the display path drew a fresh frame on
 // the canvas underneath — the overlay may go.
 export function onVoodooGpuOverlay(visible: number): void {
   gpuOverlay.visible = visible !== 0;
