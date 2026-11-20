@@ -514,14 +514,14 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
     }
     case CMD_WRTIME:
         if (data_len >= 4 && cuda->rtc) {
-            uint32_t secs = ((uint32_t)data[0] << 24) | ((uint32_t)data[1] << 16) | ((uint32_t)data[2] << 8) | data[3];
+            uint32_t secs = RD_BE32(data);
             rtc_set_seconds(cuda->rtc, secs);
         }
         break;
     case CMD_RD6805: {
         // The HC05 address space; only the PRAM page ($100-$1FF) is backed.
         // Open-ended — the host terminates once it has enough bytes.
-        uint16_t addr = (data_len >= 2) ? (uint16_t)((data[0] << 8) | data[1]) : 0;
+        uint16_t addr = (data_len >= 2) ? RD_BE16(data) : 0;
         LOG(4, "Rd6805 addr=$%04X", addr);
         for (int i = 0; i < 256 && n < CUDA_TX_MAX; i++) {
             uint16_t a = (uint16_t)(addr + i);
@@ -537,14 +537,14 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
             cuda_send_error(cuda, CUDA_ERR_PRAMADDR, PKT_PSEUDO, cmd);
             return;
         }
-        uint16_t addr = (data_len >= 2) ? (uint16_t)((data[0] << 8) | data[1]) : 0;
+        uint16_t addr = (data_len >= 2) ? RD_BE16(data) : 0;
         for (int i = 0; i < 256 && n < CUDA_TX_MAX; i++)
             cuda->tx_buf[n++] = cuda->rtc ? rtc_pram_read(cuda->rtc, (uint8_t)(addr + i)) : 0;
         break;
     }
     case CMD_WR6805: {
         if (data_len >= 2 && cuda->rtc) {
-            uint16_t addr = (uint16_t)((data[0] << 8) | data[1]);
+            uint16_t addr = RD_BE16(data);
             for (int i = 2; i < data_len; i++) {
                 uint16_t a = (uint16_t)(addr + (i - 2));
                 if (a >= 0x100 && a <= 0x1FF)
@@ -559,7 +559,7 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
                 cuda_send_error(cuda, CUDA_ERR_PRAMADDR, PKT_PSEUDO, cmd);
                 return;
             }
-            uint16_t addr = (uint16_t)((data[0] << 8) | data[1]);
+            uint16_t addr = RD_BE16(data);
             for (int i = 2; i < data_len; i++)
                 rtc_pram_write(cuda->rtc, (uint8_t)(addr + (i - 2)), data[i]);
         }

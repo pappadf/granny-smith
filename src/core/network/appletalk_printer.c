@@ -1271,7 +1271,7 @@ static void pap_handle_status_read(const ddp_header_t *ddp, atp_packet_t *atp) {
     if (same_conn)
         pap_session_record_activity();
 
-    uint16_t seq = (uint16_t)((atp->user[2] << 8) | atp->user[3]);
+    uint16_t seq = RD_BE16(atp->user + 2);
     bool completion_match = (!same_conn && g_pap->completion.active && conn_id == g_pap->completion.conn_id &&
                              ddp->llap.src == g_pap->completion.client_addr.node);
 

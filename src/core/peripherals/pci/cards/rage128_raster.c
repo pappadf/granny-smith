@@ -399,7 +399,7 @@ static inline __attribute__((always_inline)) uint32_t mem_read(st_t *s, uint32_t
         r128_vram_access(r, addr, bytes, false);
         const uint8_t *p = r->vram + addr;
         if (bytes == 2)
-            return (uint32_t)p[0] | ((uint32_t)p[1] << 8);
+            return RD_LE16(p);
         if (bytes == 1)
             return p[0];
         uint32_t v = 0;

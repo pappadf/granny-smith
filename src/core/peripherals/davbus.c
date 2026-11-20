@@ -99,8 +99,8 @@ static void awacs_render(davbus_host_t *h, const uint8_t *bytes, uint32_t nframe
         const uint8_t *f = bytes + i * 4;
         int16_t l = 0, r = 0;
         if (!mute) {
-            l = (int16_t)(le ? (f[1] << 8) | f[0] : (f[0] << 8) | f[1]);
-            r = (int16_t)(le ? (f[3] << 8) | f[2] : (f[2] << 8) | f[3]);
+            l = (int16_t)(le ? RD_LE16(f) : RD_BE16(f));
+            r = (int16_t)(le ? RD_LE16(f + 2) : RD_BE16(f + 2));
             l = audio_sat16((int32_t)(((int64_t)l * (int64_t)gl) >> 16));
             r = audio_sat16((int32_t)(((int64_t)r * (int64_t)gr) >> 16));
         }

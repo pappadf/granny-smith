@@ -13,6 +13,8 @@
 #ifndef GS_RE_DECODERS_H
 #define GS_RE_DECODERS_H
 
+// The decoders read their big-endian fields with RD_BE*
+#include "common.h"
 // The decoders write their string fields with json_fputs
 #include "storage_util.h"
 

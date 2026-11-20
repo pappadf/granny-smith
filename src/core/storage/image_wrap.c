@@ -35,25 +35,6 @@ LOG_USE_CATEGORY_NAME("image")
 // would hold (entries 1..63).
 #define SNIFF_BLOCKS (IMAGE_WRAP_MAP_START + IMAGE_WRAP_MAP_BLOCKS)
 
-// Store a big-endian 16-bit value.
-static void put16(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v >> 8);
-    p[1] = (uint8_t)v;
-}
-
-// Store a big-endian 32-bit value.
-static void put32(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v >> 24);
-    p[1] = (uint8_t)(v >> 16);
-    p[2] = (uint8_t)(v >> 8);
-    p[3] = (uint8_t)v;
-}
-
-// Load a big-endian 32-bit value.
-static uint32_t get32(const uint8_t *p) {
-    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
-}
-
 // Copy a NUL-padded string into a fixed field (never overflows it).
 static void put_str(uint8_t *p, size_t cap, const char *s) {
     size_t n = strlen(s);
@@ -72,15 +53,15 @@ uint32_t image_wrap_boot_checksum(const uint8_t *code, size_t len) {
 // Write one partition map entry into `e` (a zeroed 512-byte block).
 static void put_entry(uint8_t *e, uint32_t map_entries, uint32_t start, uint32_t blocks, const char *name,
                       const char *type, uint32_t status) {
-    put16(e + APM_OFF_SIG, APM_SIG_PM);
-    put32(e + APM_OFF_MAP_BLKCNT, map_entries);
-    put32(e + APM_OFF_PY_START, start);
-    put32(e + APM_OFF_PART_BLKCNT, blocks);
+    WR_BE16(e + APM_OFF_SIG, APM_SIG_PM);
+    WR_BE32(e + APM_OFF_MAP_BLKCNT, map_entries);
+    WR_BE32(e + APM_OFF_PY_START, start);
+    WR_BE32(e + APM_OFF_PART_BLKCNT, blocks);
     put_str(e + APM_OFF_NAME, 32, name);
     put_str(e + APM_OFF_TYPE, 32, type);
-    put32(e + APM_OFF_LG_DATA, 0);
-    put32(e + APM_OFF_DATA_CNT, blocks);
-    put32(e + APM_OFF_STATUS, status);
+    WR_BE32(e + APM_OFF_LG_DATA, 0);
+    WR_BE32(e + APM_OFF_DATA_CNT, blocks);
+    WR_BE32(e + APM_OFF_STATUS, status);
 }
 
 void image_wrap_build_prefix(uint8_t *out, uint64_t volume_blocks, const char *build_id) {
@@ -109,15 +90,15 @@ void image_wrap_build_prefix_boot(uint8_t *out, uint64_t volume_blocks, const ch
     }
 
     // Block 0: one 68k driver (ddType 1) at the driver partition.
-    put16(out + DDM_OFF_SIG, DDM_SIG_ER);
-    put16(out + DDM_OFF_BLK_SIZE, BLK);
-    put32(out + DDM_OFF_BLK_COUNT, prefix + vol);
-    put16(out + DDM_OFF_DEV_TYPE, 1);
-    put16(out + DDM_OFF_DEV_ID, 1);
-    put16(out + DDM_OFF_DRVR_COUNT, 1);
-    put32(out + DDM_OFF_DD_BLOCK, IMAGE_WRAP_DRIVER_START);
-    put16(out + DDM_OFF_DD_SIZE, drv_blocks);
-    put16(out + DDM_OFF_DD_TYPE, 1);
+    WR_BE16(out + DDM_OFF_SIG, DDM_SIG_ER);
+    WR_BE16(out + DDM_OFF_BLK_SIZE, BLK);
+    WR_BE32(out + DDM_OFF_BLK_COUNT, prefix + vol);
+    WR_BE16(out + DDM_OFF_DEV_TYPE, 1);
+    WR_BE16(out + DDM_OFF_DEV_ID, 1);
+    WR_BE16(out + DDM_OFF_DRVR_COUNT, 1);
+    WR_BE32(out + DDM_OFF_DD_BLOCK, IMAGE_WRAP_DRIVER_START);
+    WR_BE16(out + DDM_OFF_DD_SIZE, drv_blocks);
+    WR_BE16(out + DDM_OFF_DD_TYPE, 1);
 
     // Blocks 1..3: the map itself, the driver, the volume.  The driver
     // partition's name must start "Maci" and its boot fields must checksum,
@@ -129,11 +110,11 @@ void image_wrap_build_prefix_boot(uint8_t *out, uint64_t volume_blocks, const ch
     e += BLK;
     put_entry(e, n, IMAGE_WRAP_DRIVER_START, IMAGE_WRAP_DRIVER_BLOCKS, "Macintosh", "Apple_Driver",
               PM_VALID | PM_ALLOCATED | PM_IN_USE | PM_BOOTABLE | PM_READABLE | PM_WRITABLE | PM_BOOT_PIC);
-    put32(e + APM_OFF_LG_BOOT, 0);
-    put32(e + APM_OFF_BOOT_SIZE, drv_len);
-    put32(e + APM_OFF_BOOT_ADDR, 0);
-    put32(e + APM_OFF_BOOT_ENTRY, 0);
-    put32(e + APM_OFF_BOOT_CKSUM, image_wrap_boot_checksum(drv, drv_len));
+    WR_BE32(e + APM_OFF_LG_BOOT, 0);
+    WR_BE32(e + APM_OFF_BOOT_SIZE, drv_len);
+    WR_BE32(e + APM_OFF_BOOT_ADDR, 0);
+    WR_BE32(e + APM_OFF_BOOT_ENTRY, 0);
+    WR_BE32(e + APM_OFF_BOOT_CKSUM, image_wrap_boot_checksum(drv, drv_len));
     put_str(e + APM_OFF_PROCESSOR, 16, "68000");
     e += BLK;
     put_entry(e, n, prefix, vol, "MacOS", "Apple_HFS", PM_VALID | PM_ALLOCATED | PM_IN_USE | PM_READABLE | PM_WRITABLE);
@@ -142,7 +123,7 @@ void image_wrap_build_prefix_boot(uint8_t *out, uint64_t volume_blocks, const ch
     // points the partition entry's boot fields at it (block relative to the
     // partition, so the same volume behind the new map keeps them valid).
     if (hfs_entry) {
-        put32(e + APM_OFF_STATUS, get32(e + APM_OFF_STATUS) | get32(hfs_entry + APM_OFF_STATUS));
+        WR_BE32(e + APM_OFF_STATUS, RD_BE32(e + APM_OFF_STATUS) | RD_BE32(hfs_entry + APM_OFF_STATUS));
         memcpy(e + APM_OFF_LG_BOOT, hfs_entry + APM_OFF_LG_BOOT,
                APM_OFF_PROCESSOR + APM_PROCESSOR_LEN - APM_OFF_LG_BOOT);
     }
@@ -155,7 +136,7 @@ static const uint8_t *find_hfs_entry(const uint8_t *head, size_t len, uint64_t s
         const uint8_t *e = head + b * BLK;
         if (RD_BE16(e + APM_OFF_SIG) != APM_SIG_PM)
             break;
-        if (get32(e + APM_OFF_PY_START) == start && memcmp(e + APM_OFF_TYPE, "Apple_HFS", 10) == 0)
+        if (RD_BE32(e + APM_OFF_PY_START) == start && memcmp(e + APM_OFF_TYPE, "Apple_HFS", 10) == 0)
             return e;
     }
     return NULL;

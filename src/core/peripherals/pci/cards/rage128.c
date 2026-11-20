@@ -420,8 +420,7 @@ static uint32_t r128_reg_read(rage128_t *r, uint32_t off, bool peek) {
                 return 0xFFFFFFFFu;
             uint32_t a = (uint32_t)m;
             r128_vram_access(r, a, 4, false);
-            return (uint32_t)r->vram[a] | ((uint32_t)r->vram[a + 1] << 8) | ((uint32_t)r->vram[a + 2] << 16) |
-                   ((uint32_t)r->vram[a + 3] << 24);
+            return RD_LE32(&r->vram[a]);
         }
         uint32_t a = idx & MM_ADDR_MASK;
         if (a >= R128_REG_APER_SIZE || a == R_MM_DATA)

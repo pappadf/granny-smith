@@ -196,7 +196,7 @@ static void civic_gr_pixel(av_civic_t *cv, const uint8_t *bits, uint32_t stride,
         out[3] = e.b;
     } else if (code == 4) { // 16 bpp 1-5-5-5, big-endian
         const uint8_t *p = bits + (size_t)y * stride + (size_t)x * 2;
-        uint16_t v = (uint16_t)((p[0] << 8) | p[1]);
+        uint16_t v = RD_BE16(p);
         out[1] = (uint8_t)(((v >> 10) & 31) * 255 / 31);
         out[2] = (uint8_t)(((v >> 5) & 31) * 255 / 31);
         out[3] = (uint8_t)((v & 31) * 255 / 31);
@@ -260,7 +260,7 @@ static void civic_compose(av_civic_t *cv) {
             if (vsrc && x >= left && x < right) {
                 if (vi16) { // 1-5-5-5 from the capture buffer
                     const uint8_t *p = vsrc + (size_t)(x - left) * 2;
-                    uint16_t v = (uint16_t)((p[0] << 8) | p[1]);
+                    uint16_t v = RD_BE16(p);
                     out[1] = (uint8_t)(((v >> 10) & 31) * 255 / 31);
                     out[2] = (uint8_t)(((v >> 5) & 31) * 255 / 31);
                     out[3] = (uint8_t)((v & 31) * 255 / 31);

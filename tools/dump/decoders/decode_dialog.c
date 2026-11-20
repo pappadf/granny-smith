@@ -32,10 +32,10 @@
 #include <stdio.h>
 
 static void write_rect(FILE *fp, const uint8_t *p) {
-    int16_t t = (int16_t)((p[0] << 8) | p[1]);
-    int16_t l = (int16_t)((p[2] << 8) | p[3]);
-    int16_t b = (int16_t)((p[4] << 8) | p[5]);
-    int16_t r = (int16_t)((p[6] << 8) | p[7]);
+    int16_t t = RD_BE16S(p);
+    int16_t l = RD_BE16S(p + 2);
+    int16_t b = RD_BE16S(p + 4);
+    int16_t r = RD_BE16S(p + 6);
     fprintf(fp, "[%d,%d,%d,%d]", t, l, b, r);
 }
 
@@ -44,12 +44,11 @@ int re_decode_dlog(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt_fp
         fprintf(json_fp, "{\"error\":\"DLOG too short\"}\n");
         return -1;
     }
-    int16_t proc_id = (int16_t)((bytes[8] << 8) | bytes[9]);
-    int16_t visible = (int16_t)((bytes[10] << 8) | bytes[11]);
-    int16_t go_away = (int16_t)((bytes[12] << 8) | bytes[13]);
-    int32_t ref_con =
-        (int32_t)(((uint32_t)bytes[14] << 24) | ((uint32_t)bytes[15] << 16) | ((uint32_t)bytes[16] << 8) | bytes[17]);
-    int16_t ditl_id = (int16_t)((bytes[18] << 8) | bytes[19]);
+    int16_t proc_id = RD_BE16S(bytes + 8);
+    int16_t visible = RD_BE16S(bytes + 10);
+    int16_t go_away = RD_BE16S(bytes + 12);
+    int32_t ref_con = (int32_t)RD_BE32(bytes + 14);
+    int16_t ditl_id = RD_BE16S(bytes + 18);
     char title[256];
     re_pstring_to_utf8(bytes, len, 20, title, sizeof(title));
 
@@ -70,8 +69,8 @@ int re_decode_alrt(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt_fp
         fprintf(json_fp, "{\"error\":\"ALRT too short\"}\n");
         return -1;
     }
-    int16_t ditl_id = (int16_t)((bytes[8] << 8) | bytes[9]);
-    uint16_t stages = (uint16_t)((bytes[10] << 8) | bytes[11]);
+    int16_t ditl_id = RD_BE16S(bytes + 8);
+    uint16_t stages = RD_BE16(bytes + 10);
     fprintf(json_fp, "{\"bounds\":");
     write_rect(json_fp, bytes);
     fprintf(json_fp, ",\"ditl_id\":%d,\"stages\":\"0x%04x\",\"refs\":[{\"type\":\"DITL\",\"id\":%d}]}\n", ditl_id,
@@ -115,7 +114,7 @@ int re_decode_ditl(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt_fp
         fprintf(json_fp, "{\"error\":\"DITL too short\"}\n");
         return -1;
     }
-    int16_t count_m1 = (int16_t)((bytes[0] << 8) | bytes[1]);
+    int16_t count_m1 = RD_BE16S(bytes);
     int n_items = (int)count_m1 + 1;
     fprintf(json_fp, "{\"count\":%d,\"items\":[", n_items);
     if (txt_fp)
@@ -134,7 +133,7 @@ int re_decode_ditl(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt_fp
         // Control, icon and picture items carry a 2-byte resource ID, not text.
         uint8_t kind = type_byte & 0x7F;
         bool has_res_id = (kind == 7 || kind == 32 || kind == 64) && plen == 2 && off + 3 <= len;
-        int16_t res_id = has_res_id ? (int16_t)((bytes[off + 1] << 8) | bytes[off + 2]) : 0;
+        int16_t res_id = has_res_id ? RD_BE16S(&bytes[off + 1]) : 0;
         if (has_res_id)
             snprintf(text, sizeof(text), "id %d", res_id);
         else if (plen > 0 && off + 1 + plen <= len)

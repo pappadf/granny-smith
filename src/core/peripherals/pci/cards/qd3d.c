@@ -73,6 +73,7 @@
 // the time its size gives it, whichever backend drew them.
 
 #include "checkpoint.h"
+#include "common.h"
 #include "log.h"
 #include "machine_build_opts.h"
 #include "object.h"
@@ -199,11 +200,6 @@ typedef struct qd3d {
 // Small helpers
 // ============================================================
 
-// Big-endian 32/16-bit loads from a byte buffer.
-static uint32_t be32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
-}
-
 static float f32_bits(uint32_t bits) {
     float f;
     memcpy(&f, &bits, sizeof(f));
@@ -214,7 +210,7 @@ static float f32_bits(uint32_t bits) {
 static uint32_t dma_word(qd3d_t *q, uint32_t phys) {
     uint8_t b[4];
     pci_dma_read(q->dev, phys, b, 4);
-    return be32(b);
+    return RD_BE32(b);
 }
 
 // This card's position among cooperating cards: index and count.
@@ -263,10 +259,10 @@ static bool dma_load(qd3d_t *q) {
         uint8_t desc[16];
         pci_dma_read(q->dev, d->next, desc, sizeof(desc));
         d->next += 16;
-        uint32_t w0 = be32(desc);
+        uint32_t w0 = RD_BE32(desc);
         d->cmd = (w0 >> 24) & 0xFu;
         d->remaining = w0 & 0xFFFFu;
-        d->addr = be32(desc + 4);
+        d->addr = RD_BE32(desc + 4);
         if (d->cmd == DESC_STOP) {
             d->stopped = 1;
             break;
@@ -386,26 +382,26 @@ static bool obj_decode(qd3d_t *q, uint32_t w, uint32_t header, q3_obj_t *o) {
     if (log_would_log(log_local_category(), 6)) {
         char hex[68 * 3 + 1];
         for (int i = 0; i < 68; i += 4)
-            snprintf(hex + i * 2 + i / 4, 10, "%08X ", be32(rec + i));
+            snprintf(hex + i * 2 + i / 4, 10, "%08X ", RD_BE32(rec + i));
         LOG(6, "record at $%08X: %s", w, hex);
     }
     if (header & HDR_BITMAP) {
         // A 32 x 12 one-bit tile: depth, left/top, colour (twice), 12 rows
         // with bit 31 the leftmost pixel.
         o->kind = Q3_OBJ_BITMAP;
-        o->a0[Q3_A_DEPTH] = f32_bits(be32(rec + 4));
-        uint32_t xy = be32(rec + 8);
+        o->a0[Q3_A_DEPTH] = f32_bits(RD_BE32(rec + 4));
+        uint32_t xy = RD_BE32(rec + 8);
         o->bx = (int)(xy >> 19);
         o->by = (int)((xy & 0xFFFFu) >> 3);
-        o->colour = be32(rec + 12);
+        o->colour = RD_BE32(rec + 12);
         for (int r = 0; r < 12; r++)
-            o->mask[r] = be32(rec + 20 + 4 * r);
+            o->mask[r] = RD_BE32(rec + 20 + 4 * r);
         o->first = o->by;
         o->last = o->by + 11;
         return true;
     }
     for (int i = 0; i < 3; i++) {
-        uint32_t xy = be32(rec + 4 + 4 * i);
+        uint32_t xy = RD_BE32(rec + 4 + 4 * i);
         o->x13[i] = (uint16_t)(xy >> 16);
         o->y13[i] = (uint16_t)xy;
     }
@@ -416,7 +412,7 @@ static bool obj_decode(qd3d_t *q, uint32_t w, uint32_t header, q3_obj_t *o) {
     float v[3][Q3_A_NATTR];
     memset(v, 0, sizeof(v));
     for (int i = 0; i < 3; i++)
-        v[i][Q3_A_DEPTH] = f32_bits(be32(rec + 16 + 4 * i));
+        v[i][Q3_A_DEPTH] = f32_bits(RD_BE32(rec + 16 + 4 * i));
     if (header & HDR_TEXTURED) {
         // Per vertex: alpha, the low mantissa nibbles of v and u, a bfloat16
         // mip footprint; v and u's top 16 bits; grey kd (1.7) and ks (0.8).
@@ -427,9 +423,9 @@ static bool obj_decode(qd3d_t *q, uint32_t w, uint32_t header, q3_obj_t *o) {
         }
         o->tex_levels = o->tex_size == 256 ? 9 : 8;
         for (int i = 0; i < 3; i++) {
-            uint32_t a = be32(rec + 28 + 4 * i);
-            uint32_t vu = be32(rec + 40 + 4 * i);
-            uint32_t ks = be32(rec + 52 + 4 * i);
+            uint32_t a = RD_BE32(rec + 28 + 4 * i);
+            uint32_t vu = RD_BE32(rec + 40 + 4 * i);
+            uint32_t ks = RD_BE32(rec + 52 + 4 * i);
             v[i][Q3_A_ALPHA] = (float)(a >> 24) / 255.0f;
             v[i][Q3_A_V] = f20(vu >> 16, (a >> 20) & 0xFu);
             v[i][Q3_A_U] = f20(vu & 0xFFFFu, (a >> 16) & 0xFu);
@@ -440,7 +436,7 @@ static bool obj_decode(qd3d_t *q, uint32_t w, uint32_t header, q3_obj_t *o) {
     } else {
         o->kind = Q3_OBJ_GOURAUD;
         for (int i = 0; i < 3; i++) {
-            uint32_t c = be32(rec + 28 + 4 * i);
+            uint32_t c = RD_BE32(rec + 28 + 4 * i);
             v[i][Q3_A_ALPHA] = (float)(c >> 24) / 255.0f;
             v[i][Q3_A_R] = (float)((c >> 16) & 0xFFu) / 255.0f;
             v[i][Q3_A_G] = (float)((c >> 8) & 0xFFu) / 255.0f;
@@ -486,7 +482,7 @@ static void control_block(qd3d_t *q, uint32_t w, uint32_t *width, uint32_t *cur)
     pci_dma_read(q->dev, w, blk, sizeof(blk));
     uint32_t me = card_index(q);
     for (int i = 0; i < 7; i++) {
-        uint32_t cmd = be32(blk + 4 * i);
+        uint32_t cmd = RD_BE32(blk + 4 * i);
         uint32_t op = cmd >> HDR_OPCODE_SHIFT;
         if (op == 0)
             continue; // an empty slot
@@ -511,7 +507,7 @@ static void control_block(qd3d_t *q, uint32_t w, uint32_t *width, uint32_t *cur)
             continue;
         if (i == 6)
             break; // a data-carrying write with no room for its data
-        uint32_t data = be32(blk + 4 * ++i);
+        uint32_t data = RD_BE32(blk + 4 * ++i);
         if ((rr & ~3u) == REG_Y) {
             // One register for all cards; the low address bits say whose.
             if ((rr & 3u) == me)

@@ -823,16 +823,14 @@ void run_cmd(scsi_t *scsi) {
         // Promote each byte to uint32_t before shifting, as the 6-byte decode
         // above already does: data[2] promotes to `int`, and `<< 24` on
         // anything >= 0x80 overflows it, which is undefined.
-        scsi->cmd.lba = ((uint32_t)scsi->buf.data[2] << 24) | ((uint32_t)scsi->buf.data[3] << 16) |
-                        ((uint32_t)scsi->buf.data[4] << 8) | (uint32_t)scsi->buf.data[5];
-        scsi->cmd.tl = ((uint32_t)scsi->buf.data[7] << 8) | (uint32_t)scsi->buf.data[8];
+        scsi->cmd.lba = RD_BE32(scsi->buf.data + 2);
+        scsi->cmd.tl = RD_BE16(scsi->buf.data + 7);
         if (scsi->cmd.opcode == CMD_READ_12) {
             // READ(12), the group-5 read (SCSI-2; the read the Mac OS ATAPI
             // CD-ROM driver issues, SFF-8020i): the same LBA, a 32-bit
             // transfer length in bytes 6-9.  Past 65,535 blocks it is more
             // than one transfer of the staging path can describe.
-            uint32_t tl = ((uint32_t)scsi->buf.data[6] << 24) | ((uint32_t)scsi->buf.data[7] << 16) |
-                          ((uint32_t)scsi->buf.data[8] << 8) | (uint32_t)scsi->buf.data[9];
+            uint32_t tl = RD_BE32(scsi->buf.data + 6);
             if (tl > 0xFFFFu) {
                 scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB, 0x00);
                 break;
@@ -889,8 +887,7 @@ void run_cmd(scsi_t *scsi) {
             lba = (((uint32_t)scsi->buf.data[1] & 0x1F) << 16) | ((uint32_t)scsi->buf.data[2] << 8) |
                   (uint32_t)scsi->buf.data[3];
         else
-            lba = ((uint32_t)scsi->buf.data[2] << 24) | ((uint32_t)scsi->buf.data[3] << 16) |
-                  ((uint32_t)scsi->buf.data[4] << 8) | (uint32_t)scsi->buf.data[5];
+            lba = RD_BE32(scsi->buf.data + 2);
         scsi->cmd.lba = lba;
 
         LOG(1, "command: SEEK(%d) target=%d lba=%u", scsi->cmd.opcode == CMD_SEEK_6 ? 6 : 10, target, lba);
@@ -1074,7 +1071,7 @@ void run_cmd(scsi_t *scsi) {
         // non-zero list is accepted and discarded.  AIX's BOS install runs
         // this against every target disk as its "preliminary diagnostic
         // test" and refuses to install to a drive that fails it.
-        int param_len = (scsi->buf.data[3] << 8) | scsi->buf.data[4];
+        int param_len = RD_BE16(scsi->buf.data + 3);
         LOG(1, "command: SEND DIAGNOSTIC (len=%d)", param_len);
         if (param_len == 0)
             phase_status(scsi, STATUS_GOOD);
@@ -1321,9 +1318,8 @@ void run_cmd(scsi_t *scsi) {
         // row, 512 blocks at a time -- and the last one ends on the medium's
         // final block, so the bound below has to admit lba + len == capacity
         // exactly.
-        scsi->cmd.lba = ((uint32_t)scsi->buf.data[2] << 24) | ((uint32_t)scsi->buf.data[3] << 16) |
-                        ((uint32_t)scsi->buf.data[4] << 8) | (uint32_t)scsi->buf.data[5];
-        scsi->cmd.tl = ((uint32_t)scsi->buf.data[7] << 8) | (uint32_t)scsi->buf.data[8];
+        scsi->cmd.lba = RD_BE32(scsi->buf.data + 2);
+        scsi->cmd.tl = RD_BE16(scsi->buf.data + 7);
         bool bytchk = (scsi->buf.data[1] & 0x02) != 0; // byte 1 bit 1, in both ANSI texts
         uint16_t blk_sz = scsi->devices[target].block_size;
 
@@ -1537,7 +1533,7 @@ void command_complete(scsi_t *scsi) {
         // Extending buf.max is that: no phase change, REQ stays up, and this
         // function is called again when the descriptors have landed.
         if (scsi->buf.size == SCSI_FORMAT_DEFECT_HEADER) {
-            size_t defect_len = ((size_t)scsi->buf.data[2] << 8) | scsi->buf.data[3];
+            size_t defect_len = RD_BE16(scsi->buf.data + 2);
             if (defect_len > 0) {
                 LOG(2, "FORMAT UNIT: taking a %zu-byte defect list", defect_len);
                 if (!scsi_buf_ensure(scsi, SCSI_FORMAT_DEFECT_HEADER + defect_len)) {
@@ -1577,8 +1573,7 @@ void command_complete(scsi_t *scsi) {
         // (which on real hardware is why S9.1.2 makes FORMAT UNIT, not MODE
         // SELECT, the command that activates a new one).
         if (scsi->buf.size >= 12 && scsi->buf.data[3] >= 8) {
-            uint32_t block_len = ((uint32_t)scsi->buf.data[9] << 16) | ((uint32_t)scsi->buf.data[10] << 8) |
-                                 (uint32_t)scsi->buf.data[11];
+            uint32_t block_len = RD_BE24(scsi->buf.data + 9);
             if (block_len != 0 && block_len != scsi->devices[target].block_size)
                 GS_UNIMPLEMENTED("MODE SELECT asked to change a hard disk from %u-byte to %u-byte blocks; "
                                  "this emulator serves 512 only",

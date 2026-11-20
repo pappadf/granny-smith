@@ -1226,7 +1226,7 @@ void gc824_clip_rebuild(display_card_824gc_priv_t *p) {
 static void gc_clip_set_region(display_card_824gc_priv_t *p, int is_vis, uint32_t off, int ox, int oy) {
     if (off + 10 > GC824_DRAM_SIZE)
         return;
-    uint16_t size = (uint16_t)((p->dram[off] << 8) | p->dram[off + 1]);
+    uint16_t size = RD_BE16(&p->dram[off]);
     uint8_t *dst = is_vis ? p->gc_visrgn : p->gc_cliprgn;
     uint32_t *len = is_vis ? &p->gc_visrgn_len : &p->gc_cliprgn_len;
     if (size >= 10 && size <= GC824_RGN_MAX && off + size <= GC824_DRAM_SIZE) {

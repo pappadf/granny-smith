@@ -101,8 +101,7 @@ LOG_USE_CATEGORY_NAME("grackle");
 
 // Little-endian register access into the byte file.
 static uint32_t cfg32(const gos_grackle_t *g, uint32_t reg) {
-    return (uint32_t)g->cfg[reg] | ((uint32_t)g->cfg[reg + 1] << 8) | ((uint32_t)g->cfg[reg + 2] << 16) |
-           ((uint32_t)g->cfg[reg + 3] << 24);
+    return RD_LE32(&g->cfg[reg]);
 }
 
 static void set_cfg32(gos_grackle_t *g, uint32_t reg, uint32_t v) {

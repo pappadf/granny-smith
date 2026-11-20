@@ -283,12 +283,11 @@ static bool swim_post_rcv2_event(iop_t *iop, uint8_t event, uint8_t drive);
 // ============================================================================
 
 static uint16_t swim_ram_read_be16(const iop_t *iop, uint32_t off) {
-    return (uint16_t)((iop->ram[off] << 8) | iop->ram[off + 1]);
+    return RD_BE16(&iop->ram[off]);
 }
 
 static uint32_t swim_ram_read_be32(const iop_t *iop, uint32_t off) {
-    return ((uint32_t)iop->ram[off] << 24) | ((uint32_t)iop->ram[off + 1] << 16) | ((uint32_t)iop->ram[off + 2] << 8) |
-           (uint32_t)iop->ram[off + 3];
+    return RD_BE32(&iop->ram[off]);
 }
 
 static void swim_ram_write_be16(iop_t *iop, uint32_t off, uint16_t v) {
@@ -1116,7 +1115,7 @@ static void swim_dispatch_slot2(iop_t *iop) {
 // The host's device polling mask (SetPollEnables); 0 if never set, which
 // adb_autopoll_next reads as every address.
 static uint16_t swim_adb_devmap(const iop_t *iop) {
-    return (uint16_t)((iop->ram[SWIM_MODEL_DEVMAP + 0] << 8) | iop->ram[SWIM_MODEL_DEVMAP + 1]);
+    return RD_BE16(&iop->ram[SWIM_MODEL_DEVMAP]);
 }
 
 // Whether RcvMsg[3] is free for the next IOP->host message: the host has

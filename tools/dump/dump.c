@@ -24,6 +24,7 @@
 #include "code_segment.h"
 #include "coff.h"
 #include "coff_dump.h"
+#include "common.h"
 #include "pef.h"
 #include "pef_dump.h"
 #include "resource_fork.h"
@@ -90,8 +91,8 @@ static int finder_json_write(const uint8_t *finf, size_t finf_len, FILE *fp) {
         fprintf(fp, "{\"error\":\"finder info wrong size: %zu\"}\n", finf_len);
         return -1;
     }
-    uint16_t flags = (uint16_t)((finf[8] << 8) | finf[9]);
-    uint16_t fldr = (uint16_t)((finf[14] << 8) | finf[15]);
+    uint16_t flags = RD_BE16(finf + 8);
+    uint16_t fldr = RD_BE16(finf + 14);
     // Type and creator are 4-byte OSTypes; render as raw ASCII when
     // printable, else as a 4-byte hex string.  No MacRoman transcoding
     // here — finder.json is meant to round-trip the *literal* bytes.
@@ -501,16 +502,14 @@ static int parse_lpch(const uint8_t *bytes, size_t sz, size_t *header_bytes, siz
     if (sz < 8)
         return -1;
     // Try single-ROM layout: code_size at +2.
-    uint32_t code_size_a =
-        ((uint32_t)bytes[2] << 24) | ((uint32_t)bytes[3] << 16) | ((uint32_t)bytes[4] << 8) | bytes[5];
+    uint32_t code_size_a = RD_BE32(bytes + 2);
     if (code_size_a > 0 && code_size_a <= sz - 6) {
         *header_bytes = 6;
         *code_len = code_size_a;
         return 0;
     }
     // Try universal layout: code_size at +4.
-    uint32_t code_size_b =
-        ((uint32_t)bytes[4] << 24) | ((uint32_t)bytes[5] << 16) | ((uint32_t)bytes[6] << 8) | bytes[7];
+    uint32_t code_size_b = RD_BE32(bytes + 4);
     if (code_size_b > 0 && code_size_b <= sz - 8) {
         *header_bytes = 8;
         *code_len = code_size_b;

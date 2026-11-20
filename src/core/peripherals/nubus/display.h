@@ -372,14 +372,14 @@ static inline void display_pixel_rgb(const display_t *d, const uint8_t *src_row,
         idx = src_row[x];
         break;
     case PIXEL_16BPP_555: {
-        uint16_t v = (uint16_t)(((uint16_t)src_row[x * 2] << 8) | src_row[x * 2 + 1]);
+        uint16_t v = RD_BE16(src_row + x * 2);
         r = display_expand5((uint8_t)((v >> 10) & 0x1F));
         g = display_expand5((uint8_t)((v >> 5) & 0x1F));
         b = display_expand5((uint8_t)(v & 0x1F));
         goto done;
     }
     case PIXEL_16BPP_565: {
-        uint16_t v = (uint16_t)(((uint16_t)src_row[x * 2] << 8) | src_row[x * 2 + 1]);
+        uint16_t v = RD_BE16(src_row + x * 2);
         r = display_expand5((uint8_t)((v >> 11) & 0x1F));
         g = display_expand6((uint8_t)((v >> 5) & 0x3F));
         b = display_expand5((uint8_t)(v & 0x1F));

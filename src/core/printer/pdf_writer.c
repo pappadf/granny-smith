@@ -13,6 +13,7 @@
 #include "pdf_writer.h"
 
 #include "codec.h"
+#include "common.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -298,12 +299,9 @@ void pdf_writer_set_title(pdf_writer_t *w, const char *title) {
 #define PDF_SER_MAGIC 0x50444657u // "PDFW"
 
 static void put32(pdf_buf_t *b, uint32_t v) {
-    uint8_t x[4] = {(uint8_t)(v >> 24), (uint8_t)(v >> 16), (uint8_t)(v >> 8), (uint8_t)v};
+    uint8_t x[4];
+    WR_BE32(x, v);
     buf_put(b, x, 4);
-}
-
-static uint32_t get32(const uint8_t *p) {
-    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
 }
 
 bool pdf_writer_serialise(const pdf_writer_t *w, uint8_t **out, size_t *out_len) {
@@ -334,10 +332,10 @@ bool pdf_writer_serialise(const pdf_writer_t *w, uint8_t **out, size_t *out_len)
 }
 
 pdf_writer_t *pdf_writer_deserialise(const uint8_t *data, size_t len) {
-    if (!data || len < 24 || get32(data) != PDF_SER_MAGIC)
+    if (!data || len < 24 || RD_BE32(data) != PDF_SER_MAGIC)
         return NULL;
-    uint32_t nobj = get32(data + 4), npages = get32(data + 8), body = get32(data + 12);
-    uint32_t tl = get32(data + 16), pl = get32(data + 20);
+    uint32_t nobj = RD_BE32(data + 4), npages = RD_BE32(data + 8), body = RD_BE32(data + 12);
+    uint32_t tl = RD_BE32(data + 16), pl = RD_BE32(data + 20);
     // Every count is bounded by what the buffer can hold
     uint64_t need = 24ull + 4ull * nobj + 4ull * npages + body + tl + pl;
     if (need != len || nobj < OBJ_FIRST || nobj > (1u << 24) || npages > nobj)
@@ -358,9 +356,9 @@ pdf_writer_t *pdf_writer_deserialise(const uint8_t *data, size_t len) {
     w->n_pages = npages;
     w->cap_pages = npages ? npages : 1;
     for (uint32_t i = 0; i < nobj; i++, p += 4)
-        w->offsets[i] = get32(p);
+        w->offsets[i] = RD_BE32(p);
     for (uint32_t i = 0; i < npages; i++, p += 4)
-        w->page_objs[i] = get32(p);
+        w->page_objs[i] = RD_BE32(p);
     buf_put(&w->out, p, body);
     p += body;
     memcpy(w->title, p, tl);

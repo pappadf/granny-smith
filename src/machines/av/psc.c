@@ -179,7 +179,7 @@ uint16_t av_psc_snd_read16(av_psc_t *psc, uint32_t off) {
     off &= 0x1F;
     if (off + 1u >= sizeof(psc->snd))
         return 0; // $21C-$21F hold no sound latches (the array is $1C bytes)
-    return (uint16_t)((psc->snd[off] << 8) | psc->snd[off + 1]);
+    return RD_BE16(&psc->snd[off]);
 }
 
 uint32_t av_psc_snd_read32(av_psc_t *psc, uint32_t off) {
@@ -260,9 +260,9 @@ void av_psc_via2_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t v
 // at the programmed codec rate.
 static uint32_t psc_snd_phase(av_psc_t *psc) {
     static const uint32_t rates[4] = {24000, 32000, 48000, 48000};
-    uint32_t com = (uint32_t)((psc->snd[0x00] << 8) | psc->snd[0x01]); // sndComCtl
+    uint32_t com = RD_BE16(psc->snd); // sndComCtl
     uint32_t rate = rates[(com >> 9) & 3];
-    uint32_t snd_size = (uint32_t)((psc->snd[0x18] << 8) | psc->snd[0x19]);
+    uint32_t snd_size = RD_BE16(psc->snd + 0x18);
     uint32_t wrap = snd_size ? 2 * snd_size : 0x10000; // frames per pass
     double ns = scheduler_time_ns(psc->cfg->scheduler);
     uint64_t total_64ths = (uint64_t)(ns * (double)rate * 64.0 / 1e9);

@@ -7,6 +7,7 @@
 #include "iw_page.h"
 
 #include "codec.h"
+#include "common.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -173,17 +174,6 @@ static bool put(uint8_t **buf, size_t *len, size_t *cap, const void *data, size_
     return true;
 }
 
-// Big-endian 32-bit store / load
-static void be32(uint8_t out[4], uint32_t v) {
-    out[0] = (uint8_t)(v >> 24);
-    out[1] = (uint8_t)(v >> 16);
-    out[2] = (uint8_t)(v >> 8);
-    out[3] = (uint8_t)v;
-}
-static uint32_t rd32(const uint8_t *p) {
-    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
-}
-
 bool iw_page_serialise(const iw_page_t *p, uint8_t **out, size_t *out_len) {
     *out = NULL;
     *out_len = 0;
@@ -194,7 +184,7 @@ bool iw_page_serialise(const iw_page_t *p, uint8_t **out, size_t *out_len) {
     // Header: inks, dot count
     uint8_t hdr[5];
     hdr[0] = p->inks;
-    be32(hdr + 1, p->dots);
+    WR_BE32(hdr + 1, p->dots);
     bool ok = put(&buf, &len, &cap, hdr, sizeof(hdr));
     size_t plane_len = (size_t)p->stride * p->h;
     size_t zcap = codec_enc_bound(CODEC_ZLIB, plane_len);
@@ -211,7 +201,7 @@ bool iw_page_serialise(const iw_page_t *p, uint8_t **out, size_t *out_len) {
         }
         uint8_t ph[5];
         ph[0] = (uint8_t)i;
-        be32(ph + 1, (uint32_t)zl);
+        WR_BE32(ph + 1, (uint32_t)zl);
         ok = put(&buf, &len, &cap, ph, sizeof(ph)) && put(&buf, &len, &cap, z, (size_t)zl);
     }
     free(z);
@@ -231,12 +221,12 @@ bool iw_page_deserialise(iw_page_t *p, const uint8_t *data, size_t len) {
     if (len < 5)
         return false;
     uint8_t inks = data[0];
-    uint32_t dots = rd32(data + 1);
+    uint32_t dots = RD_BE32(data + 1);
     size_t off = 5;
     size_t plane_len = (size_t)p->stride * p->h;
     while (off + 5 <= len) {
         int i = data[off];
-        uint32_t zl = rd32(data + off + 1);
+        uint32_t zl = RD_BE32(data + off + 1);
         off += 5;
         if (i >= 4 || zl > len - off || !ensure_plane(p, i)) {
             iw_page_clear(p);

@@ -280,7 +280,7 @@ static uint8_t *copy_frag(const uint8_t *frag, size_t size, const char *what) {
         LOG(0, "declrom: %s fragment missing or too small (%zu bytes)", what, size);
         return NULL;
     }
-    uint32_t claimed = ((uint32_t)frag[0] << 24) | ((uint32_t)frag[1] << 16) | ((uint32_t)frag[2] << 8) | frag[3];
+    uint32_t claimed = RD_BE32(frag);
     if (claimed > size) {
         LOG(0, "declrom: %s fragment size field %u exceeds the %zu supplied bytes", what, claimed, size);
         return NULL;
@@ -534,7 +534,7 @@ bool declrom_finalise(declrom_builder_t *b, uint8_t byte_lanes) {
 static bool img_be32(const uint8_t *img, size_t size, size_t at, uint32_t *out) {
     if (at + 4 > size)
         return false;
-    *out = ((uint32_t)img[at] << 24) | ((uint32_t)img[at + 1] << 16) | ((uint32_t)img[at + 2] << 8) | img[at + 3];
+    *out = RD_BE32(&img[at]);
     return true;
 }
 
@@ -968,7 +968,7 @@ bool declrom_install_builtin(nubus_card_t *card, const char *card_id, const uint
     }
     // Path-less, identified by the blob's stored Format-Block CRC.
     const uint8_t *t = chip + chip_size - 12; // CRC field, big-endian
-    uint32_t crc = ((uint32_t)t[0] << 24) | ((uint32_t)t[1] << 16) | ((uint32_t)t[2] << 8) | (uint32_t)t[3];
+    uint32_t crc = RD_BE32(t);
     char locator[64];
     snprintf(locator, sizeof locator, "builtin:%s", card_id);
     note_card_rom(card, locator, crc, NULL, 0);

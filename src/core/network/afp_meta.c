@@ -150,7 +150,7 @@ bool afp_meta_load(const char *host_path, afp_meta_t *out) {
         fread(buf, 1, 4, f) == 4) {
         // Entry 10's leading two bytes carry our AFP attribute word; the
         // trailing byte keeps the classic "protected" flag for foreign readers.
-        out->attrs = (uint16_t)((buf[0] << 8) | buf[1]);
+        out->attrs = RD_BE16(buf);
         out->has_attrs = true;
     }
     if (find_entry_extent(hdr, n, AD_ENTRY_COMMENT, &off, &len) && fseeko(f, (off_t)off, SEEK_SET) == 0) {
@@ -183,7 +183,7 @@ static uint32_t read_entry_table(const char *sidecar, uint8_t *hdr, size_t hdr_c
         return 0;
     if (RD_BE32(hdr + 4) != APPLE_FORK_VERSION)
         return 0;
-    uint32_t n = (uint32_t)((hdr[24] << 8) | hdr[25]);
+    uint32_t n = (uint32_t)RD_BE16(hdr + 24);
     if (n > AD_MAX_ENTRIES)
         return 0;
     if (26 + (size_t)n * 12 > got)

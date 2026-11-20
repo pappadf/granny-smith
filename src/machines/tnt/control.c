@@ -387,7 +387,7 @@ static void control_compose(config_t *cfg) {
     // 2592-stride read drew the old plane plus framebuffer bytes as a
     // junk cursor column.)
     uint32_t plane_stride = stride;
-    uint32_t x = (((uint32_t)c->rad_misc[0] << 8) | c->rad_misc[1]) + 1u; // hotspot bias
+    uint32_t x = RD_BE16(c->rad_misc) + 1u; // hotspot bias
     for (uint32_t y = 0; y < h; y++) {
         uint64_t poff = (uint64_t)base + (uint64_t)y * plane_stride;
         if (poff < 16u || poff + 8u > TNT_VRAM_SIZE)

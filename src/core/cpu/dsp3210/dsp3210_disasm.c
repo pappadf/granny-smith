@@ -807,16 +807,6 @@ int dsp3210_disassemble(uint32_t w, uint32_t addr, dsp3210_insn *ins) {
 
 /* ------------------------------------------------------------------ */
 
-uint32_t dsp3210_read_be32(const void *p) {
-    const uint8_t *b = (const uint8_t *)p;
-    return ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) | ((uint32_t)b[2] << 8) | (uint32_t)b[3];
-}
-
-uint32_t dsp3210_read_le32(const void *p) {
-    const uint8_t *b = (const uint8_t *)p;
-    return ((uint32_t)b[3] << 24) | ((uint32_t)b[2] << 16) | ((uint32_t)b[1] << 8) | (uint32_t)b[0];
-}
-
 const char *dsp3210_status_name(int status) {
     switch (status) {
     case DSP3210_OK:

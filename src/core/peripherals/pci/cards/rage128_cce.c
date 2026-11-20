@@ -199,7 +199,7 @@ static bool agp_to_host(rage128_t *r, uint32_t agp, uint32_t *host, gart_memo_t 
     uint32_t table = gart & 0xFFFFF000u;
     if (!pci_dma_read(r->dev, table + (agp / GART_PAGE) * 4u, e, 4))
         return false;
-    uint32_t page = (uint32_t)e[0] | ((uint32_t)e[1] << 8) | ((uint32_t)e[2] << 16) | ((uint32_t)e[3] << 24);
+    uint32_t page = RD_LE32(e);
     *host = (page & 0xFFFFF000u) | (agp & (GART_PAGE - 1u));
     if (memo)
         memo->page = key, memo->host = page & 0xFFFFF000u;
@@ -215,8 +215,7 @@ static bool card_read(rage128_t *r, uint32_t addr, uint32_t *out, uint32_t n, ga
             if (a + 4u > r->vram_size)
                 return false;
             r128_vram_access(r, a, 4, false);
-            out[0] = (uint32_t)r->vram[a] | ((uint32_t)r->vram[a + 1] << 8) | ((uint32_t)r->vram[a + 2] << 16) |
-                     ((uint32_t)r->vram[a + 3] << 24);
+            out[0] = RD_LE32(&r->vram[a]);
             out++, n--, addr += 4u;
             continue;
         }

@@ -64,17 +64,13 @@ typedef struct {
 
 /*
  * Disassemble one instruction word.
- *   word — the 32-bit instruction (host byte order; use the helpers below
- *          to read from a byte stream)
+ *   word — the 32-bit instruction (host byte order; common.h's RD_BE32
+ *          reads one from a byte stream)
  *   addr — address of the instruction (used for pc-relative targets)
  *   out  — filled in completely on return (never left uninitialised)
  * Returns the status (same value as out->status).
  */
 int dsp3210_disassemble(uint32_t word, uint32_t addr, dsp3210_insn *out);
-
-/* Byte-stream helpers.  The DSP3210 in the AV Macs runs big-endian. */
-uint32_t dsp3210_read_be32(const void *p);
-uint32_t dsp3210_read_le32(const void *p);
 
 /* Human-readable name for a status code. */
 const char *dsp3210_status_name(int status);

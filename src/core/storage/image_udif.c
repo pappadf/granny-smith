@@ -20,10 +20,6 @@
 // rather than let a corrupt trailer drive a huge allocation.
 #define UDIF_XML_MAX (16u * 1024u * 1024u)
 
-static uint64_t rd64(const uint8_t *p) {
-    return ((uint64_t)RD_BE32(p) << 32) | (uint64_t)RD_BE32(p + 4);
-}
-
 bool udif_detect(const uint8_t *trailer, size_t len) {
     if (!trailer || len < UDIF_TRAILER_SIZE)
         return false;
@@ -42,11 +38,11 @@ int udif_parse_trailer(const uint8_t *trailer, size_t len, udif_trailer_t *out) 
         return -EINVAL;
 
     memset(out, 0, sizeof(*out));
-    out->data_fork_offset = rd64(trailer + KOLY_OFF_DATA_OFFSET);
-    out->data_fork_length = rd64(trailer + KOLY_OFF_DATA_LENGTH);
-    out->xml_offset = rd64(trailer + KOLY_OFF_XML_OFFSET);
-    out->xml_length = rd64(trailer + KOLY_OFF_XML_LENGTH);
-    out->sectors = rd64(trailer + KOLY_OFF_SECTORS);
+    out->data_fork_offset = RD_BE64(trailer + KOLY_OFF_DATA_OFFSET);
+    out->data_fork_length = RD_BE64(trailer + KOLY_OFF_DATA_LENGTH);
+    out->xml_offset = RD_BE64(trailer + KOLY_OFF_XML_OFFSET);
+    out->xml_length = RD_BE64(trailer + KOLY_OFF_XML_LENGTH);
+    out->sectors = RD_BE64(trailer + KOLY_OFF_SECTORS);
     out->segment_count = RD_BE32(trailer + KOLY_OFF_SEGMENT_COUNT);
     out->checksum_type = RD_BE32(trailer + KOLY_OFF_CHECKSUM_TYPE);
     out->checksum = RD_BE32(trailer + KOLY_OFF_CHECKSUM);
@@ -167,11 +163,11 @@ static int parse_mish(const uint8_t *b, size_t len, udif_table_t *t) {
     // Every image seen in the wild stores its chunks at absolute data-fork
     // offsets and leaves this zero; a non-zero base would silently shift every
     // read, so refuse rather than guess whether it is meant to be added.
-    if (rd64(b + MISH_OFF_DATA_OFFSET) != 0)
+    if (RD_BE64(b + MISH_OFF_DATA_OFFSET) != 0)
         return -ENOTSUP;
 
-    t->base_sector = rd64(b + MISH_OFF_SECTOR);
-    t->sectors = rd64(b + MISH_OFF_SECTOR_COUNT);
+    t->base_sector = RD_BE64(b + MISH_OFF_SECTOR);
+    t->sectors = RD_BE64(b + MISH_OFF_SECTOR_COUNT);
     t->checksum_type = RD_BE32(b + MISH_OFF_CHECKSUM_TYPE);
     t->checksum = RD_BE32(b + MISH_OFF_CHECKSUM);
 
@@ -196,10 +192,10 @@ static int parse_mish(const uint8_t *b, size_t len, udif_table_t *t) {
         if (type == UDIF_CHUNK_COMMENT)
             continue; // "+beg"/"+end" markers cover no sectors
         chunks[nc].type = type;
-        chunks[nc].sector = rd64(e + MISH_ENTRY_OFF_SECTOR);
-        chunks[nc].count = rd64(e + MISH_ENTRY_OFF_COUNT);
-        chunks[nc].offset = rd64(e + MISH_ENTRY_OFF_OFFSET);
-        chunks[nc].length = rd64(e + MISH_ENTRY_OFF_LENGTH);
+        chunks[nc].sector = RD_BE64(e + MISH_ENTRY_OFF_SECTOR);
+        chunks[nc].count = RD_BE64(e + MISH_ENTRY_OFF_COUNT);
+        chunks[nc].offset = RD_BE64(e + MISH_ENTRY_OFF_OFFSET);
+        chunks[nc].length = RD_BE64(e + MISH_ENTRY_OFF_LENGTH);
         // A chunk must stay inside the sector run its own table declares --
         // checked without an addition that 64-bit values could wrap.
         if (chunks[nc].count > t->sectors || chunks[nc].sector > t->sectors - chunks[nc].count) {

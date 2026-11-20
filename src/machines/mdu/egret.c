@@ -341,7 +341,7 @@ static void egret_process_pseudo(egret_t *eg) {
     }
     case CMD_WRTIME:
         if (data_len >= 4 && eg->rtc) {
-            uint32_t secs = ((uint32_t)data[0] << 24) | ((uint32_t)data[1] << 16) | ((uint32_t)data[2] << 8) | data[3];
+            uint32_t secs = RD_BE32(data);
             rtc_set_seconds(eg->rtc, secs);
         }
         break;
@@ -352,7 +352,7 @@ static void egret_process_pseudo(egret_t *eg) {
         // so the ROM's _ReadXPRam issues Read6805 (not ReadPRAM): a read of
         // $1xx returns PRAM byte $xx.  Open-ended, like RdPram — the host stops
         // us via the sysSes handshake once it has enough bytes.
-        uint16_t addr = (data_len >= 2) ? (uint16_t)((data[0] << 8) | data[1]) : 0;
+        uint16_t addr = (data_len >= 2) ? RD_BE16(data) : 0;
         for (int i = 0; i < 256 && n < EG_TX_MAX; i++) {
             uint16_t a = (uint16_t)(addr + i);
             eg->tx_buf[n++] = (a >= 0x100 && a <= 0x1FF && eg->rtc) ? rtc_pram_read(eg->rtc, (uint8_t)a) : 0;
@@ -362,7 +362,7 @@ static void egret_process_pseudo(egret_t *eg) {
     case CMD_RDPRAM: {
         // RdPram addr.W: stream PRAM bytes from `addr`; the host stops us via
         // the open-ended handshake (sysSes falling) once it has enough.
-        uint16_t addr = (data_len >= 2) ? (uint16_t)((data[0] << 8) | data[1]) : 0;
+        uint16_t addr = (data_len >= 2) ? RD_BE16(data) : 0;
         for (int i = 0; i < 256 && n < EG_TX_MAX; i++)
             eg->tx_buf[n++] = eg->rtc ? rtc_pram_read(eg->rtc, (uint8_t)(addr + i)) : 0;
         break;
@@ -371,7 +371,7 @@ static void egret_process_pseudo(egret_t *eg) {
         // Wr6805Addr addr.W data...: write the 65C02 address space; only the
         // PRAM window ($100-$1FF) is backed by storage (see CMD_RD6805).
         if (data_len >= 2 && eg->rtc) {
-            uint16_t addr = (uint16_t)((data[0] << 8) | data[1]);
+            uint16_t addr = RD_BE16(data);
             for (int i = 2; i < data_len; i++) {
                 uint16_t a = (uint16_t)(addr + (i - 2));
                 if (a >= 0x100 && a <= 0x1FF)
@@ -383,7 +383,7 @@ static void egret_process_pseudo(egret_t *eg) {
     case CMD_WRPRAM: {
         // WrPram addr.W data...: write the supplied bytes into PRAM.
         if (data_len >= 2 && eg->rtc) {
-            uint16_t addr = (uint16_t)((data[0] << 8) | data[1]);
+            uint16_t addr = RD_BE16(data);
             for (int i = 2; i < data_len; i++)
                 rtc_pram_write(eg->rtc, (uint8_t)(addr + (i - 2)), data[i]);
         }

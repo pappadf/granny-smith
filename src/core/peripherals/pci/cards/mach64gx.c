@@ -2767,16 +2767,14 @@ static void aux_write_line(void *ctx, uint32_t offset, const uint8_t *bytes) {
         uint32_t v[MEM_LINE_SIZE / 4];
         for (uint32_t i = 0; i < MEM_LINE_SIZE / 4; i++) {
             const uint8_t *b = bytes + 4u * i;
-            v[i] = (uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+            v[i] = RD_LE32(b);
             m->reg[dw0 + (int)i] = v[i];
         }
         mach64_host_feed_n(m, v, MEM_LINE_SIZE / 4);
         return;
     }
     for (uint32_t i = 0; i < MEM_LINE_SIZE; i += 4)
-        aux_write32(ctx, offset + i,
-                    ((uint32_t)bytes[i] << 24) | ((uint32_t)bytes[i + 1] << 16) | ((uint32_t)bytes[i + 2] << 8) |
-                        bytes[i + 3]);
+        aux_write32(ctx, offset + i, RD_BE32(&bytes[i]));
 }
 
 static uint8_t bio_rd8(void *ctx, uint32_t offset, bool peek) {

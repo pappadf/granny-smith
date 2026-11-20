@@ -41,12 +41,25 @@
 #define RD_BE64(p) __builtin_bswap64(*(const uint64_t *)__builtin_memcpy(&(uint64_t){0}, (p), 8))
 #define RD_LE16(p) (*(const uint16_t *)__builtin_memcpy(&(uint16_t){0}, (p), 2))
 #define RD_LE32(p) (*(const uint32_t *)__builtin_memcpy(&(uint32_t){0}, (p), 4))
+#define RD_LE64(p) (*(const uint64_t *)__builtin_memcpy(&(uint64_t){0}, (p), 8))
+
+// A signed big-endian 16-bit field (resource-fork offsets, COFF symbols,
+// dialog item rectangles), and the 24-bit big-endian field some formats and
+// controllers carry (a 3-byte LBA, a ProFile block number).
+#define RD_BE16S(p) ((int16_t)RD_BE16(p))
+#define RD_BE24(p)                                                                                                     \
+    ({                                                                                                                 \
+        const uint8_t *b24_ = (const uint8_t *)(p);                                                                    \
+        uint32_t v24_ = (uint32_t)RD_BE16(b24_) << 8 | b24_[2];                                                        \
+        v24_;                                                                                                          \
+    })
 
 #define WR_BE16(p, v) ((void)__builtin_memcpy((p), &(uint16_t){__builtin_bswap16((uint16_t)(v))}, 2))
 #define WR_BE32(p, v) ((void)__builtin_memcpy((p), &(uint32_t){__builtin_bswap32((uint32_t)(v))}, 4))
 #define WR_BE64(p, v) ((void)__builtin_memcpy((p), &(uint64_t){__builtin_bswap64((uint64_t)(v))}, 8))
 #define WR_LE16(p, v) ((void)__builtin_memcpy((p), &(uint16_t){(uint16_t)(v)}, 2))
 #define WR_LE32(p, v) ((void)__builtin_memcpy((p), &(uint32_t){(uint32_t)(v)}, 4))
+#define WR_LE64(p, v) ((void)__builtin_memcpy((p), &(uint64_t){(uint64_t)(v)}, 8))
 
 // The number of elements of an array -- an array, not a pointer: a
 // pointer passed by mistake is refused at compile time (the GNU builtins

@@ -718,14 +718,13 @@ static int singer_load_wav(av_singer_t *s, const char *path) {
     long data_off = 0;
     uint32_t data_len = 0;
     while (fread(chunk, 1, 8, fp) == 8) {
-        uint32_t len =
-            (uint32_t)chunk[4] | ((uint32_t)chunk[5] << 8) | ((uint32_t)chunk[6] << 16) | ((uint32_t)chunk[7] << 24);
+        uint32_t len = RD_LE32(chunk + 4);
         if (memcmp(chunk, "fmt ", 4) == 0 && len >= 16) {
             uint8_t fmt[16];
             if (fread(fmt, 1, 16, fp) != 16)
                 break;
-            channels = (uint16_t)(fmt[2] | (fmt[3] << 8));
-            bits = (uint16_t)(fmt[14] | (fmt[15] << 8));
+            channels = RD_LE16(fmt + 2);
+            bits = RD_LE16(fmt + 14);
             if (len > 16)
                 fseek(fp, (long)((len + 1) & ~1u) - 16, SEEK_CUR); // RIFF pads odd chunks to even
         } else if (memcmp(chunk, "data", 4) == 0) {

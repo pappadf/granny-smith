@@ -79,15 +79,6 @@ static const char *table_name_for(const uint8_t *p, size_t n) {
     return "whole disk (Unknown Partition : 0)";
 }
 
-static void put32(uint8_t *p, uint32_t v) {
-    WR_BE32(p, v);
-}
-
-static void put64(uint8_t *p, uint64_t v) {
-    WR_BE32(p, (uint32_t)(v >> 32));
-    WR_BE32(p + 4, (uint32_t)v);
-}
-
 static void set_err(char *err, size_t cap, const char *fmt, const char *a, int e) {
     if (err && cap)
         snprintf(err, cap, fmt, a, strerror(e));
@@ -420,32 +411,32 @@ static uint8_t *build_mish(const udif_writer_t *w, size_t *out_len) {
     uint8_t *b = calloc(1, n);
     if (!b)
         return NULL;
-    put32(b + MISH_OFF_SIGNATURE, MISH_SIGNATURE);
-    put32(b + MISH_OFF_VERSION, MISH_VERSION);
-    put64(b + MISH_OFF_SECTOR, 0);
-    put64(b + MISH_OFF_SECTOR_COUNT, w->sectors);
-    put64(b + MISH_OFF_DATA_OFFSET, 0);
-    put32(b + MISH_OFF_BUFFERS, w->chunk_sectors + 8);
+    WR_BE32(b + MISH_OFF_SIGNATURE, MISH_SIGNATURE);
+    WR_BE32(b + MISH_OFF_VERSION, MISH_VERSION);
+    WR_BE64(b + MISH_OFF_SECTOR, 0);
+    WR_BE64(b + MISH_OFF_SECTOR_COUNT, w->sectors);
+    WR_BE64(b + MISH_OFF_DATA_OFFSET, 0);
+    WR_BE32(b + MISH_OFF_BUFFERS, w->chunk_sectors + 8);
     // -2, as in hdiutil's own whole-disk table (-layout NONE).
-    put32(b + MISH_OFF_DESCRIPTOR, 0xFFFFFFFEu);
-    put32(b + MISH_OFF_CHECKSUM_TYPE, UDIF_CHECKSUM_CRC32);
-    put32(b + MISH_OFF_CHECKSUM_BITS, 32);
-    put32(b + MISH_OFF_CHECKSUM, w->crc_dec);
-    put32(b + MISH_OFF_CHUNK_COUNT, (uint32_t)(w->n_ext + 1));
+    WR_BE32(b + MISH_OFF_DESCRIPTOR, 0xFFFFFFFEu);
+    WR_BE32(b + MISH_OFF_CHECKSUM_TYPE, UDIF_CHECKSUM_CRC32);
+    WR_BE32(b + MISH_OFF_CHECKSUM_BITS, 32);
+    WR_BE32(b + MISH_OFF_CHECKSUM, w->crc_dec);
+    WR_BE32(b + MISH_OFF_CHUNK_COUNT, (uint32_t)(w->n_ext + 1));
     for (size_t i = 0; i <= w->n_ext; i++) {
         uint8_t *e = b + MISH_HEADER_SIZE + i * MISH_ENTRY_SIZE;
         if (i == w->n_ext) {
-            put32(e + MISH_ENTRY_OFF_TYPE, UDIF_CHUNK_END);
-            put64(e + MISH_ENTRY_OFF_SECTOR, w->sectors);
-            put64(e + MISH_ENTRY_OFF_OFFSET, w->data_len);
+            WR_BE32(e + MISH_ENTRY_OFF_TYPE, UDIF_CHUNK_END);
+            WR_BE64(e + MISH_ENTRY_OFF_SECTOR, w->sectors);
+            WR_BE64(e + MISH_ENTRY_OFF_OFFSET, w->data_len);
             continue;
         }
         const wext_t *x = &w->ext[i];
-        put32(e + MISH_ENTRY_OFF_TYPE, x->type);
-        put64(e + MISH_ENTRY_OFF_SECTOR, x->sector);
-        put64(e + MISH_ENTRY_OFF_COUNT, x->count);
-        put64(e + MISH_ENTRY_OFF_OFFSET, x->offset);
-        put64(e + MISH_ENTRY_OFF_LENGTH, x->length);
+        WR_BE32(e + MISH_ENTRY_OFF_TYPE, x->type);
+        WR_BE64(e + MISH_ENTRY_OFF_SECTOR, x->sector);
+        WR_BE64(e + MISH_ENTRY_OFF_COUNT, x->count);
+        WR_BE64(e + MISH_ENTRY_OFF_OFFSET, x->offset);
+        WR_BE64(e + MISH_ENTRY_OFF_LENGTH, x->length);
     }
     *out_len = n;
     return b;
@@ -563,34 +554,34 @@ int udif_writer_finish(udif_writer_t *w, udif_writer_stats_t *stats) {
     if (!rc) {
         uint8_t k[UDIF_TRAILER_SIZE] = {0};
         memcpy(k + KOLY_OFF_SIGNATURE, KOLY_SIGNATURE_STR, 4);
-        put32(k + KOLY_OFF_VERSION, KOLY_VERSION);
-        put32(k + KOLY_OFF_HEADER_SIZE, UDIF_TRAILER_SIZE);
-        put32(k + KOLY_OFF_FLAGS, 1); // flattened
-        put64(k + KOLY_OFF_RUNNING, 0);
-        put64(k + KOLY_OFF_DATA_OFFSET, 0);
-        put64(k + KOLY_OFF_DATA_LENGTH, w->data_len);
-        put64(k + KOLY_OFF_RSRC_OFFSET, 0);
-        put64(k + KOLY_OFF_RSRC_LENGTH, 0);
-        put32(k + KOLY_OFF_SEGMENT_NUM, 1);
-        put32(k + KOLY_OFF_SEGMENT_COUNT, 1);
+        WR_BE32(k + KOLY_OFF_VERSION, KOLY_VERSION);
+        WR_BE32(k + KOLY_OFF_HEADER_SIZE, UDIF_TRAILER_SIZE);
+        WR_BE32(k + KOLY_OFF_FLAGS, 1); // flattened
+        WR_BE64(k + KOLY_OFF_RUNNING, 0);
+        WR_BE64(k + KOLY_OFF_DATA_OFFSET, 0);
+        WR_BE64(k + KOLY_OFF_DATA_LENGTH, w->data_len);
+        WR_BE64(k + KOLY_OFF_RSRC_OFFSET, 0);
+        WR_BE64(k + KOLY_OFF_RSRC_LENGTH, 0);
+        WR_BE32(k + KOLY_OFF_SEGMENT_NUM, 1);
+        WR_BE32(k + KOLY_OFF_SEGMENT_COUNT, 1);
         random_uuid(k + KOLY_OFF_SEGMENT_ID);
-        put32(k + KOLY_OFF_CHECKSUM_TYPE, UDIF_CHECKSUM_CRC32);
-        put32(k + KOLY_OFF_CHECKSUM_BITS, 32);
-        put32(k + KOLY_OFF_CHECKSUM, w->crc_data);
-        put64(k + KOLY_OFF_XML_OFFSET, xml_off);
-        put64(k + KOLY_OFF_XML_LENGTH, xlen);
+        WR_BE32(k + KOLY_OFF_CHECKSUM_TYPE, UDIF_CHECKSUM_CRC32);
+        WR_BE32(k + KOLY_OFF_CHECKSUM_BITS, 32);
+        WR_BE32(k + KOLY_OFF_CHECKSUM, w->crc_data);
+        WR_BE64(k + KOLY_OFF_XML_OFFSET, xml_off);
+        WR_BE64(k + KOLY_OFF_XML_LENGTH, xlen);
         // The master checksum: CRC-32 over the block tables' checksums,
         // each as its big-endian 4 bytes.
         uint8_t ck[4];
-        put32(ck, w->crc_dec);
-        put32(k + KOLY_OFF_MASTER_TYPE, UDIF_CHECKSUM_CRC32);
-        put32(k + KOLY_OFF_MASTER_BITS, 32);
-        put32(k + KOLY_OFF_MASTER, codec_crc32(0, ck, 4));
+        WR_BE32(ck, w->crc_dec);
+        WR_BE32(k + KOLY_OFF_MASTER_TYPE, UDIF_CHECKSUM_CRC32);
+        WR_BE32(k + KOLY_OFF_MASTER_BITS, 32);
+        WR_BE32(k + KOLY_OFF_MASTER, codec_crc32(0, ck, 4));
         // A partition image, as hdiutil marks its own one-table images
         // (-layout NONE): a device image (1) must carry a partition map
         // hdiutil can read block-table IDs from, and is refused without one.
-        put32(k + KOLY_OFF_VARIANT, 2);
-        put64(k + KOLY_OFF_SECTORS, w->sectors);
+        WR_BE32(k + KOLY_OFF_VARIANT, 2);
+        WR_BE64(k + KOLY_OFF_SECTORS, w->sectors);
         rc = write_out(w, k, sizeof(k));
     }
     if (!rc && fflush(w->f) != 0)

@@ -40,33 +40,18 @@
 #define PPC_CONFIGINFO_LEN 0x28u // eight lane sums + the 64-bit sum
 #define PPC_SUM64_OFFSET   0x20u // ROMCheckSum64 within ConfigInfo
 
-// Big-endian 16-bit read.
-static uint16_t rd_be16(const uint8_t *p) {
-    return (uint16_t)(((uint16_t)p[0] << 8) | p[1]);
-}
-
-// Big-endian 32-bit read.
-static uint32_t rd_be32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
-}
-
-// Big-endian 64-bit read.
-static uint64_t rd_be64(const uint8_t *p) {
-    return ((uint64_t)rd_be32(p) << 32) | rd_be32(p + 4);
-}
-
 // The classic Mac ROM sum: big-endian 16-bit words over [from, to), mod 2^32.
 static uint32_t word_sum(const uint8_t *data, size_t from, size_t to) {
     uint32_t sum = 0;
     for (size_t i = from; i + 1 < to; i += 2)
-        sum += rd_be16(data + i); // one word into the running sum
+        sum += RD_BE16(data + i); // one word into the running sum
     return sum;
 }
 
 // Absolute offset of a 4 MiB image's ConfigInfo block, or 0 when the pointer
 // at 0x300080 does not land on a doubleword inside the PowerPC megabyte.
 static size_t ppc_configinfo(const uint8_t *data) {
-    uint32_t off = rd_be32(data + PPC_CONFIGINFO_PTR);
+    uint32_t off = RD_BE32(data + PPC_CONFIGINFO_PTR);
     if (off % 8 != 0 || (uint64_t)off + PPC_CONFIGINFO_LEN > PPC_ROM_SIZE - PPC_68K_HALF)
         return 0;
     return PPC_68K_HALF + off;
@@ -79,7 +64,7 @@ static uint64_t ppc_sum64(const uint8_t *data, size_t ci) {
     for (size_t i = 0; i < PPC_ROM_SIZE; i += 8) {
         if (i >= ci && i < ci + PPC_CONFIGINFO_LEN)
             continue; // the record itself is not summed
-        sum += rd_be64(data + i);
+        sum += RD_BE64(data + i);
     }
     return sum;
 }
@@ -99,10 +84,10 @@ static void ppc_lane_sums(const uint8_t *data, size_t ci, uint32_t lanes[8]) {
 static uint16_t lisa_rotating_sum(const uint8_t *data) {
     uint16_t sum = 0;
     for (size_t i = 0; i < LISA_CHECK_WORD; i += 2) {
-        sum = (uint16_t)(sum + rd_be16(data + i)); // ADD (A0)+,D0
+        sum = (uint16_t)(sum + RD_BE16(data + i)); // ADD (A0)+,D0
         sum = (uint16_t)((sum << 1) | (sum >> 15)); // ROL #1,D0
     }
-    return (uint16_t)(sum + rd_be16(data + LISA_CHECK_WORD));
+    return (uint16_t)(sum + RD_BE16(data + LISA_CHECK_WORD));
 }
 
 // Identity of `data` under the per-kind rule, honouring a matched row's
@@ -116,16 +101,16 @@ static void identity_eval(const uint8_t *data, size_t size, const rom_info_t *ro
     }
 
     // Lisa / Macintosh XL: 16 KB starting with the reset SSP.
-    if (size == LISA_ROM_SIZE && rd_be32(data) == LISA_RESET_SSP) {
+    if (size == LISA_ROM_SIZE && RD_BE32(data) == LISA_RESET_SSP) {
         out->kind = ROM_KIND_LISA;
-        snprintf(out->id, sizeof(out->id), "%04x", rd_be16(data + LISA_CHECK_WORD));
+        snprintf(out->id, sizeof(out->id), "%04x", RD_BE16(data + LISA_CHECK_WORD));
         out->intact = lisa_rotating_sum(data) == 0;
         if (!out->intact)
             snprintf(out->reason, sizeof(out->reason), "checksum does not verify (check the chip pair)");
         return;
     }
 
-    uint32_t stored = rd_be32(data); // the header sum every Mac ROM starts with
+    uint32_t stored = RD_BE32(data); // the header sum every Mac ROM starts with
 
     // Old World PowerPC: 4 MiB with a ConfigInfo record in the last megabyte.
     if (size == PPC_ROM_SIZE) {
@@ -136,7 +121,7 @@ static void identity_eval(const uint8_t *data, size_t size, const rom_info_t *ro
             snprintf(out->reason, sizeof(out->reason), "no ConfigInfo");
             return;
         }
-        uint64_t stored64 = rd_be64(data + ci + PPC_SUM64_OFFSET);
+        uint64_t stored64 = RD_BE64(data + ci + PPC_SUM64_OFFSET);
         snprintf(out->id, sizeof(out->id), "%08x-%016llx", stored, (unsigned long long)stored64);
         bool ok32 = word_sum(data, 4, PPC_68K_HALF) == stored; // the 68k half
         bool ok64 = (row && (row->flags & ROM_F_NO_SUM64)) || ppc_sum64(data, ci) == stored64;
@@ -150,7 +135,7 @@ static void identity_eval(const uint8_t *data, size_t size, const rom_info_t *ro
             char list[24] = "";
             size_t n = 0;
             for (int i = 0; i < 8; i++) {
-                if (lanes[i] != rd_be32(data + ci + 4 * i))
+                if (lanes[i] != RD_BE32(data + ci + 4 * i))
                     n += (size_t)snprintf(list + n, sizeof(list) - n, "%s%d", n ? ", " : "", i);
             }
             if (n)

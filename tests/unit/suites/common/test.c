@@ -52,6 +52,33 @@ TEST(hex_digit_and_encode) {
     ASSERT_TRUE(out[0] == '\0');
 }
 
+// The byte-order accessors at an odd offset: each width both ways, the
+// signed 16-bit read, the 24-bit read, and an argument evaluated once.
+TEST(byte_order_accessors) {
+    uint8_t b[17] = {0};
+    for (int i = 0; i < 16; i++)
+        b[i + 1] = (uint8_t)(0xF1 + i);
+    const uint8_t *p = b + 1;
+    ASSERT_TRUE(RD_BE16(p) == 0xF1F2u);
+    ASSERT_TRUE(RD_LE16(p) == 0xF2F1u);
+    ASSERT_TRUE(RD_BE16S(p) == (int16_t)-3598);
+    ASSERT_TRUE(RD_BE24(p) == 0xF1F2F3u);
+    ASSERT_TRUE(RD_BE32(p) == 0xF1F2F3F4u);
+    ASSERT_TRUE(RD_LE32(p) == 0xF4F3F2F1u);
+    ASSERT_TRUE(RD_BE64(p) == 0xF1F2F3F4F5F6F7F8ull);
+    ASSERT_TRUE(RD_LE64(p) == 0xF8F7F6F5F4F3F2F1ull);
+    uint8_t w[9] = {0};
+    WR_LE64(w + 1, 0x0807060504030201ull);
+    for (int i = 0; i < 8; i++)
+        ASSERT_EQ_INT(i + 1, w[i + 1]);
+    WR_BE64(w + 1, 0x0102030405060708ull);
+    ASSERT_TRUE(RD_LE64(w + 1) == 0x0807060504030201ull);
+    // A side-effecting argument is expanded once
+    const uint8_t *q = p;
+    ASSERT_TRUE(RD_BE24(q++) == 0xF1F2F3u);
+    ASSERT_TRUE(q == p + 1);
+}
+
 // The Mac epoch: 1904-01-01 is Unix -2082844800, 1970-01-01 is Mac
 // 2082844800, and 2000-01-01 (946684800) is the AppleDouble epoch.
 TEST(mac_epoch_round_trips) {
@@ -67,6 +94,7 @@ int main(void) {
     RUN(array_len_counts_elements);
     RUN(fnv1a_matches_published_vectors);
     RUN(hex_digit_and_encode);
+    RUN(byte_order_accessors);
     fprintf(stderr, "All common tests passed\n");
     return 0;
 }

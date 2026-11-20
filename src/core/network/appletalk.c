@@ -1706,7 +1706,7 @@ static void nbp_parse_and_dispatch(atalk_conn_t *c, const ddp_header_t *ddp, con
     for (int i = 0; i < header.tuple_count && parsed < (int)ARRAY_LEN(tuples); i++) {
         if (rem < 8)
             break;
-        tuples[parsed].net = (uint16_t)((p[0] << 8) | p[1]);
+        tuples[parsed].net = RD_BE16(p);
         tuples[parsed].node = p[2];
         tuples[parsed].socket = p[3];
         tuples[parsed].enumerator = p[4];
@@ -2381,7 +2381,7 @@ static int parse_atp(const uint8_t *buf, int len, atp_packet_t *atp) {
         return -1;
     atp->ctl = buf[0];
     atp->bitmap = buf[1];
-    atp->tid = (uint16_t)((buf[2] << 8) | buf[3]);
+    atp->tid = RD_BE16(buf + 2);
     memcpy(atp->user, &buf[4], 4);
     atp->data = &buf[8];
     atp->data_len = len - 8;

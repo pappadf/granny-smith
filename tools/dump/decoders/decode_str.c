@@ -32,7 +32,7 @@ int re_decode_strlist(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt
         fprintf(json_fp, "{\"error\":\"STR# too short\"}\n");
         return -1;
     }
-    uint16_t n = (uint16_t)((bytes[0] << 8) | bytes[1]);
+    uint16_t n = RD_BE16(bytes);
     size_t off = 2;
     fprintf(json_fp, "{\"count\":%u,\"items\":[", n);
     for (uint16_t i = 0; i < n; i++) {

@@ -6,6 +6,7 @@
 
 #include "image_mfs.h"
 
+#include "common.h"
 #include "mac_disk_layout.h"
 #include "macroman.h"
 #include "source.h"
@@ -41,14 +42,6 @@ struct mfs_volume {
     int n_files;
 };
 
-static uint16_t be16(const uint8_t *p) {
-    return (uint16_t)(p[0] << 8 | p[1]);
-}
-
-static uint32_t be32(const uint8_t *p) {
-    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
-}
-
 // A Mac name (MacRoman, `len` bytes) as the VFS shows it: UTF-8, '/' as ':'.
 static void mfs_name(const uint8_t *mac, size_t len, char *out, size_t cap) {
     macroman_to_utf8(mac, len, out, cap);
@@ -65,7 +58,7 @@ bool mfs_probe_source(struct peel_source *src, uint64_t off, uint64_t size) {
     uint8_t sig[2];
     if (!src || size < MFS_MDB_OFF + MFS_BLOCK || source_read_exact(src, off + MFS_MDB_OFF, sig, 2) != 0)
         return false;
-    return be16(sig) == MFS_SIG;
+    return RD_BE16(sig) == MFS_SIG;
 }
 
 // Read the allocation map: 12-bit entries for blocks 2 .. n_alloc + 1,
@@ -120,13 +113,13 @@ static int mfs_read_dir(mfs_volume_t *v, uint16_t start, uint16_t blocks, uint16
             mfs_dirent_t *f = &v->files[v->n_files++];
             memset(f, 0, sizeof(*f));
             memcpy(f->finder_info, e + 2, 16);
-            f->fnum = be32(e + 18);
-            f->data_start = be16(e + 22);
-            f->data_len = be32(e + 24);
-            f->rsrc_start = be16(e + 32);
-            f->rsrc_len = be32(e + 34);
-            f->created = be32(e + 42);
-            f->modified = be32(e + 46);
+            f->fnum = RD_BE32(e + 18);
+            f->data_start = RD_BE16(e + 22);
+            f->data_len = RD_BE32(e + 24);
+            f->rsrc_start = RD_BE16(e + 32);
+            f->rsrc_len = RD_BE32(e + 34);
+            f->created = RD_BE32(e + 42);
+            f->modified = RD_BE32(e + 46);
             mfs_name(e + 51, nlen, f->name, sizeof(f->name));
             p += (len + 1) & ~(size_t)1; // entries are word aligned
         }
@@ -144,10 +137,10 @@ mfs_volume_t *mfs_open_source(struct peel_source *src, uint64_t off, uint64_t si
     v->src = source_retain(src);
     v->off = off;
     v->size = size;
-    uint16_t n_files = be16(mdb + 12), dir_start = be16(mdb + 14), dir_blocks = be16(mdb + 16);
-    v->n_alloc = be16(mdb + 18);
-    v->alloc_size = be32(mdb + 20);
-    v->alloc_start = be16(mdb + 28);
+    uint16_t n_files = RD_BE16(mdb + 12), dir_start = RD_BE16(mdb + 14), dir_blocks = RD_BE16(mdb + 16);
+    v->n_alloc = RD_BE16(mdb + 18);
+    v->alloc_size = RD_BE32(mdb + 20);
+    v->alloc_start = RD_BE16(mdb + 28);
     mfs_name(mdb + 37, mdb[36] <= 27 ? mdb[36] : 27, v->name, sizeof(v->name));
     // The geometry must fit the volume: allocation blocks of whole sectors,
     // all of them inside it.

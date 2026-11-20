@@ -300,7 +300,7 @@ static void lt_command(iop_t *iop, uint8_t *msg) {
         }
         break;
     case LT_WRITE:
-        if (!lt_write(iop, ((unsigned)msg[1] << 8) | msg[2]))
+        if (!lt_write(iop, RD_BE16(msg + 1)))
             result = LT_FAILED;
         msg[1] = msg[2] = 0;
         break;
@@ -382,7 +382,7 @@ static bool ser_command(iop_t *iop, int drv, int box, uint8_t *msg) {
         iop->ram[IOPXmtMsgBase + IOPMsgState(ser_slot(drv, box))] = MsgReceived;
         return false;
     case SER_WRITE_BOX: {
-        unsigned len = ((unsigned)msg[4] << 8) | msg[5];
+        unsigned len = RD_BE16(msg + 4);
         if (len > SER_WBUF_SIZE)
             len = SER_WBUF_SIZE;
         if (s->ser_open[drv])

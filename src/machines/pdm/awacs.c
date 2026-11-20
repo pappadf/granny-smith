@@ -94,7 +94,7 @@ static uint16_t awacs_phys_read16(uint32_t phys) {
     if (!host)
         return 0;
     host += phys & ((1u << MEM_PAGE_SHIFT) - 1u);
-    return (uint16_t)((host[0] << 8) | host[1]);
+    return RD_BE16(host);
 }
 
 // ============================================================

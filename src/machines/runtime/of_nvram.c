@@ -6,6 +6,7 @@
 
 #include "of_nvram.h"
 
+#include "common.h"
 #include "pram_defaults.h"
 
 #include <stdio.h>
@@ -68,28 +69,11 @@ static const of_nvram_of_defaults_t k_of_24 = {
 const of_nvram_defaults_t of_nvram_defaults_tnt = {.pram = &pram_defaults_tnt, .of = &k_of_105, .startup_partition = 0};
 const of_nvram_defaults_t of_nvram_defaults_g3 = {.pram = &pram_defaults_g3, .of = &k_of_24, .startup_partition = 1};
 
-static uint16_t rd16(const uint8_t *p) {
-    return (uint16_t)((p[0] << 8) | p[1]);
-}
-static uint32_t rd32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
-}
-static void wr16(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v >> 8);
-    p[1] = (uint8_t)v;
-}
-static void wr32(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v >> 24);
-    p[1] = (uint8_t)(v >> 16);
-    p[2] = (uint8_t)(v >> 8);
-    p[3] = (uint8_t)v;
-}
-
 // Sum of the partition as 1024 big-endian words.
 static uint32_t of_word_sum(const uint8_t *of) {
     uint32_t s = 0;
     for (uint32_t i = 0; i < OF_NVRAM_OF_SIZE; i += 2)
-        s += rd16(of + i);
+        s += RD_BE16(of + i);
     return s;
 }
 
@@ -98,14 +82,14 @@ static uint32_t of_word_sum(const uint8_t *of) {
 // can leave a sum its verifier reads as $10000; the mod form always folds
 // to $FFFF, under one fold or two, so every reader accepts it.
 static void of_set_checksum(uint8_t *of) {
-    wr16(of + 4, 0);
+    WR_BE16(of + 4, 0);
     uint32_t s = of_word_sum(of);
-    wr16(of + 4, (~(s % 0xFFFFu)) & 0xFFFFu);
+    WR_BE16(of + 4, (~(s % 0xFFFFu)) & 0xFFFFu);
 }
 
 bool of_nvram_of_valid(const uint8_t nv[OF_NVRAM_SIZE]) {
     const uint8_t *of = nv + OF_NVRAM_OF;
-    if (rd16(of) != OF_MAGIC)
+    if (RD_BE16(of) != OF_MAGIC)
         return false;
     uint32_t s = of_word_sum(of);
     uint32_t f = (s >> 16) + (s & 0xFFFFu);
@@ -134,18 +118,18 @@ static bool of_pack(uint8_t *of, uint32_t flags, const uint32_t numbers[OF_N_NUM
     }
     memset(of, 0, top - OF_NVRAM_OF);
     memcpy(of + (top - OF_NVRAM_OF), heap + (top - OF_NVRAM_OF), OF_NVRAM_OF + OF_NVRAM_OF_SIZE - top);
-    wr16(of + 0, OF_MAGIC);
+    WR_BE16(of + 0, OF_MAGIC);
     of[2] = OF_VERSION;
     of[3] = OF_PAGES;
-    wr16(of + 6, OF_NVRAM_OF + OF_HDR_SIZE);
-    wr16(of + 8, top);
-    wr16(of + 0x0A, 0);
-    wr32(of + OF_FLAGS_OFF, flags);
+    WR_BE16(of + 6, OF_NVRAM_OF + OF_HDR_SIZE);
+    WR_BE16(of + 8, top);
+    WR_BE16(of + 0x0A, 0);
+    WR_BE32(of + OF_FLAGS_OFF, flags);
     for (int i = 0; i < OF_N_NUMBERS; i++)
-        wr32(of + OF_NUMS_OFF + 4 * i, numbers[i]);
+        WR_BE32(of + OF_NUMS_OFF + 4 * i, numbers[i]);
     for (int i = 0; i < OF_N_STRINGS; i++) {
-        wr16(of + OF_STRS_OFF + 4 * i, addr[i]);
-        wr16(of + OF_STRS_OFF + 4 * i + 2, (uint32_t)lens[i]);
+        WR_BE16(of + OF_STRS_OFF + 4 * i, addr[i]);
+        WR_BE16(of + OF_STRS_OFF + 4 * i + 2, (uint32_t)lens[i]);
     }
     of_set_checksum(of);
     return true;
@@ -183,18 +167,18 @@ of_var_kind_t of_nvram_getenv(const uint8_t nv[OF_NVRAM_SIZE], const char *name,
         return OF_VAR_NONE;
     const uint8_t *of = nv + OF_NVRAM_OF;
     if (slot < OF_N_BOOLS) {
-        bool on = (rd32(of + OF_FLAGS_OFF) >> (31 - slot)) & 1u;
+        bool on = (RD_BE32(of + OF_FLAGS_OFF) >> (31 - slot)) & 1u;
         snprintf(buf, buflen, "%s", on ? "true" : "false");
         return OF_VAR_BOOL;
     }
     slot -= OF_N_BOOLS;
     if (slot < OF_N_NUMBERS) {
-        snprintf(buf, buflen, "%x", (unsigned)rd32(of + OF_NUMS_OFF + 4 * slot));
+        snprintf(buf, buflen, "%x", (unsigned)RD_BE32(of + OF_NUMS_OFF + 4 * slot));
         return OF_VAR_NUMBER;
     }
     slot -= OF_N_NUMBERS;
-    uint32_t a = rd16(of + OF_STRS_OFF + 4 * slot);
-    uint32_t n = rd16(of + OF_STRS_OFF + 4 * slot + 2);
+    uint32_t a = RD_BE16(of + OF_STRS_OFF + 4 * slot);
+    uint32_t n = RD_BE16(of + OF_STRS_OFF + 4 * slot + 2);
     if (n && (a < OF_NVRAM_OF || a + n > OF_NVRAM_SIZE))
         n = 0; // a damaged entry reads as empty rather than out of bounds
     size_t c = n < buflen - 1 ? n : buflen - 1;
@@ -212,17 +196,17 @@ const char *of_nvram_setenv(uint8_t nv[OF_NVRAM_SIZE], const char *name, const c
     if (!of_nvram_of_valid(nv))
         return "the Open Firmware partition is not valid";
     uint8_t *of = nv + OF_NVRAM_OF;
-    uint32_t flags = rd32(of + OF_FLAGS_OFF);
+    uint32_t flags = RD_BE32(of + OF_FLAGS_OFF);
     uint32_t numbers[OF_N_NUMBERS];
     for (int i = 0; i < OF_N_NUMBERS; i++)
-        numbers[i] = rd32(of + OF_NUMS_OFF + 4 * i);
+        numbers[i] = RD_BE32(of + OF_NUMS_OFF + 4 * i);
     // Copy the strings out before repacking overwrites the heap.
     char *copies[OF_N_STRINGS] = {0};
     const char *strs[OF_N_STRINGS];
     size_t lens[OF_N_STRINGS];
     for (int i = 0; i < OF_N_STRINGS; i++) {
-        uint32_t a = rd16(of + OF_STRS_OFF + 4 * i);
-        uint32_t n = rd16(of + OF_STRS_OFF + 4 * i + 2);
+        uint32_t a = RD_BE16(of + OF_STRS_OFF + 4 * i);
+        uint32_t n = RD_BE16(of + OF_STRS_OFF + 4 * i + 2);
         if (n && (a < OF_NVRAM_OF || a + n > OF_NVRAM_SIZE))
             n = 0;
         copies[i] = malloc(n + 1);
@@ -324,7 +308,7 @@ void of_nvram_set_startup_scsi(uint8_t nv[OF_NVRAM_SIZE], int id, const of_nvram
 
 // The end of the record list, as an offset from $1402; 0 for an empty area.
 static uint32_t nr_used(const uint8_t nv[OF_NVRAM_SIZE]) {
-    int32_t end = (int32_t)rd16(nv + OF_NVRAM_NR) - (int32_t)OF_NVRAM_NR;
+    int32_t end = (int32_t)RD_BE16(nv + OF_NVRAM_NR) - (int32_t)OF_NVRAM_NR;
     if (end < 2 || end >= 0x400)
         return 0;
     return (uint32_t)end - 2;
@@ -351,6 +335,6 @@ bool of_nvram_nr_add(uint8_t nv[OF_NVRAM_SIZE], const uint8_t location[6], const
     memcpy(r + 7, name, 4);
     r[11] = OF_NVRAM_NR_DATA;
     memcpy(r + 12, data, OF_NVRAM_NR_DATA);
-    wr16(nv + OF_NVRAM_NR, OF_NVRAM_NR + 2 + used + OF_NVRAM_NR_RECORD);
+    WR_BE16(nv + OF_NVRAM_NR, OF_NVRAM_NR + 2 + used + OF_NVRAM_NR_RECORD);
     return true;
 }

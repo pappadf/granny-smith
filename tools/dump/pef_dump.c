@@ -17,6 +17,7 @@
 
 #include "pef_dump.h"
 
+#include "common.h"
 #include "pef.h"
 #include "ppc_disasm.h"
 #include "storage_util.h"
@@ -27,11 +28,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-// Big-endian word reader
-static uint32_t rd32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
-}
 
 // Label sources, best first: when two passes name the same address the
 // lower-numbered source wins.
@@ -356,7 +352,7 @@ static void build_labels(pd_ctx_t *c) {
         }
         // bl targets: glue stubs are named after the import they reach
         for (uint32_t off = 0; off + 4 <= s->unpacked_size; off += 4) {
-            uint32_t w = rd32(s->contents + off);
+            uint32_t w = RD_BE32(s->contents + off);
             if ((w & 0xFC000003) != 0x48000001) // bl (AA=0, LK=1)
                 continue;
             int32_t disp = (int32_t)(w & 0x03FFFFFC);
@@ -365,7 +361,7 @@ static void build_labels(pd_ctx_t *c) {
             int64_t tgt = (int64_t)off + disp;
             if (tgt < 0 || tgt + 4 > (int64_t)s->unpacked_size)
                 continue;
-            int imp = toc_load_import(c, rd32(s->contents + tgt));
+            int imp = toc_load_import(c, RD_BE32(s->contents + tgt));
             if (imp >= 0) {
                 snprintf(buf, sizeof(buf), "glue_%s", pef->imports[imp].name);
                 sym_add(&c->syms[i], (uint32_t)tgt, SRC_GLUE, buf);
@@ -532,7 +528,7 @@ static void write_code_listing(const pd_ctx_t *c, int idx, FILE *fp) {
         const pd_sym_t *sym = sym_at(syms, off);
         if (sym)
             fprintf(fp, "\n%s:\n", sym->name);
-        uint32_t w = rd32(s->contents + off);
+        uint32_t w = RD_BE32(s->contents + off);
         // Traceback tables are data: show them as words, not instructions.
         while (next_tb < c->n_tb[idx] && c->tb[idx][next_tb].tb_end <= off)
             next_tb++;
