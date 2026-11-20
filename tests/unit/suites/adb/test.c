@@ -68,17 +68,6 @@ int system_input_key_raw(uint8_t byte) {
     (void)byte;
     return -1;
 }
-// keyboard.type()'s character lookup, and the key-name resolver the object
-// surface uses; this suite drives raw port-B writes and the auto-poll engine,
-// neither of which goes near either.
-int debug_mac_resolve_ascii(char c, bool *shift) {
-    (void)c, (void)shift;
-    return -1;
-}
-int debug_mac_resolve_key_name(const char *name) {
-    (void)name;
-    return -1;
-}
 
 event_t *scheduler_new_cpu_event_ex(struct scheduler *restrict s, event_callback_t cb, void *src, uint64_t data,
                                     uint64_t cycles, uint64_t ns, bool periodic) {

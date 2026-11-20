@@ -129,12 +129,6 @@ value_t val_err(const char *fmt, ...) {
     return v;
 }
 
-int debug_mac_resolve_ascii(char c, bool *shift) {
-    (void)c;
-    (void)shift;
-    return -1;
-}
-
 #define KEY_SHIFT 0x38u
 #define KEY_A     0x00u
 

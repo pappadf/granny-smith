@@ -47,9 +47,14 @@ It exposes five methods:
 
 `key` is either a **name** — `"return"`, `"tab"`, `"space"`, `"escape"`,
 `"delete"`, `"up"`/`"down"`/`"left"`/`"right"`, `"command"`, `"shift"`,
-`"option"`, `"control"`, `"capslock"` — or an **ADB keycode integer**
-(`0x2E` for `m`), and a single character (`"m"`, `"7"`, `";"`) resolves to
-its key. `debug_mac_resolve_key_name()` is the whole table.
+`"option"`, `"control"`, `"capslock"`, `"forwarddelete"`, `"help"` — any
+DOM `KeyboardEvent.code` matched case-insensitively (`"f8"`, `"pagedown"`,
+`"home"`, `"numpad5"`), or an **ADB keycode integer** (`0x2E` for `m`), and a
+single character (`"m"`, `"7"`, `";"`) resolves to its key. `"delete"` is
+the Mac's Delete key (Backspace, `$33`), not the DOM's forward Delete. The
+names, the DOM codes and the typed characters all come from one table in
+`src/core/host_keys.c` (`host_keymap_name_to_adb()`), so any key the web UI
+can press, a script can name.
 
 An integer means **the same key on every machine**: key identity across the
 model is the ADB raw keycode (`machine_profile.h`'s `input_key`), names
@@ -78,7 +83,7 @@ implements it. Until 2026-09-21 this lived on `press`, so
 Lisa.
 
 `type(text)` walks a US-layout ASCII→keycode table
-(`debug_mac_resolve_ascii()`), holding Shift for the characters that need it;
+(`host_keymap_ascii_to_adb()`, the same table), holding Shift for the characters that need it;
 a newline in the string types Return and a tab types Tab, so a whole command
 line ends itself. The transitions are **paced in guest time**, 4 ms apart
 (`KEY_TYPE_SPACING`), continuing after whatever a previous call left in
