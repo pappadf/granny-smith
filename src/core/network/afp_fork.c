@@ -10,6 +10,7 @@
 #include "afp_meta.h"
 #include "atalk_id.h"
 #include "log.h"
+#include "vbuf.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -461,14 +462,10 @@ afp_fork_status_t afp_fork_range_lock(afp_fork_t *fk, bool unlock, bool end_rela
     if (fk->n_locks >= AFP_MAX_LOCKS_PER_FORK)
         return AFP_FORK_NO_MORE_LOCKS;
 
-    if (fk->n_locks == fk->cap_locks) {
-        size_t cap = fk->cap_locks ? fk->cap_locks * 2 : 8;
-        lock_range_t *tmp = (lock_range_t *)realloc(fk->locks, cap * sizeof(lock_range_t));
-        if (!tmp)
-            return AFP_FORK_NO_MORE_LOCKS;
-        fk->locks = tmp;
-        fk->cap_locks = cap;
-    }
+    lock_range_t *tmp = gs_grow(fk->locks, &fk->cap_locks, fk->n_locks + 1, sizeof(lock_range_t), 8);
+    if (!tmp)
+        return AFP_FORK_NO_MORE_LOCKS;
+    fk->locks = tmp;
     fk->locks[fk->n_locks++] = want;
     return AFP_FORK_OK;
 }

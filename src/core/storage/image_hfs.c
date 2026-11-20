@@ -27,6 +27,7 @@
 #include "mac_disk_layout.h"
 #include "macroman.h"
 #include "storage.h"
+#include "vbuf.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -368,14 +369,10 @@ typedef struct {
 
 // Append a zeroed record; NULL when out of memory.
 static cat_rec_t *cat_push(cat_vec_t *a) {
-    if (a->n == a->cap) {
-        size_t ncap = (a->cap == 0) ? 64 : a->cap * 2;
-        cat_rec_t *nb = realloc(a->v, ncap * sizeof(cat_rec_t));
-        if (!nb)
-            return NULL;
-        a->v = nb;
-        a->cap = ncap;
-    }
+    cat_rec_t *nv = gs_grow(a->v, &a->cap, a->n + 1, sizeof(*a->v), 64);
+    if (!nv)
+        return NULL;
+    a->v = nv;
     cat_rec_t *r = &a->v[a->n++];
     memset(r, 0, sizeof(*r));
     return r;
@@ -383,14 +380,10 @@ static cat_rec_t *cat_push(cat_vec_t *a) {
 
 // Append a zeroed record; NULL when out of memory.
 static hfs_xt_rec_t *xt_push(xt_vec_t *a) {
-    if (a->n == a->cap) {
-        size_t ncap = (a->cap == 0) ? 32 : a->cap * 2;
-        hfs_xt_rec_t *nb = realloc(a->v, ncap * sizeof(hfs_xt_rec_t));
-        if (!nb)
-            return NULL;
-        a->v = nb;
-        a->cap = ncap;
-    }
+    hfs_xt_rec_t *nv = gs_grow(a->v, &a->cap, a->n + 1, sizeof(*a->v), 32);
+    if (!nv)
+        return NULL;
+    a->v = nv;
     hfs_xt_rec_t *r = &a->v[a->n++];
     memset(r, 0, sizeof(*r));
     return r;

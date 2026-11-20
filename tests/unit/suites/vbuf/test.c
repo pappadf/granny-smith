@@ -50,10 +50,38 @@ TEST(oom_is_sticky) {
     ASSERT_TRUE(!b.oom && b.p == NULL);
 }
 
+// gs_grow seeds an empty array, doubles to fit, and leaves room alone.
+TEST(gs_grow_seeds_and_doubles) {
+    int *v = NULL;
+    size_t cap = 0;
+    v = gs_grow(v, &cap, 1, sizeof(*v), 4);
+    ASSERT_TRUE(v != NULL);
+    ASSERT_EQ_INT(4, (int)cap);
+    int *same = gs_grow(v, &cap, 4, sizeof(*v), 4);
+    ASSERT_TRUE(same == v);
+    ASSERT_EQ_INT(4, (int)cap);
+    v = gs_grow(v, &cap, 9, sizeof(*v), 4);
+    ASSERT_TRUE(v != NULL);
+    ASSERT_EQ_INT(16, (int)cap);
+    v[15] = 7; // the whole capacity is usable
+    free(v);
+}
+
+// An element count whose byte size overflows fails, leaving the array.
+TEST(gs_grow_refuses_an_overflowing_size) {
+    char *v = malloc(8);
+    size_t cap = 8;
+    ASSERT_TRUE(gs_grow(v, &cap, SIZE_MAX / 2, 16, 8) == NULL);
+    ASSERT_EQ_INT(8, (int)cap);
+    free(v);
+}
+
 int main(void) {
     RUN(putc_appendf_and_take);
     RUN(empty_takes_as_empty_string);
     RUN(oom_is_sticky);
+    RUN(gs_grow_seeds_and_doubles);
+    RUN(gs_grow_refuses_an_overflowing_size);
     fprintf(stderr, "All vbuf tests passed\n");
     return 0;
 }

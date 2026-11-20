@@ -5,13 +5,16 @@
 // The growable text buffer (vbuf_t).  It started in object/value_format as
 // the renderers' output and is used well beyond them (jobs, the expression
 // interpolator, scripts, the Apple-event codec), so it lives in core with
-// no dependency on the object model; value_format.h re-exports it.
+// no dependency on the object model; value_format.h re-exports it.  Also
+// gs_grow(), the doubling grow step for typed arrays.
 
 #ifndef GS_VBUF_H
 #define GS_VBUF_H
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -48,6 +51,33 @@ static inline void vbuf_putc(vbuf_t *b, char c) {
     } else {
         vbuf_append(b, &c, 1);
     }
+}
+
+// Makes room for `need` (>= 1) elements of `elem` bytes in the array `p`
+// of capacity *cap: the capacity doubles, starting from `seed` when it is 0,
+// until it holds `need`.  Returns the array, moved or not, with *cap
+// updated; NULL, with `p` and *cap untouched, when realloc fails or the
+// size overflows.  The usual push:
+//   rec_t *nv = gs_grow(a->v, &a->cap, a->n + 1, sizeof(*a->v), 64);
+//   if (!nv) return -ENOMEM;
+//   a->v = nv;
+//   a->v[a->n++] = rec;
+static inline void *gs_grow(void *p, size_t *cap, size_t need, size_t elem, size_t seed) {
+    if (need <= *cap)
+        return p;
+    size_t ncap = *cap ? *cap : (seed ? seed : 1);
+    while (ncap < need) {
+        if (ncap > SIZE_MAX / 2)
+            return NULL; // the count overflows
+        ncap *= 2;
+    }
+    if (elem && ncap > SIZE_MAX / elem)
+        return NULL; // the byte size overflows
+    void *np = realloc(p, ncap * elem);
+    if (!np)
+        return NULL;
+    *cap = ncap;
+    return np;
 }
 
 #ifdef __cplusplus

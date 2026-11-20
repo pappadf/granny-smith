@@ -15,6 +15,7 @@
 #include "mac_disk_layout.h"
 #include "storage_util.h"
 #include "udif_layout.h"
+#include "vbuf.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -148,14 +149,10 @@ udif_writer_t *udif_writer_open(const char *path, const udif_writer_opts_t *opts
 }
 
 static int push_extent(udif_writer_t *w, wext_t e) {
-    if (w->n_ext == w->cap_ext) {
-        size_t ncap = w->cap_ext ? w->cap_ext * 2 : 256;
-        wext_t *n = realloc(w->ext, ncap * sizeof(*n));
-        if (!n)
-            return -ENOMEM;
-        w->ext = n;
-        w->cap_ext = ncap;
-    }
+    wext_t *n = gs_grow(w->ext, &w->cap_ext, w->n_ext + 1, sizeof(*n), 256);
+    if (!n)
+        return -ENOMEM;
+    w->ext = n;
     w->ext[w->n_ext++] = e;
     return 0;
 }

@@ -32,6 +32,7 @@
 #include "gs_assert.h"
 #include "log.h"
 #include "macroman.h"
+#include "vbuf.h"
 #include "job/job.h" // EMU_THREAD_CHECK
 
 #include <ctype.h>
@@ -1023,16 +1024,13 @@ int afp_move_entries(const char *from, const char *to) {
     while ((ent = readdir(dir)) != NULL) {
         if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
             continue;
-        if (n == cap) {
-            cap = cap ? cap * 2 : 16;
-            char **grown = realloc(names, cap * sizeof(*names));
-            if (!grown) {
-                rc = -1;
-                errno = ENOMEM;
-                break;
-            }
-            names = grown;
+        char **grown = gs_grow(names, &cap, n + 1, sizeof(*names), 16);
+        if (!grown) {
+            rc = -1;
+            errno = ENOMEM;
+            break;
         }
+        names = grown;
         if (!(names[n] = strdup(ent->d_name))) {
             rc = -1;
             errno = ENOMEM;
@@ -2305,14 +2303,10 @@ static void catsearch_adopt_tree(vol_t *vol, const char *dir_rel, int depth) {
     while ((dent = readdir(dir)) != NULL) {
         if (strcmp(dent->d_name, ".") == 0 || strcmp(dent->d_name, "..") == 0 || !afp_name_visible(dent->d_name))
             continue;
-        if (count == cap) {
-            size_t ncap = cap ? cap * 2 : 32;
-            char **tmp = (char **)realloc(names, ncap * sizeof(char *));
-            if (!tmp)
-                break;
-            names = tmp;
-            cap = ncap;
-        }
+        char **tmp = gs_grow(names, &cap, count + 1, sizeof(char *), 32);
+        if (!tmp)
+            break;
+        names = tmp;
         names[count] = strdup(dent->d_name);
         if (names[count])
             count++;

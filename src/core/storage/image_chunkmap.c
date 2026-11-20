@@ -14,6 +14,7 @@
 #include "log.h"
 #include "resource_fork.h"
 #include "storage_util.h"
+#include "vbuf.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -48,14 +49,10 @@ typedef struct {
 } cm_src_t;
 
 static int cm_add(cm_src_t *m, cm_run_t r) {
-    if (m->n_runs == m->cap_runs) {
-        size_t ncap = m->cap_runs ? m->cap_runs * 2 : 64;
-        cm_run_t *nr = realloc(m->runs, ncap * sizeof(*nr));
-        if (!nr)
-            return -ENOMEM;
-        m->runs = nr;
-        m->cap_runs = ncap;
-    }
+    cm_run_t *nr = gs_grow(m->runs, &m->cap_runs, m->n_runs + 1, sizeof(*nr), 64);
+    if (!nr)
+        return -ENOMEM;
+    m->runs = nr;
     m->runs[m->n_runs++] = r;
     return 0;
 }
