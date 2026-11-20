@@ -10,6 +10,10 @@ if b"o" + body + b"\n" not in out:
     fail.append("stdout lacks the echoed text: %r" % out[-300:])
 if b"ASSERT FAILED: e" + body + b"\n" not in err:
     fail.append("stderr lacks the error line: %r" % err[-300:])
+# A deferred answer's error is decoded from its {"error": ...} document, not
+# cut out of it with its escapes left in.
+if b"cannot create '/nonexistent-gs-dir/q\"d\\e/out'" not in err:
+    fail.append("stderr lacks the decoded deferred error: %r" % err[-300:])
 if fail:
     print("FAIL:\n  " + "\n  ".join(fail))
     sys.exit(1)

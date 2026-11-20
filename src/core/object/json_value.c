@@ -6,6 +6,8 @@
 
 #include "json_value.h"
 
+#include <errno.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -178,15 +180,23 @@ static bool parse_number(json_reader_t *r, value_t *out) {
         q++;
     }
     char *end = NULL;
+    // Out-of-range numbers are refused rather than saturated: strtoll would
+    // turn 1e20-as-integer into INT64_MAX and strtod 1e999 into inf, both
+    // plausible-looking wrong values.
+    errno = 0;
     if (is_float) {
         double d = strtod(r->p, &end);
         if (end != q)
             return fail(r, "bad number");
+        if (errno == ERANGE || !isfinite(d))
+            return fail(r, "number out of range");
         *out = val_float(d);
     } else {
         long long ll = strtoll(r->p, &end, 10);
         if (end != q)
             return fail(r, "bad number");
+        if (errno == ERANGE)
+            return fail(r, "number out of range");
         *out = val_int((int64_t)ll);
     }
     r->p = q;

@@ -26,6 +26,7 @@ EXTRA_SRCS   := ../../../../src/core/job/seam.c \
                 ../../../../src/core/object/value.c \
                 ../../../../src/core/object/meta.c \
                 ../../../../src/core/object/api.c \
+                ../../../../src/core/object/json_value.c \
                 ../../../../src/core/object/value_format.c \
                 ../../../../src/core/storage/drive_catalog.c \
                 ../../../../src/core/storage/image_part.c \

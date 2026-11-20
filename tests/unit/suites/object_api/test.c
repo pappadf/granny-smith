@@ -256,6 +256,22 @@ TEST(test_out_of_range_args_are_refused) {
     fixture_down(a, b);
 }
 
+// args_json is read by the one JSON reader (json_value_parse): a surrogate
+// pair joins into one 4-byte UTF-8 code point (the old private parser wrote
+// two 3-byte halves), and a raw control character in a string is refused.
+TEST(test_args_json_is_the_one_reader) {
+    struct object *a, *b;
+    fixture_up(&a, &b);
+    object_eval("bucket.meta.indices", "[\"\\ud83d\\ude00\"]", out, sizeof(out));
+    ASSERT_TRUE(strstr(out, "\xf0\x9f\x98\x80") != NULL);
+    ASSERT_TRUE(strstr(out, "\xed\xa0\xbd") == NULL); // no lone high-surrogate half
+    ASSERT_EQ_INT(-1, object_eval("bucket.meta.indices", "[\"a\x01\"]", out, sizeof(out)));
+    ASSERT_TRUE(strstr(out, "args_json") != NULL);
+    ASSERT_EQ_INT(-1, object_eval("a.pc", "[[1]]", out, sizeof(out))); // nested: not an argument
+    ASSERT_TRUE(strstr(out, "args_json") != NULL);
+    fixture_down(a, b);
+}
+
 // A hex-flagged VK_INT renders its bit pattern at its width in text, but stays
 // a bare JSON number (a hex VK_UINT is a "0x…" string); strings escape
 // control characters.
@@ -296,6 +312,7 @@ int main(void) {
     RUN(test_truncated_args_are_refused);
     RUN(test_wellformed_args_still_parse);
     RUN(test_out_of_range_args_are_refused);
+    RUN(test_args_json_is_the_one_reader);
     RUN(test_value_format_hex_int_and_escapes);
     return 0;
 }

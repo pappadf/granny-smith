@@ -9,6 +9,7 @@
 #include "work_queue.h"
 #include "io/io_worker.h"
 #include "mailbox/mailbox.h"
+#include "object/json_value.h"
 #include "object/value_format.h"
 
 #include <pthread.h>
@@ -404,13 +405,15 @@ void job_call_complete(uint32_t token, bool ok, const char *json) {
     g_call.defer_token = 0;
     g_call.defer_io = 0;
     if (!ok) {
-        // The error text out of {"error":"..."}; anything else verbatim.
+        // The error text out of {"error":"..."}, decoded, whatever else the
+        // object holds; anything that is not such a document verbatim.
         char error[256];
-        const char *q = json ? strstr(json, "\"error\":\"") : NULL;
-        snprintf(error, sizeof error, "%s", q ? q + 9 : (json ? json : "failed"));
-        size_t n = strlen(error);
-        if (n >= 2 && strcmp(error + n - 2, "\"}") == 0)
-            error[n - 2] = '\0';
+        value_t doc;
+        bool parsed = json && json_value_parse(json, &doc, NULL, 0);
+        const char *msg = parsed ? val_as_str(value_map_get(&doc, "error")) : NULL;
+        snprintf(error, sizeof error, "%s", msg ? msg : (json ? json : "failed"));
+        if (parsed)
+            value_free(&doc);
         job_seam_note_failure(error);
     }
     pthread_mutex_unlock(&g_wq.mu);

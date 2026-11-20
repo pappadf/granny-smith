@@ -20,6 +20,7 @@ EXTRA_SRCS   := ../../../../src/core/job/seam.c \
                 ../../../../src/core/object/value.c \
                 ../../../../src/core/object/meta.c \
                 ../../../../src/core/object/api.c \
+                ../../../../src/core/object/json_value.c \
                 ../../../../src/core/object/value_format.c
 # scsi.c identifies CD-ROM contents through the format registry
 # (image_source in image_part.c), as in the other SCSI suites.

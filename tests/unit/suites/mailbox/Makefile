@@ -16,6 +16,7 @@ EXTRA_SRCS   := ../../../../src/core/mailbox/mailbox.c \
                 ../../../../src/core/storage/io_leaf.c \
                 ../../../../src/core/mailbox/out.c \
                 ../../../../src/core/object/api.c \
+                ../../../../src/core/object/json_value.c \
                 ../../../../src/core/object/meta.c \
                 ../../../../src/core/object/object.c \
                 ../../../../src/core/object/parse.c \

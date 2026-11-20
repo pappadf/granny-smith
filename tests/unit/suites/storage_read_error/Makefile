@@ -33,6 +33,7 @@ EXTRA_SRCS   := $(S)/job/seam.c \
                 $(S)/object/value.c \
                 $(S)/object/meta.c \
                 $(S)/object/api.c \
+                $(S)/object/json_value.c \
                 $(S)/object/value_format.c \
                 $(S)/storage/drive_catalog.c
 USE_SOURCE_LAYER := 1
