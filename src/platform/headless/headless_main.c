@@ -17,6 +17,7 @@
 #include "floppy.h"
 #include "gs_assert.h"
 #include "image.h"
+#include "json_value.h"
 #include "log.h"
 #include "machine.h"
 #include "machine_config.h"
@@ -440,89 +441,54 @@ bool hl_pump_once(void) {
     return did;
 }
 
-// A job's printed output arrives as EVT_LOG output records (mailbox.h);
-// this prints the text -- or, framed, hands the record to the client as an
-// `@out` line.
-// A job's annotation records (value_begin / value / error, mailbox.h): to a
-// framed client as `@value_begin <json>`, `@value <json>`, `@error <json>`
-// lines among its `@out` lines.  Unframed output prints an error's lines to
-// stderr (hl_print_error_lines) and ignores the rest.
-static void hl_print_annotation(const char *json) {
-    static const char *const kinds[] = {"value_begin", "value", "error"};
-    for (size_t i = 0; i < sizeof(kinds) / sizeof(kinds[0]); i++) {
-        char key[40];
-        snprintf(key, sizeof key, "{\"event\":\"%s\",", kinds[i]);
-        if (strncmp(json, key, strlen(key)) == 0) {
-            printf("@%s %s\n", kinds[i], json);
-            fflush(stdout);
-            return;
-        }
+// A job's records on the EVT_LOG ring (mailbox.h), each one JSON object
+// whose "event" names it.  Framed, `output` goes to the client as an `@out`
+// line and the annotations (value_begin / value / error) as `@value_begin
+// <json>`, `@value <json>`, `@error <json>` lines among them.  Unframed, an
+// output record's text is printed and an error's lines go to stderr; the
+// rest is ignored.  The record is read with the one JSON reader
+// (json_value_parse), so every escape the core writes decodes, whatever
+// the field order.
+static void hl_print_log_record(const char *json) {
+    static const char *const annotations[] = {"value_begin", "value", "error"};
+    value_t rec;
+    if (!json_value_parse(json, &rec, NULL, 0))
+        return;
+    const char *event = val_as_str(value_map_get(&rec, "event"));
+    if (!event) {
+        value_free(&rec);
+        return;
     }
-}
-
-// Writes the JSON string whose body starts at `t` (just past its opening
-// quote) to `f`, unescaped.  Returns the position after the closing quote.
-static const char *hl_put_json_string(FILE *f, const char *t) {
-    while (*t && *t != '"') {
-        if (*t == '\\' && t[1]) {
-            t++;
-            switch (*t) {
-            case 'n':
-                fputc('\n', f);
-                break;
-            case 't':
-                fputc('\t', f);
-                break;
-            case 'u': {
-                unsigned c = 0;
-                if (sscanf(t + 1, "%4x", &c) == 1) {
-                    fputc((int)c, f);
-                    t += 4;
-                }
-                break;
-            }
-            default:
-                fputc(*t, f);
-            }
-            t++;
-        } else {
-            fputc(*t++, f);
-        }
-    }
-    return *t == '"' ? t + 1 : t;
-}
-
-static void hl_print_output_record(const char *json) {
     if (g_framed) {
-        printf("@out %s\n", json);
-        fflush(stdout);
-        return;
+        bool forward = strcmp(event, "output") == 0;
+        for (size_t i = 0; !forward && i < GS_ARRAY_LEN(annotations); i++)
+            forward = strcmp(event, annotations[i]) == 0;
+        if (forward) {
+            printf("@%s %s\n", strcmp(event, "output") == 0 ? "out" : event, json);
+            fflush(stdout);
+        }
+    } else if (strcmp(event, "output") == 0) {
+        const char *text = val_as_str(value_map_get(&rec, "text"));
+        if (text) {
+            fputs(text, stdout);
+            fflush(stdout);
+        }
+    } else if (strcmp(event, "error") == 0) {
+        // The core writes a job's error only as this record; a `truncated`
+        // record's full text is already on stderr.
+        const value_t *truncated = value_map_get(&rec, "truncated");
+        const value_t *lines = value_map_get(&rec, "lines");
+        if (!(truncated && val_as_bool(truncated)) && lines && lines->kind == VK_LIST) {
+            fflush(stdout); // keep the job's text before its error
+            for (size_t i = 0; i < lines->list.len; i++) {
+                const char *line = val_as_str(&lines->list.items[i]);
+                if (line)
+                    fprintf(stderr, "%s\n", line);
+            }
+            fflush(stderr);
+        }
     }
-    const char *t = strstr(json, "\"text\":\"");
-    if (!t)
-        return;
-    hl_put_json_string(stdout, t + 8);
-    fflush(stdout);
-}
-
-// Unframed: an `error` record's lines, to stderr -- the core writes a job's
-// error only as this record.  A `truncated` record's full text is already on
-// stderr.
-static void hl_print_error_lines(const char *json) {
-    if (strstr(json, "\"truncated\":true"))
-        return;
-    const char *t = strstr(json, "\"lines\":[");
-    if (!t)
-        return;
-    t += 9;
-    fflush(stdout); // keep the job's text before its error
-    while (*t == '"') {
-        t = hl_put_json_string(stderr, t + 1);
-        fputc('\n', stderr);
-        if (*t == ',')
-            t++;
-    }
-    fflush(stderr);
+    value_free(&rec);
 }
 
 // Takes every event off the ring: a job's output is printed, the result
@@ -551,12 +517,7 @@ static bool hl_take_events(uint32_t id, int *rc) {
             char *json = (char *)buf + 4 * GS_MBX_EVENT_WORDS;
             if (4 * GS_MBX_EVENT_WORDS + n < sizeof buf) {
                 json[n] = '\0';
-                if (strstr(json, "\"event\":\"output\"") == json + 1)
-                    hl_print_output_record(json);
-                else if (g_framed)
-                    hl_print_annotation(json);
-                else if (strstr(json, "\"event\":\"error\"") == json + 1)
-                    hl_print_error_lines(json);
+                hl_print_log_record(json);
             }
         }
     }
