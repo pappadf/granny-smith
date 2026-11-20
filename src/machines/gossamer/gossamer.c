@@ -209,14 +209,6 @@ void gos_nvram_clear(config_t *cfg) {
 }
 
 // Checkpoint parts of the board's own (machine_parts.h).
-static void part_save_dbdma(void *obj, checkpoint_t *cp) {
-    dbdma_checkpoint(obj, cp);
-}
-
-static void part_save_mesh(void *obj, checkpoint_t *cp) {
-    mesh_checkpoint(obj, cp);
-}
-
 // Grackle, Heathrow, the I2C bus and the Screamer registers.
 static void part_save_gossamer_board(void *obj, checkpoint_t *cp) {
     gossamer_state_t *st = obj;

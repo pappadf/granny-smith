@@ -13,6 +13,7 @@
 #include "checkpoint_images.h"
 #include "cpu.h"
 #include "cuda.h"
+#include "dbdma.h"
 #include "debug.h"
 #include "egret.h"
 #include "floppy.h"
@@ -31,76 +32,38 @@
 #include "scheduler.h"
 #include "scsi.h"
 #include "scsi_53c96.h"
+#include "scsi_mesh.h"
 #include "sonic.h"
 #include "sound.h"
 #include "system.h"
 #include "system_internal.h"
 #include "via.h"
 
-void part_save_memory(void *obj, checkpoint_t *cp) {
-    memory_map_checkpoint(obj, cp);
-}
-void part_save_cpu(void *obj, checkpoint_t *cp) {
-    cpu_checkpoint(obj, cp); // on the 040 families this carries the MMU register file too
-}
-void part_save_ppc(void *obj, checkpoint_t *cp) {
-    ppc_checkpoint(obj, cp);
-}
-void part_save_scheduler(void *obj, checkpoint_t *cp) {
-    scheduler_checkpoint(obj, cp);
-}
-void part_save_rtc(void *obj, checkpoint_t *cp) {
-    rtc_checkpoint(obj, cp);
-}
-void part_save_scc(void *obj, checkpoint_t *cp) {
-    scc_checkpoint(obj, cp);
-}
-void part_save_atalk(void *obj, checkpoint_t *cp) {
-    atalk_conn_checkpoint(obj, cp);
-}
-void part_save_via(void *obj, checkpoint_t *cp) {
-    via_checkpoint(obj, cp);
-}
-void part_save_adb(void *obj, checkpoint_t *cp) {
-    adb_checkpoint(obj, cp);
-}
-void part_save_scsi(void *obj, checkpoint_t *cp) {
-    scsi_checkpoint(obj, cp);
-}
-void part_save_asc(void *obj, checkpoint_t *cp) {
-    asc_checkpoint(obj, cp);
-}
-void part_save_floppy(void *obj, checkpoint_t *cp) {
-    floppy_checkpoint(obj, cp);
-}
-void part_save_keyboard(void *obj, checkpoint_t *cp) {
-    keyboard_checkpoint(obj, cp);
-}
-void part_save_mouse(void *obj, checkpoint_t *cp) {
-    mouse_checkpoint(obj, cp);
-}
-void part_save_sound(void *obj, checkpoint_t *cp) {
-    sound_checkpoint(obj, cp);
-}
-void part_save_mmu(void *obj, checkpoint_t *cp) {
-    mmu_checkpoint_save(obj, cp);
-}
-
-void part_save_scsi96(void *obj, checkpoint_t *cp) {
-    scsi_53c96_checkpoint(obj, cp);
-}
-void part_save_sonic(void *obj, checkpoint_t *cp) {
-    sonic_checkpoint(obj, cp);
-}
-void part_save_egret(void *obj, checkpoint_t *cp) {
-    egret_checkpoint(obj, cp);
-}
-void part_save_iop(void *obj, checkpoint_t *cp) {
-    iop_checkpoint(obj, cp);
-}
-void part_save_cuda(void *obj, checkpoint_t *cp) {
-    av_cuda_checkpoint(obj, cp);
-}
+// The shared part-save adapters (machine_checkpoint.h): one typed call each.
+MACHINE_PART_SAVE_EXTERN(memory, memory_map_checkpoint, memory_map_t)
+// The CPU: on the 040 families its block carries the MMU register file too
+MACHINE_PART_SAVE_EXTERN(cpu, cpu_checkpoint, cpu_t)
+MACHINE_PART_SAVE_EXTERN(ppc, ppc_checkpoint, ppc_t)
+MACHINE_PART_SAVE_EXTERN(scheduler, scheduler_checkpoint, struct scheduler)
+MACHINE_PART_SAVE_EXTERN(rtc, rtc_checkpoint, rtc_t)
+MACHINE_PART_SAVE_EXTERN(scc, scc_checkpoint, scc_t)
+MACHINE_PART_SAVE_EXTERN(atalk, atalk_conn_checkpoint, atalk_conn_t)
+MACHINE_PART_SAVE_EXTERN(via, via_checkpoint, via_t)
+MACHINE_PART_SAVE_EXTERN(adb, adb_checkpoint, adb_t)
+MACHINE_PART_SAVE_EXTERN(scsi, scsi_checkpoint, scsi_t)
+MACHINE_PART_SAVE_EXTERN(asc, asc_checkpoint, asc_t)
+MACHINE_PART_SAVE_EXTERN(floppy, floppy_checkpoint, floppy_t)
+MACHINE_PART_SAVE_EXTERN(keyboard, keyboard_checkpoint, keyboard_t)
+MACHINE_PART_SAVE_EXTERN(mouse, mouse_checkpoint, mouse_t)
+MACHINE_PART_SAVE_EXTERN(sound, sound_checkpoint, sound_t)
+MACHINE_PART_SAVE_EXTERN(mmu, mmu_checkpoint_save, mmu_state_t)
+MACHINE_PART_SAVE_EXTERN(scsi96, scsi_53c96_checkpoint, scsi_53c96_t)
+MACHINE_PART_SAVE_EXTERN(sonic, sonic_checkpoint, sonic_t)
+MACHINE_PART_SAVE_EXTERN(egret, egret_checkpoint, egret_t)
+MACHINE_PART_SAVE_EXTERN(iop, iop_checkpoint, iop_t)
+MACHINE_PART_SAVE_EXTERN(cuda, av_cuda_checkpoint, av_cuda_t)
+MACHINE_PART_SAVE_EXTERN(dbdma, dbdma_checkpoint, dbdma_t)
+MACHINE_PART_SAVE_EXTERN(mesh, mesh_checkpoint, mesh_t)
 
 static void part_save_imagewriter(void *obj, checkpoint_t *cp) {
     iw_printer_checkpoint(obj, cp);

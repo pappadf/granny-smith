@@ -569,14 +569,6 @@ void tnt_nvram_clear(config_t *cfg) {
 }
 
 // Checkpoint parts of the TNT board's own (machine_parts.h).
-static void part_save_dbdma(void *obj, checkpoint_t *cp) {
-    dbdma_checkpoint(obj, cp);
-}
-
-static void part_save_mesh(void *obj, checkpoint_t *cp) {
-    mesh_checkpoint(obj, cp);
-}
-
 // Hammerhead, Grand Central and the bridges' mode registers.
 static void part_save_tnt_board(void *obj, checkpoint_t *cp) {
     tnt_state_t *st = obj;
