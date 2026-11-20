@@ -8,6 +8,7 @@
 #include "swim3_dbdma.h"
 
 #include "dbdma.h"
+#include "mailbox/spsc_index.h"
 
 #include <string.h>
 
@@ -15,16 +16,20 @@
 // Static Helpers: the byte ring
 // ============================================================================
 
+// The ring's counters are spsc_index.h's: the producer's is `tail`, the
+// consumer's `head`, both free-running over a power-of-two size.
+_Static_assert((SWIM3_DBDMA_RING_SIZE & (SWIM3_DBDMA_RING_SIZE - 1u)) == 0, "the ring size must be a power of two");
+
 // Bytes the ring holds
 static uint32_t ring_count(const swim3_dbdma_ring_t *r) {
-    return r->tail - r->head;
+    return spsc_avail(r->tail, r->head);
 }
 
 // Append one byte; false when the ring is full
 static bool ring_push(swim3_dbdma_ring_t *r, uint8_t v) {
-    if (ring_count(r) >= SWIM3_DBDMA_RING_SIZE)
+    if (ring_count(r) >= SWIM3_DBDMA_RING_SIZE) // >=, not ==: a restored ring is untrusted
         return false;
-    r->buf[r->tail % SWIM3_DBDMA_RING_SIZE] = v;
+    r->buf[spsc_slot(r->tail, SWIM3_DBDMA_RING_SIZE)] = v;
     r->tail++;
     return true;
 }
@@ -33,7 +38,7 @@ static bool ring_push(swim3_dbdma_ring_t *r, uint8_t v) {
 static bool ring_pop(swim3_dbdma_ring_t *r, uint8_t *v) {
     if (ring_count(r) == 0)
         return false;
-    *v = r->buf[r->head % SWIM3_DBDMA_RING_SIZE];
+    *v = r->buf[spsc_slot(r->head, SWIM3_DBDMA_RING_SIZE)];
     r->head++;
     return true;
 }
