@@ -6,6 +6,7 @@
 
 #include "value_format.h"
 
+#include "json_escape.h"
 #include "object.h"
 
 #include <inttypes.h>
@@ -80,52 +81,33 @@ void vbuf_free(vbuf_t *b) {
     b->len = b->cap = 0;
 }
 
+void vbuf_append_json_escaped(vbuf_t *b, const char *s, size_t n) {
+    char esc[JSON_ESCAPE_MAX];
+    size_t run = 0; // start of the pending run of bytes that stand for themselves
+    for (size_t i = 0; s && i < n; i++) {
+        size_t k = json_escape_char((unsigned char)s[i], esc);
+        if (!k)
+            continue;
+        // Runs of ordinary characters go in one call, not byte by byte
+        vbuf_append(b, s + run, i - run);
+        vbuf_append(b, esc, k);
+        run = i + 1;
+    }
+    if (s)
+        vbuf_append(b, s + run, n - run);
+}
+
+void vbuf_append_json_string(vbuf_t *b, const char *s) {
+    vbuf_append(b, "\"", 1);
+    if (s)
+        vbuf_append_json_escaped(b, s, strlen(s));
+    vbuf_append(b, "\"", 1);
+}
+
 // === Helpers ================================================================
 
 static bool mode_is_json(value_format_mode_t m) {
     return m == VFMT_JSON || m == VFMT_JSON_TAGGED;
-}
-
-// RFC 8259 string literal: quotes plus the escapes JSON requires. Runs of
-// ordinary characters are appended in one call, not byte by byte.
-static void append_json_string(vbuf_t *b, const char *s) {
-    vbuf_append(b, "\"", 1);
-    for (const unsigned char *p = (const unsigned char *)(s ? s : ""); *p; p++) {
-        const unsigned char *run = p;
-        while (*p >= 0x20 && *p != '"' && *p != '\\')
-            p++;
-        if (p > run)
-            vbuf_append(b, (const char *)run, (size_t)(p - run));
-        if (!*p)
-            break;
-        switch (*p) {
-        case '"':
-            vbuf_append(b, "\\\"", 2);
-            break;
-        case '\\':
-            vbuf_append(b, "\\\\", 2);
-            break;
-        case '\n':
-            vbuf_append(b, "\\n", 2);
-            break;
-        case '\r':
-            vbuf_append(b, "\\r", 2);
-            break;
-        case '\t':
-            vbuf_append(b, "\\t", 2);
-            break;
-        case '\b':
-            vbuf_append(b, "\\b", 2);
-            break;
-        case '\f':
-            vbuf_append(b, "\\f", 2);
-            break;
-        default:
-            vbuf_appendf(b, "\\u%04x", (unsigned)*p); // the remaining control characters
-            break;
-        }
-    }
-    vbuf_append(b, "\"", 1);
 }
 
 // The enum's label, or NULL when the index is out of range or unnamed.
@@ -216,7 +198,7 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
     case VK_STRING: {
         const char *s = v->s ? v->s : "";
         if (mode_is_json(mode))
-            append_json_string(out, s);
+            vbuf_append_json_string(out, s);
         else if (mode == VFMT_INLINE)
             vbuf_appendf(out, "\"%s\"", s);
         else
@@ -248,13 +230,13 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
         if (mode == VFMT_JSON_TAGGED) {
             vbuf_append(out, "{\"enum\":", 8);
             if (label)
-                append_json_string(out, label);
+                vbuf_append_json_string(out, label);
             else
                 vbuf_append(out, "null", 4);
             vbuf_appendf(out, ",\"index\":%d}", v->enm.idx);
         } else if (mode == VFMT_JSON) {
             if (label)
-                append_json_string(out, label);
+                vbuf_append_json_string(out, label);
             else
                 vbuf_appendf(out, "%d", v->enm.idx);
         } else if (label) {
@@ -302,7 +284,7 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
             for (size_t i = 0; i < v->map.len; i++) {
                 if (i)
                     vbuf_append(out, ",", 1);
-                append_json_string(out, v->map.entries[i].key);
+                vbuf_append_json_string(out, v->map.entries[i].key);
                 vbuf_append(out, ":", 1);
                 value_format(&v->map.entries[i].val, m, out);
             }
@@ -315,18 +297,18 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
         const char *nm = v->obj ? object_name(v->obj) : NULL;
         if (mode == VFMT_JSON_TAGGED) {
             vbuf_append(out, "{\"object\":", 10);
-            append_json_string(out, cls);
+            vbuf_append_json_string(out, cls);
             vbuf_append(out, ",\"name\":", 8);
-            append_json_string(out, nm ? nm : "");
+            vbuf_append_json_string(out, nm ? nm : "");
             // Its path, so a client can link to the node (select it in the
             // command browser, reveal it in SYSTEM).
             char path[512];
             object_compute_path(v->obj, path, sizeof(path));
             vbuf_append(out, ",\"path\":", 8);
-            append_json_string(out, path);
+            vbuf_append_json_string(out, path);
             vbuf_append(out, "}", 1);
         } else if (mode == VFMT_JSON) {
-            append_json_string(out, "<object>");
+            vbuf_append_json_string(out, "<object>");
         } else if (mode == VFMT_INLINE) {
             vbuf_appendf(out, "<%s:%s>", cls, nm ? nm : "");
         } else if (mode == VFMT_CELL) {
@@ -341,12 +323,12 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
         const char *msg = v->err ? v->err : "";
         if (mode == VFMT_JSON_TAGGED) {
             vbuf_append(out, "{\"error\":", 9);
-            append_json_string(out, *msg ? msg : "unknown");
+            vbuf_append_json_string(out, *msg ? msg : "unknown");
             vbuf_append(out, "}", 1);
         } else if (mode == VFMT_JSON) {
             vbuf_t inner = {0};
             vbuf_appendf(&inner, "<error: %s>", msg);
-            append_json_string(out, inner.p ? inner.p : "");
+            vbuf_append_json_string(out, inner.p ? inner.p : "");
             vbuf_free(&inner);
         } else if (mode == VFMT_INLINE) {
             vbuf_append(out, "<error>", 7);
@@ -359,7 +341,7 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
     case VK_REF: {
         const char *r = v->ref ? v->ref : "";
         if (mode_is_json(mode))
-            append_json_string(out, r);
+            vbuf_append_json_string(out, r);
         else
             vbuf_append_str(out, r);
         return;
@@ -378,7 +360,7 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
             vbuf_appendf(&inner, "%lld..%lld step %lld", (long long)v->range.start, (long long)v->range.stop,
                          (long long)v->range.step);
         if (mode_is_json(mode))
-            append_json_string(out, inner.p ? inner.p : "");
+            vbuf_append_json_string(out, inner.p ? inner.p : "");
         else
             vbuf_append(out, inner.p ? inner.p : "", inner.len);
         vbuf_free(&inner);

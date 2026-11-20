@@ -61,9 +61,9 @@ int re_decode_vers(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt_fp
     fprintf(json_fp, "{\"major\":%d,\"minor\":%d,\"bug\":%d,\"stage\":\"%s\",\"prerelease\":%u,\"region\":%u,", major,
             minor, bug, stage_str, prerel, region);
     fprintf(json_fp, "\"short\":");
-    re_json_write_string(json_fp, short_str);
+    json_fputs(json_fp, short_str);
     fprintf(json_fp, ",\"long\":");
-    re_json_write_string(json_fp, long_str);
+    json_fputs(json_fp, long_str);
     fprintf(json_fp, "}\n");
 
     if (txt_fp) {

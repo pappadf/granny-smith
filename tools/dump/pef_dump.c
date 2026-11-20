@@ -572,21 +572,21 @@ static void write_manifest(const pd_ctx_t *c, const char *src_label, int disasm_
     char arch[16];
     ostype_str(pef->architecture, arch, sizeof(arch));
     fprintf(fp, "{\n  \"schema_version\": 1,\n  \"generator\": \"granny-smith dump v1 (pef)\",\n  \"source\": ");
-    re_json_write_string(fp, src_label);
+    json_fputs(fp, src_label);
     fprintf(fp, ",\n  \"container\": {\"architecture\": ");
-    re_json_write_string(fp, arch);
+    json_fputs(fp, arch);
     fprintf(fp,
             ", \"format_version\": %u, \"timestamp\": %u, \"current_version\": %u, \"old_def_version\": %u, "
             "\"old_imp_version\": %u},\n",
             pef->format_version, pef->date_time_stamp, pef->current_version, pef->old_def_version,
             pef->old_imp_version);
     fprintf(fp, "  \"warning\": ");
-    re_json_write_string(fp, pef->warning);
+    json_fputs(fp, pef->warning);
     fprintf(fp, ",\n  \"sections\": [\n");
     for (int i = 0; i < pef->section_count; i++) {
         const pef_section_t *s = &pef->sections[i];
         fprintf(fp, "    {\"index\": %d, \"label\": ", i);
-        re_json_write_string(fp, c->label[i]);
+        json_fputs(fp, c->label[i]);
         fprintf(fp, ", \"kind\": \"%s\", \"total_size\": %u, \"unpacked_size\": %u, \"packed_size\": %u, ",
                 pef_section_kind_name(s->kind), s->total_size, s->unpacked_size, s->packed_size);
         if (s->instantiated)
@@ -608,13 +608,13 @@ static void write_manifest(const pd_ctx_t *c, const char *src_label, int disasm_
     fprintf(fp, "  \"libraries\": [\n");
     for (size_t l = 0; l < pef->n_libraries; l++) {
         fprintf(fp, "    {\"name\": ");
-        re_json_write_string(fp, pef->libraries[l].name);
+        json_fputs(fp, pef->libraries[l].name);
         fprintf(fp, ", \"symbols\": [");
         bool first = true;
         for (size_t k = 0; k < pef->n_imports; k++)
             if (pef->imports[k].library == (int)l) {
                 fprintf(fp, "%s", first ? "" : ", ");
-                re_json_write_string(fp, pef->imports[k].name);
+                json_fputs(fp, pef->imports[k].name);
                 first = false;
             }
         fprintf(fp, "]}%s\n", l + 1 < pef->n_libraries ? "," : "");
@@ -623,7 +623,7 @@ static void write_manifest(const pd_ctx_t *c, const char *src_label, int disasm_
     for (size_t i = 0; i < pef->n_exports; i++) {
         const pef_export_t *ex = &pef->exports[i];
         fprintf(fp, "    {\"name\": ");
-        re_json_write_string(fp, ex->name);
+        json_fputs(fp, ex->name);
         fprintf(fp, ", \"class\": \"%s\", \"section\": %d, \"value\": %u}%s\n", pef_symbol_class_name(ex->sym_class),
                 ex->section, ex->value, i + 1 < pef->n_exports ? "," : "");
     }

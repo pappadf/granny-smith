@@ -5,6 +5,7 @@
 
 #include "job.h"
 
+#include "json_escape.h"
 #include "work_queue.h"
 #include "io/io_worker.h"
 #include "mailbox/mailbox.h"
@@ -147,15 +148,6 @@ bool job_output_append(const char *text, size_t len) {
 
 static void wake_emulator(void);
 
-// The escaped length of one byte of output text inside a JSON string.
-static size_t escaped_len(unsigned char c) {
-    if (c == '"' || c == '\\' || c == '\n' || c == '\t')
-        return 2;
-    if (c < 0x20)
-        return 6;
-    return 1;
-}
-
 // Writes the job's buffered output as EVT_LOG output records, and its
 // annotations at their positions, as far as the ring has room.  Each text
 // record is sized by its ESCAPED length so the record fits the ring's record
@@ -188,8 +180,8 @@ static bool job_flush_output(struct mailbox *m, job_t *j) {
         if (a && a->at - j->out_base < limit)
             limit = (size_t)(a->at - j->out_base);
         size_t n = 0, esc = 0;
-        while (n < limit && esc + escaped_len((unsigned char)j->out[n]) <= budget)
-            esc += escaped_len((unsigned char)j->out[n++]);
+        while (n < limit && esc + json_escaped_len((unsigned char)j->out[n]) <= budget)
+            esc += json_escaped_len((unsigned char)j->out[n++]);
         // Do not split a UTF-8 sequence: back up to a boundary unless this
         // chunk ends where it must (the tail, or an annotation).
         if (n < limit)
@@ -197,34 +189,21 @@ static bool job_flush_output(struct mailbox *m, job_t *j) {
                 n--;
         if (n == 0)
             n = 1;
-        size_t cap = 64 + esc + 8;
-        char *json = (char *)malloc(cap);
-        if (!json)
+        vbuf_t json = {0};
+        vbuf_appendf(&json, "{\"event\":\"output\",\"id\":%u,\"client\":%u,\"text\":\"", (unsigned)j->req_id,
+                     (unsigned)j->client);
+        size_t head = json.len, body = 0;
+        for (size_t i = 0; i < n; i++)
+            body += json_escaped_len((unsigned char)j->out[i]);
+        vbuf_append_json_escaped(&json, j->out, n);
+        vbuf_append(&json, "\"}", 2);
+        // A buffer an allocation left short is not a record
+        if (!head || json.len != head + body + 2) {
+            vbuf_free(&json);
             return true; // drop rather than wedge
-        size_t o = (size_t)snprintf(json, cap, "{\"event\":\"output\",\"id\":%u,\"client\":%u,\"text\":\"",
-                                    (unsigned)j->req_id, (unsigned)j->client);
-        for (size_t i = 0; i < n; i++) {
-            unsigned char c = (unsigned char)j->out[i];
-            if (c == '"' || c == '\\') {
-                json[o++] = '\\';
-                json[o++] = (char)c;
-            } else if (c == '\n') {
-                json[o++] = '\\';
-                json[o++] = 'n';
-            } else if (c == '\t') {
-                json[o++] = '\\';
-                json[o++] = 't';
-            } else if (c < 0x20) {
-                o += (size_t)snprintf(json + o, 8, "\\u%04x", c);
-            } else {
-                json[o++] = (char)c;
-            }
         }
-        json[o++] = '"';
-        json[o++] = '}';
-        json[o] = '\0';
-        bool ok = mailbox_emit_output(m, json);
-        free(json);
+        bool ok = mailbox_emit_output(m, json.p);
+        vbuf_free(&json);
         if (!ok)
             return false;
         memmove(j->out, j->out + n, j->out_len - n);

@@ -57,7 +57,7 @@ int re_decode_dlog(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt_fp
     write_rect(json_fp, bytes);
     fprintf(json_fp, ",\"proc_id\":%d,\"visible\":%s,\"go_away\":%s,\"ref_con\":%d,\"ditl_id\":%d,\"title\":", proc_id,
             visible ? "true" : "false", go_away ? "true" : "false", ref_con, ditl_id);
-    re_json_write_string(json_fp, title);
+    json_fputs(json_fp, title);
     fprintf(json_fp, ",\"refs\":[{\"type\":\"DITL\",\"id\":%d}]}\n", ditl_id);
 
     if (txt_fp)
@@ -153,7 +153,7 @@ int re_decode_ditl(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt_fp
             fprintf(json_fp, ",\"res_id\":%d}", res_id);
         } else {
             fprintf(json_fp, ",\"text\":");
-            re_json_write_string(json_fp, text);
+            json_fputs(json_fp, text);
             fprintf(json_fp, "}");
         }
         if (txt_fp)

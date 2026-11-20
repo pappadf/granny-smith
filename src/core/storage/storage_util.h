@@ -68,13 +68,18 @@ int open_regular_file(const char *path, uint64_t *size, int64_t *mtime);
 // accept.  0 or a negative errno.
 int read_file(const char *path, size_t cap, uint8_t **out, size_t *out_len);
 
-// JSON-escape `src` (the body of a string literal, no quotes) into `dst`:
-// quote, backslash, \b \f \n \r \t, and any other control byte as \u00XX.
+// JSON-escape `src` (the body of a string literal, no quotes) into `dst`
+// with the one escape set (json_escape.h): quote, backslash, \b \f \n \r
+// \t, and any other control byte as \u00XX.
 // Returns the escaped length, or -EINVAL if it does not fit in `cap` with
 // its NUL.
 int json_escape(const char *src, char *dst, size_t cap);
 
 // The same into a malloc'd string ("" for NULL); NULL on OOM.
 char *json_escape_dup(const char *src);
+
+// Write `s` to `fp` as a quoted JSON string literal (NULL writes ""): the
+// form for tools and manifest writers.
+void json_fputs(FILE *fp, const char *s);
 
 #endif // GS_STORAGE_UTIL_H

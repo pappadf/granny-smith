@@ -6,6 +6,8 @@
 
 #include "storage_util.h"
 
+#include "json_escape.h"
+
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -247,40 +249,15 @@ int read_file(const char *path, size_t cap, uint8_t **out, size_t *out_len) {
 int json_escape(const char *src, char *dst, size_t cap) {
     size_t o = 0;
     for (const unsigned char *p = (const unsigned char *)(src ? src : ""); *p; p++) {
-        char buf[8];
-        size_t need = 2;
-        buf[0] = '\\';
-        switch (*p) {
-        case '"':
-        case '\\':
-            buf[1] = (char)*p;
-            break;
-        case '\b':
-            buf[1] = 'b';
-            break;
-        case '\f':
-            buf[1] = 'f';
-            break;
-        case '\n':
-            buf[1] = 'n';
-            break;
-        case '\r':
-            buf[1] = 'r';
-            break;
-        case '\t':
-            buf[1] = 't';
-            break;
-        default:
-            if (*p < 0x20) {
-                need = (size_t)snprintf(buf, sizeof(buf), "\\u%04x", *p);
-            } else {
-                buf[0] = (char)*p;
-                need = 1;
-            }
+        char esc[JSON_ESCAPE_MAX];
+        size_t need = json_escape_char(*p, esc);
+        if (!need) {
+            esc[0] = (char)*p;
+            need = 1;
         }
         if (o >= cap || need >= cap - o)
             return -EINVAL;
-        memcpy(dst + o, buf, need);
+        memcpy(dst + o, esc, need);
         o += need;
     }
     if (o >= cap)
@@ -290,11 +267,24 @@ int json_escape(const char *src, char *dst, size_t cap) {
 }
 
 char *json_escape_dup(const char *src) {
-    size_t cap = (src ? strlen(src) : 0) * 6 + 1; // every byte as \u00XX at worst
+    size_t cap = (src ? strlen(src) : 0) * JSON_ESCAPE_MAX + 1; // every byte as \u00XX at worst
     char *out = malloc(cap);
     if (out && json_escape(src, out, cap) < 0) {
         free(out);
         out = NULL;
     }
     return out;
+}
+
+void json_fputs(FILE *fp, const char *s) {
+    fputc('"', fp);
+    for (const unsigned char *p = (const unsigned char *)(s ? s : ""); *p; p++) {
+        char esc[JSON_ESCAPE_MAX];
+        size_t n = json_escape_char(*p, esc);
+        if (n)
+            fwrite(esc, 1, n, fp);
+        else
+            fputc(*p, fp);
+    }
+    fputc('"', fp);
 }

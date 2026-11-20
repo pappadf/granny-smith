@@ -13,6 +13,9 @@
 #ifndef GS_RE_DECODERS_H
 #define GS_RE_DECODERS_H
 
+// The decoders write their string fields with json_fputs
+#include "storage_util.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -34,10 +37,6 @@ const char *re_decode_dispatch_name(const uint8_t type[4]);
 // Run the dispatched decoder.  Returns 1 if a decoder ran (success),
 // 0 if no decoder for the type, negative on decoder failure.
 int re_decode_dispatch(const uint8_t type[4], const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt_fp);
-
-// Convenience: write a JSON string with proper escaping of \" \\ \n.
-// Used by decoders for short string fields.
-void re_json_write_string(FILE *fp, const char *s);
 
 // Read a Pascal string at `off` from `bytes`, transcode MacRoman to
 // UTF-8 into `out`, and return the number of bytes consumed (1 length

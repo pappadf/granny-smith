@@ -171,6 +171,21 @@ TEST(test_json_escape) {
     dup = json_escape_dup(NULL);
     ASSERT_TRUE(dup && strcmp(dup, "") == 0);
     free(dup);
+    // The rest of the escape set: \r, the other control bytes, DEL and
+    // UTF-8 as themselves
+    ASSERT_EQ_INT(18, json_escape("\r\x1f\x7f\xc3\xa9/\x0b", out, sizeof(out)));
+    ASSERT_TRUE(strcmp(out, "\\r\\u001f\x7f\xc3\xa9/\\u000b") == 0);
+}
+
+// The FILE* form writes the same escapes, quoted.
+TEST(test_json_fputs) {
+    char buf[64] = {0};
+    FILE *f = fmemopen(buf, sizeof(buf) - 1, "w");
+    ASSERT_TRUE(f != NULL);
+    json_fputs(f, "a\"\r\b\x02");
+    json_fputs(f, NULL);
+    fclose(f);
+    ASSERT_TRUE(strcmp(buf, "\"a\\\"\\r\\b\\u0002\"\"\"") == 0);
 }
 
 int main(void) {
@@ -178,6 +193,7 @@ int main(void) {
     RUN(test_rm_tree_does_not_follow_symlinks);
     RUN(test_read_file_is_capped);
     RUN(test_json_escape);
+    RUN(test_json_fputs);
     RUN(test_atomic_write_replaces_whole_or_not_at_all);
     fprintf(stderr, "All storage_util tests passed\n");
     return 0;

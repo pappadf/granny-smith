@@ -935,7 +935,7 @@ static int dump_manifest(rfork_t *rf, const char *src_label, const char *dst_dir
 
     fprintf(fp, "{\n  \"schema_version\": 1,\n  \"generator\": \"granny-smith dump v1\",\n");
     fprintf(fp, "  \"source\": {\n    \"label\": ");
-    re_json_write_string(fp, src_label);
+    json_fputs(fp, src_label);
     fprintf(fp, ",\n    \"data_fork\": {\"size\": %zu},\n", data_len);
     fprintf(fp, "    \"rsrc_fork\": {\"size\": %zu}", rsrc_len);
     if (finder_info && finder_info_len == 32) {
@@ -964,7 +964,7 @@ static int dump_manifest(rfork_t *rf, const char *src_label, const char *dst_dir
         char type_path[16];
         rfork_type_to_path(type, type_path, sizeof(type_path));
         fprintf(fp, "      {\"type\": ");
-        re_json_write_string(fp, type_path);
+        json_fputs(fp, type_path);
         fprintf(fp, ", \"ids\": [");
         size_t nr = rfork_num_resources(rf, type);
         for (size_t r = 0; r < nr; r++)
@@ -1042,9 +1042,9 @@ static int dump_manifest(rfork_t *rf, const char *src_label, const char *dst_dir
             char id_str[16];
             rfork_id_to_path(id, id_str, sizeof(id_str));
             fprintf(fp, "    {\"type\": ");
-            re_json_write_string(fp, type_path);
+            json_fputs(fp, type_path);
             fprintf(fp, ", \"id\": %d, \"name\": ", id);
-            re_json_write_string(fp, name ? name : "");
+            json_fputs(fp, name ? name : "");
             fprintf(fp, ", \"attrs\": %u, \"size\": %zu, \"files\": {\"bin\": \"resources/%s/%s\", \"info\": ", attrs,
                     sz, type_path, id_str);
             fprintf(fp, "\"resources/%s/%s.info\", \"disasm\": ", type_path, id_str);

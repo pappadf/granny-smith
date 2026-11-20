@@ -45,6 +45,7 @@
 #include "core_init.h"
 #include "cpu.h"
 #include "host_keys.h"
+#include "json_escape.h"
 #include "keyboard.h"
 #include "laserwriter_job.h"
 #include "laserwriter_transport.h"
@@ -926,17 +927,12 @@ static int download_start(download_job_t *d) {
     return -1;
 }
 
-// Copy `s` into `out` with what a JSON string cannot hold replaced: quotes,
-// backslashes and control bytes become '_'.  (File names are
-// printer_file_name's, printer_sink.h.)
-static void sanitize(char *out, size_t cap, const char *s) {
-    size_t n = 0;
-    for (; s && *s && n + 1 < cap; s++) {
-        unsigned char c = (unsigned char)*s;
-        bool ok = c >= 0x20 && c < 0x7F && c != '"' && c != '\\';
-        out[n++] = ok ? (char)c : '_';
-    }
-    out[n] = '\0';
+// `s` JSON-escaped into `out` (the body of a string literal), or "" when it
+// does not fit -- a field dropped rather than a document cut short.  (File
+// names are printer_file_name's, printer_sink.h.)
+static void json_field(char *out, size_t cap, const char *s) {
+    if (json_escape(s ? s : "", out, cap) < 0)
+        out[0] = '\0';
 }
 
 // Hand a copy of `len` bytes to the page as the download `name`, with `meta`
@@ -963,12 +959,16 @@ static int download_bytes(const char *name, const char *meta, const void *data, 
 // download path, marked as a document, and the page shows them in the print
 // viewer (or downloads them where the browser has no PDF viewer).
 void printer_sink_document(const printer_document_t *doc) {
-    char title[PRINTER_TITLE_MAX + 1], printer[64], name[PRINTER_TITLE_MAX + 64], meta[256];
-    sanitize(title, sizeof title, doc->title);
-    sanitize(printer, sizeof printer, doc->printer);
+    char title[PRINTER_TITLE_MAX * JSON_ESCAPE_MAX + 1], printer[128], name[PRINTER_TITLE_MAX + 64];
+    char meta[sizeof(((download_job_t *)0)->meta)];
+    json_field(title, sizeof title, doc->title);
+    json_field(printer, sizeof printer, doc->printer);
     printer_file_name(name, sizeof name, doc->slug, doc->job_id, doc->title, "pdf");
-    snprintf(meta, sizeof meta, ",\"kind\":\"document\",\"printer\":\"%s\",\"job\":%u,\"pages\":%u,\"title\":\"%s\"",
-             printer, (unsigned)doc->job_id, (unsigned)doc->pages, title);
+    const char *fmt = ",\"kind\":\"document\",\"printer\":\"%s\",\"job\":%u,\"pages\":%u,\"title\":\"%s\"";
+    // A title too long for the members once escaped goes, not the document
+    if ((size_t)snprintf(meta, sizeof meta, fmt, printer, (unsigned)doc->job_id, (unsigned)doc->pages, title) >=
+        sizeof meta)
+        snprintf(meta, sizeof meta, fmt, printer, (unsigned)doc->job_id, (unsigned)doc->pages, "");
     download_bytes(name, meta, doc->pdf, doc->pdf_len);
 }
 
@@ -984,9 +984,9 @@ void printer_sink_capture(const printer_capture_t *cap) {
 // A core printer's status changed: the same printer_status event the
 // LaserWriter sends, naming the printer.
 void printer_sink_status(const char *printer, const char *status) {
-    char p[64], st[128];
-    sanitize(p, sizeof p, printer);
-    sanitize(st, sizeof st, status);
+    char p[128], st[256];
+    json_field(p, sizeof p, printer);
+    json_field(st, sizeof st, status);
     event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"printer_status\",\"printer\":\"%s\",\"status\":\"%s\"}", p, st);
 }
 

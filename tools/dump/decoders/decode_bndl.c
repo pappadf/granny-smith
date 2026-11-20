@@ -89,7 +89,7 @@ int re_decode_fref(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt_fp
     fprintf(json_fp, "{\"file_type\":");
     write_ostype(json_fp, bytes);
     fprintf(json_fp, ",\"icon_local_id\":%d,\"name\":", icon_id);
-    re_json_write_string(json_fp, name);
+    json_fputs(json_fp, name);
     fprintf(json_fp, "}\n");
     if (txt_fp)
         fprintf(txt_fp, "FREF: type=%c%c%c%c icon_local=%d name=%s\n", bytes[0], bytes[1], bytes[2], bytes[3], icon_id,

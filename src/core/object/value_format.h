@@ -38,6 +38,13 @@ void vbuf_append_str(vbuf_t *b, const char *s); // NUL-terminated; NULL appends 
 void vbuf_appendf(vbuf_t *b, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 void vbuf_free(vbuf_t *b);
 
+// `n` bytes of `s` JSON-escaped (json_escape.h), the body of a string
+// literal without its quotes: a length-bounded chunk of output text.
+void vbuf_append_json_escaped(vbuf_t *b, const char *s, size_t n);
+
+// `s` as a quoted RFC 8259 string literal; NULL appends "".
+void vbuf_append_json_string(vbuf_t *b, const char *s);
+
 typedef enum {
     // Script interpolation, `${x}`: the value's plain text, unquoted, with
     // VK_BYTES as bare hex digits and a list's elements recursing in this same

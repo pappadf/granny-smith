@@ -43,7 +43,7 @@ int re_decode_menu(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt_fp
 
     fprintf(json_fp, "{\"menu_id\":%d,\"menu_proc\":%d,\"enable_flags\":\"0x%08x\",\"title\":", menu_id, menu_proc,
             enable_flags);
-    re_json_write_string(json_fp, title);
+    json_fputs(json_fp, title);
     fprintf(json_fp, ",\"items\":[");
     if (txt_fp)
         fprintf(txt_fp, "MENU %d: %s\n", menu_id, title);
@@ -69,7 +69,7 @@ int re_decode_menu(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt_fp
             fputc(',', json_fp);
         first = false;
         fprintf(json_fp, "{\"text\":");
-        re_json_write_string(json_fp, text);
+        json_fputs(json_fp, text);
         fprintf(json_fp, ",\"icon\":%u,\"cmd_key\":%u,\"mark\":%u,\"style\":\"0x%02x\"}", icon, cmd, mark, style);
         if (txt_fp) {
             fprintf(txt_fp, "  %-30s", text);
