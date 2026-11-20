@@ -14,6 +14,7 @@
 #include "fpu.h"
 #include "gs_assert.h"
 #include "mmu.h"
+#include "pmmu_ext.h"
 
 #include "log.h"
 #include "system.h"
@@ -113,18 +114,18 @@ static void pmove_root(cpu_t *cpu, mmu_state_t *mmu, uint32_t ea_mode, uint32_t 
 static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
     uint16_t ext = fetch_16(cpu, true);
     mmu_state_t *mmu = (mmu_state_t *)cpu->mmu;
-    uint32_t op_type = (ext >> 13) & 7u;
+    pmmu_ext_t x = pmmu_ext_decode(ext); // the fields, decoded once (shared with the disassembler)
 
     // Compute EA from the opcode's lower 6 bits (modes that are valid for PMOVE)
     uint32_t ea_mode = (opcode >> 3) & 7u;
     uint32_t ea_reg = opcode & 7u;
 
-    switch (op_type) {
+    switch (x.op) {
 
-    case 0: {
+    case PMMU_OP_PMOVE_TT: {
         // PMOVE TT0/TT1 (bits[12:10]: 010=TT0, 011=TT1)
-        uint32_t reg_select = (ext >> 10) & 7u;
-        uint32_t rw = (ext >> 9) & 1u; // 0=ea→reg, 1=reg→ea
+        uint32_t reg_select = x.sel;
+        uint32_t rw = x.rw; // 0=ea→reg, 1=reg→ea
 
         if (reg_select == 2 || reg_select == 3) {
             // PMOVE TT0 / TT1
@@ -137,12 +138,12 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
         break;
     }
 
-    case 1: {
+    case PMMU_OP_PLOAD_PFLUSH: {
         // PLOAD or PFLUSH (bits[12:10] = mode)
-        uint32_t flush_mode = (ext >> 10) & 7u;
+        uint32_t flush_mode = x.sel;
         if (flush_mode == 0) {
             // PLOAD — force a table walk and load the ATC entry
-            uint32_t rw = (ext >> 9) & 1u; // 0=PLOADW (write test), 1=PLOADR (read test)
+            uint32_t rw = x.rw; // 0=PLOADW (write test), 1=PLOADR (read test)
             if (mmu) {
                 // FC specifier in extension word bits 4:0 (per MC68030UM § 7.4.27),
                 // same encoding as PTEST: 1xxxx → immediate FC = bits 2:0,
@@ -150,7 +151,7 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                 // Walking the wrong root (always cpu->supervisor) would load the
                 // ATC with a translation from the supervisor-side root for a
                 // user-FC PLOAD.
-                uint32_t fc = pmmu_fc(cpu, ext & 0x1Fu);
+                uint32_t fc = pmmu_fc(cpu, x.fc5);
                 bool fc_supervisor = (fc & 4u) != 0;
                 uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
                 mmu_pload(mmu, ea, rw == 0, fc_supervisor);
@@ -177,10 +178,10 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
         break;
     }
 
-    case 2: {
+    case PMMU_OP_PMOVE_ROOT: {
         // PMOVE (TC, SRP, CRP)
-        uint32_t reg_select = (ext >> 10) & 7u;
-        uint32_t rw = (ext >> 9) & 1u; // 0=ea→reg, 1=reg→ea
+        uint32_t reg_select = x.sel;
+        uint32_t rw = x.rw; // 0=ea→reg, 1=reg→ea
 
         if (reg_select == 0) {
             // TC (Translation Control) — 32-bit
@@ -202,7 +203,7 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                 // mapping and a premature ATC flush in PMOVEFD CRP makes it
                 // unreachable, faulting the TC load and causing the boot's
                 // reset loop).
-                uint32_t fd = (ext >> 8) & 1u;
+                uint32_t fd = x.fd;
                 if (mmu) {
                     mmu->tc = val;
                     mmu->enabled = TC_ENABLE(val) != 0;
@@ -237,7 +238,7 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
 
         if (reg_select == 2 || reg_select == 3) {
             // SRP (Supervisor Root Pointer) / CRP (CPU Root Pointer) -- 64-bit
-            uint32_t fd = (ext >> 8) & 1u; // FD: suppress ATC flush (see TC case above)
+            uint32_t fd = x.fd; // FD: suppress ATC flush (see TC case above)
             uint64_t *root = !mmu ? NULL : reg_select == 2 ? &mmu->srp : &mmu->crp;
             pmove_root(cpu, mmu, ea_mode, ea_reg, rw, fd, root);
             break;
@@ -247,9 +248,9 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
         break;
     }
 
-    case 3: {
+    case PMMU_OP_PMOVE_MMUSR: {
         // PMOVE MMUSR — 16-bit
-        uint32_t rw = (ext >> 9) & 1u;
+        uint32_t rw = x.rw;
         if (rw) {
             // MMUSR → EA (read)
             uint32_t ea = calculate_ea(cpu, 2, ea_mode, ea_reg, true);
@@ -266,17 +267,17 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
         break;
     }
 
-    case 4: {
+    case PMMU_OP_PTEST: {
         // PTEST
         // Extension word bit 9 is the PTEST RW flag: per MC68030UM, 0 = PTESTW
         // (simulate a write access), 1 = PTESTR (simulate a read access).  Our
         // mmu_test_address takes `write` meaning "test as write", so map the
         // bit directly (rw==0 → write=true).
-        uint32_t rw_bit = (ext >> 9) & 1u;
+        uint32_t rw_bit = x.rw;
         bool write = (rw_bit == 0);
-        uint32_t a_field = (ext >> 8) & 1u; // 1 = write descriptor addr to An
-        uint32_t a_reg = (ext >> 5) & 7u;
-        uint32_t level = (ext >> 10) & 7u;
+        uint32_t a_field = x.fd; // 1 = write descriptor addr to An
+        uint32_t a_reg = x.mask;
+        uint32_t level = x.sel;
         // M68000PRM PTEST, "Level field": "When this field contains 0, the A
         // field and the register field must also be 0.  The instruction takes
         // an F-line exception when the level field is 0 and the A field is not
@@ -298,7 +299,7 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
         // root returns the supervisor 32-MB identity descriptor and makes
         // the shlib loader write libc1_s bytes to supervisor-mapped
         // phys (which is not where user pages actually live).
-        uint32_t fc = pmmu_fc(cpu, ext & 0x1Fu);
+        uint32_t fc = pmmu_fc(cpu, x.fc5);
         bool fc_supervisor = (fc & 4u) != 0; // FC bit 2 = supervisor
         uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
         if (mmu) {

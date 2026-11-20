@@ -7,6 +7,7 @@
 #include "cpu.h"
 #include "cpu_ea.h"
 #include "debug_mac.h"
+#include "pmmu_ext.h"
 
 #include <assert.h>
 #include <stdarg.h>
@@ -480,15 +481,15 @@ static const char *disasm_pmmu_fc(uint16_t fc5) {
 
 // disassemble CpID=0 type=0 MMU instruction (PMOVE/PFLUSH/PTEST/PLOAD)
 static void disasm_pmmu(uint16_t opcode, uint16_t ext, char *buf, uint16_t **fetch_src) {
-    uint32_t op_type = (ext >> 13) & 7u;
+    pmmu_ext_t x = pmmu_ext_decode(ext); // the executor's decode of the same fields
     uint32_t ea_m = (opcode >> 3) & 7u;
     uint32_t ea_r = opcode & 7u;
 
-    switch (op_type) {
-    case 0: { // PMOVE TT0/TT1
-        uint32_t preg = (ext >> 10) & 7u;
-        uint32_t rw = (ext >> 9) & 1u;
-        uint32_t fd = (ext >> 8) & 1u;
+    switch (x.op) {
+    case PMMU_OP_PMOVE_TT: {
+        uint32_t preg = x.sel;
+        uint32_t rw = x.rw;
+        uint32_t fd = x.fd;
         const char *mnem = fd ? "PMOVEFD" : "PMOVE";
         const char *rname;
         if (preg == 2)
@@ -507,12 +508,12 @@ static void disasm_pmmu(uint16_t opcode, uint16_t ext, char *buf, uint16_t **fet
             sprintf(buf, "%s\t%s,%s", mnem, ea, rname);
         break;
     }
-    case 1: { // PFLUSH or PLOAD
-        uint32_t mode = (ext >> 10) & 7u;
+    case PMMU_OP_PLOAD_PFLUSH: {
+        uint32_t mode = x.sel;
         if (mode == 0) {
             // PLOAD
-            uint32_t rw = (ext >> 9) & 1u;
-            const char *fc = disasm_pmmu_fc(ext & 0x1F);
+            uint32_t rw = x.rw;
+            const char *fc = disasm_pmmu_fc(x.fc5);
             const char *ea = disasm_ea(4, ea_m, ea_r, fetch_src, 1, (ea_control & ea_alterable));
             sprintf(buf, "%s\t%s,%s", rw ? "PLOADR" : "PLOADW", fc, ea);
         } else if (mode == 1) {
@@ -521,14 +522,14 @@ static void disasm_pmmu(uint16_t opcode, uint16_t ext, char *buf, uint16_t **fet
             *fetch_src += 2;
         } else if (mode == 4) {
             // PFLUSH FC,#MASK (by FC only)
-            const char *fc = disasm_pmmu_fc(ext & 0x1F);
-            uint32_t mask = (ext >> 5) & 7u;
+            const char *fc = disasm_pmmu_fc(x.fc5);
+            uint32_t mask = x.mask;
             sprintf(buf, "PFLUSH\t%s,#%d", fc, (int)mask);
             *fetch_src += 2;
         } else if (mode == 6) {
             // PFLUSH FC,#MASK,<ea> (by FC and EA)
-            const char *fc = disasm_pmmu_fc(ext & 0x1F);
-            uint32_t mask = (ext >> 5) & 7u;
+            const char *fc = disasm_pmmu_fc(x.fc5);
+            uint32_t mask = x.mask;
             const char *ea = disasm_ea(4, ea_m, ea_r, fetch_src, 1, (ea_control & ea_alterable));
             sprintf(buf, "PFLUSH\t%s,#%d,%s", fc, (int)mask, ea);
         } else {
@@ -537,10 +538,10 @@ static void disasm_pmmu(uint16_t opcode, uint16_t ext, char *buf, uint16_t **fet
         }
         break;
     }
-    case 2: { // PMOVE TC/SRP/CRP
-        uint32_t preg = (ext >> 10) & 7u;
-        uint32_t rw = (ext >> 9) & 1u;
-        uint32_t fd = (ext >> 8) & 1u;
+    case PMMU_OP_PMOVE_ROOT: {
+        uint32_t preg = x.sel;
+        uint32_t rw = x.rw;
+        uint32_t fd = x.fd;
         const char *mnem = fd ? "PMOVEFD" : "PMOVE";
         const char *rname;
         if (preg == 0)
@@ -561,8 +562,8 @@ static void disasm_pmmu(uint16_t opcode, uint16_t ext, char *buf, uint16_t **fet
             sprintf(buf, "%s\t%s,%s", mnem, ea, rname);
         break;
     }
-    case 3: { // PMOVE MMUSR
-        uint32_t rw = (ext >> 9) & 1u;
+    case PMMU_OP_PMOVE_MMUSR: {
+        uint32_t rw = x.rw;
         const char *ea = disasm_ea(2, ea_m, ea_r, fetch_src, 1, (ea_control & ea_alterable));
         if (rw)
             sprintf(buf, "PMOVE\tMMUSR,%s", ea);
@@ -570,12 +571,12 @@ static void disasm_pmmu(uint16_t opcode, uint16_t ext, char *buf, uint16_t **fet
             sprintf(buf, "PMOVE\t%s,MMUSR", ea);
         break;
     }
-    case 4: { // PTEST
-        uint32_t level = (ext >> 10) & 7u;
-        uint32_t rw = (ext >> 9) & 1u;
-        uint32_t a_field = (ext >> 8) & 1u;
-        uint32_t a_reg = (ext >> 5) & 7u;
-        const char *fc = disasm_pmmu_fc(ext & 0x1F);
+    case PMMU_OP_PTEST: {
+        uint32_t level = x.sel;
+        uint32_t rw = x.rw;
+        uint32_t a_field = x.fd;
+        uint32_t a_reg = x.mask;
+        const char *fc = disasm_pmmu_fc(x.fc5);
         const char *ea = disasm_ea(4, ea_m, ea_r, fetch_src, 1, (ea_control & ea_alterable));
         if (a_field)
             sprintf(buf, "%s\t%s,%s,#%d,A%d", rw ? "PTESTR" : "PTESTW", fc, ea, (int)level, (int)a_reg);
