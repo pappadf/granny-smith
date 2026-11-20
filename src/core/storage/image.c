@@ -189,9 +189,11 @@ static int ghost_paths(image_t *image) {
 }
 
 // The message and code of an export whose writer stopped with `rc` (a
-// storage status or a negative errno): cancelled, an unreadable disk image,
-// or a failed write to `dest`.  The words are user-visible.
-static int export_fail(int rc, const char *dest, char *err, size_t err_cap) {
+// negative errno; a storage status is one): cancelled, an unreadable disk
+// image (`unreadable`: the view's own read failed), or a failed write to
+// `dest`.  Which of the last two is the caller's record, not the number:
+// both are -EIO.  The words are user-visible.
+static int export_fail(int rc, bool unreadable, const char *dest, char *err, size_t err_cap) {
     if (rc == -ECANCELED) {
         if (err)
             snprintf(err, err_cap, "cancelled");
@@ -199,8 +201,7 @@ static int export_fail(int rc, const char *dest, char *err, size_t err_cap) {
     }
     if (err)
         snprintf(err, err_cap,
-                 rc == STATUS_E_IO ? "the disk image could not be read; '%s' not written" : "write to '%s' failed",
-                 dest);
+                 unreadable ? "the disk image could not be read; '%s' not written" : "write to '%s' failed", dest);
     return -EIO;
 }
 
@@ -773,7 +774,17 @@ struct image_export {
     uint8_t dc42_name[DC42_NAME_FIELD]; // the header's name field
     uint8_t disk_format;
     uint8_t format_byte;
+    bool unreadable; // the view could not read the disk (export_view_write)
 };
+
+// Stream the view through `write_cb`, noting whether a failure was the
+// disk's (STATUS_E_IO: the view's reads) rather than the writer's
+// (STATUS_ERROR) or a cancel.  The status passes through.
+static int export_view_write(image_export_t *e, void *ctx, storage_write_callback_t write_cb) {
+    int rc = storage_export_view_write(e->view, ctx, write_cb);
+    e->unreadable = rc == STATUS_E_IO;
+    return rc;
+}
 
 // DiskCopy 4.2's disk-format code for a floppy kind, or -1 for anything else.
 static int dc42_disk_format(enum image_type t) {
@@ -904,10 +915,10 @@ static int image_export_run_udif(image_export_t *e, char *err, size_t err_cap) {
     udif_writer_t *w = udif_writer_open(e->dest, &o, err, err_cap);
     if (!w)
         return -EIO;
-    int rc = storage_export_view_write(e->view, w, udif_write_cb);
+    int rc = export_view_write(e, w, udif_write_cb);
     if (rc != STATUS_OK) {
         udif_writer_abort(w); // removes the partial file
-        return export_fail(rc, e->dest, err, err_cap);
+        return export_fail(rc, e->unreadable, e->dest, err, err_cap);
     }
     rc = udif_writer_finish(w, NULL);
     if (rc != 0 && err)
@@ -940,7 +951,7 @@ static int image_export_run_dc42(image_export_t *e, FILE *f) {
     if (fwrite(hdr, sizeof hdr, 1, f) != 1)
         return -EIO;
     dc42_stream_t d = {.f = f};
-    int rc = storage_export_view_write(e->view, &d, dc42_write_cb);
+    int rc = export_view_write(e, &d, dc42_write_cb);
     if (rc != STATUS_OK)
         return rc; // STATUS_E_IO (the disk could not be read), -ECANCELED, or a write failure
     if (d.bytes > UINT32_MAX)
@@ -986,7 +997,7 @@ static int image_export_run_moof(image_export_t *e, FILE *f) {
     m.buf = (uint8_t *)malloc(m.cap);
     if (!m.buf)
         return -ENOMEM;
-    int rc = storage_export_view_write(e->view, &m, mem_write_cb);
+    int rc = export_view_write(e, &m, mem_write_cb);
     uint32_t sectors = (uint32_t)(m.len / STORAGE_BLOCK_SIZE);
     // The tags, when the image has one per sector (else zeros).
     const uint8_t *tags = e->tags && e->tag_bytes == MOOF_TAG_BYTES && e->tag_count >= sectors ? e->tags : NULL;
@@ -1019,12 +1030,12 @@ int image_export_run(image_export_t *e, char *err, size_t err_cap) {
     char *iobuf = stream_set_large_buffer(f);
     int rc = e->format == EXPORT_DC42   ? image_export_run_dc42(e, f)
              : e->format == EXPORT_MOOF ? image_export_run_moof(e, f)
-                                        : storage_export_view_write(e->view, f, file_write_cb);
+                                        : export_view_write(e, f, file_write_cb);
     bool closed = fclose(f) == 0;
     free(iobuf);
     if (rc != STATUS_OK || !closed) {
         remove(e->dest);
-        return export_fail(rc, e->dest, err, err_cap);
+        return export_fail(rc, e->unreadable, e->dest, err, err_cap);
     }
     return 0;
 }

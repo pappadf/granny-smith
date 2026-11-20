@@ -11,6 +11,7 @@
 // consolidated checkpoint of the disk must fail rather than embed zeros.
 
 #include "checkpoint.h"
+#include "codec.h"
 #include "cpu.h"
 #include "image.h"
 #include "image_internal.h"
@@ -145,6 +146,7 @@ static void cp_free(checkpoint_t *cp) {
 #define STATUS_CHECK_CONDITION 0x02
 
 static uint8_t g_medium[BLOCKS * BLK];
+static int g_bad_rc = -EIO; // what a read of a bad block returns
 
 static int64_t failing_read(source_t *s, uint64_t off, void *buf, size_t len) {
     (void)s;
@@ -153,7 +155,7 @@ static int64_t failing_read(source_t *s, uint64_t off, void *buf, size_t len) {
     if (len > sizeof g_medium - off)
         len = (size_t)(sizeof g_medium - off);
     if (len && off < (uint64_t)BAD_HI * BLK && off + len > (uint64_t)BAD_LO * BLK)
-        return -EIO;
+        return g_bad_rc;
     memcpy(buf, g_medium + off, len);
     return (int64_t)len;
 }
@@ -291,6 +293,44 @@ TEST(test_export_of_unreadable_disk_fails) {
     image_close(img);
 }
 
+// A codec failure crossing into storage keeps its meaning.  The bad blocks
+// are a chunk whose stream does not decode: the source returns the codec's
+// code through codec_errno (as the UDIF / NDIF / QCOW2 decoders do), and
+// storage_read_blocks reports STATUS_E_IO -- which, as an errno, is the I/O
+// error, not "No such file or directory" (STATUS_E_IO was -2, -ENOENT), and
+// not the codec's own -2 (CODEC_ERR_TRUNCATED) either.
+TEST(test_corrupt_chunk_through_storage_is_an_io_error) {
+    static const uint8_t junk[16] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    uint8_t out[64];
+    int64_t crc = codec_decode(CODEC_ZLIB, junk, sizeof junk, out, sizeof out);
+    ASSERT_TRUE(crc < 0);
+    g_bad_rc = codec_errno(crc);
+    image_t *img = open_failing_image();
+    uint8_t buf[BLK];
+    status_t rc = storage_read_blocks(image_get_storage(img), (uint64_t)BAD_LO * BLK, buf, 1);
+    ASSERT_EQ_INT(rc, STATUS_E_IO);
+    ASSERT_EQ_INT(rc, -EIO);
+    ASSERT_TRUE(strcmp(strerror(-rc), strerror(EIO)) == 0);
+    // A truncated stream, whose codec number is -2, is the same I/O error.
+    ASSERT_EQ_INT(codec_errno(CODEC_ERR_TRUNCATED), STATUS_E_IO);
+    // The export of such a disk says the image could not be read; a write
+    // that fails (the export's own -EIO) would say "write ... failed".
+    char dest[] = "/tmp/gs-read-error-export-XXXXXX";
+    int fd = mkstemp(dest);
+    ASSERT_TRUE(fd >= 0);
+    close(fd);
+    unlink(dest);
+    char err[256] = "";
+    image_export_t *e = image_export_begin(img, dest, err, sizeof err);
+    ASSERT_TRUE(e != NULL);
+    ASSERT_EQ_INT(image_export_run(e, err, sizeof err), -EIO);
+    image_export_end(e);
+    ASSERT_TRUE(strstr(err, "could not be read") != NULL);
+    ASSERT_TRUE(access(dest, F_OK) != 0);
+    image_close(img);
+    g_bad_rc = -EIO;
+}
+
 // A consolidated checkpoint of the disk fails the checkpoint, so its .tmp is
 // never renamed over a good one.
 TEST(test_consolidated_checkpoint_of_unreadable_disk_fails) {
@@ -350,6 +390,7 @@ int main(void) {
     RUN(test_scsi_read_of_unreadable_block_is_a_medium_error);
     RUN(test_scsi_verify_of_unreadable_block_is_a_medium_error);
     RUN(test_export_of_unreadable_disk_fails);
+    RUN(test_corrupt_chunk_through_storage_is_an_io_error);
     RUN(test_consolidated_checkpoint_of_unreadable_disk_fails);
     RUN(test_skipped_snapshot_with_oversized_block_is_refused);
     fprintf(stderr, "storage_read_error: all tests passed\n");

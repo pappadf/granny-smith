@@ -74,7 +74,9 @@ typedef struct storage_export_view storage_export_view_t;
 storage_export_view_t *storage_export_view_begin(storage_t *storage);
 // Any thread: streams every block (one callback per block, the checkpoint
 // record shape), reporting progress and stopping on cancel (io_worker.h).
-// A status_t (STATUS_OK or a STATUS_E_* failure), or -ECANCELED.
+// STATUS_OK; STATUS_E_IO when a block of the disk could not be read,
+// STATUS_ERROR when write_cb failed, another STATUS_E_* failure, or
+// -ECANCELED (a status_t is a negative errno, status.h, so one int holds all).
 int storage_export_view_write(storage_export_view_t *v, void *context, storage_write_callback_t write_cb);
 // Emulator thread: closes the view's handles and lifts the lock.
 void storage_export_view_end(storage_export_view_t *v);

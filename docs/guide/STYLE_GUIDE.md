@@ -207,6 +207,13 @@ Example implementation section comment:
 ### Other Conventions
 
 - Avoid magic numbers; use named constants.
+- A fallible call returns 0 (or a count) on success and a negative errno on
+  failure, spelled by its `<errno.h>` name (`-EIO`, `-ENOMEM`), never as a
+  number: errno is numbered differently under Emscripten (`EIO` is 29
+  there).  `status_t` (`src/core/status.h`) is the typed spelling of the
+  same values; a library with its own codes translates at a named bridge
+  (`codec_errno`).  A sentinel that is not an error gets a named constant of
+  its own.  An error-text out-parameter is `char *err, size_t err_len`.
 - Use `bool`, `true`, `false` from `<stdbool.h>`.
 - Free all allocated memory; avoid leaks.
 
