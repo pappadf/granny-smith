@@ -213,6 +213,17 @@ typedef struct image_list {
 // when `images` is NULL).
 image_t *images_find(const image_list_t *images, const char *name);
 
+// Write which image a drive holds, by name (image_ref.c): the
+// checkpoint_write_string form, so NULL or a nameless image writes length 0.
+void checkpoint_write_image_ref(checkpoint_t *cp, const image_t *img);
+
+// Read what checkpoint_write_image_ref wrote and resolve it in `images`.
+// NULL for "no image"; a name that does not resolve logs "<what>: the
+// checkpoint's image '...' is not among its images" and flags `cp`, as does a
+// length over CHECKPOINT_MAX_PATH.  `named` (may be NULL) is set to whether
+// the stream held a name at all.
+image_t *checkpoint_read_image_ref(checkpoint_t *cp, const image_list_t *images, const char *what, bool *named);
+
 // Create an empty disk image file of the specified size (for checkpoint restore)
 int image_create_empty(const char *filename, uint64_t size);
 

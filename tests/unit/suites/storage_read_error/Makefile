@@ -42,4 +42,6 @@ SANITIZE := $(if $(filter emcc%,$(notdir $(firstword $(CC)))),,-fsanitize=addres
 EXTRA_CFLAGS := $(SANITIZE)
 LDFLAGS += $(SANITIZE)
 
+# The drive-to-image checkpoint reference the media controllers write
+EXTRA_SRCS += ../../../../src/core/storage/image_ref.c
 include ../../common.mk

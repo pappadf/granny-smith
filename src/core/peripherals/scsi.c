@@ -50,6 +50,7 @@ static const class_desc_t scsi_image_class;
 #include <assert.h>
 #include <limits.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -1372,33 +1373,10 @@ scsi_t *scsi_init_named(struct scheduler *sched, checkpoint_t *checkpoint, const
             // this slot", and after a restore that is only knowable by whether
             // the lookup succeeded.  Eject clears the image too (see
             // scsi_eject_device), so the two cannot disagree.
-            uint32_t len = 0;
-            system_read_checkpoint_data(checkpoint, &len, sizeof(len));
-            scsi->device_images[i] = NULL;
-            scsi->devices[i].medium_present = false;
-            if (len > 0) {
-                char *name = (char *)malloc(len);
-                if (name) {
-                    system_read_checkpoint_data(checkpoint, name, len);
-                    name[len - 1] = '\0';
-                    image_t *img = images_find(images, name);
-                    if (img) {
-                        scsi->device_images[i] = img;
-                        scsi->devices[i].medium_present = true;
-                    } else {
-                        // The device held a medium: a restore without it is
-                        // not the machine that was saved.
-                        LOG(0, "SCSI id %d: the checkpoint's medium '%s' is not among its images", i, name);
-                        checkpoint_set_error(checkpoint);
-                    }
-                    free(name);
-                } else {
-                    // consume bytes to keep stream aligned
-                    char tmp;
-                    for (uint32_t k = 0; k < len; ++k)
-                        system_read_checkpoint_data(checkpoint, &tmp, 1);
-                }
-            }
+            char what[24];
+            snprintf(what, sizeof what, "SCSI id %d", i);
+            scsi->device_images[i] = checkpoint_read_image_ref(checkpoint, images, what, NULL);
+            scsi->devices[i].medium_present = scsi->device_images[i] != NULL;
         }
 
         // Restore buffer contents (if any). The buf.data has been allocated above. Restore its max/size/pos first.
@@ -1770,15 +1748,8 @@ void scsi_checkpoint(scsi_t *restrict scsi, checkpoint_t *checkpoint) {
 
     // The medium in each slot, by name.  The image itself is re-opened on
     // restore; only the filename is meaningful across processes.
-    for (int i = 0; i < 8; i++) {
-        const char *name = scsi->device_images[i] ? image_get_filename(scsi->device_images[i]) : NULL;
-        uint32_t len = 0;
-        if (name && *name)
-            len = (uint32_t)strlen(name) + 1; // include NUL
-        system_write_checkpoint_data(checkpoint, &len, sizeof(len));
-        if (len)
-            system_write_checkpoint_data(checkpoint, name, len);
-    }
+    for (int i = 0; i < 8; i++)
+        checkpoint_write_image_ref(checkpoint, scsi->device_images[i]);
 
     // buf is its own case: the metadata is plain data but `data` is a pointer
     // to a variable-length region.  Persist the full staged span

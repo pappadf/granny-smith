@@ -118,16 +118,6 @@ size_t checkpoint_read_file_loc(checkpoint_t *cp, uint8_t *dest, size_t capacity
         *out_path = NULL;
     return 0;
 }
-bool checkpoint_read_count(checkpoint_t *cp, uint32_t *out, uint32_t max, const char *what) {
-    (void)what;
-    system_read_checkpoint_data_loc(cp, out, sizeof *out, NULL, __FILE__, __LINE__);
-    if (*out > max) {
-        checkpoint_set_error(cp);
-        *out = 0;
-        return false;
-    }
-    return true;
-}
 void machine_part_begin(struct config *cfg, checkpoint_t *cp, const char *name) {
     (void)cfg, (void)cp, (void)name;
 }

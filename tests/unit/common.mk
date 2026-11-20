@@ -119,6 +119,7 @@ else ifeq ($(TEST_HARNESS),isolated)
   STUB_SRCS := $(UNIT_ROOT)/support/stub_platform.c \
                $(UNIT_ROOT)/support/stub_shell.c \
                $(UNIT_ROOT)/support/stub_checkpoint.c \
+               $(UNIT_ROOT)/support/stub_checkpoint_strings.c \
                $(UNIT_ROOT)/support/stub_system.c \
                $(UNIT_ROOT)/support/stub_memory.c \
                $(UNIT_ROOT)/support/stub_debugger.c \
@@ -133,6 +134,7 @@ else ifeq ($(TEST_HARNESS),cpu)
   STUB_SRCS := $(UNIT_ROOT)/support/stub_platform.c \
                $(UNIT_ROOT)/support/stub_shell.c \
                $(UNIT_ROOT)/support/stub_checkpoint.c \
+               $(UNIT_ROOT)/support/stub_checkpoint_strings.c \
                $(UNIT_ROOT)/support/stub_system.c \
                $(UNIT_ROOT)/support/stub_debugger.c \
                $(UNIT_ROOT)/support/stub_peripherals.c \
@@ -166,7 +168,9 @@ else
 endif
 
 # Harness stubs a suite replaces with the real module (e.g. memory), and
-# support stubs it adds by name.
+# support stubs it adds by name.  The checkpoint stub brings the bounded
+# count/string readers built over it (stub_checkpoint_strings.c).
+STUBS := $(STUBS) $(if $(filter checkpoint,$(STUBS)),$(if $(filter checkpoint_strings,$(STUBS)),,checkpoint_strings))
 COMMON_SRCS := $(filter-out $(foreach s,$(OMIT_STUBS),$(UNIT_ROOT)/support/stub_$(s).c),$(COMMON_SRCS)) \
                $(foreach s,$(STUBS),$(UNIT_ROOT)/support/stub_$(s).c)
 # The GS_ASSERT handlers come with the assert stub: they are the tools'

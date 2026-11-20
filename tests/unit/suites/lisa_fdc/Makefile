@@ -29,4 +29,6 @@ EXTRA_SRCS   := ../../../../src/machines/lisa/lisa_fdc.c \
 EXTRA_CFLAGS  = -I$(EMU_ROOT)/machines/lisa
 
 USE_SOURCE_LAYER := 1
+# The drive-to-image checkpoint reference the media controllers write
+EXTRA_SRCS += ../../../../src/core/storage/image_ref.c
 include ../../common.mk

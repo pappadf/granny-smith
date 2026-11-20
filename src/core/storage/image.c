@@ -1177,15 +1177,7 @@ image_t *images_find(const image_list_t *images, const char *name) {
 void image_checkpoint(const image_t *image, checkpoint_t *checkpoint) {
     if (!image || !checkpoint)
         return;
-    uint32_t len = 0;
-    const char *name = image->filename;
-    if (name && *name) {
-        size_t n = strlen(name) + 1;
-        len = (uint32_t)n;
-    }
-    system_write_checkpoint_data(checkpoint, &len, sizeof(len));
-    if (len)
-        system_write_checkpoint_data(checkpoint, name, len);
+    checkpoint_write_string(checkpoint, image->filename);
 
     // Bit 0: writable.  Bit 1: wrapped by the bare-volume wrapper — the
     // restore re-wraps rather than trusting the file to say so (the prefix
@@ -1199,20 +1191,14 @@ void image_checkpoint(const image_t *image, checkpoint_t *checkpoint) {
     system_write_checkpoint_data(checkpoint, &raw_size, sizeof(raw_size));
 
     // Persist the instance path so a future restore can reopen the same delta
-    // directory without relying on adjacent-to-base sidecars.  Empty
-    // string for read-only / ghost mounts.
-    const char *instance = (image->writable && image->instance_path) ? image->instance_path : "";
-    uint32_t instance_len = (uint32_t)(strlen(instance) + 1);
-    system_write_checkpoint_data(checkpoint, &instance_len, sizeof(instance_len));
-    system_write_checkpoint_data(checkpoint, instance, instance_len);
+    // directory without relying on adjacent-to-base sidecars.  None
+    // (length 0) for read-only / ghost mounts.
+    checkpoint_write_string(checkpoint, (image->writable && image->instance_path) ? image->instance_path : NULL);
 
     // The key of the source the path opened (source.h): a restore that
     // reuses the base checks it is still the same bytes -- the same file,
     // size and time stamp, or the same member of the same archive.
-    const char *key = image->source_key ? image->source_key : "";
-    uint32_t key_len = (uint32_t)(strlen(key) + 1);
-    system_write_checkpoint_data(checkpoint, &key_len, sizeof(key_len));
-    system_write_checkpoint_data(checkpoint, key, key_len);
+    checkpoint_write_string(checkpoint, image->source_key);
 
     if (image->storage) {
         status_t rc = storage_checkpoint(image->storage, checkpoint);

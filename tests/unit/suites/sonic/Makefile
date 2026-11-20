@@ -6,7 +6,7 @@
 TEST_NAME    := sonic
 TEST_SRCS    := test.c
 TEST_HARNESS := isolated
-OMIT_STUBS   := shell checkpoint memory debugger peripherals assert
+OMIT_STUBS   := shell checkpoint checkpoint_strings memory debugger peripherals assert
 EXTRA_SRCS   := ../../../../src/core/peripherals/dma_mem.c \
                 ../../../../src/core/peripherals/sonic.c
 include ../../common.mk

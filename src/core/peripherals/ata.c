@@ -1037,13 +1037,8 @@ void ata_checkpoint_save(ata_channel_t *ch, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, ch->buf, ATA_BUF_SIZE);
     if (ch->atapi_resp_len)
         system_write_checkpoint_data(cp, ch->atapi_resp, ch->atapi_resp_len);
-    for (int u = 0; u < 2; u++) {
-        const char *name = ch->img[u] ? image_get_filename(ch->img[u]) : NULL;
-        uint32_t len = (name && *name) ? (uint32_t)strlen(name) + 1u : 0u;
-        system_write_checkpoint_data(cp, &len, sizeof len);
-        if (len)
-            system_write_checkpoint_data(cp, name, len);
-    }
+    for (int u = 0; u < 2; u++)
+        checkpoint_write_image_ref(cp, ch->img[u]);
 }
 
 void ata_checkpoint_restore(ata_channel_t *ch, checkpoint_t *cp, const image_list_t *images) {
@@ -1062,28 +1057,9 @@ void ata_checkpoint_restore(ata_channel_t *ch, checkpoint_t *cp, const image_lis
         }
     }
     for (int u = 0; u < 2; u++) {
-        uint32_t len = 0;
-        system_read_checkpoint_data(cp, &len, sizeof len);
-        ch->img[u] = NULL;
-        if (!len)
-            continue;
-        char *name = (char *)malloc(len);
-        if (!name) {
-            uint8_t tmp;
-            for (uint32_t i = 0; i < len; i++)
-                system_read_checkpoint_data(cp, &tmp, 1);
-            continue;
-        }
-        system_read_checkpoint_data(cp, name, len);
-        name[len - 1] = '\0';
-        ch->img[u] = images_find(images, name);
-        if (!ch->img[u]) {
-            // The unit held a disk: a restore without it is not the machine
-            // that was saved.
-            LOG(0, "ch%d dev%d: the checkpoint's image '%s' is not among its images", ch->index, u, name);
-            checkpoint_set_error(cp);
-        }
-        free(name);
+        char what[24];
+        snprintf(what, sizeof what, "ch%d dev%d", ch->index, u);
+        ch->img[u] = checkpoint_read_image_ref(cp, images, what, NULL);
     }
     for (int u = 0; u < 2; u++)
         if (ch->dev[u].kind == ATA_DEV_HD && !ch->img[u])

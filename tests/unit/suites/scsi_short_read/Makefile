@@ -41,4 +41,6 @@ USE_SOURCE_LAYER := 1
 EXTRA_SRCS += ../../../../src/core/storage/image_iso9660.c
 # The image_t accessors (image.h)
 EXTRA_SRCS += ../../../../src/core/storage/image_access.c
+# The drive-to-image checkpoint reference the media controllers write
+EXTRA_SRCS += ../../../../src/core/storage/image_ref.c
 include ../../common.mk

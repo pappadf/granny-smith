@@ -1093,31 +1093,13 @@ floppy_t *floppy_init(floppy_type_t type, memory_map_t *map, struct scheduler *s
 
         // Restore disk images by filename
         for (int i = 0; i < NUM_DRIVES; i++) {
-            floppy->disk[i] = NULL;
-            uint32_t len = 0;
-            system_read_checkpoint_data(checkpoint, &len, sizeof(len));
-            if (len > 0) {
-                char *name = malloc(len);
-                if (name) {
-                    system_read_checkpoint_data(checkpoint, name, len);
-                    name[len - 1] = '\0';
-                    floppy->disk[i] = images_find(images, name);
-                    if (!floppy->disk[i]) {
-                        // The drive held a disk: a restore without it is not
-                        // the machine that was saved.
-                        LOG(0, "floppy drive %d: the checkpoint's disk '%s' is not among its images", i, name);
-                        checkpoint_set_error(checkpoint);
-                    }
-                    floppy_notify_present(i, floppy->disk[i] != NULL);
-                    free(name);
-                } else {
-                    // Consume bytes to keep stream aligned
-                    for (uint32_t k = 0; k < len; k++) {
-                        char tmp;
-                        system_read_checkpoint_data(checkpoint, &tmp, 1);
-                    }
-                }
-            }
+            char what[24];
+            snprintf(what, sizeof what, "floppy drive %d", i);
+            bool named = false;
+            floppy->disk[i] = checkpoint_read_image_ref(checkpoint, images, what, &named);
+            // A drive that held a disk tells the frontend whether it is back
+            if (named)
+                floppy_notify_present(i, floppy->disk[i] != NULL);
         }
 
         // Restore GCR track buffers.  trk->size comes from the file, but
@@ -1326,13 +1308,8 @@ void floppy_checkpoint(floppy_t *restrict floppy, checkpoint_t *checkpoint) {
     free(prefix);
 
     // Write disk filenames for each drive
-    for (int i = 0; i < NUM_DRIVES; i++) {
-        const char *name = floppy->disk[i] ? image_get_filename(floppy->disk[i]) : NULL;
-        uint32_t len = (name && *name) ? (uint32_t)strlen(name) + 1 : 0;
-        system_write_checkpoint_data(checkpoint, &len, sizeof(len));
-        if (len)
-            system_write_checkpoint_data(checkpoint, name, len);
-    }
+    for (int i = 0; i < NUM_DRIVES; i++)
+        checkpoint_write_image_ref(checkpoint, floppy->disk[i]);
 
     // Save GCR track buffers (preserves in-flight write data)
     for (int d = 0; d < NUM_DRIVES; d++) {

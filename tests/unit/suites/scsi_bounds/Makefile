@@ -51,4 +51,6 @@ EXTRA_SRCS += ../../../../src/core/storage/image_access.c
 ifneq ($(filter emcc%,$(notdir $(firstword $(CC)))),)
 override LDFLAGS += -sNODERAWFS=1
 endif
+# The drive-to-image checkpoint reference the media controllers write
+EXTRA_SRCS += ../../../../src/core/storage/image_ref.c
 include ../../common.mk

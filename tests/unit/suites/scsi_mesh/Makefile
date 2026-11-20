@@ -12,7 +12,7 @@ TEST_SRCS    := test.c
 # The test supplies the mock bus, the mock guest memory and a recording
 # checkpoint stream itself; from support/ it takes only the assert stub.
 TEST_HARNESS := none
-STUBS        := assert
+STUBS        := assert checkpoint_strings
 # scsi_msgsession.c is the real IDENTIFY/SDTR/WDTR parser, shared with the
 # 53C8xx SCRIPTS engine: pure logic, no emulator dependencies, so the suite
 # links the actual code rather than a stub.
@@ -35,4 +35,6 @@ USE_SOURCE_LAYER := 1
 EXTRA_SRCS += ../../../../src/core/storage/image_iso9660.c
 # The real image_t accessors; the rest of the image layer is faked here
 EXTRA_SRCS += ../../../../src/core/storage/image_access.c
+# The drive-to-image checkpoint reference the media controllers write
+EXTRA_SRCS += ../../../../src/core/storage/image_ref.c
 include ../../common.mk
