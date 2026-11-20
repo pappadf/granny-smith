@@ -61,7 +61,7 @@ MACHINE_PART_SAVE_EXTERN(scsi96, scsi_53c96_checkpoint, scsi_53c96_t)
 MACHINE_PART_SAVE_EXTERN(sonic, sonic_checkpoint, sonic_t)
 MACHINE_PART_SAVE_EXTERN(egret, egret_checkpoint, egret_t)
 MACHINE_PART_SAVE_EXTERN(iop, iop_checkpoint, iop_t)
-MACHINE_PART_SAVE_EXTERN(cuda, av_cuda_checkpoint, av_cuda_t)
+MACHINE_PART_SAVE_EXTERN(cuda, cuda_checkpoint, cuda_t)
 MACHINE_PART_SAVE_EXTERN(dbdma, dbdma_checkpoint, dbdma_t)
 MACHINE_PART_SAVE_EXTERN(mesh, mesh_checkpoint, mesh_t)
 

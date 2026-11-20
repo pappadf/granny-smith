@@ -55,7 +55,7 @@
 #include "swim3.h"
 #include "swim3_dbdma.h"
 
-struct av_cuda; // the shared behavioral Cuda model (machines/av/cuda.h)
+struct cuda; // the shared behavioral Cuda model (core/peripherals/cuda.h)
 struct dbdma; // the DBDMA engine (dbdma.h)
 struct scsi_53c96; // the external-bus SCSI chip (core scsi_53c96.h)
 
@@ -340,7 +340,7 @@ typedef struct tnt_state {
     int bridge_count;
     struct pci_bus *gc_bus; // Bandit 1's bus: the island's direct mapping follows its lane mode
     pci_device_t gc_dev; // Grand Central's config presence (device 16)
-    struct av_cuda *cuda;
+    struct cuda *cuda;
     struct dbdma *dbdma; // the 11-channel DMA engine (island +$8000)
     tnt_awacs_t awacs;
     davbus_host_t awacs_host; // the cell's wiring (awacs.c; not checkpointed)
@@ -523,7 +523,7 @@ uint8_t tnt_control_rad_read(config_t *cfg, uint32_t offset);
 // The same cell without the read's RGB-phase step (memory_interface_t.peek_*).
 uint8_t tnt_control_rad_peek(config_t *cfg, uint32_t offset);
 void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value);
-// The pixel-clock synthesiser on Cuda's I2C bus (av_cuda_attach_i2c_write).
+// The pixel-clock synthesiser on Cuda's I2C bus (cuda_attach_i2c_write).
 bool tnt_control_i2c_write(void *ctx, uint8_t slave, const uint8_t *data, int len);
 // Presentation: the primary display descriptor (NULL before init), and the
 // host-frame dirty mark (guest CPU writes bypass the renderer).

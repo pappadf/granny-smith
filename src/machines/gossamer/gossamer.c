@@ -25,7 +25,7 @@
 #include "gossamer.h"
 #include "config_seed.h"
 
-#include "cuda.h" // the shared behavioral Cuda model (machines/av/)
+#include "cuda.h" // the shared behavioral Cuda model (core/peripherals/)
 #include "davbus.h"
 #include "dbdma.h"
 
@@ -130,12 +130,12 @@ static void gos_dbdma_irq(void *ctx, int chan) {
 
 static void gos_via1_output(void *context, uint8_t port, uint8_t value) {
     gossamer_state_t *st = gos_st((config_t *)context);
-    av_cuda_via1_port_output(st ? st->cuda : NULL, port, value);
+    cuda_via1_port_output(st ? st->cuda : NULL, port, value);
 }
 
 static void gos_via1_shift_out(void *context, uint8_t byte) {
     gossamer_state_t *st = gos_st((config_t *)context);
-    av_cuda_via1_shift_input(st ? st->cuda : NULL, byte);
+    cuda_via1_shift_input(st ? st->cuda : NULL, byte);
 }
 
 // VIA IRQ -> Heathrow source $12 (IPL 1 in the kind-7 classification).
@@ -286,8 +286,8 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     st->cuda = ppc_build_cuda(cfg, cp);
     if (!st->cuda)
         return -1;
-    av_cuda_set_firmware_240(st->cuda);
-    av_cuda_attach_i2c_bus(st->cuda, gos_i2c_read, gos_i2c_write, cfg);
+    cuda_set_firmware_240(st->cuda);
+    cuda_attach_i2c_bus(st->cuda, gos_i2c_read, gos_i2c_write, cfg);
 
     // DBDMA: Heathrow's thirteen channel blocks.
     machine_part_begin(cfg, cp, "dbdma");
@@ -410,7 +410,7 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
 // A power cycle's power-on-only half (machine_profile.h): Cuda stays
 // powered, but the host side of its VIA1 handshake went down under it.
 static void gossamer_power_on(config_t *cfg) {
-    av_cuda_host_power_cycle(gos_st(cfg)->cuda);
+    cuda_host_power_cycle(gos_st(cfg)->cuda);
 }
 
 static void gossamer_bus_reset(config_t *cfg) {
@@ -452,7 +452,7 @@ static void gossamer_teardown(config_t *cfg) {
         st->dbdma = NULL;
     }
     if (st && st->cuda) {
-        av_cuda_delete(st->cuda);
+        cuda_delete(st->cuda);
         st->cuda = NULL;
     }
     machine_teardown_config_devices(cfg); // the adb after the Cuda above, then the rest

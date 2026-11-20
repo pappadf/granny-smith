@@ -3,7 +3,7 @@
 
 // cuda.c
 // Behavioral Cuda 2.37 model — see cuda.h for the transport contract.
-// Forked from mdu/egret.c and diverged to the Cuda wire protocol:
+// Forked from egret.c and diverged to the Cuda wire protocol:
 //
 //   Host -> Cuda (a command packet): the host puts the VIA SR in output
 //     mode, writes the first byte, then asserts TIP (low).  Each further
@@ -31,8 +31,6 @@
 // byte only for errorPkt).
 
 #include "cuda.h"
-
-#include "vdc.h"
 
 #include "adb.h"
 #include "adb_mcu_link.h"
@@ -149,7 +147,7 @@ typedef enum {
 #define CUDA_RX_MAX 24 // command bytes the host can send in one packet
 #define CUDA_TX_MAX 264 // response bytes (header + up to 256 PRAM/ADB data)
 
-struct av_cuda {
+struct cuda {
     // --- plain data (checkpointed up to the first pointer field) ---
     cuda_state_t state;
 
@@ -210,17 +208,20 @@ struct av_cuda {
     struct rtc *rtc;
     struct adb *adb;
     struct scheduler *sched;
-    struct av_vdc *vdc; // I2C targets behind pseudo-command $22 (may be NULL)
-    av_cuda_i2c_write_fn i2c_write; // machine-level I2C write target (may be NULL)
+    // A fixed set of I2C targets behind pseudo-command $22 (the AV video
+    // digitizer's DMSD + VDC); NULL when the board has none.
+    const cuda_i2c_targets_t *targets;
+    void *targets_ctx;
+    cuda_i2c_write_fn i2c_write; // machine-level I2C write target (may be NULL)
     void *i2c_write_ctx;
     // A machine-level I2C BUS (reads and writes, every slave on it): when
     // set, it answers every $22/$25 transaction, and a slave it does not
     // claim gets the error packet a real Cuda returns for a NAK.  The
     // Gossamer board's SPD and PERCH EEPROMs live here.
-    av_cuda_i2c_read_fn bus_read;
-    av_cuda_i2c_write_fn bus_write;
+    cuda_i2c_read_fn bus_read;
+    cuda_i2c_write_fn bus_write;
     void *bus_ctx;
-    // Firmware 2.40's wider pseudo-command table (av_cuda_set_firmware_240).
+    // Firmware 2.40's wider pseudo-command table (cuda_set_firmware_240).
     bool fw240;
 
     // Fixed machine property (config, not guest state): whether the one-second
@@ -234,7 +235,7 @@ struct av_cuda {
 static void cuda_tick_event(void *source, uint64_t data);
 static void cuda_reset_event(void *source, uint64_t data);
 static void cuda_adb_talk_event(void *source, uint64_t data);
-static void cuda_adb_service(struct av_cuda *cuda);
+static void cuda_adb_service(struct cuda *cuda);
 static void cuda_push_event(void *source, uint64_t data);
 static void cuda_send_timeout_event(void *source, uint64_t data);
 static void cuda_resend_event(void *source, uint64_t data);
@@ -243,13 +244,13 @@ static void cuda_treq_release_event(void *source, uint64_t data);
 // === TREQ / SR helpers ======================================================
 
 // Drive the TREQ (PB3) input level the host sees.  Active-low: high = idle.
-static void cuda_set_treq(av_cuda_t *cuda, bool high) {
+static void cuda_set_treq(cuda_t *cuda, bool high) {
     cuda->treq_high = high;
     via_input(cuda->via1, 1, 3, high);
 }
 
 // Clock a byte into the host's SR after the firmware's ~25 us think time.
-static void cuda_push_after(av_cuda_t *cuda, uint8_t byte, double delay_ns) {
+static void cuda_push_after(cuda_t *cuda, uint8_t byte, double delay_ns) {
     cuda->push_pending = true;
     cuda->push_byte = byte;
     cuda->push_last = false;
@@ -257,7 +258,7 @@ static void cuda_push_after(av_cuda_t *cuda, uint8_t byte, double delay_ns) {
     scheduler_new_cpu_event(cuda->sched, &cuda_push_event, cuda, 0, 0, (uint64_t)delay_ns);
 }
 
-static void cuda_push_delayed(av_cuda_t *cuda, uint8_t byte) {
+static void cuda_push_delayed(cuda_t *cuda, uint8_t byte) {
     cuda_push_after(cuda, byte, CUDA_PUSH_DELAY_NS);
 }
 
@@ -266,7 +267,7 @@ static void cuda_push_delayed(av_cuda_t *cuda, uint8_t byte) {
 // path does); a delayed push landing inside the NEXT transaction would set
 // the SR interrupt out of phase and garble the byte stream, so any new bus
 // activity invalidates whatever is still pending.
-static void cuda_cancel_push(av_cuda_t *cuda) {
+static void cuda_cancel_push(cuda_t *cuda) {
     if (!cuda->push_pending)
         return;
     cuda->push_pending = false;
@@ -275,7 +276,7 @@ static void cuda_cancel_push(av_cuda_t *cuda) {
 
 static void cuda_push_event(void *source, uint64_t data) {
     (void)data;
-    av_cuda_t *cuda = (av_cuda_t *)source;
+    cuda_t *cuda = (cuda_t *)source;
     if (!cuda->push_pending)
         return;
     cuda->push_pending = false;
@@ -290,7 +291,7 @@ static void cuda_push_event(void *source, uint64_t data) {
 
 // Push the tx_buf byte at `idx`, raising TREQ with the last byte (the
 // host's per-byte "was this the last?" check reads TREQ after the byte).
-static void cuda_push_byte(av_cuda_t *cuda, int idx) {
+static void cuda_push_byte(cuda_t *cuda, int idx) {
     bool last = (idx == cuda->tx_len - 1);
     cuda_set_treq(cuda, last);
     via_input_sr(cuda->via1, cuda->tx_buf[idx]);
@@ -299,7 +300,7 @@ static void cuda_push_byte(av_cuda_t *cuda, int idx) {
 // Advance to the next response byte and clock it one byte time later (see
 // CUDA_BYTE_NS), or ignore if none remain (the trailing idle acknowledge is
 // produced on the TIP rising edge).  TREQ negates with the last byte.
-static void cuda_advance_tx(av_cuda_t *cuda) {
+static void cuda_advance_tx(cuda_t *cuda) {
     if (cuda->tx_idx + 1 < cuda->tx_len) {
         cuda->tx_idx++;
         cuda_push_after(cuda, cuda->tx_buf[cuda->tx_idx], CUDA_BYTE_NS);
@@ -311,7 +312,7 @@ static void cuda_advance_tx(av_cuda_t *cuda) {
 
 // Begin sending a freshly-built response: assert TREQ and clock the
 // attention byte; the host asserts TIP to accept.
-static void cuda_begin_send(av_cuda_t *cuda) {
+static void cuda_begin_send(cuda_t *cuda) {
     cuda_cancel_push(cuda); // a stale idle-ack must not fire mid-response
     cuda->tx_represented = false; // a fresh presentation (the resend path re-flags)
     cuda->state = CUDA_SENDING;
@@ -327,7 +328,7 @@ static void cuda_begin_send(av_cuda_t *cuda) {
 }
 
 // Cancel the abandonment watchdog: the host engaged with the response.
-static void cuda_send_progress(av_cuda_t *cuda) {
+static void cuda_send_progress(cuda_t *cuda) {
     if (!cuda->send_timeout_pending)
         return;
     cuda->send_timeout_pending = false;
@@ -343,12 +344,12 @@ static void cuda_send_progress(av_cuda_t *cuda) {
 // window would let the abandonment watchdog reap the reply again).
 #define CUDA_RESEND_DELAY_NS 2000000.0
 
-static bool cuda_bus_idle(av_cuda_t *cuda);
-static bool cuda_present_parked_autopoll(av_cuda_t *cuda);
+static bool cuda_bus_idle(cuda_t *cuda);
+static bool cuda_present_parked_autopoll(cuda_t *cuda);
 
 static void cuda_resend_event(void *source, uint64_t data) {
     (void)data;
-    av_cuda_t *cuda = (av_cuda_t *)source;
+    cuda_t *cuda = (cuda_t *)source;
     if (!cuda->resend_pending) {
         if (cuda->ap.len && cuda_bus_idle(cuda))
             cuda_present_parked_autopoll(cuda);
@@ -371,7 +372,7 @@ static void cuda_resend_event(void *source, uint64_t data) {
 // negated ByteAck (the idle acknowledge byte follows separately).
 static void cuda_treq_release_event(void *source, uint64_t data) {
     (void)data;
-    av_cuda_t *cuda = (av_cuda_t *)source;
+    cuda_t *cuda = (cuda_t *)source;
     if (!cuda->treq_release_pending)
         return;
     cuda->treq_release_pending = false;
@@ -393,7 +394,7 @@ static void cuda_treq_release_event(void *source, uint64_t data) {
 // the packet once the bus settles, exactly like a sync-aborted reply.
 static void cuda_send_timeout_event(void *source, uint64_t data) {
     (void)data;
-    av_cuda_t *cuda = (av_cuda_t *)source;
+    cuda_t *cuda = (cuda_t *)source;
     if (!cuda->send_timeout_pending)
         return;
     cuda->send_timeout_pending = false;
@@ -420,7 +421,7 @@ static void cuda_send_timeout_event(void *source, uint64_t data) {
 }
 
 // Build the 5-byte error packet [attn, errorPkt, code, pktType, cmd].
-static void cuda_send_error(av_cuda_t *cuda, uint8_t code, uint8_t pkt_type, uint8_t cmd) {
+static void cuda_send_error(cuda_t *cuda, uint8_t code, uint8_t pkt_type, uint8_t cmd) {
     cuda->tx_buf[0] = 0x00;
     cuda->tx_buf[1] = ADB_MCU_PKT_ERROR;
     cuda->tx_buf[2] = code;
@@ -432,7 +433,7 @@ static void cuda_send_error(av_cuda_t *cuda, uint8_t code, uint8_t pkt_type, uin
 }
 
 // Process a completed ADB command packet (rx = [adbPkt, adbCmd, listen...]).
-static void cuda_process_adb(av_cuda_t *cuda) {
+static void cuda_process_adb(cuda_t *cuda) {
     bool replied;
     int out_len;
     cuda->tx_len =
@@ -443,7 +444,7 @@ static void cuda_process_adb(av_cuda_t *cuda) {
 
 // True if the firmware's dispatch rejects this pseudo-command (2.37's
 // table, or 2.40's two extra slots when that part is fitted).
-static bool cuda_cmd_rejected(const av_cuda_t *cuda, uint8_t cmd) {
+static bool cuda_cmd_rejected(const cuda_t *cuda, uint8_t cmd) {
     if (cmd > (cuda->fw240 ? CUDA_MAX_PSEUDO_240 : CUDA_MAX_PSEUDO))
         return true;
     for (size_t i = 0; i < sizeof(cuda_rejected_cmds); i++)
@@ -453,7 +454,7 @@ static bool cuda_cmd_rejected(const av_cuda_t *cuda, uint8_t cmd) {
 }
 
 // Process a completed pseudo-command packet (rx = [pseudoPkt, cmd, data...]).
-static void cuda_process_pseudo(av_cuda_t *cuda) {
+static void cuda_process_pseudo(cuda_t *cuda) {
     uint8_t cmd = (cuda->rx_len >= 2) ? cuda->rx_buf[1] : CMD_NOP;
     const uint8_t *data = &cuda->rx_buf[2];
     int data_len = cuda->rx_len - 2;
@@ -631,7 +632,7 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
         // answers first; the acknowledgement is header-only either way.
         if (!(slave & 1) && cuda->i2c_write && cuda->i2c_write(cuda->i2c_write_ctx, slave, &data[1], data_len - 1))
             break;
-        if (!cuda->vdc) {
+        if (!cuda->targets) {
             // Nothing else on this board's bus: the slave does not ACK, and
             // the transaction fails as it does on the wire.  Acknowledging
             // it instead tells the guest a part is there.  System 7.5's
@@ -645,7 +646,7 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
             cuda_send_error(cuda, CUDA_ERR_INVPSEUDO, ADB_MCU_PKT_PSEUDO, cmd);
             return;
         }
-        if (!av_vdc_i2c_slave_known(slave)) {
+        if (!cuda->targets->slave_known(slave)) {
             // Only the DMSD and VDC are on the bus; the real handler's behavior
             // for other addresses was never analysed — reject loudly so a guest
             // probing one is visible.
@@ -654,10 +655,10 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
             return;
         }
         if (slave & 1)
-            n += av_vdc_i2c_read(cuda->vdc, slave, data_len >= 2, (data_len >= 2) ? data[1] : 0, &cuda->tx_buf[n],
-                                 CUDA_TX_MAX - n);
+            n += cuda->targets->read(cuda->targets_ctx, slave, data_len >= 2, (data_len >= 2) ? data[1] : 0,
+                                     &cuda->tx_buf[n], CUDA_TX_MAX - n);
         else
-            av_vdc_i2c_write(cuda->vdc, slave, &data[1], data_len - 1);
+            cuda->targets->write(cuda->targets_ctx, slave, &data[1], data_len - 1);
         break;
     }
     case CMD_COMBIIC: {
@@ -696,7 +697,7 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
 }
 
 // Dispatch a completed command packet by its packet-type byte.
-static void cuda_process_command(av_cuda_t *cuda) {
+static void cuda_process_command(cuda_t *cuda) {
     cuda->resend_pending = false; // a new command supersedes a stale reply
     uint8_t pkt_type = (cuda->rx_len >= 1) ? cuda->rx_buf[0] : ADB_MCU_PKT_PSEUDO;
     LOG(4, "command pkt type=$%02X len=%d", pkt_type, cuda->rx_len);
@@ -717,12 +718,12 @@ static void cuda_process_command(av_cuda_t *cuda) {
 
 // === VIA1 transport hooks ===================================================
 
-void av_cuda_via1_port_output(av_cuda_t *cuda, uint8_t port, uint8_t value) {
+void cuda_via1_port_output(cuda_t *cuda, uint8_t port, uint8_t value) {
     if (port == 1)
-        av_cuda_via1_pb_input(cuda, value);
+        cuda_via1_pb_input(cuda, value);
 }
 
-void av_cuda_via1_shift_input(av_cuda_t *cuda, uint8_t byte) {
+void cuda_via1_shift_input(cuda_t *cuda, uint8_t byte) {
     if (!cuda)
         return;
     cuda_cancel_push(cuda); // the host moved on — drop any stale idle-ack
@@ -774,7 +775,7 @@ void av_cuda_via1_shift_input(av_cuda_t *cuda, uint8_t byte) {
         cuda->rx_buf[cuda->rx_len++] = byte;
 }
 
-void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b) {
+void cuda_via1_pb_input(cuda_t *cuda, uint8_t port_b) {
     if (!cuda)
         return;
     uint8_t old = cuda->last_pb;
@@ -945,7 +946,7 @@ void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b) {
 
 // === Autonomous tick + autopoll =============================================
 
-static bool cuda_bus_idle(av_cuda_t *cuda) {
+static bool cuda_bus_idle(cuda_t *cuda) {
     // Only initiate unsolicited traffic when both we and the host are idle
     // AND the previous transaction's idle acknowledge has actually been
     // clocked out.  A pending push means CudaMgr's @waitIdleAck is still
@@ -999,7 +1000,7 @@ static void cuda_reset_event(void *source, uint64_t data) {
 // Command-Option-O-F held from power-on arrives as [Command Option] then
 // [O F], and losing the first leaves O and F with no modifiers — the boot
 // carries on into Mac OS.
-static bool cuda_present_parked_autopoll(av_cuda_t *cuda) {
+static bool cuda_present_parked_autopoll(cuda_t *cuda) {
     if (!cuda->ap.len)
         return false;
     memcpy(cuda->tx_buf, cuda->ap.pkt, (size_t)cuda->ap.len);
@@ -1013,7 +1014,7 @@ static bool cuda_present_parked_autopoll(av_cuda_t *cuda) {
 // 1-second tick: [attn, tickPkt] — drives the OS one-second timer.
 static void cuda_tick_event(void *source, uint64_t data) {
     (void)data;
-    av_cuda_t *cuda = (av_cuda_t *)source;
+    cuda_t *cuda = (cuda_t *)source;
     if (cuda->onesec_enabled && cuda_bus_idle(cuda) && !cuda_present_parked_autopoll(cuda)) {
         if (cuda->onesec_mode == 3 && cuda->mode3_clock) {
             // Mode3Clock: the tick is an RdTime response carrying the
@@ -1050,7 +1051,7 @@ static void cuda_tick_event(void *source, uint64_t data) {
 // Called whenever one of those conditions may have changed: a device got
 // data (cuda_adb_data), the host turned auto-poll on, a Talk completed, or
 // the link went free (cuda_push_event, after the idle acknowledge).
-static void cuda_adb_service(av_cuda_t *cuda) {
+static void cuda_adb_service(cuda_t *cuda) {
     if (cuda->ap.len) {
         // A reaped solicited reply (resend_pending) goes first: its
         // re-presentation is dropped if the link is busy when it comes due.
@@ -1068,24 +1069,24 @@ static void cuda_adb_service(av_cuda_t *cuda) {
 // auto-poll was turned off meanwhile, by a sync: the data stays in the device).
 static void cuda_adb_talk_event(void *source, uint64_t data) {
     (void)data;
-    av_cuda_t *cuda = (av_cuda_t *)source;
+    cuda_t *cuda = (cuda_t *)source;
     if (adb_mcu_autopoll_collect(&cuda->ap, cuda->autopoll_enabled, cuda->adb))
         cuda_adb_service(cuda);
 }
 
 // A device has new data (adb_set_data_hook).
 static void cuda_adb_data(void *ctx) {
-    cuda_adb_service((av_cuda_t *)ctx);
+    cuda_adb_service((cuda_t *)ctx);
 }
 
 // === Lifecycle ==============================================================
 
 // The checkpointed plain-data prefix, up to the first host pointer
-CHECKPOINT_PREFIX(av_cuda_t, via1);
+CHECKPOINT_PREFIX(cuda_t, via1);
 
-av_cuda_t *av_cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, struct scheduler *sched, checkpoint_t *cp,
-                        bool mode3_clock) {
-    av_cuda_t *cuda = (av_cuda_t *)calloc(1, sizeof(*cuda));
+cuda_t *cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, struct scheduler *sched, checkpoint_t *cp,
+                  bool mode3_clock) {
+    cuda_t *cuda = (cuda_t *)calloc(1, sizeof(*cuda));
     if (!cuda)
         return NULL;
     cuda->via1 = via1;
@@ -1104,7 +1105,7 @@ av_cuda_t *av_cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, stru
     cuda->onesec_mode = 0;
 
     if (cp) {
-        checkpoint_load_prefix(cp, cuda, av_cuda_t);
+        checkpoint_load_prefix(cp, cuda, cuda_t);
     }
 
     if (cuda->via1)
@@ -1134,8 +1135,8 @@ av_cuda_t *av_cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, stru
 }
 
 // See cuda.h.  The periodic tick and autopoll events stay armed: they test
-// the enable flags cleared here, exactly as after av_cuda_init.
-void av_cuda_host_power_cycle(av_cuda_t *cuda) {
+// the enable flags cleared here, exactly as after cuda_init.
+void cuda_host_power_cycle(cuda_t *cuda) {
     if (!cuda)
         return;
     remove_event(cuda->sched, &cuda_push_event, cuda);
@@ -1162,7 +1163,7 @@ void av_cuda_host_power_cycle(av_cuda_t *cuda) {
     cuda_set_treq(cuda, true); // TREQ idles high (no request)
 }
 
-void av_cuda_delete(av_cuda_t *cuda) {
+void cuda_delete(cuda_t *cuda) {
     if (!cuda)
         return;
     // Thirteen scheduling sites, three callbacks removed here: one call
@@ -1172,25 +1173,27 @@ void av_cuda_delete(av_cuda_t *cuda) {
     free(cuda);
 }
 
-void av_cuda_checkpoint(av_cuda_t *cuda, checkpoint_t *cp) {
+void cuda_checkpoint(cuda_t *cuda, checkpoint_t *cp) {
     if (!cuda || !cp)
         return;
-    checkpoint_save_prefix(cp, cuda, av_cuda_t);
+    checkpoint_save_prefix(cp, cuda, cuda_t);
 }
 
-void av_cuda_attach_vdc(av_cuda_t *cuda, struct av_vdc *vdc) {
-    if (cuda)
-        cuda->vdc = vdc;
+void cuda_attach_i2c_targets(cuda_t *cuda, const cuda_i2c_targets_t *targets, void *ctx) {
+    if (cuda) {
+        cuda->targets = targets;
+        cuda->targets_ctx = ctx;
+    }
 }
 
-void av_cuda_attach_i2c_write(av_cuda_t *cuda, av_cuda_i2c_write_fn fn, void *ctx) {
+void cuda_attach_i2c_write(cuda_t *cuda, cuda_i2c_write_fn fn, void *ctx) {
     if (cuda) {
         cuda->i2c_write = fn;
         cuda->i2c_write_ctx = ctx;
     }
 }
 
-void av_cuda_attach_i2c_bus(av_cuda_t *cuda, av_cuda_i2c_read_fn rd, av_cuda_i2c_write_fn wr, void *ctx) {
+void cuda_attach_i2c_bus(cuda_t *cuda, cuda_i2c_read_fn rd, cuda_i2c_write_fn wr, void *ctx) {
     if (cuda) {
         cuda->bus_read = rd;
         cuda->bus_write = wr;
@@ -1198,7 +1201,7 @@ void av_cuda_attach_i2c_bus(av_cuda_t *cuda, av_cuda_i2c_read_fn rd, av_cuda_i2c
     }
 }
 
-void av_cuda_set_firmware_240(av_cuda_t *cuda) {
+void cuda_set_firmware_240(cuda_t *cuda) {
     if (cuda)
         cuda->fw240 = true;
 }

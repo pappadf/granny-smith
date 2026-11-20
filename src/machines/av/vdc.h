@@ -65,6 +65,11 @@ void av_vdc_i2c_write(av_vdc_t *vdc, uint8_t slave, const uint8_t *data, int len
 // Returns the byte count placed in `out` (bounded by `maxlen`).
 int av_vdc_i2c_read(av_vdc_t *vdc, uint8_t slave, bool has_sub, uint8_t sub, uint8_t *out, int maxlen);
 
+// Put the DMSD and VDC behind `cuda`'s pseudo-command $22 (the three calls
+// above, as cuda_attach_i2c_targets hooks).  A NULL `vdc` detaches them.
+struct cuda;
+void av_vdc_attach_cuda(av_vdc_t *vdc, struct cuda *cuda);
+
 // === Host source control (the machine.videoin surface + tests) ==============
 
 // Select the host video source: "none" | "pattern" | "file" | "host".

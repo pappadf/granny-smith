@@ -50,7 +50,7 @@ typedef struct swim3_backend {
 
 // Plain data first — a board checkpoints the struct positionally as part
 // of its own state and re-binds the pointer tail with swim3_bind() after a
-// restore (the av/cuda pattern).
+// restore (the cuda.c pattern).
 typedef struct swim3 {
     // reg 1 Timer: a 1 us countdown (SWIM3-ERS:76).  `timer` is the loaded
     // value, `timer_start_ns` the scheduler time of the load; the running

@@ -44,7 +44,7 @@
 # this test selects it and leaves every other category unchecked.
 #
 # The swap after "Install 1" is the regression point for the SWIM IOP 24-bit
-# DMA-address strip (swim_host_dma_ptr in src/machines/oss/iop_swim.c): before
+# DMA-address strip (swim_host_dma_ptr in src/core/peripherals/iop_swim.c): before
 # it, the Installer's read of a locked-handle buffer ($80xxxxxx master pointer)
 # came back paramErr and the guest gave up with "An error occurred while trying
 # to complete the installation."

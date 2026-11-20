@@ -3,8 +3,8 @@
 Cuda (Apple 341S0788, firmware 2.37) is Egret's successor: a 68HC05 owning
 ADB, PRAM, the real-time clock, the one-second tick, power control and the
 I²C bus to the video-in chips. The AV Quadras are the first Macs to carry it.
-Implementation: [src/machines/av/cuda.c](../../../../src/machines/av/cuda.c) /
-[cuda.h](../../../../src/machines/av/cuda.h). Hardware reference:
+Implementation: [src/core/peripherals/cuda.c](../../../../src/core/peripherals/cuda.c) /
+[cuda.h](../../../../src/core/peripherals/cuda.h). Hardware reference:
 [cuda.md](../../../reference/machines/av/cuda.md), cited by section below.
 
 ## Behavioral, not a core — and why that is a stronger position here
@@ -18,8 +18,8 @@ what Cuda 2.37 actually does — not only against the host's view of it. That is
 where the rejected-command list,
 the exact PRAM geometry and the handshake polarities below come from.
 
-Forked from [mdu/egret.c](../../../../src/machines/mdu/egret.c) and diverged;
-Egret stays where it is, since it already crosses family lines. What the two
+Forked from [egret.c](../../../../src/core/peripherals/egret.c) and diverged;
+both live in `src/core/peripherals/`, since each crosses family lines. What the two
 still share verbatim lives in
 [adb_mcu_link.c](../../../../src/core/peripherals/adb_mcu_link.c): the packet
 types and ADB flags, the response header, the reply to an ADB command packet,
@@ -148,7 +148,9 @@ subaddress first. Writes get the ordinary 4-byte acknowledgement; reads append
 the data bytes to it. Only the two Philips slaves (`$8A`/`$8B` DMSD,
 `$B8`/`$B9` VDC) are on the bus — anything else gets an error packet and a
 warning, since the firmware's behavior for other addresses was never analysed.
-The chips themselves are [vdc.md](vdc.md).
+The chips themselves are [vdc.md](../../machines/av/vdc.md); the AV family puts
+them on the bus through `cuda_attach_i2c_targets` (`av_vdc_attach_cuda`), so
+the model includes no family header.
 
 The same model serves the Power Macs' Cuda. There the bus carries what the
 board attaches: TNT's Control pixel-clock synthesiser (`$50`, write-only),

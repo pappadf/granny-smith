@@ -29,7 +29,7 @@
 #include "tnt.h"
 #include "config_seed.h"
 
-#include "cuda.h" // the shared behavioral Cuda model (machines/av/)
+#include "cuda.h" // the shared behavioral Cuda model (core/peripherals/)
 #include "dbdma.h"
 
 #include "adb.h"
@@ -400,12 +400,12 @@ static void tnt_dbdma_irq(void *ctx, int chan) {
 // out — the classic Cuda bit positions); the SR shift-out is a command byte.
 static void tnt_via1_output(void *context, uint8_t port, uint8_t value) {
     tnt_state_t *st = tnt_st((config_t *)context);
-    av_cuda_via1_port_output(st ? st->cuda : NULL, port, value);
+    cuda_via1_port_output(st ? st->cuda : NULL, port, value);
 }
 
 static void tnt_via1_shift_out(void *context, uint8_t byte) {
     tnt_state_t *st = tnt_st((config_t *)context);
-    av_cuda_via1_shift_input(st ? st->cuda : NULL, byte);
+    cuda_via1_shift_input(st ? st->cuda : NULL, byte);
 }
 
 // VIA1 aggregate IRQ -> Grand Central interrupt 18 (level-sensitive; the
@@ -681,7 +681,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // Control's pixel-clock synthesiser hangs off Cuda's I2C bus (device
     // $50): the video driver programs it with three RdWrIIC packets per
     // mode-set, and the retrace period derives from what it wrote.
-    av_cuda_attach_i2c_write(st->cuda, tnt_control_i2c_write, cfg);
+    cuda_attach_i2c_write(st->cuda, tnt_control_i2c_write, cfg);
 
     // The DBDMA engine behind the island's +$8000 channel windows.  No
     // device ports are attached yet — each datapath phase (AWACS ch 8,
@@ -864,7 +864,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
 // A power cycle's power-on-only half (machine_profile.h): Cuda stays
 // powered, but the host side of its VIA1 handshake went down under it.
 static void tnt_power_on(config_t *cfg) {
-    av_cuda_host_power_cycle(tnt_st(cfg)->cuda);
+    cuda_host_power_cycle(tnt_st(cfg)->cuda);
 }
 
 static void tnt_bus_reset(config_t *cfg) {
@@ -942,7 +942,7 @@ static void tnt_teardown(config_t *cfg) {
     //
     // The single ordering change is that cfg->scsi is now freed after these
     // four instead of before the first of them.  Safe on both counts that
-    // matter: none of scsi_delete(scsi2), dbdma_delete, av_cuda_delete or
+    // matter: none of scsi_delete(scsi2), dbdma_delete, cuda_delete or
     // adb_delete reads cfg->scsi, and the controllers that DO hold the two
     // buses are already gone -- MESH/53C96 just above, and the 53C825As with
     // the PCI root, which system_destroy frees before this runs.  DBDMA still
@@ -957,7 +957,7 @@ static void tnt_teardown(config_t *cfg) {
         st->dbdma = NULL;
     }
     if (st && st->cuda) {
-        av_cuda_delete(st->cuda);
+        cuda_delete(st->cuda);
         st->cuda = NULL;
     }
     machine_teardown_config_devices(cfg); // the adb after the Cuda above, then the rest

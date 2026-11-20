@@ -18,7 +18,7 @@
 //
 // Around those: the PowerPC 750 (the ppc core's CPU_MODEL_PPC750), the
 // board-identification halfword at $FF000004, Cuda (fourth instance of
-// av/cuda.c) whose I2C bus carries the three DIMMs' SPD EEPROMs and the
+// core/peripherals/cuda.c) whose I2C bus carries the three DIMMs' SPD EEPROMs and the
 // PERCH personality-card ID EEPROM (gossamer_i2c.c), and the cells the
 // repository already models (6522, Z8530, MESH, SWIM3, DBDMA).
 //
@@ -55,7 +55,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-struct av_cuda; // the shared behavioral Cuda model (machines/av/cuda.h)
+struct cuda; // the shared behavioral Cuda model (core/peripherals/cuda.h)
 struct dbdma; // the DBDMA engine (core/peripherals/dbdma.h)
 struct object;
 
@@ -239,7 +239,7 @@ typedef struct gossamer_state {
     struct pci_bus *bus; // the one Grackle PCI bus
     pci_device_t grackle_dev; // Grackle's own header at device 0
     pci_device_t heathrow_dev; // Heathrow's header at device $10
-    struct av_cuda *cuda;
+    struct cuda *cuda;
     struct dbdma *dbdma; // 13 channel blocks (Heathrow +$8000)
     struct mesh *mesh; // internal SCSI (core/peripherals/scsi_mesh.c)
     // The DAVbus sound cell at +$14000, Screamer variant, output on DBDMA
@@ -332,7 +332,7 @@ void gos_nvram_clear(config_t *cfg);
 // Carve the profile's RAM size into DIMMs and build their SPD bytes, and
 // the PERCH EEPROM image.
 void gos_i2c_init(config_t *cfg);
-// The Cuda I2C transaction hooks (av_cuda_attach_i2c).
+// The Cuda I2C transaction hooks (cuda_attach_i2c).
 int gos_i2c_read(void *ctx, uint8_t addr8, bool has_sub, uint8_t sub, uint8_t *out, int max);
 bool gos_i2c_write(void *ctx, uint8_t addr8, const uint8_t *data, int len);
 // The TDA7433's volume and front attenuators as the stage after the codec

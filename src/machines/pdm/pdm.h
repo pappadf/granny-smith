@@ -33,7 +33,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-struct av_cuda; // the shared behavioral Cuda model (machines/av/cuda.h)
+struct cuda; // the shared behavioral Cuda model (core/peripherals/cuda.h)
 struct object;
 struct scsi_53c96; // the shared 53C9x register core (peripherals/scsi_53c96.h)
 
@@ -239,7 +239,7 @@ typedef struct pdm_state {
     pdm_hmc_t hmc;
     pdm_amic_t amic;
     swim3_t swim3; // floppy controller (see above; NOT inside pdm_amic_t)
-    struct av_cuda *cuda;
+    struct cuda *cuda;
     // SCSI: [0] = the Curio 53C94 cell (all models, island +$10000, AMIC
     // DMA channel A, bus = cfg->scsi); [1] = the 8100's discrete 53CF96
     // (island +$11000, channel B) — instantiated with no bus attached, so

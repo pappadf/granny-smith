@@ -22,7 +22,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-struct av_cuda;
+struct cuda;
 struct config;
 
 // === Type Definitions =======================================================
@@ -63,6 +63,6 @@ void ppc_build_lowspeed(struct config *cfg, checkpoint_t *cp, const ppc_lowspeed
 
 // ADB and the behavioral Cuda on VIA1 (Mode3Clock tick on).  Returns the
 // Cuda, or NULL (logged) when it cannot be built.
-struct av_cuda *ppc_build_cuda(struct config *cfg, checkpoint_t *cp);
+struct cuda *ppc_build_cuda(struct config *cfg, checkpoint_t *cp);
 
 #endif // GS_MACHINES_RUNTIME_PPC_BUILD_H

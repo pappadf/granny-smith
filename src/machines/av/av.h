@@ -44,7 +44,7 @@
 
 struct adb;
 struct av_civic;
-struct av_cuda;
+struct cuda;
 struct av_dsp;
 struct av_mace;
 struct av_new_age;
@@ -137,7 +137,7 @@ typedef struct av_board {
 
 // Unified AV-family machine state.
 typedef struct av_state {
-    struct av_cuda *cuda; // behavioral Cuda 2.37 model on VIA1's SR
+    struct cuda *cuda; // behavioral Cuda 2.37 model on VIA1's SR
     struct av_psc *psc; // DMA + interrupt controller (the platform's heart)
     struct av_dsp *dsp; // the DSP3210 aux core on the PSC reset latch
     struct av_singer *singer; // Singer codec + PSC sound frame engine

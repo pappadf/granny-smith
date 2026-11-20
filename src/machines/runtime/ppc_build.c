@@ -6,7 +6,7 @@
 
 #include "ppc_build.h"
 
-#include "cuda.h" // the shared behavioral Cuda model (machines/av/)
+#include "cuda.h" // the shared behavioral Cuda model (core/peripherals/)
 
 #include "adb.h"
 #include "appletalk.h"
@@ -98,7 +98,7 @@ void ppc_build_lowspeed(config_t *cfg, checkpoint_t *cp, const ppc_lowspeed_opts
     via_input_c(cfg->via1, 1, 1, 1);
 }
 
-struct av_cuda *ppc_build_cuda(config_t *cfg, checkpoint_t *cp) {
+struct cuda *ppc_build_cuda(config_t *cfg, checkpoint_t *cp) {
     // ADB device state, serviced through Cuda packets
     machine_part_begin(cfg, cp, "adb");
     cfg->adb = adb_init(NULL, cfg->scheduler, cp);
@@ -106,7 +106,7 @@ struct av_cuda *ppc_build_cuda(config_t *cfg, checkpoint_t *cp) {
 
     // The Mode3Clock tick is on: the guest clock lives behind Cuda RdTime/PRAM
     machine_part_begin(cfg, cp, "cuda");
-    av_cuda_t *cuda = av_cuda_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp, /*mode3_clock=*/true);
+    cuda_t *cuda = cuda_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp, /*mode3_clock=*/true);
     if (!cuda) {
         LOG(0, "Error: out of memory constructing the Cuda");
         return NULL;

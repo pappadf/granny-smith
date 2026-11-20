@@ -873,7 +873,7 @@ static void iifx_scsidma_write_uint8(config_t *cfg, uint32_t offset, uint8_t val
 // byte — a locked handle reaches a driver as $80xxxxxx.  Real hardware drives
 // only 24 address lines, so those flag bits never reach the DMA controller;
 // strip them here too, exactly as swim_host_dma_ptr does for the SWIM IOP
-// (see src/machines/oss/iop_swim.c).  Without this the transfer lands outside
+// (see src/core/peripherals/iop_swim.c).  Without this the transfer lands outside
 // RAM and the data silently goes nowhere.
 static inline uint32_t iifx_scsidma_bus_addr(uint32_t addr) {
     if (g_mmu && g_mmu->enabled && TC_IS(g_mmu->tc) == 8)

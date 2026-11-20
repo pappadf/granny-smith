@@ -214,7 +214,7 @@ The board model is the chipset skeleton plus the DMA architecture:
   [dbdma.md](../../../reference/machines/tnt/dbdma.md) §2 for the channel
   register file, §3 for the command set and status transitions.)
 - **Cuda / VIA1** — the third instantiation of the shared behavioral Cuda
-  (machines/av/cuda.c, firmware 2.37) on one real 6522 behind the island
+  (core/peripherals/cuda.c, firmware 2.37) on one real 6522 behind the island
   decode.  TNT-driven additions to the shared model: the polled no-TIP
   response termination the ROM's early-boot driver uses, the sync-cycle
   abort of an unread response (the OF-to-68k handoff leaves its last ADB
@@ -1058,7 +1058,7 @@ In order:
 
 | Defect | Where |
 |---|---|
-| Cuda's RESET SYSTEM only reset Cuda | `av/cuda.c` |
+| Cuda's RESET SYSTEM only reset Cuda | `core/peripherals/cuda.c` |
 | `ppc_reset` threw away the CPU's time binding | `cpu/ppc/ppc.c` |
 | `Wait Reselect` jumped instead of parking | `scripts53c8xx.c` |
 | Memory Move clobbered TEMP, the Call/Return link | `scripts53c8xx.c` |
@@ -1079,11 +1079,11 @@ In order:
 | RESERVE/RELEASE answered ILLEGAL REQUEST, so AIX's disk open failed | `core/peripherals/scsi.c` |
 | A script that polls memory was declared a runaway and halted | `scripts53c8xx.c` |
 | Board Register 1 bit 8 read clear, so POST's second boot entered its serial diagnostic monitor | `tnt/ans500.c`, `ans700.c` |
-| Cuda negated TREQ inside the host's own ByteAck store at the end of a sync, so AIX's `cuda_sync` never saw it low | `av/cuda.c` |
-| A sync cycle cleared Cuda's autopoll setting, which AIX enables once and never again | `av/cuda.c` |
-| The first response byte after the attention byte was clocked inside the TIP store, overwriting the attention byte AIX had not yet read | `av/cuda.c` |
-| A 5 ms abandonment watchdog reaped replies AIX comes back for tens of milliseconds later | `av/cuda.c` |
-| RdDevList (`$1A`) was not answered, so `cfgcuda` found no keyboard or mouse and the LFT configured without one | `av/cuda.c` |
+| Cuda negated TREQ inside the host's own ByteAck store at the end of a sync, so AIX's `cuda_sync` never saw it low | `core/peripherals/cuda.c` |
+| A sync cycle cleared Cuda's autopoll setting, which AIX enables once and never again | `core/peripherals/cuda.c` |
+| The first response byte after the attention byte was clocked inside the TIP store, overwriting the attention byte AIX had not yet read | `core/peripherals/cuda.c` |
+| A 5 ms abandonment watchdog reaped replies AIX comes back for tens of milliseconds later | `core/peripherals/cuda.c` |
+| RdDevList (`$1A`) was not answered, so `cfgcuda` found no keyboard or mouse and the LFT configured without one | `core/peripherals/cuda.c` |
 
 Two patterns are worth carrying forward.
 

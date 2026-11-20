@@ -637,12 +637,12 @@ static void av_memory_layout(config_t *cfg) {
 
 void av_via1_output(void *context, uint8_t port, uint8_t value) {
     av_state_t *st = av_st((config_t *)context);
-    av_cuda_via1_port_output(st ? st->cuda : NULL, port, value);
+    cuda_via1_port_output(st ? st->cuda : NULL, port, value);
 }
 
 void av_via1_shift_out(void *context, uint8_t byte) {
     av_state_t *st = av_st((config_t *)context);
-    av_cuda_via1_shift_input(st ? st->cuda : NULL, byte);
+    cuda_via1_shift_input(st ? st->cuda : NULL, byte);
 }
 
 // ============================================================
@@ -711,7 +711,7 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     // The behavioral Cuda on VIA1's shift register + PB3/PB4/PB5.
     machine_part_begin(cfg, cp, "cuda");
-    st->cuda = av_cuda_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp, /*mode3_clock=*/false);
+    st->cuda = cuda_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp, /*mode3_clock=*/false);
     if (!st->cuda) {
         LOG(0, "Error: out of memory constructing the Cuda");
         return -1;
@@ -745,7 +745,7 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
         return -1;
     }
     machine_part(cfg, cp, "vdc", av_vdc_checkpoint_part, st->vdc);
-    av_cuda_attach_vdc(st->cuda, st->vdc);
+    av_vdc_attach_cuda(st->vdc, st->cuda);
 
     machine_part_images(cfg, cp);
 
@@ -885,7 +885,7 @@ static int av_init(config_t *cfg, checkpoint_t *cp) {
 // powered, but the host side of its VIA1 handshake went down under it, and
 // YMCA's bank registers return to their power-on layout.
 static void av_power_on(config_t *cfg) {
-    av_cuda_host_power_cycle(av_st(cfg)->cuda);
+    cuda_host_power_cycle(av_st(cfg)->cuda);
     av_civic_power_on(av_st(cfg)->civic); // Civic's VRAM goes with main RAM
     av_ymca_split(av_st(cfg)); // the bank registers come up split
 }
@@ -939,7 +939,7 @@ static void av_teardown(config_t *cfg) {
             cfg->floppy = NULL;
         }
         if (st->cuda) {
-            av_cuda_delete(st->cuda);
+            cuda_delete(st->cuda);
             st->cuda = NULL;
         }
         if (st->singer) {

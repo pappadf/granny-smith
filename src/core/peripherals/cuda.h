@@ -8,7 +8,7 @@
 // functionally (not as an HC05 core) against BOTH sides of the wire:
 //   * host side — OS/CudaMgr.a (SendCudaCmd / CudaShiftRegIRQ / CudaInit)
 //   * Cuda side — the firmware disassembly distilled in
-//     docs/internals/machines/av/cuda.md (handshake pin map,
+//     docs/internals/core/peripherals/cuda.md (handshake pin map,
 //     the 37-entry pseudo-command dispatch with its 12 REJECTED commands,
 //     PRAM = 256 bytes at $0100-$01FF, the RTC counter)
 //
@@ -26,8 +26,8 @@
 // byte Cuda clocks after every terminated response — the host spin-waits
 // on it (CudaMgr.a <SM6>).
 
-#ifndef GS_MACHINES_AV_CUDA_H
-#define GS_MACHINES_AV_CUDA_H
+#ifndef GS_CORE_PERIPHERALS_CUDA_H
+#define GS_CORE_PERIPHERALS_CUDA_H
 
 #include "checkpoint.h"
 #include "common.h"
@@ -39,10 +39,9 @@ struct via;
 struct rtc;
 struct adb;
 struct scheduler;
-struct av_vdc;
 
-struct av_cuda;
-typedef struct av_cuda av_cuda_t;
+struct cuda;
+typedef struct cuda cuda_t;
 
 // === Lifecycle ==============================================================
 
@@ -53,17 +52,17 @@ typedef struct av_cuda av_cuda_t;
 // mode3_clock enables the Mode3Clock RdTime one-second tick (the tick carries
 // the RTC). Enable only for machines with a live guest clock that needs a real
 // seed (the PDM family); the AV Quadras pass false to keep the bare tick.
-av_cuda_t *av_cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, struct scheduler *sched, checkpoint_t *cp,
-                        bool mode3_clock);
-void av_cuda_delete(av_cuda_t *cuda);
+cuda_t *cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, struct scheduler *sched, checkpoint_t *cp,
+                  bool mode3_clock);
+void cuda_delete(cuda_t *cuda);
 
 // The machine was power-cycled.  Cuda itself stays powered (it is what turns
 // the machine on, and it keeps the clock and PRAM), but the host side of the
 // VIA1 handshake lost power under it: the transport returns to idle with no
 // transaction, response or push in flight, and the asynchronous sources go
-// off until the next sync enables them -- the state av_cuda_init leaves.
-void av_cuda_host_power_cycle(av_cuda_t *cuda);
-void av_cuda_checkpoint(av_cuda_t *cuda, checkpoint_t *cp);
+// off until the next sync enables them -- the state cuda_init leaves.
+void cuda_host_power_cycle(cuda_t *cuda);
+void cuda_checkpoint(cuda_t *cuda, checkpoint_t *cp);
 
 // === VIA1 transport hooks ===================================================
 
@@ -75,7 +74,7 @@ void av_cuda_checkpoint(av_cuda_t *cuda, checkpoint_t *cp);
 // the transport.  Five machines each carried their own copy of that,
 // and they had already drifted -- two tested the machine-state pointer for
 // NULL and two did not.  Both entry points below are NULL-tolerant, and
-// av_cuda_via1_port_output takes the port number, so a machine's callback is one
+// cuda_via1_port_output takes the port number, so a machine's callback is one
 // line and cannot get the port wrong.
 //
 // Registering the transport pointer as the VIA callback context, which
@@ -85,21 +84,32 @@ void av_cuda_checkpoint(av_cuda_t *cuda, checkpoint_t *cp);
 // context), same shape on PDM and TNT), as does the IIsi's port-A output
 // for the ROM overlay.  A vtable returning the pair runs into the same
 // wall.  This is the available consolidation, not the preferred one.
-void av_cuda_via1_port_output(av_cuda_t *cuda, uint8_t port, uint8_t value);
+void cuda_via1_port_output(cuda_t *cuda, uint8_t port, uint8_t value);
 
-void av_cuda_via1_shift_input(av_cuda_t *cuda, uint8_t byte);
+void cuda_via1_shift_input(cuda_t *cuda, uint8_t byte);
 
 // The host's VIA1 port-B output changed (TIP/BYTEACK edges).  Wired from
 // the machine's VIA1 port-B output callback.
-void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b);
+void cuda_via1_pb_input(cuda_t *cuda, uint8_t port_b);
 
 // === Object-model / test helpers ============================================
 
 // Firmware identity string ("Cuda 2.37").
 
-// Attach the video digitizer's I2C targets (DMSD + VDC) behind
-// pseudo-command $22 (wired from av_build_devices once both exist).
-void av_cuda_attach_vdc(av_cuda_t *cuda, struct av_vdc *vdc);
+// A fixed set of I2C targets behind pseudo-command $22, consulted after the
+// write hook below: the AV video digitizer's DMSD + VDC (av_vdc_attach_cuda,
+// wired from av_build_devices once both exist).  `slave_known` names the
+// addresses on the bus (a transaction to any other is rejected with an error
+// packet); `read` fills `out` with up to `max` bytes from `slave` (odd
+// address; with `has_sub`, from subaddress `sub`) and returns the count;
+// `write` takes the bytes after the address, subaddress first.  With none
+// attached every $22 slave is a NAK.
+typedef struct cuda_i2c_targets {
+    bool (*slave_known)(uint8_t slave);
+    int (*read)(void *ctx, uint8_t slave, bool has_sub, uint8_t sub, uint8_t *out, int max);
+    void (*write)(void *ctx, uint8_t slave, const uint8_t *data, int len);
+} cuda_i2c_targets_t;
+void cuda_attach_i2c_targets(cuda_t *cuda, const cuda_i2c_targets_t *targets, void *ctx);
 
 // A machine-level I2C WRITE target behind pseudo-command $22, consulted
 // before the digitizer bus: `slave` is the wire address (bit 0 clear =
@@ -107,8 +117,8 @@ void av_cuda_attach_vdc(av_cuda_t *cuda, struct av_vdc *vdc);
 // the slave is its own.  The TNT's Control pixel-clock synthesiser (device
 // $50) is the one such target; a write nobody claims stays the header-only
 // acknowledgement it always was.
-typedef bool (*av_cuda_i2c_write_fn)(void *ctx, uint8_t slave, const uint8_t *data, int len);
-void av_cuda_attach_i2c_write(av_cuda_t *cuda, av_cuda_i2c_write_fn fn, void *ctx);
+typedef bool (*cuda_i2c_write_fn)(void *ctx, uint8_t slave, const uint8_t *data, int len);
+void cuda_attach_i2c_write(cuda_t *cuda, cuda_i2c_write_fn fn, void *ctx);
 
 // A machine-level I2C BUS behind pseudo-commands $22 and $25: every
 // transaction goes to it, and a slave neither hook claims is a NAK (an
@@ -116,12 +126,12 @@ void av_cuda_attach_i2c_write(av_cuda_t *cuda, av_cuda_i2c_write_fn fn, void *ct
 // fills `out` with up to `max` bytes read from `addr8` (bit 0 set; with
 // `has_sub`, from subaddress `sub`) and returns the count, or -1 for a
 // NAK.  Takes precedence over the digitizer bus and the write hook.
-typedef int (*av_cuda_i2c_read_fn)(void *ctx, uint8_t addr8, bool has_sub, uint8_t sub, uint8_t *out, int max);
-void av_cuda_attach_i2c_bus(av_cuda_t *cuda, av_cuda_i2c_read_fn rd, av_cuda_i2c_write_fn wr, void *ctx);
+typedef int (*cuda_i2c_read_fn)(void *ctx, uint8_t addr8, bool has_sub, uint8_t sub, uint8_t *out, int max);
+void cuda_attach_i2c_bus(cuda_t *cuda, cuda_i2c_read_fn rd, cuda_i2c_write_fn wr, void *ctx);
 
 // Model the 341S0060 part with firmware 2.40 (the beige G3's): the
 // dispatch table extends to $26, adding $25 COMBINED_FORMAT_IIC and the
 // undocumented $26.  Wiring, not guest state.
-void av_cuda_set_firmware_240(av_cuda_t *cuda);
+void cuda_set_firmware_240(cuda_t *cuda);
 
-#endif // GS_MACHINES_AV_CUDA_H
+#endif // GS_CORE_PERIPHERALS_CUDA_H

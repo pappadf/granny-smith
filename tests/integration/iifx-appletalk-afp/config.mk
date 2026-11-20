@@ -4,7 +4,7 @@
 # does not drive the SCC: the System's IOP LocalTalk 'ltlk' downloads the
 # IOP LocalTalk driver into the SCC IOP and talks LLAP through its
 # mailboxes, which the SCC IOP model bridges to the emulated network
-# (src/machines/oss/iop_scc.c).  Before that model existed every node the
+# (src/core/peripherals/iop_scc.c).  Before that model existed every node the
 # driver probed read as taken, and the System reported "AppleTalk cannot be
 # used because no AppleTalk address is available".
 

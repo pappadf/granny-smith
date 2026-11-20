@@ -41,7 +41,7 @@ void part_save_scsi96(void *obj, checkpoint_t *cp); // scsi_53c96_t
 void part_save_sonic(void *obj, checkpoint_t *cp); // sonic_t
 void part_save_egret(void *obj, checkpoint_t *cp); // egret_t (the IIsi's Egret, the towers' Caboose)
 void part_save_iop(void *obj, checkpoint_t *cp); // iop_t
-void part_save_cuda(void *obj, checkpoint_t *cp); // av_cuda_t
+void part_save_cuda(void *obj, checkpoint_t *cp); // cuda_t
 void part_save_dbdma(void *obj, checkpoint_t *cp); // dbdma_t (the TNT and Gossamer DBDMA)
 void part_save_mesh(void *obj, checkpoint_t *cp); // mesh_t
 

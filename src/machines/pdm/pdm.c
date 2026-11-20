@@ -22,7 +22,7 @@
 
 #include "pdm.h"
 
-#include "cuda.h" // the shared behavioral Cuda model (machines/av/)
+#include "cuda.h" // the shared behavioral Cuda model (core/peripherals/)
 
 #include "adb.h"
 #include "appletalk.h"
@@ -231,12 +231,12 @@ static void pdm_memory_layout(config_t *cfg) {
 // out — the classic Cuda bit positions); the SR shift-out is a command byte.
 static void pdm_via1_output(void *context, uint8_t port, uint8_t value) {
     pdm_state_t *st = pdm_st((config_t *)context);
-    av_cuda_via1_port_output(st ? st->cuda : NULL, port, value);
+    cuda_via1_port_output(st ? st->cuda : NULL, port, value);
 }
 
 static void pdm_via1_shift_out(void *context, uint8_t byte) {
     pdm_state_t *st = pdm_st((config_t *)context);
-    av_cuda_via1_shift_input(st ? st->cuda : NULL, byte);
+    cuda_via1_shift_input(st ? st->cuda : NULL, byte);
 }
 
 // VIA1 aggregate IRQ → ICR bit 0.
@@ -422,7 +422,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
 // A power cycle's power-on-only half (machine_profile.h): Cuda stays
 // powered, but the host side of its VIA1 handshake went down under it.
 static void pdm_power_on(config_t *cfg) {
-    av_cuda_host_power_cycle(pdm_st(cfg)->cuda);
+    cuda_host_power_cycle(pdm_st(cfg)->cuda);
 }
 
 static void pdm_bus_reset(config_t *cfg) {
@@ -476,7 +476,7 @@ static void pdm_teardown(config_t *cfg) {
     // (machine_teardown.h) rather than into it, because only PDM and TNT have
     // them; the single ordering change is that cfg->scsi is now freed after
     // these three instead of before.  That is safe: none of floppy_delete,
-    // av_cuda_delete or adb_delete reads a SCSI handle, the 53C96 controllers
+    // cuda_delete or adb_delete reads a SCSI handle, the 53C96 controllers
     // that DO hold the bus are already freed above, and scheduler_stop() ran
     // first so nothing can fire in between.  Cuda still goes before the via1,
     // rtc and adb it was handed at init, which is the ordering that matters.
@@ -485,7 +485,7 @@ static void pdm_teardown(config_t *cfg) {
         cfg->floppy = NULL;
     }
     if (st && st->cuda) {
-        av_cuda_delete(st->cuda);
+        cuda_delete(st->cuda);
         st->cuda = NULL;
     }
     machine_teardown_config_devices(cfg); // the adb after the Cuda above, then the rest

@@ -31,6 +31,7 @@
 #include "civic.h"
 
 #include "checkpoint.h"
+#include "cuda.h"
 #include "debug.h"
 #include "display.h"
 #include "log.h"
@@ -181,6 +182,26 @@ int av_vdc_i2c_read(av_vdc_t *vdc, uint8_t slave, bool has_sub, uint8_t sub, uin
     for (int r = sub; r < nregs && n < maxlen; r++)
         out[n++] = regs[r];
     return n;
+}
+
+// The digitizer's face on Cuda's pseudo-command $22 (cuda_i2c_targets_t):
+// the context is the av_vdc_t.
+static int vdc_cuda_i2c_read(void *ctx, uint8_t slave, bool has_sub, uint8_t sub, uint8_t *out, int max) {
+    return av_vdc_i2c_read((av_vdc_t *)ctx, slave, has_sub, sub, out, max);
+}
+
+static void vdc_cuda_i2c_write(void *ctx, uint8_t slave, const uint8_t *data, int len) {
+    av_vdc_i2c_write((av_vdc_t *)ctx, slave, data, len);
+}
+
+static const cuda_i2c_targets_t vdc_cuda_i2c_targets = {
+    .slave_known = av_vdc_i2c_slave_known,
+    .read = vdc_cuda_i2c_read,
+    .write = vdc_cuda_i2c_write,
+};
+
+void av_vdc_attach_cuda(av_vdc_t *vdc, struct cuda *cuda) {
+    cuda_attach_i2c_targets(cuda, vdc ? &vdc_cuda_i2c_targets : NULL, vdc);
 }
 
 // ============================================================

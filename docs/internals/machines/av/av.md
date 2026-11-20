@@ -11,7 +11,7 @@ platform is the PSC ([psc.md](psc.md)), which absorbs VIA2, the interrupt
 controller and every DMA channel.
 
 Machine pages: [q840av.md](q840av.md), [q660av.md](q660av.md).
-Device pages: [psc.md](psc.md), [civic.md](civic.md), [cuda.md](cuda.md).
+Device pages: [psc.md](psc.md), [civic.md](civic.md), [cuda.md](../../core/peripherals/cuda.md).
 Hardware reference: [av.md](../../../reference/machines/av/av.md) (family),
 [q840av.md](../../../reference/machines/av/q840av.md),
 [q660av.md](../../../reference/machines/av/q660av.md) (machines) — cited by
@@ -134,7 +134,7 @@ hangs forever inside `SCSIComplete`'s phase wait (whose deadline is
 |---|---|---|
 | PSC | [psc.c](../../../../src/machines/av/psc.c) | interrupt controller + 7-channel DMA + sound/DSP latches — [psc.md](psc.md) |
 | CIVIC + Sebastian | [civic.c](../../../../src/machines/av/civic.c) | frame buffer, bit-serial registers, RAMDAC — [civic.md](civic.md) |
-| Cuda | [cuda.c](../../../../src/machines/av/cuda.c) | ADB/PRAM/RTC behind VIA1's shift register — [cuda.md](cuda.md) |
+| Cuda | [cuda.c](../../../../src/core/peripherals/cuda.c) | ADB/PRAM/RTC behind VIA1's shift register — [cuda.md](../../core/peripherals/cuda.md) |
 | New Age | [new_age.c](../../../../src/machines/av/new_age.c) | µPD72070 FDC: the shared chip model (`core/peripherals`) on PSC DMA channel 3 and VIA2 bit 5, driving one internal SuperDrive — [new_age.md](../../core/peripherals/new_age.md) |
 | MACE | [mace.c](../../../../src/machines/av/mace.c) | Am79C940 register stub + the Apple address PROM; no datapath, so `.ENET` does not load |
 | SCSI | 53C96 (`core/peripherals`) | at `$18000`, `$10` stride; real DMA on PSC channel 0, which the HAL polls |
