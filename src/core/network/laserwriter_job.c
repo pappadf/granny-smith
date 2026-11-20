@@ -22,9 +22,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("laserwriter");
-
 #if GS_PLATEN
+
+LOG_USE_CATEGORY_NAME("laserwriter");
 
 #include "laserwriter_prelude.h"
 
