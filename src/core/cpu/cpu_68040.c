@@ -34,6 +34,12 @@ LOG_USE_CATEGORY_NAME("cpu");
 #include "cpu_decoder_macros.h"
 #include "cpu_sprint.h"
 
+// FSAVE / FRESTORE: the 040 single-longword frame formats; cpu_ops.h's
+// OP_FSAVE_EA / OP_FRESTORE_EA are written against these hooks.
+#define FPU_FSAVE_FN               fpu_fsave040
+#define FPU_FRESTORE_FN            fpu_frestore040
+#define FPU_FSAVE_PREDEC_SIZE(fpu) 4 // both NULL and IDLE frames are one longword
+
 #include "cpu_ops.h"
 
 // Shorthand: the CPU-owned 040 MMU state (may be NULL in bare unit tests).
@@ -318,51 +324,6 @@ static void cpu_cache_op(cpu_t *cpu, uint16_t opcode) {
 #define OP_MOVEC_RC_RN OP(SUPER(if (!cpu_movec040_rc_rn(cpu)) continue;))
 #undef OP_MOVEC_RN_RC
 #define OP_MOVEC_RN_RC OP(SUPER(if (!cpu_movec040_rn_rc(cpu)) continue;))
-
-// --- FSAVE / FRESTORE: 040 single-longword frame formats ---
-#undef OP_FSAVE_EA
-#define OP_FSAVE_EA                                                                                                    \
-    OP({                                                                                                               \
-        if (!cpu->fpu) {                                                                                               \
-            EXC_FTRAP();                                                                                               \
-        } else                                                                                                         \
-            SUPER({                                                                                                    \
-                fpu_state_t *fpu_ = (fpu_state_t *)cpu->fpu;                                                           \
-                if (EA_MODE == 4) {                                                                                    \
-                    bool init_ = fpu_->initialized;                                                                    \
-                    uint32_t mask_ = fpu_->pre_exc_mask;                                                               \
-                    AY -= 4; /* both NULL and IDLE frames are one longword */                                          \
-                    fpu_fsave040(fpu_, AY);                                                                            \
-                    /* Roll back An and the FPU state for the retry */                                                 \
-                    if (__builtin_expect(g_bus_error_pending, 0)) {                                                    \
-                        AY += 4;                                                                                       \
-                        fpu_->initialized = init_;                                                                     \
-                        fpu_->pre_exc_mask = mask_;                                                                    \
-                    }                                                                                                  \
-                } else {                                                                                               \
-                    uint32_t ea_ = GET_EA;                                                                             \
-                    fpu_fsave040(fpu_, ea_);                                                                           \
-                }                                                                                                      \
-            })                                                                                                         \
-    })
-#undef OP_FRESTORE_EA
-#define OP_FRESTORE_EA                                                                                                 \
-    OP({                                                                                                               \
-        if (!cpu->fpu) {                                                                                               \
-            EXC_FTRAP();                                                                                               \
-        } else                                                                                                         \
-            SUPER({                                                                                                    \
-                fpu_state_t *fpu_ = (fpu_state_t *)cpu->fpu;                                                           \
-                uint32_t ea_ = (EA_MODE == 3) ? AY : GET_EA;                                                           \
-                int sz_ = fpu_frestore040(fpu_, ea_);                                                                  \
-                if (sz_ < 0) {                                                                                         \
-                    /* not this part's frame: format error (vector 14), PC at the FRESTORE */                          \
-                    exception(cpu, 0x038, cpu->instruction_pc, GET_SR());                                              \
-                } else if (EA_MODE == 3 && __builtin_expect(!g_bus_error_pending, 1)) {                                \
-                    AY += (uint32_t)sz_; /* (An)+ steps by the frame the format word declared */                       \
-                }                                                                                                      \
-            })                                                                                                         \
-    })
 
 // ============================================================================
 

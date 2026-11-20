@@ -2061,6 +2061,15 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
         }                                                                                                              \
     })
 
+// The FPU frame functions FSAVE/FRESTORE are written against, and the size of
+// the frame a -(An) FSAVE pushes: the 6888x frames here; cpu_68040.c binds the
+// 040's single-longword formats before including this file.
+#ifndef FPU_FSAVE_FN
+#define FPU_FSAVE_FN               fpu_fsave
+#define FPU_FRESTORE_FN            fpu_frestore
+#define FPU_FSAVE_PREDEC_SIZE(fpu) ((fpu)->initialized ? (4 + FSAVE_IDLE_SIZE) : 4)
+#endif
+
 // FSAVE: write idle or null state frame (supervisor only)
 #undef OP_FSAVE_EA
 #define OP_FSAVE_EA                                                                                                    \
@@ -2072,11 +2081,11 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
                 fpu_state_t *fpu_ = (fpu_state_t *)cpu->fpu;                                                           \
                 if (EA_MODE == 4) {                                                                                    \
                     /* -(An) predecrement: compute frame size, then write */                                           \
-                    int sz_ = fpu_->initialized ? (4 + FSAVE_IDLE_SIZE) : 4;                                           \
+                    int sz_ = FPU_FSAVE_PREDEC_SIZE(fpu_);                                                             \
                     bool init_ = fpu_->initialized;                                                                    \
                     uint32_t mask_ = fpu_->pre_exc_mask;                                                               \
                     AY -= (uint32_t)sz_;                                                                               \
-                    fpu_fsave(fpu_, AY);                                                                               \
+                    FPU_FSAVE_FN(fpu_, AY);                                                                            \
                     /* A faulted save rolls back An and the FPU state it left: */                                      \
                     /* the Format $B retry must write the same frame again.    */                                      \
                     if (__builtin_expect(g_bus_error_pending, 0)) {                                                    \
@@ -2086,7 +2095,7 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
                     }                                                                                                  \
                 } else {                                                                                               \
                     uint32_t ea_ = GET_EA;                                                                             \
-                    fpu_fsave(fpu_, ea_);                                                                              \
+                    FPU_FSAVE_FN(fpu_, ea_);                                                                           \
                 }                                                                                                      \
             })                                                                                                         \
     })
@@ -2101,7 +2110,7 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
             SUPER({                                                                                                    \
                 fpu_state_t *fpu_ = (fpu_state_t *)cpu->fpu;                                                           \
                 uint32_t ea_ = (EA_MODE == 3) ? AY : GET_EA;                                                           \
-                int sz_ = fpu_frestore(fpu_, ea_);                                                                     \
+                int sz_ = FPU_FRESTORE_FN(fpu_, ea_);                                                                  \
                 if (sz_ < 0) {                                                                                         \
                     /* not this part's frame: format error (vector 14), PC at the FRESTORE */                          \
                     exception(cpu, 0x038, cpu->instruction_pc, GET_SR());                                              \
