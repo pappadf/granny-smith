@@ -1334,30 +1334,25 @@ static DEF_METHOD(mmu040_method_descriptor) {
     return val_list(items, len);
 }
 
-// peek(addr, [size], [space]) -> the value, big-endian.  "logical" (default)
-// reads through the MMU in the CPU's current state; "physical" reads the
-// physical address directly.
-static DEF_METHOD(mmu68k_method_peek) {
-    uint32_t addr = (uint32_t)argv[0].u;
-    unsigned size = (argc >= 2 && argv[1].kind == VK_UINT) ? (unsigned)argv[1].u : 4;
-    bool physical;
-    if (!debug_parse_space(argc, argv, 2, &physical))
-        return val_err("peek: space must be \"logical\" or \"physical\"");
-    if (size != 1 && size != 2 && size != 4)
-        return val_err("peek: size must be 1, 2 or 4");
+// One peek read: "logical" reads through the MMU in the CPU's current state;
+// "physical" reads the physical address directly.
+static value_t mmu68k_peek_read(void *ctx, uint32_t addr, unsigned size, bool physical, uint32_t *out) {
+    (void)ctx;
     if (physical) {
         bool ok;
-        uint32_t v = memory_debug_read_phys(addr, size, &ok);
-        return ok ? val_uint((uint8_t)size, v) : val_err("peek: nothing at physical $%08X", addr);
+        *out = memory_debug_read_phys(addr, size, &ok);
+        return ok ? val_none() : val_err("peek: nothing at physical $%08X", addr);
     }
-    uint32_t v = size == 1   ? memory_debug_read_uint8(addr)
-                 : size == 2 ? memory_debug_read_uint16(addr)
-                             : memory_debug_read_uint32(addr);
-    return val_uint((uint8_t)size, v);
+    *out = size == 1   ? memory_debug_read_uint8(addr)
+           : size == 2 ? memory_debug_read_uint16(addr)
+                       : memory_debug_read_uint32(addr);
+    return val_none();
 }
 
-// peek's default size.
-static const value_t k_peek_size4 = {.kind = VK_UINT, .u = 4};
+// peek(addr, [size], [space]) -> the value, big-endian (debug_mmu_peek).
+static DEF_METHOD(mmu68k_method_peek) {
+    return debug_mmu_peek(mmu68k_peek_read, NULL, argc, argv);
+}
 
 // descriptor's arguments, one table per descriptor-format vocabulary.
 static const arg_decl_t mmu030_desc_args[] = {
@@ -1394,20 +1389,8 @@ static const arg_decl_t mmu040_desc_args[] = {
      .doc = "the table level the descriptors sit at: \"root\", \"pointer\" or \"page\"",
      .default_doc = "page"},
 };
-static const arg_decl_t mmu68k_peek_args[] = {
-    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "address"},
-    {.name = "size",
-     .kind = VK_UINT,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &k_peek_size4,
-     .doc = "1, 2 or 4 bytes"},
-    {.name = "space",
-     .kind = VK_ENUM,
-     .enum_values = debug_space_values,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "\"logical\" or \"physical\"",
-     .default_doc = "logical"},
-};
+static const arg_decl_t mmu68k_peek_args[DEBUG_MMU_PEEK_NARGS] =
+    DEBUG_MMU_PEEK_ARGS("address", "\"logical\" or \"physical\"");
 
 // The methods both 68K mmu member tables share (descriptor differs: each
 // table adds its own after this).
@@ -1438,7 +1421,7 @@ static const arg_decl_t mmu68k_peek_args[] = {
      .name = "peek",                                                                                                   \
      .examples = EXAMPLES("machine.cpu.mmu.peek 0x40800000", "machine.cpu.mmu.peek 0x400 2 physical"),                                                                          \
      .doc = "Read memory, logical (through the MMU) or physical; side-effect-free",                                    \
-     .method = {.args = mmu68k_peek_args, .nargs = 3, .result = VK_UINT, .fn = mmu68k_method_peek}}
+     .method = {.args = mmu68k_peek_args, .nargs = DEBUG_MMU_PEEK_NARGS, .result = VK_UINT, .fn = mmu68k_method_peek}}
 // clang-format on
 
 static const member_t mmu_members[] = {

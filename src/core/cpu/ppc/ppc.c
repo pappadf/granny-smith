@@ -1616,38 +1616,34 @@ static DEF_METHOD(mmu_method_descriptor) {
     return val_list(items, len);
 }
 
-// peek(addr, [size], [space]) -> the value, big-endian.  "logical" (default)
-// reads through the data-side translation; "physical" reads the address as
-// is.  (machine.memory.peek on a PowerPC machine is physical; this is the
+// One peek read: "logical" goes through the data-side translation byte by
+// byte (a word may straddle pages); "physical" reads the address as is.
+static value_t ppc_peek_read(void *ctx, uint32_t addr, unsigned size, bool physical, uint32_t *out) {
+    ppc_t *p = (ppc_t *)ctx;
+    uint32_t raw = 0;
+    for (uint32_t i = 0; i < size; i++) {
+        uint32_t pa = addr + i;
+        if (!physical) {
+            bool ok;
+            pa = ppc_mmu_translate_debug(p, pa, true, &ok);
+            if (!ok)
+                return val_err("peek: no translation for $%08X", addr + i);
+        }
+        raw = (raw << 8) | memory_debug_read_uint8(pa);
+    }
+    *out = raw;
+    return val_none();
+}
+
+// peek(addr, [size], [space]) -> the value, big-endian (debug_mmu_peek).
+// (machine.memory.peek on a PowerPC machine is physical; this is the
 // logical read a debugger wants.)
 static DEF_METHOD(mmu_method_peek) {
     ppc_t *p = (ppc_t *)object_data(self);
     if (!p)
         return val_err("cpu not initialised");
-    uint32_t size = (argc >= 2 && argv[1].kind == VK_UINT) ? (uint32_t)argv[1].u : 4u;
-    if (size != 1 && size != 2 && size != 4)
-        return val_err("size must be 1, 2 or 4");
-    bool physical;
-    if (!debug_parse_space(argc, argv, 2, &physical))
-        return val_err("peek: space must be \"logical\" or \"physical\"");
-    uint32_t raw = 0;
-    for (uint32_t i = 0; i < size; i++) {
-        uint32_t pa = (uint32_t)argv[0].u + i;
-        if (!physical) {
-            bool ok;
-            pa = ppc_mmu_translate_debug(p, pa, true, &ok);
-            if (!ok)
-                return val_err("no translation for $%08X", (uint32_t)argv[0].u + i);
-        }
-        raw = (raw << 8) | memory_debug_read_uint8(pa);
-    }
-    value_t v = val_uint((int)size, raw);
-    v.flags |= VFLAG_HEX;
-    return v;
+    return debug_mmu_peek(ppc_peek_read, p, argc, argv);
 }
-
-// peek's default size.
-static const value_t k_peek_size4 = {.kind = VK_UINT, .u = 4};
 
 // descriptor formats: the one PowerPC page-table entry layout.
 static const char *const ppc_desc_formats[] = {"pte", NULL};
@@ -1666,20 +1662,8 @@ static const arg_decl_t mmu_desc_args[] = {
      .doc = "\"pte\", the one PowerPC entry layout (accepted for the uniform signature)",
      .default_doc = "pte"},
 };
-static const arg_decl_t mmu_peek_args[] = {
-    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "effective (logical) address"},
-    {.name = "size",
-     .kind = VK_UINT,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &k_peek_size4,
-     .doc = "1, 2 or 4 bytes"},
-    {.name = "space",
-     .kind = VK_ENUM,
-     .enum_values = debug_space_values,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "\"logical\" or \"physical\"",
-     .default_doc = "logical"},
-};
+static const arg_decl_t mmu_peek_args[DEBUG_MMU_PEEK_NARGS] =
+    DEBUG_MMU_PEEK_ARGS("effective (logical) address", "\"logical\" or \"physical\"");
 
 static const member_t ppc_mmu_members[] = {
     {.kind = MK_METHOD,
@@ -1722,7 +1706,7 @@ static const member_t ppc_mmu_members[] = {
      .name = "peek",
      .examples = EXAMPLES("machine.cpu.mmu.peek 0x5fff8000", "machine.cpu.mmu.peek 0x3000 2 physical"),
      .doc = "Read memory, logical (through the translation) or physical; side-effect-free",
-     .method = {.args = mmu_peek_args, .nargs = 3, .result = VK_UINT, .fn = mmu_method_peek}},
+     .method = {.args = mmu_peek_args, .nargs = DEBUG_MMU_PEEK_NARGS, .result = VK_UINT, .fn = mmu_method_peek}},
 };
 
 static const class_desc_t ppc_mmu_class = {
