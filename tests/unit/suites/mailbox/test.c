@@ -1027,7 +1027,7 @@ static int leaf_eval(const char *path, const char *args, char *out, size_t out_s
         io_leaf_t *j = io_leaf_new(NULL, NULL);
         j->work = leaf_work;
         j->answer = leaf_answer;
-        value_t provisional = io_leaf_dispatch(j, "leaf");
+        value_t provisional = io_leaf_dispatch(j);
         value_free(&provisional);
         snprintf(out, out_size, "true");
         return 0;
@@ -1049,6 +1049,78 @@ TEST(an_io_leaf_answering_a_map_delivers_the_map) {
     ASSERT_TRUE(json[0] == '{');
     ASSERT_TRUE(strstr(json, "\"blocks\"") != NULL);
     ASSERT_TRUE(strstr(json, "disk.img") != NULL);
+}
+
+// An I/O leaf whose work fails with a reason: the reason is the failure,
+// as is, whether the leaf deferred and the worker ran it, deferred with no
+// worker, or could not defer and worked there and then (a script on the
+// emulator thread, --jobs=inline).  The last two once lost it to "failed"
+// (the work's reason was copied onto itself) and the last added the leaf's
+// name, so inline and threaded scripts printed different errors.
+#define LEAF_REASON "cannot create '/no/dir/out': No such file or directory"
+static int failing_work(io_leaf_t *j) {
+    snprintf(j->err, sizeof j->err, "%s", LEAF_REASON);
+    return -ENOENT;
+}
+static int silent_failing_work(io_leaf_t *j) {
+    (void)j;
+    return -EIO; // gives no reason
+}
+static value_t dispatch_failing(int (*work)(io_leaf_t *)) {
+    io_leaf_t *j = io_leaf_new(NULL, NULL);
+    j->work = work;
+    return io_leaf_dispatch(j);
+}
+static int failing_leaf_eval(const char *path, const char *args, char *out, size_t out_size) {
+    if (strcmp(path, "leaf_fail") == 0) {
+        value_t provisional = dispatch_failing(failing_work);
+        value_free(&provisional);
+        snprintf(out, out_size, "true");
+        return 0;
+    }
+    return stub_eval(path, args, out, out_size);
+}
+static const char failing_leaf_json[] = "{\"error\":\"" LEAF_REASON "\"}";
+
+TEST(a_failing_io_leaf_says_why_with_or_without_a_deferral) {
+    fresh();
+    // Nothing being served: no deferral, the work runs now.
+    value_t v = dispatch_failing(failing_work);
+    ASSERT_EQ_INT(v.kind, VK_ERROR);
+    ASSERT_TRUE(strcmp(v.s, LEAF_REASON) == 0);
+    value_free(&v);
+    v = dispatch_failing(silent_failing_work);
+    ASSERT_EQ_INT(v.kind, VK_ERROR);
+    ASSERT_TRUE(strcmp(v.s, "failed") == 0);
+    value_free(&v);
+    // A request's deferral with no worker: answered at once, with the reason.
+    g_m.eval = failing_leaf_eval;
+    ASSERT_TRUE(post(85, "leaf_fail", NULL));
+    mailbox_drain(&g_m, 0, NULL);
+    uint32_t id = 0, ok = 1;
+    char json[512];
+    ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
+    ASSERT_EQ_INT(id, 85);
+    ASSERT_EQ_INT(ok, 0);
+    ASSERT_TRUE(strcmp(json, failing_leaf_json) == 0);
+}
+
+TEST(a_failing_io_leaf_on_the_worker_says_why) {
+    fresh();
+    ASSERT_TRUE(io_worker_start(0));
+    g_m.eval = failing_leaf_eval;
+    ASSERT_TRUE(post(86, "leaf_fail", NULL));
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 0); // deferred to the worker
+    uint32_t id = 0, ok = 1;
+    char json[512];
+    double deadline = wait_deadline();
+    while (take(&id, &ok, json, sizeof json) == 0) {
+        mailbox_drain(&g_m, 0, NULL);
+        WAIT_TICK(deadline, "request 86's answer from the worker");
+    }
+    ASSERT_EQ_INT(id, 86);
+    ASSERT_EQ_INT(ok, 0);
+    ASSERT_TRUE(strcmp(json, failing_leaf_json) == 0);
 }
 
 // The image layer io_leaf.c links against; the leaf above uses none of it.
@@ -1207,7 +1279,9 @@ int main(void) {
     RUN(a_transfer_buffer_ack_goes_to_its_job_until_the_job_releases_it);
     RUN(an_eval_over_the_result_limit_is_an_error_naming_its_size_and_the_limit);
     RUN(an_io_leaf_answering_a_map_delivers_the_map);
+    RUN(a_failing_io_leaf_says_why_with_or_without_a_deferral);
     RUN(cancelling_a_request_cancels_the_io_job_answering_it);
+    RUN(a_failing_io_leaf_on_the_worker_says_why);
     RUN(a_jobs_output_arrives_as_output_records_before_its_result);
     RUN(jobs_finished_between_drains_are_answered_in_the_order_they_ran);
     return 0;

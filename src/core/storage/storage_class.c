@@ -255,7 +255,7 @@ static DEF_METHOD(files_method_import) {
         return val_err("files.import: out of memory");
     j->work = work_cp;
     j->answer = answer_import;
-    return io_leaf_dispatch(j, "files.import");
+    return io_leaf_dispatch(j);
 }
 
 static const arg_decl_t files_import_args[] = {
@@ -351,7 +351,7 @@ static DEF_METHOD(files_method_cp) {
         return val_err("files.cp: out of memory");
     j->flag = recursive;
     j->work = work_cp;
-    return io_leaf_dispatch(j, "files.cp");
+    return io_leaf_dispatch(j);
 }
 
 // `files.export_raw(src, dst)` — write a disk image referenced by a VFS
@@ -369,7 +369,7 @@ static DEF_METHOD(files_method_export_raw) {
     if (!j)
         return val_err("files.export_raw: out of memory");
     j->work = work_export_raw;
-    return io_leaf_dispatch(j, "files.export_raw");
+    return io_leaf_dispatch(j);
 }
 
 // `files.find_media(dir, [dst])` — search a directory for a recognised
@@ -408,7 +408,7 @@ static DEF_METHOD(files_method_hd_create) {
         return val_err("files.hd_create: out of memory");
     snprintf(j->size_str, sizeof j->size_str, "%s", size_str);
     j->work = work_hd_create;
-    return io_leaf_dispatch(j, "files.hd_create");
+    return io_leaf_dispatch(j);
 }
 
 // Paths files.rm / files.mv must never destroy: the filesystem root and
@@ -499,7 +499,7 @@ static DEF_METHOD(files_method_fd_create) {
         return val_err("files.fd_create: out of memory");
     j->flag = high_density;
     j->work = work_fd_create;
-    return io_leaf_dispatch(j, "files.fd_create");
+    return io_leaf_dispatch(j);
 }
 
 // `files.profile_create(path, blocks)` — create a blank Lisa/XL ParaPort
@@ -531,7 +531,7 @@ static DEF_METHOD(files_method_profile_create) {
         return val_err("files.profile_create: out of memory");
     j->blocks = (uint32_t)blocks;
     j->work = work_profile_create;
-    return io_leaf_dispatch(j, "files.profile_create");
+    return io_leaf_dispatch(j);
 }
 
 // `files.partmap(path)` — print the Apple Partition Map of an image.
@@ -894,7 +894,7 @@ static value_t xfer_dispatch(const char *path, uint64_t offset, uint64_t len, bo
     j->cleanup = xfer_cleanup;
     j->work = write ? work_xfer_write : work_xfer_read;
     j->answer = write ? NULL : answer_xfer_read;
-    return io_leaf_dispatch(j, what);
+    return io_leaf_dispatch(j);
 }
 
 // `files.xfer_write(path, offset, len)` — write the window's first `len`
@@ -1237,7 +1237,7 @@ static value_t udif_dispatch(const char *a, const char *b, udif_job_t *u, int (*
     j->cleanup = udif_job_cleanup;
     j->work = work;
     j->answer = answer;
-    return io_leaf_dispatch(j, what);
+    return io_leaf_dispatch(j);
 }
 
 // An integer argument that may be absent (VK_NONE) or given as a string.
@@ -1319,7 +1319,7 @@ static DEF_METHOD(files_method_xfer_read_disk) {
     j->cleanup = xfer_cleanup;
     j->work = work_xfer_read_disk;
     j->answer = answer_xfer_read;
-    return io_leaf_dispatch(j, "files.xfer_read_disk");
+    return io_leaf_dispatch(j);
 }
 
 // The optional `level` argument: 0..9, or (absent) the codec's default.

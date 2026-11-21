@@ -3,7 +3,9 @@
 # assert, both carrying control bytes, a quote, a backslash and non-ASCII
 # text, and a files.cp whose deferred (I/O worker) failure names a path with
 # a quote and a backslash -- and checks stdout and stderr byte for byte
-# (check.py).
+# (check.py).  Twice: with the job thread, and with --jobs=inline (scripts on
+# the emulator thread, the I/O leaf working there and then), which must print
+# the same bytes -- inline once lost the worker's reason to "files.cp: failed".
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p "$WORK_DIR"
@@ -18,7 +20,20 @@ cat >> "$in" <<IN_EOF
 files.cp "$src" "/nonexistent-gs-dir/q\\"d\\\\e/out"
 quit
 IN_EOF
-out="$WORK_DIR/out.txt"
-err="$WORK_DIR/err.txt"
-timeout -k 10 120 "$HEADLESS_BIN" rom="$ROM_PATH" --script-stdin --speed=turbo < "$in" > "$out" 2> "$err" || true
-python3 "$HERE/check.py" "$out" "$err"
+for mode in threaded inline; do
+    flags=()
+    [ "$mode" = inline ] && flags=(--jobs=inline)
+    out="$WORK_DIR/out-$mode.txt"
+    err="$WORK_DIR/err-$mode.txt"
+    timeout -k 10 120 "$HEADLESS_BIN" rom="$ROM_PATH" --script-stdin --speed=turbo ${flags[@]+"${flags[@]}"} < "$in" > "$out" 2> "$err" || true
+    python3 "$HERE/check.py" "$mode" "$out" "$err"
+done
+# And the two modes print the same bytes, not merely the expected lines.
+for s in out err; do
+    if ! cmp -s "$WORK_DIR/$s-threaded.txt" "$WORK_DIR/$s-inline.txt"; then
+        echo "FAIL: std$s differs between threaded and --jobs=inline:"
+        diff "$WORK_DIR/$s-threaded.txt" "$WORK_DIR/$s-inline.txt" || true
+        exit 1
+    fi
+done
+echo "headless-unframed-text: threaded and inline match"

@@ -400,7 +400,7 @@ static DEF_METHOD(archive_method_extract) {
     if (!j)
         return val_err("files.archive.extract: out of memory");
     j->work = work_extract;
-    return io_leaf_dispatch(j, "files.archive.extract");
+    return io_leaf_dispatch(j);
 }
 
 // `files.archive.import(path, dst, [member])` — decode one member of a Mac
@@ -424,7 +424,7 @@ static DEF_METHOD(archive_method_import) {
     j->work = work_archive_import;
     j->answer = answer_archive_import;
     j->cleanup = cleanup_archive_import;
-    return io_leaf_dispatch(j, "files.archive.import");
+    return io_leaf_dispatch(j);
 }
 
 static const arg_decl_t archive_import_args[] = {
