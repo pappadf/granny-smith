@@ -73,7 +73,6 @@ import {
   skipQueuedUrlFiles,
 } from '@/state/urlBoot.svelte';
 import { setMounted, clearMounts } from '@/state/images.svelte';
-import { unzipAll, type UnzippedFile } from '@/lib/archive';
 import {
   canonicalParamName,
   planMediaFetch,
@@ -861,9 +860,9 @@ function fetchFailureText(e: unknown, url: string): string {
 // (scratchPath, so a later URL boot of the same slot never writes the file a
 // running machine may still be reading), streamed through the one chunked writer (upload.ts streamToOpfs).  When
 // the value names a member of a container, the container is fetched whole
-// and the member taken out of it (a zip in JS — unzipping needs the whole
-// archive in memory — a Mac archive by the C side); archive.org extracts zip
-// members itself.  A container fetched without a member path keeps the old
+// and the member taken out of it by the core's archive reader (peeler, through
+// files.archive.extract), whatever kind of archive it is; archive.org extracts
+// zip members itself.  A container fetched without a member path keeps the old
 // behaviour: a zip's first file, a Mac archive's found medium.  Returns the
 // staged path and the name to store it under -- the caller discards it --
 // or null, with nothing left behind.  `downloaded` is the value's body
@@ -918,7 +917,9 @@ async function fetchAndStage(
 
     if (plan.member !== null) {
       // The value named a member: take exactly that one out.
-      if (!(await extractMember(slot, staged, plan))) return null;
+      const pick = { member: plan.member, plan };
+      if (!(await unpackArchive(slot, staged, plan.containerName ?? plan.fileName, pick)))
+        return null;
     } else if (archive === 'gz' || (!archive && /gzip/i.test(ct))) {
       // A gzip body: what it holds (a floppy, a ROM).  Not a zip, though its
       // Content-Type ("application/gzip") says "zip" too.
@@ -935,11 +936,9 @@ async function fetchAndStage(
     } else if (archive === 'zip' || /\bzip/i.test(ct)) {
       // A bare zip: its first file, as before member paths existed.
       updateUrlFile(slot, { status: 'unpacking' });
-      const first = (await unzipStaged(staged, plan.fileName))[0];
-      if (!first) throw new MediaUrlError(`${plan.fileName}: the zip is empty`);
-      if (!(await streamToOpfs(staged, first.data))) return null;
+      if (!(await unpackArchive(slot, staged, plan.fileName, 'first'))) return null;
     } else if (archive) {
-      await unpackMacArchive(slot, staged, null);
+      await unpackArchive(slot, staged, plan.fileName, 'medium');
     }
 
     const size = await gsEval('files.path_size', [staged]);
@@ -977,66 +976,44 @@ function progressReporter(slot: string): (bytes: number) => void {
   };
 }
 
-// Replace the container staged at `staged` with its member `plan.member`.
-// Throws MediaUrlError (listing what is there) when the member is absent.
-async function extractMember(slot: string, staged: string, plan: MediaFetchPlan): Promise<boolean> {
-  const member = plan.member ?? '';
-  if (plan.container === 'zip') {
-    const entries = (await unzipStaged(staged, plan.containerName ?? plan.fileName)).filter(
-      (f) => f.name,
-    );
-    const hit = findMember(
-      entries.map((f) => f.name),
-      member,
-    );
-    if (!hit)
-      throw memberNotFound(
-        plan,
-        entries.map((f) => f.name),
-      );
-    const data = entries.find((f) => f.name === hit)?.data;
-    return !!data && (await streamToOpfs(staged, data));
-  }
-  return unpackMacArchive(slot, staged, member, plan);
-}
+// What to take out of an archive: the member a URL named, its first file (a
+// bare zip), or the medium files.find_media picks (a bare Mac archive).
+type ArchivePick = { member: string; plan: MediaFetchPlan } | 'first' | 'medium';
 
-// The files of the zip staged at `staged` (named `name`), or a MediaUrlError
-// saying it is not one: jszip's own message ("Can't find end of central
-// directory : is this a zip file ?" and a link to its documentation) reached
-// the user as it was.
-async function unzipStaged(staged: string, name: string): Promise<UnzippedFile[]> {
-  try {
-    return await unzipAll(await xferReadAll(staged));
-  } catch {
-    throw new MediaUrlError(`${name} is not a zip archive this page can read`);
-  }
-}
-
-// Unpack the Mac archive staged at `staged` (StuffIt, BinHex, Compact Pro,
-// MacBinary) and put `member` — or, with none, the medium files.find_media
-// picks — in its place.
-async function unpackMacArchive(
+// Unpack the archive staged at `staged` (named `name`; zip, StuffIt, BinHex,
+// Compact Pro, MacBinary, tar -- whatever the core's reader identifies) and
+// put what `pick` names in its place.  Throws MediaUrlError when the file is
+// not an archive and something was to be taken out of it, or when the member
+// is absent (listing what is there).
+async function unpackArchive(
   slot: string,
   staged: string,
-  member: string | null,
-  plan?: MediaFetchPlan,
+  name: string,
+  pick: ArchivePick,
 ): Promise<boolean> {
-  const fmt = await gsEval('files.archive.identify', [staged]);
-  if (typeof fmt !== 'string' || fmt.length === 0) {
-    if (member !== null && plan) throw new MediaUrlError(`${plan.containerName}: not an archive`);
-    return true;
+  if (!(await stagedArchiveFormat(staged))) {
+    if (pick === 'medium') return true;
+    throw new MediaUrlError(`${name} is not an archive this page can read`);
   }
   const extractDir = scratchPath(`url_${slot}_unpacked`);
   try {
     if ((await gsEval('files.archive.extract', [staged, extractDir])) !== true)
-      throw new MediaUrlError(`could not unpack ${plan?.containerName ?? 'the archive'}`);
-    if (member === null) {
+      throw new MediaUrlError(`could not unpack ${name}`);
+    if (pick === 'medium') {
       await gsEval('files.find_media', [extractDir, staged]);
       return true;
     }
     const names = await listTree(extractDir);
-    const hit = findMember(names, member);
-    if (!hit) throw memberNotFound(plan as MediaFetchPlan, names);
+    let hit: string | null;
+    if (pick === 'first') {
+      // A file's resource fork and Finder info come out as a "._" sidecar
+      // beside it (files.cp): never the file itself.
+      hit = names.find((n) => !(n.split('/').pop() ?? '').startsWith('._')) ?? null;
+      if (!hit) throw new MediaUrlError(`${name}: the zip is empty`);
+    } else {
+      hit = findMember(names, pick.member);
+      if (!hit) throw memberNotFound(pick.plan, names);
+    }
     return (await gsEval('files.cp', [`${extractDir}/${hit}`, staged])) === true;
   } finally {
     await discardStaging(extractDir);
