@@ -2403,6 +2403,9 @@ value_t node_set(node_t n, value_t v) {
     return m.out;
 }
 
+// A deferred call's success answer (job.h).  Weak: linked only where job.c is.
+bool job_call_take_answer(value_t *out) __attribute__((weak));
+
 value_t node_call(node_t n, int argc, const value_t *argv) {
     if (job_on_emulator_thread()) {
         uint32_t before = inline_mode_before();
@@ -2418,6 +2421,14 @@ value_t node_call(node_t n, int argc, const value_t *argv) {
     if (job_call_take_failure(err, sizeof err)) {
         value_free(&m.out);
         return val_err("%s", err);
+    }
+    // ...and one that succeeded: its answer, which the work produced (bytes
+    // read, a handle, stats), is the call's result -- as the same leaf's is
+    // when it works there and then (--jobs=inline).
+    value_t answer;
+    if (job_call_take_answer && job_call_take_answer(&answer)) {
+        value_free(&m.out);
+        return answer;
     }
     return m.out;
 }

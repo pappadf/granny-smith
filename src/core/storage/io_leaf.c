@@ -8,6 +8,7 @@
 #include "image.h"
 #include "value_format.h"
 #include "io/io_worker.h"
+#include "job/job.h"
 #include "mailbox/mailbox.h"
 
 #include <stdio.h>
@@ -54,6 +55,9 @@ static int io_leaf_run(void *ud, char *err, size_t cap) {
 // formatted as object_eval formats one; it and a string are held to the same
 // result limit.
 static void complete_with(uint32_t token, value_t *v) {
+    // A script's call through the job seam takes the value itself.
+    if (job_call_complete_value(token, v))
+        return;
     if (v->kind == VK_MAP || v->kind == VK_LIST || (v->kind == VK_STRING && v->s)) {
         vbuf_t b = {0};
         if (v->kind == VK_STRING)
@@ -114,8 +118,9 @@ value_t io_leaf_dispatch(io_leaf_t *j) {
         .observer_ud = j,
     };
     if (j->token) {
-        // Provisional, of the declared kind (a script's call sees it on
-        // success; the completion carries the real answer or the error).
+        // Provisional, of the declared kind (what the leaf returns now;
+        // the completion carries the real answer or the error, to a
+        // request and to a script's call alike).
         value_t provisional = j->answer ? j->answer(j) : val_bool(true);
         j->io_id = io_submit_job(&d);
         if (j->io_id) {

@@ -11,6 +11,10 @@ body = b"[\r][\x08][\x0c][\t][\"][\\][\x01][" + "é😀".encode() + b"]"
 fail = []
 if b"o" + body + b"\n" not in out:
     fail.append("stdout lacks the echoed text: %r" % out[-300:])
+# A deferred leaf's answer is what its work produced (src.txt is one byte),
+# never the provisional value the leaf returned before the work ran.
+if b"read=1\n" not in out:
+    fail.append("stdout lacks the deferred answer: %r" % out[-300:])
 if b"ASSERT FAILED: e" + body + b"\n" not in err:
     fail.append("stderr lacks the error line: %r" % err[-300:])
 # A deferred answer's error is decoded from its {"error": ...} document, not

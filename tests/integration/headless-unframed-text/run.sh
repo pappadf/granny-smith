@@ -2,10 +2,13 @@
 # Feeds statements to unframed headless on stdin -- an echo and a failing
 # assert, both carrying control bytes, a quote, a backslash and non-ASCII
 # text, and a files.cp whose deferred (I/O worker) failure names a path with
-# a quote and a backslash -- and checks stdout and stderr byte for byte
-# (check.py).  Twice: with the job thread, and with --jobs=inline (scripts on
-# the emulator thread, the I/O leaf working there and then), which must print
-# the same bytes -- inline once lost the worker's reason to "files.cp: failed".
+# a quote and a backslash, and a files.xfer_read whose deferred answer (the
+# bytes it read) only the work knows -- and checks stdout and stderr byte
+# for byte (check.py).  Twice: with the job thread, and with --jobs=inline
+# (scripts on the emulator thread, the I/O leaf working there and then),
+# which must print the same bytes -- inline once lost the worker's reason to
+# "files.cp: failed", and threaded printed the read as 0, the value the leaf
+# returned before its work ran.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p "$WORK_DIR"
@@ -17,6 +20,7 @@ echo "o[\r][\x08][\x0c][\t][\"][\\][\x01][é😀]"
 assert 1 == 2 "e[\r][\x08][\x0c][\t][\"][\\][\x01][é😀]"
 IN_EOF
 cat >> "$in" <<IN_EOF
+echo "read=\${files.xfer_read("$src", 0, 8)}"
 files.cp "$src" "/nonexistent-gs-dir/q\\"d\\\\e/out"
 quit
 IN_EOF
