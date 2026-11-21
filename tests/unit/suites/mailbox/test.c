@@ -1132,11 +1132,11 @@ TEST(a_failing_io_leaf_on_the_worker_says_why) {
 // -- not the provisional value the leaf returned at once, so a threaded
 // script sees what an inline one does.
 static int counting_work(io_leaf_t *j) {
-    j->blocks = 42; // what the work found out
+    j->size = 42; // what the work found out
     return 0;
 }
 static value_t counting_answer(io_leaf_t *j) {
-    return val_uint(4, j->blocks);
+    return val_uint(4, (uint32_t)j->size);
 }
 static void call_counting_leaf(void *ud) {
     io_leaf_t *j = io_leaf_new(NULL, NULL);
