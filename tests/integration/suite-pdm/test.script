@@ -447,7 +447,7 @@ def row_pdm_floppy_write_eject() {
 def row_pdm_floppy_format() {
     boot_pdm_75("pm7100", 24576, 0)
     let blank = "${$WORK_DIR}/pdm-blank-1440.img"
-    assert files.fd_create($blank, true) "could not create a blank 1.44 MB image"
+    assert files.create($blank, "floppy", "1440K") "could not create a blank 1.44 MB image"
     machine.floppy.drive[0].insert "${$blank}" true
     run_until_match_ex("goldens/pm7100-floppy-initdialog.png", 0, 440, 20, 640, 600000000, 50000000)
     wait_stable(900000000)

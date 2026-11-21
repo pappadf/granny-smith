@@ -512,7 +512,7 @@ def row_av_floppy_write_eject() {
 def row_av_floppy_format() {
     av_hd_desktop("q840av")
     let blank = "${$WORK_DIR}/av-blank-1440.img"
-    assert files.fd_create($blank, true) "could not create a blank 1.44 MB image"
+    assert files.create($blank, "floppy", "1440K") "could not create a blank 1.44 MB image"
     machine.floppy.drive[0].insert "${$blank}" true
     reach("goldens/q840av-7.1-floppy-initdialog.png", 900000000, 900000000, 20000000)
     # "This is not a Macintosh disk" -> Initialize -> Erase -> name (Return).

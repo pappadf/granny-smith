@@ -11,6 +11,7 @@
 #include "image.h"
 #include "image_internal.h"
 #include "platform_hooks.h"
+#include "storage_util.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -57,6 +58,63 @@ bool image_kind_fits(image_kind_t kind, const image_facts_t *f) {
 
 const char *image_kind_name(image_kind_t kind) {
     return kind_desc(kind)->name;
+}
+
+image_kind_t image_kind_by_name(const char *name) {
+    for (int k = IMAGE_KIND_NONE + 1; name && k < IMAGE_KIND_COUNT; k++)
+        if (strcmp(name, k_kinds[k].name) == 0)
+            return (image_kind_t)k;
+    return IMAGE_KIND_NONE;
+}
+
+// The largest blank hard disk files.create makes.
+#define CREATE_HD_MAX_BYTES (2ULL * 1024 * 1024 * 1024)
+
+int image_create_file_kind(const char *path, image_kind_t kind, uint64_t size, char *err, size_t err_cap) {
+    bool floppy_sized = image_layout_of_size(size) != IMAGE_LAYOUT_NONE;
+    const char *why = NULL;
+    switch (kind) {
+    case IMAGE_KIND_FLOPPY:
+        if (!floppy_sized)
+            why = "a floppy is 400K, 800K, 720K or 1440K (409600, 819200, 737280 or 1474560 bytes)";
+        break;
+    case IMAGE_KIND_HD:
+        if (floppy_sized)
+            why = "that is a floppy's size: create it as kind \"floppy\"";
+        else if (size < FITS_HD_MIN_BYTES || size > CREATE_HD_MAX_BYTES || size % 512)
+            why = "a hard disk is a whole number of 512-byte sectors, from 400K to 2 GiB";
+        break;
+    case IMAGE_KIND_PROFILE:
+        if (size == 0 || size % 512)
+            why = "a ProFile is a whole number of 512-byte sectors (the 5 MB ProFile: 9728, 4980736 bytes)";
+        break;
+    case IMAGE_KIND_CD:
+        why = "a CD-ROM is read-only: there is no blank one";
+        break;
+    default:
+        why = "the kind is floppy, hd or profile";
+        break;
+    }
+    if (why) {
+        if (err && err_cap)
+            snprintf(err, err_cap, "%s", why);
+        return -1;
+    }
+    int rc;
+    if (kind == IMAGE_KIND_HD && path_has_ext(path, ".dmg")) {
+        // A UDIF of one zero run: a couple of KB however large the disk.
+        FILE *f = fopen(path, "rb");
+        if (f) {
+            fclose(f);
+            rc = IMAGE_CREATE_EXISTS;
+        } else
+            rc = image_create_empty_udif(path, size);
+    } else
+        rc = image_create_zeros(path, image_kind_file_bytes(kind, size)); // the kind's tags in-band
+    if (rc != 0 && err && err_cap)
+        snprintf(err, err_cap,
+                 rc == IMAGE_CREATE_EXISTS ? "'%s' exists (it is never overwritten)" : "cannot write '%s'", path);
+    return rc;
 }
 
 uint64_t image_kind_file_bytes(image_kind_t kind, uint64_t data_bytes) {

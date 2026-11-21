@@ -8,7 +8,7 @@
 #   * the next machine.boot builds a new machine, its drives empty.
 
 assert machine.created "the harness booted a Plus"
-assert files.fd_create("${$WORK_DIR}/scratch.fd", false) "blank floppy created"
+assert files.create("${$WORK_DIR}/scratch.fd", "floppy", "800K") "blank floppy created"
 machine.floppy.drive[0].insert "${$WORK_DIR}/scratch.fd" true
 assert machine.floppy.drive[0].present "floppy inserted"
 scheduler.run 2000000

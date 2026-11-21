@@ -34,7 +34,7 @@ test('Restart keeps the attached hard disk — same medium, same open instance',
   // Boot and attach a scratch HD.
   await gsCallInPage(page, 'machine.boot', { model: 'iicx', ram: 8192, rom: '/opfs/images/rom/97221136' });
   await expect.poll(() => gsEvalInPage(page, 'machine.id'), { timeout: 30_000 }).toBe('iicx');
-  await gsCallInPage(page, 'files.hd_create', ['/tmp/restart-scratch.img', '20mb']);
+  await gsCallInPage(page, 'files.create', ['/tmp/restart-scratch.img', 'hd', '20mb']);
   await gsCallInPage(page, 'machine.scsi.attach_hd', ['/tmp/restart-scratch.img', 0]);
   expect(await gsEvalInPage(page, 'machine.scsi.device[0].present')).toBe(true);
   const stem0 = await gsEvalInPage(page, 'machine.scsi.device[0].image.delta');

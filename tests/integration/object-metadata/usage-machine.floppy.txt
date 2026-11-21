@@ -2,5 +2,4 @@ machine.floppy — Floppy
 Floppy controller and drives
 
 attributes: type, sel
-methods: create
 children: controller, drive

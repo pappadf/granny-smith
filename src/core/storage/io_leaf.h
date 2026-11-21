@@ -28,8 +28,8 @@ struct io_leaf {
     uint32_t io_id; // the worker job (0: inline)
     char *a, *b; // paths
     bool flag;
-    char size_str[64];
-    uint32_t blocks;
+    uint64_t size; // files.create: data bytes
+    int kind; // files.create: image_kind_t
     char err[256];
     void *ud; // the leaf's own
     int (*work)(io_leaf_t *j); // the work, on either thread: 0 or -errno, err filled

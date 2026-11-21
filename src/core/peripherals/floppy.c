@@ -1324,43 +1324,6 @@ static DEF_GETTER(floppy_attr_sel) {
     return val_bool(floppy_get_sel(floppy_self_from(self)));
 }
 
-// `floppy.create(path, [hd])` — create a blank floppy image and auto-mount
-// it. `hd` is the optional density flag: "hd" / true → 1.44 MB, anything
-// else → 800 KB. The legacy `--hd` string spelling is also accepted.
-static DEF_METHOD(floppy_method_create) {
-    bool high_density = false;
-    int preferred = -1;
-    // hd is VK_NONE-kind: body discriminates string / bool / integer.
-    if (argc >= 2) {
-        if (argv[1].kind == VK_STRING && argv[1].s) {
-            if (strcmp(argv[1].s, "hd") == 0 || strcmp(argv[1].s, "--hd") == 0) {
-                high_density = true;
-            } else if (argv[1].s[0] >= '0' && argv[1].s[0] <= '1' && argv[1].s[1] == '\0') {
-                preferred = argv[1].s[0] - '0';
-            } else if (*argv[1].s) {
-                return val_err("floppy.create: second arg must be \"hd\" or drive index 0/1");
-            }
-        } else if (argv[1].kind == VK_BOOL) {
-            high_density = argv[1].b;
-        } else if (argv[1].kind == VK_INT || argv[1].kind == VK_UINT) {
-            int64_t d = (argv[1].kind == VK_INT) ? argv[1].i : (int64_t)argv[1].u;
-            if (d != 0 && d != 1)
-                return val_err("floppy.create: drive index must be 0 or 1");
-            preferred = (int)d;
-        }
-    }
-    int rc = system_create_floppy(argv[0].s, high_density, preferred);
-    return val_bool(rc == 0);
-}
-
-static const arg_decl_t floppy_create_args[] = {
-    {.name = "path", .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = "Output path"},
-    {.name = "hd",
-     .kind = VK_NONE,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_POLY,
-     .doc = "\"hd\" / true for 1.44 MB; drive index 0/1 to pick a slot"                       },
-};
-
 static const member_t floppy_members[] = {
     {.kind = MK_ATTR,
      .name = "type",
@@ -1369,13 +1332,7 @@ static const member_t floppy_members[] = {
     {.kind = MK_ATTR,
      .name = "sel",
      .doc = "VIA-driven head-select signal",
-     .attr = {.type = VK_BOOL, .get = floppy_attr_sel, .set = NULL}},
-    {.kind = MK_METHOD,
-     .name = "create",
-     .examples = EXAMPLES("machine.floppy.create \"/opfs/images/fd/blank.dsk\"",
-     "machine.floppy.create \"/opfs/images/fd/blank-hd.dsk\" hd"),
-     .doc = "Create a blank floppy image and auto-mount it",
-     .method = {.args = floppy_create_args, .nargs = 2, .result = VK_BOOL, .fn = floppy_method_create}},
+     .attr = {.type = VK_BOOL, .get = floppy_attr_sel, .set = NULL} },
 };
 
 static const class_desc_t floppy_class = {

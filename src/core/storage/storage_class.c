@@ -11,6 +11,7 @@
 
 #include "checkpoint.h"
 #include "chunk_cache.h"
+#include "drive_catalog.h"
 #include "format_registry.h"
 #include "image_class.h"
 #include "io_leaf.h"
@@ -123,28 +124,9 @@ static int work_export_raw(io_leaf_t *j) {
     return vfs_export_raw_image(j->a, j->b, j->err, sizeof j->err);
 }
 
-static int work_hd_create(io_leaf_t *j) {
-    int rc = system_hd_create(j->a, j->size_str);
-    if (rc != 0)
-        snprintf(j->err, sizeof j->err, "could not create '%s' (%s)", j->a, j->size_str);
-    return rc == 0 ? 0 : -EIO;
-}
-
-static int work_fd_create(io_leaf_t *j) {
-    int rc = image_create_blank_floppy(j->a, false, j->flag);
-    if (rc == IMAGE_CREATE_EXISTS)
-        snprintf(j->err, sizeof j->err, "file already exists: %s", j->a);
-    else if (rc != 0)
-        snprintf(j->err, sizeof j->err, "failed to create blank floppy '%s'", j->a);
-    return rc == 0 ? 0 : -EIO;
-}
-
-static int work_profile_create(io_leaf_t *j) {
-    int rc = image_create_blank_profile(j->a, j->blocks);
-    if (rc == IMAGE_CREATE_EXISTS)
-        snprintf(j->err, sizeof j->err, "file already exists: %s", j->a);
-    else if (rc != 0)
-        snprintf(j->err, sizeof j->err, "failed to create blank ProFile image '%s'", j->a);
+// files.create's work: the blank file (image_create_file_kind).
+static int work_create(io_leaf_t *j) {
+    int rc = image_create_file_kind(j->a, (image_kind_t)j->kind, j->size, j->err, sizeof j->err);
     return rc == 0 ? 0 : -EIO;
 }
 
@@ -294,29 +276,38 @@ static DEF_METHOD(files_method_find_media) {
     return val_bool(true);
 }
 
-// `files.hd_create(path, size)` — create a blank SCSI HD image.
-// size is a VK_NONE-kind slot, so the body discriminates between
-// VK_STRING (label/size string) and integer (byte count). The size
-// string that system_hd_create parses accepts model labels, human
-// sizes, and byte counts alike, so integers stringify cleanly.
-static DEF_METHOD(files_method_hd_create) {
-    char size_str[64];
-    if (argv[1].kind == VK_STRING) {
-        snprintf(size_str, sizeof(size_str), "%s", argv[1].s ? argv[1].s : "");
-    } else if (argv[1].kind == VK_INT) {
-        snprintf(size_str, sizeof(size_str), "%lld", (long long)argv[1].i);
-    } else if (argv[1].kind == VK_UINT) {
-        snprintf(size_str, sizeof(size_str), "%llu", (unsigned long long)argv[1].u);
-    } else {
-        return val_err("files.hd_create: size must be string or integer");
-    }
-    if (destination_attached(argv[0].s))
-        return val_err("files.hd_create: '%s' is attached to a device (E_BUSY)", argv[0].s);
-    io_leaf_t *j = io_leaf_new(argv[0].s, NULL);
+// `files.create(path, kind, size)` — a new blank image file of `kind`
+// (floppy, hd or profile) holding `size` data bytes: the size of the image
+// node it becomes (512 per sector, tags not counted).  `size` is a byte
+// count, or a string drive_catalog_parse_size reads: a drive model
+// ("HD20SC"), a human size ("40mb", snapped to a catalogue drive) or an
+// exact one ("800K", "20M", "21411840").  An I/O job; it never overwrites,
+// and inserts nothing (the drive's insert does that).
+static DEF_METHOD(files_method_create) {
+    const char *path = argv[0].s;
+    image_kind_t kind = image_kind_by_name(argv[1].s);
+    if (kind == IMAGE_KIND_NONE)
+        return val_err("files.create: kind '%s' is not floppy, hd or profile", argv[1].s ? argv[1].s : "");
+    uint64_t size = 0;
+    if (argv[2].kind == VK_STRING)
+        size = argv[2].s ? drive_catalog_parse_size(argv[2].s) : 0;
+    else if (argv[2].kind == VK_INT)
+        size = argv[2].i > 0 ? (uint64_t)argv[2].i : 0;
+    else if (argv[2].kind == VK_UINT)
+        size = argv[2].u;
+    else
+        return val_err("files.create: size must be a string or a byte count");
+    if (size == 0)
+        return val_err("files.create: invalid size (a drive model such as HD20SC, a size such as 40mb or 800K, "
+                       "or a byte count)");
+    if (destination_attached(path))
+        return val_err("files.create: '%s' is attached to a device (E_BUSY)", path);
+    io_leaf_t *j = io_leaf_new(path, NULL);
     if (!j)
-        return val_err("files.hd_create: out of memory");
-    snprintf(j->size_str, sizeof j->size_str, "%s", size_str);
-    j->work = work_hd_create;
+        return val_err("files.create: out of memory");
+    j->kind = (int)kind;
+    j->size = size;
+    j->work = work_create;
     return io_leaf_dispatch(j);
 }
 
@@ -392,55 +383,6 @@ static DEF_METHOD(files_method_mv) {
     if (rc < 0)
         return val_err("files.mv: copied, but failed to remove source '%s': %s", src, strerror(-rc));
     return val_none();
-}
-
-// `files.fd_create(path, [high_density])` — create a blank (unformatted)
-// floppy image: 800 KB by default, 1.4 MB when high_density is true. Unlike
-// the `fd create` shell command this does NOT insert the disk into a drive —
-// the New Machine dialog persists the file and lets the user select it.
-static DEF_METHOD(files_method_fd_create) {
-    const char *path = argv[0].s;
-    if (!path || !*path)
-        return val_err("files.fd_create: empty path");
-    bool high_density = (argc >= 2 && argv[1].kind == VK_BOOL) ? argv[1].b : false;
-    io_leaf_t *j = io_leaf_new(path, NULL);
-    if (!j)
-        return val_err("files.fd_create: out of memory");
-    j->flag = high_density;
-    j->work = work_fd_create;
-    return io_leaf_dispatch(j);
-}
-
-// `files.profile_create(path, blocks)` — create a blank Lisa/XL ParaPort
-// ProFile image: a raw, all-zero file of `blocks` 532-byte blocks. Unlike
-// hd_create (which builds a 512-byte/block SCSI image), the ProFile is a
-// parallel-port disk with 532-byte blocks, a distinct on-disk format. `blocks`
-// is a VK_NONE slot accepting an integer or numeric string. Standard sizes:
-// 5 MB = 9728 blocks; 10 MB ≈ 19448 (the LOS-documented full Widget capacity).
-static DEF_METHOD(files_method_profile_create) {
-    const char *path = argv[0].s;
-    if (!path || !*path)
-        return val_err("files.profile_create: empty path");
-    unsigned long blocks;
-    if (argv[1].kind == VK_STRING) {
-        if (!argv[1].s)
-            return val_err("files.profile_create: missing block count");
-        blocks = strtoul(argv[1].s, NULL, 10);
-    } else if (argv[1].kind == VK_INT) {
-        blocks = (argv[1].i > 0) ? (unsigned long)argv[1].i : 0;
-    } else if (argv[1].kind == VK_UINT) {
-        blocks = (unsigned long)argv[1].u;
-    } else {
-        return val_err("files.profile_create: blocks must be an integer");
-    }
-    if (blocks == 0)
-        return val_err("files.profile_create: block count must be positive");
-    io_leaf_t *j = io_leaf_new(path, NULL);
-    if (!j)
-        return val_err("files.profile_create: out of memory");
-    j->blocks = (uint32_t)blocks;
-    j->work = work_profile_create;
-    return io_leaf_dispatch(j);
 }
 
 // `files.partmap(path)` — print the Apple Partition Map of an image.
@@ -1480,12 +1422,13 @@ static const arg_decl_t files_find_media_args[] = {
                                   .validation_flags = OBJ_ARG_OPTIONAL,
                                   .doc = "Optional path to copy match into"},
 };
-static const arg_decl_t files_hd_create_args[] = {
-    ARG_PATH("path", "Image output path"),
+static const arg_decl_t files_create_args[] = {
+    ARG_PATH("path", "New image file (it must not exist; a hard disk named .dmg is stored as UDIF)"),
+    {.name = "kind", .kind = VK_STRING, .doc = "floppy, hd or profile"},
     {.name = "size",
-                                   .kind = VK_NONE,
-                                   .validation_flags = OBJ_ARG_POLY,
-                                   .doc = "Size string (e.g. \"HD20SC\", \"40M\") or byte count"},
+                                                                                              .kind = VK_NONE,
+                                                                                              .validation_flags = OBJ_ARG_POLY,
+                                                                                              .doc = "Data bytes (512 per sector): a count, a drive model (\"HD20SC\"), or a size (\"800K\", \"40mb\")"},
 };
 static const arg_decl_t files_rm_args[] = {
     ARG_PATH("path", "Path to remove (recursive)"),
@@ -1493,22 +1436,6 @@ static const arg_decl_t files_rm_args[] = {
 static const arg_decl_t files_mv_args[] = {
     ARG_PATH("src", "Source path"),
     ARG_PATH("dst", "Destination path"),
-};
-static const value_t files_false = {.kind = VK_BOOL, .b = false};
-static const arg_decl_t files_fd_create_args[] = {
-    ARG_PATH("path", "Image output path"),
-    {.name = "high_density",
-                                   .kind = VK_BOOL,
-                                   .validation_flags = OBJ_ARG_OPTIONAL,
-                                   .default_value = &files_false,
-                                   .doc = "true = 1.4 MB, false = 800 KB"},
-};
-static const arg_decl_t files_profile_create_args[] = {
-    ARG_PATH("path", "Image output path"),
-    {.name = "blocks",
-                                   .kind = VK_NONE,
-                                   .validation_flags = OBJ_ARG_POLY,
-                                   .doc = "ProFile block count, a number or a numeric string (532-byte blocks; 5 MB = 9728)"},
 };
 static const arg_decl_t files_path_arg[] = {
     ARG_PATH("path", "Image path"),
@@ -1687,30 +1614,12 @@ static const member_t files_members[] = {
      .doc = "Find a recognised floppy/disk image in a directory",
      .method = {.args = files_find_media_args, .nargs = 2, .result = VK_BOOL, .fn = files_method_find_media}},
     {.kind = MK_METHOD,
-     .name = "hd_create",
-     .examples = EXAMPLES("files.hd_create \"/opfs/images/hd/new.img\" \"40M\"",
-     "files.hd_create \"/opfs/images/hd/hd20.img\" \"HD20SC\""),
-     .doc = "Create a blank SCSI HD image",
-     .method = {.ui_flags = MM_IO,
-                .args = files_hd_create_args,
-                .nargs = 2,
-                .result = VK_BOOL,
-                .fn = files_method_hd_create}},
-    {.kind = MK_METHOD,
-     .name = "fd_create",
-     .examples = EXAMPLES("files.fd_create \"/opfs/images/fd/blank.dsk\"",
-     "files.fd_create \"/opfs/images/fd/blank-hd.dsk\" true"),
-     .doc = "Create a blank floppy image (800 KB, or 1.4 MB when high_density)",
-     .method = {.ui_flags = MM_IO,
-                .args = files_fd_create_args,
-                .nargs = 2,
-                .result = VK_BOOL,
-                .fn = files_method_fd_create}},
-    {.kind = MK_METHOD,
-     .name = "profile_create",
-     .examples = EXAMPLES("files.profile_create \"/opfs/images/hd/profile.img\" 9728"),
-     .doc = "Create a blank Lisa/XL ProFile image (raw 532-byte/block zero file)",
-     .method = {.args = files_profile_create_args, .nargs = 2, .result = VK_BOOL, .fn = files_method_profile_create}},
+     .name = "create",
+     .examples = EXAMPLES("files.create \"/opfs/images/hd/new.dmg\" \"hd\" \"40M\"",
+     "files.create \"/opfs/images/fd/blank.dsk\" \"floppy\" \"800K\"", "files.create \"/opfs/images/hd/profile.image\" \"profile\" 4980736"),
+     .doc = "Create a blank image file of a kind and size (inserts nothing)",
+     .method =
+         {.ui_flags = MM_IO, .args = files_create_args, .nargs = 3, .result = VK_BOOL, .fn = files_method_create}},
     {.kind = MK_METHOD,
      .name = "rm",
      .examples = EXAMPLES("files.rm \"/opfs/images/hd/old.img\""),

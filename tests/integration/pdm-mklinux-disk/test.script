@@ -137,7 +137,7 @@ def pdisk_line(text, steady) {
 def phase1_boot() {
     # HD160SC = Quantum ELS170S, 177,269,760 bytes: the smallest catalog
     # mechanism that fits 40 MB of Mac OS, 96 MB of root and 16 MB of swap.
-    assert files.hd_create($target, "HD160SC") "hd_create HD160SC failed"
+    assert files.create($target, "hd", "HD160SC") "files.create HD160SC failed"
     assert files.path_size($target) == 177269760 "HD160SC wrong image size"
 
     # Clock set AFTER boot (machine.boot reseeds the RTC from the host wall

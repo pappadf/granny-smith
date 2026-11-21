@@ -104,15 +104,15 @@
       "blank_disks": [
         {
           "label": "5 MB ProFile (9728 blocks)",
-          "method": "files.profile_create",
-          "arg": "9728",
+          "kind": "profile",
+          "size": 4980736,
           "name": "blank_profile_5MB",
           "ext": ".image"
         },
         {
           "label": "10 MB Widget (19448 blocks)",
-          "method": "files.profile_create",
-          "arg": "19448",
+          "kind": "profile",
+          "size": 9957376,
           "name": "blank_profile_10MB",
           "ext": ".image"
         }

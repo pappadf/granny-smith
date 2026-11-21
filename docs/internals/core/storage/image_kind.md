@@ -266,8 +266,9 @@ written in either case.
   writable images with no base: a delta where `image_delta_dir` puts it,
   unwritten blocks read as zeros, and a checkpoint entry with no name plus
   the size, which the restore recreates. This fixes §1.4 item 5. Creating a blank *file*
-  (`fd_create`, `hd_create`, `profile_create`) is a separate verb and stays
-  file-level (commit C7).
+  is a separate verb and stays file-level: `files.create(path, kind, size)`
+  (C7; `image_create_file_kind`), `size` being the data bytes, the image
+  node's `size`.
 - **CD** is always read-only, whatever the caller asks.
 
 ### 2.6 Ownership, eject, delta placement
@@ -485,7 +486,7 @@ commit (no aliases, no shims).
 | C4 | **`files.identify`.** The identify method (`storage_class.c`) and the kinds' accept rules (`image_kind_fits`); the nine entry points of §4.2 and the SCSI facade go; `catalog.hd_models`; the shell's `contains()` takes a list haystack (membership), for `contains(files.identify(p).fits, "hd")` | yes |
 | C5 | **One image node.** `image_class.c` on every device and on `files.images`; the ATA `device[U]` collection; the renames of §3.4; every export an I/O job with a codec; gs-test-data scripts updated in that repository (none needed one: they use `machine.scsi.device[N].image.export`, unchanged). `medium_export.h` goes; `machine.storage` entries name their image's `source`. Fixes item 8 | yes |
 | C6 | *Dropped* (§6): the type keeps its name, `image_t`, with `image.h` and the `disk_*` I/O calls | — |
-| C7 | **`files.create(path, kind, size)`** replaces `files.fd_create/hd_create/profile_create` and `machine.floppy.create`; profile blank-disk entries name `{kind, size}` | |
+| C7 | **`files.create(path, kind, size)`** replaces `files.fd_create/hd_create/profile_create` and `machine.floppy.create` (with `system_create_floppy`, `system_hd_create`, `image_create_blank_floppy/profile`): `image_create_file_kind` holds the kinds' rules, and a blank 400K or 720K floppy can now be made; profile blank-disk entries name `{kind, size}`; gs-test-data's Marathon README updated in that repository | yes |
 
 ### 5.1 Risks
 

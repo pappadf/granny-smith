@@ -3,7 +3,7 @@
 
 // web2 e2e: ?hd0=blank:<size> (#281).  A URL boot can attach a new blank
 // hard disk instead of downloading one: the page creates it with
-// files.hd_create (the core parses the size, as for the shell and the New
+// files.create (kind hd: the core parses the size, as for the shell and the New
 // Machine dialog) under /opfs/images/hd/, named for the link
 // (blank_<spec>_<slot>_<hash>.dmg), and attaches it.  Reloading the same link
 // attaches that disk again instead of creating another.  Only the ROM's

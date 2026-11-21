@@ -77,7 +77,7 @@ UDIF specifics worth knowing before touching `image_udif.c`:
 
 **Writing UDIF** — `udif_writer.h`
 
-The disk images the web app stores, the blank disks `hd create` makes under a `.dmg` name, and exports to a `.dmg` name are written by a streaming UDIF writer: payload first, block map and trailer last, so it never seeks back and holds one partial chunk at most. It writes one profile (the "GS profile"):
+The disk images the web app stores, the blank hard disks `files.create` makes under a `.dmg` name, and exports to a `.dmg` name are written by a streaming UDIF writer: payload first, block map and trailer last, so it never seeks back and holds one partial chunk at most. It writes one profile (the "GS profile"):
 
 | | |
 |---|---|
@@ -142,10 +142,10 @@ Every compressor and decompressor here — and the PNG reader's, peeler's zip an
   Whatever the format, the destination is created exclusively (an existing file is never overwritten), a base block that cannot be read fails the export rather than writing zeros in its place, and the base image is never written in place. Every device's Save As goes through it, as one method of the one image node (`image_class.c`), an I/O job taking a `codec`: `machine.scsi.device[N].image.export`, `machine.floppy.drive[N].image.export` (IWM/SWIM/SWIM3/New Age and the Lisa's FDC), `machine.hd.image.export` (the ProFile), `machine.ata.device[U].image.export`, `files.images[N].export`; and `files.export_raw` (which exports a file's source, not a mounted disk).
 
 **Creating blank hard disks**
-- **`image_create_empty_udif(path, size)`** writes a UDIF of `size` zero bytes: one zero run, about 4 KB whatever the size. `hd create` and `files.hd_create` use it when the path ends in `.dmg` (the web app's Create Image names blank disks so); any other name gets **`image_create_empty()`**, a raw file of the full size, which the browser charges in full.
+- **`image_create_empty_udif(path, size)`** writes a UDIF of `size` zero bytes: one zero run, about 4 KB whatever the size. `files.create` uses it for a hard disk whose path ends in `.dmg` (the web app's Create Image names blank disks so); any other name gets **`image_create_empty()`**, a raw file of the full size, which the browser charges in full.
 
-**Creating blank floppy images**
-- **`image_create_blank_floppy()`** writes a zero-filled 819,200-byte (or 1,474,560-byte HD) raw file that can immediately be opened.
+**Creating blank image files**
+- **`image_create_file_kind(path, kind, size, err, cap)`** (`image_kind.c`; `files.create`) writes a new blank file of a kind holding `size` data bytes: a floppy of one of the four floppy sizes, a hard disk from 400K to 2 GiB (a UDIF of one zero run for a `.dmg` name, else raw), or a ProFile of whole sectors as raw 532-byte blocks; a CD-ROM is refused. Every file is created exclusively (**`image_create_zeros()`**), so an existing one is never overwritten.
 
 **Checkpointing & metadata**
 - **`image_checkpoint()`** writes `{uint32 len, path bytes, flags, kind, raw_size, uint32 instance_len, instance_path bytes, uint32 key_len, source_key bytes}`, and calls `storage_checkpoint()`, whose blocks carry the sector tags in-band. The `instance_path` field (added in the storage-isolation rewrite) lets the restore path locate the delta+journal pair without relying on adjacent-to-base sidecars. The source key lets a quick restore refuse a base that is no longer the same bytes ([source.md](source.md) §5). The storage layer writes the current bitmap for quick checkpoints or streams all blocks for consolidated checkpoints.

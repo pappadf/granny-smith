@@ -47,7 +47,7 @@ assert $rechunked.max_chunk_bytes <= 262144 "re-chunking kept the old chunks"
 
 # A blank 2 GB disk as .dmg is one zero run: a few KB, not 2 GB.
 let blank = "${$WORK_DIR}/blank.dmg"
-assert files.hd_create($blank, "2147483648") "hd_create of a .dmg failed"
+assert files.create($blank, "hd", "2147483648") "files.create of a .dmg failed"
 assert files.path_size($blank) < 4096 "a blank 2 GB .dmg is not a few KB"
 assert files.verify($blank) "a blank .dmg does not verify"
 let bv = files.udif_info($blank)
@@ -55,7 +55,7 @@ assert $bv.extents == 1 "a blank disk is more than one zero run"
 assert $bv.bytes == 2147483648 "the blank disk has the wrong size"
 
 # A raw blank (any other name) is still the full size, as before.
-assert files.hd_create("${$WORK_DIR}/blank.img", "20M") "hd_create of a raw image failed"
+assert files.create("${$WORK_DIR}/blank.img", "hd", "20M") "files.create of a raw image failed"
 
 # A disk image inside a Mac archive (here BinHex around StuffIt around a
 # DiskCopy 4.2 floppy) is decoded straight into a UDIF: nothing extracted.

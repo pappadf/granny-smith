@@ -1323,36 +1323,16 @@ int image_create_empty_udif(const char *filename, uint64_t size) {
     return udif_create_empty(filename, size) == 0 ? 0 : -1;
 }
 
-int image_create_blank_floppy(const char *filename, bool overwrite, bool high_density) {
-    if (!filename || !*filename)
-        return -1;
-    FILE *f = overwrite ? fopen(filename, "wb") : create_exclusive(filename);
-    if (!f)
-        return (!overwrite && errno == EEXIST) ? IMAGE_CREATE_EXISTS : -1;
-    const size_t total = high_density ? 1440 * 1024 : 800 * 1024;
-    int fd = fileno(f);
-    if (fd < 0 || ftruncate(fd, (off_t)total) != 0) {
-        fclose(f);
-        remove(filename);
-        return -1;
-    }
-    fclose(f);
-    return 0;
-}
-
-int image_create_blank_profile(const char *filename, uint32_t block_count) {
-    if (!filename || !*filename || block_count == 0)
+int image_create_zeros(const char *filename, uint64_t bytes) {
+    if (!filename || !*filename || bytes == 0)
         return -1;
     mkdir_parents(filename);
     FILE *f = create_exclusive(filename);
     if (!f)
         return errno == EEXIST ? IMAGE_CREATE_EXISTS : -1;
-    // A blank ProFile is just zeros — block_count × 532.  ftruncate leaves the
-    // new bytes reading as zero, so the controller serves an all-zero disk the
-    // OS then formats; the device-info block reports block_count as capacity.
-    const off_t total = (off_t)block_count * (off_t)PROFILE_BLOCK_BYTES;
+    // ftruncate leaves the new bytes reading as zero, without writing them.
     int fd = fileno(f);
-    if (fd < 0 || ftruncate(fd, total) != 0) {
+    if (fd < 0 || ftruncate(fd, (off_t)bytes) != 0) {
         fclose(f);
         remove(filename);
         return -1;

@@ -199,27 +199,12 @@ int image_create_empty(const char *filename, uint64_t size);
 // existing file).
 int image_create_empty_udif(const char *filename, uint64_t size);
 
-// What the blank-image creators below return for an existing file they will
-// not overwrite (0 is success, -1 any other failure).
+// A new all-zero file of `bytes` bytes at `filename` (parent directories
+// made), created exclusively: 0, IMAGE_CREATE_EXISTS when the file is there
+// already (it is never overwritten), -1 on any other error.  files.create
+// (image_create_file_kind) is its caller.
 #define IMAGE_CREATE_EXISTS (-2)
-
-// Create a new blank floppy image file (800K or 1440K).  Without `overwrite`
-// an existing file is refused (IMAGE_CREATE_EXISTS), atomically: the file is
-// created exclusively, so a file appearing meanwhile is never truncated.
-int image_create_blank_floppy(const char *filename, bool overwrite, bool high_density);
-
-// On-the-wire ProFile block size: 512 data bytes + a 20-byte inline tag (see
-// src/machines/lisa/lisa_profile.c).  A raw ProFile image is simply
-// block_count × this, all zero for a blank disk.
-#define PROFILE_BLOCK_BYTES 532u
-
-// Create a new blank ProFile (Lisa/XL parallel hard disk) image file: a raw,
-// all-zero file of block_count × PROFILE_BLOCK_BYTES bytes.  The controller's
-// synthesized device-info block reports this block count, so the OS sizes the
-// volume from it (5 MB ProFile = 9728 blocks; 10 MB Widget ≈ 19448 blocks).
-// Refuses to overwrite an existing file.  Returns 0 on success,
-// IMAGE_CREATE_EXISTS if the file already exists, -1 on any other error.
-int image_create_blank_profile(const char *filename, uint32_t block_count);
+int image_create_zeros(const char *filename, uint64_t bytes);
 
 // Export the full disk content (base + delta) of an open image to a new file.
 // The destination's name picks the format: .dmg is UDIF; .dc42 and

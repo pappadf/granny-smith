@@ -32,7 +32,7 @@ test('a download arrives in transfer-buffer chunks and lands as one file', async
   await page.waitForTimeout(2_000);
 
   // A 9 MB blank image (an I/O job itself), then its download.
-  await terminalRun(page, 'files.hd_create("/tmp/dl.img", "9m")');
+  await terminalRun(page, 'files.create("/tmp/dl.img", "hd", "9m")');
   await expect(page.locator('.console-output')).toContainText('hd create: created', {
     timeout: 60_000,
   });

@@ -254,17 +254,14 @@ export function cardRomIdentity(
   return identifyCardRom(gsEval, what, path);
 }
 
-// Create a blank image at `path`: a hard disk through the method the
-// profile's blank-disk entry names (with its argument), or a floppy.
-// true when made, or the core's reason.
+// Create a blank image of `kind` and `size` at `path` (files.create): a
+// profile's blank-disk entry, or a floppy of its size.  true when made, or
+// the core's reason.
 export async function createBlankImage(
-  disk: { method: string; arg: unknown } | { highDensity: boolean },
+  disk: { kind: string; size: number | string },
   path: string,
 ): Promise<true | string> {
-  const res =
-    'method' in disk
-      ? await gsEval(disk.method, [path, disk.arg])
-      : await gsEval('files.fd_create', [path, disk.highDensity]);
+  const res = await gsEval('files.create', [path, disk.kind, disk.size]);
   return res === true ? true : gsErrorText(res);
 }
 

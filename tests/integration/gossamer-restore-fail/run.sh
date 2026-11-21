@@ -33,7 +33,7 @@ truncate -s -8 "$TRUNCATED_FILE"
 echo ""
 echo "Step 2: boot 9.2.1 with an ATA disk, fail the restore, finish the boot"
 cat > "$TEST_TMPDIR/step2.script" << EOF
-assert files.hd_create("$TEST_TMPDIR/ata.img", "HD500SC") "create the ATA disk"
+assert files.create("$TEST_TMPDIR/ata.img", "hd", "HD500SC") "create the ATA disk"
 machine.rtc.time = "2026-10-01T12:00:00"
 machine.scsi.attach_hd "$TEST_TMPDIR/hd.img" 0
 assert machine.ata.attach_hd("$TEST_TMPDIR/ata.img", 0) "attach the ATA disk"

@@ -12,15 +12,15 @@ import type { BlankDisk } from '@/bus/profile';
 const SCSI: BlankDisk[] = [
   {
     label: '20 MB (HD20SC)',
-    method: 'files.hd_create',
-    arg: '21411840',
+    kind: 'hd',
+    size: 21411840,
     name: 'blank_20MB',
     ext: '.dmg',
   },
   {
     label: '80 MB (HD80SC)',
-    method: 'files.hd_create',
-    arg: '80061440',
+    kind: 'hd',
+    size: 80061440,
     name: 'blank_80MB',
     ext: '.dmg',
   },
@@ -29,15 +29,15 @@ const SCSI: BlankDisk[] = [
 const PROFILE: BlankDisk[] = [
   {
     label: '5 MB ProFile (9728 blocks)',
-    method: 'files.profile_create',
-    arg: '9728',
+    kind: 'profile',
+    size: 4980736,
     name: 'blank_profile_5MB',
     ext: '.image',
   },
   {
     label: '10 MB Widget (19448 blocks)',
-    method: 'files.profile_create',
-    arg: '19448',
+    kind: 'profile',
+    size: 9957376,
     name: 'blank_profile_10MB',
     ext: '.image',
   },
@@ -110,38 +110,36 @@ describe('blankDiskName', () => {
 });
 
 describe('floppyBlankPlan', () => {
-  it('creates 800K and 1440K floppies with files.fd_create', () => {
+  it('creates each floppy size with files.create', () => {
     expect(floppyBlankPlan('800k')).toEqual({
       ok: true,
-      method: 'files.fd_create',
-      arg: false,
+      kind: 'floppy',
+      size: '800K',
       ext: '.dsk',
     });
-    expect(floppyBlankPlan('800KB')).toMatchObject({ ok: true, arg: false });
+    expect(floppyBlankPlan('800KB')).toMatchObject({ ok: true, size: '800K' });
     for (const s of ['1440k', '1440KB', '1.44mb', '1.4MB'])
-      expect(floppyBlankPlan(s)).toMatchObject({ ok: true, arg: true });
+      expect(floppyBlankPlan(s)).toMatchObject({ ok: true, size: '1440K' });
+    expect(floppyBlankPlan('400k')).toMatchObject({ ok: true, size: '400K' });
+    expect(floppyBlankPlan('720k')).toMatchObject({ ok: true, size: '720K' });
   });
 
-  it('refuses 400K and anything else, saying what is offered', () => {
-    expect(floppyBlankPlan('400k')).toMatchObject({
+  it('refuses anything else, saying what is offered', () => {
+    expect(floppyBlankPlan('500k')).toMatchObject({
       ok: false,
-      reason: expect.stringMatching(/400K/),
-    });
-    expect(floppyBlankPlan('720k')).toMatchObject({
-      ok: false,
-      reason: expect.stringMatching(/800k or 1440k/),
+      reason: expect.stringMatching(/400k, 800k, 720k or 1440k/),
     });
     expect(floppyBlankPlan('')).toMatchObject({ ok: false });
   });
 });
 
 describe('hardDiskBlankPlan', () => {
-  it('hands the spec unchanged to files.hd_create on a SCSI bus', () => {
+  it('hands the spec unchanged to files.create on a SCSI bus', () => {
     for (const spec of ['HD230SC', '80mb', '100m', 'bogus'])
       expect(hardDiskBlankPlan(spec, SCSI)).toEqual({
         ok: true,
-        method: 'files.hd_create',
-        arg: spec,
+        kind: 'hd',
+        size: spec,
         ext: '.dmg',
       });
   });
@@ -149,11 +147,11 @@ describe('hardDiskBlankPlan', () => {
   it('takes the ProFile sizes on the Lisa', () => {
     expect(hardDiskBlankPlan('5mb', PROFILE)).toEqual({
       ok: true,
-      method: 'files.profile_create',
-      arg: '9728',
+      kind: 'profile',
+      size: 9728 * 512,
       ext: '.image',
     });
-    expect(hardDiskBlankPlan('10MB', PROFILE)).toMatchObject({ ok: true, arg: '19448' });
+    expect(hardDiskBlankPlan('10MB', PROFILE)).toMatchObject({ ok: true, size: 19448 * 512 });
     expect(hardDiskBlankPlan('20mb', PROFILE)).toMatchObject({
       ok: false,
       reason: expect.stringMatching(/5mb or 10mb/),

@@ -275,7 +275,7 @@ simulated network are its siblings at the root:
   desktop adds `machine.ata.device[U].image`.)
 - **emulator services** (siblings of `machine`, in this fixed root order):
   `scheduler`, `checkpoint`, `files` (host files, disk images and mounts:
-  `files.ls`/`cp`/`hd_create`/…, `files.images[N]`, `files.mounts[N]`,
+  `files.ls`/`cp`/`create`/…, `files.images[N]`, `files.mounts[N]`,
   `files.archive`), `debug` (+ `.find`, `.mac`, `breakpoints`/`logpoints`/
   `watchpoints`), `log` (`log.set`, `log.levels`, `log.category["scsi"]`),
   `shell`, `catalog` (what the emulator can build or fit: `models`,

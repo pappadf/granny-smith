@@ -646,100 +646,6 @@ static int do_insert_fd(const char *path, int preferred, int writable_flag) {
     return 0;
 }
 
-// Create a new blank floppy image and insert it.
-// Returns 0 on success, -1 on failure.
-int system_create_floppy(const char *path, bool high_density, int preferred) {
-    config_t *config = global_emulator;
-    if (!config) {
-        out_printf("fd create: emulator config not initialized.\n");
-        return -1;
-    }
-
-    // The preferred drive when it exists and is free, else the first free one.
-    int target = (preferred >= 0 && preferred < sys_fd_count(config) && !sys_fd_is_inserted(config, preferred))
-                     ? preferred
-                     : sys_fd_pick(config, -1, "fd create");
-    if (target < 0)
-        return -1;
-
-    int rc = image_create_blank_floppy(path, false, high_density);
-    if (rc != 0) {
-        if (rc == IMAGE_CREATE_EXISTS)
-            out_printf("fd create: file already exists: %s (won't overwrite)\n", path);
-        else
-            out_printf("fd create: failed to create blank floppy file: %s\n", path);
-        return -1;
-    }
-
-    image_t *disk = image_open_kind(path, &(image_open_opts_t){.kind = IMAGE_KIND_FLOPPY, .writable = true}, NULL, 0);
-    if (!disk) {
-        out_printf("fd create: failed to open newly created image: %s\n", path);
-        return -1;
-    }
-
-    if (sys_fd_insert(config, target, disk) != 0) {
-        out_printf("fd create: machine.floppy.drive[%d] refused %s.\n", target, path);
-        image_close(disk);
-        return -1;
-    }
-    config_add_image(config, disk);
-    out_printf("fd create: created %s (%s) and inserted into machine.floppy.drive[%d].\n", path,
-               high_density ? "1440K" : "800K", target);
-    return 0;
-}
-
-// Size limits for hd create
-#define HD_CREATE_MAX_SIZE (2ULL * 1024 * 1024 * 1024) // 2 GiB
-
-// Floppy sizes that should be rejected.  Named _BYTES because machine_profile.h
-// (included above) declares floppy_kind_t with FLOPPY_400K / FLOPPY_800K as
-// ENUM CONSTANTS: bare macros of the same name silently shadowed them for the
-// rest of this file, so anything here that later meant the kind would have got
-// a byte count instead.
-#define FLOPPY_400K_BYTES  409600
-#define FLOPPY_800K_BYTES  819200
-#define FLOPPY_1440K_BYTES 1474560
-
-// Create a new blank hard disk image at the given path.
-// Returns 0 on success, -1 on failure.
-static int do_create_hd(const char *path, const char *size_str) {
-    size_t size = drive_catalog_parse_size(size_str);
-    if (size == 0) {
-        out_printf("hd create: invalid size: %s\n", size_str);
-        out_printf("  Use a drive model (e.g. HD20SC), human size (e.g. 40mb),\n");
-        out_printf("  or exact bytes/suffix (e.g. 20M, 512K, 21411840)\n");
-        out_printf("  Run 'hd models' to see available drive sizes.\n");
-        return -1;
-    }
-    if (size > HD_CREATE_MAX_SIZE) {
-        out_printf("hd create: size %zu exceeds maximum (2 GiB)\n", size);
-        return -1;
-    }
-    // reject floppy-sized images
-    if (size == FLOPPY_400K_BYTES || size == FLOPPY_800K_BYTES || size == FLOPPY_1440K_BYTES) {
-        out_printf("hd create: size %zu matches a floppy format, use fd create instead\n", size);
-        return -1;
-    }
-    // refuse to overwrite existing files
-    FILE *exist = fopen(path, "rb");
-    if (exist) {
-        fclose(exist);
-        out_printf("hd create: file already exists: %s (won't overwrite)\n", path);
-        return -1;
-    }
-    // A .dmg is a UDIF of one zero run -- a couple of KB however large the
-    // disk; any other name is a raw file of the full size (which the browser
-    // charges in full).
-    bool udif = path_has_ext(path, ".dmg");
-    int rc = udif ? image_create_empty_udif(path, size) : image_create_empty(path, size);
-    if (rc != 0) {
-        out_printf("hd create: failed to create image: %s\n", path);
-        return -1;
-    }
-    out_printf("hd create: created %s (%zu bytes%s)\n", path, size, udif ? ", UDIF" : "");
-    return 0;
-}
-
 // Attach a SCSI hard disk image. Delegates to system_attach_scsi_hd().
 // Returns 0 on success, -1 on error.
 static int do_attach_hd_on(struct scsi *bus, const char *path, int scsi_id) {
@@ -1948,7 +1854,7 @@ bool system_checkpoint_probe(void) {
 
 // ===== Typed object-model entry points =====================================
 // Thin wrappers the typed methods (floppy.drives[N].insert,
-// scsi.attach_hd, files.hd_create) call directly — no line
+// scsi.attach_hd) call directly — no line
 // re-tokenisation, no legacy command framework.
 
 // Insert a floppy image into a drive (or the first free drive when
@@ -1969,6 +1875,3 @@ int system_hd_attach_on(struct scsi *bus, const char *path, int scsi_id) {
 
 // Create a blank SCSI hard-disk image sized per `size_str` (a drive
 // model, human size, or byte count). Returns 0 / negative.
-int system_hd_create(const char *path, const char *size_str) {
-    return do_create_hd(path, size_str);
-}

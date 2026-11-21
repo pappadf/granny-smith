@@ -49,7 +49,7 @@ test("request round trips while a 192 MB copy runs", async ({ page }) => {
   await page.waitForTimeout(2_000);
   // The source: a sparse blank image is fast to make; the copy reads and
   // writes every byte.
-  await typeLine(page, 'files.hd_create("/opfs/images/hd/src.img", "192mb")');
+  await typeLine(page, 'files.create("/opfs/images/hd/src.img", "hd", "192mb")');
   await expect(page.locator(".console-output")).toContainText(
     "hd create: created",
     {

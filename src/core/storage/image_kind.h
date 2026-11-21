@@ -115,4 +115,16 @@ bool image_kind_fits(image_kind_t kind, const image_facts_t *f);
 // is checkpointed and restored like any image with a base.
 struct image *image_create_blank_kind(image_kind_t kind, uint64_t blocks, const char *instance);
 
+// The kind named `name` (image_kind_name's inverse), or IMAGE_KIND_NONE.
+image_kind_t image_kind_by_name(const char *name);
+
+// A new blank image FILE of `kind` holding `size` data bytes (512 per
+// sector; the image node's `size`), at `path`, which must not exist:
+// files.create.  A floppy takes one of the four floppy sizes; a hard disk
+// any other size from the smallest floppy's to 2 GiB, stored as a UDIF of one
+// zero run when `path` ends in .dmg, else raw; a ProFile a whole number of
+// sectors, stored as raw 532-byte blocks; a CD-ROM is refused (it is
+// read-only).  0, IMAGE_CREATE_EXISTS, or -1 with the reason in `err`.
+int image_create_file_kind(const char *path, image_kind_t kind, uint64_t size, char *err, size_t err_cap);
+
 #endif // IMAGE_KIND_H

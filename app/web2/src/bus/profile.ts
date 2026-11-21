@@ -76,10 +76,11 @@ export interface StorageBus {
   card_slot?: string;
 }
 
+// One blank disk a bus's drives take: files.create(path, kind, size).
 export interface BlankDisk {
   label: string;
-  method: string;
-  arg: string;
+  kind: string;
+  size: number;
   name: string;
   ext: string;
 }

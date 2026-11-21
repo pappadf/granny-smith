@@ -19,7 +19,7 @@ assert debug.mac.globals.read("SysMap") != 0 "first boot: no System file opened"
 
 # A floppy in the first drive must survive the power cycle too.  Inserted
 # after the boot so the ROM's boot scan never touches it.
-assert files.fd_create("${$WORK_DIR}/scratch.fd", false) "blank floppy created"
+assert files.create("${$WORK_DIR}/scratch.fd", "floppy", "800K") "blank floppy created"
 machine.floppy.drive[0].insert "${$WORK_DIR}/scratch.fd" true
 assert machine.floppy.drive[0].present "floppy inserted"
 
@@ -64,7 +64,7 @@ assert machine.scsi.device[0].present "after restore: HD attached"
 assert machine.scsi.device[0].image.source == $hd_file0 "after restore: same medium"
 assert try(machine.scsi.loopback, none) != none "after restore: live controller surface"
 assert len(catalog.hd_models) > 0 "after restore: the hard disk models"
-assert files.hd_create("${$WORK_DIR}/after-load.img", "5M") "create a second disk"
+assert files.create("${$WORK_DIR}/after-load.img", "hd", "5M") "create a second disk"
 let bay = machine.attach_media("scsi", 1, "hd", "${$WORK_DIR}/after-load.img")
 assert machine.scsi.device[$bay.id].present "after restore: attach_media reaches the live controller"
 assert machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24 GC" "after restore: the saved card"

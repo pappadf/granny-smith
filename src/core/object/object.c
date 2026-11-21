@@ -1862,7 +1862,7 @@ static validate_status_t validate_slot(const typed_slot_t *s, const value_t *in,
     // VK_ANY — and VK_NONE, its historical spelling on an argument slot —
     // is the "accept any kind" sentinel: the body sees the value as-is
     // and does its own discrimination. Used today for slots that
-    // legitimately accept multiple kinds (e.g. files.hd_create's size
+    // legitimately accept multiple kinds (e.g. files.create's size
     // arg, which takes either a string label or an integer count).
     if (s->kind == VK_NONE || s->kind == VK_ANY) {
         if ((s->flags & OBJ_ARG_NONEMPTY) && in->kind == VK_STRING) {

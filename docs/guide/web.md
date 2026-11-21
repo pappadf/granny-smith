@@ -374,7 +374,7 @@ running mode by owner (0: any); both answer `true` / `false`.
 
 **I/O jobs.** A leaf whose cost is the size of a file rather than of the
 machine — `files.cp`, `files.import`, `files.export_raw`,
-`files.hd_create` / `fd_create` / `profile_create`, `files.xfer_write`
+`files.create`, `files.xfer_write`
 / `xfer_read`, `files.archive.extract`, every drive's `image.export`
 (floppy, SCSI, ATA, the Lisa's diskette and ProFile alike),
 `files.download`, and the quick checkpoint's publish — runs on
@@ -682,10 +682,10 @@ worker's OPFS request through the page's thread — it deadlocked the page.
    previous pick. The floppy / HD
    slots also offer "Create blank image…", which opens
    [`CreateImageDialog.svelte`](../../app/web2/src/components/display/CreateImageDialog.svelte)
-   and creates a blank image directly in OPFS via `files.fd_create`
-   (800 KB / 1.4 MB) or `files.hd_create` (size from
-   `catalog.hd_models`; named `.dmg`, so a blank 2 GB disk is a
-   4 KB UDIF).
+   and creates a blank image directly in OPFS via `files.create`: a
+   floppy (800 KB / 1.4 MB) or the bus's blank disks
+   (`catalog.profile(id).storage[].blank_disks`, each a `{kind, size}`; a
+   hard disk is named `.dmg`, so a blank 2 GB disk is a 4 KB UDIF).
 2. **Drag-and-drop onto the Display** —
    [`DropOverlay.svelte`](../../app/web2/src/components/display/DropOverlay.svelte)
    captures drops, calls `processDataTransfer` →
@@ -814,8 +814,9 @@ typed-dispatch and introspection surface.
   OPFS (backs copy-out and Save to computer…). **`files.rm(path)`** /
   **`files.mv(src, dst)`** — recursive remove / move, run worker-side so
   WasmFS stays coherent (see Persistence above).
-- **`files.hd_create(path, size)`** / **`files.fd_create(path,
-  high_density)`** — create a blank HD / floppy image; **`catalog.hd_models`** →
+- **`files.create(path, kind, size)`** — create a blank image file of a
+  kind (`floppy`, `hd`, `profile`) holding `size` data bytes (a count, a
+  drive model, or a size string); it inserts nothing. **`catalog.hd_models`** →
   drive-size catalog. These drive the New Machine dialog's "Create blank
   image…" option.
 - **`catalog.profile(id)`** → the model's profile: `name`,
@@ -985,21 +986,20 @@ view; errors still toast.
   instead of a download ([`lib/blankMedia.ts`](../../app/web2/src/lib/blankMedia.ts),
   created in `bus/urlMedia.ts::provideBlank` the way the New Machine
   dialog's **Create blank image** does, `CreateImageDialog.svelte`).  On a
-  SCSI or ATA bus the spec goes unchanged to `files.hd_create(path, spec)`,
-  so the URL, the shell's `hd create` and the dialog share one parser
+  SCSI or ATA bus the spec goes unchanged to `files.create(path, "hd", spec)`,
+  so the URL, the shell and the dialog share one parser
   (`drive_catalog_parse_size`, `src/core/storage/drive_catalog.c`): a catalog
   model (`HD230SC`), a decimal size that snaps to the nearest model at or
   above it (`80mb` → HD80SC, `1gb`), or an exact binary size (`100m`,
   `512k`), at most 2 GiB and never a floppy's size.  On the Lisa's ProFile
   the bus's own blank disks apply (`catalog.profile(id).storage[].blank_disks`:
-  `5mb`, `10mb` → `files.profile_create`); a floppy is `800k` or `1440k`
-  (`files.fd_create`; the core has no blank 400K image, so `400k` is
-  refused).  A floppy is created with the downloads; a hard disk once the ROM
+  `5mb`, `10mb` → kind `profile` and the entry's size); a floppy is `400k`,
+  `800k`, `720k` or `1440k` (kind `floppy`).  A floppy is created with the downloads; a hard disk once the ROM
   has chosen the model, since the bus of the model's N-th default hard disk
   decides what it is.  Decisions:
   - **Reloads reuse.** The file is
     `/opfs/images/<hd|fd>/blank_<spec>_<slot>_<hash><ext>` (`.dmg` for
-    `hd_create`, `.image` for a ProFile, `.dsk` for a floppy), `<hash>` an
+    a hard disk, `.image` for a ProFile, `.dsk` for a floppy), `<hash>` an
     8-hex FNV-1a of the URL's media parameters (`rom`, `vrom`, `fdN`, `hdN`,
     `cd`, in a fixed order; `blank!:` hashes as `blank:`).  If it exists it
     is attached again (the row says "Blank disk · already stored");

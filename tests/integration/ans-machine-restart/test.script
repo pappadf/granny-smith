@@ -14,8 +14,8 @@ def restarts(model, ram_kb) {
     # One medium per channel, so a power cycle that confused the two would
     # show up as the wrong device rather than as silence.  Channel 0's is in
     # bay 1: bay 0 is the CD bay, which takes only the CD-ROM drive.
-    assert files.hd_create("${$WORK_DIR}/${$model}-bay1.img", "80M") "could not create the channel 0 disk"
-    assert files.hd_create("${$WORK_DIR}/${$model}-bay4.img", "80M") "could not create the channel 1 disk"
+    assert files.create("${$WORK_DIR}/${$model}-bay1.img", "hd", "80M") "could not create the channel 0 disk"
+    assert files.create("${$WORK_DIR}/${$model}-bay4.img", "hd", "80M") "could not create the channel 1 disk"
     machine.scsi.attach_hd("${$WORK_DIR}/${$model}-bay1.img", 1)
     machine.scsi2.attach_hd("${$WORK_DIR}/${$model}-bay4.img", 4)
     assert machine.scsi.device[1].type == "hd" "${$model}: channel 0 bay 1 not mounted"
