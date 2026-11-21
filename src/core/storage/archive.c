@@ -16,6 +16,8 @@
 
 #include "image_chunkmap.h"
 #include "log.h"
+#include "macroman.h"
+#include "namespace.h"
 #include "object.h"
 #include "peeler.h"
 #include "shell.h"
@@ -199,16 +201,21 @@ static void isink_commit(source_t *s) {
 
 static const peel_sink_ops_t import_sink_ops = {isink_create, isink_write, isink_commit};
 
-// True when `name` (an entry path) matches `member` exactly, case-blind, or
-// by its last component.
-static bool member_matches(const char *name, const char *member) {
+// True when `name` (an entry's VFS path, ns_archive_member_path) in an
+// archive of `format` matches `member` exactly, case-blind, or by its last
+// component.  Case-blind is the Finder's rule (mac_name_eq) for a Mac
+// format's names, ASCII for the others.
+static bool member_matches(const char *format, const char *name, const char *member) {
     while (*member == '/')
         member++;
-    if (strcmp(name, member) == 0 || strcasecmp(name, member) == 0)
+    bool mac = ns_archive_names_are_macroman(format);
+    if (strcmp(name, member) == 0 || (mac ? ns_archive_member_eq(format, name, member) : strcasecmp(name, member) == 0))
         return true;
     const char *nb = strrchr(name, '/');
     const char *mb = strrchr(member, '/');
-    return strcasecmp(nb ? nb + 1 : name, mb ? mb + 1 : member) == 0;
+    nb = nb ? nb + 1 : name;
+    mb = mb ? mb + 1 : member;
+    return mac ? mac_name_eq(nb, mb) : strcasecmp(nb, mb) == 0;
 }
 
 // Junk an archive carries besides its media.
@@ -219,7 +226,7 @@ static bool member_is_junk(const peel_entry_t *e) {
 }
 
 typedef struct {
-    char member[512];
+    char member[1536]; // the member's VFS path (ns_archive_member_path)
     char *want; // the member asked for, or NULL
     char *origin; // recorded in the image as gs-origin, or NULL
     udif_writer_stats_t st;
@@ -264,7 +271,9 @@ static int work_archive_import(io_leaf_t *j) {
     for (int i = 0; a && i < peel_count(a); i++) {
         const peel_entry_t *en = peel_entry(a, i);
         if (u->want) {
-            if (!en->is_dir && member_matches(en->path, u->want)) {
+            char vpath[sizeof u->member];
+            ns_archive_member_path(peel_format(a), en->path, vpath, sizeof vpath);
+            if (!en->is_dir && member_matches(peel_format(a), vpath, u->want)) {
                 pick = i;
                 break;
             }
@@ -275,7 +284,8 @@ static int work_archive_import(io_leaf_t *j) {
     }
     bool ndif = false;
     if (a && pick >= 0) {
-        snprintf(u->member, sizeof u->member, "%s", peel_entry(a, pick)->path);
+        // Named as the VFS names it (UTF-8 for a Mac format's names).
+        ns_archive_member_path(peel_format(a), peel_entry(a, pick)->path, u->member, sizeof u->member);
         // An NDIF image's block map is its resource fork, which a UDIF's
         // payload cannot carry: that one is extracted (forks kept) instead.
         if (peel_entry(a, pick)->rsrc_len > 0) {

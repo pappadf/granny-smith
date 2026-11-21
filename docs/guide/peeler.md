@@ -136,6 +136,13 @@ A file's resource fork and Finder info are reachable as
 `<file>/rsrc/_raw` and the Finder-info leaf, the same as on an HFS
 volume.
 
+Names are UTF-8 there. Peeler itself hands names out as the archive
+stores them; the core converts the MacRoman names of the Mac formats
+(`sit`, `cpt`, `hqx`, `bin`) to UTF-8 and matches them as the Finder
+does (`café` finds `CAFÉ`), and leaves zip, tar and gzip names as stored,
+matched exactly (see `namespace.md`). `extract` therefore writes UTF-8
+host names, and `files.archive.import`'s `member` is one of these names.
+
 ### `files.archive`
 
 | Path | Result | Description |
@@ -258,8 +265,9 @@ git add -A && git commit -m "Sync from granny-smith"
   archive/image descent.
 - Integration rows `archive-fork-unpack` and `archive-confined` cover
   `files.archive.extract`, `archive-import-rsrc` `files.archive.import`
-  through a resource-fork wrapper; the web2 e2e specs `filesystem-tab.spec.ts`,
-  `url-archive-boot.spec.ts` and `display-drop.spec.ts` cover the UI.
+  through a resource-fork wrapper, `archive-mac-names` member names (MacRoman
+  converted to UTF-8 by the core, zip names left as stored); the web2 e2e
+  specs `filesystem-tab.spec.ts`, `url-archive-boot.spec.ts` and `display-drop.spec.ts` cover the UI.
 
 ## References
 

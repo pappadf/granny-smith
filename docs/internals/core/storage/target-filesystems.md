@@ -357,7 +357,10 @@ so a corrupt map with a cycle in it is an error, never the same bytes again.
 not HFS: the primary volume descriptor at sector 16 (`CD001`), directory
 records in both byte orders that never cross a sector. Names come from the
 best description on the disc -- Joliet (UCS-2, preferred), Rock Ridge `NM`
-entries, else the ISO name less its `;1`. Apple's extensions to ISO 9660
+entries, else the ISO name less its `;1`; a `/` in a Joliet or Rock Ridge
+name shows as `:`. A Joliet name can hold any character, so it is matched
+as an HFS name is (`mac_name_eq`: `été.txt` finds `ÉTÉ.txt`); plain ISO and
+Rock Ridge names are matched case-blind over ASCII only. Apple's extensions to ISO 9660
 are read too: the associated file (a directory-record flag) is its file's
 resource fork, and the `AA` system use entry -- or the original, length-less
 `BA` form, and after a CD-XA record on an XA disc -- is its type, creator and
