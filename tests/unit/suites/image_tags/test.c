@@ -1,22 +1,21 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 //
-// The sector tags a guest writes survive a checkpoint.  See Makefile.
-//
-// Tags live only in memory: a guest's disk_write_tag lands in image->tags,
-// not in the delta, and the base file is never written.  So a restore that
-// reopened the base and replayed the delta used to hand the guest the new
-// data under the OLD tags -- on a Lisa diskette, page labels that no longer
-// describe the pages.  image_checkpoint now ends with the tags and
-// mac_checkpoint_restore_one_image reads them back; this checks both, for a
-// quick and a consolidated checkpoint, from a raw and a DiskCopy source.
+// A GCR floppy's sector tags are in-band: each sector is stored as one block,
+// its 12 tag bytes then its 512 data bytes, so a guest's disk_write_tag lands
+// in the delta beside the data and base + delta is the whole disk.  See
+// Makefile.  This checks that the tags come back -- from a raw source (zero
+// tags) and a DiskCopy one (its tag section) -- through a quick and a
+// consolidated checkpoint, and through reopening the delta with no
+// checkpoint at all, which is what lost them when they lived in memory.
 
 #include "checkpoint.h"
 #include "checkpoint_images.h"
 #include "checkpoint_machine.h"
 #include "format_registry.h"
 #include "image.h"
-#include "image_internal.h" // the tag fields under test
+#include "image_internal.h" // the block geometry under test
+#include "image_kind.h"
 #include "image_wrap.h"
 #include "test_assert.h"
 
@@ -178,9 +177,9 @@ static bool written(unsigned s) {
 // Every sector reads back the guest's tag where it wrote one, else the
 // base's (zero for a raw source); the written data is there too.
 static void check_disk(image_t *img, bool dc42) {
-    ASSERT_TRUE(img->tags != NULL);
     ASSERT_EQ_INT((int)img->tag_bytes, (int)TAG_BYTES);
-    ASSERT_EQ_INT((int)img->tag_count, (int)SECTORS);
+    ASSERT_EQ_INT((int)img->block_size, (int)(TAG_BYTES + SECTOR)); // tag first, then data
+    ASSERT_EQ_INT((int)disk_size(img), (int)(SECTORS * SECTOR)); // the data bytes
     for (unsigned s = 0; s < SECTORS; s++) {
         uint8_t got[TAG_BYTES], want[TAG_BYTES];
         ASSERT_EQ_INT((int)disk_read_tag(img, s, got, TAG_BYTES), (int)TAG_BYTES);
@@ -206,8 +205,17 @@ static void check_disk(image_t *img, bool dc42) {
 
 // Mount `path` writable, let the guest write, checkpoint it, close it, then
 // restore it from the checkpoint and check the tags and data came back.
+// A floppy drive's open of `path`: writable, and a fresh instance unless
+// `instance` names one to reopen.
+static image_t *open_floppy(const char *path, const char *instance) {
+    return image_open_kind(
+        path,
+        &(image_open_opts_t){.kind = IMAGE_KIND_FLOPPY, .writable = true, .instance = instance, .delta_dir = g_dir},
+        NULL, 0);
+}
+
 static void round_trip(const char *path, bool dc42, checkpoint_kind_t kind) {
-    image_t *img = image_create(path, g_dir);
+    image_t *img = open_floppy(path, NULL);
     ASSERT_TRUE(img != NULL);
     guest_writes(img);
 
@@ -271,9 +279,32 @@ TEST(test_raw_tags_survive_a_consolidated_checkpoint) {
     round_trip(path, false, CHECKPOINT_KIND_CONSOLIDATED);
 }
 
-// A disk with no tags (a hard disk) writes an empty tag record, and the
-// restore still ends exactly where the image did.
-TEST(test_an_untagged_disk_keeps_the_stream_aligned) {
+// The tags are in the delta: commit it (what a checkpoint does to the
+// storage), close the image and reopen the same delta with no checkpoint to
+// read from, and the guest's tags are there with its data.  When the tags
+// lived in memory, the reopened disk had the data and the base file's tags.
+TEST(test_tags_survive_reopening_the_delta) {
+    char path[96];
+    make_dir();
+    snprintf(path, sizeof path, "%s/reopen.dc42", g_dir);
+    make_disk(path, true);
+    image_t *img = open_floppy(path, NULL);
+    ASSERT_TRUE(img != NULL);
+    guest_writes(img);
+    ASSERT_EQ_INT(storage_clear_rollback(image_get_storage(img)), STATUS_OK);
+    char instance[256];
+    snprintf(instance, sizeof instance, "%s", image_path(img));
+    image_close(img);
+
+    image_t *back = open_floppy(path, instance);
+    ASSERT_TRUE(back != NULL);
+    check_disk(back, true);
+    image_close(back);
+}
+
+// A disk with no tags (a hard disk) is stored in plain 512-byte blocks, and
+// the restore ends exactly where the image did.
+TEST(test_an_untagged_disk_keeps_plain_blocks) {
     char path[96];
     make_dir();
     snprintf(path, sizeof path, "%s/hd.img", g_dir);
@@ -282,9 +313,12 @@ TEST(test_an_untagged_disk_keeps_the_stream_aligned) {
     ASSERT_TRUE(ftruncate(fileno(f), 1024 * 1024) == 0); // 1 MB: no floppy size
     fclose(f);
 
-    image_t *img = image_create(path, g_dir);
+    image_t *img = image_open_kind(path, &(image_open_opts_t){.kind = IMAGE_KIND_HD, .writable = true}, NULL, 0);
     ASSERT_TRUE(img != NULL);
-    ASSERT_TRUE(img->tags == NULL);
+    ASSERT_EQ_INT((int)img->tag_bytes, 0);
+    ASSERT_EQ_INT((int)img->block_size, (int)SECTOR);
+    uint8_t tag[TAG_BYTES] = {1};
+    ASSERT_EQ_INT((int)disk_write_tag(img, 0, tag, TAG_BYTES), 0); // no tags to write
     checkpoint_t *cp = cp_new(CHECKPOINT_KIND_QUICK);
     image_checkpoint(img, cp);
     uint32_t sentinel = SENTINEL;
@@ -293,36 +327,11 @@ TEST(test_an_untagged_disk_keeps_the_stream_aligned) {
 
     image_t *back = mac_checkpoint_restore_one_image(cp);
     ASSERT_TRUE(back != NULL);
-    ASSERT_TRUE(back->tags == NULL);
+    ASSERT_EQ_INT((int)back->tag_bytes, 0);
     uint32_t after = 0;
     system_read_checkpoint_data_loc(cp, &after, sizeof after, NULL, __FILE__, __LINE__);
     ASSERT_TRUE(!cp->error);
     ASSERT_EQ_INT((int)after, (int)SENTINEL);
-    image_close(back);
-    cp_free(cp);
-}
-
-// A corrupt tag record (an absurd tag size) fails the restore loudly
-// instead of allocating from it.
-TEST(test_a_corrupt_tag_record_fails_the_restore) {
-    char path[96];
-    make_dir();
-    snprintf(path, sizeof path, "%s/bad.dsk", g_dir);
-    make_disk(path, false);
-    image_t *img = image_create(path, g_dir);
-    ASSERT_TRUE(img != NULL);
-    checkpoint_t *cp = cp_new(CHECKPOINT_KIND_QUICK);
-    image_checkpoint(img, cp);
-    image_close(img);
-
-    // The tag record is the stream's last 8 + 9600 bytes; make its tag size
-    // 4096.
-    size_t rec = cp->len - (SECTORS * TAG_BYTES) - 8;
-    uint32_t huge = 4096;
-    memcpy(cp->buf + rec, &huge, sizeof huge);
-
-    image_t *back = mac_checkpoint_restore_one_image(cp);
-    ASSERT_TRUE(cp->error);
     image_close(back);
     cp_free(cp);
 }
@@ -332,8 +341,8 @@ int main(void) {
     RUN(test_dc42_tags_survive_a_consolidated_checkpoint);
     RUN(test_raw_tags_survive_a_quick_checkpoint);
     RUN(test_raw_tags_survive_a_consolidated_checkpoint);
-    RUN(test_an_untagged_disk_keeps_the_stream_aligned);
-    RUN(test_a_corrupt_tag_record_fails_the_restore);
-    printf("[PASS] All image checkpoint tag tests passed\n");
+    RUN(test_tags_survive_reopening_the_delta);
+    RUN(test_an_untagged_disk_keeps_plain_blocks);
+    printf("[PASS] All image tag tests passed\n");
     return 0;
 }

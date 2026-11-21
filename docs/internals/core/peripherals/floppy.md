@@ -48,4 +48,5 @@ renamed, deleted or replaced; inserting it again opens it afresh. A checkpoint
 taken while the disk was in still restores, since the restore reopens the
 image from the checkpoint's own image list. The Lisa's Sony drive is not a
 `floppy_t` and keeps an ejected diskette open for a faithful reinsert (its
-writes and page-label tags live only in that open image).
+writes and page-label tags, both in that image's delta, then come back with
+it).

@@ -51,13 +51,3 @@ uint64_t image_get_reads(const image_t *image) {
 uint64_t image_get_writes(const image_t *image) {
     return image ? image->writes : 0;
 }
-void image_set_tags(image_t *image, uint8_t *tags, uint32_t tag_bytes, uint32_t tag_count) {
-    if (!image) {
-        free(tags); // nobody to own them
-        return;
-    }
-    free(image->tags); // drop the tags the image had
-    image->tags = tags;
-    image->tag_bytes = tags ? tag_bytes : 0;
-    image->tag_count = tags ? tag_count : 0;
-}

@@ -93,7 +93,7 @@ struct lisa_profile {
     // per-instance delta.  NULL when no disk is attached.  Owned by the
     // machine's image table, like every drive's image: detach hands it back.
     image_t *image;
-    uint32_t nblocks; // disk_size(image) / PRO_BLOCK
+    uint32_t nblocks; // disk_size(image) / PRO_DATA: its sectors (each a 532-byte block)
 
     // Handshake / transfer state.
     pro_phase_t phase;
@@ -162,7 +162,7 @@ static void pro_fill_read(lisa_profile_t *pf, uint32_t block) {
         // cannot read: status byte 0 $09, the CRC error on read that the OS
         // driver retries and then fails through its checksum-error path
         // (docs/reference/machines/lisa/profile.md, "Status bytes").
-        if (disk_read_data(pf->image, (size_t)block * PRO_BLOCK, &pf->buf[PRO_STATUS], PRO_BLOCK) != PRO_BLOCK) {
+        if (disk_read_units(pf->image, block, &pf->buf[PRO_STATUS], 1) != PRO_BLOCK) {
             memset(&pf->buf[PRO_STATUS], 0, PRO_BLOCK);
             pf->buf[0] = 0x09;
             LOG(1, "read block %u: unreadable in the image; CRC error status", block);
@@ -185,7 +185,7 @@ static void pro_commit_write(lisa_profile_t *pf, uint32_t block) {
         LOG(1, "write block %u out of range (%u blocks)", block, pf->nblocks);
         return;
     }
-    disk_write_data(pf->image, (size_t)block * PRO_BLOCK, pf->buf, PRO_BLOCK);
+    disk_write_units(pf->image, block, pf->buf, 1);
     LOG(2, "wrote block %u", block);
 }
 
@@ -391,7 +391,7 @@ bool lisa_profile_attach_image(lisa_profile_t *pf, image_t *img) {
     if (!pf || !img || pf->image)
         return false; // one disk at a time: detach the one there first
     pf->image = img;
-    pf->nblocks = (uint32_t)(disk_size(img) / PRO_BLOCK);
+    pf->nblocks = (uint32_t)(disk_size(img) / PRO_DATA);
     lisa_profile_reset(pf);
     LOG(2, "attach (transferred handle, %u blocks)", pf->nblocks);
     return true;
@@ -419,7 +419,7 @@ lisa_profile_t *lisa_profile_init(struct scheduler *scheduler, lisa_profile_bsy_
         image_t *img = checkpoint_read_image_ref(cp, images, "ProFile", NULL);
         if (img) {
             pf->image = img;
-            pf->nblocks = (uint32_t)(disk_size(img) / PRO_BLOCK);
+            pf->nblocks = (uint32_t)(disk_size(img) / PRO_DATA);
             lisa_profile_reset(pf);
         }
     }

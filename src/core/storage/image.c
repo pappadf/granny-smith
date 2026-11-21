@@ -134,7 +134,6 @@ void image_close(image_t *image) {
         writable_unregister(image);
     if (image->storage)
         storage_delete(image->storage);
-    free(image->tags);
     free(image->wrap_prefix);
     // Ghost (read-only) instances were placed in a scratch dir; remove their
     // delta+journal so we don't leave clutter behind.
@@ -192,63 +191,114 @@ static int export_fail(int rc, bool unreadable, const char *dest, char *err, siz
     return -EIO;
 }
 
-// Normalise a geometry's block size, treating 0 as the default (512).
-static uint32_t geometry_block_size(image_geometry_t geom) {
-    return geom.block_size ? geom.block_size : STORAGE_BLOCK_SIZE;
-}
-
-// Load the DiskCopy 4.2 tag section (after the data) into image->tags, and
-// keep the header's disk name and format byte for a DiskCopy export.  The
-// tags are the per-sector page labels the Lisa boot ROM/OS read (e.g. the
-// boot block's FILEID = $AAAA).  Best-effort: on any failure the image simply
-// has no tags from the file.  `dc42` is the DiskCopy file itself.
-static void image_load_diskcopy_tags(image_t *image, source_t *dc42) {
+// Keep a DiskCopy 4.2 header's disk name and format byte for a DiskCopy
+// export, so an unchanged disk exports back to the same bytes; and say where
+// its tag section is and how many bytes per sector it holds (0: none).
+// `dc42` is the DiskCopy file itself.  Best-effort: a header that does not
+// parse leaves the image unlabelled and tagless.
+static uint32_t image_load_diskcopy_identity(image_t *image, source_t *dc42, uint64_t *tags_at) {
     uint8_t header[DISKCOPY_HEADER_SIZE];
     if (source_read_exact(dc42, 0, header, sizeof(header)) != 0)
-        return;
+        return 0;
     // Every value is re-derived from this header and checked against this
-    // file.  The sector count is the header's own: DiskCopy 4.2 sectors are
-    // 512 data bytes whatever geometry the image is opened with.  Bounding
-    // the tag section by the file bounds the allocation by the file.
+    // file.  DiskCopy 4.2 sectors are 512 data bytes.
     uint32_t data_size = 0, tag_size = 0;
     if (!dc42_parse_header(header, sizeof(header), source_size(dc42), &data_size, &tag_size))
-        return;
-    // The disk's own label, padding and all, so an unchanged disk exports
-    // back to the same bytes.
+        return 0;
     memcpy(image->dc42_name, header, DC42_NAME_FIELD);
     image->dc42_format_byte = header[DC42_OFF_FORMAT_BYTE];
     uint32_t count = data_size / STORAGE_BLOCK_SIZE;
     if (tag_size == 0 || count == 0 || (tag_size % count) != 0)
-        return; // no tags (or unexpected layout)
-    uint8_t *tags = (uint8_t *)malloc(tag_size);
-    if (!tags)
-        return;
-    if (source_read_exact(dc42, (uint64_t)DISKCOPY_HEADER_SIZE + data_size, tags, tag_size) != 0) {
-        free(tags);
-        return;
-    }
-    image->tags = tags;
-    image->tag_bytes = tag_size / count;
-    image->tag_count = count;
+        return 0; // no tags (or an unexpected layout)
+    *tags_at = (uint64_t)DISKCOPY_HEADER_SIZE + data_size;
+    return tag_size / count;
 }
 
-// A 400K/800K GCR disk has a 12-byte tag beside every sector whatever file
-// it came from; give one opened from a raw image (or a DiskCopy file without
-// a tag section) a zeroed tag area, so the guest's tag writes are kept
-// rather than dropped.  Reads are unchanged: every reader zero-fills first.
-#define GCR_TAG_BYTES 12u
+// A base of 512-byte sectors seen as whole blocks, tag first: each block is
+// its sector's `t` tag bytes -- from a tag section (a DiskCopy file's) when
+// there is one, else zeros -- then its 512 data bytes.  What gives a
+// 400K/800K GCR floppy from a raw, UDIF or DiskCopy file its in-band tags.
+typedef struct {
+    source_t *data; // the sectors
+    source_t *tags; // the tag section's file, or NULL for zero tags
+    uint64_t tags_at; // where the section starts in it
+    uint32_t t; // tag bytes per sector
+    uint64_t sectors;
+    char *key;
+} tagged_src_t;
 
-static void image_ensure_gcr_tags(image_t *image) {
-    image_layout_t layout = image_layout_of_size(image->raw_size);
-    if (image->tags || (layout != IMAGE_LAYOUT_GCR400 && layout != IMAGE_LAYOUT_GCR800) ||
-        image->block_size != STORAGE_BLOCK_SIZE)
-        return;
-    uint32_t count = (uint32_t)(image->raw_size / STORAGE_BLOCK_SIZE);
-    image->tags = (uint8_t *)calloc(count, GCR_TAG_BYTES);
-    if (!image->tags)
-        return; // no tags: the disk still works, its tag writes are dropped
-    image->tag_bytes = GCR_TAG_BYTES;
-    image->tag_count = count;
+static int64_t tagged_read(source_t *s, uint64_t off, void *buf, size_t len) {
+    tagged_src_t *m = s->ctx;
+    uint32_t unit = STORAGE_BLOCK_SIZE + m->t;
+    uint64_t size = m->sectors * unit;
+    if (off >= size)
+        return 0;
+    if (len > size - off)
+        len = (size_t)(size - off);
+    uint8_t block[STORAGE_MAX_BLOCK_SIZE];
+    size_t done = 0;
+    while (done < len) {
+        uint64_t pos = off + done;
+        uint64_t sector = pos / unit;
+        uint32_t within = (uint32_t)(pos % unit);
+        // Assemble the sector's block: its tag, then its data.
+        memset(block, 0, m->t);
+        int rc = m->tags ? source_read_exact(m->tags, m->tags_at + sector * m->t, block, m->t) : 0;
+        if (!rc)
+            rc = source_read_exact(m->data, sector * STORAGE_BLOCK_SIZE, block + m->t, STORAGE_BLOCK_SIZE);
+        if (rc)
+            return done ? (int64_t)done : rc;
+        size_t n = unit - within;
+        if (n > len - done)
+            n = len - done;
+        memcpy((uint8_t *)buf + done, block + within, n);
+        done += n;
+    }
+    return (int64_t)done;
+}
+
+static uint64_t tagged_size(source_t *s) {
+    tagged_src_t *m = s->ctx;
+    return m->sectors * (STORAGE_BLOCK_SIZE + m->t);
+}
+
+static const char *tagged_key(source_t *s) {
+    return ((tagged_src_t *)s->ctx)->key;
+}
+
+static source_tier_t tagged_tier(source_t *s) {
+    return source_tier(((tagged_src_t *)s->ctx)->data); // arithmetic over the sectors
+}
+
+static void tagged_close(source_t *s) {
+    tagged_src_t *m = s->ctx;
+    if (m) {
+        source_release(m->tags);
+        free(m->key);
+        free(m);
+    }
+}
+
+static const source_ops_t tagged_ops = {tagged_read, tagged_size, tagged_key, tagged_tier, tagged_close, NULL};
+
+// The tagged view over `data` (`sectors` sectors), its tags from `tags` at
+// `tags_at` or zeros.  NULL when out of memory.
+static source_t *tagged_view(source_t *data, source_t *tags, uint64_t tags_at, uint32_t t, uint64_t sectors) {
+    tagged_src_t *m = calloc(1, sizeof *m);
+    if (!m)
+        return NULL;
+    m->data = data;
+    m->tags = tags ? source_retain(tags) : NULL;
+    m->tags_at = tags_at;
+    m->t = t;
+    m->sectors = sectors;
+    m->key = str_printf("%s#tags%u", source_key(data), (unsigned)t);
+    if (!m->key) {
+        source_release(m->tags);
+        free(m);
+        return NULL;
+    }
+    return source_new(&tagged_ops, m, data); // closes `m` itself when it fails
 }
 
 void image_set_diskcopy_identity(image_t *image, const char *name, uint8_t format_byte) {
@@ -258,25 +308,118 @@ void image_set_diskcopy_identity(image_t *image, const char *name, uint8_t forma
     image->dc42_format_byte = format_byte;
 }
 
+// Note a read the backing image could not serve: the guest sees a read error
+// (the short count each device turns into its own).  The first is logged.
+static void note_read_error(image_t *disk, uint64_t offset, size_t size) {
+    if (disk->read_errors++ == 0)
+        LOG(0,
+            "%s: unreadable at offset %llu (%zu bytes): the backing image failed the read; the guest sees a read error",
+            disk->filename ? disk->filename : "image", (unsigned long long)offset, size);
+    else
+        LOG(1, "%s: unreadable at offset %llu (%zu bytes), read error %llu", disk->filename ? disk->filename : "image",
+            (unsigned long long)offset, size, (unsigned long long)disk->read_errors);
+}
+
+// Sectors of a tagged image (tags in-band).
+static uint64_t tagged_sectors(const image_t *disk) {
+    return disk->raw_size / STORAGE_BLOCK_SIZE;
+}
+
 size_t disk_read_tag(image_t *disk, size_t sector, uint8_t *buf, size_t size) {
-    if (!disk || !disk->tags || !buf || sector >= disk->tag_count)
+    if (!disk || !disk->tag_bytes || !buf || sector >= tagged_sectors(disk))
         return 0;
+    uint8_t block[STORAGE_MAX_BLOCK_SIZE];
+    if (storage_read_block(disk->storage, (uint64_t)sector * disk->block_size, block) != STATUS_OK) {
+        note_read_error(disk, (uint64_t)sector * STORAGE_BLOCK_SIZE, disk->tag_bytes);
+        return 0;
+    }
     size_t n = size < disk->tag_bytes ? size : disk->tag_bytes;
-    memcpy(buf, disk->tags + sector * disk->tag_bytes, n);
+    memcpy(buf, block, n); // the tag leads its block
     return n;
 }
 
 // Persist a sector's tag (pagelabel).  The Lisa Sony controller writes the
 // 512-byte data sector *and* its tag together; modelling only the data drops
-// the FS pagelabel updates the OS makes on every write.  Tags live in the
-// in-memory image->tags buffer, which checkpoints carry and a DiskCopy 4.2
-// export writes out; the read-only base file is untouched.
+// the FS pagelabel updates the OS makes on every write.  The tag is part of
+// its sector's block, so it lands in the delta with the data; the base file
+// is untouched.
 size_t disk_write_tag(image_t *disk, size_t sector, const uint8_t *buf, size_t size) {
-    if (!disk || !disk->tags || !buf || sector >= disk->tag_count)
+    if (!disk || !disk->tag_bytes || !disk->writable || !buf || sector >= tagged_sectors(disk))
+        return 0;
+    uint8_t block[STORAGE_MAX_BLOCK_SIZE];
+    uint64_t at = (uint64_t)sector * disk->block_size;
+    if (storage_read_block(disk->storage, at, block) != STATUS_OK)
         return 0;
     size_t n = size < disk->tag_bytes ? size : disk->tag_bytes;
-    memcpy(disk->tags + sector * disk->tag_bytes, buf, n);
+    memcpy(block, buf, n);
+    if (storage_write_block(disk->storage, at, block) != STATUS_OK)
+        return 0;
+    disk->writes++;
     return n;
+}
+
+size_t disk_read_units(image_t *disk, uint64_t first, uint8_t *buf, size_t count) {
+    if (!disk || !disk->storage || !buf || count == 0)
+        return 0;
+    disk->reads++;
+    uint64_t blocks = disk->raw_size / STORAGE_BLOCK_SIZE;
+    if (first >= blocks || count > blocks - first)
+        return 0;
+    if (storage_read_blocks(disk->storage, first * disk->block_size, buf, count) != STATUS_OK) {
+        note_read_error(disk, first * STORAGE_BLOCK_SIZE, count * disk->block_size);
+        return 0;
+    }
+    return count * disk->block_size;
+}
+
+size_t disk_write_units(image_t *disk, uint64_t first, const uint8_t *buf, size_t count) {
+    if (!disk || !disk->storage || !buf || count == 0 || !disk->writable)
+        return 0;
+    disk->writes++;
+    uint64_t blocks = disk->raw_size / STORAGE_BLOCK_SIZE;
+    if (first >= blocks || count > blocks - first)
+        return 0;
+    for (size_t i = 0; i < count; i++)
+        if (storage_write_block(disk->storage, (first + i) * disk->block_size, buf + i * disk->block_size) != STATUS_OK)
+            return i * disk->block_size;
+    return count * disk->block_size;
+}
+
+// The data plane of a tagged image: whole 512-byte sectors at `offset`,
+// each the data half of its block.  A read past the end is blank media.
+static size_t tagged_read_data(image_t *disk, uint64_t offset, uint8_t *buf, size_t size) {
+    uint8_t block[STORAGE_MAX_BLOCK_SIZE];
+    for (size_t done = 0; done < size; done += STORAGE_BLOCK_SIZE) {
+        uint64_t sector = (offset + done) / STORAGE_BLOCK_SIZE;
+        if (sector >= tagged_sectors(disk)) {
+            memset(buf + done, 0, size - done);
+            break;
+        }
+        if (storage_read_block(disk->storage, sector * disk->block_size, block) != STATUS_OK) {
+            note_read_error(disk, offset + done, STORAGE_BLOCK_SIZE);
+            return 0;
+        }
+        memcpy(buf + done, block + disk->tag_bytes, STORAGE_BLOCK_SIZE);
+    }
+    return size;
+}
+
+// ...and its writes: each sector's data replaces the data half of its block,
+// whose tag stays as it was.  A write past the end is dropped.
+static size_t tagged_write_data(image_t *disk, uint64_t offset, const uint8_t *buf, size_t size) {
+    uint8_t block[STORAGE_MAX_BLOCK_SIZE];
+    for (size_t done = 0; done < size; done += STORAGE_BLOCK_SIZE) {
+        uint64_t sector = (offset + done) / STORAGE_BLOCK_SIZE;
+        if (sector >= tagged_sectors(disk))
+            break;
+        uint64_t at = sector * disk->block_size;
+        if (storage_read_block(disk->storage, at, block) != STATUS_OK)
+            return done;
+        memcpy(block + disk->tag_bytes, buf + done, STORAGE_BLOCK_SIZE);
+        if (storage_write_block(disk->storage, at, block) != STATUS_OK)
+            return done;
+    }
+    return size;
 }
 
 // Scratch sidecars -- read-only deltas and blank-image deltas -- live under
@@ -316,7 +459,6 @@ const char *image_open_error(void) {
 // instance stem.  NULL (with errno set) on failure.
 static image_t *image_open_source(const char *name, source_t *data, source_t *rsrc, image_geometry_t geom,
                                   open_mode_t mode, const char *dir) {
-    uint32_t block_size = geometry_block_size(geom);
     format_unwrapped_t u;
     t_open_error[0] = '\0';
     format_unwrap(data, rsrc, &u);
@@ -356,7 +498,18 @@ static image_t *image_open_source(const char *name, source_t *data, source_t *rs
         return NULL;
     }
     uint64_t raw = source_size(u.data);
-    if (raw == 0 || (raw % block_size) != 0) {
+    // The tags its sectors carry: a kind's fixed ones, which its files hold
+    // in-band (a ProFile's 532-byte blocks), or a GCR floppy's 12.
+    uint32_t t = geom.tag_bytes;
+    bool units_in_file = t != 0;
+    if (geom.gcr_tags) {
+        image_layout_t l = image_layout_of_size(raw);
+        if (l == IMAGE_LAYOUT_GCR400 || l == IMAGE_LAYOUT_GCR800)
+            t = IMAGE_GCR_TAG_BYTES;
+    }
+    uint32_t block_size = STORAGE_BLOCK_SIZE + t;
+    uint32_t file_block = units_in_file ? block_size : STORAGE_BLOCK_SIZE;
+    if (raw == 0 || (raw % file_block) != 0) {
         format_unwrapped_free(&u);
         errno = EINVAL;
         return NULL;
@@ -374,7 +527,7 @@ static image_t *image_open_source(const char *name, source_t *data, source_t *rs
     // (the second-last block; Disk First Aid rejects a volume without it).
     // Guest writes to the tail land in the delta like any others.
     source_t *padded = NULL;
-    if (block_size == STORAGE_BLOCK_SIZE) {
+    if (t == 0) {
         uint64_t start = 0;
         uint64_t blocks = image_wrap_extended_blocks(source_read_cb, u.data, raw / block_size, &start);
         uint8_t hdr[STORAGE_BLOCK_SIZE];
@@ -393,8 +546,10 @@ static image_t *image_open_source(const char *name, source_t *data, source_t *rs
     image->checkpoint_index = IMAGE_REF_NONE;
     image->source_key = gs_strdup(source_key(data));
     image->format = gs_strdup(u.chain[0] ? u.chain : "raw");
-    image->raw_size = raw;
+    image->raw_size = raw / file_block * STORAGE_BLOCK_SIZE; // the data bytes
     image->block_size = block_size;
+    image->tag_bytes = t;
+    image->units_in_file = units_in_file;
     // The kind is the opening device's (image_open_kind); an image opened here
     // and nowhere else is held by no device (IMAGE_KIND_NONE, from calloc).
     image->writable = mode != OPEN_READONLY;
@@ -426,19 +581,32 @@ static image_t *image_open_source(const char *name, source_t *data, source_t *rs
         return NULL;
     }
 
+    // A sector base that carries tags is seen through the tagged view: the
+    // DiskCopy file's tag section when it has one per sector, else zeros.
+    uint64_t sectors = image->raw_size / STORAGE_BLOCK_SIZE;
+    uint64_t tags_at = 0;
+    uint32_t dc42_t = u.dc42 ? image_load_diskcopy_identity(image, u.dc42, &tags_at) : 0;
+    source_t *view = NULL;
+    if (t && !units_in_file) {
+        view = tagged_view(padded ? padded : u.data, dc42_t == t ? u.dc42 : NULL, tags_at, t, sectors);
+        if (!view) {
+            source_release(padded);
+            format_unwrapped_free(&u);
+            image_close(image);
+            errno = ENOMEM;
+            return NULL;
+        }
+    }
     storage_config_t config = {0};
-    config.base = padded ? padded : u.data;
+    config.base = view ? view : padded ? padded : u.data;
     config.delta_path = image->delta_path;
     config.journal_path = image->journal_path;
-    config.block_count = image->raw_size / image->block_size;
+    config.block_count = sectors;
     config.block_size = image->block_size;
     config.lazy = image->ghost_instance;
     status_t rc = storage_new(&config, &image->storage);
+    source_release(view);
     source_release(padded);
-    if (rc == STATUS_OK && u.dc42)
-        image_load_diskcopy_tags(image, u.dc42);
-    if (rc == STATUS_OK)
-        image_ensure_gcr_tags(image);
     format_unwrapped_free(&u);
     if (rc != STATUS_OK) {
         out_printf("image: storage engine failed for %s (error %d)\n", name, rc);
@@ -476,7 +644,7 @@ static image_t *image_open_path(const char *path, image_geometry_t geom, open_mo
 }
 
 image_t *image_open_readonly(const char *base_path) {
-    return image_open_readonly_with_geometry(base_path, (image_geometry_t){.block_size = STORAGE_BLOCK_SIZE});
+    return image_open_readonly_with_geometry(base_path, (image_geometry_t){0});
 }
 
 image_t *image_open_readonly_with_geometry(const char *base_path, image_geometry_t geom) {
@@ -488,12 +656,11 @@ image_t *image_open_readonly_source(const char *name, source_t *data, source_t *
         errno = EINVAL;
         return NULL;
     }
-    return image_open_source(name, data, rsrc, (image_geometry_t){.block_size = STORAGE_BLOCK_SIZE}, OPEN_READONLY,
-                             NULL);
+    return image_open_source(name, data, rsrc, (image_geometry_t){0}, OPEN_READONLY, NULL);
 }
 
 image_t *image_create(const char *base_path, const char *delta_dir) {
-    return image_create_with_geometry(base_path, delta_dir, (image_geometry_t){.block_size = STORAGE_BLOCK_SIZE});
+    return image_create_with_geometry(base_path, delta_dir, (image_geometry_t){0});
 }
 
 image_t *image_create_with_geometry(const char *base_path, const char *delta_dir, image_geometry_t geom) {
@@ -518,7 +685,7 @@ image_t *image_create_with_geometry(const char *base_path, const char *delta_dir
 }
 
 image_t *image_open(const char *base_path, const char *instance_path) {
-    return image_open_with_geometry(base_path, instance_path, (image_geometry_t){.block_size = STORAGE_BLOCK_SIZE});
+    return image_open_with_geometry(base_path, instance_path, (image_geometry_t){0});
 }
 
 image_t *image_open_with_geometry(const char *base_path, const char *instance_path, image_geometry_t geom) {
@@ -528,7 +695,7 @@ image_t *image_open_with_geometry(const char *base_path, const char *instance_pa
 }
 
 image_t *image_create_blank(uint64_t block_count, image_geometry_t geom, const char *delta_dir, const char *instance) {
-    uint32_t block_size = geometry_block_size(geom);
+    uint32_t block_size = STORAGE_BLOCK_SIZE + geom.tag_bytes;
     if (block_count == 0)
         return NULL;
     if (!instance || !*instance) {
@@ -545,8 +712,10 @@ image_t *image_create_blank(uint64_t block_count, image_geometry_t geom, const c
         return NULL;
     image->filename = NULL; // no backing base file: unwritten blocks read as zeros
     image->checkpoint_index = IMAGE_REF_NONE;
-    image->raw_size = block_count * block_size;
+    image->raw_size = block_count * STORAGE_BLOCK_SIZE; // the data bytes
     image->block_size = block_size;
+    image->tag_bytes = geom.tag_bytes;
+    image->units_in_file = geom.tag_bytes != 0;
     image->writable = true;
     image->from_diskcopy = false;
     // A writable instance like any other (its delta lives with the machine,
@@ -606,6 +775,10 @@ size_t disk_read_data(image_t *disk, uint64_t offset, uint8_t *buf, size_t size)
     if (!disk || !disk->storage || !buf || size == 0)
         return 0;
     disk->reads++; // the activity light's only cost on this path
+    if (disk->tag_bytes) {
+        GS_ASSERT((offset % STORAGE_BLOCK_SIZE) == 0 && (size % STORAGE_BLOCK_SIZE) == 0);
+        return tagged_read_data(disk, offset, buf, size);
+    }
     GS_ASSERT((offset % disk->block_size) == 0);
     GS_ASSERT((size % disk->block_size) == 0);
     uint64_t pre = wrap_bytes(disk);
@@ -651,15 +824,7 @@ static size_t storage_read_range(image_t *disk, uint64_t offset, uint8_t *buf, s
         // makes each device model report its own read error.
         GS_ASSERTF(rc == STATUS_OK || rc == STATUS_E_IO, "storage_read_blocks failed (%d)", rc);
         if (rc != STATUS_OK) {
-            if (disk->read_errors++ == 0)
-                LOG(0,
-                    "%s: unreadable at offset %llu (%zu bytes): the backing image failed the read; the guest sees a "
-                    "read error",
-                    disk->filename ? disk->filename : "image", (unsigned long long)offset, backed);
-            else
-                LOG(1, "%s: unreadable at offset %llu (%zu bytes), read error %llu",
-                    disk->filename ? disk->filename : "image", (unsigned long long)offset, backed,
-                    (unsigned long long)disk->read_errors);
+            note_read_error(disk, offset, backed);
             return 0;
         }
     }
@@ -678,6 +843,10 @@ size_t disk_write_data(image_t *disk, uint64_t offset, uint8_t *buf, size_t size
         return 0;
     }
     disk->writes++;
+    if (disk->tag_bytes) {
+        GS_ASSERT((offset % STORAGE_BLOCK_SIZE) == 0 && (size % STORAGE_BLOCK_SIZE) == 0);
+        return tagged_write_data(disk, offset, buf, size);
+    }
     GS_ASSERT((offset % disk->block_size) == 0);
     GS_ASSERT((size % disk->block_size) == 0);
     uint64_t pre = wrap_bytes(disk);
@@ -778,22 +947,50 @@ struct image_export {
     uint32_t block_size;
     export_format_t format;
     udif_codec_t udif_codec; // what a UDIF export compresses with
-    // DiskCopy 4.2 and MOOF: the tags as they were at begin (the view's
-    // moment), and the header's label (DiskCopy) and format byte.
-    uint8_t *tags; // tag_count * tag_bytes, or NULL for an untagged disk
+    // A sector image's tags are in-band: each block streams as its tag then
+    // its data, and the export splits them -- the data on to the format, the
+    // tags (the view's moment, like the data) collected here for a DiskCopy
+    // 4.2 or MOOF file.  A ProFile's raw file keeps whole blocks: no split.
+    bool split; // strip the tags off each block
+    uint8_t *tags; // tag_count * tag_bytes collected, or NULL for an untagged disk
     uint32_t tag_bytes;
     uint32_t tag_count;
+    uint32_t tags_seen; // blocks split so far
     uint8_t dc42_name[DC42_NAME_FIELD]; // the header's name field
     uint8_t disk_format;
     uint8_t format_byte;
     bool unreadable; // the view could not read the disk (export_view_write)
 };
 
-// Stream the view through `write_cb`, noting whether a failure was the
-// disk's (STATUS_E_IO: the view's reads) rather than the writer's
-// (STATUS_ERROR) or a cancel.  The status passes through.
+// A split stream: one block per call (the view's record shape), its tag kept
+// and its data passed on.
+typedef struct {
+    image_export_t *e;
+    void *ctx;
+    storage_write_callback_t write_cb;
+} split_stream_t;
+
+static int split_write_cb(void *ctx, const void *data, size_t size) {
+    split_stream_t *sp = (split_stream_t *)ctx;
+    image_export_t *e = sp->e;
+    if (size != (size_t)e->block_size)
+        return -1; // not a block: the view streams one per call
+    const uint8_t *block = (const uint8_t *)data;
+    if (e->tags && e->tags_seen < e->tag_count)
+        memcpy(e->tags + (size_t)e->tags_seen * e->tag_bytes, block, e->tag_bytes);
+    e->tags_seen++;
+    return sp->write_cb(sp->ctx, block + e->tag_bytes, size - e->tag_bytes);
+}
+
+// Stream the view through `write_cb` -- the data alone when the export
+// splits -- noting whether a failure was the disk's (STATUS_E_IO: the view's
+// reads) rather than the writer's (STATUS_ERROR) or a cancel.  The status
+// passes through.
 static int export_view_write(image_export_t *e, void *ctx, storage_write_callback_t write_cb) {
-    int rc = storage_export_view_write(e->view, ctx, write_cb);
+    split_stream_t sp = {e, ctx, write_cb};
+    e->tags_seen = 0;
+    int rc = e->split ? storage_export_view_write(e->view, &sp, split_write_cb)
+                      : storage_export_view_write(e->view, ctx, write_cb);
     e->unreadable = rc == STATUS_E_IO;
     return rc;
 }
@@ -814,12 +1011,12 @@ static int dc42_disk_format(image_layout_t t) {
     }
 }
 
-// Fill in the DiskCopy half of an export: a copy of the tags (the guest goes
-// on writing them while the export runs) and the header's label.  False on
-// a medium DiskCopy 4.2 cannot hold, or out of memory.
+// Fill in the DiskCopy half of an export: room for the tags the stream
+// splits off and the header's label.  False on a medium DiskCopy 4.2 cannot
+// hold, or out of memory.
 static bool export_prepare_dc42(image_export_t *e, const image_t *image, char *err, size_t err_cap) {
     int fmt = dc42_disk_format(image_layout_of_size(image->raw_size));
-    if (fmt < 0 || image->block_size != STORAGE_BLOCK_SIZE || image->wrap_prefix) {
+    if (fmt < 0 || image->units_in_file || image->wrap_prefix) {
         if (err)
             snprintf(err, err_cap, "DiskCopy 4.2 holds 400K, 800K, 720K and 1440K floppies only");
         return false;
@@ -845,18 +1042,14 @@ static bool export_prepare_dc42(image_export_t *e, const image_t *image, char *e
         dc42_name_field(e->dc42_name, stem);
         free(stem);
     }
-    if (image->tags && image->tag_bytes && image->tag_count) {
-        size_t n = (size_t)image->tag_count * image->tag_bytes;
-        e->tags = (uint8_t *)malloc(n);
-        if (e->tags)
-            memcpy(e->tags, image->tags, n);
-        e->tag_bytes = image->tag_bytes;
-        e->tag_count = image->tag_count;
-    }
-    if (image->tags && !e->tags) {
-        if (err)
-            snprintf(err, err_cap, "out of memory");
-        return false;
+    if (image->tag_bytes) {
+        e->tag_count = (uint32_t)(image->raw_size / STORAGE_BLOCK_SIZE);
+        e->tags = (uint8_t *)calloc(e->tag_count, image->tag_bytes);
+        if (!e->tags) {
+            if (err)
+                snprintf(err, err_cap, "out of memory");
+            return false;
+        }
     }
     return true;
 }
@@ -882,12 +1075,16 @@ image_export_t *image_export_begin(image_t *image, const char *dest_path, char *
         return NULL;
     e->dest = strdup(dest_path);
     e->block_size = image->block_size;
+    e->tag_bytes = image->tag_bytes;
+    // A sector image streams its data alone; a ProFile's raw file is whole
+    // blocks, tags in-band, as the file it came from.
+    e->split = image->tag_bytes && !image->units_in_file;
     if (image->filename) {
         const char *slash = strrchr(image->filename, '/');
         e->name = strdup(slash ? slash + 1 : image->filename);
     }
     // The destination's name picks the format (image.h, image_export_to).
-    if (e->block_size == UDIF_SECTOR_SIZE && path_has_ext(dest_path, ".dmg"))
+    if (!image->units_in_file && path_has_ext(dest_path, ".dmg"))
         e->format = EXPORT_UDIF;
     else if (path_has_ext(dest_path, ".dc42") || path_has_ext(dest_path, ".diskcopy") ||
              (path_has_ext(dest_path, ".image") && image_layout_of_size(image->raw_size) != IMAGE_LAYOUT_NONE))
@@ -1235,13 +1432,4 @@ void image_checkpoint(const image_t *image, checkpoint_t *checkpoint) {
             checkpoint_set_error(checkpoint);
         }
     }
-    // The sector tags last: they live only in memory (disk_write_tag), so
-    // a restore without them would hand the guest the base file's labels
-    // under the delta's data.
-    uint32_t tag_bytes = image->tags ? image->tag_bytes : 0;
-    uint32_t tag_count = image->tags ? image->tag_count : 0;
-    system_write_checkpoint_data(checkpoint, &tag_bytes, sizeof(tag_bytes));
-    system_write_checkpoint_data(checkpoint, &tag_count, sizeof(tag_count));
-    if (tag_bytes && tag_count)
-        system_write_checkpoint_data(checkpoint, image->tags, (size_t)tag_bytes * tag_count);
 }

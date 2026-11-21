@@ -200,9 +200,9 @@ reformat tracking (`floppy_media_current`). It stays device state, see §2.9.
 **Decision: D.** It is the only option with a single mechanism. The ProFile
 already works this way, data and tag are journaled and committed together,
 and the engine stays as it is (block size `512+T`; 524 and 532 are both
-multiples of 4, as `storage_new` requires). The delta header (v3) also
-records `tag_bytes` in a field that is reserved today, so the delta
-describes itself.
+multiples of 4, as `storage_new` requires). The delta header already
+records `block_size`, which is `512+T`, so the delta describes itself with
+no new field (the design had a v3 header carrying `tag_bytes`).
 
 Consequences:
 
@@ -211,8 +211,8 @@ Consequences:
   needs nothing extra, because the tags are in the delta's blocks. A
   consolidated checkpoint carries them inside the block stream, at the same
   cost as today: an 800K floppy is 1600 × 12 = 19 KB.
-- **DiskCopy export.** The export reads units and splits them into the data
-  section and the tag section. The checksums are unchanged
+- **DiskCopy export.** The export streams blocks and splits them into the
+  data section and the tag section. The checksums are unchanged
   (`image_export_run_dc42`). MOOF export reads tags the same way. Raw and
   `.dmg` exports of a floppy write the data plane only, as today.
 - **API.** Three planes, all on one `storage_t`:
@@ -221,13 +221,13 @@ Consequences:
     unchanged. When T > 0 the data parts are gathered, and a write keeps
     each sector's existing tag. Partition, HFS and wrapper readers use this
     plane.
-  - sector plane `disk_read_sector(img, lba, data, tag)` /
-    `disk_write_sector(img, lba, data, tag)` (tag `NULL`: read none / keep
-    existing). The floppy controllers use this plane instead of
-    `disk_*_data` + `disk_*_tag`.
-  - unit plane `disk_read_units/disk_write_units(img, lba, n, buf)`: raw
-    `[tag][data]`. The ProFile uses it unchanged, and so do export and
-    checkpoint.
+  - tags `disk_read_tag/disk_write_tag(img, sector, buf, len)`: a
+    sector's tag, read from or written into its block. The floppy
+    controllers kept their calls (data, then tag), so they needed no change;
+    the design's combined sector call was not needed for that.
+  - blocks `disk_read_units/disk_write_units(img, first, buf, count)`: raw
+    `[tag][data]`. The ProFile moves these (its wire block is its stored
+    block); export and checkpoint stream the storage's blocks.
 
 ### 2.4 Bases: adapting files to the unit
 
@@ -475,7 +475,7 @@ commit (no aliases, no shims).
 |---|---|---|
 | C1 | **One open path + kinds.** `image_kind.c`: the kind table, `image_open_kind(path, {kind, writable, instance, delta_dir})`, `image_delta_dir`, `image_create_blank_kind`; `media_open`, `do_insert_fd`, `system_create_floppy`, `lisa_profile_attach` and the checkpoint restore route through it; the kind is stored on the image and in its checkpoint entry; `files.images[].type` reports it. Removes `enum image_type`, `classify_image`, `image_set_type`, the ProFile's `pro_delta_dir`, `system.c`'s `pick_delta_dir`, the public `*_with_geometry` openers, `system_probe_floppy`. Fixes §1.4 items 1, 2, 10 | yes |
 | C2 | **One owner, one eject, one checkpoint path.** The ProFile in the image table; every eject releases its image to the table (`config_release_image`; the Lisa diskette excepted, §2.6); refs by position; blank images with a persistent delta; read-only images write-protected, with a lazy scratch pair; write-protect checks in the Lisa FDC and the SWIM ISM; `insert` writable by default everywhere; host eject of an ATA hard disk. Fixes items 4–7, 9 | yes |
-| C3 | **Tags in-band.** Units `[T][512]`; pad and merge base views; delta v3 `tag_bytes`; sector and unit planes; the floppy controllers on the sector API; DiskCopy and MOOF export read tags from units; the checkpoint tag tail goes. Fixes item 3 | |
+| C3 | **Tags in-band.** Blocks `[T][512]`; the tagged base view (a DiskCopy tag section, or zeros); `disk_read_tag/disk_write_tag` on blocks, `disk_read_units/disk_write_units` for the ProFile; DiskCopy and MOOF export split the tags off the streamed blocks; the checkpoint tag tail, `image->tags` and `image_set_tags` go. Fixes item 3 | yes |
 | C4 | **`files.identify`.** The identify core and method; the nine entry points of §4.2 and the SCSI facade go; `catalog.hd_models` | |
 | C5 | **One image node.** `image_class.c` on every device and on `files.images`; the ATA `device[U]` collection; the renames of §3.4; every export an I/O job with a codec; gs-test-data scripts updated in that repository. Fixes item 8 | |
 | C6 | *Dropped* (§6): the type keeps its name, `image_t`, with `image.h` and the `disk_*` I/O calls | — |
@@ -512,7 +512,7 @@ commit (no aliases, no shims).
 5. **C6 dropped.** With the node named `image`, renaming `image_t` to
    `medium_t` would reintroduce the split the owner removed: the type, its
    header and the `disk_read_data`/`disk_write_data` calls keep their
-   names, and the new planes are `disk_read_sector`/`disk_write_sector` and
+   names, with `disk_read_tag`/`disk_write_tag` and
    `disk_read_units`/`disk_write_units` beside them.
 
 ## References

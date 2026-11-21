@@ -48,10 +48,6 @@ storage_t *image_get_storage(const image_t *image);
 // disk_read_data / disk_write_data calls since open (drive_activity.h)
 uint64_t image_get_reads(const image_t *image);
 uint64_t image_get_writes(const image_t *image);
-// Replace the per-sector tags (a checkpoint restore): the image takes
-// ownership of `tags` (tag_count * tag_bytes bytes, malloc'd) and frees the
-// old ones.  A NULL image frees `tags`.
-void image_set_tags(image_t *image, uint8_t *tags, uint32_t tag_bytes, uint32_t tag_count);
 
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
 //
@@ -118,20 +114,30 @@ bool image_key_is_open_writable(const char *key);
 #define IMAGE_CKPT_WRITABLE 0x01
 #define IMAGE_CKPT_WRAPPED  0x02 // re-wrap on restore (image_wrap.h)
 
-// Write image metadata to checkpoint (ends with the sector tags)
+// Write image metadata to checkpoint, then its storage (blocks, tags in-band)
 void image_checkpoint(const image_t *image, checkpoint_t *checkpoint);
 
 // === Operations ===
 
-// Read/write raw data from/to the disk image
+// The data plane: whole 512-byte sectors' data at `offset` (whole blocks of
+// disk_block_size on an image without tags).  A tagged image's sectors keep
+// their tags on a write.
 size_t disk_read_data(image_t *disk, uint64_t offset, uint8_t *buf, size_t size);
 
-// Read a logical sector's DiskCopy tag (per-sector metadata) into `buf`.
-// Returns the number of tag bytes copied (0 if the image has no tags or the
-// sector is out of range).  Used by the Lisa floppy controller to populate the
-// boot-block header the ROM validates (FILEID = $AAAA).
+// A sector's tag (the 12 bytes beside a GCR sector, a ProFile block's 20):
+// in-band, in the sector's block, so it lands in the delta with the data.
+// Returns the bytes copied, at most the image's tag size (0 for an image
+// without tags, a sector out of range, or a write to a write-protected
+// image).  The floppy controllers read and write them with each sector (the
+// Lisa boot ROM validates the boot block's FILEID = $AAAA).
 size_t disk_read_tag(image_t *disk, size_t sector, uint8_t *buf, size_t size);
 size_t disk_write_tag(image_t *disk, size_t sector, const uint8_t *buf, size_t size);
+
+// Whole blocks as stored, tag first ([tag][512 data]): `count` blocks of
+// disk_block_size from block `first`.  What a ProFile moves (its 532-byte
+// wire block is its stored one).  Bytes moved, 0 on failure.
+size_t disk_read_units(image_t *disk, uint64_t first, uint8_t *buf, size_t count);
+size_t disk_write_units(image_t *disk, uint64_t first, const uint8_t *buf, size_t count);
 
 // Label the disk for a DiskCopy 4.2 export: the name and format byte its
 // header gets.  A machine whose disks differ from the Mac's defaults (the
@@ -141,13 +147,13 @@ void image_set_diskcopy_identity(image_t *image, const char *name, uint8_t forma
 
 size_t disk_write_data(image_t *disk, uint64_t offset, uint8_t *buf, size_t size);
 
-// Get the size of the disk image in bytes.  0 for a NULL image -- no opened
-// image is empty (the openers refuse a zero-length one), so 0 always means
-// "no image".
+// The disk's data bytes (sectors x 512; a tagged image's tags not counted).
+// 0 for a NULL image -- no opened image is empty (the openers refuse a
+// zero-length one), so 0 always means "no image".
 uint64_t disk_size(image_t *disk);
 
-// Bytes per block the image was opened with (512 unless a geometry said
-// otherwise); disk_read_data/disk_write_data work in whole blocks of it.
+// Bytes per stored block: 512 plus the tags each sector carries (524 for a
+// GCR floppy, 532 for a ProFile).  disk_read_units moves whole ones.
 uint32_t disk_block_size(image_t *disk);
 
 // Tick all tracked images (drives storage consolidation)

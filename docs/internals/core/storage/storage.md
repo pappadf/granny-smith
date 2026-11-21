@@ -51,7 +51,7 @@ The browser charges a file's logical length against the origin's quota, holes in
 - **Read** block N: bitmap bit clear → base. Else its data is at `data_offset + ((table[N / cb] − 1) × cb + N % cb) × block_size`.
 - **Write** block N: a cluster with no slot gets `slots_used + 1`; a block that is set in the committed bitmap has its preimage journaled first, read from the slot it will be replayed into (a committed cluster's slot never moves). The blocks of a slot that were never written keep their bitmap bit clear and still read from the base.
 
-The header records `block_size`, so a delta is self-describing: reopen validates the size it was written with. `block_size` is a multiple of 4 in `[512, STORAGE_MAX_BLOCK_SIZE]` (1024). 512 covers flat disks (Mac SCSI HD, floppy data); 532 is the Lisa ProFile's block (512 data + 20 inline tag).
+The header records `block_size`, so a delta is self-describing: reopen validates the size it was written with. `block_size` is a multiple of 4 in `[512, STORAGE_MAX_BLOCK_SIZE]` (1024). The image layer stores one sector per block, its tags first: 512 covers a disk without tags (Mac SCSI HD, CD, MFM floppy); 524 a 400K/800K GCR floppy (12 tag bytes + 512 data); 532 the Lisa ProFile's block (20 tag bytes + 512 data).
 
 The current bitmap and table track what has been written; the committed copies are a snapshot at the last successful checkpoint. Both are kept in memory and flushed to the delta at checkpoint time, after the data they point at.
 

@@ -18,17 +18,17 @@
 // One row per kind: everything a kind decides about the media it opens.
 typedef struct image_kind_desc {
     const char *name; // wire name (files.images[i].type)
-    uint32_t block_size; // bytes per stored block
+    image_geometry_t geom; // the tags its sectors carry
     bool read_only; // never writable, whatever the caller asks
     bool floppy_sizes; // accepts only the four floppy sizes
 } image_kind_desc_t;
 
 static const image_kind_desc_t k_kinds[IMAGE_KIND_COUNT] = {
-    [IMAGE_KIND_NONE] = {.name = "none", .block_size = 512},
-    [IMAGE_KIND_FLOPPY] = {.name = "floppy", .block_size = 512, .floppy_sizes = true},
-    [IMAGE_KIND_HD] = {.name = "hd", .block_size = 512},
-    [IMAGE_KIND_CD] = {.name = "cd", .block_size = 512, .read_only = true},
-    [IMAGE_KIND_PROFILE] = {.name = "profile", .block_size = 532},
+    [IMAGE_KIND_NONE] = {.name = "none"},
+    [IMAGE_KIND_FLOPPY] = {.name = "floppy", .geom = {.gcr_tags = true}, .floppy_sizes = true},
+    [IMAGE_KIND_HD] = {.name = "hd"},
+    [IMAGE_KIND_CD] = {.name = "cd", .read_only = true},
+    [IMAGE_KIND_PROFILE] = {.name = "profile", .geom = {.tag_bytes = 20}},
 };
 
 // The row for `kind` (IMAGE_KIND_NONE's for a value out of range).
@@ -40,8 +40,9 @@ const char *image_kind_name(image_kind_t kind) {
     return kind_desc(kind)->name;
 }
 
-uint32_t image_kind_block_size(image_kind_t kind) {
-    return kind_desc(kind)->block_size;
+uint64_t image_kind_file_bytes(image_kind_t kind, uint64_t data_bytes) {
+    uint32_t t = kind_desc(kind)->geom.tag_bytes; // in-band in the kind's files
+    return data_bytes / 512 * (512 + t);
 }
 
 const char *image_delta_dir(const char *path) {
@@ -65,7 +66,7 @@ image_t *image_open_kind(const char *path, const image_open_opts_t *o, char *err
         return NULL;
     }
     const image_kind_desc_t *d = kind_desc(o->kind);
-    const image_geometry_t geom = {.block_size = d->block_size};
+    const image_geometry_t geom = d->geom;
     bool writable = o->writable && !d->read_only;
     image_t *img = NULL;
     if (!writable)
@@ -95,8 +96,7 @@ image_t *image_open_kind(const char *path, const image_open_opts_t *o, char *err
 }
 
 image_t *image_create_blank_kind(image_kind_t kind, uint64_t blocks, const char *instance) {
-    image_t *img = image_create_blank(blocks, (image_geometry_t){.block_size = kind_desc(kind)->block_size},
-                                      image_delta_dir(NULL), instance);
+    image_t *img = image_create_blank(blocks, kind_desc(kind)->geom, image_delta_dir(NULL), instance);
     if (img)
         img->kind = kind;
     return img;

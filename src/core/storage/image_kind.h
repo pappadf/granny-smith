@@ -64,9 +64,10 @@ static inline image_layout_t image_layout_of_size(uint64_t bytes) {
 // The wire name of a kind: "none", "floppy", "hd", "cd", "profile".
 const char *image_kind_name(image_kind_t kind);
 
-// Bytes per block a medium of `kind` is stored in: 532 for a ProFile (512
-// data + its 20-byte tag, tag first), 512 for every other kind.
-uint32_t image_kind_block_size(image_kind_t kind);
+// Bytes a raw file of `kind` takes for `data_bytes` of disk: the same, but
+// for a ProFile, whose files hold each sector's 20 tag bytes in-band
+// (532-byte blocks).  What a checkpoint's restore recreates a missing base as.
+uint64_t image_kind_file_bytes(image_kind_t kind, uint64_t data_bytes);
 
 // Where a writable medium opened from `path` keeps its delta: the active
 // machine's directory (it shares state.checkpoint's lifetime), or NULL --
@@ -91,8 +92,8 @@ typedef struct image_open_opts {
 // the reason is in `err` (may be NULL).
 struct image *image_open_kind(const char *path, const image_open_opts_t *o, char *err, size_t err_cap);
 
-// A writable all-zero image of `kind` with no base file: `blocks` blocks of
-// image_kind_block_size(kind) bytes (a blank ProFile).  Its delta is a fresh
+// A writable all-zero image of `kind` with no base file: `blocks` 512-byte
+// sectors, with the kind's tags (a blank ProFile).  Its delta is a fresh
 // instance where image_delta_dir(NULL) says, or the existing `instance` stem
 // (NULL for a fresh one: a checkpoint restore passes the saved one), so it
 // is checkpointed and restored like any image with a base.
