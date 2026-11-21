@@ -375,9 +375,9 @@ running mode by owner (0: any); both answer `true` / `false`.
 **I/O jobs.** A leaf whose cost is the size of a file rather than of the
 machine — `files.cp`, `files.import`, `files.export_raw`,
 `files.hd_create` / `fd_create` / `profile_create`, `files.xfer_write`
-/ `xfer_read`, `files.archive.extract`, a SCSI `image.export`, a floppy
-`disk.export` (the Lisa's `floppy.drive[0].export`) and the Lisa
-`profile.save`, `files.download`, and the quick checkpoint's publish — runs on
+/ `xfer_read`, `files.archive.extract`, every drive's `image.export`
+(floppy, SCSI, ATA, the Lisa's diskette and ProFile alike),
+`files.download`, and the quick checkpoint's publish — runs on
 the **I/O worker** (`src/core/io/io_worker.h`), a second thread created
 at boot. `meta.method_info` reports such a method with `io: true`
 (`MM_IO`). The leaf takes its request off the drain's answer path

@@ -334,9 +334,9 @@ static DEF_GETTER(attr_catalog_models) {
 
 // The storage devices the running machine was built with, the positions an
 // image can be attached to: {bus, bus_label, unit, position, type, present,
-// media, filename}, type hd or cd as machine.attach_media takes them,
+// media, source}, type hd or cd as machine.attach_media takes them,
 // present when an image is in it, media the bay as machine.attach_media
-// answers it ({bus, id, label}: what machine.eject_media takes) and filename
+// answers it ({bus, id, label}: what machine.eject_media takes) and source
 // the source path of the image in it ("" when empty) -- so a page that did
 // not attach the media (a checkpoint restore) can tell what is where.
 static DEF_GETTER(attr_machine_storage) {
@@ -374,10 +374,10 @@ static DEF_GETTER(attr_machine_storage) {
         bool present = have_bay && sub->media_present && sub->media_present(cfg, bay.bus, bay.unit);
         val_map_put(m, "present", val_bool(present));
         image_t *img = present ? system_media_image(cfg, bay.bus, bay.unit) : NULL;
-        const char *filename = img ? image_get_filename(img) : NULL;
+        const char *source = img ? image_get_filename(img) : NULL;
         if (have_bay)
             val_map_put(m, "media", media_bay_value(&bay));
-        val_map_put(m, "filename", val_str(filename ? filename : ""));
+        val_map_put(m, "source", val_str(source ? source : ""));
         items[i] = val_map_finish(m);
     }
     return val_list(items, n);
@@ -1050,7 +1050,7 @@ static const member_t machine_members[] = {
     {.kind = MK_ATTR,
      .name = "storage",
      .doc = "The storage devices the machine was built with: {bus, bus_label, unit, position, type, present, media, "
-            "filename}", .attr = {.type = VK_LIST, .get = attr_machine_storage, .set = NULL}},
+            "source}", .attr = {.type = VK_LIST, .get = attr_machine_storage, .set = NULL}},
     {.kind = MK_ATTR,
      .name = "irq",
      .doc = "Raw interrupt-source bitmap the family aggregates (bit meanings are per family)",

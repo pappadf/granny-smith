@@ -185,7 +185,7 @@ entries (and perhaps a verb or two) is built from the descriptor alone by
 `category["scsi"]`; keys are short identifiers, `[A-Za-z0-9_.-]{1,63}`
 (`object_valid_key`).
 
-Entries, and lookup-backed named children such as `drive[n].disk` and
+Entries, and lookup-backed named children such as `drive[n].image` and
 `device[n].image`, are handed out by callbacks and never attached, so they
 have no parent of their own. They get a **logical parent**
 (`object_set_logical_parent(obj, parent, name, index, key)`): a

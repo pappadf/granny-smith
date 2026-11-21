@@ -16,6 +16,7 @@
 #include "floppy.h" // FLOPPY_NUM_DRIVES, FLOPPY_TYPE_*
 #include "floppy_geometry.h" // zone helpers + floppy_media_t (public API)
 #include "image.h"
+#include "image_class.h"
 #include "memory.h"
 #include "scheduler.h"
 
@@ -276,7 +277,8 @@ struct floppy {
     struct object *controller_object; // floppy.controller node (the register file)
     struct object *drives_object; // floppy.drive collection child
     struct object *drive_objects[NUM_DRIVES]; // per-drive entry objects
-    struct object *disk_objects[NUM_DRIVES]; // per-drive medium (disk) nodes — drive[N].disk
+    struct object *image_objects[NUM_DRIVES]; // per-drive image nodes — drive[N].image
+    image_node_t image_nodes[NUM_DRIVES]; // their data: this floppy and the drive (image_class.h)
     // Per-drive back-link used as instance_data for each drive entry.
     floppy_drive_link_t drive_links[NUM_DRIVES];
     // How many of the controller's NUM_DRIVES the machine has cabled

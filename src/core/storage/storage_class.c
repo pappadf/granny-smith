@@ -12,6 +12,7 @@
 #include "checkpoint.h"
 #include "chunk_cache.h"
 #include "format_registry.h"
+#include "image_class.h"
 #include "io_leaf.h"
 #include "out.h"
 #include "storage.h"
@@ -60,115 +61,27 @@
 // `files.images`
 // enumerates the machine's tracked images (config_get_image). Slot index in
 // the collection matches the image's slot; the slots are dense from 0 to
-// config_get_n_images() - 1.  Each entry's data is the cfg; its index is its
-// slot.
+// config_get_n_images() - 1.  Each entry is the one image node
+// (image_class.h) over its slot, the same class every drive mounts; its
+// eject() is not a drive's, and says where to eject it.
 
-static image_t *files_image_at(struct object *self) {
-    return config_get_image((config_t *)object_data(self), object_entry_index(self));
-}
+#define FILES_IMAGE_SLOTS 16 // at least the image table's capacity (system.c)
 
-static DEF_GETTER(files_image_attr_index) {
-    return val_int(object_entry_index(self));
+static image_t *files_node_image(void *dev, unsigned slot) {
+    return config_get_image((config_t *)dev, (int)slot);
 }
-static DEF_GETTER(files_image_attr_filename) {
-    image_t *img = files_image_at(self);
-    const char *s = img ? image_get_filename(img) : NULL;
-    return val_str(s ? s : "");
-}
-static DEF_GETTER(files_image_attr_path) {
-    image_t *img = files_image_at(self);
-    const char *s = img ? image_path(img) : NULL;
-    return val_str(s ? s : "");
-}
-static DEF_GETTER(files_image_attr_raw_size) {
-    image_t *img = files_image_at(self);
-    return val_uint(8, img ? (uint64_t)img->raw_size : 0);
-}
-static DEF_GETTER(files_image_attr_writable) {
-    image_t *img = files_image_at(self);
-    return val_bool(img ? img->writable : false);
-}
-
-static DEF_GETTER(files_image_attr_reads) {
-    image_t *img = files_image_at(self);
-    return val_uint(8, img ? img->reads : 0);
-}
-static DEF_GETTER(files_image_attr_writes) {
-    image_t *img = files_image_at(self);
-    return val_uint(8, img ? img->writes : 0);
-}
-
-static value_t files_image_attr_format(struct object *self, const member_t *m) {
-    (void)m;
-    image_t *img = files_image_at(self);
-    return val_str(img && img->format ? img->format : "");
-}
-
-// The kind names, indexed by image_kind_t (image_kind_name spells them).
-static const char *const STORAGE_IMAGE_KIND_NAMES[IMAGE_KIND_COUNT] = {
-    [IMAGE_KIND_NONE] = "none", [IMAGE_KIND_FLOPPY] = "floppy",   [IMAGE_KIND_HD] = "hd",
-    [IMAGE_KIND_CD] = "cd",     [IMAGE_KIND_PROFILE] = "profile",
-};
-
-static DEF_GETTER(files_image_attr_type) {
-    image_t *img = files_image_at(self);
-    return val_enum((int)image_get_kind(img), STORAGE_IMAGE_KIND_NAMES, IMAGE_KIND_COUNT);
-}
-
-static const member_t files_image_members[] = {
-    {.kind = MK_ATTR,
-     .name = "index",
-     .doc = "Position in files.images; stable only while no image is added or removed",
-     .attr = {.type = VK_INT, .get = files_image_attr_index, .set = NULL}                                        },
-    {.kind = MK_ATTR,
-     .name = "filename",
-     .doc = "Last path component, for display",
-     .attr = {.type = VK_STRING, .get = files_image_attr_filename, .set = NULL}                                  },
-    {.kind = MK_ATTR,
-     .name = "path",
-     .doc = "Full host path or storage URI the image was opened from",
-     .attr = {.type = VK_STRING, .get = files_image_attr_path, .set = NULL}                                      },
-    {.kind = MK_ATTR,
-     .name = "raw_size",
-     .doc = "Logical size of the image in bytes, before any container or compression layer",
-     .attr = {.type = VK_UINT, .get = files_image_attr_raw_size, .set = NULL}                                    },
-    {.kind = MK_ATTR,
-     .name = "writable",
-     .doc = "True when guest writes reach the image (directly or through a checkpoint delta)",
-     .attr = {.type = VK_BOOL, .get = files_image_attr_writable, .set = NULL}                                    },
-    {.kind = MK_ATTR,
-     .name = "type",
-     .doc = "The kind of medium its drive presents it as: floppy, hd, cd or profile",
-     .attr = {.type = VK_ENUM, .get = files_image_attr_type, .set = NULL}                                        },
-    {.kind = MK_ATTR,
-     .name = "format",
-     .doc = "Wrapper layers peeled to reach the disk, outermost first: raw, dc42, udif, bin+ndif, gz+dc42, ...",
-     .attr = {.type = VK_STRING, .get = files_image_attr_format, .set = NULL}                                    },
-    {.kind = MK_ATTR,
-     .name = "reads",
-     .doc = "Drive reads served from the image since it was opened (what lights the activity light)",
-     .attr = {.type = VK_UINT, .get = files_image_attr_reads, .set = NULL, .presentation_flags = VFLAG_VOLATILE} },
-    {.kind = MK_ATTR,
-     .name = "writes",
-     .doc = "Drive writes to the image since it was opened",
-     .attr = {.type = VK_UINT, .get = files_image_attr_writes, .set = NULL, .presentation_flags = VFLAG_VOLATILE}},
-};
-
-static const class_desc_t files_image_class = {
-    .name = "image",
-    .members = files_image_members,
-    .n_members = sizeof(files_image_members) / sizeof(files_image_members[0]),
-    .doc = "One configured disk image",
-};
+static const image_node_ops_t files_image_ops = {.image = files_node_image, .eject = NULL};
+static image_node_t g_image_nodes[FILES_IMAGE_SLOTS];
 
 // The image entry objects, made on first use; freed with the machine.
-static object_cache_t g_images = OBJECT_CACHE(&files_image_class, NULL);
+static object_cache_t g_images = OBJECT_CACHE(&image_class, NULL);
 
 static struct object *files_images_get(struct object *self, int index) {
     config_t *cfg = (config_t *)object_data(self);
-    if (!config_get_image(cfg, index))
+    if (index < 0 || index >= FILES_IMAGE_SLOTS || !config_get_image(cfg, index))
         return NULL;
-    return object_cache_at(&g_images, index, cfg);
+    g_image_nodes[index] = (image_node_t){.ops = &files_image_ops, .dev = cfg, .slot = (unsigned)index};
+    return object_cache_at(&g_images, index, &g_image_nodes[index]);
 }
 
 // The next tracked image's slot after `prev` (-1 to start), or -1 at the end.
@@ -260,7 +173,7 @@ static const arg_decl_t files_import_args[] = {
 };
 
 static const collection_desc_t files_images = {
-    .entry = &files_image_class,
+    .entry = &image_class,
     .by_index = {.get = files_images_get, .next = files_images_next},
     .name = "files_images",
     .doc = "The machine's configured disk images",

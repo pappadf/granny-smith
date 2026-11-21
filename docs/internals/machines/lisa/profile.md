@@ -39,7 +39,7 @@ for the device-info block), with
   user's image (the boot-time `mountinfo`/MDDF write goes to the delta) — every
   cold boot starts from the pristine base, fixing the spurious "startup disk was
   in use" scavenge prompt. A blank attach (no path) is an all-zero ephemeral
-  image (`image_create_blank`); `machine.hd.save` consolidates base+delta into a new
+  image (`image_create_blank`); `machine.hd.image.export` consolidates base+delta into a new
   single-file image via `image_export_to`. See `docs/internals/core/storage/image.md`.
 - **`via.c` port-A hooks** — `via_set_porta_hooks()` adds a read/write callback on
   the ORA/IRA (handshaked, CA2/PSTRB-strobed) and ORA-no-handshake registers, the
@@ -48,12 +48,13 @@ for the device-info block), with
   levels, so an undriven open-collector CMD/ reads high, not a spurious assert);
   port-A hooks → the device; BSY → PB1 + CA1; OCD/ (PB0) driven low when a disk is
   attached; VIA1 PB7 (CRES/) falling edge → controller reset. A `machine.hd`
-  node (class `profile`: `hd.attach [path] [writable]` / `hd.detach` /
-  `hd.present` / `hd.save`, plus the `pram_init`/`pram_save`/`pram_load`
+  node (class `profile`: `hd.insert [path] [writable]` / `hd.eject` /
+  `hd.present` and the `hd.image` node (`image_class.c`, whose `export`
+  saves the disk), plus the `pram_init`/`pram_save`/`pram_load`
   PRAM snapshot methods)
-  attaches an image (a blank 5 MB disk if no path).  The image belongs to the
+  inserts an image (a blank 5 MB disk if no path).  The image belongs to the
   machine's image list like every drive's: it is checkpointed there (a blank
-  disk included), `hd.detach` closes it, and the device saves only which
+  disk included), `hd.eject` closes it, and the device saves only which
   entry it holds.
 - **Verification.** `tests/unit/suites/lisa_profile` drives the device API
   directly (detection, device-info read, write→read round-trip, decline/abort).
@@ -173,7 +174,7 @@ for the device-info block), with
 
 ## Image files
 
-`machine.hd.attach` takes a ProFile image in either shape, and the image
+`machine.hd.insert` takes a ProFile image in either shape, and the image
 layer decides which by content, never by name:
 
 - **Raw** — 532-byte blocks, 20-byte tag first, in drive order. This is the

@@ -77,7 +77,7 @@ let PREFIX_BYTES = 96 * 512
 def image_index(path) {
     let i = 0
     while $i < files.images.count {
-        if files.images[$i].filename == $path { return $i }
+        if files.images[$i].source == $path { return $i }
         $i = $i + 1
     }
     error("no attached image ${$path}")
@@ -135,7 +135,7 @@ def row_wrap_layout() {
     assert machine.scsi.attach_hd("${$vol753}", 0) "wrap-layout: attach_hd failed"
     assert machine.scsi.device[0].type == "hd" "wrap-layout: SCSI 0 is not a hard disk"
     let i = image_index($vol753)
-    assert files.images[$i].raw_size == $file_size + $PREFIX_BYTES "wrap-layout: disk is ${files.images[$i].raw_size} bytes, want ${$file_size} + ${$PREFIX_BYTES}"
+    assert files.images[$i].size == $file_size + $PREFIX_BYTES "wrap-layout: disk is ${files.images[$i].size} bytes, want ${$file_size} + ${$PREFIX_BYTES}"
     assert files.path_size("${$vol753}") == $file_size "wrap-layout: the volume file changed size"
     assert machine.scsi.attach_cdrom("${$vol753}", 3) "wrap-layout: attach_cdrom failed"
     assert machine.scsi.device[3].type == "cdrom" "wrap-layout: SCSI 3 is not a CD-ROM"
@@ -296,7 +296,7 @@ def row_checkpoint() {
     assert checkpoint.save("${$WORK_DIR}/bare-volume.checkpoint") "checkpoint: save failed"
     assert checkpoint.load("${$WORK_DIR}/bare-volume.checkpoint") "checkpoint: load failed"
     let i = image_index($vol753)
-    assert files.images[$i].raw_size == files.path_size("${$vol753}") + $PREFIX_BYTES "checkpoint: restored disk is not wrapped"
+    assert files.images[$i].size == files.path_size("${$vol753}") + $PREFIX_BYTES "checkpoint: restored disk is not wrapped"
     # Keep running off the restored disk: the Finder must still be there.
     scheduler.run 200000000
     assert_desktop("checkpoint")
@@ -314,7 +314,7 @@ def row_driverless() {
     let file_size = files.path_size("${$voldl753}")
     assert machine.scsi.attach_hd("${$voldl753}", 0) "driverless: attach_hd failed"
     let i = image_index($voldl753)
-    assert files.images[$i].raw_size == files.path_size("${$vol753}") + $PREFIX_BYTES "driverless: disk is ${files.images[$i].raw_size} bytes, want the HFS partition + ${$PREFIX_BYTES}"
+    assert files.images[$i].size == files.path_size("${$vol753}") + $PREFIX_BYTES "driverless: disk is ${files.images[$i].size} bytes, want the HFS partition + ${$PREFIX_BYTES}"
     scheduler.run 150000000
     wait_stable(1600000000)
     assert_desktop("driverless")
@@ -324,7 +324,7 @@ def row_driverless() {
     assert checkpoint.save("${$WORK_DIR}/driverless.checkpoint") "driverless: checkpoint save failed"
     assert checkpoint.load("${$WORK_DIR}/driverless.checkpoint") "driverless: checkpoint load failed"
     let j = image_index($voldl753)
-    assert files.images[$j].raw_size == files.path_size("${$vol753}") + $PREFIX_BYTES "driverless: restored disk is not wrapped"
+    assert files.images[$j].size == files.path_size("${$vol753}") + $PREFIX_BYTES "driverless: restored disk is not wrapped"
     scheduler.run 200000000
     assert_desktop("driverless (restored)")
     check_desktop("goldens/iici-7.5.3-640x480x1-bare-finder.png")
@@ -341,7 +341,7 @@ def row_trimmed() {
     assert $file_size < files.path_size("${$vol753}") "trimmed: the volume was not trimmed"
     assert machine.scsi.attach_hd("${$voltrim753}", 0) "trimmed: attach_hd failed"
     let i = image_index($voltrim753)
-    assert files.images[$i].raw_size == files.path_size("${$vol753}") + $PREFIX_BYTES "trimmed: disk is ${files.images[$i].raw_size} bytes, want the whole volume + ${$PREFIX_BYTES}"
+    assert files.images[$i].size == files.path_size("${$vol753}") + $PREFIX_BYTES "trimmed: disk is ${files.images[$i].size} bytes, want the whole volume + ${$PREFIX_BYTES}"
     scheduler.run 150000000
     wait_stable(1600000000)
     assert_desktop("trimmed")

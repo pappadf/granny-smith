@@ -25,7 +25,7 @@ def menu_pick(mx, ix, iy) {
     machine.adb.mouse.click false
 }
 
-machine.hd.attach "$WORK_DIR/profile.image"
+machine.hd.insert "$WORK_DIR/profile.image"
 assert machine.hd.present == true "ProFile should be attached"
 assert machine.hd.pram_init(2, false) "pram_init failed"
 

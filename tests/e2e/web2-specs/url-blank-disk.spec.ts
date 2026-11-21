@@ -71,25 +71,25 @@ test("?hd0=blank:20mb attaches a new blank disk, and a reload reuses it", async 
   await bootFromUrl(page, query);
   // The Plus's hd0 is SCSI ID 0; its image is the blank disk, stored in OPFS
   // (image.path is the machine's delta; image.filename the image itself).
-  expect(await gsEvalInPage(page, "machine.scsi.device[0].image.present")).toBe(
+  expect(await gsEvalInPage(page, "machine.scsi.device[0].present")).toBe(
     true,
   );
   const attached = await gsEvalInPage(
     page,
-    "machine.scsi.device[0].image.filename",
+    "machine.scsi.device[0].image.source",
   );
   expect(attached).toMatch(BLANK);
   expect(await blankDisks(page)).toEqual([attached]);
   // 20mb snaps to the smallest model at or above 20,000,000 bytes, an
   // HD20SC of 21307392 bytes (the core's catalog), read back from the UDIF.
   expect(
-    Number(await gsEvalInPage(page, "machine.scsi.device[0].image.raw_size")),
+    Number(await gsEvalInPage(page, "machine.scsi.device[0].image.size")),
   ).toBe(21307392);
 
   // The same link again: the disk it created is attached, no second one made.
   await bootFromUrl(page, query);
   expect(
-    await gsEvalInPage(page, "machine.scsi.device[0].image.filename"),
+    await gsEvalInPage(page, "machine.scsi.device[0].image.source"),
   ).toBe(attached);
   expect(await blankDisks(page)).toEqual([attached]);
 });

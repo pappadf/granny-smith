@@ -18,8 +18,8 @@ assert files.path_exists("${$d2}/partition1/BDC Data B") "no BDC Data B on disk 
 # Both MOOFs decode (to DiskCopy 4.2, then the disk) and mount as 800K.
 machine.floppy.drive[0].insert $d1
 machine.floppy.drive[1].insert $d2
-assert machine.floppy.drive[0].disk.density == "800k" "disk 1 is not an 800K disk"
-assert machine.floppy.drive[1].disk.density == "800k" "disk 2 is not an 800K disk"
+assert machine.floppy.drive[0].format == "gcr800" "disk 1 is not an 800K disk"
+assert machine.floppy.drive[1].format == "gcr800" "disk 2 is not an 800K disk"
 
 # Boot: the Launcher starts the game, which shows its title.
 scheduler.run 112000000

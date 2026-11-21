@@ -1716,7 +1716,7 @@ int system_media_attach_scsi_bus(config_t *cfg, struct scsi *bus, const media_sl
 // One verb for "put this disk in that bay", whatever bus the bay is on: the
 // one substrate dispatch (media_attach), fed by media_open.  Before,
 // every caller branched on hd_bus itself and chose between scsi.attach_hd,
-// scsi2.attach_hd and hd.attach -- and several chose wrong.
+// scsi2.attach_hd and hd.attach (now hd.insert) -- and several chose wrong.
 
 image_t *system_media_image_scsi_bus(struct scsi *bus, int unit) {
     return (bus && unit >= 0 && unit <= 6) ? scsi_device_image(bus, (unsigned)unit) : NULL;

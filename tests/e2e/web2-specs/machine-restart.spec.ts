@@ -36,9 +36,9 @@ test('Restart keeps the attached hard disk — same medium, same open instance',
   await expect.poll(() => gsEvalInPage(page, 'machine.id'), { timeout: 30_000 }).toBe('iicx');
   await gsCallInPage(page, 'files.hd_create', ['/tmp/restart-scratch.img', '20mb']);
   await gsCallInPage(page, 'machine.scsi.attach_hd', ['/tmp/restart-scratch.img', 0]);
-  expect(await gsEvalInPage(page, 'machine.scsi.device[0].image.present')).toBe(true);
-  const stem0 = await gsEvalInPage(page, 'machine.scsi.device[0].image.path');
-  const file0 = await gsEvalInPage(page, 'machine.scsi.device[0].image.filename');
+  expect(await gsEvalInPage(page, 'machine.scsi.device[0].present')).toBe(true);
+  const stem0 = await gsEvalInPage(page, 'machine.scsi.device[0].image.delta');
+  const file0 = await gsEvalInPage(page, 'machine.scsi.device[0].image.source');
   expect(stem0).toBeTruthy();
   expect(file0).toBeTruthy();
 
@@ -64,7 +64,7 @@ test('Restart keeps the attached hard disk — same medium, same open instance',
 
   // The HD survived the power-cycle as the SAME open instance.
   expect(await gsEvalInPage(page, 'machine.created')).toBe(true);
-  expect(await gsEvalInPage(page, 'machine.scsi.device[0].image.present')).toBe(true);
-  expect(await gsEvalInPage(page, 'machine.scsi.device[0].image.filename')).toBe(file0);
-  expect(await gsEvalInPage(page, 'machine.scsi.device[0].image.path')).toBe(stem0);
+  expect(await gsEvalInPage(page, 'machine.scsi.device[0].present')).toBe(true);
+  expect(await gsEvalInPage(page, 'machine.scsi.device[0].image.source')).toBe(file0);
+  expect(await gsEvalInPage(page, 'machine.scsi.device[0].image.delta')).toBe(stem0);
 });

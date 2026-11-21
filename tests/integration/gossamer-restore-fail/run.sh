@@ -39,7 +39,10 @@ machine.scsi.attach_hd "$TEST_TMPDIR/hd.img" 0
 assert machine.ata.attach_hd("$TEST_TMPDIR/ata.img", 0) "attach the ATA disk"
 scheduler.run 2000000000
 assert !checkpoint.load("$TRUNCATED_FILE") "the truncated checkpoint loaded"
-assert machine.ata.devices == "hd - - -" "the running machine lost its ATA disk"
+assert machine.ata.device[0].type == "hd" "the running machine lost its ATA disk"
+assert machine.ata.device[1].type == "none" "the running machine lost its ATA disk"
+assert machine.ata.device[2].type == "none" "the running machine lost its ATA disk"
+assert machine.ata.device[3].type == "none" "the running machine lost its ATA disk"
 let ata_reads = files.images[1].reads
 # Up to 22 G more, sampled every 250 M: done once the Finder is the current
 # application (CurApName, \$910, reads "Finder") and the ATA disk has been

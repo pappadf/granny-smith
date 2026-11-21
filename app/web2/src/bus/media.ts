@@ -170,7 +170,7 @@ export async function readMounts(): Promise<Record<string, MountInfo>> {
   const out: Record<string, MountInfo> = {};
   const count = await detectFdDriveCount(true);
   for (let d = 0; d < count; d++) {
-    const name = await gsEval(`machine.floppy.drive[${d}].disk.filename`);
+    const name = await gsEval(`machine.floppy.drive[${d}].image.source`);
     if (gsOk(name) && typeof name === 'string' && name)
       out[name] = { kind: 'fd', bus: 'floppy', drive: d };
   }
@@ -178,8 +178,8 @@ export async function readMounts(): Promise<Record<string, MountInfo>> {
   if (!Array.isArray(devices)) return out;
   for (const d of devices as Record<string, unknown>[]) {
     const bay = d.media as Partial<MediaBay> | undefined;
-    if (d.present !== true || typeof d.filename !== 'string' || !d.filename || !bay) continue;
-    out[d.filename] = {
+    if (d.present !== true || typeof d.source !== 'string' || !d.source || !bay) continue;
+    out[d.source] = {
       kind: d.type === 'cd' ? 'cd' : 'hd',
       bus: bay.bus ?? '',
       drive: bay.id ?? 0,
@@ -279,9 +279,9 @@ export async function convertImage(
   return isGsObject(r) ? (r as { bytes_in?: number; stored_bytes?: number }) : gsErrorText(r);
 }
 
-// The file name an attached image suggests for itself (`<target>.filename`).
+// The file name an attached image suggests for itself (`<image>.source`).
 export async function imageFileName(target: string): Promise<string> {
-  const r = await gsEval(`${target}.filename`);
+  const r = await gsEval(`${target}.source`);
   return typeof r === 'string' ? r : '';
 }
 

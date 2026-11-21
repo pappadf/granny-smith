@@ -363,7 +363,11 @@ exists only while an image is loaded.
 | `eject()` | → none or error | releases the image to the table; error text when locked or empty |
 
 The node has no `present` member: a node that resolves holds an image.
-Floppy `density` becomes the drive's `format` (§3.2).
+Floppy `density` becomes the drive's `format` (§3.2). A drive hands the
+class its ops (`image_node_t {ops, dev, slot}`, `image_class.h`); a
+`files.images` entry has no eject op, so its `eject()` answers an error that
+names the drive verbs instead. `files.images[i].index` goes: the path holds
+the index.
 
 ### 3.2 Device nodes (device-specific state lives here)
 
@@ -479,7 +483,7 @@ commit (no aliases, no shims).
 | C2 | **One owner, one eject, one checkpoint path.** The ProFile in the image table; every eject releases its image to the table (`config_release_image`; the Lisa diskette excepted, §2.6); refs by position; blank images with a persistent delta; read-only images write-protected, with a lazy scratch pair; write-protect checks in the Lisa FDC and the SWIM ISM; `insert` writable by default everywhere; host eject of an ATA hard disk. Fixes items 4–7, 9 | yes |
 | C3 | **Tags in-band.** Blocks `[T][512]`; the tagged base view (a DiskCopy tag section, or zeros); `disk_read_tag/disk_write_tag` on blocks, `disk_read_units/disk_write_units` for the ProFile; DiskCopy and MOOF export split the tags off the streamed blocks; the checkpoint tag tail, `image->tags` and `image_set_tags` go. Fixes item 3 | yes |
 | C4 | **`files.identify`.** The identify method (`storage_class.c`) and the kinds' accept rules (`image_kind_fits`); the nine entry points of §4.2 and the SCSI facade go; `catalog.hd_models`; the shell's `contains()` takes a list haystack (membership), for `contains(files.identify(p).fits, "hd")` | yes |
-| C5 | **One image node.** `image_class.c` on every device and on `files.images`; the ATA `device[U]` collection; the renames of §3.4; every export an I/O job with a codec; gs-test-data scripts updated in that repository. Fixes item 8 | |
+| C5 | **One image node.** `image_class.c` on every device and on `files.images`; the ATA `device[U]` collection; the renames of §3.4; every export an I/O job with a codec; gs-test-data scripts updated in that repository (none needed one: they use `machine.scsi.device[N].image.export`, unchanged). `medium_export.h` goes; `machine.storage` entries name their image's `source`. Fixes item 8 | yes |
 | C6 | *Dropped* (§6): the type keeps its name, `image_t`, with `image.h` and the `disk_*` I/O calls | — |
 | C7 | **`files.create(path, kind, size)`** replaces `files.fd_create/hd_create/profile_create` and `machine.floppy.create`; profile blank-disk entries name `{kind, size}` | |
 

@@ -25,7 +25,7 @@ machine.scsi.device
 assert machine.scsi.device[0].id == 0
 assert machine.scsi.device[0].type == "hd"
 assert machine.scsi.device[0].block_size == 512
-assert machine.scsi.device[0].medium_present == true
+assert machine.scsi.device[0].present == true
 assert machine.scsi.device[0].read_only == false
 # hd1.img matches the HD20SC catalog entry. vendor / product are the
 # raw SCSI INQUIRY fields stored on the device — vendor is the 8-char
@@ -96,13 +96,13 @@ assert files.identify("${$WORK_DIR}/ident-fd.img").kind == "floppy" "the floppy 
 # disk back turned it into a read-only SONY CDU-8002 with 2048-byte blocks.
 #
 # The slot's type survives an eject -- scsi_eject_device clears
-# medium_present and the image pointer, never the type -- so insert() asks it.
+# `present` and the image pointer, never the type -- so insert() asks it.
 
 # Hard disk: out and back in as a hard disk.
 assert machine.scsi.device[0].type == "hd" "slot 0 should start as a hard disk"
 let tracked = files.images.count
 assert machine.scsi.device[0].eject() "ejecting the boot HD failed"
-assert machine.scsi.device[0].medium_present == false "HD still reports a medium after eject"
+assert machine.scsi.device[0].present == false "HD still reports a medium after eject"
 # The eject hands the image back: it is closed and its slot in the machine's
 # image list freed, so the file is free at once.  It used to stay open until
 # the machine went away.

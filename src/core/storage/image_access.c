@@ -51,3 +51,11 @@ uint64_t image_get_reads(const image_t *image) {
 uint64_t image_get_writes(const image_t *image) {
     return image ? image->writes : 0;
 }
+
+uint64_t image_get_read_errors(const image_t *image) {
+    return image ? image->read_errors : 0;
+}
+
+uint32_t image_get_tag_bytes(const image_t *image) {
+    return image ? image->tag_bytes : 0;
+}

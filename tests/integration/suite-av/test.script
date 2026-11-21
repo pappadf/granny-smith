@@ -235,14 +235,14 @@ def row_av_hd_device() {
     machine.scsi.attach_hd "${$av_hd}" 0
     assert machine.scsi.device[0].type == "hd" "av-hd-device: SCSI 0 is not a hard disk"
     assert !machine.scsi.device[0].read_only "av-hd-device: disk came up read-only"
-    assert machine.scsi.device[0].medium_present "av-hd-device: no medium present"
+    assert machine.scsi.device[0].present "av-hd-device: no medium present"
     assert machine.scsi.device[0].block_size == 512 "av-hd-device: block_size ${machine.scsi.device[0].block_size}, want 512 (from the image's DDM)"
     # No other MEDIUM on the bus: any boot below can only come from this disk.
     # The CD bay itself is always there — a machine with a CD drive carries it
     # from power-on, empty or not, because SCSI is not hot-plug and a drive the
     # boot scan never saw is one the guest will never poll (system_create).
     assert machine.scsi.device[3].type == "cdrom" "av-hd-device: SCSI 3 is not the empty CD bay"
-    assert !machine.scsi.device[3].medium_present "av-hd-device: a disc is in the CD bay"
+    assert !machine.scsi.device[3].present "av-hd-device: a disc is in the CD bay"
 }
 
 # golden-collision-ok: q840av-7.1-640x480x8-hd-finder.png q660av-7.1-640x480x8-hd-finder.png — both
@@ -471,7 +471,7 @@ def row_av_floppy_write_eject() {
     machine.floppy.drive[0].insert "${$av_fd_144}" true
     scheduler.run 2400000000 # ~60 s at 40 MIPS: the mount and window open
     wait_stable(900000000)
-    let inst = machine.floppy.drive[0].disk.path
+    let inst = machine.floppy.drive[0].image.delta
     let delta = "${$inst}.delta"
     let before = files.path_size($delta)
 

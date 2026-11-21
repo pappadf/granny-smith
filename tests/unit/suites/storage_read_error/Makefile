@@ -29,6 +29,7 @@ EXTRA_SRCS   := $(S)/job/seam.c \
                 $(S)/storage/image_part.c \
                 $(S)/storage/image_iso9660.c \
                 $(S)/storage/image_access.c \
+                $(S)/storage/image_class.c \
                 $(S)/object/object.c \
                 $(S)/object/parse.c \
                 $(S)/object/value.c \

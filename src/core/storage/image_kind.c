@@ -17,7 +17,7 @@
 
 // One row per kind: everything a kind decides about the media it opens.
 typedef struct image_kind_desc {
-    const char *name; // wire name (files.images[i].type)
+    const char *name; // wire name (the image node's `kind`)
     image_geometry_t geom; // the tags its sectors carry
     bool read_only; // never writable, whatever the caller asks
     bool floppy_sizes; // accepts only the four floppy sizes

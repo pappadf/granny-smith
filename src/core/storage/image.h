@@ -48,6 +48,10 @@ storage_t *image_get_storage(const image_t *image);
 // disk_read_data / disk_write_data calls since open (drive_activity.h)
 uint64_t image_get_reads(const image_t *image);
 uint64_t image_get_writes(const image_t *image);
+// Reads the backing store could not serve (each a guest read error)
+uint64_t image_get_read_errors(const image_t *image);
+// Tag bytes stored beside each 512-byte sector: 12 (GCR floppy), 20 (ProFile) or 0
+uint32_t image_get_tag_bytes(const image_t *image);
 
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
 //
