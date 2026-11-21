@@ -133,9 +133,34 @@ the screen while it holds the output, whichever device the monitor is
 connected to (`pci_connected_display`).
 `machine_slots_resolve` validates every entry before the running machine
 is touched — the card fits (`pci_card_fits_socket`), the kind accepts each
-option (`pci_card_accepts_option`), the PROM identifies as the card's — and puts the
+option (`pci_card_accepts_option`), the entry's monitor is one of the card's
+(`card_monitor_check`), the PROM identifies as the card's — and puts the
 result in `cfg->build_opts`. `pci_seat_slots` seats each socket from its
 entry, else its `default_card`, and hands the card its slot's entry.
+
+### The monitor
+
+A display card's monitor reaches it one way, as on NuBus: the slot entry's
+`monitor` (`slot_opts_t.monitor`), the id of one of the kind's monitor rows
+(`pci_card_kind_t.monitors`, `nubus_monitor_t`) or `none`. A row's id is the
+`monitor_catalog` id it names, and the row carries what the card's sense
+hardware answers: the 3-bit `sense_code`, Apple's 6-bit extended code
+(`ext_sense`, derived from the strap when 0 — `card_monitor_ext_sense`) and
+whether the monitor answers DDC (`ddc`). A configuration plugs a monitor in
+with `displays.<slot>.monitor` (a catalogue id), which `apply_displays` turns
+into the card's row and its sense; one check, shared with NuBus
+(`card_monitor_check`), refuses a monitor the card does not drive; and the
+bus gives every display card a definite monitor before it is built (its
+first row when the entry names none). A card reads its row with
+`card_monitor_row`. There is no `monitor=` card option.
+
+The built-in video of a PCI machine (Control, the beige G3's Rage Pro, the
+Network Server's 54M30) takes its monitors from its kind's rows the same
+way (`builtin_video_desc_t.slot_monitors`): the build resolves the
+document's monitor to a row (`machine_build_opts_t.builtin_monitor`, with
+its `builtin_sense`) and the bus copies both into the built-in slot's entry.
+A `BUILTIN_FALLBACK` stand-in that seats (the 9500's Control) takes its own
+row for the monitor of the card it stands in for.
 
 The bus builds the device (`pci_card_construct`), the way NuBus builds its
 cards: a kind declares its vtable (`ops`), its config-header declaration
@@ -152,7 +177,7 @@ state is the machine's; the 53C825A, whose engine allocates its own) leaves
 honoured for a kind with no `init`.
 
 Card-specific object children go through the kind's `attach_objects()`
-hook, and options through `accepts_option()`, so the generic layer never
+hook, and unadvertised options through `accepts_option()`, so the generic layer never
 learns a card's identity — the two places `nubus.c` had to include card
 headers.
 
@@ -366,9 +391,9 @@ A kind also DECLARES the options a user should be offered
 frontend can render a control per option without knowing which card it is.
 The declaration is also the validation: a value an advertised option lists
 is accepted with no card code. Only what the card does not advertise goes
-to the kind's `accepts_option()` hook (the Mach64 GX's `monitor=`, kept for
-debugging because it senses its monitor for itself; the Voodoo2's hidden
-`raster=sw|null` and `memory=`).
+to the kind's `accepts_option()` hook (the Rage 128's `gpu=`; the Voodoo2's
+hidden `raster=sw|null` and `memory=`). The monitor is not an option (see
+"The monitor", above).
 
 A **variant** kind (`rage128_webgpu`, `voodoo2_webgpu`) is a stored id for
 one of its base card's option values, not a card of its own: it names the

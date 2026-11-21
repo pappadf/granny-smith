@@ -272,7 +272,7 @@ def mach64_strip(x, y, item_x, item_y) {
 }
 
 def row_pm9500_mach64_depths() {
-    machine.boot model=pm9500 ram=32768 rom="${$ROM}" pci_card="mach64_gx" pci_option="vram=4m,monitor=17in_multi"
+    machine.boot model=pm9500 ram=32768 rom="${$ROM}" config="{\"cards\":[{\"slot\":\"pci_1\",\"card\":\"mach64_gx\",\"options\":{\"vram\":\"4m\"}}],\"displays\":{\"pci_1\":{\"monitor\":\"multiscan_17\"}}}"
     machine.rtc.time = "2026-04-26T21:30:36"
     machine.scsi.attach_hd "${$hd_76}" 0
     scheduler.run 4000000000

@@ -236,7 +236,13 @@ typedef struct pci_card_kind {
     // Control that field carries the documented Chaos conflation, which
     // is exactly why the UI hint is separate.)
     const char *card_class;
-    const struct nubus_monitor *monitors; // display cards only; NULL otherwise
+    // The monitors a display card drives (NULL for any other card, and for a
+    // variant, which drives its base card's): one nubus_monitor_t row per
+    // monitor, its id the monitor_catalog id, carrying the card's sense code
+    // and what else its sense hardware answers (ext_sense, ddc).  A slot
+    // entry's `monitor` names one of them (or "none"); the bus checks it
+    // (card_monitor_check) and gives the card a definite one.
+    const struct nubus_monitor *monitors;
     // Construction.  A kind declares its vtable, its config-header
     // declaration, the size of its private state and an `init` hook, and
     // the bus builds the device (pci_card_construct).  `factory` is the
@@ -303,6 +309,9 @@ const pci_card_kind_t *pci_card_find(const char *id);
 
 // The kind that builds `k`: the card a variant names, else `k` itself.
 const pci_card_kind_t *pci_card_base(const pci_card_kind_t *k);
+
+// The monitor rows of `k`'s base card (pci_card_kind_t.monitors), or NULL.
+const struct nubus_monitor *pci_card_monitors(const pci_card_kind_t *k);
 
 // Does `k` take option key=value?  True when the base kind advertises the
 // value among its options, else whatever its accepts_option says.

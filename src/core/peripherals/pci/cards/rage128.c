@@ -50,12 +50,14 @@
 // Linux aty128fb driver was used for orientation only.
 
 #include "card.h"
+#include "card_registry.h"
 #include "checkpoint.h"
 #include "config_space.h"
 #include "display.h"
 #include "display_class.h"
 #include "log.h"
 #include "memory.h"
+#include "monitor_catalog.h"
 #include "object.h"
 #include "pci.h"
 #include "platform_clock.h"
@@ -75,24 +77,6 @@
 #include <string.h>
 
 LOG_USE_CATEGORY_NAME("video");
-
-// A monitor without tie resistors: the two undriven lines read their own
-// strapped levels.
-#define STRAP_EXT01(p) (uint8_t)((((p) >> 1) & 1u) * 2u + ((p) & 1u))
-#define STRAP_EXT02(p) (uint8_t)((((p) >> 2) & 1u) * 2u + ((p) & 1u))
-#define STRAP_EXT12(p) (uint8_t)((((p) >> 2) & 1u) * 2u + (((p) >> 1) & 1u))
-
-static const r128_monitor_t r128_sense[] = {
-    // A VGA monitor that answers DDC: the FCode publishes its EDID.
-    {"vga",       false, true,  7, 3,              3,              3             },
-    // A VGA monitor with no DDC (or a dumb adapter): VGA, no EDID.
-    {"vga_noddc", false, false, 7, 3,              3,              3             },
-    // 13" AppleColor High-Resolution RGB on an Apple cable: code $62B.
-    {"13in_rgb",  true,  false, 6, STRAP_EXT01(6), STRAP_EXT02(6), STRAP_EXT12(6)},
-    // 21" Macintosh Color Display: code $000.
-    {"21in_rgb",  true,  false, 0, STRAP_EXT01(0), STRAP_EXT02(0), STRAP_EXT12(0)},
-    {NULL,        false, false, 0, 0,              0,              0             },
-};
 
 static const int depths_8_16_32[] = {8, 16, 32, 0};
 
@@ -121,13 +105,32 @@ static const int depths_8_16_32[] = {8, 16, 32, 0};
     }
 static const uint8_t r128_crt_response[3][256] = {R128_RESPONSE, R128_RESPONSE, R128_RESPONSE};
 
+// The monitors the card drives, by catalogue id.  A VGA cable (sense code 7:
+// nothing tied, no VSYNC loopback) or an Apple-sense one (any other code: the
+// lines tied to the monitor's strap, which has no tie resistors, so its
+// extended answers are the strap's own).  The first, the default, answers DDC.
 static const struct nubus_monitor r128_monitors[] = {
-    {.id = "vga", .monitor = "vga", .width = 640, .height = 480, .depths = depths_8_16_32, .sense_code = 7},
-    {.id = "vga_noddc", .monitor = "vga", .width = 640, .height = 480, .depths = depths_8_16_32, .sense_code = 7},
+    // A VGA monitor that answers DDC: the FCode publishes its EDID.
+    {.id = "vga",
+     .monitor = "vga",
+     .width = 640,
+     .height = 480,
+     .depths = depths_8_16_32,
+     .sense_code = 7,
+     .ddc = true},
+    // A VGA monitor with no DDC (or a dumb adapter): VGA, no EDID.
+    {.id = "vga_noddc", .monitor = "vga_noddc", .width = 640, .height = 480, .depths = depths_8_16_32, .sense_code = 7},
+    // 13" AppleColor High-Resolution RGB on an Apple cable: code $62B.
     {.id = "13in_rgb", .monitor = "13in_rgb", .width = 640, .height = 480, .depths = depths_8_16_32, .sense_code = 6},
+    // 21" Macintosh Color Display: code $000.
     {.id = "21in_rgb", .monitor = "21in_rgb", .width = 1152, .height = 870, .depths = depths_8_16_32, .sense_code = 0},
     {.id = NULL},
 };
+
+// An Apple-sense cable: VSYNC looped back on MONID3, the sense lines tied.
+static bool r128_apple_sense(const struct nubus_monitor *mon) {
+    return mon && mon->sense_code != MACHINE_SENSE_NONE;
+}
 
 static void r128_update(rage128_t *r);
 static void r128_offset_write(rage128_t *r);
@@ -173,15 +176,18 @@ static bool r128_in_vblank(const rage128_t *r) {
 // The level the monitor's side puts on pad `pad` given which pads the card
 // is driving low (`driven`, a pad mask).  1 = released (pulled up).
 static bool r128_monitor_pad(const rage128_t *r, uint32_t pad, uint32_t driven) {
-    const r128_monitor_t *mon = r->mon;
+    const struct nubus_monitor *mon = r->mon;
     if (!mon)
         return true; // no cable: every pad floats high
     if (pad == MONID_PAD_LOOP)
         // The Apple cable loops the card's VSYNC polarity back; a VGA cable
         // leaves the pad floating.
-        return mon->apple_sense ? (r->reg[R_CRTC_V_SYNC_STRT_WID / 4] & CRTC_V_SYNC_POL) != 0 : true;
-    if (!mon->apple_sense)
+        return r128_apple_sense(mon) ? (r->reg[R_CRTC_V_SYNC_STRT_WID / 4] & CRTC_V_SYNC_POL) != 0 : true;
+    if (!r128_apple_sense(mon))
         return true; // VGA: the sense lines are not tied
+    uint8_t ext01 = (r->mon_ext >> 4) & 3u; // SENSE2 driven low: (SENSE1, SENSE0)
+    uint8_t ext02 = (r->mon_ext >> 2) & 3u; // SENSE1 driven low: (SENSE2, SENSE0)
+    uint8_t ext12 = r->mon_ext & 3u; // SENSE0 driven low: (SENSE2, SENSE1)
     // Pads -> logical sense lines: MONID0 = SENSE0, MONID2 = SENSE1,
     // MONID1 = SENSE2.
     static const uint8_t sense_of_pad[3] = {0, 2, 1};
@@ -192,13 +198,13 @@ static bool r128_monitor_pad(const rage128_t *r, uint32_t pad, uint32_t driven) 
             drv |= 1u << sense_of_pad[p];
     switch (drv & ~(1u << s)) {
     case 0: // nothing else driven: the strap
-        return (mon->primary >> s) & 1u;
+        return (mon->sense_code >> s) & 1u;
     case 4: // SENSE2 driven: (SENSE1, SENSE0) = ext01
-        return s == 1 ? (mon->ext01 >> 1) & 1u : mon->ext01 & 1u;
+        return s == 1 ? (ext01 >> 1) & 1u : ext01 & 1u;
     case 2: // SENSE1 driven: (SENSE2, SENSE0) = ext02
-        return s == 2 ? (mon->ext02 >> 1) & 1u : mon->ext02 & 1u;
+        return s == 2 ? (ext02 >> 1) & 1u : ext02 & 1u;
     case 1: // SENSE0 driven: (SENSE2, SENSE1) = ext12
-        return s == 2 ? (mon->ext12 >> 1) & 1u : mon->ext12 & 1u;
+        return s == 2 ? (ext12 >> 1) & 1u : ext12 & 1u;
     default:
         return true; // two lines driven: not a step the Apple walk takes
     }
@@ -1456,11 +1462,9 @@ static bool r128_raster_offered(const char *value) {
     return strcmp(value, "webgpu") != 0 || platform_v2gpu_available();
 }
 
-// The monitor is not among the options: the configuration's display row
-// picks it (displays.<slot>.monitor, which the build hands the card as its
-// monitor= option), so the dialog shows one Monitor choice.  monitor= stays
-// accepted below, which is how "vga_noddc" -- a VGA monitor without DDC --
-// is still reached.
+// The monitor is not among the options: it is the slot entry's monitor (a
+// configuration's displays.<slot>.monitor), one of r128_monitors, so the
+// dialog shows one Monitor choice.
 static const pci_card_option_t r128_options[] = {
     {.key = "memory",
      .label = "Video memory",
@@ -1477,18 +1481,9 @@ static const pci_card_option_t r128_options[] = {
     {.key = NULL},
 };
 
-static const r128_monitor_t *r128_monitor_by_id(const char *value) {
-    for (const r128_monitor_t *m = r128_sense; m->id; m++)
-        if (strcmp(m->id, value) == 0)
-            return m;
-    return NULL;
-}
-
 // The keys beyond the advertised memory= and raster= (which the generic check
 // takes from r128_options).
 static bool r128_accepts_option(const char *key, const char *value) {
-    if (strcmp(key, "monitor") == 0)
-        return r128_monitor_by_id(value) != NULL;
     // Not advertised: when the takeover engages — on a 3D draw into a
     // screen-shaped surface (auto), or on any 3D draw (always, the tests).
     if (strcmp(key, "gpu") == 0)
@@ -1506,7 +1501,7 @@ static rage128_t *node_card(struct object *self) {
 
 static DEF_GETTER(mon_attr_id) {
     rage128_t *c = node_card(self);
-    return val_str((c && c->mon) ? c->mon->id : "");
+    return val_str(!c ? "" : c->mon ? c->mon->id : MONITOR_NONE);
 }
 static DEF_GETTER(mon_attr_ddc) {
     rage128_t *c = node_card(self);
@@ -1514,7 +1509,7 @@ static DEF_GETTER(mon_attr_ddc) {
 }
 static DEF_GETTER(mon_attr_apple_sense) {
     rage128_t *c = node_card(self);
-    return val_bool(c && c->mon && c->mon->apple_sense);
+    return val_bool(c && r128_apple_sense(c->mon));
 }
 
 static const member_t monitor_members[] = {
@@ -1735,8 +1730,10 @@ static int r128_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom, c
         return -1;
     }
 
-    const char *monitor = slot_opts_option(opts, "monitor");
-    r->mon = monitor ? r128_monitor_by_id(monitor) : &r128_sense[0];
+    // The monitor the slot entry plugs in (the bus made it definite; "" is
+    // the first row, as for a bare card), or none: no cable.
+    r->mon = card_monitor_row(r128_monitors, opts->monitor);
+    r->mon_ext = card_monitor_ext_sense(r->mon);
     r128_build_edid(r);
 
     r128_reset(dev, cfg);
@@ -1761,7 +1758,8 @@ static int r128_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom, c
     }
 
     LOG(1, "Rage 128: seated in slot %d: %u MB VRAM, monitor '%s', %zu-byte expansion ROM, %s rasteriser",
-        dev->slot_index, r->vram_size >> 20, r->mon->id, prom_size, r->gpu ? "WebGPU" : "software");
+        dev->slot_index, r->vram_size >> 20, r->mon ? r->mon->id : MONITOR_NONE, prom_size,
+        r->gpu ? "WebGPU" : "software");
     watch_add_reporter(r128_watch_report, r);
     return 0;
 }
@@ -1797,7 +1795,6 @@ const pci_card_kind_t rage128_webgpu_kind = {
     .attach = PCI_ATTACH_PCI,
     .requires_prom = true,
     .card_class = "display",
-    .monitors = r128_monitors,
     .attach_objects = r128_attach_objects,
     .offered = platform_v2gpu_available,
     .variant_of = "rage128", // its "Rendering: WebGPU" option

@@ -54,6 +54,7 @@
 // exist on the 88800GX at all.
 
 #include "card.h"
+#include "card_registry.h"
 #include "checkpoint.h"
 #include "config_space.h"
 #include "display.h"
@@ -61,6 +62,7 @@
 #include "display_ramdac.h"
 #include "log.h"
 #include "memory.h"
+#include "monitor_catalog.h"
 #include "object.h"
 #include "pci.h"
 #include "prom.h"
@@ -466,11 +468,12 @@ static const char *mach64_traj_name(mach64_traj_t t) {
 // ============================================================
 //
 // Apple's three-line + extended sense, as the 9500 developer note (tables
-// 2-1 and 2-3) publishes it.  `primary` is the 3-bit code read with all
-// three pins tri-stated; the three `ext` values are the 2-bit readbacks
-// obtained by driving one pin low and reading the other two.
+// 2-1 and 2-3) publishes it.  The primary code is the 3-bit code read with
+// all three pins tri-stated (the row's sense_code); the extended code is the
+// three 2-bit readbacks obtained by driving one pin low and reading the
+// other two (the row's ext_sense, card_monitor_ext_sense).
 //
-// A monitor with no tie resistors does not need table entries at all: its
+// A monitor with no tie resistors does not need an extended code at all: its
 // extended readbacks fall out of the primary strap, because the two pins
 // still being read simply report their own strapped levels.  Deriving them
 // that way for the 14" AppleColor (primary 6, pins 1,1,0) yields $2B —
@@ -485,65 +488,47 @@ static const char *mach64_traj_name(mach64_traj_t t) {
 // does not depend on it: the card's FCode gives up only when
 // primary == 7 AND extended == $3F together, i.e. when all three pins float
 // high in every configuration, which is what "no cable attached" looks
-// like.
-typedef struct mach64_monitor_sense {
-    const char *id;
-    uint8_t primary; // 3-bit code, pins (2,1,0), all tri-stated
-    uint8_t ext01; // drive pin 2, read (pin1,pin0) -> pin1*2 + pin0
-    uint8_t ext02; // drive pin 1, read (pin2,pin0) -> pin2*2 + pin0
-    uint8_t ext12; // drive pin 0, read (pin2,pin1) -> pin2*2 + pin1
-} mach64_monitor_sense_t;
-
-// Derived-from-strap extended values for a monitor with no tie resistors:
-// with pin k driven low, the other two read their own strapped levels.
-#define STRAP_EXT01(p) (uint8_t)((((p) >> 1) & 1u) * 2u + ((p) & 1u))
-#define STRAP_EXT02(p) (uint8_t)((((p) >> 2) & 1u) * 2u + ((p) & 1u))
-#define STRAP_EXT12(p) (uint8_t)((((p) >> 2) & 1u) * 2u + (((p) >> 1) & 1u))
-
-static const mach64_monitor_sense_t mach64_sense[] = {
-    // 14" AppleColor / 12" monochrome — no tie resistors; extended = $2B.
-    {"14in_rgb",   6, STRAP_EXT01(6), STRAP_EXT02(6), STRAP_EXT12(6)},
-    // The multiple-scan displays answer the extended probe with Apple's
-    // MSB1/2/3 codes $03/$0B/$23 (Displays.h kESCSixMSB1..3), assembled
-    // "BC AC AB": drive A (pin 2) and read B,C into bits 5:4, and so on.
-    // Driving C reads back A,B = 1,1 -- the primary strap, as it must.
-    {"15in_multi", 6, 0,              0,              3             },
-    {"17in_multi", 6, 0,              2,              3             },
-    {"20in_multi", 6, 2,              0,              3             },
-    // 21" colour — a primary-only code, like the 14".
-    {"21in_color", 0, STRAP_EXT01(0), STRAP_EXT02(0), STRAP_EXT12(0)},
-    // No cable: every pin floats high in every configuration, the one answer
-    // the card's FCode treats as "nothing attached" (primary 7, extended $3F).
-    {"none",       7, 3,              3,              3             },
-    {NULL,         0, 0,              0,              0             },
-};
+// like -- the "none" monitor.
 
 // The depths Apple documents per raster at 2 MB (9500 developer note table
 // 2-1).  These reach the configuration dialog through catalog.profile.
 static const int depths_8_16_24[] = {8, 16, 24, 0};
 static const int depths_8_16[] = {8, 16, 0};
 
+// The monitors the card drives (the GX in a socket, and the Rage Pro on the
+// beige G3's logic board), by catalogue id.  The first is the default: the
+// 14" AppleColor (catalogue 13in_rgb), whose primary code of 6 can never trip
+// the FCode's "No monitor" bail.
 static const struct nubus_monitor mach64_monitors[] = {
-    {.id = "14in_rgb", .monitor = "13in_rgb", .width = 640, .height = 480, .depths = depths_8_16_24, .sense_code = 6},
-    {.id = "15in_multi",
+    // 14" AppleColor / 12" monochrome — no tie resistors; extended = $2B.
+    {.id = "13in_rgb", .monitor = "13in_rgb", .width = 640, .height = 480, .depths = depths_8_16_24, .sense_code = 6},
+    // The multiple-scan displays answer the extended probe with Apple's
+    // MSB1/2/3 codes $03/$0B/$23 (Displays.h kESCSixMSB1..3), assembled
+    // "BC AC AB": drive A (pin 2) and read B,C into bits 5:4, and so on.
+    // Driving C reads back A,B = 1,1 -- the primary strap, as it must.
+    {.id = "multiscan_15",
      .monitor = "multiscan_15",
      .width = 832,
      .height = 624,
      .depths = depths_8_16_24,
-     .sense_code = 6},
-    {.id = "17in_multi",
+     .sense_code = 6,
+     .ext_sense = 0x03},
+    {.id = "multiscan_17",
      .monitor = "multiscan_17",
      .width = 1024,
      .height = 768,
      .depths = depths_8_16,
-     .sense_code = 6},
-    {.id = "20in_multi",
+     .sense_code = 6,
+     .ext_sense = 0x0B},
+    {.id = "multiscan_20",
      .monitor = "multiscan_20",
      .width = 1152,
      .height = 870,
      .depths = depths_8_16,
-     .sense_code = 6},
-    {.id = "21in_color", .monitor = "21in_rgb", .width = 1152, .height = 870, .depths = depths_8_16, .sense_code = 0},
+     .sense_code = 6,
+     .ext_sense = 0x23},
+    // 21" colour — a primary-only code, like the 14".
+    {.id = "21in_rgb", .monitor = "21in_rgb", .width = 1152, .height = 870, .depths = depths_8_16, .sense_code = 0},
     {.id = NULL},
 };
 
@@ -568,7 +553,9 @@ typedef struct mach64 {
     uint8_t *vram;
     uint32_t vram_size;
 
-    const mach64_monitor_sense_t *mon; // the strapped monitor
+    const struct nubus_monitor *mon; // the strapped monitor; NULL: no cable
+    uint8_t mon_primary; // its primary sense code, pins (2,1,0) tri-stated
+    uint8_t mon_ext; // its 6-bit extended code (card_monitor_ext_sense)
     uint8_t mon_id_dir; // DAC_CNTL 29:27, latched from the last write
     uint8_t mon_id_out; // DAC_CNTL 26:24 as WRITTEN (the driven levels)
     bool sense_seen; // the guest has exercised the sense engine
@@ -906,18 +893,18 @@ static void mach64_reg_write(mach64_t *m, int dw, uint32_t value) {
 
 // What the three pins read back with `dir` selecting the driven pin.
 static uint8_t mach64_mon_id_state_dir(const mach64_t *m, uint8_t dir) {
-    const mach64_monitor_sense_t *mon = m->mon;
-    if (!mon)
-        return 7u; // nothing strapped: all pins float high = "no monitor"
+    uint8_t ext01 = (m->mon_ext >> 4) & 3u; // drive pin 2, read (pin1, pin0)
+    uint8_t ext02 = (m->mon_ext >> 2) & 3u; // drive pin 1, read (pin2, pin0)
+    uint8_t ext12 = m->mon_ext & 3u; // drive pin 0, read (pin2, pin1)
     switch (dir) {
     case 0: // all three tri-stated: the primary code
-        return mon->primary;
+        return m->mon_primary;
     case 1: // pin 0 driven: read (pin2, pin1)
-        return (uint8_t)((((mon->ext12 >> 1) & 1u) << 2) | ((mon->ext12 & 1u) << 1));
+        return (uint8_t)((((ext12 >> 1) & 1u) << 2) | ((ext12 & 1u) << 1));
     case 2: // pin 1 driven: read (pin2, pin0)
-        return (uint8_t)((((mon->ext02 >> 1) & 1u) << 2) | (mon->ext02 & 1u));
+        return (uint8_t)((((ext02 >> 1) & 1u) << 2) | (ext02 & 1u));
     case 4: // pin 2 driven: read (pin1, pin0)
-        return (uint8_t)(mon->ext01 & 3u);
+        return ext01;
     default:
         // Two or three pins driven at once is reserved (RRG p. 3-31).  Real
         // silicon would report whatever the drivers won; say "all high" and
@@ -946,25 +933,25 @@ static void mach64_sense_step(mach64_t *m) {
         // owns its own two bits and simply overwrites them.
         m->sense_primary = state;
         m->sense_seen = true;
-    } else if (m->mon) {
+    } else {
         // Reassemble the same 6-bit code the card's FCode builds:
         // (pin1,pin0) << 4 | (pin2,pin0) << 2 | (pin2,pin1).
         switch (m->mon_id_dir) {
         case 4:
-            m->sense_ext = (uint8_t)((m->sense_ext & 0x0Fu) | ((m->mon->ext01 & 3u) << 4));
+            m->sense_ext = (uint8_t)((m->sense_ext & 0x0Fu) | (m->mon_ext & 0x30u));
             break;
         case 2:
-            m->sense_ext = (uint8_t)((m->sense_ext & 0x33u) | ((m->mon->ext02 & 3u) << 2));
+            m->sense_ext = (uint8_t)((m->sense_ext & 0x33u) | (m->mon_ext & 0x0Cu));
             break;
         case 1:
-            m->sense_ext = (uint8_t)((m->sense_ext & 0x3Cu) | (m->mon->ext12 & 3u));
+            m->sense_ext = (uint8_t)((m->sense_ext & 0x3Cu) | (m->mon_ext & 0x03u));
             break;
         default:
             break;
         }
     }
     LOG(3, "Mach64: sense: dir=%u -> state=%u (monitor '%s': primary=%u extended=$%02X)", m->mon_id_dir, state,
-        m->mon ? m->mon->id : "(none)", m->sense_primary, m->sense_ext);
+        m->mon ? m->mon->id : MONITOR_NONE, m->sense_primary, m->sense_ext);
 }
 
 // ============================================================
@@ -3452,16 +3439,14 @@ static const pci_device_ops_t ragepro_ops = {
 // ============================================================
 // Options
 // ============================================================
-// Checked through the KIND's accepts_option hook before the boot begins, so
-// the generic layer never learns this card's identity; the factory reads
-// them from its slot's entry.
+// Checked by the generic layer against the advertised values before the boot
+// begins; the factory reads them from its slot's entry.
 
-// What a frontend may offer.  The monitor list is deliberately NOT here:
-// this card SENSES its monitor over the DAC's ID pins (mach64_sense_step),
-// so forcing one is a debugging affordance rather than a configuration a
-// user should be handed — and offering it would invite the "why does my
-// display say 15 inches" question.  VRAM is a real, physical choice: the
-// 109-31600-00 expansion module.
+// What a frontend may offer.  The monitor is not an option: it is the slot
+// entry's monitor (a configuration's displays.<slot>.monitor), checked
+// against mach64_monitors, and the card senses it over the DAC's ID pins
+// (mach64_sense_step).  VRAM is a real, physical choice: the 109-31600-00
+// expansion module.
 static const char *const mach64_vram_values[] = {"2m", "4m", NULL};
 static const char *const mach64_vram_labels[] = {"2 MB", "4 MB (expansion module)", NULL};
 static const uint32_t mach64_vram_sizes[] = {MACH64_VRAM_2MB, MACH64_VRAM_4MB}; // 4m: the 109-31600-00 module
@@ -3475,23 +3460,6 @@ static const pci_card_option_t mach64_options[] = {
     {.key = NULL},
 };
 
-// The monitor a `monitor=` option straps, or NULL when `value` names none.
-static const mach64_monitor_sense_t *mach64_monitor_by_id(const char *value) {
-    for (const mach64_monitor_sense_t *s = mach64_sense; s->id; s++) {
-        if (strcmp(s->id, value) == 0)
-            return s;
-    }
-    return NULL;
-}
-
-// The one key beyond the advertised vram= (which the generic check takes from
-// mach64_options): a strapped monitor=.
-static bool mach64_accepts_option(const char *key, const char *value) {
-    if (strcmp(key, "monitor") == 0)
-        return mach64_monitor_by_id(value) != NULL;
-    return false;
-}
-
 // ============================================================
 // The object model — machine.pci.slot[N].card.*
 // ============================================================
@@ -3502,11 +3470,11 @@ static mach64_t *node_card(struct object *self) {
 
 static DEF_GETTER(mon_attr_id) {
     mach64_t *c = node_card(self);
-    return val_str((c && c->mon) ? c->mon->id : "");
+    return val_str(!c ? "" : c->mon ? c->mon->id : MONITOR_NONE);
 }
 static DEF_GETTER(mon_attr_primary) {
     mach64_t *c = node_card(self);
-    return val_uint(1, (c && c->mon) ? c->mon->primary : 7);
+    return val_uint(1, c ? c->mon_primary : 7);
 }
 static DEF_GETTER(mon_attr_sensed_primary) {
     mach64_t *c = node_card(self);
@@ -3742,6 +3710,14 @@ MEMORY_IFACE(bio); // Rage Pro BAR1: block-decoded I/O, dword = offset / 4
 // Rage Pro BAR2: block 1 at +0, block 0 at +$400; takes castouts whole
 static const memory_interface_t aux_iface = {MEMORY_IFACE_FIELDS(aux), .write_line = aux_write_line};
 
+// Strap the monitor the slot entry plugs in (the bus made it definite; ""
+// is the first row, as for a bare card): its primary and extended codes.
+static void mach64_strap_monitor(mach64_t *m, const slot_opts_t *opts) {
+    m->mon = card_monitor_row(mach64_monitors, opts ? opts->monitor : "");
+    m->mon_primary = m->mon ? m->mon->sense_code : 7u;
+    m->mon_ext = card_monitor_ext_sense(m->mon);
+}
+
 // The bus has allocated `dev` and its mach64_t and reset the header.
 static int mach64_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     mach64_t *m = (mach64_t *)dev->priv;
@@ -3765,12 +3741,7 @@ static int mach64_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom,
         return -1;
     }
 
-    // The strapped monitor: the slot's monitor= option if the document gave
-    // one, else the 14" AppleColor, which is the safe default — a primary
-    // code of 6 can never trip the card's "No monitor" bail (that needs 7
-    // AND $3F).
-    const char *monitor = slot_opts_option(opts, "monitor");
-    m->mon = monitor ? mach64_monitor_by_id(monitor) : &mach64_sense[0];
+    mach64_strap_monitor(m, opts);
 
     mach64_reset(dev, cfg);
 
@@ -3780,7 +3751,7 @@ static int mach64_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom,
     pci_device_add_fixed_region(dev, PCI_SPACE_IO, 0, MACH64_IO_SPAN, MACH64_IO_MATCH_MASK, m->io_base, &io_iface, m);
 
     LOG(1, "Mach64: seated in slot %d: %u MB VRAM, monitor '%s' (primary sense %u), %zu-byte expansion ROM",
-        dev->slot_index, m->vram_size >> 20, m->mon->id, m->mon->primary, prom_size);
+        dev->slot_index, m->vram_size >> 20, m->mon ? m->mon->id : MONITOR_NONE, m->mon_primary, prom_size);
     return 0;
 }
 
@@ -3796,7 +3767,6 @@ const pci_card_kind_t mach64_gx_kind = {
     .priv_size = sizeof(mach64_t),
     .init = mach64_init,
     .options = mach64_options,
-    .accepts_option = mach64_accepts_option,
     .attach_objects = mach64_attach_objects,
 };
 
@@ -3813,43 +3783,12 @@ const pci_card_kind_t mach64_gx_kind = {
 // and Mac OS loads the ROM's `ATY,RAGEIII` ndrv — and has 2 MB of SGRAM,
 // the shipping configuration.
 //
-// The monitor is the one the machine's built-in video port names
-// (mach64_ragepro_monitor_at, below): Apple's 14" RGB by default (sense 6,
-// extended from its straps), a 640 x 480 display whose code every Mac driver
-// knows, or one of the multiple-scan displays or the 21" -- the GX's own
-// sense rows.
-
-// The monitors the Rage Pro's machine offers on its built-in video port
-// (gossamer.c's builtin_video_desc_t), as monitor-catalogue ids: the first
-// five rows of mach64_sense, whose GP_IO sense the card already answers.
-// The byte that names one is its row index: the build resolves the
-// document's monitor to it (builtin_sense) and the PCI layer hands it back
-// as the built-in slot's `sense`.  Any other value -- 7, MACHINE_SENSE_NONE,
-// which every G3 built before this list existed carries, its checkpoints
-// included -- straps the 14", the monitor the Rage Pro always had.
-// The sixth, "none", is the port with nothing plugged in -- every sense line
-// floats high, which the chip's FCode reads as "nothing attached" -- how a
-// G3 runs with its display on a PCI card instead; its index is
-// mach64_sense's "none" row.
-static const char *const ragepro_monitors[] = {"13in_rgb",     "multiscan_15", "multiscan_17",
-                                               "multiscan_20", "21in_rgb",     "none"};
-#define RAGEPRO_MONITORS (sizeof(ragepro_monitors) / sizeof(ragepro_monitors[0]))
-
-bool mach64_ragepro_monitor_at(size_t i, const char **id, const char **monitor) {
-    if (i >= RAGEPRO_MONITORS)
-        return false;
-    *id = *monitor = ragepro_monitors[i];
-    return true;
-}
-
-bool mach64_ragepro_monitor_sense(const char *id, uint8_t *out_sense) {
-    for (size_t i = 0; i < RAGEPRO_MONITORS; i++)
-        if (strcmp(ragepro_monitors[i], id) == 0) {
-            *out_sense = (uint8_t)i;
-            return true;
-        }
-    return false;
-}
+// The monitor is the one the configuration plugs into the machine's built-in
+// video port: one of the GX's own monitor rows (the 14" RGB by default, a
+// 640 x 480 display whose code every Mac driver knows, or one of the
+// multiple-scan displays or the 21"), or "none" -- every sense line floats
+// high, which the chip's FCode reads as "nothing attached" -- how a G3 runs
+// with its display on a PCI card instead.
 
 // The bus has allocated `dev` and its mach64_t and reset the header.
 static int ragepro_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
@@ -3873,7 +3812,7 @@ static int ragepro_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom
         free(m->compose);
         return -1;
     }
-    m->mon = &mach64_sense[opts && opts->sense < RAGEPRO_MONITORS ? opts->sense : 0];
+    mach64_strap_monitor(m, opts);
     mach64_reset(dev, cfg);
 
     pci_bar_backing_iface(dev, MACH64_BAR_APER, &aper_iface, m);
@@ -3881,7 +3820,7 @@ static int ragepro_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom
     pci_bar_backing_iface(dev, RAGEPRO_BAR_AUX, &aux_iface, m);
 
     LOG(1, "Rage Pro: seated at slot %d: %u MB SGRAM, monitor '%s' (primary sense %u)", dev->slot_index,
-        m->vram_size >> 20, m->mon->id, m->mon->primary);
+        m->vram_size >> 20, m->mon ? m->mon->id : MONITOR_NONE, m->mon_primary);
     return 0;
 }
 
@@ -3890,6 +3829,7 @@ const pci_card_kind_t ati_rage_pro_kind = {
     .display_name = "Built-in video",
     .attach = PCI_ATTACH_BUILTIN,
     .card_class = "display",
+    .monitors = mach64_monitors,
     .ops = &ragepro_ops,
     .decl = &ragepro_decl,
     .priv_size = sizeof(mach64_t),

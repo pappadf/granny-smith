@@ -5,6 +5,9 @@
 
 #include "card_registry.h"
 
+#include "monitor_catalog.h" // MONITOR_NONE
+#include "nubus/card.h" // nubus_monitor_t
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -106,4 +109,42 @@ bool card_refuse(char *why, size_t len, const char *fmt, ...) {
     vsnprintf(why, len, fmt, ap);
     va_end(ap);
     return false;
+}
+
+bool card_monitor_check(const nubus_monitor_t *rows, const char *monitor) {
+    if (!monitor[0] || strcmp(monitor, MONITOR_NONE) == 0)
+        return true;
+    for (const nubus_monitor_t *m = rows; m && m->id; m++)
+        if (strcmp(m->id, monitor) == 0)
+            return true;
+    return false;
+}
+
+const nubus_monitor_t *card_monitor_row(const nubus_monitor_t *rows, const char *monitor) {
+    if (!rows || !rows->id || strcmp(monitor, MONITOR_NONE) == 0)
+        return NULL;
+    if (!monitor[0])
+        return rows;
+    for (const nubus_monitor_t *m = rows; m->id; m++)
+        if (strcmp(m->id, monitor) == 0)
+            return m;
+    return NULL;
+}
+
+void card_entry_set_monitor(slot_opts_t *e, const nubus_monitor_t *row) {
+    snprintf(e->monitor, sizeof e->monitor, "%s", row ? row->id : MONITOR_NONE);
+    e->sense = row ? row->sense_code : MACHINE_SENSE_NONE;
+}
+
+uint8_t card_monitor_ext_sense(const nubus_monitor_t *row) {
+    if (!row)
+        return 0x3Fu; // no cable: every line floats high in every configuration
+    if (row->ext_sense)
+        return row->ext_sense;
+    uint8_t p = row->sense_code;
+    // With line k driven low, the other two read their own strapped levels
+    uint8_t ext01 = (uint8_t)((((p >> 1) & 1u) << 1) | (p & 1u));
+    uint8_t ext02 = (uint8_t)((((p >> 2) & 1u) << 1) | (p & 1u));
+    uint8_t ext12 = (uint8_t)((((p >> 2) & 1u) << 1) | ((p >> 1) & 1u));
+    return (uint8_t)((ext01 << 4) | (ext02 << 2) | ext12);
 }

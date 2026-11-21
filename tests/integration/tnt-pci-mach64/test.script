@@ -111,7 +111,7 @@ machine.memory.poke.l(0xF2800000, 0x00000000)
 assert machine.pci.slot[1].card.regs.chip_id == 0x020000D7 "CONFIG_CHIP_ID: 'GX', class 0, revision 2 (GX-2)"
 assert machine.pci.slot[1].card.regs.vram_size == 0x200000 "2 MB of VRAM, as Apple soldered down"
 assert machine.pci.slot[1].card.config.rom_size == 0x8000 "a 32 KB expansion ROM is loaded"
-assert machine.pci.slot[1].card.monitor.id == "14in_rgb" "the default strapped monitor"
+assert machine.pci.slot[1].card.monitor.id == "13in_rgb" "the default strapped monitor"
 assert !machine.pci.slot[1].card.monitor.probed "nothing has sensed the monitor yet"
 
 # --- Now let the guest's own firmware run the card. -------------------------
@@ -412,10 +412,12 @@ machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
 assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 2 "2 MB is the soldered default"
 machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx" pci_option="vram=4m"
 assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 3 "the 109-31600-00 expansion module makes it 4 MB"
-# Several options at once, and one the card senses for itself.
-machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx" pci_option="vram=2m,monitor=15in_multi"
-assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 2 "a comma-separated list must apply every pair"
-assert machine.pci.slot[1].card.monitor.id == "15in_multi" "...including the second one"
+# The monitor is not an option: it is the slot's display (a configuration's
+# displays.<slot>.monitor), checked against the card's monitor rows.
+assert !machine.boot(model="pm9500", ram=32768, rom="${$ROM}", pci_card="mach64_gx", pci_option="monitor=multiscan_15") "monitor= is not a card option"
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" config="{\"cards\":[{\"slot\":\"pci_1\",\"card\":\"mach64_gx\",\"options\":{\"vram\":\"2m\"}}],\"displays\":{\"pci_1\":{\"monitor\":\"multiscan_15\"}}}"
+assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 2 "the configuration's option applies"
+assert machine.pci.slot[1].card.monitor.id == "multiscan_15" "...and its monitor is strapped"
 # A malformed pair, a key the card does not take and a value it does not
 # offer each reject the boot, before the running machine is touched: the
 # card answers for its own options, so a typo is never silently a default.

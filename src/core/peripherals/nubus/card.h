@@ -128,6 +128,12 @@ struct nubus_card {
 // sResource ID that the card's driver picks up from its slot PRAM record for
 // this monitor, which the seeding step writes from a chosen video mode
 // (nubus_card_kind_t.startup_record).
+//
+// The same rows serve a PCI display card (pci_card_kind_t.monitors) and the
+// built-in video of a PCI machine: one row per monitor the card drives, its
+// id the monitor_catalog id, carrying what the card's sense hardware needs
+// (`ext_sense`, `ddc`).  slot_opts_t.monitor names a row (or "none"), and
+// card_monitor_check (card_registry.h) is the one check of it for both buses.
 typedef struct nubus_monitor {
     const char *id; // "13in_rgb" -- the card's own token, what a mode id names
     const char *monitor; // the shared catalogue id (monitor_catalog.h)
@@ -140,6 +146,14 @@ typedef struct nubus_monitor {
     // it; uint8_t because only the low three bits exist.
     uint8_t sense_code;
     uint8_t srsrc_sister; // top-level Ax sister sResource ID (savedSRsrcID)
+    // Apple's 6-bit extended sense code, for a card that walks the extended
+    // probe (drive one line, read the other two): (pin1,pin0) << 4 |
+    // (pin2,pin0) << 2 | (pin2,pin1).  0 means the monitor has no tie
+    // resistors and answers with its strap alone (card_monitor_ext_sense
+    // derives it -- for sense code 0 that is $00 too).
+    uint8_t ext_sense;
+    // The monitor answers DDC with an EDID, which a VGA-cable card publishes.
+    bool ddc;
     // CRT response curve (physical phosphor / gamma response) that the
     // monitor on the far end of the cable would apply.  Mac System 7's
     // video driver gamma-pre-corrects CLUT writes for THIS specific
