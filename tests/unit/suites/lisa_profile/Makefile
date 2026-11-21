@@ -11,6 +11,8 @@ TEST_HARNESS := isolated
 # checkpoints (always inits with a NULL checkpoint).
 EXTRA_SRCS   := ../../../../src/machines/lisa/lisa_profile.c \
                 ../../../../src/core/storage/image.c \
+                ../../../../src/core/storage/image_kind.c \
+                ../../../../src/core/platform_hooks.c \
                 ../../../../src/core/storage/image_wrap_sniff.c \
                 ../../../../src/core/storage/image_iso9660.c \
                 ../../../../src/core/storage/image_apm.c \

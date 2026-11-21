@@ -15,7 +15,6 @@
 #include "format_registry.h"
 #include "gs_assert.h"
 #include "image_internal.h"
-#include "image_iso9660.h"
 #include "image_moof.h"
 #include "image_scratch.h"
 #include "image_udif.h"
@@ -47,18 +46,6 @@ LOG_USE_CATEGORY_NAME("image")
 // ============================================================================
 // Format detection
 // ============================================================================
-
-static enum image_type classify_image(uint64_t raw_size) {
-    if (raw_size == 400 * 1024)
-        return image_fd_ss;
-    if (raw_size == 800 * 1024)
-        return image_fd_ds;
-    if (raw_size == 720 * 1024)
-        return image_fd_dd_mfm;
-    if (raw_size == 1440 * 1024)
-        return image_fd_hd;
-    return image_hd;
-}
 
 // ============================================================================
 // Image lifecycle
@@ -252,7 +239,8 @@ static void image_load_diskcopy_tags(image_t *image, source_t *dc42) {
 #define GCR_TAG_BYTES 12u
 
 static void image_ensure_gcr_tags(image_t *image) {
-    if (image->tags || (image->type != image_fd_ss && image->type != image_fd_ds) ||
+    image_layout_t layout = image_layout_of_size(image->raw_size);
+    if (image->tags || (layout != IMAGE_LAYOUT_GCR400 && layout != IMAGE_LAYOUT_GCR800) ||
         image->block_size != STORAGE_BLOCK_SIZE)
         return;
     uint32_t count = (uint32_t)(image->raw_size / STORAGE_BLOCK_SIZE);
@@ -406,12 +394,8 @@ static image_t *image_open_source(const char *name, source_t *data, source_t *rs
     image->format = gs_strdup(u.chain[0] ? u.chain : "raw");
     image->raw_size = raw;
     image->block_size = block_size;
-    image->type = classify_image(raw);
-    // A disc is told apart by its content, not its size: an ISO 9660 primary
-    // volume descriptor at 32 KB (an HFS-only CD stays a hard disk -- nothing
-    // in its bytes says CD).
-    if (image->type == image_hd && block_size == STORAGE_BLOCK_SIZE && iso_probe_source(u.data, 0, source_size(u.data)))
-        image->type = image_cdrom;
+    // The kind is the opening device's (image_open_kind); an image opened here
+    // and nowhere else is held by no device (IMAGE_KIND_NONE, from calloc).
     image->writable = mode != OPEN_READONLY;
     image->from_diskcopy = u.dc42 != NULL;
 
@@ -549,7 +533,6 @@ image_t *image_create_blank(uint64_t block_count, image_geometry_t geom) {
     image->filename = NULL; // no backing base file: unwritten blocks read as zeros
     image->raw_size = block_count * block_size;
     image->block_size = block_size;
-    image->type = image_hd;
     image->writable = true;
     image->from_diskcopy = false;
     // Place the delta+journal in the scratch root so the blank disk's
@@ -786,16 +769,16 @@ static int export_view_write(image_export_t *e, void *ctx, storage_write_callbac
     return rc;
 }
 
-// DiskCopy 4.2's disk-format code for a floppy kind, or -1 for anything else.
-static int dc42_disk_format(enum image_type t) {
+// DiskCopy 4.2's disk-format code for a floppy layout, or -1 for anything else.
+static int dc42_disk_format(image_layout_t t) {
     switch (t) {
-    case image_fd_ss:
+    case IMAGE_LAYOUT_GCR400:
         return 0; // 400K GCR
-    case image_fd_ds:
+    case IMAGE_LAYOUT_GCR800:
         return 1; // 800K GCR
-    case image_fd_dd_mfm:
+    case IMAGE_LAYOUT_MFM720:
         return 2; // 720K MFM
-    case image_fd_hd:
+    case IMAGE_LAYOUT_MFM1440:
         return 3; // 1440K MFM
     default:
         return -1;
@@ -806,7 +789,7 @@ static int dc42_disk_format(enum image_type t) {
 // on writing them while the export runs) and the header's label.  False on
 // a medium DiskCopy 4.2 cannot hold, or out of memory.
 static bool export_prepare_dc42(image_export_t *e, const image_t *image, char *err, size_t err_cap) {
-    int fmt = dc42_disk_format(image->type);
+    int fmt = dc42_disk_format(image_layout_of_size(image->raw_size));
     if (fmt < 0 || image->block_size != STORAGE_BLOCK_SIZE || image->wrap_prefix) {
         if (err)
             snprintf(err, err_cap, "DiskCopy 4.2 holds 400K, 800K, 720K and 1440K floppies only");
@@ -878,11 +861,12 @@ image_export_t *image_export_begin(image_t *image, const char *dest_path, char *
     if (e->block_size == UDIF_SECTOR_SIZE && path_has_ext(dest_path, ".dmg"))
         e->format = EXPORT_UDIF;
     else if (path_has_ext(dest_path, ".dc42") || path_has_ext(dest_path, ".diskcopy") ||
-             (path_has_ext(dest_path, ".image") && image_is_floppy(image->type)))
+             (path_has_ext(dest_path, ".image") && image_layout_of_size(image->raw_size) != IMAGE_LAYOUT_NONE))
         e->format = EXPORT_DC42;
     else if (path_has_ext(dest_path, ".moof")) {
         e->format = EXPORT_MOOF;
-        if (image->type != image_fd_ss && image->type != image_fd_ds) {
+        image_layout_t layout = image_layout_of_size(image->raw_size);
+        if (layout != IMAGE_LAYOUT_GCR400 && layout != IMAGE_LAYOUT_GCR800) {
             if (err)
                 snprintf(err, err_cap, "MOOF holds 400K and 800K GCR floppies only");
             image_export_end(e);
@@ -1197,6 +1181,10 @@ void image_checkpoint(const image_t *image, checkpoint_t *checkpoint) {
     uint8_t flags =
         (uint8_t)((image->writable ? IMAGE_CKPT_WRITABLE : 0) | (image->wrap_prefix ? IMAGE_CKPT_WRAPPED : 0));
     system_write_checkpoint_data(checkpoint, &flags, sizeof(flags));
+    // The kind the drive presents it as: the restore reopens it as the same
+    // (a ProFile at its 532-byte block, a CD read-only).
+    uint8_t kind = (uint8_t)image->kind;
+    system_write_checkpoint_data(checkpoint, &kind, sizeof(kind));
 
     uint64_t raw_size = (uint64_t)(image->wrap_prefix ? image->wrap_storage_size : image->raw_size);
     system_write_checkpoint_data(checkpoint, &raw_size, sizeof(raw_size));

@@ -10,6 +10,7 @@
 // === Includes ===
 #include "checkpoint.h"
 #include "common.h"
+#include "image_kind.h"
 #include "storage.h"
 
 #include <stdbool.h>
@@ -21,48 +22,16 @@ struct config;
 typedef struct config config_t;
 
 // === Type Definitions ===
-// Floppy kinds are named by capacity because that is what distinguishes them
-// on the wire; the encoding follows from it.  image_fd_dd_mfm (720K) was
-// missing, so a 737,280-byte floppy classified as a hard disk and every
-// consumer got a wrong answer.  Ask "is this MFM media?" with
-// image_is_mfm_floppy(), never `type == image_fd_hd`.
-enum image_type {
-    image_other,
-    image_fd_ss, // 400K GCR, single-sided
-    image_fd_ds, // 800K GCR, double-sided
-    image_fd_dd_mfm, // 720K MFM, double-density
-    image_fd_hd, // 1440K MFM, high-density
-    image_hd,
-    image_cdrom // an ISO 9660 disc (a primary volume descriptor at 32 KB)
-};
-
-// True for media the drive reads with MFM framing rather than Apple GCR.
-static inline bool image_is_mfm_floppy(enum image_type t) {
-    return t == image_fd_dd_mfm || t == image_fd_hd;
-}
-
-// True for any floppy geometry, GCR or MFM.
-static inline bool image_is_floppy(enum image_type t) {
-    return t == image_fd_ss || t == image_fd_ds || image_is_mfm_floppy(t);
-}
-
-// Per-image geometry.  The default openers use { .block_size = 512 }; devices
-// with a different on-disk block (e.g. the Lisa ProFile's 532-byte block) open
-// with the matching size via the *_with_geometry variants.  Has room to grow
-// (tag size, sector-header layout) without churning the opener signatures.
-typedef struct image_geometry {
-    uint32_t block_size; // Bytes per block; 0 is treated as STORAGE_BLOCK_SIZE (512)
-} image_geometry_t;
-
 // A disk image: opaque outside the storage module (image_internal.h)
 struct image;
 typedef struct image image_t;
 
 // === Accessors ===
-// Detected type (floppy geometry, hard disk, CD-ROM)
-enum image_type image_get_type(const image_t *image);
-// Re-classify an image (a floppy-sized file attached as a CD-ROM)
-void image_set_type(image_t *image, enum image_type type);
+// The kind the device that opened it presents it as (image_open_kind);
+// IMAGE_KIND_NONE for an image no device holds
+image_kind_t image_get_kind(const image_t *image);
+// The floppy layout its size implies (IMAGE_LAYOUT_NONE: not floppy-sized)
+image_layout_t image_layout(const image_t *image);
 // True when the caller opened the image for writing
 bool image_is_writable(const image_t *image);
 // Logical size in bytes (a synthesised wrapper prefix included)
@@ -123,21 +92,6 @@ image_t *image_create(const char *base_path, const char *delta_dir);
 // (no extension) returned by image_path() when the instance was created.
 // Fails if the delta+journal files are missing.
 image_t *image_open(const char *base_path, const char *instance_path);
-
-// Geometry-aware variants of the three openers above.  Identical behaviour but
-// the base is interpreted as `geom.block_size`-byte blocks (0 ⇒ 512).  The
-// default openers are thin wrappers over these with { .block_size = 512 }.
-image_t *image_open_readonly_with_geometry(const char *base_path, image_geometry_t geom);
-image_t *image_create_with_geometry(const char *base_path, const char *delta_dir, image_geometry_t geom);
-image_t *image_open_with_geometry(const char *base_path, const char *instance_path, image_geometry_t geom);
-
-// Create a brand-new, writable, all-zero image with NO backing base file:
-// `block_count` blocks of geom.block_size bytes, every block reading back as
-// zeros until written.  The delta+journal live in a process-local scratch dir
-// and are removed when the image is closed (like a read-only ghost mount), so
-// the image is ephemeral unless its contents are written out via
-// image_export_to().  Used for a blank ProFile (no source file to open).
-image_t *image_create_blank(uint64_t block_count, image_geometry_t geom);
 
 // Returns the instance path stem for a writable image, suitable for
 // persisting in checkpoints and feeding back into image_open().

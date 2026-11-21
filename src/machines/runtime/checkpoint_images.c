@@ -10,6 +10,7 @@
 #include "checkpoint.h"
 #include "checkpoint_machine.h"
 #include "image.h"
+#include "image_kind.h"
 #include "image_wrap.h"
 #include "source.h"
 #include "status.h"
@@ -27,6 +28,7 @@
 //   for each image i:
 //     uint32_t name_len, name_bytes...
 //     uint8_t  flags (IMAGE_CKPT_WRITABLE | IMAGE_CKPT_WRAPPED)
+//     uint8_t  kind (image_kind_t: what the drive presents it as)
 //     uint64_t raw_size (the storage's, without any wrapper prefix)
 //     uint32_t instance_len, instance_bytes...
 //     uint32_t key_len, key_bytes... (the base's source key, source.h)
@@ -99,15 +101,22 @@ static bool base_present(const char *path) {
 // back onto the machine's tracked images.  Mirrors save layout; fails loudly via
 // checkpoint_set_error on partial reads / failed image opens so the
 // caller's restore loop sees a marked-error checkpoint.
-image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geom) {
+image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp) {
     // Bounded and terminated by the reader rather than by the writer's
-    // promise: `name` goes on to base_present(), image_open_with_geometry() and
+    // promise: `name` goes on to base_present(), image_open_kind() and
     // out_printf("%s"), so a file that omits the NUL used to read off the end of
     // the allocation, and an unbounded length drove the malloc.
     char *name = checkpoint_read_string(cp, CHECKPOINT_MAX_PATH, "image path");
     uint8_t flags = 0;
     system_read_checkpoint_data(cp, &flags, sizeof(flags));
     bool writable = (flags & IMAGE_CKPT_WRITABLE) != 0;
+    uint8_t kind = 0;
+    system_read_checkpoint_data(cp, &kind, sizeof(kind));
+    if (kind >= IMAGE_KIND_COUNT) {
+        out_printf("Error: image kind %u in the checkpoint is not one this build knows\n", (unsigned)kind);
+        checkpoint_set_error(cp);
+        kind = IMAGE_KIND_NONE;
+    }
     uint64_t raw_size = 0;
     system_read_checkpoint_data(cp, &raw_size, sizeof(raw_size));
     char *instance_path = checkpoint_read_string(cp, CHECKPOINT_MAX_PATH, "image instance path");
@@ -117,8 +126,8 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
     if (name) {
         // Consolidated checkpoints carry the raw image bytes inline; quick
         // checkpoints reference the on-disk file and just need it reopened.  The
-        // base is reopened with `geom` so a non-512 device (the ProFile) restores
-        // at its real block size rather than the default 512.
+        // base is reopened as the kind it was saved as, so a ProFile restores
+        // at its 532-byte block and a CD read-only.
         bool consolidated = checkpoint_get_kind(cp) == CHECKPOINT_KIND_CONSOLIDATED;
         if (raw_size > 0 && consolidated && !base_present(name)) {
             // A consolidated checkpoint carries every block inline and the
@@ -143,15 +152,12 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
             if (rc != 0)
                 out_printf("Error: cannot recreate the missing base %s while restoring checkpoint\n", name);
         }
-        if (writable && consolidated) {
-            img = image_create_with_geometry(name, checkpoint_machine_dir(), geom);
-        } else if (writable && instance_path && instance_path[0]) {
-            img = image_open_with_geometry(name, instance_path, geom);
-        } else if (writable) {
-            img = image_create_with_geometry(name, checkpoint_machine_dir(), geom);
-        } else {
-            img = image_open_readonly_with_geometry(name, geom);
-        }
+        image_open_opts_t o = {.kind = (image_kind_t)kind, .writable = writable};
+        if (writable && !consolidated && instance_path && instance_path[0])
+            o.instance = instance_path; // the same delta files
+        else if (writable)
+            o.delta_dir = checkpoint_machine_dir(); // a fresh instance
+        img = image_open_kind(name, &o, NULL, 0);
         if (!img) {
             out_printf("Error: image_open failed for %s while restoring checkpoint\n", name);
             checkpoint_set_error(cp);
@@ -206,8 +212,7 @@ void mac_checkpoint_restore_images(config_t *cfg, checkpoint_t *cp) {
         // remainder against an already-failed stream.
         if (checkpoint_has_error(cp))
             return;
-        // Generic image list is all flat 512-byte disks (block_size 0 ⇒ 512).
-        image_t *img = mac_checkpoint_restore_one_image(cp, (image_geometry_t){0});
+        image_t *img = mac_checkpoint_restore_one_image(cp);
         if (img)
             config_add_image(cfg, img);
     }

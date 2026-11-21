@@ -26,6 +26,7 @@
 #include "checkpoint_images.h"
 #include "checkpoint_machine.h"
 #include "image.h"
+#include "image_kind.h"
 #include "log.h"
 #include "scheduler.h"
 
@@ -392,18 +393,6 @@ bool lisa_profile_save_as(const lisa_profile_t *pf, const char *path) {
     return true;
 }
 
-// Where a writable mount's delta+journal live.  Mirrors system.c's
-// pick_delta_dir: a volatile /tmp base keeps its delta in image_create's
-// scratch root (NULL); everything else routes the delta under the active
-// per-machine checkpoint directory so it shares state.checkpoint's lifetime
-// (docs/internals/core/checkpointing.md).  checkpoint_machine_dir() is NULL
-// when no machine dir is active (headless tests) → the scratch root.
-static const char *pro_delta_dir(const char *base) {
-    if (base && strncmp(base, "/tmp/", 5) == 0)
-        return NULL;
-    return checkpoint_machine_dir();
-}
-
 bool lisa_profile_attach(lisa_profile_t *pf, const char *path, bool writable) {
     if (!pf)
         return false;
@@ -412,20 +401,16 @@ bool lisa_profile_attach(lisa_profile_t *pf, const char *path, bool writable) {
     // Open through the shared base+delta subsystem with a 532-byte block, so the
     // base image is never mutated (the boot-time mountinfo/MDDF dirtying lands in
     // the delta, leaving the user's pristine image to cold-boot cleanly).
-    const image_geometry_t geom = {.block_size = PRO_BLOCK};
     image_t *img = NULL;
     if (!path) {
         // Blank disk: an all-zero base+delta of the canonical 5 MB geometry.
-        img = image_create_blank(PRO_DEFAULT_BLOCKS, geom);
+        img = image_create_blank_kind(IMAGE_KIND_PROFILE, PRO_DEFAULT_BLOCKS);
     } else {
-        // Open base+delta: a writable mount gets a persistent delta under the
-        // per-machine checkpoint dir (pro_delta_dir, mirroring system.c's
-        // pick_delta_dir, so the delta shares state.checkpoint's lifetime and
-        // gets cleaned with it), a read-only mount an ephemeral scratch delta.
-        // Either way the base is immutable.  The path is used as given: where
-        // media lives is the frontend's choice.
-        img = writable ? image_create_with_geometry(path, pro_delta_dir(path), geom)
-                       : image_open_readonly_with_geometry(path, geom);
+        // Open base+delta through the one kind-aware open (image_kind.h): a writable
+        // mount's delta lives where image_delta_dir puts it, and the base is
+        // immutable either way.  The path is used as given: where media
+        // lives is the frontend's choice.
+        img = image_open_kind(path, &(image_open_opts_t){.kind = IMAGE_KIND_PROFILE, .writable = writable}, NULL, 0);
     }
     if (!img) {
         LOG(1, "attach: cannot open %s", path ? path : "(blank)");
@@ -490,7 +475,7 @@ lisa_profile_t *lisa_profile_init(struct scheduler *scheduler, lisa_profile_bsy_
         uint8_t attached = 0;
         system_read_checkpoint_data(cp, &attached, sizeof(attached));
         if (attached) {
-            pf->image = mac_checkpoint_restore_one_image(cp, (image_geometry_t){.block_size = PRO_BLOCK});
+            pf->image = mac_checkpoint_restore_one_image(cp);
             if (pf->image) {
                 pf->nblocks = (uint32_t)(disk_size(pf->image) / PRO_BLOCK);
                 lisa_profile_reset(pf);

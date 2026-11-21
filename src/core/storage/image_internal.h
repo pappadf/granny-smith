@@ -31,7 +31,7 @@ struct image {
     uint32_t block_size; // Bytes per logical block (512 default, 532 for a ProFile)
     bool writable; // True when the caller requested write access
     bool ghost_instance; // True when delta+journal are ephemeral scratch (read-only mounts)
-    enum image_type type; // Detected image type (floppy, hd, ...)
+    image_kind_t kind; // What the opening device presents it as (image_open_kind); IMAGE_KIND_NONE unheld
     bool from_diskcopy; // True if a DiskCopy 4.2 layer was peeled
 
     // disk_read_data / disk_write_data calls since open: the drive-activity
@@ -73,5 +73,22 @@ struct image {
     uint64_t wrap_base;
     uint64_t wrap_storage_size;
 };
+
+// Per-image geometry: the bytes per stored block (0 is treated as 512).  The
+// kind decides it (image_kind_block_size); only the storage module opens
+// with one, through image_open_kind.
+typedef struct image_geometry {
+    uint32_t block_size;
+} image_geometry_t;
+
+// The three openers of image.h at a given block size.
+image_t *image_open_readonly_with_geometry(const char *base_path, image_geometry_t geom);
+image_t *image_create_with_geometry(const char *base_path, const char *delta_dir, image_geometry_t geom);
+image_t *image_open_with_geometry(const char *base_path, const char *instance_path, image_geometry_t geom);
+
+// A brand-new, writable, all-zero image with NO backing base file:
+// `block_count` blocks of geom.block_size bytes, every block reading back as
+// zeros until written (image_create_blank_kind).
+image_t *image_create_blank(uint64_t block_count, image_geometry_t geom);
 
 #endif // IMAGE_INTERNAL_H

@@ -218,7 +218,7 @@ static void round_trip(const char *path, bool dc42, checkpoint_kind_t kind) {
     ASSERT_TRUE(!cp->error);
     image_close(img);
 
-    image_t *back = mac_checkpoint_restore_one_image(cp, (image_geometry_t){0});
+    image_t *back = mac_checkpoint_restore_one_image(cp);
     ASSERT_TRUE(back != NULL);
     ASSERT_TRUE(!cp->error);
     uint32_t after = 0;
@@ -291,7 +291,7 @@ TEST(test_an_untagged_disk_keeps_the_stream_aligned) {
     system_write_checkpoint_data_loc(cp, &sentinel, sizeof sentinel, NULL, __FILE__, __LINE__);
     image_close(img);
 
-    image_t *back = mac_checkpoint_restore_one_image(cp, (image_geometry_t){0});
+    image_t *back = mac_checkpoint_restore_one_image(cp);
     ASSERT_TRUE(back != NULL);
     ASSERT_TRUE(back->tags == NULL);
     uint32_t after = 0;
@@ -321,7 +321,7 @@ TEST(test_a_corrupt_tag_record_fails_the_restore) {
     uint32_t huge = 4096;
     memcpy(cp->buf + rec, &huge, sizeof huge);
 
-    image_t *back = mac_checkpoint_restore_one_image(cp, (image_geometry_t){0});
+    image_t *back = mac_checkpoint_restore_one_image(cp);
     ASSERT_TRUE(cp->error);
     image_close(back);
     cp_free(cp);

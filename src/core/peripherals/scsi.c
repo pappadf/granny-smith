@@ -2223,7 +2223,7 @@ static DEF_METHOD(scsi_method_identify_hd) {
         LOG(2, "identify_hd: cannot open %s", path);
         return val_bool(false);
     }
-    if (image_is_floppy(image_get_type(img))) {
+    if (image_layout(img) != IMAGE_LAYOUT_NONE) {
         LOG(2, "identify_hd: %s is floppy-sized (%llu bytes)", path, (unsigned long long)image_get_raw_size(img));
         image_close(img);
         return val_bool(false);
@@ -2251,7 +2251,7 @@ static DEF_METHOD(scsi_method_identify_cdrom) {
         LOG(2, "identify_cdrom: cannot open %s", path);
         return val_bool(false);
     }
-    if (image_is_floppy(image_get_type(img))) {
+    if (image_layout(img) != IMAGE_LAYOUT_NONE) {
         LOG(2, "identify_cdrom: %s is floppy-sized (%llu bytes)", path, (unsigned long long)image_get_raw_size(img));
         image_close(img);
         return val_bool(false);
@@ -2292,7 +2292,7 @@ static DEF_METHOD(scsi_method_identify_iso) {
         return val_bool(false);
     }
     bool is_iso = false;
-    if (!image_is_floppy(image_get_type(img))) {
+    if (image_layout(img) == IMAGE_LAYOUT_NONE) {
         source_t *src = image_source(img);
         is_iso = iso_probe_source(src, 0, disk_size(img));
         source_release(src);

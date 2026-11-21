@@ -122,18 +122,18 @@ bool floppy_media_from_image(image_t *img, floppy_media_t *out) {
     if (!img)
         return false;
     out->img = img;
-    switch (image_get_type(img)) {
-    case image_fd_hd:
+    switch (image_layout(img)) {
+    case IMAGE_LAYOUT_MFM1440:
         out->hd = true; // the only HD class we model
         floppy_media_apply_format(out, FLOPPY_FMT_MFM_1440K);
         break;
-    case image_fd_dd_mfm:
+    case IMAGE_LAYOUT_MFM720:
         floppy_media_apply_format(out, FLOPPY_FMT_MFM_720K);
         break;
-    case image_fd_ds:
+    case IMAGE_LAYOUT_GCR800:
         floppy_media_apply_format(out, FLOPPY_FMT_GCR_800K);
         break;
-    case image_fd_ss:
+    case IMAGE_LAYOUT_GCR400:
         floppy_media_apply_format(out, FLOPPY_FMT_GCR_400K);
         break;
     default:
@@ -209,7 +209,7 @@ int iwm_image_num_sides(image_t *img) {
     if (!img)
         return 2; // Default to double-sided if unknown
     // Only the 400K disk is single-sided; 720K, 800K and 1440K are not.
-    return (image_get_type(img) == image_fd_ss) ? 1 : 2;
+    return (image_layout(img) == IMAGE_LAYOUT_GCR400) ? 1 : 2;
 }
 
 // Calculates TACH signal state (60 pulses per revolution) based on current time and motor speed
@@ -353,7 +353,7 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
     // (SWIM) read path.  This used to test `== image_fd_hd`, so a 720K disk
     // (which once classified as a hard disk) was GCR-encoded from
     // MFM-laid-out bytes and handed to the IWM as if it were an 800K disk.
-    if (image_is_mfm_floppy(image_get_type(img)))
+    if (image_layout_is_mfm(image_layout(img)))
         return NULL;
     GS_ASSERT(drive->track < NUM_TRACKS);
 
@@ -423,7 +423,7 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
 // or MFM).
 const uint8_t *iwm_track_data_peek(const floppy_drive_t *drive, image_t *img, int sel) {
     static uint8_t sync_track[9320]; // iwm_track_length's longest zone
-    if (!img || image_is_mfm_floppy(image_get_type(img)) || drive->track < 0 || drive->track >= NUM_TRACKS)
+    if (!img || image_layout_is_mfm(image_layout(img)) || drive->track < 0 || drive->track >= NUM_TRACKS)
         return NULL;
     const floppy_track_t *track = &drive->tracks[sel][drive->track];
     if (track->data)

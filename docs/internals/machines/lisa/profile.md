@@ -174,7 +174,7 @@ for the device-info block), with
 layer decides which by content, never by name:
 
 - **Raw** — 532-byte blocks, 20-byte tag first, in drive order. This is the
-  model's own storage format (`image_open_*_with_geometry`, 532-byte blocks).
+  model's own storage format (`image_open_kind` as `IMAGE_KIND_PROFILE`, 532-byte blocks).
 - **LisaEm ProFile image** — the format LisaEm writes: a DiskCopy 4.2 <!-- lint-allow: LisaEm -->
   file with 20 tag bytes per block, data and tags in separate regions,
   blocks in the Lisa OS's logical order

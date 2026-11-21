@@ -258,7 +258,7 @@ static void setup(void) {
         s_hd[i] = (uint8_t)(i * 7u + (i >> 9));
     for (size_t i = 0; i < sizeof s_cd; i++)
         s_cd[i] = (uint8_t)(i * 13u + (i >> 11));
-    s_cd_img.type = image_cdrom;
+    s_cd_img.kind = IMAGE_KIND_CD;
     s_cd_img.raw_size = sizeof s_cd; // what the bus model's range check reads
     s_hd_img.raw_size = sizeof s_hd;
     s_bus = scsi_init_named(NULL, NULL, NULL, "atapi");

@@ -290,11 +290,6 @@ bool system_attach_scsi_cdrom(struct config *restrict config, struct scsi *bus, 
 // presented as the closest catalog drive.  NULL bus: refused (no SCSI).
 bool system_attach_scsi_hd(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id);
 
-// Probe a floppy image at `path`: opens it read-only and prints the
-// detected density.
-// Returns 0 if the image is a recognised floppy, non-zero otherwise.
-int system_probe_floppy(const char *path);
-
 // Whether a disk is in floppy drive `drive` (routes through the machine
 // substrate's fd_present hook — Mac IWM/SWIM or the Lisa FDC).  Used by the
 // platform tick to push drive-present changes to the UI.

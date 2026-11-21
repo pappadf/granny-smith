@@ -103,20 +103,15 @@ static value_t files_image_attr_format(struct object *self, const member_t *m) {
     return val_str(img && img->format ? img->format : "");
 }
 
-// Designated-initialiser table keyed by `image_type` so a future enum
-// reorder (or a value inserted out of order) keeps the labels aligned.
-static const char *const STORAGE_IMAGE_TYPE_NAMES[] = {
-    [image_other] = "other", [image_fd_ss] = "fd_ss", [image_fd_ds] = "fd_ds", [image_fd_dd_mfm] = "fd_720k_mfm",
-    [image_fd_hd] = "fd_hd", [image_hd] = "hd",       [image_cdrom] = "cdrom",
+// The kind names, indexed by image_kind_t (image_kind_name spells them).
+static const char *const STORAGE_IMAGE_KIND_NAMES[IMAGE_KIND_COUNT] = {
+    [IMAGE_KIND_NONE] = "none", [IMAGE_KIND_FLOPPY] = "floppy",   [IMAGE_KIND_HD] = "hd",
+    [IMAGE_KIND_CD] = "cd",     [IMAGE_KIND_PROFILE] = "profile",
 };
 
 static DEF_GETTER(files_image_attr_type) {
     image_t *img = files_image_at(self);
-    int t = img ? (int)img->type : 0;
-    int max = (int)(sizeof(STORAGE_IMAGE_TYPE_NAMES) / sizeof(STORAGE_IMAGE_TYPE_NAMES[0]));
-    if (t < 0 || t >= max || !STORAGE_IMAGE_TYPE_NAMES[t])
-        t = 0;
-    return val_enum(t, STORAGE_IMAGE_TYPE_NAMES, (size_t)max);
+    return val_enum((int)image_get_kind(img), STORAGE_IMAGE_KIND_NAMES, IMAGE_KIND_COUNT);
 }
 
 static const member_t files_image_members[] = {
@@ -142,7 +137,7 @@ static const member_t files_image_members[] = {
      .attr = {.type = VK_BOOL, .get = files_image_attr_writable, .set = NULL}                                    },
     {.kind = MK_ATTR,
      .name = "type",
-     .doc = "Media the image was identified as: fd_ss, fd_ds, fd_720k_mfm, fd_hd, hd, cdrom, or other",
+     .doc = "The kind of medium its drive presents it as: floppy, hd, cd or profile",
      .attr = {.type = VK_ENUM, .get = files_image_attr_type, .set = NULL}                                        },
     {.kind = MK_ATTR,
      .name = "format",
@@ -623,7 +618,7 @@ static DEF_METHOD(files_method_image_error) {
 // Floppy Disk upload's test for a file its size does not identify (a MOOF).
 static DEF_METHOD(files_method_identify_floppy) {
     image_t *img = image_open_readonly(argv[0].s);
-    bool fd = img && image_is_floppy(image_get_type(img));
+    bool fd = image_layout(img) != IMAGE_LAYOUT_NONE;
     image_close(img);
     return val_bool(fd);
 }

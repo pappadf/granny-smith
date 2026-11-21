@@ -325,7 +325,7 @@ int floppy_disk_status_at(floppy_t *floppy, int drv, uint8_t lines, bool peek) {
             // 1440K only: the deviation from swim.md's "2 pulses per
             // revolution unconditionally" is justified by MacTest for HD
             // media specifically, so 720K MFM stays on the 2/rev path.
-            bool is_hd = (img && image_get_type(img) == image_fd_hd);
+            bool is_hd = (img && image_layout(img) == IMAGE_LAYOUT_MFM1440);
             ret = floppy_index_signal(FLOPPY_INDEX_ISM, now_ns, ns_per_rev, is_hd ? 1 : 2);
             desc = is_hd ? "INDEX(HD)" : "INDEX(800K)";
         } else {
@@ -356,7 +356,7 @@ int floppy_disk_status_at(floppy_t *floppy, int drv, uint8_t lines, bool peek) {
         desc = "NEWINTF";
         if (floppy->type == FLOPPY_TYPE_SWIM) {
             // Report new interface (0) only for HD disks
-            ret = (floppy->disk[drv] && image_get_type(floppy->disk[drv]) == image_fd_hd) ? 0 : 1;
+            ret = (floppy->disk[drv] && image_layout(floppy->disk[drv]) == IMAGE_LAYOUT_MFM1440) ? 0 : 1;
         } else {
             ret = 1; // 800K drive
         }
@@ -1325,17 +1325,17 @@ static DEF_METHOD(floppy_method_identify) {
     if (!img)
         return val_str("");
     const char *density = "";
-    switch (image_get_type(img)) {
-    case image_fd_ss:
+    switch (image_layout(img)) {
+    case IMAGE_LAYOUT_GCR400:
         density = "400K";
         break;
-    case image_fd_ds:
+    case IMAGE_LAYOUT_GCR800:
         density = "800K";
         break;
-    case image_fd_dd_mfm:
+    case IMAGE_LAYOUT_MFM720:
         density = "720K";
         break;
-    case image_fd_hd:
+    case IMAGE_LAYOUT_MFM1440:
         density = "1.4MB";
         break;
     default:
@@ -1572,14 +1572,14 @@ static DEF_GETTER(floppy_disk_attr_density) {
     image_t *img = floppy ? floppy_drive_image(floppy, slot) : NULL;
     if (!img)
         return val_str("");
-    switch (image_get_type(img)) {
-    case image_fd_ss:
+    switch (image_layout(img)) {
+    case IMAGE_LAYOUT_GCR400:
         return val_str("400k");
-    case image_fd_ds:
+    case IMAGE_LAYOUT_GCR800:
         return val_str("800k");
-    case image_fd_dd_mfm:
+    case IMAGE_LAYOUT_MFM720:
         return val_str("720k");
-    case image_fd_hd:
+    case IMAGE_LAYOUT_MFM1440:
         return val_str("1440k");
     default:
         return val_str("");

@@ -17,7 +17,7 @@ The image subsystem speaks **paths only**. It does not know about machine ids, s
 	- `block_size`: bytes per logical block — 512 for flat disks (the default openers), 532 for a Lisa ProFile (512 data + 20 inline tag).
 	- `writable`: true when the caller asked for write access.
 	- `ghost_instance`: true when delta+journal live in a process-local scratch dir (read-only mounts); they are deleted on `image_close`.
-	- `type`: detected category (`image_fd_ds`, `image_hd`, ...): a floppy by its size, `image_cdrom` for an ISO 9660 disc (a primary volume descriptor at 32 KB), `image_hd` for anything else — an HFS-only CD included, since nothing in its bytes says CD.
+	- `kind`: what the device that opened it presents it as (`image_open_kind`): floppy, hard disk, CD-ROM or ProFile; `IMAGE_KIND_NONE` for an image no device holds. Reported as `files.images[n].type`.
 	- `from_diskcopy`: marks DiskCopy 4.2 sources so their headers can be skipped.
 	- `tags` / `tag_bytes` / `tag_count`: the per-sector tags, 12 bytes beside each 512-byte GCR sector. The Lisa file system keeps its page labels there (file id, page links) and the Lisa boot ROM checks the boot block's; the Mac file systems write them too. Loaded from a DiskCopy 4.2 source's tag section; a 400K/800K GCR disk from any other source gets a zeroed area, so the guest's tag writes (`disk_write_tag`, from the IWM/SWIM, SWIM3, IOP SWIM and Lisa controllers) are kept rather than dropped. `NULL` for anything else. They live only in memory: a checkpoint carries them (the restore hands them back through `image_set_tags()`) and a DiskCopy 4.2 export writes them out.
 	- `dc42_name` / `dc42_format_byte`: how a DiskCopy 4.2 export labels the disk — a DiskCopy source's own header values, or a machine's (`image_set_diskcopy_identity()`: the Lisa's controller sets `-not a Macintosh disk-` and `$02` on insert); else derived at export.
@@ -30,13 +30,13 @@ The image subsystem speaks **paths only**. It does not know about machine ids, s
 
 The single old `image_open(filename, writable)` is replaced by three explicit operations matching the three real use cases:
 
-- **`image_open_readonly(const char *base_path)`** — opens a base image with no on-disk delta. The image layer mints a scratch instance under `/tmp/gs-image-ro/`; the delta and journal there are deleted on `image_close`. Use this for probes (`files.partmap`, `files.probe`, `machine.scsi.identify_hd`, `floppy.identify`, …) and for read-only mounts (CD-ROM).
+- **`image_open_readonly(const char *base_path)`** — opens a base image with no on-disk delta. The image layer mints a scratch instance under `/tmp/gs-image-ro/`; the delta and journal there are deleted on `image_close`. Use this for probes (`files.partmap`, `files.probe`, `machine.scsi.identify_hd`, `floppy.identify`, …) and for VFS mounts; a drive opens through `image_open_kind` instead (below).
 - **`image_create(const char *base_path, const char *delta_dir)`** — opens a fresh writable instance. The image layer mints a 16-hex-char opaque id and creates `<delta_dir>/<id>.delta` and `<delta_dir>/<id>.journal`. If `delta_dir` is `NULL`, the scratch root is used: the `GS_STORAGE_CACHE` directory when set (the integration runner's per-test sidecar routing), else `/tmp/gs-image-ro/`. Never the base image's own directory — a delta is per-instance, so one left beside the base is an orphan once the process exits, and shared media (`tests/data`) would collect them.
 - **`image_open(const char *base_path, const char *instance_path)`** — reopens an existing writable instance. `instance_path` is the stem returned by `image_path()` when the instance was first created; the image layer appends `.delta` and `.journal` itself. Used by checkpoint restore.
 
 After construction the caller queries the instance stem with **`image_path(const image_t *image)`** and persists it (in a checkpoint or in the higher-layer slot table) so a future `image_open(base, instance_path)` can find the same delta files. Returns `NULL` for read-only mounts.
 
-**Non-512 block geometries** — each of the three openers has a `*_with_geometry(..., image_geometry_t geom)` variant that interprets the base as `geom.block_size`-byte blocks (0 ⇒ 512); the default openers are thin wrappers passing `{ .block_size = 512 }`, so existing call sites are unchanged. The Lisa ProFile opens with `{ .block_size = 532 }`. For a disk with **no source file**, **`image_create_blank(uint64_t block_count, image_geometry_t geom)`** makes a writable, all-zero image (no base; unwritten blocks read as zeros) whose scratch delta+journal are removed on `image_close` — used for a blank ProFile, exportable via `image_export_to()`.
+**Non-512 block geometries** — inside the storage module each of the three openers has a `*_with_geometry(..., image_geometry_t geom)` variant (`image_internal.h`) that interprets the base as `geom.block_size`-byte blocks; `image_open_kind` picks the geometry from the kind, so no caller outside the module names one. For a disk with **no source file**, **`image_create_blank_kind(kind, blocks)`** makes a writable, all-zero image (no base; unwritten blocks read as zeros) whose scratch delta+journal are removed on `image_close` — used for a blank ProFile, exportable via `image_export_to()`.
 
 Common steps (shared by all three openers):
 
@@ -46,23 +46,9 @@ Common steps (shared by all three openers):
 
 No seeding step is needed — unmodified blocks are read directly from the base file.
 
-**Picking the delta directory** — `system.c` helper
+**Opening as a kind** — `image_kind.h`
 
-The higher layer in `system.c` chooses the delta directory before each fresh writable mount:
-
-```c
-static const char *pick_delta_dir(const char *path) {
-    // Volatile bases under /tmp/ (test-uploaded artifacts) keep deltas in
-    // image_create's scratch root (also under /tmp) by passing NULL.
-    if (path && strncmp(path, "/tmp/", 5) == 0)
-        return NULL;
-    // Otherwise route deltas under the active per-machine directory so they
-    // share lifetime with state.checkpoint (see docs/internals/core/checkpointing.md).
-    return checkpoint_machine_dir();
-}
-```
-
-`fd insert`, `fd create`, and `hd attach` all funnel through this helper.
+A device never calls the three openers itself: it opens through **`image_open_kind(path, &(image_open_opts_t){kind, writable, instance, delta_dir}, err, cap)`** ([image_kind.md](image_kind.md)). The kind is the device's — `IMAGE_KIND_FLOPPY`, `HD`, `CD` or `PROFILE` — never a guess from the file's size, and it decides the block size (532 for a ProFile, else 512), whether the image may be written (a CD never) and which sizes are accepted (a floppy drive takes the four floppy sizes only). A fresh writable instance's delta goes to `delta_dir`, or, when that is NULL, to **`image_delta_dir(path)`**: the active machine's directory, so the delta shares `state.checkpoint`'s lifetime, or the scratch root for a base on volatile storage (`platform_path_is_volatile`). `fd insert`, `fd create`, every attach and the checkpoint restore go through it. The kind is kept on the image (`image_get_kind`; `IMAGE_KIND_NONE` for a probe or a mount no drive holds) and in its checkpoint entry. What a floppy-sized image's size implies is `image_layout()` (`IMAGE_LAYOUT_GCR400` … `MFM1440`), which the floppy controllers read.
 
 **Image formats** — the format registry
 
@@ -161,11 +147,11 @@ Every compressor and decompressor here — and the PNG reader's, peeler's zip an
 - **`image_create_blank_floppy()`** writes a zero-filled 819,200-byte (or 1,474,560-byte HD) raw file that can immediately be opened.
 
 **Checkpointing & metadata**
-- **`image_checkpoint()`** writes `{uint32 len, path bytes, writable flag, raw_size, uint32 instance_len, instance_path bytes, uint32 key_len, source_key bytes}`, calls `storage_checkpoint()`, and ends with the sector tags `{uint32 tag_bytes, uint32 tag_count, tags}` — they are not in the delta, so without them a restored disk would pair the delta's data with the base file's labels. The `instance_path` field (added in the storage-isolation rewrite) lets the restore path locate the delta+journal pair without relying on adjacent-to-base sidecars. The source key lets a quick restore refuse a base that is no longer the same bytes ([source.md](source.md) §5). The storage layer writes the current bitmap for quick checkpoints or streams all blocks for consolidated checkpoints.
-- During restore the machine init code reads back the same fields and chooses an opener based on `(writable, kind)`:
-	- writable + quick → `image_open(base, instance_path)` reopens the same delta files.
-	- writable + consolidated → `image_create(base, checkpoint_machine_dir())` mints a fresh instance; the embedded blocks then repopulate it via `storage_restore_from_checkpoint()`.
-	- read-only → `image_open_readonly(base)`.
+- **`image_checkpoint()`** writes `{uint32 len, path bytes, flags, kind, raw_size, uint32 instance_len, instance_path bytes, uint32 key_len, source_key bytes}`, calls `storage_checkpoint()`, and ends with the sector tags `{uint32 tag_bytes, uint32 tag_count, tags}` — they are not in the delta, so without them a restored disk would pair the delta's data with the base file's labels. The `instance_path` field (added in the storage-isolation rewrite) lets the restore path locate the delta+journal pair without relying on adjacent-to-base sidecars. The source key lets a quick restore refuse a base that is no longer the same bytes ([source.md](source.md) §5). The storage layer writes the current bitmap for quick checkpoints or streams all blocks for consolidated checkpoints.
+- During restore the machine init code reads back the same fields and reopens the image through `image_open_kind` as the kind it was saved as (a ProFile at its 532-byte block, a CD read-only):
+	- writable + quick → the same delta files (`instance`).
+	- writable + consolidated → a fresh instance in `checkpoint_machine_dir()`; the embedded blocks then repopulate it via `storage_restore_from_checkpoint()`.
+	- read-only → no instance.
 - Old checkpoints written before the format change become unreadable naturally through `checkpoint_validate_build_id`; no migration code is needed.
 
 **Usage notes**

@@ -14,12 +14,11 @@
 #include <stdlib.h>
 
 // The accessors below are NULL-safe: a NULL image reads as empty.
-enum image_type image_get_type(const image_t *image) {
-    return image ? image->type : image_other;
+image_kind_t image_get_kind(const image_t *image) {
+    return image ? image->kind : IMAGE_KIND_NONE;
 }
-void image_set_type(image_t *image, enum image_type type) {
-    if (image)
-        image->type = type;
+image_layout_t image_layout(const image_t *image) {
+    return image ? image_layout_of_size(image->raw_size) : IMAGE_LAYOUT_NONE;
 }
 bool image_is_writable(const image_t *image) {
     return image && image->writable;

@@ -11,6 +11,8 @@ OMIT_STUBS   := checkpoint
 EXTRA_SRCS   := ../../../../src/machines/runtime/checkpoint_images.c \
                 ../../../../src/core/job/seam.c \
                 ../../../../src/core/storage/image.c \
+                ../../../../src/core/storage/image_kind.c \
+                ../../../../src/core/platform_hooks.c \
                 ../../../../src/core/storage/image_access.c \
                 ../../../../src/core/storage/image_wrap_sniff.c \
                 ../../../../src/core/storage/image_apm.c \

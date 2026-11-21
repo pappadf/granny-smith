@@ -13,7 +13,7 @@ assert files.path_size("${$ndif}/rsrc/_raw") > 0 "the chunk map's resource fork"
 
 # Attached as a CD, the drive sees the decoded disk, read-only.
 machine.scsi.attach_cdrom "${$ndif}" 3
-assert files.images[0].type == "cdrom" "attached as a CD-ROM"
+assert files.images[0].type == "cd" "attached as a CD-ROM"
 assert files.images[0].format == "ndif" "the NDIF wrapper is decoded"
 assert files.images[0].raw_size == 819200 "the decoded disk is the floppy's size"
 assert !files.images[0].writable "a CD is read-only"
@@ -22,5 +22,13 @@ assert !files.images[0].writable "a CD is read-only"
 assert files.export_raw($ndif, "${$WORK_DIR}/decoded.img") "export the decoded disk"
 assert files.path_compare("${$WORK_DIR}/decoded.img", $fd) == -1 "NDIF decodes to the original floppy"
 assert files.list("${$ndif}/partition1/System Folder") "the HFS volume inside the NDIF inside the HFS volume"
+
+# A checkpoint restore reopens the disc as the kind its drive presents.  It
+# used to re-guess the kind from the size, so this floppy-sized disc came back
+# as an 800K floppy (and lit the floppy light).
+assert checkpoint.save("${$WORK_DIR}/cd.checkpoint") "checkpoint save"
+assert checkpoint.load("${$WORK_DIR}/cd.checkpoint") "checkpoint load"
+assert files.images[0].type == "cd" "restored as a CD-ROM, not re-guessed from its size"
+assert !files.images[0].writable "still read-only after the restore"
 
 quit
