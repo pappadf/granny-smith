@@ -13,7 +13,6 @@
 
 #include "config_space.h"
 #include "display.h"
-#include "display_class.h"
 #include "memory.h"
 #include "pci.h"
 
@@ -316,7 +315,6 @@ typedef struct rage128 {
 
     // Scanout, rebuilt from the CRTC registers whenever one moves.
     display_t display;
-    display_fb_node_t fb_node;
     rgba8_t clut_view[256];
     uint8_t dac_view[3][256]; // the palette as the direct-colour DAC table (display_t.dac_lut)
     uint8_t *blank; // black stub while the raster is off (vram_size)

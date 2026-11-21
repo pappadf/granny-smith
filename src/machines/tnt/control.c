@@ -53,6 +53,7 @@
 #include "tnt.h"
 
 #include "card.h"
+#include "config_space.h"
 #include "display.h"
 #include "log.h"
 #include "pci.h"
@@ -702,9 +703,33 @@ static void control_pci_teardown(pci_device_t *dev, config_t *cfg) {
     tnt_control_teardown(cfg);
 }
 
+// The guest physical address of the first displayed byte: the VRAM BAR's
+// base, plus the +$800000 half the usable framebuffer is in, plus the scan
+// start's place in the bank view vram_map decodes (the inverse of that map:
+// the 4 MB linear layout is the store itself; in the 2 MB modes bank 2 shows
+// through at +$600000).  Taken from the registers, not from `bits`, which
+// points at the composite while the hardware cursor is up.  0 while blanked.
+uint64_t tnt_control_fb_base(config_t *cfg) {
+    tnt_state_t *st = cfg ? tnt_st(cfg) : NULL;
+    if (!st || !st->vram || !st->display.bits || st->display.bits == st->blank || !st->control_dev ||
+        !pci_cfg_bar_enabled(st->control_dev, CONTROL_BAR_VRAM))
+        return 0;
+    const tnt_control_t *c = &st->control;
+    uint32_t store = control_scan_base(c);
+    uint32_t view = store; // bank 1, or the 4 MB linear layout
+    if (!(c->reg[CR_VRAM_ATTR] & 0x40u) && store >= 0x200000u)
+        view = 0x600000u + (store - 0x200000u); // bank 2 shows through
+    return (uint64_t)pci_cfg_bar_base(st->control_dev, CONTROL_BAR_VRAM) + 0x800000u + view;
+}
+
+static uint64_t control_pci_fb_base(pci_device_t *dev) {
+    return tnt_control_fb_base((config_t *)dev->priv);
+}
+
 static const pci_device_ops_t control_pci_ops = {
     .teardown = control_pci_teardown,
     .display = control_pci_display,
+    .fb_base = control_pci_fb_base,
     .vram = control_pci_vram,
     .name = control_pci_name,
 };
@@ -961,13 +986,7 @@ static display_t *control_fb_resolve(void *owner) {
     return tnt_control_display((config_t *)owner);
 }
 static uint64_t control_fb_base(void *owner) {
-    // A byte offset into the 4 MB store, which is what CR_START_ADDR and the
-    // bank-select attribute add up to.
-    config_t *cfg = (config_t *)owner;
-    tnt_state_t *st = cfg ? tnt_st(cfg) : NULL;
-    if (!st || !st->display.bits || st->display.bits == st->blank || !st->vram)
-        return 0;
-    return (uint64_t)(st->display.bits - st->vram);
+    return tnt_control_fb_base((config_t *)owner);
 }
 
 int tnt_control_init(config_t *cfg, uint8_t sense) {

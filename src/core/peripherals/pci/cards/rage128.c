@@ -54,7 +54,6 @@
 #include "checkpoint.h"
 #include "config_space.h"
 #include "display.h"
-#include "display_class.h"
 #include "log.h"
 #include "memory.h"
 #include "monitor_catalog.h"
@@ -1129,6 +1128,18 @@ static display_t *r128_display(pci_device_t *dev) {
     return (r && r->blank) ? &r->display : NULL;
 }
 
+// The guest physical address of the first displayed byte: linear aperture 0
+// (BAR0's base) plus the live CRTC scan offset, the flip included.  Each
+// aperture maps VRAM from offset 0; its swapper, when the driver sets one,
+// reorders bytes only within a pixel, so this is the first pixel's address.
+// 0 while blanked or with BAR0 not decoded.
+static uint64_t r128_fb_base(pci_device_t *dev) {
+    rage128_t *r = (rage128_t *)dev->priv;
+    if (!r || r->scan_blanked || !pci_cfg_bar_enabled(dev, R128_BAR_APER))
+        return 0;
+    return (uint64_t)pci_cfg_bar_base(dev, R128_BAR_APER) + r->scan_base;
+}
+
 // The VRAM a power cycle loses (the bus default, pci_power_on).
 static size_t r128_vram(pci_device_t *dev, uint8_t **base) {
     rage128_t *r = (rage128_t *)dev->priv;
@@ -1440,6 +1451,7 @@ static const pci_device_ops_t r128_ops = {
     .cfg_write = r128_cfg_write,
     .name = r128_name,
     .display = r128_display,
+    .fb_base = r128_fb_base,
     .vram = r128_vram,
     .on_vbl = r128_on_vbl,
     .checkpoint_save = r128_checkpoint_save,
@@ -1652,40 +1664,15 @@ static const member_t regs_members[] = {
 static const class_desc_t r128_regs_class = {
     .name = "regs", .members = regs_members, .n_members = sizeof(regs_members) / sizeof(regs_members[0])};
 
-static display_t *r128_fb_resolve(void *owner) {
-    rage128_t *c = (rage128_t *)owner;
-    return c ? &c->display : NULL;
-}
-static uint64_t r128_fb_base(void *owner) {
-    rage128_t *c = (rage128_t *)owner;
-    return c ? (uint64_t)c->crtc_offset_live : 0;
-}
-
 static void r128_attach_objects(pci_device_t *dev, struct object *card_node) {
     rage128_t *r = (rage128_t *)dev->priv;
     if (!r || !card_node)
         return;
-    r->fb_node = (display_fb_node_t){.owner = r, .resolve = r128_fb_resolve, .base = r128_fb_base};
-    struct object *fb = object_new(&display_fb_class, &r->fb_node, "framebuffer");
-    if (fb) {
-        object_set_label(fb, "Framebuffer");
-        object_set_order(fb, 10);
-        object_attach(card_node, fb);
-        pci_card_set_framebuffer_object(dev, fb);
-    }
-    struct object *mon = object_new(&r128_monitor_class, r, "monitor");
-    if (mon) {
-        object_set_label(mon, "Monitor");
-        object_set_order(mon, 20);
-        object_attach(card_node, mon);
-    }
-    struct object *regs = object_new(&r128_regs_class, r, "regs");
-    if (regs) {
-        object_set_label(regs, "Registers");
-        object_set_order(regs, 30);
-        object_set_category(regs, M_CAT_ADVANCED);
-        object_attach(card_node, regs);
-    }
+    // The framebuffer node is the generic layer's (pci_objects_build), with
+    // its base from r128_fb_base.
+    object_attach_new(card_node, &r128_monitor_class, r, "monitor", "Monitor", 20);
+    struct object *regs = object_attach_new(card_node, &r128_regs_class, r, "regs", "Registers", 30);
+    object_set_category(regs, M_CAT_ADVANCED);
 }
 
 // ============================================================

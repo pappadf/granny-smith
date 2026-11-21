@@ -176,6 +176,28 @@ assert machine.screen.source.stride == 640 "linebytes $280 — CRTC_PITCH x 8 x 
 # wins over the machine's built-in video.
 assert machine.pci.slot[1].card.framebuffer.depth == 8 "screen.source resolves to the card's framebuffer"
 
+# framebuffer.base is the guest physical address of the first displayed
+# byte -- the aperture's BAR0 base plus CRTC_OFFSET x 8 ($200), not the bare
+# VRAM offset it used to be -- and the byte there IS the top-left pixel:
+# replacing it changes that pixel and neither its neighbour nor row 1.
+let FB = machine.pci.slot[1].card.framebuffer.base
+assert $FB == machine.pci.slot[1].card.config.bar[0].base + 0x200 "framebuffer.base ${$FB:08x} is not BAR0 + the CRTC offset"
+assert machine.screen.source.base == $FB "screen.source is the same node"
+let FB_PITCH = machine.memory.peek.l(0x817FFC14)
+let FB_P0 = machine.screen.checksum(0, 0, 1, 1)
+let FB_P1 = machine.screen.checksum(0, 1, 1, 2)
+let FB_R1 = machine.screen.checksum(1, 0, 2, 1)
+let FB_V = machine.memory.peek.b($FB)
+machine.memory.poke.b($FB, 0xFF - $FB_V)
+machine.memory.poke.l(0x817FFC14, $FB_PITCH)
+assert machine.screen.checksum(0, 0, 1, 1) == 0xFF - $FB_V "the byte at framebuffer.base is the first displayed pixel"
+assert machine.screen.checksum(0, 1, 1, 2) == $FB_P1 "...and only that pixel"
+assert machine.screen.checksum(1, 0, 2, 1) == $FB_R1 "...on row 0 only"
+assert machine.screen.checksum(1, 0, 2, 1) == machine.memory.peek.b($FB + machine.pci.slot[1].card.framebuffer.stride) "row 1 starts a stride on"
+machine.memory.poke.b($FB, $FB_V)
+machine.memory.poke.l(0x817FFC14, $FB_PITCH)
+assert machine.screen.checksum(0, 0, 1, 1) == $FB_P0 "restoring the byte restores the pixel"
+
 # --- The hardware cursor is an overlay, not something drawn into VRAM. ------
 # A 64x64 block of 2-bit pixels: 00 = colour 0, 01 = colour 1, 10 =
 # transparent, 11 = complement (PRG, "Hardware Cursor").  The pitch is

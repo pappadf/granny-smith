@@ -100,7 +100,7 @@ static display_t *nubus_fb_resolve(void *owner) {
 }
 static uint64_t nubus_fb_base(void *owner) {
     nubus_card_t *c = (nubus_card_t *)owner;
-    return c ? nubus_slot_base(c->slot) : 0;
+    return (c && c->ops && c->ops->fb_base) ? c->ops->fb_base(c) : 0;
 }
 
 // --- declrom node -----------------------------------------------------------
@@ -331,22 +331,6 @@ static void nubus_root_install(struct config *cfg) {
 
 // === Object-tree build / teardown ===========================================
 
-// Attach one resource child under the card node with a label/order/category.
-// `data` is the node's instance data -- the nubus_card_t for every class
-// defined here, and a display_fb_node_t for the shared framebuffer class, so
-// it is typed as the void the object model actually stores.
-static struct object *attach_resource(struct object *card_node, const class_desc_t *cls, void *data, const char *name,
-                                      const char *label, int order, uint16_t category) {
-    struct object *o = object_new(cls, data, name);
-    if (!o)
-        return NULL;
-    object_set_label(o, label);
-    object_set_order(o, order);
-    object_set_category(o, category);
-    object_attach(card_node, o);
-    return o;
-}
-
 void nubus_objects_build(nubus_bus_t *bus) {
     nubus_objects_teardown(); // idempotent — drop any prior trees first
     if (!bus)
@@ -373,12 +357,10 @@ void nubus_objects_build(nubus_bus_t *bus) {
             object_set_label(n->card, label);
             object_attach(n->slot, n->card);
             n->fb_node = (display_fb_node_t){.owner = card, .resolve = nubus_fb_resolve, .base = nubus_fb_base};
-            n->fb =
-                attach_resource(n->card, &display_fb_class, &n->fb_node, "framebuffer", "Framebuffer", 10, M_CAT_BASIC);
-            n->declrom =
-                attach_resource(n->card, &nubus_declrom_class, card, "declrom", "Declaration ROM", 20, M_CAT_BASIC);
-            n->clut = attach_resource(n->card, &nubus_clut_class, card, "clut", "CLUT", 30, M_CAT_BASIC);
-            n->mode = attach_resource(n->card, &nubus_mode_class, card, "mode", "Mode", 40, M_CAT_BASIC);
+            n->fb = object_attach_new(n->card, &display_fb_class, &n->fb_node, "framebuffer", "Framebuffer", 10);
+            n->declrom = object_attach_new(n->card, &nubus_declrom_class, card, "declrom", "Declaration ROM", 20);
+            n->clut = object_attach_new(n->card, &nubus_clut_class, card, "clut", "CLUT", 30);
+            n->mode = object_attach_new(n->card, &nubus_mode_class, card, "mode", "Mode", 40);
             // Card-specific children, through the KIND that seated this slot.
             // This file never tests a card's identity -- the accelerator nodes
             // that used to live here behind is_card() belong to the cards,

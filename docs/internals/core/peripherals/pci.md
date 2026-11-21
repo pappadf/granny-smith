@@ -212,6 +212,16 @@ grows a `card` subtree with the identity attributes and a `config` child
 (Advanced) exposing the live header and one `bar[i]` node per declared BAR
 plus the expansion-ROM BAR. `catalog.pci_cards` lists the registry.
 
+Every seated device whose ops have a `display` hook also gets a
+`framebuffer` child — the node `display_class.c` shares with NuBus and the
+built-in chips, attached here so no card builds its own — and the one
+`machine.screen.source` resolves to while that device is the primary
+display. Its `base` is the device's optional `fb_base` op: the guest
+physical address of the first displayed byte (the aperture BAR's base plus
+the scan offset), or 0 when the displayed frame is not in guest memory (a
+blanked scanout; the Voodoo2's converted pass-through frame). Card-specific
+children come from the kind's `attach_objects` hook.
+
 ## Why not one expansion-bus abstraction
 
 NuBus and PCI differ in kind, not degree, on the things that matter:

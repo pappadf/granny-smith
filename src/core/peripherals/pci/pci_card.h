@@ -86,6 +86,12 @@ typedef struct pci_device_ops {
 
     void (*on_vbl)(pci_device_t *dev, config_t *cfg);
     display_t *(*display)(pci_device_t *dev);
+    // The guest physical address of the first byte `display` scans -- its
+    // aperture/BAR base plus the scan offset -- or 0 when that frame is not
+    // in guest-addressable memory.  What the `framebuffer` node the generic
+    // layer attaches to every device with a `display` reports as `base`
+    // (display_class.h).  NULL reads 0.
+    uint64_t (*fb_base)(pci_device_t *dev);
     void (*checkpoint_save)(pci_device_t *dev, checkpoint_t *cp);
     void (*checkpoint_restore)(pci_device_t *dev, checkpoint_t *cp);
     const char *(*name)(const pci_device_t *dev);

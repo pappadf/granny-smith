@@ -74,6 +74,13 @@ typedef struct nubus_card_ops {
     // live-mutable (see display.h for the dirty-flag contract).
     display_t *(*display)(nubus_card_t *card);
 
+    // Optional: the guest physical address of the first byte `display`
+    // scans -- in the card's slot or super-slot space, or main RAM for a
+    // built-in that scans it -- or 0 when that frame is not in
+    // guest-addressable memory (the blank).  What the card's `framebuffer`
+    // node reports as `base` (display_class.h); NULL reads 0.
+    uint64_t (*fb_base)(nubus_card_t *card);
+
     // Checkpoint hooks; the bus controller calls these for every populated
     // slot in canonical slot order.
     void (*checkpoint_save)(nubus_card_t *card, checkpoint_t *cp);

@@ -55,30 +55,30 @@ static DEF_GETTER(fb_attr_clut_len) {
 static const member_t fb_members[] = {
     {.kind = MK_ATTR,
      .name = "base",
-     .doc = "Framebuffer base, in the address space the guest reaches it through",
-     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = fb_attr_base}                                                 },
+     .doc = "Guest physical address of the first displayed byte (0 when the frame is not in guest memory)",
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = fb_attr_base}                                                                          },
     {.kind = MK_ATTR,
      .name = "width",
      .doc = "Active width in pixels",
-     .attr = {.type = VK_UINT, .get = fb_attr_width}                                                                                 },
+     .attr = {.type = VK_UINT, .get = fb_attr_width}                                                                                                          },
     {.kind = MK_ATTR,
      .name = "height",
      .doc = "Active height in pixels",
-     .attr = {.type = VK_UINT, .get = fb_attr_height}                                                                                },
+     .attr = {.type = VK_UINT, .get = fb_attr_height}                                                                                                         },
     {.kind = MK_ATTR,
      .name = "stride",
      .doc = "Row stride in bytes (rowBytes)",
-     .attr = {.type = VK_UINT, .get = fb_attr_stride}                                                                                },
-    {.kind = MK_ATTR, .name = "depth",  .doc = "Bits per pixel",                   .attr = {.type = VK_UINT, .get = fb_attr_depth}   },
-    {.kind = MK_ATTR, .name = "format", .doc = "Pixel encoding",                   .attr = {.type = VK_STRING, .get = fb_attr_format}},
+     .attr = {.type = VK_UINT, .get = fb_attr_stride}                                                                                                         },
+    {.kind = MK_ATTR, .name = "depth",  .doc = "Bits per pixel",                                            .attr = {.type = VK_UINT, .get = fb_attr_depth}   },
+    {.kind = MK_ATTR, .name = "format", .doc = "Pixel encoding",                                            .attr = {.type = VK_STRING, .get = fb_attr_format}},
     {.kind = MK_ATTR,
      .name = "clut_len",
      .doc = "Palette entries the current format uses (0 for a direct format)",
-     .attr = {.type = VK_UINT, .get = fb_attr_clut_len}                                                                              },
+     .attr = {.type = VK_UINT, .get = fb_attr_clut_len}                                                                                                       },
     {.kind = MK_ATTR,
      .name = "raw_size",
      .doc = "Active framebuffer size in bytes (stride x height)",
-     .attr = {.type = VK_UINT, .get = fb_attr_raw_size}                                                                              },
+     .attr = {.type = VK_UINT, .get = fb_attr_raw_size}                                                                                                       },
 };
 
 const class_desc_t display_fb_class = {.name = "framebuffer",
@@ -105,12 +105,7 @@ struct object *display_attach_video_node(display_fb_node_t *node, const char *la
         return NULL;
     object_set_label(video, label ? label : "Video");
     object_set_order(video, OBJ_ORDER_VIDEO);
-    struct object *fb = object_new(&display_fb_class, node, "framebuffer");
-    if (fb) {
-        object_set_label(fb, "Framebuffer");
-        object_set_order(fb, 10);
-        object_attach(video, fb);
-    }
+    object_attach_new(video, &display_fb_class, node, "framebuffer", "Framebuffer", 10);
     object_attach(machine_object(), video);
     return video;
 }

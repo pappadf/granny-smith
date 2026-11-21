@@ -58,7 +58,6 @@
 #include "checkpoint.h"
 #include "config_space.h"
 #include "display.h"
-#include "display_class.h"
 #include "display_ramdac.h"
 #include "log.h"
 #include "memory.h"
@@ -574,7 +573,6 @@ typedef struct mach64 {
     // one of them moves; `blank` is the black stub shown while the raster
     // is disabled, and `compose` carries the hardware-cursor composite.
     display_t display;
-    display_fb_node_t fb_node; // instance data for the shared framebuffer class
     rgba8_t clut_view[256];
     uint8_t *blank;
     uint8_t *compose;
@@ -3124,6 +3122,22 @@ static display_t *mach64_display(pci_device_t *dev) {
     return &m->display;
 }
 
+// The guest physical address of the first displayed byte: the aperture's
+// BAR0 base plus the CRTC scan offset.  The GX's aperture repeats through the
+// BAR, so its first copy is the address; the Rage Pro's lower 8 MB swaps bytes
+// within a pixel, so its address is the big-endian aperture at +8 MB, where
+// VRAM reads in the order the CRTC scans it.  0 while blanked, or with no
+// aperture decoded.
+static uint64_t mach64_fb_base(pci_device_t *dev) {
+    mach64_t *m = (mach64_t *)dev->priv;
+    if (!m || m->scan_blanked || !pci_cfg_bar_enabled(dev, MACH64_BAR_APER))
+        return 0;
+    if (!m->gp && !mach64_aperture_size(m))
+        return 0; // CFG_MEM_AP_SIZE = 0: VRAM is not in the BAR at all
+    uint64_t aper = pci_cfg_bar_base(dev, MACH64_BAR_APER) + (m->gp ? MACH64_APER_8MB : 0u);
+    return aper + m->scan_base;
+}
+
 // The VRAM a power cycle loses (the bus default, pci_power_on).
 static size_t mach64_vram(pci_device_t *dev, uint8_t **base) {
     mach64_t *m = (mach64_t *)dev->priv;
@@ -3418,6 +3432,7 @@ static const pci_device_ops_t mach64_ops = {
     .reset = mach64_reset,
     .name = mach64_name,
     .display = mach64_display,
+    .fb_base = mach64_fb_base,
     .vram = mach64_vram,
     .on_vbl = mach64_on_vbl,
     .checkpoint_save = mach64_checkpoint_save,
@@ -3429,6 +3444,7 @@ static const pci_device_ops_t ragepro_ops = {
     .reset = mach64_reset,
     .name = mach64_name,
     .display = mach64_display,
+    .fb_base = mach64_fb_base,
     .vram = mach64_vram,
     .on_vbl = mach64_on_vbl,
     .cfg_read = ragepro_cfg_read,
@@ -3644,57 +3660,18 @@ static const member_t dac_members[] = {
 static const class_desc_t mach64_dac_class = {
     .name = "dac", .members = dac_members, .n_members = sizeof(dac_members) / sizeof(dac_members[0])};
 
-// --- the framebuffer node ---------------------------------------------------
-// The framebuffer node is display_class.c's, shared with the NuBus cards and
-// the built-in chips, so `machine.screen.source` reads the same on either bus.
-// This card used to re-implement it with `size` where NuBus said `raw_size`,
-// VK_UINT where NuBus said VK_INT, and no `format` at all -- the node was
-// declared to mirror the NuBus one and did not.
-static display_t *mach64_fb_resolve(void *owner) {
-    mach64_t *c = (mach64_t *)owner;
-    return c ? &c->display : NULL;
-}
-static uint64_t mach64_fb_base(void *owner) {
-    // A byte offset into VRAM, not an address: CRTC_OFFSET x 8.
-    mach64_t *c = (mach64_t *)owner;
-    return c ? (uint64_t)(c->reg[DW_CRTC_OFF_PITCH] & 0xFFFFFu) * 8u : 0;
-}
-
 static void mach64_attach_objects(pci_device_t *dev, struct object *card_node) {
     mach64_t *m = (mach64_t *)dev->priv;
     if (!m || !card_node)
         return;
-    m->fb_node = (display_fb_node_t){.owner = m, .resolve = mach64_fb_resolve, .base = mach64_fb_base};
-    struct object *fb = object_new(&display_fb_class, &m->fb_node, "framebuffer");
-    if (fb) {
-        object_set_label(fb, "Framebuffer");
-        object_set_order(fb, 10);
-        object_attach(card_node, fb);
-        // Nominate it: `machine.screen.source` resolves to whichever
-        // framebuffer node belongs to the current primary display, and the
-        // generic layer must not have to guess which child that is.
-        pci_card_set_framebuffer_object(dev, fb);
-    }
-    struct object *mon = object_new(&mach64_monitor_class, m, "monitor");
-    if (mon) {
-        object_set_label(mon, "Monitor");
-        object_set_order(mon, 20);
-        object_attach(card_node, mon);
-    }
-    struct object *regs = object_new(&mach64_regs_class, m, "regs");
-    if (regs) {
-        object_set_label(regs, "Registers");
-        object_set_order(regs, 30);
-        object_set_category(regs, M_CAT_ADVANCED);
-        object_attach(card_node, regs);
-    }
-    struct object *dac = object_new(&mach64_dac_class, m, "dac");
-    if (dac) {
-        object_set_label(dac, m->gp ? "Palette DAC (integrated)" : "RAMDAC (IBM RGB514)");
-        object_set_order(dac, 40);
-        object_set_category(dac, M_CAT_ADVANCED);
-        object_attach(card_node, dac);
-    }
+    // The framebuffer node is the generic layer's (pci_objects_build), with
+    // its base from mach64_fb_base.
+    object_attach_new(card_node, &mach64_monitor_class, m, "monitor", "Monitor", 20);
+    struct object *regs = object_attach_new(card_node, &mach64_regs_class, m, "regs", "Registers", 30);
+    object_set_category(regs, M_CAT_ADVANCED);
+    struct object *dac = object_attach_new(card_node, &mach64_dac_class, m, "dac",
+                                           m->gp ? "Palette DAC (integrated)" : "RAMDAC (IBM RGB514)", 40);
+    object_set_category(dac, M_CAT_ADVANCED);
 }
 
 // ============================================================

@@ -22,6 +22,7 @@
 #include "declrom.h"
 #include "display.h"
 #include "gsvrom.h"
+#include "nubus.h"
 
 #include <stddef.h> // offsetof — the checkpoint range
 #include <stdint.h>
@@ -136,6 +137,14 @@ static display_t *card_display(nubus_card_t *card) {
     return p ? &p->display : NULL;
 }
 
+// The guest physical address of the first displayed byte: the 64 KB VRAM
+// also decodes at the base of slot $E's standard space, where the Slot
+// Manager puts the 32-bit ScrnBase ($FE008040 for the primary buffer).
+static uint64_t card_fb_base(nubus_card_t *card) {
+    se30_priv_t *p = card->priv;
+    return p ? display_guest_addr(&p->display, p->vram, SE30_VRAM_SIZE, nubus_slot_base(card->slot)) : 0;
+}
+
 // The checkpointed plain-data prefix, up to the first host pointer
 CHECKPOINT_PREFIX(se30_priv_t, display);
 
@@ -180,6 +189,7 @@ static const nubus_card_ops_t builtin_se30_video_ops = {
     .on_vbl = NULL,
     .power_on = card_power_on,
     .display = card_display,
+    .fb_base = card_fb_base,
 };
 
 // === Factory + kind descriptor ==============================================

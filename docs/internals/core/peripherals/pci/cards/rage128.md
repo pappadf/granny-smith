@@ -431,8 +431,9 @@ bit 0 is the live blank, bit 1 the since-last-cleared latch.
 
 ## 4. Object-model / shell surface
 
-`machine.pci.slot[N].card` carries `framebuffer` (the shared display node,
-nominated as `machine.screen.source`), `monitor` (`id`, `ddc`,
+`machine.pci.slot[N].card` carries `framebuffer` (the shared display node
+the generic layer attaches; its `base` is linear aperture 0 — BAR0 — plus
+the live CRTC scan offset, 0 while blanked), `monitor` (`id`, `ddc`,
 `apple_sense`) and, under the advanced category, `regs` (`vram_size`,
 `crtc_gen_cntl`, `config_cntl`, `microcode`, `cce_packets`, `prims3d`,
 `flips` (page flips), `raster` (`sw` or `webgpu`), `gpu_engaged`, `gpu_presenting`, `gpu_stats` (the

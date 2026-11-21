@@ -568,6 +568,22 @@ static inline bool display_set_scanout(display_t *d, const uint8_t *buf, size_t 
     return false;
 }
 
+// The guest physical address of the first byte `d` scans, for a producer
+// whose `bits` points into `store` -- a buffer the guest reaches at
+// `store_addr`.  0 when `bits` is somewhere else (the blank, a composed
+// frame, a private buffer): that frame is not in guest-addressable memory.
+// This is what every framebuffer node's `base` reports (display_class.h).
+static inline uint64_t display_guest_addr(const display_t *d, const uint8_t *store, size_t store_size,
+                                          uint64_t store_addr) {
+    if (!d || !d->bits || !store)
+        return 0;
+    uintptr_t bits = (uintptr_t)d->bits, lo = (uintptr_t)store;
+    // Compared as integers: `bits` may point into a different allocation
+    if (bits < lo || bits - lo >= store_size)
+        return 0;
+    return store_addr + (bits - lo);
+}
+
 // True when the visible raster still holds nothing but its power-on blank,
 // i.e. the guest has not drawn.  A depth change reinterprets every byte, so
 // the fill chosen at the old depth stops meaning black at the new one (0xFF
