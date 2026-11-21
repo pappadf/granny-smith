@@ -366,7 +366,15 @@ int gos_media_eject(config_t *cfg, media_bus_t bus, int unit) {
     gossamer_state_t *st = gos_st(cfg);
     if (!st || !st->ata_ready || !unit_ok(unit))
         return -1;
-    // A hard disk is not removable media: only a disc comes out.
+    // A hard disk comes off the bus as a SCSI disk does (the host's detach,
+    // not the guest's eject); a disc comes out of its ATAPI drive.  Either
+    // way the image goes back to the table, which closes it.
+    image_t *hd = st->ata[unit >> 1].img[unit & 1];
+    if (hd) {
+        ata_detach(&st->ata[unit >> 1], unit & 1);
+        config_release_image(cfg, hd);
+        return 0;
+    }
     return system_media_eject_scsi_bus(st->atapi, unit);
 }
 

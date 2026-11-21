@@ -1,0 +1,12 @@
+# Integration test: eject_media on an ATA hard disk (see config.mk).
+
+let n = files.images.count
+assert machine.ata.attach_hd("${$WORK_DIR}/ata.img", 0) "attach an ATA hard disk as the primary bus's master"
+assert files.images.count == $n + 1 "its image is tracked"
+assert machine.ata.devices == "hd - - -" "unit 0 is a hard disk: ${machine.ata.devices}"
+machine.eject_media "ata" 0
+assert machine.ata.devices == "- - - -" "the disk is off the bus: ${machine.ata.devices}"
+assert files.images.count == $n "the ejected disk's image is still open"
+assert try(machine.eject_media("ata", 0), "empty") == "empty" "nothing left to eject at unit 0"
+echo "gossamer-ata-eject-ok"
+quit

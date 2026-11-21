@@ -32,6 +32,7 @@ struct image {
     bool writable; // True when the caller requested write access
     bool ghost_instance; // True when delta+journal are ephemeral scratch (read-only mounts)
     image_kind_t kind; // What the opening device presents it as (image_open_kind); IMAGE_KIND_NONE unheld
+    uint32_t checkpoint_index; // position in the image list the last checkpoint saved (image_ref.c)
     bool from_diskcopy; // True if a DiskCopy 4.2 layer was peeled
 
     // disk_read_data / disk_write_data calls since open: the drive-activity
@@ -88,7 +89,9 @@ image_t *image_open_with_geometry(const char *base_path, const char *instance_pa
 
 // A brand-new, writable, all-zero image with NO backing base file:
 // `block_count` blocks of geom.block_size bytes, every block reading back as
-// zeros until written (image_create_blank_kind).
-image_t *image_create_blank(uint64_t block_count, image_geometry_t geom);
+// zeros until written (image_create_blank_kind).  Its delta is a fresh
+// instance in `delta_dir` (NULL: the scratch root), or the existing
+// `instance` stem (a checkpoint restore), so it survives like any other.
+image_t *image_create_blank(uint64_t block_count, image_geometry_t geom, const char *delta_dir, const char *instance);
 
 #endif // IMAGE_INTERNAL_H

@@ -248,19 +248,24 @@ written in either case.
 
 ### 2.5 Read-only, writable, blank
 
-- **writable ⇔ a persistent delta.** A writable medium always has
-  `<delta_dir>/<id>.{delta,journal}`. A read-only medium has **no delta at
-  all**: `storage_new` accepts a NULL `delta_path`, reads come from the base,
-  and writes fail (`STATUS_E_ROFS`). `ghost_instance` and `ghost_paths` go
-  away. Identify, probe, VFS mounts and CDs stop creating scratch files.
-- **Write-protect is enforced twice.** The device reports it to the guest,
-  as it does today: the IWM sense, SCSI DATA PROTECT, Lisa FDC status
-  `$18`. The medium refuses the write as a backstop. Commit C2 adds the
-  missing device checks, in the Lisa FDC and the SWIM ISM.
-- **Blank media** (`image_create_blank_kind(kind, sectors)`) are writable media
-  with no base: a persistent delta in the machine directory, unwritten
-  sectors read as zeros, and a checkpoint entry with source `""` plus the
-  sector count. This fixes §1.4 item 5. Creating a blank *file*
+- **writable ⇔ a persistent delta.** A writable image always has
+  `<delta_dir>/<id>.{delta,journal}`. A read-only image is write-protected:
+  `disk_write_data` refuses a write, and its scratch pair is **lazy**
+  (`storage_config_t.lazy`) — created only by the first write to the
+  storage, which for a read-only image is only a consolidated checkpoint's
+  restore over a missing base. Identify, probes, VFS mounts and CDs create no
+  files. (The design had read-only images without any delta; the lazy pair
+  keeps that one restore case working with no engine mode of its own.)
+- **Write-protect is enforced twice.** The device reports it to the guest:
+  the IWM/SWIM sense, SCSI DATA PROTECT, Lisa FDC status `$20`. The image
+  refuses the write as a backstop. The Lisa FDC and the SWIM ISM write path
+  check it too now.
+- **`insert` is writable by default** everywhere (§6); `writable=false` asks
+  for a write-protected disk.
+- **Blank images** (`image_create_blank_kind(kind, blocks, instance)`) are
+  writable images with no base: a delta where `image_delta_dir` puts it,
+  unwritten blocks read as zeros, and a checkpoint entry with no name plus
+  the size, which the restore recreates. This fixes §1.4 item 5. Creating a blank *file*
   (`fd_create`, `hd_create`, `profile_create`) is a separate verb and stays
   file-level (commit C7).
 - **CD** is always read-only, whatever the caller asks.
@@ -270,10 +275,13 @@ written in either case.
 - **One owner.** The machine's media table (today `image_table`,
   `system.c:93`) owns every attached medium, the ProFile included. Devices
   borrow the pointer.
-- **One eject.** `system_media_eject` and every device eject verb end in a
-  single helper, `media_release(cfg, m)`. It drops the device's pointer,
-  then closes the medium and frees its table slot. The floppy calls it
-  today; SCSI, ATAPI, the Lisa FDC and the ProFile join. A SCSI CD keeps
+- **One eject.** Every eject — host or guest, on every device — drops the
+  device's pointer and hands the image to `config_release_image`, which
+  closes it and frees its table slot. The floppy did; SCSI (and so ATAPI),
+  the ATA hard disk and the ProFile do now. The Lisa diskette is the one
+  exception, on purpose: the Lisa FDC keeps a reinsert cache that hands the
+  same image back when the same diskette goes in again, so what the OS wrote
+  to it (the boot diskette's overmount stamp) survives an eject. A SCSI CD keeps
   its (empty) drive. The guest's PREVENT MEDIUM REMOVAL still refuses
   (`scsi_eject_device` `-2`). The host may eject an HD on every bus, which
   is SCSI's behaviour today, so ATA's refusal goes (§1.4 item 9).
@@ -294,11 +302,13 @@ storage blob · DiskCopy identity (name field, format byte)`
   same base view and the same presentation. The `image_geometry_t` argument
   goes away, and so does the ProFile's private restore
   (`lisa_profile_init` `:471`, `lisa_profile_checkpoint` `:511`).
-- Device parts store a **table ordinal** (the entry's position in the saved
-  list, `u32`, or `UINT32_MAX` for an empty drive) instead of the filename
+- Device parts store the image's **position** in the saved list (`u32`,
+  `IMAGE_REF_NONE` for an empty drive) instead of the filename
   (`checkpoint_write_image_ref`). Matching by name cannot resolve a blank
-  medium, and it is ambiguous when two entries share a name. The ordinal is
-  computed at save, because NULL slots are skipped there.
+  image, and it is ambiguous when two entries share a name. The images part
+  stamps each image with its position as it saves it
+  (`image_set_checkpoint_index`): NULL slots are skipped there, and it is
+  saved before any device that refers to it.
 - The format changes, which `checkpoint_validate_build_id` already handles.
   No migration code is needed (owner rule).
 
@@ -350,7 +360,7 @@ exists only while an image is loaded.
 | `delta` | string | instance stem; `""` when read-only |
 | `reads` / `writes` / `read_errors` | uint, volatile | I/O counters |
 | `export(path, [codec])` | → `true` or error | I/O job; §2.8 |
-| `eject()` | → none or error | `media_release`; error text when locked or empty |
+| `eject()` | → none or error | releases the image to the table; error text when locked or empty |
 
 The node has no `present` member: a node that resolves holds an image.
 Floppy `density` becomes the drive's `format` (§3.2).
@@ -464,7 +474,7 @@ commit (no aliases, no shims).
 | # | Step | Landed |
 |---|---|---|
 | C1 | **One open path + kinds.** `image_kind.c`: the kind table, `image_open_kind(path, {kind, writable, instance, delta_dir})`, `image_delta_dir`, `image_create_blank_kind`; `media_open`, `do_insert_fd`, `system_create_floppy`, `lisa_profile_attach` and the checkpoint restore route through it; the kind is stored on the image and in its checkpoint entry; `files.images[].type` reports it. Removes `enum image_type`, `classify_image`, `image_set_type`, the ProFile's `pro_delta_dir`, `system.c`'s `pick_delta_dir`, the public `*_with_geometry` openers, `system_probe_floppy`. Fixes §1.4 items 1, 2, 10 | yes |
-| C2 | **One owner, one eject, one checkpoint path.** The ProFile in the image table; `media_release` on every eject; refs by ordinal; blank images with a persistent delta; read-only images with no delta; write-protect checks in the Lisa FDC and the SWIM ISM; `insert` writable by default everywhere. Fixes items 4–7, 9 | |
+| C2 | **One owner, one eject, one checkpoint path.** The ProFile in the image table; every eject releases its image to the table (`config_release_image`; the Lisa diskette excepted, §2.6); refs by position; blank images with a persistent delta; read-only images write-protected, with a lazy scratch pair; write-protect checks in the Lisa FDC and the SWIM ISM; `insert` writable by default everywhere; host eject of an ATA hard disk. Fixes items 4–7, 9 | yes |
 | C3 | **Tags in-band.** Units `[T][512]`; pad and merge base views; delta v3 `tag_bytes`; sector and unit planes; the floppy controllers on the sector API; DiskCopy and MOOF export read tags from units; the checkpoint tag tail goes. Fixes item 3 | |
 | C4 | **`files.identify`.** The identify core and method; the nine entry points of §4.2 and the SCSI facade go; `catalog.hd_models` | |
 | C5 | **One image node.** `image_class.c` on every device and on `files.images`; the ATA `device[U]` collection; the renames of §3.4; every export an I/O job with a codec; gs-test-data scripts updated in that repository. Fixes item 8 | |
@@ -479,7 +489,7 @@ commit (no aliases, no shims).
   are the ones a caller asked to be write-protected.
 - **Six floppy controllers change their sector I/O (C3)** in hot paths
   (track build and flush); every controller is covered by a boot row.
-- **Ownership move (C2).** One owner plus `media_release` removes the
+- **Ownership move (C2).** One owner and one release path remove the
   double-free class recorded at `lisa_fdc.c`, but a teardown that also
   closes (`lisa_profile_delete`) has to be cut in the same commit.
 - **Ref ordinals (C2)** have to match the saved order: NULL slots are

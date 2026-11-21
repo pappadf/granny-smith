@@ -20,6 +20,10 @@ image_kind_t image_get_kind(const image_t *image) {
 image_layout_t image_layout(const image_t *image) {
     return image ? image_layout_of_size(image->raw_size) : IMAGE_LAYOUT_NONE;
 }
+void image_set_checkpoint_index(image_t *image, uint32_t index) {
+    if (image)
+        image->checkpoint_index = index;
+}
 bool image_is_writable(const image_t *image) {
     return image && image->writable;
 }

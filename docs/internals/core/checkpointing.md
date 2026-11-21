@@ -133,7 +133,9 @@ Until 2026-09 the core copied every non-OPFS image to a flat, hash-named `/opfs/
 
 A single OPFS mount at `/opfs` is created in C `main()`. Subdirectories inside `/opfs/images` are created via `mkdir()` on the worker thread; the `<machine_id>-<created>` directory is created lazily by `checkpoint_machine_set()`.
 
-Read-only image opens (`image_open_readonly`) park their throwaway delta and journal under `/tmp/gs-image-ro/<random>.{delta,journal}` and delete those on `image_close`. They never touch `/opfs/images/`.
+Read-only image opens (`image_open_readonly`, a CD, a write-protected floppy) are write-protected and create no delta: their throwaway pair under `/tmp/gs-image-ro/<random>.{delta,journal}` is made only if a consolidated restore over a missing base writes to it, and is deleted on `image_close`. They never touch `/opfs/images/`.
+
+Which image a drive holds is saved as its **position** in the images part (`checkpoint_write_image_ref`): the images part is saved before any drive refers to it and stamps each image with its position as it goes, and a drive's restore resolves the position in the restored list (`checkpoint_read_image_ref`). A position rather than the file name, because a blank image has none and two drives may hold images of the same file. Every drive's image — the Lisa's ProFile included — is in that list; the ProFile no longer saves its own.
 
 
 ### Details and Best Practices

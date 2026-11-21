@@ -98,6 +98,7 @@ int storage_load_state(storage_t*, void* ctx, storage_read_callback_t cb);
 | `journal_path` | Path to preimage journal (created if missing). |
 | `block_count` | Number of logical blocks. |
 | `block_size` | Bytes per block: a multiple of 4 in `[512, STORAGE_MAX_BLOCK_SIZE]` (512 default, 532 for a ProFile). |
+| `lazy` | Create the delta and journal on the first write instead of at `storage_new`, when they do not exist yet. A read-only image's scratch pair is lazy, so a probe or a mount never puts a file on disk. |
 
 `storage_checkpoint` needs a checkpoint stream (NULL is an error); a commit without one is `storage_clear_rollback`.
 

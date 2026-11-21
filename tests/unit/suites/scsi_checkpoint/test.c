@@ -78,6 +78,15 @@ sprint_io_t g_sprint_io;
 config_t *system_config(void) {
     return NULL;
 }
+// An eject hands its image back to the running machine's table; this suite
+// has no machine, and its images are its own.
+config_t *system_running(void) {
+    return NULL;
+}
+void config_release_image(config_t *cfg, image_t *image) {
+    (void)cfg;
+    (void)image;
+}
 
 void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, const memory_interface_t *iface,
                     void *context) {
@@ -90,14 +99,6 @@ uint32_t cpu_get_pc(cpu_t *restrict cpu) {
 void via_input_c(via_t *via, int port, int c, bool value) {
     (void)via, (void)port, (void)c, (void)value;
 }
-// No image is re-opened here: these tests care about the register and device
-// state around the medium, not the medium itself.
-image_t *images_find(const image_list_t *images, const char *name) {
-    (void)images;
-    (void)name;
-    return NULL;
-}
-
 // A checkpoint error, counted (none is expected).
 static int g_cp_errors;
 void checkpoint_set_error(checkpoint_t *checkpoint) {
@@ -149,7 +150,7 @@ void scheduler_forget_source(struct scheduler *sch, void *source) {
     (void)source;
 }
 // The medium itself is out of scope here: these tests stage the state AROUND a
-// device, not its contents, and images_find() returns NULL so
+// device, not its contents, and no checkpoint names an image, so
 // no image is ever opened.
 size_t disk_read_data(image_t *img, uint64_t off, uint8_t *buf, size_t len) {
     (void)img, (void)off, (void)buf, (void)len;

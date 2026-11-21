@@ -91,8 +91,11 @@ typedef struct image_open_opts {
 // the reason is in `err` (may be NULL).
 struct image *image_open_kind(const char *path, const image_open_opts_t *o, char *err, size_t err_cap);
 
-// A brand-new all-zero medium of `kind` with no base file: `blocks` blocks of
-// image_kind_block_size(kind) bytes (a blank ProFile).
-struct image *image_create_blank_kind(image_kind_t kind, uint64_t blocks);
+// A writable all-zero image of `kind` with no base file: `blocks` blocks of
+// image_kind_block_size(kind) bytes (a blank ProFile).  Its delta is a fresh
+// instance where image_delta_dir(NULL) says, or the existing `instance` stem
+// (NULL for a fresh one: a checkpoint restore passes the saved one), so it
+// is checkpointed and restored like any image with a base.
+struct image *image_create_blank_kind(image_kind_t kind, uint64_t blocks, const char *instance);
 
 #endif // IMAGE_KIND_H

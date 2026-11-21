@@ -1712,11 +1712,11 @@ static DEF_METHOD(floppy_drive_method_insert) {
     unsigned slot = 0;
     if (!floppy_drive_floppy(self, &slot))
         return val_err("floppy.drives.N.insert: floppy controller not available");
-    bool writable = (argc >= 2) ? argv[1].b : false;
+    bool writable = (argc >= 2) ? argv[1].b : true;
     return val_bool(system_fd_insert(argv[0].s, (int)slot, writable) == 0);
 }
 
-static const value_t floppy_false = {.kind = VK_BOOL, .b = false};
+static const value_t floppy_true = {.kind = VK_BOOL, .b = true};
 static const arg_decl_t floppy_drive_insert_args[] = {
     {.name = "path",
      .kind = VK_STRING,
@@ -1725,8 +1725,8 @@ static const arg_decl_t floppy_drive_insert_args[] = {
     {.name = "writable",
      .kind = VK_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &floppy_false,
-     .doc = "Mount writable"},
+     .default_value = &floppy_true,
+     .doc = "Mount writable; false = write-protected"},
 };
 
 static const member_t floppy_drive_members[] = {

@@ -81,14 +81,9 @@ uint32_t disk_block_size(image_t *img) {
 const char *image_get_filename(const image_t *img) {
     return img == &s_hd_img ? "hd.img" : img == &s_cd_img ? "cd.iso" : NULL;
 }
-image_t *images_find(const image_list_t *images, const char *filename) {
-    (void)images;
-    if (filename && strcmp(filename, "hd.img") == 0)
-        return &s_hd_img;
-    if (filename && strcmp(filename, "cd.iso") == 0)
-        return &s_cd_img;
-    return NULL;
-}
+// The machine's restored image list: the positions a checkpoint names.
+static image_t *const s_items[] = {&s_hd_img, &s_cd_img};
+static const image_list_t s_images = {s_items, 2};
 
 static bool s_cp_error; // a restore flagged the stream
 
@@ -147,6 +142,15 @@ void system_read_checkpoint_data_loc(checkpoint_t *cp, void *d, size_t n, const 
 // The active machine, as scsi.c asks for it: none in this suite.
 config_t *system_config(void) {
     return NULL;
+}
+// An eject hands its image back to the running machine's table; this suite
+// has no machine, and its images are its own.
+config_t *system_running(void) {
+    return NULL;
+}
+void config_release_image(config_t *cfg, image_t *image) {
+    (void)cfg;
+    (void)image;
 }
 void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, const memory_interface_t *iface,
                     void *context) {
@@ -259,6 +263,8 @@ static void setup(void) {
     for (size_t i = 0; i < sizeof s_cd; i++)
         s_cd[i] = (uint8_t)(i * 13u + (i >> 11));
     s_cd_img.kind = IMAGE_KIND_CD;
+    s_hd_img.checkpoint_index = 0; // their positions in the saved list
+    s_cd_img.checkpoint_index = 1;
     s_cd_img.raw_size = sizeof s_cd; // what the bus model's range check reads
     s_hd_img.raw_size = sizeof s_hd;
     s_bus = scsi_init_named(NULL, NULL, NULL, "atapi");
@@ -672,7 +678,7 @@ TEST(a_checkpoint_mid_read_resumes_the_stream) {
     ata_channel_init(&s_ch, 0);
     ata_set_irq(&s_ch, on_irq, NULL);
     ata_set_atapi_bus(&s_ch, s_bus);
-    ata_checkpoint_restore(&s_ch, NULL, NULL);
+    ata_checkpoint_restore(&s_ch, NULL, &s_images);
     pio_in(b + 256, 1024 - 256);
     ASSERT_TRUE(memcmp(b, s_hd + 30 * 512, sizeof b) == 0);
     teardown();
@@ -687,23 +693,24 @@ static void restore_fresh(void) {
     s_cp_error = false;
     s_cp_max_read = 0;
     s_cp_pos = 0;
-    ata_checkpoint_restore(&s_ch, NULL, NULL);
+    ata_checkpoint_restore(&s_ch, NULL, &s_images);
 }
 
-// A hostile image-name length is refused at the count, instead of driving a
-// 4 GB allocation and read on the file's word.
-TEST(a_hostile_image_name_length_is_refused_at_the_count) {
+// A drive's image is named by its position in the saved image list; a
+// position the restored list does not hold fails the restore rather than
+// reading past the list.
+TEST(an_image_position_the_list_lacks_is_refused) {
     setup();
     s_cp_len = s_cp_pos = 0;
     ata_checkpoint_save(&s_ch, NULL);
-    // The first unit's name length follows the prefix, the sector buffer and
+    // The first unit's reference follows the prefix, the sector buffer and
     // the (empty) ATAPI response blob
     size_t at = offsetof(ata_channel_t, buf) + ATA_BUF_SIZE + sizeof(uint32_t) + s_ch.atapi_resp_len;
-    uint32_t len;
-    memcpy(&len, s_cp + at, sizeof len);
-    ASSERT_EQ_INT(len, strlen("hd.img") + 1);
-    len = 0xFFFFFFF0u;
-    memcpy(s_cp + at, &len, sizeof len);
+    uint32_t index;
+    memcpy(&index, s_cp + at, sizeof index);
+    ASSERT_EQ_INT(index, 0); // the hard disk: position 0
+    index = 0xFFFFFFF0u;
+    memcpy(s_cp + at, &index, sizeof index);
     restore_fresh();
     ASSERT_TRUE(s_cp_error);
     ASSERT_TRUE(s_ch.img[0] == NULL);
@@ -748,7 +755,7 @@ int main(void) {
     RUN(atapi_read_by_dma);
     RUN(atapi_check_condition_reports_the_sense_key);
     RUN(a_checkpoint_mid_read_resumes_the_stream);
-    RUN(a_hostile_image_name_length_is_refused_at_the_count);
+    RUN(an_image_position_the_list_lacks_is_refused);
     RUN(a_hostile_atapi_response_length_drives_no_read);
     free(s_cp);
     printf("All ata tests passed\n");

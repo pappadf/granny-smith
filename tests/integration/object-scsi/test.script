@@ -100,8 +100,13 @@ assert machine.scsi.identify_iso("${$WORK_DIR}/ident-fd.img") == false "floppy s
 
 # Hard disk: out and back in as a hard disk.
 assert machine.scsi.device[0].type == "hd" "slot 0 should start as a hard disk"
+let tracked = files.images.count
 assert machine.scsi.device[0].eject() "ejecting the boot HD failed"
 assert machine.scsi.device[0].medium_present == false "HD still reports a medium after eject"
+# The eject hands the image back: it is closed and its slot in the machine's
+# image list freed, so the file is free at once.  It used to stay open until
+# the machine went away.
+assert files.images.count == $tracked - 1 "the ejected HD's image is still open"
 assert machine.scsi.device[0].insert("${$WORK_DIR}/ident-hd.img") "re-inserting the HD failed"
 assert machine.scsi.device[0].type == "hd" "HD came back as ${machine.scsi.device[0].type} after insert"
 assert machine.scsi.device[0].read_only == false "HD came back read-only after insert"

@@ -157,26 +157,29 @@ void image_tick_all(config_t *config);
 const char *image_get_filename(const image_t *image);
 
 // A machine's restored images, handed to the media controllers as a
-// construction argument: each resolves the media it saved by name.
+// construction argument: each resolves the media it saved by position.
 typedef struct image_list {
     image_t *const *items;
     int n;
 } image_list_t;
 
-// The image in `images` whose image_get_filename is `name`, or NULL (also
-// when `images` is NULL).
-image_t *images_find(const image_list_t *images, const char *name);
+// What checkpoint_write_image_ref writes for an empty drive.
+#define IMAGE_REF_NONE UINT32_MAX
 
-// Write which image a drive holds, by name (image_ref.c): the
-// checkpoint_write_string form, so NULL or a nameless image writes length 0.
+// Record `img`'s position in the image list a checkpoint is saving (the
+// images part, before any drive refers to it); IMAGE_REF_NONE for an image
+// the list does not hold.
+void image_set_checkpoint_index(image_t *img, uint32_t index);
+
+// Write which image a drive holds (image_ref.c): its position in the
+// checkpoint's image list, or IMAGE_REF_NONE for NULL.
 void checkpoint_write_image_ref(checkpoint_t *cp, const image_t *img);
 
 // Read what checkpoint_write_image_ref wrote and resolve it in `images`.
-// NULL for "no image"; a name that does not resolve logs "<what>: the
-// checkpoint's image '...' is not among its images" and flags `cp`, as does a
-// length over CHECKPOINT_MAX_PATH.  `named` (may be NULL) is set to whether
-// the stream held a name at all.
-image_t *checkpoint_read_image_ref(checkpoint_t *cp, const image_list_t *images, const char *what, bool *named);
+// NULL for "no image"; a position the list does not hold logs "<what>: the
+// checkpoint's image N is not among its images" and flags `cp`.  `held` (may
+// be NULL) is set to whether the drive held an image at all.
+image_t *checkpoint_read_image_ref(checkpoint_t *cp, const image_list_t *images, const char *what, bool *held);
 
 // Create an empty disk image file of the specified size (for checkpoint restore)
 int image_create_empty(const char *filename, uint64_t size);

@@ -1,4 +1,6 @@
 assert machine.hd.present "hd= attached the ProFile"
+assert files.images.count == 1 "the ProFile's image is the machine's, like every drive's"
+assert files.images[0].type == "profile" "and is a ProFile"
 assert try(machine.attach_cdrom("${$WORK_DIR}/pro.img"), "none") == "none" "no CD bay on a Lisa"
 machine.eject_media "profile"
 assert !machine.hd.present "eject_media took the ProFile out"
@@ -8,6 +10,29 @@ assert $b.bus == "profile" "attach_hd on a Lisa uses the ProFile"
 assert machine.hd.present "and it is attached"
 assert machine.storage[0].media.bus == "profile" "storage names the ProFile bay"
 assert machine.storage[0].filename == "${$WORK_DIR}/pro.img" "and the image in it"
+
+# An eject hands the image back: it is closed and its slot freed.  The
+# ProFile's used to stay open until the machine went away.  (The diskette's
+# stays open on purpose: the Lisa FDC's reinsert cache hands the same image
+# back when the same diskette goes in again.)
+let n = files.images.count
+machine.floppy.drive[0].insert "${$TEST_DATA}/systems/System_2_0_1.dsk"
+assert files.images.count == $n + 1 "the diskette is tracked"
+assert files.images[$n].writable "inserted writable by default"
+machine.floppy.drive[0].eject
+assert files.images.count == $n + 1 "the diskette stays for its reinsert"
+let m = files.images.count
+machine.eject_media "profile"
+assert files.images.count == $m - 1 "the ejected ProFile's image is still open"
+
+# A blank ProFile is checkpointed and restored like any disk.  It used to
+# vanish: it had no file name to save, so the restore dropped it.
+machine.hd.attach
+assert machine.hd.present "a blank ProFile"
+assert checkpoint.save("${$WORK_DIR}/blank.checkpoint") "checkpoint save"
+assert checkpoint.load("${$WORK_DIR}/blank.checkpoint") "checkpoint load"
+assert machine.hd.present "the blank ProFile survived the restore"
+assert files.images[0].type == "profile" "as a ProFile"
 
 # A Lisa has no SCSI.  After a Mac with a controller was booted and replaced,
 # machine.scsi must not answer from that Mac's controller: the machine-bound

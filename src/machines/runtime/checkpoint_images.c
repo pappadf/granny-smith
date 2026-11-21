@@ -43,10 +43,16 @@ void mac_checkpoint_save_images(config_t *cfg, checkpoint_t *cp) {
     for (int i = 0; i < n; ++i)
         count += config_get_image(cfg, i) != NULL;
     system_write_checkpoint_data(cp, &count, sizeof(count));
+    // Each image's position in this list is what a drive's reference names
+    // (checkpoint_write_image_ref); the restore rebuilds the list in this
+    // order, so the positions resolve there.
+    uint32_t index = 0;
     for (int i = 0; i < n; ++i) {
         image_t *img = config_get_image(cfg, i);
-        if (img)
+        if (img) {
+            image_set_checkpoint_index(img, index++);
             image_checkpoint(img, cp);
+        }
     }
 }
 
@@ -168,6 +174,20 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp) {
             // consolidated one carries every block, so its base is not read.)
             out_printf("Error: %s is not the image the checkpoint was saved with (it was %s, it is now %s)\n", name,
                        saved_key, image_get_source_key(img));
+            checkpoint_set_error(cp);
+        }
+    } else if (raw_size > 0 && !checkpoint_has_error(cp)) {
+        // A blank image (no base file: a blank ProFile).  A quick checkpoint
+        // reopens its delta; a consolidated one refills a fresh blank one.
+        // This entry used to be dropped, so the disk vanished on restore.
+        uint32_t bs = image_kind_block_size((image_kind_t)kind);
+        bool quick = checkpoint_get_kind(cp) != CHECKPOINT_KIND_CONSOLIDATED;
+        if (kind != IMAGE_KIND_NONE && raw_size % bs == 0)
+            img = image_create_blank_kind((image_kind_t)kind, raw_size / bs,
+                                          quick && instance_path && instance_path[0] ? instance_path : NULL);
+        if (!img) {
+            out_printf("Error: cannot recreate a blank %s image while restoring checkpoint\n",
+                       image_kind_name((image_kind_t)kind));
             checkpoint_set_error(cp);
         }
     }

@@ -63,8 +63,9 @@ assert !files.list("${$raw}/partition1") "a disk attached before its first mount
 machine.restart
 assert !files.list("${$dmg}/partition1") "a .dmg is served by the VFS after machine.restart"
 
-# A read-only insert leaves nothing the VFS cannot see: still served.
-machine.floppy.drive[1].insert "${$ro}"
+# A read-only (write-protected) insert leaves nothing the VFS cannot see:
+# still served.
+machine.floppy.drive[1].insert "${$ro}" false
 assert files.list("${$ro}/partition1") "a read-only floppy is refused by the VFS"
 
 quit

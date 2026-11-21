@@ -22,6 +22,7 @@
 #include "debug.h"
 #include "display.h"
 #include "image.h"
+#include "image_kind.h"
 #include "io_leaf.h"
 #include "lisa_fdc.h"
 #include "lisa_keymap.h"
@@ -513,8 +514,8 @@ static bool lisa_fd_present(config_t *cfg, int drive) {
 
 // hw_profile_t.media_attach.  The Lisa has no cfg->floppy/cfg->scsi, so the
 // std core implementation covers nothing here: the Sony disk lives in the
-// 6504A FDC (owned by the tracked images, system.c) and the hard disk is the parallel ProFile
-// (which owns its image itself, hence attach_image).
+// 6504A FDC and the hard disk is the parallel ProFile.  Both images belong to
+// the machine's image table (system.c), like every other drive's.
 static int lisa_media_attach(config_t *cfg, const media_slot_t *slot) {
     lisa_state_t *ls = lisa_state(cfg);
     switch (slot->bus) {
@@ -526,6 +527,7 @@ static int lisa_media_attach(config_t *cfg, const media_slot_t *slot) {
     case MEDIA_BUS_PROFILE:
         if (!ls || !ls->profile || !lisa_profile_attach_image(ls->profile, slot->img))
             return -1;
+        config_add_image(cfg, slot->img);
         lisa_profile_update_lines(cfg); // drive OCD//BSY so the ROM sees the drive
         return 0;
     default:
@@ -561,7 +563,8 @@ static int lisa_media_eject(config_t *cfg, media_bus_t bus, int unit) {
         lisa_fdc_eject(ls->fdc);
         return 0;
     }
-    lisa_profile_detach(ls->profile);
+    // The image goes back to the table, which closes it: the file is free.
+    config_release_image(cfg, lisa_profile_detach(ls->profile));
     lisa_profile_update_lines(cfg);
     return 0;
 }
@@ -577,7 +580,7 @@ static int lisa_media_eject(config_t *cfg, media_bus_t bus, int unit) {
 // object's instance_data is the config_t.
 
 static DEF_METHOD(lisa_fd_drive_insert) {
-    bool writable = (argc >= 2) ? argv[1].b : false;
+    bool writable = (argc >= 2) ? argv[1].b : true;
     return val_bool(system_fd_insert(argv[0].s, 0, writable) == 0);
 }
 
@@ -626,7 +629,6 @@ static DEF_GETTER(lisa_fd_drive_index) {
     return val_int(0);
 }
 
-static const value_t lisa_false = {.kind = VK_BOOL, .b = false};
 static const value_t lisa_true = {.kind = VK_BOOL, .b = true};
 static const arg_decl_t lisa_fd_insert_args[] = {
     {.name = "path",
@@ -636,8 +638,8 @@ static const arg_decl_t lisa_fd_insert_args[] = {
     {.name = "writable",
      .kind = VK_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &lisa_false,
-     .doc = "Mount writable"},
+     .default_value = &lisa_true,
+     .doc = "Mount writable; false = write-protected"},
 };
 
 static const arg_decl_t lisa_fd_export_args[] = {
@@ -731,9 +733,22 @@ static DEF_METHOD(lisa_hd_attach) {
     bool writable = (argc >= 2 && argv[1].kind == VK_BOOL) ? argv[1].b : true;
     if (!ls || !ls->profile)
         return val_err("profile: no controller");
-    if (!lisa_profile_attach(ls->profile, path, writable))
-        return val_err("profile.attach: cannot open '%s'", path ? path : "(blank)");
-    lisa_profile_update_lines(cfg);
+    // A blank disk of the canonical 5 MB geometry, or the file as a ProFile
+    // image (its base never modified; writes go to its delta).
+    char err[256] = "";
+    image_t *img = path ? image_open_kind(path, &(image_open_opts_t){.kind = IMAGE_KIND_PROFILE, .writable = writable},
+                                          err, sizeof err)
+                        : image_create_blank_kind(IMAGE_KIND_PROFILE, LISA_PROFILE_DEFAULT_BLOCKS, NULL);
+    if (!img)
+        return val_err("profile.attach: %s", err[0] ? err : "cannot create a blank disk");
+    // The disk there goes out first (back to the table, which closes it).
+    if (lisa_profile_attached(ls->profile))
+        lisa_media_eject(cfg, MEDIA_BUS_PROFILE, 0);
+    media_slot_t slot = {.bus = MEDIA_BUS_PROFILE, .img = img};
+    if (lisa_media_attach(cfg, &slot) != 0) {
+        image_close(img);
+        return val_err("profile.attach: the ProFile cannot take '%s'", path ? path : "(blank)");
+    }
     return val_bool(true);
 }
 
@@ -742,8 +757,7 @@ static DEF_METHOD(lisa_hd_detach) {
     lisa_state_t *ls = lisa_state(cfg);
     if (!ls || !ls->profile || !lisa_profile_attached(ls->profile))
         return val_err("profile: no disk attached");
-    lisa_profile_detach(ls->profile);
-    lisa_profile_update_lines(cfg);
+    lisa_media_eject(cfg, MEDIA_BUS_PROFILE, 0);
     return val_none();
 }
 
@@ -1106,7 +1120,7 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // ProFile parallel hard disk on VIA2: control lines via the port-B output
     // callback (lisa_via2_output), data via the port-A hooks, BSY back to PB1/CA1.
     machine_part_begin(cfg, checkpoint, "profile");
-    ls->profile = lisa_profile_init(cfg->scheduler, lisa_profile_bsy, cfg, checkpoint);
+    ls->profile = lisa_profile_init(cfg->scheduler, lisa_profile_bsy, cfg, checkpoint, config_images(cfg));
     machine_part(cfg, checkpoint, "profile", lisa_profile_checkpoint_part, ls->profile);
     via_set_porta_hooks(cfg->via2, lisa_profile_porta_read_cb, lisa_profile_porta_write_cb, cfg);
     lisa_profile_update_lines(cfg); // no disk yet → OCD/ high (disconnected)

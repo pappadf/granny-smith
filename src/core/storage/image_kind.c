@@ -94,8 +94,9 @@ image_t *image_open_kind(const char *path, const image_open_opts_t *o, char *err
     return img;
 }
 
-image_t *image_create_blank_kind(image_kind_t kind, uint64_t blocks) {
-    image_t *img = image_create_blank(blocks, (image_geometry_t){.block_size = kind_desc(kind)->block_size});
+image_t *image_create_blank_kind(image_kind_t kind, uint64_t blocks, const char *instance) {
+    image_t *img = image_create_blank(blocks, (image_geometry_t){.block_size = kind_desc(kind)->block_size},
+                                      image_delta_dir(NULL), instance);
     if (img)
         img->kind = kind;
     return img;

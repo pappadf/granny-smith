@@ -390,6 +390,7 @@ static image_t *image_open_source(const char *name, source_t *data, source_t *rs
     }
 
     image->filename = gs_strdup(name);
+    image->checkpoint_index = IMAGE_REF_NONE;
     image->source_key = gs_strdup(source_key(data));
     image->format = gs_strdup(u.chain[0] ? u.chain : "raw");
     image->raw_size = raw;
@@ -407,7 +408,10 @@ static image_t *image_open_source(const char *name, source_t *data, source_t *rs
         image->instance_path = str_printf("%s/%s", dir, id);
     } else {
         // A read-only mount's delta+journal are ghosts in the scratch root,
-        // so they never land beside the media (a NULL path is caught below).
+        // so they never land beside the media (a NULL path is caught below),
+        // and lazy: nothing writes to a read-only image (disk_write_data
+        // refuses), so a probe or a mount never creates them.  Only a
+        // consolidated checkpoint's restore over a missing base does.
         ghost_paths(image);
     }
     if (image->instance_path) {
@@ -428,6 +432,7 @@ static image_t *image_open_source(const char *name, source_t *data, source_t *rs
     config.journal_path = image->journal_path;
     config.block_count = image->raw_size / image->block_size;
     config.block_size = image->block_size;
+    config.lazy = image->ghost_instance;
     status_t rc = storage_new(&config, &image->storage);
     source_release(padded);
     if (rc == STATUS_OK && u.dc42)
@@ -522,24 +527,41 @@ image_t *image_open_with_geometry(const char *base_path, const char *instance_pa
     return image_open_path(base_path, geom, OPEN_REOPEN, instance_path);
 }
 
-image_t *image_create_blank(uint64_t block_count, image_geometry_t geom) {
+image_t *image_create_blank(uint64_t block_count, image_geometry_t geom, const char *delta_dir, const char *instance) {
     uint32_t block_size = geometry_block_size(geom);
     if (block_count == 0)
         return NULL;
+    if (!instance || !*instance) {
+        if (!delta_dir || !*delta_dir)
+            delta_dir = image_scratch_dir();
+        if (mkdir_p(delta_dir) != 0) {
+            out_printf("image_create_blank: cannot create delta directory: %s\n", delta_dir);
+            return NULL;
+        }
+    }
 
     image_t *image = (image_t *)calloc(1, sizeof(image_t));
     if (!image)
         return NULL;
     image->filename = NULL; // no backing base file: unwritten blocks read as zeros
+    image->checkpoint_index = IMAGE_REF_NONE;
     image->raw_size = block_count * block_size;
     image->block_size = block_size;
     image->writable = true;
     image->from_diskcopy = false;
-    // Place the delta+journal in the scratch root so the blank disk's
-    // sidecars don't clutter any user directory; ghost_instance unlinks them on
-    // image_close.  The image is ephemeral unless exported via image_export_to.
-    image->instance_path = NULL; // never serialized
-    if (ghost_paths(image) != 0) {
+    // A writable instance like any other (its delta lives with the machine,
+    // so a checkpoint can name it and a restore reopen it), with no base
+    // behind it: the existing `instance`, or a fresh one in `delta_dir`.
+    if (instance && *instance) {
+        image->instance_path = gs_strdup(instance);
+    } else {
+        char id[17];
+        mint_random_hex_id(id);
+        image->instance_path = str_printf("%s/%s", delta_dir, id);
+    }
+    image->delta_path = image->instance_path ? str_printf("%s.delta", image->instance_path) : NULL;
+    image->journal_path = image->instance_path ? str_printf("%s.journal", image->instance_path) : NULL;
+    if (!image->delta_path || !image->journal_path) {
         image->writable = false; // never registered
         image_close(image);
         return NULL;
@@ -648,6 +670,13 @@ static size_t storage_read_range(image_t *disk, uint64_t offset, uint8_t *buf, s
 size_t disk_write_data(image_t *disk, uint64_t offset, uint8_t *buf, size_t size) {
     if (!disk || !disk->storage || !buf || size == 0)
         return 0;
+    // A read-only image is write-protected: the device tells the guest so,
+    // and a write that reaches here anyway is refused, not kept somewhere.
+    if (!disk->writable) {
+        LOG(1, "disk_write_data: %zu-byte write at %llu to the write-protected %s refused", size,
+            (unsigned long long)offset, disk->filename ? disk->filename : "image");
+        return 0;
+    }
     disk->writes++;
     GS_ASSERT((offset % disk->block_size) == 0);
     GS_ASSERT((size % disk->block_size) == 0);
@@ -1152,17 +1181,6 @@ void image_tick_all(config_t *config) {
 
 const char *image_get_filename(const image_t *image) {
     return image ? image->filename : NULL;
-}
-
-image_t *images_find(const image_list_t *images, const char *name) {
-    if (!images || !name)
-        return NULL;
-    for (int i = 0; i < images->n; i++) {
-        const char *n = image_get_filename(images->items[i]);
-        if (n && strcmp(n, name) == 0)
-            return images->items[i];
-    }
-    return NULL;
 }
 
 // ============================================================================

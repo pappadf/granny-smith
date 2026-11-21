@@ -5,13 +5,13 @@
 TEST_NAME    := lisa_profile
 TEST_SRCS    := test.c
 TEST_HARNESS := isolated
-# checkpoint_stubs.c supplies the two checkpoint/restore symbols the ProFile now
-# references (checkpoint_machine_dir, mac_checkpoint_restore_one_image) without
-# dragging in checkpoint_machine.c / checkpoint_images.c — this suite never
-# checkpoints (always inits with a NULL checkpoint).
+# checkpoint_stubs.c supplies checkpoint_machine_dir (image_delta_dir asks for
+# it) without dragging in checkpoint_machine.c — this suite never checkpoints
+# (always inits with a NULL checkpoint).
 EXTRA_SRCS   := ../../../../src/machines/lisa/lisa_profile.c \
                 ../../../../src/core/storage/image.c \
                 ../../../../src/core/storage/image_kind.c \
+                ../../../../src/core/storage/image_ref.c \
                 ../../../../src/core/platform_hooks.c \
                 ../../../../src/core/storage/image_wrap_sniff.c \
                 ../../../../src/core/storage/image_iso9660.c \

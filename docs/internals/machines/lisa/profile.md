@@ -51,7 +51,10 @@ for the device-info block), with
   node (class `profile`: `hd.attach [path] [writable]` / `hd.detach` /
   `hd.present` / `hd.save`, plus the `pram_init`/`pram_save`/`pram_load`
   PRAM snapshot methods)
-  attaches an image (blank in-memory if no path).
+  attaches an image (a blank 5 MB disk if no path).  The image belongs to the
+  machine's image list like every drive's: it is checkpointed there (a blank
+  disk included), `hd.detach` closes it, and the device saves only which
+  entry it holds.
 - **Verification.** `tests/unit/suites/lisa_profile` drives the device API
   directly (detection, device-info read, write→read round-trip, decline/abort).
   `tests/integration/lisa-profile` boots the rev-H ROM, attaches a blank ProFile,
