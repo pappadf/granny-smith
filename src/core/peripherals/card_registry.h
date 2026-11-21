@@ -2,8 +2,9 @@
 // Copyright (c) pappadf
 // card_registry.h
 // The pieces of a card-kind registry NuBus (nubus.c) and PCI (pci.c) share:
-// find a kind by id, suggest the id a near-miss typo meant, and format a
-// slot-check refusal.
+// find a kind by id, suggest the id a near-miss typo meant, format a
+// slot-check refusal, and check and resolve the monitor a slot entry plugs
+// into its card (slot_opts_t.monitor against the kind's monitor rows).
 //
 // Both buses keep their kinds in an explicit, NULL-terminated array of
 // pointers to a kind struct whose FIRST member is `const char *id`
@@ -21,6 +22,9 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
+
+struct nubus_monitor; // nubus/card.h: one monitor row of a card kind
 
 // === Type Definitions ===
 
@@ -51,6 +55,27 @@ value_t card_registry_list(const void *const *registry, const char *what);
 // slot with the reason in `why` ("" for a malformed entry).
 int card_slot_table_check(slot_opts_t *table, int n_slots, card_entry_check_fn check, const void *slots,
                           const char *model, char *why, size_t why_len);
+
+// The monitor rows a slot entry may name: a card kind's `monitors` (a
+// sentinel-terminated nubus_monitor_t array, NULL for a card without video).
+
+// Does `monitor` (slot_opts_t.monitor) name a row of `rows`?  "" (the card's
+// default) and "none" (nothing plugged in) always do.  The one check of an
+// entry's monitor, for both buses.
+bool card_monitor_check(const struct nubus_monitor *rows, const char *monitor);
+
+// The row an entry's `monitor` names: its row, the first row for "" (the
+// card's default), NULL for "none" or a card without rows.
+const struct nubus_monitor *card_monitor_row(const struct nubus_monitor *rows, const char *monitor);
+
+// Plug `row` into the entry: its monitor and sense become the row's, or
+// "none" and MACHINE_SENSE_NONE for NULL.
+void card_entry_set_monitor(slot_opts_t *e, const struct nubus_monitor *row);
+
+// The 6-bit extended sense code `row` answers the extended probe with: its
+// ext_sense, else what its strap alone reads (an undriven line reads its own
+// strapped level).  NULL -- no cable -- reads $3F, every line high.
+uint8_t card_monitor_ext_sense(const struct nubus_monitor *row);
 
 // Formats a slot-check refusal into `why` and returns false.
 __attribute__((format(printf, 3, 4))) bool card_refuse(char *why, size_t len, const char *fmt, ...);

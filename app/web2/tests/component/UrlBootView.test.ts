@@ -92,7 +92,7 @@ describe('UrlBootView', () => {
     expect(bars[1].getAttribute('aria-valuenow')).toBe('50');
     const hd = container.querySelector('[data-slot="hd0"]');
     expect(hd?.textContent).toContain(urlBoot.files[1].name);
-    expect(hd?.textContent).toContain('12.5 MB of 25.0 MB · 50%');
+    expect(hd?.textContent).toContain('13 MB of 25 MB · 50%');
     expect(container.querySelector('[data-slot="rom"]')?.getAttribute('data-state')).toBe('done');
   });
 

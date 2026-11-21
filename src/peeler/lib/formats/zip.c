@@ -13,7 +13,9 @@
 // (method 8) decode through the codec library's CODEC_DEFLATE (src/codec), as
 // far as reads reach.
 // Zip64 sizes and offsets, and a self-extractor stub (or anything else)
-// prepended to the archive, are handled.  Encrypted members are listed but
+// prepended to the archive, are handled.  Data descriptors (flag bit 3: the
+// local header's CRC and sizes left zero, written after the data) need
+// nothing: the central directory's are the ones read.  Encrypted members are listed but
 // refuse to open.
 //
 // Archives made on a Mac carry each file's resource fork and Finder info in

@@ -683,13 +683,12 @@ static display_t *civic_fb_resolve(void *owner) {
     return cv ? &cv->display : NULL;
 }
 static uint64_t civic_fb_base(void *owner) {
-    // A byte offset into CIVIC's own VRAM.  While the video-in overlay is up
-    // the scan runs from the composed frame instead, which is not in VRAM and
-    // has no meaningful offset.
+    // The guest physical address of the first displayed byte: CIVIC's VRAM
+    // window at AV_CIVIC_VRAM_BASE plus the scan offset.  While the video-in
+    // overlay is up (or the raster is held blanked) the scan runs from the
+    // composed frame instead, which is not in guest memory: 0.
     av_civic_t *cv = (av_civic_t *)owner;
-    if (!cv || !cv->display.bits || cv->display.bits == cv->compose || !cv->vram)
-        return 0;
-    return (uint64_t)(cv->display.bits - cv->vram);
+    return cv ? display_guest_addr(&cv->display, cv->vram, AV_CIVIC_VRAM_SIZE, AV_CIVIC_VRAM_BASE) : 0;
 }
 
 // The checkpointed plain-data prefix, up to the first host pointer

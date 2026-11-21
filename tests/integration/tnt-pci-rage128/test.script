@@ -80,9 +80,9 @@ def of_go() {
     assert contains($out, "0 > ") "Open Firmware did not return to its prompt"
     return $out
 }
-# Boot with slot entry `entry` to the prompt and return the card's properties.
-def card_properties(entry) {
-    machine.boot model="pm9500" ram=32768 rom="${$ROM}" slots="${$entry}"
+# Stop the machine just booted at the Open Firmware prompt and return the
+# card's properties.
+def of_card_properties() {
     machine.adb.keyboard.down "Command"
     machine.adb.keyboard.down "Option"
     machine.adb.keyboard.down "o"
@@ -102,6 +102,20 @@ def card_properties(entry) {
     of_send(".propert")
     of_send("ies")
     return of_go()
+}
+
+# Boot with slot entry `entry` to the prompt and return the card's properties.
+def card_properties(entry) {
+    machine.boot model="pm9500" ram=32768 rom="${$ROM}" slots="${$entry}"
+    return of_card_properties()
+}
+
+# The same with the Rage 128 in slot 1 and `monitor` plugged into it (the
+# configuration's displays.pci_1.monitor, the one way a monitor is chosen).
+def monitor_properties(monitor) {
+    machine.boot model="pm9500" ram=32768 rom="${$ROM}" config="{\"cards\":[{\"slot\":\"pci_1\",\"card\":\"rage128\"}],\"displays\":{\"pci_1\":{\"monitor\":\"${$monitor}\"}}}"
+    assert machine.pci.slot[1].card.monitor.id == $monitor "the configured monitor is plugged in"
+    return of_card_properties()
 }
 
 let p = card_properties("1=rage128")
@@ -138,18 +152,18 @@ assert contains($p, "driver,AAPL,MacOS,PowerPC") "the ndrv is published"
 assert contains($p, "0001844A bytes total") "...all 99,402 bytes of it"
 
 # A VGA monitor that does not answer DDC: no EDID, the same VGA mode.
-let p = card_properties("1=rage128,monitor=vga_noddc")
+let p = monitor_properties("vga_noddc")
 assert !contains($p, "EDID ") "no DDC, no EDID property"
 assert contains($p, "ATY,Flags               07170012") "VGA, no EDID"
 
 # An Apple 13" RGB on an Apple cable: the VSYNC loopback follows the
 # polarity the FCode drives, so it trusts the sense lines and reads $62B.
-let p = card_properties("1=rage128,monitor=13in_rgb")
+let p = monitor_properties("13in_rgb")
 assert contains($p, "ATY,Flags               062B8012") "Apple sense path ($8000), code $62B"
 assert contains($p, "width                   00000280") "640 x 480 at 67 Hz for the 13-inch"
 
 # A 21" Macintosh Color Display: code $000 -> 1152 x 870.
-let p = card_properties("1=rage128,monitor=21in_rgb")
+let p = monitor_properties("21in_rgb")
 assert contains($p, "ATY,Flags               00008010") "Apple sense, code $000"
 assert contains($p, "width                   00000480") "1152 pixels"
 assert contains($p, "height                  00000366") "870 lines"

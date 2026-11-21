@@ -387,6 +387,14 @@ static display_t *card_display(nubus_card_t *card) {
     return t ? &t->display : NULL;
 }
 
+// The guest physical address of the first displayed byte: the VRAM sits at
+// the bottom of the card's slot space, and the TFB base registers pick the
+// page scanned.  0 while the blank is scanned.
+static uint64_t card_fb_base(nubus_card_t *card) {
+    toby_t *t = card->priv;
+    return t ? display_guest_addr(&t->display, t->vram, TOBY_VRAM_SIZE, t->slot_base) : 0;
+}
+
 // The checkpointed plain-data prefix, up to the first host pointer
 CHECKPOINT_PREFIX(toby_t, display);
 
@@ -418,6 +426,7 @@ static const nubus_card_ops_t mac_ii_video_card_ops = {
     .teardown = card_teardown,
     .on_vbl = card_on_vbl,
     .display = card_display,
+    .fb_base = card_fb_base,
     .checkpoint_save = card_checkpoint_save,
     .checkpoint_restore = card_checkpoint_restore,
 };

@@ -15,6 +15,8 @@
 // The empty-slot coverage in particular is the gap this suite closes: the
 // hand-rolled model it replaces was never unit-tested at all.
 
+#include "card.h"
+#include "card_registry.h"
 #include "config_space.h"
 #include "pci.h"
 #include "system_internal.h"
@@ -42,11 +44,18 @@ const pci_card_kind_t tnt_control_kind = {
 // card with a real ROM requirement; the factory is the counting one, so the
 // slot walk can be watched seating it.
 static pci_device_t *counting_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts);
+// Two monitor rows, as the real card's carry them (the default first).
+static const nubus_monitor_t stub_mach64_monitors[] = {
+    {.id = "13in_rgb", .monitor = "13in_rgb", .width = 640, .height = 480, .sense_code = 6},
+    {.id = "21in_rgb", .monitor = "21in_rgb", .width = 1152, .height = 870, .sense_code = 0},
+    {.id = NULL},
+};
 const pci_card_kind_t mach64_gx_kind = {.id = "mach64_gx",
                                         .display_name = "Apple Accelerated PCI Graphics Card (ATI Mach64 GX)",
                                         .attach = PCI_ATTACH_PCI,
                                         .requires_prom = true,
                                         .card_class = "display",
+                                        .monitors = stub_mach64_monitors,
                                         .factory = counting_factory};
 // ...and the beige G3's on-board Rage Pro, the same file's builtin variant.
 const pci_card_kind_t ati_rage_pro_kind = {.id = "ati_rage_pro",
@@ -753,6 +762,8 @@ static int g_factory_calls;
 static int g_factory_slots[8];
 static const char *g_factory_vram[8]; // each call's vram= option, or NULL
 static char g_factory_raster[8][16]; // each call's raster= option, or ""
+static char g_factory_monitor[8][NUBUS_MONITOR_ID_MAX]; // each call's monitor
+static int g_factory_sense[8]; // ...and the sense code its connector reads
 
 static pci_device_t *counting_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     (void)cfg;
@@ -762,6 +773,8 @@ static pci_device_t *counting_factory(int slot_index, config_t *cfg, const rom_i
         g_factory_vram[g_factory_calls] = slot_opts_option(opts, "vram");
         const char *raster = slot_opts_option(opts, "raster");
         snprintf(g_factory_raster[g_factory_calls], sizeof g_factory_raster[0], "%s", raster ? raster : "");
+        snprintf(g_factory_monitor[g_factory_calls], sizeof g_factory_monitor[0], "%s", opts->monitor);
+        g_factory_sense[g_factory_calls] = opts->sense;
     }
     g_factory_calls++;
     pci_device_t *d = (pci_device_t *)calloc(1, sizeof(pci_device_t));
@@ -858,6 +871,52 @@ TEST(test_slot_walk_seats_the_documents_entries) {
     ASSERT_EQ_INT(g_factory_calls, 1);
     ASSERT_EQ_INT(g_factory_slots[0], 3); // only the document's card
     ASSERT_TRUE(pci_slot_device(root, 1) == NULL);
+    pci_root_delete(root);
+    cfg->build_opts = machine_build_opts_default();
+}
+
+// The monitor reaches a card one way, its slot entry's `monitor`: the shared
+// check refuses one the kind's rows do not list, and a valid one -- or the
+// kind's first row, for an entry that names none -- is what the card is
+// built with, its sense code beside it.
+TEST(test_monitor_is_checked_and_drives_the_sense) {
+    static const pci_slot_decl_t slots[] = {
+        {.slot = 1, .kind = PCI_SLOT_SOCKET, .label = "A1", .bus = 0, .device = 13},
+        {.slot = 2, .kind = PCI_SLOT_SOCKET, .label = "B1", .bus = 0, .device = 14},
+        {0},
+    };
+    char why[256] = "";
+    slot_opts_t e = {.slot = 1, .card = "mach64_gx", .monitor = "multiscan_17"};
+    ASSERT_TRUE(!pci_slot_entry_check(slots, "test", &e, false, why, sizeof why));
+    ASSERT_TRUE(strcmp(why, "monitor 'multiscan_17' is not one slot 1's card 'mach64_gx' drives") == 0);
+    // A card without monitor rows takes none at all.
+    e = (slot_opts_t){.slot = 1, .card = "sym53c825", .monitor = "13in_rgb"};
+    ASSERT_TRUE(!pci_slot_entry_check(slots, "test", &e, false, why, sizeof why));
+    e = (slot_opts_t){.slot = 1, .card = "mach64_gx", .monitor = "21in_rgb"};
+    ASSERT_TRUE(pci_slot_entry_check(slots, "test", &e, false, why, sizeof why));
+    e = (slot_opts_t){.slot = 1, .card = "mach64_gx", .monitor = "none"};
+    ASSERT_TRUE(pci_slot_entry_check(slots, "test", &e, false, why, sizeof why));
+
+    // Seated: slot 1 with the 21" plugged in (its row's sense, 0), slot 2
+    // naming no monitor (the first row, sense 6).
+    config_t *cfg = test_cfg();
+    cfg->build_opts = machine_build_opts_default();
+    cfg->build_opts.n_slots = 2;
+    cfg->build_opts.slots[0] = (slot_opts_t){.slot = 1, .card = "mach64_gx"};
+    card_entry_set_monitor(&cfg->build_opts.slots[0], card_monitor_row(stub_mach64_monitors, "21in_rgb"));
+    cfg->build_opts.slots[1] = (slot_opts_t){.slot = 2, .card = "mach64_gx"};
+    pci_root_t *root = pci_root_create(cfg);
+    pci_bus_create(root, "test", 0);
+    pci_init(root, slots);
+    stub_prom_offered = true;
+    g_factory_calls = 0;
+    pci_seat_slots(root, NULL);
+    stub_prom_offered = false;
+    ASSERT_EQ_INT(g_factory_calls, 2);
+    ASSERT_TRUE(strcmp(g_factory_monitor[0], "21in_rgb") == 0);
+    ASSERT_EQ_INT(g_factory_sense[0], 0);
+    ASSERT_TRUE(strcmp(g_factory_monitor[1], "13in_rgb") == 0);
+    ASSERT_EQ_INT(g_factory_sense[1], 6);
     pci_root_delete(root);
     cfg->build_opts = machine_build_opts_default();
 }
@@ -1204,6 +1263,7 @@ int main(void) {
     RUN(test_option_check_is_data_driven);
     RUN(test_init_hook_builds_a_whole_device);
     RUN(test_variant_builds_the_base_with_its_defaults);
+    RUN(test_monitor_is_checked_and_drives_the_sense);
     fprintf(stderr, "pci: all tests passed\n");
     return 0;
 }

@@ -298,12 +298,10 @@ void pci_objects_teardown_owned(pci_root_t *root);
 display_t *pci_connected_display(pci_root_t *root);
 pci_device_t *pci_connected_display_card(pci_root_t *root);
 
-// A display card may nominate one of the object nodes its kind attached as
-// the FRAMEBUFFER node — what `machine.screen.source` resolves to.  The
-// generic layer stores the nomination and hands back whichever belongs to
-// the current primary display, so it never has to test a card's identity
-// or guess which child is the framebuffer.
-void pci_card_set_framebuffer_object(pci_device_t *dev, struct object *obj);
+// The `framebuffer` node of the current primary display -- what
+// `machine.screen.source` resolves to.  pci_objects_build attaches one under
+// every seated device that has a `display` op (its `base` from the op's
+// optional `fb_base`), so the generic layer never tests a card's identity.
 struct object *pci_active_framebuffer_object(void);
 
 #endif // PCI_H

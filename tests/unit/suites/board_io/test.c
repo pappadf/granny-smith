@@ -476,6 +476,254 @@ TEST(test_validate_flags_a_window_with_no_declared_penalty) {
     ASSERT_EQ_INT(board_io_validate(&io, "probe"), 1);
 }
 
+// --- The direct page map (board_io_mark_untimed) -----------------------------
+// The PowerPC islands (AMIC, Grand Central, Heathrow) route their byte
+// accesses through board_io_direct_{read,peek,write}_uint8, which serve a page
+// owned by one plain row straight from the page map and hand everything else
+// to the general engine.  The fast path must be invisible: at every offset of
+// an island (and its mirror), for each board guard state, it has to make
+// exactly the calls the engine makes -- the same callee, the same arguments,
+// in the same order -- charge the same bus penalty, and return the same value.
+
+// One recorded call: which callee, and every argument it saw.
+typedef struct {
+    int fn; // DREC_* below
+    const void *ctx; // the cfg (handler rows) or the device handle (device rows)
+    uint32_t off; // window offset / device sub-offset
+    uint32_t addr; // raw bus address (handler rows; 0 for device calls)
+    uint32_t value; // written value (writes; 0 otherwise)
+} drec_call_t;
+
+enum {
+    DREC_H1_READ = 1,
+    DREC_H1_PEEK,
+    DREC_H1_WRITE,
+    DREC_H2_READ,
+    DREC_H2_WRITE,
+    DREC_DEV_READ,
+    DREC_DEV_PEEK,
+    DREC_DEV_WRITE
+};
+
+#define DREC_MAX 8
+static drec_call_t g_drec[DREC_MAX];
+static int g_drec_n;
+static bool g_drec_present; // what the guarded rows' present() answers
+
+// Append one call to the log.
+static void drec(int fn, const void *ctx, uint32_t off, uint32_t addr, uint32_t value) {
+    ASSERT_TRUE(g_drec_n < DREC_MAX);
+    g_drec[g_drec_n++] = (drec_call_t){fn, ctx, off, addr, value};
+}
+
+// A value that depends on the callee and every argument, so a call with any
+// argument wrong reads back differently too.
+static uint8_t drec_value(int fn, const void *ctx, uint32_t off, uint32_t addr) {
+    return (uint8_t)(fn * 37u + off * 7u + (addr >> 3) + (uint32_t)(uintptr_t)ctx);
+}
+
+// Handler row with a side-effect-free peek_fn of its own.
+static uint8_t h1_read(struct config *cfg, uint32_t win_off, uint32_t addr) {
+    drec(DREC_H1_READ, cfg, win_off, addr, 0);
+    return drec_value(DREC_H1_READ, cfg, win_off, addr);
+}
+static uint8_t h1_peek(struct config *cfg, uint32_t win_off, uint32_t addr) {
+    drec(DREC_H1_PEEK, cfg, win_off, addr, 0);
+    return drec_value(DREC_H1_PEEK, cfg, win_off, addr);
+}
+static void h1_write(struct config *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    drec(DREC_H1_WRITE, cfg, win_off, addr, value);
+}
+// Handler row without one: its read_fn serves inspections too.
+static uint8_t h2_read(struct config *cfg, uint32_t win_off, uint32_t addr) {
+    drec(DREC_H2_READ, cfg, win_off, addr, 0);
+    return drec_value(DREC_H2_READ, cfg, win_off, addr);
+}
+static void h2_write(struct config *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    drec(DREC_H2_WRITE, cfg, win_off, addr, value);
+}
+// Device faces: one interface with a peek side, one without.
+static uint8_t dev_read(void *dev, uint32_t sub) {
+    drec(DREC_DEV_READ, dev, sub, 0, 0);
+    return drec_value(DREC_DEV_READ, dev, sub, 0);
+}
+static uint8_t dev_peek(void *dev, uint32_t sub) {
+    drec(DREC_DEV_PEEK, dev, sub, 0, 0);
+    return drec_value(DREC_DEV_PEEK, dev, sub, 0);
+}
+static void dev_write(void *dev, uint32_t sub, uint8_t v) {
+    drec(DREC_DEV_WRITE, dev, sub, 0, v);
+}
+static const memory_interface_t k_dev_peeking = {
+    .read_uint8 = dev_read, .write_uint8 = dev_write, .peek_uint8 = dev_peek};
+static const memory_interface_t k_dev_plain = {.read_uint8 = dev_read, .write_uint8 = dev_write};
+
+// The board guard on the guarded rows.
+static bool drec_present(struct config *cfg) {
+    (void)cfg;
+    return g_drec_present;
+}
+
+// A 64 KB island with one of each kind of page the map has to decide: whole
+// pages owned by one plain row (handler with and without peek_fn, device with
+// and without a peek interface, a two-page device row, a device row whose
+// slot nobody bound), and pages it must leave to the engine (a guarded row
+// alone, a guarded row over a fallback, two rows sharing a page, a row that
+// covers part of its page, an offset transform, a bus penalty, an unmapped
+// page).
+#define DIRECT_MIRROR 0x0000FFFFu
+static const board_io_range_t k_direct_ranges[] = {
+    {0x0000, 0x1000, 0, 0, BOARD_IO_NORMAL, 0, 0, h1_read, h1_write, "plain_peek", .peek_fn = h1_peek},
+    {0x1000, 0x2000, 0, 0, BOARD_IO_NORMAL, 0, 0, h2_read, h2_write, "plain_nopeek"},
+    {0x2000, 0x4000, BOARD_DEV_VIA1, 0, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "dev_two_pages"},
+    {0x4000, 0x5000, BOARD_DEV_SCC, 0, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "dev_nopeek"},
+    {0x5000, 0x6000, BOARD_DEV_SCSI, 0, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "dev_unbound"},
+    {0x6000, 0x7000, 0, 0, BOARD_IO_NORMAL, 0, 0, h1_read, h1_write, "guarded", .peek_fn = h1_peek,
+     .present = drec_present},
+    {0x7000, 0x8000, 0, 0, BOARD_IO_NORMAL, 0, 0, h1_read, h1_write, "guarded_over", .peek_fn = h1_peek,
+     .present = drec_present},
+    {0x7000, 0x8000, 0, 0, BOARD_IO_NORMAL, 0, 0, h2_read, h2_write, "fallback"},
+    {0x8000, 0x8800, 0, 0, BOARD_IO_NORMAL, 0, 0, h2_read, h2_write, "shared_lo"},
+    {0x8800, 0x9000, BOARD_DEV_VIA1, 0, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "shared_hi"},
+    {0x9000, 0x9400, 0, 0, BOARD_IO_NORMAL, 0, 0, h1_read, h1_write, "part_page", .peek_fn = h1_peek},
+    {0xA000, 0xB000, 0, 0, BOARD_IO_STRIDE_16, 0, 0, h1_read, h1_write, "stride", .peek_fn = h1_peek},
+    {0xB000, 0xC000, BOARD_DEV_VIA2, 0, BOARD_IO_MASK_A0, 0, 0, NULL, NULL, "dev_mask_a0"},
+    {0xC000, 0xD000, 0, 3, BOARD_IO_NORMAL, 0, 0, h2_read, h2_write, "penalty"},
+    // $D000-$EFFF unmapped
+    {0xF000, 0x10000, BOARD_DEV_VIA1, 0, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "dev_last"},
+    {0},
+};
+
+// What one access did: the calls in order, the bus penalty it charged, and
+// (reads) the value it returned.
+typedef struct {
+    drec_call_t calls[DREC_MAX];
+    int n;
+    uint32_t phantom;
+    uint8_t value;
+} drec_trace_t;
+
+static uint32_t g_drec_burndown;
+
+// Start recording one access, with the bus-penalty mechanism live so a
+// penalty the direct path dropped would show.
+static void drec_begin(void) {
+    g_drec_n = 0;
+    g_drec_burndown = 1000000u;
+    g_sprint_io.burndown = &g_drec_burndown;
+    g_sprint_io.cpi_x256 = 256;
+    g_sprint_io.penalty_remainder = 0;
+    g_sprint_io.phantom_instructions = 0;
+}
+
+static drec_trace_t drec_end(uint8_t value) {
+    drec_trace_t t = {.n = g_drec_n, .phantom = g_sprint_io.phantom_instructions, .value = value};
+    memcpy(t.calls, g_drec, sizeof g_drec);
+    g_sprint_io.burndown = NULL;
+    g_sprint_io.cpi_x256 = 0;
+    return t;
+}
+
+// The engine's trace and the fast path's must be identical.
+static void drec_expect_same(const char *what, uint32_t addr, const drec_trace_t *eng, const drec_trace_t *dir) {
+    bool same = eng->n == dir->n && eng->phantom == dir->phantom && eng->value == dir->value;
+    for (int i = 0; same && i < eng->n; i++) {
+        const drec_call_t *a = &eng->calls[i], *b = &dir->calls[i];
+        same = a->fn == b->fn && a->ctx == b->ctx && a->off == b->off && a->addr == b->addr && a->value == b->value;
+    }
+    if (same)
+        return;
+    fprintf(stderr,
+            "[FAIL] %s at $%05X: engine %d call(s) penalty %u -> $%02X, direct %d call(s) penalty %u -> $%02X\n", what,
+            addr, eng->n, eng->phantom, eng->value, dir->n, dir->phantom, dir->value);
+    for (int i = 0; i < eng->n || i < dir->n; i++) {
+        if (i < eng->n)
+            fprintf(stderr, "    engine[%d]: fn %d off $%X addr $%X value $%X\n", i, eng->calls[i].fn,
+                    eng->calls[i].off, eng->calls[i].addr, eng->calls[i].value);
+        if (i < dir->n)
+            fprintf(stderr, "    direct[%d]: fn %d off $%X addr $%X value $%X\n", i, dir->calls[i].fn,
+                    dir->calls[i].off, dir->calls[i].addr, dir->calls[i].value);
+    }
+    exit(1);
+}
+
+TEST(test_direct_page_map_matches_the_engine) {
+    static int cfg_token, via1, scc, via2; // distinct cfg and device handles
+    struct config *cfg = (struct config *)&cfg_token;
+    board_io_t io;
+    board_io_install_table(&io, cfg, k_direct_ranges, DIRECT_MIRROR, 0x5Cu);
+    board_io_mark_untimed(&io);
+    board_io_bind_dev(&io, BOARD_DEV_VIA1, &via1, &k_dev_peeking);
+    board_io_bind_dev(&io, BOARD_DEV_SCC, &scc, &k_dev_plain);
+    board_io_bind_dev(&io, BOARD_DEV_VIA2, &via2, &k_dev_peeking);
+    // BOARD_DEV_SCSI left unbound
+
+    // The map holds exactly the plain whole-page rows, so the sweep below
+    // exercises both halves of each fast path.
+    ASSERT_TRUE(io.direct);
+    const int want_direct[16] = {0, 1, 2, 2, 3, 4, -1, -1, -1, -1, -1, -1, -1, -1, -1, 14};
+    for (unsigned pg = 0; pg < 16; pg++) {
+        const board_io_range_t *want = want_direct[pg] < 0 ? NULL : &k_direct_ranges[want_direct[pg]];
+        if (io.page_row[pg] != want) {
+            fprintf(stderr, "[FAIL] page %u: direct map holds %s, expected %s\n", pg,
+                    io.page_row[pg] ? io.page_row[pg]->debug_name : "(none)", want ? want->debug_name : "(none)");
+            exit(1);
+        }
+    }
+
+    // Every offset of the island and of its first mirror, both guard states.
+    int hits = 0;
+    for (int present = 0; present < 2; present++) {
+        g_drec_present = present;
+        for (uint32_t addr = 0; addr < 2u * (DIRECT_MIRROR + 1u); addr++) {
+            drec_begin();
+            uint8_t v = board_io_read_uint8(&io, addr);
+            drec_trace_t eng = drec_end(v);
+            drec_begin();
+            v = board_io_direct_read_uint8(&io, addr);
+            drec_trace_t dir = drec_end(v);
+            drec_expect_same("read", addr, &eng, &dir);
+
+            drec_begin();
+            v = board_io_peek_uint8(&io, addr);
+            eng = drec_end(v);
+            drec_begin();
+            v = board_io_direct_peek_uint8(&io, addr);
+            dir = drec_end(v);
+            drec_expect_same("peek", addr, &eng, &dir);
+
+            uint8_t value = (uint8_t)(addr * 13u + 0x41u);
+            drec_begin();
+            board_io_write_uint8(&io, addr, value);
+            eng = drec_end(0);
+            drec_begin();
+            board_io_direct_write_uint8(&io, addr, value);
+            dir = drec_end(0);
+            drec_expect_same("write", addr, &eng, &dir);
+            hits += eng.n > 0;
+        }
+    }
+    // Not a vacuous sweep: most offsets reached a callee, and the guard and
+    // penalty rows did what they say.
+    ASSERT_TRUE(hits > 0x10000);
+    g_drec_present = false;
+    drec_begin();
+    ASSERT_EQ_INT(board_io_direct_read_uint8(&io, 0x6010), 0x5C); // guard off: unmapped
+    drec_end(0);
+    ASSERT_EQ_INT(g_drec_n, 0);
+    drec_begin();
+    board_io_direct_read_uint8(&io, 0x7010); // guard off: the fallback row
+    drec_end(0);
+    ASSERT_EQ_INT(g_drec[0].fn, DREC_H2_READ);
+    drec_begin();
+    board_io_direct_read_uint8(&io, 0xC010);
+    ASSERT_EQ_INT(drec_end(0).phantom, 3);
+    drec_begin();
+    ASSERT_EQ_INT(board_io_direct_read_uint8(&io, 0x5010), 0x5C); // unbound device slot
+    drec_end(0);
+    ASSERT_EQ_INT(g_drec_n, 0);
+}
+
 // --- IRQ routing ----------------------------------------------------------
 
 TEST(test_irq_single_sources) {
@@ -512,6 +760,7 @@ int main(void) {
     RUN(test_decode_miss_is_recorded_once_per_4k);
     RUN(test_every_shipped_window_declares_a_bus_penalty);
     RUN(test_validate_flags_a_window_with_no_declared_penalty);
+    RUN(test_direct_page_map_matches_the_engine);
     RUN(test_irq_single_sources);
     RUN(test_irq_priority);
     printf("[PASS] All board_io dispatch-table tests passed\n");

@@ -111,7 +111,7 @@ machine.memory.poke.l(0xF2800000, 0x00000000)
 assert machine.pci.slot[1].card.regs.chip_id == 0x020000D7 "CONFIG_CHIP_ID: 'GX', class 0, revision 2 (GX-2)"
 assert machine.pci.slot[1].card.regs.vram_size == 0x200000 "2 MB of VRAM, as Apple soldered down"
 assert machine.pci.slot[1].card.config.rom_size == 0x8000 "a 32 KB expansion ROM is loaded"
-assert machine.pci.slot[1].card.monitor.id == "14in_rgb" "the default strapped monitor"
+assert machine.pci.slot[1].card.monitor.id == "13in_rgb" "the default strapped monitor"
 assert !machine.pci.slot[1].card.monitor.probed "nothing has sensed the monitor yet"
 
 # --- Now let the guest's own firmware run the card. -------------------------
@@ -175,6 +175,28 @@ assert machine.screen.source.stride == 640 "linebytes $280 — CRTC_PITCH x 8 x 
 # whatever is currently driving the display.  A seated PCI display card
 # wins over the machine's built-in video.
 assert machine.pci.slot[1].card.framebuffer.depth == 8 "screen.source resolves to the card's framebuffer"
+
+# framebuffer.base is the guest physical address of the first displayed
+# byte -- the aperture's BAR0 base plus CRTC_OFFSET x 8 ($200), not the bare
+# VRAM offset it used to be -- and the byte there IS the top-left pixel:
+# replacing it changes that pixel and neither its neighbour nor row 1.
+let FB = machine.pci.slot[1].card.framebuffer.base
+assert $FB == machine.pci.slot[1].card.config.bar[0].base + 0x200 "framebuffer.base ${$FB:08x} is not BAR0 + the CRTC offset"
+assert machine.screen.source.base == $FB "screen.source is the same node"
+let FB_PITCH = machine.memory.peek.l(0x817FFC14)
+let FB_P0 = machine.screen.checksum(0, 0, 1, 1)
+let FB_P1 = machine.screen.checksum(0, 1, 1, 2)
+let FB_R1 = machine.screen.checksum(1, 0, 2, 1)
+let FB_V = machine.memory.peek.b($FB)
+machine.memory.poke.b($FB, 0xFF - $FB_V)
+machine.memory.poke.l(0x817FFC14, $FB_PITCH)
+assert machine.screen.checksum(0, 0, 1, 1) == 0xFF - $FB_V "the byte at framebuffer.base is the first displayed pixel"
+assert machine.screen.checksum(0, 1, 1, 2) == $FB_P1 "...and only that pixel"
+assert machine.screen.checksum(1, 0, 2, 1) == $FB_R1 "...on row 0 only"
+assert machine.screen.checksum(1, 0, 2, 1) == machine.memory.peek.b($FB + machine.pci.slot[1].card.framebuffer.stride) "row 1 starts a stride on"
+machine.memory.poke.b($FB, $FB_V)
+machine.memory.poke.l(0x817FFC14, $FB_PITCH)
+assert machine.screen.checksum(0, 0, 1, 1) == $FB_P0 "restoring the byte restores the pixel"
 
 # --- The hardware cursor is an overlay, not something drawn into VRAM. ------
 # A 64x64 block of 2-bit pixels: 00 = colour 0, 01 = colour 1, 10 =
@@ -412,10 +434,12 @@ machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
 assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 2 "2 MB is the soldered default"
 machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx" pci_option="vram=4m"
 assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 3 "the 109-31600-00 expansion module makes it 4 MB"
-# Several options at once, and one the card senses for itself.
-machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx" pci_option="vram=2m,monitor=15in_multi"
-assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 2 "a comma-separated list must apply every pair"
-assert machine.pci.slot[1].card.monitor.id == "15in_multi" "...including the second one"
+# The monitor is not an option: it is the slot's display (a configuration's
+# displays.<slot>.monitor), checked against the card's monitor rows.
+assert !machine.boot(model="pm9500", ram=32768, rom="${$ROM}", pci_card="mach64_gx", pci_option="monitor=multiscan_15") "monitor= is not a card option"
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" config="{\"cards\":[{\"slot\":\"pci_1\",\"card\":\"mach64_gx\",\"options\":{\"vram\":\"2m\"}}],\"displays\":{\"pci_1\":{\"monitor\":\"multiscan_15\"}}}"
+assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 2 "the configuration's option applies"
+assert machine.pci.slot[1].card.monitor.id == "multiscan_15" "...and its monitor is strapped"
 # A malformed pair, a key the card does not take and a value it does not
 # offer each reject the boot, before the running machine is touched: the
 # card answers for its own options, so a typo is never silently a default.

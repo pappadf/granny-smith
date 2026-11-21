@@ -771,13 +771,11 @@ static display_t *dafb_fb_resolve(void *owner) {
     return dafb_display((dafb_t *)owner);
 }
 static uint64_t dafb_fb_base(void *owner) {
-    // A byte offset into the chip's own VRAM, which is where the Swatch
-    // scan base points.
+    // The guest physical address of the first displayed byte: the VRAM
+    // window at DAFB_VRAM_BASE plus where the Swatch scan base points.  Held
+    // blanked, the scan runs from the blank, which is not in VRAM: 0.
     dafb_t *d = (dafb_t *)owner;
-    // Held blanked, the scan runs from the blank, which is not in VRAM.
-    if (!d || !d->display.bits || d->display.bits == d->blank || !d->vram)
-        return 0;
-    return (uint64_t)(d->display.bits - d->vram);
+    return d ? display_guest_addr(&d->display, d->vram, d->vram_size, DAFB_VRAM_BASE) : 0;
 }
 
 void dafb_attach_objects(dafb_t *dafb) {

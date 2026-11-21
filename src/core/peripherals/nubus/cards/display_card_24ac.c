@@ -957,6 +957,13 @@ static display_t *card_display(nubus_card_t *card) {
     return p ? &p->display : NULL;
 }
 
+// The guest physical address of the first displayed byte: the VRAM sits at
+// the bottom of the card's slot space.  0 while the blank is scanned.
+static uint64_t card_fb_base(nubus_card_t *card) {
+    display_card_24ac_priv_t *p = card->priv;
+    return p ? display_guest_addr(&p->display, p->vram, DISPLAY_CARD_24AC_VRAM_SIZE, p->slot_base) : 0;
+}
+
 // The VRAM a power cycle loses (the bus default, nubus_power_on).
 static size_t card_vram(nubus_card_t *card, uint8_t **base) {
     display_card_24ac_priv_t *p = card->priv;
@@ -1011,6 +1018,7 @@ static const nubus_card_ops_t display_card_24ac_ops = {
     .reset = card_reset,
     .on_vbl = card_on_vbl,
     .display = card_display,
+    .fb_base = card_fb_base,
     .vram = card_vram,
     .checkpoint_save = card_checkpoint_save,
     .checkpoint_restore = card_checkpoint_restore,

@@ -321,14 +321,9 @@ bool nubus_slot_entry_check(const nubus_slot_decl_t *slots, const char *model, c
             return card_refuse(why, why_len, "custom_mode '%s' on slot $%X's card '%s': %s", e->custom_mode, e->slot,
                                k->id, bad);
     }
-    if (e->monitor[0] && strcmp(e->monitor, "none") != 0) {
-        bool known = false;
-        for (const nubus_monitor_t *m = rows; m && m->id; m++)
-            known |= strcmp(m->id, e->monitor) == 0;
-        if (!known)
-            return card_refuse(why, why_len, "monitor '%s' is not one slot $%X's card '%s' drives", e->monitor, e->slot,
-                               k ? k->id : "(none)");
-    }
+    if (!card_monitor_check(rows, e->monitor))
+        return card_refuse(why, why_len, "monitor '%s' is not one slot $%X's card '%s' drives", e->monitor, e->slot,
+                           k ? k->id : "(none)");
     if (e->n_options)
         return card_refuse(why, why_len, "slot $%X's card '%s' takes no option '%s'", e->slot, k ? k->id : "(none)",
                            e->options[0].key);

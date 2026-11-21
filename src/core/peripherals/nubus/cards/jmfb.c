@@ -581,6 +581,14 @@ static display_t *card_display(nubus_card_t *card) {
     return p ? &p->display : NULL;
 }
 
+// The guest physical address of the first displayed byte: the VRAM sits at
+// the bottom of the card's slot space, and VideoBase picks the scan start in
+// it.  0 while the blank is scanned.
+static uint64_t card_fb_base(nubus_card_t *card) {
+    jmfb_priv_t *p = card->priv;
+    return p ? display_guest_addr(&p->display, p->vram, JMFB_VRAM_SIZE, p->slot_base) : 0;
+}
+
 // The VRAM a power cycle loses (the bus default, nubus_power_on).
 static size_t card_vram(nubus_card_t *card, uint8_t **base) {
     jmfb_priv_t *p = card->priv;
@@ -639,6 +647,7 @@ static const nubus_card_ops_t mdc_8_24_ops = {
     .teardown = card_teardown,
     .on_vbl = card_on_vbl,
     .display = card_display,
+    .fb_base = card_fb_base,
     .vram = card_vram, // a power cycle takes the bus default
     .checkpoint_save = card_checkpoint_save,
     .checkpoint_restore = card_checkpoint_restore,
