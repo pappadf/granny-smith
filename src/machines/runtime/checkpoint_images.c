@@ -14,13 +14,13 @@
 #include "source.h"
 #include "status.h"
 #include "storage.h"
+#include "storage_util.h"
 #include "system.h" // config_max_images -- the real bound on the restored list
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 
 // Save the image list into a checkpoint stream.  Layout:
 //   uint32_t count
@@ -137,9 +137,8 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
             // storage_restore_from_checkpoint's own check.
             // A .dmg is recreated as UDIF (a few KB of zero run), not as a
             // raw file of the full size under that name.
-            size_t nl = strlen(name);
-            int rc = (nl >= 4 && strcasecmp(name + nl - 4, ".dmg") == 0) ? image_create_empty_udif(name, raw_size)
-                                                                         : image_create_empty(name, raw_size);
+            int rc = path_has_ext(name, ".dmg") ? image_create_empty_udif(name, raw_size)
+                                                : image_create_empty(name, raw_size);
             // The open below then fails and flags the checkpoint; this says why.
             if (rc != 0)
                 out_printf("Error: cannot recreate the missing base %s while restoring checkpoint\n", name);

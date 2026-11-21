@@ -37,18 +37,18 @@ __attribute__((weak)) bool platform_checkpoint_auto_get(void) {
 
 __attribute__((weak)) int platform_checkpoint_auto_set(bool enabled) {
     (void)enabled;
-    return -2; // no auto-checkpoint loop on this platform
+    return PLATFORM_E_UNSUPPORTED; // no auto-checkpoint loop on this platform
 }
 
 // Platform-specific entry points (see platform_hooks.h): the weak defaults say "not
-// supported on this platform" (-2), and a platform that has the thing
+// supported on this platform" (PLATFORM_E_UNSUPPORTED), and a platform that has the thing
 // overrides them -- headless quit, wasm download.
 __attribute__((weak)) int platform_quit(void) {
-    return -2; // the browser owns the page's lifecycle
+    return PLATFORM_E_UNSUPPORTED; // the browser owns the page's lifecycle
 }
 __attribute__((weak)) int platform_download(const char *path) {
     (void)path;
-    return -2; // no browser to hand a file to
+    return PLATFORM_E_UNSUPPORTED; // no browser to hand a file to
 }
 
 // Host video-input seam: the defaults model "no camera attached" — the
@@ -65,6 +65,18 @@ __attribute__((weak)) int platform_video_in_frame(uint8_t *rgba) {
 
 __attribute__((weak)) void platform_video_in_state(bool active) {
     (void)active;
+}
+
+// Shared-memory wake seam (platform_hooks.h): no waiter on a native host.
+__attribute__((weak)) void platform_wake(volatile uint32_t *word) {
+    (void)word;
+}
+
+__attribute__((weak)) int platform_wait(volatile uint32_t *word, uint32_t expect, uint32_t timeout_ms) {
+    (void)word;
+    (void)expect;
+    (void)timeout_ms;
+    return -1;
 }
 
 // Host GPU-transport seam (platform_hooks.h): no GPU on a native host.

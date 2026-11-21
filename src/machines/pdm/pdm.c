@@ -22,7 +22,7 @@
 
 #include "pdm.h"
 
-#include "cuda.h" // the shared behavioral Cuda model (machines/av/)
+#include "cuda.h" // the shared behavioral Cuda model (core/peripherals/)
 
 #include "adb.h"
 #include "appletalk.h"
@@ -36,7 +36,9 @@
 #include "machine_checkpoint.h"
 #include "machine_teardown.h" // the shared config_t-owned delete chain
 #include "nubus.h"
+#include "page_fill.h"
 #include "ppc.h"
+#include "ppc_build.h"
 #include "rtc.h"
 #include "scc.h"
 #include "scheduler.h"
@@ -96,46 +98,6 @@ const struct nubus_slot_decl pdm_nubus_slots_cde[] = {
 };
 
 // ============================================================
-// Page-table helpers (the mac030_fill_page shape, kept local so the PDM
-// family does not pull 68K-family headers)
-// ============================================================
-
-void pdm_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
-    if (page_index >= (uint32_t)g_page_count)
-        return;
-    memory_page_set_host(page_index, host_ptr, writable);
-    uint32_t guest_base = page_index << MEM_PAGE_SHIFT;
-    uintptr_t adjusted = MEM_RAM_ENTRY((uintptr_t)host_ptr - guest_base);
-    // Supervisor arrays hold the eager physical identity view; the USER
-    // arrays belong to the 601 MMU front end (logical fills, ppc_mmu.c)
-    // and are only ever cleared here.  Callers that change the physical
-    // map (HMC remap) additionally invalidate the MMU caches.
-    if (g_supervisor_read)
-        g_supervisor_read[page_index] = adjusted;
-    if (g_supervisor_write) // write entry refused on a predecoded code page (memory.h)
-        g_supervisor_write[page_index] = writable ? memory_write_fill(page_index, host_ptr, adjusted, MEM_WT_SUPER) : 0;
-    if (g_user_read)
-        g_user_read[page_index] = 0;
-    if (g_user_write)
-        g_user_write[page_index] = 0;
-    memory_logpoint_guard_page(page_index);
-}
-
-void pdm_clear_page(uint32_t page_index) {
-    if (page_index >= (uint32_t)g_page_count)
-        return;
-    memory_page_clear(page_index);
-    if (g_supervisor_read)
-        g_supervisor_read[page_index] = 0;
-    if (g_supervisor_write)
-        g_supervisor_write[page_index] = 0;
-    if (g_user_read)
-        g_user_read[page_index] = 0;
-    if (g_user_write)
-        g_user_write[page_index] = 0;
-}
-
-// ============================================================
 // I/O island dispatch ($50F00000-$50F4FFFF)
 // ============================================================
 // All AMIC registers are byte-wide; wider accesses decompose into bytes,
@@ -144,23 +106,23 @@ void pdm_clear_page(uint32_t page_index) {
 
 static uint8_t pdm_io_read8(void *ctx, uint32_t offset) {
     config_t *cfg = (config_t *)ctx;
-    if (offset >= 0x40000u)
-        return pdm_hmc_read(cfg, offset - 0x40000u);
+    if (offset >= PDM_AMIC_ISLAND_SIZE)
+        return pdm_hmc_read(cfg, offset - PDM_AMIC_ISLAND_SIZE);
     return pdm_amic_read(cfg, offset);
 }
 
 // An inspection: each chip's peek, nothing on the island changed.
 static uint8_t pdm_io_peek8(void *ctx, uint32_t offset) {
     config_t *cfg = (config_t *)ctx;
-    if (offset >= 0x40000u)
-        return pdm_hmc_peek(cfg, offset - 0x40000u);
+    if (offset >= PDM_AMIC_ISLAND_SIZE)
+        return pdm_hmc_peek(cfg, offset - PDM_AMIC_ISLAND_SIZE);
     return pdm_amic_peek(cfg, offset);
 }
 
 static void pdm_io_write8(void *ctx, uint32_t offset, uint8_t value) {
     config_t *cfg = (config_t *)ctx;
-    if (offset >= 0x40000u)
-        pdm_hmc_write(cfg, offset - 0x40000u, value);
+    if (offset >= PDM_AMIC_ISLAND_SIZE)
+        pdm_hmc_write(cfg, offset - PDM_AMIC_ISLAND_SIZE, value);
     else
         pdm_amic_write(cfg, offset, value);
 }
@@ -215,7 +177,7 @@ static void pdm_map_rom_window(config_t *cfg, uint32_t base, uint32_t window) {
     uint32_t first = base >> MEM_PAGE_SHIFT;
     uint32_t pages = window >> MEM_PAGE_SHIFT;
     for (uint32_t p = 0; p < pages; p++)
-        pdm_fill_page(first + p, rom + ((p << MEM_PAGE_SHIFT) % rom_size), false);
+        page_fill_identity_sv(first + p, rom + ((p << MEM_PAGE_SHIFT) % rom_size), false);
 }
 
 static void pdm_memory_layout(config_t *cfg) {
@@ -269,12 +231,12 @@ static void pdm_memory_layout(config_t *cfg) {
 // out — the classic Cuda bit positions); the SR shift-out is a command byte.
 static void pdm_via1_output(void *context, uint8_t port, uint8_t value) {
     pdm_state_t *st = pdm_st((config_t *)context);
-    av_cuda_via1_port_output(st ? st->cuda : NULL, port, value);
+    cuda_via1_port_output(st ? st->cuda : NULL, port, value);
 }
 
 static void pdm_via1_shift_out(void *context, uint8_t byte) {
     pdm_state_t *st = pdm_st((config_t *)context);
-    av_cuda_via1_shift_input(st ? st->cuda : NULL, byte);
+    cuda_via1_shift_input(st ? st->cuda : NULL, byte);
 }
 
 // VIA1 aggregate IRQ → ICR bit 0.
@@ -312,20 +274,17 @@ static void pdm_scc_irq(void *context, bool active) {
 
 // The substrate-private part: the HMC config, the AMIC register file, the
 // SWIM3's plain-data prefix, the ICR sources and BART.
+#define PDM_PRIVATE_CP_FIELDS(OP, cp, st)                                                                              \
+    CP_FIELD(OP, cp, (st)->hmc);                                                                                       \
+    CP_FIELD(OP, cp, (st)->amic);                                                                                      \
+    SWIM3_CP(OP, cp, &(st)->swim3); /* the plain-data prefix; the bind wires the tail */                               \
+    CP_FIELD(OP, cp, (st)->icr_sources);                                                                               \
+    CP_FIELD(OP, cp, (st)->bart)
+
+// Saves the substrate-private part.
 static void part_save_pdm_private(void *obj, checkpoint_t *cp) {
     pdm_state_t *st = obj;
-    system_write_checkpoint_data(cp, &st->hmc, sizeof(st->hmc));
-    system_write_checkpoint_data(cp, &st->amic, sizeof(st->amic));
-    // offsetof, not sizeof: swim3_t's tail is `struct floppy *fd; struct
-    // scheduler *sched; swim3_backend_t be;` and swim3.h labels it "not
-    // checkpointed; swim3_bind".  Writing the whole struct put host pointers
-    // in a user-shareable save file, and made two saves of the same guest
-    // state differ -- which defeats any diff-based checkpoint testing.  The
-    // restore re-binds through *_swim3_bind either way, so the values were
-    // harmless; the leak and the non-reproducibility were not.
-    system_write_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
-    system_write_checkpoint_data(cp, &st->icr_sources, sizeof(st->icr_sources));
-    system_write_checkpoint_data(cp, &st->bart, sizeof(st->bart));
+    PDM_PRIVATE_CP_FIELDS(system_write_checkpoint_data, cp, st);
 }
 
 // Ariel's identity part: the monitor strapped to the built-in port.
@@ -344,88 +303,35 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
 
     // Core: memory map, the 601, the scheduler on the PPC seam.  CPI is
     // 1.0 — the 601 is near-1-CPI on HWInit's measurement loop, and 1.0
-    // makes the measured clock land exactly on the snap-table value.
-    machine_part_begin(cfg, cp, "memory");
-    cfg->memory_map =
-        memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, MEMORY_BUS_ERR_NONE,
-                        &cfg->build_opts.rom, cp); // no bus-error watchdog: unanswered floats to $FF
-    machine_part(cfg, cp, "memory", part_save_memory, cfg->memory_map);
-    // No 68k MMU owns this machine's page table, so host-backed regions that
-    // core code registers on the bus map — a NuBus card's VRAM and
-    // declaration ROM — are filled through our own page filler.
-    memory_map_set_host_fill(cfg->memory_map, pdm_fill_page);
-    machine_part_begin(cfg, cp, "cpu");
-    cfg->ppc = ppc_init(cp, cfg->machine->cpu_model);
-    if (cfg->ppc) {
-        memory_cpu_hooks_t hooks = ppc_memory_hooks(cfg->ppc);
-        memory_map_set_cpu_hooks(cfg->memory_map, &hooks);
-    }
-    if (!cfg->ppc) {
-        LOG(0, "Error: out of memory constructing the PowerPC core");
+    // makes the measured clock land exactly on the snap-table value.  The
+    // 601's RTC input: 7.8336 MHz on every PDM board.  No 68k MMU owns this
+    // machine's page table, so host-backed regions that core code registers
+    // on the bus map — a NuBus card's VRAM and declaration ROM — are filled
+    // through our own page filler.
+    const ppc_core_opts_t core = {.fill_page = page_fill_identity_sv, .cpi = 1, .tb_hz = 7833600u};
+    if (ppc_build_core(cfg, cp, &core) != 0)
         return -1;
-    }
-    machine_part(cfg, cp, "cpu", part_save_ppc, cfg->ppc);
-    sched_cpu_if_t cpu_if = ppc_sched_if(cfg->ppc);
-    machine_part_begin(cfg, cp, "scheduler");
-    cfg->scheduler = scheduler_init(&cpu_if, cp);
-    machine_part(cfg, cp, "scheduler", part_save_scheduler, cfg->scheduler);
-    scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
-    scheduler_set_cpi(cfg->scheduler, 1);
-    // The 601's RTC input: 7.8336 MHz on every PDM board.
-    ppc_bind_time(cfg->ppc, cfg->scheduler, cfg->machine->freq, 7833600u);
-
-    machine_part_begin(cfg, cp, "rtc");
-    cfg->rtc = rtc_init(cfg->scheduler, cp, true, cfg->machine->pram);
-    machine_part(cfg, cp, "rtc", part_save_rtc, cfg->rtc);
 
     // The ESCC cell in Curio behind the AMIC island decode (single base
     // $50F04000, +0 bCtl / +2 aCtl / +4 bData / +6 aData;
-    // PCLK 15.6672 MHz, RTxC 3.672 MHz synthesized by AMIC).
-    machine_part_begin(cfg, cp, "scc");
-    cfg->scc = scc_init(NULL, cfg->scheduler, pdm_scc_irq, cfg, cp);
-    machine_part(cfg, cp, "scc", part_save_scc, cfg->scc);
-    scc_set_clocks(cfg->scc, 15667200, 3672000);
+    // PCLK 15.6672 MHz, RTxC 3.672 MHz synthesized by AMIC), the AppleTalk
+    // connection on its LocalTalk channel, and the AMIC pseudo-VIA1: a real
+    // 6522 core instance behind the island decode, its timers at 783.36 kHz
+    // on every model (checked at pdm-rom-ladder rung L17).
+    const ppc_lowspeed_opts_t lowspeed = {
+        .scc_irq = pdm_scc_irq,
+        .scc_rtxc_hz = 3672000,
+        .via1_output = pdm_via1_output,
+        .via1_shift_out = pdm_via1_shift_out,
+        .via1_irq = pdm_via1_irq,
+    };
+    ppc_build_lowspeed(cfg, cp, &lowspeed);
 
-    // The AppleTalk connection rides the SCC's LocalTalk channel.
-    machine_part_begin(cfg, cp, "appletalk");
-    cfg->atalk = atalk_conn_new(appletalk_network(), cfg->scheduler, cfg->scc, cp);
-    machine_part(cfg, cp, "appletalk", part_save_atalk, cfg->atalk);
-    machine_part_imagewriter(cfg, cp, false);
-
-    // The AMIC pseudo-VIA1 is a real 6522 core instance behind the island
-    // decode.  Its timers run at 783.36 kHz on every model, and no PDM CPU
-    // clock divides integrally by that — the rounded divisor is display-only
-    // and via_set_exact_clock installs the reduced 783360/freq rational so
-    // guest-measured timer rates are exactly φ2-equivalent (checked at
-    // pdm-rom-ladder rung L17).
-    uint8_t via_ff = via_freq_factor_for_clock(cfg->machine->freq);
-    machine_part_begin(cfg, cp, "via1");
-    cfg->via1 =
-        via_init(NULL, cfg->scheduler, via_ff, "via1", pdm_via1_output, pdm_via1_shift_out, pdm_via1_irq, cfg, cp);
-    machine_part(cfg, cp, "via1", part_save_via, cfg->via1);
-    via_set_exact_clock(cfg->via1, cfg->machine->freq);
-
-    // VIA1 idle input levels: PB3 is Cuda TREQ (active-low, idle high);
-    // CA1 (tick) and the Cuda CB1/CB2 lines idle high.
-    via_input(cfg->via1, 1, 3, 1);
-    via_input_c(cfg->via1, 0, 0, 1);
-    via_input_c(cfg->via1, 1, 0, 1);
-    via_input_c(cfg->via1, 1, 1, 1);
-
-    // ADB device state, serviced through Cuda packets (the AV pattern).
-    machine_part_begin(cfg, cp, "adb");
-    cfg->adb = adb_init(NULL, cfg->scheduler, cp);
-    machine_part(cfg, cp, "adb", part_save_adb, cfg->adb);
-
-    // The behavioral Cuda (firmware 2.37 — the same 341S0788 part as the
-    // AV machines) on the pseudo-VIA1 shift register + PB3/4/5.
-    machine_part_begin(cfg, cp, "cuda");
-    st->cuda = av_cuda_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp, /*mode3_clock=*/true);
-    if (!st->cuda) {
-        LOG(0, "Error: out of memory constructing the Cuda");
+    // ADB, and the behavioral Cuda (firmware 2.37 — the same 341S0788 part
+    // as the AV machines) on the pseudo-VIA1 shift register + PB3/4/5.
+    st->cuda = ppc_build_cuda(cfg, cp);
+    if (!st->cuda)
         return -1;
-    }
-    machine_part(cfg, cp, "cuda", part_save_cuda, st->cuda);
 
     // The image list before the devices that reference it (floppy and SCSI
     // both resolve their media out of it by filename).
@@ -462,6 +368,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // Board state + memory map.
     pdm_hmc_init(cfg);
     pdm_amic_init(cfg);
+    pdm_amic_io_bind(cfg); // the island decode; construction only, not on reset
     pdm_amic_attach_object(cfg); // machine.amic; construction only, not on reset
     pdm_amic_register_events(cfg);
     pdm_awacs_register_events(cfg);
@@ -474,13 +381,8 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // plain data; derived mappings are rebuilt below.
     machine_part_begin(cfg, cp, "pdm");
     if (cp) {
-        system_read_checkpoint_data(cp, &st->hmc, sizeof(st->hmc));
-        system_read_checkpoint_data(cp, &st->amic, sizeof(st->amic));
-        // The SWIM3's prefix only; *_swim3_bind re-attaches the pointer tail.
-        system_read_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
-        pdm_swim3_bind(cfg); // the restore overwrote the chip's pointer tail
-        system_read_checkpoint_data(cp, &st->icr_sources, sizeof(st->icr_sources));
-        system_read_checkpoint_data(cp, &st->bart, sizeof(st->bart));
+        PDM_PRIVATE_CP_FIELDS(system_read_checkpoint_data, cp, st);
+        pdm_swim3_bind(cfg);
         pdm_hmc_remap(cfg);
         via_redrive_outputs(cfg->via1);
         pdm_amic_recompute(cfg);
@@ -507,7 +409,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     machine_part(cfg, cp, "ariel.monitor", part_save_ariel_monitor, st);
     pdm_awacs_init(cfg);
 
-    // Finish: the debugger (the mac030_glue_finish shape).
+    // Finish: the debugger (the m68k_board_finish shape).
     cfg->debugger = debug_init();
 
     // Fresh boot: start the free-running VBL raster (a restore rebinds
@@ -520,7 +422,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
 // A power cycle's power-on-only half (machine_profile.h): Cuda stays
 // powered, but the host side of its VIA1 handshake went down under it.
 static void pdm_power_on(config_t *cfg) {
-    av_cuda_host_power_cycle(pdm_st(cfg)->cuda);
+    cuda_host_power_cycle(pdm_st(cfg)->cuda);
 }
 
 static void pdm_bus_reset(config_t *cfg) {
@@ -553,12 +455,10 @@ static void pdm_bus_reset(config_t *cfg) {
     st->icr_sources = 0;
     pdm_hmc_remap(cfg);
     pdm_video_update(cfg); // blanked power-on raster follows the reset regs
-    system_reset_common_devices(cfg); // scsi/scsi2, NuBus, PCI -- the same net
+    system_reset_common_devices(cfg); // scsi, NuBus, PCI -- the same net
 }
 
 static void pdm_teardown(config_t *cfg) {
-    if (cfg->scheduler)
-        scheduler_stop(cfg->scheduler);
     pdm_state_t *st = pdm_st(cfg);
     if (st) {
         pdm_amic_detach_object(cfg);
@@ -576,7 +476,7 @@ static void pdm_teardown(config_t *cfg) {
     // (machine_teardown.h) rather than into it, because only PDM and TNT have
     // them; the single ordering change is that cfg->scsi is now freed after
     // these three instead of before.  That is safe: none of floppy_delete,
-    // av_cuda_delete or adb_delete reads a SCSI handle, the 53C96 controllers
+    // cuda_delete or adb_delete reads a SCSI handle, the 53C96 controllers
     // that DO hold the bus are already freed above, and scheduler_stop() ran
     // first so nothing can fire in between.  Cuda still goes before the via1,
     // rtc and adb it was handed at init, which is the ordering that matters.
@@ -585,24 +485,15 @@ static void pdm_teardown(config_t *cfg) {
         cfg->floppy = NULL;
     }
     if (st && st->cuda) {
-        av_cuda_delete(st->cuda);
+        cuda_delete(st->cuda);
         st->cuda = NULL;
     }
-    if (cfg->adb) {
-        adb_delete(cfg->adb);
-        cfg->adb = NULL;
-    }
-    machine_teardown_config_devices(cfg);
-    if (st) {
-        free(st);
-        cfg->machine_context = NULL;
-    }
+    machine_teardown_config_devices(cfg); // the adb after the Cuda above, then the rest
 }
 
 // The AMIC-internal 60.15 Hz tick: VIA1 CA1 pulse.
 static void pdm_trigger_vbl(config_t *cfg) {
-    via_input_c(cfg->via1, 0, 0, 0);
-    via_input_c(cfg->via1, 0, 0, 1);
+    via_pulse_c(cfg->via1, 0, 0); // VBL: CA1 low then high
     image_tick_all(cfg);
     if (cfg->nubus)
         nubus_tick_vbl(cfg->nubus);
@@ -621,23 +512,8 @@ static struct display *pdm_display(config_t *cfg) {
 }
 
 // Floppy: the one internal SuperDrive behind SWIM3.  Drive 1 is the only
-// bay the family has — there is no external port on any PDM — so slot 1
-// refuses whatever the caller asks.
-static int pdm_fd_insert(config_t *cfg, int drive, struct image *disk) {
-    if (!cfg->floppy || drive != 0)
-        return -1;
-    return floppy_insert(cfg->floppy, drive, disk);
-}
-
-// A drive the family does not have holds no disk.  This used to answer
-// "occupied" so the core's drive auto-select would never pick drive 1; the
-// auto-select is now bounded by the profile's floppy_slots (#177), so
-// the answer can be the true one.
-static bool pdm_fd_present(config_t *cfg, int drive) {
-    if (!cfg->floppy || drive != 0)
-        return false;
-    return floppy_is_inserted(cfg->floppy, drive);
-}
+// bay the family has — there is no external port on any PDM — so the shared
+// mac_fd_* (bounded by the profile's floppy_slots) refuse slot 1.
 
 const machine_substrate_t pdm_substrate = {
     .init = pdm_init,
@@ -647,13 +523,7 @@ const machine_substrate_t pdm_substrate = {
     .seed = mac_seed_rtc_pram,
     .nubus_slot_irq = pdm_nubus_slot_irq,
     .trigger_vbl = pdm_trigger_vbl,
-    .fd_insert = pdm_fd_insert,
-    .fd_present = pdm_fd_present,
-    .input_key = mac_input_key,
-    .input_mouse_move = mac_input_mouse_move,
-    .input_mouse_button = mac_input_mouse_button,
-    .media_attach = system_media_attach_std,
-    .media_present = system_media_present_std,
-    .media_eject = system_media_eject_std,
+    MAC_SUBSTRATE_HOST_IO,
+    MAC_SUBSTRATE_MEDIA_STD,
     .display = pdm_display,
 };

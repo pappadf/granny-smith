@@ -679,31 +679,8 @@ lisa_fdc_t *lisa_fdc_init(struct scheduler *scheduler, lisa_fdc_fdir_fn fdir_cb,
     if (cp) {
         uint8_t attached = 0;
         system_read_checkpoint_data(cp, &attached, sizeof(attached));
-        if (attached) {
-            uint32_t len = 0;
-            system_read_checkpoint_data(cp, &len, sizeof(len));
-            if (len) {
-                char *name = (char *)malloc(len);
-                if (name) {
-                    system_read_checkpoint_data(cp, name, len);
-                    name[len - 1] = '\0';
-                    disk = images_find(images, name);
-                    if (!disk) {
-                        // The drive held a disk: a restore without it is not
-                        // the machine that was saved.
-                        LOG(0, "the checkpoint's diskette '%s' is not among its images", name);
-                        checkpoint_set_error(cp);
-                    }
-                    free(name);
-                } else {
-                    // Keep the stream aligned even if the allocation fails.
-                    for (uint32_t k = 0; k < len; ++k) {
-                        char tmp;
-                        system_read_checkpoint_data(cp, &tmp, 1);
-                    }
-                }
-            }
-        }
+        if (attached)
+            disk = checkpoint_read_image_ref(cp, images, "diskette", NULL);
         int32_t sides = 1;
         system_read_checkpoint_data(cp, &sides, sizeof(sides));
         fdc->num_sides = (int)sides;
@@ -754,11 +731,7 @@ void lisa_fdc_checkpoint(lisa_fdc_t *fdc, checkpoint_t *cp) {
     uint8_t attached = (fdc && fdc->image) ? 1u : 0u;
     system_write_checkpoint_data(cp, &attached, sizeof(attached));
     if (attached) {
-        const char *fn = image_get_filename(fdc->image);
-        uint32_t len = fn ? (uint32_t)(strlen(fn) + 1) : 0u;
-        system_write_checkpoint_data(cp, &len, sizeof(len));
-        if (len)
-            system_write_checkpoint_data(cp, fn, len);
+        checkpoint_write_image_ref(cp, fdc->image);
     }
     int32_t sides = fdc ? (int32_t)fdc->num_sides : 1;
     system_write_checkpoint_data(cp, &sides, sizeof(sides));

@@ -35,10 +35,12 @@
 #define GS_MACHINES_TNT_H
 
 #include "awacs.h" // shared ASCO codec semantics (core/peripherals/)
+#include "board_io.h" // board_io_t, the island decode engine
 #include "checkpoint.h"
 #include "davbus.h" // the DAVbus sound cell (core/peripherals/)
 #include "display.h"
 #include "display_class.h" // scanout descriptor (control.c presents through it)
+#include "display_ramdac.h" // the RaDACal palette ports
 #include "gbus.h" // the ANS GBUS island: board registers, keyswitch, LCD
 #include "machine.h"
 #include "machine_profile.h"
@@ -49,9 +51,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "escc_dbdma.h"
 #include "swim3.h"
+#include "swim3_dbdma.h"
 
-struct av_cuda; // the shared behavioral Cuda model (machines/av/cuda.h)
+struct cuda; // the shared behavioral Cuda model (core/peripherals/cuda.h)
 struct dbdma; // the DBDMA engine (dbdma.h)
 struct scsi_53c96; // the external-bus SCSI chip (core scsi_53c96.h)
 
@@ -284,15 +288,14 @@ typedef struct tnt_control {
     uint8_t vbl_pending; // intr_stat: a VBL edge not yet acknowledged
     uint8_t vbl_armed; // the frame event is pending in the scheduler
     // RaDACal (byte registers on $10 centres at GC +$1B000)
-    uint8_t rad_addr; // +$00 index register (CLUT entry / misc register)
-    uint8_t rad_phase; // RGB byte phase of the CLUT data port
+    ramdac_seq_t rad; // +$00 index register (CLUT entry / misc register), CLUT port phase
     uint8_t rad_ctrl; // misc $20: depth control (bits 3:2 = 8/16/32 bpp)
     uint8_t rad_bank; // misc $21: VRAM bank select
     uint8_t rad_misc[2]; // misc $10/$11 (cursor, cleared on mode set)
     uint8_t rad_reg[256]; // every other misc index: latched, read back
     uint8_t clut[256][3];
     uint8_t crsr[8][3]; // cursor palette (+$10 port)
-    uint8_t crsr_phase;
+    ramdac_seq_t crsr_seq; // the cursor port's phase (the index is rad's)
     // The pixel-clock synthesiser (Cuda I2C device $50, subaddresses 1..3):
     // divisor p0, multiplier p1, post-scale exponent p2.  Zero = unprogrammed.
     uint8_t clk[3];
@@ -318,21 +321,6 @@ extern const builtin_video_desc_t tnt_builtin_video;
 // checkpoint.  tnt.c holds one.
 #include "scsi_mesh.h"
 
-// The byte ring between the SWIM3 engine (which pushes/pulls one byte at
-// a time) and DBDMA channel 1 (which moves runs of bytes per descriptor).
-// The ESCC's DBDMA channels (4/5 = A tx/rx, 6/7 = B tx/rx; grand_central.c):
-// one port context per SCC channel.
-typedef struct tnt_scc_dma_ctx {
-    config_t *cfg;
-    unsigned ch;
-} tnt_scc_dma_ctx_t;
-
-#define TNT_FDRING_SIZE 4096u
-typedef struct tnt_fdring {
-    uint8_t buf[TNT_FDRING_SIZE];
-    uint32_t head, tail; // free-running; count = tail - head
-} tnt_fdring_t;
-
 // The MACE Ethernet's register state (tnt_mace.c).  Plain data,
 // checkpointed whole.
 typedef struct tnt_mace {
@@ -352,7 +340,7 @@ typedef struct tnt_state {
     int bridge_count;
     struct pci_bus *gc_bus; // Bandit 1's bus: the island's direct mapping follows its lane mode
     pci_device_t gc_dev; // Grand Central's config presence (device 16)
-    struct av_cuda *cuda;
+    struct cuda *cuda;
     struct dbdma *dbdma; // the 11-channel DMA engine (island +$8000)
     tnt_awacs_t awacs;
     davbus_host_t awacs_host; // the cell's wiring (awacs.c; not checkpointed)
@@ -369,15 +357,18 @@ typedef struct tnt_state {
                                // by the bus: its factory allocated it)
     mesh_t *mesh; // internal fast SCSI (core/peripherals/scsi_mesh.c)
     // The internal SuperDrive: the shared SWIM3 model behind Grand Central
-    // +$15000, fed by DBDMA channel 1 through a byte ring (swim3.c).  Both
-    // are plain data, checkpointed in the tail; the chip's pointer tail is
-    // re-bound after a restore (tnt_swim3_bind).
+    // +$15000, fed by DBDMA channel 1 through the shared byte ring and port
+    // (runtime/swim3_dbdma.c).  The chip's prefix and the ring are plain
+    // data, checkpointed in the tail; the chip's pointer tail is re-bound
+    // after a restore (tnt_swim3_bind), the port's wiring at init.
     swim3_t swim3;
-    tnt_fdring_t fdring;
+    swim3_dbdma_t fdport;
     // The on-board MACE Ethernet at +$11000 (tnt_mace.c), Macintosh boards
     // only; checkpointed in the tnt.io part after the floppy ring.
     tnt_mace_t mace;
-    tnt_scc_dma_ctx_t scc_dma_ctx[2]; // the ESCC DBDMA ports' contexts (rebuilt at init)
+    // The ESCC's DBDMA ports (4/5 = A tx/rx, 6/7 = B tx/rx; runtime/
+    // escc_dbdma.c): rebuilt at init, not checkpointed.
+    escc_dbdma_t escc_dma;
     // The Network Server's GBUS island (gbus.c / lcd.c).  Built only for
     // TNT_BOARD_SHINER; inert and unread on the Macintosh boards.
     tnt_gbus_t gbus;
@@ -387,11 +378,6 @@ typedef struct tnt_state {
     struct object *board_object; // machine.board node (gbus.c)
     struct object *lcd_object; // machine.lcd node (lcd.c)
     struct scsi_53c96 *scsi96; // the 53C94 (no bus attached on the Network Servers)
-    // `machine.scsi2`.  On the Network Servers, the second fast/wide bus
-    // (Open Firmware's `scsi-int2` / `probe-scsi2`), carrying backplane bays
-    // 4-6; on the Macintosh boards, the 53C94's bus: the CD-ROM drive and the
-    // external chain.
-    struct scsi *scsi2;
     uint8_t *vram; // TNT_VRAM_SIZE host buffer (bank 2 at +$200000)
     struct display display; // scanout descriptor (display.h)
     rgba8_t clut_view[256]; // materialized CLUT for the renderer
@@ -401,6 +387,10 @@ typedef struct tnt_state {
 
     // Memory interfaces registered with the map
     memory_interface_t gc_interface; // $F3000000 island (128 KB)
+    // Grand Central's byte decode (grand_central.c): its range table bound
+    // to this machine's VIA and SCC.  Host pointers, rebuilt at init, never
+    // checkpointed.
+    board_io_t gc_io;
     memory_interface_t hh_interface; // $F8000000 register window
     memory_interface_t chaos_probe_interface; // unclaimed Chaos window (logged)
     memory_interface_t control_regs_if; // Control BAR $14 (register block)
@@ -429,6 +419,13 @@ extern const storage_device_decl_t tnt_default_storage[];
 // See the derivation there -- and the five reasons it is not the 9500's.
 extern const pci_slot_decl_t ans_pci_slots[];
 
+// Tables more than one model shares byte for byte (tnt.c): the one-Bandit
+// PCI topology (7500, 8500), the 8500/9500 DIMM totals and the Network
+// Servers' DIMM totals.
+extern const pci_slot_decl_t tnt_pci_slots_1bandit[];
+extern const uint32_t tnt_ram_options_kb[];
+extern const uint32_t ans_ram_options_kb[];
+
 // The Network Servers' shared front backplane on fast/wide 0 (tnt.c), as
 // one storage_bus_decl_t initialiser; the second controller stays per-model
 // -- that is where the bays differ.  And their default devices.
@@ -452,11 +449,6 @@ extern const builtin_video_desc_t ans_builtin_video;
      .bays = ans_bays_bus0,                                                                                            \
      .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD,                                                                       \
      .startup_ok = true}
-
-// Fill/clear one physical page in the AoS table + SoA fast-path arrays
-// (the pdm_fill_page shape; local so tnt stays free of 68K-family headers).
-void tnt_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable);
-void tnt_clear_page(uint32_t page_index);
 
 // === hammerhead.c ===========================================================
 
@@ -531,7 +523,7 @@ uint8_t tnt_control_rad_read(config_t *cfg, uint32_t offset);
 // The same cell without the read's RGB-phase step (memory_interface_t.peek_*).
 uint8_t tnt_control_rad_peek(config_t *cfg, uint32_t offset);
 void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value);
-// The pixel-clock synthesiser on Cuda's I2C bus (av_cuda_attach_i2c_write).
+// The pixel-clock synthesiser on Cuda's I2C bus (cuda_attach_i2c_write).
 bool tnt_control_i2c_write(void *ctx, uint8_t slave, const uint8_t *data, int len);
 // Presentation: the primary display descriptor (NULL before init), and the
 // host-frame dirty mark (guest CPU writes bypass the renderer).
@@ -543,6 +535,9 @@ void tnt_control_host_vbl(config_t *cfg);
 void tnt_gc_init(config_t *cfg); // power-on state (NVRAM contents survive)
 // Seat Grand Central's config presence at device 16 on Bandit 1's bus.
 void tnt_gc_pci_attach(config_t *cfg, pci_bus_t *bus, checkpoint_t *cp);
+// Install Grand Central's byte decode table and bind its VIA and SCC rows;
+// once, at construction, after cfg->via1 and cfg->scc exist.
+void tnt_gc_io_bind(config_t *cfg);
 // Island dispatch ($F3000000, offsets 0..$1FFFF).  Byte-wide cells decode
 // bytes only; the 32-bit LE registers (interrupt block, BoxID) decode
 // longwords only.

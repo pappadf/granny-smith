@@ -25,6 +25,7 @@
 #include "highlight.h"
 #include "lint.h"
 #include "object.h"
+#include "object_order.h"
 #include "scheduler.h"
 #include "script.h"
 #include "shell.h"
@@ -491,7 +492,7 @@ void shell_class_register(struct config *cfg) {
     struct object *shell_obj = root_attach_stub(NULL, object_new(&shell_class, cfg, "shell"));
     if (!shell_obj)
         return;
-    object_set_order(shell_obj, 60);
+    object_set_order(shell_obj, OBJ_ORDER_SHELL);
     shell_funcs_install(shell_obj); // `shell.functions` container
     root_attach_stub(shell_obj, object_new(&shell_alias_class, cfg, "alias"));
     root_attach_stub(shell_obj, object_new(&shell_command_class, cfg, "command"));

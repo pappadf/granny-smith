@@ -8,11 +8,14 @@
   import { onMount, tick, untrack } from 'svelte';
   import { setWelcomeSlide } from '@/state/layout.svelte';
   import { showNotification } from '@/state/toasts.svelte';
-  import { initEmulator, opfs, gsEval, whenModuleReady } from '@/bus';
+  import { initEmulator, opfs, whenModuleReady } from '@/bus';
+  import { romIdentity } from '@/bus/media';
+  import { diskPartitions } from '@/bus/vfs';
   import { pickAndUploadAs } from '@/bus/upload';
   import {
     getProfile,
     clearProfileCache,
+    catalogModels,
     type BlankDisk,
     type Card,
     type ConfigDocument,
@@ -20,7 +23,7 @@
     type MachineProfile,
     type StorageBus,
   } from '@/bus/profile';
-  import { identifyRom, type MediaTypeId, type RomIdentity } from '@/lib/media';
+  import { type MediaTypeId, type RomIdentity } from '@/lib/media';
   import * as mc from '@/lib/machineConfig';
   import type { ImageCategory, MediaImage, OpfsEntry } from '@/bus/types';
   import { images } from '@/state/images.svelte';
@@ -217,15 +220,14 @@
         opfs.scanImages('hd').catch(() => []),
         opfs.scanImages('cd').catch(() => []),
       ]);
-      const identified = (await Promise.all(roms.map((r) => identifyRom(gsEval, r.path)))).filter(
+      const identified = (await Promise.all(roms.map((r) => romIdentity(r.path)))).filter(
         (e): e is RomIdentity => e !== null,
       );
       // A card's availability follows the card ROMs stored, which may just
       // have changed: ask the core again.
       clearProfileCache();
-      const order = await gsEval('catalog.models').catch(() => null);
-      if (Array.isArray(order))
-        modelOrder = order.filter((m): m is string => typeof m === 'string');
+      const order = await catalogModels();
+      if (order) modelOrder = order;
       const ids = [...new Set(identified.flatMap((r) => r.compatible))].sort(
         (a, b) => orderOf(a) - orderOf(b),
       );
@@ -313,9 +315,9 @@
   }
   async function lookUpVolumes(path: string): Promise<void> {
     volumesAsked.add(path);
-    const r = await gsEval('files.partitions', [path]).catch(() => null);
     // An image the core cannot read offers no volumes: the disk itself.
-    volumesByPath = { ...volumesByPath, [path]: Array.isArray(r) ? (r as mc.DiskPartition[]) : [] };
+    const r = (await diskPartitions(path)) as mc.DiskPartition[];
+    volumesByPath = { ...volumesByPath, [path]: r };
   }
   $effect(() => {
     for (const d of doc?.storage ?? []) {

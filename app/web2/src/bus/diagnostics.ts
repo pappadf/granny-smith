@@ -16,8 +16,8 @@ import {
   breadcrumbsPtr,
   bridgeDeadReason,
   getMailbox,
-  getModule,
   gsEval,
+  heapBuffer,
   recentCoreEvents,
 } from '@/bus/emulator';
 import { routePrintLine } from '@/bus/logSink';
@@ -99,11 +99,9 @@ interface Crumbs {
 }
 
 function readCrumbs(): Crumbs | null {
-  const mod = getModule();
+  const buffer = heapBuffer();
   const ptr = breadcrumbsPtr();
-  if (!mod || !ptr) return null;
-  const buffer =
-    (mod as unknown as { wasmMemory?: WebAssembly.Memory }).wasmMemory?.buffer ?? mod.HEAPU8.buffer;
+  if (!buffer || !ptr) return null;
   const w = new Uint32Array(buffer, ptr, 32);
   const at = (i: number) => Atomics.load(w, i) >>> 0;
   if (at(CRUMB.MAGIC) !== CRUMB_MAGIC) return null;
@@ -142,11 +140,7 @@ function crumbsLine(c: Crumbs): string {
 }
 
 function memoryLine(): string {
-  const mod = getModule();
-  const wasm =
-    (mod as unknown as { wasmMemory?: WebAssembly.Memory } | null)?.wasmMemory?.buffer.byteLength ??
-    mod?.HEAPU8.buffer.byteLength ??
-    0;
+  const wasm = heapBuffer()?.byteLength ?? 0;
   const js = (
     performance as unknown as { memory?: { usedJSHeapSize: number; jsHeapSizeLimit: number } }
   ).memory;

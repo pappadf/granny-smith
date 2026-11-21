@@ -8,7 +8,8 @@ EXTRA_SRCS := ../../../../tools/dump/decoders/decoders.c \
               ../../../../tools/dump/decoders/decode_size.c \
               ../../../../tools/dump/decoders/decode_str.c \
               ../../../../tools/dump/decoders/decode_vers.c \
-              ../../../../src/core/storage/macroman.c
+              ../../../../src/core/storage/macroman.c \
+              ../../../../src/core/storage/storage_util.c
 include ../../common.mk
 
 # The per-type resource decoders live in tools/dump/decoders/.

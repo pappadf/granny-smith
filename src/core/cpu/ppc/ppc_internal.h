@@ -664,5 +664,10 @@ void ppc_do_frsqrte(ppc_t *p, uint32_t iw);
 // The interpreter proper is generated from ppc_decode.h as a static
 // function inside ppc_run.c (single call site, inlined into the sprint
 // loop) — there is deliberately no external ppc_execute entry point.
+// The one external instantiation runs the FP register-to-register leaves
+// only (ppc_ops_fp.h), for the translation tier's FP helper: 0 when the
+// word was one of them and ran, nonzero (nothing done) otherwise.  The
+// caller checks MSR[FP] and that FP exceptions are disabled first.
+int ppc_execute_fp(ppc_t *restrict p, uint32_t iw);
 
 #endif // GS_CPU_PPC_INTERNAL_H

@@ -336,7 +336,6 @@ defines:
 #define PD_DECODE_NAME   cpu_pd_decode_68030   // lazy decode + elision pass
 #define PD_TREE_NAME     cpu_pd_tree_68030     // the classifier's tree instantiation
 #define PD_CLASSIFY_NAME cpu_pd_classify_68030 // the classifier entry point
-#define PD_HW_RESET(c)   ...                   // the double-bus-fault reset
 #include "cpu_pd_run.h"
 ```
 
@@ -600,8 +599,9 @@ predecoded code.
 | `ipc` | the guest address of the instruction being dispatched (`page_lo + 2 * (cur - blk->e)`, computed as `((uintptr_t)cur >> 2) + ipc_bias`: entries are 8 bytes and instruction words 2, and `ipc_bias` is set when a block is entered) |
 | `pd_held` | the current page was declined by the pool: stay generic without re-asking until the PC leaves it |
 
-**Prologue** (the switch core's, minus the loop):
-- if `cpu->halted` is set (a double bus fault), run `PD_HW_RESET`;
+**Prologue** (the switch core's, minus the loop: both call
+`m68k_sprint_enter`, and the exit `m68k_sprint_exit`, from `cpu_sprint.h`):
+- if `cpu->halted` is set (a double bus fault), run `m68k_hw_reset`;
 - on the 030/040, select the active SoA tables for the current mode;
 - `cpu_check_interrupt`;
 - publish `g_bus_error_instr_ptr`;

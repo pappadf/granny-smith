@@ -39,10 +39,18 @@ typedef peel_tier_t source_tier_t;
 #define GS_TIER_STREAM  PEEL_TIER_STREAM
 #define GS_TIER_WHOLE   PEEL_TIER_WHOLE
 #define GS_EAGAIN       PEEL_EAGAIN
+#define GS_SIZE_UNKNOWN PEEL_SIZE_UNKNOWN // a stream's length, before it is decoded
 
 // The forks a path can name: a file's data, its resource fork, and its
 // 32-byte Finder info (FInfo + FXInfo).
 typedef enum { GS_FORK_DATA, GS_FORK_RSRC, GS_FORK_FINFO } source_fork_t;
+
+// The path components that name a file's resource fork and Finder info, and
+// the raw-fork escape under "rsrc", where the VFS synthesises them
+// (image_vfs.h) and in the keys of the sources that hold them.
+#define VFS_FORK_RSRC  "rsrc"
+#define VFS_FORK_FINF  "finf"
+#define VFS_RAW_ESCAPE "_raw"
 
 // Size of the Finder info a GS_FORK_FINFO source holds.
 #define GS_FINDER_INFO_SIZE 32u
@@ -87,6 +95,12 @@ source_t *source_pad(source_t *parent, uint64_t size, uint64_t patch_off, const 
 
 // === Operations =============================================================
 
+// A new source over `ops` and `ctx`, with one reference.  Takes a reference
+// on `parent` (may be NULL).  NULL on allocation failure (ops->close is then
+// called).  The constructor a source kind's opener ends with.
+static inline source_t *source_new(const source_ops_t *ops, void *ctx, source_t *parent) {
+    return peel_source_new(ops, ctx, parent);
+}
 static inline source_t *source_retain(source_t *s) {
     return peel_source_retain(s);
 }

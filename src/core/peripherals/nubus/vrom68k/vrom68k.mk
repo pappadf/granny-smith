@@ -19,8 +19,8 @@ VROM68K_DIR := src/core/peripherals/nubus/vrom68k
 VROM68K_OUT := build/vrom68k
 VROM68K_HEADER := $(VROM68K_OUT)/gsvrom_fragments.h
 
-M68K_AS      ?= m68k-linux-gnu-as
-M68K_OBJCOPY ?= m68k-linux-gnu-objcopy
+# The m68k binutils and the assemble-and-flatten recipe (src/m68k.mk).
+include src/m68k.mk
 # --register-prefix-optional keeps the source in plain Motorola register
 # spelling (a4, d0, sp) rather than gas's %-prefixed form.
 M68K_ASFLAGS := -m68030 --register-prefix-optional -I $(VROM68K_DIR)
@@ -48,16 +48,9 @@ VROM68K_SRC_DEPS := $(wildcard $(VROM68K_DIR)/*.s) $(wildcard $(VROM68K_DIR)/*.i
 # under temporary names and renamed, so a build interrupted (or racing
 # another target's build -- both Makefiles and the declrom unit suite write
 # here) never leaves a torn fragment that make then trusts as up to date.
-$(VROM68K_OUT)/frag_%.bin: $(VROM68K_SRC_DEPS) $(VROM68K_DIR)/vrom68k.mk
-	@command -v $(M68K_AS) >/dev/null 2>&1 || { \
-	  echo "error: $(M68K_AS) not found — install binutils-m68k-linux-gnu" >&2; \
-	  echo "       (or point M68K_AS/M68K_OBJCOPY at another m68k binutils)" >&2; \
-	  exit 1; }
-	@mkdir -p $(VROM68K_OUT)
-	$(M68K_AS) $(M68K_ASFLAGS) --defsym $(VROM68K_SYM_$(word 1,$(subst _, ,$*)))=1 \
-	  -o $(VROM68K_OUT)/frag_$*.o.$$$$ $(VROM68K_DIR)/frag_$(word 2,$(subst _, ,$*)).s && \
-	$(M68K_OBJCOPY) -O binary $(VROM68K_OUT)/frag_$*.o.$$$$ $@.$$$$ && \
-	mv -f $(VROM68K_OUT)/frag_$*.o.$$$$ $(VROM68K_OUT)/frag_$*.o && mv -f $@.$$$$ $@
+$(VROM68K_OUT)/frag_%.bin: $(VROM68K_SRC_DEPS) $(VROM68K_DIR)/vrom68k.mk src/m68k.mk
+	$(call m68k_flat_bin,$(M68K_ASFLAGS) --defsym $(VROM68K_SYM_$(word 1,$(subst _, ,$*)))=1 \
+	  $(VROM68K_DIR)/frag_$(word 2,$(subst _, ,$*)).s,$(VROM68K_OUT)/frag_$*)
 
 # The generated header gsvrom_data.c includes (-I$(VROM68K_OUT)).
 $(VROM68K_HEADER): $(VROM68K_BINS) scripts/bin2c.py

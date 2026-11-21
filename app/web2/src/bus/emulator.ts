@@ -8,6 +8,7 @@
 // races that state. Every JS→C call MUST route through the SAB-backed
 // bridge slot (`pending=1`, single in-flight). See docs/guide/web.md.
 
+import { gsErrorText, gsOk, type GsError } from '@/lib/gsResult';
 import {
   machine,
   setSchedulerMode,
@@ -36,8 +37,9 @@ import {
 } from '@/gpu/rage128Gpu.svelte';
 
 // The core's GPU transport seam is one for both 3D takeovers (platform_v2gpu_*,
-// em_gpu.c): an attach goes to the worker whose MAGIC its control block
-// carries, and the display path's "hide the overlay" covers both.
+// em_gpu.c; Module.onGpuAttach / onGpuDetach / onGpuOverlay): an attach goes
+// to the worker whose MAGIC its control block carries, and the display
+// path's "hide the overlay" covers both.
 function onGpuAttach(ctrl: number): void {
   if (isRage128Ctrl(ctrl)) onRage128GpuAttach(ctrl);
   else onVoodooGpuAttach(ctrl);
@@ -74,6 +76,7 @@ import {
   EVT_LOG,
   type MailboxFailure,
 } from './mailbox';
+import { exposeDebug } from '@/lib/debugGlobal';
 
 // The client id this page writes into every request (the daemon and the
 // script runner will have their own).
@@ -81,6 +84,8 @@ const CLIENT_PAGE = 1;
 
 // Minimal Emscripten module surface — enough to type-check what bus uses.
 interface EmscriptenModule {
+  // The linked memory (a shared Memory in the pthread build).
+  wasmMemory?: WebAssembly.Memory;
   HEAP16: Int16Array<ArrayBufferLike>;
   HEAP32: Int32Array<ArrayBufferLike>;
   HEAPU8: Uint8Array<ArrayBufferLike>;
@@ -133,9 +138,9 @@ interface EmscriptenModuleConfig {
   onAudioInReady?(ptr: number): void;
   onAudioInState?(active: boolean): void;
   onAudioInInjected?(path: string): void;
-  onVoodooGpuAttach?(ctrl: number, bytes: number): void;
-  onVoodooGpuDetach?(ctrl: number): void;
-  onVoodooGpuOverlay?(visible: number): void;
+  onGpuAttach?(ctrl: number, bytes: number): void;
+  onGpuDetach?(ctrl: number): void;
+  onGpuOverlay?(visible: number): void;
   onPrinterAttach?(ctrl: number, version: string): void;
   // The audio-out AudioWorklet module (em_audio.c addModule()s it).
   gsAudioWorkletUrl?: string;
@@ -270,9 +275,9 @@ async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
     onAudioInReady,
     onAudioInState,
     onAudioInInjected,
-    onVoodooGpuAttach: onGpuAttach,
-    onVoodooGpuDetach: onGpuDetach,
-    onVoodooGpuOverlay: onGpuOverlay,
+    onGpuAttach,
+    onGpuDetach,
+    onGpuOverlay,
     onPrinterAttach,
     gsAudioWorkletUrl,
     gsAudioTargetLatency: audioTargetLatencyFromQuery(window.location.search),
@@ -284,12 +289,8 @@ async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
   // The rings are static and below the boot-time heap size; a transfer
   // buffer (a download chunk) is anywhere in the heap, so the mailbox reads
   // those through the memory as it is at that moment.
-  const memMod = Module as unknown as { wasmMemory?: WebAssembly.Memory; HEAPU8: Uint8Array };
-  mailbox = new Mailbox(
-    Module.HEAP32.buffer,
-    Module._get_mailbox(),
-    CLIENT_PAGE,
-    () => memMod.wasmMemory?.buffer ?? memMod.HEAPU8.buffer,
+  mailbox = new Mailbox(Module.HEAP32.buffer, Module._get_mailbox(), CLIENT_PAGE, () =>
+    heapBuffer()!,
   );
   mailbox.setLostHandler((why) => markBridgeDead(why));
   mailbox.on(dispatchCoreEvent);
@@ -326,19 +327,9 @@ export function isModuleReady(): boolean {
 
 // --- gsEval -------------------------------------------------------------
 
-// The result contract:
-//   - a value     — the method or attribute's result;
-//   - null        — ONLY a successful method that returns nothing (VK_NONE);
-//   - { error }   — failure.  A C-side VK_ERROR carries the core's message;
-//                   a failure of the bridge itself (module not ready, a
-//                   thrown request) also sets `transport: true`.
-// So `r !== null` is never a success test: `{ error }` satisfies it.  Use
-// gsOk() for "did it work", `=== true` for a VK_BOOL method, and a shape check
-// for a read.
-export interface GsError {
-  error: string;
-  transport?: true;
-}
+// The result contract and its predicates: lib/gsResult.ts.
+export type { GsError } from '@/lib/gsResult';
+export { gsErrorText, gsOk, isGsError, isGsObject } from '@/lib/gsResult';
 
 // A bridge-level failure, distinct from an error the core returned.
 function transportError(message: string): GsError {
@@ -579,26 +570,6 @@ export function isWorkerCrashLine(line: string): boolean {
 function routeErrLine(line: string): void {
   if (isWorkerCrashLine(line)) markBridgeDead(line);
   routeErrorLine(line);
-}
-
-// True for any failure shape — the core's VK_ERROR or a transport failure.
-export function isGsError(res: unknown): res is GsError {
-  return !!res && typeof res === 'object' && 'error' in res;
-}
-
-// "Did the call work?": not an error, and not a VK_BOOL method's `false`.
-// A VK_NONE success (null) counts as success.
-export function gsOk(res: unknown): boolean {
-  return !isGsError(res) && res !== false;
-}
-
-// Human-readable reason from a failed gsEval result. Single home for the
-// error-shape knowledge so callers don't each re-implement the check.
-export function gsErrorText(res: unknown): string {
-  if (isGsError(res)) return String(res.error);
-  if (res === false) return 'the operation reported failure';
-  if (res === null) return 'no result';
-  return String(res);
 }
 
 // --- Shell line surface (Terminal pane only) ----------------------------
@@ -848,8 +819,7 @@ export function dispatchCoreEvent(kindWord: number, json: string): void {
   const same = (e: CoreEvent) => e.kind === ev.kind && e.event === ev.event;
   if (coreEventTrace.filter(same).length > CORE_EVENT_TRACE_MAX)
     coreEventTrace.splice(coreEventTrace.findIndex(same), 1);
-  if (typeof window !== 'undefined')
-    (window as unknown as { __gsCoreEvents?: CoreEvent[] }).__gsCoreEvents = coreEventTrace;
+  if (typeof window !== 'undefined') exposeDebug('__gsCoreEvents', coreEventTrace);
   routeCoreEvent(ev);
   for (const cb of coreEventListeners) cb(ev);
 }
@@ -1024,12 +994,49 @@ export function setGpuUnavailable(): void {
   mailbox?.setGpuAvailable(false);
 }
 
+// The wasm memory as a worker is handed it: the shared Memory when the
+// build exposes it, else the heap's buffer.  Null before the module loads.
+export function getWasmMemory(): WebAssembly.Memory | ArrayBufferLike | null {
+  if (!Module) return null;
+  return Module.wasmMemory ?? Module.HEAPU8.buffer;
+}
+
+// The heap's buffer as it is NOW.  Under ALLOW_MEMORY_GROWTH with pthreads
+// a growth on the emulator thread replaces the buffer before this thread's
+// Module.HEAP* views catch up, so a block allocated after a growth is only
+// reachable through this.
+export function heapBuffer(): ArrayBufferLike | null {
+  if (!Module) return null;
+  return Module.wasmMemory?.buffer ?? Module.HEAPU8.buffer;
+}
+
+// Hand `worker` the shared memory and the address of the control block it
+// serves ({type: 'attach', memory, ctrl}); the memory, the address and the
+// worker are left on window[debugName] (lib/debugGlobal.ts) for a page
+// script to inspect when something stalls.  False (nothing posted) when the
+// memory is not shared.
+export function attachSharedWorker(worker: Worker, ctrl: number, debugName: string): boolean {
+  const memory = getWasmMemory();
+  if (!(memory instanceof WebAssembly.Memory) && !(memory instanceof SharedArrayBuffer))
+    return false;
+  exposeDebug(debugName, { memory, ctrl, worker });
+  worker.postMessage({ type: 'attach', memory, ctrl });
+  return true;
+}
+
 // Fresh heap views for direct shared-memory writers (the camera frame
 // transport). Fetched per use — under ALLOW_MEMORY_GROWTH the underlying
-// buffer can be replaced, so callers must never cache these.
+// buffer can be replaced, so callers must never cache these.  Views over
+// the current buffer (heapBuffer) when Module.HEAP* still show an older one.
+let grownViews: { u8: Uint8Array; i16: Int16Array; i32: Int32Array } | null = null;
 export function getModuleHeap(): { u8: Uint8Array; i16: Int16Array; i32: Int32Array } | null {
   if (!Module || !moduleReady) return null;
-  return { u8: Module.HEAPU8, i16: Module.HEAP16, i32: Module.HEAP32 };
+  const buf = heapBuffer()!;
+  if (Module.HEAPU8.buffer === buf)
+    return { u8: Module.HEAPU8, i16: Module.HEAP16, i32: Module.HEAP32 };
+  if (grownViews?.u8.buffer !== buf)
+    grownViews = { u8: new Uint8Array(buf), i16: new Int16Array(buf), i32: new Int32Array(buf) };
+  return grownViews;
 }
 
 // --- Lifecycle wrappers --------------------------------------------------

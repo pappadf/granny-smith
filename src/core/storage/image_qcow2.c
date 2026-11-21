@@ -139,7 +139,7 @@ int qcow2_decode_cluster(const uint8_t *src, size_t src_len, uint32_t cluster_bi
     if (!out)
         return -ENOMEM;
     int64_t n = codec_decode(CODEC_DEFLATE, src, src_len, out, cluster);
-    int rc = n == (int64_t)cluster ? 0 : -EINVAL;
+    int rc = n < 0 ? codec_errno(n) : n == (int64_t)cluster ? 0 : -EIO;
     if (out != dst) {
         if (rc == 0)
             memcpy(dst, out, dst_len);

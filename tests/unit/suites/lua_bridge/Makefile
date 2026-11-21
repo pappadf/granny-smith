@@ -7,6 +7,7 @@ EXTRA_SRCS = ../../../../src/core/job/seam.c \
               ../../../../src/core/object/meta.c \
               ../../../../src/core/object/parse.c \
               ../../../../src/core/object/value_format.c \
+              ../../../../src/core/vbuf.c \
               ../../../../src/core/lua/gs_lua.c \
               ../../../../src/core/platform_hooks.c \
               $(LUA_SRC)

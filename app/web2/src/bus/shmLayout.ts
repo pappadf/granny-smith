@@ -62,3 +62,46 @@ export function shmBlockOk(i32: Int32Array, ptr: number, magic: number, version:
   const w = ptr >> 2;
   return Atomics.load(i32, w) >>> 0 === magic && Atomics.load(i32, w + 1) === version;
 }
+
+// What a claimed block needs from its owner: what to do when the block is
+// from another build, and how to read its layout words once it checks out.
+export interface ShmBlockOwner {
+  magic: number;
+  version: number;
+  onMismatch(): void;
+  onClaim(i32: Int32Array, w: number): void;
+}
+
+// A block the core announces while the module is still starting, so it is
+// checked (once per announcement) on first use: claim() returns its address
+// when it is the layout this build speaks, 0 otherwise.
+export function lazyShmBlock(owner: ShmBlockOwner): {
+  announce(ptr: number): void;
+  claim(i32: Int32Array): number;
+} {
+  let announced = 0;
+  let checked = false;
+  let ptr = 0;
+  return {
+    announce(p: number): void {
+      announced = p;
+      checked = false;
+      ptr = 0;
+    },
+    claim(i32: Int32Array): number {
+      if (!announced) return 0;
+      if (!checked) {
+        checked = true;
+        // A core from another build: writing through a guessed layout
+        // would corrupt the heap, so the owner is told and nothing is read.
+        if (!shmBlockOk(i32, announced, owner.magic, owner.version)) {
+          owner.onMismatch();
+          return 0;
+        }
+        owner.onClaim(i32, announced >> 2);
+        ptr = announced;
+      }
+      return ptr;
+    },
+  };
+}

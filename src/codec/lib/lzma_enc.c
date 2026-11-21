@@ -405,16 +405,6 @@ static bool put_varint(uint8_t *out, size_t cap, size_t *at, uint64_t v) {
     return put(out, cap, at, b, n);
 }
 
-// Little-endian 32/64-bit stores.
-static void wr_le32(uint8_t *p, uint32_t v) {
-    for (int i = 0; i < 4; i++)
-        p[i] = (uint8_t)(v >> (8 * i));
-}
-static void wr_le64(uint8_t *p, uint64_t v) {
-    wr_le32(p, (uint32_t)v);
-    wr_le32(p + 4, (uint32_t)(v >> 32));
-}
-
 // The LZMA2 dictionary-size byte for the smallest size covering `len`:
 // sizes run 4 KiB, 6 KiB, 8 KiB, 12 KiB, ... (2^n and 3 * 2^(n-1)).
 static uint8_t dict_byte(size_t len) {
@@ -574,14 +564,14 @@ static int64_t xz_compress(xenc_t *st, const uint8_t *in, size_t len, uint8_t *o
     memcpy(sh, codec_xz_magic, 6);
     sh[6] = 0;
     sh[7] = ENC_CHECK_CRC64;
-    wr_le32(sh + 8, codec_crc32(0, sh + 6, 2));
+    codec_wr_le32(sh + 8, codec_crc32(0, sh + 6, 2));
     ok = put(out, cap, &at, sh, sizeof(sh));
 
     // Block header: size, flags (one filter, no sizes), LZMA2 with its
     // dictionary-size byte, padding, CRC-32.
     size_t block = at;
     uint8_t bh[12] = {12 / 4 - 1, 0x00, XZ_FILTER_LZMA2, 0x01, dict_byte(len), 0, 0, 0};
-    wr_le32(bh + 8, codec_crc32(0, bh, 8));
+    codec_wr_le32(bh + 8, codec_crc32(0, bh, 8));
     ok = ok && put(out, cap, &at, bh, sizeof(bh));
 
     ok = ok && lzma2_encode(st, len, params_for(level), out, cap, &at);
@@ -589,7 +579,7 @@ static int64_t xz_compress(xenc_t *st, const uint8_t *in, size_t len, uint8_t *o
     static const uint8_t zeros[4] = {0};
     ok = ok && put(out, cap, &at, zeros, (4 - (at & 3)) & 3);
     uint8_t ck[8];
-    wr_le64(ck, codec_crc64(0, in, len));
+    codec_wr_le64(ck, codec_crc64(0, in, len));
     ok = ok && put(out, cap, &at, ck, sizeof(ck));
     unpadded += sizeof(ck);
 
@@ -600,19 +590,19 @@ static int64_t xz_compress(xenc_t *st, const uint8_t *in, size_t len, uint8_t *o
     ok = ok && put(out, cap, &at, zeros, (4 - ((at - index) & 3)) & 3);
     uint8_t crc[4];
     if (ok) {
-        wr_le32(crc, codec_crc32(0, out + index, at - index));
+        codec_wr_le32(crc, codec_crc32(0, out + index, at - index));
         ok = put(out, cap, &at, crc, 4);
     }
 
     // Footer: CRC-32 of what follows, the index size in fours less one,
     // the stream flags, "YZ".
     uint8_t sf[XZ_HEADER_SIZE];
-    wr_le32(sf + 4, (uint32_t)((at - index) / 4 - 1));
+    codec_wr_le32(sf + 4, (uint32_t)((at - index) / 4 - 1));
     sf[8] = 0;
     sf[9] = ENC_CHECK_CRC64;
     sf[10] = 'Y';
     sf[11] = 'Z';
-    wr_le32(sf, codec_crc32(0, sf + 4, 6));
+    codec_wr_le32(sf, codec_crc32(0, sf + 4, 6));
     ok = ok && put(out, cap, &at, sf, sizeof(sf));
 
     st->m.dst = NULL;

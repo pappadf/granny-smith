@@ -38,9 +38,9 @@ int re_decode_size(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt_fp
         fprintf(json_fp, "{\"error\":\"SIZE too short\"}\n");
         return -1;
     }
-    uint16_t flags = (uint16_t)((bytes[0] << 8) | bytes[1]);
-    uint32_t pref = ((uint32_t)bytes[2] << 24) | ((uint32_t)bytes[3] << 16) | ((uint32_t)bytes[4] << 8) | bytes[5];
-    uint32_t mini = ((uint32_t)bytes[6] << 24) | ((uint32_t)bytes[7] << 16) | ((uint32_t)bytes[8] << 8) | bytes[9];
+    uint16_t flags = RD_BE16(bytes);
+    uint32_t pref = RD_BE32(bytes + 2);
+    uint32_t mini = RD_BE32(bytes + 6);
     fprintf(json_fp, "{\"flags\":\"0x%04x\",\"preferred_size\":%u,\"minimum_size\":%u,\"flag_names\":[", flags, pref,
             mini);
     bool first = true;

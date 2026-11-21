@@ -8,6 +8,8 @@
 
 #include "pef.h"
 
+#include "common.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,14 +30,6 @@
 
 // Maximum nesting of repeat instructions inside repeated blocks
 #define PEF_MAX_REPEAT_DEPTH 8
-
-// Big-endian readers
-static uint16_t be16(const uint8_t *p) {
-    return (uint16_t)((p[0] << 8) | p[1]);
-}
-static uint32_t be32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
-}
 
 // Copy a NUL-terminated string from `base + off` (bounded by `len`) into dst.
 static void copy_cstr(char *dst, size_t cap, const uint8_t *base, size_t len, size_t off) {
@@ -220,7 +214,7 @@ static void reloc_word(reloc_state_t *st, int kind, int target) {
     r->offset = st->addr;
     r->kind = kind;
     r->target = target;
-    r->addend = be32(s->contents + st->addr); // the stored value is the addend
+    r->addend = RD_BE32(s->contents + st->addr); // the stored value is the addend
     st->addr += 4;
 }
 
@@ -239,7 +233,7 @@ static void reloc_import(reloc_state_t *st, uint32_t index) {
 static void reloc_exec(reloc_state_t *st, uint32_t begin, uint32_t end, int depth) {
     uint32_t i = begin;
     while (i < end && !st->failed) {
-        uint16_t w = be16(st->instr + 2 * i);
+        uint16_t w = RD_BE16(st->instr + 2 * i);
         uint32_t at = i++; // index of this instruction, for repeats
         if ((w & 0xC000) == 0x0000) { // RelocBySectDWithSkip
             st->addr += ((w >> 6) & 0xFF) * 4; // skip count words
@@ -313,7 +307,7 @@ static void reloc_exec(reloc_state_t *st, uint32_t begin, uint32_t end, int dept
                 st->failed = true;
                 break;
             }
-            uint16_t w2 = be16(st->instr + 2 * i++);
+            uint16_t w2 = RD_BE16(st->instr + 2 * i++);
             switch (w & 0xFC00) {
             case 0xA000: // RelocSetPosition
                 st->addr = ((uint32_t)(w & 0x3FF) << 16) | w2;
@@ -396,20 +390,20 @@ static int parse_loader(pef_t *pef, const uint8_t *ld, size_t len, const char **
         return -1;
     }
     pef->has_loader = true;
-    pef->main_section = (int32_t)be32(ld + 0);
-    pef->main_offset = be32(ld + 4);
-    pef->init_section = (int32_t)be32(ld + 8);
-    pef->init_offset = be32(ld + 12);
-    pef->term_section = (int32_t)be32(ld + 16);
-    pef->term_offset = be32(ld + 20);
-    uint32_t n_libs = be32(ld + 24);
-    uint32_t n_syms = be32(ld + 28);
-    uint32_t n_reloc_sects = be32(ld + 32);
-    uint32_t reloc_instr_off = be32(ld + 36);
-    uint32_t strings_off = be32(ld + 40);
-    uint32_t hash_off = be32(ld + 44);
-    uint32_t hash_power = be32(ld + 48);
-    uint32_t n_exports = be32(ld + 52);
+    pef->main_section = (int32_t)RD_BE32(ld + 0);
+    pef->main_offset = RD_BE32(ld + 4);
+    pef->init_section = (int32_t)RD_BE32(ld + 8);
+    pef->init_offset = RD_BE32(ld + 12);
+    pef->term_section = (int32_t)RD_BE32(ld + 16);
+    pef->term_offset = RD_BE32(ld + 20);
+    uint32_t n_libs = RD_BE32(ld + 24);
+    uint32_t n_syms = RD_BE32(ld + 28);
+    uint32_t n_reloc_sects = RD_BE32(ld + 32);
+    uint32_t reloc_instr_off = RD_BE32(ld + 36);
+    uint32_t strings_off = RD_BE32(ld + 40);
+    uint32_t hash_off = RD_BE32(ld + 44);
+    uint32_t hash_power = RD_BE32(ld + 48);
+    uint32_t n_exports = RD_BE32(ld + 52);
 
     // Imported libraries and symbols follow the header back to back.
     uint64_t libs_end = PEF_LOADER_HEADER_SIZE + (uint64_t)n_libs * PEF_LIBRARY_SIZE;
@@ -435,11 +429,11 @@ static int parse_loader(pef_t *pef, const uint8_t *ld, size_t len, const char **
     for (uint32_t i = 0; i < n_libs; i++) {
         const uint8_t *e = ld + PEF_LOADER_HEADER_SIZE + i * PEF_LIBRARY_SIZE;
         pef_library_t *lib = &pef->libraries[i];
-        copy_cstr(lib->name, sizeof(lib->name), strs, strs_len, be32(e));
-        lib->old_imp_version = be32(e + 4);
-        lib->current_version = be32(e + 8);
-        lib->symbol_count = be32(e + 12);
-        lib->first_symbol = be32(e + 16);
+        copy_cstr(lib->name, sizeof(lib->name), strs, strs_len, RD_BE32(e));
+        lib->old_imp_version = RD_BE32(e + 4);
+        lib->current_version = RD_BE32(e + 8);
+        lib->symbol_count = RD_BE32(e + 12);
+        lib->first_symbol = RD_BE32(e + 16);
         lib->options = e[20];
         // Tag each imported symbol with its library
         for (uint32_t k = 0; k < lib->symbol_count; k++)
@@ -447,7 +441,7 @@ static int parse_loader(pef_t *pef, const uint8_t *ld, size_t len, const char **
                 pef->imports[lib->first_symbol + k].library = (int)i;
     }
     for (uint32_t i = 0; i < n_syms; i++) {
-        uint32_t v = be32(ld + libs_end + i * 4);
+        uint32_t v = RD_BE32(ld + libs_end + i * 4);
         pef_import_t *im = &pef->imports[i];
         im->sym_class = (uint8_t)((v >> 24) & 0x0F); // low 4 bits of the class byte
         im->weak = (v >> 24) & 0x80; // high bit: weak import
@@ -471,11 +465,11 @@ static int parse_loader(pef_t *pef, const uint8_t *ld, size_t len, const char **
                 const uint8_t *k = ld + keys_off + i * 4;
                 const uint8_t *s = ld + syms_off + i * PEF_EXPORT_SIZE;
                 pef_export_t *ex = &pef->exports[i];
-                uint32_t cn = be32(s);
+                uint32_t cn = RD_BE32(s);
                 ex->sym_class = (uint8_t)((cn >> 24) & 0x0F);
-                ex->value = be32(s + 4);
-                ex->section = (int16_t)be16(s + 8);
-                copy_counted(ex->name, sizeof(ex->name), strs, strs_len, cn & 0xFFFFFF, be16(k)); // key high half
+                ex->value = RD_BE32(s + 4);
+                ex->section = (int16_t)RD_BE16(s + 8);
+                copy_counted(ex->name, sizeof(ex->name), strs, strs_len, cn & 0xFFFFFF, RD_BE16(k)); // key high half
             }
         }
     }
@@ -483,9 +477,9 @@ static int parse_loader(pef_t *pef, const uint8_t *ld, size_t len, const char **
     // Relocations, one header per relocated section.
     for (uint32_t i = 0; i < n_reloc_sects; i++) {
         const uint8_t *h = ld + syms_end + i * PEF_RELOC_HEADER_SIZE;
-        uint16_t sect = be16(h);
-        uint32_t count = be32(h + 4);
-        uint64_t first = (uint64_t)reloc_instr_off + be32(h + 8);
+        uint16_t sect = RD_BE16(h);
+        uint32_t count = RD_BE32(h + 4);
+        uint64_t first = (uint64_t)reloc_instr_off + RD_BE32(h + 8);
         if (sect >= pef->section_count || first + (uint64_t)count * 2 > len) {
             set_warning(pef, "relocation header out of range");
             continue;
@@ -519,14 +513,14 @@ int pef_parse(const uint8_t *bytes, size_t len, pef_t *out, const char **errmsg)
         *errmsg = "not a PEF container (no 'Joy!peff' tag)";
         return -1;
     }
-    out->architecture = be32(bytes + 8);
-    out->format_version = be32(bytes + 12);
-    out->date_time_stamp = be32(bytes + 16);
-    out->old_def_version = be32(bytes + 20);
-    out->old_imp_version = be32(bytes + 24);
-    out->current_version = be32(bytes + 28);
-    out->section_count = be16(bytes + 32);
-    out->inst_section_count = be16(bytes + 34);
+    out->architecture = RD_BE32(bytes + 8);
+    out->format_version = RD_BE32(bytes + 12);
+    out->date_time_stamp = RD_BE32(bytes + 16);
+    out->old_def_version = RD_BE32(bytes + 20);
+    out->old_imp_version = RD_BE32(bytes + 24);
+    out->current_version = RD_BE32(bytes + 28);
+    out->section_count = RD_BE16(bytes + 32);
+    out->inst_section_count = RD_BE16(bytes + 34);
     out->main_section = out->init_section = out->term_section = -1;
 
     size_t names_off = PEF_CONTAINER_HEADER_SIZE + (size_t)out->section_count * PEF_SECTION_HEADER_SIZE;
@@ -545,14 +539,14 @@ int pef_parse(const uint8_t *bytes, size_t len, pef_t *out, const char **errmsg)
         const uint8_t *h = bytes + PEF_CONTAINER_HEADER_SIZE + (size_t)i * PEF_SECTION_HEADER_SIZE;
         pef_section_t *s = &out->sections[i];
         s->index = i;
-        int32_t name_off = (int32_t)be32(h);
+        int32_t name_off = (int32_t)RD_BE32(h);
         if (name_off >= 0)
             copy_cstr(s->name, sizeof(s->name), bytes, len, names_off + (size_t)name_off);
-        s->default_address = be32(h + 4);
-        s->total_size = be32(h + 8);
-        s->unpacked_size = be32(h + 12);
-        s->packed_size = be32(h + 16);
-        s->container_offset = be32(h + 20);
+        s->default_address = RD_BE32(h + 4);
+        s->total_size = RD_BE32(h + 8);
+        s->unpacked_size = RD_BE32(h + 12);
+        s->packed_size = RD_BE32(h + 16);
+        s->container_offset = RD_BE32(h + 20);
         s->kind = h[24];
         s->share_kind = h[25];
         s->alignment = h[26];
@@ -635,7 +629,7 @@ pef_tbfunc_t *pef_scan_traceback(const uint8_t *code, size_t len, size_t *n_out)
     size_t n = 0, cap = 0;
     *n_out = 0;
     for (size_t i = 4; i + 12 <= len; i += 4) {
-        if (be32(code + i) != 0)
+        if (RD_BE32(code + i) != 0)
             continue;
         const uint8_t *t = code + i + 4;
         size_t avail = len - (i + 4);
@@ -647,7 +641,7 @@ pef_tbfunc_t *pef_scan_traceback(const uint8_t *code, size_t len, size_t *n_out)
         if (t[0] != 0 || t[1] > 0x0F)
             continue;
         // Without tb_offset the table must follow a return (blr or bctr).
-        uint32_t prev = be32(code + i - 4);
+        uint32_t prev = RD_BE32(code + i - 4);
         if (!has_tboff && prev != 0x4E800020 && prev != 0x4E800420)
             continue;
         size_t p = 8;
@@ -657,7 +651,7 @@ pef_tbfunc_t *pef_scan_traceback(const uint8_t *code, size_t len, size_t *n_out)
         if (has_tboff) {
             if (p + 4 > avail)
                 continue;
-            tb_off = be32(t + p);
+            tb_off = RD_BE32(t + p);
             p += 4;
         }
         if (int_hndl)
@@ -665,7 +659,7 @@ pef_tbfunc_t *pef_scan_traceback(const uint8_t *code, size_t len, size_t *n_out)
         if (has_ctl) {
             if (p + 4 > avail)
                 continue;
-            uint32_t nctl = be32(t + p);
+            uint32_t nctl = RD_BE32(t + p);
             if (nctl > 64)
                 continue;
             p += 4 + 4 * (size_t)nctl;
@@ -677,7 +671,7 @@ pef_tbfunc_t *pef_scan_traceback(const uint8_t *code, size_t len, size_t *n_out)
         if (name_present) {
             if (p + 2 > avail)
                 continue;
-            uint16_t nl = be16(t + p);
+            uint16_t nl = RD_BE16(t + p);
             if (nl == 0 || nl >= sizeof(f.name) || p + 2 + nl > avail)
                 continue;
             bool printable = true;
@@ -715,24 +709,24 @@ pef_tbfunc_t *pef_scan_traceback(const uint8_t *code, size_t len, size_t *n_out)
 int pef_parse_cfrg(const uint8_t *bytes, size_t len, pef_cfrg_member_t *out, int cap) {
     if (!bytes || len < CFRG_HEADER_SIZE)
         return -1;
-    uint16_t count = be16(bytes + 30); // memberCount closes the header
+    uint16_t count = RD_BE16(bytes + 30); // memberCount closes the header
     size_t off = CFRG_HEADER_SIZE;
     int n = 0;
     for (uint16_t i = 0; i < count; i++) {
         if (off + CFRG_MEMBER_FIXED_SIZE + 1 > len)
             return -1;
         const uint8_t *m = bytes + off;
-        uint16_t member_size = be16(m + 40); // after uWhere1 (4), uWhere2 (2), extensionCount (2)
+        uint16_t member_size = RD_BE16(m + 40); // after uWhere1 (4), uWhere2 (2), extensionCount (2)
         if (member_size < CFRG_MEMBER_FIXED_SIZE + 1 || off + member_size > len)
             return -1;
         if (n < cap) {
             pef_cfrg_member_t *o = &out[n++];
-            o->architecture = be32(m);
-            o->current_version = be32(m + 8);
+            o->architecture = RD_BE32(m);
+            o->current_version = RD_BE32(m + 8);
             o->usage = m[22];
             o->where = m[23];
-            o->offset = be32(m + 24);
-            o->length = be32(m + 28);
+            o->offset = RD_BE32(m + 24);
+            o->length = RD_BE32(m + 28);
             copy_counted(o->name, sizeof(o->name), m, member_size, CFRG_MEMBER_FIXED_SIZE + 1,
                          m[CFRG_MEMBER_FIXED_SIZE]);
         }

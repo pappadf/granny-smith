@@ -1025,6 +1025,9 @@ void mesh_reset(mesh_t *m) {
 // holds, wiring supplied by callback, and a checkpoint bounded by the first
 // pointer.
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(mesh_t, bus);
+
 mesh_t *mesh_init(struct scheduler *sched, checkpoint_t *cp) {
     mesh_t *m = (mesh_t *)calloc(1, sizeof(mesh_t));
     if (!m)
@@ -1036,7 +1039,7 @@ mesh_t *mesh_init(struct scheduler *sched, checkpoint_t *cp) {
         // The plain-data block only.  The pointers below it stay NULL and are
         // re-bound by the machine (mesh_attach_bus, mesh_set_irq_callback,
         // mesh_set_dbdma_kick).
-        system_read_checkpoint_data(cp, m, offsetof(mesh_t, bus));
+        checkpoint_load_prefix(cp, m, mesh_t);
         m->sched = sched;
     }
     return m;
@@ -1059,7 +1062,7 @@ void mesh_delete(mesh_t *m) {
 void mesh_checkpoint(mesh_t *m, checkpoint_t *cp) {
     if (!m || !cp)
         return;
-    system_write_checkpoint_data(cp, m, offsetof(mesh_t, bus));
+    checkpoint_save_prefix(cp, m, mesh_t);
 }
 
 void mesh_attach_bus(mesh_t *m, struct scsi *bus) {

@@ -75,7 +75,7 @@ typedef struct {
 typedef struct {
     uint32_t base; // physical I/O base
     uint32_t size; // span in bytes
-    memory_interface_t *iface;
+    const memory_interface_t *iface;
     void *dev;
 } lisa_io_dev_t;
 
@@ -241,7 +241,7 @@ void lisa_mmu_checkpoint_restore(lisa_mmu_t *m, checkpoint_t *cp) {
     LISA_MMU_CP_FIELDS(system_read_checkpoint_data, m, cp);
 }
 
-void lisa_mmu_map_io(lisa_mmu_t *m, uint32_t phys_base, uint32_t size, memory_interface_t *iface, void *dev) {
+void lisa_mmu_map_io(lisa_mmu_t *m, uint32_t phys_base, uint32_t size, const memory_interface_t *iface, void *dev) {
     if (!m || m->io_count >= LISA_MAX_IO_DEVS)
         return;
     m->io[m->io_count].base = phys_base;
@@ -1056,25 +1056,23 @@ static value_t lisa_method_descriptor(struct object *self, const member_t *mb, i
     return val_list(items, len);
 }
 
-// peek(addr, [size], [space]) -> the value, big-endian, logical only: the
-// Lisa has three physical spaces, and a bare physical address names none.
+// One peek read, logical only: the Lisa has three physical spaces, and a
+// bare physical address names none.
+static value_t lisa_peek_read(void *ctx, uint32_t addr, unsigned size, bool physical, uint32_t *out) {
+    (void)ctx;
+    if (physical)
+        return val_err("peek: the Lisa has three physical spaces (RAM, I/O, ROM); read a logical address");
+    *out = lisa_mmu_debug_read(addr, size, debug_cpu_is_supervisor());
+    return val_none();
+}
+
+// peek(addr, [size], [space]) -> the value, big-endian (debug_mmu_peek).
 static value_t lisa_method_peek(struct object *self, const member_t *mb, int argc, const value_t *argv) {
     (void)mb;
     if (!lisa_mmu_from(self))
         return val_err("mmu not present");
-    unsigned size = (argc >= 2 && argv[1].kind == VK_UINT) ? (unsigned)argv[1].u : 4;
-    bool physical;
-    if (!debug_parse_space(argc, argv, 2, &physical))
-        return val_err("peek: space must be \"logical\" or \"physical\"");
-    if (physical)
-        return val_err("peek: the Lisa has three physical spaces (RAM, I/O, ROM); read a logical address");
-    if (size != 1 && size != 2 && size != 4)
-        return val_err("peek: size must be 1, 2 or 4");
-    return val_uint((uint8_t)size, lisa_mmu_debug_read((uint32_t)argv[0].u, size, debug_cpu_is_supervisor()));
+    return debug_mmu_peek(lisa_peek_read, NULL, argc, argv);
 }
-
-// peek's default size.
-static const value_t k_peek_size4 = {.kind = VK_UINT, .u = 4};
 
 static const arg_decl_t lisa_desc_args[] = {
     {.name = "segment", .kind = VK_UINT, .doc = "first segment number (0-127; logical address bits 23-17)"},
@@ -1089,20 +1087,8 @@ static const arg_decl_t lisa_desc_args[] = {
      .doc = "the context's descriptor set (0-3; supervisor mode uses 0)",
      .default_doc = "the context the SEG1/SEG2 latches select"},
 };
-static const arg_decl_t lisa_peek_args[] = {
-    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "logical address"},
-    {.name = "size",
-     .kind = VK_UINT,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &k_peek_size4,
-     .doc = "1, 2 or 4 bytes"},
-    {.name = "space",
-     .kind = VK_ENUM,
-     .enum_values = debug_space_values,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "\"logical\"; \"physical\" is refused on the Lisa",
-     .default_doc = "logical"},
-};
+static const arg_decl_t lisa_peek_args[DEBUG_MMU_PEEK_NARGS] =
+    DEBUG_MMU_PEEK_ARGS("logical address", "\"logical\"; \"physical\" is refused on the Lisa");
 
 static const member_t lisa_mmu_members[] = {
     {.kind = MK_ATTR,
@@ -1153,7 +1139,7 @@ static const member_t lisa_mmu_members[] = {
      .name = "peek",
      .examples = EXAMPLES("machine.cpu.mmu.peek 0x20000"),
      .doc = "Read memory through the segment MMU; side-effect-free",
-     .method = {.args = lisa_peek_args, .nargs = 3, .result = VK_UINT, .fn = lisa_method_peek}},
+     .method = {.args = lisa_peek_args, .nargs = DEBUG_MMU_PEEK_NARGS, .result = VK_UINT, .fn = lisa_method_peek}},
 };
 
 static const class_desc_t lisa_mmu_class = {

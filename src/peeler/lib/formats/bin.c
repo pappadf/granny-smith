@@ -79,7 +79,7 @@ static bool bin_validate(const uint8_t *hdr) {
 
     // bin.md § 6.2 — CRC-16/XMODEM over bytes 0–123, stored at 124–125
     uint16_t crc_calc = codec_crc16_xmodem(0, hdr, 124);
-    uint16_t crc_stored = rd16be(hdr + 124);
+    uint16_t crc_stored = codec_be16(hdr + 124);
     if (crc_calc != crc_stored) {
         // bin.md § 6.2 — MacBinary I fallback: accept if byte 82 is 0
         if (hdr[82] != 0) {
@@ -105,18 +105,18 @@ static bin_header_t bin_parse_header(const uint8_t *hdr) {
     h.name[copy] = '\0';
 
     // bin.md § 4.1 — file type at offset 65, creator at offset 69
-    h.mac_type = rd32be(hdr + 65);
-    h.mac_creator = rd32be(hdr + 69);
+    h.mac_type = codec_be32(hdr + 65);
+    h.mac_creator = codec_be32(hdr + 69);
 
     // bin.md § 4.2 — Finder flags: high byte at offset 73, low byte at 101
     h.finder_flags = (uint16_t)((uint16_t)hdr[73] << 8 | (uint16_t)hdr[101]);
 
     // bin.md § 4.1 — data fork length at offset 83, resource fork at 87
-    h.data_len = rd32be(hdr + 83);
-    h.rsrc_len = rd32be(hdr + 87);
+    h.data_len = codec_be32(hdr + 83);
+    h.rsrc_len = codec_be32(hdr + 87);
 
     // bin.md § 4.1 — secondary header length at offset 120
-    h.sec_hdr_len = rd16be(hdr + 120);
+    h.sec_hdr_len = codec_be16(hdr + 120);
 
     return h;
 }

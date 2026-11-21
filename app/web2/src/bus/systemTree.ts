@@ -62,3 +62,14 @@ export async function loadMembers(path: string, values = false): Promise<MemberI
       !!m && typeof m === 'object' && typeof (m as MemberInfo).name === 'string',
   );
 }
+
+// Write an attribute of the tree: the core's answer (null, or an {error}).
+export function writeMember(path: string, value: unknown): Promise<unknown> {
+  return gsEval(path, [value]);
+}
+
+// Call a method of the tree (`<node>.<name>`) with its arguments: the
+// core's answer.
+export function callMember(call: string, args: unknown[]): Promise<unknown> {
+  return gsEval(call, args);
+}

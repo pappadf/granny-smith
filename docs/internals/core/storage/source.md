@@ -41,7 +41,7 @@ therefore a source the storage engine can mount with no adapter.
 |---|---|---|
 | `source_t`, `source_ops_t` | `source.h` (= `peel_source_t`) | read / size / key / tier / close; reference counted |
 | `source_tier_t` | `source.h` | `RANDOM`, `INDEXED`, `EARNED`, `STREAM`, `WHOLE` |
-| `source_host` | `source.c` | a host file, `pread`, thread-safe |
+| `source_host` | `source.c` | a host file, `pread`, thread-safe; opened through `open_regular_file` (`storage_util.c`), the one host opener the host VFS backend and `read_file` share: regular files only, non-blocking open so a FIFO is refused rather than waited on |
 | `source_view`, `source_memory` | `source.c` | offset window; bytes in memory |
 | `source_open_path` | `source.c` | open a path's data / resource fork / Finder info through the installed opener |
 | `source_decode_through` | `source_cache.c` | cache-backed wrapper for forward-only or expensive sources |

@@ -227,6 +227,12 @@ static void alias_clear_user_impl(void) {
 // operation; the interpreter on the job thread and the emulator thread
 // (breakpoint conditions, completion, shell.vars) both read here. =========
 
+void alias_register_builtin_or_log(const char *owner, const char *name, const char *path) {
+    char err[160];
+    if (alias_register_builtin(name, path, err, sizeof(err)) != STATUS_OK)
+        LOG(0, "%s: built-in alias '$%s' → '%s' rejected: %s", owner ? owner : "alias", name, path, err);
+}
+
 status_t alias_register_builtin(const char *name, const char *path, char *err_buf, size_t err_size) {
     job_tables_lock();
     status_t r = alias_register_builtin_impl(name, path, err_buf, err_size);

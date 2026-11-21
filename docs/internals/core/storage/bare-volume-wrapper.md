@@ -40,7 +40,9 @@ checksum), [`gsdisk/gsdisk_drvr.s`](../../../../src/core/storage/gsdisk/gsdisk_d
 
 - **A bare volume** (`image_wrap_is_bare_volume`): the first three blocks show
   a volume header at 1024 (`BD` or `H+`), with neither `ER` at 0 nor `PM` at
-  512.
+  512. A bare HFSX volume (no classic Mac OS mounts it) and a bare MFS volume
+  (mounted from floppies only) are not wrapped; the volume classifier
+  (`volume_sniff`, `image_volume.c`) names them, and the wrapper declines.
 - **A driverless partitioned disk** (`image_wrap_find_driverless_hfs`): `PM`
   at 512; block 0 is not `ER`, or is a DDM with `sbDrvrCount 0`; the whole map
   parses (it must fit in the first 64 blocks, like the wrapper's own); no

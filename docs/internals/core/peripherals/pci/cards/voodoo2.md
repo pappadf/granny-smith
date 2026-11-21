@@ -312,7 +312,9 @@ reshaped into a command layer:
   pool: both pool configurations made the startup ready gate flaky in
   CI) and the `voodoo2-thread` e2e spec pins it.  A build defaults to the
   walker with `EXTRA_CFLAGS='-DGS_V2_RASTER_DEFAULT="sw"'`, or leaves
-  the thread backend out entirely with `-DGS_V2_THREAD_BACKEND=0` (no
+  the thread backend out entirely with `-DGS_RASTER_THREAD_BACKEND=0` (the
+  shared raster queue's knob, `raster_queue.{c,h}`, which holds the ring and
+  worker for this card and the QuickDraw 3D card; no
   pthread code compiled; `raster=thread` then falls back with a log
   line); any boot picks one with `pci_option`.  `machine.pci.slot[N].card.regs.raster`
   reports which.

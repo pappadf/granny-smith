@@ -19,6 +19,7 @@
 #include "appledouble.h"
 #include "out.h"
 #include "shell.h"
+#include "storage_util.h"
 #include "vfs.h"
 #include "io/io_worker.h"
 
@@ -41,19 +42,6 @@ struct cp_stats {
     // first error so callers can distinguish a source read from a dest write.
     char detail[320];
 };
-
-// Concatenate two path components with exactly one separator, however many
-// trailing slashes `a` has and leading slashes `b` has.  (The VFS has no
-// join helper of its own; this is the only one in the tree.)
-static void path_join(char *dst, size_t cap, const char *a, const char *b) {
-    size_t alen = strlen(a);
-    while (alen > 1 && a[alen - 1] == '/')
-        alen--; // keep a lone "/" (the root) intact
-    bool has_sep = alen > 0 && a[alen - 1] == '/';
-    while (b[0] == '/')
-        b++;
-    snprintf(dst, cap, "%.*s%s%s", (int)alen, a, has_sep ? "" : "/", b);
-}
 
 // Return the basename (last path component) of `path` into `out`.
 static void path_basename(const char *path, char *out, size_t cap) {
@@ -374,8 +362,11 @@ static int copy_recursive(const char *src, const char *dst, struct cp_stats *s) 
     for (size_t i = 0; i < n; i++) {
         char sub_src[VFS_PATH_MAX];
         char sub_dst[VFS_PATH_MAX];
-        path_join(sub_src, sizeof(sub_src), src, names[i]);
-        path_join(sub_dst, sizeof(sub_dst), dst, names[i]);
+        if (!path_join(sub_src, sizeof(sub_src), src, names[i]) ||
+            !path_join(sub_dst, sizeof(sub_dst), dst, names[i])) {
+            rc = -ENAMETOOLONG;
+            goto done;
+        }
         rc = copy_recursive(sub_src, sub_dst, s);
         if (rc < 0)
             goto done;

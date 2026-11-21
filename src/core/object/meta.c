@@ -31,37 +31,6 @@ void meta_complete_register(meta_complete_fn fn) {
     g_complete_provider = fn;
 }
 
-// === Member-list accumulator ==============================================
-//
-// `meta.children`, `meta.attributes`, `meta.methods` all build a
-// VK_LIST<VK_STRING> by scanning the inspected object's class members and
-// (for children) its statically-attached children. Same pattern as
-// root.c's `objects/attributes/methods` methods.
-
-typedef struct {
-    value_t *items;
-    size_t len;
-    size_t cap;
-    bool oom; // set when a push failed; the list must not be returned short
-} name_list_t;
-
-// The shared accumulator, val_list_push.  This was the second of five
-// near-identical copies, and like the others it discarded the failure -- so
-// meta.children and meta.indices returned a SILENTLY TRUNCATED list under
-// memory pressure, which the inspector renders as the complete set.
-static bool name_list_push(name_list_t *acc, const char *name) {
-    if (!name)
-        return true;
-    return val_list_push(&acc->items, &acc->len, &acc->cap, val_str(name));
-}
-
-static void each_attached_collect(struct object *parent, struct object *child, void *ud) {
-    (void)parent;
-    name_list_t *acc = (name_list_t *)ud;
-    if (!name_list_push(acc, object_name(child)))
-        acc->oom = true;
-}
-
 // === Attribute getters ====================================================
 
 // Return the inspected object — i.e. the object the Meta node was
@@ -88,69 +57,15 @@ static DEF_GETTER(meta_get_path) {
 }
 
 static DEF_GETTER(meta_get_children) {
-    struct object *insp = meta_inspected(self);
-    if (!insp)
-        return val_list(NULL, 0);
-    name_list_t acc = {0};
-    const class_desc_t *cls = object_class(insp);
-    if (cls) {
-        for (size_t i = 0; i < cls->n_members; i++)
-            if (cls->members[i].kind == MK_CHILD)
-                if (!name_list_push(&acc, cls->members[i].name))
-                    acc.oom = true;
-    }
-    // Attached (runtime) children in deterministic (order, attach_seq)
-    // sequence so the SYSTEM tab renders stably.
-    object_each_attached_ordered(insp, each_attached_collect, &acc);
-    if (acc.oom) {
-        for (size_t i = 0; i < acc.len; i++)
-            value_free(&acc.items[i]);
-        free(acc.items);
-        return val_err("out of memory");
-    }
-    return val_list(acc.items, acc.len);
+    return object_member_names(meta_inspected(self), MK_CHILD);
 }
 
 static DEF_GETTER(meta_get_attributes) {
-    struct object *insp = meta_inspected(self);
-    if (!insp)
-        return val_list(NULL, 0);
-    name_list_t acc = {0};
-    const class_desc_t *cls = object_class(insp);
-    if (cls) {
-        for (size_t i = 0; i < cls->n_members; i++)
-            if (cls->members[i].kind == MK_ATTR)
-                if (!name_list_push(&acc, cls->members[i].name))
-                    acc.oom = true;
-    }
-    if (acc.oom) {
-        for (size_t i = 0; i < acc.len; i++)
-            value_free(&acc.items[i]);
-        free(acc.items);
-        return val_err("out of memory");
-    }
-    return val_list(acc.items, acc.len);
+    return object_member_names(meta_inspected(self), MK_ATTR);
 }
 
 static DEF_GETTER(meta_get_methods) {
-    struct object *insp = meta_inspected(self);
-    if (!insp)
-        return val_list(NULL, 0);
-    name_list_t acc = {0};
-    const class_desc_t *cls = object_class(insp);
-    if (cls) {
-        for (size_t i = 0; i < cls->n_members; i++)
-            if (cls->members[i].kind == MK_METHOD)
-                if (!name_list_push(&acc, cls->members[i].name))
-                    acc.oom = true;
-    }
-    if (acc.oom) {
-        for (size_t i = 0; i < acc.len; i++)
-            value_free(&acc.items[i]);
-        free(acc.items);
-        return val_err("out of memory");
-    }
-    return val_list(acc.items, acc.len);
+    return object_member_names(meta_inspected(self), MK_METHOD);
 }
 
 // Map a visibility-category bitfield (M_CAT_*) to its string name. Used by

@@ -23,6 +23,7 @@
 
 import { probeGlContext, releaseGlContext } from './gpuProbe';
 import type { WorkerProbeAnswer } from './gpuProbe.worker';
+import { exposeDebug } from './debugGlobal';
 
 // Every way the graphics check can fail, from the page probe or later from
 // the emulator's renderer (the `state:renderer` event).
@@ -156,8 +157,8 @@ export async function diagnoseGraphics(): Promise<GraphicsDiagnosis> {
   const page = diagnosePageWebGL();
   const result = page.ok ? await diagnoseWorkerWebGL() : page;
   const final = result.ok && page.ok ? { ok: true as const, renderer: page.renderer } : result;
-  // For bug reports and automation: what the check saw.
-  (window as unknown as { __gsGraphics?: GraphicsDiagnosis }).__gsGraphics = final;
+  // For bug reports and automation: what the check saw (window.__gsGraphics).
+  exposeDebug('__gsGraphics', final);
   if (!final.ok) console.error(`[graphics] ${final.failure}: ${final.detail}`);
   return final;
 }

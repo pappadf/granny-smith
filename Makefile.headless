@@ -17,18 +17,9 @@ TARGET ?= native
 ifeq ($(TARGET),node)
 CC := emcc
 endif
-# -Wall -Wextra on every C build, minus one: -Wmissing-field-initializers
-# objects to positional initializers that stop before a struct's last
-# fields, and the I/O range and display timing tables are written that way
-# on purpose (mac030_io_range_t keeps its optional fields last "so
-# positional initializers stay valid").  WERROR=1 (set in CI) makes every
-# warning an error; it applies to compilation only, never to the link.
-CFLAGS_BASE := -std=gnu11 -Wall -Wextra -Wno-missing-field-initializers \
-               -D_GNU_SOURCE -D_DARWIN_C_SOURCE -D_POSIX_C_SOURCE=200809L -MMD -MP
-WERROR ?= 0
-ifeq ($(WERROR),1)
-CFLAGS_BASE += -Werror
-endif
+# The dialect, warnings and feature macros every build shares.
+include src/build-flags.mk
+CFLAGS_BASE := $(WARN_CFLAGS) $(FEATURE_CFLAGS) -MMD -MP
 
 # -- Build mode (release | debug | sanitize | fast) --
 
@@ -181,30 +172,9 @@ $(BUILD_DIR)/%.o: %.c
 FORCE:
 $(BUILD_DIR)/$(CORE_DIR)/build_id.o: FORCE
 
-# gsvrom_data.c embeds the generated fragments header (edit a vrom68k
-# .s file → make rebuilds fragment, header, object — real dependency
-# tracking; the stale-blob failure mode is gone).
-$(BUILD_DIR)/$(CORE_DIR)/peripherals/nubus/gsvrom_data.o: $(VROM68K_HEADER)
-
-# The predecoded executors include the generated T1 headers.
-$(BUILD_DIR)/$(CORE_DIR)/cpu/cpu.o $(BUILD_DIR)/$(CORE_DIR)/cpu/cpu_68000.o $(BUILD_DIR)/$(CORE_DIR)/cpu/cpu_68030.o \
-    $(BUILD_DIR)/$(CORE_DIR)/cpu/cpu_68040.o: $(PDGEN_CPU_HEADERS)
-$(BUILD_DIR)/$(CORE_DIR)/cpu/ppc/ppc.o $(BUILD_DIR)/$(CORE_DIR)/cpu/ppc/ppc_run.o: $(PDGEN_PPC_HEADERS)
-
-# image_wrap.c embeds the generated GSDisk driver header.
-$(BUILD_DIR)/$(CORE_DIR)/storage/image_wrap.o: $(GSDISK_HEADER)
-
-# laserwriter_job.c embeds the generated prelude header.
-$(BUILD_DIR)/$(CORE_DIR)/network/laserwriter_job.o: $(LASERWRITER_PRELUDE_HEADER)
-
-# The embedded Lua standard library (bin2c of gs_lua_lib.lua).
-$(BUILD_DIR)/$(CORE_DIR)/lua/gs_lua.o: $(GS_LUA_LIB_HEADER)
-
-# The flags stamp: creating it (any flag change) outdates every object.
-$(FLAGS_STAMP):
-	@mkdir -p $(dir $@)
-	@rm -f $(BUILD_DIR)/flags-*.stamp $(BUILD_DIR)/platen-*.stamp
-	@touch $@
+# The generated-header edges and the flags stamp, shared with wasm.
+OBJ_ROOT := $(BUILD_DIR)
+include src/build-rules.mk
 $(OBJ): $(FLAGS_STAMP) $(PLATEN_PREREQS)
 
 # Link all objects into the headless binary

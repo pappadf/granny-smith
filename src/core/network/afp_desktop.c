@@ -10,6 +10,7 @@
 #include "afp_applog.h"
 #include "afp_catalog.h"
 #include "afp_meta.h"
+#include "vbuf.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -105,14 +106,10 @@ static int icon_apply(afp_desktop_t *dt, uint8_t op, uint32_t creator, uint32_t 
     if (si < 0) {
         if (icon_live(dt) >= AFP_MAX_ICONS)
             return -ENOSPC;
-        if (dt->icon_len == dt->icon_cap) {
-            size_t cap = dt->icon_cap ? dt->icon_cap * 2 : 16;
-            icon_slot_t *tmp = (icon_slot_t *)realloc(dt->icons, cap * sizeof(icon_slot_t));
-            if (!tmp)
-                return -ENOMEM;
-            dt->icons = tmp;
-            dt->icon_cap = cap;
-        }
+        icon_slot_t *tmp = gs_grow(dt->icons, &dt->icon_cap, dt->icon_len + 1, sizeof(icon_slot_t), 16);
+        if (!tmp)
+            return -ENOMEM;
+        dt->icons = tmp;
         si = (long)dt->icon_len++;
         memset(&dt->icons[si], 0, sizeof(dt->icons[si]));
     }
@@ -205,14 +202,10 @@ static int appl_apply(afp_desktop_t *dt, uint8_t op, uint32_t creator, uint32_t 
     if (op != DT_OP_PUT)
         return 0; // a later format's record
     if (si < 0) {
-        if (dt->appl_len == dt->appl_cap) {
-            size_t cap = dt->appl_cap ? dt->appl_cap * 2 : 16;
-            appl_slot_t *tmp = (appl_slot_t *)realloc(dt->appls, cap * sizeof(appl_slot_t));
-            if (!tmp)
-                return -ENOMEM;
-            dt->appls = tmp;
-            dt->appl_cap = cap;
-        }
+        appl_slot_t *tmp = gs_grow(dt->appls, &dt->appl_cap, dt->appl_len + 1, sizeof(appl_slot_t), 16);
+        if (!tmp)
+            return -ENOMEM;
+        dt->appls = tmp;
         si = (long)dt->appl_len++;
         memset(&dt->appls[si], 0, sizeof(dt->appls[si]));
     }

@@ -125,6 +125,24 @@ TEST(clut_component_phase) {
     dafb_delete(d);
 }
 
+// A run-read walks consecutive entries: after the third (blue) data read the
+// index advances, as a run-write's does.  It used to step only the phase, so a
+// guest reading N entries back in one run got the first entry N times.
+TEST(clut_run_read_advances) {
+    dafb_t *d = make_dafb();
+    w32(d, 0x200, 5);
+    static const uint8_t rgb[6] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
+    for (int i = 0; i < 6; i++)
+        w32(d, 0x210, rgb[i]); // entries 5 and 6
+    w32(d, 0x200, 5); // re-address for the read
+    for (int i = 0; i < 6; i++) {
+        int got = (int)(r32(d, 0x210) & 0xFF); // read once: the read steps the port
+        ASSERT_EQ_INT(rgb[i], got);
+    }
+    ASSERT_EQ_INT(7, (int)(r32(d, 0x200) & 0xFF)); // index left one past the run
+    dafb_delete(d);
+}
+
 TEST(sense_protocol_13in) {
     dafb_t *d = make_dafb_monitor(6); // 13" RGB: line 0 grounded by the monitor
     // Reset state: drives tristate; read returns the inverted passive code.
@@ -189,6 +207,7 @@ int main(void) {
     RUN(geometry_from_rom_mode_set);
     RUN(depth_matrix_pcbr0);
     RUN(clut_component_phase);
+    RUN(clut_run_read_advances);
     RUN(sense_protocol_13in);
     RUN(sense_protocol_extended_16in);
     RUN(swatch_interrupt_clears);

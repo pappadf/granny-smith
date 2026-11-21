@@ -9,6 +9,7 @@
 #include "audio_out.h"
 #include "machine_profile.h" // machine_object()
 #include "object.h"
+#include "object_order.h"
 #include "value.h"
 
 #include <stdlib.h>
@@ -170,7 +171,7 @@ struct object *sound_object_new(const sound_surface_t *s) {
         return NULL;
     }
     object_set_label(obj, "Sound");
-    object_set_order(obj, 110);
+    object_set_order(obj, OBJ_ORDER_SOUND);
     object_attach(machine_object(), obj);
     // Deterministic capture sink for golden-WAV tests (sound.capture.*).
     audio_out_capture_attach(obj);
@@ -188,7 +189,6 @@ void sound_object_delete(struct object *obj) {
     // repeatedly (boot-config does it 28 times) those stale children
     // accumulate with dangling parents.  object_delete_tree is post-order and
     // takes the subtree.
-    object_detach(obj);
-    object_delete_tree(obj);
+    object_destroy(&obj);
     free(copy);
 }

@@ -92,28 +92,6 @@ checkpoint_kind_t checkpoint_get_kind(checkpoint_t *cp) {
     return cp->kind;
 }
 
-bool checkpoint_read_count(checkpoint_t *cp, uint32_t *out, uint32_t max, const char *what) {
-    (void)what;
-    system_read_checkpoint_data_loc(cp, out, sizeof *out, NULL, __FILE__, __LINE__);
-    if (*out > max) {
-        cp->error = true;
-        *out = 0;
-        return false;
-    }
-    return true;
-}
-
-char *checkpoint_read_string(checkpoint_t *cp, uint32_t max, const char *what) {
-    uint32_t len = 0;
-    if (!checkpoint_read_count(cp, &len, max, what) || len == 0)
-        return NULL;
-    char *s = malloc((size_t)len + 1);
-    ASSERT_TRUE(s != NULL);
-    system_read_checkpoint_data_loc(cp, s, len, NULL, __FILE__, __LINE__);
-    s[len] = '\0';
-    return s;
-}
-
 static char g_dir[64]; // the media and the deltas
 
 const char *checkpoint_machine_dir(void) {

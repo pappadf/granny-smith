@@ -17,6 +17,8 @@
 #ifndef GS_CORE_PERIPHERALS_ATA_H
 #define GS_CORE_PERIPHERALS_ATA_H
 
+#include "irq_line.h"
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -60,7 +62,7 @@ typedef enum ata_dev_kind {
     ATA_DEV_ATAPI, // ATAPI CD-ROM (a device on the channel's SCSI back end)
 } ata_dev_kind_t;
 
-typedef void (*ata_irq_fn)(void *ctx, bool level);
+typedef irq_fn ata_irq_fn;
 typedef void (*ata_dma_kick_fn)(void *ctx);
 
 // One device on the channel.  Each device holds its own copy of the task
@@ -101,8 +103,7 @@ typedef struct ata_channel {
     uint8_t cur; // the device the command in progress belongs to
     uint8_t enabled; // the I/O controller has the cell enabled
     uint8_t packet_dma; // the pending PACKET command moves its data by DMA
-    uint8_t line; // INTRQ as last driven out
-    uint8_t pad[3];
+    uint8_t pad[4];
     uint32_t timing; // the I/O controller's timing latch (store and read back)
     uint64_t lba; // next sector of a multi-sector transfer
     uint32_t sectors_left; // sectors of the command not yet staged
@@ -118,8 +119,7 @@ typedef struct ata_channel {
     uint8_t *atapi_resp; // the whole response of the current PACKET command
     struct image *img[2]; // HD media
     struct scsi *atapi_bus; // the ATAPI devices' back end (shared, may be NULL)
-    ata_irq_fn irq;
-    void *irq_ctx;
+    irq_line_t irq; // INTRQ out (its level is recomputed on a restore)
     ata_dma_kick_fn dma_kick;
     void *dma_ctx;
     int index; // channel number, for logs

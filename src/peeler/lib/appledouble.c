@@ -25,11 +25,11 @@ static bool magic_ok(uint32_t magic) {
 static bool header_valid(const uint8_t *buf, size_t len, uint16_t *n_out) {
     if (!buf || len < AD_HDR_FIXED)
         return false;
-    if (!magic_ok(rd32be(buf)))
+    if (!magic_ok(codec_be32(buf)))
         return false;
-    if (rd32be(buf + 4) != APPLE_FORK_VERSION)
+    if (codec_be32(buf + 4) != APPLE_FORK_VERSION)
         return false;
-    uint16_t n = rd16be(buf + AD_NENTRIES_OFF);
+    uint16_t n = codec_be16(buf + AD_NENTRIES_OFF);
     if (n == 0 || n > AD_MAX_ENTRIES)
         return false;
     // Descriptor table must fit.
@@ -39,9 +39,9 @@ static bool header_valid(const uint8_t *buf, size_t len, uint16_t *n_out) {
     // entry id must be non-zero (id 0 is invalid per the spec).
     for (uint16_t i = 0; i < n; i++) {
         const uint8_t *d = buf + AD_HDR_FIXED + (size_t)i * AD_DESC_SIZE;
-        uint32_t id = rd32be(d);
-        uint32_t off = rd32be(d + 4);
-        uint32_t elen = rd32be(d + 8);
+        uint32_t id = codec_be32(d);
+        uint32_t off = codec_be32(d + 4);
+        uint32_t elen = codec_be32(d + 8);
         if (id == 0)
             return false;
         if ((uint64_t)off + elen > (uint64_t)len)
@@ -62,14 +62,14 @@ int ad_parse(const uint8_t *buf, size_t len, ad_file_t *out) {
         return -EINVAL;
 
     memset(out, 0, sizeof(*out));
-    out->magic = rd32be(buf);
-    out->version = rd32be(buf + 4);
+    out->magic = codec_be32(buf);
+    out->version = codec_be32(buf + 4);
     out->n_entries = n;
     for (uint16_t i = 0; i < n; i++) {
         const uint8_t *d = buf + AD_HDR_FIXED + (size_t)i * AD_DESC_SIZE;
-        uint32_t id = rd32be(d);
-        uint32_t off = rd32be(d + 4);
-        uint32_t elen = rd32be(d + 8);
+        uint32_t id = codec_be32(d);
+        uint32_t off = codec_be32(d + 4);
+        uint32_t elen = codec_be32(d + 8);
         const uint8_t *bytes = elen ? buf + off : NULL;
         out->entries[i].id = id;
         out->entries[i].bytes = bytes;
@@ -115,15 +115,15 @@ long ad_build_header(bool applesingle, const ad_entry_t *entries, size_t n_entri
     if (hdr > cap)
         return -EINVAL;
     memset(out, 0, hdr); // including the 16-byte filler at AD_FILLER_OFF
-    wr32be(out, applesingle ? APPLESINGLE_MAGIC : APPLEDOUBLE_MAGIC);
-    wr32be(out + 4, APPLE_FORK_VERSION);
-    wr16be(out + AD_NENTRIES_OFF, (uint16_t)n_entries);
+    codec_wr_be32(out, applesingle ? APPLESINGLE_MAGIC : APPLEDOUBLE_MAGIC);
+    codec_wr_be32(out + 4, APPLE_FORK_VERSION);
+    codec_wr_be16(out + AD_NENTRIES_OFF, (uint16_t)n_entries);
     size_t payload = hdr;
     for (size_t i = 0; i < n_entries; i++) {
         uint8_t *d = out + AD_HDR_FIXED + i * AD_DESC_SIZE;
-        wr32be(d, entries[i].id);
-        wr32be(d + 4, (uint32_t)payload);
-        wr32be(d + 8, (uint32_t)entries[i].len);
+        codec_wr_be32(d, entries[i].id);
+        codec_wr_be32(d + 4, (uint32_t)payload);
+        codec_wr_be32(d + 8, (uint32_t)entries[i].len);
         payload += entries[i].len;
     }
     return (long)hdr;

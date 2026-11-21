@@ -18,6 +18,11 @@
 //    but not INEX2 (UM §6.1.5/§6.1.7, FPSP round);
 //  - FCOS of a denormal is exactly 1.0 in every rounding mode (FPSP scosd)
 //    and FATAN of a denormal is X with UNFL and INEX2 (FPSP satand);
+//  - the other transcendentals of a denormal take their tiny paths too:
+//    FETOX/FTWOTOX/FTENTOX/FCOSH give 1.0 and FACOS pi/2 with INEX2, and
+//    FETOXM1/FSINH/FTANH/FASIN/FATANH give X with UNFL and INEX2 (FPSP
+//    setoxd, stwotoxd, stentoxd, scoshd, sacosd, setoxm1d, ssinhd, stanhd,
+//    sasind, satanhd) -- never an overflow or an operand error;
 //  - the packed-decimal ILOG is exact next to the large powers of ten;
 //  - a packed store writes the fourth exponent digit, with OPERR, when the
 //    decimal exponent reaches 1000 (UM §4.3.3, Figure 3-11; FPSP bindec A15),
@@ -41,6 +46,7 @@
 #include "harness.h"
 #include "memory.h"
 #include "test_assert.h"
+#include "value.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -63,6 +69,16 @@
 #define OP_FGETMAN 0x1Fu
 #define OP_FDIV    0x20u
 #define OP_FSCALE  0x26u
+#define OP_FSINH   0x02u
+#define OP_FETOXM1 0x08u
+#define OP_FTANH   0x09u
+#define OP_FASIN   0x0Cu
+#define OP_FATANH  0x0Du
+#define OP_FETOX   0x10u
+#define OP_FTWOTOX 0x11u
+#define OP_FTENTOX 0x12u
+#define OP_FCOSH   0x19u
+#define OP_FACOS   0x1Cu
 
 static cpu_t *g_cpu;
 static fpu_state_t *g_fpu;
@@ -301,6 +317,41 @@ TEST(fatan_of_denormal_is_x) {
     ASSERT_EQ_INT(FPEXC_UNFL | FPEXC_INEX2, exc());
 }
 
+// e^X, 2^X, 10^X and cosh X of a denormal are 1.0, inexact; acos X is pi/2
+TEST(exp_family_of_denormal_is_one) {
+    const unsigned ops[] = {OP_FETOX, OP_FTWOTOX, OP_FTENTOX, OP_FCOSH};
+    const float80_reg_t xs[] = {x80(0x0000, 1), x80(0x8000, 0x4000000000000000ULL)};
+    for (unsigned i = 0; i < 4; i++) {
+        for (unsigned k = 0; k < 2; k++) {
+            float80_reg_t r = run_op(ops[i], RN, xs[k], FP80_ZERO);
+            if (r.exponent != 0x3FFF || r.mantissa != 0x8000000000000000ULL || exc() != FPEXC_INEX2)
+                fprintf(stderr, "op %02X x%u: %04X:%016llX exc %04X\n", ops[i], k, r.exponent,
+                        (unsigned long long)r.mantissa, exc());
+            assert_reg(r, 0x3FFF, 0x8000000000000000ULL);
+            ASSERT_EQ_INT(FPEXC_INEX2, exc());
+        }
+    }
+    float80_reg_t r = run_op(OP_FACOS, RN, x80(0x0000, 1), FP80_ZERO);
+    assert_reg(r, 0x3FFF, 0xC90FDAA22168C235ULL);
+    ASSERT_EQ_INT(FPEXC_INEX2, exc());
+}
+
+// e^X - 1, sinh, tanh, asin and atanh of a denormal are X with UNFL and INEX2
+TEST(odd_transcendentals_of_denormal_are_x) {
+    const unsigned ops[] = {OP_FETOXM1, OP_FSINH, OP_FTANH, OP_FASIN, OP_FATANH};
+    const float80_reg_t xs[] = {x80(0x0000, 1), x80(0x8000, 0x0000123456789ABCULL)};
+    for (unsigned i = 0; i < 5; i++) {
+        for (unsigned k = 0; k < 2; k++) {
+            float80_reg_t r = run_op(ops[i], RN, xs[k], FP80_ZERO);
+            if (r.exponent != xs[k].exponent || r.mantissa != xs[k].mantissa || exc() != (FPEXC_UNFL | FPEXC_INEX2))
+                fprintf(stderr, "op %02X x%u: %04X:%016llX exc %04X\n", ops[i], k, r.exponent,
+                        (unsigned long long)r.mantissa, exc());
+            assert_reg(r, xs[k].exponent, xs[k].mantissa);
+            ASSERT_EQ_INT(FPEXC_UNFL | FPEXC_INEX2, exc());
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Packed decimal ILOG
 // ---------------------------------------------------------------------------
@@ -501,6 +552,44 @@ TEST(fdiv_wide_divisor_is_correctly_rounded) {
     ASSERT_EQ_INT(FPEXC_INEX2, exc());
 }
 
+// ---------------------------------------------------------------------------
+// debug.frame's decimal rendering
+// ---------------------------------------------------------------------------
+
+// The "val" string debug.frame shows for FP1 holding `v`
+static void frame_fp1_val(float80_reg_t v, char *out, size_t cap) {
+    g_fpu->fp[1] = v;
+    cpu_debug_if_t dif = cpu_debug_if(g_cpu);
+    value_map_builder_t *b = val_map_new();
+    ASSERT_TRUE(dif.fpu(dif.ctx, b));
+    value_t m = val_map_finish(b);
+    const value_t *fp = value_map_get(&m, "fp");
+    ASSERT_TRUE(fp && fp->kind == VK_LIST && fp->list.len == 8);
+    const value_t *val = value_map_get(&fp->list.items[1], "val");
+    ASSERT_TRUE(val && val->kind == VK_STRING);
+    snprintf(out, cap, "%s", val->s);
+    value_free(&m);
+}
+
+TEST(frame_displays_unnormals_and_rounds_without_touching_fpsr) {
+    char buf[64];
+    // An unnormal 0.5 (exponent of 1.0, J bit clear) is 0.5, not 1.5
+    frame_fp1_val(x80(0x3FFF, 0x4000000000000000ULL), buf, sizeof(buf));
+    ASSERT_TRUE(strcmp(buf, "0.5") == 0);
+    // Above the half-way point past the double's LSB rounds up to nearest
+    // instead of truncating to 1
+    frame_fp1_val(x80(0x3FFF, 0x8000000000000401ULL), buf, sizeof(buf));
+    ASSERT_TRUE(strcmp(buf, "1.0000000000000002") == 0);
+    // The conversion's inexact bit never reaches the live FPSR, and the
+    // live rounding mode does not apply
+    g_fpu->fpsr = 0;
+    g_fpu->fpcr = RZ;
+    frame_fp1_val(x80(0x3FFF, 0x8000000000000401ULL), buf, sizeof(buf));
+    ASSERT_TRUE(strcmp(buf, "1.0000000000000002") == 0);
+    ASSERT_EQ_INT(0, g_fpu->fpsr);
+    g_fpu->fpcr = 0;
+}
+
 int main(void) {
     test_context_t *ctx = test_harness_init();
     if (!ctx) {
@@ -529,6 +618,8 @@ int main(void) {
     RUN(fcos_of_denormal_is_exactly_one);
     RUN(fsincos_of_denormal_gives_x_and_one);
     RUN(fatan_of_denormal_is_x);
+    RUN(exp_family_of_denormal_is_one);
+    RUN(odd_transcendentals_of_denormal_are_x);
     RUN(floor_log10_exact_next_to_powers_of_ten);
     RUN(packed_store_writes_fourth_exponent_digit);
     RUN(packed_store_f_format_rounds_at_kth_place);
@@ -543,6 +634,7 @@ int main(void) {
     RUN(packed_load_nondecimal_digits_not_detected);
     RUN(fdiv_final_remainder_bit_is_sticky);
     RUN(fdiv_wide_divisor_is_correctly_rounded);
+    RUN(frame_displays_unnormals_and_rounds_without_touching_fpsr);
 
     test_harness_destroy(ctx);
     printf("[fpu_hw] all tests passed\n");

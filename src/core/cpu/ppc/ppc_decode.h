@@ -6,7 +6,10 @@
 // Note: this header is a template intended for multiple inclusion with
 // different macro parameters; it intentionally has no include guard (the
 // cpu_decode.h pattern).
-// Current includers: ppc_run.c (execution) and ppc_disasm.c (printing).
+// Current includers: ppc_run.c (execution, the predecode classifier via
+// ppc_pd_classify.h, and ppc_execute_fp, the translation tier's FP
+// helper), ppc_disasm.c (printing) and ppc_jit_classify.h (the
+// translation tier's classifier).
 // Because emulator and disassembler are literally the same decode tree,
 // they cannot drift out of sync.
 //

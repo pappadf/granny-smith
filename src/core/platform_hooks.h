@@ -9,17 +9,22 @@
 // models "this host has none of it" -- no camera, no GPU worker, no
 // auto-checkpoint loop -- and a platform that has the thing links a strong
 // definition of the same name.  A default that is asked to DO something it
-// cannot answers -2 ("not supported on this platform"); 0 is success and
-// other negative values are failures of a platform that tried.  The `gs_`
+// cannot answers PLATFORM_E_UNSUPPORTED ("not supported on this platform");
+// 0 is success and other negative values are failures of a platform that
+// tried.  The `gs_`
 // prefix marks a hook of this contract (Granny Smith's platform surface);
 // core-owned functions use `system_`.
 
 #ifndef PLATFORM_HOOKS_H
 #define PLATFORM_HOOKS_H
 
+#include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+// A weak default's "this platform has none of it" (once a literal -2).
+#define PLATFORM_E_UNSUPPORTED (-ENOTSUP)
 
 // A new machine has become the active one (boot or restore).  The host
 // re-bases its samples of the machine and announces what it shows of it; the
@@ -39,12 +44,12 @@ bool platform_storage_persistent(void);
 
 // Background auto-checkpoint state.  The wasm platform overrides the weak
 // defaults to read/write its live flag; a platform with no auto-checkpoint
-// loop (headless) reads false and refuses the set (-2, "not supported").
+// loop (headless) reads false and refuses the set (PLATFORM_E_UNSUPPORTED).
 bool platform_checkpoint_auto_get(void);
 int platform_checkpoint_auto_set(bool enabled);
 
 // Platform-specific entry points used by typed root methods: the weak default
-// answers -2 ("not supported on this platform"), and the platform that has
+// answers PLATFORM_E_UNSUPPORTED, and the platform that has
 // the thing overrides it.  0 on success.
 //
 //   platform_quit()                — request emulator shutdown.  Headless sets
@@ -71,6 +76,19 @@ int platform_download(const char *path);
 bool platform_video_in_connected(void);
 int platform_video_in_frame(uint8_t *rgba);
 void platform_video_in_state(bool active);
+
+// The host's one wake primitive for the shared-memory transports (the
+// mailbox, the LaserWriter ring, the GPU takeovers): the page's workers
+// park in Atomics.waitAsync on a control word, and the core wakes them
+// after it publishes.  `platform_wake` wakes every waiter on `word`;
+// `platform_wait` blocks the CALLING thread until *word != expect or
+// `timeout_ms` passes (0 when woken, negative on a timeout).  The weak
+// defaults model a host with no such waiter: wake is a no-op, and wait
+// returns -1 at once (timed out).  The wasm build overrides both (em_main.c)
+// and routes its mailbox_notify / laserwriter_ring_notify /
+// platform_v2gpu_notify / platform_v2gpu_wait through them.
+void platform_wake(volatile uint32_t *word);
+int platform_wait(volatile uint32_t *word, uint32_t expect, uint32_t timeout_ms);
 
 // Host GPU-transport seam for the Voodoo2's WebGPU takeover
 // (voodoo2_gpu.c): the browser build attaches a GPU worker to a shared

@@ -29,7 +29,12 @@ model (`amic.c` still stubs that aperture).
 | `+$31000` | DMA register file (window base, per-channel address/count/control through `+$122xx`) |
 | `+$40000` | the HMC serial config port (hmc.md) |
 
-All registers are byte-wide; wider accesses decompose big-endian.
+All registers are byte-wide; wider accesses decompose big-endian.  The
+decode is a range table (`amic_io_ranges`, one row per block with its
+read, peek and write side together) walked by the shared I/O engine,
+`machines/runtime/board_io.c`, the one the 68k II families use; offsets
+no row claims read 0 and are logged once per 4 KB under the `board`
+category.
 
 ## Interrupt model
 

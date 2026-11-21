@@ -25,7 +25,10 @@ vi.mock('@/bus/emulator', () => ({
 
 // The drive helpers, so "Insert into floppy drive" on an in-image file can be
 // checked for the path it hands over without a machine profile behind it.
-vi.mock('@/bus/media', () => ({
+vi.mock('@/bus/media', async (importOriginal) => ({
+  // The real thin wrappers (machineCreated, fdDrivePresent, ...) over the
+  // mocked gsEval; the attach helpers mocked.
+  ...(await importOriginal<typeof import('@/bus/media')>()),
   insertFloppy: (...a: unknown[]) => mediaMock.insertFloppy(...a),
   mountImage: (...a: unknown[]) => mediaMock.mountImage(...a),
   imageInUseUnder: async () => core.inUse,

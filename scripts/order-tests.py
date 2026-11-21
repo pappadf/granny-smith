@@ -31,19 +31,16 @@ turns them into order-only prerequisites).  Run from tests/integration.
 """
 
 import json
+import os
 import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+from testconfig import read_config  # noqa: E402  (the one config.mk reader)
 
 
 def config_list(test, key):
     """The names a test's config.mk lists under `key :=` (empty if none)."""
-    try:
-        with open(f"{test}/config.mk") as f:
-            for line in f:
-                if line.startswith(key) and ":=" in line and line.split(":=")[0].strip() == key:
-                    return line.split(":=", 1)[1].split()
-    except FileNotFoundError:
-        pass
-    return []
+    return read_config(test).get(key, "").split()
 
 
 def fixture_edges(tests):

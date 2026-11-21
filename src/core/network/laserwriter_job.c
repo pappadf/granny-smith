@@ -22,25 +22,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("laserwriter");
-
-// ============================================================================
-// Platform sink default
-// ============================================================================
-
-// Fallback when no platform sink is linked: the document is lost, loudly.
-__attribute__((weak)) void laserwriter_sink_document(const laserwriter_document_t *doc) {
-    LOG(1, "laserwriter: job %u '%s' (%u pages, %zu bytes) dropped: no document sink on this platform",
-        (unsigned)doc->job_id, doc->title, (unsigned)doc->pages, doc->pdf_len);
-}
-
-// Fallback for a capture: the same.
-__attribute__((weak)) void laserwriter_sink_capture(const laserwriter_capture_t *cap) {
-    LOG(1, "laserwriter: job %u PostScript (%zu bytes) dropped: no capture sink on this platform",
-        (unsigned)cap->job_id, cap->ps_len);
-}
-
 #if GS_PLATEN
+
+LOG_USE_CATEGORY_NAME("laserwriter");
 
 #include "laserwriter_prelude.h"
 
@@ -357,31 +341,32 @@ static void lw_on_finished(uint32_t job_id, const laserwriter_finish_result_t *r
             g_lw.output_dropped, LASERWRITER_OUTPUT_MAX);
         g_lw.output_dropped = 0;
     }
-    laserwriter_document_t doc;
-    memset(&doc, 0, sizeof(doc));
-    doc.job_id = job_id;
-    doc.title = g_lw.title;
-    doc.pdf = res->pdf;
-    doc.pdf_len = res->pdf_len;
-    doc.pages = res->pages;
-    doc.error_name = res->error_name ? res->error_name : "";
-    doc.offending = res->offending ? res->offending : "";
-    doc.ok = res->outcome == LASERWRITER_OUTCOME_OK;
-    doc.budget_exceeded = res->outcome == LASERWRITER_OUTCOME_BUDGET;
+    const char *error_name = res->error_name ? res->error_name : "";
+    const char *offending = res->offending ? res->offending : "";
+    bool budget_exceeded = res->outcome == LASERWRITER_OUTCOME_BUDGET;
+    printer_document_t doc = {.printer = "LaserWriter",
+                              .slug = NULL, // its files carry no printer prefix
+                              .job_id = job_id,
+                              .title = g_lw.title,
+                              .pdf = res->pdf,
+                              .pdf_len = res->pdf_len,
+                              .pages = res->pages,
+                              .ok = res->outcome == LASERWRITER_OUTCOME_OK,
+                              .detail = ""};
     g_lw.last_pages = doc.pages;
     g_lw.pages = doc.pages;
     if (res->outcome == LASERWRITER_OUTCOME_FAILED) {
         // The document could not be closed or the job is poisoned: nothing to keep
-        LOG(1, "laserwriter: job %u finish failed: %s", (unsigned)job_id, doc.error_name);
-        snprintf(g_lw.last_outcome, sizeof(g_lw.last_outcome), "failed: %s", doc.error_name);
-    } else if (doc.budget_exceeded) {
+        LOG(1, "laserwriter: job %u finish failed: %s", (unsigned)job_id, error_name);
+        snprintf(g_lw.last_outcome, sizeof(g_lw.last_outcome), "failed: %s", error_name);
+    } else if (budget_exceeded) {
         LOG(1, "laserwriter: job %u '%s' stopped by the execution budget after %u pages", (unsigned)job_id, g_lw.title,
             (unsigned)doc.pages);
         snprintf(g_lw.last_outcome, sizeof(g_lw.last_outcome), "budget");
     } else if (!doc.ok) {
-        LOG(1, "laserwriter: job %u '%s' error: %s in %s (%u pages kept)", (unsigned)job_id, g_lw.title, doc.error_name,
-            doc.offending, (unsigned)doc.pages);
-        snprintf(g_lw.last_outcome, sizeof(g_lw.last_outcome), "error: %s in %s", doc.error_name, doc.offending);
+        LOG(1, "laserwriter: job %u '%s' error: %s in %s (%u pages kept)", (unsigned)job_id, g_lw.title, error_name,
+            offending, (unsigned)doc.pages);
+        snprintf(g_lw.last_outcome, sizeof(g_lw.last_outcome), "error: %s in %s", error_name, offending);
     } else {
         LOG(2, "laserwriter: job %u '%s' complete: %u pages, %zu bytes", (unsigned)job_id, g_lw.title,
             (unsigned)doc.pages, doc.pdf_len);
@@ -393,8 +378,16 @@ static void lw_on_finished(uint32_t job_id, const laserwriter_finish_result_t *r
     // the page); the count still moves.
     if (res->outcome != LASERWRITER_OUTCOME_FAILED && (doc.pages > 0 || !doc.ok)) {
         g_lw.documents++;
-        if (doc.pdf)
-            laserwriter_sink_document(&doc);
+        if (doc.pdf) {
+            // What went wrong, for the sink's report: last_outcome's words
+            char detail[sizeof(g_lw.last_outcome) + 16];
+            if (budget_exceeded)
+                snprintf(detail, sizeof detail, "execution budget spent");
+            else
+                snprintf(detail, sizeof detail, "%s", doc.ok ? "" : g_lw.last_outcome);
+            doc.detail = detail;
+            printer_sink_document(&doc);
+        }
     }
     lw_release();
     lw_notify(LASERWRITER_EVENT_FINISHED, NULL);

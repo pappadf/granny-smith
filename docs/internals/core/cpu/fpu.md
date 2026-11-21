@@ -411,3 +411,5 @@ The `fpu_pack()` function applies rounding when converting from the unpacked 128
 For single and double precision, the mantissa is rounded to the target width and excess bits are discarded. This matches the 68882 behavior where precision control affects the result stored in the FP register.
 
 The transcendental module also uses `fpu_round_to_64()` to round intermediate results to 64-bit mantissa precision after each step, faithfully simulating the 68882's internal pipeline rounding behavior.
+
+Every transcendental entry routes its range checks through one `fpu_compact()` (the FPSP's 32-bit "compact form": biased exponent in the high half, the top 16 mantissa bits in the low half). A denormal operand, which `fpu_unpack()` has normalized to an unbiased exponent below −16383, clamps to biased exponent 0 there, so it lands on the function's tiny path rather than wrapping to a huge compact value (FETOX of a denormal is 1.0, inexact, not an overflow). `fpu_nan1()` is the shared quiet-NaN propagation and `fpu_unpacked_from_i32()` the exact integer-to-unpacked conversion of the reduction steps.

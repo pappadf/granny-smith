@@ -52,6 +52,11 @@ A plain 13-inch monitor is code 6; the cross-drive tuples produce the
 
 (Reference: [dafb.md](../../../reference/machines/mcu/dafb.md) §2.4.)
 
+The palette port (`$200` index, `$210` data) is the shared RAMDAC sequencer
+(`src/core/peripherals/nubus/display_ramdac.h`): R, G, B are latched and the
+entry is stored on blue, and a run-read walks entries the same way — the index
+advances after each blue read, as after each blue write.
+
 The ACDC address register (`$200`) selects which PCBR the config register
 (`$220`) reaches: 0 → **PCBR0**, 1 → **PCBR1**. On the plain AC842 there
 is no PCBR1 — a "PCBR1" write clobbers PCBR0, which is exactly what

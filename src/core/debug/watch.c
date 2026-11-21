@@ -196,9 +196,8 @@ static void format_screen(char *buf, size_t size) {
         }
     }
     if (flat) {
-        char hex[2 * 4 + 1] = "";
-        for (uint32_t i = 0; i < px_bytes && i < 4; i++)
-            snprintf(hex + 2 * i, sizeof hex - 2 * i, "%02x", first[i]);
+        char hex[2 * 4 + 1];
+        hex_encode(hex, first, px_bytes < 4 ? px_bytes : 4, false);
         snprintf(buf + k, size - (size_t)k, " (uniform, every sampled pixel %s)", hex);
     }
 }

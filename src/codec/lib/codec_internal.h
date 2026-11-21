@@ -32,40 +32,12 @@
 #define CODEC_INTERNAL_H
 
 #include "codec.h"
+#include "codec_bytes.h" // byte order: codec_le*/codec_be*/codec_wr_* (shared with peeler)
 
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
-
-// ============================================================================
-// Byte order
-// ============================================================================
-
-static inline uint32_t codec_le16(const uint8_t *p) {
-    return (uint32_t)p[0] | (uint32_t)p[1] << 8;
-}
-static inline uint32_t codec_le32(const uint8_t *p) {
-    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
-}
-static inline uint64_t codec_le64(const uint8_t *p) {
-    return (uint64_t)codec_le32(p) | (uint64_t)codec_le32(p + 4) << 32;
-}
-static inline uint32_t codec_be16(const uint8_t *p) {
-    return (uint32_t)p[0] << 8 | (uint32_t)p[1];
-}
-static inline uint32_t codec_be32(const uint8_t *p) {
-    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | (uint32_t)p[3];
-}
-static inline uint64_t codec_be64(const uint8_t *p) {
-    return (uint64_t)codec_be32(p) << 32 | codec_be32(p + 4);
-}
-static inline void codec_wr_le32(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)v, p[1] = (uint8_t)(v >> 8), p[2] = (uint8_t)(v >> 16), p[3] = (uint8_t)(v >> 24);
-}
-static inline void codec_wr_be32(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v >> 24), p[1] = (uint8_t)(v >> 16), p[2] = (uint8_t)(v >> 8), p[3] = (uint8_t)v;
-}
 
 // ============================================================================
 // Input

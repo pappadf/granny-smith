@@ -14,8 +14,8 @@ import { test, expect } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile, stageOpfsText } from '../helpers/web2-fs';
 import { terminalRun } from '../helpers/terminal';
+import { DATA } from '../helpers/paths';
 
-const DATA = path.resolve(__dirname, '../../data');
 const PLUS_ROM = path.join(DATA, 'roms', 'plus-v3-4d1f8172.rom');
 const SYSTEM_HD = path.join(DATA, 'systems', 'system_6_0_8_20mb_8_24gc.img');
 

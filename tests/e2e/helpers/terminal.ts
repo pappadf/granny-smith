@@ -57,3 +57,49 @@ export async function terminalRun(
   await page.keyboard.press("Enter");
   if (opts.settleMs) await page.waitForTimeout(opts.settleMs);
 }
+
+// A fresh key per echo, shared by every probe in the run, so the echoed
+// input line (still holding the unexpanded ${...}) or an earlier answer can
+// never satisfy the match -- only this response can.
+let echoSeq = 0;
+
+// How long the terminal is given to answer an echo before its output is read.
+const ECHO_WAIT_MS = 400;
+
+// Echo `body` (shell text with ${...} splices) behind a fresh key, once, and
+// match the answer against `value` (a regex source with capture groups).
+// Returns the match, or null when the answer has not shown up yet.
+export async function terminalEcho(
+  page: Page,
+  body: string,
+  value: string,
+): Promise<RegExpMatchArray | null> {
+  const key = `te${++echoSeq}`;
+  await terminalRun(page, `echo "${key}=${body}"`, { settleMs: 250 });
+  await page.waitForTimeout(ECHO_WAIT_MS);
+  const text = await page.locator(CONSOLE_OUTPUT).innerText();
+  return text.match(new RegExp(`${key}=${value}`));
+}
+
+export interface TerminalEvalOptions {
+  // Echoes to try before giving up.
+  attempts?: number;
+  // The value pattern (a regex source without groups).  The default
+  // rejects a value holding a space or a colon: such a probe times out.
+  value?: string;
+}
+
+// Read one expression's value back through the terminal, retrying until the
+// answer shows (a line typed while the machine starts can be lost).
+export async function terminalEval(
+  page: Page,
+  expr: string,
+  opts: TerminalEvalOptions = {},
+): Promise<string> {
+  const value = opts.value ?? "[A-Za-z0-9_.-]+";
+  for (let attempt = 0; attempt < (opts.attempts ?? 30); attempt++) {
+    const m = await terminalEcho(page, `[\${${expr}}]`, `\\[(${value})\\]`);
+    if (m) return m[1];
+  }
+  throw new Error(`terminal probe never answered: ${expr}`);
+}

@@ -19,6 +19,8 @@
 --   iisi-12in-rgb   **V8 monitor sense 010**: the 12" RGB, which only the
 --                   IIsi's V8 decodes; the ROM drives 512x384 to the no-disk
 --                   "?" screen (the raster was pinned at 640x480, #158)
+--   iisi-checkpoint **checkpoint round-trip** with the frame buffer in Bank A:
+--                   save → reboot at a different RAM size → load → re-match
 --
 -- The IIsi is builtin-video only, so every other row runs the V8 at 640x480.
 
@@ -224,12 +226,41 @@ local function row_iisi_12in_rgb()
     mac.report_perf("suite-iisi/iisi-12in-rgb", scheduler.instr_count)
 end
 
+-- ---- iisi-checkpoint --------------------------------------------------------
+-- Checkpoint round-trip on the IIsi, whose V8 scans its frame buffer out of the
+-- bottom of Bank A (physical 0) while the ROM's PMMU tables start logical 0
+-- past it: boot to the Finder, save, reboot at a different RAM size, load, and
+-- re-match the pre-save golden.
+--
+-- Guards the restore order (machine_part_pmmu): VIA1 is re-driven while the
+-- PMMU is still the fresh, disabled one.  Re-driving it after the PMMU restore
+-- left the overlay's identity entries for the low pages in the SoA arrays, so
+-- the restored guest's low-memory writes (Ticks, the cursor globals) landed in
+-- the top of the screen -- the IIci had the fix, the IIsi did not.
+local function row_iisi_checkpoint()
+    machine.boot{model = "iisi", ram = 17408, rom = vars.ROM}
+    machine.floppy.drive[0].insert(sys_701)
+    scheduler.run(200000000)
+    mac.wait_match("goldens/iisi-7.0.1-640x480x1-finder.png", 800000000, 20000000)
+    assert(checkpoint.save(F"${vars.WORK_DIR}/suite-iisi.gsc"), "iisi-checkpoint: save failed")
+    machine.boot{model = "iisi", ram = 5120, rom = vars.ROM}
+    assert(checkpoint.load(F"${vars.WORK_DIR}/suite-iisi.gsc"), "iisi-checkpoint: load failed")
+    scheduler.run(5000000)
+    mac.wait_stable(400000000)
+    assert(machine.ram == 17408, "iisi-checkpoint: restored RAM size wrong")
+    -- A settled frame only: the restored guest runs a few million
+    -- instructions before it is quiescent again.
+    mac.check("goldens/iisi-7.0.1-640x480x1-finder.png")
+    mac.report_perf("suite-iisi/iisi-checkpoint", scheduler.instr_count)
+end
+
 mac.row("iisi-chime", row_iisi_chime)
 mac.row("iisi-701-fd", row_iisi_701_fd)
 mac.row("iisi-608-hd", row_iisi_608_hd)
 mac.row("iisi-71-kbd", row_iisi_71_kbd)
 mac.row("iisi-701-depths", row_iisi_701_depths)
 mac.row("iisi-12in-rgb", row_iisi_12in_rgb)
+mac.row("iisi-checkpoint", row_iisi_checkpoint)
 if mac.row_on("iisi-75-hd") then
     if mac.have_media(hd_75) then
         mac.row("iisi-75-hd", row_iisi_75_hd)

@@ -24,6 +24,20 @@
 // ...), or -1 for a key no Apple keyboard has.
 int host_keymap_dom_to_adb(const char *dom_code);
 
+// The US-layout ADB raw keycode that types printable ASCII `c`, setting
+// *shift (optional) when the character needs Shift; Tab and newline (either
+// line ending) resolve to their keys.  -1 for a character the layout cannot
+// type.  keyboard.type's resolver.
+int host_keymap_ascii_to_adb(char c, bool *shift);
+
+// The ADB raw keycode a key NAME means, or -1: the named keys ("return",
+// "esc", "delete" = the Mac's Delete $33, "forwarddelete"/"del", "help",
+// the arrows and modifiers), any DOM code case-insensitively ("f8",
+// "pagedown", "home", "numpad5"), the hex form "0x24", or one character
+// (the key that types it, Shift ignored).  keyboard.press/down/up's
+// resolver.
+int host_keymap_name_to_adb(const char *name);
+
 // Where a key transition goes: 0 when the machine took it, <0 when it
 // refused (a key its keyboard has not got).  The web host passes
 // system_input_key.

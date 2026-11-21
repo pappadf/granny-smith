@@ -15,32 +15,6 @@
 #include <stdio.h>
 #include <string.h>
 
-void re_json_write_string(FILE *fp, const char *s) {
-    fputc('"', fp);
-    if (!s) {
-        fputc('"', fp);
-        return;
-    }
-    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
-        unsigned char c = *p;
-        if (c == '"' || c == '\\') {
-            fputc('\\', fp);
-            fputc(c, fp);
-        } else if (c == '\n') {
-            fputs("\\n", fp);
-        } else if (c == '\r') {
-            fputs("\\r", fp);
-        } else if (c == '\t') {
-            fputs("\\t", fp);
-        } else if (c < 0x20) {
-            fprintf(fp, "\\u%04x", c);
-        } else {
-            fputc(c, fp);
-        }
-    }
-    fputc('"', fp);
-}
-
 size_t re_pstring_to_utf8(const uint8_t *bytes, size_t len, size_t off, char *out, size_t cap) {
     if (!bytes || !out || cap == 0)
         return 0;

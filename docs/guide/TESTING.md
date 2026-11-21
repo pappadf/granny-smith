@@ -340,6 +340,10 @@ Valgrind is deliberately *not* a full sweep: at its 20–50× slowdown over
 billions of guest cycles, `test-valgrind` across every test cannot run to
 completion, and the throughput floors would fail by construction — hence
 `PERF_FLOORS=off` for those runs.
+`test-valgrind` is the aggregate `test` run with the binary wrapped (the
+same fixtures, skip report and summary), and `test-valgrind-<name>` is
+`test-<name>` wrapped; neither appends to `durations.jsonl`, whose times
+feed `test-weights.json`.
 
 ### CPU performance benchmarks
 
@@ -460,7 +464,8 @@ live in the headless integration tests, not here.
    ```
    A spec whose point is pacing, or that feeds real-time media into the
    guest, keeps web2's default with `test.use({ gsSpeed: null })`, and goes
-   in the config's `SERIAL` list if it must not share the machine with
+   in `tests/e2e/serial-specs.json` (the config's `SERIAL` list, also read by
+   `scripts/e2e-shard.py`) if it must not share the machine with
    another running emulator (the `parallel` project runs
    `GS_E2E_WORKERS` specs at once; the default is 1).
 3. Drive through the shipped UI (dialog, drag-and-drop); read or call the

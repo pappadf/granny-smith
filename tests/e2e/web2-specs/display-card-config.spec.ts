@@ -26,6 +26,7 @@
 import { test, expect } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
+import { uploadRomViaWelcome } from '../helpers/upload';
 
 const IICX_ROM = path.resolve(__dirname, '../../data/roms/iix-iicx-se30-97221136.rom');
 const VROM_8_24 = path.resolve(__dirname, '../../data/roms/mdc-8-24-revb-d1629664.vrom');
@@ -44,11 +45,7 @@ test('New Machine dialog: pick the 24AC card by name and boot it', async ({ page
   // Upload the IIcx ROM via the Welcome "Load ROM..." button. The persist
   // bumps the image revision, which re-scans the config slide (ROM + the two
   // staged vROMs).
-  const [romChooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Load ROM...' }).click(),
-  ]);
-  await romChooser.setFiles(IICX_ROM);
+  await uploadRomViaWelcome(page, IICX_ROM);
 
   // Open the dialog and select the IIcx (the Universal ROM also lights up
   // se30 / iix, so the pick is explicit).

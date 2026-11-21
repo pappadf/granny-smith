@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { gsEval, gsOk, isGsError, gsErrorText } from '@/bus/emulator';
+import { gsEval, gsOk, isGsError, isGsObject, gsErrorText } from '@/bus/emulator';
 
 // The gsEval result contract: null is only a VK_NONE
 // success; every failure — the core's or the bridge's — is an { error } shape.
@@ -41,5 +41,16 @@ describe('request size', () => {
     // Measured in UTF-8 bytes, not characters: three-byte characters are
     // over the limit long before their count is.
     expect(requestTooLarge('p', '€'.repeat(ARGS_MAX / 3 + 1))).toMatch(/arguments too large/);
+  });
+});
+
+describe('isGsObject', () => {
+  it('is an object answer, never a failure or a scalar', () => {
+    expect(isGsObject({ origin: 'x' })).toBe(true);
+    expect(isGsObject([])).toBe(true);
+    expect(isGsObject({ error: 'no such file' })).toBe(false);
+    expect(isGsObject(null)).toBe(false);
+    expect(isGsObject(true)).toBe(false);
+    expect(isGsObject('text')).toBe(false);
   });
 });

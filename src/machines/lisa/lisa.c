@@ -11,6 +11,7 @@
 
 #include "machine.h"
 #include "machine_checkpoint.h"
+#include "machine_irq.h"
 #include "machine_teardown.h"
 #include "system_internal.h"
 
@@ -29,6 +30,7 @@
 #include "log.h"
 #include "memory.h"
 #include "object.h"
+#include "object_order.h"
 #include "scc.h"
 #include "scheduler.h"
 #include "system.h"
@@ -220,19 +222,18 @@ static display_t *lisa_display(config_t *cfg) {
 // Set the CPU IPL from the per-level interrupt bitmask.  Lisa sources sit on
 // fixed levels: SCC=6, COPS(VIA1)=2, floppy/parallel(VIA2)/VBL=1.
 static void lisa_update_ipl(config_t *cfg, int level, bool active) {
-    if (active)
-        cfg->rt.irq |= (1u << level);
-    else
-        cfg->rt.irq &= ~(1u << level);
-    int ipl = 0;
-    for (int l = 7; l >= 1; l--) {
-        if (cfg->rt.irq & (1u << l)) {
-            ipl = l;
-            break;
-        }
-    }
-    cpu_set_ipl(cfg->cpu, ipl);
-    cpu_reschedule(cfg->scheduler);
+    // The source bit is the level itself, so the table is the identity
+    static const machine_irq_route_t lisa_irq_routes[] = {
+        {1 << 7, 7},
+        {1 << 6, 6},
+        {1 << 5, 5},
+        {1 << 4, 4},
+        {1 << 3, 3},
+        {1 << 2, 2},
+        {1 << 1, 1},
+        {0,      0}, // sentinel
+    };
+    machine_irq_update(cfg, lisa_irq_routes, 1 << level, active);
 }
 
 // ============================================================
@@ -288,7 +289,7 @@ static void lisa_via_write32(void *dev, uint32_t off, uint32_t v) {
     lisa_via_write8(dev, off, (uint8_t)v);
 }
 
-static memory_interface_t lisa_via_iface = {
+static const memory_interface_t lisa_via_iface = {
     .read_uint8 = lisa_via_read8,
     .read_uint16 = lisa_via_read16,
     .read_uint32 = lisa_via_read32,
@@ -471,7 +472,7 @@ static void lisa_fdc_io_write16(void *dev, uint32_t off, uint16_t v) {
 static void lisa_fdc_io_write32(void *dev, uint32_t off, uint32_t v) {
     lisa_fdc_write32((lisa_fdc_t *)dev, off, v);
 }
-static memory_interface_t lisa_fdc_iface = {
+static const memory_interface_t lisa_fdc_iface = {
     .read_uint8 = lisa_fdc_io_read8,
     .read_uint16 = lisa_fdc_io_read16,
     .read_uint32 = lisa_fdc_io_read32,
@@ -701,12 +702,9 @@ static const class_desc_t lisa_fd_class = {
 static void lisa_register_floppy_object(config_t *cfg) {
     lisa_state_t *ls = lisa_state(cfg);
     (void)lisa_fd_members;
-    ls->fd_obj = object_new(&lisa_fd_class, cfg, "floppy");
+    ls->fd_obj = object_attach_new(machine_object(), &lisa_fd_class, cfg, "floppy", "Floppy", OBJ_ORDER_FLOPPY);
     if (!ls->fd_obj)
         return;
-    object_set_label(ls->fd_obj, "Floppy");
-    object_set_order(ls->fd_obj, 80);
-    object_attach(machine_object(), ls->fd_obj);
     // Named "drive" (singular) to match the standard floppy collection
     // (machine.floppy.drive[N]).
     ls->fd_drives_obj = object_new(&lisa_fd_drives_class, cfg, "drive");
@@ -912,12 +910,7 @@ static void lisa_register_profile_object(config_t *cfg) {
     // "profile" would be shadowed by the machine class's `profile` *method*
     // (the resolver finds members before attached children). The ProFile is
     // the Lisa's hard disk, so machine.hd reads correctly.
-    ls->hd_obj = object_new(&lisa_hd_class, cfg, "hd");
-    if (ls->hd_obj) {
-        object_set_label(ls->hd_obj, "ProFile");
-        object_set_order(ls->hd_obj, 90);
-        object_attach(machine_object(), ls->hd_obj);
-    }
+    ls->hd_obj = object_attach_new(machine_object(), &lisa_hd_class, cfg, "hd", "ProFile", OBJ_ORDER_PROFILE);
 }
 
 // ============================================================
@@ -948,12 +941,7 @@ static const class_desc_t lisa_power_class = {
 
 static void lisa_register_power_object(config_t *cfg) {
     lisa_state_t *ls = lisa_state(cfg);
-    ls->power_obj = object_new(&lisa_power_class, cfg, "power");
-    if (ls->power_obj) {
-        object_set_label(ls->power_obj, "Power");
-        object_set_order(ls->power_obj, 130);
-        object_attach(machine_object(), ls->power_obj);
-    }
+    ls->power_obj = object_attach_new(machine_object(), &lisa_power_class, cfg, "power", "Power", OBJ_ORDER_POWER);
 }
 
 // ============================================================
@@ -984,7 +972,7 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part(cfg, checkpoint, "memory", part_save_memory, cfg->memory_map);
 
     // The profile is the source of truth for the CPU model, as it is for the
-    // clock below and as mac030_build_core states for the II families.  Both
+    // clock below and as m68k_board_build_core states for the II families.  Both
     // profiles behind this substrate declare 68000, so this reads back exactly
     // what the constant said -- but system_create derives cfg->cpu_arch from
     // the profile unconditionally, so a profile that ever disagreed with a
@@ -1164,10 +1152,8 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     cfg->debugger = debug_init();
 
-    if (!checkpoint) {
-        cfg->rt.irq = 0;
-        cpu_set_ipl(cfg->cpu, 0);
-    } else {
+    machine_irq_cold_reset(cfg, checkpoint);
+    if (checkpoint) {
         // Level 1's sub-sources are not checkpointed: recompute each from its
         // device's restored state so cfg->rt.irq agrees with the hardware (#325).
         ls->l1_via2 = (via_get_ifr(cfg->via2) & 0x80) != 0; // VIA2 aggregate IRQ
@@ -1178,9 +1164,6 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
 }
 
 static void lisa_teardown(config_t *cfg) {
-    if (cfg->scheduler)
-        scheduler_stop(cfg->scheduler);
-
     lisa_state_t *ls0 = lisa_state(cfg);
     if (ls0) {
         // Tear down the `floppy` object tree (entry is unattached, like the IWM
@@ -1189,26 +1172,10 @@ static void lisa_teardown(config_t *cfg) {
             object_delete(ls0->fd_drive_obj);
             ls0->fd_drive_obj = NULL;
         }
-        if (ls0->fd_drives_obj) {
-            object_detach(ls0->fd_drives_obj);
-            object_delete(ls0->fd_drives_obj);
-            ls0->fd_drives_obj = NULL;
-        }
-        if (ls0->fd_obj) {
-            object_detach(ls0->fd_obj);
-            object_delete(ls0->fd_obj);
-            ls0->fd_obj = NULL;
-        }
-        if (ls0->hd_obj) {
-            object_detach(ls0->hd_obj);
-            object_delete(ls0->hd_obj);
-            ls0->hd_obj = NULL;
-        }
-        if (ls0->power_obj) {
-            object_detach(ls0->power_obj);
-            object_delete(ls0->power_obj);
-            ls0->power_obj = NULL;
-        }
+        object_destroy(&ls0->fd_drives_obj);
+        object_destroy(&ls0->fd_obj);
+        object_destroy(&ls0->hd_obj);
+        object_destroy(&ls0->power_obj);
     }
     if (ls0 && ls0->profile) {
         lisa_profile_delete(ls0->profile);
@@ -1234,11 +1201,6 @@ static void lisa_teardown(config_t *cfg) {
     // both.  Note it also deletes the scheduler LAST of those, which is what
     // keeps the device destructors' scheduler_forget_source calls valid.
     machine_teardown_config_devices(cfg);
-
-    if (ls) {
-        free(ls);
-        cfg->machine_context = NULL;
-    }
 }
 
 // ============================================================

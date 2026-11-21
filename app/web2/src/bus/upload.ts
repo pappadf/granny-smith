@@ -43,7 +43,7 @@ import { showNotification } from '@/state/toasts.svelte';
 import { machine } from '@/state/machine.svelte';
 import { setMounted, clearMounts, bumpImagesRevision } from '@/state/images.svelte';
 import { startActivity, endActivity } from '@/state/activity.svelte';
-import { sanitizeName } from '@/lib/archive';
+import { sanitizeName } from '@/lib/fileName';
 import { interleaveHalves } from '@/lib/mediaUrl';
 import { fileHasCheckpointSignature, scratchPath, ROMS_DIR, HD_DIR, CD_DIR } from '@/lib/opfsPaths';
 import {

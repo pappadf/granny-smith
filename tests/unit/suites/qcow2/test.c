@@ -317,7 +317,7 @@ TEST(qcow2_decode_cluster_checks_length) {
     uint8_t in[512], stream[1024], out[CL];
     memset(in, 0x33, sizeof in);
     size_t n = raw_deflate(in, sizeof in, stream, sizeof stream);
-    ASSERT_EQ_INT(-EINVAL, qcow2_decode_cluster(stream, n, CB, out, CL));
+    ASSERT_EQ_INT(-EIO, qcow2_decode_cluster(stream, n, CB, out, CL));
     uint8_t full[CL];
     memset(full, 0x44, CL);
     n = raw_deflate(full, CL, stream, sizeof stream);

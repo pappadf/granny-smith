@@ -6,12 +6,16 @@
 
 #include "config_seed.h"
 
+#include "log.h"
 #include "machine_profile.h"
 #include "nubus.h"
+#include "of_nvram.h"
 #include "rtc.h"
 #include "system_internal.h"
 
 #include <string.h>
+
+LOG_USE_CATEGORY_NAME("board");
 
 // SysParam, the original 20-byte parameter RAM, as the extended RTC (and an
 // XPRAM image) holds it: logical bytes $00-$0F at $10-$1F, $10-$13 at
@@ -76,10 +80,24 @@ void mac_seed_xpram_sysparam(uint8_t xpram[256], const struct config *cfg, const
 int mac_seed_startup_scsi_id(const struct config *cfg, const char *bus_id) {
     const machine_startup_t *s = &cfg->build_opts.startup;
     if (!cfg->build_opts.storage_given)
-        return -2;
+        return SEED_STARTUP_UNSET;
     if (s->none || !s->bus[0] || strcmp(s->bus, bus_id) != 0)
-        return -1;
+        return SEED_STARTUP_NONE;
     return s->unit;
+}
+
+void mac_seed_of_nvram(uint8_t *nv, const struct config *cfg, const of_nvram_defaults_t *d) {
+    mac_seed_xpram_sysparam(nv + OF_NVRAM_XPRAM, cfg, d->pram); // SysParam into XPRAM
+    int id = mac_seed_startup_scsi_id(cfg, "scsi");
+    if (id != SEED_STARTUP_UNSET) // the configuration names a startup device (or none)
+        of_nvram_set_startup_scsi(nv, id, d);
+}
+
+void mac_seed_of_config_vars(uint8_t *nv, const struct config *cfg) {
+    const char *bad = NULL;
+    const char *err = of_nvram_setenv_packed(nv, cfg->build_opts.n_of_vars, cfg->build_opts.of_vars, &bad);
+    if (err)
+        LOG(0, "configuration nvram %s: %s", bad, err);
 }
 
 // Start Manager record (PRAMInitTbl, pram.md §4.2): $77 the default OS, $78-$7B
@@ -134,7 +152,7 @@ void mac_seed_rtc_pram(struct config *cfg) {
     if (pd && !pd->startmgr)
         return;
     int id = mac_seed_startup_scsi_id(cfg, "scsi");
-    if (id == -2)
+    if (id == SEED_STARTUP_UNSET)
         return;
     // "No default": the refnum of no driver, which the Start Manager answers
     // by searching every drive.

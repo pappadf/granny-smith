@@ -8,6 +8,7 @@
 
 #include "codec_internal.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -70,6 +71,21 @@ const char *codec_strerror(int64_t rc) {
         return "cannot read the compressed input";
     default:
         return "decode error";
+    }
+}
+
+int codec_errno(int64_t rc) {
+    if (rc >= 0)
+        return 0;
+    switch (rc) {
+    case CODEC_ERR_NOMEM:
+        return -ENOMEM;
+    case CODEC_ERR_ARG:
+        return -EINVAL;
+    case CODEC_ERR_UNSUPPORTED:
+        return -ENOTSUP;
+    default: // DATA, TRUNCATED, OVERFLOW, CHECKSUM, INPUT: the bytes did not decode
+        return -EIO;
     }
 }
 

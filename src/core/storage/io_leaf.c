@@ -45,11 +45,15 @@ static int io_leaf_run(void *ud, char *err, size_t cap) {
 
 // The success value as the JSON the answer carries: a string, a number, a
 // boolean, a map or a list; anything else is `true`.  A map or a list is
-// formatted as object_eval formats one, and is held to the same result limit.
+// formatted as object_eval formats one; it and a string are held to the same
+// result limit.
 static void complete_with(uint32_t token, value_t *v) {
-    if (v->kind == VK_MAP || v->kind == VK_LIST) {
+    if (v->kind == VK_MAP || v->kind == VK_LIST || (v->kind == VK_STRING && v->s)) {
         vbuf_t b = {0};
-        value_format(v, VFMT_JSON_TAGGED, &b);
+        if (v->kind == VK_STRING)
+            vbuf_append_json_string(&b, v->s);
+        else
+            value_format(v, VFMT_JSON_TAGGED, &b);
         if (b.p && b.len < GS_MBX_RESULT_MAX) // the result's limit (mailbox.h), its NUL aside
             mailbox_result_complete(token, true, b.p);
         else {
@@ -61,16 +65,8 @@ static void complete_with(uint32_t token, value_t *v) {
         vbuf_free(&b);
         return;
     }
-    char json[1100];
-    if (v->kind == VK_STRING && v->s) {
-        size_t o = (size_t)snprintf(json, sizeof json, "\"");
-        for (const char *c = v->s; *c && o + 4 < sizeof json; c++) {
-            if (*c == '"' || *c == '\\')
-                json[o++] = '\\';
-            json[o++] = *c;
-        }
-        snprintf(json + o, sizeof json - o, "\"");
-    } else if (v->kind == VK_UINT) {
+    char json[64];
+    if (v->kind == VK_UINT) {
         snprintf(json, sizeof json, "%llu", (unsigned long long)v->u);
     } else if (v->kind == VK_INT) {
         snprintf(json, sizeof json, "%lld", (long long)v->i);

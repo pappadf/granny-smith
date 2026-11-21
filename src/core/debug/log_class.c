@@ -16,6 +16,7 @@
 #include "log.h"
 #include "log_categories.h"
 #include "object.h"
+#include "object_order.h"
 #include "out.h"
 #include "value.h"
 #include "watch.h"
@@ -373,7 +374,7 @@ void log_class_init(void) {
     if (!g_log_object)
         return;
     object_set_label(g_log_object, "Logs");
-    object_set_order(g_log_object, 50);
+    object_set_order(g_log_object, OBJ_ORDER_LOG);
     object_attach(object_root(), g_log_object);
     struct object *categories = object_collection_new(&log_categories, NULL, "category");
     if (categories) {

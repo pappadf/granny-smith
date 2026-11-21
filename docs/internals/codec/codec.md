@@ -51,6 +51,12 @@ an archive member a read at a time. A run returns 1 once the stream has
 ended and every byte of it has been produced, 0 while more remains (only
 ever with the buffer full), or a negative `CODEC_ERR_*` code after the
 bytes before the fault; `codec_dec_message()` says why in a few words.
+The `CODEC_ERR_*` numbers overlap errno's (`CODEC_ERR_TRUNCATED` is -2,
+`-ENOENT` on Linux), so a caller whose own contract is negative errno
+translates through `codec_errno()`: `NOMEM`, `ARG` and `UNSUPPORTED` become
+`-ENOMEM`, `-EINVAL` and `-ENOTSUP`, and every stream that does not decode
+`-EIO`. The storage layer's chunk decoders (UDIF, NDIF, QCOW2) are those
+callers.
 `codec_dec_read(d, out, cap)` and `codec_dec_read_alloc(d, max, ...)` run a
 decoder to the end of its stream (into a fixed buffer it must end within,
 or a growing one), leaving it and its message the caller's; `codec_decode`
@@ -151,8 +157,11 @@ framework they are written on is `lib/codec_internal.h`:
   the formats whose codes a lookup table would mishandle (StuffIt 13's
   absent symbols take code values, and its codes reach 31 bits) or are
   rare (Compact Pro). The fast formats build lookup tables of their own.
-- Byte order (`codec_le32`, `codec_be16`, ...) and every checksum
-  (`checksum.c`) come from one place, never a private copy.
+- Byte order (`codec_le32`, `codec_be16`, `codec_wr_le64`, ...) and every
+  checksum (`checksum.c`) come from one place, never a private copy. The
+  byte-order helpers are the public header-only `include/codec_bytes.h`,
+  which peeler's formats use too, so the libraries have one family of
+  their own beside core's `RD_*`/`WR_*`.
 
 ## 2. Key types & files
 
@@ -163,7 +172,7 @@ framework they are written on is `lib/codec_internal.h`:
 | `codec_check_t` | a stated checksum over the decoded bytes, verified at the end |
 | `codec_enc_t` | an encoder, its state reused across inputs (§1.2) |
 | `codec_id_t` | `COPY`, `DEFLATE`, `ZLIB`, `GZIP`, `ADC`, `BZIP2`, `LZFSE`, `XZ`, `LZMA_ALONE`, `RLE90`, `RLE90_BINHEX`, `BINHEX`, `SIT2`, `SIT3`, `SIT13`, `SIT15`, `CPT_RLE`, `CPT_LZH`, `DCMP`, `GSRLE` |
-| `codec_crc32`, `codec_crc32_zeros`, `codec_crc32_msb`, `codec_crc64`, `codec_adler32`, `codec_crc16_xmodem`, `codec_crc16_arc` | CRC-32 (reflected; zero runs in O(log n)), CRC-32 MSB-first (bzip2), CRC-64/XZ, Adler-32, CRC-16/XMODEM (BinHex, MacBinary), CRC-16/ARC (StuffIt); constant tables, slice-by-8 for the CRC-32s, callable from any thread |
+| `codec_crc32`, `codec_crc32_zeros`, `codec_crc32_msb`, `codec_crc64`, `codec_adler32`, `codec_crc16_xmodem`, `codec_crc16_xmodem_byte`, `codec_crc16_arc` | CRC-32 (reflected; zero runs in O(log n); also the BMAC multicast hash), CRC-32 MSB-first (bzip2), CRC-64/XZ, Adler-32, CRC-16/XMODEM (BinHex, MacBinary; per byte for the SWIM ISM and the MFM field CRC), CRC-16/ARC (StuffIt); constant tables, slice-by-8 for the CRC-32s, callable from any thread |
 
 | File | |
 |---|---|

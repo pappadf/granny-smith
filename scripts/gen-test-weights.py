@@ -17,8 +17,11 @@ drops a test back to "unknown".
 """
 
 import json
-import statistics
+import os
 import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+from e2e import merge_median
 
 WEIGHTS = "tests/integration/test-weights.json"
 
@@ -42,9 +45,7 @@ def main(argv):
                     continue
                 rec = json.loads(line)
                 samples.setdefault(rec["test"], []).append(rec["secs"])
-    weights = dict(old.get("weights", {}))
-    for test, secs in samples.items():
-        weights[test] = int(round(statistics.median(secs)))
+    weights = merge_median(old.get("weights", {}), samples)
     out = {k: v for k, v in old.items() if k != "weights"}
     out["source"] = source or ("gen-test-weights.py over " + ", ".join(args))
     out["weights"] = dict(sorted(weights.items()))

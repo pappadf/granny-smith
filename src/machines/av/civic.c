@@ -24,6 +24,7 @@
 
 #include "civic.h"
 #include "display_class.h"
+#include "display_ramdac.h"
 #include "display_timing.h"
 
 #include "av.h"
@@ -86,8 +87,7 @@ struct av_civic {
     bool vdc_flag; // VDCInt latch (reads inverted — active low)
     bool vdc_armed; // VDCClr wrote 1 after 0 (re-armed)
     rgba8_t clut[2][256]; // Sebastian CLUT banks (graphics, video-in)
-    uint8_t seb_addr; // CLUT address register
-    uint8_t seb_phase; // 0-3 within the R,G,B,A quad
+    ramdac_seq_t seb; // CLUT address register and the phase within the R,G,B,A quad
     uint8_t seb_pcbr; // Pixel Bus Control Register
     uint8_t clk_reg[3]; // Endeavor M/N/Clk latches
     // The monitor strapped on the sense lines (the build's built-in monitor,
@@ -196,7 +196,7 @@ static void civic_gr_pixel(av_civic_t *cv, const uint8_t *bits, uint32_t stride,
         out[3] = e.b;
     } else if (code == 4) { // 16 bpp 1-5-5-5, big-endian
         const uint8_t *p = bits + (size_t)y * stride + (size_t)x * 2;
-        uint16_t v = (uint16_t)((p[0] << 8) | p[1]);
+        uint16_t v = RD_BE16(p);
         out[1] = (uint8_t)(((v >> 10) & 31) * 255 / 31);
         out[2] = (uint8_t)(((v >> 5) & 31) * 255 / 31);
         out[3] = (uint8_t)((v & 31) * 255 / 31);
@@ -260,7 +260,7 @@ static void civic_compose(av_civic_t *cv) {
             if (vsrc && x >= left && x < right) {
                 if (vi16) { // 1-5-5-5 from the capture buffer
                     const uint8_t *p = vsrc + (size_t)(x - left) * 2;
-                    uint16_t v = (uint16_t)((p[0] << 8) | p[1]);
+                    uint16_t v = RD_BE16(p);
                     out[1] = (uint8_t)(((v >> 10) & 31) * 255 / 31);
                     out[2] = (uint8_t)(((v >> 5) & 31) * 255 / 31);
                     out[3] = (uint8_t)((v & 31) * 255 / 31);
@@ -574,29 +574,11 @@ static uint8_t av_civic_seb_read_access(config_t *cfg, uint32_t win_off, uint32_
     int bank = (cv->seb_pcbr >> 6) & 1;
     switch (reg) {
     case 0: // address register
-        return cv->seb_addr;
+        return ramdac_seq_addr(&cv->seb);
     case 1: { // data register: R,G,B,A with auto-increment after the quad
-        rgba8_t *e = &cv->clut[bank][cv->seb_addr];
-        uint8_t v = 0;
-        switch (cv->seb_phase) {
-        case 0:
-            v = e->r;
-            break;
-        case 1:
-            v = e->g;
-            break;
-        case 2:
-            v = e->b;
-            break;
-        default:
-            v = e->a;
-            break;
-        }
-        if (!peek && ++cv->seb_phase == 4) {
-            cv->seb_phase = 0;
-            cv->seb_addr++;
-        }
-        return v;
+        uint8_t comp;
+        uint8_t idx = ramdac_seq_read(&cv->seb, peek, &comp);
+        return ((const uint8_t *)&cv->clut[bank][idx])[comp];
     }
     case 2:
         return cv->seb_pcbr;
@@ -619,30 +601,16 @@ void av_civic_seb_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t 
     int bank = (cv->seb_pcbr >> 6) & 1;
     switch (reg) {
     case 0:
-        cv->seb_addr = value;
-        cv->seb_phase = 0;
+        ramdac_seq_set_waddr(&cv->seb, value);
         break;
     case 1: {
-        rgba8_t *e = &cv->clut[bank][cv->seb_addr];
-        switch (cv->seb_phase) {
-        case 0:
-            e->r = value;
-            break;
-        case 1:
-            e->g = value;
-            break;
-        case 2:
-            e->b = value;
-            break;
-        default:
-            e->a = value;
-            break;
+        // R, G, B, A latch; the entry is stored in the selected bank on A
+        uint8_t idx;
+        if (ramdac_seq_write(&cv->seb, value, &idx)) {
+            const uint8_t *c = cv->seb.pending;
+            cv->clut[bank][idx] = (rgba8_t){c[0], c[1], c[2], c[3]};
+            civic_update_disp_clut(cv);
         }
-        if (++cv->seb_phase == 4) {
-            cv->seb_phase = 0;
-            cv->seb_addr++;
-        }
-        civic_update_disp_clut(cv);
         break;
     }
     case 2:
@@ -691,7 +659,7 @@ void av_civic_install_memory(config_t *cfg, av_civic_t *cv) {
     uint32_t pages = AV_CIVIC_VRAM_SIZE >> MEM_PAGE_SHIFT;
     uint32_t start = AV_CIVIC_VRAM_BASE >> MEM_PAGE_SHIFT;
     for (uint32_t i = 0; i < pages && start + i < g_page_count; i++)
-        mac030_fill_page(start + i, cv->vram + (i << MEM_PAGE_SHIFT), true);
+        page_fill_68k(start + i, cv->vram + (i << MEM_PAGE_SHIFT), true);
     memory_map_host_region(cfg->memory_map, "civic_vram", cv->vram, AV_CIVIC_VRAM_BASE, AV_CIVIC_VRAM_SIZE,
                            /*writable*/ true);
 
@@ -724,11 +692,15 @@ static uint64_t civic_fb_base(void *owner) {
     return (uint64_t)(cv->display.bits - cv->vram);
 }
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(av_civic_t, cfg);
+
 av_civic_t *av_civic_init(config_t *cfg, checkpoint_t *cp) {
     av_civic_t *cv = calloc(1, sizeof(*cv));
     if (!cv)
         return NULL;
     cv->cfg = cfg;
+    ramdac_seq_init(&cv->seb, RAMDAC_RGBA); // Sebastian: four bytes per entry, one index
     cv->vram = calloc(1, AV_CIVIC_VRAM_SIZE);
     if (!cv->vram) {
         free(cv);
@@ -748,8 +720,7 @@ av_civic_t *av_civic_init(config_t *cfg, checkpoint_t *cp) {
     cv->sense = cfg->build_opts.builtin_sense;
 
     if (cp) {
-        size_t data_size = offsetof(av_civic_t, cfg);
-        system_read_checkpoint_data(cp, cv, data_size);
+        checkpoint_load_prefix(cp, cv, av_civic_t);
         system_read_checkpoint_data(cp, cv->vram, AV_CIVIC_VRAM_SIZE);
     }
 
@@ -827,8 +798,7 @@ void av_civic_delete(av_civic_t *cv) {
 void av_civic_checkpoint(av_civic_t *cv, checkpoint_t *cp) {
     if (!cv || !cp)
         return;
-    size_t data_size = offsetof(av_civic_t, cfg);
-    system_write_checkpoint_data(cp, cv, data_size);
+    checkpoint_save_prefix(cp, cv, av_civic_t);
     system_write_checkpoint_data(cp, cv->vram, AV_CIVIC_VRAM_SIZE);
 }
 

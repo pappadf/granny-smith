@@ -18,6 +18,7 @@ EXTRA_SRCS   := ../../../../src/core/job/seam.c \
               $(wildcard ../../../../src/codec/lib/*.c) \
               ../../../../src/core/checkpoint_class.c \
               ../../../../src/core/io/io_worker.c \
+              ../../../../src/core/work_queue.c \
                 ../../../../src/core/object/object.c \
                 ../../../../src/core/object/parse.c \
                 ../../../../src/core/object/value.c \

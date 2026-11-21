@@ -62,21 +62,17 @@ LOG_USE_CATEGORY_NAME("board");
 // VIA callbacks (tower wiring: Caboose on VIA1, IOP IRQs on VIA2)
 // ============================================================
 
-static inline mcu_state_t *q900_state(config_t *cfg) {
-    return (mcu_state_t *)cfg->machine_context;
-}
-
 // VIA1 outputs: PB carries the Egret/Caboose handshake (PB4 viaFull, PB5
 // sysSes; PB3 xcvrSes is our input to the host) — VIA1InitQuadra900.  Port A
 // is all model-sense inputs on the tower (no head select: floppy is behind
 // the SWIM IOP).
 void q900_via1_output(void *context, uint8_t port, uint8_t output) {
-    egret_via1_port_output(q900_state((config_t *)context)->caboose, port, output);
+    egret_via1_port_output(mcu_st((config_t *)context)->caboose, port, output);
 }
 
 // VIA1 SR shift-out: a command byte for Caboose (Egret byte pump).
 void q900_via1_shift_out(void *context, uint8_t byte) {
-    egret_via1_shift_input(q900_state((config_t *)context)->caboose, byte);
+    egret_via1_shift_input(mcu_st((config_t *)context)->caboose, byte);
 }
 
 // VIA2 outputs: PB3/PB6 select the sound input source on the towers; DFAC
@@ -96,7 +92,7 @@ static void q900_asc_irq(void *context, bool active) {
 // The two 53C96 INT outputs wire-OR (active-low) onto VIA2 CB2:
 // don't drop the line while the other controller still requests.
 static void q900_scsi_irq_update(config_t *cfg, int bit, bool active) {
-    mcu_state_t *st = q900_state(cfg);
+    mcu_state_t *st = mcu_st(cfg);
     st->scsi_irq_or = active ? (st->scsi_irq_or | (uint8_t)(1u << bit)) : (st->scsi_irq_or & (uint8_t) ~(1u << bit));
     via_input_c(cfg->via2, 1, 1, st->scsi_irq_or ? 0 : 1);
 }
@@ -113,9 +109,9 @@ static void q900_scsi96_ext_irq(void *context, bool active) {
 // IOP host INT (mailbox traffic) — same combination the IIfx routes into its
 // OSS source.
 static void q900_scc_irq_update(config_t *cfg, int bit, bool active) {
-    mcu_state_t *st = q900_state(cfg);
+    mcu_state_t *st = mcu_st(cfg);
     st->scc_irq_or = active ? (st->scc_irq_or | (uint8_t)(1u << bit)) : (st->scc_irq_or & (uint8_t) ~(1u << bit));
-    mac030_glue_update_ipl(cfg, MAC030_GLUE_IRQ_SCC, st->scc_irq_or != 0);
+    m68k_board_update_ipl(cfg, M68K_BOARD_IRQ_SCC, st->scc_irq_or != 0);
 }
 
 void q900_scc_irq(void *context, bool active) {
@@ -145,7 +141,7 @@ static void q900_sonic_irq(void *context, bool active) {
 // ============================================================
 
 int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
-    mcu_state_t *st = q900_state(cfg);
+    mcu_state_t *st = mcu_st(cfg);
     const mcu_board_t *board = (const mcu_board_t *)cfg->machine->board;
     const mcu_board_desc_t *desc = board->desc;
 
@@ -179,22 +175,14 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     // (ADBIop in InfoQuadra900), not VIA1's shift register — pass NULL for
     // the VIA so slot-3 IOP traffic reaches adb_iop_transact() directly.
     machine_part_begin(cfg, cp, "adb");
-    st->adb = adb_init(NULL, cfg->scheduler, cp);
-    cfg->adb = st->adb;
-    machine_part(cfg, cp, "adb", part_save_adb, st->adb);
+    cfg->adb = adb_init(NULL, cfg->scheduler, cp);
+    machine_part(cfg, cp, "adb", part_save_adb, cfg->adb);
 
     machine_part_images(cfg, cp);
 
     // Internal SCSI bus: carries the configured disks + CD through the
     // shared bus/target model; the internal 53C96 fronts it.
-    machine_part_begin(cfg, cp, "scsi");
-    cfg->scsi = machine_scsi_bus_init(cfg, cp, "scsi");
-    machine_part(cfg, cp, "scsi", part_save_scsi, cfg->scsi);
-    machine_part_begin(cfg, cp, "scsi96");
-    st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp);
-    machine_part(cfg, cp, "scsi96", part_save_scsi96, st->scsi96);
-    scsi_53c96_set_irq_callback(st->scsi96, q900_scsi96_irq, cfg);
-    scsi_53c96_attach_bus(st->scsi96, cfg->scsi);
+    mcu_build_scsi0(cfg, cp, q900_scsi96_irq);
 
     // External SCSI bus: electrically isolated second 53C96.  The profile
     // declares its bays (mac_scsi_slots_ext01); with nothing attached,
@@ -208,31 +196,16 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     // TNT already does it this way (tnt.c: "scsi2"), and scsi.h documents the
     // second-bus case; the Q900 predates the helper and was never converted.
     machine_part_begin(cfg, cp, "scsi2");
-    st->scsi_ext = machine_scsi_bus_init(cfg, cp, "scsi2");
-    machine_part(cfg, cp, "scsi2", part_save_scsi, st->scsi_ext);
+    cfg->scsi2 = machine_scsi_bus_init(cfg, cp, "scsi2");
+    machine_part(cfg, cp, "scsi2", part_save_scsi, cfg->scsi2);
     machine_part_begin(cfg, cp, "scsi96_ext");
     st->scsi96_ext = scsi_53c96_init(cfg->scheduler, 25000000, cp);
     machine_part(cfg, cp, "scsi96_ext", part_save_scsi96, st->scsi96_ext);
     scsi_53c96_set_irq_callback(st->scsi96_ext, q900_scsi96_ext_irq, cfg);
-    scsi_53c96_attach_bus(st->scsi96_ext, st->scsi_ext);
+    scsi_53c96_attach_bus(st->scsi96_ext, cfg->scsi2);
 
-    // SONIC Ethernet (20 MHz-class part on the Q900; no wire in v1).
-    machine_part_begin(cfg, cp, "sonic");
-    st->sonic = sonic_init(cp);
-    machine_part(cfg, cp, "sonic", part_save_sonic, st->sonic);
-    sonic_set_irq_callback(st->sonic, q900_sonic_irq, cfg);
-    // SONIC bus-master DMA: the shared guest-physical port.
-    sonic_set_memory_port(st->sonic, &dma_mem_port_physical);
-
-    machine_part_begin(cfg, cp, "asc");
-    st->asc = asc_init(NULL, cfg->scheduler, cp); // EASC: ASC-compatible core
-    machine_part(cfg, cp, "asc", part_save_asc, st->asc);
-    asc_set_mix(st->asc, ASC_MIX_CH_A);
-    asc_set_irq_handler(st->asc, q900_asc_irq, cfg);
-    machine_part_begin(cfg, cp, "floppy");
-    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
-    cfg->floppy = st->floppy;
-    machine_part(cfg, cp, "floppy", part_save_floppy, st->floppy);
+    // SONIC Ethernet (20 MHz-class part on the Q900), the EASC and the SWIM.
+    mcu_build_sonic_asc_floppy(cfg, cp, q900_sonic_irq, q900_asc_irq);
 
     // Caboose: the Egret-protocol system manager (RTC/PRAM/power/keyswitch;
     // the ROM drives it through the same EgretMgr dispatch it uses for
@@ -255,35 +228,27 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
         iop_init(SccIopNum, scc_get_memory_interface(cfg->scc), cfg->scc, q900_scc_iop_irq, cfg, cfg->scheduler, cp);
     machine_part(cfg, cp, "scc_iop", part_save_iop, st->scc_iop);
     machine_part_begin(cfg, cp, "swim_iop");
-    st->swim_iop = iop_init(SwimIopNum, floppy_get_memory_interface(st->floppy), st->floppy, q900_swim_iop_irq, cfg,
+    st->swim_iop = iop_init(SwimIopNum, floppy_get_memory_interface(cfg->floppy), cfg->floppy, q900_swim_iop_irq, cfg,
                             cfg->scheduler, cp);
     machine_part(cfg, cp, "swim_iop", part_save_iop, st->swim_iop);
-    iop_swim_attach_adb(st->swim_iop, st->adb); // ADB is driven through IOP slot 3
+    iop_swim_attach_adb(st->swim_iop, cfg->adb); // ADB is driven through IOP slot 3
 
     if (mcu_build_dafb(cfg, cp) != 0)
         return -1;
 
-    // Bus-side physical resolver for the 040 walker (flat RAM model +
-    // ROM-aperture mirrors; identical to the Q700 arrangement).
-    uint32_t ram_size = cfg->ram_size;
-    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
-    uint8_t *rom_data = ram_native_pointer(cfg->memory_map, ram_size);
-    st->bus_mmu = mmu_init(ram_base, ram_size, 0x40000000u, rom_data, cfg->machine->rom_size, desc->common.rom_base,
-                           desc->common.rom_end);
-    if (!st->bus_mmu) {
-        LOG(0, "Error: out of memory constructing the 040 bus MMU");
+    // Bus-side physical resolver for the 040 walker: RAM at 0 through the
+    // full 1 GiB aperture, the 1 MiB ROM mirroring through its window.
+    st->bus_mmu = m68k_board_build_bus_mmu040(cfg, 0x40000000u, desc->common.rom_base, desc->common.rom_end);
+    if (!st->bus_mmu)
         return -1;
-    }
-    memory_map_set_pmmu(cfg->memory_map, st->bus_mmu);
-    mmu_attach_mmu040(st->bus_mmu, (mmu040_state_t *)cfg->cpu->mmu);
 
     // Bind the I/O island (tower decode: IOP apertures + dual SCSI), then
     // hook the IOP host interfaces the shared table routes to.
-    mcu_io_bind(&st->io, cfg, desc, st->asc, st->floppy);
-    st->io.handle[MAC030_DEV_SCC_IOP] = st->scc_iop;
-    st->io.iface[MAC030_DEV_SCC_IOP] = iop_get_memory_interface(st->scc_iop);
-    st->io.handle[MAC030_DEV_SWIM_IOP] = st->swim_iop;
-    st->io.iface[MAC030_DEV_SWIM_IOP] = iop_get_memory_interface(st->swim_iop);
+    mcu_io_bind(&st->io, cfg, desc, st->asc, cfg->floppy);
+    st->io.handle[BOARD_DEV_SCC_IOP] = st->scc_iop;
+    st->io.iface[BOARD_DEV_SCC_IOP] = iop_get_memory_interface(st->scc_iop);
+    st->io.handle[BOARD_DEV_SWIM_IOP] = st->swim_iop;
+    st->io.iface[BOARD_DEV_SWIM_IOP] = iop_get_memory_interface(st->swim_iop);
     mcu_memory_layout(cfg);
 
     mcu_private_part(cfg, cp);
@@ -353,17 +318,7 @@ const nubus_slot_decl_t q900_nubus_slots[] = {
 };
 
 static const mcu_board_desc_t q900_board_desc = {
-    .common =
-        {
-                 .chipset = "MCU+DAFB",
-                 .rom_base = 0x40000000u,
-                 .rom_end = 0x50000000u,
-                 .io_ranges = mcu_q900_io_ranges,
-                 .io_mirror_mask = 0x0003FFFFu, // 256 KiB island
-            .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
-            .bus_err_lo = 0xF1000000u, // slots $1-$E: this board decodes below $F9
-            .bus_err_hi = NUBUS_BERR_HI,
-                 },
+    .common = MCU_BOARD_COMMON(mcu_q900_io_ranges),
     .ram_bank_count = 4, // sixteen SIMM sockets = four four-SIMM banks
     .via1_pa_model = 0xD0, // Q900 model sense: PA & $56 == $50 (InfoQuadra900)
     .dafb_vram_size = 0x00200000u, // modelled maxed; ships 1 MiB, expands to 2

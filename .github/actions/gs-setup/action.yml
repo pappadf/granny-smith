@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) pappadf
+#
+# The setup the CI jobs share, after actions/checkout: verify the tools the
+# pinned dev image is meant to carry, and fetch the proprietary test data.
+#
+# The tools are VERIFIED, not installed: a self-repairing step hides a stale
+# image pin, which is exactly how publish-staging drifted onto a
+# five-month-old image unnoticed.  The data fetch takes the revision pinned
+# in tests/data-version, so CI runs against the media the goldens were
+# captured from; the token arrives as an input (a composite action cannot
+# read secrets), and a fork PR passes it empty.
+name: gs-setup
+description: Verify the dev image's tools; fetch the test data when a token is given
+inputs:
+  tools:
+    description: Commands that must be on PATH (space-separated)
+    default: ''
+  data:
+    description: "none | optional (no token: skip, with a notice) | required (no token: fail)"
+    default: none
+  data-token:
+    description: The test-data token (secrets.GS_TEST_DATA_TOKEN)
+    default: ''
+  no-data-message:
+    description: What the notice (or, for required, the error) says when there is no token
+    default: Test data not available (external contributor or missing secret)
+outputs:
+  has_test_data:
+    description: "'true' when the test data was fetched"
+    value: ${{ steps.fetch.outputs.has_test_data }}
+runs:
+  using: composite
+  steps:
+    - name: Verify the image's tools
+      if: inputs.tools != ''
+      shell: bash
+      env:
+        GS_TOOLS: ${{ inputs.tools }}
+      run: |
+        for t in $GS_TOOLS; do
+          which "$t" || { echo "$t not on PATH — the pinned dev image is wrong or stale"; exit 1; }
+        done
+
+    - name: Fetch test data
+      id: fetch
+      if: inputs.data != 'none'
+      shell: bash
+      env:
+        GS_TEST_DATA_TOKEN: ${{ inputs.data-token }}
+        GS_DATA: ${{ inputs.data }}
+        GS_NO_DATA: ${{ inputs.no-data-message }}
+      run: |
+        if [ -n "$GS_TEST_DATA_TOKEN" ]; then
+          ./scripts/fetch-test-data.sh
+          echo "has_test_data=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "has_test_data=false" >> "$GITHUB_OUTPUT"
+          if [ "$GS_DATA" = required ]; then
+            echo "::error::$GS_NO_DATA"
+            exit 1
+          fi
+          echo "::notice::$GS_NO_DATA"
+        fi

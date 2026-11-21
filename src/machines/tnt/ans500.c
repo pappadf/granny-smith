@@ -34,16 +34,6 @@
 #include "slot_tables.h"
 #include "tnt.h"
 
-// Eight DIMM slots in four interleaved bank pairs (against the 9500's
-// twelve), and a hard 512 MB ceiling that is a ROM DECODE limit, not a
-// Hammerhead one: "Production ROMs through (TBD) August 1996? provide
-// decoding of up to 512 Mbytes" (ibid., §5), and the documented failure
-// mode above it is a HANG during the RAM test rather than a clean error.
-// Being less permissive than the silicon is the faithful choice here.
-static const uint32_t ans500_ram_options_kb[] = {
-    16384,  32768,  49152,  65536,  81920,  98304,  114688, 131072, 147456, 163840, 180224, 196608, 212992, 229376,
-    245760, 262144, 278528, 294912, 311296, 327680, 344064, 360448, 393216, 409600, 425984, 458752, 524288, 0};
-
 // Bays 4-6 cable to the SECOND fast/wide controller, which the production
 // ROM's own device aliases settle: `disk0`..`disk3` resolve through
 // `/bandit/53c825@11`, `disk4` onward through `@12`.  That controller is
@@ -129,7 +119,9 @@ const hw_profile_t machine_ans500 = {
     .ram_max = 0x20000000, // 512 MB — the ROM's decode ceiling, not the chipset's
     .rom_size = 0x400000, // 4 MB ($962F6C13 production / $49B2BE8F prototype)
 
-    .ram_options = ans500_ram_options_kb,
+    // Eight DIMM slots in four interleaved bank pairs, 512 MB the ROM's
+    // decode ceiling (tnt.c, ans_ram_options_kb)
+    .ram_options = ans_ram_options_kb,
     .floppy_slots = mac_floppy_slots_1hd,
     .storage = ans500_storage,
     .default_storage = ans_default_storage,

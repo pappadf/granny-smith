@@ -212,6 +212,21 @@ static inline const slot_opts_t *machine_build_opts_slot(const machine_build_opt
     return NULL;
 }
 
+// The entry for `slot`, created empty when absent; NULL when the table is
+// full (MACHINE_SLOTS_MAX).
+static inline slot_opts_t *machine_build_opts_slot_get_or_add(machine_build_opts_t *o, int slot) {
+    for (int i = 0; i < o->n_slots; i++) {
+        if (o->slots[i].slot == slot)
+            return &o->slots[i];
+    }
+    if (o->n_slots >= MACHINE_SLOTS_MAX)
+        return NULL;
+    slot_opts_t *e = &o->slots[o->n_slots++];
+    memset(e, 0, sizeof(*e));
+    e->slot = slot;
+    return e;
+}
+
 // The value of option `key` in a slot entry, or NULL.
 // Make an entry a checkpoint carried safe to read -- every string field
 // terminated, the option count in range -- and say whether its fixed facts

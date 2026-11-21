@@ -83,7 +83,7 @@ static void img_src_close(source_t *s) {
 static const source_ops_t img_src_ops = {img_src_read, img_src_size, img_src_key, img_src_tier, img_src_close};
 
 source_t *image_source(image_t *img) {
-    return img ? peel_source_new(&img_src_ops, img, NULL) : NULL;
+    return img ? source_new(&img_src_ops, img, NULL) : NULL;
 }
 
 int source_read_partition(source_t *src, uint64_t part_off, uint64_t part_size, uint64_t off, void *buf, size_t n) {

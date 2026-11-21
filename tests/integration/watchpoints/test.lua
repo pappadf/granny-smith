@@ -15,6 +15,9 @@ assert(debug.watchpoints.entries[wid].mode == "write", "mode reads back")
 assert(debug.watchpoints.entries[wid].addr == 0x16A, "addr reads back")
 assert(debug.watchpoints.entries[wid].end_addr == 0x16D, "width=l widens to the longword")
 assert(debug.watchpoints.entries[wid].enabled, "enabled by default")
+-- The two collections share one id counter: a watchpoint's id is no
+-- logpoint child either.
+assert(gs.try(function() return debug.logpoints.entries[wid].addr end, -1) == -1, "a watchpoint id does not resolve under debug.logpoints")
 
 local i0 = machine.cpu.instr_count
 scheduler.run(5000000)

@@ -19,6 +19,7 @@
 #include <stdint.h>
 
 #include "laserwriter_transport.h" // LASERWRITER_OUTPUT_MAX
+#include "printer_sink.h" // printer_document_t, PRINTER_TITLE_MAX
 
 // === Constants ===
 
@@ -39,24 +40,11 @@
 #define LASERWRITER_VERSION  "47.0"
 #define LASERWRITER_REVISION "0"
 
-// Longest job name kept from the driver's %%Title: comment.
-#define LASERWRITER_TITLE_MAX 63
+// Longest job name kept from the driver's %%Title: comment: the one printer
+// title limit (printer_sink.h).
+#define LASERWRITER_TITLE_MAX PRINTER_TITLE_MAX
 
 // === Type Definitions ===
-
-// A finished job handed to the platform sink.  The bytes are valid only for
-// the duration of the call; the sink copies what it keeps.
-typedef struct {
-    uint32_t job_id; // PAP job counter value for the job
-    const char *title; // job name from %%Title:, "" when absent
-    const uint8_t *pdf; // the document, complete whatever the outcome
-    size_t pdf_len;
-    uint32_t pages; // pages in the document
-    bool ok; // the program ran to the end of its data
-    const char *error_name; // PostScript error name, "" when ok
-    const char *offending; // offending command, "" when ok
-    bool budget_exceeded; // stopped by the execution budget
-} laserwriter_document_t;
 
 // What the bridge tells the PAP layer, always from a scheduler event or a
 // poll — never from inside a begin / feed / finish call.
@@ -163,25 +151,11 @@ void laserwriter_printer_retire(void);
 uint32_t laserwriter_printer_jobs(void);
 uint32_t laserwriter_printer_permanent_jobs(void);
 
-// Platform sink for a finished document.  The weak default in
-// laserwriter_job.c logs and drops it; headless_main.c writes
-// <print-dir>/<job>-<title>.pdf.  The browser never sees the bytes here
+// A finished document goes to printer_sink_document (printer_sink.h) as
+// printer "LaserWriter" with no file-name prefix: headless writes
+// <print-dir>/<job>-<title>.pdf.  The browser never sees the bytes there
 // (its worker posts the PDF to the page), so the sink is not called there.
-void laserwriter_sink_document(const laserwriter_document_t *doc);
-
-// A job's PostScript as the workstation sent it (appletalk.printer.capture),
-// handed over when the job ends.  The bytes are valid only for the duration
-// of the call.
-typedef struct {
-    uint32_t job_id; // PAP job counter value, as in laserwriter_document_t
-    const uint8_t *ps;
-    size_t ps_len;
-    bool complete; // the job ended normally; false for one cut off
-} laserwriter_capture_t;
-
-// Platform sink for a capture.  The weak default in laserwriter_job.c logs
-// and drops it; headless_main.c writes <print-dir>/<job>.ps beside the PDF;
-// the browser downloads it.  The core printer holds no file of its own.
-void laserwriter_sink_capture(const laserwriter_capture_t *cap);
+// A job's PostScript as the workstation sent it (appletalk.printer.capture)
+// goes to printer_sink_capture as <job>.ps when the job ends.
 
 #endif // LASERWRITER_JOB_H

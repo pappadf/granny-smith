@@ -177,7 +177,7 @@ static bool tail_has_fork_component(const char *tail) {
         while (*p && *p != '/')
             p++;
         size_t len = (size_t)(p - start);
-        if ((len == 4 && strncmp(start, "rsrc", 4) == 0) || (len == 4 && strncmp(start, "finf", 4) == 0))
+        if (vfs_is_fork_keyword(start, len))
             return true;
     }
     return false;
@@ -195,7 +195,7 @@ static bool first_component_is_fork(const char *rem) {
     while (*p && *p != '/')
         p++;
     size_t len = (size_t)(p - start);
-    return len == 4 && (strncmp(start, "rsrc", 4) == 0 || strncmp(start, "finf", 4) == 0);
+    return vfs_is_fork_keyword(start, len);
 }
 
 // Given an outer image mount `m` and its in-image tail (starting with '/'),

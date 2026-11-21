@@ -7,6 +7,7 @@
 
 #include "image_udif.h"
 #include "common.h"
+#include "udif_layout.h"
 
 #include "codec.h"
 
@@ -15,58 +16,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-// 'koly' trailer field offsets (big-endian).  The 128-byte checksum blob at
-// 0x58 is why XMLOffset lands at 0xD8 and not, as a naive count of the struct
-// members suggests, earlier.
-#define KOLY_OFF_SIGNATURE     0x00
-#define KOLY_OFF_VERSION       0x04
-#define KOLY_OFF_HEADER_SIZE   0x08
-#define KOLY_OFF_DATA_OFFSET   0x18
-#define KOLY_OFF_DATA_LENGTH   0x20
-#define KOLY_OFF_SEGMENT_COUNT 0x3C
-#define KOLY_OFF_CHECKSUM_TYPE 0x50
-#define KOLY_OFF_CHECKSUM      0x58
-#define KOLY_OFF_XML_OFFSET    0xD8
-#define KOLY_OFF_XML_LENGTH    0xE0
-#define KOLY_OFF_VARIANT       0x1E8
-#define KOLY_OFF_SECTORS       0x1EC
-
-// The trailer is exactly 512 bytes, so a mistyped offset is a read past its
-// end — catch that at compile time instead of at decode time.
-_Static_assert(KOLY_OFF_XML_LENGTH + 8 <= UDIF_TRAILER_SIZE, "koly offset outside the trailer");
-_Static_assert(KOLY_OFF_SECTORS + 8 <= UDIF_TRAILER_SIZE, "koly offset outside the trailer");
-
-// 'mish' block-table field offsets (big-endian).
-#define MISH_OFF_SIGNATURE     0x00
-#define MISH_OFF_VERSION       0x04
-#define MISH_OFF_SECTOR        0x08
-#define MISH_OFF_SECTOR_COUNT  0x10
-#define MISH_OFF_DATA_OFFSET   0x18
-#define MISH_OFF_CHECKSUM_TYPE 0x40
-#define MISH_OFF_CHECKSUM      0x48
-#define MISH_OFF_CHUNK_COUNT   0xC8
-#define MISH_HEADER_SIZE       0xCC // chunk entries start here
-#define MISH_ENTRY_SIZE        40
-
-// Only version 4 trailers and version 1 block tables were ever written.
-#define KOLY_VERSION 4
-#define MISH_VERSION 1
-
 // A 16 MB plist is already absurd for a block map; refuse anything larger
 // rather than let a corrupt trailer drive a huge allocation.
 #define UDIF_XML_MAX (16u * 1024u * 1024u)
 
-static const uint8_t KOLY_SIGNATURE[4] = {'k', 'o', 'l', 'y'};
-#define MISH_SIGNATURE 0x6D697368u // 'mish'
-
-static uint64_t rd64(const uint8_t *p) {
-    return ((uint64_t)RD_BE32(p) << 32) | (uint64_t)RD_BE32(p + 4);
-}
-
 bool udif_detect(const uint8_t *trailer, size_t len) {
     if (!trailer || len < UDIF_TRAILER_SIZE)
         return false;
-    if (memcmp(trailer + KOLY_OFF_SIGNATURE, KOLY_SIGNATURE, sizeof(KOLY_SIGNATURE)) != 0)
+    if (memcmp(trailer + KOLY_OFF_SIGNATURE, KOLY_SIGNATURE_STR, 4) != 0)
         return false;
     // Version and header size are the two fields that separate a real trailer
     // from four incidental bytes of payload that happen to spell 'koly'.
@@ -81,11 +38,11 @@ int udif_parse_trailer(const uint8_t *trailer, size_t len, udif_trailer_t *out) 
         return -EINVAL;
 
     memset(out, 0, sizeof(*out));
-    out->data_fork_offset = rd64(trailer + KOLY_OFF_DATA_OFFSET);
-    out->data_fork_length = rd64(trailer + KOLY_OFF_DATA_LENGTH);
-    out->xml_offset = rd64(trailer + KOLY_OFF_XML_OFFSET);
-    out->xml_length = rd64(trailer + KOLY_OFF_XML_LENGTH);
-    out->sectors = rd64(trailer + KOLY_OFF_SECTORS);
+    out->data_fork_offset = RD_BE64(trailer + KOLY_OFF_DATA_OFFSET);
+    out->data_fork_length = RD_BE64(trailer + KOLY_OFF_DATA_LENGTH);
+    out->xml_offset = RD_BE64(trailer + KOLY_OFF_XML_OFFSET);
+    out->xml_length = RD_BE64(trailer + KOLY_OFF_XML_LENGTH);
+    out->sectors = RD_BE64(trailer + KOLY_OFF_SECTORS);
     out->segment_count = RD_BE32(trailer + KOLY_OFF_SEGMENT_COUNT);
     out->checksum_type = RD_BE32(trailer + KOLY_OFF_CHECKSUM_TYPE);
     out->checksum = RD_BE32(trailer + KOLY_OFF_CHECKSUM);
@@ -159,28 +116,40 @@ static const char *find_in(const char *from, const char *end, const char *needle
     return NULL;
 }
 
-// Copy the <string> value that follows `<key>key</key>` inside [from, end)
-// into `dst`.  Entry dicts list Attributes / CFName / Data / ID / Name in that
-// order, so the key must be matched — taking the first <string> would yield
-// the attribute word.  Returns true when the key was found.
-static bool extract_keyed_string(const char *from, const char *end, const char *key, char *dst, size_t cap) {
-    char pattern[32];
+bool udif_plist_value(const char *xml, size_t len, const char *key, char *dst, size_t cap) {
+    if (!xml || !key || !dst || cap == 0)
+        return false;
+    char pattern[64];
     snprintf(pattern, sizeof(pattern), "<key>%s</key>", key);
-    const char *k = find_in(from, end, pattern);
+    const char *end = xml + len;
+    const char *k = find_in(xml, end, pattern);
     if (!k)
         return false;
-    const char *o = find_in(k, end, "<string>");
-    if (!o)
+    // The value is the character data of the element after the key: skip to
+    // the end of its opening tag.
+    const char *p = memchr(k + strlen(pattern), '>', (size_t)(end - k - strlen(pattern)));
+    if (!p)
         return false;
-    o += strlen("<string>");
-    const char *c = find_in(o, end, "</string>");
-    if (!c)
-        return false;
-    // Only a human-readable label, so silent truncation is harmless.
-    size_t n = (size_t)(c - o);
-    if (n >= cap)
-        n = cap - 1;
-    memcpy(dst, o, n);
+    p++;
+    size_t n = 0;
+    while (p < end && *p != '<' && n + 1 < cap) {
+        if (*p == '&') {
+            // The three entities a plist writer escapes; any other reads as '?'.
+            const char *semi = memchr(p, ';', (size_t)(end - p));
+            if (semi) {
+                size_t el = (size_t)(semi - p);
+                char c = el == 3 && !memcmp(p, "&lt", 3)    ? '<'
+                         : el == 3 && !memcmp(p, "&gt", 3)  ? '>'
+                         : el == 4 && !memcmp(p, "&amp", 4) ? '&'
+                                                            : '?';
+                dst[n++] = c;
+                p = semi + 1;
+                continue;
+            }
+        }
+        // Only a human-readable label, so silent truncation is harmless.
+        dst[n++] = *p++;
+    }
     dst[n] = '\0';
     return true;
 }
@@ -194,11 +163,11 @@ static int parse_mish(const uint8_t *b, size_t len, udif_table_t *t) {
     // Every image seen in the wild stores its chunks at absolute data-fork
     // offsets and leaves this zero; a non-zero base would silently shift every
     // read, so refuse rather than guess whether it is meant to be added.
-    if (rd64(b + MISH_OFF_DATA_OFFSET) != 0)
+    if (RD_BE64(b + MISH_OFF_DATA_OFFSET) != 0)
         return -ENOTSUP;
 
-    t->base_sector = rd64(b + MISH_OFF_SECTOR);
-    t->sectors = rd64(b + MISH_OFF_SECTOR_COUNT);
+    t->base_sector = RD_BE64(b + MISH_OFF_SECTOR);
+    t->sectors = RD_BE64(b + MISH_OFF_SECTOR_COUNT);
     t->checksum_type = RD_BE32(b + MISH_OFF_CHECKSUM_TYPE);
     t->checksum = RD_BE32(b + MISH_OFF_CHECKSUM);
 
@@ -217,16 +186,16 @@ static int parse_mish(const uint8_t *b, size_t len, udif_table_t *t) {
     size_t nc = 0;
     for (uint32_t i = 0; i < n_entries; i++) {
         const uint8_t *e = b + MISH_HEADER_SIZE + (size_t)i * MISH_ENTRY_SIZE;
-        uint32_t type = RD_BE32(e);
+        uint32_t type = RD_BE32(e + MISH_ENTRY_OFF_TYPE);
         if (type == UDIF_CHUNK_END)
             break;
         if (type == UDIF_CHUNK_COMMENT)
             continue; // "+beg"/"+end" markers cover no sectors
         chunks[nc].type = type;
-        chunks[nc].sector = rd64(e + 8);
-        chunks[nc].count = rd64(e + 16);
-        chunks[nc].offset = rd64(e + 24);
-        chunks[nc].length = rd64(e + 32);
+        chunks[nc].sector = RD_BE64(e + MISH_ENTRY_OFF_SECTOR);
+        chunks[nc].count = RD_BE64(e + MISH_ENTRY_OFF_COUNT);
+        chunks[nc].offset = RD_BE64(e + MISH_ENTRY_OFF_OFFSET);
+        chunks[nc].length = RD_BE64(e + MISH_ENTRY_OFF_LENGTH);
         // A chunk must stay inside the sector run its own table declares --
         // checked without an addition that 64-bit values could wrap.
         if (chunks[nc].count > t->sectors || chunks[nc].sector > t->sectors - chunks[nc].count) {
@@ -306,8 +275,11 @@ int udif_parse_blkx(const uint8_t *xml, size_t xml_len, udif_map_t **out) {
         memset(t, 0, sizeof(*t));
         // CFName carries the readable partition label; older writers set only
         // Name.  Either way this is diagnostics, never decode input.
-        if (!extract_keyed_string(dict, dict_end, "CFName", t->name, sizeof(t->name)))
-            extract_keyed_string(dict, dict_end, "Name", t->name, sizeof(t->name));
+        // Entry dicts list Attributes / CFName / Data / ID / Name in that
+        // order, so the key is matched, not the first <string> taken.
+        size_t dict_len = (size_t)(dict_end - dict);
+        if (!udif_plist_value(dict, dict_len, "CFName", t->name, sizeof(t->name)))
+            udif_plist_value(dict, dict_len, "Name", t->name, sizeof(t->name));
 
         rc = parse_mish(blob, blob_len, t);
         free(blob);
@@ -381,11 +353,9 @@ int udif_decode_chunk(const udif_chunk_t *chunk, const uint8_t *src, size_t src_
     if (codec < 0 || !src)
         return -EINVAL;
     int64_t got = codec_decode((codec_id_t)codec, src, src_len, dst, need);
-    if (got == CODEC_ERR_UNSUPPORTED)
-        return -ENOTSUP;
-    if (got == CODEC_ERR_NOMEM)
-        return -ENOMEM;
+    if (got < 0)
+        return codec_errno(got); // a stream that does not decode is -EIO
     // The chunk's sector count states the exact decoded size, so a short or
-    // long result means the stream and the map disagree.
-    return got == (int64_t)need ? 0 : -EINVAL;
+    // long result means the stream and the map disagree: corrupt, as above.
+    return got == (int64_t)need ? 0 : -EIO;
 }

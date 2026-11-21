@@ -5,6 +5,7 @@
 /* Minimal no-op logging API for unit tests.
    Included via -include to avoid depending on full logging runtime. */
 #include <stdarg.h>
+#include <stddef.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -55,6 +56,15 @@ static inline void log_vemit(const log_category_t *cat, int level, const char *f
     (void)level;
     (void)fmt;
     (void)ap;
+}
+static inline void log_hex(const log_category_t *cat, int level, const char *tag, const void *data, size_t len,
+                           size_t max) {
+    (void)cat;
+    (void)level;
+    (void)tag;
+    (void)data;
+    (void)len;
+    (void)max;
 }
 
 /* Indentation control, as in the real log.h */

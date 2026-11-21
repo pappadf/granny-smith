@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  import { gsEval, gsErrorText } from '@/bus/emulator';
+  import { saveLabelledCheckpoint } from '@/bus/checkpoint';
   import { opfs } from '@/bus/opfs';
   import { getOrCreateMachine, nowStamp } from '@/lib/machineId';
   import { CHECKPOINT_DIR, SAVED_CHECKPOINT_DIR } from '@/lib/opfsPaths';
@@ -27,19 +27,15 @@
     const dir = `${SAVED_CHECKPOINT_DIR}/${me.id}-${nowStamp()}`;
     startActivity(label, 'Saving');
     try {
-      // The machine's own checkpoint first, so its autosave (what a reload
-      // resumes) is this moment too; checkpoint.snapshot returns once the
-      // file is complete.
-      if ((await gsEval('checkpoint.snapshot', [label])) !== true) {
-        showNotification('Checkpoint creation failed', 'error');
-        return;
-      }
-      await gsEval('files.mkdir', [SAVED_CHECKPOINT_DIR]);
-      await gsEval('files.mkdir', [dir]);
-      const ok = await gsEval('checkpoint.save', [`${dir}/state.checkpoint`]);
-      if (ok !== true) {
-        await gsEval('files.rm', [dir]);
-        showNotification(`Checkpoint creation failed: ${gsErrorText(ok)}`, 'error');
+      // The machine's own checkpoint (its autosave), then the copy in dir.
+      const saved = await saveLabelledCheckpoint(label, SAVED_CHECKPOINT_DIR, dir);
+      if (!saved.ok) {
+        showNotification(
+          saved.reason === undefined
+            ? 'Checkpoint creation failed'
+            : `Checkpoint creation failed: ${saved.reason}`,
+          'error',
+        );
         return;
       }
       // The machine's own manifest (model, RAM, build, images), labelled.

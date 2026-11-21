@@ -14,6 +14,7 @@
 #include "log.h"
 #include "machine.h"
 #include "object.h"
+#include "object_order.h"
 
 #include <stdio.h>
 
@@ -179,20 +180,8 @@ static value_t bmac_attr_last_tx(struct object *self, const member_t *m) {
     uint8_t f[1600];
     int n = b ? bmac_last_tx(b, f, (int)sizeof f) : 0;
     char hex[2 * sizeof f + 1];
-    for (int i = 0; i < n; i++)
-        snprintf(hex + 2 * i, 3, "%02x", f[i]);
-    hex[2 * n] = '\0';
+    hex_encode(hex, f, (size_t)n, false);
     return val_str(hex);
-}
-
-static int hex_nibble(char c) {
-    if (c >= '0' && c <= '9')
-        return c - '0';
-    if (c >= 'a' && c <= 'f')
-        return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F')
-        return c - 'A' + 10;
-    return -1;
 }
 
 // `receive(hex)`: a frame (destination address first, no FCS) arrives on
@@ -211,7 +200,7 @@ static value_t bmac_method_receive(struct object *self, const member_t *m, int a
             p++;
             continue;
         }
-        int hi = hex_nibble(p[0]), lo = p[1] ? hex_nibble(p[1]) : -1;
+        int hi = hex_digit(p[0]), lo = p[1] ? hex_digit(p[1]) : -1;
         if (hi < 0 || lo < 0)
             return val_err("bmac.receive: '%s' is not hex bytes", argv[0].s);
         if (n == (int)sizeof f)
@@ -263,19 +252,13 @@ void gos_bmac_attach_objects(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
     if (!st || st->bmac_object)
         return;
-    st->bmac_object = object_new(&bmac_class, cfg, "bmac");
-    if (st->bmac_object) {
-        object_set_label(st->bmac_object, "BMAC Ethernet");
-        object_set_order(st->bmac_object, 92);
-        object_attach(machine_object(), st->bmac_object);
-    }
+    st->bmac_object =
+        object_attach_new(machine_object(), &bmac_class, cfg, "bmac", "BMAC Ethernet", OBJ_ORDER_ETHERNET);
 }
 
 void gos_bmac_detach_objects(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
     if (st && st->bmac_object) {
-        object_detach(st->bmac_object);
-        object_delete(st->bmac_object);
-        st->bmac_object = NULL;
+        object_destroy(&st->bmac_object);
     }
 }

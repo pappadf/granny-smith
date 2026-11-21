@@ -29,8 +29,10 @@ Usage: scripts/check-links.py [files...]     Exit: 0 clean, 1 broken links.
 
 import os
 import re
-import subprocess
 import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import repo  # the tracked-file listing
 
 LINK = re.compile(r"!?\[(?:[^\]\[]|\[[^\]]*\])*\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
 FENCE = re.compile(r"^\s*(```|~~~)")
@@ -48,8 +50,7 @@ _cache = {}
 
 
 def tracked_md():
-    out = subprocess.run(["git", "ls-files", "--", "*.md"], capture_output=True, text=True, check=True)
-    return out.stdout.split()
+    return repo.tracked("*.md")
 
 
 def read(path):

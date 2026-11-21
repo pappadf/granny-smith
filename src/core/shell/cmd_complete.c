@@ -13,7 +13,7 @@
 #include "commands.h"
 #include "shell_var.h"
 #include "syntax.h"
-#include "worker_thread.h"
+#include "job/job.h" // EMU_THREAD_CHECK
 
 #include <ctype.h>
 #include <stdbool.h>
@@ -60,10 +60,7 @@ static const char *comp_strdup(struct completion *out, const char *s) {
 
 // FNV-1a hash of a candidate string, for the dedup index.
 static uint32_t comp_hash(const char *s) {
-    uint32_t h = 2166136261u;
-    for (const unsigned char *p = (const unsigned char *)s; *p; p++)
-        h = (h ^ *p) * 16777619u; // fold in one byte
-    return h;
+    return fnv1a32_str(FNV1A32_INIT, s);
 }
 
 // Slot of `cand` in the dedup index: the slot holding an equal item, or the
@@ -746,8 +743,8 @@ static void complete_arguments(const char *line, const script_stmt_t *st, const 
 // === Public entry point =====================================================
 
 void shell_complete(const char *line, int cursor_pos, struct completion *out) {
-    // Thread-affinity guard (compiled out in release). See worker_thread.h.
-    worker_thread_check("shell_complete");
+    // Thread-affinity guard (compiled out in release). See job/job.h.
+    EMU_THREAD_CHECK("shell_complete");
 
     if (!out)
         return;

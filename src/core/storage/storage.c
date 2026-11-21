@@ -30,6 +30,7 @@
 #include "storage.h"
 
 #include "checkpoint.h"
+#include "common.h"
 #include "source.h"
 #include "status.h"
 #include "io/io_worker.h"
@@ -190,7 +191,7 @@ static inline void bitmap_clear(uint8_t *bm, uint32_t bit) {
 //
 // Every multi-byte field this file puts on disk or in a checkpoint stream is
 // little-endian: the delta header, the journal's LBAs and the snapshot
-// header go through the helpers below.  The cluster tables are arrays of
+// header go through common.h's RD_LE*/WR_LE*.  The cluster tables are arrays of
 // uint32_t written and read in place, which is little-endian only on a
 // little-endian host -- every target is one (x86-64, arm64, wasm32), and the
 // assertion below stops a big-endian build rather than let it write deltas
@@ -199,21 +200,6 @@ static inline void bitmap_clear(uint8_t *bm, uint32_t bit) {
 #if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__)
 _Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "the delta's cluster tables are stored host-order (LE)");
 #endif
-
-static void put_le32(uint8_t *p, uint32_t v) {
-    for (int i = 0; i < 4; i++)
-        p[i] = (uint8_t)(v >> (8 * i));
-}
-static void put_le64(uint8_t *p, uint64_t v) {
-    for (int i = 0; i < 8; i++)
-        p[i] = (uint8_t)(v >> (8 * i));
-}
-static uint32_t get_le32(const uint8_t *p) {
-    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
-}
-static uint64_t get_le64(const uint8_t *p) {
-    return (uint64_t)get_le32(p) | (uint64_t)get_le32(p + 4) << 32;
-}
 
 // ============================================================================
 // Journal helpers
@@ -253,7 +239,7 @@ static void journal_trim_partial(storage_t *s) {
 // Append a preimage entry to the journal file and index.
 static status_t journal_append(storage_t *s, uint32_t lba, const uint8_t *data) {
     uint8_t le[4];
-    put_le32(le, lba);
+    WR_LE32(le, lba);
     // Write-ahead: the preimage has to leave this FILE's buffer before the
     // overwrite of the block it saves can leave the delta's (the next seek
     // on the delta flushes that one).  Deferring this to the checkpoint
@@ -361,7 +347,7 @@ static status_t journal_load_index(storage_t *s) {
         uint8_t le[4];
         if (fread(le, sizeof(le), 1, s->journal_fp) != 1)
             break;
-        uint32_t lba = get_le32(le);
+        uint32_t lba = RD_LE32(le);
         if (lba >= s->block_count) {
             LOG(0,
                 "storage: journal entry %" PRIu64 " names block %" PRIu32 " of %" PRIu64 "; discarding it and the rest",
@@ -395,14 +381,14 @@ static status_t journal_load_index(storage_t *s) {
 static status_t delta_write_header(storage_t *s) {
     uint8_t h[STORAGE_DELTA_HEADER_SIZE] = {0};
     memcpy(h, STORAGE_DELTA_MAGIC, STORAGE_DELTA_MAGIC_SIZE);
-    put_le32(h + 4, s->version);
-    put_le64(h + 8, s->block_count);
-    put_le32(h + 16, s->block_size);
+    WR_LE32(h + 4, s->version);
+    WR_LE64(h + 8, s->block_count);
+    WR_LE32(h + 16, s->block_size);
     size_t len = STORAGE_DELTA_HEADER_V1;
     if (s->version == STORAGE_DELTA_VERSION) {
-        put_le32(h + 20, s->cluster_blocks);
-        put_le64(h + 24, s->cluster_count);
-        put_le64(h + 32, s->slots_committed);
+        WR_LE32(h + 20, s->cluster_blocks);
+        WR_LE64(h + 24, s->cluster_count);
+        WR_LE64(h + 32, s->slots_committed);
         len = STORAGE_DELTA_HEADER_SIZE;
     }
     if (fseeko(s->delta_fp, 0, SEEK_SET) != 0 || fwrite(h, len, 1, s->delta_fp) != 1)
@@ -443,22 +429,22 @@ static status_t delta_read_header(storage_t *s) {
         return STATUS_E_IO;
     if (memcmp(h, STORAGE_DELTA_MAGIC, STORAGE_DELTA_MAGIC_SIZE) != 0)
         return STATUS_E_INVAL;
-    uint32_t version = get_le32(h + 4);
+    uint32_t version = RD_LE32(h + 4);
     if (version != STORAGE_DELTA_VERSION && version != STORAGE_DELTA_VERSION_V1)
         return STATUS_E_INVAL;
-    if (get_le64(h + 8) != s->block_count || get_le32(h + 16) != s->block_size)
+    if (RD_LE64(h + 8) != s->block_count || RD_LE32(h + 16) != s->block_size)
         return STATUS_E_INVAL;
     s->version = version;
     if (version == STORAGE_DELTA_VERSION) {
         if (fread(h + STORAGE_DELTA_HEADER_V1, STORAGE_DELTA_HEADER_SIZE - STORAGE_DELTA_HEADER_V1, 1, s->delta_fp) !=
             1)
             return STATUS_E_IO;
-        s->cluster_blocks = get_le32(h + 20);
+        s->cluster_blocks = RD_LE32(h + 20);
         if (s->cluster_blocks == 0 || s->cluster_blocks > (1u << 20))
             return STATUS_E_INVAL;
-        if (get_le64(h + 24) != (s->block_count + s->cluster_blocks - 1) / s->cluster_blocks)
+        if (RD_LE64(h + 24) != (s->block_count + s->cluster_blocks - 1) / s->cluster_blocks)
             return STATUS_E_INVAL;
-        s->slots_committed = get_le64(h + 32);
+        s->slots_committed = RD_LE64(h + 32);
     }
     return delta_layout_init(s);
 }
@@ -870,7 +856,7 @@ status_t storage_apply_rollback(storage_t *storage) {
 
         if (fread(le, sizeof(le), 1, storage->journal_fp) != 1)
             return STATUS_E_IO;
-        uint32_t lba = get_le32(le);
+        uint32_t lba = RD_LE32(le);
         if (fread(data, storage->block_size, 1, storage->journal_fp) != 1)
             return STATUS_E_IO;
 
@@ -948,10 +934,10 @@ status_t storage_checkpoint(storage_t *storage, checkpoint_t *checkpoint) {
     header.block_count = storage->block_count;
     header.block_size = storage->block_size;
     uint8_t h[STORAGE_SNAPSHOT_HEADER_BYTES] = {0};
-    put_le32(h, header.version);
+    WR_LE32(h, header.version);
     h[4] = header.has_data;
-    put_le64(h + 8, header.block_count);
-    put_le32(h + 16, header.block_size);
+    WR_LE64(h + 8, header.block_count);
+    WR_LE32(h + 16, header.block_size);
     system_write_checkpoint_data(checkpoint, h, sizeof(h));
     if (checkpoint_has_error(checkpoint))
         return STATUS_ERROR;
@@ -969,9 +955,9 @@ status_t storage_checkpoint(storage_t *storage, checkpoint_t *checkpoint) {
         system_write_checkpoint_data(checkpoint, storage->bitmap, storage->bitmap_bytes);
         uint32_t cb = storage->version == STORAGE_DELTA_VERSION ? storage->cluster_blocks : 0;
         uint8_t le[8];
-        put_le32(le, cb);
+        WR_LE32(le, cb);
         system_write_checkpoint_data(checkpoint, le, 4);
-        put_le64(le, storage->slots_used);
+        WR_LE64(le, storage->slots_used);
         system_write_checkpoint_data(checkpoint, le, 8);
         if (cb)
             system_write_checkpoint_data(checkpoint, storage->table, storage->table_bytes);
@@ -988,9 +974,9 @@ static status_t read_quick_layout(checkpoint_t *checkpoint, uint64_t block_count
                                   uint32_t *table, size_t table_bytes) {
     uint8_t le[8];
     system_read_checkpoint_data(checkpoint, le, 4);
-    *cb = get_le32(le);
+    *cb = RD_LE32(le);
     system_read_checkpoint_data(checkpoint, le, 8);
-    *slots = get_le64(le);
+    *slots = RD_LE64(le);
     if (checkpoint_has_error(checkpoint))
         return STATUS_ERROR;
     if (!*cb)
@@ -1056,7 +1042,7 @@ status_t storage_restore_from_checkpoint(storage_t *storage, checkpoint_t *check
     if (checkpoint_has_error(checkpoint))
         return STATUS_ERROR;
     storage_snapshot_header_t header = {
-        .version = get_le32(h), .has_data = h[4], .block_count = get_le64(h + 8), .block_size = get_le32(h + 16)};
+        .version = RD_LE32(h), .has_data = h[4], .block_count = RD_LE64(h + 8), .block_size = RD_LE32(h + 16)};
     if (header.version != STORAGE_SNAPSHOT_VERSION) {
         LOG(0, "storage: snapshot version mismatch (got %u, expected %u)", header.version, STORAGE_SNAPSHOT_VERSION);
         return STATUS_E_INVAL;

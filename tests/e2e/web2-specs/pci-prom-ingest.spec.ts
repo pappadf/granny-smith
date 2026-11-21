@@ -32,8 +32,9 @@ import { test, expect, type Page } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
 import { gsCallInPage, gsEvalInPage } from '../helpers/web2-eval';
+import { DATA } from '../helpers/paths';
+import { uploadRomViaWelcome } from '../helpers/upload';
 
-const DATA = path.resolve(__dirname, '../../data');
 const TNT_ROM = path.join(DATA, 'roms', 'pm7500-pm8500-pm9500-96cd923d.rom');
 const MACH64_PROM = path.join(DATA, 'roms', 'mach64-gx-104-437584e0.prom');
 
@@ -43,18 +44,6 @@ const MACH64_PROM = path.join(DATA, 'roms', 'mach64-gx-104-437584e0.prom');
 // filename never matters.
 const STORED_ROM = '/opfs/images/rom/96cd923d-c241cd82bf90797a';
 const STORED_PROM = '/opfs/images/prom/1002-4758-c6e8';
-
-// Upload a host file through the shipped generic ingest path — the Welcome
-// "Load ROM..." button, which probes the file against every media type
-// rather than being told what it is.  This is the exact action that produced
-// "Failed to save".
-async function uploadViaWelcome(page: Page, hostFile: string): Promise<void> {
-  const [chooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Load ROM...' }).click(),
-  ]);
-  await chooser.setFiles(hostFile);
-}
 
 async function openNewMachine(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'New Machine...' }).click();
@@ -67,7 +56,7 @@ test('a 9500 boots its factory PCI display card once its ROM is uploaded', async
   test.setTimeout(240_000);
   await gotoWeb2(page);
 
-  await uploadViaWelcome(page, TNT_ROM);
+  await uploadRomViaWelcome(page, TNT_ROM);
   await expect(
     page.locator('.toast .msg').filter({ hasText: 'pm7500-pm8500-pm9500-96cd923d.rom added' }),
   ).toBeVisible({ timeout: 60_000 });
@@ -92,7 +81,7 @@ test('a 9500 boots its factory PCI display card once its ROM is uploaded', async
 
   // --- Upload the card's expansion ROM. ------------------------------------
   await page.locator('.back-link').click();
-  await uploadViaWelcome(page, MACH64_PROM);
+  await uploadRomViaWelcome(page, MACH64_PROM);
 
   // The toast naming the card is the "we identified it" signal.  Before the
   // store directory existed this read "Failed to save ..." instead.
@@ -128,11 +117,11 @@ test('an uploaded .prom is still offered after a reload', async ({ page }) => {
   test.setTimeout(240_000);
   await gotoWeb2(page);
 
-  await uploadViaWelcome(page, TNT_ROM);
+  await uploadRomViaWelcome(page, TNT_ROM);
   await expect(
     page.locator('.toast .msg').filter({ hasText: 'pm7500-pm8500-pm9500-96cd923d.rom added' }),
   ).toBeVisible({ timeout: 60_000 });
-  await uploadViaWelcome(page, MACH64_PROM);
+  await uploadRomViaWelcome(page, MACH64_PROM);
   await expect(
     page.locator('.toast .msg').filter({ hasText: "PCI expansion ROM for 'mach64_gx'" }),
   ).toBeVisible({ timeout: 60_000 });

@@ -59,7 +59,7 @@ Behind AMIC's decode, two datapaths have their own modules:
   optional PDS adapter that is not modeled, so that machine presents no
   bridge at all and the ROM's probe finds that out.  See `bart.md`.
 
-Reused models: the AV family's behavioral **Cuda** (`av/cuda.c`, the same
+Reused models: the behavioral **Cuda** (`core/peripherals/cuda.c`, the same
 341S0788 firmware 2.37 part) on the pseudo-VIA1 shift-register transport;
 the Tier-1 **6522** core; the shared **NuBus** bus controller and card
 drivers (`core/peripherals/nubus/`) behind BART; the shared **floppy**

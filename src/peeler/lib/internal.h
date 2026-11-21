@@ -8,7 +8,9 @@
 #ifndef PEELER_INTERNAL_H
 #define PEELER_INTERNAL_H
 
+#include "appledouble.h"
 #include "codec.h"
+#include "codec_bytes.h" // byte order: codec_be16/32, codec_le16/32/64, codec_wr_*
 #include "peeler.h"
 
 #include <stdarg.h>
@@ -26,20 +28,6 @@ peel_err_t *make_err(const char *fmt, ...)
     __attribute__((format(printf, 1, 2)))
 #endif
     ;
-
-// ============================================================================
-// Big-Endian Read Helpers
-// ============================================================================
-
-// Read a big-endian 16-bit unsigned integer from a byte pointer.
-static inline uint16_t rd16be(const uint8_t *p) {
-    return (uint16_t)((uint16_t)p[0] << 8 | (uint16_t)p[1]);
-}
-
-// Read a big-endian 32-bit unsigned integer from a byte pointer.
-static inline uint32_t rd32be(const uint8_t *p) {
-    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | (uint32_t)p[3];
-}
 
 // ============================================================================
 // Limits -- the one place peeler's size and depth caps live
@@ -82,24 +70,6 @@ static inline bool peel_extent_fits(size_t off, uint64_t len, size_t total) {
 }
 
 // ============================================================================
-// Big-Endian Write Helpers
-// ============================================================================
-
-// Write a 16-bit value in big-endian byte order.
-static inline void wr16be(uint8_t *p, uint16_t v) {
-    p[0] = (uint8_t)(v >> 8);
-    p[1] = (uint8_t)(v);
-}
-
-// Write a 32-bit value in big-endian byte order.
-static inline void wr32be(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v >> 24);
-    p[1] = (uint8_t)(v >> 16);
-    p[2] = (uint8_t)(v >> 8);
-    p[3] = (uint8_t)(v);
-}
-
-// ============================================================================
 // Per-Format Detect Functions
 // ============================================================================
 
@@ -138,7 +108,7 @@ typedef struct {
     size_t len; // valid bytes in buf
 } peel_reader_t;
 
-// 0 or -12.  Does not retain `src`: the reader lives inside a call.
+// 0 or -ENOMEM.  Does not retain `src`: the reader lives inside a call.
 int peel_reader_init(peel_reader_t *r, peel_source_t *src);
 void peel_reader_free(peel_reader_t *r);
 
@@ -167,12 +137,18 @@ const uint8_t *peel_reader_at(peel_reader_t *r, uint64_t off, size_t n);
 codec_dec_t *peel_fork_decoder(peel_source_t *src, uint64_t off, uint64_t len, codec_id_t id,
                                const codec_dec_opts_t *opts, const char *what, peel_err_t **err);
 
-// Run a decoder to the end into an owned buffer of exactly `len` bytes, then
-// free it (always).  A decoder that fails, or ends short or long, is an
-// error: its own message, prefixed by `what` when that is given.  The buffer
-// APIs are this over the same decoders the decode-through sources drive, so
-// both decode one way.
-peel_buf_t peel_decoder_drain(codec_dec_t *d, uint64_t len, const char *what, peel_err_t **err);
+// Names a decode failure in a format's own words: an error for codec code
+// `rc` (`d` is still live), or NULL to keep the generic text.
+typedef peel_err_t *(*peel_drain_describe_fn)(int64_t rc, codec_dec_t *d, void *ctx);
+
+// Run a decoder to the end into an owned buffer of exactly `len` bytes (at
+// most PEEL_MAX_FORK), then free it (always).  A decoder that fails, or ends
+// short or long, is an error: `describe`'s (optional) when it names one,
+// else the decoder's own message, prefixed by `what` when that is given.
+// The buffer APIs are this over the same decoders the decode-through
+// sources drive, so both decode one way.
+peel_buf_t peel_decoder_drain(codec_dec_t *d, uint64_t len, const char *what, peel_drain_describe_fn describe,
+                              void *ctx, peel_err_t **err);
 
 typedef struct peel_fmt peel_fmt_t;
 
@@ -218,6 +194,17 @@ extern const peel_fmt_t peel_fmt_hqx, peel_fmt_bin, peel_fmt_gz, peel_fmt_sit, p
 // Append an entry; returns it zeroed (data_off/rsrc_off = UINT64_MAX), or
 // NULL on allocation failure.
 peel_entry_t *peel_archive_add(peel_archive_t *a);
+
+// Add a folder entry for each ancestor of `path` ("a" and "a/b" for
+// "a/b/c") the archive does not list yet, so a member is never an orphan.
+// `on_add` (optional) runs after each folder is added (zip keeps a slot per
+// entry).  0, or -1 when an addition or `on_add` fails.
+int peel_archive_ensure_parents(peel_archive_t *a, const char *path, int (*on_add)(void *ctx), void *ctx);
+
+// Give `e` the Finder info of its AppleDouble companion `ad`: type, creator
+// and Finder flags, when the companion carries them.  The resource fork is
+// the format's to attach (an archive range or an owned buffer).
+void peel_entry_set_finder(peel_entry_t *e, const ad_file_t *ad);
 
 // Read exactly `len` bytes of the archive's source at `off` into a fresh
 // buffer (NULL + *err on failure, `what` naming it in the message).

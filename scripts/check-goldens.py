@@ -47,6 +47,9 @@ import zlib
 from collections import defaultdict
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+import png  # noqa: E402
+
 # check("x.png") / check_ex("x.png", ...) / machine.screen.match x.png, plus any
 # bare "*.png" literal — which is how a parameterised helper's call sites name
 # their goldens (sweep_cell(..., "goldens/x.png")). Without that third pattern
@@ -81,7 +84,6 @@ PATTERNS = [
 # is the mactest failure mode wearing a comment.
 WAIVER = re.compile(r"(?:#|--)\s*golden-collision-ok:\s*(.+)$")
 
-PNG_SIG = b"\x89PNG\r\n\x1a\n"
 CHANNELS = {0: 1, 2: 3, 6: 4}  # colour type -> bytes per pixel, at bit depth 8
 
 
@@ -91,45 +93,37 @@ def decode(path: Path):
     The digest covers the dimensions and the pixels expanded to RGBA exactly
     as load_png_to_rgba expands them, so it is independent of the encoding.
     `problem` is None, or why the emulator would misread the file."""
-    data = path.read_bytes()
-    if not data.startswith(PNG_SIG):
-        return None, "not a PNG"
-    pos, ihdr, idat = 8, None, b""
-    while pos + 8 <= len(data):
-        length, ctype = struct.unpack(">I4s", data[pos:pos + 8])
-        body = data[pos + 8:pos + 8 + length]
-        pos += 12 + length
-        if ctype == b"IHDR":
-            ihdr = struct.unpack(">IIBBBBB", body)
-        elif ctype == b"IDAT":
-            idat += body
-    if not ihdr or not idat:
+    try:
+        chs = png.chunks(path.read_bytes())
+    except ValueError as e:
+        return None, str(e)
+    hdr, data = png.ihdr(chs), png.idat(chs)
+    if not hdr or not data:
         return None, "no IHDR or IDAT"
     # Stored (uncompressed) deflate: the emulator reads it, but a 640x480
     # frame is 1.2 MB of it against ~12 KB deflated, and every checkout
     # carries it.  The emulator's own writer deflates (save_framebuffer_as_png).
-    # IDAT is a zlib stream: past its 2-byte header (CMF, FLG), idat[2] opens
+    # IDAT is a zlib stream: past its 2-byte header (CMF, FLG), data[2] opens
     # the first deflate block, BFINAL in bit 0 and BTYPE in bits 1-2.
-    if len(idat) > 2 and (idat[2] >> 1) & 3 == 0:
+    if len(data) > 2 and (data[2] >> 1) & 3 == 0:
         return None, "stored (uncompressed) deflate blocks; re-encode it deflated"
-    width, height, depth, colour, _, _, interlace = ihdr
+    width, height, depth, colour, _, _, interlace = hdr
     if depth != 8 or colour not in CHANNELS or interlace:
         return None, f"bit depth {depth}, colour type {colour}, interlace {interlace}: " \
                      "the reader takes 8-bit grey, RGB or RGBA, not interlaced"
     try:
-        raw = zlib.decompress(idat)
+        raw = zlib.decompress(data)
     except zlib.error as e:
         return None, f"IDAT does not inflate ({e})"
-    bpp = CHANNELS[colour]
-    stride = 1 + width * bpp
-    if len(raw) != stride * height:
-        return None, f"IDAT holds {len(raw)} bytes, {stride * height} expected"
+    try:
+        # The reader ignores filters, so the rows are taken as stored.
+        lines = png.rows(raw, width, height, CHANNELS[colour], 8, unfilter=False)
+    except ValueError as e:
+        return None, str(e)
     rgba = bytearray()
-    for y in range(height):
-        row = raw[y * stride:(y + 1) * stride]
-        if row[0] != 0:
-            return None, f"row {y} has filter type {row[0]}; the reader ignores filters, so only 0 decodes"
-        px = row[1:]
+    for y, (filt, px) in enumerate(lines):
+        if filt != 0:
+            return None, f"row {y} has filter type {filt}; the reader ignores filters, so only 0 decodes"
         if colour == 6:
             rgba += px
         elif colour == 2:

@@ -33,6 +33,9 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import repo  # the tracked-file listing
+
 # Lines allowed to match in the tracked tree.  Zero: any match fails.
 MAX_MATCHES = 0
 
@@ -73,9 +76,7 @@ def local_patterns():
 
 
 def tracked_files():
-    out = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True,
-                         check=True).stdout
-    return [p for p in out.decode().split("\0") if p]
+    return repo.tracked(cwd=ROOT)
 
 
 def tracked_md_names():

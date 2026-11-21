@@ -219,13 +219,39 @@ static fpu_unpacked_t logtbl_log_f(int i) {
     return fpsp_ext(p[0], p[1], p[2]);
 }
 
-// Integer k as an exact unpacked value (K in the LOGMAIN reconstruction)
-static fpu_unpacked_t log_k_value(int32_t k) {
-    if (k == 0)
+// NaN operand of a monadic transcendental: quiet it into *out, raising SNAN
+// for a signalling one, and return true; false for any other operand
+static inline bool fpu_nan1(fpu_state_t *fpu, fpu_unpacked_t src, fpu_unpacked_t *out) {
+    if (src.exponent != FPU_EXP_INF || src.mantissa_hi == 0)
+        return false;
+    if (!(src.mantissa_hi & 0x4000000000000000ULL))
+        fpu->fpsr |= FPEXC_SNAN;
+    src.mantissa_hi |= 0x4000000000000000ULL; // SNaN -> QNaN
+    *out = src;
+    return true;
+}
+
+// FPSP compact form of a finite, normalized, non-zero value.  Denormals
+// (unbiased exponent below the format's minimum) clamp to biased exponent 0,
+// so they fall into the callers' "tiny" paths instead of wrapping around to
+// a huge compact value.
+static inline uint32_t fpu_compact(fpu_unpacked_t src) {
+    int32_t biased = src.exponent + FPU_EXP_BIAS;
+    if (biased < 0)
+        biased = 0;
+    return ((uint32_t)biased << 16) | (uint32_t)(src.mantissa_hi >> 48);
+}
+
+// Integer n as an exact unpacked value (N, K or L in the reconstructions)
+static inline fpu_unpacked_t fpu_unpacked_from_i32(int32_t n) {
+    if (n == 0)
         return (fpu_unpacked_t){false, FPU_EXP_ZERO, 0, 0};
     fpu_unpacked_t r;
-    r.sign = (k < 0);
-    r.mantissa_hi = k < 0 ? (uint64_t)(-(int64_t)k) : (uint64_t)k;
+    r.sign = (n < 0);
+    // Magnitude via uint cast so INT32_MIN doesn't trip signed-overflow
+    // UB (`-INT32_MIN` is UB). Valid inputs keep |n| well under that.
+    uint32_t abs_n = n < 0 ? (uint32_t)(-(uint32_t)n) : (uint32_t)n;
+    r.mantissa_hi = (uint64_t)abs_n;
     r.mantissa_lo = 0;
     r.exponent = 63;
     fpu_normalize(&r);
@@ -308,12 +334,9 @@ static fpu_unpacked_t lognear1_poly(fpu_state_t *fpu, fpu_unpacked_t u) {
 
 fpu_unpacked_t fpu_op_logn(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw) {
     // NaN: propagate, converting SNaN to QNaN
-    if (src.exponent == FPU_EXP_INF && src.mantissa_hi != 0) {
-        if (!(src.mantissa_hi & 0x4000000000000000ULL))
-            fpu->fpsr |= FPEXC_SNAN;
-        src.mantissa_hi |= 0x4000000000000000ULL;
-        return src;
-    }
+    fpu_unpacked_t nan;
+    if (fpu_nan1(fpu, src, &nan))
+        return nan;
 
     // Zero: divide by zero → -infinity
     if (src.exponent == FPU_EXP_ZERO) {
@@ -331,14 +354,10 @@ fpu_unpacked_t fpu_op_logn(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t r
     if (src.exponent == FPU_EXP_INF)
         return src;
 
-    // Normalize unnormalized extended inputs (J-bit clear, non-zero exponent).
-    // The 68882 normalizes these before computing transcendentals.
+    // Biased exponent of the register (0 for a denormal).  An unnormal needs
+    // no handling here: fpu_unpack has already normalized src, and every
+    // biased exponent it can carry is the register's own.
     uint16_t biased_exp = fp80_exp(raw);
-    if (biased_exp != 0 && biased_exp != 0x7FFF && !(src.mantissa_hi & 0x8000000000000000ULL)) {
-        fpu_normalize(&src);
-        // Recompute biased exponent from the adjusted unpacked exponent
-        biased_exp = (uint16_t)(src.exponent + 16383);
-    }
 
     // Build compact form: (biased_exp << 16) | (upper 16 of mantissa)
     uint32_t compact = ((uint32_t)biased_exp << 16) | (uint32_t)(src.mantissa_hi >> 48);
@@ -399,7 +418,7 @@ fpu_unpacked_t fpu_op_logn(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t r
         fp0 = fpu_round_to_64(fpu_op_mul(fpu, fp0, inv_f));
 
         // K * log(2)
-        fpu_unpacked_t klog2 = fpu_round_to_64(fpu_op_mul(fpu, log_k_value(k), LOGOF2));
+        fpu_unpacked_t klog2 = fpu_round_to_64(fpu_op_mul(fpu, fpu_unpacked_from_i32(k), LOGOF2));
 
         result = logmain_poly(fpu, fp0, klog2, log_f);
     }
@@ -495,13 +514,11 @@ fpu_unpacked_t fpu_op_log2(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t r
 //   LP1CARE:  1+X in [1/2,3/2]\BOUNDS1 → careful (Y-F) preserving X's bits
 
 fpu_unpacked_t fpu_op_lognp1(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw) {
+    (void)raw; // src comes from fpu_unpack, already normalized
     // NaN: propagate, converting SNaN to QNaN
-    if (src.exponent == FPU_EXP_INF && src.mantissa_hi != 0) {
-        if (!(src.mantissa_hi & 0x4000000000000000ULL))
-            fpu->fpsr |= FPEXC_SNAN;
-        src.mantissa_hi |= 0x4000000000000000ULL;
-        return src;
-    }
+    fpu_unpacked_t nan;
+    if (fpu_nan1(fpu, src, &nan))
+        return nan;
 
     // -Infinity: log(1+(-inf)) → OPERR
     if (src.exponent == FPU_EXP_INF && src.sign) {
@@ -512,12 +529,6 @@ fpu_unpacked_t fpu_op_lognp1(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t
     // +Infinity: log(1+inf) = +inf
     if (src.exponent == FPU_EXP_INF)
         return src;
-
-    // Normalize unnormalized extended inputs (J-bit clear, non-zero exponent)
-    uint16_t biased_exp = fp80_exp(raw);
-    if (biased_exp != 0 && biased_exp != 0x7FFF && !(src.mantissa_hi & 0x8000000000000000ULL)) {
-        fpu_normalize(&src);
-    }
 
     // Tiny: |X| <= LTHOLD (2^-102) → log(1+X) ≈ X with INEX2
     // Covers denormals (very negative exponent); zero is exact (no INEX2)
@@ -579,7 +590,7 @@ fpu_unpacked_t fpu_op_lognp1(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t
         fpu_unpacked_t fp0 = fpu_round_to_64(fpu_op_sub(fpu, yn, f));
 
         fp0 = fpu_round_to_64(fpu_op_mul(fpu, fp0, inv_f)); // U
-        fpu_unpacked_t klog2 = fpu_round_to_64(fpu_op_mul(fpu, log_k_value(k), LOGOF2)); // K*log(2)
+        fpu_unpacked_t klog2 = fpu_round_to_64(fpu_op_mul(fpu, fpu_unpacked_from_i32(k), LOGOF2)); // K*log(2)
         result = logmain_poly(fpu, fp0, klog2, log_f);
     } else if (compact >= BOUNDS1_LO && compact <= BOUNDS1_HI) {
         // ---- LP1ONE16 path (Y near 1, within BOUNDS1) ----
@@ -622,7 +633,7 @@ fpu_unpacked_t fpu_op_lognp1(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t
 
         // Continue with LOGMAIN polynomial (LP1CONT1)
         fp0 = fpu_round_to_64(fpu_op_mul(fpu, fp0, inv_f)); // U = (Y-F)*(1/F)
-        fpu_unpacked_t klog2 = fpu_round_to_64(fpu_op_mul(fpu, log_k_value(k), LOGOF2)); // K*log(2)
+        fpu_unpacked_t klog2 = fpu_round_to_64(fpu_op_mul(fpu, fpu_unpacked_from_i32(k), LOGOF2)); // K*log(2)
         result = logmain_poly(fpu, fp0, klog2, log_f);
     }
 
@@ -727,13 +738,11 @@ static int32_t fpu_to_int32_rne(fpu_unpacked_t v) {
 //   result = 2^M * ans
 
 fpu_unpacked_t fpu_op_etox(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw) {
+    (void)raw; // src comes from fpu_unpack, already normalized
     // NaN: propagate, converting SNaN to QNaN
-    if (src.exponent == FPU_EXP_INF && src.mantissa_hi != 0) {
-        if (!(src.mantissa_hi & 0x4000000000000000ULL))
-            fpu->fpsr |= FPEXC_SNAN;
-        src.mantissa_hi |= 0x4000000000000000ULL;
-        return src;
-    }
+    fpu_unpacked_t nan;
+    if (fpu_nan1(fpu, src, &nan))
+        return nan;
 
     // +Infinity: e^(+inf) = +inf
     if (src.exponent == FPU_EXP_INF && !src.sign)
@@ -748,15 +757,8 @@ fpu_unpacked_t fpu_op_etox(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t r
         return (fpu_unpacked_t){false, 0, 0x8000000000000000ULL, 0};
     }
 
-    // Normalize unnormalized extended inputs
-    uint16_t biased_exp = fp80_exp(raw);
-    if (biased_exp != 0 && biased_exp != 0x7FFF && !(src.mantissa_hi & 0x8000000000000000ULL)) {
-        fpu_normalize(&src);
-    }
-
     // Build compact form for range checks (sign stripped)
-    uint16_t bexp = (uint16_t)(src.exponent + FPU_EXP_BIAS);
-    uint32_t compact = ((uint32_t)bexp << 16) | (uint32_t)(src.mantissa_hi >> 48);
+    uint32_t compact = fpu_compact(src);
 
     // Step 7: tiny — |X| < 2^(-65), e^X ≈ 1+X
     if (compact < 0x3FBE0000u) {
@@ -797,19 +799,7 @@ fpu_unpacked_t fpu_op_etox(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t r
     int32_t m = n >> 6; // arithmetic right shift for negative N
 
     // Convert N back to floating-point
-    fpu_unpacked_t fp_n;
-    if (n == 0) {
-        fp_n = (fpu_unpacked_t){false, FPU_EXP_ZERO, 0, 0};
-    } else {
-        fp_n.sign = (n < 0);
-        // Magnitude via uint cast so INT32_MIN doesn't trip signed-overflow
-        // UB (`-INT32_MIN` is UB). Valid inputs keep |n| well under that.
-        uint32_t abs_n = n < 0 ? (uint32_t)(-(uint32_t)n) : (uint32_t)n;
-        fp_n.mantissa_hi = (uint64_t)abs_n;
-        fp_n.mantissa_lo = 0;
-        fp_n.exponent = 63;
-        fpu_normalize(&fp_n);
-    }
+    fpu_unpacked_t fp_n = fpu_unpacked_from_i32(n);
 
     // Step 3: R = X + N*L1 + N*L2 (Cody-Waite reduction)
     fpu_unpacked_t l1_val = fpsp_sgl(0xBC317218); // L1 = -log2/64 (single leading)
@@ -878,12 +868,9 @@ fpu_unpacked_t fpu_op_etox(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t r
 
 fpu_unpacked_t fpu_op_etoxm1(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw) {
     // NaN: propagate, converting SNaN to QNaN
-    if (src.exponent == FPU_EXP_INF && src.mantissa_hi != 0) {
-        if (!(src.mantissa_hi & 0x4000000000000000ULL))
-            fpu->fpsr |= FPEXC_SNAN;
-        src.mantissa_hi |= 0x4000000000000000ULL;
-        return src;
-    }
+    fpu_unpacked_t nan;
+    if (fpu_nan1(fpu, src, &nan))
+        return nan;
 
     // +Infinity: e^(+inf)-1 = +inf
     if (src.exponent == FPU_EXP_INF && !src.sign)
@@ -897,15 +884,9 @@ fpu_unpacked_t fpu_op_etoxm1(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t
     if (src.exponent == FPU_EXP_ZERO)
         return src;
 
-    // Normalize unnormalized extended inputs
-    uint16_t biased_exp = fp80_exp(raw);
-    if (biased_exp != 0 && biased_exp != 0x7FFF && !(src.mantissa_hi & 0x8000000000000000ULL)) {
-        fpu_normalize(&src);
-    }
-
-    // Biased exponent for range checks
-    uint16_t bexp = (uint16_t)(src.exponent + FPU_EXP_BIAS);
-    uint32_t compact = ((uint32_t)bexp << 16) | (uint32_t)(src.mantissa_hi >> 48);
+    // Compact form and biased exponent for range checks
+    uint32_t compact = fpu_compact(src);
+    uint32_t bexp = compact >> 16;
 
     // Tiny: |X| < 2^(-65), exp(X)-1 ≈ X
     if (bexp < 0x3FBE) {
@@ -1005,19 +986,7 @@ fpu_unpacked_t fpu_op_etoxm1(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t
     int32_t m = n >> 6;
 
     // Convert N back to floating-point
-    fpu_unpacked_t fp_n;
-    if (n == 0) {
-        fp_n = (fpu_unpacked_t){false, FPU_EXP_ZERO, 0, 0};
-    } else {
-        fp_n.sign = (n < 0);
-        // Magnitude via uint cast so INT32_MIN doesn't trip signed-overflow
-        // UB (`-INT32_MIN` is UB). Valid inputs keep |n| well under that.
-        uint32_t abs_n = n < 0 ? (uint32_t)(-(uint32_t)n) : (uint32_t)n;
-        fp_n.mantissa_hi = (uint64_t)abs_n;
-        fp_n.mantissa_lo = 0;
-        fp_n.exponent = 63;
-        fpu_normalize(&fp_n);
-    }
+    fpu_unpacked_t fp_n = fpu_unpacked_from_i32(n);
 
     // Step 3: R = X + N*L1 + N*L2 (Cody-Waite reduction)
     fpu_unpacked_t l1_val = fpsp_sgl(0xBC317218); // L1 lead
@@ -1220,13 +1189,11 @@ static fpu_unpacked_t stwotox_poly_recon(fpu_state_t *fpu, fpu_unpacked_t r, int
 // Big (|X| > 16480): overflow or underflow.
 
 fpu_unpacked_t fpu_op_twotox(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw) {
+    (void)raw; // src comes from fpu_unpack, already normalized
     // NaN: propagate, converting SNaN to QNaN
-    if (src.exponent == FPU_EXP_INF && src.mantissa_hi != 0) {
-        if (!(src.mantissa_hi & 0x4000000000000000ULL))
-            fpu->fpsr |= FPEXC_SNAN;
-        src.mantissa_hi |= 0x4000000000000000ULL;
-        return src;
-    }
+    fpu_unpacked_t nan;
+    if (fpu_nan1(fpu, src, &nan))
+        return nan;
 
     // +Infinity: 2^(+inf) = +inf
     if (src.exponent == FPU_EXP_INF && !src.sign)
@@ -1240,15 +1207,8 @@ fpu_unpacked_t fpu_op_twotox(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t
     if (src.exponent == FPU_EXP_ZERO)
         return (fpu_unpacked_t){false, 0, 0x8000000000000000ULL, 0};
 
-    // Normalize unnormalized extended inputs
-    uint16_t biased_exp = fp80_exp(raw);
-    if (biased_exp != 0 && biased_exp != 0x7FFF && !(src.mantissa_hi & 0x8000000000000000ULL)) {
-        fpu_normalize(&src);
-    }
-
     // Compact form for range checks
-    uint16_t bexp = (uint16_t)(src.exponent + FPU_EXP_BIAS);
-    uint32_t compact = ((uint32_t)bexp << 16) | (uint32_t)(src.mantissa_hi >> 48);
+    uint32_t compact = fpu_compact(src);
 
     // Tiny: |X| < 2^(-70), 2^X ≈ 1+X
     if (compact < 0x3FB98000u) {
@@ -1281,19 +1241,7 @@ fpu_unpacked_t fpu_op_twotox(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t
     int32_t l = n >> 6; // L = N / 64
 
     // Convert N to float
-    fpu_unpacked_t fp_n;
-    if (n == 0) {
-        fp_n = (fpu_unpacked_t){false, FPU_EXP_ZERO, 0, 0};
-    } else {
-        fp_n.sign = (n < 0);
-        // Magnitude via uint cast so INT32_MIN doesn't trip signed-overflow
-        // UB (`-INT32_MIN` is UB). Valid inputs keep |n| well under that.
-        uint32_t abs_n = n < 0 ? (uint32_t)(-(uint32_t)n) : (uint32_t)n;
-        fp_n.mantissa_hi = (uint64_t)abs_n;
-        fp_n.mantissa_lo = 0;
-        fp_n.exponent = 63;
-        fpu_normalize(&fp_n);
-    }
+    fpu_unpacked_t fp_n = fpu_unpacked_from_i32(n);
 
     // r = X - N/64
     fpu_unpacked_t inv64 = fpsp_sgl(0x3C800000); // 1/64
@@ -1324,13 +1272,11 @@ fpu_unpacked_t fpu_op_twotox(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t
 // Big (|X| > 16480*log2/log10): overflow or underflow.
 
 fpu_unpacked_t fpu_op_tentox(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw) {
+    (void)raw; // src comes from fpu_unpack, already normalized
     // NaN: propagate, converting SNaN to QNaN
-    if (src.exponent == FPU_EXP_INF && src.mantissa_hi != 0) {
-        if (!(src.mantissa_hi & 0x4000000000000000ULL))
-            fpu->fpsr |= FPEXC_SNAN;
-        src.mantissa_hi |= 0x4000000000000000ULL;
-        return src;
-    }
+    fpu_unpacked_t nan;
+    if (fpu_nan1(fpu, src, &nan))
+        return nan;
 
     // +Infinity: 10^(+inf) = +inf
     if (src.exponent == FPU_EXP_INF && !src.sign)
@@ -1344,15 +1290,8 @@ fpu_unpacked_t fpu_op_tentox(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t
     if (src.exponent == FPU_EXP_ZERO)
         return (fpu_unpacked_t){false, 0, 0x8000000000000000ULL, 0};
 
-    // Normalize unnormalized extended inputs
-    uint16_t biased_exp = fp80_exp(raw);
-    if (biased_exp != 0 && biased_exp != 0x7FFF && !(src.mantissa_hi & 0x8000000000000000ULL)) {
-        fpu_normalize(&src);
-    }
-
     // Compact form for range checks
-    uint16_t bexp = (uint16_t)(src.exponent + FPU_EXP_BIAS);
-    uint32_t compact = ((uint32_t)bexp << 16) | (uint32_t)(src.mantissa_hi >> 48);
+    uint32_t compact = fpu_compact(src);
 
     // Tiny: |X| < 2^(-70), 10^X ≈ 1+X
     if (compact < 0x3FB98000u) {
@@ -1385,19 +1324,7 @@ fpu_unpacked_t fpu_op_tentox(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t
     int32_t l = n >> 6; // L = N / 64
 
     // Convert N to float
-    fpu_unpacked_t fp_n;
-    if (n == 0) {
-        fp_n = (fpu_unpacked_t){false, FPU_EXP_ZERO, 0, 0};
-    } else {
-        fp_n.sign = (n < 0);
-        // Magnitude via uint cast so INT32_MIN doesn't trip signed-overflow
-        // UB (`-INT32_MIN` is UB). Valid inputs keep |n| well under that.
-        uint32_t abs_n = n < 0 ? (uint32_t)(-(uint32_t)n) : (uint32_t)n;
-        fp_n.mantissa_hi = (uint64_t)abs_n;
-        fp_n.mantissa_lo = 0;
-        fp_n.exponent = 63;
-        fpu_normalize(&fp_n);
-    }
+    fpu_unpacked_t fp_n = fpu_unpacked_from_i32(n);
 
     // r = X - N*L10TWO1 - N*L10TWO2 (Cody-Waite with log2/(64*log10))
     fpu_unpacked_t l10two1 = fpsp_dbl(0x3F734413, 0x509F8000); // lead
@@ -1827,27 +1754,7 @@ static inline fpu_unpacked_t atantbl_entry(int i) {
 }
 
 // FATAN: arctangent (opcode 0x0A)
-// Normalize an unnormal input (J-bit clear, finite, non-zero exponent) in
-// place, as the 68882 does before evaluating a transcendental.  An unnormal
-// with an all-zero mantissa becomes a zero.
-static void trig_normalize_input(fpu_unpacked_t *src) {
-    if (src->exponent != FPU_EXP_INF && src->exponent != FPU_EXP_ZERO && !(src->mantissa_hi & 0x8000000000000000ULL))
-        fpu_normalize(src);
-}
-
-// FPSP compact form of a finite, normalized, non-zero value.  Denormals
-// (unbiased exponent below the format's minimum) clamp to biased exponent 0,
-// so they fall into the callers' "tiny" paths instead of wrapping around to
-// a huge compact value.
-static uint32_t trig_compact(fpu_unpacked_t src) {
-    int32_t biased = src.exponent + FPU_EXP_BIAS;
-    if (biased < 0)
-        biased = 0;
-    return ((uint32_t)biased << 16) | (uint32_t)(src.mantissa_hi >> 48);
-}
-
 fpu_unpacked_t fpu_op_atan(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw) {
-    trig_normalize_input(&src);
 
     // Handle special cases: zero, NaN, infinity
     if (src.exponent == FPU_EXP_ZERO) {
@@ -1876,7 +1783,7 @@ fpu_unpacked_t fpu_op_atan(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t r
     fpu->fpcr = 0;
 
     // Compute compact form: biased_exp << 16 | top 16 mantissa bits
-    uint32_t compact = trig_compact(src);
+    uint32_t compact = fpu_compact(src);
 
     fpu_unpacked_t fp0;
 
@@ -2369,7 +2276,6 @@ static fpu_unpacked_t trig_eval(fpu_state_t *fpu, trig_reduced_t red, int adj_n,
 
 // FSIN: sine (opcode 0x0E)
 fpu_unpacked_t fpu_op_sin(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw) {
-    trig_normalize_input(&src);
 
     // Special cases: zero, NaN, infinity
     if (src.exponent == FPU_EXP_ZERO) {
@@ -2394,7 +2300,7 @@ fpu_unpacked_t fpu_op_sin(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t ra
     fpu->fpcr = 0;
 
     // Compute compact form
-    uint32_t compact = trig_compact(src);
+    uint32_t compact = fpu_compact(src);
 
     // Tiny: |X| < 2^(-40)
     if (compact < COMPACT_2M40) {
@@ -2411,7 +2317,6 @@ fpu_unpacked_t fpu_op_sin(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t ra
 
 // FCOS: cosine (opcode 0x1D)
 fpu_unpacked_t fpu_op_cos(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw) {
-    trig_normalize_input(&src);
 
     // Special cases
     if (src.exponent == FPU_EXP_ZERO) {
@@ -2440,7 +2345,7 @@ fpu_unpacked_t fpu_op_cos(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t ra
     uint32_t saved_fpcr = fpu->fpcr;
     fpu->fpcr = 0;
 
-    uint32_t compact = trig_compact(src);
+    uint32_t compact = fpu_compact(src);
 
     // Tiny: |X| < 2^(-40), cos(X) = 1 - tiny
     if (compact < COMPACT_2M40) {
@@ -2461,7 +2366,6 @@ fpu_unpacked_t fpu_op_cos(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t ra
 // FSINCOS: sin and cos computed together (opcodes 0x30-0x37)
 // Returns sin(X). Stores cos(X) into fpu->fp[cos_reg].
 fpu_unpacked_t fpu_op_sincos(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw, int cos_reg) {
-    trig_normalize_input(&src);
 
     // Special cases
     if (src.exponent == FPU_EXP_ZERO) {
@@ -2495,7 +2399,7 @@ fpu_unpacked_t fpu_op_sincos(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t
     uint32_t saved_fpcr = fpu->fpcr;
     fpu->fpcr = 0;
 
-    uint32_t compact = trig_compact(src);
+    uint32_t compact = fpu_compact(src);
 
     // Tiny: |X| < 2^(-40)
     if (compact < COMPACT_2M40) {
@@ -2688,7 +2592,6 @@ fpu_unpacked_t fpu_op_sincos(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t
 // extended-precision accuracy.  The argument is reduced once and both
 // polynomials are evaluated from that single reduction.
 fpu_unpacked_t fpu_op_tan(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw) {
-    trig_normalize_input(&src);
 
     // Special cases
     if (src.exponent == FPU_EXP_ZERO) {
@@ -2710,7 +2613,7 @@ fpu_unpacked_t fpu_op_tan(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t ra
     uint32_t saved_fpcr = fpu->fpcr;
     fpu->fpcr = 0;
 
-    uint32_t compact = trig_compact(src);
+    uint32_t compact = fpu_compact(src);
 
     // Tiny: |X| < 2^(-40), tan(X) ≈ X
     if (compact < COMPACT_2M40) {
@@ -2749,14 +2652,47 @@ fpu_unpacked_t fpu_op_tan(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t ra
 // T1 = 16381*LOG2_LEAD (double)  = 0x40C62D38_D3D64634
 // T2 = 16381*LOG2_TRAIL (double) = 0x3D6F90AE_B1E75CC7
 
+// SINHBIG/COSHBIG for 16380*log2 < |X| <= 16480*log2:
+// (neg ? -1 : 1) * exp(|X| - 16381*log2) * 2^16380, the last multiply in the
+// user's FPCR so the result rounds (and overflows) as the caller's would
+static fpu_unpacked_t exp_scaled_big(fpu_state_t *fpu, fpu_unpacked_t src, bool neg) {
+    uint32_t saved_fpcr = fpu->fpcr;
+    fpu->fpcr = 0;
+
+    // Y = |X|
+    fpu_unpacked_t fp0 = src;
+    fp0.sign = false;
+
+    // T1 = 16381*LOG2_LEAD, T2 = 16381*LOG2_TRAIL (IEEE doubles)
+    fpu_unpacked_t t1 = fpsp_dbl(0x40C62D38, 0xD3D64634);
+    fpu_unpacked_t t2 = fpsp_dbl(0x3D6F90AE, 0xB1E75CC7);
+
+    // fp0 = |X| - T1
+    fp0 = fpu_round_to_64(fpu_op_sub(fpu, fp0, t1));
+    // fp0 = fp0 - T2 = |X| - 16381*log2 (accurate)
+    fp0 = fpu_round_to_64(fpu_op_sub(fpu, fp0, t2));
+
+    // exp(fp0)
+    float80_reg_t fp0_raw = fpu_pack(fpu, fp0);
+    fpu_unpacked_t fp0_u = fpu_unpack(fp0_raw);
+    fpu_unpacked_t exp_val = fpu_op_etox(fpu, fp0_u, fp0_raw);
+    exp_val = fpu_round_to_64(exp_val);
+
+    // sgnFact = sign * 2^16380: extended { sign|0x7FFB, 0x8000..., 0 }
+    fpu_unpacked_t sgn_fact = {neg, 16380, 0x8000000000000000ULL, 0};
+
+    // Final multiply with user FPCR
+    fpu->fpcr = saved_fpcr;
+    fpu_unpacked_t result = fpu_op_mul(fpu, exp_val, sgn_fact);
+    fpu->fpsr |= FPEXC_INEX2;
+    return result;
+}
+
 fpu_unpacked_t fpu_op_sinh(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw) {
     // NaN: propagate, converting SNaN to QNaN
-    if (src.exponent == FPU_EXP_INF && src.mantissa_hi != 0) {
-        if (!(src.mantissa_hi & 0x4000000000000000ULL))
-            fpu->fpsr |= FPEXC_SNAN;
-        src.mantissa_hi |= 0x4000000000000000ULL;
-        return src;
-    }
+    fpu_unpacked_t nan;
+    if (fpu_nan1(fpu, src, &nan))
+        return nan;
 
     // Infinity: sinh(+inf) = +inf, sinh(-inf) = -inf
     if (src.exponent == FPU_EXP_INF)
@@ -2773,14 +2709,9 @@ fpu_unpacked_t fpu_op_sinh(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t r
         return src;
     }
 
-    // Normalize unnormalized extended inputs
-    if (biased_exp != 0 && biased_exp != 0x7FFF && !(src.mantissa_hi & 0x8000000000000000ULL))
-        fpu_normalize(&src);
-
     // Build compact form (sign stripped) for range checks
     bool input_sign = src.sign;
-    uint16_t bexp = (uint16_t)(src.exponent + FPU_EXP_BIAS);
-    uint32_t compact = ((uint32_t)bexp << 16) | (uint32_t)(src.mantissa_hi >> 48);
+    uint32_t compact = fpu_compact(src);
 
     // SINHBIG boundary: |X| > 16380*log2
     if (compact > COMPACT_16380LOG2) {
@@ -2791,38 +2722,8 @@ fpu_unpacked_t fpu_op_sinh(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t r
             return (fpu_unpacked_t){input_sign, 16384, 0xFFFFFFFFFFFFFFFFULL, 0};
         }
 
-        // 16380*log2 < |X| <= 16480*log2
-        // sinh(X) = sign(X) * exp(|X| - 16381*log2) * 2^16380
-        uint32_t saved_fpcr = fpu->fpcr;
-        fpu->fpcr = 0;
-
-        // Y = |X|
-        fpu_unpacked_t fp0 = src;
-        fp0.sign = false;
-
-        // T1 = 16381*LOG2_LEAD, T2 = 16381*LOG2_TRAIL (IEEE doubles)
-        fpu_unpacked_t t1 = fpsp_dbl(0x40C62D38, 0xD3D64634);
-        fpu_unpacked_t t2 = fpsp_dbl(0x3D6F90AE, 0xB1E75CC7);
-
-        // fp0 = |X| - T1
-        fp0 = fpu_round_to_64(fpu_op_sub(fpu, fp0, t1));
-        // fp0 = fp0 - T2 = |X| - 16381*log2 (accurate)
-        fp0 = fpu_round_to_64(fpu_op_sub(fpu, fp0, t2));
-
-        // exp(fp0)
-        float80_reg_t fp0_raw = fpu_pack(fpu, fp0);
-        fpu_unpacked_t fp0_u = fpu_unpack(fp0_raw);
-        fpu_unpacked_t exp_val = fpu_op_etox(fpu, fp0_u, fp0_raw);
-        exp_val = fpu_round_to_64(exp_val);
-
-        // sgnFact = sign(X) * 2^16380: extended { sign|0x7FFB, 0x8000..., 0 }
-        fpu_unpacked_t sgn_fact = {input_sign, 16380, 0x8000000000000000ULL, 0};
-
-        // Final multiply with user FPCR
-        fpu->fpcr = saved_fpcr;
-        fpu_unpacked_t result = fpu_op_mul(fpu, exp_val, sgn_fact);
-        fpu->fpsr |= FPEXC_INEX2;
-        return result;
+        // 16380*log2 < |X| <= 16480*log2: sign(X) * exp(|X| - 16381*log2) * 2^16380
+        return exp_scaled_big(fpu, src, input_sign);
     }
 
     // Normal case: |X| <= 16380*log2
@@ -2876,12 +2777,9 @@ fpu_unpacked_t fpu_op_sinh(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t r
 
 fpu_unpacked_t fpu_op_cosh(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw) {
     // NaN: propagate, converting SNaN to QNaN
-    if (src.exponent == FPU_EXP_INF && src.mantissa_hi != 0) {
-        if (!(src.mantissa_hi & 0x4000000000000000ULL))
-            fpu->fpsr |= FPEXC_SNAN;
-        src.mantissa_hi |= 0x4000000000000000ULL;
-        return src;
-    }
+    fpu_unpacked_t nan;
+    if (fpu_nan1(fpu, src, &nan))
+        return nan;
 
     // Infinity: cosh(+inf) = cosh(-inf) = +inf
     if (src.exponent == FPU_EXP_INF)
@@ -2899,13 +2797,8 @@ fpu_unpacked_t fpu_op_cosh(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t r
         return (fpu_unpacked_t){false, 0, 0x8000000000000000ULL, 0};
     }
 
-    // Normalize unnormalized extended inputs
-    if (biased_exp != 0 && biased_exp != 0x7FFF && !(src.mantissa_hi & 0x8000000000000000ULL))
-        fpu_normalize(&src);
-
     // Build compact form (sign stripped) for range checks
-    uint16_t bexp = (uint16_t)(src.exponent + FPU_EXP_BIAS);
-    uint32_t compact = ((uint32_t)bexp << 16) | (uint32_t)(src.mantissa_hi >> 48);
+    uint32_t compact = fpu_compact(src);
 
     // COSHBIG boundary: |X| > 16380*log2
     if (compact > COMPACT_16380LOG2) {
@@ -2916,38 +2809,8 @@ fpu_unpacked_t fpu_op_cosh(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t r
             return (fpu_unpacked_t){false, 16384, 0xFFFFFFFFFFFFFFFFULL, 0};
         }
 
-        // 16380*log2 < |X| <= 16480*log2
-        // cosh(X) = exp(|X| - 16381*log2) * 2^16380
-        uint32_t saved_fpcr = fpu->fpcr;
-        fpu->fpcr = 0;
-
-        // Y = |X|
-        fpu_unpacked_t fp0 = src;
-        fp0.sign = false;
-
-        // T1 = 16381*LOG2_LEAD, T2 = 16381*LOG2_TRAIL
-        fpu_unpacked_t t1 = fpsp_dbl(0x40C62D38, 0xD3D64634);
-        fpu_unpacked_t t2 = fpsp_dbl(0x3D6F90AE, 0xB1E75CC7);
-
-        // fp0 = |X| - T1
-        fp0 = fpu_round_to_64(fpu_op_sub(fpu, fp0, t1));
-        // fp0 = fp0 - T2 = |X| - 16381*log2
-        fp0 = fpu_round_to_64(fpu_op_sub(fpu, fp0, t2));
-
-        // exp(fp0)
-        float80_reg_t fp0_raw = fpu_pack(fpu, fp0);
-        fpu_unpacked_t fp0_u = fpu_unpack(fp0_raw);
-        fpu_unpacked_t exp_val = fpu_op_etox(fpu, fp0_u, fp0_raw);
-        exp_val = fpu_round_to_64(exp_val);
-
-        // TWO16380 = 2^16380: extended { 0x7FFB, 0x8000..., 0 }
-        fpu_unpacked_t two16380 = {false, 16380, 0x8000000000000000ULL, 0};
-
-        // Final multiply with user FPCR
-        fpu->fpcr = saved_fpcr;
-        fpu_unpacked_t result = fpu_op_mul(fpu, exp_val, two16380);
-        fpu->fpsr |= FPEXC_INEX2;
-        return result;
+        // 16380*log2 < |X| <= 16480*log2: exp(|X| - 16381*log2) * 2^16380
+        return exp_scaled_big(fpu, src, false);
     }
 
     // Normal case: |X| <= 16380*log2
@@ -2997,12 +2860,9 @@ fpu_unpacked_t fpu_op_cosh(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t r
 
 fpu_unpacked_t fpu_op_tanh(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw) {
     // NaN: propagate, converting SNaN to QNaN
-    if (src.exponent == FPU_EXP_INF && src.mantissa_hi != 0) {
-        if (!(src.mantissa_hi & 0x4000000000000000ULL))
-            fpu->fpsr |= FPEXC_SNAN;
-        src.mantissa_hi |= 0x4000000000000000ULL;
-        return src;
-    }
+    fpu_unpacked_t nan;
+    if (fpu_nan1(fpu, src, &nan))
+        return nan;
 
     // Infinity: tanh(+inf) = +1, tanh(-inf) = -1
     if (src.exponent == FPU_EXP_INF) {
@@ -3020,15 +2880,10 @@ fpu_unpacked_t fpu_op_tanh(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t r
         return src;
     }
 
-    // Normalize unnormalized extended inputs
-    if (biased_exp != 0 && biased_exp != 0x7FFF && !(src.mantissa_hi & 0x8000000000000000ULL))
-        fpu_normalize(&src);
-
     bool input_sign = src.sign;
 
     // Build compact form (sign stripped) for range checks
-    uint16_t bexp = (uint16_t)(src.exponent + FPU_EXP_BIAS);
-    uint32_t compact = ((uint32_t)bexp << 16) | (uint32_t)(src.mantissa_hi >> 48);
+    uint32_t compact = fpu_compact(src);
 
     // BOUNDS1: 2^(-40) = 0x3FD78000, (5/2)*log2 = 0x3FFFDDCE
     if (compact > COMPACT_2M40 && compact < 0x3FFFDDCEu) {
@@ -3139,12 +2994,9 @@ fpu_unpacked_t fpu_op_tanh(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t r
 
 fpu_unpacked_t fpu_op_asin(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw) {
     // NaN: propagate, converting SNaN to QNaN
-    if (src.exponent == FPU_EXP_INF && src.mantissa_hi != 0) {
-        if (!(src.mantissa_hi & 0x4000000000000000ULL))
-            fpu->fpsr |= FPEXC_SNAN;
-        src.mantissa_hi |= 0x4000000000000000ULL;
-        return src;
-    }
+    fpu_unpacked_t nan;
+    if (fpu_nan1(fpu, src, &nan))
+        return nan;
 
     // Infinity: asin(inf) → OPERR
     if (src.exponent == FPU_EXP_INF) {
@@ -3163,14 +3015,9 @@ fpu_unpacked_t fpu_op_asin(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t r
         return src;
     }
 
-    // Normalize unnormalized extended inputs
-    if (biased_exp != 0 && biased_exp != 0x7FFF && !(src.mantissa_hi & 0x8000000000000000ULL))
-        fpu_normalize(&src);
-
     // Build compact form (sign stripped) for range checks
     // |X| >= 1 means biased_exp >= 0x3FFF and mantissa_hi >= 0x8000...
-    uint16_t bexp = (uint16_t)(src.exponent + FPU_EXP_BIAS);
-    uint32_t compact = ((uint32_t)bexp << 16) | (uint32_t)(src.mantissa_hi >> 48);
+    uint32_t compact = fpu_compact(src);
 
     if (compact >= COMPACT_ONE) {
         // |X| >= 1. Check if exactly 1.0
@@ -3242,12 +3089,9 @@ fpu_unpacked_t fpu_op_asin(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t r
 
 fpu_unpacked_t fpu_op_acos(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw) {
     // NaN: propagate, converting SNaN to QNaN
-    if (src.exponent == FPU_EXP_INF && src.mantissa_hi != 0) {
-        if (!(src.mantissa_hi & 0x4000000000000000ULL))
-            fpu->fpsr |= FPEXC_SNAN;
-        src.mantissa_hi |= 0x4000000000000000ULL;
-        return src;
-    }
+    fpu_unpacked_t nan;
+    if (fpu_nan1(fpu, src, &nan))
+        return nan;
 
     // Infinity: acos(inf) → OPERR
     if (src.exponent == FPU_EXP_INF) {
@@ -3270,13 +3114,8 @@ fpu_unpacked_t fpu_op_acos(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t r
         return piby2;
     }
 
-    // Normalize unnormalized extended inputs
-    if (biased_exp != 0 && biased_exp != 0x7FFF && !(src.mantissa_hi & 0x8000000000000000ULL))
-        fpu_normalize(&src);
-
     // Build compact form (sign stripped) for range checks
-    uint16_t bexp = (uint16_t)(src.exponent + FPU_EXP_BIAS);
-    uint32_t compact = ((uint32_t)bexp << 16) | (uint32_t)(src.mantissa_hi >> 48);
+    uint32_t compact = fpu_compact(src);
 
     if (compact >= COMPACT_ONE) {
         // |X| >= 1. Check if exactly 1.0
@@ -3340,12 +3179,9 @@ fpu_unpacked_t fpu_op_acos(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t r
 // FPSP algorithm: z = 2|X|/(1-|X|), atanh(X) = sign(X) * (1/2) * lognp1(z)
 fpu_unpacked_t fpu_op_atanh(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw) {
     // NaN: propagate, converting SNaN to QNaN
-    if (src.exponent == FPU_EXP_INF && src.mantissa_hi != 0) {
-        if (!(src.mantissa_hi & 0x4000000000000000ULL))
-            fpu->fpsr |= FPEXC_SNAN;
-        src.mantissa_hi |= 0x4000000000000000ULL;
-        return src;
-    }
+    fpu_unpacked_t nan;
+    if (fpu_nan1(fpu, src, &nan))
+        return nan;
 
     // Infinity: |X| > 1, generate OPERR
     if (src.exponent == FPU_EXP_INF) {
@@ -3365,10 +3201,6 @@ fpu_unpacked_t fpu_op_atanh(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t 
         return src;
     }
 
-    // Normalize unnormalized extended inputs
-    if (biased_exp != 0 && biased_exp != 0x7FFF && !(src.mantissa_hi & 0x8000000000000000ULL))
-        fpu_normalize(&src);
-
     bool input_sign = src.sign;
 
     // |X| for comparison: take fabsx
@@ -3379,8 +3211,7 @@ fpu_unpacked_t fpu_op_atanh(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t 
     fpu_unpacked_t one = fpsp_sgl(0x3F800000);
 
     // Build compact for range check: biased_exp << 16 | top mantissa bits
-    uint16_t bexp = (uint16_t)(abs_x.exponent + FPU_EXP_BIAS);
-    uint32_t compact = ((uint32_t)bexp << 16) | (uint32_t)(abs_x.mantissa_hi >> 48);
+    uint32_t compact = fpu_compact(abs_x);
 
     // 1.0 in compact: 0x3FFF8000
     if (compact >= COMPACT_ONE) {

@@ -73,7 +73,9 @@ declaration ROM: the boot ROM drives the video from the hard-coded
   1/2/4/8 bpp selected via `RvMonP`; the 15" Portrait (sense `1`) gives
   640×870, and any other code halts video — see [rbv.md](rbv.md),
   "Monitor sense". The CLUT is programmed through the VDAC and surfaces
-  via `display.clut`.
+  via `display.clut`.  The VDAC's palette ports are the shared RAMDAC
+  sequencer (`display_ramdac.h`): latched R, G, B stored on blue, and runs in
+  either direction advance the one index after blue.
 - The slot-0 video VBL interrupt (`RvIRQ0`) is asserted once per frame
   in the card's `on_vbl`; the boot ROM polls `RvSInt` bit 6 for it during
   video init.

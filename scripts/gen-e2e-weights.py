@@ -9,12 +9,17 @@ The reports are the web2-e2e-report-shard-* artifacts (parallel.json,
 serial.json per shard).  For each spec file: `secs`, the sum of its tests'
 durations, and `max_test`, its longest test.  With several runs a file's
 figures are the median over the runs that ran it.  Files the reports do not
-mention keep their old weights.  scripts/e2e-shard.py reads the result.
+mention keep their old weights.  scripts/e2e-shard.py reads the result; a
+file is keyed by its path under tests/e2e (scripts/lib/e2e.py spec_key), so
+a spec in a subdirectory of web2-specs gets its own weight.
 """
 
 import json
-import statistics
+import os
 import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+from e2e import merge_median, spec_key
 
 WEIGHTS = "tests/e2e/e2e-weights.json"
 
@@ -48,13 +53,11 @@ def main(argv):
         for s in report.get("suites", []):
             walk(s, None, tests)
         for f, durs in tests.items():
-            runs.setdefault("web2-specs/" + f.split("/")[-1], []).append((sum(durs), max(durs)))
+            runs.setdefault(spec_key(f), []).append((sum(durs), max(durs)))
+    secs = merge_median({}, {f: [s for s, _ in v] for f, v in runs.items()})
+    max_test = merge_median({}, {f: [m for _, m in v] for f, v in runs.items()})
     files = dict(old.get("files", {}))
-    for f, samples in runs.items():
-        files[f] = {
-            "secs": int(round(statistics.median(s for s, _ in samples))),
-            "max_test": int(round(statistics.median(m for _, m in samples))),
-        }
+    files.update({f: {"secs": secs[f], "max_test": max_test[f]} for f in runs})
     out = {
         "_comment": "Per web2 spec file: the seconds its tests took (secs) and its longest test "
         "(max_test), from CI's e2e JSON reports. scripts/e2e-shard.py packs the files across the "

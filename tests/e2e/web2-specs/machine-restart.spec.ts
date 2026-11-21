@@ -15,6 +15,7 @@ import { test, expect } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
 import { gsCallInPage, gsEvalInPage } from '../helpers/web2-eval';
+import { uploadRomViaWelcome } from '../helpers/upload';
 
 const IICX_ROM = path.resolve(__dirname, '../../data/roms/iix-iicx-se30-97221136.rom');
 
@@ -25,11 +26,7 @@ test('Restart keeps the attached hard disk — same medium, same open instance',
   await gotoWeb2(page);
 
   // Upload the IIcx ROM via the Welcome button (no auto-boot).
-  const [chooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Load ROM...' }).click(),
-  ]);
-  await chooser.setFiles(IICX_ROM);
+  await uploadRomViaWelcome(page, IICX_ROM);
   await expect(
     page.locator('.toast .msg').filter({ hasText: 'iix-iicx-se30-97221136.rom added' }),
   ).toBeVisible({ timeout: 60_000 });

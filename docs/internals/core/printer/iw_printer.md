@@ -170,6 +170,16 @@ sit on that alert for minutes, and without our Tickles the workstation's
 connection timer ran out after two and its next write failed ("The AppleTalk
 network is not responding").
 
+The protocol pieces it shares with the LaserWriter's server live once in
+`src/core/network/pap_server.c`: the status-reply prefix, the SendData and
+CloseConn requests (CloseConn exactly-once with SendData's release hint,
+retried five times) and the session predicate. So does the OpenConn rule.
+While withdrawn, or for an OpenConn with less than its 4 bytes of data, the
+card stays silent rather than answering PrinterBusy, which the workstation
+would retry without end. `localtalk_name` follows NBP's name rule: 32
+MacRoman characters, MacRoman-encodable. The shared rename helper
+(`atalk_nbp_rename`) reports why a name is refused.
+
 ## 6. Jobs
 
 A job starts with the first byte after idle. It ends after `idle_timeout_ms`
@@ -190,12 +200,18 @@ job begins (the Finder for Print Directory); on the Lisa, or when the global
 holds no name (the boot prompt), the title is `Print`. It names the PDF's
 document title and its file.
 
-At the end of a job the PDF goes to `printer_sink_deliver()`:
+At the end of a job the PDF goes to `printer_sink_document()`
+(`printer_sink.h`, the sink the LaserWriter's documents and captures use too).
+Both platforms name the file by `printer_file_name()`, whose title rule
+(`printer_safe_title()`: one `_` per run of anything outside
+`[A-Za-z0-9.-]`, none leading, "untitled" when nothing is left) is the one
+the page's `documentName` mirrors; unit suite `printer_sink`:
 
 - **Headless** (`headless_main.c`): `<print-dir>/<slug>-<job:05>-<title>.pdf`
   (`imagewriter2-00001-Finder.pdf`), and with `capture` the job's raw input as
   `<slug>-<job:05>.iw` beside it.
-- **Browser** (`em_main.c`): the bytes go to the page over the download path
+- **Browser** (`em_main.c`): the same names (the browser used to write one
+  `_` per character, `My__Doc`); the bytes go to the page over the download path
   (I/O job, transfer buffer, `download_chunk` events) with
   `kind: "document"`, the printer's name, job, pages and title;
   `bus/download.ts` opens them in the print viewer, or saves them where the
@@ -254,6 +270,7 @@ events under `atalk_imagewriter.*`.
 |---|---|
 | unit `imagewriter` | parser, switches, tabs, pixel-exact columns for every pitch, interleave, opaque graphics, the CAN recovery, pages, perforation skip, colour planes, self ID, the eighth bit, custom characters, ROM glyphs (draft, NLQ passes, proportional widths, the original ImageWriter's), its vertical format unit, PDF structure, determinism and serialisation |
 | unit `scc_port` | the port-device seam: bytes to the device, ready line, RX injection |
+| unit `pap_imagewriter` | the LocalTalk card's PAP server: silent while withdrawn or for a short OpenConn, busy for a second connection, the CloseConn's parameters, the NBP name rule |
 | `lisa-imagewriter` | LOS 3.1 prints the Calculator tape on Serial A; PDF golden |
 | `mac-imagewriter` | a Plus with System 6.0.8 prints Faster, Best (deselected mid-job), Draft, and Faster through the 2 KB buffer on the printer port; PDF goldens |
 | `appletalk-imagewriter` | the same over the LocalTalk card, with paper-out alert and recovery |

@@ -57,13 +57,11 @@ jobs:
 
       # 7z extracts the large binary archives (CD-ROM images and the like) and
       # m68k binutils assembles the declaration-ROM fragments.  The dev image
-      # installs both, so these VERIFY rather than install: a self-repairing
-      # step hides a stale image pin, which is exactly how publish-staging
-      # drifted onto a five-month-old image unnoticed.
+      # installs both; gs-setup verifies them (.github/actions/gs-setup).
       - name: Verify 7z and m68k binutils
-        run: |
-          which 7z || { echo '7z not on PATH — the pinned dev image is wrong or stale'; exit 1; }
-          which m68k-linux-gnu-as || { echo 'm68k-linux-gnu-as not on PATH — the pinned dev image is wrong or stale'; exit 1; }
+        uses: ./.github/actions/gs-setup
+        with:
+          tools: 7z m68k-linux-gnu-as
 
       # PLATEN=1 WERROR=1 as every integration shard builds it, so a
       # warning or a link failure is reported once, here, by name.
@@ -156,31 +154,18 @@ jobs:
           persist-credentials: false
 
       # 7z extracts the large binary archives (CD-ROM images and the like) and
-      # m68k binutils assembles the declaration-ROM fragments.  The dev image
-      # installs both, so these VERIFY rather than install: a self-repairing
-      # step hides a stale image pin, which is exactly how publish-staging
-      # drifted onto a five-month-old image unnoticed.
-      - name: Verify 7z and m68k binutils
-        run: |
-          which 7z || { echo '7z not on PATH — the pinned dev image is wrong or stale'; exit 1; }
-          which m68k-linux-gnu-as || { echo 'm68k-linux-gnu-as not on PATH — the pinned dev image is wrong or stale'; exit 1; }
-
-      # Proprietary test data (internal builds with token access only).  No
-      # flag: fetches the revision pinned in tests/data-version, so CI runs
-      # against the media the goldens were captured from.  The token is
-      # scoped to this step; fork PRs see it empty and skip the data steps.
-      - name: Fetch test data
+      # m68k binutils assembles the declaration-ROM fragments; both verified
+      # (.github/actions/gs-setup).  Then the proprietary test data (internal
+      # builds with token access only), the revision pinned in
+      # tests/data-version.  The token is scoped to this step; fork PRs see
+      # it empty and skip the data steps.
+      - name: Verify the tools, fetch test data
         id: fetch-data
-        run: |
-          if [ -n "$GS_TEST_DATA_TOKEN" ]; then
-            ./scripts/fetch-test-data.sh
-            echo "has_test_data=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_test_data=false" >> $GITHUB_OUTPUT
-            echo "::notice::Test data not available (external contributor or missing secret)"
-          fi
-        env:
-          GS_TEST_DATA_TOKEN: ${{ secrets.GS_TEST_DATA_TOKEN }}
+        uses: ./.github/actions/gs-setup
+        with:
+          tools: 7z m68k-linux-gnu-as
+          data: optional
+          data-token: ${{ secrets.GS_TEST_DATA_TOKEN }}
 
       # --output-sync=target prints each test's output as one block when it
       # ends, so parallel tests never interleave inside a line (a split
@@ -500,28 +485,17 @@ jobs:
           }
 
       # m68k binutils for the WASM build's declaration-ROM fragments --
-      # verified, not installed (see the matching step in the static job).
-      - name: Verify m68k binutils presence
-        run: |
-          which m68k-linux-gnu-as || {
-            echo 'm68k-linux-gnu-as not on PATH — the pinned dev image is wrong or stale'
-            exit 1
-          }
-
-      # Proprietary test data (internal builds with token access only); the
-      # token is scoped to this step.
-      - name: Fetch test data
+      # verified, not installed -- and the proprietary test data (internal
+      # builds with token access only); the token is scoped to this step
+      # (.github/actions/gs-setup).
+      - name: Verify m68k binutils, fetch test data
         id: fetch-data
-        run: |
-          if [ -n "$GS_TEST_DATA_TOKEN" ]; then
-            ./scripts/fetch-test-data.sh
-            echo "has_test_data=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_test_data=false" >> $GITHUB_OUTPUT
-            echo "::notice::Test data not available — skipping the functional web2 e2e."
-          fi
-        env:
-          GS_TEST_DATA_TOKEN: ${{ secrets.GS_TEST_DATA_TOKEN }}
+        uses: ./.github/actions/gs-setup
+        with:
+          tools: m68k-linux-gnu-as
+          data: optional
+          data-token: ${{ secrets.GS_TEST_DATA_TOKEN }}
+          no-data-message: Test data not available — skipping the functional web2 e2e.
 
       # Built here rather than by the Playwright webServer's `make ui2`, so
       # the build does not count against that server's start-up timeout; the

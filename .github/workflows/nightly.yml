@@ -87,17 +87,11 @@ jobs:
 
       - name: Fetch test data
         id: fetch-data
-        run: |
-          if [ -n "$GS_TEST_DATA_TOKEN" ]; then
-            ./scripts/fetch-test-data.sh
-            echo "has_test_data=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_test_data=false" >> $GITHUB_OUTPUT
-            echo "::error::Nightly needs the private test data; nothing to run."
-            exit 1
-          fi
-        env:
-          GS_TEST_DATA_TOKEN: ${{ secrets.GS_TEST_DATA_TOKEN }}
+        uses: ./.github/actions/gs-setup
+        with:
+          data: required
+          data-token: ${{ secrets.GS_TEST_DATA_TOKEN }}
+          no-data-message: Nightly needs the private test data; nothing to run.
 
       # PLATEN=1 and in parallel, as every step below builds it: a build
       # with other flags would be rebuilt from scratch by the next step.

@@ -41,14 +41,17 @@ LABEL="${WRAPPER:+ (valgrind)}"
 trap 'echo "=== FAIL${LABEL}: $TEST (runner error at line $LINENO) ==="; echo FAIL > "${TEST_RESULTS_DIR:-/nonexistent}/status" 2>/dev/null || true' ERR
 
 # Wall seconds per test: printed on the result line and appended, one JSON
-# record per test, to durations.jsonl beside the per-test result dirs --
-# what scripts/gen-test-weights.py turns into test-weights.json, the
+# record per test, to DURATIONS_FILE (unset: durations.jsonl beside the
+# per-test result dirs; empty: not recorded, as under Valgrind) -- what
+# scripts/gen-test-weights.py turns into test-weights.json, the
 # longest-first order make -j starts the tests in.  An O_APPEND write of one
 # short line is atomic, so concurrent tests do not interleave records.
 SECONDS=0
+DURATIONS_FILE="${DURATIONS_FILE-$(dirname "$TEST_RESULTS_DIR")/durations.jsonl}"
 record_duration() {
+    [ -n "$DURATIONS_FILE" ] || return 0
     printf '{"test":"%s","secs":%d,"status":"%s"}\n' "$TEST" "$SECONDS" "$1" \
-        >> "$(dirname "$TEST_RESULTS_DIR")/durations.jsonl" 2>/dev/null || true
+        >> "$DURATIONS_FILE" 2>/dev/null || true
 }
 
 fail() {

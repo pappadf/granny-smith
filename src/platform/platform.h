@@ -22,11 +22,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Byte swapping.
-#define BE16(x) ((((x) & 0xff00) >> 8) | (((x) & 0x00ff) << 8))
-#define BE32(x)                                                                                                        \
-    ((((x) & 0xff000000) >> 24) | (((x) & 0x00ff0000) >> 8) | (((x) & 0x0000ff00) << 8) | (((x) & 0x000000ff) << 24))
-
 #ifndef MIN
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #endif

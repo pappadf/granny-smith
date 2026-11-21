@@ -13,13 +13,6 @@
 #include "of_nvram.h"
 #include "slot_tables.h"
 
-static const uint32_t pmg3_ram_options_kb[] = {32768,  65536,  98304,  131072, 163840, 196608, 229376,
-                                               262144, 294912, 327680, 360448, 393216, 425984, 458752,
-                                               524288, 557056, 589824, 655360, 786432, 0};
-
-static const uint8_t whisper_eeprom[16] = {0x0F, 0xAA, 0x55, 0xAA, 'W',  'h',  'i',  's',
-                                           'p',  'e',  'r',  0x00, 0x00, 0x00, 0x00, 0x02};
-
 static const gossamer_board_desc_t pmg3mt_board = {
     // As the desktop, with PID 2: the ROM's L2CR entry $B9100000 (1 MB).
     .board_id = 0x8000u | 0x3F00u | (2u << 5) | 0x0010u | (6u << 1) | 0x0001u,
@@ -28,7 +21,7 @@ static const gossamer_board_desc_t pmg3mt_board = {
     .hid1 = 0x70000000u, // PLL_CFG 0111: 4.5x -> 300.69 MHz
     .ati_device = 0x4750u,
     .ati_revision = 0x7Cu,
-    .perch_eeprom = whisper_eeprom,
+    .perch_eeprom = gossamer_whisper_eeprom,
 };
 
 const hw_profile_t machine_pmg3mt = {
@@ -44,7 +37,7 @@ const hw_profile_t machine_pmg3mt = {
     .ram_max = 0x30000000,
     .rom_size = 0x400000,
 
-    .ram_options = pmg3_ram_options_kb,
+    .ram_options = gossamer_ram_options_kb,
     .storage = gossamer_storage,
     .default_storage = gossamer_default_storage,
     .appletalk = true,

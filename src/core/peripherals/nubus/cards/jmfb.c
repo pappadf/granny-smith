@@ -110,9 +110,6 @@ typedef struct {
     nubus_card_t *card; // back-pointer for IRQ helpers
     uint8_t *vram; // 2 MB
     uint8_t *blank; // the power-on raster's black fill, shown while held blanked after /RESET
-    uint8_t *vrom; // 32 KB declaration ROM bytes
-    char *vrom_path; // path the VROM was loaded from
-    uint32_t vrom_size; // typically 32 KB; 0 if no VROM loaded
     uint32_t slot_base; // physical bus base (== nubus_slot_base(slot))
     uint16_t poweron_row_words; // RowWords at power-on: the sensed monitor's 1 bpp width (card_reset)
 } jmfb_priv_t;
@@ -297,8 +294,7 @@ static void io_write8(void *dev, uint32_t addr, uint8_t val) {
     // at a stale index, and an X session on a Display Card 8*24 came up
     // black on black.
     if (classify(addr, p->slot_base, &off) == JMFB_BLK_CLUT && (off & ~3u) == CLUTAddrReg) {
-        p->regs.clut_idx = val;
-        p->regs.clut_phase = 0;
+        ramdac_seq_set_waddr(&p->regs.clut_seq, val);
         return;
     }
     // Otherwise the same treatment as io_read8 — promote to a 16-bit write.
@@ -323,7 +319,7 @@ static void io_write32(void *dev, uint32_t addr, uint32_t val) {
     io_write16(dev, addr + 2, (uint16_t)(val & 0xFFFFu));
 }
 
-static memory_interface_t s_jmfb_mem_iface = {
+static const memory_interface_t s_jmfb_mem_iface = {
     .read_uint8 = io_read8,
     .read_uint16 = io_read16,
     .read_uint32 = io_read32,
@@ -337,59 +333,37 @@ static memory_interface_t s_jmfb_mem_iface = {
 
 // === Card vtable ============================================================
 
-// Load the 8•24 declaration ROM (32 KB chip image) through the shared
-// content-driven declrom loader: the slot's own ROM file when the document
-// names one, else the offered candidates in the catalog's order (see vrom.h);
-// validates the byteLanes byte and lays the chip out into p->vrom (sized
-// JMFB_DECLROM_BUS_SIZE = 128 KB).  Returns true on success.
-static bool load_vrom(jmfb_priv_t *p, const char *rom) {
-    char *path = NULL;
-    if (!declrom_load_vrom_card(p->card, mdc_8_24_kind.id, rom, p->vrom, JMFB_DECLROM_BUS_SIZE, &path))
-        return false;
-    free(p->vrom_path);
-    p->vrom_path = path;
-    p->vrom_size = JMFB_DECLROM_BUS_SIZE;
-    return true;
+// The substitute's monitors for a slot with a custom resolution: the card's
+// list with the default monitor's (13" RGB, sense $6) geometry rewritten to
+// it, in `scratch`; the rest stay so their sResources still exist (the sensed
+// one wins at boot).  NULL when the slot runs no custom geometry -- Apple's
+// ROM, or the substitute at the card's own modes.  *w / *h get the geometry.
+static const nubus_monitor_t *custom_monitors(const slot_opts_t *opts, nubus_monitor_t *scratch, uint32_t *w,
+                                              uint32_t *h) {
+    uint32_t cw = 0, ch = 0, cd = 0;
+    if (!opts->substitute || !opts->custom_mode[0] || !nubus_custom_mode_parse(opts->custom_mode, &cw, &ch, &cd, NULL))
+        return NULL;
+    size_t n = 0;
+    for (const nubus_monitor_t *mm = mdc_8_24_kind.monitors; mm->id && n < NUBUS_SUBST_MONITORS_MAX - 1; mm++)
+        scratch[n++] = *mm;
+    for (size_t i = 0; i < n; i++) {
+        if (scratch[i].sense_code == 0x6) {
+            scratch[i].width = cw;
+            scratch[i].height = ch;
+        }
+    }
+    scratch[n] = (nubus_monitor_t){0};
+    if (w)
+        *w = cw;
+    if (h)
+        *h = ch;
+    return scratch;
 }
 
-// Seat the card's declaration ROM in p->vrom: the generated substitute
-// (records from `gen_monitors`, which may carry a custom resolution) or
-// Apple's ROM through the content-driven loader.  A substitute that fails to
-// generate leaves a zero-filled ROM and the card up; an Apple ROM that cannot
-// be loaded fails the card (returns false) and the slot stays empty.
-//
-// Failures log at level 0, the always-on level (docs/internals/core/debug/
-// log.md): a display card that comes up without its ROM is something the user
-// must see without turning a category up.  They are filed under this file's
-// "video" category with the rest of the card's messages.
-static bool install_declrom(jmfb_priv_t *p, nubus_card_t *card, const slot_opts_t *opts,
-                            const nubus_monitor_t *gen_monitors) {
-    if (opts->substitute) {
-        // The substitute ROM: the GS declaration ROM generated here --
-        // records from the (possibly custom-overridden) monitor list, code
-        // fragments spliced, CRC stamped in C; the offer registry is never
-        // consulted.
-        declrom_builder_t *bld = gsvrom_generate(GSVROM_JMFB, gen_monitors);
-        size_t img_size = 0;
-        const uint8_t *img = bld ? declrom_builder_bytes(bld, &img_size) : NULL;
-        if (img && declrom_install_builtin(p->card, mdc_8_24_kind.id, img, img_size, p->vrom, JMFB_DECLROM_BUS_SIZE))
-            p->vrom_size = JMFB_DECLROM_BUS_SIZE;
-        else
-            LOG(0, "JMFB: the substitute declaration ROM failed to generate; declaration ROM is zero-filled");
-        declrom_builder_free(bld);
-        return true;
-    }
-    if (!load_vrom(p, opts->rom[0] ? opts->rom : NULL)) {
-        // The bus seats Apple's ROM only when it is offered (else the
-        // substitute), so this is a file that went away or a checkpoint whose
-        // ROM is not this card's: the slot stays empty.
-        LOG(0,
-            "JMFB: slot $%X: the 8\xe2\x80\xa2"
-            "24 declaration ROM could not be loaded",
-            card->slot);
-        return false;
-    }
-    return true;
+// The kind's substitute_monitors_for: the bus seats the substitute with the
+// custom geometry (declrom_seat).
+static const nubus_monitor_t *substitute_monitors_for(const slot_opts_t *opts, nubus_monitor_t *scratch) {
+    return custom_monitors(opts, scratch, NULL, NULL);
 }
 
 // Put the card on the bus: VRAM (writable) and the declaration ROM
@@ -401,7 +375,7 @@ static void map_regions(jmfb_priv_t *p, config_t *cfg) {
     // through memory_map_add with a memory_interface_t since it needs
     // I/O dispatch on every access.
     memory_map_host_region(cfg->memory_map, "jmfb_vram", p->vram, p->slot_base, JMFB_VRAM_SIZE, /*writable*/ true);
-    memory_map_host_region(cfg->memory_map, "jmfb_declrom", p->vrom, p->slot_base + JMFB_DECLROM_BUS_OFFSET,
+    memory_map_host_region(cfg->memory_map, "jmfb_declrom", p->card->declrom, p->slot_base + JMFB_DECLROM_BUS_OFFSET,
                            JMFB_DECLROM_BUS_SIZE, /*writable*/ false);
     memory_map_add(cfg->memory_map, p->slot_base + JMFB_BLOCK_OFFSET, JMFB_REGISTER_SIZE, "JMFB regs",
                    &s_jmfb_mem_iface, p);
@@ -476,12 +450,7 @@ static void init_power_on_state(jmfb_priv_t *p, const nubus_monitor_t *monitor, 
     // Initial CLUT — a simple grayscale ramp so the canvas isn't blank
     // before the OS programs a palette.  The driver's first cscSetEntries
     // will overwrite this.
-    for (int i = 0; i < 256; i++) {
-        p->clut[i].r = (uint8_t)i;
-        p->clut[i].g = (uint8_t)i;
-        p->clut[i].b = (uint8_t)i;
-        p->clut[i].a = 255;
-    }
+    display_seed_gray_ramp(p->clut);
 }
 
 static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
@@ -500,10 +469,7 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
     p->regs.sw_ic = VINT_DISABLE;
 
     p->vram = calloc(1, JMFB_VRAM_SIZE);
-    p->vrom = calloc(1, JMFB_DECLROM_BUS_SIZE);
-    if (!p->vram || !p->vrom) {
-        free(p->vram);
-        free(p->vrom);
+    if (!p->vram) {
         free(p);
         return -1;
     }
@@ -521,45 +487,12 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
 
     // A custom resolution overrides the default monitor's geometry: the card
     // senses its default 13" RGB monitor, but that monitor's video sResource
-    // -- and the HLE display -- carry the WxHxD the document asked for (checked
-    // against this card by jmfb_custom_mode_fits before the boot began).
-    // custom_monitors backs the pointers in the runtime monitor list; it is
-    // read only within this call (the builder copies what it needs and the
-    // display geometry is captured into p->display), so a local is enough.
-    nubus_monitor_t custom_monitors[5];
-    const nubus_monitor_t *gen_monitors = substitute ? mdc_8_24_kind.monitors : NULL;
-    uint32_t custom_w = 0, custom_h = 0, custom_d = 0;
-    bool custom_active = false;
-    if (substitute && opts->custom_mode[0] &&
-        nubus_custom_mode_parse(opts->custom_mode, &custom_w, &custom_h, &custom_d, NULL)) {
-        // Copy the monitor list and rewrite the default (13" RGB,
-        // sense $6) entry to the custom geometry; the rest stay so their
-        // sResources still exist (the sensed one wins at boot).
-        size_t n = 0;
-        for (const nubus_monitor_t *mm = mdc_8_24_kind.monitors; mm->id && n < 4; mm++)
-            custom_monitors[n++] = *mm;
-        for (size_t i = 0; i < n; i++) {
-            if (custom_monitors[i].sense_code == 0x6) {
-                custom_monitors[i].width = custom_w;
-                custom_monitors[i].height = custom_h;
-            }
-        }
-        custom_monitors[n] = (nubus_monitor_t){0};
-        gen_monitors = custom_monitors;
-        custom_active = true;
-    }
-
-    if (!install_declrom(p, card, opts, gen_monitors)) {
-        free(p->vram);
-        free(p->vrom);
-        free(p);
-        return -1;
-    }
-    // Publish the declaration ROM on the card struct (drives the
-    // slot[N].card.declrom object-model node, same as the 24AC / 8•24 GC);
-    // nubus_delete owns and frees card->declrom after card_teardown.
-    card->declrom = p->vrom;
-    card->declrom_size = p->vrom_size;
+    // -- seated by the bus from the same list (substitute_monitors_for) -- and
+    // the HLE display carry the WxHxD the document asked for (checked against
+    // this card by jmfb_custom_mode_fits before the boot began).
+    nubus_monitor_t scratch[NUBUS_SUBST_MONITORS_MAX];
+    uint32_t custom_w = 0, custom_h = 0;
+    bool custom_active = custom_monitors(opts, scratch, &custom_w, &custom_h) != NULL;
 
     // A validated custom resolution overrode the default monitor above, so
     // the card senses that monitor, the 13" RGB ($6); the seeding step saves
@@ -594,8 +527,6 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
         return;
     free(p->vram);
     free(p->blank);
-    // p->vrom is published as card->declrom; nubus_delete owns and frees it.
-    free(p->vrom_path);
     free(p);
     card->priv = NULL;
 }
@@ -631,18 +562,6 @@ static void card_reset(nubus_card_t *card, config_t *cfg) {
     p->display.fb_dirty = true;
 }
 
-// Power cycle: VRAM does not survive losing power, and the card comes up as
-// card_init leaves it -- the power-on registers, scanning out black -- not
-// showing the last session's picture until the ROM gets round to redrawing.
-static void card_power_on(nubus_card_t *card, config_t *cfg) {
-    jmfb_priv_t *p = card->priv;
-    if (!p)
-        return;
-    card_reset(card, cfg);
-    memset(p->vram, 0, JMFB_VRAM_SIZE);
-    display_blank_raster(&p->display);
-}
-
 static void card_on_vbl(nubus_card_t *card, config_t *cfg) {
     (void)cfg;
     jmfb_priv_t *p = card->priv;
@@ -662,13 +581,23 @@ static display_t *card_display(nubus_card_t *card) {
     return p ? &p->display : NULL;
 }
 
+// The VRAM a power cycle loses (the bus default, nubus_power_on).
+static size_t card_vram(nubus_card_t *card, uint8_t **base) {
+    jmfb_priv_t *p = card->priv;
+    *base = p ? p->vram : NULL;
+    return p ? JMFB_VRAM_SIZE : 0;
+}
+
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(jmfb_priv_t, display);
+
 // === Checkpoint =============================================================
 // VRAM is a private calloc (card_init), not part of the RAM image
 // memory_map_checkpoint saves, so without these a restored machine comes back
 // with a blank screen and a default palette until the guest happens to redraw.
 //
-// The pointer members (card, vram, blank, vrom, vrom_path) and the construction
-// facts beside them (vrom_size, slot_base) are deliberately NOT in the stream:
+// The pointer members (card, vram, blank) and the construction facts beside
+// them (slot_base) are deliberately NOT in the stream:
 // they are rebuilt by card_init before the restore runs, and writing them back
 // from a checkpoint would install stale addresses.
 //
@@ -679,14 +608,8 @@ static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
     if (!p)
         return;
     system_write_checkpoint_data(cp, p->vram, JMFB_VRAM_SIZE);
-    system_write_checkpoint_data(cp, p, offsetof(jmfb_priv_t, display));
-    {
-        // Fixed widths, not a raw struct prefix: the prefix carried a bare
-        // pixel_format_t, whose size is implementation-defined (see
-        // display.h).
-        display_head_t head = display_head_of(&p->display);
-        system_write_checkpoint_data(cp, &head, sizeof head);
-    }
+    checkpoint_save_prefix(cp, p, jmfb_priv_t);
+    display_head_save(cp, &p->display);
 }
 
 static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
@@ -694,12 +617,8 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
     if (!p)
         return;
     system_read_checkpoint_data(cp, p->vram, JMFB_VRAM_SIZE);
-    system_read_checkpoint_data(cp, p, offsetof(jmfb_priv_t, display));
-    {
-        display_head_t head;
-        system_read_checkpoint_data(cp, &head, sizeof head);
-        display_head_apply(&p->display, &head);
-    }
+    checkpoint_load_prefix(cp, p, jmfb_priv_t);
+    display_head_restore(cp, &p->display);
 
     // stride, width and the scan base are all derived from row_words,
     // video_base and the restored format -- and the restore must land on a
@@ -711,19 +630,16 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
     // display.bits still points into p->vram (card_init set it and the buffer
     // has not moved), but everything the frontend caches about this display is
     // now stale.
-    p->display.shape_dirty = true;
-    p->display.clut_dirty = true;
-    p->display.fb_dirty = true;
-    p->display.response_dirty = true;
+    display_mark_all_dirty(&p->display);
 }
 
 static const nubus_card_ops_t mdc_8_24_ops = {
     .init = card_init,
     .reset = card_reset,
-    .power_on = card_power_on,
     .teardown = card_teardown,
     .on_vbl = card_on_vbl,
     .display = card_display,
+    .vram = card_vram, // a power cycle takes the bus default
     .checkpoint_save = card_checkpoint_save,
     .checkpoint_restore = card_checkpoint_restore,
 };
@@ -864,7 +780,7 @@ static bool jmfb_startup_record(const slot_opts_t *e, uint8_t rec[8]) {
     } else if (!e->video_mode[0] || !jmfb_video_mode_lookup(e->video_mode, &row, &depth)) {
         return false;
     }
-    uint8_t sp_depth = depth == 2 ? 0x81 : depth == 4 ? 0x82 : depth == 8 ? 0x83 : 0x80;
+    uint8_t sp_depth = nubus_spdepth_for_bpp(depth, 0x80);
     const uint8_t r[8] = {0x00, 0x27, sp_depth, row->srsrc_sister, row->srsrc_sister, 0, 0, 0};
     memcpy(rec, r, sizeof r);
     return true;
@@ -880,6 +796,9 @@ const nubus_card_kind_t mdc_8_24_kind = {
     // from it, and identity gamma for every row is card_init's decision.
     .substitute = true,
     .monitors = mdc_8_24_monitors,
+    .substitute_monitors_for = substitute_monitors_for,
+    .declrom_bus_size = JMFB_DECLROM_BUS_SIZE,
+    .gsvrom = GSVROM_JMFB,
     .ops = &mdc_8_24_ops,
     .custom_mode_fits = jmfb_custom_mode_fits,
     .startup_record = jmfb_startup_record,

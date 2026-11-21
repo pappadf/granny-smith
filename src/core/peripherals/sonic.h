@@ -19,6 +19,7 @@
 
 #include "checkpoint.h"
 #include "dma_mem.h"
+#include "irq_line.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -27,7 +28,7 @@ typedef struct sonic sonic_t;
 
 // INT output callback (level; active-high argument — wired active-low to
 // VIA2 PA0 on the Quadras by the machine).
-typedef void (*sonic_irq_cb)(void *context, bool active);
+typedef irq_fn sonic_irq_cb;
 
 // Bus-master memory hooks: SONIC DMAs descriptors and packet data to/from
 // guest-PHYSICAL memory (no IOMMU on this family).  Width is 1, 2, or 4 bytes;

@@ -41,7 +41,7 @@ import {
   holdRealTime,
   micGraph,
   micStats,
-  probe,
+  probeValue,
   probeNumber,
   shutDown,
   startMachine,
@@ -80,17 +80,17 @@ test("AV microphone control delivers browser audio into guest RAM", async ({
   await expect(micBtn).toHaveAttribute("aria-pressed", "false");
   await holdRealTime(page);
 
-  expect(await probe(page, "machine.audioin.source")).toBe("none");
-  expect(await probe(page, "machine.audioin.connected")).toBe("false");
+  expect(await probeValue(page, "machine.audioin.source")).toBe("none");
+  expect(await probeValue(page, "machine.audioin.connected")).toBe("false");
 
   // --- 3. Connect the microphone.
   await micBtn.click();
   await expect(micBtn).toHaveAttribute("aria-pressed", "true");
   await expect
-    .poll(async () => probe(page, "machine.audioin.source"))
+    .poll(async () => probeValue(page, "machine.audioin.source"))
     .toBe("host");
   await expect
-    .poll(async () => probe(page, "machine.audioin.connected"), {
+    .poll(async () => probeValue(page, "machine.audioin.connected"), {
       timeout: 30_000,
     })
     .toBe("true");
@@ -112,15 +112,15 @@ test("AV microphone control delivers browser audio into guest RAM", async ({
     await gsCallInPage(page, "machine.memory.poke.w", [0x50f31218, 240]);
     expect(await probeNumber(page, "machine.memory.peek.w", [0x50f31218])).toBe(240);
     await gsCallInPage(page, "machine.memory.poke.w", [0x50f31200, 0x0080]);
-    expect(await probe(page, "machine.sound.in_enabled")).toBe("true");
+    expect(await probeValue(page, "machine.sound.in_enabled")).toBe("true");
     await page.waitForTimeout(4000);
-    armed = (await probe(page, "machine.sound.in_enabled")) === "true";
+    armed = (await probeValue(page, "machine.sound.in_enabled")) === "true";
   }
   // Log the whole picture BEFORE asserting: a failed assertion that takes
   // the diagnostics down with it is what made the last three rounds guesswork.
   console.log("  micStats AFTER pSndInEn:", JSON.stringify(await micStats(page)));
   console.log("  graph:", JSON.stringify(await micGraph(page)));
-  expect(await probe(page, "machine.sound.in_enabled")).toBe("true");
+  expect(await probeValue(page, "machine.sound.in_enabled")).toBe("true");
   // The worklet, not the deprecated fallback: addModule() from a blob: URL
   // is rejected under cross-origin isolation and fails SILENTLY into it.
   const graph = await micGraph(page);
@@ -198,7 +198,7 @@ test("AV microphone control delivers browser audio into guest RAM", async ({
   await menu.getByText("Disconnect microphone").click();
   await expect(micBtn).toHaveAttribute("aria-pressed", "false");
   await expect
-    .poll(async () => probe(page, "machine.audioin.source"))
+    .poll(async () => probeValue(page, "machine.audioin.source"))
     .toBe("none");
-  expect(await probe(page, "machine.audioin.connected")).toBe("false");
+  expect(await probeValue(page, "machine.audioin.connected")).toBe("false");
 });

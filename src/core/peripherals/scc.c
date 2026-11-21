@@ -10,7 +10,9 @@
 #include "cpu.h"
 #include "gs_assert.h"
 #include "log.h"
+#include "memory_iface_sized.h"
 #include "object.h"
+#include "object_order.h"
 #include "platform.h"
 #include "scheduler.h"
 #include "system.h"
@@ -160,7 +162,6 @@ struct scc {
 
     struct scheduler *scheduler;
     memory_map_t *memory_map;
-    memory_interface_t memory_interface;
 
     // Per-instance IRQ callback routing
     scc_irq_fn irq_cb;
@@ -1226,20 +1227,10 @@ static uint8_t peek_uint8(void *s, uint32_t addr) {
     return reg_read(s, addr, true);
 }
 
-// SCC registers are byte-only; wide reads come from misaligned guest code
-// (a buggy driver, a debugger probe, etc.). Log and return floating-bus 0xFF*
-// rather than aborting.
-static uint16_t scc_read_uint16(void *scc, uint32_t addr) {
-    (void)scc;
-    LOG(1, "scc: word read at 0x%08X — SCC is byte-only, returning 0xFFFF", addr);
-    return 0xFFFF;
-}
-
-static uint32_t scc_read_uint32(void *scc, uint32_t addr) {
-    (void)scc;
-    LOG(1, "scc: long read at 0x%08X — SCC is byte-only, returning 0xFFFFFFFF", addr);
-    return 0xFFFFFFFFu;
-}
+// SCC registers are byte-only; wide accesses come from misaligned guest code
+// (a buggy driver, a debugger probe, etc.): open bus, logged, rather than
+// aborting -- and a peek reads it silently.
+MEMORY_IFACE_OPEN_BUS_WIDE(scc_wide, "SCC")
 
 // write access from cpu bus
 static void scc_write_uint8(void *s, uint32_t addr, uint8_t value) {
@@ -1400,17 +1391,6 @@ static void scc_write_uint8(void *s, uint32_t addr, uint8_t value) {
         }
     } break;
     }
-}
-
-// Wide writes — same rationale as the wide-read helpers: log and drop.
-static void scc_write_uint16(void *scc, uint32_t addr, uint16_t value) {
-    (void)scc;
-    LOG(1, "scc: word write at 0x%08X = 0x%04X — SCC is byte-only, ignored", addr, value);
-}
-
-static void scc_write_uint32(void *scc, uint32_t addr, uint32_t value) {
-    (void)scc;
-    LOG(1, "scc: long write at 0x%08X = 0x%08X — SCC is byte-only, ignored", addr, value);
 }
 
 // True once the guest has put channel B into SDLC mode, i.e. once its
@@ -1790,6 +1770,18 @@ void scc_reset(scc_t *restrict scc) {
     update_irqs(scc);
 }
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(scc_channel_t, scc);
+
+// The SCC's register window; every instance shares it (the chip rides
+// beside it at the mapping)
+static const memory_interface_t scc_iface = {
+    .read_uint8 = read_uint8,
+    .peek_uint8 = peek_uint8,
+    .write_uint8 = scc_write_uint8,
+    MEMORY_IFACE_OPEN_BUS_WIDE_FIELDS(scc_wide),
+};
+
 scc_t *scc_init(memory_map_t *map, struct scheduler *scheduler, scc_irq_fn irq_cb, void *cb_context,
                 checkpoint_t *checkpoint) {
     scc_t *scc = (scc_t *)malloc(sizeof(scc_t));
@@ -1803,20 +1795,9 @@ scc_t *scc_init(memory_map_t *map, struct scheduler *scheduler, scc_irq_fn irq_c
     scc->irq_cb = irq_cb;
     scc->cb_context = cb_context;
 
-    scc->memory_interface.read_uint8 = &read_uint8;
-    scc->memory_interface.peek_uint8 = &peek_uint8;
-    scc->memory_interface.read_uint16 = &scc_read_uint16;
-    scc->memory_interface.read_uint32 = &scc_read_uint32;
-    scc->memory_interface.peek_uint16 = &scc_read_uint16; // floating bus: no side effect
-    scc->memory_interface.peek_uint32 = &scc_read_uint32;
-
-    scc->memory_interface.write_uint8 = &scc_write_uint8;
-    scc->memory_interface.write_uint16 = &scc_write_uint16;
-    scc->memory_interface.write_uint32 = &scc_write_uint32;
-
     // Register with memory map if provided (NULL = machine handles registration)
     if (map)
-        memory_map_add(map, 0x00800000, 0x00400000, "SCC", &scc->memory_interface, scc);
+        memory_map_add(map, 0x00800000, 0x00400000, "SCC", &scc_iface, scc);
 
     scc->pclk_hz = 0;
     scc->rtxc_hz = 0;
@@ -1834,11 +1815,10 @@ scc_t *scc_init(memory_map_t *map, struct scheduler *scheduler, scc_irq_fn irq_c
     // If a checkpoint is provided, restore channel plain-data (everything up to the
     // embedded scc pointer inside scc_channel_t). The scc_channel_t.scc pointer will be re-linked below.
     if (checkpoint) {
-        size_t ch_data_size = offsetof(scc_channel_t, scc);
         // One block per channel, mirroring the save (see scc_checkpoint for
-        // why this is not a single ch_data_size * 2 read).
+        // why this is not a single two-channel read).
         for (int i = 0; i < 2; i++)
-            system_read_checkpoint_data(checkpoint, &scc->ch[i], ch_data_size);
+            checkpoint_load_prefix(checkpoint, &scc->ch[i], scc_channel_t);
 
         uint8_t loopback = 0;
         system_read_checkpoint_data(checkpoint, &loopback, sizeof(loopback));
@@ -1868,7 +1848,7 @@ scc_t *scc_init(memory_map_t *map, struct scheduler *scheduler, scc_irq_fn irq_c
     scc->object = object_new(&scc_class, scc, "scc");
     if (scc->object) {
         object_set_label(scc->object, "SCC");
-        object_set_order(scc->object, 50);
+        object_set_order(scc->object, OBJ_ORDER_SCC);
         object_attach(machine_object(), scc->object);
         // instance_data is the CHANNEL, not the chip: that is what lets one
         // member table serve both children.  No free hazard from handing out
@@ -1894,7 +1874,8 @@ void scc_set_clocks(scc_t *restrict scc, uint32_t pclk_hz, uint32_t rtxc_hz) {
 
 // Return the SCC memory-mapped I/O interface for machine-level address decode
 const memory_interface_t *scc_get_memory_interface(scc_t *scc) {
-    return &scc->memory_interface;
+    (void)scc; // one table serves every instance
+    return &scc_iface;
 }
 
 // Enable or disable external loopback (cable between port A and port B)
@@ -1988,21 +1969,9 @@ void scc_delete(scc_t *scc) {
     // of it is torn down.
     scheduler_forget_source(scc->scheduler, scc);
     // Tear down object-tree nodes in reverse order (children first).
-    if (scc->channel_b) {
-        object_detach(scc->channel_b);
-        object_delete(scc->channel_b);
-        scc->channel_b = NULL;
-    }
-    if (scc->channel_a) {
-        object_detach(scc->channel_a);
-        object_delete(scc->channel_a);
-        scc->channel_a = NULL;
-    }
-    if (scc->object) {
-        object_detach(scc->object);
-        object_delete(scc->object);
-        scc->object = NULL;
-    }
+    object_destroy(&scc->channel_b);
+    object_destroy(&scc->channel_a);
+    object_destroy(&scc->object);
     // Close the ports' output files
     for (int ch = 0; ch < 2; ch++) {
         if (scc->port[ch].out)
@@ -2033,9 +2002,8 @@ void scc_checkpoint(scc_t *restrict scc, checkpoint_t *checkpoint) {
     //
     // Per channel, the two are the same number only when the prefix happens
     // to fill the struct, so the loop is the form that cannot drift.
-    size_t ch_data_size = offsetof(scc_channel_t, scc);
     for (int i = 0; i < 2; i++)
-        system_write_checkpoint_data(checkpoint, &scc->ch[i], ch_data_size);
+        checkpoint_save_prefix(checkpoint, &scc->ch[i], scc_channel_t);
 
     // The external loopback cable.  It sits outside the per-channel
     // blocks because it is a property of the two ports TOGETHER, and it was
