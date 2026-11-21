@@ -1351,7 +1351,8 @@ int main(int argc, char *argv[]) {
     char *config_text = NULL;
     if (config_arg && *config_arg && *config_arg != '{') {
         // A machine configuration document is a few KB
-        if (read_text_file(config_arg, 1u << 20, &config_text, NULL) != 0) {
+        // config=<(...) and other pipes are streamed, not refused
+        if (read_text_stream(config_arg, 1u << 20, &config_text, NULL) != 0) {
             fprintf(stderr, "Error: cannot read config=%s\n", config_arg);
             goto out;
         }

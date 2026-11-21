@@ -72,6 +72,16 @@ int read_file(const char *path, size_t cap, uint8_t **out, size_t *out_len);
 // *out_len, which may be NULL).  Same cap and errors.
 int read_text_file(const char *path, size_t cap, char **out, size_t *out_len);
 
+// read_text_file for a path the user named on the command line, which may be
+// a FIFO, pipe or character device as well as a regular file (config=<(...)
+// in a shell): the descriptor is opened blocking -- a FIFO waits for its
+// writer -- and read to EOF.  Only for a reader that runs once, before
+// anything else, on a path its own user typed; everything else keeps
+// read_text_file, which refuses such files so they cannot hang it.  A
+// directory is -EISDIR; more than `cap` bytes is -EFBIG.  0 or a negative
+// errno.
+int read_text_stream(const char *path, size_t cap, char **out, size_t *out_len);
+
 // Fill `out` with `n` unpredictable bytes: getentropy, else /dev/urandom,
 // else a pid/time/counter mix that is at least unique within the process
 // (ids and UUIDs that must not collide, not keys).  Never fails.

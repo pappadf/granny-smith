@@ -263,6 +263,68 @@ int read_text_file(const char *path, size_t cap, char **out, size_t *out_len) {
     return rc;
 }
 
+int read_text_stream(const char *path, size_t cap, char **out, size_t *out_len) {
+    *out = NULL;
+    if (out_len)
+        *out_len = 0;
+    if (!path)
+        return -EINVAL;
+    // Blocking on purpose: a FIFO's writer may not have opened it yet
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return -errno;
+    struct stat st;
+    int e = fstat(fd, &st) != 0 ? errno : S_ISDIR(st.st_mode) ? EISDIR : 0;
+    if (e) {
+        close(fd);
+        return -e;
+    }
+    char *buf = NULL;
+    size_t len = 0, size = 0;
+    int rc = 0;
+    for (;;) {
+        // Keep room for one byte past the cap (to detect overflow) and the NUL
+        if (len + 2 > size) {
+            size_t want = size ? size * 2 : 4096;
+            if (want > cap + 2)
+                want = cap + 2;
+            char *nb = realloc(buf, want);
+            if (!nb) {
+                rc = -ENOMEM;
+                break;
+            }
+            buf = nb;
+            size = want;
+        }
+        // Never past one byte over the cap, and leave the NUL's slot
+        ssize_t n = read(fd, buf + len, size - 1 - len);
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+            rc = -errno;
+            break;
+        }
+        if (n == 0)
+            break;
+        len += (size_t)n;
+        if (len > cap) {
+            rc = -EFBIG;
+            break;
+        }
+    }
+    close(fd);
+    if (rc != 0) {
+        free(buf);
+        return rc;
+    }
+    // The first pass always allocates, so even an empty stream has a buffer
+    buf[len] = '\0';
+    *out = buf;
+    if (out_len)
+        *out_len = len;
+    return 0;
+}
+
 void random_bytes(void *out, size_t n) {
     uint8_t *b = (uint8_t *)out;
     size_t got = 0;
