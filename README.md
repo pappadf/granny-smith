@@ -124,7 +124,6 @@ Sibling projects this one is built on:
 ## Acknowledgments
 
 - [raddad772](https://github.com/raddad772) for the 68K test suite ([single-step-tests](https://github.com/SingleStepTests/m68000))
-- [JSZip](https://stuk.github.io/jszip/) for ZIP file handling
 - [Emscripten](https://emscripten.org/) for the WebAssembly toolchain
 
 ## Trademarks
