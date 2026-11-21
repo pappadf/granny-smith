@@ -64,6 +64,23 @@ const JUNK = new Uint8Array(1000).fill(0x33);
 const VROM = new Uint8Array(32 * 1024).fill(0x56);
 
 let files: Map<string, Uint8Array>;
+
+// files.identify as the fake core answers it: an 800K file is a floppy,
+// anything else a hard disk; `extra` overrides (an archive, a disc).
+const identifyAs = (path: string, extra: Record<string, unknown> = {}) => {
+  const f = files.get(path);
+  const floppy = !!f && f.length === 819200;
+  return {
+    opens: !!f,
+    refusal: '',
+    archive: '',
+    floppy: floppy ? 'gcr800' : '',
+    fits: !f ? [] : floppy ? ['floppy'] : ['hd'],
+    kind: !f ? '' : floppy ? 'floppy' : 'hd',
+    volumes: [],
+    ...extra,
+  };
+};
 let served: Record<string, Uint8Array<ArrayBuffer>>;
 const written: string[] = [];
 
@@ -86,10 +103,7 @@ beforeEach(() => {
       size: f.length,
     };
   });
-  bridge.reply('machine.scsi.identify_hd', (args: unknown) => {
-    const f = files.get((args as [string])[0]);
-    return !!f && f.length !== 819200;
-  });
+  bridge.reply('files.identify', (args: unknown) => identifyAs((args as [string])[0]));
   bridge.reply('machine.boot', true);
   bridge.reply('machine.id', 'plus');
   bridge.reply('catalog.vroms.identify', (args: unknown) => {
@@ -151,9 +165,12 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
   it('a gzipped floppy is unpacked, stored and inserted', async () => {
     served['plus.rom'] = PLUS_ROM;
     served['sys.dsk.gz'] = gzipSync(FLOPPY) as Uint8Array<ArrayBuffer>;
-    bridge.reply('files.archive.identify', (args: unknown) => {
+    bridge.reply('files.identify', (args: unknown) => {
       const f = files.get((args as [string])[0]);
-      return f && f[0] === 0x1f && f[1] === 0x8b ? 'gz' : '';
+      return identifyAs(
+        (args as [string])[0],
+        f && f[0] === 0x1f && f[1] === 0x8b ? { archive: 'gz' } : {},
+      );
     });
     await processUrlMedia(new URLSearchParams('rom=plus.rom&fd0=sys.dsk.gz'));
     const stored = [...files.keys()].find((p) => p.startsWith('/opfs/images/fd/'));
@@ -250,9 +267,9 @@ describe('URL media: a zip member comes out through the core', () => {
   }
   beforeEach(() => {
     zips.clear();
-    bridge.reply('files.archive.identify', (args: unknown) => {
+    bridge.reply('files.identify', (args: unknown) => {
       const f = files.get((args as [string])[0]);
-      return f && zips.has(key(f)) ? 'zip' : '';
+      return identifyAs((args as [string])[0], f && zips.has(key(f)) ? { archive: 'zip' } : {});
     });
     bridge.reply('files.archive.extract', (args: unknown) => {
       const [from, dir] = args as [string, string];
@@ -552,10 +569,12 @@ describe('URL media: blank: creates a blank disk, reused on reload', () => {
 });
 
 describe("URL media: cd= is the configuration's CD-ROM drive", () => {
-  // An ISO 9660 disc: 2 KB blocks, as the fake core's identify_cdrom sees it.
+  // An ISO 9660 disc: 2 KB blocks, as the fake core's identify sees it.
   const DISC = new Uint8Array(4096).fill(0x43);
   beforeEach(() => {
-    bridge.reply('machine.scsi.identify_cdrom', () => true);
+    bridge.reply('files.identify', (args: unknown) =>
+      identifyAs((args as [string])[0], { fits: ['hd', 'cd'], kind: 'cd' }),
+    );
   });
   afterEach(() => vi.mocked(media.machineDevices).mockImplementation(async () => []));
 

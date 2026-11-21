@@ -684,14 +684,14 @@ worker's OPFS request through the page's thread — it deadlocked the page.
    [`CreateImageDialog.svelte`](../../app/web2/src/components/display/CreateImageDialog.svelte)
    and creates a blank image directly in OPFS via `files.fd_create`
    (800 KB / 1.4 MB) or `files.hd_create` (size from
-   `machine.scsi.hd_models`; named `.dmg`, so a blank 2 GB disk is a
+   `catalog.hd_models`; named `.dmg`, so a blank 2 GB disk is a
    4 KB UDIF).
 2. **Drag-and-drop onto the Display** —
    [`DropOverlay.svelte`](../../app/web2/src/components/display/DropOverlay.svelte)
    captures drops, calls `processDataTransfer` →
    `acceptFiles(files)`. Auto-detects type by probing each
    `MediaTypeDescriptor` in order; a file the core identifies as an archive
-   (`files.archive.identify`: StuffIt, Compact Pro, Zip, BinHex, MacBinary,
+   (`files.identify`'s `archive`: StuffIt, Compact Pro, Zip, BinHex, MacBinary,
    gzip — by content, not name) is not extracted: its members are probed in
    place through the archive's VFS path, and only the first medium that
    validates is copied out into its store. A floppy goes into the first empty drive the
@@ -789,13 +789,17 @@ typed-dispatch and introspection surface.
   dialog.
 - **`catalog.vroms.identify(path)`** / **`catalog.proms.identify(path)`** →
   the card a video ROM / PCI expansion ROM belongs to, or `null`.
-- **`machine.floppy.identify(path)`** → density string (`400K` / `800K` /
-  `1.4MB`); empty if not a floppy.
-- **`machine.scsi.identify_hd(path)` / `machine.scsi.identify_cdrom(path)`**
-  → bool.  **`machine.scsi.identify_iso(path)`** → bool: the image holds ISO
-  9660, what a drop files a CD-ROM by (`validateUnstated` in lib/media.ts).
-- **`files.archive.identify(path)`** → the archive format (`sit`, `cpt`,
-  `zip`, `hqx`, `bin`, `gz`) or an empty string.
+- **`files.identify(path)`** → what a file is, for any drive, before a
+  machine exists: `{opens, refusal, archive, encoding, file_size, size,
+  sectors, tags, floppy, map, hybrid, fits, kind, volumes}`.  `fits` lists
+  the kinds of drive that take it (`floppy`, `hd`, `cd`, `profile`) — what
+  each Images-panel section validates by (`lib/media.ts`); `kind` is the one
+  a drop of no stated kind is filed as (a CD-ROM only when it holds ISO
+  9660, `validateUnstated`); `refusal` is why a container (UDIF, NDIF, QCOW2,
+  MOOF) cannot be read; `archive` the archive format (`sit`, `cpt`, `zip`,
+  `hqx`, `bin`, `gz`) or `""`; `floppy` the layout a floppy's size implies
+  (`gcr400` … `mfm1440`); `volumes` the Mac OS volumes, numbered as the
+  attached disk's partitions.
   **`files.archive.extract(path, out_dir)`** → bool; powers the
   Filesystem-tab "Unpack" action (an upload probes the archive in place). See [peeler.md](peeler.md).
 - **`files.list(path)`** → `[{name, kind, size, mtime, expandable}]`, descending
@@ -811,7 +815,7 @@ typed-dispatch and introspection surface.
   **`files.mv(src, dst)`** — recursive remove / move, run worker-side so
   WasmFS stays coherent (see Persistence above).
 - **`files.hd_create(path, size)`** / **`files.fd_create(path,
-  high_density)`** — create a blank HD / floppy image; **`machine.scsi.hd_models`** →
+  high_density)`** — create a blank HD / floppy image; **`catalog.hd_models`** →
   drive-size catalog. These drive the New Machine dialog's "Create blank
   image…" option.
 - **`catalog.profile(id)`** → the model's profile: `name`,

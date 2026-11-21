@@ -586,6 +586,7 @@ static image_t *image_open_source(const char *name, source_t *data, source_t *rs
     uint64_t sectors = image->raw_size / STORAGE_BLOCK_SIZE;
     uint64_t tags_at = 0;
     uint32_t dc42_t = u.dc42 ? image_load_diskcopy_identity(image, u.dc42, &tags_at) : 0;
+    image->file_tag_bytes = units_in_file ? t : dc42_t;
     source_t *view = NULL;
     if (t && !units_in_file) {
         view = tagged_view(padded ? padded : u.data, dc42_t == t ? u.dc42 : NULL, tags_at, t, sectors);

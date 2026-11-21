@@ -30,15 +30,6 @@
 #include "system_internal.h"
 #include "value.h"
 
-// Forward declaration — defined alongside the static singleton near the
-// end of the file. scsi_init calls this to detach the pre-machine
-// singleton before mounting the per-machine `scsi` object at root.
-static void scsi_static_detach(void);
-
-// Live per-machine primary (`machine.scsi`) instances; the static singleton
-// comes back only when the last one goes.
-static int s_primary_live = 0;
-
 // Forward declarations — class descriptors are at the bottom of the file but
 // scsi_init / scsi_delete reference them.
 static const class_desc_t scsi_class;
@@ -1415,15 +1406,8 @@ scsi_t *scsi_init_named(struct scheduler *sched, checkpoint_t *checkpoint, const
 
     // Object-tree binding — instance_data is the scsi itself, with bus
     // and devices children plus the per-slot device entries that the
-    // indexed-child get() returns on demand. The pre-machine static
-    // singleton (mounted by scsi_class_register from core_init) shares
-    // the "scsi" name at root — detach it first so dispatch on the new
-    // per-machine object isn't shadowed.
+    // indexed-child get() returns on demand.
     bool primary = (name == NULL) || strcmp(name, "scsi") == 0;
-    if (primary) {
-        scsi_static_detach();
-        s_primary_live++;
-    }
     scsi->object = object_new(&scsi_class, scsi, primary ? "scsi" : name);
     if (scsi->object) {
         object_set_label(scsi->object, primary ? "SCSI" : name);
@@ -1689,15 +1673,6 @@ void scsi_delete(scsi_t *scsi) {
     }
     object_destroy(&scsi->devices_object);
     object_destroy(&scsi->bus_object);
-    // Only the instance mounted at `machine.scsi` displaced the static
-    // singleton on the way in (see the `primary` gate in scsi_init_named), so
-    // only that instance may restore it on the way out.  A machine with a
-    // second bus deletes two instances; restoring unconditionally would
-    // re-attach a singleton named "scsi" while the other bus is still
-    // attached, and since object_attach head-pushes, the singleton would then
-    // shadow a live bus for whatever teardown order happens to run next.
-    bool primary = scsi->object && strcmp(object_name(scsi->object), "scsi") == 0;
-
     object_destroy(&scsi->object);
     if (scsi->buf.data) {
         free(scsi->buf.data);
@@ -1708,15 +1683,6 @@ void scsi_delete(scsi_t *scsi) {
         scsi->chip5380 = NULL;
     }
     free(scsi);
-
-    // Restore the pre-machine static singleton so the next round of
-    // upload validation (e.g. the Welcome view after stopping a
-    // machine) keeps resolving `scsi.identify_hd` / `identify_cdrom`.
-    // Only when no other primary bus is live: checkpoint.load builds the new
-    // machine before destroying the old one, and a singleton re-attached then
-    // would shadow the new machine's `machine.scsi` (head-push attach).
-    if (primary && --s_primary_live == 0)
-        scsi_class_register();
 }
 
 // ============================================================================
@@ -2207,101 +2173,6 @@ static DEF_SETTER(scsi_attr_loopback_set) {
     return val_none();
 }
 
-// The smallest disk taken as a hard disk: the smallest floppy's size.
-#define IDENTIFY_HD_MIN_BYTES (400u * 1024u)
-
-// `scsi.identify_hd(path)` — true if the file looks like a SCSI HD image:
-// it opens, isn't a floppy-sized image, and its disk is at least as large as
-// the smallest floppy.  Smaller is a ROM, a card's ROM or a cut-short dump
-// (S1018-26).  The size is the disk's, not the file's: a UDIF or QCOW2 of a
-// mostly empty disk is far smaller than the disk it holds.  Why, and the
-// closest drive model, go to the scsi log category.
-static DEF_METHOD(scsi_method_identify_hd) {
-    const char *path = argv[0].s;
-    image_t *img = image_open_readonly(path);
-    if (!img) {
-        LOG(2, "identify_hd: cannot open %s", path);
-        return val_bool(false);
-    }
-    if (image_layout(img) != IMAGE_LAYOUT_NONE) {
-        LOG(2, "identify_hd: %s is floppy-sized (%llu bytes)", path, (unsigned long long)image_get_raw_size(img));
-        image_close(img);
-        return val_bool(false);
-    }
-    uint64_t sz = image_get_raw_size(img);
-    if (sz < IDENTIFY_HD_MIN_BYTES) {
-        LOG(2, "identify_hd: %s is smaller than the smallest floppy (%llu bytes)", path, (unsigned long long)sz);
-        image_close(img);
-        return val_bool(false);
-    }
-    const struct drive_model *best = drive_catalog_find_closest(sz);
-    LOG(2, "identify_hd: %s is an HD image: %llu bytes, %s %s %s", path, (unsigned long long)sz,
-        sz == best->size ? "matches" : "nearest model", best->vendor, best->product);
-    image_close(img);
-    return val_bool(true);
-}
-
-// `scsi.identify_cdrom(path)` — true if the file is a recognised CD-ROM
-// image (ISO 9660, HFS, or Apple Partition Map).  What was matched, or why
-// nothing was, goes to the scsi log category.
-static DEF_METHOD(scsi_method_identify_cdrom) {
-    const char *path = argv[0].s;
-    image_t *img = image_open_readonly(path);
-    if (!img) {
-        LOG(2, "identify_cdrom: cannot open %s", path);
-        return val_bool(false);
-    }
-    if (image_layout(img) != IMAGE_LAYOUT_NONE) {
-        LOG(2, "identify_cdrom: %s is floppy-sized (%llu bytes)", path, (unsigned long long)image_get_raw_size(img));
-        image_close(img);
-        return val_bool(false);
-    }
-    // ISO 9660 at sector 16; anything else the format registry recognises
-    // as a disk (a partition map, or a bare HFS / HFS+ / UFS volume).  The
-    // image was opened through the registry already, so a .dmg or a Toast
-    // image inside an archive is judged by the disk it holds.
-    uint64_t sz = disk_size(img);
-    source_t *src = image_source(img);
-    bool is_iso = iso_probe_source(src, 0, sz); // the probe the VFS mounts with
-    const format_t *f = format_contents(src, NULL);
-    source_release(src);
-    bool is_disk = f && strcmp(f->name, "disk") == 0;
-    double size_mb = (double)sz / (1024.0 * 1024.0);
-    const char *fmt = image_get_format(img);
-    const char *enc = (fmt && strcmp(fmt, "raw") != 0) ? fmt : NULL;
-    if (!is_iso && !is_disk) {
-        LOG(2, "identify_cdrom: %s has no ISO 9660, HFS, or Apple Partition Map", path);
-        image_close(img);
-        return val_bool(false);
-    }
-    LOG(2, "identify_cdrom: %s is a CD-ROM image: %.1f MB, %s%s%s%s%s", path, size_mb, is_iso ? "ISO 9660" : "",
-        is_iso && is_disk ? " + " : "", is_disk ? f->doc : "", enc ? ", in " : "", enc ? enc : "");
-    image_close(img);
-    return val_bool(true);
-}
-
-// `scsi.identify_iso(path)` — true if the image holds an ISO 9660 volume
-// (alone or as a hybrid's other side).  An upload of no stated kind (a drop,
-// Home's Load ROM) is filed as a CD-ROM only then: a bare HFS or partitioned
-// image is a hard disk (S1018-06), though identify_cdrom accepts it as a disc.
-static DEF_METHOD(scsi_method_identify_iso) {
-    const char *path = argv[0].s;
-    image_t *img = image_open_readonly(path);
-    if (!img) {
-        LOG(2, "identify_iso: cannot open %s", path);
-        return val_bool(false);
-    }
-    bool is_iso = false;
-    if (image_layout(img) == IMAGE_LAYOUT_NONE) {
-        source_t *src = image_source(img);
-        is_iso = iso_probe_source(src, 0, disk_size(img));
-        source_release(src);
-    }
-    LOG(2, "identify_iso: %s %s", path, is_iso ? "holds ISO 9660" : "has no ISO 9660 volume");
-    image_close(img);
-    return val_bool(is_iso);
-}
-
 // `scsi.attach_hd(path, id)` — attach a hard-disk image at the given SCSI id.
 // Calls system_hd_attach directly.
 static DEF_METHOD(scsi_method_attach_hd) {
@@ -2325,101 +2196,10 @@ static DEF_METHOD(scsi_method_attach_cdrom) {
     return val_bool(system_attach_scsi_cdrom(cfg, bus ? bus : cfg->scsi, argv[0].s, (int)id));
 }
 
-// `scsi.hd_models` — VK_LIST of {label, vendor, product, revision, size} maps
-// for the known SCSI HD model catalog.
-static DEF_GETTER(scsi_attr_hd_models) {
-    int count = drive_catalog_count();
-    if (count <= 0)
-        return val_list(NULL, 0);
-    value_t *items = (value_t *)calloc((size_t)count, sizeof(value_t));
-    if (!items)
-        return val_err("scsi.hd_models: out of memory");
-    for (int i = 0; i < count; i++) {
-        const struct drive_model *md = drive_catalog_get(i);
-        value_map_builder_t *b = val_map_new();
-        val_map_put(b, "label", val_str(md ? md->label : ""));
-        val_map_put(b, "vendor", val_str(md ? md->vendor : ""));
-        val_map_put(b, "product", val_str(md ? md->product : ""));
-        val_map_put(b, "revision", val_str(md ? md->revision : ""));
-        val_map_put(b, "size", val_int(md ? (int64_t)md->size : 0));
-        items[i] = val_map_finish(b);
-    }
-    return val_list(items, (size_t)count);
-}
-
-static const arg_decl_t scsi_path_arg[] = {
-    {.name = "path", .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = "Image file path"},
-};
-
 static const arg_decl_t scsi_attach_args[] = {
     {.name = "path", .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = "Image file path"},
     {.name = "id", .kind = VK_INT, .doc = "SCSI bus index 0..6"},
 };
-
-// The members that need no live bus: the drive catalog and the image
-// identification helpers, shared by the pre-machine singleton
-// (scsi_static_members) and the per-machine class (scsi_members).
-// clang-format off
-#define SCSI_CATALOG_MEMBERS                                                                                           \
-    {.kind = MK_ATTR,                                                                                                  \
-     .name = "hd_models",                                                                                              \
-     .doc = "Known SCSI HD model catalog: [{label, vendor, product, size}] maps",                                      \
-     .flags = M_CAT_ADVANCED,                                                                                          \
-     .attr = {.type = VK_LIST, .get = scsi_attr_hd_models, .set = NULL}},                                              \
-        {.kind = MK_METHOD,                                                                                            \
-         .name = "identify_hd",                                                                                        \
-         .flags = M_CAT_ADVANCED,                                                                                      \
-         .doc = "True if the file looks like a SCSI HD image",                                                         \
-         .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_hd}},             \
-        {.kind = MK_METHOD,                                                                                            \
-         .name = "identify_cdrom",                                                                                     \
-         .flags = M_CAT_ADVANCED,                                                                                      \
-         .doc = "True if the file looks like a CD-ROM image",                                                          \
-         .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_cdrom}},          \
-        {.kind = MK_METHOD,                                                                                            \
-         .name = "identify_iso",                                                                                       \
-         .flags = M_CAT_ADVANCED,                                                                                      \
-         .doc = "True if the image holds an ISO 9660 volume",                                                          \
-         .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_iso}}
-// clang-format on
-
-// Subset of `scsi_members` that doesn't depend on a live bus instance:
-// the drive catalog plus the two file-identification helpers. The static
-// singleton in `s_scsi_static_object` is mounted at root by
-// scsi_class_register so pre-machine code paths (e.g. the Welcome-view
-// HD / CD-ROM upload validation) resolve `scsi.identify_hd` /
-// `scsi.identify_cdrom` without needing a machine on the tree.
-static const member_t scsi_static_members[] = {
-    SCSI_CATALOG_MEMBERS,
-};
-
-static const class_desc_t scsi_static_class = {
-    .name = "scsi",
-    .members = scsi_static_members,
-    .n_members = sizeof(scsi_static_members) / sizeof(scsi_static_members[0]),
-    .doc = "SCSI image identification (before a machine exists)",
-};
-
-// Pre-machine singleton holding the static subset. Replaced by the
-// per-machine full `scsi` object on scsi_init; restored on scsi_delete.
-static struct object *s_scsi_static_object = NULL;
-
-void scsi_class_register(void) {
-    if (s_scsi_static_object)
-        return;
-    s_scsi_static_object = object_new(&scsi_static_class, NULL, "scsi");
-    if (s_scsi_static_object) {
-        object_set_label(s_scsi_static_object, "SCSI");
-        object_set_order(s_scsi_static_object, OBJ_ORDER_SCSI);
-        object_attach(machine_object(), s_scsi_static_object);
-    }
-}
-
-static void scsi_static_detach(void) {
-    if (!s_scsi_static_object)
-        return;
-    object_destroy(&s_scsi_static_object);
-}
 
 static const member_t scsi_members[] = {
     {.kind = MK_ATTR,
@@ -2427,7 +2207,6 @@ static const member_t scsi_members[] = {
      .doc = "Loopback test card / passive terminator",
      .flags = 0,
      .attr = {.type = VK_BOOL, .get = scsi_attr_loopback_get, .set = scsi_attr_loopback_set}            },
-    SCSI_CATALOG_MEMBERS,
     {.kind = MK_METHOD,
      .name = "attach_hd",
      .examples = EXAMPLES("machine.scsi.attach_hd \"/opfs/images/hd/data.img\" 1"),

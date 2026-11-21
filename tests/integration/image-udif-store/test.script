@@ -26,7 +26,7 @@ assert files.verify($dmg) "verify failed"
 assert !files.convert($raw, $dmg) "convert overwrote an existing file"
 
 # The volume inside is read in place, and it is the raw disk's volume.
-files.probe $dmg
+assert files.identify($dmg).opens "the .dmg opens"
 let from_dmg = files.list("${$dmg}/partition1")
 let from_raw = files.list("${$raw}/partition1")
 assert len($from_dmg) == len($from_raw) "the UDIF's volume has a different entry count"
@@ -66,7 +66,7 @@ let mi = files.udif_info($mt)
 assert $mi.source_name == "MacTest Disk.image" "the member was not recorded"
 # The UDIF holds the member as it was (a DiskCopy 4.2 file); the format
 # registry peels both layers, so it opens as the 800 KB floppy inside.
-files.probe $mt
+assert files.identify($mt).opens "the blank .dmg opens"
 assert files.list("${$mt}") "the imported floppy does not mount"
 assert !files.archive.import("../../data/apps/MacTest_Disk.image_.sit_.hqx", "${$WORK_DIR}/no.dmg", "Nope") "a missing member was imported"
 

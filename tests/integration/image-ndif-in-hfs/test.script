@@ -7,7 +7,7 @@ let fd = "${$TEST_DATA}/systems/System_6_0_8.dsk"
 
 # The outer volume holds the NDIF file: its chunks in the data fork, the
 # chunk map in the resource fork.
-assert files.probe($toast) "the HFS image is recognised"
+assert files.identify($toast).opens "the HFS image is recognised"
 assert files.path_size($ndif) > 0 "the NDIF's data fork"
 assert files.path_size("${$ndif}/rsrc/_raw") > 0 "the chunk map's resource fork"
 

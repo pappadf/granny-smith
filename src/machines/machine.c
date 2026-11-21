@@ -5,6 +5,7 @@
 // Machine profile registry plus the machine.* object-model surface.
 
 #include "machine.h"
+#include "drive_catalog.h"
 #include "machine_config.h"
 
 #include "adb.h"
@@ -1177,6 +1178,28 @@ static DEF_GETTER(attr_catalog_pci_cards) {
     return pci_cards_list();
 }
 
+// `catalog.hd_models` — the SCSI hard disk models a disk image is presented
+// as (the closest one by size): {label, vendor, product, revision, size}.
+static DEF_GETTER(attr_catalog_hd_models) {
+    int count = drive_catalog_count();
+    if (count <= 0)
+        return val_list(NULL, 0);
+    value_t *items = (value_t *)calloc((size_t)count, sizeof(value_t));
+    if (!items)
+        return val_err("catalog.hd_models: out of memory");
+    for (int i = 0; i < count; i++) {
+        const struct drive_model *md = drive_catalog_get(i);
+        value_map_builder_t *b = val_map_new();
+        val_map_put(b, "label", val_str(md ? md->label : ""));
+        val_map_put(b, "vendor", val_str(md ? md->vendor : ""));
+        val_map_put(b, "product", val_str(md ? md->product : ""));
+        val_map_put(b, "revision", val_str(md ? md->revision : ""));
+        val_map_put(b, "size", val_int(md ? (int64_t)md->size : 0));
+        items[i] = val_map_finish(b);
+    }
+    return val_list(items, (size_t)count);
+}
+
 static const member_t catalog_members[] = {
     {.kind = MK_ATTR,
      .name = "models",
@@ -1200,13 +1223,18 @@ static const member_t catalog_members[] = {
      .doc = "The ids of all registered PCI card drivers",
      .flags = M_CAT_ADVANCED,
      .attr = {.type = VK_LIST, .get = attr_catalog_pci_cards, .set = NULL}},
+    {.kind = MK_ATTR,
+     .name = "hd_models",
+     .doc = "The SCSI hard disk models an attached image is presented as: [{label, vendor, product, revision, size}]",
+     .flags = M_CAT_ADVANCED,
+     .attr = {.type = VK_LIST, .get = attr_catalog_hd_models, .set = NULL}},
 };
 
 static const class_desc_t catalog_class = {
     .name = "catalog",
     .members = catalog_members,
     .n_members = sizeof(catalog_members) / sizeof(catalog_members[0]),
-    .doc = "What the emulator can build or fit: models, card drivers, option ROMs",
+    .doc = "What the emulator can build or fit: models, card drivers, option ROMs, hard disk models",
 };
 
 static struct object *s_catalog_object = NULL;

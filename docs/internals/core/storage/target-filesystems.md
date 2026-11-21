@@ -11,7 +11,7 @@ does this image have?" and "give me the bytes of `/etc/motd` (or a resource
 fork) out of this volume" cheaply and deterministically.
 
 ```
-shell / web terminal     files.partmap | files.probe | files.ls | files.list | files.cat | files.cp
+shell / web terminal     files.partmap | files.identify | files.ls | files.list | files.cat | files.cp
         │                  web Filesystem tree → files.list (image descent)
         ▼
   VFS resolver  ───────  path normalise + descent + auto-mount cache   (src/core/vfs/vfs.c)
@@ -448,7 +448,7 @@ it for a disk image:
   drops it.
 - On open it probes **APM first, then a bare HFS/HFS+, UFS, MFS or ISO 9660
   volume** by `volume_sniff_source` (`image_volume.c`), the classifier the
-  format registry's disk detector and `files.probe` use too, so a disk the
+  format registry's disk detector and `files.identify` use too, so a disk the
   registry claims is one this open accepts (a UFS magic counts big-endian
   only, as `ufs_open_source` reads it). A bare
   volume gets a synthetic `partition1` covering the whole image, so the rest
@@ -484,7 +484,7 @@ Partition inspection (`src/core/storage/storage_class.c`):
 | Command | Effect |
 |---------|--------|
 | `files.partmap <path>` | Parse and print the partition map as a text table. |
-| `files.probe <path>` | Print the detected format without descending, by the classifier the VFS mounts with (`volume_sniff`) — APM, ISO 9660, APM+ISO or bare HFS-family+ISO hybrid, a bare HFS, HFS+, HFSX, MFS or UFS volume, or raw. On an APM disk, one line per filesystem partition (HFS, UFS, or one whose own head the classifier recognises), with the volume it finds there. |
+| `files.identify <path>` | What the file is, without descending, by the classifier the VFS mounts with (`volume_sniff`): its partition map (`map`), whether it is an ISO 9660 + APM or bare HFS-family hybrid (`hybrid`), its Mac OS volumes as the attached disk numbers them (`volumes`), which kinds of drive take it (`fits`), and more (see `image_kind.md` §4). |
 | `files.mounts[n]` | The currently-cached auto-mounts, indexed by a never-reused mount serial: `path`, `format`, `partitions`, `refcount`, `busy`, `stale`. |
 | `files.mounts.find <path>` | The serial `n` of the mount caching `path`, or -1. |
 | `files.mounts[n].unmount` | Force-close a cached auto-mount. |
@@ -599,7 +599,7 @@ The web frontend runs these through the **Terminal console**
 | `src/core/vfs/image_vfs.{c,h}` | Auto-mount cache + image backend; in-image path parsing; partition routing |
 | `src/core/vfs/vfs_class.c` | Object-model `files.ls` / `files.cat` / `files.mkdir` bindings |
 | `src/core/storage/image_apm.{c,h}` | Pure APM parser |
-| `src/core/storage/image_volume.{c,h}` | `volume_sniff`: the one APM / HFS / HFS+ / HFSX / MFS / UFS / ISO 9660 classifier (registry detector, VFS open, `files.probe`, wrapper sniff, UDIF table name) |
+| `src/core/storage/image_volume.{c,h}` | `volume_sniff`: the one APM / HFS / HFS+ / HFSX / MFS / UFS / ISO 9660 classifier (registry detector, VFS open, `files.identify`, wrapper sniff, UDIF table name) |
 | `src/core/storage/mac_disk_layout.h` | DDM, APM entry and volume-header field offsets and signatures, shared by the parser, the wrapper and the classifier |
 | `src/core/storage/image_apm_io.c` | Image-backed APM entry point |
 | `src/core/storage/image_hfs.{c,h}` | HFS catalog + Extents Overflow walker, fork reader |

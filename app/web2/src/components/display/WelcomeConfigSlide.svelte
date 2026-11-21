@@ -305,7 +305,7 @@
     profile && doc ? mc.dropImagelessDisks(profile, doc, mediaImages).doc : null,
   );
   // The Mac OS volumes of each hard disk image chosen, by OPFS path
-  // (files.partitions, numbered as the attached disk's partitions), and by
+  // (files.identify's volumes, numbered as the attached disk's partitions), and by
   // storage position: "Start up from" offers a disk's volumes by name.
   let volumesByPath = $state<Record<string, mc.DiskPartition[]>>({});
   // eslint-disable-next-line svelte/prefer-svelte-reactivity -- bookkeeping, not state

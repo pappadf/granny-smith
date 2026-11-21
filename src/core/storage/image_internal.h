@@ -43,6 +43,10 @@ struct image {
     // 532-byte layout); otherwise it holds 512-byte sectors and its tags,
     // if any, come from a DiskCopy tag section or are zeros.
     bool units_in_file;
+    // Tag bytes per sector the file itself carries (a DiskCopy tag section,
+    // a ProFile's in-band 20), whatever the image was opened with: what
+    // files.identify reports.
+    uint32_t file_tag_bytes;
     bool writable; // True when the caller requested write access
     bool ghost_instance; // True when delta+journal are ephemeral scratch (read-only mounts)
     image_kind_t kind; // What the opening device presents it as (image_open_kind); IMAGE_KIND_NONE unheld

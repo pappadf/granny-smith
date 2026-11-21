@@ -11,6 +11,7 @@
 import { gsEval, gsEvalWithProgress, gsOk, gsErrorText, isGsError, isGsObject } from './emulator';
 import {
   MEDIA_TYPES,
+  identifyFile,
   identifyRom,
   identifyCardRom,
   type MediaTypeId,
@@ -229,10 +230,10 @@ export async function fdDrivePresent(d: number): Promise<boolean> {
   return (await gsEval(`machine.floppy.drive[${d}].present`)) === true;
 }
 
-// The density the machine's floppy controller reads `path` as ("" or an
-// error when it is no floppy it takes).
-export async function identifyFloppy(path: string): Promise<unknown> {
-  return gsEval('machine.floppy.identify', [path]);
+// The floppy layout `path` is (gcr400, gcr800, mfm720, mfm1440), or "" when
+// it is no floppy (files.identify).
+export async function identifyFloppy(path: string): Promise<string> {
+  return (await identifyFile(gsEval, path))?.floppy ?? '';
 }
 
 // Whether the core takes `path` as a medium of type `id` (lib/media).

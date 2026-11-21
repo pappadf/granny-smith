@@ -142,7 +142,7 @@ def row_wrap_layout() {
 }
 
 def scsi_identify_ok() {
-    return machine.scsi.identify_hd("${$vol753}")
+    return contains(files.identify("${$vol753}").fits, "hd")
 }
 
 # ---- boot rows ------------------------------------------------------------------

@@ -850,7 +850,7 @@ machine with no drives; `"startup": null` is "no default startup device"
 -- one of the Apple drives `docs/internals/core/peripherals/scsi_cdrom.md`
 §1.1 lists; absent, it is the profile's (`hw_profile_t.cdrom_drive`).
 `startup` may also name a `partition`: the startup
-volume's partition number on that disk as attached (`files.partitions`),
+volume's partition number on that disk as attached (`files.identify`'s `volumes`),
 which a family whose firmware boots a partition seeds (the G3's Open
 Firmware `boot-device`, for an ATA disk); the others ignore it.  A `model` member must agree with `model=`.  Images
 are not configuration: they are attached after the boot to the device at a

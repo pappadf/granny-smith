@@ -35,13 +35,14 @@ assert machine.hd.present "the blank ProFile survived the restore"
 assert files.images[0].type == "profile" "as a ProFile"
 
 # A Lisa has no SCSI.  After a Mac with a controller was booted and replaced,
-# machine.scsi must not answer from that Mac's controller: the machine-bound
-# members error, and only the pre-machine probe surface remains.
+# machine.scsi must not answer from that Mac's controller: a Lisa has no
+# machine.scsi at all (no pre-machine stand-in either).
 machine.boot model="plus" rom="../../data/roms/plus-v3-4d1f8172.rom"
 assert try(machine.scsi.loopback, "none") != "none" "the Plus has a live controller"
 machine.boot model="lisa" rom="${$ROM}"
 assert try(machine.scsi.loopback, "none") == "none" "a Lisa has no SCSI controller to answer"
 assert try(machine.scsi.device[0].type, "none") == "none" "nor SCSI devices"
-assert machine.scsi.hd_models != none "the probe surface still answers"
+assert try(machine.scsi, "none") == "none" "a Lisa has no machine.scsi"
+assert len(catalog.hd_models) > 0 "the hard disk models answer from the catalog"
 echo "media-bays-lisa-ok"
 quit

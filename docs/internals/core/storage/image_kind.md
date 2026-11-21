@@ -410,7 +410,8 @@ the image layer through one call, `image_open_kind`.
 
 ### 4.1 `files.identify(path)`
 
-Identify lives in `image_kind.c` and is exposed as `files.identify`.
+Identify is `files.identify` (`storage_class.c`), with the kinds' accept
+rules in `image_kind.c` (`image_kind_fits`).
 `files` is a root service that exists before any machine, so no facade is
 needed. It opens the file once, read-only, with no kind (T = 0, no wrapper),
 then asks the archive layer and the kind table. It always returns a map: a
@@ -420,7 +421,7 @@ error.
 | Field | Type | Meaning |
 |---|---|---|
 | `opens` | bool | the image layer opens it |
-| `error` | string | why a container will not open, else `""` |
+| `refusal` | string | why a container will not open, else `""` (not named `error`: a map with that key is a failure under the result contract) |
 | `archive` | string | `sit`/`cpt`/`zip`/`tar`/`hqx`/`bin`/`gz` when the archive layer recognises it, else `""` |
 | `encoding` | string | wrapper layers peeled |
 | `file_size`, `size`, `sectors` | uint | host bytes; disk data bytes; 512-byte sectors |
@@ -441,20 +442,21 @@ table, not the identity.
 
 | Removed | Use |
 |---|---|
-| `files.identify_floppy(p)` | `"floppy" in files.identify(p).fits` |
+| `files.identify_floppy(p)` | `contains(files.identify(p).fits, "floppy")` |
 | `machine.floppy.identify(p)` | `files.identify(p).floppy` |
-| `machine.scsi.identify_hd(p)` | `"hd" in …fits` |
-| `machine.scsi.identify_cdrom(p)` | `"cd" in …fits` |
+| `machine.scsi.identify_hd(p)` | `contains(…fits, "hd")` |
+| `machine.scsi.identify_cdrom(p)` | `contains(…fits, "cd")` |
 | `machine.scsi.identify_iso(p)` | `…kind == "cd"` |
-| `files.image_error(p)` | `…error` |
+| `files.image_error(p)` | `…refusal` |
 | `files.archive.identify(p)` | `…archive` (`files.archive.extract/import` stay) |
 | `files.partitions(p)` | `…volumes` |
 | `files.probe(p)` | `files.identify p` at the REPL; `assert files.identify(p).opens` in scripts |
 | `system_probe_floppy` (dead) | deleted (C1) |
 
-`system_find_media` uses the identify core (`fits` holds `floppy`). The
-web's size table (`lib/media.ts`) is deleted: every `validate` makes a
-single `files.identify` call.
+`system_find_media` (`files.find_media`) keeps its own check, which is the
+floppy rule already (`image_layout`: a floppy's four sizes). The web's size
+table (`lib/media.ts`) is deleted: every `validate` makes a single
+`files.identify` call.
 
 ### 4.3 The SCSI facade goes
 
@@ -476,7 +478,7 @@ commit (no aliases, no shims).
 | C1 | **One open path + kinds.** `image_kind.c`: the kind table, `image_open_kind(path, {kind, writable, instance, delta_dir})`, `image_delta_dir`, `image_create_blank_kind`; `media_open`, `do_insert_fd`, `system_create_floppy`, `lisa_profile_attach` and the checkpoint restore route through it; the kind is stored on the image and in its checkpoint entry; `files.images[].type` reports it. Removes `enum image_type`, `classify_image`, `image_set_type`, the ProFile's `pro_delta_dir`, `system.c`'s `pick_delta_dir`, the public `*_with_geometry` openers, `system_probe_floppy`. Fixes §1.4 items 1, 2, 10 | yes |
 | C2 | **One owner, one eject, one checkpoint path.** The ProFile in the image table; every eject releases its image to the table (`config_release_image`; the Lisa diskette excepted, §2.6); refs by position; blank images with a persistent delta; read-only images write-protected, with a lazy scratch pair; write-protect checks in the Lisa FDC and the SWIM ISM; `insert` writable by default everywhere; host eject of an ATA hard disk. Fixes items 4–7, 9 | yes |
 | C3 | **Tags in-band.** Blocks `[T][512]`; the tagged base view (a DiskCopy tag section, or zeros); `disk_read_tag/disk_write_tag` on blocks, `disk_read_units/disk_write_units` for the ProFile; DiskCopy and MOOF export split the tags off the streamed blocks; the checkpoint tag tail, `image->tags` and `image_set_tags` go. Fixes item 3 | yes |
-| C4 | **`files.identify`.** The identify core and method; the nine entry points of §4.2 and the SCSI facade go; `catalog.hd_models` | |
+| C4 | **`files.identify`.** The identify method (`storage_class.c`) and the kinds' accept rules (`image_kind_fits`); the nine entry points of §4.2 and the SCSI facade go; `catalog.hd_models`; the shell's `contains()` takes a list haystack (membership), for `contains(files.identify(p).fits, "hd")` | yes |
 | C5 | **One image node.** `image_class.c` on every device and on `files.images`; the ATA `device[U]` collection; the renames of §3.4; every export an I/O job with a codec; gs-test-data scripts updated in that repository. Fixes item 8 | |
 | C6 | *Dropped* (§6): the type keeps its name, `image_t`, with `image.h` and the `disk_*` I/O calls | — |
 | C7 | **`files.create(path, kind, size)`** replaces `files.fd_create/hd_create/profile_create` and `machine.floppy.create`; profile blank-disk entries name `{kind, size}` | |

@@ -1316,36 +1316,6 @@ static DEF_GETTER(floppy_attr_sel) {
     return val_bool(floppy_get_sel(floppy_self_from(self)));
 }
 
-// `floppy.identify(path)` — return density string for a recognised floppy
-// image ("400K" / "800K" / "1.4MB"), or empty string otherwise. Empty is
-// falsy under the predicate-truthy rule, so callers can do
-//   `assert ${floppy.identify(path)} "not a floppy"`.
-static DEF_METHOD(floppy_method_identify) {
-    image_t *img = image_open_readonly(argv[0].s);
-    if (!img)
-        return val_str("");
-    const char *density = "";
-    switch (image_layout(img)) {
-    case IMAGE_LAYOUT_GCR400:
-        density = "400K";
-        break;
-    case IMAGE_LAYOUT_GCR800:
-        density = "800K";
-        break;
-    case IMAGE_LAYOUT_MFM720:
-        density = "720K";
-        break;
-    case IMAGE_LAYOUT_MFM1440:
-        density = "1.4MB";
-        break;
-    default:
-        density = "";
-        break;
-    }
-    image_close(img);
-    return val_str(density);
-}
-
 // `floppy.create(path, [hd])` — create a blank floppy image and auto-mount
 // it. `hd` is the optional density flag: "hd" / true → 1.44 MB, anything
 // else → 800 KB. The legacy `--hd` string spelling is also accepted.
@@ -1375,10 +1345,6 @@ static DEF_METHOD(floppy_method_create) {
     return val_bool(rc == 0);
 }
 
-static const arg_decl_t floppy_path_arg[] = {
-    {.name = "path", .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = "Floppy image path"},
-};
-
 static const arg_decl_t floppy_create_args[] = {
     {.name = "path", .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = "Output path"},
     {.name = "hd",
@@ -1396,11 +1362,6 @@ static const member_t floppy_members[] = {
      .name = "sel",
      .doc = "VIA-driven head-select signal",
      .attr = {.type = VK_BOOL, .get = floppy_attr_sel, .set = NULL}},
-    {.kind = MK_METHOD,
-     .name = "identify",
-     .flags = M_CAT_ADVANCED,
-     .doc = "Return floppy density (\"400K\" / \"800K\" / \"1.4MB\") or empty if not a floppy",
-     .method = {.args = floppy_path_arg, .nargs = 1, .result = VK_STRING, .fn = floppy_method_identify}},
     {.kind = MK_METHOD,
      .name = "create",
      .examples = EXAMPLES("machine.floppy.create \"/opfs/images/fd/blank.dsk\"",

@@ -92,6 +92,22 @@ typedef struct image_open_opts {
 // the reason is in `err` (may be NULL).
 struct image *image_open_kind(const char *path, const image_open_opts_t *o, char *err, size_t err_cap);
 
+// What files.identify learned about a file, for the kinds' accept rules.
+typedef struct image_facts {
+    bool opens; // the image layer opens it as 512-byte sectors
+    uint64_t size; // its data bytes
+    bool iso; // holds an ISO 9660 volume
+    bool disk_contents; // a partition map or a bare HFS / HFS+ / UFS volume
+    bool profile_layout; // a ProFile's 532-byte blocks: a raw file of them, or the DiskCopy variant
+} image_facts_t;
+
+// Whether a drive presenting `kind` takes a file with these facts: a floppy
+// drive the four floppy sizes; a hard disk anything else of at least the
+// smallest floppy's size (smaller is a ROM or a cut-short dump); a CD-ROM
+// drive a disc (ISO 9660) or anything a disc can carry (a partition map, a
+// bare volume), never floppy-sized; a ProFile its 532-byte layout.
+bool image_kind_fits(image_kind_t kind, const image_facts_t *f);
+
 // A writable all-zero image of `kind` with no base file: `blocks` 512-byte
 // sectors, with the kind's tags (a blank ProFile).  Its delta is a fresh
 // instance where image_delta_dir(NULL) says, or the existing `instance` stem

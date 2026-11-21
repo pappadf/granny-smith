@@ -392,15 +392,6 @@ static void cleanup_archive_import(io_leaf_t *j) {
 // Object-model class descriptor
 // ============================================================================
 
-// `files.archive.identify(path)` — return the format short name for a recognised
-// archive ("sit" / "cpt" / "zip" / "hqx" / "bin" / "gz"), or empty string
-// when the file is unreadable or not an archive. Empty is falsy under
-// the predicate-truthy rule — same shape as floppy.identify.
-static DEF_METHOD(archive_method_identify) {
-    const char *format = archive_identify_file(argv[0].s);
-    return val_str(format ? format : "");
-}
-
 // `files.archive.extract(path, [out_dir])` — extract a Mac archive into out_dir
 // (defaults to the current working directory). Returns true on success.
 static DEF_METHOD(archive_method_extract) {
@@ -452,10 +443,6 @@ static const arg_decl_t archive_import_args[] = {
                                                           .default_doc = "none"            },
 };
 
-static const arg_decl_t archive_path_arg[] = {
-    ARG_PATH("path", "Archive file path"),
-};
-
 static const arg_decl_t archive_extract_args[] = {
     ARG_PATH("path", "Archive file path"),
     {.name = "out_dir",
@@ -467,16 +454,6 @@ static const arg_decl_t archive_extract_args[] = {
 };
 
 static const member_t archive_members[] = {
-    {.kind = MK_METHOD,
-     .name = "identify",
-     .examples = EXAMPLES("files.archive.identify \"/opfs/downloads/app.sit\""),
-     .doc = "Identify a Mac archive's format",
-     .method = {.result_doc =
-                    "\"sit\", \"cpt\", \"zip\", \"tar\", \"hqx\", \"bin\" or \"gz\"; empty when not an archive",
-                .args = archive_path_arg,
-                .nargs = 1,
-                .result = VK_STRING,
-                .fn = archive_method_identify}},
     {.kind = MK_METHOD,
      .name = "extract",
      .examples = EXAMPLES("files.archive.extract \"/opfs/downloads/app.sit\"",
@@ -498,7 +475,7 @@ static const member_t archive_members[] = {
                 .args = archive_import_args,
                 .nargs = 4,
                 .result = VK_MAP,
-                .fn = archive_method_import}},
+                .fn = archive_method_import} },
 };
 
 static const class_desc_t archive_class = {

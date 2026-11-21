@@ -155,7 +155,7 @@ export interface ConfigDocument {
   floppies: Record<string, string>;
   storage: StorageDevice[];
   // partition: the startup volume's partition number on that disk
-  // (files.partitions), when one is chosen.
+  // (files.identify's volumes), when one is chosen.
   startup: { bus: string; unit: number; partition?: number } | null;
   cards: CardEntry[];
   displays: Record<string, DisplayEntry>;

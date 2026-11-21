@@ -674,7 +674,7 @@ TEST(test_decode_sector_rejects_illegal_data_codeword) {
 // The four Macintosh floppy capacities, each pinning an encoding, a side count
 // and a sector layout.  720K is the one that used to be missing: it classified
 // as a hard disk, so the GCR path encoded MFM-laid-out bytes as if they were an
-// 800K disk, the media senses reported DD GCR, and floppy.identify said "not a
+// 800K disk, the media senses reported DD GCR, and files.identify said "not a
 // floppy".
 TEST(test_media_descriptor) {
     struct {

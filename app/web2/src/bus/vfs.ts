@@ -11,6 +11,7 @@
 import { gsEval, gsErrorText, gsOk } from './emulator';
 import { opfs } from './opfs';
 import { listViaVfs, isExpandable, markExpandable } from '@/lib/diskImage';
+import { identifyFile } from '@/lib/media';
 import type { OpfsEntry } from './types';
 
 interface VfsRawEntry {
@@ -95,11 +96,11 @@ export async function listRaw(dir: string): Promise<unknown[] | string> {
   return Array.isArray(r) ? r : gsErrorText(r);
 }
 
-// The Mac OS volumes of a disk image (files.partitions, numbered as the
-// attached disk's partitions); none for an image the core cannot read.
+// The Mac OS volumes of a disk image (files.identify's volumes, numbered as
+// the attached disk's partitions); none for an image the core cannot read.
 export async function diskPartitions(path: string): Promise<unknown[]> {
-  const r = await gsEval('files.partitions', [path]).catch(() => null);
-  return Array.isArray(r) ? r : [];
+  const id = await identifyFile(gsEval, path).catch(() => null);
+  return id?.volumes ?? [];
 }
 
 // A file's size in bytes, or null when the core cannot say.

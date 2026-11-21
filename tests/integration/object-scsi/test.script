@@ -45,48 +45,48 @@ assert machine.scsi.loopback == true
 machine.scsi.loopback = false
 assert machine.scsi.loopback == false
 
-# --- identify_hd / identify_cdrom / identify_iso ----------------------------
-# The typed classifiers the web2 upload pipeline gates on (lib/media.ts):
-# a file dropped into the HD/CD slot must identify as that media type or
-# the upload is rejected. Previously only exercised through the legacy
-# web UI's `hd validate` / `cdrom validate` commands (retired with it).
+# --- files.identify: which drives take a file ------------------------------
+# The one identify the web2 upload pipeline gates on (lib/media.ts): a file
+# dropped into the HD/CD slot must fit that kind of drive or the upload is
+# rejected.  It answers for every kind of drive, not just SCSI's.
 #
-# HD: accepts anything that opens and isn't floppy-sized; a fresh
-# catalog-model image is the positive case, a blank 800K floppy the
-# negative one.
+# HD: anything that opens and isn't floppy-sized; a fresh catalog-model
+# image is the positive case, a blank 800K floppy the negative one.
 assert files.hd_create("${$WORK_DIR}/ident-hd.img", "HD20SC") "hd_create failed"
 assert files.fd_create("${$WORK_DIR}/ident-fd.img") "fd_create failed"
-assert machine.scsi.identify_hd("${$WORK_DIR}/ident-hd.img") == true "HD image not identified as HD"
-assert machine.scsi.identify_hd("${$WORK_DIR}/ident-fd.img") == false "floppy wrongly identified as HD"
-assert machine.scsi.identify_hd("${$WORK_DIR}/does-not-exist.img") == false "missing file identified as HD"
+assert contains(files.identify("${$WORK_DIR}/ident-hd.img").fits, "hd") "HD image not identified as HD"
+assert !contains(files.identify("${$WORK_DIR}/ident-fd.img").fits, "hd") "floppy wrongly identified as HD"
+assert contains(files.identify("${$WORK_DIR}/ident-fd.img").fits, "floppy") "floppy not identified as a floppy"
+assert files.identify("${$WORK_DIR}/ident-fd.img").floppy == "gcr800" "the blank floppy is an 800K GCR one"
+let missing = files.identify("${$WORK_DIR}/does-not-exist.img")
+assert !$missing.opens && len($missing.fits) == 0 "missing file identified as a disk"
 # A disk smaller than the smallest floppy is no hard disk (S1018-26): a
 # 32 KB PCI card ROM opens and is not floppy-sized, but is refused.
-assert machine.scsi.identify_hd("../../data/roms/mach64-gx-104-437584e0.prom") == false "a 32 KB card ROM identified as HD"
+assert !contains(files.identify("../../data/roms/mach64-gx-104-437584e0.prom").fits, "hd") "a 32 KB card ROM identified as HD"
 # The floor is the disk's size, not the file's: the UDIF of the blank 20 MB
 # disk above is a few KB, and still a hard disk.
 assert files.convert("${$WORK_DIR}/ident-hd.img", "${$WORK_DIR}/ident-hd.dmg") "convert to UDIF failed"
 assert files.path_size("${$WORK_DIR}/ident-hd.dmg") < 409600 "the blank disk's UDIF is not smaller than a floppy"
-assert machine.scsi.identify_hd("${$WORK_DIR}/ident-hd.dmg") == true "a compact UDIF of a 20 MB disk not identified as HD"
+assert contains(files.identify("${$WORK_DIR}/ident-hd.dmg").fits, "hd") "a compact UDIF of a 20 MB disk not identified as HD"
 
 # CD-ROM: requires a recognised filesystem (ISO 9660 / HFS / APM). The
 # retail A/UX install disc is the positive case; a blank (all-zero) HD
 # image and a floppy are the negatives.
-assert machine.scsi.identify_cdrom("../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso") == true "A/UX retail ISO not identified as CD-ROM"
-assert machine.scsi.identify_cdrom("${$WORK_DIR}/ident-hd.img") == false "blank HD image wrongly identified as CD-ROM"
-assert machine.scsi.identify_cdrom("${$WORK_DIR}/ident-fd.img") == false "floppy wrongly identified as CD-ROM"
+assert contains(files.identify("../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso").fits, "cd") "A/UX retail ISO not identified as CD-ROM"
+assert !contains(files.identify("${$WORK_DIR}/ident-hd.img").fits, "cd") "blank HD image wrongly identified as CD-ROM"
+assert !contains(files.identify("${$WORK_DIR}/ident-fd.img").fits, "cd") "floppy wrongly identified as CD-ROM"
 
-# identify_iso: what files an upload of no stated kind (a drop, Load ROM)
-# as a CD-ROM (S1018-06).  A partitioned or bare HFS disk passes
-# identify_cdrom (the CD-ROM section's own Add takes it as a disc) but holds
-# no ISO 9660, so a drop files it as a hard disk -- the A/UX disc, all
-# partition map, too.
-# The positive cases are in image-iso9660, which builds an ISO disc.
-assert machine.scsi.identify_iso("../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso") == false "the A/UX disc (APM, no ISO side) seen as ISO 9660"
-assert machine.scsi.identify_cdrom("../../data/systems/system_6_0_8_20mb_8_24gc.img") == true "partitioned HFS disk not accepted as a CD-ROM"
-assert machine.scsi.identify_iso("../../data/systems/system_6_0_8_20mb_8_24gc.img") == false "partitioned HFS disk seen as ISO 9660"
-assert machine.scsi.identify_cdrom("../../data/systems/system_7_0_1_10mb_bare_plus.img") == true "bare HFS disk not accepted as a CD-ROM"
-assert machine.scsi.identify_iso("../../data/systems/system_7_0_1_10mb_bare_plus.img") == false "bare HFS disk seen as ISO 9660"
-assert machine.scsi.identify_iso("${$WORK_DIR}/ident-fd.img") == false "floppy seen as ISO 9660"
+# kind: what an upload of no stated kind (a drop, Load ROM) is filed as.  A
+# CD-ROM only when it holds ISO 9660 (S1018-06): a partitioned or bare HFS
+# disk fits a CD-ROM drive (the CD-ROM section's own Add takes it as a disc)
+# but holds no ISO 9660, so a drop files it as a hard disk -- the A/UX disc,
+# all partition map, too.  The ISO cases are in image-iso9660.
+assert files.identify("../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso").kind == "hd" "the A/UX disc (APM, no ISO side) filed as a CD-ROM"
+assert contains(files.identify("../../data/systems/system_6_0_8_20mb_8_24gc.img").fits, "cd") "partitioned HFS disk not accepted as a CD-ROM"
+assert files.identify("../../data/systems/system_6_0_8_20mb_8_24gc.img").kind == "hd" "partitioned HFS disk filed as a CD-ROM"
+assert contains(files.identify("../../data/systems/system_7_0_1_10mb_bare_plus.img").fits, "cd") "bare HFS disk not accepted as a CD-ROM"
+assert files.identify("../../data/systems/system_7_0_1_10mb_bare_plus.img").kind == "hd" "bare HFS disk filed as a CD-ROM"
+assert files.identify("${$WORK_DIR}/ident-fd.img").kind == "floppy" "the floppy is filed as a floppy"
 
 # --- eject / insert round-trip ----------------------------------------------
 # eject() is deliberately type-agnostic: on a hard disk it is "detach this

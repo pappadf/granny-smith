@@ -50,6 +50,11 @@ assert $nums[0] == 1 "list literal first element"
 assert $nums[2] == 3 "list literal last element"
 let trailing = [1, 2, 3,]
 assert len($trailing) == 3 "trailing comma is allowed"
+# contains() over a list asks membership: is one of its items the string.
+let kinds = ["floppy", "hd"]
+assert contains($kinds, "hd") "contains finds a list item"
+assert !contains($kinds, "cd") "contains misses an absent item"
+assert !contains($kinds, "h") "contains matches whole items, not substrings"
 let mixed = [1, "two", 3 + 4]
 assert $mixed[1] == "two" "mixed-kind list literal"
 assert $mixed[2] == 7 "list elements are full expressions"

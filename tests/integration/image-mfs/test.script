@@ -1,7 +1,7 @@
 # A System 2.0.1 floppy: MFS, one flat directory of nine files.
 let d = "../../data/systems/System_2_0_1.dsk"
-assert files.probe($d) "the MFS floppy is recognised as a disk"
-assert machine.floppy.identify($d) == "400K" "it is a 400K floppy"
+assert files.identify($d).opens "the MFS floppy is recognised as a disk"
+assert files.identify($d).floppy == "gcr400" "it is a 400K floppy"
 let names = ""
 for e in files.list("${$d}/partition1") {
     $names = "${$names}|${$e.name}"

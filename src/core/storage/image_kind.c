@@ -36,6 +36,25 @@ static const image_kind_desc_t *kind_desc(image_kind_t kind) {
     return (kind >= IMAGE_KIND_NONE && kind < IMAGE_KIND_COUNT) ? &k_kinds[kind] : &k_kinds[IMAGE_KIND_NONE];
 }
 
+// The smallest disk taken as a hard disk: the smallest floppy's size.
+#define FITS_HD_MIN_BYTES (400u * 1024u)
+
+bool image_kind_fits(image_kind_t kind, const image_facts_t *f) {
+    bool floppy_sized = f->opens && image_layout_of_size(f->size) != IMAGE_LAYOUT_NONE;
+    switch (kind) {
+    case IMAGE_KIND_FLOPPY:
+        return floppy_sized;
+    case IMAGE_KIND_HD:
+        return f->opens && !floppy_sized && f->size >= FITS_HD_MIN_BYTES;
+    case IMAGE_KIND_CD:
+        return f->opens && !floppy_sized && (f->iso || f->disk_contents);
+    case IMAGE_KIND_PROFILE:
+        return f->profile_layout;
+    default:
+        return false;
+    }
+}
+
 const char *image_kind_name(image_kind_t kind) {
     return kind_desc(kind)->name;
 }

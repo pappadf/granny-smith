@@ -26,6 +26,7 @@
 #include "image_hfs.h"
 #include "image_internal.h"
 #include "image_iso9660.h"
+#include "image_kind.h"
 #include "image_ndif.h"
 #include "image_part.h"
 #include "image_udif.h"
@@ -581,107 +582,17 @@ static const char *partition_volume_kind(image_t *img, uint64_t size, const apm_
     return kind == VOL_APM ? NULL : volume_kind_label(kind);
 }
 
-// files.probe's lines for an APM disk's filesystem partitions.
-static void probe_report_partitions(image_t *img, uint64_t size) {
-    apm_table_t *table = image_apm_parse(img, NULL);
-    if (!table)
-        return;
-    for (uint32_t i = 0; i < table->n_partitions; i++) {
-        const apm_partition_t *p = &table->partitions[i];
-        if (p->fs_kind != APM_FS_HFS && p->fs_kind != APM_FS_UFS && p->fs_kind != APM_FS_UNKNOWN)
-            continue;
-        const char *vol = partition_volume_kind(img, size, p);
-        if (!vol && p->fs_kind == APM_FS_UNKNOWN)
-            continue; // an unrecognised partition with no volume we know
-        out_printf("partition %u: %s (%s)%s%s\n", (unsigned)p->index, p->name[0] ? p->name : "(unnamed)",
-                   p->type[0] ? p->type : "(unknown)", vol ? ", volume " : "", vol ? vol : "");
-    }
-    image_apm_free(table);
-}
-
-// `files.probe(path)` — identify the format of a disk image.
-// `files.image_error(path)` — why the file at `path` cannot be opened as a
-// disk image when it is a container image (UDIF, NDIF, QCOW2, MOOF) the emulator
-// cannot read, else "".  The upload says it instead of "not a valid Hard
-// Disk image" (the reason was only in the terminal).
-static DEF_METHOD(files_method_image_error) {
-    image_t *img = image_open_readonly(argv[0].s);
-    if (img) {
-        image_close(img);
-        return val_str("");
-    }
-    return val_str(image_open_error());
-}
-
-// `files.identify_floppy(path)` -- true when the image layer opens the file
-// as a floppy (400K/800K GCR, 720K/1440K MFM), whatever wraps it: the
-// Floppy Disk upload's test for a file its size does not identify (a MOOF).
-static DEF_METHOD(files_method_identify_floppy) {
-    image_t *img = image_open_readonly(argv[0].s);
-    bool fd = image_layout(img) != IMAGE_LAYOUT_NONE;
-    image_close(img);
-    return val_bool(fd);
-}
-
-static DEF_METHOD(files_method_probe) {
-    const char *path = argv[0].s;
-    image_t *img = image_open_readonly(path);
-    if (!img) {
-        out_printf("cannot open image '%s'\n", path);
-        return val_bool(false);
-    }
-    uint64_t size = disk_size(img);
-    // The classifier the VFS mounts with, so a disc reported as a hybrid
-    // here is one the VFS shows both sides of, and a bare volume named here
-    // is one it opens.
-    source_t *vsrc = image_source(img);
-    volume_sniff_t v = volume_sniff_source(vsrc, 0, size);
-    source_release(vsrc);
-    bool apm = v.kind == VOL_APM;
-    const char *label = volume_kind_label(v.kind);
-    bool hybrid = v.iso && (apm || volume_kind_is_hfs(v.kind));
-    if (apm || v.kind == VOL_ISO)
-        out_printf("format: %s%s (%llu bytes)\n", label, hybrid ? " + ISO 9660 hybrid" : "", (unsigned long long)size);
-    else if (label)
-        out_printf("format: %s%s (bare, %llu bytes)\n", label, hybrid ? " + ISO 9660 hybrid" : "",
-                   (unsigned long long)size);
-    else
-        out_printf("format: unrecognised / raw (%llu bytes)\n", (unsigned long long)size);
-    // A partitioned disk's volumes: each partition the map names as a
-    // filesystem, and what its own header says it is (an HFS volume's
-    // MDB sits 1024 bytes into its partition, as on a bare disk).
-    if (apm)
-        probe_report_partitions(img, size);
-    // What the format registry peeled to reach the disk, and what it finds
-    // the disk to be.
-    if (img->format && strcmp(img->format, "raw") != 0)
-        out_printf("encoding: %s\n", img->format);
-    source_t *src = image_source(img);
-    const format_t *contents = format_contents(src, NULL);
-    source_release(src);
-    if (contents)
-        out_printf("contents: %s\n", contents->doc);
-    image_close(img);
-    return val_bool(true);
-}
-
-// `files.partitions(path)` — the Mac OS volumes a hard disk image offers as
-// startup partitions, numbered as a machine sees the disk once it is
-// attached: a driverless disk or bare volume behind the GSDisk map and
-// driver (image_wrap), so its volume is partition 3 whatever the file's own
-// map says.  The number is what an Open Firmware path names (`@0:3`).
-static DEF_METHOD(files_method_partitions) {
-    const char *path = argv[0].s;
-    image_t *img = image_open_readonly(path);
-    if (!img)
-        return val_err("files.partitions: cannot open image '%s'", path);
-    // The same presentation attach gives the disk (system.c media_open).
-    if (image_wrap_volume(img) < 0) {
-        image_close(img);
-        return val_err("files.partitions: cannot wrap '%s'", path);
-    }
+// The Mac OS volumes `img` offers as startup partitions, numbered as a
+// machine sees the disk once it is attached: a driverless disk or bare
+// volume behind the GSDisk map and driver (image_wrap), so its volume is
+// partition 3 whatever the file's own map says.  The number is what an Open
+// Firmware path names (`@0:3`).  Wraps `img`: its other facts first.
+static value_t identify_volumes(image_t *img) {
     value_t *items = NULL;
     size_t len = 0, cap = 0;
+    // The same presentation attach gives the disk (system.c media_open).
+    if (image_wrap_volume(img) < 0)
+        return val_list(NULL, 0);
     uint64_t size = disk_size(img);
     apm_table_t *table = image_apm_parse(img, NULL);
     source_t *src = table ? image_source(img) : NULL;
@@ -707,8 +618,110 @@ static DEF_METHOD(files_method_partitions) {
     }
     source_release(src);
     image_apm_free(table);
-    image_close(img);
     return val_list(items, len);
+}
+
+// The bytes of the file at `path` (its data fork), or 0.
+static uint64_t identify_file_size(const char *path) {
+    int err = 0;
+    source_t *s = source_open_path(path, GS_FORK_DATA, &err);
+    uint64_t n = s ? source_size(s) : 0;
+    source_release(s);
+    return n;
+}
+
+// The floppy layouts' wire names (files.identify's `floppy`).
+static const char *identify_floppy_name(image_layout_t l) {
+    switch (l) {
+    case IMAGE_LAYOUT_GCR400:
+        return "gcr400";
+    case IMAGE_LAYOUT_GCR800:
+        return "gcr800";
+    case IMAGE_LAYOUT_MFM720:
+        return "mfm720";
+    case IMAGE_LAYOUT_MFM1440:
+        return "mfm1440";
+    default:
+        return "";
+    }
+}
+
+// `files.identify(path)` -- what a file is, as one map: whether the image
+// layer opens it (and why not), the archive it is, its wrapper layers, its
+// size and tags, the floppy layout its size implies, its partition map and
+// volumes, and which kinds of drive take it (image_kind_fits).  The one
+// answer to "what is this file", for any drive; answers before a machine
+// exists.  A file that is no image is a map with opens false, not an error.
+static DEF_METHOD(files_method_identify) {
+    const char *path = argv[0].s;
+    value_map_builder_t *b = val_map_new();
+    const char *arch = archive_identify_file(path);
+    uint64_t file_size = identify_file_size(path);
+    image_t *img = image_open_readonly(path);
+    char error[256];
+    snprintf(error, sizeof error, "%s", img ? "" : image_open_error());
+    // A raw ProFile file of 532-byte blocks need not be a whole number of
+    // 512-byte sectors: open it as one.
+    bool profile_open = false;
+    if (!img && file_size && file_size % (512 + 20) == 0) {
+        img = image_open_kind(path, &(image_open_opts_t){.kind = IMAGE_KIND_PROFILE}, NULL, 0);
+        profile_open = img != NULL;
+    }
+    image_facts_t f = {.opens = img && !profile_open};
+    val_map_put(b, "opens", val_bool(img != NULL));
+    val_map_put(b, "refusal", val_str(img ? "" : error)); // not "error": a map with one is a failure (result contract)
+    val_map_put(b, "archive", val_str(arch ? arch : ""));
+    val_map_put(b, "encoding", val_str(img && img->format ? img->format : ""));
+    val_map_put(b, "file_size", val_uint(8, file_size));
+    uint64_t size = img ? disk_size(img) : 0;
+    f.size = size;
+    val_map_put(b, "size", val_uint(8, size));
+    val_map_put(b, "sectors", val_uint(8, size / 512));
+    val_map_put(b, "tags", val_uint(4, img ? img->file_tag_bytes : 0));
+    val_map_put(b, "floppy", val_str(f.opens ? identify_floppy_name(image_layout(img)) : ""));
+    bool apm = false, hybrid = false;
+    if (f.opens) {
+        // The classifier the VFS mounts with, so a disc reported as a hybrid
+        // here is one the VFS shows both sides of.
+        source_t *src = image_source(img);
+        volume_sniff_t v = volume_sniff_source(src, 0, size);
+        f.iso = iso_probe_source(src, 0, size); // the probe the VFS mounts with
+        const format_t *contents = format_contents(src, NULL);
+        source_release(src);
+        f.disk_contents = contents && strcmp(contents->name, "disk") == 0;
+        apm = v.kind == VOL_APM;
+        hybrid = v.iso && (apm || volume_kind_is_hfs(v.kind));
+    }
+    // A ProFile's 532-byte layout: opened as one, a DiskCopy that unwraps to
+    // one, or a raw file of whole 532-byte blocks.
+    f.profile_layout = profile_open || (img && img->format && strstr(img->format, "lisaem")) ||
+                       (img && img->format && strcmp(img->format, "raw") == 0 && file_size % (512 + 20) == 0);
+    val_map_put(b, "map", val_str(apm ? "apm" : ""));
+    val_map_put(b, "hybrid", val_bool(hybrid));
+    // Which kinds take it, and the one an upload of no stated kind is filed
+    // as: a disc only when it holds ISO 9660 (a bare HFS or partitioned image
+    // is a hard disk, though a CD-ROM drive takes it too).
+    static const image_kind_t order[] = {IMAGE_KIND_FLOPPY, IMAGE_KIND_HD, IMAGE_KIND_CD, IMAGE_KIND_PROFILE};
+    value_t fits[4];
+    size_t nfits = 0;
+    bool fit[IMAGE_KIND_COUNT] = {0};
+    for (size_t i = 0; i < sizeof order / sizeof order[0]; i++)
+        if ((fit[order[i]] = image_kind_fits(order[i], &f)))
+            fits[nfits++] = val_str(image_kind_name(order[i]));
+    value_t *fl = nfits ? calloc(nfits, sizeof *fl) : NULL;
+    for (size_t i = 0; fl && i < nfits; i++)
+        fl[i] = fits[i];
+    val_map_put(b, "fits", val_list(fl, fl ? nfits : 0));
+    image_kind_t kind = fit[IMAGE_KIND_CD] && f.iso ? IMAGE_KIND_CD
+                        : fit[IMAGE_KIND_FLOPPY]    ? IMAGE_KIND_FLOPPY
+                        : fit[IMAGE_KIND_HD]        ? IMAGE_KIND_HD
+                        : fit[IMAGE_KIND_PROFILE]   ? IMAGE_KIND_PROFILE
+                                                    : IMAGE_KIND_NONE;
+    val_map_put(b, "kind", val_str(kind == IMAGE_KIND_NONE ? "" : image_kind_name(kind)));
+    // Last: the volumes wrap the image.
+    val_map_put(b, "volumes", f.opens ? identify_volumes(img) : val_list(NULL, 0));
+    image_close(img);
+    return val_map_finish(b);
 }
 
 // `files.path_exists(path)` — true if the path resolves in the shell VFS.
@@ -1801,29 +1814,16 @@ static const member_t files_members[] = {
      .doc = "Print the Apple Partition Map of an image",
      .method = {.args = files_path_arg, .nargs = 1, .result = VK_BOOL, .fn = files_method_partmap}},
     {.kind = MK_METHOD,
-     .name = "partitions",
-     .examples = EXAMPLES("files.partitions \"/opfs/images/hd/system.img\""),
-     .doc = "The Mac OS volumes of a hard disk image, numbered as an attached disk's partitions",
-     .method = {.result_doc = "a list of {partition, name, filesystem, powerpc_booter} maps",
+     .name = "identify",
+     .examples = EXAMPLES("files.identify \"/opfs/upload/disk.img\""),
+     .doc = "What a file is: whether it opens as a disk image (and why not), its archive, wrapper layers, size, "
+            "tags, floppy layout, partition map, Mac OS volumes, and which kinds of drive take it", .method = {.result_doc =
+                    "{opens, refusal, archive, encoding, file_size, size, sectors, tags, floppy, map, hybrid, "
+                    "fits, kind, volumes}",
                 .args = files_path_arg,
                 .nargs = 1,
-                .result = VK_LIST,
-                .fn = files_method_partitions}},
-    {.kind = MK_METHOD,
-     .name = "image_error",
-     .examples = EXAMPLES("files.image_error \"/opfs/upload/disk.qcow2\""),
-     .doc = "Why a container image (UDIF, NDIF, QCOW2, MOOF) cannot be read, or \"\"",
-     .method = {.args = files_path_arg, .nargs = 1, .result = VK_STRING, .fn = files_method_image_error}},
-    {.kind = MK_METHOD,
-     .name = "identify_floppy",
-     .examples = EXAMPLES("files.identify_floppy \"/opfs/upload/game.moof\""),
-     .doc = "True if the file opens as a floppy disk image (any wrapper, MOOF included)",
-     .method = {.args = files_path_arg, .nargs = 1, .result = VK_BOOL, .fn = files_method_identify_floppy}},
-    {.kind = MK_METHOD,
-     .name = "probe",
-     .examples = EXAMPLES("files.probe \"/opfs/images/fd/disk.image\""),
-     .doc = "Identify the format of a disk image",
-     .method = {.args = files_path_arg, .nargs = 1, .result = VK_BOOL, .fn = files_method_probe}},
+                .result = VK_MAP,
+                .fn = files_method_identify}},
     {.kind = MK_METHOD,
      .name = "path_exists",
      .examples = EXAMPLES("files.path_exists \"/opfs/images/hd/system.img\""),

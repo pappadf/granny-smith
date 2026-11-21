@@ -80,10 +80,16 @@ beforeEach(() => {
   });
   bridge.reply('catalog.vroms.identify', { recognised: false });
   bridge.reply('catalog.proms.identify', { recognised: false });
-  bridge.reply('machine.floppy.identify', '');
-  bridge.reply('machine.scsi.identify_cdrom', false);
-  // The permissive hd probe would take an 8 KB chip.
-  bridge.reply('machine.scsi.identify_hd', true);
+  // A permissive hd verdict would take an 8 KB chip.
+  bridge.reply('files.identify', {
+    opens: true,
+    refusal: '',
+    archive: '',
+    floppy: '',
+    fits: ['hd'],
+    kind: 'hd',
+    volumes: [],
+  });
   bridge.reply('machine.boot', true);
 });
 
@@ -107,7 +113,15 @@ describe('Lisa ROM chips uploaded together', () => {
 
   it('are combined beside the other files of the drop', async () => {
     const notes = new File([new TextEncoder().encode('notes\n')], 'notes.txt');
-    bridge.reply('machine.scsi.identify_hd', false);
+    bridge.reply('files.identify', {
+      opens: true,
+      refusal: '',
+      archive: '',
+      floppy: '',
+      fits: [],
+      kind: '',
+      volumes: [],
+    });
     await acceptFiles([chip('lo.bin', LOW), notes, chip('hi.bin', HIGH)]);
     expect(stored()).toEqual(['/opfs/images/rom/3f7b']);
     expect(toastText().some((m) => m.startsWith('1 stored (1 ROM), 1 rejected'))).toBe(true);
