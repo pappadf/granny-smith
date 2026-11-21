@@ -856,6 +856,27 @@ static void gc_gbus_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_
     tnt_gbus_write8(cfg, addr, value);
 }
 
+// The Ethernet-PROM chip select.  On the Network Servers it is a GBUS block
+// (above); on the dual-processor Macintosh card it is the secondary-to-
+// primary interrupt, which a read rings (mp.c) and which reads as 0 there.
+static bool gc_has_eprom(config_t *cfg) {
+    return tnt_board(cfg)->has_gbus || tnt_mp_present(cfg);
+}
+static uint8_t gc_eprom_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    if (tnt_mp_present(cfg))
+        tnt_mp_eprom_access(cfg);
+    return tnt_board(cfg)->has_gbus ? gc_gbus_read(cfg, win_off, addr) : 0;
+}
+static uint8_t gc_eprom_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    return tnt_board(cfg)->has_gbus ? gc_gbus_peek(cfg, win_off, addr) : 0;
+}
+static void gc_eprom_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    if (tnt_board(cfg)->has_gbus)
+        gc_gbus_write(cfg, win_off, addr, value);
+    else
+        gc_open_write(cfg, win_off, addr, value);
+}
+
 // Byte j of the little-endian BoxID register (the ROM reads it both as lwbrx
 // and byte-wise).  On the Network Servers this is Board Register 1 and the
 // ROM reads bytes +0 and +1 only.
@@ -923,8 +944,8 @@ static const board_io_range_t gc_io_ranges[] = {
     {OFF_VIA, OFF_VIA + 0x2000u, BOARD_DEV_VIA1, 0, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "via1"},
     {OFF_MESH, OFF_MESH + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_mesh_read, gc_mesh_write, "mesh",
      .peek_fn = gc_mesh_peek, .present = gc_has_mesh},
-    {OFF_EPROM, OFF_EPROM + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_gbus_read, gc_gbus_write, "eprom",
-     .peek_fn = gc_gbus_peek, .present = gc_has_gbus},
+    {OFF_EPROM, OFF_EPROM + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_eprom_read, gc_eprom_write, "eprom",
+     .peek_fn = gc_eprom_peek, .present = gc_has_eprom},
     {OFF_BOXID, OFF_BOXID + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_boxid_read8, gc_open_write, "boxid"},
     {OFF_RADACAL, OFF_RADACAL + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_rad_read, gc_rad_write, "radacal",
      .peek_fn = gc_rad_peek},

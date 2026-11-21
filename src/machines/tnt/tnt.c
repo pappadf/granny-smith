@@ -642,8 +642,14 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
         .fill_page = page_fill_identity_sv,
         .cpi = 2,
         .tb_hz = (cpu_model == CPU_MODEL_PPC601) ? 7833600u : tnt_board(cfg)->bus_hz / 4u,
+        .set_identity = tnt_board(cfg)->pvr != 0 && !cp,
+        .pvr = tnt_board(cfg)->pvr,
     };
     if (ppc_build_core(cfg, cp, &core) != 0)
+        return -1;
+    // The dual-processor card's second 604, parked until system software
+    // rings its start doorbell (mp.c).  Nothing on a uniprocessor board.
+    if (tnt_mp_init(cfg, cp, core.tb_hz) < 0)
         return -1;
 
     // The ESCC cell behind the Grand Central decode, reachable through two
@@ -877,6 +883,7 @@ static void tnt_bus_reset(config_t *cfg) {
     // the ladder).
     tnt_hh_init(cfg);
     tnt_gc_init(cfg);
+    tnt_mp_reset(cfg); // the second processor back to parked
     dbdma_reset(st->dbdma);
     // The floppy CONTROLLER behind Grand Central +$15000.  cfg->floppy (the
     // drive and its media) is reset by the shared chain; the SWIM3 was the
@@ -912,6 +919,7 @@ static void tnt_bus_reset(config_t *cfg) {
 static void tnt_teardown(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     if (st) {
+        tnt_mp_teardown(cfg); // the peer core references the scheduler: before it goes
         tnt_gc_detach_object(cfg);
         tnt_awacs_teardown(cfg);
         tnt_gbus_teardown(cfg);
