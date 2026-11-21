@@ -423,8 +423,17 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 #define OP_MFCR       OP(GPR(RT) = p->cr)
 #define OP_MTCRF      OP(uint32_t m_ = ppc_crm_mask((iw >> 12) & 0xFFu); p->cr = (GPR(RT) & m_) | (p->cr & ~m_))
 #define OP_MCRXR      OP(ppc_set_cr_field(p, PPC_CRFD(iw), p->xer >> 28); p->xer &= 0x0FFFFFFFu)
-#define OP_MFSPR      OP(ppc_mfspr(p, iw))
-#define OP_MTSPR      OP(ppc_mtspr(p, iw))
+// LR and CTR (SPR 8/9: every model, user level, a plain field) inline; the
+// rest of the SPR file goes out of line.  mtlr/mtctr are ~14% of the guest
+// stream under the PDM's 68K emulator, and the call plus the table switch
+// in ppc_mtspr cost ~30 host instructions each.  The predecoded executor
+// and the JIT already special-case them (PPD_MTLR..., jx_cls_spr).
+#define OP_MFSPR                                                                                                       \
+    OP(uint32_t n_ = PPC_SPR_NUMBER(iw); if (n_ == 8) GPR(RT) = p->lr; else if (n_ == 9) GPR(RT) = p->ctr;          \
+       else ppc_mfspr(p, iw))
+#define OP_MTSPR                                                                                                       \
+    OP(uint32_t n_ = PPC_SPR_NUMBER(iw); if (n_ == 8) p->lr = GPR(RT); else if (n_ == 9) p->ctr = GPR(RT);          \
+       else ppc_mtspr(p, iw))
 #define OP_MFMSR      OP(PRIV(); GPR(RT) = p->msr)
 #define OP_MTMSR      OP(PRIV(); p->msr = GPR(RT) & ppc_msr_mask(p); ppc_update_active_maps(p); ppc_context_sync(p); ppc_check_power_mode(p))
 #define OP_MFSR       OP(PRIV(); GPR(RT) = p->sr[(iw >> 16) & 0xFu])
