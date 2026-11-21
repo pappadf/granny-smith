@@ -171,6 +171,13 @@ typedef struct board_io {
     uint8_t page_last_row[BOARD_IO_MAX_PAGES];
     uint8_t page_count;
     bool indexed;
+    // Direct page map (board_io_mark_untimed): for each 4 KB page, the one
+    // row that owns all of it and needs nothing but a call -- no guard, no
+    // penalty, no esync/berr, a plain offset -- or NULL.  `direct` says the
+    // map is live; the board_io_direct_* fast paths consult it before the
+    // general engine.  Only the PowerPC islands opt in.
+    bool direct;
+    const board_io_range_t *page_row[BOARD_IO_MAX_PAGES];
 } board_io_t;
 
 // --- The engine ------------------------------------------------------------
@@ -206,6 +213,59 @@ void board_io_fill_interface(memory_interface_t *iface);
 // opens with this; the PowerPC islands call it directly.
 void board_io_install_table(board_io_t *io, struct config *cfg, const board_io_range_t *ranges, uint32_t mirror_mask,
                             uint8_t unmapped_read);
+
+// Declare the island untimed (no bus-turnaround model: the PowerPC islands,
+// whose timing lives in the CPU core) and build its direct page map, so the
+// board_io_direct_* fast paths below serve every page owned by one plain
+// row.  Call after board_io_install_table; the island must have no
+// bus-error span (none of the PowerPC islands do).
+void board_io_mark_untimed(board_io_t *io);
+
+// Byte fast paths for an island marked untimed: one masked page lookup and
+// the row's call, which is what a hand-written switch over the island's 4 KB
+// blocks costs.  Anything the map does not cover -- a page shared by several
+// rows, a guarded row, an unbound device slot, an unmapped page -- takes the
+// general engine, which decides it exactly as before.  `offset` is the
+// island offset, as for board_io_read_uint8.
+static inline uint8_t board_io_direct_read_uint8(board_io_t *io, uint32_t offset) {
+    uint32_t off = offset & io->mirror_mask;
+    const board_io_range_t *r = io->direct ? io->page_row[off >> 12] : NULL;
+    if (r) {
+        if (r->read_fn)
+            return r->read_fn(io->cfg, off - r->base, offset);
+        if (io->iface[r->device])
+            return io->iface[r->device]->read_uint8(io->handle[r->device], off - r->base);
+    }
+    return board_io_read_uint8(io, offset);
+}
+
+static inline uint8_t board_io_direct_peek_uint8(board_io_t *io, uint32_t offset) {
+    uint32_t off = offset & io->mirror_mask;
+    const board_io_range_t *r = io->direct ? io->page_row[off >> 12] : NULL;
+    if (r) {
+        if (r->read_fn)
+            return (r->peek_fn ? r->peek_fn : r->read_fn)(io->cfg, off - r->base, offset);
+        if (io->iface[r->device])
+            return memory_iface_read8(io->iface[r->device], io->handle[r->device], off - r->base, true);
+    }
+    return board_io_peek_uint8(io, offset);
+}
+
+static inline void board_io_direct_write_uint8(board_io_t *io, uint32_t offset, uint8_t value) {
+    uint32_t off = offset & io->mirror_mask;
+    const board_io_range_t *r = io->direct ? io->page_row[off >> 12] : NULL;
+    if (r) {
+        if (r->write_fn) {
+            r->write_fn(io->cfg, off - r->base, offset, value);
+            return;
+        }
+        if (io->iface[r->device]) {
+            io->iface[r->device]->write_uint8(io->handle[r->device], off - r->base, value);
+            return;
+        }
+    }
+    board_io_write_uint8(io, offset, value);
+}
 
 // Bind one device slot: its handle and the memory interface that decodes it,
 // together.  The two arrays are indexed by the same board_dev_t and are

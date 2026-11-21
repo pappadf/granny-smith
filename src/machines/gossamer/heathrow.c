@@ -517,7 +517,7 @@ static void hr_io_bind(config_t *cfg) {
     board_io_t *io = &gos_st(cfg)->hr_io;
     // Undecoded island space reads 0, as it always has here.
     board_io_install_table(io, cfg, hr_io_ranges, GOS_HEATHROW_SIZE - 1u, 0);
-    io->untimed = true;
+    board_io_mark_untimed(io);
     board_io_bind_dev(io, BOARD_DEV_VIA1, cfg->via1, via_get_memory_interface(cfg->via1));
     board_io_bind_dev(io, BOARD_DEV_SCC, cfg->scc, scc_get_memory_interface(cfg->scc));
     board_io_validate(io, cfg->machine->id);
@@ -527,7 +527,7 @@ static void hr_io_bind(config_t *cfg) {
 // chip's side-effect-free peek.
 static uint8_t hr_access8(void *ctx, uint32_t off, bool peek) {
     board_io_t *io = &gos_st((config_t *)ctx)->hr_io;
-    return peek ? board_io_peek_uint8(io, off) : board_io_read_uint8(io, off);
+    return peek ? board_io_direct_peek_uint8(io, off) : board_io_direct_read_uint8(io, off);
 }
 
 static uint8_t hr_read8(void *ctx, uint32_t off) {
@@ -538,7 +538,7 @@ static uint8_t hr_peek8(void *ctx, uint32_t off) {
 }
 
 static void hr_write8(void *ctx, uint32_t off, uint8_t value) {
-    board_io_write_uint8(&gos_st((config_t *)ctx)->hr_io, off, value);
+    board_io_direct_write_uint8(&gos_st((config_t *)ctx)->hr_io, off, value);
 }
 
 // 32-bit access: the little-endian register blocks.  `value` at this edge

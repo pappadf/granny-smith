@@ -370,12 +370,41 @@ void board_io_install_table(board_io_t *io, config_t *cfg, const board_io_range_
     io->cfg = cfg;
     io->unmapped_read = unmapped_read;
     io->untimed = false;
+    io->direct = false;
     io->window_base = 0;
     io->berr_lo = 1; // lo > hi: no bus-error span
     io->berr_hi = 0;
     for (unsigned w = 0; w < 2; w++)
         io->miss_logged_read[w] = io->miss_logged_write[w] = 0;
     io_build_page_index(io);
+}
+
+// A page goes in the direct map only when the general engine would do
+// nothing for it but the row's call: the page index names exactly one row
+// for it, that row covers the whole page, and the row has no guard, penalty,
+// esync, bus error or offset transform.  Every other page stays NULL and
+// keeps the full decode.
+void board_io_mark_untimed(board_io_t *io) {
+    io->untimed = true;
+    io->direct = false;
+    for (unsigned pg = 0; pg < BOARD_IO_MAX_PAGES; pg++)
+        io->page_row[pg] = NULL;
+    if (!io->indexed || io->berr_lo <= io->berr_hi)
+        return;
+    for (unsigned pg = 0; pg < io->page_count; pg++) {
+        unsigned first = io->page_first_row[pg];
+        if (first == BOARD_IO_NO_ROW || first != io->page_last_row[pg])
+            continue;
+        const board_io_range_t *r = &io->ranges[first];
+        if (r->base > (pg << 12) || r->end < ((pg + 1u) << 12))
+            continue;
+        if (r->present || r->penalty || r->esync || r->berr || r->xform != BOARD_IO_NORMAL)
+            continue;
+        if (!r->read_fn != !r->write_fn) // a half handler row: leave it to the engine
+            continue;
+        io->page_row[pg] = r;
+    }
+    io->direct = true;
 }
 
 int board_io_validate(const board_io_t *io, const char *machine_id) {

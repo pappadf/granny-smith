@@ -1173,20 +1173,20 @@ void pdm_amic_io_bind(config_t *cfg) {
     board_io_t *io = &pdm_st(cfg)->amic_io;
     // Undecoded island space reads 0, as it always has here (see the EPROM note).
     board_io_install_table(io, cfg, amic_io_ranges, PDM_AMIC_ISLAND_SIZE - 1u, 0);
-    io->untimed = true;
+    board_io_mark_untimed(io);
     board_io_bind_dev(io, BOARD_DEV_VIA1, cfg->via1, via_get_memory_interface(cfg->via1));
     board_io_bind_dev(io, BOARD_DEV_SCC, cfg->scc, scc_get_memory_interface(cfg->scc));
     board_io_validate(io, cfg->machine->id);
 }
 
 uint8_t pdm_amic_read(config_t *cfg, uint32_t offset) {
-    return board_io_read_uint8(&pdm_st(cfg)->amic_io, offset);
+    return board_io_direct_read_uint8(&pdm_st(cfg)->amic_io, offset);
 }
 
 uint8_t pdm_amic_peek(config_t *cfg, uint32_t offset) {
-    return board_io_peek_uint8(&pdm_st(cfg)->amic_io, offset);
+    return board_io_direct_peek_uint8(&pdm_st(cfg)->amic_io, offset);
 }
 
 void pdm_amic_write(config_t *cfg, uint32_t offset, uint8_t value) {
-    board_io_write_uint8(&pdm_st(cfg)->amic_io, offset, value);
+    board_io_direct_write_uint8(&pdm_st(cfg)->amic_io, offset, value);
 }
