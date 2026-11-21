@@ -81,6 +81,7 @@ import {
   decodeConfigParam,
   type MediaFetchPlan,
 } from '@/lib/mediaUrl';
+import { formatSize } from '@/lib/format';
 import { identifyRom, MEDIA_TYPES, type MediaTypeId } from '@/lib/media';
 import {
   addUrlConfigParam,
@@ -799,7 +800,7 @@ async function fetchAndImport(
   const name = out.path.split('/').pop() ?? plan.fileName;
   if (!urlBoot.requested)
     showNotification(
-      `${label}: ${name}${typeof size === 'number' ? ` (${sizeText(size)} stored)` : ''}`,
+      `${label}: ${name}${typeof size === 'number' ? ` (${formatSize(size)} stored)` : ''}`,
       'info',
     );
   // The row's size is the disk's: what was received is the compressed
@@ -839,12 +840,6 @@ async function fetchRomPair(urlA: string, urlB: string): Promise<string | undefi
     await discardStaging(a.path);
     if (b) await discardStaging(b.path);
   }
-}
-
-// Human size for messages ("512 KB", "25.0 MB").
-function sizeText(bytes: number): string {
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 // A failed fetch() of `url`: a TypeError is the browser refusing to hand the
@@ -942,7 +937,7 @@ async function fetchAndStage(
     }
 
     const size = await gsEval('files.path_size', [staged]);
-    const sz = typeof size === 'number' ? ` (${sizeText(size)})` : '';
+    const sz = typeof size === 'number' ? ` (${formatSize(size)})` : '';
     // The progress view lists each file as it lands; a toast per file is
     // for a page that is not showing it.
     if (!urlBoot.requested) showNotification(`${label}: ${storeAs}${sz}`, 'info');

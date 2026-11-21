@@ -26,6 +26,7 @@
   import { showNotification } from '@/state/toasts.svelte';
   import type { OpfsEntry, ImageCategory } from '@/bus/types';
   import { LARGE_IMPORT_BYTES, type MediaTypeId } from '@/lib/media';
+  import { formatSize } from '@/lib/format';
   import { downloadFiles, downloadRawImage } from '@/bus/fsOps';
   import { storedDmgName } from '@/bus/importImage';
   import { startActivity, endActivity, setActivityDetail } from '@/state/activity.svelte';
@@ -323,7 +324,7 @@
       const st = r;
       await rmPath(entry.path);
       showNotification(
-        `'${entry.name}' compacted: ${Math.round((st.bytes_in ?? size ?? 0) / 1048576)} MB disk in ${Math.max(1, Math.round((st.stored_bytes ?? 0) / 1048576))} MB`,
+        `'${entry.name}' compacted: ${formatSize(st.bytes_in ?? size ?? 0)} disk in ${formatSize(st.stored_bytes ?? 0)}`,
         'info',
       );
       bumpImagesRevision();

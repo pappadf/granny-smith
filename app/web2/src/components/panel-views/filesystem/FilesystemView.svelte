@@ -53,7 +53,8 @@
     clearFsSelection,
   } from '@/state/filesystem.svelte';
   import { iconForFsEntry } from '@/lib/iconForFsEntry';
-  import { formatMtime, formatSize } from '@/lib/fileInfo';
+  import { formatMtime } from '@/lib/fileInfo';
+  import { formatSize } from '@/lib/format';
   import type { OpfsEntry } from '@/bus/types';
   import { pathIsAncestorOrSelf, pathKey, pathKeyToArray } from '@/lib/treePath';
 

@@ -34,6 +34,7 @@ import { xferChunkBytes, xferUdifAppend, xferRead } from './xfer';
 import { showNotification } from '@/state/toasts.svelte';
 import { bumpImagesRevision } from '@/state/images.svelte';
 import { setActivityCancel, setActivityDetail } from '@/state/activity.svelte';
+import { formatSize } from '@/lib/format';
 import { sanitizeName } from '@/lib/fileName';
 import { scratchPath } from '@/lib/opfsPaths';
 import { MEDIA_TYPES, LARGE_IMPORT_BYTES, validateUnstated, type MediaTypeId } from '@/lib/media';
@@ -138,12 +139,6 @@ export async function isQcow2File(blob: Blob): Promise<boolean> {
 export async function isGzipFile(blob: Blob): Promise<boolean> {
   if (blob.size < 2) return false;
   return sniffContainer(new Uint8Array(await blob.slice(0, 2).arrayBuffer())) === 'gzip';
-}
-
-function sizeText(bytes: number): string {
-  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
 class ImportCancelled extends Error {}
@@ -287,10 +282,7 @@ async function preflight(
     // The stored image is at most about the decoded size, at least what the
     // source compresses to; the source's own size is the cheap bound.
     if (free !== null && sourceBytes !== null && free < Math.min(sourceBytes, 64 * 1024 * 1024)) {
-      showNotification(
-        `Not enough browser storage for ${name}: ${sizeText(Math.max(0, free))} free`,
-        'error',
-      );
+      showNotification(`Not enough browser storage for ${name}: ${formatSize(free)} free`, 'error');
       return { ok: false, free };
     }
     return { ok: true, free };
@@ -306,7 +298,7 @@ async function preflight(
 // so an estimate then shows space again.
 export function storageFullHint(free: number | null, stored: number): string {
   if (free === null || stored < 0.9 * free) return '';
-  return ` (the browser's storage is full: it had ${sizeText(Math.max(0, free))} free)`;
+  return ` (the browser's storage is full: it had ${formatSize(free)} free)`;
 }
 
 // --- The pipeline ----------------------------------------------------------------
@@ -517,7 +509,7 @@ async function importDecoded(
           [staged, part, 64, 1, 'udif', name, opts.origin ?? ''],
           (done, total) =>
             setActivityDetail(
-              `converting the QCOW2 image: ${sizeText(done)}${total ? ` of ${sizeText(total)}` : ''}`,
+              `converting the QCOW2 image: ${formatSize(done)}${total ? ` of ${formatSize(total)}` : ''}`,
             ),
         );
         // The reason names the staged copy; the user knows the file by its name.
@@ -561,7 +553,7 @@ async function importDecoded(
     const placed = await placeUdif(part, shown, opts.categories, opts.unstated);
     if (placed)
       showNotification(
-        `${shown}: ${sizeText(st.bytes_in)} disk stored in ${sizeText(st.stored_bytes)}`,
+        `${shown}: ${formatSize(st.bytes_in)} disk stored in ${formatSize(st.stored_bytes)}`,
         'info',
       );
     return { handled: true, path: placed?.path ?? null, category: placed?.category };
@@ -621,7 +613,7 @@ async function importMacArchive(
         const placed = await placeUdif(part, shown, [cat], opts.unstated);
         if (placed && r.bytes_in && r.stored_bytes)
           showNotification(
-            `${shown}: ${sizeText(r.bytes_in)} disk stored in ${sizeText(r.stored_bytes)}`,
+            `${shown}: ${formatSize(r.bytes_in)} disk stored in ${formatSize(r.stored_bytes)}`,
             'info',
           );
         return { handled: true, path: placed?.path ?? null, category: placed?.category };
@@ -661,7 +653,7 @@ export async function importImage(
     onProgress(read, t, stored) {
       storedSoFar = Math.max(storedSoFar, stored);
       setActivityDetail(
-        `${sizeText(read)}${t ? ` of ${sizeText(t)}` : ''} read, ${sizeText(stored)} stored`,
+        `${formatSize(read)}${t ? ` of ${formatSize(t)}` : ''} read, ${formatSize(stored)} stored`,
       );
       report?.(read, t, stored);
     },
