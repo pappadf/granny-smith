@@ -6,6 +6,7 @@
 // the core writes (`machine: {model, ram_bytes}`, the build, the images); the
 // UI adds a `label` to it.
 
+import { formatRamKb } from './machine';
 import { localStamp } from './time';
 
 export interface ParsedCheckpointDir {
@@ -49,19 +50,6 @@ export function checkpointCreatedToDate(created: string): Date | null {
   );
 }
 
-// Compact human size, e.g. "20 MB".
-export function formatBytes(n: number): string {
-  if (n <= 0 || !Number.isFinite(n)) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  let v = n;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
-    i++;
-  }
-  return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
-}
-
 // The manifest's `machine`: the core writes `{model, ram_bytes}`; manifests
 // written by older builds of this UI hold the model as a plain string.
 export function manifestMachine(m: unknown): { model: string; ramBytes: number } | null {
@@ -78,6 +66,5 @@ export function manifestMachine(m: unknown): { model: string; ramBytes: number }
 // "Macintosh Plus · 4 MB" (the RAM left out when unknown).
 export function describeMachine(name: string, ramBytes: number): string {
   if (ramBytes <= 0) return name;
-  const mb = ramBytes / (1024 * 1024);
-  return `${name} · ${Number.isInteger(mb) ? `${mb} MB` : formatBytes(ramBytes)}`;
+  return `${name} · ${formatRamKb(ramBytes / 1024)}`;
 }

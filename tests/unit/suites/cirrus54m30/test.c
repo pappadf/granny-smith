@@ -21,7 +21,6 @@
 #include "checkpoint.h"
 #include "config_space.h"
 #include "display.h"
-#include "display_class.h"
 #include "pci.h"
 #include "pci_card.h"
 #include "system_internal.h"
@@ -71,40 +70,12 @@ void pci_device_regions_changed(pci_device_t *dev) {
     (void)dev;
     s_regions_changed++;
 }
-void pci_card_set_framebuffer_object(pci_device_t *dev, struct object *fb) {
-    (void)dev;
-    (void)fb;
-}
 
 // Input Status 1 is a function of the scheduler's cycle count.
 static uint64_t s_cycles;
 uint64_t scheduler_cpu_cycles(struct scheduler *s) {
     (void)s;
     return s_cycles;
-}
-
-// The object tree: object_new() hands back the card's display_fb_node_t, so
-// the framebuffer node's resolve/base hooks are reachable from a row.
-const class_desc_t display_fb_class = {0};
-static display_fb_node_t *s_fb_node;
-static char s_fake_object;
-struct object *object_new(const class_desc_t *cls, void *data, const char *name) {
-    (void)cls;
-    (void)name;
-    s_fb_node = (display_fb_node_t *)data;
-    return (struct object *)&s_fake_object;
-}
-void object_attach(struct object *parent, struct object *child) {
-    (void)parent;
-    (void)child;
-}
-void object_set_label(struct object *o, const char *l) {
-    (void)o;
-    (void)l;
-}
-void object_set_order(struct object *o, int order) {
-    (void)o;
-    (void)order;
 }
 
 // The checkpoint stream: a flat byte buffer, written in order and read back
@@ -764,35 +735,36 @@ TEST(checkpoint_latches_out_of_range_are_contained) {
     s_cp_buf = NULL;
 }
 
-// The shared framebuffer node resolves to the live descriptor and reports
-// the CR0C/CR0D start address as a byte offset into display memory.
-TEST(framebuffer_node_resolves_the_descriptor) {
+// The framebuffer node (the generic layer's) reports the fb_base op as its
+// base: the guest physical address of the first displayed byte, which is
+// BAR0's base plus the CR0C/CR0D start -- and 0 while BAR0 decodes nothing.
+TEST(framebuffer_base_is_bar0_plus_the_start) {
     pci_device_t *dev = seat();
-    s_fb_node = NULL;
-    cirrus_54m30_kind.attach_objects(dev, (struct object *)&s_fake_object);
-    ASSERT_TRUE(s_fb_node && s_fb_node->resolve && s_fb_node->base);
+    ASSERT_TRUE(dev->ops->fb_base != NULL);
     program_of_640x480x8();
     crtc(0x0D, 0x40); // $0040 doublewords = byte $100
-    ASSERT_TRUE(s_fb_node->resolve(s_fb_node->owner) == dev->ops->display(dev));
-    ASSERT_TRUE(s_fb_node->base(s_fb_node->owner) == 0x100u);
+    ASSERT_TRUE(dev->ops->fb_base(dev) == 0u); // BAR0 unassigned, memory space off
+    cfg_write32(dev, PCI_CFG_BAR0, 0x81000000u);
+    cfg_write32(dev, PCI_CFG_COMMAND, PCI_CMD_MEM_SPACE);
+    ASSERT_TRUE(dev->ops->fb_base(dev) == 0x81000100u);
     unseat(dev);
 }
 
-// The node's base is where the scanout starts, not the CR0C/CR0D pair alone:
-// it includes the CR1B extension, and follows the fall-back to 0 when the
-// start would run the raster off the end of display memory.
-TEST(framebuffer_node_base_is_the_scanout_start) {
+// The base follows where the scanout starts, not the CR0C/CR0D pair alone:
+// it includes the CR1B extension, and the fall-back to 0 when the start
+// would run the raster off the end of display memory.
+TEST(framebuffer_base_is_the_scanout_start) {
     pci_device_t *dev = seat();
-    s_fb_node = NULL;
-    cirrus_54m30_kind.attach_objects(dev, (struct object *)&s_fake_object);
+    cfg_write32(dev, PCI_CFG_BAR0, 0x81000000u);
+    cfg_write32(dev, PCI_CFG_COMMAND, PCI_CMD_MEM_SPACE);
     program_of_640x480x8();
     fb_poke(0x40000, 0x22);
     crtc(0x1B, 0x01); // start bit 16: doubleword $10000 = byte $40000
     display_t *d = dev->ops->display(dev);
     ASSERT_EQ_INT(d->bits[0], 0x22);
-    ASSERT_TRUE(s_fb_node->base(s_fb_node->owner) == 0x40000u);
+    ASSERT_TRUE(dev->ops->fb_base(dev) == 0x81040000u);
     crtc(0x1B, 0x0C); // bits 18:17 set: byte $C0000, and 640x480 does not fit
-    ASSERT_TRUE(s_fb_node->base(s_fb_node->owner) == 0u);
+    ASSERT_TRUE(dev->ops->fb_base(dev) == 0x81000000u);
     unseat(dev);
 }
 
@@ -824,7 +796,7 @@ int main(void) {
     RUN(checkpoint_round_trips_the_mode);
     RUN(checkpoint_keeps_the_port_latches);
     RUN(checkpoint_latches_out_of_range_are_contained);
-    RUN(framebuffer_node_resolves_the_descriptor);
-    RUN(framebuffer_node_base_is_the_scanout_start);
+    RUN(framebuffer_base_is_bar0_plus_the_start);
+    RUN(framebuffer_base_is_the_scanout_start);
     return 0;
 }

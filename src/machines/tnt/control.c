@@ -53,6 +53,7 @@
 #include "tnt.h"
 
 #include "card.h"
+#include "config_space.h"
 #include "display.h"
 #include "log.h"
 #include "pci.h"
@@ -136,60 +137,12 @@ LOG_USE_CATEGORY_NAME("video");
 // {2,1,0}); this was a compile-time constant, pinning every TNT machine to
 // 640x480 whatever the guest asked for (#146).
 
-// The monitors the built-in port can present, by the 3-bit passive sense
-// code (display_timing.h): the ROM's extended walk reads the grounded lines
-// and picks the timing set.  Restricted to the eight passive codes, as the
-// PDM's list is: monitors Apple told apart by per-line strapping are not
-// modelled.  Grounding all three (sense 0) is what makes Open Firmware
-// program 1152x870.
-typedef struct control_monitor_kind {
-    const char *id; // config token ("hires", "twopage", ...)
-    const char *monitor; // its shared catalogue id (monitor_catalog.h)
-    uint8_t sense; // the 3-bit strap this monitor presents
-} control_monitor_kind_t;
-
-// "twopage" is sense 0, which the 21" Color and the 21" Two-Page displays
-// share; without the extended answers that tell them apart it is offered as
-// the one this port renders, the 21" Color.
-static const control_monitor_kind_t control_monitors[] = {
-    {"hires",    "13in_rgb",      0x6u},
-    {"twopage",  "21in_rgb",      0x0u},
-    {"portrait", "15in_portrait", 0x1u},
-    {"rubik",    "12in_rgb",      0x2u},
-    {"none",     "none",          0x7u},
-    {NULL,       NULL,            0   },
-};
-
-// hw_profile_t.builtin_video (machine_profile.h): two thin adapters over
-// control_monitors so the machine registry can publish and validate this
-// port without reaching into the family.
-static bool control_builtin_monitor_at(size_t i, const char **id, const char **monitor) {
-    size_t n = 0;
-    for (const control_monitor_kind_t *m = control_monitors; m->id; m++, n++) {
-        if (n == i) {
-            *id = m->id;
-            *monitor = m->monitor;
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool control_builtin_monitor_sense(const char *id, uint8_t *out_sense) {
-    for (const control_monitor_kind_t *m = control_monitors; m->id; m++) {
-        if (strcmp(m->id, id) == 0) {
-            *out_sense = m->sense;
-            return true;
-        }
-    }
-    return false;
-}
-
+// The built-in port's monitors are the Control kind's rows (control_monitors,
+// below), as the RBV's are its pseudo-slot card's.
 const builtin_video_desc_t tnt_builtin_video = {
     .detail = "Control",
-    .monitor_at = control_builtin_monitor_at,
-    .monitor_sense = control_builtin_monitor_sense,
     .default_monitor = "13in_rgb",
+    .slot_monitors = true,
 };
 
 static tnt_control_t *ctl(config_t *cfg) {
@@ -750,9 +703,33 @@ static void control_pci_teardown(pci_device_t *dev, config_t *cfg) {
     tnt_control_teardown(cfg);
 }
 
+// The guest physical address of the first displayed byte: the VRAM BAR's
+// base, plus the +$800000 half the usable framebuffer is in, plus the scan
+// start's place in the bank view vram_map decodes (the inverse of that map:
+// the 4 MB linear layout is the store itself; in the 2 MB modes bank 2 shows
+// through at +$600000).  Taken from the registers, not from `bits`, which
+// points at the composite while the hardware cursor is up.  0 while blanked.
+uint64_t tnt_control_fb_base(config_t *cfg) {
+    tnt_state_t *st = cfg ? tnt_st(cfg) : NULL;
+    if (!st || !st->vram || !st->display.bits || st->display.bits == st->blank || !st->control_dev ||
+        !pci_cfg_bar_enabled(st->control_dev, CONTROL_BAR_VRAM))
+        return 0;
+    const tnt_control_t *c = &st->control;
+    uint32_t store = control_scan_base(c);
+    uint32_t view = store; // bank 1, or the 4 MB linear layout
+    if (!(c->reg[CR_VRAM_ATTR] & 0x40u) && store >= 0x200000u)
+        view = 0x600000u + (store - 0x200000u); // bank 2 shows through
+    return (uint64_t)pci_cfg_bar_base(st->control_dev, CONTROL_BAR_VRAM) + 0x800000u + view;
+}
+
+static uint64_t control_pci_fb_base(pci_device_t *dev) {
+    return tnt_control_fb_base((config_t *)dev->priv);
+}
+
 static const pci_device_ops_t control_pci_ops = {
     .teardown = control_pci_teardown,
     .display = control_pci_display,
+    .fb_base = control_pci_fb_base,
     .vram = control_pci_vram,
     .name = control_pci_name,
 };
@@ -778,11 +755,23 @@ static int control_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom
     return 0;
 }
 
-// Its stock monitor, as a card row: what the 9500's stand-in senses when no
-// card's monitor is there to borrow (the built-in port's own monitors are
-// tnt_builtin_video's).
-static const nubus_monitor_t control_stock_monitor[] = {
+// The monitors the built-in port can present, by the 3-bit passive sense
+// code (display_timing.h): the ROM's extended walk reads the grounded lines
+// and picks the timing set.  Restricted to the eight passive codes, as the
+// PDM's list is: monitors Apple told apart by per-line strapping are not
+// modelled.  Grounding all three (sense 0) is what makes Open Firmware
+// program 1152x870.  The ids are the port's tokens (what the legacy
+// monitor= argument names); the first is the stock monitor, which the 9500's
+// stand-in senses when no card's monitor is there to borrow.
+//
+// "twopage" is sense 0, which the 21" Color and the 21" Two-Page displays
+// share; without the extended answers that tell them apart it is offered as
+// the one this port renders, the 21" Color.
+static const nubus_monitor_t control_monitors[] = {
     {.id = "hires", .monitor = "13in_rgb", .width = 640, .height = 480, .sense_code = 0x6},
+    {.id = "twopage", .monitor = "21in_rgb", .width = 1152, .height = 870, .sense_code = 0x0},
+    {.id = "portrait", .monitor = "15in_portrait", .width = 640, .height = 870, .sense_code = 0x1},
+    {.id = "rubik", .monitor = "12in_rgb", .width = 512, .height = 384, .sense_code = 0x2},
     {0},
 };
 
@@ -791,7 +780,7 @@ const pci_card_kind_t tnt_control_kind = {
     .display_name = "Built-in video",
     .attach = PCI_ATTACH_BUILTIN,
     .card_class = "display",
-    .monitors = control_stock_monitor,
+    .monitors = control_monitors,
     .ops = &control_pci_ops,
     .decl = &control_decl,
     .init = control_init,
@@ -997,13 +986,7 @@ static display_t *control_fb_resolve(void *owner) {
     return tnt_control_display((config_t *)owner);
 }
 static uint64_t control_fb_base(void *owner) {
-    // A byte offset into the 4 MB store, which is what CR_START_ADDR and the
-    // bank-select attribute add up to.
-    config_t *cfg = (config_t *)owner;
-    tnt_state_t *st = cfg ? tnt_st(cfg) : NULL;
-    if (!st || !st->display.bits || st->display.bits == st->blank || !st->vram)
-        return 0;
-    return (uint64_t)(st->display.bits - st->vram);
+    return tnt_control_fb_base((config_t *)owner);
 }
 
 int tnt_control_init(config_t *cfg, uint8_t sense) {

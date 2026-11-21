@@ -1057,6 +1057,19 @@ static display_t *card_display(nubus_card_t *card) {
     return p ? &p->display : NULL;
 }
 
+// The guest physical address of the first displayed byte, in whichever of
+// the card's two framebuffers is scanned: the accelerator's DRAM, which the
+// super-slot space decodes at GC824_DRAM_OFFSET (where 32-bit QuickDraw's
+// ScrnBase points), or the standard-slot VRAM the early boot screen uses.
+// 0 while the blank is scanned.
+static uint64_t card_fb_base(nubus_card_t *card) {
+    display_card_824gc_priv_t *p = card->priv;
+    if (!p)
+        return 0;
+    uint64_t dram = display_guest_addr(&p->display, p->dram, GC824_DRAM_SIZE, p->super_base + GC824_DRAM_OFFSET);
+    return dram ? dram : display_guest_addr(&p->display, p->vram, GC824_VRAM_SIZE, p->slot_base);
+}
+
 // The VRAM a power cycle loses (the bus default, nubus_power_on).
 static size_t card_vram(nubus_card_t *card, uint8_t **base) {
     display_card_824gc_priv_t *p = card->priv;
@@ -1176,6 +1189,7 @@ static const nubus_card_ops_t display_card_824gc_ops = {
     .reset = card_reset,
     .on_vbl = card_on_vbl,
     .display = card_display,
+    .fb_base = card_fb_base,
     .vram = card_vram,
 };
 

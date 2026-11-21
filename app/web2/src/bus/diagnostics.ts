@@ -21,6 +21,7 @@ import {
   recentCoreEvents,
 } from '@/bus/emulator';
 import { routePrintLine } from '@/bus/logSink';
+import { formatSize } from '@/lib/format';
 import { rage128GpuProbe, rage128GpuWorkerStats } from '@/gpu/rage128Gpu.svelte';
 
 // The breadcrumb block's words (keep in step with breadcrumb.h)
@@ -145,10 +146,8 @@ function memoryLine(): string {
     performance as unknown as { memory?: { usedJSHeapSize: number; jsHeapSizeLimit: number } }
   ).memory;
   return (
-    `wasm memory ${(wasm / 2 ** 20).toFixed(0)} MB` +
-    (js
-      ? `, js heap ${(js.usedJSHeapSize / 2 ** 20).toFixed(0)} of ${(js.jsHeapSizeLimit / 2 ** 20).toFixed(0)} MB`
-      : '')
+    `wasm memory ${formatSize(wasm)}` +
+    (js ? `, js heap ${formatSize(js.usedJSHeapSize)} of ${formatSize(js.jsHeapSizeLimit)}` : '')
   );
 }
 
@@ -156,7 +155,7 @@ function workerStatsLine(s: Record<string, unknown>): string {
   const n = (k: string) => (typeof s[k] === 'number' ? (s[k] as number) : 0);
   const t = n('seconds') || 1;
   return (
-    `${n('records')} records (${(n('records') / t).toFixed(0)}/s, ${(n('bytes') / 1024 / t).toFixed(0)} KB/s), ` +
+    `${n('records')} records (${(n('records') / t).toFixed(0)}/s, ${formatSize(n('bytes') / t)}/s), ` +
     `${n('draws')} draws, drains ${n('drains')} busy ${n('drainMs').toFixed(0)} ms (${((100 * n('drainMs')) / (t * 1000)).toFixed(0)}%, longest ${n('drainMaxMs').toFixed(0)} ms), ` +
     `readbacks ${n('readbacks')} avg ${(n('readbacks') ? n('readbackMs') / n('readbacks') : 0).toFixed(1)} ms max ${n('readbackMaxMs').toFixed(0)} ms, ` +
     `presents ${n('presents')} (GPU completion lag max ${n('presentLagMaxMs').toFixed(0)} ms), idle waits ${n('idleWaits')}; ` +

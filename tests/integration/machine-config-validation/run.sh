@@ -98,6 +98,10 @@ boot_case v7-builtin-mode iici "$IICI" '{"displays":{"builtin":{"monitor":"13in_
 # A socketed Cirrus 54M30 takes a VGA monitor, moved off the built-in video.
 boot_case v7-pci-vga pm8500 "$TNT" \
     '{"cards":[{"slot":"pci_3","card":"cirrus_54m30"}],"displays":{"pci_3":{"monitor":"vga"}}}' OK
+# A PCI display card takes the monitors its kind lists, and nothing else.
+boot_case v7-pci-monitor pm9500 "$TNT" \
+    '{"cards":[{"slot":"pci_1","card":"mach64_gx"}],"displays":{"pci_1":{"monitor":"vga"}}}' \
+    'displays.pci_1: monitor "vga" is not one this device takes'
 boot_case v7-builtin-depth iici "$IICI" '{"displays":{"builtin":{"monitor":"13in_rgb","mode":"640x480x16"}}}' \
     'displays.builtin: mode "640x480x16" is not one of the built-in video'"'"'s modes on that monitor'
 
@@ -158,6 +162,33 @@ if ! grep -qF "machine.boot: config's cards and the legacy card arguments" "$WOR
     echo "FAIL: v8: expected the mixing to be refused"
     fail=1
 fi
+
+# The monitor reaches a PCI card one way, its slot entry: it is no card
+# option, and the configuration's monitor is the row the card is built with,
+# whose code its sense lines read (the 21" grounds all three: 0; the 17"
+# multiple-scan reads 6).
+script="$WORK_DIR/pci-monitor.lua"
+printf 'machine.boot{model = "pm9500", rom = "%s", pci_card = "mach64_gx", pci_option = "monitor=21in_rgb"}\nquit()\n' "$TNT" > "$script"
+"$HEADLESS_BIN" rom="$IICI" script="$script" --speed=turbo > "$WORK_DIR/pci-monitor.out" 2>&1 || true
+n=$((n + 1))
+if ! grep -qF "machine.boot: slot 1's card 'mach64_gx' does not take option monitor=21in_rgb" "$WORK_DIR/pci-monitor.out"; then
+    echo "FAIL: pci-monitor-option: expected monitor= to be refused as a card option"
+    sed -n '/running/,$p' "$WORK_DIR/pci-monitor.out" | head -5
+    fail=1
+fi
+for row in "21in_rgb 0" "multiscan_17 6"; do
+    set -- $row
+    script="$WORK_DIR/pci-sense-$1.lua"
+    printf 'machine.boot{model = "pm9500", rom = "%s", config = "{\\"cards\\":[{\\"slot\\":\\"pci_1\\",\\"card\\":\\"mach64_gx\\"}],\\"displays\\":{\\"pci_1\\":{\\"monitor\\":\\"%s\\"}}}"}\n' "$TNT" "$1" > "$script"
+    printf '%s\n' 'echo(F"MON ${machine.pci.slot[1].card.monitor.id}|${machine.pci.slot[1].card.monitor.sense_code}")' 'quit()' >> "$script"
+    "$HEADLESS_BIN" rom="$IICI" script="$script" --speed=turbo > "$WORK_DIR/pci-sense-$1.out" 2>&1 || true
+    n=$((n + 1))
+    if ! grep -qx "MON $1|$2" "$WORK_DIR/pci-sense-$1.out"; then
+        echo "FAIL: pci-sense-$1: expected the card strapped with $1, sense code $2"
+        sed -n '/running/,$p' "$WORK_DIR/pci-sense-$1.out" | head -5
+        fail=1
+    fi
+done
 
 if [ "$fail" -ne 0 ]; then
     exit 1

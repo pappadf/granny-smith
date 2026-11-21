@@ -1083,11 +1083,12 @@ ROM=https://host/path/roms.zip/Mac%20IIci/iici.rom
 FD1=https://host/disks/Games.sit/Dark%20Castle.img
 ```
 
-The container is fetched whole; a zip member is found by exact path, then
-ignoring case, then by a unique base name; a Mac archive is unpacked by
-`files.archive.extract` and searched the same way.  A container named with no
-member keeps the old behaviour (a zip's first file, a Mac archive's
-`files.find_media` pick).  A missing member is reported with the first
+The container is fetched whole and unpacked by the core's archive reader
+(`files.archive.extract`, peeler: zip with Zip64 and data descriptors,
+StuffIt, Compact Pro, BinHex, MacBinary, tar); the member is found among
+what it holds by exact path, then ignoring case, then by a unique base
+name.  A container named with no member keeps the old behaviour (a zip's
+first file, `._` sidecars aside; a Mac archive's `files.find_media` pick).  A missing member is reported with the first
 few names the container does hold.
 
 **Encoding.**  Write a value `encodeURIComponent`-encoded.  Browsers let
@@ -1209,8 +1210,8 @@ links with archive.org's endpoints routed to the gs-test-data copies.
 
 Downloads run one at a time and stream to the scratch area through the
 same chunked writer as uploads (`bus/upload.ts::streamToOpfs`), so an
-image is never held whole in memory — except a zip, which is read back
-whole to unzip.
+image is never held whole in memory, a zip container included: the core
+unpacks it from the scratch file.
 
 ## Startup Flow
 

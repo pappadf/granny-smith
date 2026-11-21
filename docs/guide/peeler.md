@@ -18,7 +18,7 @@ formats:
 | `gz`  | wrapper | gzip (multi-member; BGZF is indexed for random access) |
 | `sit` | archive | StuffIt 1.x–5.x (methods 0, 1, 2, 3, 5, 13, 15) |
 | `cpt` | archive | Compact Pro |
-| `zip` | archive | Zip (stored and deflate; Zip64; self-extracting prefixes; `__MACOSX/` AppleDouble folded back into resource forks and Finder info) |
+| `zip` | archive | Zip (stored and deflate; Zip64; data descriptors; self-extracting prefixes; `__MACOSX/` AppleDouble folded back into resource forks and Finder info) |
 | `tar` | archive | tar (ustar, GNU long names, pax `path`/`size`, base-256 sizes, hard links; macOS `._` AppleDouble folded back; every member a view) |
 
 A *wrapper* holds exactly one file; an *archive* holds a tree. Nesting
@@ -235,7 +235,9 @@ git add -A && git commit -m "Sync from granny-smith"
 - `make -C src/peeler test` runs the corpus in `src/peeler/test/`
   against its recorded checksums. The zip, gzip and tar cases
   (`zip_*`, `gz_*`, `tar_*`: Info-ZIP mixed, all-stored and Zip64
-  archives, a Python Zip64 one, self-extractors with and without adjusted
+  archives, a Python Zip64 one, data-descriptor (flag bit 3) zips from
+  Info-ZIP writing to a pipe and from Python on an unseekable stream (Zip64
+  descriptors, stored and deflated), self-extractors with and without adjusted
   offsets, a Finder zip with `__MACOSX` companions, single- and
   multi-member gzip, BGZF; GNU, ustar and pax tars, a hard link, a tar in
   gzip, a macOS tar with `._` companions) are

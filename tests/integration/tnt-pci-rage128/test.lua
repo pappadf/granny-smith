@@ -81,9 +81,9 @@ local function of_go()
     assert(gs.contains(out, "0 > "), "Open Firmware did not return to its prompt")
     return out
 end
--- Boot with slot entry `entry` to the prompt and return the card's properties.
-local function card_properties(entry)
-    machine.boot{model = "pm9500", ram = 32768, rom = vars.ROM, slots = entry}
+-- Stop the machine just booted at the Open Firmware prompt and return the
+-- card's properties.
+local function of_card_properties()
     machine.adb.keyboard.down("Command")
     machine.adb.keyboard.down("Option")
     machine.adb.keyboard.down("o")
@@ -103,6 +103,20 @@ local function card_properties(entry)
     of_send(".propert")
     of_send("ies")
     return of_go()
+end
+
+-- Boot with slot entry `entry` to the prompt and return the card's properties.
+local function card_properties(entry)
+    machine.boot{model = "pm9500", ram = 32768, rom = vars.ROM, slots = entry}
+    return of_card_properties()
+end
+
+-- The same with the Rage 128 in slot 1 and `monitor` plugged into it (the
+-- configuration's displays.pci_1.monitor, the one way a monitor is chosen).
+local function monitor_properties(monitor)
+    machine.boot{model = "pm9500", ram = 32768, rom = vars.ROM, config = F"{\"cards\":[{\"slot\":\"pci_1\",\"card\":\"rage128\"}],\"displays\":{\"pci_1\":{\"monitor\":\"${monitor}\"}}}"}
+    assert(machine.pci.slot[1].card.monitor.id == monitor, "the configured monitor is plugged in")
+    return of_card_properties()
 end
 
 local p = card_properties("1=rage128")
@@ -139,18 +153,18 @@ assert(gs.contains(p, "driver,AAPL,MacOS,PowerPC"), "the ndrv is published")
 assert(gs.contains(p, "0001844A bytes total"), "...all 99,402 bytes of it")
 
 -- A VGA monitor that does not answer DDC: no EDID, the same VGA mode.
-local p = card_properties("1=rage128,monitor=vga_noddc")
+local p = monitor_properties("vga_noddc")
 assert(not gs.truthy(function() return gs.contains(p, "EDID ") end), "no DDC, no EDID property")
 assert(gs.contains(p, "ATY,Flags               07170012"), "VGA, no EDID")
 
 -- An Apple 13" RGB on an Apple cable: the VSYNC loopback follows the
 -- polarity the FCode drives, so it trusts the sense lines and reads $62B.
-local p = card_properties("1=rage128,monitor=13in_rgb")
+local p = monitor_properties("13in_rgb")
 assert(gs.contains(p, "ATY,Flags               062B8012"), "Apple sense path ($8000), code $62B")
 assert(gs.contains(p, "width                   00000280"), "640 x 480 at 67 Hz for the 13-inch")
 
 -- A 21" Macintosh Color Display: code $000 -> 1152 x 870.
-local p = card_properties("1=rage128,monitor=21in_rgb")
+local p = monitor_properties("21in_rgb")
 assert(gs.contains(p, "ATY,Flags               00008010"), "Apple sense, code $000")
 assert(gs.contains(p, "width                   00000480"), "1152 pixels")
 assert(gs.contains(p, "height                  00000366"), "870 lines")

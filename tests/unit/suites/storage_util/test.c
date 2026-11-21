@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 static char g_root[64];
@@ -135,6 +136,82 @@ TEST(test_read_text_file) {
     ASSERT_EQ_INT(0, rm_tree(g_root));
 }
 
+// Write `text` `repeat` times into the FIFO `p` from a child process: the
+// open blocks until a reader arrives, as a shell's process substitution does.
+static pid_t fifo_writer(const char *p, const char *text, size_t repeat) {
+    pid_t pid = fork();
+    ASSERT_TRUE(pid >= 0);
+    if (pid == 0) {
+        FILE *f = fopen(p, "wb");
+        if (!f)
+            _exit(1);
+        for (size_t i = 0; i < repeat; i++)
+            fputs(text, f);
+        _exit(fclose(f) == 0 ? 0 : 1);
+    }
+    return pid;
+}
+
+// Reap the writer; a reader that stopped at the cap may leave it killed by
+// SIGPIPE, which is not the writer's failure.
+static void fifo_reap(pid_t pid) {
+    int status = 0;
+    ASSERT_TRUE(waitpid(pid, &status, 0) == pid);
+}
+
+// The command-line reader streams a FIFO (config=<(...)), with the same cap
+// and NUL terminator as read_text_file -- which still refuses a FIFO, so a
+// path someone else names cannot hang its reader.
+TEST(test_read_text_stream_reads_fifos) {
+    fresh_root();
+    char *p = str_printf("%s/fifo", g_root);
+    ASSERT_EQ_INT(0, mkfifo(p, 0600));
+    char *text = NULL;
+    size_t len = 0;
+    ASSERT_EQ_INT(-EINVAL, read_text_file(p, 1u << 20, &text, &len));
+    ASSERT_TRUE(text == NULL);
+
+    // A short document through the FIFO
+    pid_t w = fifo_writer(p, "{\"model\":\"plus\"}\n", 1);
+    ASSERT_EQ_INT(0, read_text_stream(p, 1u << 20, &text, &len));
+    fifo_reap(w);
+    ASSERT_TRUE(len == 17 && strcmp(text, "{\"model\":\"plus\"}\n") == 0);
+    free(text);
+
+    // Longer than one read and than the first buffer: exactly at the cap
+    w = fifo_writer(p, "0123456789", 1000);
+    ASSERT_EQ_INT(0, read_text_stream(p, 10000, &text, &len));
+    fifo_reap(w);
+    ASSERT_TRUE(len == 10000 && text[9999] == '9' && text[10000] == '\0');
+    free(text);
+
+    // One byte over the cap is refused
+    w = fifo_writer(p, "0123456789", 1000);
+    ASSERT_EQ_INT(-EFBIG, read_text_stream(p, 9999, &text, &len));
+    fifo_reap(w);
+    ASSERT_TRUE(text == NULL);
+
+    // A writer that writes nothing is an empty document, not a failure
+    w = fifo_writer(p, "", 1);
+    ASSERT_EQ_INT(0, read_text_stream(p, 10, &text, &len));
+    fifo_reap(w);
+    ASSERT_TRUE(text && len == 0 && text[0] == '\0');
+    free(text);
+
+    // Regular files, directories and missing paths read as read_text_file's
+    char *f = str_printf("%s/t", g_root);
+    write_file(f, "echo 1\n");
+    ASSERT_EQ_INT(0, read_text_stream(f, 7, &text, &len));
+    ASSERT_TRUE(len == 7 && strcmp(text, "echo 1\n") == 0);
+    free(text);
+    ASSERT_EQ_INT(-EFBIG, read_text_stream(f, 6, &text, NULL));
+    ASSERT_EQ_INT(-EISDIR, read_text_stream(g_root, 6, &text, NULL));
+    ASSERT_EQ_INT(-ENOENT, read_text_stream("/tmp/storage_util_test_missing", 6, &text, NULL));
+    free(f);
+    free(p);
+    ASSERT_EQ_INT(0, rm_tree(g_root));
+}
+
 // A file replaced whole or not at all: a commit that failed -- or was told
 // the writes failed -- leaves the old file and no temporary behind.
 TEST(test_atomic_write_replaces_whole_or_not_at_all) {
@@ -251,6 +328,7 @@ int main(void) {
     RUN(test_rm_tree_does_not_follow_symlinks);
     RUN(test_read_file_is_capped);
     RUN(test_read_text_file);
+    RUN(test_read_text_stream_reads_fifos);
     RUN(test_json_escape);
     RUN(test_json_fputs);
     RUN(test_path_helpers);

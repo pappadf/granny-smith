@@ -2995,6 +2995,12 @@ static const pci_device_ops_t v2_ops = {
     .reset = v2_reset,
     .name = v2_name,
     .display = v2_display,
+    // No fb_base: what the monitor shows is the gamma-converted XRGB shadow
+    // of a 5-6-5 colour buffer, and the LFB that reaches that buffer is a
+    // mode-dependent pixel port (lfbMode picks the buffer, the format and the
+    // Y origin over a 1024-pixel logical line), not a linear raster -- so the
+    // first displayed byte is in no guest-addressable memory and `base` reads
+    // 0.  video.displayed_buffer says which colour buffer is scanned.
     .on_vbl = v2_on_vbl,
     .cfg_read = v2_cfg_read,
     .cfg_write = v2_cfg_write,
@@ -3306,54 +3312,13 @@ static const class_desc_t v2_dac_class = {
     .n_members = sizeof(dac_members) / sizeof(dac_members[0]),
 };
 
-static DEF_GETTER(fb_attr_width) {
-    voodoo2_t *v = node_card(self);
-    return val_uint(4, v ? v2_screen_width(v) : 0);
-}
-static DEF_GETTER(fb_attr_height) {
-    voodoo2_t *v = node_card(self);
-    return val_uint(4, v ? v2_screen_height(v) : 0);
-}
-static DEF_GETTER(fb_attr_depth) {
-    return val_uint(4, 16); // the framebuffer is natively 5-6-5
-}
-static DEF_GETTER(fb_attr_stride) {
-    voodoo2_t *v = node_card(self);
-    return val_uint(4, v ? v2_screen_width(v) * 2u : 0);
-}
-static DEF_GETTER(fb_attr_displayed) {
+// The displayed buffer: the video node's, beside the pass-through predicate.
+// The `framebuffer` node is the generic layer's (pci_objects_build): it
+// reads v2_display, which answers only while the card drives the monitor.
+static DEF_GETTER(video_attr_displayed) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v->displayed_buffer : 0);
 }
-
-static const member_t fb_members[] = {
-    {.kind = MK_ATTR,
-     .name = "width",
-     .doc = "Active raster width in pixels (videoDimensions)",
-     .attr = {.type = VK_UINT, .get = fb_attr_width}    },
-    {.kind = MK_ATTR,
-     .name = "height",
-     .doc = "Active raster height in lines",
-     .attr = {.type = VK_UINT, .get = fb_attr_height}   },
-    {.kind = MK_ATTR,
-     .name = "depth",
-     .doc = "Bits per pixel (always 16 — the framebuffer is 5-6-5)",
-     .attr = {.type = VK_UINT, .get = fb_attr_depth}    },
-    {.kind = MK_ATTR,
-     .name = "stride",
-     .doc = "Scanout bytes per row",
-     .attr = {.type = VK_UINT, .get = fb_attr_stride}   },
-    {.kind = MK_ATTR,
-     .name = "displayed_buffer",
-     .doc = "Physical colour buffer being scanned (status[11:10])",
-     .attr = {.type = VK_UINT, .get = fb_attr_displayed}},
-};
-static const class_desc_t v2_fb_class = {
-    .name = "voodoo2_fb",
-    .doc = "The Voodoo2 framebuffer: geometry and the displayed buffer",
-    .members = fb_members,
-    .n_members = sizeof(fb_members) / sizeof(fb_members[0]),
-};
 
 static DEF_GETTER(video_attr_drives) {
     voodoo2_t *v = node_card(self);
@@ -3376,6 +3341,10 @@ static const member_t video_members[] = {
      .name = "swaps_pending",
      .doc = "swapbufferCMDs issued and not yet retired at a frame boundary",
      .attr = {.type = VK_UINT, .get = video_attr_swaps_pending}                                                                 },
+    {.kind = MK_ATTR,
+     .name = "displayed_buffer",
+     .doc = "Physical colour buffer being scanned (status[11:10])",
+     .attr = {.type = VK_UINT, .get = video_attr_displayed}                                                                     },
 };
 static const class_desc_t v2_video_class = {
     .name = "voodoo2_video",
@@ -3388,36 +3357,11 @@ static void v2_attach_objects(pci_device_t *dev, struct object *card_node) {
     voodoo2_t *v = (voodoo2_t *)dev->priv;
     if (!v || !card_node)
         return;
-    struct object *fb = object_new(&v2_fb_class, v, "framebuffer");
-    if (fb) {
-        object_set_label(fb, "Framebuffer");
-        object_set_order(fb, 10);
-        object_attach(card_node, fb);
-        // Nominate it: machine.screen.source resolves to whichever
-        // framebuffer node belongs to the current primary display, so
-        // it follows the pass-through switch automatically.
-        pci_card_set_framebuffer_object(dev, fb);
-    }
-    struct object *video = object_new(&v2_video_class, v, "video");
-    if (video) {
-        object_set_label(video, "Video / Pass-through");
-        object_set_order(video, 20);
-        object_attach(card_node, video);
-    }
-    struct object *regs = object_new(&v2_regs_class, v, "regs");
-    if (regs) {
-        object_set_label(regs, "Registers");
-        object_set_order(regs, 30);
-        object_set_category(regs, M_CAT_ADVANCED);
-        object_attach(card_node, regs);
-    }
-    struct object *dac = object_new(&v2_dac_class, v, "dac");
-    if (dac) {
-        object_set_label(dac, "DAC (ICS5342)");
-        object_set_order(dac, 40);
-        object_set_category(dac, M_CAT_ADVANCED);
-        object_attach(card_node, dac);
-    }
+    object_attach_new(card_node, &v2_video_class, v, "video", "Video / Pass-through", 20);
+    struct object *regs = object_attach_new(card_node, &v2_regs_class, v, "regs", "Registers", 30);
+    object_set_category(regs, M_CAT_ADVANCED);
+    struct object *dac = object_attach_new(card_node, &v2_dac_class, v, "dac", "DAC (ICS5342)", 40);
+    object_set_category(dac, M_CAT_ADVANCED);
 }
 
 // ============================================================

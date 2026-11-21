@@ -273,7 +273,7 @@ local function mach64_strip(x, y, item_x, item_y)
 end
 
 local function row_pm9500_mach64_depths()
-    machine.boot{model = "pm9500", ram = 32768, rom = vars.ROM, pci_card = "mach64_gx", pci_option = "vram=4m,monitor=17in_multi"}
+    machine.boot{model = "pm9500", ram = 32768, rom = vars.ROM, config = "{\"cards\":[{\"slot\":\"pci_1\",\"card\":\"mach64_gx\",\"options\":{\"vram\":\"4m\"}}],\"displays\":{\"pci_1\":{\"monitor\":\"multiscan_17\"}}}"}
     machine.rtc.time = "2026-04-26T21:30:36"
     machine.scsi.attach_hd(hd_76, 0)
     scheduler.run(4000000000)
@@ -409,7 +409,12 @@ local function row_tnt_voodoo2_display()
     assert(machine.screen.depth == 32, "the screen is the Voodoo2's DAC output: 5-6-5 expanded to 8-8-8 through the gamma CLUT")
     assert(machine.screen.width == 640, "..at the card's programmed videoDimensions")
     assert(machine.screen.height == 480, "..both axes")
-    assert(machine.screen.source.displayed_buffer == 0, "screen.source resolves to the CARD's framebuffer node")
+    assert(machine.pci.slot[1].card.video.displayed_buffer == 0, "the card scans colour buffer 0")
+    -- screen.source resolves to the CARD's framebuffer node: its geometry,
+    -- and base 0 -- the gamma-converted XRGB the monitor shows is in no
+    -- guest-addressable memory.
+    assert(machine.screen.source.width == 640 and machine.screen.source.depth == 32, "screen.source resolves to the CARD's framebuffer node")
+    assert(machine.screen.source.base == 0, "the Voodoo2's scanned frame has no guest address")
     -- The card's own rendering.
     mac.check("goldens/pm8500-voodoo2-640x480x32-frame.png")
 

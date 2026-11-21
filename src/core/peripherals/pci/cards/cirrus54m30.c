@@ -50,8 +50,8 @@
 
 #include "card.h"
 #include "checkpoint.h"
+#include "config_space.h"
 #include "display.h"
-#include "display_class.h"
 #include "display_ramdac.h"
 #include "log.h"
 #include "pci.h"
@@ -199,7 +199,6 @@ typedef struct c54m30 {
     rgba8_t clut[256]; // the palette materialised for the renderer
     c54m30_blt_t blt; // the BitBLT engine's only state that outlives a register write
     uint32_t win_logged; // accesses to the legacy-window mirror logged loudly so far
-    display_fb_node_t fb_node; // instance data for the shared framebuffer class
 } c54m30_t;
 
 static void c54m30_update(c54m30_t *c);
@@ -1282,6 +1281,18 @@ static display_t *c54m30_display(pci_device_t *dev) {
     return (c && c->display.width && c->display.height) ? &c->display : NULL;
 }
 
+// The guest physical address of the first displayed byte: BAR0's base plus
+// where the scanout actually starts, as c54m30_update derived it (CR0C/CR0D
+// with the CR1B extension, and the fall-back to 0 for a start that runs the
+// raster off the end).  The display memory sits at the bottom of the 16 MB
+// aperture, byte for byte.  0 with no scanout or no aperture decoded.
+static uint64_t c54m30_fb_base(pci_device_t *dev) {
+    c54m30_t *c = (c54m30_t *)dev->priv;
+    if (!c || !c->display.bits || !pci_cfg_bar_enabled(dev, C54M30_BAR_FB))
+        return 0;
+    return (uint64_t)pci_cfg_bar_base(dev, C54M30_BAR_FB) + c->scan_start;
+}
+
 // The display memory a power cycle loses (the bus default, pci_power_on).
 static size_t c54m30_vram(pci_device_t *dev, uint8_t **base) {
     c54m30_t *c = (c54m30_t *)dev->priv;
@@ -1409,6 +1420,7 @@ static void c54m30_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
 
 static const pci_device_ops_t c54m30_ops = {
     .display = c54m30_display,
+    .fb_base = c54m30_fb_base,
     .vram = c54m30_vram,
     .reset = c54m30_reset,
     .teardown = c54m30_teardown,
@@ -1449,38 +1461,6 @@ static int c54m30_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom,
     return 0;
 }
 
-// The framebuffer node, shared with every other display source
-// (display_class.h).  This card declared no attach_objects at all, so on a
-// Network Server `machine.screen.source` resolved to nothing and there was no
-// way to read the geometry the VGA CRTC had been programmed with.
-static display_t *c54m30_fb_resolve(void *owner) {
-    c54m30_t *c = (c54m30_t *)owner;
-    return c ? &c->display : NULL;
-}
-static uint64_t c54m30_fb_base(void *owner) {
-    // A byte offset into display memory: where the scanout actually starts,
-    // as c54m30_update derived it (CR0C/CR0D with the CR1B extension, and the
-    // fall-back to 0 for a start that runs the raster off the end).
-    c54m30_t *c = (c54m30_t *)owner;
-    return c ? c->scan_start : 0;
-}
-
-static void c54m30_attach_objects(pci_device_t *dev, struct object *card_node) {
-    c54m30_t *c = dev ? (c54m30_t *)dev->priv : NULL;
-    if (!c || !card_node)
-        return;
-    c->fb_node = (display_fb_node_t){.owner = c, .resolve = c54m30_fb_resolve, .base = c54m30_fb_base};
-    struct object *fb = object_new(&display_fb_class, &c->fb_node, "framebuffer");
-    if (!fb)
-        return;
-    object_set_label(fb, "Framebuffer");
-    object_set_order(fb, 10);
-    object_attach(card_node, fb);
-    // Nominate it, so `machine.screen.source` resolves here when this card is
-    // the primary display.
-    pci_card_set_framebuffer_object(dev, fb);
-}
-
 // The monitor a socketed card can drive.  Without one the configuration
 // could not plug a monitor into the card at all: the screen stayed on the
 // Mac's own video, which an operating system driving the 54M30 (OS/2 Warp
@@ -1508,6 +1488,5 @@ const pci_card_kind_t cirrus_54m30_kind = {
     .decl = &c54m30_decl,
     .priv_size = sizeof(c54m30_t),
     .init = c54m30_init,
-    .attach_objects = c54m30_attach_objects,
     .monitors = c54m30_monitors,
 };

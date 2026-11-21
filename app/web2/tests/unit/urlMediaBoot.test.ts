@@ -9,6 +9,7 @@ import { fakeHeap, installFakeCoreFs } from '../helpers/fakeCoreFs';
 import { tree } from '../helpers/configTree';
 import type { MachineProfile } from '@/bus/profile';
 import { gzipSync } from 'node:zlib';
+import { makeZip } from '../helpers/zipWriter';
 
 const heap = fakeHeap();
 
@@ -144,8 +145,9 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
     expect([...files.keys()].some((p) => p.startsWith('/opfs/images/hd/'))).toBe(false);
   });
 
-  // S1018-31: a gzip body went to jszip (its Content-Type has "zip" in it),
-  // whose "Can't find end of central directory" was the row's error.
+  // S1018-31: a gzip body was taken for a zip (its Content-Type has "zip" in
+  // it), and the zip reader's "Can't find end of central directory" was the
+  // row's error.
   it('a gzipped floppy is unpacked, stored and inserted', async () => {
     served['plus.rom'] = PLUS_ROM;
     served['sys.dsk.gz'] = gzipSync(FLOPPY) as Uint8Array<ArrayBuffer>;
@@ -162,13 +164,14 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
   });
 
   // S1018-44: a file that is not a zip, named as one with a member path.
-  it('a member of a file that is not a zip says so, not jszip', async () => {
+  it('a member of a file that is not a zip says so', async () => {
     served['plus.rom'] = PLUS_ROM;
     served['disks.zip'] = JUNK;
     await processUrlMedia(new URLSearchParams('rom=plus.rom&fd0=disks.zip/sys.dsk'));
-    expect(toastText()).toMatch(/disks[.]zip is not a zip archive this page can read/);
+    expect(toastText()).toMatch(/disks[.]zip is not an archive this page can read/);
     expect(toastText()).not.toMatch(/central directory/);
     expect(media.insertFloppy).not.toHaveBeenCalled();
+    expect(scratchLeft()).toEqual([]);
   });
 
   it('a valid floppy is stored and inserted from its store, not from scratch', async () => {
@@ -181,7 +184,6 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
     expect(media.insertFloppy).toHaveBeenCalledWith(stored, true, 0);
     expect(scratchLeft()).toEqual([]);
   });
-
   it('a hard disk position the model lacks is said as fd1= says it, and its row fails', async () => {
     served['plus.rom'] = PLUS_ROM;
     served['disk.img'] = new Uint8Array(1 << 20).fill(0x11); // over the 400 KB floor
@@ -231,6 +233,80 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
     expect(new Set(second).has(first[0])).toBe(false);
     expect(written).not.toContain(firstPath);
     expect(files.get(firstPath)).toBe(mounted);
+    expect(scratchLeft()).toEqual([]);
+  });
+});
+
+// A zip is unpacked by the core's archive reader (files.archive.extract), the
+// one that unpacks every other archive: the page never reads it itself.
+describe('URL media: a zip member comes out through the core', () => {
+  // What files.archive.extract writes for each served zip, keyed by its bytes.
+  const zips = new Map<string, Record<string, Uint8Array>>();
+  const key = (b: Uint8Array) => b.join(',');
+  async function serveZip(name: string, members: Record<string, Uint8Array>): Promise<void> {
+    const body = await makeZip(Object.entries(members).map(([n, data]) => ({ name: n, data })));
+    served[name] = body as Uint8Array<ArrayBuffer>;
+    zips.set(key(body), members);
+  }
+  beforeEach(() => {
+    zips.clear();
+    bridge.reply('files.archive.identify', (args: unknown) => {
+      const f = files.get((args as [string])[0]);
+      return f && zips.has(key(f)) ? 'zip' : '';
+    });
+    bridge.reply('files.archive.extract', (args: unknown) => {
+      const [from, dir] = args as [string, string];
+      const f = files.get(from);
+      const members = f && zips.get(key(f));
+      if (!members) return false;
+      for (const [n, data] of Object.entries(members)) files.set(`${dir}/${n}`, data.slice());
+      return true;
+    });
+    // A directory's children: the files under it, and the folders they are in.
+    bridge.reply('files.list', (args: unknown) => {
+      const [dir] = args as [string];
+      const kinds = new Map<string, string>();
+      for (const p of files.keys()) {
+        if (!p.startsWith(`${dir}/`)) continue;
+        const rest = p.slice(dir.length + 1).split('/');
+        kinds.set(rest[0], rest.length > 1 ? 'directory' : 'file');
+      }
+      return [...kinds].map(([name, kind]) => ({ name, kind }));
+    });
+  });
+
+  it('a member path picks that member, not the first file', async () => {
+    served['plus.rom'] = PLUS_ROM;
+    await serveZip('disks.zip', { 'decoy.dsk': JUNK, 'System Disks/sys.dsk': FLOPPY });
+    await processUrlMedia(
+      new URLSearchParams(
+        `rom=plus.rom&fd0=${encodeURIComponent('disks.zip/System Disks/sys.dsk')}`,
+      ),
+    );
+    expect(bridge.paths()).toContain('files.archive.extract');
+    const stored = [...files.keys()].find((p) => p.startsWith('/opfs/images/fd/'));
+    expect(stored).toBeDefined();
+    expect(files.get(stored!)).toEqual(FLOPPY);
+    expect(media.insertFloppy).toHaveBeenCalledWith(stored, true, 0);
+    expect(scratchLeft()).toEqual([]);
+  });
+
+  it('a member that is not there is reported with what is', async () => {
+    served['plus.rom'] = PLUS_ROM;
+    await serveZip('disks.zip', { 'other.dsk': FLOPPY });
+    await processUrlMedia(new URLSearchParams('rom=plus.rom&fd0=disks.zip/sys.dsk'));
+    expect(toastText()).toMatch(/"sys.dsk" is not in disks.zip \(it has other.dsk\)/);
+    expect(media.insertFloppy).not.toHaveBeenCalled();
+    expect(scratchLeft()).toEqual([]);
+  });
+
+  it('a bare zip gives its first file, never a "._" sidecar', async () => {
+    served['plus.rom'] = PLUS_ROM;
+    await serveZip('sys.zip', { '._sys.dsk': JUNK, 'sys.dsk': FLOPPY, 'later.dsk': JUNK });
+    await processUrlMedia(new URLSearchParams('rom=plus.rom&fd0=sys.zip'));
+    const stored = [...files.keys()].find((p) => p.startsWith('/opfs/images/fd/'));
+    expect(stored).toBeDefined();
+    expect(files.get(stored!)).toEqual(FLOPPY);
     expect(scratchLeft()).toEqual([]);
   });
 });

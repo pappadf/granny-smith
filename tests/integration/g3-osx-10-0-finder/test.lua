@@ -31,7 +31,7 @@ if mac.have_media(hd) then
     machine.rtc.time = "2026-10-01T12:00:00"
     machine.attach_media("ata0", 0, "hd", hd)
     assert(machine.ata.devices == "hd - - -", "the disk is not ATA bus 0's master")
-    assert(machine.pci.slot[4].card.monitor.id == "17in_multi", "the configuration's 17\" monitor is not strapped")
+    assert(machine.pci.slot[4].card.monitor.id == "multiscan_17", "the configuration's 17\" monitor is not strapped")
     -- No nvram block in the configuration: the seeding wrote the patch and
     -- the startup partition's boot-device.
     local boot_device = machine.nvram.getenv("boot-device")

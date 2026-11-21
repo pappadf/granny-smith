@@ -14,6 +14,7 @@
 
 #include "card_registry.h"
 #include "config_space.h"
+#include "display_class.h"
 #include "machine_profile.h"
 #include "object.h"
 #include "object_order.h"
@@ -34,7 +35,8 @@ typedef struct pci_slot_nodes {
     struct object *card;
     struct object *config;
     object_cache_t bars; // the bar nodes, by BAR index; their data is this record
-    struct object *fb; // the card's nominated framebuffer node, if any
+    struct object *fb; // the device's framebuffer node, when it has a display
+    display_fb_node_t fb_node; // instance data for the shared framebuffer class
     pci_device_t *dev;
     int number; // instance data for the slot wrapper
 } pci_slot_nodes_t;
@@ -369,6 +371,19 @@ static void pci_root_install(struct config *cfg) {
     }
 }
 
+// === Framebuffer node =======================================================
+// The node is display_class.c's, shared with NuBus and the built-in chips.
+// It reaches the device's live descriptor through its `display` op and its
+// base through the optional `fb_base` op.
+static display_t *pci_fb_resolve(void *owner) {
+    pci_device_t *dev = (pci_device_t *)owner;
+    return (dev && dev->ops && dev->ops->display) ? dev->ops->display(dev) : NULL;
+}
+static uint64_t pci_fb_base(void *owner) {
+    pci_device_t *dev = (pci_device_t *)owner;
+    return (dev && dev->ops && dev->ops->fb_base) ? dev->ops->fb_base(dev) : 0;
+}
+
 // === Object-tree build / teardown ===========================================
 
 void pci_objects_build(pci_root_t *root) {
@@ -401,12 +416,9 @@ void pci_objects_build(pci_root_t *root) {
         // The live config header, Advanced so it doesn't clutter the
         // default SYSTEM tree.  Its instance data is the slot record: the
         // BAR children reach the device through it.
-        n->config = object_new(&pci_config_class, n, "config");
+        n->config = object_attach_new(n->card, &pci_config_class, n, "config", "Config space", 10);
         if (n->config) {
-            object_set_label(n->config, "Config space");
-            object_set_order(n->config, 10);
             object_set_category(n->config, M_CAT_ADVANCED);
-            object_attach(n->card, n->config);
             struct object *bars = object_collection_new(&pci_bars, n, "bar");
             if (bars) {
                 object_set_label(bars, "BARs");
@@ -426,22 +438,19 @@ void pci_objects_build(pci_root_t *root) {
             }
         }
 
+        // Every device that produces a display gets the shared framebuffer
+        // node -- the one `machine.screen.source` resolves to while it is the
+        // primary display.
+        if (n->dev->ops && n->dev->ops->display) {
+            n->fb_node = (display_fb_node_t){.owner = n->dev, .resolve = pci_fb_resolve, .base = pci_fb_base};
+            n->fb = object_attach_new(n->card, &display_fb_class, &n->fb_node, "framebuffer", "Framebuffer", 10);
+        }
+
         // Card-specific children, through the KIND that actually seated
         // this slot — pci_class.c never tests a device's identity.
         const pci_card_kind_t *kind = pci_slot_kind(root, i);
         if (kind && kind->attach_objects)
             kind->attach_objects(n->dev, n->card);
-    }
-}
-
-void pci_card_set_framebuffer_object(pci_device_t *dev, struct object *obj) {
-    if (!dev)
-        return;
-    for (int i = 0; i < PCI_OBJ_SLOTS; i++) {
-        if (g_slot_nodes[i].dev == dev) {
-            g_slot_nodes[i].fb = obj;
-            return;
-        }
     }
 }
 

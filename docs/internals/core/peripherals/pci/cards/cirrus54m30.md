@@ -82,8 +82,8 @@ them the mode: the display op returns NULL until the firmware programs one.
 A checkpoint stores the register files, the port latches (the index
 registers, the attribute flip-flop and the DAC's position within an entry),
 the palette and all of display memory; restore rebuilds the palette and the
-scanout from them (line 1321). The framebuffer node's base is the byte offset
-the scanout actually starts at, after the fall-back above.
+scanout from them (line 1321). The framebuffer node's base is BAR0's base plus the
+byte offset the scanout actually starts at, after the fall-back above.
 
 ## What it does not implement
 

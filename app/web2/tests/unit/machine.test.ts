@@ -49,6 +49,8 @@ describe('formatRamKb', () => {
     [2560, '2.5 MB'],
     [4096, '4 MB'],
     [524288, '512 MB'],
+    [1048576, '1024 MB'],
+    [10752, '11 MB'],
   ] as const)('%d -> %s', (kb, label) => {
     expect(formatRamKb(kb)).toBe(label);
   });

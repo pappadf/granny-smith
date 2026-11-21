@@ -248,6 +248,16 @@ static display_t *card_display(nubus_card_t *card) {
     return p ? &p->display : NULL;
 }
 
+// The guest physical address of the first displayed byte.  Once the machine
+// has handed over Bank A (builtin_rbv_video_set_framebuffer) the raster is
+// main RAM from physical 0, so Mac OS's screen at the bottom of RAM reads 0
+// here -- the same as before the hand-over, when the private buffer is in no
+// guest memory at all.
+static uint64_t card_fb_base(nubus_card_t *card) {
+    rbv_video_priv_t *p = card->priv;
+    return (p && p->fb_external) ? display_guest_addr(&p->display, p->fb, BUILTIN_RBV_VRAM_SIZE, 0) : 0;
+}
+
 // The checkpointed plain-data prefix, up to the first host pointer
 CHECKPOINT_PREFIX(rbv_video_priv_t, display);
 
@@ -298,6 +308,7 @@ static const nubus_card_ops_t builtin_rbv_video_ops = {
     .teardown = card_teardown,
     .on_vbl = card_on_vbl,
     .display = card_display,
+    .fb_base = card_fb_base,
     .checkpoint_save = card_checkpoint_save,
     .checkpoint_restore = card_checkpoint_restore,
 };

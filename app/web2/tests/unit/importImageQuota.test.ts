@@ -9,7 +9,7 @@ const MB = 1024 * 1024;
 describe('storageFullHint', () => {
   it('names a full storage when the import wrote about all that was free', () => {
     expect(storageFullHint(1000 * MB, 968 * MB)).toBe(
-      " (the browser's storage is full: it had 1000.0 MB free)",
+      " (the browser's storage is full: it had 1000 MB free)",
     );
   });
 

@@ -16,10 +16,10 @@
   import {
     checkpointCreatedToDate,
     describeMachine,
-    formatBytes,
     formatCheckpointLabel,
     formatLocalStamp,
   } from '@/lib/checkpointMeta';
+  import { formatSize } from '@/lib/format';
   import { getProfile } from '@/bus/profile';
   import type { CheckpointEntry } from '@/bus/types';
   import { saveBlob } from '@/bus/download';
@@ -107,7 +107,7 @@
       label: 'Size',
       width: 'var(--gs-checkpoints-col-size)',
       cmp: (a, b) => a.sizeBytes - b.sizeBytes,
-      text: (row) => formatBytes(row.sizeBytes),
+      text: (row) => formatSize(row.sizeBytes),
     },
   ];
 
