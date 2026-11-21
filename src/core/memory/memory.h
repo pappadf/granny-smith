@@ -27,33 +27,17 @@
 // code is byte-identical on aarch64 (gcc), x86-64 (clang) and wasm32 (emcc),
 // for every width, loads and stores; on wasm the only delta is that the
 // alignment hint becomes honest (p2align=0) instead of a false claim of
-// natural alignment.  For on-disk and on-wire buffers, common.h's
-// RD_BE*/WR_BE* remain the byte-wise spelling.
+// natural alignment.  These are common.h's RD_BE*/WR_BE* under the name that
+// marks a guest-memory access: one family, one expansion.  (They used to
+// route through static inline memory_load_host* helpers; gcc and emcc both
+// inline those at -Og, but the macros need no such reliance.)
 #define LOAD_BE8(p)  (*(const uint8_t *)(p))
-#define LOAD_BE16(p) (__builtin_bswap16(memory_load_host16(p)))
-#define LOAD_BE32(p) (__builtin_bswap32(memory_load_host32(p)))
+#define LOAD_BE16(p) RD_BE16(p)
+#define LOAD_BE32(p) RD_BE32(p)
 
 #define STORE_BE8(p, v)  (*(uint8_t *)(p) = (uint8_t)(v))
-#define STORE_BE16(p, v) memory_store_host16((p), __builtin_bswap16((uint16_t)(v)))
-#define STORE_BE32(p, v) memory_store_host32((p), __builtin_bswap32((uint32_t)(v)))
-
-// Alignment-agnostic host-memory primitives behind the macros above.
-static inline uint16_t memory_load_host16(const void *p) {
-    uint16_t v;
-    __builtin_memcpy(&v, p, sizeof v);
-    return v;
-}
-static inline uint32_t memory_load_host32(const void *p) {
-    uint32_t v;
-    __builtin_memcpy(&v, p, sizeof v);
-    return v;
-}
-static inline void memory_store_host16(void *p, uint16_t v) {
-    __builtin_memcpy(p, &v, sizeof v);
-}
-static inline void memory_store_host32(void *p, uint32_t v) {
-    __builtin_memcpy(p, &v, sizeof v);
-}
+#define STORE_BE16(p, v) WR_BE16((p), (v))
+#define STORE_BE32(p, v) WR_BE32((p), (v))
 
 // === Type Definitions ===
 struct mmu_state;
@@ -94,6 +78,42 @@ static inline uint8_t memory_iface_read8(const memory_interface_t *m, void *dev,
         return m->peek_uint8(dev, addr);
     return m->read_uint8 ? m->read_uint8(dev, addr) : 0xFF;
 }
+
+// A register face that reads through one `<face>_rd8/16/32(ctx, addr, peek)`:
+// stamps out the guest's `<face>_read8/16/32` (peek false) and the
+// inspection's `<face>_peek8/16/32` (peek true) around them.
+#define MEMORY_READ_FACE(face)                                                                                         \
+    static uint8_t face##_read8(void *ctx, uint32_t a) {                                                               \
+        return face##_rd8(ctx, a, false);                                                                              \
+    }                                                                                                                  \
+    static uint16_t face##_read16(void *ctx, uint32_t a) {                                                             \
+        return face##_rd16(ctx, a, false);                                                                             \
+    }                                                                                                                  \
+    static uint32_t face##_read32(void *ctx, uint32_t a) {                                                             \
+        return face##_rd32(ctx, a, false);                                                                             \
+    }                                                                                                                  \
+    static uint8_t face##_peek8(void *ctx, uint32_t a) {                                                               \
+        return face##_rd8(ctx, a, true);                                                                               \
+    }                                                                                                                  \
+    static uint16_t face##_peek16(void *ctx, uint32_t a) {                                                             \
+        return face##_rd16(ctx, a, true);                                                                              \
+    }                                                                                                                  \
+    static uint32_t face##_peek32(void *ctx, uint32_t a) {                                                             \
+        return face##_rd32(ctx, a, true);                                                                              \
+    }
+
+// The designated initialisers of a face's nine width handlers
+// (`<face>_read8/16/32`, `<face>_write8/16/32`, `<face>_peek8/16/32`), for a
+// `static const memory_interface_t` that adds members of its own (write_line).
+#define MEMORY_IFACE_FIELDS(face)                                                                                      \
+    .read_uint8 = face##_read8, .read_uint16 = face##_read16, .read_uint32 = face##_read32,                            \
+    .write_uint8 = face##_write8, .write_uint16 = face##_write16, .write_uint32 = face##_write32,                      \
+    .peek_uint8 = face##_peek8, .peek_uint16 = face##_peek16, .peek_uint32 = face##_peek32
+
+// Defines `static const memory_interface_t <face>_iface` over the face's nine
+// width handlers.  The context is passed beside the table at every mapping
+// (memory_map_add, pci_bar_backing_iface), so one table serves every instance.
+#define MEMORY_IFACE(face) static const memory_interface_t face##_iface = {MEMORY_IFACE_FIELDS(face)}
 
 struct memory;
 typedef struct memory memory_map_t;
@@ -161,7 +181,7 @@ void memory_map_checkpoint(memory_map_t *restrict mem, checkpoint_t *checkpoint)
 
 // === Operations ===
 
-void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
+void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, const memory_interface_t *iface,
                     void *device);
 
 // Register a host-backed region on the physical bus map.  `writable`
@@ -197,7 +217,7 @@ void memory_map_host_region_alias(memory_map_t *m, uint32_t alias_phys_base, uin
 //   * DECODED but unpopulated ("light-shaded: decoded but might not be
 //     used") — the decoder acknowledges anyway, the cycle completes, and the
 //     data bus floats to the pull-ups.  Reads return $FF; NO fault.  This is
-//     what mac030_board_desc_t.io_unmapped_read models.
+//     what m68k_board_desc_t.io_unmapped_read models.
 //   * NOT DECODED ("unshaded") — nothing acknowledges, the watchdog times
 //     out, bus error.  This is what bus_err_lo/bus_err_hi model for whole
 //     regions, and what THIS function models for an individual device window
@@ -337,9 +357,6 @@ extern uint32_t g_bus_fault_regs[16];
 extern bool g_bus_fault_regs_valid;
 extern unsigned g_bus_fault_size; // bytes of the access that faulted (with the copy)
 extern uint32_t *g_bus_error_instr_ptr; // points to decoder's instruction counter
-extern uint32_t *g_fault_dregs_src; // the running 68k core's D0-D7 (memory.c)
-extern uint32_t g_fault_dregs[8]; // D0-D7 at the first MMU fault of the instruction
-extern bool g_fault_dregs_valid;
 
 // The running sprint's state shared with the slow paths: the one channel
 // between the scheduler, which owns its contents -- it sets them up at each

@@ -2,14 +2,15 @@
 // Copyright (c) pappadf
 
 /*
- * dsp3210_dis.c — reference disassembler for the AT&T DSP3210
+ * dsp3210_disasm.c — reference disassembler for the AT&T DSP3210
  *
- * See dsp3210_dis.h for provenance.  Bit-field references below are to the
+ * See dsp3210_disasm.h for provenance.  Bit-field references below are to the
  * DSP3210 Information Manual, Tables 10-1 (instruction encodings), 10-2
  * (CA field encodings) and 10-3 (DA field encodings).
  */
 
 #include "dsp3210_disasm.h"
+#include "dsp3210_fields.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -51,24 +52,14 @@ static void sb_fmt(sb *s, const char *fmt, ...) {
 }
 
 /* ------------------------------------------------------------------ */
-/* field extraction helpers                                            */
-
-static uint32_t bits(uint32_t w, int hi, int lo) {
-    return (w >> lo) & ((hi - lo == 31) ? 0xFFFFFFFFu : ((1u << (hi - lo + 1)) - 1u));
-}
-
-static int32_t sext16(uint32_t v) {
-    return (int32_t)(int16_t)(v & 0xFFFFu);
-}
-
-/* ------------------------------------------------------------------ */
 /* name tables (IM Table 10-2)                                         */
 
 /*
  * The 5-bit CAU register field is deliberately discontinuous: pc occupies
  * code 15, breaking r1-r14 (codes 1-14) away from r15-r19 (codes 17-21);
  * codes 22/23 are the -n/+n pseudo-operands; r20-r22 are codes 24-26;
- * pcsh is code 30.  Codes 16, 27-29 and 31 are reserved.
+ * pcsh is code 30.  Codes 16, 27-29 and 31 are reserved.  The names are
+ * k_dsp_rc[code].name (dsp3210_fields.h).
  */
 #define RC_R0    0
 #define RC_PC    15
@@ -76,10 +67,6 @@ static int32_t sext16(uint32_t v) {
 #define RC_PLUS  23 /* +n pseudo-operand */
 #define RC_SP    25 /* r21 */
 #define RC_PCSH  30
-
-static const char *const ca_reg_name[32] = {
-    "r0",   "r1",  "r2",  "r3",  "r4",  "r5",  "r6", "r7", "r8",  "r9",  "r10", "r11",  "r12",  "r13",  "r14",  "pc",
-    "?r16", "r15", "r16", "r17", "r18", "r19", "-n", "+n", "r20", "r21", "r22", "?r27", "?r28", "?r29", "pcsh", "?r31"};
 
 /* IO registers reachable by format 7b/7d moves (all others are MMIO). */
 static const char *ior_name(unsigned code, char *tmp, size_t cap) {
@@ -179,7 +166,7 @@ static void ca_target(sb *s, dsp3210_insn *ins, unsigned rb, int32_t n) {
         ins->has_target = 1;
         ins->target = ins->addr + 8 + (uint32_t)n;
     } else {
-        sb_puts(s, ca_reg_name[rb]);
+        sb_puts(s, k_dsp_rc[rb].name);
         if (n != 0)
             sb_disp(s, n);
     }
@@ -187,7 +174,7 @@ static void ca_target(sb *s, dsp3210_insn *ins, unsigned rb, int32_t n) {
 
 /* register-indirect memory operand of the format 7c/7d moves */
 static void ca_mem(sb *s, unsigned rp, unsigned ri) {
-    sb_fmt(s, "*%s", ca_reg_name[rp]);
+    sb_fmt(s, "*%s", k_dsp_rc[rp].name);
     if (ri == RC_R0)
         return; /* post-modify by zero: plain *rP */
     if (ri == RC_PLUS)
@@ -195,7 +182,7 @@ static void ca_mem(sb *s, unsigned rp, unsigned ri) {
     else if (ri == RC_MINUS)
         sb_puts(s, "--");
     else
-        sb_fmt(s, "++%s", ca_reg_name[ri]);
+        sb_fmt(s, "++%s", k_dsp_rc[ri].name);
 }
 
 /*
@@ -454,7 +441,7 @@ static void dis_ca_alu_reg(uint32_t w, dsp3210_insn *ins, sb *s) {
 
     /* no-store forms */
     if (f == F_CMP || f == F_BTST) {
-        sb_fmt(s, "%s%s %s %s", size, ca_reg_name[rs1], (f == F_CMP) ? "-" : "&", ca_reg_name[rs2]);
+        sb_fmt(s, "%s%s %s %s", size, k_dsp_rc[rs1].name, (f == F_CMP) ? "-" : "&", k_dsp_rc[rs2].name);
         return;
     }
 
@@ -464,51 +451,51 @@ static void dis_ca_alu_reg(uint32_t w, dsp3210_insn *ins, sb *s) {
         return;
     }
 
-    sb_fmt(s, "%s = %s", ca_reg_name[rd], size);
+    sb_fmt(s, "%s = %s", k_dsp_rc[rd].name, size);
 
     switch (f) {
     case F_ADD:
         if (rs2 == RC_PLUS || rs2 == RC_MINUS) {
-            sb_fmt(s, "%s %c 1", ca_reg_name[rs1], rs2 == RC_PLUS ? '+' : '-');
+            sb_fmt(s, "%s %c 1", k_dsp_rc[rs1].name, rs2 == RC_PLUS ? '+' : '-');
         } else if (rs1 == rs2 && rs1 != RC_R0) {
-            sb_fmt(s, "%s * 2", ca_reg_name[rs1]);
+            sb_fmt(s, "%s * 2", k_dsp_rc[rs1].name);
         } else if (rs2 == RC_R0) {
-            sb_puts(s, ca_reg_name[rs1]); /* assignment */
+            sb_puts(s, k_dsp_rc[rs1].name); /* assignment */
         } else if (rs1 == RC_R0) {
-            sb_puts(s, ca_reg_name[rs2]); /* assignment */
+            sb_puts(s, k_dsp_rc[rs2].name); /* assignment */
         } else {
-            sb_fmt(s, "%s + %s", ca_reg_name[rs1], ca_reg_name[rs2]);
+            sb_fmt(s, "%s + %s", k_dsp_rc[rs1].name, k_dsp_rc[rs2].name);
         }
         break;
     case F_SUB:
         if (rs1 == RC_R0)
-            sb_fmt(s, "-%s", ca_reg_name[rs2]); /* negate */
+            sb_fmt(s, "-%s", k_dsp_rc[rs2].name); /* negate */
         else if (rs2 == RC_PLUS)
-            sb_fmt(s, "%s - 1", ca_reg_name[rs1]);
+            sb_fmt(s, "%s - 1", k_dsp_rc[rs1].name);
         else if (rs2 == RC_MINUS)
-            sb_fmt(s, "%s + 1", ca_reg_name[rs1]);
+            sb_fmt(s, "%s + 1", k_dsp_rc[rs1].name);
         else
-            sb_fmt(s, "%s - %s", ca_reg_name[rs1], ca_reg_name[rs2]);
+            sb_fmt(s, "%s - %s", k_dsp_rc[rs1].name, k_dsp_rc[rs2].name);
         break;
     case F_RSUB:
         /* immediate form is N - rD; register form is not in the
          * assembler's repertoire — render the raw meaning */
-        sb_fmt(s, "%s - %s", ca_reg_name[rs2], ca_reg_name[rs1]);
+        sb_fmt(s, "%s - %s", k_dsp_rc[rs2].name, k_dsp_rc[rs1].name);
         break;
     case F_ROR:
     case F_ROL:
-        sb_fmt(s, "%s %s", ca_reg_name[rs1], f_op_sym[f]);
+        sb_fmt(s, "%s %s", k_dsp_rc[rs1].name, f_op_sym[f]);
         break;
     case F_SHL_N:
     case F_SHR_N:
     case F_ASR_N:
         if (rs2 == RC_PLUS)
-            sb_fmt(s, "%s %s 1", ca_reg_name[rs1], f_op_sym[f]);
+            sb_fmt(s, "%s %s 1", k_dsp_rc[rs1].name, f_op_sym[f]);
         else
-            sb_fmt(s, "%s %s %s", ca_reg_name[rs1], f_op_sym[f], ca_reg_name[rs2]);
+            sb_fmt(s, "%s %s %s", k_dsp_rc[rs1].name, f_op_sym[f], k_dsp_rc[rs2].name);
         break;
     default: /* #, &~, ^, |, & */
-        sb_fmt(s, "%s %s %s", ca_reg_name[rs1], f_op_sym[f], ca_reg_name[rs2]);
+        sb_fmt(s, "%s %s %s", k_dsp_rc[rs1].name, f_op_sym[f], k_dsp_rc[rs2].name);
         break;
     }
 }
@@ -528,30 +515,30 @@ static void dis_ca_alu_imm(uint32_t w, dsp3210_insn *ins, sb *s) {
 
     /* no-store forms */
     if (f == F_CMP || f == F_BTST) {
-        sb_fmt(s, "%s%s %s ", size, ca_reg_name[rd], (f == F_CMP) ? "-" : "&");
+        sb_fmt(s, "%s%s %s ", size, k_dsp_rc[rd].name, (f == F_CMP) ? "-" : "&");
         sb_imm(s, n);
         return;
     }
 
-    sb_fmt(s, "%s = %s", ca_reg_name[rd], size);
+    sb_fmt(s, "%s = %s", k_dsp_rc[rd].name, size);
 
     switch (f) {
     case F_RSUB: /* rD = N - rD */
         sb_imm(s, n);
-        sb_fmt(s, " - %s", ca_reg_name[rd]);
+        sb_fmt(s, " - %s", k_dsp_rc[rd].name);
         break;
     case F_SHL_N:
     case F_SHR_N:
     case F_ASR_N: /* 5 LSBs of N used */
-        sb_fmt(s, "%s %s %u", ca_reg_name[rd], f_op_sym[f], (unsigned)(n & 31));
+        sb_fmt(s, "%s %s %u", k_dsp_rc[rd].name, f_op_sym[f], (unsigned)(n & 31));
         break;
     case F_ROR:
     case F_ROL: /* not documented with
                    an immediate */
-        sb_fmt(s, "%s %s", ca_reg_name[rd], f_op_sym[f]);
+        sb_fmt(s, "%s %s", k_dsp_rc[rd].name, f_op_sym[f]);
         break;
     default: /* + - # &~ ^ | & */
-        sb_fmt(s, "%s %s ", ca_reg_name[rd], f_op_sym[f]);
+        sb_fmt(s, "%s %s ", k_dsp_rc[rd].name, f_op_sym[f]);
         sb_imm(s, n);
         break;
     }
@@ -578,9 +565,9 @@ static void dis_ca_move(uint32_t w, dsp3210_insn *ins, sb *s) {
             return;
         }
         if (t == 0)
-            sb_fmt(s, "%s = %s*0x%x", ca_reg_name[rh], kw, l);
+            sb_fmt(s, "%s = %s*0x%x", k_dsp_rc[rh].name, kw, l);
         else
-            sb_fmt(s, "*0x%x = %s%s", l, kw, ca_reg_name[rh]);
+            sb_fmt(s, "*0x%x = %s%s", l, kw, k_dsp_rc[rh].name);
         return;
     }
 
@@ -605,9 +592,9 @@ static void dis_ca_move(uint32_t w, dsp3210_insn *ins, sb *s) {
             }
         }
         if (t == 0)
-            sb_fmt(s, "%s = %s%s", ca_reg_name[rh], kw, in);
+            sb_fmt(s, "%s = %s%s", k_dsp_rc[rh].name, kw, in);
         else
-            sb_fmt(s, "%s = %s%s", in, kw, ca_reg_name[rh]);
+            sb_fmt(s, "%s = %s%s", in, kw, k_dsp_rc[rh].name);
         return;
     }
 
@@ -615,7 +602,7 @@ static void dis_ca_move(uint32_t w, dsp3210_insn *ins, sb *s) {
     {
         unsigned rp = bits(w, 15, 11);
         unsigned ri = bits(w, 4, 0);
-        const char *regn = io ? ior_name(rh, tmp, sizeof tmp) : ca_reg_name[rh];
+        const char *regn = io ? ior_name(rh, tmp, sizeof tmp) : k_dsp_rc[rh].name;
 
         if (t == 0) {
             sb_fmt(s, "%s = %s", regn, kw);
@@ -671,7 +658,7 @@ int dsp3210_disassemble(uint32_t w, uint32_t addr, dsp3210_insn *ins) {
     case 0x03: { /* 3a: if (rM-- >= 0) goto */
         unsigned rm = bits(w, 25, 21), rb = bits(w, 20, 16);
         ins->is_branch = 1;
-        sb_fmt(&s, "if (%s-- >= 0) goto ", ca_reg_name[rm]);
+        sb_fmt(&s, "if (%s-- >= 0) goto ", k_dsp_rc[rm].name);
         ca_target(&s, ins, rb, sext16(w));
         break;
     }
@@ -680,7 +667,7 @@ int dsp3210_disassemble(uint32_t w, uint32_t addr, dsp3210_insn *ins) {
         ins->is_branch = 1;
         sb_puts(&s, "call ");
         ca_target(&s, ins, rb, sext16(w));
-        sb_fmt(&s, " (%s)", ca_reg_name[rm]);
+        sb_fmt(&s, " (%s)", k_dsp_rc[rm].name);
         break;
     }
     case 0x05:
@@ -688,13 +675,13 @@ int dsp3210_disassemble(uint32_t w, uint32_t addr, dsp3210_insn *ins) {
         unsigned rd = bits(w, 25, 21), rs3 = bits(w, 20, 16);
         const char *size = (op6 & 0x20) ? "" : "(short) ";
         int32_t n = sext16(w);
-        sb_fmt(&s, "%s = %s", ca_reg_name[rd], size);
+        sb_fmt(&s, "%s = %s", k_dsp_rc[rd].name, size);
         if (rs3 == RC_R0) { /* SET: rD = (short) N */
             sb_imm(&s, n);
         } else if (n == 0) {
-            sb_puts(&s, ca_reg_name[rs3]);
+            sb_puts(&s, k_dsp_rc[rs3].name);
         } else {
-            sb_fmt(&s, "%s %c ", ca_reg_name[rs3], n < 0 ? '-' : '+');
+            sb_fmt(&s, "%s %c ", k_dsp_rc[rs3].name, n < 0 ? '-' : '+');
             sb_fmt(&s, "0x%x", (unsigned)(n < 0 ? -n : n));
         }
         break;
@@ -745,14 +732,14 @@ int dsp3210_disassemble(uint32_t w, uint32_t addr, dsp3210_insn *ins) {
         if (!m || k) /* doblock has an implicit K = 0 */
             sb_fmt(&s, "%u, ", k);
         if (isreg)
-            sb_puts(&s, ca_reg_name[bits(w, 4, 0)]);
+            sb_puts(&s, k_dsp_rc[bits(w, 4, 0)].name);
         else
             sb_fmt(&s, "%u", bits(w, 10, 0));
         break;
     }
     case 0x24: { /* 4b: rD = rS <<| N */
         unsigned rd = bits(w, 25, 21), rs = bits(w, 20, 16);
-        sb_fmt(&s, "%s = %s <<| 0x%x", ca_reg_name[rd], ca_reg_name[rs], (unsigned)bits(w, 15, 0));
+        sb_fmt(&s, "%s = %s <<| 0x%x", k_dsp_rc[rd].name, k_dsp_rc[rs].name, (unsigned)bits(w, 15, 0));
         break;
     }
     case 0x28:
@@ -776,7 +763,7 @@ int dsp3210_disassemble(uint32_t w, uint32_t addr, dsp3210_insn *ins) {
             ins->has_target = 1;
             ins->target = ins->addr + 8 + m;
         } else {
-            sb_fmt(&s, "%s+0x%x", ca_reg_name[rb], m);
+            sb_fmt(&s, "%s+0x%x", k_dsp_rc[rb].name, m);
         }
         break;
     }
@@ -790,7 +777,7 @@ int dsp3210_disassemble(uint32_t w, uint32_t addr, dsp3210_insn *ins) {
     case 0x37: { /* 8b: rD=(ushort24)M */
         unsigned rd = bits(w, 20, 16);
         uint32_t m = ((bits(w, 28, 21)) << 16) | bits(w, 15, 0);
-        sb_fmt(&s, "%s = (ushort24) 0x%x", ca_reg_name[rd], m);
+        sb_fmt(&s, "%s = (ushort24) 0x%x", k_dsp_rc[rd].name, m);
         break;
     }
     case 0x38:
@@ -806,7 +793,7 @@ int dsp3210_disassemble(uint32_t w, uint32_t addr, dsp3210_insn *ins) {
         ins->is_branch = 1;
         ins->has_target = 1;
         ins->target = m;
-        sb_fmt(&s, "call 0x%x (%s)", m, ca_reg_name[rm]);
+        sb_fmt(&s, "call 0x%x (%s)", m, k_dsp_rc[rm].name);
         break;
     }
     default:
@@ -819,16 +806,6 @@ int dsp3210_disassemble(uint32_t w, uint32_t addr, dsp3210_insn *ins) {
 }
 
 /* ------------------------------------------------------------------ */
-
-uint32_t dsp3210_read_be32(const void *p) {
-    const uint8_t *b = (const uint8_t *)p;
-    return ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) | ((uint32_t)b[2] << 8) | (uint32_t)b[3];
-}
-
-uint32_t dsp3210_read_le32(const void *p) {
-    const uint8_t *b = (const uint8_t *)p;
-    return ((uint32_t)b[3] << 24) | ((uint32_t)b[2] << 16) | ((uint32_t)b[1] << 8) | (uint32_t)b[0];
-}
 
 const char *dsp3210_status_name(int status) {
     switch (status) {

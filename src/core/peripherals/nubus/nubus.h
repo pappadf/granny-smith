@@ -238,7 +238,8 @@ void nubus_tick_vbl(nubus_bus_t *bus);
 void nubus_reset(nubus_bus_t *bus);
 
 // Power-cycle fan-out (system_machine_power_cycle, ahead of the /RESET):
-// each populated card's ops->power_on, which drops what power loses (VRAM).
+// each populated card's ops->power_on, which drops what power loses (VRAM),
+// or for a card without one the bus default over its ops->vram (card.h).
 void nubus_power_on(nubus_bus_t *bus);
 
 #endif // NUBUS_H

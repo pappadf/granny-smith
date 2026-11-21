@@ -20,7 +20,7 @@ int re_decode_str_single(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *
     if (len > 0)
         re_pstring_to_utf8(bytes, len, 0, s, sizeof(s));
     fprintf(json_fp, "{\"text\":");
-    re_json_write_string(json_fp, s);
+    json_fputs(json_fp, s);
     fprintf(json_fp, "}\n");
     if (txt_fp)
         fprintf(txt_fp, "%s\n", s);
@@ -32,7 +32,7 @@ int re_decode_strlist(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt
         fprintf(json_fp, "{\"error\":\"STR# too short\"}\n");
         return -1;
     }
-    uint16_t n = (uint16_t)((bytes[0] << 8) | bytes[1]);
+    uint16_t n = RD_BE16(bytes);
     size_t off = 2;
     fprintf(json_fp, "{\"count\":%u,\"items\":[", n);
     for (uint16_t i = 0; i < n; i++) {
@@ -44,7 +44,7 @@ int re_decode_strlist(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt
             break;
         if (i > 0)
             fputc(',', json_fp);
-        re_json_write_string(json_fp, s);
+        json_fputs(json_fp, s);
         if (txt_fp)
             fprintf(txt_fp, "%s\n", s);
         off += consumed;
@@ -63,7 +63,7 @@ int re_decode_text(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt_fp
     }
     macroman_to_utf8(bytes, len, utf8, len * 3 + 1);
     fprintf(json_fp, "{\"length\":%zu,\"text\":", len);
-    re_json_write_string(json_fp, utf8);
+    json_fputs(json_fp, utf8);
     fprintf(json_fp, "}\n");
     if (txt_fp)
         fputs(utf8, txt_fp);

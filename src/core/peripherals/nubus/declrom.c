@@ -12,6 +12,8 @@
 
 #include "declrom.h"
 #include "card.h"
+#include "checkpoint.h"
+#include "gsvrom.h"
 #include "log.h"
 #include "vrom.h" // content identification + the platform-fed offer registry
 
@@ -278,7 +280,7 @@ static uint8_t *copy_frag(const uint8_t *frag, size_t size, const char *what) {
         LOG(0, "declrom: %s fragment missing or too small (%zu bytes)", what, size);
         return NULL;
     }
-    uint32_t claimed = ((uint32_t)frag[0] << 24) | ((uint32_t)frag[1] << 16) | ((uint32_t)frag[2] << 8) | frag[3];
+    uint32_t claimed = RD_BE32(frag);
     if (claimed > size) {
         LOG(0, "declrom: %s fragment size field %u exceeds the %zu supplied bytes", what, claimed, size);
         return NULL;
@@ -532,7 +534,7 @@ bool declrom_finalise(declrom_builder_t *b, uint8_t byte_lanes) {
 static bool img_be32(const uint8_t *img, size_t size, size_t at, uint32_t *out) {
     if (at + 4 > size)
         return false;
-    *out = ((uint32_t)img[at] << 24) | ((uint32_t)img[at + 1] << 16) | ((uint32_t)img[at + 2] << 8) | img[at + 3];
+    *out = RD_BE32(&img[at]);
     return true;
 }
 
@@ -966,7 +968,7 @@ bool declrom_install_builtin(nubus_card_t *card, const char *card_id, const uint
     }
     // Path-less, identified by the blob's stored Format-Block CRC.
     const uint8_t *t = chip + chip_size - 12; // CRC field, big-endian
-    uint32_t crc = ((uint32_t)t[0] << 24) | ((uint32_t)t[1] << 16) | ((uint32_t)t[2] << 8) | (uint32_t)t[3];
+    uint32_t crc = RD_BE32(t);
     char locator[64];
     snprintf(locator, sizeof locator, "builtin:%s", card_id);
     note_card_rom(card, locator, crc, NULL, 0);
@@ -1044,5 +1046,63 @@ bool declrom_load_vrom_card(nubus_card_t *card, const char *card_id, const char 
             return true;
         }
     }
+    return false;
+}
+
+// The substitute declaration ROM generated into `card`'s bus window: records
+// from the slot's monitors, code fragments spliced, CRC stamped in C; the
+// offer registry is never consulted.  A generation failure leaves the window
+// zero-filled (declrom_size 0) and the card up.
+static void seat_substitute(nubus_card_t *card, const nubus_card_kind_t *kind, const slot_opts_t *opts) {
+    nubus_monitor_t scratch[NUBUS_SUBST_MONITORS_MAX];
+    const nubus_monitor_t *monitors =
+        kind->substitute_monitors_for ? kind->substitute_monitors_for(opts, scratch) : NULL;
+    if (!monitors)
+        monitors = kind->substitute_monitors ? kind->substitute_monitors : kind->monitors;
+    declrom_builder_t *bld = gsvrom_generate(kind->gsvrom, monitors);
+    size_t img_size = 0;
+    const uint8_t *img = bld ? declrom_builder_bytes(bld, &img_size) : NULL;
+    if (img && declrom_install_builtin(card, kind->id, img, img_size, card->declrom, kind->declrom_bus_size))
+        card->declrom_size = kind->declrom_bus_size;
+    else
+        LOG(0, "slot $%X: %s: the substitute declaration ROM failed to generate; declaration ROM is zero-filled",
+            card->slot, kind->display_name ? kind->display_name : kind->id);
+    declrom_builder_free(bld);
+}
+
+bool declrom_seat(nubus_card_t *card, const nubus_card_kind_t *kind, const slot_opts_t *opts, checkpoint_t *cp) {
+    if (!card || !kind || !opts || !kind->declrom_bus_size)
+        return false;
+    card->declrom = calloc(1, kind->declrom_bus_size);
+    card->declrom_size = 0;
+    if (!card->declrom)
+        return false;
+    const char *name = kind->display_name ? kind->display_name : kind->id;
+    if (opts->substitute) {
+        seat_substitute(card, kind, opts);
+        return true;
+    }
+    // Apple's ROM, which the bus seats only when it is offered (else the
+    // substitute), so a miss is a file that went away or a checkpoint whose
+    // ROM is not this card's.  Logged at level 0, the always-on level: a card
+    // that comes up without its ROM is something the user must see.
+    if (declrom_load_vrom_card(card, kind->id, opts->rom[0] ? opts->rom : NULL, card->declrom, kind->declrom_bus_size,
+                               NULL)) {
+        card->declrom_size = kind->declrom_bus_size;
+        return true;
+    }
+    if (kind->declrom_falls_back) {
+        // The machine around the card stays whole, and a restore fails on
+        // the checkpoint's error
+        LOG(0, "slot $%X: %s: the declaration ROM could not be loaded; running the substitute", card->slot, name);
+        if (cp)
+            checkpoint_set_error(cp);
+        card->substitute = true;
+        seat_substitute(card, kind, opts);
+        return true;
+    }
+    LOG(0, "slot $%X: %s: the declaration ROM could not be loaded", card->slot, name);
+    free(card->declrom);
+    card->declrom = NULL;
     return false;
 }

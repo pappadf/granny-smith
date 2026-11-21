@@ -22,7 +22,7 @@ the inherited cells — and are cited from there, not restated.
 |---|---|
 | `gossamer.c` | The substrate: construction order, bus reset, teardown, the checkpoint stream, the VIA/Cuda, SCC, MESH and SWIM3 glue, the PCI slot table (three slots plus the on-board ATI as slot "F1"), the media hooks. |
 | `grackle.c` | The MPC106: its configuration registers behind the little-endian `CONFIG_ADDR`/`CONFIG_DATA` ports, the memory bank registers the RAM decode is rebuilt from, the PCI windows, the board-register page at `$FF000000`, and `machine.grackle`. |
-| `heathrow.c` | The I/O controller: its PCI header (`$106B:0010`, BAR0 512 KB), the two-bank interrupt controller, the feature-control and control-block registers, the NVRAM window, the cell decode, `machine.heathrow` and `machine.nvram`. |
+| `heathrow.c` | The I/O controller: its PCI header (`$106B:0010`, BAR0 512 KB), the two-bank interrupt controller, the feature-control and control-block registers, the NVRAM window, the cell decode (a byte range table, `hr_io_ranges`, on the shared I/O engine `machines/runtime/board_io.c`; the little-endian 16/32-bit faces keep their own paths), `machine.heathrow` and `machine.nvram`. |
 | `gossamer_i2c.c` | The Cuda's I2C bus: the DIMMs' SPD EEPROMs (built from the RAM size), the personality card's ID EEPROM, and the TDA7433 audio processor the sound path's volume goes through (below). |
 | `gossamer_ata.c` | Heathrow's two ATA cells on the core channel model ([ata.md](../../core/peripherals/ata.md)), the ATAPI back end, `machine.ata`. |
 | `gossamer_bmac.c` | The Ethernet cell on the core BMAC model ([bmac.md](../../core/peripherals/bmac.md)): the 16-bit bus edge, the FCR enable and reset, `machine.bmac`. |
@@ -32,7 +32,9 @@ The shared core models carry the rest: `core/cpu/ppc` with the 750 deltas
 (L2CR, HID1, THRM, the performance monitor — see
 [ppc.md](../../core/cpu/ppc.md)), `core/peripherals/dbdma.c` (thirteen
 channels), `davbus.c` in its Screamer face, `scsi_mesh.c`, `scc.c`,
-`swim3.c`, and the Rage Pro face of `pci/cards/mach64gx.c`.
+`swim3.c` (fed through the SWIM3 byte ring and DBDMA port the TNT boards
+share, `machines/runtime/swim3_dbdma.c`, which empties the ring when the
+driver stops the channel), and the Rage Pro face of `pci/cards/mach64gx.c`.
 
 Sound on this board is the Screamer codec passing through to a TDA7433
 audio processor on the I2C bus, which drives the speaker, the line-out and
@@ -119,7 +121,8 @@ BMAC's on bank-2 sources 32/33 (`gos_dbdma_source`).
   - only `+$00`–`+$3F` of the `+$13000` aperture reach the cell.  The
     driver writes `$00`, `$01` to `+$A0` before a frame; decoded as A
     control, that left channel A's register pointer at 1, and the driver's
-    next "select RR3" landed in WR1;
+    next "select RR3" landed in WR1 (the decode is shared with Grand
+    Central: `runtime/escc_dbdma.c`);
   - the Tx Underrun/EOM External/Status interrupt (WR15 bit 6), raised
     when the frame has drained from the Tx FIFO, not inside the WR0
     "reset Tx underrun/EOM" write that ends it — the driver sets the flag

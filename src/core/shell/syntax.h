@@ -18,6 +18,46 @@
 
 #include "object.h"
 
+// The identifier characters of the shell grammar: ASCII letters, digits and
+// `_` (never the locale's letters), the same in every scanner.
+static inline bool script_ident_start(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+
+static inline bool script_ident_char(char c) {
+    return script_ident_start(c) || (c >= '0' && c <= '9');
+}
+
+// Quote state for the quote-aware scans (brackets, braces, comments): the
+// parser's rule, where a backslash escapes the next byte inside and outside
+// quotes.
+typedef struct {
+    char quote; // 0, '"' or '\''
+    bool esc;
+} script_quote_t;
+
+// Advance the quote state over c.
+static inline void script_quote_step(script_quote_t *q, char c) {
+    if (q->esc) {
+        q->esc = false;
+        return;
+    }
+    if (c == '\\') {
+        q->esc = true;
+        return;
+    }
+    if (q->quote) {
+        if (c == q->quote)
+            q->quote = 0;
+        return;
+    }
+    if (c == '"' || c == '\'')
+        q->quote = c;
+}
+
+// The first unquoted `c` in [p, end), or NULL.
+const char *script_find_unquoted(const char *p, const char *end, char c);
+
 // What a statement is, decided by its first word(s).
 typedef enum {
     SCRIPT_STMT_EMPTY = 0, // blank

@@ -13,7 +13,11 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import * as Shm from '@/bus/shmLayout';
 import * as V2 from '@/gpu/voodoo2Protocol';
+import * as R128 from '@/gpu/rage128Protocol';
+import * as Takeover from '@/gpu/takeoverProtocol';
 import * as Lw from '@/printer/platenProtocol';
+import * as Mbx from '@/bus/mailbox';
+import * as MbxRing from '@/bus/mailboxRing';
 
 const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
 
@@ -43,26 +47,36 @@ function tsNumbers(mod: Record<string, unknown>): Map<string, number> {
   return out;
 }
 
-// Every TS number must equal its header twin; `tsOnly` lists the ones that
-// have none.  With `complete`, every header number must be mirrored too.
+// How one TS module mirrors one header: `prefix` is dropped from the
+// header's names; `tsOnly` lists the TS numbers that have no twin;
+// `aliases` maps a TS name to a header name outside the prefix scheme;
+// with `complete`, every prefixed header number must be mirrored too.
+interface Mirror {
+  prefix: string;
+  tsOnly?: string[];
+  aliases?: Record<string, string>;
+  complete?: boolean;
+  minMatched?: number;
+}
+
+// Every TS number must equal its header twin (see Mirror).
 function compare(
   header: Map<string, number>,
-  prefix: string,
   ts: Map<string, number>,
-  tsOnly: string[] = [],
-  complete = false,
+  { prefix, tsOnly = [], aliases = {}, complete = false, minMatched = 9 }: Mirror,
 ): void {
   let matched = 0;
   for (const [name, value] of ts) {
-    const twin = header.get(prefix + name);
+    const cName = aliases[name] ?? prefix + name;
+    const twin = header.get(cName);
     if (twin === undefined) {
-      expect(tsOnly, `${name} has no ${prefix}${name} in the header`).toContain(name);
+      expect(tsOnly, `${name} has no ${cName} in the header`).toContain(name);
       continue;
     }
-    expect(value, `${name} vs ${prefix}${name}`).toBe(twin);
+    expect(value, `${name} vs ${cName}`).toBe(twin);
     matched++;
   }
-  expect(matched).toBeGreaterThan(8);
+  expect(matched).toBeGreaterThanOrEqual(minMatched);
   if (!complete) return;
   for (const name of header.keys()) {
     if (!name.startsWith(prefix)) continue;
@@ -70,32 +84,88 @@ function compare(
   }
 }
 
+// The names of a module's numeric exports that start with `p`.
+function keysWith(mod: Record<string, unknown>, p: string): string[] {
+  return [...tsNumbers(mod).keys()].filter((k) => k.startsWith(p));
+}
+
+// The registry: every C header the page mirrors, and its TS twin.  A new
+// shared-heap layout adds a row here.
+const MIRRORS: { header: string; ts: string; mod: Record<string, unknown>; mirror: Mirror }[] = [
+  {
+    header: 'src/platform/wasm/em_shm_layout.h',
+    ts: 'bus/shmLayout.ts',
+    mod: Shm,
+    mirror: { prefix: 'GS_', complete: true },
+  },
+  {
+    header: 'src/core/peripherals/pci/cards/voodoo2_gpu_protocol.h',
+    ts: 'gpu/voodoo2Protocol.ts',
+    mod: V2,
+    // The draw-header words and the vertex sizing are struct-derived on
+    // the C side.
+    mirror: { prefix: 'V2GPU_', tsOnly: [...keysWith(V2, 'DH_'), 'VERTEX_BYTES', 'MAX_VERTS'] },
+  },
+  {
+    header: 'src/core/peripherals/pci/cards/rage128_gpu_protocol.h',
+    ts: 'gpu/rage128Protocol.ts',
+    mod: R128,
+    // The draw-header words are struct-derived on the C side.
+    mirror: { prefix: 'R128GPU_', tsOnly: keysWith(R128, 'DH_') },
+  },
+  {
+    header: 'src/core/peripherals/pci/cards/voodoo2_gpu_protocol.h',
+    ts: 'gpu/takeoverProtocol.ts (the control block both cards share)',
+    mod: Takeover,
+    mirror: { prefix: 'V2GPU_', tsOnly: keysWith(Takeover, 'DH_') },
+  },
+  {
+    header: 'src/core/peripherals/pci/cards/rage128_gpu_protocol.h',
+    ts: 'gpu/takeoverProtocol.ts (the control block both cards share)',
+    mod: Takeover,
+    mirror: { prefix: 'R128GPU_', tsOnly: keysWith(Takeover, 'DH_') },
+  },
+  {
+    header: 'src/core/network/laserwriter_ring_protocol.h',
+    ts: 'printer/platenProtocol.ts',
+    mod: Lw,
+    mirror: { prefix: 'LWRING_' },
+  },
+  {
+    header: 'src/core/mailbox/mailbox.h',
+    ts: 'bus/mailbox.ts',
+    mod: Mbx,
+    // The magic and version keep the header's older GS_MAILBOX_ names.
+    mirror: {
+      prefix: 'GS_MBX_',
+      aliases: { MAGIC: 'GS_MAILBOX_MAGIC', VERSION: 'GS_MAILBOX_VERSION' },
+    },
+  },
+  {
+    header: 'src/core/mailbox/mailbox_ring.h',
+    ts: 'bus/mailboxRing.ts',
+    mod: MbxRing,
+    mirror: { prefix: 'MBX_', complete: true, minMatched: 2 },
+  },
+];
+
 describe('shared-heap layout mirrors', () => {
-  it('em_shm_layout.h and bus/shmLayout.ts agree, both ways', () => {
-    const h = headerDefines('src/platform/wasm/em_shm_layout.h');
-    compare(h, 'GS_', tsNumbers(Shm), [], true);
+  it.each(MIRRORS)('$header and $ts agree', ({ header, mod, mirror }) => {
+    compare(headerDefines(header), tsNumbers(mod), mirror);
   });
 
-  it('voodoo2_gpu_protocol.h and gpu/voodoo2Protocol.ts agree', () => {
+  it('the Voodoo2 vertex size is the header float count', () => {
     const h = headerDefines('src/core/peripherals/pci/cards/voodoo2_gpu_protocol.h');
-    // PROTOCOL_VERSION is V2GPU_PROTOCOL_VERSION; the draw-header words and
-    // the vertex sizing are struct-derived on the C side.
-    const tsOnly = [
-      ...[...tsNumbers(V2).keys()].filter((k) => k.startsWith('DH_')),
-      'VERTEX_BYTES',
-      'MAX_VERTS',
-    ];
-    compare(h, 'V2GPU_', tsNumbers(V2), tsOnly);
     expect(V2.VERTEX_BYTES).toBe(h.get('V2GPU_VERTEX_FLOATS')! * 4);
-  });
-
-  it('laserwriter_ring_protocol.h and printer/platenProtocol.ts agree', () => {
-    const h = headerDefines('src/core/network/laserwriter_ring_protocol.h');
-    compare(h, 'LWRING_', tsNumbers(Lw));
   });
 
   it('a header value the TS side does not share is caught', () => {
     const h = new Map([['GS_X', 1]]);
-    expect(() => compare(h, 'GS_', new Map([['X', 2]]))).toThrow();
+    expect(() => compare(h, new Map([['X', 2]]), { prefix: 'GS_', minMatched: 0 })).toThrow();
+  });
+
+  it('a TS number with no header twin is caught', () => {
+    const h = new Map([['GS_X', 1]]);
+    expect(() => compare(h, new Map([['Y', 1]]), { prefix: 'GS_', minMatched: 0 })).toThrow();
   });
 });

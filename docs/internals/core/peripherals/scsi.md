@@ -645,6 +645,14 @@ comes next.
 > A 5380-based Mac implementation stays asynchronous 8-bit.  Reject
 > SDTR/WDTR unless explicitly emulating negotiation.
 
+In the emulator the 5380's MESSAGE OUT runs through the same message
+session MESH and the 53C8xx use (`scsi_msgsession.c`): the target keeps
+MESSAGE OUT while the initiator holds ATN, parses the whole message once
+ATN drops, and answers an SDTR with offset 0 (asynchronous) and a WDTR with
+8-bit, rejects an extended message it does not implement, releases the bus
+on ABORT (`0x06`) or BUS DEVICE RESET (`0x0C`), and otherwise completes the
+command with GOOD status.
+
 ### 8.5 Mandatory commands (direct-access disks)
 
 Below, **CDB** shows byte-accurate layouts and **Data** shows exact

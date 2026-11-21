@@ -70,6 +70,13 @@ value_t parse_integer_literal(const char **p);
 // are decoded.
 value_t parse_string_literal(const char **p);
 
+// Decode one \-escape at *p (which points at the '\'): \n \t \r \0 \\ \"
+// \' \xHH, and \$ when `allow_dollar` (interpolated strings, where `$`
+// starts a splice).  Advances *p past it and writes the byte to *out; false,
+// *p unmoved, on a malformed escape.  The one escape table for literals and
+// interpolation (expr.c).
+bool parse_decode_escape(const char **p, char *out, bool allow_dollar);
+
 // === Identifiers =============================================================
 
 // Longest identifier (binding, alias, function, parameter or member name) the

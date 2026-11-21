@@ -29,7 +29,7 @@
 #include "shell.h"
 #include "system.h"
 #include "value.h"
-#include "worker_thread.h"
+#include "job/job.h" // EMU_THREAD_CHECK
 
 #include <assert.h>
 #include <ctype.h>
@@ -376,7 +376,6 @@ static void atp_timers_init(atalk_conn_t *c);
 static void atp_reset(atalk_conn_t *c, bool teardown);
 // Logging category function used by LOG() macro; provided by LOG_USE_CATEGORY_NAME later
 static log_category_t *log_local_category(void);
-static void log_hex(log_category_t *cat, int level, const char *tag, const uint8_t *data, size_t len);
 static log_category_t *llap_log_category(void);
 static log_category_t *atp_log_category(void);
 #define LOG_LLAP(level, fmt, ...) LOG_WITH(llap_log_category(), (level), (fmt), ##__VA_ARGS__)
@@ -550,7 +549,7 @@ static void llap_wire_send(atalk_conn_t *c, const uint8_t *buf, size_t total) {
     // the RTS timer, which does not pass through llap_send again.
     if (!c->enabled)
         return;
-    log_hex(llap_log_category(), 11, "LLAP tx dump", buf, total);
+    log_hex(llap_log_category(), 11, "LLAP tx dump", buf, total, 0);
     c->stats.llap_tx++;
     if (c->scc)
         scc_sdlc_send(c->scc, (uint8_t *)buf, total);
@@ -652,7 +651,7 @@ static void llap_in(atalk_conn_t *c, const uint8_t *buf, size_t len) {
     llap_wire_note_peer_frame(c, len);
 
     // LLAP rx hexdump at high verbosity
-    log_hex(llap_log_category(), 11, "LLAP rx dump", buf, len);
+    log_hex(llap_log_category(), 11, "LLAP rx dump", buf, len, 0);
 
     switch (header.type) {
 
@@ -738,7 +737,7 @@ static void llap_in(atalk_conn_t *c, const uint8_t *buf, size_t len) {
 // guest's frames and the scheduler's timers there, the object model's calls
 // through the mailbox.  A debug build checks it.
 static void llap_receive(void *ctx, const uint8_t *buf, size_t size) {
-    worker_thread_check("llap_receive");
+    EMU_THREAD_CHECK("llap_receive");
     llap_in((atalk_conn_t *)ctx, buf, size);
 }
 
@@ -805,6 +804,35 @@ static void ddp_setup_reply(const ddp_header_t *request, ddp_header_t *reply) {
     reply->dst_socket = request->src_socket;
     reply->src_socket = request->dst_socket;
     reply->type = request->type; // preserve DDP protocol type in reply
+}
+
+// Construct an outbound short DDP header from the host's `src_socket` to
+// `dest`, carrying `payload_len` bytes of `type`
+static void ddp_header_to(ddp_header_t *ddp, const atalk_socket_addr_t *dest, uint8_t src_socket, uint8_t type,
+                          int payload_len) {
+    memset(ddp, 0, sizeof(*ddp));
+    ddp->llap.dst = dest->node;
+    ddp->llap.src = ATALK_HOST_NODE;
+    ddp->llap.type = LLAP_DDP_SHORT;
+    ddp->len = (uint16_t)(payload_len + DDP_SHORT_HEADER_SIZE);
+    ddp->dst_net = dest->net; // not on the wire in a short header; kept for the logs
+    ddp->dst_socket = dest->socket;
+    ddp->src_socket = src_socket;
+    ddp->type = type;
+}
+
+// Write the 8-byte ATP header {ctl, bitmap or sequence, TID, user bytes}
+// into `out`; returns its size
+static int atp_encode_header(uint8_t out[8], uint8_t ctl, uint8_t bitmap_or_seq, uint16_t tid, const uint8_t user[4]) {
+    out[0] = ctl;
+    out[1] = bitmap_or_seq;
+    out[2] = (uint8_t)(tid >> 8);
+    out[3] = (uint8_t)tid;
+    if (user)
+        memcpy(&out[4], user, 4);
+    else
+        memset(&out[4], 0, 4);
+    return 8;
 }
 
 // ============================================================================
@@ -1050,7 +1078,7 @@ static int ddp_send(atalk_conn_t *c, const ddp_header_t *header, const uint8_t *
     memcpy(&buffer[5], data, (size_t)size);
 
     LOG_INDENT(4);
-    log_hex(log_local_category(), 9, "DDP tx dump", buffer, length);
+    log_hex(log_local_category(), 9, "DDP tx dump", buffer, length, 0);
     LOG_INDENT(-4);
 
     c->stats.ddp_out++;
@@ -1068,15 +1096,7 @@ int atalk_ddp_send_to(const atalk_socket_addr_t *dest, uint8_t src_socket, uint8
     if (!c || !c->enabled)
         return -1; // no machine on the cable, or it is detached from the link
     ddp_header_t ddp;
-    memset(&ddp, 0, sizeof(ddp));
-    ddp.llap.dst = dest->node;
-    ddp.llap.src = ATALK_HOST_NODE;
-    ddp.llap.type = LLAP_DDP_SHORT;
-    ddp.len = (uint16_t)(len + DDP_SHORT_HEADER_SIZE);
-    ddp.dst_net = dest->net;
-    ddp.dst_socket = dest->socket;
-    ddp.src_socket = src_socket;
-    ddp.type = ddp_type;
+    ddp_header_to(&ddp, dest, src_socket, ddp_type, len);
     return ddp_send(c, &ddp, data, len);
 }
 
@@ -1190,7 +1210,7 @@ static void ddp_short_in(atalk_conn_t *c, llap_header_t *llap, const uint8_t *bu
 
     LOG_INDENT(4);
     // Full DDP hexdump at high verbosity (includes 5-byte header + payload)
-    log_hex(log_local_category(), 9, "DDP rx dump", buf, len);
+    log_hex(log_local_category(), 9, "DDP rx dump", buf, len, 0);
     ddp_in(c, &ddp, buf + 5, len - 5);
     LOG_INDENT(-4);
 }
@@ -1282,70 +1302,6 @@ static log_category_t *atp_log_category(void) {
     if (!cat)
         cat = log_register_category("atp");
     return cat;
-}
-
-// --------------- Hex dump helper for high-verbosity diagnostics ---------------
-// Emit a multi-line hex dump with ASCII gutter to the AppleTalk log category
-// One LOG call per 16-byte row: a log record is capped at 512 bytes
-// (log_vemit), so a whole frame does not fit in one.  The rows are only
-// formatted when the category would print them.
-static void log_hex(log_category_t *cat, int level, const char *tag, const uint8_t *data, size_t len) {
-    if (!log_would_log(cat, level))
-        return;
-    if (!data || len == 0) {
-        LOG_WITH(cat, level, "%s: <empty>", tag ? tag : "HEX");
-        return;
-    }
-    // Build per-line hex with ASCII gutter (16 bytes per line)
-    char hexbuf[3 * 16 + 2 + 1]; // "XX " * 16 + space after 8 + NUL
-    char asciibuf[16 + 1]; // 16 chars + NUL
-
-    for (size_t off = 0; off < len; off += 16) {
-        size_t n = (len - off) < 16 ? (len - off) : 16;
-
-        // Hex field
-        size_t hp = 0;
-        for (size_t i = 0; i < 16; i++) {
-            size_t left = sizeof(hexbuf) - hp;
-            if (i < n) {
-                if (left <= 1) {
-                    hexbuf[sizeof(hexbuf) - 1] = '\0';
-                    break;
-                }
-                int wrote = snprintf(&hexbuf[hp], left, "%02X ", data[off + i]);
-                if (wrote < 0) {
-                    hexbuf[hp] = '\0';
-                    break;
-                }
-                size_t adv = (size_t)wrote;
-                if (adv >= left) { // truncated; keep NUL and stop
-                    hp = sizeof(hexbuf) - 1;
-                    hexbuf[hp] = '\0';
-                    break;
-                }
-                hp += adv;
-            } else {
-                // Pad alignment when fewer than 16 bytes this row
-                if (left >= 4) {
-                    hexbuf[hp++] = ' ';
-                    hexbuf[hp++] = ' ';
-                    hexbuf[hp++] = ' ';
-                }
-            }
-            if (i == 7 && hp < sizeof(hexbuf) - 1)
-                hexbuf[hp++] = ' ';
-        }
-        hexbuf[hp] = '\0';
-
-        // ASCII gutter
-        for (size_t i = 0; i < n; i++) {
-            unsigned char c = data[off + i];
-            asciibuf[i] = (c >= 32 && c <= 126) ? (char)c : '.';
-        }
-        asciibuf[n] = '\0';
-
-        LOG_WITH(cat, level, "%04" PRIx64 ": %s | %s", (uint64_t)off, hexbuf, asciibuf);
-    }
 }
 
 // =============================== NBP (Name Binding Protocol) ===============================
@@ -1750,7 +1706,7 @@ static void nbp_parse_and_dispatch(atalk_conn_t *c, const ddp_header_t *ddp, con
     for (int i = 0; i < header.tuple_count && parsed < (int)ARRAY_LEN(tuples); i++) {
         if (rem < 8)
             break;
-        tuples[parsed].net = (uint16_t)((p[0] << 8) | p[1]);
+        tuples[parsed].net = RD_BE16(p);
         tuples[parsed].node = p[2];
         tuples[parsed].socket = p[3];
         tuples[parsed].enumerator = p[4];
@@ -2090,20 +2046,11 @@ static void atp_request_complete(atalk_conn_t *c, atp_request_handle_t *req, atp
 static void atp_send_trel(atalk_conn_t *c, const atp_request_handle_t *req) {
     if (!req || !req->xo)
         return;
-    uint8_t buffer[8] = {0};
+    uint8_t buffer[8];
     // TRel packets should have the lower 3 bits set to zero (Inside AppleTalk, p. 9-13)
-    buffer[0] = ATP_CONTROL_TREL;
-    buffer[2] = (uint8_t)((req->tid >> 8) & 0xFF);
-    buffer[3] = (uint8_t)(req->tid & 0xFF);
+    atp_encode_header(buffer, ATP_CONTROL_TREL, 0, req->tid, NULL);
     ddp_header_t ddp;
-    memset(&ddp, 0, sizeof(ddp));
-    ddp.llap.dst = req->dest.node;
-    ddp.llap.src = ATALK_HOST_NODE;
-    ddp.llap.type = LLAP_DDP_SHORT;
-    ddp.len = (uint16_t)(DDP_SHORT_HEADER_SIZE + sizeof(buffer));
-    ddp.dst_socket = req->dest.socket;
-    ddp.src_socket = req->src_socket;
-    ddp.type = DDP_ATP;
+    ddp_header_to(&ddp, &req->dest, req->src_socket, DDP_ATP, (int)sizeof(buffer));
     ddp_send(c, &ddp, buffer, sizeof(buffer));
     LOG_ATP(3, "ATP: sent TRel tid=0x%04X srcSock=%u dstSock=%u", req->tid, (unsigned)req->src_socket,
             (unsigned)req->dest.socket);
@@ -2111,24 +2058,13 @@ static void atp_send_trel(atalk_conn_t *c, const atp_request_handle_t *req) {
 
 static void atp_send_request_packets(atalk_conn_t *c, atp_request_handle_t *req, uint8_t bitmap) {
     uint8_t atp_buf[DDP_MAX_DATA_SIZE];
-    atp_buf[0] = req->base_ctl;
-    atp_buf[1] = bitmap;
-    atp_buf[2] = (uint8_t)((req->tid >> 8) & 0xFF);
-    atp_buf[3] = (uint8_t)(req->tid & 0xFF);
-    memcpy(&atp_buf[4], req->user, 4);
+    int total = atp_encode_header(atp_buf, req->base_ctl, bitmap, req->tid, req->user);
     if (req->payload_len > 0)
-        memcpy(&atp_buf[8], req->payload, (size_t)req->payload_len);
-    int total = 8 + req->payload_len;
+        memcpy(&atp_buf[total], req->payload, (size_t)req->payload_len);
+    total += req->payload_len;
 
     ddp_header_t ddp;
-    memset(&ddp, 0, sizeof(ddp));
-    ddp.llap.dst = req->dest.node;
-    ddp.llap.src = ATALK_HOST_NODE;
-    ddp.llap.type = LLAP_DDP_SHORT;
-    ddp.len = (uint16_t)(total + DDP_SHORT_HEADER_SIZE);
-    ddp.dst_socket = req->dest.socket;
-    ddp.src_socket = req->src_socket;
-    ddp.type = DDP_ATP;
+    ddp_header_to(&ddp, &req->dest, req->src_socket, DDP_ATP, total);
     ddp_send(c, &ddp, atp_buf, total);
     LOG_ATP(3, "ATP: sent TReq tid=0x%04X srcSock=%u dstSock=%u bitmap=0x%02X", req->tid, (unsigned)req->src_socket,
             (unsigned)req->dest.socket, (unsigned)bitmap);
@@ -2412,17 +2348,11 @@ int atp_responder_send_packets(const ddp_header_t *request_ddp, const atp_packet
         bool is_last = (i == packet_count - 1);
         if (desc->eom || is_last)
             ctl |= ATP_CONTROL_EOM;
-        buffer[0] = ctl;
-        buffer[1] = (uint8_t)i;
-        buffer[2] = (uint8_t)((request_atp->tid >> 8) & 0xFF);
-        buffer[3] = (uint8_t)(request_atp->tid & 0xFF);
-        if (desc->user)
-            memcpy(&buffer[4], desc->user, 4);
-        else
-            memcpy(&buffer[4], request_atp->user, 4);
+        int total =
+            atp_encode_header(buffer, ctl, (uint8_t)i, request_atp->tid, desc->user ? desc->user : request_atp->user);
         if (desc->payload_len > 0 && desc->payload)
-            memcpy(&buffer[8], desc->payload, (size_t)desc->payload_len);
-        int total = 8 + desc->payload_len;
+            memcpy(&buffer[total], desc->payload, (size_t)desc->payload_len);
+        total += desc->payload_len;
         ddp_send(c, &reply, buffer, total);
         if (xo_index >= 0)
             atp_xo_store_packet(&c->xo_entries[xo_index], (uint8_t)i, buffer, total);
@@ -2451,7 +2381,7 @@ static int parse_atp(const uint8_t *buf, int len, atp_packet_t *atp) {
         return -1;
     atp->ctl = buf[0];
     atp->bitmap = buf[1];
-    atp->tid = (uint16_t)((buf[2] << 8) | buf[3]);
+    atp->tid = RD_BE16(buf + 2);
     memcpy(atp->user, &buf[4], 4);
     atp->data = &buf[8];
     atp->data_len = len - 8;

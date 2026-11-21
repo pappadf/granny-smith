@@ -11,9 +11,10 @@
 // or, where the browser has no inline viewer, downloads at once (the blob
 // + anchor path platform_download uses).
 
-import { getModule } from '@/bus/emulator';
+import { attachSharedWorker, getModule } from '@/bus/emulator';
 import { showNotification } from '@/state/toasts.svelte';
 import { showPrintedDocument } from '@/state/printer.svelte';
+import { saveBlob } from '@/lib/saveBlob';
 import type { DocumentMsg } from './platenRing';
 
 let worker: Worker | null = null;
@@ -78,18 +79,11 @@ function start(version: string): void {
 
 // Hands the worker the shared memory and the control block's address.
 function attach(ctrl: number): void {
-  const mod = getModule();
-  if (!worker || !mod) return;
-  const memory =
-    (mod as unknown as { wasmMemory?: WebAssembly.Memory }).wasmMemory ?? mod.HEAPU8.buffer;
-  if (!(memory instanceof WebAssembly.Memory) && !(memory instanceof SharedArrayBuffer)) {
+  if (!worker || !getModule()) return;
+  // window.__platen: the control block's address and the memory, for a
+  // page script to read HEAD/TAIL/STATUS when something stalls.
+  if (!attachSharedWorker(worker, ctrl, '__platen'))
     console.warn('[platen] the emulator memory is not shared; cannot attach the interpreter');
-    return;
-  }
-  // Diagnostics: the control block's address and the memory, for a page
-  // script to read HEAD/TAIL/STATUS when something stalls.
-  (window as unknown as { __platen?: unknown }).__platen = { memory, ctrl, worker };
-  worker.postMessage({ type: 'attach', memory, ctrl });
 }
 
 // A finished document: the viewer where the browser can show a PDF inline
@@ -112,18 +106,10 @@ function deliver(doc: DocumentMsg): void {
 
 // The automatic download of a finished document.
 function download(doc: DocumentMsg): void {
-  try {
-    const blob = new Blob([doc.pdf as BlobPart], { type: 'application/pdf' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = doc.name;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(a.href), 0);
+  const blob = new Blob([doc.pdf as BlobPart], { type: 'application/pdf' });
+  if (saveBlob(blob, doc.name)) {
     showNotification(`LaserWriter: ${doc.name} (${doc.pages} page${doc.pages === 1 ? '' : 's'})`);
-  } catch (e) {
-    console.error('[platen] download failed:', e);
+  } else {
     showNotification(`LaserWriter: could not save ${doc.name}`, 'error');
   }
 }

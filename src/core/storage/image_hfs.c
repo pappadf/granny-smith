@@ -13,7 +13,7 @@
 //
 // HFS and HFS+ share the snapshot machinery (the flat cat_rec_t / xt_rec
 // arrays, lookup, readdir, and the extent-walking fork reader); only the
-// on-disk parse differs.  hfs_open sniffs the signature at volume+1024 and
+// on-disk parse differs.  hfs_open_source sniffs the signature at volume+1024 and
 // dispatches to open_classic (MDB-based, MacRoman names, 16-bit allocation
 // blocks) or open_plus (Volume-Header-based, UTF-16 names, 32-bit
 // allocation blocks, 8 inline fork extents).  See Apple TN1150 for the
@@ -24,8 +24,10 @@
 #include "image.h"
 #include "image_part.h"
 #include "log.h"
+#include "mac_disk_layout.h"
 #include "macroman.h"
 #include "storage.h"
+#include "vbuf.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -42,13 +44,11 @@ LOG_USE_CATEGORY_NAME("image")
 
 // ---- HFS on-disk offsets --------------------------------------------------
 
-#define HFS_MDB_OFF_IN_VOL 1024
+#define HFS_MDB_OFF_IN_VOL MAC_VOLUME_HEADER_OFF
 
-// Master Directory Block field offsets (bytes, from MDB start).
-#define MDB_OFF_SIG        0
-#define MDB_OFF_NM_AL_BLKS 18
-#define MDB_OFF_AL_BLK_SIZ 20
-#define MDB_OFF_AL_BL_ST   28
+// Master Directory Block field offsets (bytes, from MDB start).  The
+// signature and allocation-geometry fields (MDB_OFF_SIG .. MDB_OFF_AL_BL_ST)
+// are in mac_disk_layout.h, shared with the volume classifier.
 #define MDB_OFF_VN         36 // pstring up to 28 bytes
 #define MDB_OFF_XT_FL_SIZE 130 // extents overflow file size (u32)
 #define MDB_OFF_XT_EXT_REC 134 // 3 x (startABlk:2, numABlks:2) for the EO file
@@ -64,14 +64,13 @@ LOG_USE_CATEGORY_NAME("image")
 
 // ---- HFS Plus on-disk offsets (TN1150) ------------------------------------
 
-#define HFSP_VH_OFF_IN_VOL 1024 // Volume Header sits 1024 bytes into the volume
+#define HFSP_VH_OFF_IN_VOL MAC_VOLUME_HEADER_OFF // Volume Header sits 1024 bytes into the volume
 
-// HFS Plus Volume Header field offsets (bytes, from header start).
-#define VH_OFF_SIG        0x00 // uint16 "H+" / "HX"
-#define VH_OFF_BLOCK_SIZE 0x28 // uint32 allocation block size
-#define VH_OFF_TOTAL_BLKS 0x2C // uint32 total allocation blocks
-#define VH_OFF_CAT_FORK   0x110 // HFSPlusForkData catalogFile
-#define VH_OFF_EXT_FORK   0xC0 // HFSPlusForkData extentsFile
+// HFS Plus Volume Header field offsets (bytes, from header start).  The
+// signature and size fields (VH_OFF_SIG, VH_OFF_BLOCK_SIZE,
+// VH_OFF_TOTAL_BLKS) are in mac_disk_layout.h.
+#define VH_OFF_CAT_FORK 0x110 // HFSPlusForkData catalogFile
+#define VH_OFF_EXT_FORK 0xC0 // HFSPlusForkData extentsFile
 
 // HFSPlusForkData (80 bytes): logicalSize(8) clumpSize(4) totalBlocks(4)
 // then 8 x HFSPlusExtentDescriptor (startBlock:4, blockCount:4).
@@ -192,7 +191,7 @@ struct hfs_volume {
     char volume_name[256]; // UTF-8; sized to hold a full HFS+ name
     cat_rec_t *records;
     size_t n_records;
-    // Extents Overflow snapshot.  Loaded eagerly at hfs_open time using
+    // Extents Overflow snapshot.  Loaded eagerly at open time using
     // the EO file's own inline extents (drXTExtRec in the MDB); the EO
     // file is small enough in practice (usually < 8 KB) that walking it
     // linearly per lookup is fine.  When the EO file *itself* is
@@ -200,6 +199,7 @@ struct hfs_volume {
     // load — same compromise as the catalog file.
     hfs_xt_rec_t *xt_records;
     size_t n_xt_records;
+    size_t malformed_records; // B-tree leaf records dropped as malformed, all trees
 };
 
 struct hfs_dir_iter {
@@ -292,107 +292,174 @@ static int load_catalog_file(hfs_volume_t *vol, const uint8_t *mdb, uint8_t **ou
 
 // ---- B-tree scan ----------------------------------------------------------
 
-// Parse one leaf node and append its records to *dst (realloc as needed).
-// A malformed record is skipped and counted in *skipped.  Returns 0 on
-// success, negated errno on failure.
-static int parse_leaf_node(const uint8_t *node, size_t node_size, cat_rec_t **dst, size_t *dst_n, size_t *dst_cap,
-                           size_t *skipped) {
-    uint16_t nrecs = RD_BE16(node + NODE_OFF_NRECS);
-    // Record offset table lives at the end of the node: 2 bytes per pointer,
-    // nrecs+1 entries (last one is the free-space sentinel).
-    if (node_size < 14 + (size_t)(nrecs + 1) * 2)
-        return -EINVAL;
+// What a leaf-record parser tells the walker.  A negated errno aborts the walk.
+enum {
+    HFS_REC_OK = 0, // used, or deliberately passed over (a thread record)
+    HFS_REC_MALFORMED = 1, // dropped: counted and logged
+};
 
-    for (uint16_t i = 0; i < nrecs; i++) {
-        uint16_t off = RD_BE16(node + node_size - (i + 1) * 2);
-        uint16_t next = RD_BE16(node + node_size - (i + 2) * 2);
-        if (off < 14 || next > node_size || next <= off) {
-            (*skipped)++;
-            continue;
-        }
-        size_t rec_size = next - off;
-        const uint8_t *rec = node + off;
-        // Key: keyLen(1) + reserved(1) + parID(4) + nameLen(1) + name[]
-        if (rec_size < 7) {
-            (*skipped)++;
-            continue;
-        }
-        uint8_t key_len = rec[0];
-        if (key_len < 1 + 4 || key_len > 37) {
-            (*skipped)++;
-            continue;
-        }
-        uint32_t parent_cnid = RD_BE32(rec + 2);
-        uint8_t name_len = rec[6];
-        // The name must lie inside both the key and the record.  The key
-        // length alone bounds neither, and the name is read -- and shown to
-        // the user -- before anything else checks it.
-        if (name_len > 31 || (size_t)name_len + 6 > key_len || (size_t)name_len + 7 > rec_size) {
-            (*skipped)++;
-            continue;
-        }
-        // Key storage (including keyLen byte) padded up to even length.
-        size_t key_bytes = 1 + key_len;
-        if (key_bytes & 1)
-            key_bytes++;
-        if (key_bytes >= rec_size) {
-            (*skipped)++;
-            continue;
-        }
-        const uint8_t *rec_data = rec + key_bytes;
-        size_t data_size = rec_size - key_bytes;
-        if (data_size < 2) {
-            (*skipped)++;
-            continue;
-        }
+// Parses one leaf record of `rec_size` bytes (key and data) into `ctx`.
+typedef int (*hfs_leaf_rec_fn)(void *ctx, const uint8_t *rec, size_t rec_size);
 
-        uint8_t type = rec_data[0];
-        if (type != CAT_REC_FOLDER && type != CAT_REC_FILE)
-            continue; // filter out thread records
+// Walk a B-tree's leaf chain from `first_leaf`, handing every record to
+// `fn`.  This owns what the four trees (HFS and HFS+ catalog and extents
+// overflow) share: the forward-link cycle bound, the leaf-kind check and
+// the record-offset table at the end of each node.  A record whose offsets
+// are out of the node, or that `fn` calls malformed, is skipped, counted in
+// vol->malformed_records and logged once per tree as "`tree`: N malformed
+// record(s) skipped; `lost`".  Returns 0, -EINVAL when a node's offset
+// table does not fit, or fn's negated errno.
+static int hfs_btree_walk_leaves(hfs_volume_t *vol, const uint8_t *buf, size_t size, size_t node_size,
+                                 uint32_t first_leaf, hfs_leaf_rec_fn fn, void *ctx, const char *tree,
+                                 const char *lost) {
+    uint32_t node_idx = first_leaf;
+    // Hard upper bound on chain length: at most one visit per node in the
+    // file.  Anything past that means a forward-link cycle.
+    size_t max_nodes = node_size ? (size / node_size) + 1 : 0;
+    size_t visited = 0;
+    size_t skipped = 0;
+    int rc = 0;
 
-        // Ensure capacity.
-        if (*dst_n == *dst_cap) {
-            size_t ncap = (*dst_cap == 0) ? 64 : *dst_cap * 2;
-            cat_rec_t *nb = realloc(*dst, ncap * sizeof(cat_rec_t));
-            if (!nb)
-                return -ENOMEM;
-            *dst = nb;
-            *dst_cap = ncap;
+    while (rc == 0 && node_idx != 0 && visited++ < max_nodes) {
+        uint64_t off = (uint64_t)node_idx * node_size;
+        if (off + node_size > size)
+            break;
+        const uint8_t *node = buf + off;
+        if (node[NODE_OFF_KIND] != NODE_KIND_LEAF)
+            break;
+        uint16_t nrecs = RD_BE16(node + NODE_OFF_NRECS);
+        // Record offset table lives at the end of the node: 2 bytes per pointer,
+        // nrecs+1 entries (last one is the free-space sentinel).
+        if (node_size < 14 + (size_t)(nrecs + 1) * 2) {
+            rc = -EINVAL;
+            break;
         }
-        cat_rec_t *r = &(*dst)[(*dst_n)++];
-        memset(r, 0, sizeof(*r));
-        r->parent_cnid = parent_cnid;
-        // Transcode the MacRoman on-disk name to UTF-8 once, at parse time.
-        macroman_to_utf8(rec + 7, name_len, r->name, sizeof(r->name));
-        r->record_type = type;
-
-        if (type == CAT_REC_FOLDER && data_size >= 10) {
-            r->valence = RD_BE16(rec_data + FOLDER_OFF_VALENCE);
-            r->cnid = RD_BE32(rec_data + FOLDER_OFF_DIRID);
-            if (data_size >= FOLDER_OFF_MDDAT + 4)
-                r->mod_date = RD_BE32(rec_data + FOLDER_OFF_MDDAT);
-        } else if (type == CAT_REC_FILE && data_size >= 98) {
-            r->cnid = RD_BE32(rec_data + FILE_OFF_FILEID);
-            r->mod_date = RD_BE32(rec_data + FILE_OFF_MDDAT);
-            // 0x00 = data fork, 0xFF = resource fork (HFS convention,
-            // matches the EO-file key's forkType byte).
-            parse_fork(rec_data, FILE_OFF_DATA_LGLEN, FILE_OFF_DATA_EXT, r->cnid, 0x00, &r->data_fork);
-            parse_fork(rec_data, FILE_OFF_RSRC_LGLEN, FILE_OFF_RSRC_EXT, r->cnid, 0xFF, &r->rsrc_fork);
-            // FInfo (16 bytes) + FXInfo (16 bytes) form a contiguous 32-byte
-            // Finder info block in the on-disk record.
-            memcpy(r->finder_info, rec_data + FILE_OFF_FINFO, 16);
-            memcpy(r->finder_info + 16, rec_data + FILE_OFF_FXINFO, 16);
-        } else {
-            (*dst_n)--; // malformed; drop it
-            (*skipped)++;
+        for (uint16_t i = 0; i < nrecs && rc == 0; i++) {
+            uint16_t rec_off = RD_BE16(node + node_size - (i + 1) * 2);
+            uint16_t next = RD_BE16(node + node_size - (i + 2) * 2);
+            if (rec_off < 14 || next > node_size || next <= rec_off) {
+                skipped++;
+                continue;
+            }
+            rc = fn(ctx, node + rec_off, (size_t)(next - rec_off));
+            if (rc == HFS_REC_MALFORMED) {
+                skipped++;
+                rc = 0;
+            }
         }
+        node_idx = RD_BE32(node + NODE_OFF_F_LINK);
     }
-    return 0;
+    vol->malformed_records += skipped;
+    if (skipped)
+        LOG(1, "%s: %zu malformed record(s) skipped; %s", tree, skipped, lost);
+    return rc;
+}
+
+// A growing array of catalog records.
+typedef struct {
+    cat_rec_t *v;
+    size_t n, cap;
+} cat_vec_t;
+
+// A growing array of extents-overflow records.
+typedef struct {
+    hfs_xt_rec_t *v;
+    size_t n, cap;
+} xt_vec_t;
+
+// Append a zeroed record; NULL when out of memory.
+static cat_rec_t *cat_push(cat_vec_t *a) {
+    cat_rec_t *nv = gs_grow(a->v, &a->cap, a->n + 1, sizeof(*a->v), 64);
+    if (!nv)
+        return NULL;
+    a->v = nv;
+    cat_rec_t *r = &a->v[a->n++];
+    memset(r, 0, sizeof(*r));
+    return r;
+}
+
+// Append a zeroed record; NULL when out of memory.
+static hfs_xt_rec_t *xt_push(xt_vec_t *a) {
+    hfs_xt_rec_t *nv = gs_grow(a->v, &a->cap, a->n + 1, sizeof(*a->v), 32);
+    if (!nv)
+        return NULL;
+    a->v = nv;
+    hfs_xt_rec_t *r = &a->v[a->n++];
+    memset(r, 0, sizeof(*r));
+    return r;
+}
+
+// Parse one HFS catalog leaf record into the cat_vec_t `ctx`.  Folder and
+// file records are kept; thread records are passed over.
+static int hfs_cat_leaf_rec(void *ctx, const uint8_t *rec, size_t rec_size) {
+    cat_vec_t *recs = ctx;
+    // Key: keyLen(1) + reserved(1) + parID(4) + nameLen(1) + name[]
+    if (rec_size < 7) {
+        return HFS_REC_MALFORMED;
+    }
+    uint8_t key_len = rec[0];
+    if (key_len < 1 + 4 || key_len > 37) {
+        return HFS_REC_MALFORMED;
+    }
+    uint32_t parent_cnid = RD_BE32(rec + 2);
+    uint8_t name_len = rec[6];
+    // The name must lie inside both the key and the record.  The key
+    // length alone bounds neither, and the name is read -- and shown to
+    // the user -- before anything else checks it.
+    if (name_len > 31 || (size_t)name_len + 6 > key_len || (size_t)name_len + 7 > rec_size) {
+        return HFS_REC_MALFORMED;
+    }
+    // Key storage (including keyLen byte) padded up to even length.
+    size_t key_bytes = 1 + key_len;
+    if (key_bytes & 1)
+        key_bytes++;
+    if (key_bytes >= rec_size) {
+        return HFS_REC_MALFORMED;
+    }
+    const uint8_t *rec_data = rec + key_bytes;
+    size_t data_size = rec_size - key_bytes;
+    if (data_size < 2) {
+        return HFS_REC_MALFORMED;
+    }
+
+    uint8_t type = rec_data[0];
+    if (type != CAT_REC_FOLDER && type != CAT_REC_FILE)
+        return HFS_REC_OK; // filter out thread records
+
+    cat_rec_t *r = cat_push(recs);
+    if (!r)
+        return -ENOMEM;
+    r->parent_cnid = parent_cnid;
+    // Transcode the MacRoman on-disk name to UTF-8 once, at parse time.
+    macroman_to_utf8(rec + 7, name_len, r->name, sizeof(r->name));
+    r->record_type = type;
+
+    if (type == CAT_REC_FOLDER && data_size >= 10) {
+        r->valence = RD_BE16(rec_data + FOLDER_OFF_VALENCE);
+        r->cnid = RD_BE32(rec_data + FOLDER_OFF_DIRID);
+        if (data_size >= FOLDER_OFF_MDDAT + 4)
+            r->mod_date = RD_BE32(rec_data + FOLDER_OFF_MDDAT);
+    } else if (type == CAT_REC_FILE && data_size >= 98) {
+        r->cnid = RD_BE32(rec_data + FILE_OFF_FILEID);
+        r->mod_date = RD_BE32(rec_data + FILE_OFF_MDDAT);
+        // 0x00 = data fork, 0xFF = resource fork (HFS convention,
+        // matches the EO-file key's forkType byte).
+        parse_fork(rec_data, FILE_OFF_DATA_LGLEN, FILE_OFF_DATA_EXT, r->cnid, 0x00, &r->data_fork);
+        parse_fork(rec_data, FILE_OFF_RSRC_LGLEN, FILE_OFF_RSRC_EXT, r->cnid, 0xFF, &r->rsrc_fork);
+        // FInfo (16 bytes) + FXInfo (16 bytes) form a contiguous 32-byte
+        // Finder info block in the on-disk record.
+        memcpy(r->finder_info, rec_data + FILE_OFF_FINFO, 16);
+        memcpy(r->finder_info + 16, rec_data + FILE_OFF_FXINFO, 16);
+    } else {
+        recs->n--; // malformed; drop it
+        return HFS_REC_MALFORMED;
+    }
+    return HFS_REC_OK;
 }
 
 // ---- Extents Overflow file --------------------------------------------------
 //
-// Loads the EO file's three inline extents into memory at hfs_open time
+// Loads the EO file's three inline extents into memory at open time
 // (the same compromise as the catalog file — the EO file's own
 // fragmentation past 3 extents falls through unreached, but in practice
 // the EO file is tiny).  Walks its leaf chain and builds a flat sorted
@@ -445,7 +512,7 @@ static int load_xt_file(hfs_volume_t *vol, const uint8_t *mdb, uint8_t **out_buf
     return 0;
 }
 
-// Parse one EO leaf node into the volume's xt_records list.  Each record
+// Parse one EO leaf record into the xt_vec_t `ctx`.  Each record
 // in the EO B-tree has:
 //   key: keyLen(1) + forkType(1) + reserved(1?) + fileNumber(4) + startBlock(2)
 //   data: 3 × (startBlock(2) + numBlocks(2))
@@ -453,74 +520,39 @@ static int load_xt_file(hfs_volume_t *vol, const uint8_t *mdb, uint8_t **out_buf
 // is the forkType; reserved byte may or may not be present — in HFS the
 // "reserved" byte is the high byte of the keyLen field, so keyLen of 7
 // implies a 7-byte key body of forkType(1) + fileNumber(4) + startBlock(2)).
-static int parse_xt_leaf_node(const uint8_t *node, size_t node_size, hfs_xt_rec_t **dst, size_t *dst_n,
-                              size_t *dst_cap) {
-    uint16_t nrecs = RD_BE16(node + NODE_OFF_NRECS);
-    if (node_size < 14 + (size_t)(nrecs + 1) * 2)
-        return -EINVAL;
-    for (uint16_t i = 0; i < nrecs; i++) {
-        uint16_t off = RD_BE16(node + node_size - (i + 1) * 2);
-        uint16_t next = RD_BE16(node + node_size - (i + 2) * 2);
-        if (off < 14 || next > node_size || next <= off)
-            continue;
-        size_t rec_size = next - off;
-        const uint8_t *rec = node + off;
-        // keyLen(1) + a 7-byte key (forkType, fileNumber, startBlock), then
-        // three extents (12 bytes).  Checked before any field is read.
-        const size_t key_bytes = 1 + 7;
-        if (rec_size < key_bytes + 12 || rec[0] != 7)
-            continue;
-        uint8_t fork_type = rec[1];
-        uint32_t file_id = RD_BE32(rec + 2);
-        uint16_t start_block = RD_BE16(rec + 6);
-        const uint8_t *rec_data = rec + key_bytes;
-
-        if (*dst_n == *dst_cap) {
-            size_t ncap = (*dst_cap == 0) ? 32 : *dst_cap * 2;
-            hfs_xt_rec_t *nb = realloc(*dst, ncap * sizeof(hfs_xt_rec_t));
-            if (!nb)
-                return -ENOMEM;
-            *dst = nb;
-            *dst_cap = ncap;
-        }
-        hfs_xt_rec_t *r = &(*dst)[(*dst_n)++];
-        memset(r, 0, sizeof(*r));
-        r->fork_type = fork_type;
-        r->file_id = file_id;
-        r->start_block = start_block;
-        for (int e = 0; e < HFS_INLINE_EXTENTS; e++) {
-            r->extents[e].start_ablock = RD_BE16(rec_data + e * 4);
-            r->extents[e].num_ablocks = RD_BE16(rec_data + e * 4 + 2);
-        }
+static int hfs_xt_leaf_rec(void *ctx, const uint8_t *rec, size_t rec_size) {
+    xt_vec_t *recs = ctx;
+    // keyLen(1) + a 7-byte key (forkType, fileNumber, startBlock), then
+    // three extents (12 bytes).  Checked before any field is read.
+    const size_t key_bytes = 1 + 7;
+    if (rec_size < key_bytes + 12 || rec[0] != 7)
+        return HFS_REC_MALFORMED;
+    const uint8_t *rec_data = rec + key_bytes;
+    hfs_xt_rec_t *r = xt_push(recs);
+    if (!r)
+        return -ENOMEM;
+    r->fork_type = rec[1];
+    r->file_id = RD_BE32(rec + 2);
+    r->start_block = RD_BE16(rec + 6);
+    for (int e = 0; e < HFS_INLINE_EXTENTS; e++) {
+        r->extents[e].start_ablock = RD_BE16(rec_data + e * 4);
+        r->extents[e].num_ablocks = RD_BE16(rec_data + e * 4 + 2);
     }
-    return 0;
+    return HFS_REC_OK;
 }
 
 // Walk the EO B-tree's leaf chain and populate vol->xt_records.
 static int collect_xt_records(hfs_volume_t *vol, const uint8_t *xt_buf, size_t xt_size, size_t node_size,
                               uint32_t first_leaf) {
-    hfs_xt_rec_t *dst = NULL;
-    size_t n = 0, cap = 0;
-    uint32_t node_idx = first_leaf;
-    size_t max_nodes = node_size ? (xt_size / node_size) + 1 : 0;
-    size_t visited = 0;
-    while (node_idx != 0 && visited++ < max_nodes) {
-        uint64_t off = (uint64_t)node_idx * node_size;
-        if (off + node_size > xt_size)
-            break;
-        const uint8_t *node = xt_buf + off;
-        uint8_t kind = node[NODE_OFF_KIND];
-        if (kind != NODE_KIND_LEAF)
-            break;
-        int rc = parse_xt_leaf_node(node, node_size, &dst, &n, &cap);
-        if (rc < 0) {
-            free(dst);
-            return rc;
-        }
-        node_idx = RD_BE32(node + NODE_OFF_F_LINK);
+    xt_vec_t recs = {0};
+    int rc = hfs_btree_walk_leaves(vol, xt_buf, xt_size, node_size, first_leaf, hfs_xt_leaf_rec, &recs,
+                                   "HFS extents overflow", "the fork extents they hold will not be read");
+    if (rc < 0) {
+        free(recs.v);
+        return rc;
     }
-    vol->xt_records = dst;
-    vol->n_xt_records = n;
+    vol->xt_records = recs.v;
+    vol->n_xt_records = recs.n;
     return 0;
 }
 
@@ -556,95 +588,19 @@ static cat_rec_t *shrink_records(cat_rec_t *recs, size_t n, size_t cap) {
 // Walk the catalog B-tree's leaf chain starting from firstLeaf.
 static int collect_catalog_records(hfs_volume_t *vol, const uint8_t *cat_buf, size_t cat_size, size_t node_size,
                                    uint32_t first_leaf) {
-    cat_rec_t *dst = NULL;
-    size_t n = 0, cap = 0;
-    uint32_t node_idx = first_leaf;
-    // Hard upper bound on chain length: at most one visit per node in the
-    // catalog. Anything past that means a forward-link cycle.
-    size_t max_nodes = node_size ? (cat_size / node_size) + 1 : 0;
-    size_t visited = 0;
-    size_t skipped = 0;
-
-    while (node_idx != 0 && visited++ < max_nodes) {
-        uint64_t off = (uint64_t)node_idx * node_size;
-        if (off + node_size > cat_size)
-            break;
-        const uint8_t *node = cat_buf + off;
-        uint8_t kind = node[NODE_OFF_KIND];
-        if (kind != NODE_KIND_LEAF)
-            break;
-        int rc = parse_leaf_node(node, node_size, &dst, &n, &cap, &skipped);
-        if (rc < 0) {
-            free(dst);
-            return rc;
-        }
-        node_idx = RD_BE32(node + NODE_OFF_F_LINK);
+    cat_vec_t recs = {0};
+    int rc = hfs_btree_walk_leaves(vol, cat_buf, cat_size, node_size, first_leaf, hfs_cat_leaf_rec, &recs,
+                                   "HFS catalog", "the files they describe will not be found");
+    if (rc < 0) {
+        free(recs.v);
+        return rc;
     }
-    if (skipped)
-        LOG(1, "HFS catalog: %zu malformed record(s) skipped; the files they describe will not be found", skipped);
-
-    vol->records = shrink_records(dst, n, cap);
-    vol->n_records = n;
+    vol->records = shrink_records(recs.v, recs.n, recs.cap);
+    vol->n_records = recs.n;
     return 0;
 }
 
 // ---- Comparison / lookup --------------------------------------------------
-
-// HFS filenames compare case-insensitively (the native comparison folds
-// via the Macintosh Roman case table; ASCII-only volumes see plain toupper).
-// Fold a single byte for case-insensitive HFS comparison.  Also maps
-// '/' (HFS-legal in filenames) and ':' (Unix-side stand-in we expose
-// via the VFS) to the same canonical value so a file named
-// "MacTest cx/ci" on disk can be addressed as ".../MacTest cx:ci"
-// through Unix-style "/"-separated paths.  See `fill_dirent` for the
-// matching outbound swap.
-static uint8_t hfs_fold_byte(uint8_t c) {
-    if (c >= 'a' && c <= 'z')
-        c -= 32;
-    if (c == '/' || c == ':')
-        c = ':';
-    return c;
-}
-
-// Fold a byte of a UTF-8 name, `prev` the byte before it.  ASCII as
-// hfs_fold_byte; a Latin-1 letter (U+00E0..U+00FE but U+00F7, which is
-// 0xC3 then 0xA0..0xBE) to its capital (0xC3 then 0x80..0x9E), so "café"
-// finds "CAFÉ" as the Finder would.  Upper and lower case of these letters
-// are the same length in UTF-8, so the names still compare byte for byte.
-// The MacRoman letters outside Latin-1 (œ, ÿ) and the rest of Unicode are
-// not folded.
-static uint8_t fold_utf8_byte(uint8_t prev, uint8_t c) {
-    if (prev == 0xC3 && c >= 0xA0 && c <= 0xBE && c != 0xB7)
-        return (uint8_t)(c - 0x20);
-    return hfs_fold_byte(c);
-}
-
-static int ci_compare_name(const uint8_t *a, size_t la, const uint8_t *b, size_t lb) {
-    size_t n = la < lb ? la : lb;
-    for (size_t i = 0; i < n; i++) {
-        uint8_t ca = fold_utf8_byte(i ? a[i - 1] : 0, a[i]);
-        uint8_t cb = fold_utf8_byte(i ? b[i - 1] : 0, b[i]);
-        if (ca != cb)
-            return (int)ca - (int)cb;
-    }
-    if (la != lb)
-        return (la < lb) ? -1 : 1;
-    return 0;
-}
-
-// Compare a record's stored UTF-8 name against a supplied UTF-8 component.
-// Matching is case-insensitive over ASCII and the Latin-1 letters MacRoman
-// shares (see fold_utf8_byte; the rest of Unicode is compared exactly),
-// with the HFS↔Unix '/' ↔ ':' equivalence
-// applied symmetrically so a name containing a slash on disk can be matched
-// via a colon-separated path component on the way in.
-static bool name_matches(const char *stored_utf8, const char *input_utf8) {
-    size_t a = strlen(stored_utf8);
-    size_t b = strlen(input_utf8);
-    if (a != b)
-        return false;
-    return ci_compare_name((const uint8_t *)stored_utf8, a, (const uint8_t *)input_utf8, b) == 0;
-}
 
 // Populate a VFS-facing dirent from an internal record.
 static void fill_dirent(const cat_rec_t *r, hfs_dirent_t *out) {
@@ -653,7 +609,7 @@ static void fill_dirent(const cat_rec_t *r, hfs_dirent_t *out) {
     // HFS↔Unix path-separator swap: HFS allows '/' in filenames and
     // uses ':' as the on-disk separator.  Our VFS uses '/' as the
     // path separator, so we expose any '/' bytes in HFS names as ':'
-    // instead — symmetric with the comparison fold in hfs_fold_byte().
+    // instead — symmetric with the comparison fold in mac_name_eq().
     // Callers that need the literal on-disk name can pull it from the
     // raw record; this is the VFS-facing view.
     for (char *p = out->name; *p; p++) {
@@ -853,190 +809,132 @@ static int read_fork_to_buffer(hfs_volume_t *vol, const hfs_fork_t *fork, uint64
     return 0;
 }
 
-// Parse one HFS+ extents-overflow leaf node.  Key is a fixed 10-byte
+// Parse one HFS+ extents-overflow leaf record.  Key is a fixed 10-byte
 // HFSPlusExtentKey; data is 8 extent descriptors (64 bytes).
-static int parse_hfsplus_xt_leaf(const uint8_t *node, size_t node_size, hfs_xt_rec_t **dst, size_t *dst_n,
-                                 size_t *dst_cap) {
-    uint16_t nrecs = RD_BE16(node + NODE_OFF_NRECS);
-    if (node_size < 14 + (size_t)(nrecs + 1) * 2)
-        return -EINVAL;
-    for (uint16_t i = 0; i < nrecs; i++) {
-        uint16_t off = RD_BE16(node + node_size - (i + 1) * 2);
-        uint16_t next = RD_BE16(node + node_size - (i + 2) * 2);
-        if (off < 14 || next > node_size || next <= off)
-            continue;
-        size_t rec_size = next - off;
-        const uint8_t *rec = node + off;
-        if (rec_size < 2)
-            continue;
-        uint16_t key_len = RD_BE16(rec); // big (uint16) keys
-        if (key_len != 10)
-            continue;
-        size_t key_area = 2 + 10;
-        if (key_area + 64 > rec_size)
-            continue; // need 8 extents of data
-        uint8_t fork_type = rec[2]; // forkType (rec[3] is pad)
-        uint32_t file_id = RD_BE32(rec + 4);
-        uint32_t start_block = RD_BE32(rec + 8);
-        const uint8_t *recdata = rec + key_area;
-
-        if (*dst_n == *dst_cap) {
-            size_t ncap = (*dst_cap == 0) ? 32 : *dst_cap * 2;
-            hfs_xt_rec_t *nb = realloc(*dst, ncap * sizeof(hfs_xt_rec_t));
-            if (!nb)
-                return -ENOMEM;
-            *dst = nb;
-            *dst_cap = ncap;
-        }
-        hfs_xt_rec_t *r = &(*dst)[(*dst_n)++];
-        memset(r, 0, sizeof(*r));
-        r->fork_type = fork_type;
-        r->file_id = file_id;
-        r->start_block = start_block;
-        for (int e = 0; e < HFS_FORK_EXTENTS; e++) {
-            r->extents[e].start_ablock = RD_BE32(recdata + e * 8);
-            r->extents[e].num_ablocks = RD_BE32(recdata + e * 8 + 4);
-        }
+static int hfsp_xt_leaf_rec(void *ctx, const uint8_t *rec, size_t rec_size) {
+    xt_vec_t *recs = ctx;
+    if (rec_size < 2)
+        return HFS_REC_MALFORMED;
+    uint16_t key_len = RD_BE16(rec); // big (uint16) keys
+    if (key_len != 10)
+        return HFS_REC_MALFORMED;
+    size_t key_area = 2 + 10;
+    if (key_area + 64 > rec_size)
+        return HFS_REC_MALFORMED; // need 8 extents of data
+    const uint8_t *recdata = rec + key_area;
+    hfs_xt_rec_t *r = xt_push(recs);
+    if (!r)
+        return -ENOMEM;
+    r->fork_type = rec[2]; // forkType (rec[3] is pad)
+    r->file_id = RD_BE32(rec + 4);
+    r->start_block = RD_BE32(rec + 8);
+    for (int e = 0; e < HFS_FORK_EXTENTS; e++) {
+        r->extents[e].start_ablock = RD_BE32(recdata + e * 8);
+        r->extents[e].num_ablocks = RD_BE32(recdata + e * 8 + 4);
     }
-    return 0;
+    return HFS_REC_OK;
 }
 
 // Walk the HFS+ extents-overflow leaf chain into vol->xt_records.
 static int collect_hfsplus_xt(hfs_volume_t *vol, const uint8_t *xt_buf, size_t xt_size, size_t node_size,
                               uint32_t first_leaf) {
-    hfs_xt_rec_t *dst = NULL;
-    size_t n = 0, cap = 0;
-    uint32_t node_idx = first_leaf;
-    size_t max_nodes = node_size ? (xt_size / node_size) + 1 : 0;
-    size_t visited = 0;
-    while (node_idx != 0 && visited++ < max_nodes) {
-        uint64_t off = (uint64_t)node_idx * node_size;
-        if (off + node_size > xt_size)
-            break;
-        const uint8_t *node = xt_buf + off;
-        if (node[NODE_OFF_KIND] != NODE_KIND_LEAF)
-            break;
-        int rc = parse_hfsplus_xt_leaf(node, node_size, &dst, &n, &cap);
-        if (rc < 0) {
-            free(dst);
-            return rc;
-        }
-        node_idx = RD_BE32(node + NODE_OFF_F_LINK);
+    xt_vec_t recs = {0};
+    int rc = hfs_btree_walk_leaves(vol, xt_buf, xt_size, node_size, first_leaf, hfsp_xt_leaf_rec, &recs,
+                                   "HFS+ extents overflow", "the fork extents they hold will not be read");
+    if (rc < 0) {
+        free(recs.v);
+        return rc;
     }
-    vol->xt_records = dst;
-    vol->n_xt_records = n;
+    vol->xt_records = recs.v;
+    vol->n_xt_records = recs.n;
     return 0;
 }
 
-// Parse one HFS+ catalog leaf node, appending folder/file records to *dst.
-// Thread records are skipped, except the root folder's thread (and the
+// The HFS+ catalog walk's state: the records, and the volume name the root
+// folder's thread (or, failing that, its folder record) supplies.
+typedef struct {
+    cat_vec_t recs;
+    char *vol_name;
+    size_t vol_name_cap;
+} hfsp_cat_ctx_t;
+
+// Parse one HFS+ catalog leaf record, appending folder/file records.
+// Thread records are passed over, except the root folder's thread (and the
 // root folder record itself), from which we recover the volume name.
-static int parse_hfsplus_catalog_leaf(const uint8_t *node, size_t node_size, cat_rec_t **dst, size_t *dst_n,
-                                      size_t *dst_cap, char *vol_name, size_t vol_name_cap) {
-    uint16_t nrecs = RD_BE16(node + NODE_OFF_NRECS);
-    if (node_size < 14 + (size_t)(nrecs + 1) * 2)
-        return -EINVAL;
-    for (uint16_t i = 0; i < nrecs; i++) {
-        uint16_t off = RD_BE16(node + node_size - (i + 1) * 2);
-        uint16_t next = RD_BE16(node + node_size - (i + 2) * 2);
-        if (off < 14 || next > node_size || next <= off)
-            continue;
-        size_t rec_size = next - off;
-        const uint8_t *rec = node + off;
-        if (rec_size < 2)
-            continue;
-        // HFSPlusCatalogKey: keyLength(2) parentID(4) nodeName{len:2, UTF16}.
-        uint16_t key_len = RD_BE16(rec);
-        size_t key_area = 2 + (size_t)key_len;
-        if (key_len < 6 || key_area > rec_size)
-            continue;
-        uint32_t parent_cnid = RD_BE32(rec + HFSP_KEY_OFF_PARENT);
-        uint16_t name_units = RD_BE16(rec + HFSP_KEY_OFF_NAMELEN);
-        if (name_units > 255 || HFSP_KEY_OFF_NAME + (size_t)name_units * 2 > key_area)
-            continue;
-        const uint8_t *namep = rec + HFSP_KEY_OFF_NAME;
-        const uint8_t *recdata = rec + key_area;
-        size_t data_size = rec_size - key_area;
-        if (data_size < 2)
-            continue;
-        int16_t type = (int16_t)RD_BE16(recdata);
+static int hfsp_cat_leaf_rec(void *ctx, const uint8_t *rec, size_t rec_size) {
+    hfsp_cat_ctx_t *c = ctx;
+    if (rec_size < 2)
+        return HFS_REC_MALFORMED;
+    // HFSPlusCatalogKey: keyLength(2) parentID(4) nodeName{len:2, UTF16}.
+    uint16_t key_len = RD_BE16(rec);
+    size_t key_area = 2 + (size_t)key_len;
+    if (key_len < 6 || key_area > rec_size)
+        return HFS_REC_MALFORMED;
+    uint32_t parent_cnid = RD_BE32(rec + HFSP_KEY_OFF_PARENT);
+    uint16_t name_units = RD_BE16(rec + HFSP_KEY_OFF_NAMELEN);
+    if (name_units > 255 || HFSP_KEY_OFF_NAME + (size_t)name_units * 2 > key_area)
+        return HFS_REC_MALFORMED;
+    const uint8_t *namep = rec + HFSP_KEY_OFF_NAME;
+    const uint8_t *recdata = rec + key_area;
+    size_t data_size = rec_size - key_area;
+    if (data_size < 2)
+        return HFS_REC_MALFORMED;
+    int16_t type = (int16_t)RD_BE16(recdata);
 
-        // The root folder's thread record holds the volume name.
-        if (type == HFSP_REC_FOLDER_THREAD && parent_cnid == HFSP_ROOT_FOLDER_ID && vol_name) {
-            uint16_t vn_units =
-                (data_size >= HFSP_THREAD_OFF_NAMELEN + 2) ? RD_BE16(recdata + HFSP_THREAD_OFF_NAMELEN) : 0;
-            if (vn_units > 0 && (size_t)HFSP_THREAD_OFF_NAMELEN + 2 + (size_t)vn_units * 2 <= data_size)
-                utf16be_to_utf8(recdata + HFSP_THREAD_OFF_NAMELEN + 2, vn_units, vol_name, vol_name_cap);
-            continue;
-        }
-        if (type != HFSP_REC_FOLDER && type != HFSP_REC_FILE)
-            continue; // skip threads / unknown record types
-        if (type == HFSP_REC_FOLDER && data_size < HFSP_FOLDER_OFF_ID + 4)
-            continue;
-        if (type == HFSP_REC_FILE && data_size < HFSP_FILE_REC_MIN)
-            continue;
-
-        if (*dst_n == *dst_cap) {
-            size_t ncap = (*dst_cap == 0) ? 64 : *dst_cap * 2;
-            cat_rec_t *nb = realloc(*dst, ncap * sizeof(cat_rec_t));
-            if (!nb)
-                return -ENOMEM;
-            *dst = nb;
-            *dst_cap = ncap;
-        }
-        cat_rec_t *r = &(*dst)[(*dst_n)++];
-        memset(r, 0, sizeof(*r));
-        r->parent_cnid = parent_cnid;
-        utf16be_to_utf8(namep, name_units, r->name, sizeof(r->name));
-
-        if (type == HFSP_REC_FOLDER) {
-            r->record_type = CAT_REC_FOLDER;
-            r->valence = RD_BE32(recdata + HFSP_FOLDER_OFF_VALENCE);
-            r->cnid = RD_BE32(recdata + HFSP_FOLDER_OFF_ID);
-            if (data_size >= HFSP_OFF_MOD_DATE + 4)
-                r->mod_date = RD_BE32(recdata + HFSP_OFF_MOD_DATE);
-            // The root folder record (folderID==2) names the volume; use it
-            // as a fallback if the thread record didn't already set the name.
-            if (r->cnid == HFSP_ROOT_FOLDER_ID && vol_name && vol_name[0] == '\0')
-                snprintf(vol_name, vol_name_cap, "%s", r->name);
-        } else { // HFSP_REC_FILE
-            r->record_type = CAT_REC_FILE;
-            r->cnid = RD_BE32(recdata + HFSP_FILE_OFF_ID);
-            r->mod_date = RD_BE32(recdata + HFSP_OFF_MOD_DATE);
-            parse_hfsplus_fork(recdata + HFSP_FILE_OFF_DATAFORK, r->cnid, 0x00, &r->data_fork);
-            parse_hfsplus_fork(recdata + HFSP_FILE_OFF_RSRCFORK, r->cnid, 0xFF, &r->rsrc_fork);
-            // FInfo (16) + FXInfo (16) are contiguous in the record.
-            memcpy(r->finder_info, recdata + HFSP_FILE_OFF_USERINFO, 32);
-        }
+    // The root folder's thread record holds the volume name.
+    if (type == HFSP_REC_FOLDER_THREAD && parent_cnid == HFSP_ROOT_FOLDER_ID) {
+        uint16_t vn_units = (data_size >= HFSP_THREAD_OFF_NAMELEN + 2) ? RD_BE16(recdata + HFSP_THREAD_OFF_NAMELEN) : 0;
+        if (vn_units > 0 && (size_t)HFSP_THREAD_OFF_NAMELEN + 2 + (size_t)vn_units * 2 <= data_size)
+            utf16be_to_utf8(recdata + HFSP_THREAD_OFF_NAMELEN + 2, vn_units, c->vol_name, c->vol_name_cap);
+        return HFS_REC_OK;
     }
-    return 0;
+    if (type != HFSP_REC_FOLDER && type != HFSP_REC_FILE)
+        return HFS_REC_OK; // skip threads / unknown record types
+    if (type == HFSP_REC_FOLDER && data_size < HFSP_FOLDER_OFF_ID + 4)
+        return HFS_REC_MALFORMED;
+    if (type == HFSP_REC_FILE && data_size < HFSP_FILE_REC_MIN)
+        return HFS_REC_MALFORMED;
+
+    cat_rec_t *r = cat_push(&c->recs);
+    if (!r)
+        return -ENOMEM;
+    r->parent_cnid = parent_cnid;
+    utf16be_to_utf8(namep, name_units, r->name, sizeof(r->name));
+
+    if (type == HFSP_REC_FOLDER) {
+        r->record_type = CAT_REC_FOLDER;
+        r->valence = RD_BE32(recdata + HFSP_FOLDER_OFF_VALENCE);
+        r->cnid = RD_BE32(recdata + HFSP_FOLDER_OFF_ID);
+        if (data_size >= HFSP_OFF_MOD_DATE + 4)
+            r->mod_date = RD_BE32(recdata + HFSP_OFF_MOD_DATE);
+        // The root folder record (folderID==2) names the volume; use it
+        // as a fallback if the thread record didn't already set the name.
+        if (r->cnid == HFSP_ROOT_FOLDER_ID && c->vol_name[0] == '\0')
+            snprintf(c->vol_name, c->vol_name_cap, "%s", r->name);
+    } else { // HFSP_REC_FILE
+        r->record_type = CAT_REC_FILE;
+        r->cnid = RD_BE32(recdata + HFSP_FILE_OFF_ID);
+        r->mod_date = RD_BE32(recdata + HFSP_OFF_MOD_DATE);
+        parse_hfsplus_fork(recdata + HFSP_FILE_OFF_DATAFORK, r->cnid, 0x00, &r->data_fork);
+        parse_hfsplus_fork(recdata + HFSP_FILE_OFF_RSRCFORK, r->cnid, 0xFF, &r->rsrc_fork);
+        // FInfo (16) + FXInfo (16) are contiguous in the record.
+        memcpy(r->finder_info, recdata + HFSP_FILE_OFF_USERINFO, 32);
+    }
+    return HFS_REC_OK;
 }
 
 // Walk the HFS+ catalog leaf chain into vol->records (and vol->volume_name).
 static int collect_hfsplus_catalog(hfs_volume_t *vol, const uint8_t *cat_buf, size_t cat_size, size_t node_size,
                                    uint32_t first_leaf) {
-    cat_rec_t *dst = NULL;
-    size_t n = 0, cap = 0;
-    uint32_t node_idx = first_leaf;
-    size_t max_nodes = node_size ? (cat_size / node_size) + 1 : 0;
-    size_t visited = 0;
-    while (node_idx != 0 && visited++ < max_nodes) {
-        uint64_t off = (uint64_t)node_idx * node_size;
-        if (off + node_size > cat_size)
-            break;
-        const uint8_t *node = cat_buf + off;
-        if (node[NODE_OFF_KIND] != NODE_KIND_LEAF)
-            break;
-        int rc =
-            parse_hfsplus_catalog_leaf(node, node_size, &dst, &n, &cap, vol->volume_name, sizeof(vol->volume_name));
-        if (rc < 0) {
-            free(dst);
-            return rc;
-        }
-        node_idx = RD_BE32(node + NODE_OFF_F_LINK);
+    hfsp_cat_ctx_t c = {.vol_name = vol->volume_name, .vol_name_cap = sizeof(vol->volume_name)};
+    int rc = hfs_btree_walk_leaves(vol, cat_buf, cat_size, node_size, first_leaf, hfsp_cat_leaf_rec, &c, "HFS+ catalog",
+                                   "the files they describe will not be found");
+    if (rc < 0) {
+        free(c.recs.v);
+        return rc;
     }
-    vol->records = shrink_records(dst, n, cap);
-    vol->n_records = n;
+    vol->records = shrink_records(c.recs.v, c.recs.n, c.recs.cap);
+    vol->n_records = c.recs.n;
     return 0;
 }
 
@@ -1121,13 +1019,6 @@ static hfs_volume_t *open_plus(source_t *src, uint64_t partition_byte_offset, ui
 
 // ---- Public API -----------------------------------------------------------
 
-hfs_volume_t *hfs_open(image_t *img, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
-    source_t *src = image_source(img);
-    hfs_volume_t *vol = hfs_open_source(src, partition_byte_offset, partition_byte_size);
-    source_release(src); // the volume holds its own reference
-    return vol;
-}
-
 hfs_volume_t *hfs_open_source(source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
     if (!src || partition_byte_size < HFS_MDB_OFF_IN_VOL + 512)
         return NULL;
@@ -1180,6 +1071,10 @@ const char *hfs_volume_name(const hfs_volume_t *vol) {
     return vol ? vol->volume_name : "";
 }
 
+size_t hfs_malformed_records(const hfs_volume_t *vol) {
+    return vol ? vol->malformed_records : 0;
+}
+
 // Find a record with the given parent CNID and UTF-8 name.  O(n) scan; fine
 // for realistic catalog sizes.
 static const cat_rec_t *find_child(const hfs_volume_t *vol, uint32_t parent_cnid, const char *name) {
@@ -1187,7 +1082,7 @@ static const cat_rec_t *find_child(const hfs_volume_t *vol, uint32_t parent_cnid
         const cat_rec_t *r = &vol->records[i];
         if (r->parent_cnid != parent_cnid)
             continue;
-        if (name_matches(r->name, name))
+        if (mac_name_eq(r->name, name))
             return r;
     }
     return NULL;

@@ -15,6 +15,7 @@
 #include "appletalk_internal.h"
 #include "appletalk_ppc.h"
 #include "object.h"
+#include "object_order.h"
 #include "value.h"
 
 #include <stdio.h>
@@ -61,7 +62,7 @@ void atalk_install_objects(void) {
     if (!atalk)
         return;
     g_atalk_object = atalk;
-    object_set_order(atalk, 100);
+    object_set_order(atalk, OBJ_ORDER_APPLETALK);
     object_set_domain(atalk, OBJ_DOMAIN_NETWORK);
     object_attach(object_root(), atalk);
 

@@ -11,22 +11,16 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFileStreaming } from '../helpers/web2-fs';
 import { gsEvalInPage } from '../helpers/web2-eval';
+import { ROMS } from '../helpers/paths';
+import { uploadRomViaWelcome } from '../helpers/upload';
 
-const ROMS = path.resolve(__dirname, '../../data/roms');
 const OSX_DISK = path.resolve(
   __dirname,
   '../../data/systems/mac_os_x_10_0_3_2gb_g3_minimal_aqua.dmg',
 );
 
 async function uploadRom(page: Page, file: string): Promise<void> {
-  const [chooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Load ROM...' }).click(),
-  ]);
-  await chooser.setFiles(path.join(ROMS, file));
-  await expect(page.locator('.toast .msg').filter({ hasText: `${file} added` })).toBeVisible({
-    timeout: 60_000,
-  });
+  await uploadRomViaWelcome(page, path.join(ROMS, file), { toast: true });
 }
 
 async function openNewMachine(page: Page, model: string): Promise<void> {

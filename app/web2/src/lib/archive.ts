@@ -26,10 +26,8 @@ async function loadJSZip(): Promise<JSZipLike> {
 // core's format registry decides from its content (files.archive.identify,
 // and the `expandable` flag files.list reports).
 
-// Filename sanitiser — keep alphanumerics, ., _, -; collapse the rest to _.
-export function sanitizeName(n: string): string {
-  return n.replace(/[^A-Za-z0-9._-]+/g, '_');
-}
+// The filename sanitiser lives in lib/fileName.ts.
+export { sanitizeName } from './fileName';
 
 export interface UnzippedFile {
   name: string;

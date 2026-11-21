@@ -20,7 +20,10 @@ vi.mock('@/bus/emulator', () => ({
   getModule: () => null,
 }));
 
-vi.mock('@/bus/media', () => ({
+vi.mock('@/bus/media', async (importOriginal) => ({
+  // The real thin wrappers (machineCreated, fdDrivePresent, ...) over the
+  // mocked gsEval; the attach helpers mocked.
+  ...(await importOriginal<typeof import('@/bus/media')>()),
   insertFloppy: (...a: unknown[]) => mediaMock.insertFloppy(...a),
   detectFdDriveCount: async () => drives.count,
   ejectMedia: vi.fn(),

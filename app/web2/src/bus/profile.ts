@@ -9,7 +9,7 @@
 // availability follows the ROMs uploaded, so the cache is dropped when the
 // stored ROM set changes (clearProfileCache).
 
-import { gsEval, isGsError } from './emulator';
+import { gsEval, isGsObject } from './emulator';
 
 // A place a medium goes, as the attach verbs answer it: the bus it is on
 // and the unit there.
@@ -196,7 +196,7 @@ export function getProfile(model: string): Promise<MachineProfile | null> {
   if (hit) return hit;
   const p = (async () => {
     const r = await gsEval('catalog.profile', [model]);
-    if (!r || typeof r !== 'object' || isGsError(r)) return null;
+    if (!isGsObject(r)) return null;
     return normalise(r as Partial<MachineProfile>);
   })();
   cache.set(model, p);
@@ -288,4 +288,11 @@ function normalise(r: Partial<MachineProfile>): MachineProfile {
       startup: d.startup ?? null,
     },
   };
+}
+
+// The models the core can build, in its family order (catalog.models);
+// null when it does not answer with a list.
+export async function catalogModels(): Promise<string[] | null> {
+  const order = await gsEval('catalog.models').catch(() => null);
+  return Array.isArray(order) ? order.filter((m): m is string => typeof m === 'string') : null;
 }

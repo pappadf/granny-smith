@@ -20,7 +20,7 @@
 // drSigWord, at byte 1024 of the volume.
 #define MFS_SIG 0xD2D7
 
-struct peel_source;
+typedef struct peel_source source_t; // source.h's byte source, without peeler.h
 typedef struct mfs_volume mfs_volume_t;
 
 // One file.  `name` is UTF-8, a Mac '/' shown as ':' (as for HFS).
@@ -34,12 +34,12 @@ typedef struct {
 } mfs_dirent_t;
 
 // Does the volume at `off` (of `size` bytes) carry the MFS signature?
-bool mfs_probe_source(struct peel_source *src, uint64_t off, uint64_t size);
+bool mfs_probe_source(source_t *src, uint64_t off, uint64_t size);
 
 // Open the volume at `off` (of `size` bytes): its directory and allocation
 // map are read at once (both are small).  The source is retained.  NULL when
 // it is not MFS, is corrupt, or memory runs out.
-mfs_volume_t *mfs_open_source(struct peel_source *src, uint64_t off, uint64_t size);
+mfs_volume_t *mfs_open_source(source_t *src, uint64_t off, uint64_t size);
 void mfs_close(mfs_volume_t *vol);
 
 // The volume name (UTF-8).

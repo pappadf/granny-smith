@@ -96,27 +96,18 @@ source_t *source_host(const char *path, int *err) {
         *err = -EINVAL;
         return NULL;
     }
-    int fd = open(path, O_RDONLY);
+    uint64_t size = 0;
+    int64_t mtime = 0;
+    int fd = open_regular_file(path, &size, &mtime);
     if (fd < 0) {
-        *err = -errno;
-        return NULL;
-    }
-    struct stat st;
-    if (fstat(fd, &st) != 0) {
-        *err = -errno;
-        close(fd);
-        return NULL;
-    }
-    if (!S_ISREG(st.st_mode)) {
-        *err = S_ISDIR(st.st_mode) ? -EISDIR : -EINVAL;
-        close(fd);
+        *err = fd;
         return NULL;
     }
     host_src_t *h = calloc(1, sizeof(*h));
     // The key names the file's content: the canonical path (one spelling for
     // every relative, absolute or symlinked route to it) plus size and mtime.
     char *canon = realpath(path, NULL);
-    char *key = str_printf("%s@%" PRIu64 ":%lld", canon ? canon : path, (uint64_t)st.st_size, (long long)st.st_mtime);
+    char *key = str_printf("%s@%" PRIu64 ":%lld", canon ? canon : path, size, (long long)mtime);
     free(canon);
     if (!h || !key) {
         free(h);
@@ -126,9 +117,9 @@ source_t *source_host(const char *path, int *err) {
         return NULL;
     }
     h->fd = fd;
-    h->size = (uint64_t)st.st_size;
+    h->size = size;
     h->key = key;
-    source_t *s = peel_source_new(&host_ops, h, NULL);
+    source_t *s = source_new(&host_ops, h, NULL);
     if (!s)
         *err = -ENOMEM;
     return s;
@@ -161,7 +152,7 @@ static int64_t pad_read(source_t *s, uint64_t off, void *buf, size_t len) {
     if (len > p->size - off)
         len = (size_t)(p->size - off);
     if (off < p->psize) // the parent's own bytes (a short read is the caller's to resume)
-        return peel_source_read(s->parent, off, buf, len < p->psize - off ? len : (size_t)(p->psize - off));
+        return source_read(s->parent, off, buf, len < p->psize - off ? len : (size_t)(p->psize - off));
     memset(buf, 0, len);
     uint64_t lo = off > p->patch_off ? off : p->patch_off;
     uint64_t hi = off + len < p->patch_off + p->patch_len ? off + len : p->patch_off + p->patch_len;
@@ -179,7 +170,7 @@ static const char *pad_key(source_t *s) {
 }
 
 static source_tier_t pad_tier(source_t *s) {
-    return peel_source_tier(s->parent);
+    return source_tier(s->parent);
 }
 
 static void pad_close(source_t *s) {
@@ -196,7 +187,7 @@ static const source_ops_t pad_ops = {pad_read, pad_size, pad_key, pad_tier, pad_
 source_t *source_pad(source_t *parent, uint64_t size, uint64_t patch_off, const void *patch, size_t patch_len) {
     if (!parent)
         return NULL;
-    uint64_t psize = peel_source_size(parent);
+    uint64_t psize = source_size(parent);
     if (size <= psize ||
         (patch_len && (!patch || patch_off < psize || patch_off > size || patch_len > size - patch_off)))
         return NULL;
@@ -207,7 +198,7 @@ source_t *source_pad(source_t *parent, uint64_t size, uint64_t patch_off, const 
     p->psize = psize;
     p->patch_off = patch_off;
     p->patch_len = patch_len;
-    const char *pk = peel_source_key(parent);
+    const char *pk = source_key(parent);
     p->key = str_printf("%s#pad%" PRIu64, pk ? pk : "", size);
     p->patch = patch_len ? malloc(patch_len) : NULL;
     if (!p->key || (patch_len && !p->patch)) {
@@ -216,7 +207,7 @@ source_t *source_pad(source_t *parent, uint64_t size, uint64_t patch_off, const 
     }
     if (patch_len)
         memcpy(p->patch, patch, patch_len);
-    return peel_source_new(&pad_ops, p, parent);
+    return source_new(&pad_ops, p, parent);
 }
 
 // ============================================================================
@@ -266,8 +257,7 @@ bool source_key_same_source(const char *saved, const char *now) {
 }
 
 int source_read_exact(source_t *s, uint64_t off, void *buf, size_t len) {
-    int rc = peel_source_read_exact(s, off, buf, len);
-    return rc == -5 ? -EIO : rc; // peeler's "short" is EIO's value; keep errno spelling
+    return peel_source_read_exact(s, off, buf, len); // the peeler's codes are negative errno already
 }
 
 int source_read_all(source_t *s, size_t max, uint8_t **out, size_t *out_len) {
@@ -364,7 +354,7 @@ static source_t *sidecar_fork(const char *path, source_fork_t fork) {
                 uint8_t *copy = calloc(1, keep);
                 if (copy) {
                     memcpy(copy, p, n < keep ? n : keep);
-                    char *key = str_printf("%s/%s", side, fork == GS_FORK_RSRC ? "rsrc" : "finf");
+                    char *key = str_printf("%s/%s", side, fork == GS_FORK_RSRC ? VFS_FORK_RSRC : VFS_FORK_FINF);
                     s = source_memory(copy, keep, true, key);
                     free(key);
                 }

@@ -51,10 +51,15 @@
 // in the block a checkpoint writes with offsetof().
 //
 //     BYTE_FIFO(16) fifo;   ->   fifo.buf[16], fifo.rd, fifo.n
+//
+// The depth is handed to the helpers as (uint8_t)sizeof buf and the cursors
+// are uint8_t, so a depth above 255 would wrap (BYTE_FIFO(256) to depth 0,
+// and a division by zero); the assertion refuses it at compile time.
 #define BYTE_FIFO(depth)                                                                                               \
     struct {                                                                                                           \
         uint8_t buf[depth];                                                                                            \
         uint8_t rd, n;                                                                                                 \
+        _Static_assert((depth) > 0 && (depth) <= 255, "BYTE_FIFO depth must fit its uint8_t cursors");                 \
     }
 
 // Store a byte.  Returns false and stores nothing if the ring is full.

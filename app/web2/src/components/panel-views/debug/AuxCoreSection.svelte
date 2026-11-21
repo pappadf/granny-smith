@@ -8,8 +8,7 @@
   // block and a disassembly window around its PC.  Read-only — the core
   // exposes no register setters.
   import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
-  import { gsEval } from '@/bus/emulator';
-  import { loadDebugFrame, type DebugFrame } from '@/bus/debug';
+  import { loadDebugFrame, auxCoreState, type DebugFrame } from '@/bus/debug';
   import { machine, type AuxCpu } from '@/state/machine.svelte';
   import { debug } from '@/state/debug.svelte';
   import { registerGroups, fmtRegister } from '@/lib/registerLayout';
@@ -46,8 +45,7 @@
     loading = true;
     try {
       frame = await loadDebugFrame(undefined, ROWS, BEFORE, cpu.name);
-      const s = await gsEval(`machine.${cpu.name}.state`);
-      runState = typeof s === 'string' ? s : null;
+      runState = await auxCoreState(cpu.name);
     } finally {
       loading = false;
     }

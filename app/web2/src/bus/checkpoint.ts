@@ -19,6 +19,7 @@ import {
   resolveCheckpointPrompt,
 } from '@/state/checkpointPrompt.svelte';
 import { showNotification } from '@/state/toasts.svelte';
+import { compactLocalStamp } from '@/lib/time';
 
 export function isResumePending(): boolean {
   return checkpointPrompt.shown;
@@ -70,7 +71,7 @@ export type SaveCheckpointResult =
   { ok: true; name: string } | { ok: false; step: 'save' | 'save to computer'; message: string };
 
 export async function saveCheckpoint(): Promise<SaveCheckpointResult> {
-  const name = `saved-state-${compactTimestamp()}.bin`;
+  const name = `saved-state-${compactLocalStamp()}.bin`;
   // Written in the OPFS scratch area, not the memory-backed /tmp: a machine
   // with a large modified disk would otherwise hold its whole state in the
   // wasm heap while the download is made.  In a directory of its own, so no
@@ -95,12 +96,32 @@ export async function saveCheckpoint(): Promise<SaveCheckpointResult> {
   }
 }
 
-// Local-time YYYYMMDD-HHMMSS for a download name.
-function compactTimestamp(): string {
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return (
-    `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-` +
-    `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
-  );
+// --- The Checkpoints panel ------------------------------------------------
+
+// Save a labelled checkpoint into `dir` (made under `parent`): the machine's
+// own checkpoint first, so its autosave (what a reload resumes) is this
+// moment too -- checkpoint.snapshot returns once the file is complete --
+// then a copy at `dir`/state.checkpoint.  A failed copy leaves no
+// directory behind.  The reason is the core's, when it gave one.
+export async function saveLabelledCheckpoint(
+  label: string,
+  parent: string,
+  dir: string,
+): Promise<{ ok: true } | { ok: false; reason?: string }> {
+  if ((await gsEval('checkpoint.snapshot', [label])) !== true) return { ok: false };
+  await gsEval('files.mkdir', [parent]);
+  await gsEval('files.mkdir', [dir]);
+  const ok = await gsEval('checkpoint.save', [`${dir}/state.checkpoint`]);
+  if (ok !== true) {
+    await gsEval('files.rm', [dir]);
+    return { ok: false, reason: gsErrorText(ok) };
+  }
+  return { ok: true };
+}
+
+// Load the checkpoint in `dir`: true, or the core's reason.  gsEval never
+// rejects: a transport failure is an {error} result too.
+export async function loadCheckpointFrom(dir: string): Promise<true | string> {
+  const ok = await gsEval('checkpoint.load', [`${dir}/state.checkpoint`]);
+  return ok === true ? true : gsErrorText(ok);
 }

@@ -27,6 +27,7 @@
 // at the guest looking alike.
 // JS is left with capture and rate conversion only.
 
+#include "audio_out.h" // audio_sat16f
 #include "em.h"
 #include "em_mic_ring.h"
 #include "em_shm_layout.h"
@@ -303,7 +304,7 @@ static void mic_condition(int16_t *s, uint32_t n, uint32_t rate) {
         float hi = c - g_cond.lo_y1;
         losum2 += (double)g_cond.lo_y1 * (double)g_cond.lo_y1;
         hisum2 += (double)hi * (double)hi;
-        s[i] = (int16_t)(c < -32768.0f ? -32768.0f : (c > 32767.0f ? 32767.0f : c));
+        s[i] = audio_sat16f(c);
         sum2 += (double)c * (double)c;
     }
     float rms = (float)sqrt(sum2 / (double)n);
@@ -426,7 +427,7 @@ static void mic_condition(int16_t *s, uint32_t n, uint32_t rate) {
         float x = (float)s[i];
         lo += k2 * (x - lo);
         float v = (lo + g_cond.shelf * (x - lo)) * g_cond.gain;
-        s[i] = (int16_t)(v < -32768.0f ? -32768.0f : (v > 32767.0f ? 32767.0f : v));
+        s[i] = audio_sat16f(v);
     }
 }
 
@@ -551,7 +552,7 @@ static void rs_run(const int16_t *in, uint32_t need, int16_t *lr, uint32_t frame
             int32_t n = (int32_t)j - (int32_t)k;
             acc += h[k] * (float)(n >= 0 ? in[n] : g_rs.hist[GS_RS_TAPS + n]);
         }
-        int16_t v = (int16_t)(acc < -32768.0f ? -32768.0f : (acc > 32767.0f ? 32767.0f : acc));
+        int16_t v = audio_sat16f(acc);
         lr[i * 2] = v;
         lr[i * 2 + 1] = v;
     }

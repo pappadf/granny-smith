@@ -234,7 +234,7 @@ void system_drive_io_counts(uint64_t reads[DRIVE_KIND_COUNT], uint64_t writes[DR
 // machine is running.
 // `adb_code` is an ADB raw keycode (0x00-0x7F) -- the model's universal
 // key identity, see machine_profile.h.  Resolve names with
-// debug_mac_resolve_key_name before calling.
+// host_keymap_name_to_adb (host_keys.h) before calling.
 int system_input_key(int adb_code, bool down);
 // This machine's own keyboard wire byte; -1 if the machine has no raw form.
 int system_input_key_raw(uint8_t byte);

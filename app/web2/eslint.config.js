@@ -67,6 +67,23 @@ export default [
     },
   },
   {
+    // A component asks the bus module that owns the domain (bus/vfs,
+    // bus/media, bus/checkpoint, bus/debug, bus/systemTree, ...), never the
+    // core directly: one place per call for its error handling.
+    files: ['src/components/**/*.{ts,svelte,svelte.ts}'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        ...['@/bus', '@/bus/emulator', '@/bus/index'].map((name) => ({
+          name,
+          importNames: ['gsEval', 'gsEvalWithProgress'],
+          message:
+            'Components do not call the core directly: add the call to the bus module that owns it (bus/vfs, bus/media, bus/checkpoint, ...).',
+        })),
+      ],
+    },
+  },
+  {
     files: ['src/bus/**/*.ts'],
     rules: {
       // Same merged-into-one rule pattern (see comment above).

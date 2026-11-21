@@ -28,6 +28,7 @@
 
 #include "checkpoint.h"
 #include "dbdma.h"
+#include "irq_line.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -35,7 +36,7 @@
 typedef struct bmac bmac_t;
 
 // Cell interrupt (level): STATUS & ~INTDISABLE != 0.
-typedef void (*bmac_irq_fn)(void *ctx, bool level);
+typedef irq_fn bmac_irq_fn;
 
 // The Rev C beige G3's cell id (its device tree's `cell-id`).
 #define BMAC_CHIPID_HEATHROW 0xB1u

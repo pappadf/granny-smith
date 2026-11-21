@@ -96,7 +96,7 @@ static inline uint16_t ppd_cls_bclr(const ppc_cls_t *c, uint32_t iw, uint16_t id
 
 // mfspr/mtspr: LR, CTR and XER are plain user-level moves (ppc.c).
 static inline uint16_t ppd_cls_spr(const ppc_cls_t *c, uint32_t iw, bool to_spr, uint16_t t1) {
-    uint32_t n = ((iw >> 16) & 0x1Fu) | (((iw >> 11) & 0x1Fu) << 5);
+    uint32_t n = PPC_SPR_NUMBER(iw);
     uint16_t id;
     switch (n) {
     case 1:

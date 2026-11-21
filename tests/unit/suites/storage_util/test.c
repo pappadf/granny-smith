@@ -113,6 +113,28 @@ TEST(test_read_file_is_capped) {
     ASSERT_EQ_INT(0, rm_tree(g_root));
 }
 
+// The text form: NUL-terminated, same cap, and a directory is an error
+// rather than an empty read.
+TEST(test_read_text_file) {
+    fresh_root();
+    char *p = str_printf("%s/t", g_root);
+    write_file(p, "echo 1\n");
+    char *text = NULL;
+    size_t len = 0;
+    ASSERT_EQ_INT(0, read_text_file(p, 7, &text, &len));
+    ASSERT_TRUE(len == 7 && strcmp(text, "echo 1\n") == 0);
+    free(text);
+    ASSERT_EQ_INT(-EFBIG, read_text_file(p, 6, &text, NULL));
+    ASSERT_TRUE(text == NULL);
+    write_file(p, "");
+    ASSERT_EQ_INT(0, read_text_file(p, 6, &text, NULL));
+    ASSERT_TRUE(text && text[0] == '\0');
+    free(text);
+    ASSERT_EQ_INT(-EISDIR, read_text_file(g_root, 6, &text, NULL));
+    free(p);
+    ASSERT_EQ_INT(0, rm_tree(g_root));
+}
+
 // A file replaced whole or not at all: a commit that failed -- or was told
 // the writes failed -- leaves the old file and no temporary behind.
 TEST(test_atomic_write_replaces_whole_or_not_at_all) {
@@ -171,13 +193,68 @@ TEST(test_json_escape) {
     dup = json_escape_dup(NULL);
     ASSERT_TRUE(dup && strcmp(dup, "") == 0);
     free(dup);
+    // The rest of the escape set: \r, the other control bytes, DEL and
+    // UTF-8 as themselves
+    ASSERT_EQ_INT(18, json_escape("\r\x1f\x7f\xc3\xa9/\x0b", out, sizeof(out)));
+    ASSERT_TRUE(strcmp(out, "\\r\\u001f\x7f\xc3\xa9/\\u000b") == 0);
+}
+
+// Suffix checks (one ignoring case, one exact) and the join: one separator
+// however the parts are slashed, and a path that does not fit refused
+// rather than cut into the name of some other file.
+TEST(test_path_helpers) {
+    ASSERT_TRUE(path_has_ext("disk.DMG", ".dmg"));
+    ASSERT_TRUE(!path_has_ext("disk.dmgx", ".dmg"));
+    ASSERT_TRUE(!path_has_ext("dmg", ".dmg"));
+    ASSERT_TRUE(path_has_suffix("a.tmp", ".tmp"));
+    ASSERT_TRUE(!path_has_suffix("a.TMP", ".tmp"));
+    char out[16];
+    ASSERT_TRUE(path_join(out, sizeof out, "/a/b//", "//c"));
+    ASSERT_TRUE(strcmp(out, "/a/b/c") == 0);
+    ASSERT_TRUE(path_join(out, sizeof out, "/", "c"));
+    ASSERT_TRUE(strcmp(out, "/c") == 0);
+    ASSERT_TRUE(path_join(out, sizeof out, "", "c"));
+    ASSERT_TRUE(strcmp(out, "/c") == 0);
+    ASSERT_TRUE(path_join(out, sizeof out, "/dir", "12345678")); // 14 bytes: fits
+    ASSERT_TRUE(!path_join(out, sizeof out, "/dir", "state.checkpoint")); // would cut to "/dir/state.chec"
+}
+
+// random_bytes fills every byte asked for (more than getentropy's 256 a
+// call), and two draws differ.
+TEST(test_random_bytes) {
+    uint8_t a[300], b[300];
+    memset(a, 0, sizeof a);
+    memset(b, 0, sizeof b);
+    random_bytes(a, sizeof a);
+    random_bytes(b, sizeof b);
+    ASSERT_TRUE(memcmp(a, b, sizeof a) != 0);
+    int zero_tail = 1;
+    for (size_t i = 256; i < sizeof a; i++)
+        zero_tail &= a[i] == 0;
+    ASSERT_TRUE(!zero_tail);
+    random_bytes(a, 0); // nothing asked, nothing written
+}
+
+// The FILE* form writes the same escapes, quoted.
+TEST(test_json_fputs) {
+    char buf[64] = {0};
+    FILE *f = fmemopen(buf, sizeof(buf) - 1, "w");
+    ASSERT_TRUE(f != NULL);
+    json_fputs(f, "a\"\r\b\x02");
+    json_fputs(f, NULL);
+    fclose(f);
+    ASSERT_TRUE(strcmp(buf, "\"a\\\"\\r\\b\\u0002\"\"\"") == 0);
 }
 
 int main(void) {
     RUN(test_mkdir_p_and_parents);
     RUN(test_rm_tree_does_not_follow_symlinks);
     RUN(test_read_file_is_capped);
+    RUN(test_read_text_file);
     RUN(test_json_escape);
+    RUN(test_json_fputs);
+    RUN(test_path_helpers);
+    RUN(test_random_bytes);
     RUN(test_atomic_write_replaces_whole_or_not_at_all);
     fprintf(stderr, "All storage_util tests passed\n");
     return 0;

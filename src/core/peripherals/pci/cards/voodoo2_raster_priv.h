@@ -32,6 +32,23 @@ V2_INLINE uint32_t v2_texel_addr(const v2_tmu_state_t *tm, int lod, uint32_t s, 
     return addr & tm->mask;
 }
 
+// The triangle's vertex bounding box in 12.4 fixed point.  The walker and
+// the GPU translator both derive their pixel box (and the translator its
+// scissor and fallbacks) from it, so they must agree: one copy.
+V2_INLINE void v2_tri_bbox(const voodoo2_tri_t *T, int32_t *minx, int32_t *maxx, int32_t *miny, int32_t *maxy) {
+    int32_t x0 = T->ax, x1 = T->ax, y0 = T->ay, y1 = T->ay;
+    // Widen by vertex B, then C, on each axis
+    x0 = T->bx < x0 ? T->bx : x0;
+    x0 = T->cx < x0 ? T->cx : x0;
+    x1 = T->bx > x1 ? T->bx : x1;
+    x1 = T->cx > x1 ? T->cx : x1;
+    y0 = T->by < y0 ? T->by : y0;
+    y0 = T->cy < y0 ? T->cy : y0;
+    y1 = T->by > y1 ? T->by : y1;
+    y1 = T->cy > y1 ? T->cy : y1;
+    *minx = x0, *maxx = x1, *miny = y0, *maxy = y1;
+}
+
 // Clamp or wrap one texel coordinate against a level dimension.
 V2_INLINE uint32_t v2_tex_coord(int32_t c, uint32_t dim, bool clamp) {
     if (clamp)

@@ -28,17 +28,7 @@ static const uint32_t q660av_ram_options_kb[] = {4096,  8192,  12288, 16384, 204
                                                  36864, 40960, 45056, 53248, 69632, 0};
 
 static const av_board_desc_t q660av_board_desc = {
-    .common =
-        {
-                 .chipset = "YMCA+PSC",
-                 .rom_base = 0x40800000u,
-                 .rom_end = 0x40A00000u,
-                 .io_ranges = av_io_ranges,
-                 .io_mirror_mask = 0x0003FFFFu,
-                 .io_unmapped_read = 0xFF,
-                 .bus_err_lo = 0xA0000000u, // super-slots + slots; see nubus.h
-            .bus_err_hi = NUBUS_BERR_HI,
-                 },
+    .common = AV_BOARD_COMMON,
     .strap_nibble = 0xB, // Tempest25 straps %1011
     .muni_present = false, // no NuBus adapter: MUNI_Control bus-errors
     .ram_onboard = 0x400000, // 4 MB soldered, YMCA bank 0

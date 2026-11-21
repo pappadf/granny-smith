@@ -7,9 +7,11 @@
 
 #include "machine_teardown.h"
 
+#include "adb.h"
 #include "appletalk.h"
 #include "cpu.h"
 #include "debug.h"
+#include "floppy.h"
 #include "iw_printer.h"
 #include "log.h"
 #include "memory.h"
@@ -27,11 +29,29 @@ void machine_teardown_config_devices(config_t *cfg) {
     if (!cfg)
         return;
 
+    // The floppy drive module and the ADB transceiver: cfg is their one owner
+    // in every family.  A family whose Cuda or Egret holds the adb frees that
+    // first; one that orders the floppy against its own devices (the DBDMA
+    // of PDM/TNT/Gossamer, the AV's New Age) frees it itself and leaves NULL.
+    if (cfg->floppy) {
+        floppy_delete(cfg->floppy);
+        cfg->floppy = NULL;
+    }
+    if (cfg->adb) {
+        adb_delete(cfg->adb);
+        cfg->adb = NULL;
+    }
     if (cfg->scsi) {
         scsi_delete(cfg->scsi);
         cfg->scsi = NULL;
     }
-    // NULL on the single-VIA machines (MDU, OSS, AV, and both PowerPC
+    // A family that orders its second bus against its own devices frees it
+    // itself (TNT, MCU); this catches the rest.
+    if (cfg->scsi2) {
+        scsi_delete(cfg->scsi2);
+        cfg->scsi2 = NULL;
+    }
+    // NULL on the single-VIA machines (MDU, OSS, AV, and the three PowerPC
     // families) -- they simply pass through.
     if (cfg->via2) {
         via_delete(cfg->via2);

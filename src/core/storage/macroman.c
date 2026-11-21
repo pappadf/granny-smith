@@ -282,3 +282,35 @@ uint8_t macroman_fold(uint8_t c) {
                 return k_d2_pairs[i][1];
     return c;
 }
+
+// ---- Mac file names in the VFS ----------------------------------------------
+
+void mac_name_to_vfs(const uint8_t *mac, size_t len, char *out, size_t cap) {
+    macroman_to_utf8(mac, len, out, cap);
+    for (char *p = out; cap && *p; p++)
+        if (*p == '/')
+            *p = ':'; // a Mac '/' is shown as ':'
+}
+
+// Fold one byte of a UTF-8 name, `prev` the byte before it: ASCII a-z to
+// A-Z, '/' to ':', and the second byte of a Latin-1 small letter (0xC3 then
+// 0xA0..0xBE, but 0xB7 for U+00F7) to its capital's (0xC3 then 0x80..0x9E).
+static uint8_t mac_name_fold(uint8_t prev, uint8_t c) {
+    if (prev == 0xC3 && c >= 0xA0 && c <= 0xBE && c != 0xB7)
+        return (uint8_t)(c - 0x20);
+    if (c >= 'a' && c <= 'z')
+        return (uint8_t)(c - 32);
+    return c == '/' ? ':' : c;
+}
+
+bool mac_name_eq(const char *a, const char *b) {
+    const uint8_t *pa = (const uint8_t *)a, *pb = (const uint8_t *)b;
+    for (size_t i = 0;; i++) {
+        uint8_t ca = mac_name_fold(i ? pa[i - 1] : 0, pa[i]);
+        uint8_t cb = mac_name_fold(i ? pb[i - 1] : 0, pb[i]);
+        if (ca != cb)
+            return false;
+        if (!ca)
+            return true;
+    }
+}

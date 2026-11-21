@@ -124,9 +124,17 @@ The board model is the chipset skeleton plus the DMA architecture:
   window — *not* its I/O window, which is at the bridge base).  The model populates the interrupt block (`+$20..$2C`), the
   VIA1/Cuda window (`+$16000`, 16 byte-wide registers on `$200` centres),
   both ESCC apertures (`+$12000` legacy / `+$13000` native, one shared
-  Z8530 core), BoxID (`+$1A000`), the banked NVRAM (`+$1D000` bank
+  Z8530 core; only `+$00`–`+$3F` of the native aperture reach the cell,
+  the decode and the ESCC's DBDMA ports being the ones Heathrow uses,
+  `runtime/escc_dbdma.c`), BoxID (`+$1A000`), the banked NVRAM (`+$1D000` bank
   port / `+$1F000` data window on `$10` centres, 8 KB), and the eleven
-  DBDMA channel windows (`+$8000+n*$100`).  It also carries AWACS
+  DBDMA channel windows (`+$8000+n*$100`).  The byte-wide cells decode
+  through a range table (`gc_io_ranges`) on the shared I/O engine
+  (`machines/runtime/board_io.c`); the board deltas — MESH on the
+  Macintosh boards only, MACE and the GBUS blocks on one side each — are
+  row guards (`present`), so a block and its guard are written once for
+  reads and writes.  The little-endian longword blocks keep their own
+  32-bit path (`gc_access32`).  It also carries AWACS
   (`+$14000`; output on DBDMA channel 8, input on channel 9, which records
   silence at the codec rate — MacTest Pro's play/record test runs both)
   and the RaDACal RAMDAC (`+$1B000`, control.c); the SWIM3 aperture
@@ -206,7 +214,7 @@ The board model is the chipset skeleton plus the DMA architecture:
   [dbdma.md](../../../reference/machines/tnt/dbdma.md) §2 for the channel
   register file, §3 for the command set and status transitions.)
 - **Cuda / VIA1** — the third instantiation of the shared behavioral Cuda
-  (machines/av/cuda.c, firmware 2.37) on one real 6522 behind the island
+  (core/peripherals/cuda.c, firmware 2.37) on one real 6522 behind the island
   decode.  TNT-driven additions to the shared model: the polled no-TIP
   response termination the ROM's early-boot driver uses, the sync-cycle
   abort of an unread response (the OF-to-68k handoff leaves its last ADB
@@ -638,7 +646,11 @@ The two channels are separate namespaces in the object model:
 `machine.scsi` is channel 0 (bays 0-3, Open Firmware's `disk0`..`disk3`)
 and `machine.scsi2` is channel 1 (bays 4-6, plus the 700's two rear
 drives). This is the first machine here where a SCSI id does not identify a
-device on its own, and `scsi_init_named` exists for it.
+device on its own, and `scsi_init_named` exists for it.  The second bus is
+`cfg->scsi2` (as on the Quadra 900/950), so the shared media path
+(`system_media_*_std`, `MEDIA_BUS_SCSI2`) and the shared /RESET
+(`system_reset_common_devices`) reach it as they reach `cfg->scsi`: a
+restart clears a PREVENT lock on the 53C94's CD-ROM drive.
 
 The bays say where a drive physically sits, not which IDs a channel has:
 either channel takes a drive at any ID 0-6 (7 is the 53C825A's own). An ID
@@ -830,8 +842,11 @@ IRQ pin on Grand Central interrupt 19, and the data path on **DBDMA
 channel 1**.  The engine and the DMA engine meet in the middle — the
 SWIM3 engine *pushes* decoded bytes as a sector passes under the head,
 a DBDMA INPUT command *pulls* up to N bytes from the device port — so a
-4 KB byte ring (`tnt_fdring_t`, checkpointed with the board) sits
+4 KB byte ring (`swim3_dbdma_ring_t`, checkpointed with the board) sits
 between them: reads fill the ring and kick the channel, writes drain it.
+The ring and the DBDMA device port over it are shared with Gossamer's
+Heathrow, which feeds its SWIM3 the same way:
+`src/machines/runtime/swim3_dbdma.c`.
 The ring is emptied when the driver stops the channel (the DBDMA port's
 `stop` hook): a write's OUTPUT command is larger than the sector, so the
 channel tops the ring up past the one stream the chip consumes, and that
@@ -1043,7 +1058,7 @@ In order:
 
 | Defect | Where |
 |---|---|
-| Cuda's RESET SYSTEM only reset Cuda | `av/cuda.c` |
+| Cuda's RESET SYSTEM only reset Cuda | `core/peripherals/cuda.c` |
 | `ppc_reset` threw away the CPU's time binding | `cpu/ppc/ppc.c` |
 | `Wait Reselect` jumped instead of parking | `scripts53c8xx.c` |
 | Memory Move clobbered TEMP, the Call/Return link | `scripts53c8xx.c` |
@@ -1064,11 +1079,11 @@ In order:
 | RESERVE/RELEASE answered ILLEGAL REQUEST, so AIX's disk open failed | `core/peripherals/scsi.c` |
 | A script that polls memory was declared a runaway and halted | `scripts53c8xx.c` |
 | Board Register 1 bit 8 read clear, so POST's second boot entered its serial diagnostic monitor | `tnt/ans500.c`, `ans700.c` |
-| Cuda negated TREQ inside the host's own ByteAck store at the end of a sync, so AIX's `cuda_sync` never saw it low | `av/cuda.c` |
-| A sync cycle cleared Cuda's autopoll setting, which AIX enables once and never again | `av/cuda.c` |
-| The first response byte after the attention byte was clocked inside the TIP store, overwriting the attention byte AIX had not yet read | `av/cuda.c` |
-| A 5 ms abandonment watchdog reaped replies AIX comes back for tens of milliseconds later | `av/cuda.c` |
-| RdDevList (`$1A`) was not answered, so `cfgcuda` found no keyboard or mouse and the LFT configured without one | `av/cuda.c` |
+| Cuda negated TREQ inside the host's own ByteAck store at the end of a sync, so AIX's `cuda_sync` never saw it low | `core/peripherals/cuda.c` |
+| A sync cycle cleared Cuda's autopoll setting, which AIX enables once and never again | `core/peripherals/cuda.c` |
+| The first response byte after the attention byte was clocked inside the TIP store, overwriting the attention byte AIX had not yet read | `core/peripherals/cuda.c` |
+| A 5 ms abandonment watchdog reaped replies AIX comes back for tens of milliseconds later | `core/peripherals/cuda.c` |
+| RdDevList (`$1A`) was not answered, so `cfgcuda` found no keyboard or mouse and the LFT configured without one | `core/peripherals/cuda.c` |
 
 Two patterns are worth carrying forward.
 

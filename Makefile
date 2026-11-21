@@ -138,17 +138,8 @@ INCLUDES := $(CORE_INCLUDES) \
 # -MMD -MP generates .d dependency files alongside each .o so that
 # header changes trigger the correct recompilations.
 
-# -Wall -Wextra on every C build, minus one: -Wmissing-field-initializers
-# objects to positional initializers that stop before a struct's last
-# fields, and the I/O range and display timing tables are written that way
-# on purpose (mac030_io_range_t keeps its optional fields last "so
-# positional initializers stay valid").  WERROR=1 (set in CI) makes every
-# warning an error; it applies to compilation only, never to the link.
-WARN_CFLAGS := -std=gnu11 -Wall -Wextra -Wno-missing-field-initializers
-WERROR ?= 0
-ifeq ($(WERROR),1)
-WARN_CFLAGS += -Werror
-endif
+# The dialect and warnings every build shares (WARN_CFLAGS).
+include src/build-flags.mk
 
 # gnu11, not c11: EM_ASM does not compile in a strict ISO mode.
 CFLAGS := -MMD -MP $(MODE_CFLAGS) $(WARN_CFLAGS) \
@@ -288,25 +279,9 @@ $(OBJ_DIR)/%.o: %.c
 BUILD_ID_OBJ := $(OBJ_DIR)/$(CORE_DIR)/build_id.o
 $(BUILD_ID_OBJ): $(filter-out $(BUILD_ID_OBJ),$(OBJ)) $(LDFLAGS_STAMP)
 
-# gsvrom_data.c embeds the generated fragments header.
-$(OBJ_DIR)/$(CORE_DIR)/peripherals/nubus/gsvrom_data.o: $(VROM68K_HEADER)
-
-# The predecoded executors include the generated T1 headers.
-$(OBJ_DIR)/$(CORE_DIR)/cpu/cpu.o $(OBJ_DIR)/$(CORE_DIR)/cpu/cpu_68000.o $(OBJ_DIR)/$(CORE_DIR)/cpu/cpu_68030.o \
-    $(OBJ_DIR)/$(CORE_DIR)/cpu/cpu_68040.o: $(PDGEN_CPU_HEADERS)
-$(OBJ_DIR)/$(CORE_DIR)/cpu/ppc/ppc.o $(OBJ_DIR)/$(CORE_DIR)/cpu/ppc/ppc_run.o: $(PDGEN_PPC_HEADERS)
-
-# image_wrap.c embeds the generated GSDisk driver header.
-$(OBJ_DIR)/$(CORE_DIR)/storage/image_wrap.o: $(GSDISK_HEADER)
-
-# laserwriter_job.c embeds the generated prelude header.
-$(OBJ_DIR)/$(CORE_DIR)/network/laserwriter_job.o: $(LASERWRITER_PRELUDE_HEADER)
-
-# The flags stamp: creating it (any flag change) outdates every object.
-$(FLAGS_STAMP):
-	@mkdir -p $(dir $@)
-	@rm -f $(OBJ_DIR)/flags-*.stamp $(OBJ_DIR)/platen-*.stamp
-	@touch $@
+# The generated-header edges and the flags stamp, shared with headless.
+OBJ_ROOT := $(OBJ_DIR)
+include src/build-rules.mk
 
 # The link-flags stamp: creating it (any LDFLAGS change) relinks, through
 # build_id.o, with a fresh build ID.
@@ -471,7 +446,8 @@ ui2-check-dist:
 # environment GitHub Pages provides. Requires Playwright + chromium
 # already installed via tests/e2e/ (`cd tests/e2e && npm ci &&
 # npx playwright install chromium`). The webServer block in the
-# config starts scripts/prod-smoke-server.mjs automatically.
+# config starts scripts/dev_server.py (--subpath, --no-coi-headers)
+# automatically.
 ui2-prod-smoke: ui2 ui2-check-dist
 	cd tests/e2e && npx playwright test --config=playwright.prod-smoke.config.ts
 

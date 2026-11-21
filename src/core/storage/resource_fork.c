@@ -27,11 +27,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Big-endian field readers — the fork buffer is the on-disk layout verbatim.
-static int16_t be_i16(const uint8_t *p) {
-    return (int16_t)RD_BE16(p);
-}
-
 // A resource name's UTF-8 buffer (its terminator included)
 #define RFORK_NAME_UTF8_MAX 64
 
@@ -180,11 +175,11 @@ rfork_t *rfork_parse(const uint8_t *fork_bytes, size_t fork_len, const char **er
 
         for (size_t r = 0; r < num_res; r++) {
             const uint8_t *re = map + ref_start + 12 * r;
-            int16_t id = be_i16(re + 0);
-            int16_t name_off = be_i16(re + 2);
+            int16_t id = RD_BE16S(re + 0);
+            int16_t name_off = RD_BE16S(re + 2);
             uint8_t attrs = re[4];
             // 24-bit data offset in the low 3 bytes of the next u32.
-            uint32_t do24 = ((uint32_t)re[5] << 16) | ((uint32_t)re[6] << 8) | (uint32_t)re[7];
+            uint32_t do24 = RD_BE24(re + 5);
             if ((size_t)do24 + 4 > data_len)
                 FAIL("resource data offset out of range");
             uint32_t rlen = RD_BE32(data + do24);

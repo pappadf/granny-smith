@@ -34,13 +34,15 @@ import {
   stageOpfsFile,
   stageOpfsFileStreaming,
 } from "../helpers/web2-fs";
-import { CONSOLE_OUTPUT, terminalRun as typeLine } from "../helpers/terminal";
+import { CONSOLE_OUTPUT, terminalRun as typeLine, terminalEval } from "../helpers/terminal";
+import { DATA } from "../helpers/paths";
+import { uploadRomViaWelcome } from "../helpers/upload";
+import { instrCount, launchMarathon, measureOnce, probeSample, settleFinder } from "../helpers/perf";
 
 // Output is read right after each line: type, submit, then settle.
 const terminalRun = (page: Page, line: string) =>
   typeLine(page, line, { settleMs: 250 });
 
-const DATA = path.resolve(__dirname, "../../data");
 const LABEL = process.env.PERF_LABEL ?? "unlabeled";
 const PAIRS = Number(process.env.PERF_PAIRS ?? 3);
 const WINDOW_SECS = Number(process.env.PERF_WINDOW_SECS ?? 6);
@@ -80,86 +82,6 @@ const ROWS: Record<
   pm6100: { rom: "pm6100-pm7100-pm8100-9feb69b3.rom", ram: "24 MB" },
 };
 
-async function instrCount(page: Page): Promise<number> {
-  return (await probeSample(page)).instr;
-}
-
-// Boot to the Finder and let it go idle: the Finder is the application
-// (ApplZone moved off SysZone), then another 150 M instructions for the
-// desktop to draw and the startup disk activity to finish.
-async function settleFinder(page: Page): Promise<void> {
-  await expect
-    .poll(
-      () =>
-        probeString(
-          page,
-          'debug.mac.globals.read("ApplZone") != debug.mac.globals.read("SysZone")',
-        ),
-      { timeout: 600_000, intervals: [5_000] },
-    )
-    .toMatch(/^(true|1)$/);
-  const at = await instrCount(page);
-  await expect
-    .poll(() => instrCount(page), { timeout: 240_000, intervals: [3_000] })
-    .toBeGreaterThan(at + 150_000_000);
-}
-
-// The headless iicx-marathon row's launch choreography, typed into the shell.
-async function launchMarathon(page: Page): Promise<void> {
-  // Boot to the Finder: the headless row needs ~200 M instructions.
-  await expect
-    .poll(() => instrCount(page), { timeout: 240_000, intervals: [3_000] })
-    .toBeGreaterThan(230_000_000);
-  await terminalRun(page, 'machine.adb.mouse.move 237 157 "global"');
-  await page.waitForTimeout(500);
-  for (let i = 0; i < 2; i++) {
-    await terminalRun(page, "machine.adb.mouse.click true");
-    await terminalRun(page, "machine.adb.mouse.click false");
-  }
-  // Marathon's main menu is up ~85 M instructions after the double-click.
-  const after = await instrCount(page);
-  await expect
-    .poll(() => instrCount(page), { timeout: 240_000, intervals: [3_000] })
-    .toBeGreaterThan(after + 120_000_000);
-}
-
-let probeSeq = 0;
-async function probeSample(
-  page: Page,
-): Promise<{ instr: number; wallNs: number }> {
-  for (let attempt = 0; attempt < 30; attempt++) {
-    const key = `pb${++probeSeq}`;
-    await terminalRun(
-      page,
-      `echo "${key}=\${machine.cpu.instr_count},\${scheduler.host_wall_ns}"`,
-    );
-    await page.waitForTimeout(400);
-    const text = await page.locator(CONSOLE_OUTPUT).innerText();
-    const m = text.match(new RegExp(`${key}=(\\d+),(\\d+)`));
-    if (m) return { instr: Number(m[1]), wallNs: Number(m[2]) };
-  }
-  throw new Error("terminal sample probe never answered");
-}
-
-async function probeString(page: Page, expr: string): Promise<string> {
-  for (let attempt = 0; attempt < 30; attempt++) {
-    const key = `ps${++probeSeq}`;
-    await terminalRun(page, `echo "${key}=[${"$"}{${expr}}]"`);
-    await page.waitForTimeout(400);
-    const text = await page.locator(CONSOLE_OUTPUT).innerText();
-    const m = text.match(new RegExp(`${key}=\\[([A-Za-z0-9_.-]+)\\]`));
-    if (m) return m[1];
-  }
-  throw new Error("terminal string probe never answered");
-}
-
-async function measureOnce(page: Page): Promise<number> {
-  const a = await probeSample(page);
-  await page.waitForTimeout(WINDOW_SECS * 1000);
-  const b = await probeSample(page);
-  return (b.instr - a.instr) / ((b.wallNs - a.wallNs) / 1e9) / 1e6;
-}
-
 for (const machine of MACHINES) {
   test(`perf-predecode: ${machine} switch vs predecoded (turbo, tracked numbers)`, async ({
     page,
@@ -181,11 +103,7 @@ for (const machine of MACHINES) {
         path.join(DATA, row.vrom),
       );
 
-    const [romChooser] = await Promise.all([
-      page.waitForEvent("filechooser"),
-      page.getByRole("button", { name: "Load ROM..." }).click(),
-    ]);
-    await romChooser.setFiles(path.join(DATA, "roms", row.rom));
+    await uploadRomViaWelcome(page, path.join(DATA, "roms", row.rom));
 
     await page.getByRole("button", { name: "New Machine..." }).click();
     const model = page.locator("#cfg-model");
@@ -220,7 +138,7 @@ for (const machine of MACHINES) {
     await expect(page.locator(".console")).toBeVisible({ timeout: 15_000 });
 
     await terminalRun(page, 'scheduler.mode = "turbo"');
-    expect(await probeString(page, "scheduler.mode")).toBe("turbo");
+    expect(await terminalEval(page, "scheduler.mode")).toBe("turbo");
     // Boot the System to the measured state (and let the wasm tier up) first;
     // a media-free row only settles into its ROM loop.
     if (row.settle === "finder") await settleFinder(page);
@@ -231,16 +149,16 @@ for (const machine of MACHINES) {
     // The interpreters alone: the PowerPC translation tier (on by default
     // in the wasm build; ppc_jit.md) stays off in both arms
     await terminalRun(page, "jit.enabled = 0");
-    expect(await probeString(page, "jit.enabled")).toBe("0");
+    expect(await terminalEval(page, "jit.enabled")).toBe("0");
     for (let pair = 1; pair <= PAIRS; pair++) {
       for (const [exec, on] of [
         ["switch", 0],
         ["predecode", 1],
       ] as const) {
         await terminalRun(page, `predecode.enabled = ${on}`);
-        expect(await probeString(page, "predecode.enabled")).toBe(String(on));
+        expect(await terminalEval(page, "predecode.enabled")).toBe(String(on));
         await page.waitForTimeout(2_000);
-        const mips = await measureOnce(page);
+        const mips = await measureOnce(page, WINDOW_SECS);
         results[exec].push(mips);
         console.log(
           `PERFBENCH label=${LABEL} machine=${machine} exec=${exec} pair=${pair} mips=${mips.toFixed(2)}`,

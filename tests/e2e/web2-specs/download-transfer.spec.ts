@@ -17,8 +17,8 @@ import { test, expect } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
 import { terminalRun } from '../helpers/terminal';
+import { DATA } from '../helpers/paths';
 
-const DATA = path.resolve(__dirname, '../../data');
 const ROM = path.join(DATA, 'roms', 'iix-iicx-se30-97221136.rom');
 
 test('a download arrives in transfer-buffer chunks and lands as one file', async ({ page }) => {

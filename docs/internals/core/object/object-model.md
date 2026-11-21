@@ -63,6 +63,12 @@ flags (`VFLAG_HEX`, `VFLAG_VOLATILE`, `VFLAG_SENSITIVE`, `VFLAG_PATH`, …). Err
 in-band: a `value_t` of kind `VK_ERROR` carries a string message rather
 than relying on a separate return channel or out-pointer.
 
+An attribute is read one way, `object_attr_get`: its getter, then the
+member's `presentation_flags` merged onto the value.  `node_get` and the
+REPL's object and list tables all go through it, so a getter returns a
+plain value and never sets a flag its member declares, and the REPL prints
+a `VFLAG_SENSITIVE` value as `<sensitive>`.
+
 Ownership is single-owner: the receiver of a `value_t` owns it and
 must call `value_free` (which is safe on every kind, including the
 inline ones). Heap-owning kinds (`VK_STRING`, `VK_BYTES`, `VK_ERROR`,
@@ -202,8 +208,8 @@ with any attached subtree.
 
 ### The root
 
-The root's children, in their fixed order (`object_set_order`), fall in three
-domains:
+The root's children, in their fixed order (`object_set_order`, with the
+weights named in `src/core/object/object_order.h`), fall in three domains:
 
 | Order | Node | Domain | Holds |
 |---|---|---|---|
@@ -565,9 +571,9 @@ configure, and what the JS frontend operates on:
   and the worker's `shell_poll()` drains every tick, and an event ring
   the answers come back on, each carrying its request's id.
   `Atomics.waitAsync` + `emscripten_atomic_notify` carry the wake-ups —
-  no polling. The worker-thread guard
-  in `worker_thread.h` enforces that `object_eval` only runs on the worker
-  pthread, never via direct `Module.ccall` from the main thread. JS
+  no polling. The thread-affinity guard
+  (`EMU_THREAD_CHECK`, [`job/seam.md`](../job/seam.md)) enforces that
+  `object_eval` only runs on the emulator pthread, never via direct `Module.ccall` from the main thread. JS
   callers see numbers, strings, lists, and `{error: "…"}` shapes —
   never raw exit codes. See [`web.md`](../../../guide/web.md) for the wire layout
   and protocol.
@@ -786,7 +792,7 @@ old machine keeps running.
 | `monitor` | string | the model's default | Sugar for `displays.builtin.monitor`: the monitor on the **built-in** video port, a monitor-catalogue id the port takes (`catalog.profile(id).displays.builtin.monitors`; the family's own legacy ids are accepted too). `none` leaves the port unconnected, which connects the monitor to the first display card instead. It resolves to the port's sense code at construction. |
 | `pci_card` | string | the slot default | Card id for the machine's **first** PCI socket (sugar for its `slots=` entry). Rejected on a model with no PCI slots, and for an unknown id. |
 | `prom` | string | resolved from the offers | A PCI expansion-ROM file: the ROM of every slot whose card its content provides. The file must identify as a known Open Firmware expansion ROM (`prom_identify_card`). |
-| `pci_option` | string | none | `key=value[,key=value]` options for the `pci_card` socket (for example `vram=4m`; sugar for that slot's options). Each pair must be one the card's `accepts_option` hook accepts, or the boot is rejected. |
+| `pci_option` | string | none | `key=value[,key=value]` options for the `pci_card` socket (for example `vram=4m`; sugar for that slot's options). Each pair must be one the card advertises or its `accepts_option` hook accepts, or the boot is rejected. |
 
 The sugar and `slots=` resolve, once, into one entry per configured slot
 (`machine_slots_resolve`); below `machine_boot_apply` nothing knows the

@@ -21,8 +21,8 @@
 LOG_USE_CATEGORY_NAME("image")
 
 // How many wrapper layers are peeled before giving up (a file that detects
-// as a wrapper of itself, forever).
-#define MAX_UNWRAP 8
+// as a wrapper of itself, forever): peeler's one cap.
+#define MAX_UNWRAP PEEL_MAX_WRAP_DEPTH
 
 // ============================================================================
 // DiskCopy 4.2
@@ -211,7 +211,7 @@ static int lisaem_unwrap(const format_probe_t *p, source_t **data, source_t **rs
     }
     // The file is the parent: retained for the view's life, and its poll
     // serves a remote file's "not yet".
-    *data = peel_source_new(&lisaem_ops, m, p->data);
+    *data = source_new(&lisaem_ops, m, p->data);
     return *data ? 0 : -ENOMEM;
 }
 
@@ -393,7 +393,7 @@ int format_probe_init(format_probe_t *p, source_t *data, source_t *rsrc) {
     memset(p, 0, sizeof(*p));
     int rc = peel_probe_init(&p->p, data);
     if (rc != 0)
-        return rc == -5 ? -EIO : rc;
+        return rc; // a negative errno (peeler.h)
     p->data = data;
     p->rsrc = rsrc;
     return 0;

@@ -26,11 +26,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { gotoWeb2, stageOpfsFile } from "../helpers/web2-fs";
 import { gsCallInPage, gsEvalInPage } from "../helpers/web2-eval";
-import { BASE_ARGS, WEBGPU_ARGS, terminalRun } from "../helpers/voodoo2";
+import { BASE_ARGS, WEBGPU_ARGS, terminalRun } from "../helpers/tnt";
+import { DATA } from "../helpers/paths";
+import { uploadRomViaWelcome } from "../helpers/upload";
 
 test.use({ launchOptions: { args: [...BASE_ARGS, ...WEBGPU_ARGS] } });
 
-const DATA = path.resolve(__dirname, "../../data");
 const TNT_ROM = path.join(DATA, "roms", "pm7500-pm8500-pm9500-96cd923d.rom");
 const R128_PROM = path.join(DATA, "roms", "rage128-xclaimvr128-108-d0c84d42.prom");
 const STORED_ROM = "/opfs/images/rom/96cd923d-c241cd82bf90797a";
@@ -38,11 +39,7 @@ const ROW = path.resolve(__dirname, "../../integration/rage128-3d/test.script");
 const DONE = "rage128-webgpu: the 3D row's drawing assertions hold on the GPU";
 
 async function upload(page: Page, file: string, toast: string): Promise<void> {
-  const [chooser] = await Promise.all([
-    page.waitForEvent("filechooser"),
-    page.getByRole("button", { name: "Load ROM..." }).click(),
-  ]);
-  await chooser.setFiles(file);
+  await uploadRomViaWelcome(page, file);
   await expect(page.locator(".toast .msg").filter({ hasText: toast })).toBeVisible({
     timeout: 60_000,
   });

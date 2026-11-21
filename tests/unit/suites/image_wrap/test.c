@@ -3,6 +3,7 @@
 
 // The volume wrapper's layout and sniffs.  See Makefile.
 
+#include "common.h"
 #include "image_apm.h"
 #include "image_internal.h"
 #include "image_wrap.h"
@@ -34,14 +35,6 @@ size_t disk_read_data(image_t *disk, uint64_t offset, uint8_t *buf, size_t size)
 
 #define BLK 512u
 
-static uint32_t rd32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
-}
-
-static uint16_t rd16(const uint8_t *p) {
-    return (uint16_t)((p[0] << 8) | p[1]);
-}
-
 // A buffer holding the prefix followed by the first blocks of a volume, so
 // the APM parser sees a whole-disk head.
 static uint8_t *build(uint64_t vol_blocks) {
@@ -61,22 +54,15 @@ static void bare_head(uint8_t *head) {
     head[2 * BLK + 1] = 'D';
 }
 
-static void wr32(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v >> 24);
-    p[1] = (uint8_t)(v >> 16);
-    p[2] = (uint8_t)(v >> 8);
-    p[3] = (uint8_t)v;
-}
-
 // Write map entry `i` (1-based) of an `n`-entry map into `head`.
 static void map_entry(uint8_t *head, uint32_t i, uint32_t n, uint32_t start, uint32_t blocks, const char *type) {
     uint8_t *e = head + (size_t)i * BLK;
     memset(e, 0, BLK);
     e[0] = 'P';
     e[1] = 'M';
-    wr32(e + 4, n);
-    wr32(e + 8, start);
-    wr32(e + 12, blocks);
+    WR_BE32(e + 4, n);
+    WR_BE32(e + 8, start);
+    WR_BE32(e + 12, blocks);
     memcpy(e + 48, type, strlen(type));
 }
 
@@ -89,7 +75,7 @@ static void driverless_head(uint8_t *head) {
     head[0] = 'E';
     head[1] = 'R';
     head[2] = 0x02; // sbBlkSize 512
-    wr32(head + 4, 245760);
+    WR_BE32(head + 4, 245760);
     map_entry(head, 1, 3, 1, 63, "Apple_partition_map");
     map_entry(head, 2, 3, 64, 245680, "Apple_HFS");
     map_entry(head, 3, 3, 245744, 16, "Apple_Free");
@@ -102,13 +88,13 @@ static void driverless_head(uint8_t *head) {
 TEST(test_ddm_names_one_68k_driver) {
     const uint64_t vol = 51200; // a 25 MB volume
     uint8_t *buf = build(vol);
-    ASSERT_EQ_INT(rd16(buf + 0), 0x4552); // 'ER'
-    ASSERT_EQ_INT(rd16(buf + 2), 512);
-    ASSERT_EQ_INT(rd32(buf + 4), (uint32_t)(IMAGE_WRAP_PREFIX_BLOCKS + vol));
-    ASSERT_EQ_INT(rd16(buf + 16), 1); // sbDrvrCount
-    ASSERT_EQ_INT(rd32(buf + 18), IMAGE_WRAP_DRIVER_START); // ddBlock
-    ASSERT_TRUE(rd16(buf + 22) >= 1 && rd16(buf + 22) <= IMAGE_WRAP_DRIVER_BLOCKS); // ddSize
-    ASSERT_EQ_INT(rd16(buf + 24), 1); // ddType: Mac OS 68k
+    ASSERT_EQ_INT(RD_BE16(buf + 0), 0x4552); // 'ER'
+    ASSERT_EQ_INT(RD_BE16(buf + 2), 512);
+    ASSERT_EQ_INT(RD_BE32(buf + 4), (uint32_t)(IMAGE_WRAP_PREFIX_BLOCKS + vol));
+    ASSERT_EQ_INT(RD_BE16(buf + 16), 1); // sbDrvrCount
+    ASSERT_EQ_INT(RD_BE32(buf + 18), IMAGE_WRAP_DRIVER_START); // ddBlock
+    ASSERT_TRUE(RD_BE16(buf + 22) >= 1 && RD_BE16(buf + 22) <= IMAGE_WRAP_DRIVER_BLOCKS); // ddSize
+    ASSERT_EQ_INT(RD_BE16(buf + 24), 1); // ddType: Mac OS 68k
     free(buf);
 }
 
@@ -141,11 +127,11 @@ TEST(test_driver_partition_passes_the_rom_checks) {
     uint8_t *buf = build(20480);
     const uint8_t *e = buf + 2 * BLK; // second map entry
     ASSERT_TRUE(memcmp(e + 16, "Maci", 4) == 0);
-    ASSERT_EQ_INT(rd32(e + 8), rd32(buf + 18));
-    uint32_t size = rd32(e + 96);
-    ASSERT_TRUE(size > 0 && size <= (uint32_t)rd16(buf + 22) * BLK);
+    ASSERT_EQ_INT(RD_BE32(e + 8), RD_BE32(buf + 18));
+    uint32_t size = RD_BE32(e + 96);
+    ASSERT_TRUE(size > 0 && size <= (uint32_t)RD_BE16(buf + 22) * BLK);
     const uint8_t *drv = buf + (size_t)IMAGE_WRAP_DRIVER_START * BLK;
-    ASSERT_EQ_INT(rd32(e + 116), image_wrap_boot_checksum(drv, size));
+    ASSERT_EQ_INT(RD_BE32(e + 116), image_wrap_boot_checksum(drv, size));
     ASSERT_TRUE(memcmp(e + 120, "68000", 5) == 0);
     // The ROM JSRs to the first byte: a BRA over the DRVR header.
     ASSERT_EQ_INT(drv[0], 0x60);
@@ -157,7 +143,7 @@ TEST(test_driver_partition_passes_the_rom_checks) {
 TEST(test_build_id_is_stamped_into_the_driver) {
     uint8_t *buf = build(20480);
     const uint8_t *drv = buf + (size_t)IMAGE_WRAP_DRIVER_START * BLK;
-    size_t size = rd32(buf + 2 * BLK + 96);
+    size_t size = RD_BE32(buf + 2 * BLK + 96);
     const uint8_t *hit = NULL;
     for (size_t i = 0; i + 13 < size && !hit; i++)
         if (memcmp(drv + i, "GSDisk build ", 13) == 0)
@@ -167,7 +153,7 @@ TEST(test_build_id_is_stamped_into_the_driver) {
     uint8_t *other = (uint8_t *)calloc(1, (size_t)IMAGE_WRAP_PREFIX_BLOCKS * BLK);
     ASSERT_TRUE(other != NULL);
     image_wrap_build_prefix(other, 20480, "another-build");
-    ASSERT_TRUE(rd32(other + 2 * BLK + 116) != rd32(buf + 2 * BLK + 116));
+    ASSERT_TRUE(RD_BE32(other + 2 * BLK + 116) != RD_BE32(buf + 2 * BLK + 116));
     free(other);
     free(buf);
 }
@@ -196,6 +182,11 @@ TEST(test_bare_volume_sniff) {
     head[2 * BLK + 1] = '+';
     ASSERT_TRUE(image_wrap_is_bare_volume(head, sizeof(head))); // HFS+
     ASSERT_TRUE(!image_wrap_is_bare_volume(head, 2 * BLK)); // too short
+    head[2 * BLK + 1] = 'X';
+    ASSERT_TRUE(!image_wrap_is_bare_volume(head, sizeof(head))); // HFSX: no classic Mac OS mounts it
+    head[2 * BLK] = 0xD2;
+    head[2 * BLK + 1] = 0xD7;
+    ASSERT_TRUE(!image_wrap_is_bare_volume(head, sizeof(head))); // MFS: a floppy-only volume
 
     bare_head(head);
     head[0] = 'E';
@@ -277,7 +268,7 @@ static void set_mdb(uint8_t *head, uint32_t nm, uint32_t size, uint32_t first) {
     uint8_t *m = head + 2 * BLK;
     m[18] = (uint8_t)(nm >> 8);
     m[19] = (uint8_t)nm;
-    wr32(m + 20, size);
+    WR_BE32(m + 20, size);
     m[28] = (uint8_t)(first >> 8);
     m[29] = (uint8_t)first;
 }
@@ -311,8 +302,8 @@ TEST(test_volume_blocks) {
     memset(head + 2 * BLK, 0, BLK);
     head[2 * BLK] = 'H';
     head[2 * BLK + 1] = '+';
-    wr32(head + 2 * BLK + 40, 4096);
-    wr32(head + 2 * BLK + 44, 1000);
+    WR_BE32(head + 2 * BLK + 40, 4096);
+    WR_BE32(head + 2 * BLK + 44, 1000);
     ASSERT_EQ_INT(image_wrap_volume_blocks(head, sizeof(head)), 8000);
 
     memset(head, 0, sizeof(head));
@@ -371,23 +362,23 @@ TEST(test_extended_blocks_driverless) {
 // Mac OS X's boot fields on its Apple_HFS map entry `e` (the 10.1 installer's,
 // as measured on an installed disk): the XCOFF BootX in the HFS+ startup file.
 static void put_boot_fields(uint8_t *e) {
-    wr32(e + 88, 0x4000003B); // pmPartStatus: valid, allocated, bootable, r/w
-    wr32(e + 92, 0x20E0); // pmLgBootStart, partition-relative
-    wr32(e + 96, 0xB4000); // pmBootSize
-    wr32(e + 100, 0x01C00000); // pmBootAddr
-    wr32(e + 108, 0x01C00510); // pmBootEntry
+    WR_BE32(e + 88, 0x4000003B); // pmPartStatus: valid, allocated, bootable, r/w
+    WR_BE32(e + 92, 0x20E0); // pmLgBootStart, partition-relative
+    WR_BE32(e + 96, 0xB4000); // pmBootSize
+    WR_BE32(e + 100, 0x01C00000); // pmBootAddr
+    WR_BE32(e + 108, 0x01C00510); // pmBootEntry
     memcpy(e + 120, "powerpc", 7); // pmProcessor
 }
 
 static void check_boot_fields(const uint8_t *e) {
-    ASSERT_EQ_INT(0x20E0, (int)rd32(e + 92));
-    ASSERT_EQ_INT(0xB4000, (int)rd32(e + 96));
-    ASSERT_EQ_INT(0x01C00000, (int)rd32(e + 100));
-    ASSERT_EQ_INT(0x01C00510, (int)rd32(e + 108));
+    ASSERT_EQ_INT(0x20E0, (int)RD_BE32(e + 92));
+    ASSERT_EQ_INT(0xB4000, (int)RD_BE32(e + 96));
+    ASSERT_EQ_INT(0x01C00000, (int)RD_BE32(e + 100));
+    ASSERT_EQ_INT(0x01C00510, (int)RD_BE32(e + 108));
     ASSERT_EQ_INT(0, memcmp(e + 120, "powerpc", 8));
-    ASSERT_TRUE((rd32(e + 88) & 0x08) != 0); // bootable
-    ASSERT_TRUE((rd32(e + 88) & 0x40000000u) != 0); // the volume's own bits kept
-    ASSERT_TRUE((rd32(e + 88) & 0x04) != 0); // and in use, as the wrapper marks it
+    ASSERT_TRUE((RD_BE32(e + 88) & 0x08) != 0); // bootable
+    ASSERT_TRUE((RD_BE32(e + 88) & 0x40000000u) != 0); // the volume's own bits kept
+    ASSERT_TRUE((RD_BE32(e + 88) & 0x04) != 0); // and in use, as the wrapper marks it
 }
 
 // The volume's own boot fields ride into the synthesised Apple_HFS entry,
@@ -401,14 +392,14 @@ TEST(test_boot_fields_are_carried) {
     image_wrap_build_prefix_boot(buf, 20480, "test-build", entry);
     const uint8_t *hfs = buf + 3 * BLK;
     ASSERT_EQ_INT(0, memcmp(hfs + 48, "Apple_HFS", 10));
-    ASSERT_EQ_INT((int)IMAGE_WRAP_PREFIX_BLOCKS, (int)rd32(hfs + 8));
-    ASSERT_EQ_INT(20480, (int)rd32(hfs + 12));
+    ASSERT_EQ_INT((int)IMAGE_WRAP_PREFIX_BLOCKS, (int)RD_BE32(hfs + 8));
+    ASSERT_EQ_INT(20480, (int)RD_BE32(hfs + 12));
     check_boot_fields(hfs);
     // Without an entry there is nothing to boot from the partition.
     image_wrap_build_prefix(buf, 20480, "test-build");
-    ASSERT_EQ_INT(0, (int)rd32(hfs + 92));
-    ASSERT_EQ_INT(0, (int)rd32(hfs + 96));
-    ASSERT_TRUE((rd32(hfs + 88) & 0x08) == 0);
+    ASSERT_EQ_INT(0, (int)RD_BE32(hfs + 92));
+    ASSERT_EQ_INT(0, (int)RD_BE32(hfs + 96));
+    ASSERT_TRUE((RD_BE32(hfs + 88) & 0x08) == 0);
     free(buf);
 }
 

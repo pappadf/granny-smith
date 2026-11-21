@@ -30,7 +30,7 @@
 
 // Host (Unix) seconds -> AFP time, clamped into the 32-bit wire field.
 uint32_t afp_meta_time_from_unix(int64_t unix_secs) {
-    int64_t v = unix_secs + 2082844800LL; // 1970 -> 1904
+    int64_t v = unix_to_mac64(unix_secs);
     if (v < 0)
         return 0;
     if (v > (int64_t)UINT32_MAX)
@@ -43,7 +43,7 @@ uint32_t afp_meta_time_from_unix(int64_t unix_secs) {
 int64_t afp_meta_time_to_unix(uint32_t afp_secs) {
     if (afp_secs == AFP_DATE_NEVER)
         return 0;
-    return (int64_t)afp_secs - 2082844800LL;
+    return mac_to_unix64(afp_secs);
 }
 
 // AFP time (1904 epoch) -> AppleDouble DATES entry (signed secs from 2000).
@@ -98,7 +98,7 @@ bool afp_meta_is_hidden(const char *name) {
     size_t n = strlen(name);
     if (n >= 2 && name[0] == '.' && name[1] == '_')
         return true;
-    if (n >= 5 && strcmp(name + n - 5, ".rsrc") == 0)
+    if (path_has_suffix(name, ".rsrc"))
         return true;
     if (strcmp(name, AFP_CONTROL_DIR) == 0)
         return true;
@@ -150,7 +150,7 @@ bool afp_meta_load(const char *host_path, afp_meta_t *out) {
         fread(buf, 1, 4, f) == 4) {
         // Entry 10's leading two bytes carry our AFP attribute word; the
         // trailing byte keeps the classic "protected" flag for foreign readers.
-        out->attrs = (uint16_t)((buf[0] << 8) | buf[1]);
+        out->attrs = RD_BE16(buf);
         out->has_attrs = true;
     }
     if (find_entry_extent(hdr, n, AD_ENTRY_COMMENT, &off, &len) && fseeko(f, (off_t)off, SEEK_SET) == 0) {
@@ -183,7 +183,7 @@ static uint32_t read_entry_table(const char *sidecar, uint8_t *hdr, size_t hdr_c
         return 0;
     if (RD_BE32(hdr + 4) != APPLE_FORK_VERSION)
         return 0;
-    uint32_t n = (uint32_t)((hdr[24] << 8) | hdr[25]);
+    uint32_t n = (uint32_t)RD_BE16(hdr + 24);
     if (n > AD_MAX_ENTRIES)
         return 0;
     if (26 + (size_t)n * 12 > got)

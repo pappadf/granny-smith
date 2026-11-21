@@ -11,9 +11,11 @@
 #define CPU_DECODER_IS_68030 1
 
 #include "cpu_internal.h"
+#include "cpu_movec.h"
 #include "fpu.h"
 #include "gs_assert.h"
 #include "mmu.h"
+#include "pmmu_ext.h"
 
 #include "log.h"
 #include "system.h"
@@ -21,6 +23,7 @@ LOG_USE_CATEGORY_NAME("cpu");
 
 // Operand/memory/flag/exception macros shared by all three 68K decoders
 #include "cpu_decoder_macros.h"
+#include "cpu_sprint.h"
 
 #include "cpu_ops.h"
 
@@ -37,59 +40,98 @@ LOG_USE_CATEGORY_NAME("cpu");
 //   011 = PMOVE (MMUSR)
 //   100 = PTEST
 
+// The function code a PLOAD or PTEST names in extension bits 4:0
+// (MC68030UM 7.4.27, 7.4.30): 1xxxx an immediate FC in bits 2:0, 01xxx the
+// low three bits of Dn, 00000 SFC, 00001 DFC.
+static uint32_t pmmu_fc(cpu_t *cpu, uint32_t fc_spec) {
+    if (fc_spec & 0x10u)
+        return fc_spec & 7u; // immediate FC
+    if (fc_spec & 0x08u)
+        return cpu->d[fc_spec & 7u] & 7u; // Dn low 3 bits
+    if (fc_spec == 0)
+        return cpu->sfc;
+    if (fc_spec == 1)
+        return cpu->dfc;
+    return cpu->supervisor != 0 ? 5u : 1u; // undefined encoding -- fall back
+}
+
+// PMOVE of a 32-bit transparent-translation register: to <ea> (rw = 1) or
+// from it, then flush the ATC.  TT ignores FD: over-flushing is
+// architecturally invisible (MC68030UM 9.4).  field is NULL with no MMU.
+static void pmove_tt(cpu_t *cpu, mmu_state_t *mmu, uint32_t ea_mode, uint32_t ea_reg, uint32_t rw, uint32_t *field) {
+    uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
+    if (rw) {
+        memory_write_uint32(ea, field ? *field : 0);
+        return;
+    }
+    uint32_t val = memory_read_uint32(ea);
+    if (g_bus_error_pending)
+        return; // a faulted operand read commits nothing
+    if (field) {
+        *field = val;
+        mmu_invalidate_tlb(mmu);
+    }
+}
+
+// PMOVE of a 64-bit root pointer (SRP or CRP): to <ea> (rw = 1) or from it.
+// root is NULL with no MMU; fd (Force Descriptor) suppresses the ATC flush.
+static void pmove_root(cpu_t *cpu, mmu_state_t *mmu, uint32_t ea_mode, uint32_t ea_reg, uint32_t rw, uint32_t fd,
+                       uint64_t *root) {
+    uint32_t ea = calculate_ea(cpu, 8, ea_mode, ea_reg, true);
+    if (rw) {
+        uint64_t val = root ? *root : 0;
+        memory_write_uint32(ea, (uint32_t)(val >> 32));
+        memory_write_uint32(ea + 4, (uint32_t)val);
+        return;
+    }
+    // A faulting operand fetch must not commit a half-read root.
+    // Every comparable multi-access op guards; cpu_pmmu_general did
+    // not, so a bus error on either long left the register loaded
+    // from whatever the failed read returned.
+    uint32_t upper = memory_read_uint32(ea);
+    if (g_bus_error_pending)
+        return;
+    uint32_t lower = memory_read_uint32(ea + 4);
+    if (g_bus_error_pending)
+        return;
+    if (!root)
+        return;
+    *root = ((uint64_t)upper << 32) | lower;
+    // Validate DT field (bits 1:0 of upper word)
+    if ((upper & 3) == DESC_DT_INVALID) {
+        // MC68030UM 9.7.5.3: the register is loaded before the
+        // exception is taken (commit-then-except -- this is a
+        // post-instruction exception, so validate-before-commit
+        // would be wrong).  The flush was being skipped by the
+        // early break, leaving ATC entries from the old root.
+        mmu_invalidate_tlb(mmu);
+        exception(cpu, M68K_VEC_MMU_CONFIG, cpu->pc, cpu_get_sr(cpu));
+        return;
+    }
+    if (!fd)
+        mmu_invalidate_tlb(mmu);
+}
+
 static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
     uint16_t ext = fetch_16(cpu, true);
     mmu_state_t *mmu = (mmu_state_t *)cpu->mmu;
-    uint32_t op_type = (ext >> 13) & 7u;
+    pmmu_ext_t x = pmmu_ext_decode(ext); // the fields, decoded once (shared with the disassembler)
 
     // Compute EA from the opcode's lower 6 bits (modes that are valid for PMOVE)
     uint32_t ea_mode = (opcode >> 3) & 7u;
     uint32_t ea_reg = opcode & 7u;
 
-    switch (op_type) {
+    switch (x.op) {
 
-    case 0: {
+    case PMMU_OP_PMOVE_TT: {
         // PMOVE TT0/TT1 (bits[12:10]: 010=TT0, 011=TT1)
-        uint32_t reg_select = (ext >> 10) & 7u;
-        uint32_t rw = (ext >> 9) & 1u; // 0=ea→reg, 1=reg→ea
+        uint32_t reg_select = x.sel;
+        uint32_t rw = x.rw; // 0=ea→reg, 1=reg→ea
 
-        if (reg_select == 2) {
-            // PMOVE TT0
-            if (rw) {
-                // TT0 → EA
-                uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
-                memory_write_uint32(ea, mmu ? mmu->tt0 : 0);
-            } else {
-                // EA → TT0
-                uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
-                uint32_t val = memory_read_uint32(ea);
-                if (g_bus_error_pending)
-                    break;
-                if (mmu) {
-                    mmu->tt0 = val;
-                    mmu_invalidate_tlb(mmu);
-                }
-            }
-            break;
-        }
-
-        if (reg_select == 3) {
-            // PMOVE TT1
-            if (rw) {
-                // TT1 → EA
-                uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
-                memory_write_uint32(ea, mmu ? mmu->tt1 : 0);
-            } else {
-                // EA → TT1
-                uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
-                uint32_t val = memory_read_uint32(ea);
-                if (g_bus_error_pending)
-                    break;
-                if (mmu) {
-                    mmu->tt1 = val;
-                    mmu_invalidate_tlb(mmu);
-                }
-            }
+        if (reg_select == 2 || reg_select == 3) {
+            // PMOVE TT0 / TT1
+            uint32_t *tt = !mmu ? NULL : reg_select == 2 ? &mmu->tt0 : &mmu->tt1;
+            pmove_tt(cpu, mmu, ea_mode, ea_reg, rw, tt);
             break;
         }
 
@@ -97,12 +139,12 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
         break;
     }
 
-    case 1: {
+    case PMMU_OP_PLOAD_PFLUSH: {
         // PLOAD or PFLUSH (bits[12:10] = mode)
-        uint32_t flush_mode = (ext >> 10) & 7u;
+        uint32_t flush_mode = x.sel;
         if (flush_mode == 0) {
             // PLOAD — force a table walk and load the ATC entry
-            uint32_t rw = (ext >> 9) & 1u; // 0=PLOADW (write test), 1=PLOADR (read test)
+            uint32_t rw = x.rw; // 0=PLOADW (write test), 1=PLOADR (read test)
             if (mmu) {
                 // FC specifier in extension word bits 4:0 (per MC68030UM § 7.4.27),
                 // same encoding as PTEST: 1xxxx → immediate FC = bits 2:0,
@@ -110,18 +152,7 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                 // Walking the wrong root (always cpu->supervisor) would load the
                 // ATC with a translation from the supervisor-side root for a
                 // user-FC PLOAD.
-                uint32_t fc_spec = ext & 0x1Fu;
-                uint32_t fc;
-                if (fc_spec & 0x10u)
-                    fc = fc_spec & 7u; // immediate FC
-                else if (fc_spec & 0x08u)
-                    fc = cpu->d[fc_spec & 7u] & 7u; // Dn low 3 bits
-                else if (fc_spec == 0)
-                    fc = cpu->sfc;
-                else if (fc_spec == 1)
-                    fc = cpu->dfc;
-                else
-                    fc = cpu->supervisor != 0 ? 5u : 1u; // undefined encoding — fall back
+                uint32_t fc = pmmu_fc(cpu, x.fc5);
                 bool fc_supervisor = (fc & 4u) != 0;
                 uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
                 mmu_pload(mmu, ea, rw == 0, fc_supervisor);
@@ -148,10 +179,10 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
         break;
     }
 
-    case 2: {
+    case PMMU_OP_PMOVE_ROOT: {
         // PMOVE (TC, SRP, CRP)
-        uint32_t reg_select = (ext >> 10) & 7u;
-        uint32_t rw = (ext >> 9) & 1u; // 0=ea→reg, 1=reg→ea
+        uint32_t reg_select = x.sel;
+        uint32_t rw = x.rw; // 0=ea→reg, 1=reg→ea
 
         if (reg_select == 0) {
             // TC (Translation Control) — 32-bit
@@ -173,7 +204,7 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                 // mapping and a premature ATC flush in PMOVEFD CRP makes it
                 // unreachable, faulting the TC load and causing the boot's
                 // reset loop).
-                uint32_t fd = (ext >> 8) & 1u;
+                uint32_t fd = x.fd;
                 if (mmu) {
                     mmu->tc = val;
                     mmu->enabled = TC_ENABLE(val) != 0;
@@ -195,7 +226,7 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                             // entries built under the old TC.
                             mmu->enabled = false;
                             mmu_invalidate_tlb(mmu);
-                            exception(cpu, 0xE0, cpu->pc, cpu_get_sr(cpu));
+                            exception(cpu, M68K_VEC_MMU_CONFIG, cpu->pc, cpu_get_sr(cpu));
                             break;
                         }
                     }
@@ -206,93 +237,11 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
             break;
         }
 
-        if (reg_select == 2) {
-            // SRP (Supervisor Root Pointer) — 64-bit
-            if (rw) {
-                // SRP → EA
-                uint32_t ea = calculate_ea(cpu, 8, ea_mode, ea_reg, true);
-                uint32_t upper = (uint32_t)(mmu ? mmu->srp >> 32 : 0);
-                uint32_t lower = (uint32_t)(mmu ? mmu->srp & 0xFFFFFFFF : 0);
-                memory_write_uint32(ea, upper);
-                memory_write_uint32(ea + 4, lower);
-            } else {
-                // EA → SRP
-                uint32_t ea = calculate_ea(cpu, 8, ea_mode, ea_reg, true);
-                // A faulting operand fetch must not commit a half-read root.
-                // Every comparable multi-access op guards; cpu_pmmu_general did
-                // not, so a bus error on either long left the register loaded
-                // from whatever the failed read returned.
-                uint32_t upper = memory_read_uint32(ea);
-                if (g_bus_error_pending)
-                    break;
-                uint32_t lower = memory_read_uint32(ea + 4);
-                if (g_bus_error_pending)
-                    break;
-                uint32_t fd = (ext >> 8) & 1u; // FD: suppress ATC flush (see TC case above)
-                if (mmu) {
-                    uint64_t val = ((uint64_t)upper << 32) | lower;
-                    // Validate DT field (bits 1:0 of upper word)
-                    if ((upper & 3) == DESC_DT_INVALID) {
-                        // MC68030UM 9.7.5.3: the register is loaded before the
-                        // exception is taken (commit-then-except -- this is a
-                        // post-instruction exception, so validate-before-commit
-                        // would be wrong).  The flush was being skipped by the
-                        // early break, leaving ATC entries from the old root.
-                        mmu->srp = val;
-                        mmu_invalidate_tlb(mmu);
-                        exception(cpu, 0xE0, cpu->pc, cpu_get_sr(cpu));
-                        break;
-                    }
-                    mmu->srp = val;
-                    if (!fd)
-                        mmu_invalidate_tlb(mmu);
-                }
-            }
-            break;
-        }
-
-        if (reg_select == 3) {
-            // CRP (CPU Root Pointer) — 64-bit
-            if (rw) {
-                // CRP → EA
-                uint32_t ea = calculate_ea(cpu, 8, ea_mode, ea_reg, true);
-                uint32_t upper = (uint32_t)(mmu ? mmu->crp >> 32 : 0);
-                uint32_t lower = (uint32_t)(mmu ? mmu->crp & 0xFFFFFFFF : 0);
-                memory_write_uint32(ea, upper);
-                memory_write_uint32(ea + 4, lower);
-            } else {
-                // EA → CRP
-                uint32_t ea = calculate_ea(cpu, 8, ea_mode, ea_reg, true);
-                // A faulting operand fetch must not commit a half-read root.
-                // Every comparable multi-access op guards; cpu_pmmu_general did
-                // not, so a bus error on either long left the register loaded
-                // from whatever the failed read returned.
-                uint32_t upper = memory_read_uint32(ea);
-                if (g_bus_error_pending)
-                    break;
-                uint32_t lower = memory_read_uint32(ea + 4);
-                if (g_bus_error_pending)
-                    break;
-                uint32_t fd = (ext >> 8) & 1u; // FD: suppress ATC flush (see TC case above)
-                if (mmu) {
-                    uint64_t val = ((uint64_t)upper << 32) | lower;
-                    // Validate DT field (bits 1:0 of upper word)
-                    if ((upper & 3) == DESC_DT_INVALID) {
-                        // MC68030UM 9.7.5.3: the register is loaded before the
-                        // exception is taken (commit-then-except -- this is a
-                        // post-instruction exception, so validate-before-commit
-                        // would be wrong).  The flush was being skipped by the
-                        // early break, leaving ATC entries from the old root.
-                        mmu->crp = val;
-                        mmu_invalidate_tlb(mmu);
-                        exception(cpu, 0xE0, cpu->pc, cpu_get_sr(cpu));
-                        break;
-                    }
-                    mmu->crp = val;
-                    if (!fd)
-                        mmu_invalidate_tlb(mmu);
-                }
-            }
+        if (reg_select == 2 || reg_select == 3) {
+            // SRP (Supervisor Root Pointer) / CRP (CPU Root Pointer) -- 64-bit
+            uint32_t fd = x.fd; // FD: suppress ATC flush (see TC case above)
+            uint64_t *root = !mmu ? NULL : reg_select == 2 ? &mmu->srp : &mmu->crp;
+            pmove_root(cpu, mmu, ea_mode, ea_reg, rw, fd, root);
             break;
         }
 
@@ -300,9 +249,9 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
         break;
     }
 
-    case 3: {
+    case PMMU_OP_PMOVE_MMUSR: {
         // PMOVE MMUSR — 16-bit
-        uint32_t rw = (ext >> 9) & 1u;
+        uint32_t rw = x.rw;
         if (rw) {
             // MMUSR → EA (read)
             uint32_t ea = calculate_ea(cpu, 2, ea_mode, ea_reg, true);
@@ -311,23 +260,25 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
             // EA → MMUSR (write) — some systems allow writing MMUSR
             uint32_t ea = calculate_ea(cpu, 2, ea_mode, ea_reg, true);
             uint16_t val = memory_read_uint16(ea);
+            if (g_bus_error_pending)
+                break; // a faulted operand read commits nothing
             if (mmu)
                 mmu->mmusr = val;
         }
         break;
     }
 
-    case 4: {
+    case PMMU_OP_PTEST: {
         // PTEST
         // Extension word bit 9 is the PTEST RW flag: per MC68030UM, 0 = PTESTW
         // (simulate a write access), 1 = PTESTR (simulate a read access).  Our
         // mmu_test_address takes `write` meaning "test as write", so map the
         // bit directly (rw==0 → write=true).
-        uint32_t rw_bit = (ext >> 9) & 1u;
+        uint32_t rw_bit = x.rw;
         bool write = (rw_bit == 0);
-        uint32_t a_field = (ext >> 8) & 1u; // 1 = write descriptor addr to An
-        uint32_t a_reg = (ext >> 5) & 7u;
-        uint32_t level = (ext >> 10) & 7u;
+        uint32_t a_field = x.fd; // 1 = write descriptor addr to An
+        uint32_t a_reg = x.mask;
+        uint32_t level = x.sel;
         // M68000PRM PTEST, "Level field": "When this field contains 0, the A
         // field and the register field must also be 0.  The instruction takes
         // an F-line exception when the level field is 0 and the A field is not
@@ -349,18 +300,7 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
         // root returns the supervisor 32-MB identity descriptor and makes
         // the shlib loader write libc1_s bytes to supervisor-mapped
         // phys (which is not where user pages actually live).
-        uint32_t fc_spec = ext & 0x1Fu;
-        uint32_t fc;
-        if (fc_spec & 0x10u)
-            fc = fc_spec & 7u; // immediate FC
-        else if (fc_spec & 0x08u)
-            fc = cpu->d[fc_spec & 7u] & 7u; // Dn low 3 bits
-        else if (fc_spec == 0)
-            fc = cpu->sfc;
-        else if (fc_spec == 1)
-            fc = cpu->dfc;
-        else
-            fc = cpu->supervisor != 0 ? 5u : 1u; // undefined encoding — fall back
+        uint32_t fc = pmmu_fc(cpu, x.fc5);
         bool fc_supervisor = (fc & 4u) != 0; // FC bit 2 = supervisor
         uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
         if (mmu) {
@@ -393,84 +333,37 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
 // Returns 1 on success; calls illegal_instruction() and returns 0 on unknown control register.
 
 static int cpu_movec_rc_rn(cpu_t *cpu) {
-    uint16_t ext = fetch_16(cpu, true);
-    uint32_t da = (ext >> 15) & 1u;
-    uint32_t rn = (ext >> 12) & 7u;
-    uint16_t rc = ext & 0x0FFFu;
+    movec_ext_t x = movec_ext(cpu);
     uint32_t val = 0;
-    switch (rc) {
-    case 0x000:
-        val = cpu->sfc;
-        break;
-    case 0x001:
-        val = cpu->dfc;
-        break;
-    case 0x002:
-        val = cpu->cacr;
-        break;
-    case 0x800:
-        val = cpu->usp;
-        break;
-    case 0x801:
-        val = cpu->vbr;
-        break;
-    case 0x802:
-        val = cpu->caar;
-        break;
-    case 0x803:
-        val = cpu->m ? cpu->a[7] : cpu->msp;
-        break;
-    case 0x804:
-        val = cpu->m ? cpu->ssp : cpu->a[7];
-        break;
-    default:
-        illegal_instruction(cpu);
-        return 0;
+    if (!movec_common_read(cpu, x.rc, &val)) {
+        switch (x.rc) {
+        case 0x002:
+            val = cpu->cacr;
+            break;
+        case 0x802:
+            val = cpu->caar;
+            break;
+        default:
+            illegal_instruction(cpu);
+            return 0;
+        }
     }
-    if (da)
-        cpu->a[rn] = val;
-    else
-        cpu->d[rn] = val;
+    *x.rn = val;
     return 1;
 }
 
 static int cpu_movec_rn_rc(cpu_t *cpu) {
-    uint16_t ext = fetch_16(cpu, true);
-    uint32_t da = (ext >> 15) & 1u;
-    uint32_t rn = (ext >> 12) & 7u;
-    uint16_t rc = ext & 0x0FFFu;
-    uint32_t val = da ? cpu->a[rn] : cpu->d[rn];
-    switch (rc) {
-    case 0x000:
-        cpu->sfc = val & 7u;
-        break;
-    case 0x001:
-        cpu->dfc = val & 7u;
-        break;
+    movec_ext_t x = movec_ext(cpu);
+    uint32_t val = *x.rn;
+    if (movec_common_write(cpu, x.rc, val))
+        return 1;
+    switch (x.rc) {
     case 0x002:
         cpu->cacr = val & 0x3313u;
         break; /* 68030 CACR writable bits */
-    case 0x800:
-        cpu->usp = val;
-        break;
-    case 0x801:
-        cpu->vbr = val;
-        break;
     case 0x802:
         cpu->caar = val;
         break; /* cache address register: no-op */
-    case 0x803:
-        if (cpu->m)
-            cpu->a[7] = val;
-        else
-            cpu->msp = val;
-        break;
-    case 0x804:
-        if (!cpu->m)
-            cpu->a[7] = val;
-        else
-            cpu->ssp = val;
-        break;
     default:
         illegal_instruction(cpu);
         return 0;
@@ -523,7 +416,7 @@ void cpu_reset_to_vector_68030(cpu_t *restrict cpu) {
 
     // The PMMU is INSIDE the 68030, so its reset belongs here and not on the
     // board's /RESET net.  The family bus_reset handlers used to clear it --
-    // mac030_glue_reset took an `mmu` argument for exactly this -- which put
+    // the 68k board reset took an `mmu` argument for exactly this -- which put
     // CPU-internal state on the wrong side of the package boundary, the only
     // line the hardware actually draws.  The 68040 equivalent was already on
     // this side, in cpu_hardware_reset_040.
@@ -547,43 +440,13 @@ void cpu_reset_to_vector_68030(cpu_t *restrict cpu) {
     }
 }
 
-// Double bus error → HALT → the GLU asserts RESET.  The sequence matches real
-// hardware: RESET asserts and the peripherals reset (VIA1 re-enables the ROM
-// overlay at $0), then the CPU reads SSP from $0 and PC from $4.
-static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict cpu) {
-    LOG(1, "Hardware reset (double bus error → HALT → GLU RESET)");
-    system_reset_devices(); // the board's /RESET net; must precede the vector read
-    cpu_reset_to_vector_68030(cpu);
-}
-
 // Generate the cpu_run_68030 decoder function using the shared template
 #define CPU_DECODER_NAME        cpu_run_68030_switch
 #define CPU_DECODER_ARGS        cpu_t *restrict cpu, uint32_t *instructions
 #define CPU_DECODER_RETURN_TYPE void
 #define CPU_DECODER_PROLOGUE                                                                                           \
-    /* Double bus error recovery: CPU halted → GLU asserts RESET line.                                               \
-     * RESET resets peripherals (VIA overlay re-enabled: ROM at $0),                                                   \
-     * then CPU loads SSP from $0 and PC from $4, SR=$2700, VBR=0. */                                                  \
-    if (__builtin_expect(cpu->halted, 0)) {                                                                            \
-        cpu->halted = 0;                                                                                               \
-        cpu_hardware_reset(cpu);                                                                                       \
-    }                                                                                                                  \
-    /* Set SoA active pointers based on current supervisor mode */                                                     \
-    cpu_select_soa(cpu->supervisor);                                                                                   \
-    g_bus_error_instr_ptr = instructions; /* let memory slow paths force exit */                                       \
-    g_fault_dregs_src = cpu->d; /* MMU faults snapshot D0-D7 for the retry */                                          \
-    cpu_check_interrupt(cpu);                                                                                          \
-    /* The same-PC retry latch: decided once per sprint (and in write_sr), */                                          \
-    /* never per instruction -- see m68k_bus_error_latch_settle.           */                                          \
-    if (__builtin_expect(cpu->last_bus_error_pc != 0, 0))                                                              \
-        m68k_bus_error_latch_settle(cpu, instructions);                                                                \
-    /* Capture trace state before execution; clamp to 1 instruction if T1 set */                                       \
-    uint32_t saved_trace_ = cpu->trace;                                                                                \
-    if (__builtin_expect(saved_trace_ & 2, 0))                                                                         \
-        if (*instructions > 1) {                                                                                       \
-            g_sprint_io.unrun_slots += *instructions - 1; /* the rest of the plan is not run */                        \
-            *instructions = 1;                                                                                         \
-        }                                                                                                              \
+    /* Sprint entry (cpu_sprint.h): reset after a double bus fault, T1 sampling */                                     \
+    uint32_t saved_trace = m68k_sprint_enter(cpu, instructions);                                                       \
     /* Saturating burn-down decrement: see cores.md, "The 68K decoder prologue" */                                     \
     while (*instructions > 0) {                                                                                        \
         uint32_t fetch = memory_read_prefetch32(cpu->pc);                                                              \
@@ -594,37 +457,8 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
             (*instructions)--;
 #define CPU_DECODER_EPILOGUE                                                                                           \
     }                                                                                                                  \
-    /* Exception priority (MC68030UM Table 8-5): group 0 RESET, then group 1   */                                      \
-    /* 1.0 ADDRESS ERROR and 1.1 BUS ERROR, ... then group 4 4.1 TRACE, 4.2      */                                    \
-    /* INTERRUPT.  Reset is highest and address error outranks bus error -- the  */                                    \
-    /* old comment here had both backwards.  No behavioural consequence today    */                                    \
-    /* (we implement neither reset-as-exception nor address error), but it would */                                    \
-    /* mislead whoever implements address error.  Handle the deferred bus error  */                                    \
-    /* first so trace > interrupt, and so it preempts a trace that the same      */                                    \
-    /* instruction would otherwise have raised.                                  */                                    \
-    if (__builtin_expect(g_bus_error_pending, 0)) {                                                                    \
-        g_bus_error_pending = false;                                                                                   \
-        /* PMMU table-walk failures use Format $B (retry) so the kernel's                                              \
-         * fault handler restarts the instruction after fixing the PTE.                                                \
-         * Plain bus timeouts (unmapped physical in NuBus-probe range) use                                             \
-         * Format $A (skip) so ROM probes advance past the bad access.                                                 \
-         * g_bus_error_is_pmmu is set by mmu_handle_fault based on which                                               \
-         * code path produced the false return.  That ran on the memory                                                \
-         * layer's g_mmu, while this reads cpu->mmu: boards set the two                                                \
-         * together (memory_map_set_pmmu + cpu_attach_mmu), and the assert                                             \
-         * holds them to it. */                                                                                        \
-        GS_ASSERT(cpu->mmu == (void *)g_mmu);                                                                          \
-        if (cpu->mmu && ((mmu_state_t *)cpu->mmu)->enabled && g_bus_error_is_pmmu)                                     \
-            exception_bus_error_retry(cpu, g_bus_error_address, g_bus_error_rw);                                       \
-        else                                                                                                           \
-            exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw, cpu->pc);                                    \
-        cpu_select_soa(cpu->supervisor);                                                                               \
-    } else if (__builtin_expect((saved_trace_ & 2) && (cpu->trace & 2), 0)) {                                          \
-        /* Trace exception: fire if T1 was set at sprint start AND still set now. */                                   \
-        /* For SR-modifying instructions, uses new T1 value (per M68000 PRM 6.3.10). */                                \
-        exception(cpu, 0x024, cpu->pc, cpu_get_sr(cpu));                                                               \
-    }                                                                                                                  \
-    cpu_check_interrupt(cpu)
+    /* Sprint exit (cpu_sprint.h): deferred bus error (Format $B/$A), trace */                                         \
+    m68k_sprint_exit(cpu, saved_trace)
 
 #include "cpu_decode.h"
 #undef CPU_DECODER_NAME
@@ -644,7 +478,6 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
 #define PD_DECODE_NAME   cpu_pd_decode_68030
 #define PD_TREE_NAME     cpu_pd_tree_68030
 #define PD_CLASSIFY_NAME cpu_pd_classify_68030
-#define PD_HW_RESET(c)   cpu_hardware_reset(c)
 #include "cpu_pd_run.h"
 
 // The core's entry point: the predecoded executor when enabled, else the

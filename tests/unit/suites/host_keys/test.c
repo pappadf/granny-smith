@@ -38,6 +38,44 @@ static void reset(bool lisa) {
     sink_is_lisa = lisa;
 }
 
+// --- The key-name and typed-text paths ------------------------------------
+
+// keyboard.press/down/up name the same keys the web UI presses: the
+// extended block (NT Setup's Page Down and F8) was unnameable before, as
+// were the keypad and Home/End.  "delete" stays the Mac's Delete key.
+TEST(names_reach_every_key_in_the_table) {
+    ASSERT_EQ_INT(host_keymap_name_to_adb("f8"), 0x64);
+    ASSERT_EQ_INT(host_keymap_name_to_adb("pagedown"), 0x79);
+    ASSERT_EQ_INT(host_keymap_name_to_adb("PageUp"), 0x74);
+    ASSERT_EQ_INT(host_keymap_name_to_adb("home"), 0x73);
+    ASSERT_EQ_INT(host_keymap_name_to_adb("numpad5"), 0x57);
+    ASSERT_EQ_INT(host_keymap_name_to_adb("help"), 0x72);
+    ASSERT_EQ_INT(host_keymap_name_to_adb("forwarddelete"), 0x75);
+    ASSERT_EQ_INT(host_keymap_name_to_adb("delete"), 0x33);
+    ASSERT_EQ_INT(host_keymap_name_to_adb("RETURN"), 0x24);
+    ASSERT_EQ_INT(host_keymap_name_to_adb("left"), 0x3B);
+    ASSERT_EQ_INT(host_keymap_name_to_adb("0x24"), 0x24);
+    ASSERT_EQ_INT(host_keymap_name_to_adb("0x80"), -1);
+    ASSERT_EQ_INT(host_keymap_name_to_adb("a"), 0x00);
+    ASSERT_EQ_INT(host_keymap_name_to_adb("!"), 0x12);
+    ASSERT_EQ_INT(host_keymap_name_to_adb("nosuchkey"), -1);
+}
+
+// keyboard.type's lookup: the key and whether Shift is held
+TEST(ascii_resolves_with_shift) {
+    bool shift = true;
+    ASSERT_EQ_INT(host_keymap_ascii_to_adb('a', &shift), 0x00);
+    ASSERT_TRUE(!shift);
+    ASSERT_EQ_INT(host_keymap_ascii_to_adb('A', &shift), 0x00);
+    ASSERT_TRUE(shift);
+    ASSERT_EQ_INT(host_keymap_ascii_to_adb('"', &shift), 0x27);
+    ASSERT_TRUE(shift);
+    ASSERT_EQ_INT(host_keymap_ascii_to_adb('\r', &shift), 0x24);
+    ASSERT_TRUE(!shift);
+    ASSERT_EQ_INT(host_keymap_ascii_to_adb('\t', NULL), 0x30);
+    ASSERT_EQ_INT(host_keymap_ascii_to_adb((char)0xA7, &shift), -1);
+}
+
 // --- The DOM table --------------------------------------------------------
 
 TEST(dom_codes_map_to_adb_raw_codes) {
@@ -229,6 +267,8 @@ TEST(release_all_lets_go_of_everything_but_caps_lock) {
 }
 
 int main(void) {
+    RUN(names_reach_every_key_in_the_table);
+    RUN(ascii_resolves_with_shift);
     RUN(dom_codes_map_to_adb_raw_codes);
     RUN(the_extended_keyboard_block_is_mapped);
     RUN(every_key_a_lisa_has_survives);

@@ -35,6 +35,8 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+from testconfig import read_config  # noqa: E402  (the one config.mk reader)
 SRC = ROOT / "src"
 
 
@@ -232,15 +234,9 @@ def parse_script(test, text):
 
 
 def parse_test(d):
-    cfg = (d / "config.mk").read_text(errors="replace")
-    rom = ""
-    fields = {}
-    for line in cfg.splitlines():
-        m = re.match(r'\s*TEST_(ROM|ARGS|SETUP|RUNNER)\s*:?=\s*(.*)', line)
-        if m:
-            fields[m.group(1)] = m.group(2)
-            if m.group(1) == "ROM":
-                rom = m.group(2).strip()
+    cfg = read_config(d)
+    fields = {k: cfg["TEST_" + k] for k in ("ROM", "ARGS", "SETUP", "RUNNER") if "TEST_" + k in cfg}
+    rom = fields.get("ROM", "")
     # What the ROM boots by default is the core's answer, not its filename.
     default = ROM_DEFAULT.get(rom)
     # model= in TEST_ARGS overrides the ROM-derived default
@@ -414,11 +410,8 @@ def check_perf(baseline_path, log_paths):
 
 def owner_tier(suite_root, suite):
     """TEST_TIER of the directory that owes a cell (read from its config.mk)."""
-    cfg = Path(suite_root) / suite / "config.mk"
-    if not cfg.exists():
-        return None
-    m = re.search(r"^TEST_TIER\s*:=\s*(\w+)", cfg.read_text(), re.M)
-    return m.group(1) if m else None
+    m = re.match(r"\w+", read_config(Path(suite_root) / suite).get("TEST_TIER", ""))
+    return m.group(0) if m else None
 
 
 def check_coverage(target_path, log_paths, suite_root, tier=None):
@@ -519,9 +512,9 @@ def main():
     root = Path(paths[0]) if paths else Path("tests/integration")
     roms = set()
     for cfg in root.glob("*/config.mk"):
-        m = re.search(r"^\s*TEST_ROM\s*:?=\s*(\S+)", cfg.read_text(errors="replace"), re.M)
-        if m:
-            roms.add(m.group(1))
+        rom = read_config(cfg.parent).get("TEST_ROM", "").split()
+        if rom:
+            roms.add(rom[0])
     ROM_DEFAULT.update(rom_defaults(roms))
     tests = [parse_test(d) for d in sorted(root.iterdir())
              if (d / "config.mk").exists() and (d / "test.script").exists()]

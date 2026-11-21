@@ -159,7 +159,7 @@ static void sound_scan_batch_event(void *source, uint64_t data);
 static void sound_scan_batch(sound_t *sound) {
     if (sound->enabled) {
         for (int i = 0; i < SCAN_BATCH_WORDS; i++) {
-            uint8_t b = BE16(sound->buffer[sound->scan_idx]) >> 8;
+            uint8_t b = LOAD_BE16(&sound->buffer[sound->scan_idx]) >> 8;
             sound->out_buf[sound->out_count++] = (int16_t)(((int)b - 128) << 8);
             if (sound->out_count >= SOUND_PUSH_BATCH)
                 sound_flush(sound);
@@ -258,6 +258,9 @@ static uint64_t plus_snd_overruns(void *ctx) {
     return 0; // the VBL scan cannot overrun: it pushes what is there
 }
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(sound_t, buffer);
+
 // Initializes the sound subsystem
 sound_t *sound_init(memory_map_t *map, scheduler_t *scheduler, checkpoint_t *checkpoint) {
     sound_t *sound = (sound_t *)malloc(sizeof(sound_t));
@@ -289,8 +292,7 @@ sound_t *sound_init(memory_map_t *map, scheduler_t *scheduler, checkpoint_t *che
         // Do NOT restore buffer contents here; RAM is checkpointed separately and
         // already contains both main and alternate buffers. VIA outputs will also
         // re-drive buffer selection, volume and enable after device init.
-        size_t data_size = offsetof(sound_t, buffer);
-        system_read_checkpoint_data(checkpoint, sound, data_size);
+        checkpoint_load_prefix(checkpoint, sound, sound_t);
     }
 
     // Object-tree binding — instance_data is the sound itself.
@@ -331,8 +333,7 @@ void sound_checkpoint(sound_t *restrict sound, checkpoint_t *checkpoint) {
     if (!sound || !checkpoint)
         return;
     // Write contiguous plain-data portion of sound_t in one operation
-    size_t data_size = offsetof(sound_t, buffer);
-    system_write_checkpoint_data(checkpoint, sound, data_size);
+    checkpoint_save_prefix(checkpoint, sound, sound_t);
     // Do not write buffer contents; RAM is serialized by memory_map_checkpoint.
 }
 

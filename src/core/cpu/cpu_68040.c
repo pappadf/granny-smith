@@ -23,6 +23,7 @@
 #define CPU_DECODER_IS_68040 1
 
 #include "cpu_internal.h"
+#include "cpu_movec.h"
 #include "fpu.h"
 #include "mmu040.h"
 
@@ -32,6 +33,13 @@ LOG_USE_CATEGORY_NAME("cpu");
 
 // Operand/memory/flag/exception macros shared by all three 68K decoders
 #include "cpu_decoder_macros.h"
+#include "cpu_sprint.h"
+
+// FSAVE / FRESTORE: the 040 single-longword frame formats; cpu_ops.h's
+// OP_FSAVE_EA / OP_FRESTORE_EA are written against these hooks.
+#define FPU_FSAVE_FN               fpu_fsave040
+#define FPU_FRESTORE_FN            fpu_frestore040
+#define FPU_FSAVE_PREDEC_SIZE(fpu) 4 // both NULL and IDLE frames are one longword
 
 #include "cpu_ops.h"
 
@@ -48,84 +56,55 @@ LOG_USE_CATEGORY_NAME("cpu");
 
 // MOVEC Rc,Rn — returns 1 on success, 0 after raising illegal instruction.
 static int cpu_movec040_rc_rn(cpu_t *cpu) {
-    uint16_t ext = fetch_16(cpu, true);
-    uint32_t da = (ext >> 15) & 1u;
-    uint32_t rn = (ext >> 12) & 7u;
-    uint16_t rc = ext & 0x0FFFu;
+    movec_ext_t x = movec_ext(cpu);
     mmu040_state_t *mmu = CPU_MMU040(cpu);
     uint32_t val = 0;
-    switch (rc) {
-    case 0x000:
-        val = cpu->sfc;
-        break;
-    case 0x001:
-        val = cpu->dfc;
-        break;
-    case 0x002:
-        val = cpu->cacr;
-        break;
-    case 0x003:
-        val = mmu ? mmu->tc : 0;
-        break;
-    case 0x004:
-        val = mmu ? mmu->itt0 : 0;
-        break;
-    case 0x005:
-        val = mmu ? mmu->itt1 : 0;
-        break;
-    case 0x006:
-        val = mmu ? mmu->dtt0 : 0;
-        break;
-    case 0x007:
-        val = mmu ? mmu->dtt1 : 0;
-        break;
-    case 0x800:
-        val = cpu->usp;
-        break;
-    case 0x801:
-        val = cpu->vbr;
-        break;
-    case 0x803:
-        val = cpu->m ? cpu->a[7] : cpu->msp;
-        break;
-    case 0x804:
-        val = cpu->m ? cpu->ssp : cpu->a[7];
-        break;
-    case 0x805:
-        val = mmu ? mmu->mmusr : 0;
-        break;
-    case 0x806:
-        val = mmu ? mmu->urp : 0;
-        break;
-    case 0x807:
-        val = mmu ? mmu->srp : 0;
-        break;
-    default: // includes 030-only CAAR ($802)
-        illegal_instruction(cpu);
-        return 0;
+    if (!movec_common_read(cpu, x.rc, &val)) {
+        switch (x.rc) {
+        case 0x002:
+            val = cpu->cacr;
+            break;
+        case 0x003:
+            val = mmu ? mmu->tc : 0;
+            break;
+        case 0x004:
+            val = mmu ? mmu->itt0 : 0;
+            break;
+        case 0x005:
+            val = mmu ? mmu->itt1 : 0;
+            break;
+        case 0x006:
+            val = mmu ? mmu->dtt0 : 0;
+            break;
+        case 0x007:
+            val = mmu ? mmu->dtt1 : 0;
+            break;
+        case 0x805:
+            val = mmu ? mmu->mmusr : 0;
+            break;
+        case 0x806:
+            val = mmu ? mmu->urp : 0;
+            break;
+        case 0x807:
+            val = mmu ? mmu->srp : 0;
+            break;
+        default: // includes 030-only CAAR ($802)
+            illegal_instruction(cpu);
+            return 0;
+        }
     }
-    if (da)
-        cpu->a[rn] = val;
-    else
-        cpu->d[rn] = val;
+    *x.rn = val;
     return 1;
 }
 
 // MOVEC Rn,Rc — returns 1 on success, 0 after raising illegal instruction.
 static int cpu_movec040_rn_rc(cpu_t *cpu) {
-    uint16_t ext = fetch_16(cpu, true);
-    uint32_t da = (ext >> 15) & 1u;
-    uint32_t rn = (ext >> 12) & 7u;
-    uint16_t rc = ext & 0x0FFFu;
+    movec_ext_t x = movec_ext(cpu);
     mmu040_state_t *mmu = CPU_MMU040(cpu);
-    uint32_t val = da ? cpu->a[rn] : cpu->d[rn];
-    switch (rc) {
-    case 0x000:
-        cpu->sfc = val & 7u;
-        break;
-    case 0x001:
-        cpu->dfc = val & 7u;
-        break;
+    uint32_t val = *x.rn;
+    if (movec_common_write(cpu, x.rc, val))
+        return 1;
+    switch (x.rc) {
     case 0x002:
         // 68040 CACR: DE (bit 31) and IE (bit 15) are the only writable bits
         cpu->cacr = val & 0x80008000u;
@@ -148,24 +127,6 @@ static int cpu_movec040_rn_rc(cpu_t *cpu) {
     case 0x007:
         if (mmu)
             mmu040_set_ttr(mmu, &mmu->dtt1, val);
-        break;
-    case 0x800:
-        cpu->usp = val;
-        break;
-    case 0x801:
-        cpu->vbr = val;
-        break;
-    case 0x803:
-        if (cpu->m)
-            cpu->a[7] = val;
-        else
-            cpu->msp = val;
-        break;
-    case 0x804:
-        if (!cpu->m)
-            cpu->a[7] = val;
-        else
-            cpu->ssp = val;
         break;
     case 0x805:
         if (mmu)
@@ -318,51 +279,6 @@ static void cpu_cache_op(cpu_t *cpu, uint16_t opcode) {
 #undef OP_MOVEC_RN_RC
 #define OP_MOVEC_RN_RC OP(SUPER(if (!cpu_movec040_rn_rc(cpu)) continue;))
 
-// --- FSAVE / FRESTORE: 040 single-longword frame formats ---
-#undef OP_FSAVE_EA
-#define OP_FSAVE_EA                                                                                                    \
-    OP({                                                                                                               \
-        if (!cpu->fpu) {                                                                                               \
-            EXC_FTRAP();                                                                                               \
-        } else                                                                                                         \
-            SUPER({                                                                                                    \
-                fpu_state_t *fpu_ = (fpu_state_t *)cpu->fpu;                                                           \
-                if (EA_MODE == 4) {                                                                                    \
-                    bool init_ = fpu_->initialized;                                                                    \
-                    uint32_t mask_ = fpu_->pre_exc_mask;                                                               \
-                    AY -= 4; /* both NULL and IDLE frames are one longword */                                          \
-                    fpu_fsave040(fpu_, AY);                                                                            \
-                    /* Roll back An and the FPU state for the retry */                                                 \
-                    if (__builtin_expect(g_bus_error_pending, 0)) {                                                    \
-                        AY += 4;                                                                                       \
-                        fpu_->initialized = init_;                                                                     \
-                        fpu_->pre_exc_mask = mask_;                                                                    \
-                    }                                                                                                  \
-                } else {                                                                                               \
-                    uint32_t ea_ = GET_EA;                                                                             \
-                    fpu_fsave040(fpu_, ea_);                                                                           \
-                }                                                                                                      \
-            })                                                                                                         \
-    })
-#undef OP_FRESTORE_EA
-#define OP_FRESTORE_EA                                                                                                 \
-    OP({                                                                                                               \
-        if (!cpu->fpu) {                                                                                               \
-            EXC_FTRAP();                                                                                               \
-        } else                                                                                                         \
-            SUPER({                                                                                                    \
-                fpu_state_t *fpu_ = (fpu_state_t *)cpu->fpu;                                                           \
-                uint32_t ea_ = (EA_MODE == 3) ? AY : GET_EA;                                                           \
-                int sz_ = fpu_frestore040(fpu_, ea_);                                                                  \
-                if (sz_ < 0) {                                                                                         \
-                    /* not this part's frame: format error (vector 14), PC at the FRESTORE */                          \
-                    exception(cpu, 0x038, cpu->instruction_pc, GET_SR());                                              \
-                } else if (EA_MODE == 3 && __builtin_expect(!g_bus_error_pending, 1)) {                                \
-                    AY += (uint32_t)sz_; /* (An)+ steps by the frame the format word declared */                       \
-                }                                                                                                      \
-            })                                                                                                         \
-    })
-
 // ============================================================================
 
 // Hardware reset: same sequence as the 030 (see cpu_68030.c), plus the 040
@@ -398,13 +314,6 @@ void cpu_reset_to_vector_68040(cpu_t *restrict cpu) {
     cpu->pc = memory_read_uint32(0x00000004); // PC from vector 1 (ROM via overlay)
 }
 
-// Double bus error → HALT → RESET, as on the 030.
-static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restrict cpu) {
-    LOG(1, "Hardware reset (double bus error → HALT → RESET)");
-    system_reset_devices(); // the board's /RESET net; must precede the vector read
-    cpu_reset_to_vector_68040(cpu);
-}
-
 // Generate the cpu_run_68040 decoder function using the shared template.
 // Prologue/epilogue mirror cpu_68030.c; the model checks inside the shared
 // exception helpers select the 040 frame formats (Format $7 access error).
@@ -412,26 +321,8 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restri
 #define CPU_DECODER_ARGS        cpu_t *restrict cpu, uint32_t *instructions
 #define CPU_DECODER_RETURN_TYPE void
 #define CPU_DECODER_PROLOGUE                                                                                           \
-    /* Double bus error recovery: CPU halted → RESET (see cpu_68030.c). */                                           \
-    if (__builtin_expect(cpu->halted, 0)) {                                                                            \
-        cpu->halted = 0;                                                                                               \
-        cpu_hardware_reset_040(cpu);                                                                                   \
-    }                                                                                                                  \
-    /* Set SoA active pointers based on current supervisor mode */                                                     \
-    cpu_select_soa(cpu->supervisor);                                                                                   \
-    g_bus_error_instr_ptr = instructions; /* let memory slow paths force exit */                                       \
-    cpu_check_interrupt(cpu);                                                                                          \
-    /* The same-PC retry latch: decided once per sprint (and in write_sr), */                                          \
-    /* never per instruction -- see m68k_bus_error_latch_settle.           */                                          \
-    if (__builtin_expect(cpu->last_bus_error_pc != 0, 0))                                                              \
-        m68k_bus_error_latch_settle(cpu, instructions);                                                                \
-    /* Capture trace state before execution; clamp to 1 instruction if T1 set */                                       \
-    uint32_t saved_trace_ = cpu->trace;                                                                                \
-    if (__builtin_expect(saved_trace_ & 2, 0))                                                                         \
-        if (*instructions > 1) {                                                                                       \
-            g_sprint_io.unrun_slots += *instructions - 1; /* the rest of the plan is not run */                        \
-            *instructions = 1;                                                                                         \
-        }                                                                                                              \
+    /* Sprint entry (cpu_sprint.h): reset after a double bus fault, T1 sampling */                                     \
+    uint32_t saved_trace = m68k_sprint_enter(cpu, instructions);                                                       \
     /* Saturating burn-down decrement: see cores.md, "The 68K decoder prologue" */                                     \
     while (*instructions > 0) {                                                                                        \
         uint32_t fetch = memory_read_prefetch32(cpu->pc);                                                              \
@@ -442,22 +333,8 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restri
             (*instructions)--;
 #define CPU_DECODER_EPILOGUE                                                                                           \
     }                                                                                                                  \
-    /* Deferred bus error: delivered as a Format $7 access error.  MMU     */                                          \
-    /* descriptor faults use retry semantics (handler maps the page, RTE   */                                          \
-    /* restarts the instruction); plain bus timeouts use skip semantics so */                                          \
-    /* ROM probes advance past the bad access — same split as the 030.     */                                        \
-    if (__builtin_expect(g_bus_error_pending, 0)) {                                                                    \
-        g_bus_error_pending = false;                                                                                   \
-        if (g_bus_error_is_pmmu)                                                                                       \
-            exception_bus_error_retry(cpu, g_bus_error_address, g_bus_error_rw);                                       \
-        else                                                                                                           \
-            exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw, cpu->pc);                                    \
-        cpu_select_soa(cpu->supervisor);                                                                               \
-    } else if (__builtin_expect((saved_trace_ & 2) && (cpu->trace & 2), 0)) {                                          \
-        /* Trace exception: fire if T1 was set at sprint start AND still set now. */                                   \
-        exception(cpu, 0x024, cpu->pc, cpu_get_sr(cpu));                                                               \
-    }                                                                                                                  \
-    cpu_check_interrupt(cpu)
+    /* Sprint exit (cpu_sprint.h): deferred bus error (Format $7), trace */                                            \
+    m68k_sprint_exit(cpu, saved_trace)
 
 #include "cpu_decode.h"
 #undef CPU_DECODER_NAME
@@ -477,7 +354,6 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restri
 #define PD_DECODE_NAME   cpu_pd_decode_68040
 #define PD_TREE_NAME     cpu_pd_tree_68040
 #define PD_CLASSIFY_NAME cpu_pd_classify_68040
-#define PD_HW_RESET(c)   cpu_hardware_reset_040(c)
 #include "cpu_pd_run.h"
 
 // The core's entry point: the predecoded executor when enabled, else the

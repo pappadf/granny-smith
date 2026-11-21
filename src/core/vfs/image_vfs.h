@@ -30,10 +30,17 @@
 #include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 
 // Opaque mount handle.
 typedef struct image_mount image_mount_t;
 struct ns;
+
+// True when the `len` bytes at `s` are a synthetic fork keyword
+// (VFS_FORK_RSRC or VFS_FORK_FINF, case-sensitive), as one path component.
+static inline bool vfs_is_fork_keyword(const char *s, size_t len) {
+    return len == 4 && (memcmp(s, VFS_FORK_RSRC, 4) == 0 || memcmp(s, VFS_FORK_FINF, 4) == 0);
+}
 
 // The backend vtable.  ctx passed to its methods is an image_mount_t *.
 const vfs_backend_t *vfs_image_backend(void);

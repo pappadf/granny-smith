@@ -23,8 +23,6 @@ tests/e2e/
 ├── playwright.gallery.config.ts     # UI gallery screenshots (gallery/), Vite dev server
 ├── package.json                     # Node dependencies (Playwright)
 ├── tsconfig.json
-├── test_server.py                   # COOP/COEP-enabled static server (web2 + webkit configs)
-├── scripts/prod-smoke-server.mjs    # Subpath server without COI headers (prod-smoke)
 │
 ├── web2-specs/                      # Main functional suite (playwright.web2.config.ts)
 │   ├── afp-remote.spec.ts               # An archive.org volume of "Internet Archive" mounted, fetched and unpacked on System 6
@@ -218,7 +216,8 @@ the pacing, or that feeds real-time media into the guest, opts out with
 
 `playwright.web2.config.ts` has two projects.  `serial` holds the specs that
 must not share the machine with another running emulator (its `SERIAL`
-list: pacing, wall-clock jitter, real-time media) and runs one at a time;
+list, `serial-specs.json`: pacing, wall-clock jitter, real-time media) and
+runs one at a time;
 `parallel` holds the rest and runs `GS_E2E_WORKERS` specs at once (default
 1; CI uses 3).  Each test has its own browser context, so its own OPFS.
 CI runs `--project=parallel` and then `--project=serial` on each shard, so
@@ -234,7 +233,9 @@ keystrokes, no scraping the console, no sleeps for the render to settle.
 `gsCallInPage` fails the spec on a refusal (`{ error }`). Named arguments go
 as an object (`gsCallInPage(page, 'machine.boot', { model: 'iicx', ram: 8192,
 rom })`), positional ones as an array. Type into the Terminal panel
-(`helpers/terminal.ts`) only when the console itself is what the spec tests.
+(`helpers/terminal.ts`) only when the console itself is what the spec tests;
+its `terminalEval(page, expr)` reads a value back by echoing it behind a
+fresh key, the one copy of the terminal-scrape probe.
 The machine auto-runs after boot, so `scheduler.stop` before any bounded
 `scheduler.run`. See `helpers/web2-fs.ts` and the existing specs for the
 OPFS-staging and drag-gesture patterns (only the HTML5 drag *gesture* is

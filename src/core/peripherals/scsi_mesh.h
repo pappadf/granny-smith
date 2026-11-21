@@ -20,6 +20,7 @@
 #include "byte_fifo.h"
 #include "checkpoint.h"
 #include "common.h"
+#include "irq_line.h"
 #include "scsi_msgsession.h"
 
 #include <stdbool.h>
@@ -32,7 +33,7 @@ struct scheduler;
 
 // Interrupt delivery: the machine says where the line goes.  On a Power
 // Macintosh that is Grand Central's MESH source.
-typedef void (*mesh_irq_cb)(void *ctx, bool level);
+typedef irq_fn mesh_irq_cb;
 
 // The data phases move through a DBDMA channel the machine owns; MESH pokes it
 // when it has room or bytes.

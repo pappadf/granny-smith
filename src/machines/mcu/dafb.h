@@ -13,6 +13,7 @@
 
 #include "checkpoint.h"
 #include "display.h"
+#include "irq_line.h"
 #include "memory.h"
 
 #include <stdbool.h>
@@ -34,7 +35,7 @@ struct scheduler;
 typedef struct dafb dafb_t;
 
 // Video interrupt output (level; VIA2 PA6 + the /SLOTIRQ aggregate).
-typedef void (*dafb_irq_cb)(void *context, bool active);
+typedef irq_fn dafb_irq_cb;
 
 // Create the DAFB with `vram_size` bytes of installed VRAM (512 KiB / 1 MiB /
 // 2 MiB; the CPU aperture is fixed at 2 MiB regardless) and the monitor

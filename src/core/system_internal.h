@@ -35,7 +35,7 @@ typedef struct nubus_bus nubus_bus_t;
 // dispatch while the composition above it stays fixed after construction.
 typedef struct system_runtime {
     // Active interrupt-source bitmask; the bits are the family's own
-    // (PLUS_IRQ_*, MAC030_GLUE_IRQ_*, AV_IRQ_*, the Lisa's levels, OSS).
+    // (PLUS_IRQ_*, M68K_BOARD_IRQ_*, AV_IRQ_*, the Lisa's levels, OSS).
     uint32_t irq;
 } system_runtime_t;
 
@@ -88,6 +88,12 @@ struct config {
     struct iw_printer *imagewriter;
     struct iw_printer *atalk_imagewriter; // the AppleTalk ImageWriter (machines with AppleTalk)
     scsi_t *scsi;
+    // The second visible SCSI bus, `machine.scsi2` (MEDIA_BUS_SCSI2): the
+    // TNT boards' 53C94 bus or the Network Servers' fast/wide channel 1, the
+    // Quadra 900/950's external bus.  NULL on a one-bus machine.  The shared
+    // media path and the shared /RESET (system_reset_common_devices) reach it
+    // here, as they reach `scsi`.
+    scsi_t *scsi2;
     rtc_t *rtc;
     floppy_t *floppy; // floppy controller: IWM (Plus) or SWIM (SE/30)
     sound_t *sound; // PWM sound (Plus); NULL on SE/30 / IIcx (which use ASC)

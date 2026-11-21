@@ -13,30 +13,12 @@
 
 #include "image_apm.h"
 #include "common.h"
+#include "mac_disk_layout.h"
 
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-
-// On-disk APM entry field offsets.  From the Apple Partition Map spec.
-#define APM_OFF_SIG         0x00 // uint16 "PM" (0x504D)
-#define APM_OFF_SIG_PAD     0x02 // uint16 reserved, should be 0
-#define APM_OFF_MAP_BLKCNT  0x04 // uint32 blocks in partition map
-#define APM_OFF_PY_START    0x08 // uint32 partition start in 512-byte blocks
-#define APM_OFF_PART_BLKCNT 0x0C // uint32 partition size in 512-byte blocks
-#define APM_OFF_NAME        0x10 // char[32]
-#define APM_OFF_TYPE        0x30 // char[32]
-#define APM_OFF_STATUS      0x58 // uint32
-#define APM_OFF_BOOT_SIZE   0x60 // uint32 boot code bytes
-#define APM_OFF_PROCESSOR   0x78 // char[16]
-
-#define APM_SIG_PM 0x504D
-
-// Upper bound on the partition map length we will accept.  Real Apple
-// media never exceeds ~64 entries; capping at 256 protects against a
-// corrupt pmMapBlkCnt that would otherwise drive a huge allocation.
-#define APM_MAX_PARTITIONS 256
 
 // Copy a 32-byte APM name/type field into a 33-byte NUL-terminated buffer,
 // stripping trailing NULs and spaces for display.
@@ -45,19 +27,6 @@ static void copy_apm_str(char *dst, const uint8_t *src) {
     dst[32] = '\0';
     for (int i = 31; i >= 0 && (dst[i] == '\0' || dst[i] == ' '); i--)
         dst[i] = '\0';
-}
-
-bool image_apm_probe_magic(const uint8_t *block1) {
-    if (!block1)
-        return false;
-    // Signature "PM" must be present.
-    if (RD_BE16(block1 + APM_OFF_SIG) != APM_SIG_PM)
-        return false;
-    // pmMapBlkCnt must be plausible: non-zero and not absurdly large.
-    uint32_t map_blocks = RD_BE32(block1 + APM_OFF_MAP_BLKCNT);
-    if (map_blocks == 0 || map_blocks > APM_MAX_PARTITIONS)
-        return false;
-    return true;
 }
 
 enum apm_fs_kind image_apm_classify_type(const char *type_string) {

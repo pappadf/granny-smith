@@ -3,7 +3,7 @@
 //
 // AV video-in unit test.
 //
-// Links the real av/vdc.c + av/civic.c + av/cuda.c against recording stubs
+// Links the real av/vdc.c + av/civic.c + core/peripherals/cuda.c against recording stubs
 // and pins the video-in contracts:
 //
 //  1. Cuda pseudo-command $22 wire framing: direction from bit 0 of
@@ -109,7 +109,7 @@ static void fire_events(void *source) {
 }
 
 // --- memory plumbing civic touches at install time (not exercised) ---
-void mac030_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
+void page_fill_68k(uint32_t page_index, uint8_t *host_ptr, bool writable) {
     (void)page_index;
     (void)host_ptr;
     (void)writable;
@@ -123,7 +123,7 @@ void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host, ui
     (void)size;
     (void)writable;
 }
-void memory_map_add(memory_map_t *m, uint32_t base, uint32_t size, const char *name, memory_interface_t *iface,
+void memory_map_add(memory_map_t *m, uint32_t base, uint32_t size, const char *name, const memory_interface_t *iface,
                     void *ctx) {
     (void)m;
     (void)base;
@@ -235,6 +235,10 @@ struct object *object_new(const class_desc_t *cls, void *instance_data, const ch
 }
 void object_delete(struct object *o) {
     (void)o;
+}
+void object_destroy(struct object **slot) {
+    if (slot)
+        *slot = NULL;
 }
 void object_attach(struct object *parent, struct object *child) {
     (void)parent;
@@ -367,16 +371,16 @@ static uint8_t s_pb = PB_TIP | PB_BYTEACK; // idle: TIP + BYTEACK high
 
 static void pb(uint8_t value) {
     s_pb = value;
-    av_cuda_via1_pb_input(s_st.cuda, value);
+    cuda_via1_pb_input(s_st.cuda, value);
 }
 
 // Run one command packet; returns the response byte count in `resp`.
 static int cuda_xact(const uint8_t *cmd, int cmd_len, uint8_t *resp, int max) {
     s_sr_count = 0;
-    av_cuda_via1_shift_input(s_st.cuda, cmd[0]);
+    cuda_via1_shift_input(s_st.cuda, cmd[0]);
     pb((uint8_t)(s_pb & ~PB_TIP)); // assert TIP
     for (int i = 1; i < cmd_len; i++)
-        av_cuda_via1_shift_input(s_st.cuda, cmd[i]);
+        cuda_via1_shift_input(s_st.cuda, cmd[i]);
     pb((uint8_t)(s_pb | PB_TIP)); // negate TIP → Cuda processes + sends attn
     ASSERT_EQ_INT(1, s_sr_count); // the attention byte is in the SR
     pb((uint8_t)(s_pb & ~PB_TIP)); // accept: assert TIP
@@ -623,9 +627,9 @@ int main(void) {
     ASSERT_TRUE(s_st.civic != NULL);
     s_st.vdc = av_vdc_init(&s_cfg, NULL);
     ASSERT_TRUE(s_st.vdc != NULL);
-    s_st.cuda = av_cuda_init((struct via *)&s_st, NULL, NULL, NULL, NULL, /*mode3_clock=*/false);
+    s_st.cuda = cuda_init((struct via *)&s_st, NULL, NULL, NULL, NULL, /*mode3_clock=*/false);
     ASSERT_TRUE(s_st.cuda != NULL);
-    av_cuda_attach_vdc(s_st.cuda, s_st.vdc);
+    av_vdc_attach_cuda(s_st.vdc, s_st.cuda);
 
     RUN(test_golden_open_sequence);
     RUN(test_status_bytes);

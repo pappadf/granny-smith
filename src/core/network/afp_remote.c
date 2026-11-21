@@ -127,12 +127,7 @@ static double remote_now_ms(void) {
 
 // FNV-1a over a path: the cache file names of its listing and marker.
 static uint64_t remote_hash(const char *s) {
-    uint64_t h = 0xcbf29ce484222325ull;
-    for (; *s; s++) {
-        h ^= (uint8_t)*s;
-        h *= 0x100000001b3ull;
-    }
-    return h;
+    return fnv1a64_str(FNV1A64_INIT, s);
 }
 
 // "<root>/.gs-afp/remote/<prefix><hash of rel><suffix>"

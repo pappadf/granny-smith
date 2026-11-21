@@ -71,6 +71,15 @@ extern "C" {
 // A short static description of a CODEC_ERR_* code.
 const char *codec_strerror(int64_t rc);
 
+// The negative errno a CODEC_ERR_* code means, for a caller whose own
+// contract is negative errno (the storage layer's chunk decoders): 0 for a
+// result >= 0; -ENOMEM, -EINVAL (ARG) and -ENOTSUP (UNSUPPORTED) as named;
+// -EIO for a stream that does not decode (DATA, TRUNCATED, OVERFLOW,
+// CHECKSUM) or whose input could not be read (INPUT).  The CODEC_ERR_*
+// numbers overlap errno's (CODEC_ERR_TRUNCATED is -2, -ENOENT on Linux), so
+// a codec code is never returned as an errno without passing through here.
+int codec_errno(int64_t rc);
+
 // === Codecs ===
 
 typedef enum {
@@ -276,6 +285,11 @@ uint32_t codec_adler32(uint32_t adler, const void *data, size_t len);
 // CRC-16/XMODEM (polynomial 0x1021, MSB first, initial 0, no final XOR), as
 // BinHex and MacBinary use it.  Chains: a result seeds the next call.
 uint16_t codec_crc16_xmodem(uint16_t crc, const void *data, size_t len);
+
+// One byte of CRC-16/XMODEM, for a per-byte hardware model (the SWIM ISM,
+// which seeds 0xFFFF and resets on each mark byte itself).  The same
+// register codec_crc16_xmodem keeps.
+uint16_t codec_crc16_xmodem_byte(uint16_t crc, uint8_t b);
 
 // CRC-16/ARC (reflected polynomial 0xA001, initial 0, no final XOR), as
 // StuffIt checks a fork with it.  Chains like codec_crc16_xmodem.

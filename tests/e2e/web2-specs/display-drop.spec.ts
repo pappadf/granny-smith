@@ -18,10 +18,10 @@ import { test, expect, type Page } from '../helpers/test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
-import { terminalRun } from '../helpers/terminal';
+import { terminalRun, terminalEcho } from '../helpers/terminal';
 import { gsEvalInPage, scratchFiles } from '../helpers/web2-eval';
+import { DATA } from '../helpers/paths';
 
-const DATA = path.resolve(__dirname, '../../data');
 const PLUS_ROM = path.join(DATA, 'roms', 'plus-v3-4d1f8172.rom');
 const SYSTEM_FD = path.join(DATA, 'systems', 'System_6_0_8.dsk');
 // A StuffIt archive in BinHex holding one 400K Disk Copy 4.2 image (with
@@ -80,13 +80,8 @@ function toast(page: Page, text: string | RegExp) {
 }
 
 // Read machine.cpu.instr_count through the terminal with a unique key.
-let probeSeq = 0;
 async function readInstr(page: Page): Promise<number | null> {
-  const key = `di${++probeSeq}`;
-  await terminalRun(page, `echo "${key}=\${machine.cpu.instr_count}"`);
-  await page.waitForTimeout(400);
-  const text = await page.locator('.console-output').innerText();
-  const m = text.match(new RegExp(`${key}=(\\d+)`));
+  const m = await terminalEcho(page, '${machine.cpu.instr_count}', '(\\d+)');
   return m ? Number(m[1]) : null;
 }
 
@@ -295,7 +290,6 @@ test('Open Checkpoint on the Welcome page restores a saved state', async ({ page
   // The page shows the restored machine, not Welcome (#239).
   await expect(page.locator('.welcome-layer')).toHaveCount(0);
 });
-
 
 // Save State of a machine with a disk, re-opened with Open Checkpoint: the
 // consolidated checkpoint carries every disk block inline, and restoring

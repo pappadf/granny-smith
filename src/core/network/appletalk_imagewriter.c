@@ -21,6 +21,7 @@
 #include "appletalk_internal.h"
 #include "iw_printer.h"
 #include "log.h"
+#include "pap_server.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -28,18 +29,12 @@
 LOG_USE_CATEGORY_NAME("pap");
 
 #define IW_PAP_OBJECT_DEFAULT "Virtual ImageWriter"
-#define IW_PAP_OBJECT_MAX     32
 #define IW_PAP_TYPE           "ImageWriter"
-// Guest time between a transaction's end and the next SendData (as the
-// LaserWriter's server spaces its reads, appletalk_printer.c)
-#define IW_PAP_GAP_NS   10000000ull
-#define IW_PAP_RETRY_MS 8000u
 // SendData is retried without end (Inside AppleTalk ch. 10): the workstation
 // holds it while its driver waits on an alert (the "select" light is off,
 // out of paper) for as long as the user takes, and the connection timer, not
 // the retry count, says when the workstation is gone.
 #define IW_PAP_RETRY_LIMIT -1
-#define IW_PAP_TIMEOUT_NS  (120ull * 1000000000ull)
 // Our own Tickle: half the connection timeout, retried without end, ALO so
 // every retry reaches the workstation as a sign of life (Inside AppleTalk
 // ch. 10).  The retries of a SendData it holds do not keep it alive
@@ -84,7 +79,7 @@ typedef struct {
 static struct {
     bool registered; // the socket handler is installed
     bool published; // the NBP entry is up
-    char object[IW_PAP_OBJECT_MAX + 1];
+    char object[ATALK_NBP_TEXT_CAP]; // UTF-8; at most 32 MacRoman characters
     atalk_nbp_entry_t *nbp;
 } g_iw = {.object = IW_PAP_OBJECT_DEFAULT};
 
@@ -115,10 +110,7 @@ static uint16_t status_bits(const iw_printer_t *p) {
 // driver reads: with bit 13 set it reports the printer out of paper.)
 static int status_payload(uint16_t result, uint8_t out[7]) {
     uint16_t bits = status_bits(iw_printer_localtalk());
-    out[0] = ATALK_HOST_IW_PAP_SOCKET;
-    out[1] = PAP_MAX_FLOW_QUANTUM;
-    out[2] = (uint8_t)(result >> 8);
-    out[3] = (uint8_t)result;
+    pap_status_prefix(out, ATALK_HOST_IW_PAP_SOCKET, PAP_MAX_FLOW_QUANTUM, result);
     out[4] = 2;
     out[5] = (uint8_t)(bits >> 8);
     out[6] = (uint8_t)bits;
@@ -155,26 +147,13 @@ static void issue_senddata(void) {
     // The printer must take data: selected, with paper; otherwise wait
     iw_printer_t *p = iw_printer_localtalk();
     if (!p || !iw_printer_selected(p) || iw_printer_paper_out(p)) {
-        atalk_timer_arm(&g_gap_timer, 0, IW_PAP_GAP_NS * 10);
+        atalk_timer_arm(&g_gap_timer, 0, PAP_SENDDATA_GAP_NS * 10);
         return;
     }
-    uint8_t q = g_s.quantum ? g_s.quantum : PAP_MAX_FLOW_QUANTUM;
-    uint16_t seq = g_s.next_seq++;
-    if (g_s.next_seq == 0)
-        g_s.next_seq = 1;
-    atp_request_params_t params = {.dest = g_s.client,
-                                   .src_socket = ATALK_HOST_IW_PAP_SOCKET,
-                                   .bitmap = (uint8_t)(q >= 8 ? 0xFF : (1u << q) - 1u),
-                                   .mode = ATP_TRANSACTION_XO,
-                                   .trel_timer_hint = 2,
-                                   .retry_timeout_ms = IW_PAP_RETRY_MS,
-                                   .retry_limit = IW_PAP_RETRY_LIMIT};
-    params.user[0] = g_s.conn_id;
-    params.user[1] = PAP_FUNC_SENDDATA;
-    params.user[2] = (uint8_t)(seq >> 8);
-    params.user[3] = (uint8_t)seq;
+    uint16_t seq = pap_take_seq(&g_s.next_seq);
     atp_request_callbacks_t cb = {.on_response = on_fragment, .on_complete = on_complete};
-    g_s.send = atp_request_submit(&params, &cb, &g_s);
+    g_s.send = pap_submit_senddata(&g_s.client, ATALK_HOST_IW_PAP_SOCKET, g_s.conn_id, g_s.quantum, seq,
+                                   IW_PAP_RETRY_LIMIT, &cb, &g_s);
     if (!g_s.send) {
         LOG(1, "imagewriter pap: SendData could not be submitted");
         iw_pap_close(true);
@@ -197,12 +176,12 @@ static void idle_cb(void *source, uint64_t data) {
     if (!g_s.active)
         return;
     uint64_t idle = atalk_now_ns() - g_s.last_activity_ns;
-    if (idle >= IW_PAP_TIMEOUT_NS) {
+    if (idle >= PAP_SESSION_TIMEOUT_NS) {
         LOG(1, "imagewriter pap: connection timeout");
         iw_pap_close(true);
         return;
     }
-    atalk_timer_arm(&g_idle_timer, 0, IW_PAP_TIMEOUT_NS - idle);
+    atalk_timer_arm(&g_idle_timer, 0, PAP_SESSION_TIMEOUT_NS - idle);
 }
 
 // One Data packet: its bytes go to the printer as they come.
@@ -240,7 +219,7 @@ static void on_complete(atp_request_handle_t *h, atp_request_result_t result, vo
         release_credits();
         // The workstation closes the connection, or sends the next job
     }
-    atalk_timer_arm(&g_gap_timer, 0, IW_PAP_GAP_NS);
+    atalk_timer_arm(&g_gap_timer, 0, PAP_SENDDATA_GAP_NS);
 }
 
 // End the connection (optionally telling the workstation); a job cut off
@@ -250,18 +229,8 @@ static void iw_pap_close(bool notify) {
         session_reset();
         return;
     }
-    if (notify && g_s.client.socket) {
-        atp_request_params_t params = {.dest = g_s.client,
-                                       .src_socket = ATALK_HOST_IW_PAP_SOCKET,
-                                       .bitmap = 1,
-                                       .mode = ATP_TRANSACTION_XO,
-                                       .retry_timeout_ms = 2000,
-                                       .retry_limit = 2};
-        params.user[0] = g_s.conn_id;
-        params.user[1] = PAP_FUNC_CLOSE;
-        atp_request_callbacks_t cb = {0};
-        atp_request_submit(&params, &cb, NULL);
-    }
+    if (notify && g_s.client.socket)
+        pap_submit_close_conn(&g_s.client, ATALK_HOST_IW_PAP_SOCKET, g_s.conn_id, NULL, NULL);
     release_credits();
     iw_printer_end_network_job(iw_printer_localtalk(), true);
     session_reset();
@@ -284,11 +253,17 @@ static void tickle_start(void) {
     g_s.tickle = atp_request_submit(&params, &cb, NULL);
 }
 
+// An OpenConn: silent while withdrawn or malformed, busy while a job runs
+// (pap_open_answerable), else the connection.
 static void handle_open(const ddp_header_t *ddp, atp_packet_t *atp) {
     uint8_t conn_id = atp->user[0];
     uint16_t result = PAP_RESULT_OK;
     iw_printer_t *p = iw_printer_localtalk();
-    if (!p || !g_iw.published || g_s.active || iw_printer_busy(p) || atp->data_len < 2) {
+    if (!pap_open_answerable(p && g_iw.published, atp)) {
+        LOG(2, "imagewriter pap: OpenConn conn=%u while withdrawn or malformed: no answer", (unsigned)conn_id);
+        return;
+    }
+    if (g_s.active || iw_printer_busy(p)) {
         result = PAP_RESULT_BUSY;
     } else {
         session_reset();
@@ -300,7 +275,7 @@ static void handle_open(const ddp_header_t *ddp, atp_packet_t *atp) {
         g_s.quantum = PAP_MAX_FLOW_QUANTUM;
         g_s.next_seq = 1;
         g_s.last_activity_ns = atalk_now_ns();
-        atalk_timer_arm(&g_idle_timer, 0, IW_PAP_TIMEOUT_NS);
+        atalk_timer_arm(&g_idle_timer, 0, PAP_SESSION_TIMEOUT_NS);
         tickle_start();
     }
     uint8_t payload[7];
@@ -309,7 +284,7 @@ static void handle_open(const ddp_header_t *ddp, atp_packet_t *atp) {
     LOG(2, "imagewriter pap: OpenConn conn=%u -> %s", (unsigned)conn_id, result == PAP_RESULT_OK ? "ok" : "busy");
     atp_responder_send_simple(ddp, atp, user, payload, len, false);
     if (result == PAP_RESULT_OK)
-        atalk_timer_arm(&g_gap_timer, 0, IW_PAP_GAP_NS);
+        atalk_timer_arm(&g_gap_timer, 0, PAP_SENDDATA_GAP_NS);
 }
 
 static void handle_status(const ddp_header_t *ddp, atp_packet_t *atp) {
@@ -321,8 +296,7 @@ static void handle_status(const ddp_header_t *ddp, atp_packet_t *atp) {
 }
 
 static bool is_session(const ddp_header_t *ddp, const atp_packet_t *atp) {
-    return g_s.active && atp->user[0] == g_s.conn_id && ddp->llap.src == g_s.client.node &&
-           ddp->src_net == g_s.client.net;
+    return pap_request_is_session(g_s.active, g_s.conn_id, &g_s.client, ddp, atp);
 }
 
 static void handle_request(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx) {
@@ -398,13 +372,7 @@ int atalk_imagewriter_publish(bool on) {
     if (!appletalk_network())
         return -1;
     atalk_imagewriter_register();
-    atalk_nbp_service_desc_t desc = {.object = g_iw.object,
-                                     .type = IW_PAP_TYPE,
-                                     .zone = "*",
-                                     .socket = ATALK_HOST_IW_PAP_SOCKET,
-                                     .node = ATALK_HOST_NODE,
-                                     .net = 0};
-    if (atalk_nbp_publish(&g_iw.nbp, &desc) != 0) {
+    if (atalk_nbp_publish_host(&g_iw.nbp, g_iw.object, IW_PAP_TYPE, ATALK_HOST_IW_PAP_SOCKET) != 0) {
         LOG(1, "imagewriter pap: cannot publish '%s'", g_iw.object);
         return -1;
     }
@@ -421,24 +389,12 @@ const char *atalk_imagewriter_name(void) {
     return g_iw.object;
 }
 
-int atalk_imagewriter_set_name(const char *name) {
-    if (!name || !*name || strlen(name) > IW_PAP_OBJECT_MAX)
+int atalk_imagewriter_set_name(const char *name, char *err, size_t err_len) {
+    // NBP's rule, and re-published under the new name first; on failure the
+    // old one stays
+    if (atalk_nbp_rename(&g_iw.nbp, "printer name", name, IW_PAP_TYPE, ATALK_HOST_IW_PAP_SOCKET, g_iw.published, err,
+                         err_len) != 0)
         return -1;
-    char old[IW_PAP_OBJECT_MAX + 1];
-    memcpy(old, g_iw.object, sizeof(old));
     snprintf(g_iw.object, sizeof(g_iw.object), "%s", name);
-    if (!g_iw.published)
-        return 0;
-    // Re-publish under the new name; on failure the old one stays
-    atalk_nbp_service_desc_t desc = {.object = g_iw.object,
-                                     .type = IW_PAP_TYPE,
-                                     .zone = "*",
-                                     .socket = ATALK_HOST_IW_PAP_SOCKET,
-                                     .node = ATALK_HOST_NODE,
-                                     .net = 0};
-    if (atalk_nbp_publish(&g_iw.nbp, &desc) != 0) {
-        memcpy(g_iw.object, old, sizeof(old));
-        return -1;
-    }
     return 0;
 }

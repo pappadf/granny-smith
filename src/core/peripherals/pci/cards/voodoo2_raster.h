@@ -43,7 +43,7 @@
 //           pthreads; in the browser a second Web Worker, created on demand
 //           — see voodoo2_raster.c).  A build can default to sw with
 //           -DGS_V2_RASTER_DEFAULT='"sw"', or leave the backend out with
-//           -DGS_V2_THREAD_BACKEND=0; any boot can pick one with
+//           -DGS_RASTER_THREAD_BACKEND=0; any boot can pick one with
 //           pci_option="raster=...".
 //   webgpu  the thread backend whose worker TRANSLATES for the
 //           browser's GPU while the card drives the monitor

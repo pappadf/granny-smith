@@ -26,8 +26,8 @@ Evidence labels below follow the DAFB-family implementation reference:
   mapped at `$00000000`. The **first access to the normal ROM aperture**
   (`$40000000–$4FFFFFFF`) drops the overlay — RAM appears at zero and the
   aperture becomes direct ROM mirrors. Unlike GLUE/MDU there is no VIA
-  overlay bit; `mcu.c` registers the shared `mac030_rom_overlay` trigger
-  device over the aperture and arms it (`mac030_rom_overlay_arm`), and the
+  overlay bit; `mcu.c` registers the shared `m68k_board_overlay` trigger
+  device over the aperture and arms it (`m68k_board_overlay_arm`), and the
   first access drops the overlay.
 - **MCU/Orwell register file at `$5000E000`.** Orwell has a single config
   data bit, written and read one bit at a time through a run of longword
@@ -41,14 +41,14 @@ Evidence labels below follow the DAFB-family implementation reference:
   64 longword slots latch writes and read back verbatim, and every first touch
   is logged (`log.set board`).
 - **256 KiB I/O island at `$50000000`**, mirror mask `$3FFFF`, run on the
-  shared mac030 I/O engine (reference: [mcu.md](../../../reference/machines/mcu/mcu.md)
+  shared board_io engine (reference: [mcu.md](../../../reference/machines/mcu/mcu.md)
   §3.2). Q700 decode: VIA1 `$0000`, VIA2 `$2000`, MAC
   PROM `$8000`, SONIC `$A000`, SCC `$C000`, MCU `$E000`, 53C96 `$F000`,
   SCSI pseudo-DMA `$F100`, EASC `$14000`, SWIM `$1E000`, YANCC `$28000`.
   The towers swap direct SCC/SWIM for IOP apertures and add the external
   53C96 windows (see [q900.md](q900.md)).
 - **Interrupts:** VIA1→IPL1, VIA2→IPL2, SCC→IPL4, NMI→IPL7 — the same
-  routing table as the GLUE family, so `mac030_glue_update_ipl` is reused
+  routing table as the GLUE family, so `m68k_board_update_ipl` is reused
   verbatim. Slot-level sources aggregate on **/SLOTIRQ** (below).
   (Reference: [mcu.md](../../../reference/machines/mcu/mcu.md) §5.1–§5.2.)
 - **Bus-side physical resolver.** The 68040's MMU is on-chip

@@ -28,13 +28,13 @@
 // disk in memory, and the QCOW2 removed once the UDIF is stored.  Nothing
 // else keeps a QCOW2 -- the stored image is the UDIF.
 
-import { gsEval, gsEvalWithProgress, gsErrorText, gsOk } from './emulator';
+import { gsEval, gsEvalWithProgress, gsErrorText, gsOk, isGsObject } from './emulator';
 import { streamToOpfs } from './upload';
 import { xferChunkBytes, xferUdifAppend, xferRead } from './xfer';
 import { showNotification } from '@/state/toasts.svelte';
 import { bumpImagesRevision } from '@/state/images.svelte';
 import { setActivityCancel, setActivityDetail } from '@/state/activity.svelte';
-import { sanitizeName } from '@/lib/archive';
+import { sanitizeName } from '@/lib/fileName';
 import { scratchPath } from '@/lib/opfsPaths';
 import { MEDIA_TYPES, LARGE_IMPORT_BYTES, validateUnstated, type MediaTypeId } from '@/lib/media';
 import { findMember } from '@/lib/mediaUrl';
@@ -442,7 +442,7 @@ async function settleUdif(part: string, name: string, origin?: string): Promise<
   if (!inPlace) showNotification(`Re-chunking ${name} so it can be read in place...`, 'info');
   const r = await gsEval('files.convert', [part, rechunked, 64, 1, 'udif', name, origin ?? '']);
   await rmQuiet(part);
-  if (!r || typeof r !== 'object' || 'error' in (r as object)) {
+  if (!isGsObject(r)) {
     await rmQuiet(rechunked);
     throw new Error(`${name}: ${gsErrorText(r)}`);
   }
@@ -521,8 +521,7 @@ async function importDecoded(
             ),
         );
         // The reason names the staged copy; the user knows the file by its name.
-        if (!r || typeof r !== 'object' || 'error' in (r as object))
-          throw new Error(gsErrorText(r).split(staged).join(name));
+        if (!isGsObject(r)) throw new Error(gsErrorText(r).split(staged).join(name));
       } finally {
         await rmQuiet(staged);
       }
@@ -547,8 +546,7 @@ async function importDecoded(
           opts.origin ?? '',
         ]);
         await rmQuiet(part);
-        if (!r || typeof r !== 'object' || 'error' in (r as object))
-          throw new Error(gsErrorText(r));
+        if (!isGsObject(r)) throw new Error(gsErrorText(r));
         const placed = await placeUdif(dmg, shown, opts.categories, opts.unstated);
         if (placed) showNotification(`${shown} stored`, 'info');
         return { handled: true, path: placed?.path ?? null, category: placed?.category };

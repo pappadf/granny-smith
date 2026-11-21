@@ -238,6 +238,11 @@ void pci_replay_decode(pci_root_t *root);
 // PCI RST#: every seated device's header returns to power-on (command
 // clear ⇒ regions undecoded) and its ops->reset runs.
 void pci_reset(pci_root_t *root);
+
+// Power-cycle fan-out (system_machine_power_cycle, ahead of the RST#): each
+// device's ops->power_on, or the default over its ops->vram (pci_card.h) --
+// VRAM is lost with the power, and the raster comes up black.
+void pci_power_on(pci_root_t *root);
 // VBL fan-out, for video cards' VSync (the NuBus shape, verbatim).
 void pci_tick_vbl(pci_root_t *root);
 

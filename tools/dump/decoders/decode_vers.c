@@ -27,7 +27,7 @@ int re_decode_vers(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt_fp
     uint8_t minor_bcd = bytes[1];
     uint8_t stage = bytes[2];
     uint8_t prerel = bytes[3];
-    uint16_t region = (uint16_t)((bytes[4] << 8) | bytes[5]);
+    uint16_t region = RD_BE16(bytes + 4);
 
     char short_str[256];
     size_t off = 6;
@@ -61,9 +61,9 @@ int re_decode_vers(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt_fp
     fprintf(json_fp, "{\"major\":%d,\"minor\":%d,\"bug\":%d,\"stage\":\"%s\",\"prerelease\":%u,\"region\":%u,", major,
             minor, bug, stage_str, prerel, region);
     fprintf(json_fp, "\"short\":");
-    re_json_write_string(json_fp, short_str);
+    json_fputs(json_fp, short_str);
     fprintf(json_fp, ",\"long\":");
-    re_json_write_string(json_fp, long_str);
+    json_fputs(json_fp, long_str);
     fprintf(json_fp, "}\n");
 
     if (txt_fp) {

@@ -46,6 +46,30 @@ void audio_out_push(const int16_t *frames, int nframes, int vol_0_7);
 uint32_t audio_out_rate(void);
 int audio_out_channels(void);
 
+// --- Producer helpers --------------------------------------------------------
+
+// Re-parameterizes the stream only when the engine's rate moved: each
+// engine checks before every push, and a set_rate is a host stream restart.
+static inline void audio_out_ensure_rate(uint32_t src_rate_hz) {
+    if (audio_out_rate() != src_rate_hz)
+        audio_out_set_rate(src_rate_hz);
+}
+
+// Saturates a 32-bit mix or gain result to an int16 sample.
+static inline int16_t audio_sat16(int32_t v) {
+    return (int16_t)(v > INT16_MAX ? INT16_MAX : v < INT16_MIN ? INT16_MIN : v);
+}
+
+// The same for a float sample on the int16 scale (truncated toward zero).
+static inline int16_t audio_sat16f(float v) {
+    return (int16_t)(v < -32768.0f ? -32768.0f : (v > 32767.0f ? 32767.0f : v));
+}
+
+// The 1.5 dB-per-step D/A attenuation ladder as x65536 gains (0 = loudest,
+// 15 = -22.5 dB): the ASCO 2300 / AWACS codec's and the AV Singer's, the
+// same sixteen values.
+extern const uint32_t audio_atten_1p5db_x65536[16];
+
 // --- Capture sink (deterministic, guest-rate, pre-volume) ------------------
 
 // Starts recording pushed frames. Returns false if already recording.

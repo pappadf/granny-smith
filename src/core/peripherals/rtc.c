@@ -6,10 +6,12 @@
 
 #include "rtc.h"
 
+#include "byte_store.h"
 #include "checkpoint.h"
 #include "gs_assert.h"
 #include "log.h"
 #include "object.h"
+#include "object_order.h"
 #include "system.h"
 #include "system_internal.h"
 #include "value.h"
@@ -61,10 +63,6 @@ struct rtc {
 };
 
 static const class_desc_t rtc_pram_class;
-
-// diff between mac (1904) and unix (1970) epochs
-// precalculated using any online epoch converter
-#define MAC_TO_UNIX_EPOCH 2082844800
 
 #define RTC_IS_READ(cmd)     ((cmd) & 0x80)
 #define RTC_IS_EXTENDED(cmd) (((cmd) >> 3 & 0x0F) == 7)
@@ -398,7 +396,7 @@ static uint32_t wall_clock_seconds(void) {
     // Promote to 64 bits before the cast so the wrap point is visible (Mac
     // epoch in 1904 + Unix epoch overflowing uint32_t in 2040): the explicit
     // 64-bit add documents the assumption, the (uint32_t) cast is the wrap.
-    return (uint32_t)((int64_t)now + offset + MAC_TO_UNIX_EPOCH);
+    return (uint32_t)unix_to_mac64((int64_t)now + offset);
 }
 
 void rtc_set_via(rtc_t *restrict rtc, via_t *via) {
@@ -475,6 +473,9 @@ void rtc_pram_reset(rtc_t *rtc) {
     LOG(1, "PRAM reset to its defaults");
 }
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(rtc_t, via);
+
 rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint, bool extended,
                 const pram_defaults_t *defaults) {
     rtc_t *rtc = (rtc_t *)malloc(sizeof(rtc_t));
@@ -509,8 +510,7 @@ rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint, 
     // Load from checkpoint if provided. Read a single contiguous block containing
     // the plain-data members of rtc_t (everything before the first pointer).
     if (checkpoint) {
-        size_t data_size = offsetof(rtc_t, via);
-        system_read_checkpoint_data(checkpoint, rtc, data_size);
+        checkpoint_load_prefix(checkpoint, rtc, rtc_t);
         // Do NOT schedule the default one-second event here; it is restored
         // from the scheduler's checkpointed event queue once the machine is built.
         LOG(1, "rtc_init: restored from checkpoint");
@@ -528,7 +528,7 @@ rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint, 
     rtc->object = object_new(&rtc_class, rtc, "rtc");
     if (rtc->object) {
         object_set_label(rtc->object, "RTC");
-        object_set_order(rtc->object, 60);
+        object_set_order(rtc->object, OBJ_ORDER_RTC);
         object_attach(machine_object(), rtc->object);
         rtc->pram_object = object_new(&rtc_pram_class, rtc, "pram");
         if (rtc->pram_object) {
@@ -547,16 +547,8 @@ void rtc_delete(rtc_t *rtc) {
     // of it is torn down.
     scheduler_forget_source(rtc->scheduler, rtc);
     LOG(1, "rtc_delete: freeing rtc seconds=%u", rtc->seconds);
-    if (rtc->pram_object) {
-        object_detach(rtc->pram_object);
-        object_delete(rtc->pram_object);
-        rtc->pram_object = NULL;
-    }
-    if (rtc->object) {
-        object_detach(rtc->object);
-        object_delete(rtc->object);
-        rtc->object = NULL;
-    }
+    object_destroy(&rtc->pram_object);
+    object_destroy(&rtc->object);
     free(rtc);
 }
 
@@ -564,8 +556,7 @@ void rtc_checkpoint(rtc_t *restrict rtc, checkpoint_t *checkpoint) {
     if (!rtc || !checkpoint)
         return;
     // Write the contiguous plain-data portion of rtc_t in a single operation.
-    size_t data_size = offsetof(rtc_t, via);
-    system_write_checkpoint_data(checkpoint, rtc, data_size);
+    checkpoint_save_prefix(checkpoint, rtc, rtc_t);
 }
 
 // === Object-model class descriptor =========================================
@@ -611,20 +602,20 @@ static DEF_SETTER(rtc_attr_time_set) {
         long long parsed = strtoll(in.s, &endp, 10);
         if (endp && endp != in.s && *endp == '\0') {
             // Reject negatives and values that would overflow the 32-bit Mac
-            // seconds counter after the epoch shift. UINT32_MAX - MAC_TO_UNIX_EPOCH
+            // seconds counter after the epoch shift. UINT32_MAX - MAC_EPOCH_UNIX_OFFSET
             // corresponds to early 2040, the Mac-counter wraparound point.
-            if (parsed < 0 || (uint64_t)parsed > (UINT32_MAX - (uint64_t)MAC_TO_UNIX_EPOCH)) {
+            if (parsed < 0 || (uint64_t)parsed > (UINT32_MAX - (uint64_t)MAC_EPOCH_UNIX_OFFSET)) {
                 value_free(&in);
                 return val_err("rtc.time: epoch out of range (0 ≤ unix < 2040)");
             }
-            mac_seconds = (uint32_t)((uint64_t)parsed + MAC_TO_UNIX_EPOCH);
+            mac_seconds = (uint32_t)((uint64_t)parsed + MAC_EPOCH_UNIX_OFFSET);
             resolved = true;
         } else {
             struct tm tm = {0};
             if (strptime(in.s, "%Y-%m-%dT%H:%M:%S", &tm)) {
                 time_t t = timegm(&tm);
-                if (t != (time_t)-1 && t >= 0 && (uint64_t)t <= (UINT32_MAX - (uint64_t)MAC_TO_UNIX_EPOCH)) {
-                    mac_seconds = (uint32_t)((uint64_t)t + MAC_TO_UNIX_EPOCH);
+                if (t != (time_t)-1 && t >= 0 && (uint64_t)t <= (UINT32_MAX - (uint64_t)MAC_EPOCH_UNIX_OFFSET)) {
+                    mac_seconds = (uint32_t)((uint64_t)t + MAC_EPOCH_UNIX_OFFSET);
                     resolved = true;
                 }
             }
@@ -691,78 +682,32 @@ static const class_desc_t rtc_class = {
 // instance_data is the same rtc_t* the parent uses, set in rtc_init
 // when the child is attached.
 
-static DEF_METHOD(rtc_pram_method_peek) {
+// The PRAM bytes, for the shared byte-store methods.
+static uint8_t *rtc_pram_store(struct object *self) {
     rtc_t *rtc = rtc_from(self);
-    if (!rtc)
-        return val_err("rtc not available");
-    uint64_t addr = argv[0].u;
-    if (addr > 0xFF)
-        return val_err("rtc.pram.peek: addr must be 0..255");
-    value_t v = val_uint(1, rtc_pram_read(rtc, (uint8_t)addr));
-    v.flags |= VFLAG_HEX;
-    return v;
+    return rtc ? rtc->pram : NULL;
 }
 
-static DEF_METHOD(rtc_pram_method_poke) {
-    rtc_t *rtc = rtc_from(self);
-    if (!rtc)
-        return val_err("rtc not available");
-    uint64_t addr = argv[0].u;
-    const value_t *bytes = &argv[1];
-    if (bytes->kind != VK_BYTES || !bytes->bytes.p)
-        return val_err("rtc.pram.poke: bytes argument must be VK_BYTES (use the :N width suffix, e.g. 0xa8:1)");
-    size_t n = bytes->bytes.n;
-    if (n == 0)
-        return val_err("rtc.pram.poke: bytes argument is empty");
-    if (addr > 0xFF || addr + n > 0x100)
-        return val_err("rtc.pram.poke: write of %zu bytes at 0x%02llX would overflow PRAM (256 bytes)", n,
-                       (unsigned long long)addr);
-    for (size_t i = 0; i < n; i++) {
-        if (!rtc_pram_write(rtc, (uint8_t)(addr + i), bytes->bytes.p[i]))
-            return val_err("rtc.pram.poke: PRAM is write-protected");
-    }
-    return val_none();
+// poke and restore honour the write-protect bit, the way a guest's write does.
+static bool rtc_pram_store_write(struct object *self, size_t off, uint8_t v) {
+    return rtc_pram_write(rtc_from(self), (uint8_t)off, v);
 }
 
-static DEF_METHOD(rtc_pram_method_dump) {
-    rtc_t *rtc = rtc_from(self);
-    if (!rtc)
-        return val_err("rtc not available");
-    uint64_t addr = argv[0].u;
-    uint64_t n = argv[1].u;
-    if (addr > 0xFF || n == 0 || addr + n > 0x100)
-        return val_err("rtc.pram.dump: read of %llu bytes at 0x%02llX would overflow PRAM (256 bytes)",
-                       (unsigned long long)n, (unsigned long long)addr);
-    return val_bytes(rtc->pram + addr, (size_t)n);
-}
-
-static DEF_METHOD(rtc_pram_method_snapshot) {
-    rtc_t *rtc = rtc_from(self);
-    if (!rtc)
-        return val_err("rtc not available");
-    return val_bytes(rtc->pram, sizeof(rtc->pram));
-}
-
-// Whole-PRAM restore — used by integration tests that want to seed PRAM
+// peek/poke/dump/snapshot/restore: the shared byte-store methods (byte_store.h).
+// The whole-PRAM restore is used by integration tests that want to seed PRAM
 // with a previously-snapshotted state (typically dumped via `snapshot`
 // after a cold boot, then replayed across `machine.boot` cycles to
 // preserve the boot ROM's validity tokens and slot-PRAM init data —
 // individually replaying 256 `poke` calls is slow).  Honours the
 // write-protect bit the same way per-byte writes do.
-static DEF_METHOD(rtc_pram_method_restore) {
-    rtc_t *rtc = rtc_from(self);
-    if (!rtc)
-        return val_err("rtc not available");
-    const value_t *bytes = &argv[0];
-    if (bytes->kind != VK_BYTES || bytes->bytes.n != 256 || !bytes->bytes.p)
-        return val_err("rtc.pram.restore: expected VK_BYTES of length 256 (got len=%zu)",
-                       bytes->kind == VK_BYTES ? bytes->bytes.n : 0);
-    for (int i = 0; i < 256; i++) {
-        if (!rtc_pram_write(rtc, (uint8_t)i, bytes->bytes.p[i]))
-            return val_err("rtc.pram.restore: PRAM is write-protected");
-    }
-    return val_none();
-}
+static const byte_store_ops_t rtc_pram_ops = {
+    .store = rtc_pram_store,
+    .write = rtc_pram_store_write,
+    .size = 256,
+    .what = "rtc.pram",
+    .missing = "rtc not available",
+};
+BYTE_STORE_METHODS(rtc_pram_method, rtc_pram_ops)
 
 // Stamp both validity tokens that the boot ROM's `_InitUtil` checks
 // at cold-boot (see docs/reference/formats/mac-pram.md §3).  Without these, `_InitUtil` will

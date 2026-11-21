@@ -93,27 +93,24 @@ static __attribute__((noinline)) void ppc_pd_decode(pd_block_t *blk, uint32_t id
 #define PPD_B_OR(rc)     PPD_REC(e.a, PPD_R(e.b) | PPD_R(e.c), rc)
 #define PPD_B_NOR(rc)    PPD_REC(e.a, ~(PPD_R(e.b) | PPD_R(e.c)), rc)
 #define PPD_B_XOR(rc)    PPD_REC(e.a, PPD_R(e.b) ^ PPD_R(e.c), rc)
-#define PPD_B_SLW(rc)    PPD_REC(e.a, (PPD_R(e.c) & 0x20u) ? 0 : (PPD_R(e.b) << (PPD_R(e.c) & 31u)), rc)
-#define PPD_B_SRW(rc)    PPD_REC(e.a, (PPD_R(e.c) & 0x20u) ? 0 : (PPD_R(e.b) >> (PPD_R(e.c) & 31u)), rc)
-#define PPD_B_EXTSB(rc)  PPD_REC(e.a, (uint32_t)(int32_t)(int8_t)PPD_R(e.b), rc)
-#define PPD_B_EXTSH(rc)  PPD_REC(e.a, (uint32_t)(int32_t)(int16_t)PPD_R(e.b), rc)
-#define PPD_B_CNTLZW(rc) PPD_REC(e.a, PPD_R(e.b) ? (uint32_t)__builtin_clz(PPD_R(e.b)) : 32u, rc)
-#define PPD_B_SRAWI(rc)                                                                                                \
-    uint32_t n_ = e.c, s_ = PPD_R(e.b);                                                                                \
-    ppc_set_ca(p, ((int32_t)s_ < 0) && n_ != 0 && (s_ & ((1u << n_) - 1u)) != 0);                                      \
-    PPD_REC(e.a, (uint32_t)((int32_t)s_ >> n_), rc)
+#define PPD_B_SLW(rc)    PPD_REC(e.a, ppc_alu_slw(PPD_R(e.b), PPD_R(e.c)), rc)
+#define PPD_B_SRW(rc)    PPD_REC(e.a, ppc_alu_srw(PPD_R(e.b), PPD_R(e.c)), rc)
+#define PPD_B_EXTSB(rc)  PPD_REC(e.a, ppc_alu_extsb(PPD_R(e.b)), rc)
+#define PPD_B_EXTSH(rc)  PPD_REC(e.a, ppc_alu_extsh(PPD_R(e.b)), rc)
+#define PPD_B_CNTLZW(rc) PPD_REC(e.a, ppc_alu_cntlzw(PPD_R(e.b)), rc)
+#define PPD_B_SRAWI(rc)  PPD_REC(e.a, ppc_alu_srawi(p, PPD_R(e.b), e.c), rc)
 // The rotates re-derive their fields from the raw word (§6.2).
 #define PPD_B_RLWINM(rc)                                                                                               \
     uint32_t iw = e.c;                                                                                                 \
-    PPD_REC(PPD_GOFF(PPC_RA(iw)), ppc_rotl(p->gpr[PPC_RT(iw)], PPC_RB(iw)) & ppc_mask(PPC_MB(iw), PPC_ME(iw)), rc)
+    PPD_REC(PPD_GOFF(PPC_RA(iw)), ppc_alu_rlwinm(p->gpr[PPC_RT(iw)], PPC_RB(iw), PPC_MB(iw), PPC_ME(iw)), rc)
 #define PPD_B_RLWIMI(rc)                                                                                               \
     uint32_t iw = e.c;                                                                                                 \
-    uint32_t m_ = ppc_mask(PPC_MB(iw), PPC_ME(iw));                                                                    \
-    PPD_REC(PPD_GOFF(PPC_RA(iw)), (ppc_rotl(p->gpr[PPC_RT(iw)], PPC_RB(iw)) & m_) | (p->gpr[PPC_RA(iw)] & ~m_), rc)
+    PPD_REC(PPD_GOFF(PPC_RA(iw)),                                                                                      \
+            ppc_alu_rlwimi(p->gpr[PPC_RT(iw)], p->gpr[PPC_RA(iw)], PPC_RB(iw), PPC_MB(iw), PPC_ME(iw)), rc)
 #define PPD_B_RLWNM(rc)                                                                                                \
     uint32_t iw = e.c;                                                                                                 \
     PPD_REC(PPD_GOFF(PPC_RA(iw)),                                                                                      \
-            ppc_rotl(p->gpr[PPC_RT(iw)], p->gpr[PPC_RB(iw)] & 31u) & ppc_mask(PPC_MB(iw), PPC_ME(iw)), rc)
+            ppc_alu_rlwinm(p->gpr[PPC_RT(iw)], p->gpr[PPC_RB(iw)] & 31u, PPC_MB(iw), PPC_ME(iw)), rc)
 
 // CR logical: a = bT, b = bA, c = bB.
 #define PPD_CROP(ID, EXPR)                                                                                             \

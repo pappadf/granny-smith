@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// The initiator-side message conversation shared by MESH and the 53C8xx
-// SCRIPTS engine.  See scsi_msgsession.h for why it exists and where the
+// The initiator-side message conversation shared by MESH, the 53C8xx
+// SCRIPTS engine and the NCR 5380.  See scsi_msgsession.h for why it exists and where the
 // capability numbers come from.
 
 #include "scsi_msgsession.h"
@@ -12,7 +12,9 @@
 // SCSI-2 message codes we act on.  Everything else is a single-byte message we
 // have nothing to say about.
 #define MSG_EXTENDED 0x01u
+#define MSG_ABORT    0x06u
 #define MSG_REJECT   0x07u
+#define MSG_BDR      0x0Cu // BUS DEVICE RESET
 #define EXT_SDTR     0x01u
 #define EXT_WDTR     0x03u
 
@@ -73,6 +75,8 @@ void scsi_msg_complete(scsi_msgsession_t *s, const scsi_msg_caps_t *caps, scsi_m
         if (b != MSG_EXTENDED) {
             if (b == MSG_REJECT)
                 result->rejected = true;
+            else if (b == MSG_ABORT || b == MSG_BDR)
+                result->abort = true;
             i++;
             continue;
         }

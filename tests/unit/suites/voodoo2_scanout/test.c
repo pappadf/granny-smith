@@ -63,6 +63,7 @@ int platform_v2gpu_wait(volatile uint32_t *addr, uint32_t expected, uint32_t tim
     (void)timeout_ms;
     return -1;
 }
+void platform_v2gpu_keepalive(void) {}
 struct object *object_new(const class_desc_t *cls, void *data, const char *name) {
     (void)cls;
     (void)data;
@@ -105,7 +106,7 @@ static pci_device_t *seat_driving(uint32_t width, uint32_t height) {
     config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     slot_opts_t opts = {.slot = 1, .n_options = 1, .options = {{"raster", "sw"}}}; // no worker thread
-    pci_device_t *dev = voodoo2_kind.factory(0, &cfg, NULL, &opts);
+    pci_device_t *dev = pci_card_construct(&voodoo2_kind, NULL, 0, &cfg, NULL, &opts);
     ASSERT_TRUE(dev && s_bar_if);
     dev->ops->cfg_write(dev, 0x40, 0, 0x01); // initEnable: fbiInit writes on
     reg_write(R_FBIINIT1, 0x0001E000u); // outputs enabled; no reset, no blank
@@ -117,9 +118,7 @@ static pci_device_t *seat_driving(uint32_t width, uint32_t height) {
 static void unseat(pci_device_t *dev) {
     config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
-    if (dev->ops->teardown)
-        dev->ops->teardown(dev, &cfg);
-    free(dev); // the bus owns the wrapper
+    pci_device_free(dev, &cfg); // what the bus does with a device it built
 }
 
 // Taller than the raster: the height is not taken as programmed.

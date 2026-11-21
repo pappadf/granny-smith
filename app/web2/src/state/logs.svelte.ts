@@ -8,6 +8,9 @@
 // update per frame. Tests fall back to microtasks (queueMicrotask) so
 // they can assert synchronously after `await Promise.resolve()`.
 
+import { saveBlob } from '@/lib/saveBlob';
+import { compactLocalStamp } from '@/lib/time';
+
 export interface LogEntry {
   ts: number; // wall-clock ms when JS observed the line
   cat: string; // category name from log.c
@@ -109,23 +112,7 @@ export function setAutoscroll(on: boolean): void {
 export function downloadLogs(): void {
   const lines = logs.entries.map((e) => `[${e.cat}] ${e.level} ${e.msg}`);
   const blob = new Blob([lines.join('\n') + '\n'], { type: 'text/plain' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `logs-${compactStamp()}.txt`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-function compactStamp(): string {
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return (
-    `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-` +
-    `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
-  );
+  saveBlob(blob, `logs-${compactLocalStamp()}.txt`);
 }
 
 // Reload the per-category level map from the C side. Best effort —

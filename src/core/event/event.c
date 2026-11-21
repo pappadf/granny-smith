@@ -5,6 +5,8 @@
 
 #include "event.h"
 
+#include "json_escape.h"
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,24 +46,18 @@ void event_emit_text(event_kind_t kind, const char *event, const char *field, co
     if (!text)
         text = "";
     size_t n = strlen(text);
-    // Worst case every byte escapes to \uXXXX (6 bytes).
-    size_t cap = strlen(event) + strlen(field) + 6 * n + 32;
+    // Worst case every byte escapes to \uXXXX
+    size_t cap = strlen(event) + strlen(field) + JSON_ESCAPE_MAX * n + 32;
     char *buf = (char *)malloc(cap);
     if (!buf)
         return;
     size_t o = (size_t)snprintf(buf, cap, "{\"event\":\"%s\",\"%s\":\"", event, field);
     for (const unsigned char *c = (const unsigned char *)text; *c; c++) {
-        if (*c == '"' || *c == '\\') {
-            buf[o++] = '\\';
+        size_t k = json_escape_char(*c, buf + o);
+        if (k)
+            o += k;
+        else
             buf[o++] = (char)*c;
-        } else if (*c == '\n') {
-            buf[o++] = '\\';
-            buf[o++] = 'n';
-        } else if (*c < 0x20) {
-            o += (size_t)snprintf(buf + o, 8, "\\u%04x", *c);
-        } else {
-            buf[o++] = (char)*c;
-        }
     }
     buf[o++] = '"';
     buf[o++] = '}';

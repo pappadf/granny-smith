@@ -11,6 +11,7 @@ import {
   gsOk,
   gsErrorText,
   isGsError,
+  isGsObject,
   pauseEmulator,
   resumeEmulator,
   isModuleReady,
@@ -129,7 +130,7 @@ export async function loadDebugFrame(
   // The frame is a native nested object (VK_MAP through the gsEval bridge) —
   // no inner JSON.parse.
   const parsed = await gsEval(`machine.${core}.frame`, args);
-  if (!parsed || typeof parsed !== 'object' || isGsError(parsed)) return null;
+  if (!isGsObject(parsed)) return null;
   const obj = parsed as {
     arch?: unknown;
     pc?: unknown;
@@ -383,4 +384,10 @@ export async function restart(): Promise<void> {
   if (!isModuleReady()) return;
   await restartEmulator();
   bumpDebugRefresh();
+}
+
+// An auxiliary core's run state (`machine.<name>.state`), or null.
+export async function auxCoreState(name: string): Promise<string | null> {
+  const s = await gsEval(`machine.${name}.state`);
+  return typeof s === 'string' ? s : null;
 }

@@ -238,8 +238,7 @@ int checkpoint_machine_sweep_others(void) {
             const char *name = me_entry->d_name;
             if (!name)
                 continue;
-            size_t nlen = strlen(name);
-            if (nlen >= 4 && strcmp(name + nlen - 4, ".tmp") == 0) {
+            if (path_has_suffix(name, ".tmp")) {
                 char *p = str_printf("%s/%s", g_machine_dir, name);
                 if (p) {
                     if (unlink(p) != 0 && errno != ENOENT)

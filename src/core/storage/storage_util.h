@@ -53,19 +53,56 @@ int file_replace_commit(file_replace_t *a, bool ok); // 0 or a negative errno
 // The whole of `data` to `path`, replaced atomically.  0 or a negative errno.
 int file_write_atomic(const char *path, const void *data, size_t len);
 
+// The one host-file opener for reading, under source_host, the host VFS
+// backend and read_file: a read-only, close-on-exec descriptor on a regular
+// file, or a negative errno (-EISDIR for a directory, -EINVAL for a FIFO,
+// socket or device).  The open is non-blocking, so a FIFO with no writer is
+// refused instead of hanging the caller; the descriptor it returns blocks as
+// usual.  `size` and `mtime` (either may be NULL) receive the file's length
+// and modification time.
+int open_regular_file(const char *path, uint64_t *size, int64_t *mtime);
+
 // Read all of `path` into a malloc'd buffer (*out; a non-NULL buffer even for
 // an empty file) of *out_len bytes.  A file larger than `cap` is refused
 // with -EFBIG before anything is allocated: every caller states what it will
 // accept.  0 or a negative errno.
 int read_file(const char *path, size_t cap, uint8_t **out, size_t *out_len);
 
-// JSON-escape `src` (the body of a string literal, no quotes) into `dst`:
-// quote, backslash, \b \f \n \r \t, and any other control byte as \u00XX.
+// The same for text: *out is NUL-terminated (the terminator not counted in
+// *out_len, which may be NULL).  Same cap and errors.
+int read_text_file(const char *path, size_t cap, char **out, size_t *out_len);
+
+// Fill `out` with `n` unpredictable bytes: getentropy, else /dev/urandom,
+// else a pid/time/counter mix that is at least unique within the process
+// (ids and UUIDs that must not collide, not keys).  Never fails.
+void random_bytes(void *out, size_t n);
+
+// True when `path` ends in `ext` (".dmg"), ignoring case: the rule for
+// media and output file names a user types.
+bool path_has_ext(const char *path, const char *ext);
+
+// True when `s` ends in exactly `suffix`: the rule for internal file names
+// the emulator itself writes (".tmp", ".delta", ".rsrc").
+bool path_has_suffix(const char *s, const char *suffix);
+
+// `dir` and `leaf` joined with exactly one '/', however many trailing
+// slashes `dir` and leading slashes `leaf` have (a lone "/" stays the root),
+// into `out`.  False when it does not fit `cap` -- a truncated path names a
+// different file, so a caller must not use it.
+bool path_join(char *out, size_t cap, const char *dir, const char *leaf);
+
+// JSON-escape `src` (the body of a string literal, no quotes) into `dst`
+// with the one escape set (json_escape.h): quote, backslash, \b \f \n \r
+// \t, and any other control byte as \u00XX.
 // Returns the escaped length, or -EINVAL if it does not fit in `cap` with
 // its NUL.
 int json_escape(const char *src, char *dst, size_t cap);
 
 // The same into a malloc'd string ("" for NULL); NULL on OOM.
 char *json_escape_dup(const char *src);
+
+// Write `s` to `fp` as a quoted JSON string literal (NULL writes ""): the
+// form for tools and manifest writers.
+void json_fputs(FILE *fp, const char *s);
 
 #endif // GS_STORAGE_UTIL_H

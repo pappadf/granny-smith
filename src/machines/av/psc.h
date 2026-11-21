@@ -50,7 +50,7 @@ av_psc_t *av_psc_init(config_t *cfg, checkpoint_t *cp);
 void av_psc_delete(av_psc_t *psc);
 void av_psc_checkpoint(av_psc_t *psc, checkpoint_t *cp);
 
-// === I/O island handlers (mac030 engine rows) ===============================
+// === I/O island handlers (board_io engine rows) ===============================
 
 // The 3-register VIA2 window at island $02000 ($1A00 IFR / $1C00 IER /
 // $1E00 SInt).

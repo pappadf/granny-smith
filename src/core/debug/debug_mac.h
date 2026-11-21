@@ -73,13 +73,4 @@ void debug_mac_mouse_button_mode(bool button_down, mouse_route_t route);
 // Toggle the 1 Hz mouse-position trace logger on the machine `hi` belongs to.
 void debug_mac_set_trace_mouse(struct host_input *hi, bool enabled);
 
-// Resolve a key name (e.g. "return", "esc", "0x24") to an ADB
-// keycode (0..0x7F). Returns -1 if the name doesn't match any
-// registered alias and isn't a 0xNN hex literal in range.
-int debug_mac_resolve_key_name(const char *name);
-
-// Resolve one printable ASCII character to the US-layout ADB keycode that
-// produces it; *shift says whether Shift must be held.  -1 = untypable.
-int debug_mac_resolve_ascii(char c, bool *shift);
-
 #endif // DEBUG_MAC_H

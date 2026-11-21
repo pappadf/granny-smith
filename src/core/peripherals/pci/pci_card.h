@@ -34,6 +34,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 struct config;
 struct checkpoint;
@@ -58,6 +59,15 @@ typedef struct pci_device_ops {
     int (*init)(pci_device_t *dev, config_t *cfg, checkpoint_t *cp);
     void (*teardown)(pci_device_t *dev, config_t *cfg);
     void (*reset)(pci_device_t *dev, config_t *cfg); // PCI RST#
+
+    // A power cycle (machine.restart), ahead of the RST# that follows: the
+    // device loses what losing power loses.  NULL takes the bus default
+    // (pci_power_on): reset, zero the VRAM `vram` reports, blank the raster.
+    // A device overrides it only for state beyond that.
+    void (*power_on)(pci_device_t *dev, config_t *cfg);
+    // The device's own VRAM, for that default: its size, with the buffer in
+    // *base.  NULL (or 0) for a device with none.
+    size_t (*vram)(pci_device_t *dev, uint8_t **base);
 
     // Config space BEYOND the generic header.  The generic layer answers
     // IDs, class, command/status, the BARs, the expansion-ROM BAR and
@@ -151,9 +161,21 @@ struct pci_device {
     size_t rom_size;
     pci_bar_backing_t backing[PCI_BAR_SLOTS]; // BARs 0..5 + the ROM BAR
     pci_fixed_region_t fixed[PCI_FIXED_REGIONS]; // non-BAR strapped decode
+    bool priv_owned; // `priv` was allocated by the bus (kind priv_size); freed after teardown
 };
 
-// Per-card constructor.  The bus controller calls this once per populated
+// Per-card initialiser: the NuBus-style construction hook.  The bus allocates
+// the device (and `priv`, when the kind declares priv_size), sets ops, decl,
+// slot_index and bus, resets the generic header, then calls this with what
+// the boot document says about the slot (`opts`, never NULL) and, for a card
+// with one, its expansion ROM (see pci_card_factory_fn).  So the device is
+// whole -- it can raise its slot interrupt -- while it is built.  Returns 0
+// on success; on failure the hook frees only what it allocated itself, and
+// the bus drops the device.  A kind with priv_size 0 sets `priv` here.
+typedef int (*pci_card_init_fn)(pci_device_t *dev, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts);
+
+// Per-card constructor (the older form; used when a kind has no `init`).
+// The bus controller calls this once per populated
 // slot during pci_seat_slots(), with what the boot document says about the
 // slot (`opts`, never NULL; empty fields mean the card's defaults): its
 // options and its expansion-ROM file.  On a restore `rom` is the expansion
@@ -172,6 +194,12 @@ typedef enum pci_attach {
     PCI_ATTACH_PCI, // standard 33 MHz 5 V slot — universal
 } pci_attach_t;
 
+// One option a variant kind defaults (pci_card_kind_t.variant_defaults).
+typedef struct pci_option_default {
+    const char *key; // NULL ends the list
+    const char *value;
+} pci_option_default_t;
+
 // Per-driver descriptor — one static instance per registered driver,
 // listed in pci.c's explicit registry array.
 // One user-selectable card option, and the values it takes.  `values` is a
@@ -184,6 +212,10 @@ typedef struct pci_card_option {
     const char *label; // "Video memory"
     const char *const *values; // {"2m", "4m", NULL}
     const char *const *labels; // {"2 MB", "4 MB (expansion module)", NULL}
+    // What each value means to the card (a VRAM size, say), alongside
+    // `values`; NULL when the card reads the id itself.  See
+    // pci_card_option_payload.
+    const uint32_t *payloads; // {2 << 20, 4 << 20}
     const char *default_value;
     // Is `value` offered on this host right now?  NULL means every value is.
     // A value that needs a host facility (the Voodoo2's WebGPU rendering)
@@ -205,21 +237,29 @@ typedef struct pci_card_kind {
     // is exactly why the UI hint is separate.)
     const char *card_class;
     const struct nubus_monitor *monitors; // display cards only; NULL otherwise
+    // Construction.  A kind declares its vtable, its config-header
+    // declaration, the size of its private state and an `init` hook, and
+    // the bus builds the device (pci_card_construct).  `factory` is the
+    // older form, used only when `init` is NULL.
+    const pci_device_ops_t *ops;
+    const pci_config_decl_t *decl;
+    size_t priv_size; // bytes of zeroed `priv` the bus allocates; 0 = init sets priv
+    pci_card_init_fn init;
     pci_card_factory_fn factory;
 
-    // What accepts_option() will accept, DECLARED so a frontend can render a
-    // control for it without knowing what card this is.  Sentinel-
+    // The options a user is offered, DECLARED so a frontend can render a
+    // control for each without knowing what card this is.  Sentinel-
     // terminated (an entry whose key is NULL ends the list); NULL means the
-    // card takes no options a user should be offered.  The card is still
-    // free to accept keys it does not advertise — this is the offered set,
-    // not the accepted set.
+    // card takes no options a user should be offered.  An advertised value is
+    // accepted by the generic check (pci_card_accepts_option) with no card
+    // code; this is the offered set, not the whole accepted set.
     const struct pci_card_option *options;
 
-    // Does the kind take option key=value?  machine_boot_apply asks before
-    // the running machine is touched, so the factory only ever sees options
-    // it accepts.  NULL: the kind takes no options.  Like attach_objects
-    // below, a seam through the KIND, so the generic layer never tests card
-    // identity.
+    // Does the kind take an option key=value it does NOT advertise above (a
+    // debugging key, or a hidden value of an advertised one)?  The generic
+    // check asks it only after the advertised values.  NULL: nothing beyond
+    // them.  Like attach_objects below, a seam through the KIND, so the
+    // generic layer never tests card identity.
     bool (*accepts_option)(const char *key, const char *value);
     void (*attach_objects)(pci_device_t *dev, struct object *card_node);
 
@@ -237,6 +277,12 @@ typedef struct pci_card_kind {
     // Voodoo2's "Rendering" option).  catalog.profile lists only the card it
     // names; the kind stays registered so a document or checkpoint may name it.
     const char *variant_of;
+    // What makes it the variant: the options the base card is built with
+    // when the slot's entry does not name them itself (key NULL ends the
+    // list).  A variant has no init or options of its own -- the bus
+    // builds the base kind with these merged in, and validates the slot's
+    // options against the base.
+    const struct pci_option_default *variant_defaults;
 
     // A card that brings its own SCSI bus (a 53C825A in a socket): the
     // machine builds the bus, "pci_<slot>", after the slot walk and hands it
@@ -254,10 +300,75 @@ static inline const char *pci_card_rom_id(const pci_card_kind_t *k) {
 
 // Registry accessors.  The registry is an explicit list in pci.c.
 const pci_card_kind_t *pci_card_find(const char *id);
+
+// The kind that builds `k`: the card a variant names, else `k` itself.
+const pci_card_kind_t *pci_card_base(const pci_card_kind_t *k);
+
+// Does `k` take option key=value?  True when the base kind advertises the
+// value among its options, else whatever its accepts_option says.
+bool pci_card_accepts_option(const pci_card_kind_t *k, const char *key, const char *value);
+
+// The payload (pci_card_option_t.payloads) of the value the slot's entry
+// names for option `key` of `options`, else that of the option's default.
+// The value was validated before the boot, so every id resolves; `fallback`
+// is returned only when `options` has no `key` row with payloads.
+uint32_t pci_card_option_payload(const pci_card_option_t *options, const slot_opts_t *opts, const char *key,
+                                 uint32_t fallback);
 const pci_card_kind_t *const *pci_card_registry(void);
 
 // For unknown-id error messages: the registered id that differs from `id`
 // only by underscores, or NULL.
 const char *pci_card_suggest(const char *id);
+
+// Build a device of kind `k` the way the bus seats one: through its `init`
+// hook (allocating the device and its priv_size bytes of `priv`, setting ops,
+// decl, slot_index and bus and resetting the header first), else through its
+// `factory`.  NULL on failure.  `bus` may be NULL (a unit test's bare card);
+// pci_bus_add_device sets it either way.
+static inline pci_device_t *pci_card_construct(const pci_card_kind_t *k, pci_bus_t *bus, int slot_index, config_t *cfg,
+                                               const rom_image_t *rom, const slot_opts_t *opts) {
+    if (!k->init) {
+        pci_device_t *dev = k->factory ? k->factory(slot_index, cfg, rom, opts) : NULL;
+        if (dev)
+            dev->slot_index = slot_index;
+        return dev;
+    }
+    pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
+    if (!dev)
+        return NULL;
+    if (k->priv_size) {
+        dev->priv = calloc(1, k->priv_size);
+        if (!dev->priv) {
+            free(dev);
+            return NULL;
+        }
+        dev->priv_owned = true;
+    }
+    dev->ops = k->ops;
+    dev->decl = k->decl;
+    dev->slot_index = slot_index;
+    dev->bus = bus;
+    pci_cfg_reset(dev); // power-on header state, including status_reset
+    if (k->init(dev, cfg, rom, opts) != 0) {
+        if (dev->priv_owned)
+            free(dev->priv);
+        free(dev);
+        return NULL;
+    }
+    return dev;
+}
+
+// Release a device the bus built: its teardown, its expansion ROM, the
+// `priv` the bus allocated for it, and the device itself.
+static inline void pci_device_free(pci_device_t *dev, config_t *cfg) {
+    if (!dev)
+        return;
+    if (dev->ops && dev->ops->teardown)
+        dev->ops->teardown(dev, cfg);
+    free(dev->rom);
+    if (dev->priv_owned)
+        free(dev->priv);
+    free(dev);
+}
 
 #endif // PCI_CARD_H

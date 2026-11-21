@@ -86,6 +86,15 @@ ifneq ($(UNTIERED),)
 $(error tests with no recognised TEST_TIER (unit | matrix | extended): $(UNTIERED))
 endif
 
+# Every config.mk reader (the runner's cfg(), tier_of above,
+# scripts/order-tests.py, scripts/test-matrix.py) takes `KEY := value`;
+# a `KEY = value` (or ?=, +=) line is seen by some of them and silently
+# ignored by others.  One syntax, enforced here, instead of seven parsers.
+MISASSIGNED := $(shell grep -lE '^TEST_[A-Z0-9_]+[[:space:]]*[?+]?=' $(addsuffix /config.mk,$(ALL_TEST_DIRS)) 2>/dev/null)
+ifneq ($(MISASSIGNED),)
+$(error config.mk files assigning a TEST_ key with something other than :=: $(MISASSIGNED))
+endif
+
 # TIER may name several tiers ("matrix extended"): CI runs them as ONE -j
 # pool, so the machine never idles at the boundary between two tails.
 space := $(empty) $(empty)
@@ -126,7 +135,6 @@ ifneq ($(FIXTURE_RUN),)
 FIXTURE_EDGES := $(shell python3 $(ROOT_DIR)/scripts/order-tests.py $(TEST_WEIGHTS) --deps $(TEST_DIRS))
 $(foreach e,$(FIXTURE_EDGES),$(eval test-$(firstword $(subst :, ,$(e))): | test-$(lastword $(subst :, ,$(e)))))
 endif
-VALGRIND_TARGETS := $(addprefix test-valgrind-,$(TEST_DIRS))
 
 # Extra --var definitions forwarded to the shell (suite row filters,
 # golden regeneration, keep-going nightly mode).
@@ -199,12 +207,17 @@ $(DUMP_BIN):
 # `make test -j8` runs tests concurrently; -k keeps going past failures
 # and the summary below reads the per-test status files the runner
 # writes, which stays accurate under parallel interleaving.
+# SUMMARY_TAG labels the run (test-valgrind's "(valgrind)"); DURATIONS is
+# the file the runner appends per-test wall times to, reset here (empty:
+# none are recorded).
+SUMMARY_TAG ?=
+DURATIONS ?= $(abspath $(TEST_RESULTS_BASE))/durations.jsonl
 test: check-data $(HEADLESS_BIN) $(DUMP_BIN)
 	@echo "========================================"
-	@echo "Running $(words $(TEST_DIRS)) integration test(s)$(if $(TIER), [tier: $(TIER)])$(if $(SHARD), [shard $(SHARD)])"
+	@echo "Running $(words $(TEST_DIRS)) integration test(s)$(if $(SUMMARY_TAG), $(SUMMARY_TAG))$(if $(TIER), [tier: $(TIER)])$(if $(SHARD), [shard $(SHARD)])"
 	@$(if $(DATA_LINE),echo "$(DATA_LINE)",true)
 	@echo "========================================"
-	@mkdir -p $(TEST_RESULTS_BASE) && : > $(TEST_RESULTS_BASE)/durations.jsonl
+	@mkdir -p $(TEST_RESULTS_BASE)$(if $(DURATIONS), && : > $(DURATIONS))
 	@rm -rf $(FIXTURE_DIR) && mkdir -p $(FIXTURE_DIR)
 	@$(MAKE) --no-print-directory -k $(TEST_TARGETS) FIXTURE_RUN=1; \
 	failed=""; skipped=""; \
@@ -215,10 +228,10 @@ test: check-data $(HEADLESS_BIN) $(DUMP_BIN)
 	echo "========================================"; \
 	[ -z "$$skipped" ] || echo "SKIPPED (no media):$$skipped"; \
 	if [ -z "$$failed" ]; then \
-		echo "All $(words $(TEST_DIRS)) integration test(s) passed$${skipped:+, $$(echo $$skipped | wc -w) of them skipped}"; \
+		echo "All $(words $(TEST_DIRS)) integration test(s) passed$(if $(SUMMARY_TAG), $(SUMMARY_TAG))$${skipped:+, $$(echo $$skipped | wc -w) of them skipped}"; \
 	else \
 		echo "FAILED:$$failed"; \
-		echo "$$(echo $$failed | wc -w) of $(words $(TEST_DIRS)) test(s) FAILED"; \
+		echo "$$(echo $$failed | wc -w) of $(words $(TEST_DIRS)) test(s) FAILED$(if $(SUMMARY_TAG), $(SUMMARY_TAG))"; \
 		exit 1; \
 	fi
 
@@ -246,15 +259,19 @@ check-tiers:
 # script that appends a flag, scripts/compare-jobs-inline.sh); empty by
 # default.
 WRAPPER ?=
-test-%: $(HEADLESS_BIN) $(DUMP_BIN) FORCE
+define run_one_test
 	$(if $(FIXTURE_RUN),-)@HEADLESS_BIN="$(HEADLESS_BIN_ABS)" \
 	DUMP_BIN="$(DUMP_BIN_ABS)" \
 	TEST_DATA="$(TEST_DATA_ABS)" \
 	TEST_RESULTS_DIR="$(abspath $(TEST_RESULTS_BASE))/$*" \
 	WORK_DIR="$(abspath $(WORK_DIR_BASE))/$*" \
 	FIXTURE_DIR="$(if $(FIXTURE_RUN),$(FIXTURE_DIR))" \
+	DURATIONS_FILE="$(DURATIONS)" \
 	WRAPPER="$(WRAPPER)" \
 	bash $(RUNNER) "$*"
+endef
+test-%: $(HEADLESS_BIN) $(DUMP_BIN) FORCE
+	$(run_one_test)
 
 # Clean integration test artifacts (headless binary is cleaned by top-level make)
 clean:
@@ -263,32 +280,15 @@ clean:
 # Run the (tier-filtered) tests under Valgrind memcheck.  Note: the
 # full-suite sweep is impractical (20-50x slowdown over billions of
 # guest cycles); CI runs `make test-valgrind TIER=unit` plus selected
-# boots — see docs/guide/TESTING.md.
-test-valgrind: check-data $(HEADLESS_BIN) $(DUMP_BIN)
-	@echo "========================================"
-	@echo "Running $(words $(TEST_DIRS)) integration test(s) under Valgrind$(if $(TIER), [tier: $(TIER)])"
-	@$(if $(DATA_LINE),echo "$(DATA_LINE)",true)
-	@echo "========================================"
-	@$(MAKE) --no-print-directory -k $(VALGRIND_TARGETS); \
-	failed=""; \
-	for dir in $(TEST_DIRS); do \
-		[ "$$(cat "$(TEST_RESULTS_BASE)/$$dir/status" 2>/dev/null)" = "PASS" ] || failed="$$failed $$dir"; \
-	done; \
-	echo "========================================"; \
-	if [ -z "$$failed" ]; then \
-		echo "All $(words $(TEST_DIRS)) integration test(s) passed (valgrind)"; \
-	else \
-		echo "FAILED:$$failed"; \
-		echo "$$(echo $$failed | wc -w) of $(words $(TEST_DIRS)) test(s) FAILED (valgrind)"; \
-		exit 1; \
-	fi
+# boots — see docs/guide/TESTING.md.  The same aggregate run as `test`
+# (fixtures, skip reporting, the summary) with the binary wrapped; the
+# wall times are not recorded, since they would skew test-weights.json.
+VALGRIND_WRAPPER := $(VALGRIND) $(VALGRIND_FLAGS)
+test-valgrind:
+	@$(MAKE) --no-print-directory test WRAPPER="$(VALGRIND_WRAPPER)" SUMMARY_TAG="(valgrind)" DURATIONS=
 
-# Valgrind flavor of the pattern rule: same runner, wrapped binary.
+# Valgrind flavor of the pattern rule: the same recipe, wrapped binary.
+test-valgrind-%: WRAPPER = $(VALGRIND_WRAPPER)
+test-valgrind-%: DURATIONS =
 test-valgrind-%: $(HEADLESS_BIN) $(DUMP_BIN) FORCE
-	@HEADLESS_BIN="$(HEADLESS_BIN_ABS)" \
-	DUMP_BIN="$(DUMP_BIN_ABS)" \
-	TEST_DATA="$(TEST_DATA_ABS)" \
-	TEST_RESULTS_DIR="$(abspath $(TEST_RESULTS_BASE))/$*" \
-	WORK_DIR="$(abspath $(WORK_DIR_BASE))/$*" \
-	WRAPPER="$(VALGRIND) $(VALGRIND_FLAGS)" \
-	bash $(RUNNER) "$*"
+	$(run_one_test)

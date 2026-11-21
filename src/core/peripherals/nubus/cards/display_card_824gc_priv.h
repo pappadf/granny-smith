@@ -15,6 +15,7 @@
 #include "display_card_824gc.h"
 
 #include "display.h"
+#include "display_ramdac.h"
 #include "jmfb_family.h"
 #include "memory.h"
 #include "nubus.h"
@@ -73,13 +74,11 @@ struct display_card_824gc_priv {
                     // (no-VidComm) programming path isn't decoded.  Runtime
                     // depth switches arrive via VidComm (see gc_vidcomm).
     // ACDC RAMDAC palette load state (GC decl-ROM SetEntries path).
-    uint8_t acdc_addr; // current palette index (auto-increments per entry)
-    uint8_t acdc_phase; // 0=R,1=G,2=B; reset on ADDR-port write
-    uint8_t acdc_rgb[3]; // R,G,B bytes accumulated for the current entry
-                         // (card-local 0x04000000..0x07FFFFFF), backed as RAM so the
-                         // video driver's write-then-read-back register probes and
-                         // ACDC CLUT accesses behave; the few semantic registers
-                         // (alive, MFB heartbeat, attach, kick) are intercepted.
+    ramdac_seq_t acdc; // palette index, R/G/B phase and the entry being loaded
+                       // (card-local 0x04000000..0x07FFFFFF), backed as RAM so the
+                       // video driver's write-then-read-back register probes and
+                       // ACDC CLUT accesses behave; the few semantic registers
+                       // (alive, MFB heartbeat, attach, kick) are intercepted.
 
     gc_state_t state;
     bool booted; // boot handshake completed (CB published)
@@ -171,9 +170,6 @@ struct display_card_824gc_priv {
 
     // --- Display half (standard slot space) ---
     uint8_t *vram; // GC824_VRAM_SIZE
-    uint8_t *vrom; // GC824_DECLROM_BUS_SIZE
-    char *vrom_path;
-    uint32_t vrom_size;
     display_t display;
     jmfb_bind_t jmfb_bind; // what `jmfb` acts on; rebuilt at init, never checkpointed
     // A refused VidComm scanout shows this instead (display_set_scanout);

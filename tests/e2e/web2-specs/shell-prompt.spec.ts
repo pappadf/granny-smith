@@ -16,12 +16,13 @@ import { test, expect, type Page } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
 import { terminalRun as typeLine, consoleLine, CONSOLE_INPUT } from '../helpers/terminal';
+import { DATA } from '../helpers/paths';
+import { uploadRomViaWelcome } from '../helpers/upload';
 
 // Output is read right after each line: type, submit, then settle.
 const terminalRun = (page: Page, line: string) =>
   typeLine(page, line, { settleMs: 250 });
 
-const DATA = path.resolve(__dirname, '../../data');
 const SE30_ROM = path.join(DATA, 'roms', 'iix-iicx-se30-97221136.rom');
 
 const lastTermLine = consoleLine;
@@ -111,11 +112,7 @@ test('shell prompt reflects machine and run state', async ({ page }) => {
     .toMatch(/^gs>$/);
 
   // --- Boot an SE/30 (ROM upload + New Machine, no media) ---------------
-  const [romChooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Load ROM...' }).click(),
-  ]);
-  await romChooser.setFiles(SE30_ROM);
+  await uploadRomViaWelcome(page, SE30_ROM);
 
   await page.getByRole('button', { name: 'New Machine...' }).click();
   const model = page.locator('#cfg-model');

@@ -154,11 +154,12 @@ transports, installed at module construction:
   — the Singer's capture gate, and the file `machine.audioin.inject` just
   fed the guest (the page plays it aloud too); see
   [../machines/av/singer.md](../internals/machines/av/singer.md).
-- **`Module.onVoodooGpuOverlay(visible)`** — whether the Voodoo2
-  takeover's overlay canvas should show.
+- **`Module.onGpuOverlay(visible)`** — whether the GPU takeovers'
+  overlay canvas should show (0 hides the Voodoo2's and the Rage 128's).
 
-- **`Module.onVoodooGpuAttach(ctrl, bytes)` / `onVoodooGpuDetach(ctrl)`**
-  — the Voodoo2 WebGPU takeover (`raster=webgpu`,
+- **`Module.onGpuAttach(ctrl, bytes)` / `onGpuDetach(ctrl)`**
+  — a WebGPU takeover; `bus/emulator.ts` routes each to its card by the
+  control block's magic.  For the Voodoo2 (`raster=webgpu`,
   [`src/platform/wasm/em_gpu.c`](../../src/platform/wasm/em_gpu.c)): the
   emulator's raster pthread allocated a control block + op ring +
   readback area at `ctrl` in the shared heap and wants the page's GPU
@@ -467,7 +468,8 @@ Entry point: [`app/web2/src/main.ts`](../../app/web2/src/main.ts).
    quitting and restarting the browser, and does **not** mount Svelte. The
    error page is vanilla DOM so it survives a degraded framework runtime.
    A worker probe that cannot start or does not answer in 5 s is skipped,
-   never fatal. The verdict is left in `window.__gsGraphics`. WebGPU is
+   never fatal. The verdict is left in `window.__gsGraphics` under
+   automation or with `?debug` (`lib/debugGlobal.ts`). WebGPU is
    not checked here: only the Voodoo2's GPU mode uses it, and its absence
    just withholds that option (the reason is logged to the console).
 3. Mount the Svelte tree.
@@ -562,7 +564,11 @@ State lives under [`app/web2/src/state/`](../../app/web2/src/state/) —
 each `*.svelte.ts` file owns a `$state` slice (`machine`, `layout`,
 `debug`, `appearance`, `logs`, `images`, `uploads`, `toasts`, …). The bus
 layer at [`app/web2/src/bus/`](../../app/web2/src/bus/) wraps every
-`gsEval` call site.
+`gsEval` call site: a component asks the bus module that owns the domain
+(`bus/vfs`, `bus/media`, `bus/checkpoint`, `bus/debug`, `bus/systemTree`,
+…), and an ESLint rule (`no-restricted-imports` in
+`app/web2/eslint.config.js`) refuses a `gsEval` or `gsEvalWithProgress`
+import under `components/`.
 
 ## SYSTEM tab
 

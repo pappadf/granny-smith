@@ -455,6 +455,46 @@ TEST(udif_parse_blkx_reads_chunks) {
     udif_map_free(m);
 }
 
+// A foreign writer escapes XML metacharacters in the partition label (hdiutil
+// writes "&amp;"); the table name is the unescaped text, as udif_info reads
+// the gs-* keys.
+TEST(udif_parse_blkx_unescapes_the_table_name) {
+    const test_chunk_t chunks[] = {
+        {UDIF_CHUNK_ZERO, 0, 4, 0, 0},
+    };
+    size_t mish_len = 0;
+    uint8_t *mish = build_mish(0, 4, 0, chunks, 1, &mish_len);
+    char *b64 = base64_encode(mish, mish_len);
+    char *xml = build_plist("Data &amp; Tools &lt;1&gt;", b64);
+    udif_map_t *m = NULL;
+    ASSERT_EQ_INT(0, udif_parse_blkx((const uint8_t *)xml, strlen(xml), &m));
+    ASSERT_TRUE(m != NULL);
+    ASSERT_EQ_INT(0, strcmp(m->tables[0].name, "Data & Tools <1>"));
+    udif_map_free(m);
+    free(xml);
+    free(b64);
+    free(mish);
+}
+
+// The shared plist accessor: the value after a key, unescaped, bounded by
+// the slice and the destination.
+TEST(udif_plist_value_reads_keys) {
+    static const char xml[] = "<dict><key>gs-profile</key><integer>1</integer>"
+                              "<key>gs-source</key><string>A &amp; B</string></dict>";
+    char v[64];
+    ASSERT_TRUE(udif_plist_value(xml, strlen(xml), "gs-profile", v, sizeof(v)));
+    ASSERT_EQ_INT(0, strcmp(v, "1"));
+    ASSERT_TRUE(udif_plist_value(xml, strlen(xml), "gs-source", v, sizeof(v)));
+    ASSERT_EQ_INT(0, strcmp(v, "A & B"));
+    // Truncated to the destination.
+    char small[3];
+    ASSERT_TRUE(udif_plist_value(xml, strlen(xml), "gs-source", small, sizeof(small)));
+    ASSERT_EQ_INT(0, strcmp(small, "A "));
+    ASSERT_TRUE(!udif_plist_value(xml, strlen(xml), "gs-origin", v, sizeof(v)));
+    // A key outside the slice is not found.
+    ASSERT_TRUE(!udif_plist_value(xml, 20, "gs-source", v, sizeof(v)));
+}
+
 TEST(udif_parse_blkx_rejects_malformed) {
     // A chunk running past the table's own sector count.
     const test_chunk_t overrun[] = {
@@ -552,7 +592,7 @@ TEST(udif_decode_zlib_chunk) {
     // must fail rather than yield a half-filled sector.
     udif_chunk_t two = {.type = UDIF_CHUNK_ZLIB, .sector = 0, .count = 2, .offset = 0, .length = slen};
     uint8_t big[1024] = {0};
-    ASSERT_EQ_INT(-EINVAL, udif_decode_chunk(&two, stream, slen, big, sizeof(big)));
+    ASSERT_EQ_INT(-EIO, udif_decode_chunk(&two, stream, slen, big, sizeof(big)));
     free(stream);
 }
 
@@ -584,8 +624,8 @@ static const vector_t *find_vector(const char *name) {
 }
 
 // Every compressed chunk type decodes through its codec; a stream that
-// decodes to other than the chunk's sectors, or that is corrupt, is
-// malformed (-EINVAL); a codec feature not implemented is -ENOTSUP.
+// decodes to other than the chunk's sectors, or that is corrupt, is an I/O
+// error (-EIO, codec_errno); a codec feature not implemented is -ENOTSUP.
 TEST(udif_decode_compressed_chunks) {
     static const struct {
         uint32_t type;
@@ -604,15 +644,16 @@ TEST(udif_decode_compressed_chunks) {
         ASSERT_EQ_INT(0, udif_decode_chunk(&c, v->enc, v->enc_len, dst, v->len));
         ASSERT_EQ_INT(0, memcmp(dst, want, v->len));
         // A sector more, or one fewer, than the stream holds.
+        // Corrupt data either way: an I/O error (codec_errno), not a bad argument.
         c.count++;
-        ASSERT_EQ_INT(-EINVAL, udif_decode_chunk(&c, v->enc, v->enc_len, dst, v->len + 512));
+        ASSERT_EQ_INT(-EIO, udif_decode_chunk(&c, v->enc, v->enc_len, dst, v->len + 512));
         c.count -= 2;
-        ASSERT_EQ_INT(-EINVAL, udif_decode_chunk(&c, v->enc, v->enc_len, dst, v->len));
+        ASSERT_EQ_INT(-EIO, udif_decode_chunk(&c, v->enc, v->enc_len, dst, v->len));
         // Garbage in place of the stream.
         c.count++;
         uint8_t junk[64];
         memset(junk, 0x5A, sizeof(junk));
-        ASSERT_EQ_INT(-EINVAL, udif_decode_chunk(&c, junk, sizeof(junk), dst, v->len));
+        ASSERT_EQ_INT(-EIO, udif_decode_chunk(&c, junk, sizeof(junk), dst, v->len));
         free(dst);
         free(want);
     }
@@ -771,6 +812,8 @@ int main(void) {
     RUN(udif_detect_rejects_impostors);
     RUN(udif_trailer_rejects_unsupported);
     RUN(udif_parse_blkx_reads_chunks);
+    RUN(udif_parse_blkx_unescapes_the_table_name);
+    RUN(udif_plist_value_reads_keys);
     RUN(udif_parse_blkx_rejects_malformed);
     RUN(udif_decode_zero_ignore_raw);
     RUN(udif_decode_zlib_chunk);

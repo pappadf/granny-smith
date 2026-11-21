@@ -20,8 +20,10 @@
 #include "pci.h"
 
 #include "card.h"
+#include "card_registry.h"
 #include "checkpoint.h"
 #include "config_space.h"
+#include "display.h"
 #include "log.h"
 #include "machine_parts.h"
 #include "machine_profile.h" // machine_substrate_t (slot-IRQ routing)
@@ -149,43 +151,76 @@ const pci_card_kind_t *const *pci_card_registry(void) {
 }
 
 const pci_card_kind_t *pci_card_find(const char *id) {
-    if (!id || !*id)
-        return NULL;
-    for (const pci_card_kind_t *const *p = g_card_registry; *p; p++) {
-        if (strcmp((*p)->id, id) == 0)
-            return *p;
-    }
-    return NULL;
-}
-
-// Compare two ids ignoring underscores, so a near-miss typo earns a
-// did-you-mean (the nubus_card_suggest rule).
-static bool ids_match_sans_underscores(const char *a, const char *b) {
-    while (*a == '_')
-        a++;
-    while (*b == '_')
-        b++;
-    while (*a && *b) {
-        if (*a != *b)
-            return false;
-        a++;
-        b++;
-        while (*a == '_')
-            a++;
-        while (*b == '_')
-            b++;
-    }
-    return *a == '\0' && *b == '\0';
+    return card_registry_find((const void *const *)g_card_registry, id);
 }
 
 const char *pci_card_suggest(const char *id) {
-    if (!id || !*id)
-        return NULL;
-    for (const pci_card_kind_t *const *p = g_card_registry; *p; p++) {
-        if (ids_match_sans_underscores((*p)->id, id))
-            return (*p)->id;
+    return card_registry_suggest((const void *const *)g_card_registry, id);
+}
+
+const pci_card_kind_t *pci_card_base(const pci_card_kind_t *k) {
+    const pci_card_kind_t *base = k && k->variant_of ? pci_card_find(k->variant_of) : NULL;
+    return base ? base : k;
+}
+
+// The row of `options` for `key`, or NULL.
+static const pci_card_option_t *option_row(const pci_card_option_t *options, const char *key) {
+    for (const pci_card_option_t *o = options; o && o->key; o++) {
+        if (strcmp(o->key, key) == 0)
+            return o;
     }
     return NULL;
+}
+
+// The index of `value` among `row`'s values, or -1.
+static int option_value_index(const pci_card_option_t *row, const char *value) {
+    for (int i = 0; row && row->values && row->values[i]; i++) {
+        if (strcmp(row->values[i], value) == 0)
+            return i;
+    }
+    return -1;
+}
+
+bool pci_card_accepts_option(const pci_card_kind_t *k, const char *key, const char *value) {
+    k = pci_card_base(k);
+    if (!k)
+        return false;
+    if (option_value_index(option_row(k->options, key), value) >= 0)
+        return true; // an advertised value
+    return k->accepts_option && k->accepts_option(key, value);
+}
+
+uint32_t pci_card_option_payload(const pci_card_option_t *options, const slot_opts_t *opts, const char *key,
+                                 uint32_t fallback) {
+    const pci_card_option_t *row = option_row(options, key);
+    if (!row || !row->payloads)
+        return fallback;
+    const char *value = slot_opts_option(opts, key);
+    int i = option_value_index(row, value ? value : row->default_value);
+    if (i < 0)
+        i = option_value_index(row, row->default_value); // validated already; belt and braces
+    return i >= 0 ? row->payloads[i] : fallback;
+}
+
+// The entry a variant's base card is built from: `opts` with each of the
+// variant's defaults the entry does not name itself added.  `opts` itself
+// for a kind that is no variant.
+static const slot_opts_t *variant_opts(const pci_card_kind_t *kind, const slot_opts_t *opts, slot_opts_t *scratch) {
+    if (!kind->variant_defaults)
+        return opts;
+    *scratch = *opts;
+    for (const pci_option_default_t *d = kind->variant_defaults; d->key; d++) {
+        if (slot_opts_option(scratch, d->key))
+            continue; // the document chose it
+        if (scratch->n_options >= SLOT_OPTIONS_MAX) {
+            LOG(0, "slot %d: no room for the %s default %s=%s", opts->slot, kind->id, d->key, d->value);
+            continue;
+        }
+        slot_option_t *o = &scratch->options[scratch->n_options++];
+        snprintf(o->key, sizeof o->key, "%s", d->key);
+        snprintf(o->value, sizeof o->value, "%s", d->value);
+    }
+    return scratch;
 }
 
 // Card ↔ socket compatibility, COMPUTED from the two declarations: the
@@ -724,15 +759,6 @@ static const char *socket_card_id(const pci_slot_decl_t *s, const slot_opts_t *e
     return s->default_card;
 }
 
-// Format a refusal into the caller's buffer and say no.
-__attribute__((format(printf, 3, 4))) static bool refuse(char *why, size_t len, const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(why, len, fmt, ap);
-    va_end(ap);
-    return false;
-}
-
 bool pci_slot_entry_check(const pci_slot_decl_t *slots, const char *model, const slot_opts_t *e, bool roms_final,
                           char *why, size_t why_len) {
     const pci_slot_decl_t *d = NULL;
@@ -741,53 +767,130 @@ bool pci_slot_entry_check(const pci_slot_decl_t *slots, const char *model, const
             d = s;
     }
     if (!d || d->kind == PCI_SLOT_ABSENT)
-        return refuse(why, why_len, "PCI slot %d on model '%s' takes no card", e->slot, model);
+        return card_refuse(why, why_len, "PCI slot %d on model '%s' takes no card", e->slot, model);
     const pci_card_kind_t *k = NULL;
     bool named = false;
     if (e->empty) {
         if (d->kind != PCI_SLOT_SOCKET)
-            return refuse(why, why_len, "PCI slot %d on model '%s' is built in and cannot be emptied", e->slot, model);
+            return card_refuse(why, why_len, "PCI slot %d on model '%s' is built in and cannot be emptied", e->slot,
+                               model);
     } else if (e->card[0]) {
         k = pci_card_find(e->card);
         if (!k) {
             const char *near = pci_card_suggest(e->card);
             if (near)
-                return refuse(why, why_len, "unknown card id '%s' — did you mean '%s'? (see catalog.pci_cards)",
-                              e->card, near);
-            return refuse(why, why_len, "unknown card id '%s' (see catalog.pci_cards)", e->card);
+                return card_refuse(why, why_len, "unknown card id '%s' — did you mean '%s'? (see catalog.pci_cards)",
+                                   e->card, near);
+            return card_refuse(why, why_len, "unknown card id '%s' (see catalog.pci_cards)", e->card);
         }
         bool fits = d->kind == PCI_SLOT_SOCKET ? pci_card_fits_socket(d, k)
                                                : (d->builtin_card_id && strcmp(d->builtin_card_id, k->id) == 0);
         if (!fits)
-            return refuse(why, why_len, "card '%s' fits no slot on model '%s' (see catalog.profile(\"%s\").pci_slots)",
-                          e->card, model, model);
+            return card_refuse(why, why_len,
+                               "card '%s' fits no slot on model '%s' (see catalog.profile(\"%s\").pci_slots)", e->card,
+                               model, model);
         named = d->kind == PCI_SLOT_SOCKET;
     } else {
         k = pci_card_find(d->kind == PCI_SLOT_SOCKET ? d->default_card : d->builtin_card_id);
     }
     if (e->video_mode[0] || e->custom_mode[0])
-        return refuse(why, why_len, "PCI slot %d takes no video mode (a PCI display card senses its monitor)", e->slot);
+        return card_refuse(why, why_len, "PCI slot %d takes no video mode (a PCI display card senses its monitor)",
+                           e->slot);
     for (int i = 0; i < e->n_options; i++) {
-        if (!k || !k->accepts_option || !k->accepts_option(e->options[i].key, e->options[i].value))
-            return refuse(why, why_len, "slot %d's card '%s' does not take option %s=%s", e->slot, k ? k->id : "(none)",
-                          e->options[i].key, e->options[i].value);
+        if (!pci_card_accepts_option(k, e->options[i].key, e->options[i].value))
+            return card_refuse(why, why_len, "slot %d's card '%s' does not take option %s=%s", e->slot,
+                               k ? k->id : "(none)", e->options[i].key, e->options[i].value);
     }
     if (e->rom[0]) {
         prom_id_t pid;
         if (!prom_identify_card(e->rom, &pid))
-            return refuse(why, why_len,
-                          "prom '%s' is not a recognised PCI expansion ROM (see catalog.proms.identify for what it is "
-                          "instead)",
-                          e->rom);
+            return card_refuse(
+                why, why_len,
+                "prom '%s' is not a recognised PCI expansion ROM (see catalog.proms.identify for what it is "
+                "instead)",
+                e->rom);
         if (!k || strcmp(pid.card_id, pci_card_rom_id(k)) != 0)
-            return refuse(why, why_len, "prom '%s' is for card '%s', not slot %d's '%s'", e->rom, pid.card_id, e->slot,
-                          k ? k->id : "(none)");
+            return card_refuse(why, why_len, "prom '%s' is for card '%s', not slot %d's '%s'", e->rom, pid.card_id,
+                               e->slot, k ? k->id : "(none)");
     }
     if (roms_final && named && k && k->requires_prom &&
         !prom_card_resolvable(pci_card_rom_id(k), e->rom[0] ? e->rom : NULL))
-        return refuse(why, why_len,
-                      "card '%s' (PCI slot %d) needs a PCI expansion ROM but no offered .prom file provides it", k->id,
-                      e->slot);
+        return card_refuse(why, why_len,
+                           "card '%s' (PCI slot %d) needs a PCI expansion ROM but no offered .prom file provides it",
+                           k->id, e->slot);
+    return true;
+}
+
+// ============================================================================
+// The expansion ROM
+// ============================================================================
+// A card whose kind requires_prom runs its own FCode: the bus resolves it
+// before the card is built (the image its checkpoint carries on a restore,
+// else the slot's file or the offered candidates) and owns it as dev->rom.
+// A device that declares a ROM BAR and backs it with nothing of its own gets
+// the default face below: dev->rom as big-endian bytes, $FF past the image
+// (an unprogrammed chip), writes ignored.  Reads have no side effects, so
+// there is no peek.
+
+static uint8_t rom_bar_read8(void *ctx, uint32_t off) {
+    const pci_device_t *dev = (const pci_device_t *)ctx;
+    if (!dev->rom || off >= dev->rom_size)
+        return 0xFFu;
+    return dev->rom[off];
+}
+
+static uint16_t rom_bar_read16(void *ctx, uint32_t off) {
+    return (uint16_t)((rom_bar_read8(ctx, off) << 8) | rom_bar_read8(ctx, off + 1u));
+}
+
+static uint32_t rom_bar_read32(void *ctx, uint32_t off) {
+    return ((uint32_t)rom_bar_read16(ctx, off) << 16) | rom_bar_read16(ctx, off + 2u);
+}
+
+static void rom_bar_write8(void *ctx, uint32_t off, uint8_t v) {
+    const pci_device_t *dev = (const pci_device_t *)ctx;
+    LOG(2, "slot %d: write to the expansion ROM at +$%05X = $%02X — ignored (it is a ROM)", dev->slot_index, off, v);
+}
+
+static void rom_bar_write16(void *ctx, uint32_t off, uint16_t v) {
+    rom_bar_write8(ctx, off, (uint8_t)(v >> 8));
+}
+
+static void rom_bar_write32(void *ctx, uint32_t off, uint32_t v) {
+    rom_bar_write8(ctx, off, (uint8_t)(v >> 24));
+}
+
+// The default ROM-BAR face (see above).
+static const memory_interface_t pci_rom_bar_iface = {
+    .read_uint8 = rom_bar_read8,
+    .read_uint16 = rom_bar_read16,
+    .read_uint32 = rom_bar_read32,
+    .write_uint8 = rom_bar_write8,
+    .write_uint16 = rom_bar_write16,
+    .write_uint32 = rom_bar_write32,
+};
+
+// The expansion ROM a requires_prom kind runs, into *out (malloc'd, the
+// caller's): the restored image when the checkpoint carried one, else the
+// slot's file or the offered candidates.  False when none resolves.
+static bool resolve_card_rom(const pci_card_kind_t *kind, const slot_opts_t *opts, const rom_image_t *restored,
+                             rom_image_t *out) {
+    *out = (rom_image_t){0};
+    if (restored && restored->data && restored->size) {
+        uint8_t *copy = (uint8_t *)malloc(restored->size);
+        if (!copy)
+            return false;
+        memcpy(copy, restored->data, restored->size);
+        out->data = copy;
+        out->size = restored->size;
+        return true;
+    }
+    uint8_t *buf = NULL;
+    size_t size = 0;
+    if (!prom_load_card(pci_card_rom_id(kind), opts->rom[0] ? opts->rom : NULL, &buf, &size, NULL))
+        return false;
+    out->data = buf;
+    out->size = size;
     return true;
 }
 
@@ -796,28 +899,26 @@ bool pci_slot_entry_check(const pci_slot_decl_t *slots, const char *model, const
 static void device_part_open(config_t *cfg, checkpoint_t *cp, const char *name, rom_image_t *rom);
 static void device_part_close(config_t *cfg, checkpoint_t *cp, pci_device_t *dev, const char *name);
 
+// The bus's slot-entry check as a card_entry_check_fn.
+static bool slot_entry_check_thunk(const void *slots, const char *model, const slot_opts_t *e, bool roms_final,
+                                   char *why, size_t why_len) {
+    return pci_slot_entry_check(slots, model, e, roms_final, why, why_len);
+}
+
 // A restore's slot table is a file the user supplied: every entry that seats
 // a card goes through the checks machine.boot applies to a document's, bar
 // the PROM file (the card's PROM comes from its own block).  A bad entry
 // fails the restore, naming the slot.
 static bool slot_table_valid(slot_opts_t *entry, const pci_slot_decl_t *slots, const char *model) {
-    for (int n = 0; n < PCI_MAX_SLOTS; n++) {
-        slot_opts_t *e = &entry[n];
-        if (!slot_opts_sanitize(e, n)) {
-            LOG(0, "Error: the checkpoint's PCI slot %d entry is malformed", n);
-            return false;
-        }
-        if (!e->card[0])
-            continue;
-        slot_opts_t check = *e;
-        check.rom[0] = '\0';
-        char why[256];
-        if (!pci_slot_entry_check(slots, model, &check, false, why, sizeof why)) {
-            LOG(0, "Error: the checkpoint's PCI slot %d: %s", n, why);
-            return false;
-        }
-    }
-    return true;
+    char why[256];
+    int n = card_slot_table_check(entry, PCI_MAX_SLOTS, slot_entry_check_thunk, slots, model, why, sizeof why);
+    if (n < 0)
+        return true;
+    if (!why[0])
+        LOG(0, "Error: the checkpoint's PCI slot %d entry is malformed", n);
+    else
+        LOG(0, "Error: the checkpoint's PCI slot %d: %s", n, why);
+    return false;
 }
 
 static void pci_slots_part_save(void *obj, checkpoint_t *cp) {
@@ -906,7 +1007,9 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
             case PCI_SLOT_ABSENT:
                 continue;
             }
-            if (!kind || !kind->factory)
+            // A variant is built by the card it is a variant of.
+            const pci_card_kind_t *builder = pci_card_base(kind);
+            if (!builder || (!builder->init && !builder->factory))
                 continue;
             if (s->slot < 0 || s->slot >= PCI_MAX_SLOTS) {
                 LOG(0, "slot %d out of range; ignored", s->slot);
@@ -929,8 +1032,38 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
             // A slot the document says nothing about builds with the card's
             // defaults.
             slot_opts_t none = {.slot = s->slot, .sense = MACHINE_SENSE_NONE};
-            pci_device_t *dev = kind->factory(s->slot, root->cfg, rom.data ? &rom : NULL, entry ? entry : &none);
+            const slot_opts_t *opts = entry ? entry : &none;
+            // A card that runs its own FCode is useless without it: Open
+            // Firmware runs it to build the node, and Mac OS loads the ndrv
+            // the same image publishes.  A card the document named that cannot
+            // resolve one has already failed machine.boot's validation;
+            // reaching here with nothing means a slot DEFAULT could not
+            // resolve, which degrades to an empty slot with a log rather than
+            // killing the boot.
+            rom_image_t prom = {0};
+            pci_device_t *dev = NULL;
+            if (kind->requires_prom && !resolve_card_rom(kind, opts, &rom, &prom))
+                LOG(0,
+                    "slot %d: no expansion ROM available for the %s — the card cannot enumerate without its own "
+                    "FCode, so the slot is left empty",
+                    s->slot, kind->display_name ? kind->display_name : kind->id);
+            else {
+                slot_opts_t merged;
+                dev = pci_card_construct(builder, bus, s->slot, root->cfg,
+                                         kind->requires_prom ? &prom : (rom.data ? &rom : NULL),
+                                         variant_opts(kind, opts, &merged));
+            }
             free((void *)rom.data);
+            if (dev && prom.data) {
+                // The bus owns the ROM the card runs (pci_root_delete frees it)
+                dev->rom = (uint8_t *)prom.data;
+                dev->rom_size = prom.size;
+                prom.data = NULL;
+            }
+            free((void *)prom.data);
+            // A declared ROM BAR the device backs with nothing: the default face
+            if (dev && dev->decl && dev->decl->rom_size && dev->backing[PCI_ROM_BAR_INDEX].kind == PCI_BACKING_NONE)
+                pci_bar_backing_iface(dev, PCI_ROM_BAR_INDEX, &pci_rom_bar_iface, dev);
             if (!dev) {
                 LOG(1, "slot %d card factory '%s' returned NULL", s->slot, kind->id);
                 if (cp) {
@@ -940,7 +1073,6 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
                 machine_part_cancel(root->cfg);
                 continue;
             }
-            dev->slot_index = s->slot;
             pci_bus_add_device(bus, dev, s->device);
             if (pci_bus_device(bus, s->device) != dev) {
                 // The IDSEL was already taken (a slot table that names one
@@ -949,10 +1081,8 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
                 LOG(0, "slot %d: device %d on bus %d is already seated; '%s' dropped", s->slot, s->device, s->bus,
                     kind->id);
                 machine_part_cancel(root->cfg);
-                if (dev->ops && dev->ops->teardown)
-                    dev->ops->teardown(dev, root->cfg);
-                free(dev->rom);
-                free(dev);
+                dev->bus = NULL; // never seated
+                pci_device_free(dev, root->cfg);
                 continue;
             }
             bus->owns[s->device] = true; // our factory made it; we free it
@@ -982,12 +1112,10 @@ void pci_root_delete(pci_root_t *root) {
             pci_device_t *dev = bus->dev[d];
             if (!dev)
                 continue;
-            if (dev->ops && dev->ops->teardown)
+            if (bus->owns[d])
+                pci_device_free(dev, bus->cfg); // teardown, ROM, bus-allocated priv, the device
+            else if (dev->ops && dev->ops->teardown)
                 dev->ops->teardown(dev, bus->cfg);
-            if (bus->owns[d]) {
-                free(dev->rom);
-                free(dev);
-            }
             bus->dev[d] = NULL;
         }
         g_pci_decode_gen++;
@@ -1023,10 +1151,7 @@ static int pci_collect(pci_root_t *root, pci_device_t **out, int max) {
 // restores the card it was saved with whatever PROM files the host offers now.
 static void pci_device_part_save(void *obj, checkpoint_t *cp) {
     pci_device_t *dev = obj;
-    uint32_t size = dev->rom ? (uint32_t)dev->rom_size : 0;
-    system_write_checkpoint_data(cp, &size, sizeof size, "pci.rom");
-    if (size)
-        system_write_checkpoint_data(cp, dev->rom, size, "pci.rom");
+    checkpoint_write_blob(cp, dev->rom, dev->rom ? (uint32_t)dev->rom_size : 0, "pci.rom");
     system_write_checkpoint_data(cp, &dev->cfg, sizeof(dev->cfg), "pci.cfg");
     if (dev->ops && dev->ops->checkpoint_save)
         dev->ops->checkpoint_save(dev, cp);
@@ -1040,20 +1165,7 @@ static void device_part_open(config_t *cfg, checkpoint_t *cp, const char *name, 
     if (!cp)
         return;
     uint32_t size = 0;
-    system_read_checkpoint_data(cp, &size, sizeof size, "pci.rom");
-    if (checkpoint_has_error(cp) || !size)
-        return;
-    if (size > DEVICE_ROM_MAX) {
-        LOG(0, "Error: the checkpoint's '%s' expansion ROM is %u bytes (at most %u)", name, size, DEVICE_ROM_MAX);
-        checkpoint_set_error(cp);
-        return;
-    }
-    uint8_t *data = malloc(size);
-    if (!data) {
-        checkpoint_set_error(cp);
-        return;
-    }
-    system_read_checkpoint_data(cp, data, size, "pci.rom");
+    uint8_t *data = checkpoint_read_blob(cp, DEVICE_ROM_MAX, &size, "pci.rom");
     *rom = (rom_image_t){.data = data, .size = size};
 }
 
@@ -1100,6 +1212,37 @@ void pci_reset(pci_root_t *root) {
         pci_device_regions_changed(devs[i]);
         if (devs[i]->ops && devs[i]->ops->reset)
             devs[i]->ops->reset(devs[i], root->cfg);
+    }
+}
+
+// The power-cycle default: a device with VRAM comes up as a cold one does --
+// power-on registers, VRAM lost, the raster black -- rather than showing the
+// last session's picture until its ROM redraws (the NuBus default's twin).
+static void pci_device_power_on_default(pci_device_t *dev, config_t *cfg) {
+    uint8_t *vram = NULL;
+    size_t size = dev->ops->vram ? dev->ops->vram(dev, &vram) : 0;
+    if (!size || !vram)
+        return; // nothing the power held
+    // Registers first: the blank below paints the power-on raster
+    if (dev->ops->reset)
+        dev->ops->reset(dev, cfg);
+    memset(vram, 0, size);
+    if (dev->ops->display)
+        display_blank_raster(dev->ops->display(dev));
+}
+
+void pci_power_on(pci_root_t *root) {
+    if (!root)
+        return;
+    pci_device_t *devs[PCI_MAX_TOTAL_DEVICES];
+    int n = pci_collect(root, devs, PCI_MAX_TOTAL_DEVICES);
+    for (int i = 0; i < n; i++) {
+        if (!devs[i]->ops)
+            continue;
+        if (devs[i]->ops->power_on)
+            devs[i]->ops->power_on(devs[i], root->cfg);
+        else
+            pci_device_power_on_default(devs[i], root->cfg);
     }
 }
 

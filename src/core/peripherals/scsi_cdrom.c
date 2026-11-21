@@ -397,7 +397,7 @@ static int build_page_2a(uint8_t *buf, int page_control) {
 // knows page 2Ah, which a SCSI-1 CDU-8002 has no notion of.
 static void cd_mode_sense(scsi_t *scsi, bool ten) {
     int target = scsi->bus.target & 7;
-    uint16_t alloc_len = ten ? (uint16_t)(scsi->buf.data[7] << 8 | scsi->buf.data[8]) : scsi->buf.data[4];
+    uint16_t alloc_len = ten ? RD_BE16(scsi->buf.data + 7) : scsi->buf.data[4];
     uint8_t page_code = scsi->buf.data[2] & 0x3F;
     int page_control = (scsi->buf.data[2] >> 6) & 0x03;
 
@@ -586,8 +586,7 @@ void scsi_cdrom_mode_select(scsi_t *scsi) {
     // silently keeping the old size, which is what this did, tells the guest
     // the switch happened and then serves it the wrong sectors.
     if (bd_len >= 8 && offset + 8 <= len) {
-        uint32_t block_len =
-            ((uint32_t)data[offset + 5] << 16) | ((uint32_t)data[offset + 6] << 8) | (uint32_t)data[offset + 7];
+        uint32_t block_len = RD_BE24(&data[offset + 5]);
         switch (block_len) {
         case 0:
             // A zero-filled descriptor is how a driver says "I came here for
@@ -745,7 +744,7 @@ static void scsi_cdrom_read_toc_session(scsi_t *scsi, uint8_t format, bool msf, 
 
 void scsi_cdrom_read_toc(scsi_t *scsi) {
     int target = scsi->bus.target & 7;
-    uint16_t alloc_len = (scsi->buf.data[7] << 8) | scsi->buf.data[8];
+    uint16_t alloc_len = RD_BE16(scsi->buf.data + 7);
     // MSF: X3.131-1994 Table 260 puts it at byte 1 bit 1, and CDU-541 S5.2.24
     // agrees -- "the format of the CD Address is determined by the MSF bit in
     // the CDB".  Byte 2 is Reserved in BOTH; there is no format field here.
@@ -877,7 +876,7 @@ static void put_bcd_msf(uint8_t *dst, uint32_t lba) {
 // "Audio CD 1".
 void scsi_cdrom_read_toc_sony(scsi_t *scsi) {
     int target = scsi->bus.target & 7;
-    uint16_t alloc_len = (uint16_t)((scsi->buf.data[7] << 8) | scsi->buf.data[8]);
+    uint16_t alloc_len = RD_BE16(scsi->buf.data + 7);
     uint8_t type = scsi->buf.data[9] & 0xC0;
 
     // Single data session: track 1 at LBA 0, the lead-out after the last block.
@@ -918,7 +917,7 @@ void scsi_cdrom_read_toc_sony(scsi_t *scsi) {
 
 // Handle READ SUB-CHANNEL — return "no current audio status" for data disc
 void scsi_cdrom_read_sub_channel(scsi_t *scsi) {
-    uint16_t alloc_len = (scsi->buf.data[7] << 8) | scsi->buf.data[8];
+    uint16_t alloc_len = RD_BE16(scsi->buf.data + 7);
 
     // Minimal sub-channel data header (4 bytes)
     uint8_t resp[4];
@@ -934,14 +933,13 @@ void scsi_cdrom_read_sub_channel(scsi_t *scsi) {
 
 // Handle READ HEADER — return mode 1 data for the requested LBA
 void scsi_cdrom_read_header(scsi_t *scsi) {
-    uint16_t alloc_len = (uint16_t)(((uint16_t)scsi->buf.data[7] << 8) | scsi->buf.data[8]);
+    uint16_t alloc_len = RD_BE16(scsi->buf.data + 7);
     // X3.131-1994 S14.1.5: "The READ HEADER, READ SUB-CHANNEL and READ TABLE OF
     // CONTENTS commands have this feature" -- the MSF bit, byte 1 bit 1.
     bool msf = (scsi->buf.data[1] & 0x02) != 0;
     // Promote each byte to uint32_t before shifting so the high-byte shift
     // (`<< 24`) doesn't trip signed-overflow UB when data[2] > 0x7F.
-    uint32_t lba = ((uint32_t)scsi->buf.data[2] << 24) | ((uint32_t)scsi->buf.data[3] << 16) |
-                   ((uint32_t)scsi->buf.data[4] << 8) | (uint32_t)scsi->buf.data[5];
+    uint32_t lba = RD_BE32(scsi->buf.data + 2);
 
     uint8_t resp[8];
     memset(resp, 0, sizeof(resp));

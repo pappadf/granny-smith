@@ -11,7 +11,7 @@ platform is the PSC ([psc.md](psc.md)), which absorbs VIA2, the interrupt
 controller and every DMA channel.
 
 Machine pages: [q840av.md](q840av.md), [q660av.md](q660av.md).
-Device pages: [psc.md](psc.md), [civic.md](civic.md), [cuda.md](cuda.md).
+Device pages: [psc.md](psc.md), [civic.md](civic.md), [cuda.md](../../core/peripherals/cuda.md).
 Hardware reference: [av.md](../../../reference/machines/av/av.md) (family),
 [q840av.md](../../../reference/machines/av/q840av.md),
 [q660av.md](../../../reference/machines/av/q660av.md) (machines) — cited by
@@ -61,7 +61,7 @@ this, family level.)
 - **Interrupts**: VIA1→IPL 1, the PSC-VIA2
   window→IPL 2 (**SCSI and floppy arrive here**, not at the PSC level
   registers), MACE→3, SCC/Singer/DMA-complete→4, DSP→5, 60.15 Hz→6, NMI→7.
-  The family instantiates the shared `mac030_irq_resolve_ipl` engine with its
+  The family instantiates the shared `machine_irq_update` engine with its
   own routing table ([av.md](../../../reference/machines/av/av.md) §5.1).
 
 ## YMCA (memory controller, `$50F30400`)
@@ -90,7 +90,7 @@ through it when it is smaller. The ROM sizes memory against exactly that:
 
 A bank's ten bits are written boundary first, `Sz2` last, so the decode is
 rebuilt on each bank's `Sz2` write; windows it leaves are cleared
-(`mac030_clear_page`) so they do not echo.
+(`page_clear`, `src/machines/runtime/page_fill.h`) so they do not echo.
 
 The installed RAM is the board's banks (`av_ram_banks`): the soldered bank
 (660AV: 4 MB as bank 0) and SIMMs of 4/8/16/32 MB, slot `k` on banks
@@ -134,7 +134,7 @@ hangs forever inside `SCSIComplete`'s phase wait (whose deadline is
 |---|---|---|
 | PSC | [psc.c](../../../../src/machines/av/psc.c) | interrupt controller + 7-channel DMA + sound/DSP latches — [psc.md](psc.md) |
 | CIVIC + Sebastian | [civic.c](../../../../src/machines/av/civic.c) | frame buffer, bit-serial registers, RAMDAC — [civic.md](civic.md) |
-| Cuda | [cuda.c](../../../../src/machines/av/cuda.c) | ADB/PRAM/RTC behind VIA1's shift register — [cuda.md](cuda.md) |
+| Cuda | [cuda.c](../../../../src/core/peripherals/cuda.c) | ADB/PRAM/RTC behind VIA1's shift register — [cuda.md](../../core/peripherals/cuda.md) |
 | New Age | [new_age.c](../../../../src/machines/av/new_age.c) | µPD72070 FDC: the shared chip model (`core/peripherals`) on PSC DMA channel 3 and VIA2 bit 5, driving one internal SuperDrive — [new_age.md](../../core/peripherals/new_age.md) |
 | MACE | [mace.c](../../../../src/machines/av/mace.c) | Am79C940 register stub + the Apple address PROM; no datapath, so `.ENET` does not load |
 | SCSI | 53C96 (`core/peripherals`) | at `$18000`, `$10` stride; real DMA on PSC channel 0, which the HAL polls |

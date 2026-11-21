@@ -14,18 +14,6 @@
 #include "of_nvram.h"
 #include "slot_tables.h"
 
-// PC66 SDRAM, three 168-pin DIMM slots, 256 MB per slot at most.
-static const uint32_t pmg3_ram_options_kb[] = {32768,  65536,  98304,  131072, 163840, 196608, 229376,
-                                               262144, 294912, 327680, 360448, 393216, 425984, 458752,
-                                               524288, 557056, 589824, 655360, 786432, 0};
-
-// The Whisper card's ID EEPROM (I2C $53): a length/marker byte, the
-// AA 55 AA signature, the NUL-terminated name, the version the tree
-// surfaces as `version 00000002` (read back from a real Rev C machine with
-// `8c 0 0a6 read-iic` at an Open Firmware prompt).
-static const uint8_t whisper_eeprom[16] = {0x0F, 0xAA, 0x55, 0xAA, 'W',  'h',  'i',  's',
-                                           'p',  'e',  'r',  0x00, 0x00, 0x00, 0x00, 0x02};
-
 static const gossamer_board_desc_t pmg3dt_board = {
     // bit 15 SWIM3, bit 14 clear (burst ROM), bits 13-8 all ones (three
     // empty slots), PID 1 (the ROM's L2CR table entry $A9100000: 512 KB,
@@ -37,7 +25,7 @@ static const gossamer_board_desc_t pmg3dt_board = {
     .hid1 = 0xA0000000u, // PLL_CFG 1010: 4x -> 267.28 MHz (the ROM's own table)
     .ati_device = 0x4750u, // Rage Pro Turbo (GP)
     .ati_revision = 0x7Cu,
-    .perch_eeprom = whisper_eeprom,
+    .perch_eeprom = gossamer_whisper_eeprom,
 };
 
 const hw_profile_t machine_pmg3dt = {
@@ -53,7 +41,7 @@ const hw_profile_t machine_pmg3dt = {
     .ram_max = 0x30000000, // 768 MB: three 256 MB DIMMs
     .rom_size = 0x400000, // 4 MB ($78F57389 / $79D68D63)
 
-    .ram_options = pmg3_ram_options_kb,
+    .ram_options = gossamer_ram_options_kb,
     .storage = gossamer_storage,
     .default_storage = gossamer_default_storage,
     .appletalk = true,

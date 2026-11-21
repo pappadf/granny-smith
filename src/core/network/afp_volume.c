@@ -401,13 +401,7 @@ int atalk_afp_error_code_at(int index, int32_t *out_code, uint64_t *out_count) {
 // Advertise the server as `object` (registering, or renaming in place).  On
 // failure the advertisement -- and the caller's stored name -- stay as they were.
 static int afp_nbp_publish(const char *object) {
-    atalk_nbp_service_desc_t desc = {.object = object,
-                                     .type = AFP_ENTITY_TYPE,
-                                     .zone = "*",
-                                     .socket = g_afp->socket,
-                                     .node = ATALK_HOST_NODE,
-                                     .net = 0};
-    return atalk_nbp_publish(&g_afp->nbp_entry, &desc);
+    return atalk_nbp_publish_host(&g_afp->nbp_entry, object, AFP_ENTITY_TYPE, g_afp->socket);
 }
 
 // Withdraw the NBP advertisement so the Chooser stops listing the server.
@@ -418,12 +412,11 @@ static void afp_nbp_withdraw(void) {
 int atalk_afp_set_name(const char *name, char *err, size_t err_len) {
     if (err && err_len)
         err[0] = '\0';
-    if (atalk_nbp_name_check("server name", name, err, err_len) != 0)
-        return -1;
     // Published under the new name first, stored after: a name another entity
     // holds leaves the server advertised, and named, as it was.
-    if (g_afp->enabled && afp_nbp_publish(name) != 0)
-        return vol_fail(err, err_len, "the name '%s' is already taken on the network", name);
+    if (atalk_nbp_rename(&g_afp->nbp_entry, "server name", name, AFP_ENTITY_TYPE, g_afp->socket, g_afp->enabled, err,
+                         err_len) != 0)
+        return -1;
     snprintf(g_afp->object, sizeof(g_afp->object), "%s", name);
     LOG(1, "AFP: server name is now '%s'", g_afp->object);
     return 0;

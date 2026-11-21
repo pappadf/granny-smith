@@ -18,6 +18,11 @@ arrow("left", 0x183, 0x08)
 arrow("right", 0x183, 0x10)
 arrow("down", 0x183, 0x20)
 arrow("up", 0x183, 0x40)
+# The extended block by name -- Windows NT Setup pages with Page Down and
+# accepts with F8, and keyboard.down could not name either: Page Down $79 is
+# byte $183 bit 1, F8 $64 byte $180 bit 4.
+arrow("pagedown", 0x183, 0x02)
+arrow("f8", 0x180, 0x10)
 
 # The Lisa's keymap takes the same raw codes.
 machine.boot model="lisa" rom="${$TEST_DATA}/roms/lisa2-revh-098917b2.rom"

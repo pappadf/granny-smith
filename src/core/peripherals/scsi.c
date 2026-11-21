@@ -12,16 +12,16 @@
 #include "image_part.h"
 #include "out.h"
 
-#include "io_leaf.h"
-
-value_t io_leaf_export_image(struct image *img, const char *dest, const char *codec, const char *what)
-    __attribute__((weak));
 #include "checkpoint.h"
 #include "drive_catalog.h"
 #include "gs_assert.h"
 #include "image.h"
+#include "io_leaf.h"
 #include "log.h"
+#include "medium_export.h"
+#include "memory_iface_sized.h"
 #include "object.h"
+#include "object_order.h"
 #include "platform.h"
 #include "scheduler.h"
 #include "scsi_internal.h"
@@ -50,6 +50,7 @@ static const class_desc_t scsi_image_class;
 #include <assert.h>
 #include <limits.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -466,6 +467,7 @@ void scsi_5380_bus_freed(scsi_t *bus) {
     if (!chip)
         return;
     chip->end_of_dma = false;
+    scsi_msg_reset(&chip->msg); // no message conversation survives a disconnect
 }
 
 // One byte of a bus-master DATA OUT, through this chip's handshake model.
@@ -501,6 +503,63 @@ void scsi_5380_dma_push_byte(scsi_t *bus, uint8_t byte) {
 // ============================================================================
 // Memory Interface
 // ============================================================================
+
+// What a 5380 can agree to in a negotiation: it has no synchronous mode at
+// all (every transfer is REQ/ACK interlocked), so an SDTR is answered with
+// offset 0, asynchronous, at whatever period was offered; and it is narrow.
+static const scsi_msg_caps_t SCSI_5380_MSG_CAPS = {.min_period = 0, .max_offset = 0, .wide = false};
+
+// The ACK ending a MESSAGE OUT byte's handshake: the target takes the byte
+// from ODR into the message session (scsi_msgsession.c, the one MESH and the
+// 53C8xx use).  While ATN stays asserted the initiator has more to send, so
+// the target asks for the next byte; once ATN is dropped (before the last
+// byte's ACK, SCSI-2 5.1.9) the message is over and the session parses it.
+//
+// This used to decode each byte on its own -- IDENTIFY, ABORT/BUS DEVICE
+// RESET, "anything else completes with GOOD status" -- so the $01 that opens
+// an extended message ended the command after its first byte.
+static void message_out_ack(scsi_t *scsi) {
+    scsi_5380_t *chip = scsi->chip5380;
+    if (!scsi_msg_collect(&chip->msg, chip->reg.odr))
+        LOG(1, "scsi: MESSAGE OUT byte $%02X dropped (message too long)", chip->reg.odr);
+    if (chip->reg.icr & ICR_ATN) {
+        scsi->bus.req = true; // more to come
+        return;
+    }
+    scsi_msg_result_t r;
+    scsi_msg_complete(&chip->msg, &SCSI_5380_MSG_CAPS, &r);
+    if (r.abort) {
+        phase_free(scsi); // ABORT / BUS DEVICE RESET: the target lets go of the bus
+        return;
+    }
+    if (r.incomplete)
+        LOG(1, "scsi: MESSAGE OUT ended mid extended message (%u bytes) -- ignored", chip->msg.out_len);
+    uint8_t reply;
+    if (scsi_msg_next(&chip->msg, &reply)) {
+        phase_message_in(scsi, reply); // the target answers (SDTR, WDTR, MESSAGE REJECT)
+        return;
+    }
+    // Nothing to answer (an IDENTIFY, a NO OPERATION...): the command
+    // completes with GOOD status, as the 5380 path always has.
+    scsi_msg_reset(&chip->msg);
+    phase_status(scsi, STATUS_GOOD);
+}
+
+// The ACK ending a MESSAGE IN byte: the next byte of a reply to MESSAGE OUT,
+// GOOD status once the reply is out, or -- COMMAND COMPLETE accepted -- bus
+// free.
+static void message_in_ack(scsi_t *scsi) {
+    scsi_5380_t *chip = scsi->chip5380;
+    uint8_t next;
+    if (scsi_msg_next(&chip->msg, &next)) {
+        phase_message_in(scsi, next);
+    } else if (chip->msg.in_n) {
+        scsi_msg_reset(&chip->msg);
+        phase_status(scsi, STATUS_GOOD);
+    } else {
+        phase_free(scsi);
+    }
+}
 
 // Write to the initiator command register
 static void write_icr(scsi_t *scsi, uint8_t val) {
@@ -590,24 +649,10 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
         } else if (scsi->bus.phase == scsi_status)
             phase_message_in(scsi, MSG_CMD_COMPLETE);
         else if (scsi->bus.phase == scsi_message_in)
-            phase_free(scsi);
-        else if (scsi->bus.phase == scsi_message_out) {
-            // Process the message byte received from the initiator.
-            uint8_t msg = scsi->chip5380->reg.odr;
-            if (msg >= 0x80) {
-                // IDENTIFY: LUN in bits 0-2, disconnect privilege in bit 6.
-                // Both branches of the saved_phase test currently complete with
-                // STATUS_GOOD; the dispatch is kept as a hook for future
-                // phase-specific message handling.
-                phase_status(scsi, STATUS_GOOD);
-            } else if (msg == 0x06 || msg == 0x0C) {
-                // ABORT or BUS DEVICE RESET: go bus free
-                phase_free(scsi);
-            } else {
-                // Unhandled message — complete with GOOD status
-                phase_status(scsi, STATUS_GOOD);
-            }
-        } else if (scsi->bus.phase == scsi_data_in) {
+            message_in_ack(scsi);
+        else if (scsi->bus.phase == scsi_message_out)
+            message_out_ack(scsi);
+        else if (scsi->bus.phase == scsi_data_in) {
             if (scsi->buf.size == 0)
                 phase_status(scsi, STATUS_GOOD);
             else
@@ -974,33 +1019,9 @@ static uint8_t peek_uint8(void *s, uint32_t addr) {
     return reg_read(s, addr, true);
 }
 
-// Read a 16-bit word from SCSI controller. The NCR 5380 is byte-only; wide
-// reads come from buggy drivers or debugger probes. Log and return a safe
-// floating-bus value rather than aborting.
-static uint16_t read_uint16(void *scsi, uint32_t addr) {
-    (void)scsi;
-    LOG(1, "scsi: word read at 0x%08X — NCR 5380 is byte-only, returning 0xFFFF", addr);
-    return 0xFFFF;
-}
-
-// Read a 32-bit longword from SCSI controller — same byte-only rationale.
-static uint32_t read_uint32(void *scsi, uint32_t addr) {
-    (void)scsi;
-    LOG(1, "scsi: long read at 0x%08X — NCR 5380 is byte-only, returning 0xFFFFFFFF", addr);
-    return 0xFFFFFFFFu;
-}
-
-// The wide reads' floating-bus values, without their log lines.
-static uint16_t peek_uint16(void *scsi, uint32_t addr) {
-    (void)scsi;
-    (void)addr;
-    return 0xFFFF;
-}
-static uint32_t peek_uint32(void *scsi, uint32_t addr) {
-    (void)scsi;
-    (void)addr;
-    return 0xFFFFFFFFu;
-}
+// The NCR 5380 is byte-only; wide accesses come from buggy drivers or
+// debugger probes: open bus, logged, rather than aborting.
+MEMORY_IFACE_OPEN_BUS_WIDE(scsi_wide, "NCR 5380")
 
 // ============================================================================
 // scsi_odr_auto_handshake_byte() — shared body for "byte arrives at ODR
@@ -1234,17 +1255,6 @@ static void write_uint8(void *s, uint32_t addr, uint8_t value) {
     }
 }
 
-// Wide writes — same byte-only rationale as the wide-read helpers.
-static void write_uint16(void *scsi, uint32_t addr, uint16_t value) {
-    (void)scsi;
-    LOG(1, "scsi: word write at 0x%08X = 0x%04X — NCR 5380 is byte-only, ignored", addr, value);
-}
-
-static void write_uint32(void *scsi, uint32_t addr, uint32_t value) {
-    (void)scsi;
-    LOG(1, "scsi: long write at 0x%08X = 0x%08X — NCR 5380 is byte-only, ignored", addr, value);
-}
-
 // ============================================================================
 // Lifecycle: Constructor
 // ============================================================================
@@ -1253,6 +1263,10 @@ static void write_uint32(void *scsi, uint32_t addr, uint32_t value) {
 // Attaching the NCR 5380 to a bus
 // ============================================================================
 
+// The checkpointed plain-data prefixes, up to the first host pointer
+CHECKPOINT_PREFIX(scsi_5380_t, bus);
+CHECKPOINT_PREFIX(scsi_t, buf);
+
 // Give this bus a 5380, and hand back the chip.
 //
 // Where the chip answers in the address space is the MACHINE's business, not
@@ -1260,7 +1274,7 @@ static void write_uint32(void *scsi, uint32_t addr, uint32_t value) {
 // their decode puts it.  This function used to take a memory map and register
 // $500000/$100000 in it -- a Macintosh Plus address hard-coded inside
 // src/core, which every other 5380 machine already bypassed by doing its own
-// decode (mac030_glue_io.c, mdu_io.c, iifx.c).
+// decode (glue_io.c, mdu_io.c, iifx.c).
 scsi_5380_t *scsi_5380_attach(scsi_t *bus, checkpoint_t *checkpoint) {
     if (!bus)
         return NULL;
@@ -1271,14 +1285,9 @@ scsi_5380_t *scsi_5380_attach(scsi_t *bus, checkpoint_t *checkpoint) {
     bus->chip5380 = chip;
 
     chip->memory_interface.read_uint8 = &read_uint8;
-    chip->memory_interface.read_uint16 = &read_uint16;
-    chip->memory_interface.read_uint32 = &read_uint32;
     chip->memory_interface.peek_uint8 = &peek_uint8;
-    chip->memory_interface.peek_uint16 = &peek_uint16;
-    chip->memory_interface.peek_uint32 = &peek_uint32;
     chip->memory_interface.write_uint8 = &write_uint8;
-    chip->memory_interface.write_uint16 = &write_uint16;
-    chip->memory_interface.write_uint32 = &write_uint32;
+    MEMORY_IFACE_SET_OPEN_BUS_WIDE(&chip->memory_interface, scsi_wide);
 
     // The DRQ service is this chip's event, so its type is registered as the
     // chip is attached -- before the event queue is restored, which may hold
@@ -1292,7 +1301,7 @@ scsi_5380_t *scsi_5380_attach(scsi_t *bus, checkpoint_t *checkpoint) {
         // The chip's plain-data block, matching the single write in
         // scsi_checkpoint.  Stops at the runtime pointers -- see
         // scsi_internal.h.
-        system_read_checkpoint_data(checkpoint, chip, offsetof(scsi_5380_t, bus));
+        checkpoint_load_prefix(checkpoint, chip, scsi_5380_t);
         // Re-drive the restored pin levels into the machine's wiring.
         scsi_update_irq(bus);
         scsi_update_drq(bus);
@@ -1348,7 +1357,7 @@ scsi_t *scsi_init_named(struct scheduler *sched, checkpoint_t *checkpoint, const
         //
         // buf.data was allocated above and everything from buf onward is a
         // pointer, so the block stops there.
-        system_read_checkpoint_data(checkpoint, scsi, offsetof(scsi_t, buf));
+        checkpoint_load_prefix(checkpoint, scsi, scsi_t);
 
         for (int i = 0; i < 8; i++) {
             // Backward compat: default HD values for old checkpoints missing
@@ -1372,33 +1381,10 @@ scsi_t *scsi_init_named(struct scheduler *sched, checkpoint_t *checkpoint, const
             // this slot", and after a restore that is only knowable by whether
             // the lookup succeeded.  Eject clears the image too (see
             // scsi_eject_device), so the two cannot disagree.
-            uint32_t len = 0;
-            system_read_checkpoint_data(checkpoint, &len, sizeof(len));
-            scsi->device_images[i] = NULL;
-            scsi->devices[i].medium_present = false;
-            if (len > 0) {
-                char *name = (char *)malloc(len);
-                if (name) {
-                    system_read_checkpoint_data(checkpoint, name, len);
-                    name[len - 1] = '\0';
-                    image_t *img = images_find(images, name);
-                    if (img) {
-                        scsi->device_images[i] = img;
-                        scsi->devices[i].medium_present = true;
-                    } else {
-                        // The device held a medium: a restore without it is
-                        // not the machine that was saved.
-                        LOG(0, "SCSI id %d: the checkpoint's medium '%s' is not among its images", i, name);
-                        checkpoint_set_error(checkpoint);
-                    }
-                    free(name);
-                } else {
-                    // consume bytes to keep stream aligned
-                    char tmp;
-                    for (uint32_t k = 0; k < len; ++k)
-                        system_read_checkpoint_data(checkpoint, &tmp, 1);
-                }
-            }
+            char what[24];
+            snprintf(what, sizeof what, "SCSI id %d", i);
+            scsi->device_images[i] = checkpoint_read_image_ref(checkpoint, images, what, NULL);
+            scsi->devices[i].medium_present = scsi->device_images[i] != NULL;
         }
 
         // Restore buffer contents (if any). The buf.data has been allocated above. Restore its max/size/pos first.
@@ -1441,7 +1427,7 @@ scsi_t *scsi_init_named(struct scheduler *sched, checkpoint_t *checkpoint, const
     scsi->object = object_new(&scsi_class, scsi, primary ? "scsi" : name);
     if (scsi->object) {
         object_set_label(scsi->object, primary ? "SCSI" : name);
-        object_set_order(scsi->object, primary ? 90 : 91);
+        object_set_order(scsi->object, primary ? OBJ_ORDER_SCSI : OBJ_ORDER_SCSI_SECONDARY);
         object_attach(machine_object(), scsi->object);
         scsi->bus_object = object_new(&scsi_bus_class, scsi, "bus");
         if (scsi->bus_object) {
@@ -1701,16 +1687,8 @@ void scsi_delete(scsi_t *scsi) {
             scsi->device_objects[i] = NULL;
         }
     }
-    if (scsi->devices_object) {
-        object_detach(scsi->devices_object);
-        object_delete(scsi->devices_object);
-        scsi->devices_object = NULL;
-    }
-    if (scsi->bus_object) {
-        object_detach(scsi->bus_object);
-        object_delete(scsi->bus_object);
-        scsi->bus_object = NULL;
-    }
+    object_destroy(&scsi->devices_object);
+    object_destroy(&scsi->bus_object);
     // Only the instance mounted at `machine.scsi` displaced the static
     // singleton on the way in (see the `primary` gate in scsi_init_named), so
     // only that instance may restore it on the way out.  A machine with a
@@ -1720,11 +1698,7 @@ void scsi_delete(scsi_t *scsi) {
     // shadow a live bus for whatever teardown order happens to run next.
     bool primary = scsi->object && strcmp(object_name(scsi->object), "scsi") == 0;
 
-    if (scsi->object) {
-        object_detach(scsi->object);
-        object_delete(scsi->object);
-        scsi->object = NULL;
-    }
+    object_destroy(&scsi->object);
     if (scsi->buf.data) {
         free(scsi->buf.data);
         scsi->buf.data = NULL;
@@ -1766,19 +1740,12 @@ void scsi_checkpoint(scsi_t *restrict scsi, checkpoint_t *checkpoint) {
     // default_block_size were all silently dropped by the old loop, so a
     // checkpoint taken between a CHECK CONDITION and the driver's REQUEST
     // SENSE restored as NO SENSE.
-    system_write_checkpoint_data(checkpoint, scsi, offsetof(scsi_t, buf));
+    checkpoint_save_prefix(checkpoint, scsi, scsi_t);
 
     // The medium in each slot, by name.  The image itself is re-opened on
     // restore; only the filename is meaningful across processes.
-    for (int i = 0; i < 8; i++) {
-        const char *name = scsi->device_images[i] ? image_get_filename(scsi->device_images[i]) : NULL;
-        uint32_t len = 0;
-        if (name && *name)
-            len = (uint32_t)strlen(name) + 1; // include NUL
-        system_write_checkpoint_data(checkpoint, &len, sizeof(len));
-        if (len)
-            system_write_checkpoint_data(checkpoint, name, len);
-    }
+    for (int i = 0; i < 8; i++)
+        checkpoint_write_image_ref(checkpoint, scsi->device_images[i]);
 
     // buf is its own case: the metadata is plain data but `data` is a pointer
     // to a variable-length region.  Persist the full staged span
@@ -1796,7 +1763,7 @@ void scsi_checkpoint(scsi_t *restrict scsi, checkpoint_t *checkpoint) {
     // for the bus, then scsi_5380_attach for the chip).  A machine either has a
     // 5380 or does not, deterministically per model, so the two always agree.
     if (scsi->chip5380)
-        system_write_checkpoint_data(checkpoint, scsi->chip5380, offsetof(scsi_5380_t, bus));
+        checkpoint_save_prefix(checkpoint, scsi->chip5380, scsi_5380_t);
 }
 
 // === Object-model class descriptors =========================================
@@ -2020,15 +1987,7 @@ static DEF_METHOD(scsi_image_method_export) {
     if (!img)
         return val_err("image.export: no medium present in this device");
     const char *codec = argc > 1 && argv[1].kind == VK_STRING ? argv[1].s : NULL;
-    // An I/O job: the disk is snapshotted and write-locked here, streamed
-    // to the file on the I/O worker, and the answer comes when it is done.
-    // (Weak: a unit suite of the controller alone links no I/O leaves and
-    // exports here and now.)
-    if (io_leaf_export_image)
-        return io_leaf_export_image(img, argv[0].s, codec, "image.export");
-    if (image_export_to_codec(img, argv[0].s, codec) != 0)
-        return val_err("image.export: failed to write '%s' (refuses to overwrite an existing file)", argv[0].s);
-    return val_bool(true);
+    return medium_export_image(img, argv[0].s, codec, "image.export"); // an I/O job (medium_export.h)
 }
 
 // `eject()` — proxy to the owning device's eject.
@@ -2397,6 +2356,33 @@ static const arg_decl_t scsi_attach_args[] = {
     {.name = "id", .kind = VK_INT, .doc = "SCSI bus index 0..6"},
 };
 
+// The members that need no live bus: the drive catalog and the image
+// identification helpers, shared by the pre-machine singleton
+// (scsi_static_members) and the per-machine class (scsi_members).
+// clang-format off
+#define SCSI_CATALOG_MEMBERS                                                                                           \
+    {.kind = MK_ATTR,                                                                                                  \
+     .name = "hd_models",                                                                                              \
+     .doc = "Known SCSI HD model catalog: [{label, vendor, product, size}] maps",                                      \
+     .flags = M_CAT_ADVANCED,                                                                                          \
+     .attr = {.type = VK_LIST, .get = scsi_attr_hd_models, .set = NULL}},                                              \
+        {.kind = MK_METHOD,                                                                                            \
+         .name = "identify_hd",                                                                                        \
+         .flags = M_CAT_ADVANCED,                                                                                      \
+         .doc = "True if the file looks like a SCSI HD image",                                                         \
+         .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_hd}},             \
+        {.kind = MK_METHOD,                                                                                            \
+         .name = "identify_cdrom",                                                                                     \
+         .flags = M_CAT_ADVANCED,                                                                                      \
+         .doc = "True if the file looks like a CD-ROM image",                                                          \
+         .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_cdrom}},          \
+        {.kind = MK_METHOD,                                                                                            \
+         .name = "identify_iso",                                                                                       \
+         .flags = M_CAT_ADVANCED,                                                                                      \
+         .doc = "True if the image holds an ISO 9660 volume",                                                          \
+         .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_iso}}
+// clang-format on
+
 // Subset of `scsi_members` that doesn't depend on a live bus instance:
 // the drive catalog plus the two file-identification helpers. The static
 // singleton in `s_scsi_static_object` is mounted at root by
@@ -2404,26 +2390,7 @@ static const arg_decl_t scsi_attach_args[] = {
 // HD / CD-ROM upload validation) resolve `scsi.identify_hd` /
 // `scsi.identify_cdrom` without needing a machine on the tree.
 static const member_t scsi_static_members[] = {
-    {.kind = MK_ATTR,
-     .name = "hd_models",
-     .doc = "Known SCSI HD model catalog: [{label, vendor, product, size}] maps",
-     .flags = M_CAT_ADVANCED,
-     .attr = {.type = VK_LIST, .get = scsi_attr_hd_models, .set = NULL}                                },
-    {.kind = MK_METHOD,
-     .name = "identify_hd",
-     .flags = M_CAT_ADVANCED,
-     .doc = "True if the file looks like a SCSI HD image",
-     .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_hd}   },
-    {.kind = MK_METHOD,
-     .name = "identify_cdrom",
-     .flags = M_CAT_ADVANCED,
-     .doc = "True if the file looks like a CD-ROM image",
-     .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_cdrom}},
-    {.kind = MK_METHOD,
-     .name = "identify_iso",
-     .flags = M_CAT_ADVANCED,
-     .doc = "True if the image holds an ISO 9660 volume",
-     .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_iso}  },
+    SCSI_CATALOG_MEMBERS,
 };
 
 static const class_desc_t scsi_static_class = {
@@ -2443,7 +2410,7 @@ void scsi_class_register(void) {
     s_scsi_static_object = object_new(&scsi_static_class, NULL, "scsi");
     if (s_scsi_static_object) {
         object_set_label(s_scsi_static_object, "SCSI");
-        object_set_order(s_scsi_static_object, 90);
+        object_set_order(s_scsi_static_object, OBJ_ORDER_SCSI);
         object_attach(machine_object(), s_scsi_static_object);
     }
 }
@@ -2451,9 +2418,7 @@ void scsi_class_register(void) {
 static void scsi_static_detach(void) {
     if (!s_scsi_static_object)
         return;
-    object_detach(s_scsi_static_object);
-    object_delete(s_scsi_static_object);
-    s_scsi_static_object = NULL;
+    object_destroy(&s_scsi_static_object);
 }
 
 static const member_t scsi_members[] = {
@@ -2462,26 +2427,7 @@ static const member_t scsi_members[] = {
      .doc = "Loopback test card / passive terminator",
      .flags = 0,
      .attr = {.type = VK_BOOL, .get = scsi_attr_loopback_get, .set = scsi_attr_loopback_set}            },
-    {.kind = MK_ATTR,
-     .name = "hd_models",
-     .doc = "Known SCSI HD model catalog: [{label, vendor, product, size}] maps",
-     .flags = M_CAT_ADVANCED,
-     .attr = {.type = VK_LIST, .get = scsi_attr_hd_models, .set = NULL}                                 },
-    {.kind = MK_METHOD,
-     .name = "identify_hd",
-     .flags = M_CAT_ADVANCED,
-     .doc = "True if the file looks like a SCSI HD image",
-     .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_hd}    },
-    {.kind = MK_METHOD,
-     .name = "identify_cdrom",
-     .flags = M_CAT_ADVANCED,
-     .doc = "True if the file looks like a CD-ROM image",
-     .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_cdrom} },
-    {.kind = MK_METHOD,
-     .name = "identify_iso",
-     .flags = M_CAT_ADVANCED,
-     .doc = "True if the image holds an ISO 9660 volume",
-     .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_iso}   },
+    SCSI_CATALOG_MEMBERS,
     {.kind = MK_METHOD,
      .name = "attach_hd",
      .examples = EXAMPLES("machine.scsi.attach_hd \"/opfs/images/hd/data.img\" 1"),

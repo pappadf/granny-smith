@@ -31,6 +31,8 @@
 #include "log.h"
 #include "machine.h"
 #include "object.h"
+#include "object_order.h"
+#include "regfile.h"
 #include "scheduler.h"
 #include "scsi.h"
 #include "system.h"
@@ -168,8 +170,7 @@ void gos_ata_write8(config_t *cfg, uint32_t off, uint8_t value) {
         return;
     }
     if (rel >= ATA_TIMING && rel < ATA_TIMING + 4u) {
-        uint32_t shift = 8u * (rel - ATA_TIMING);
-        ch->timing = (ch->timing & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+        le_lane8_set(&ch->timing, rel - ATA_TIMING, value);
         return;
     }
     LOG(2, "cell %d: write of unassigned +$%03X = $%02X", ch->index, rel, value);
@@ -473,19 +474,12 @@ void gos_ata_attach_objects(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
     if (!st || st->ata_object)
         return;
-    st->ata_object = object_new(&ata_class, cfg, "ata");
-    if (st->ata_object) {
-        object_set_label(st->ata_object, "ATA");
-        object_set_order(st->ata_object, 91);
-        object_attach(machine_object(), st->ata_object);
-    }
+    st->ata_object = object_attach_new(machine_object(), &ata_class, cfg, "ata", "ATA", OBJ_ORDER_ATA);
 }
 
 void gos_ata_detach_objects(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
     if (st && st->ata_object) {
-        object_detach(st->ata_object);
-        object_delete(st->ata_object);
-        st->ata_object = NULL;
+        object_destroy(&st->ata_object);
     }
 }

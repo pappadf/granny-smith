@@ -12,13 +12,15 @@ EXTRA_SRCS   := ../../../../src/core/mailbox/mailbox.c \
                 ../../../../src/core/job/job.c \
                 ../../../../src/core/job/seam.c \
                 ../../../../src/core/io/io_worker.c \
+                ../../../../src/core/work_queue.c \
                 ../../../../src/core/storage/io_leaf.c \
                 ../../../../src/core/mailbox/out.c \
                 ../../../../src/core/object/api.c \
+                ../../../../src/core/object/json_value.c \
                 ../../../../src/core/object/meta.c \
                 ../../../../src/core/object/object.c \
                 ../../../../src/core/object/parse.c \
                 ../../../../src/core/object/value.c \
-                ../../../../src/core/object/value_format.c
+                ../../../../src/core/object/value_format.c ../../../../src/core/vbuf.c
 EXTRA_CFLAGS := -DGS_MBX_REQ_BYTES=4096u -DGS_MBX_EVT_BYTES=4096u
 include ../../common.mk

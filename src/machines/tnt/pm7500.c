@@ -23,49 +23,6 @@ static const uint32_t pm7500_ram_options_kb[] = {
 // The internal fast-SCSI (MESH) bus carries the boot disks; the
 // 53C94 carries the CD-ROM drive and the external chain (machine.scsi2).
 
-// PCI topology.  Three sockets on Bandit
-// 1 at IDSEL 13/14/15 — the ROM's own `slot-names` bitmask ($0000E000) on
-// the bandit node, corroborated by Apple's Network Server developer note
-// IDSEL table — with their strapped INTA-D lines on Grand Central
-// externals 23/24/25 (Apple's 9500 external-interrupt table, §1.4).
-// Control is the soldered-down video device the machine names, on the
-// Chaos display bus.
-static const pci_slot_decl_t pm7500_pci_slots[] = {
-    {.slot = 1,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "PCI slot A1",
-     .detail = "A1",
-     .fill_order = 1,
-     .bus = TNT_PCI_BUS_1,
-     .device = 13,
-     .int_line = 23},
-    {.slot = 2,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "PCI slot B1",
-     .detail = "B1",
-     .fill_order = 2,
-     .bus = TNT_PCI_BUS_1,
-     .device = 14,
-     .int_line = 24},
-    {.slot = 3,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "PCI slot C1",
-     .detail = "C1",
-     .fill_order = 3,
-     .bus = TNT_PCI_BUS_1,
-     .device = 15,
-     .int_line = 25},
-    {.slot = 4,
-     .kind = PCI_SLOT_BUILTIN,
-     .label = "Built-in video",
-     .detail = "VCI",
-     .bus = TNT_PCI_BUS_VCI,
-     .device = 11,
-     .int_line = TNT_INT_VBL,
-     .builtin_card_id = "tnt_control"},
-    {0},
-};
-
 static const tnt_board_desc_t pm7500_board = {
     // BoxID (little-endian bit numbering): bit 15 pulled high, bit 14 MESH
     // present, bit 8 the factory-test strap idling HIGH, bit 11 CLEAR (set
@@ -128,7 +85,7 @@ const hw_profile_t machine_pm7500 = {
     .cdrom_drive = &scsi_cd_drive_applecd_600i,
     .floppy_slots = mac_floppy_slots_1hd,
 
-    .pci_slots = pm7500_pci_slots,
+    .pci_slots = tnt_pci_slots_1bandit,
 
     .builtin_video = &tnt_builtin_video,
 

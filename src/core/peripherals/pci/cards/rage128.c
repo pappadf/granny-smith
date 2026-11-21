@@ -63,6 +63,7 @@
 #include "prom.h"
 #include "rage128_gpu.h"
 #include "rage128_priv.h"
+#include "regfile.h"
 #include "scheduler.h"
 #include "system.h"
 #include "system_internal.h"
@@ -419,8 +420,7 @@ static uint32_t r128_reg_read(rage128_t *r, uint32_t off, bool peek) {
                 return 0xFFFFFFFFu;
             uint32_t a = (uint32_t)m;
             r128_vram_access(r, a, 4, false);
-            return (uint32_t)r->vram[a] | ((uint32_t)r->vram[a + 1] << 8) | ((uint32_t)r->vram[a + 2] << 16) |
-                   ((uint32_t)r->vram[a + 3] << 24);
+            return RD_LE32(&r->vram[a]);
         }
         uint32_t a = idx & MM_ADDR_MASK;
         if (a >= R128_REG_APER_SIZE || a == R_MM_DATA)
@@ -788,56 +788,10 @@ static void aper_write32(void *ctx, uint32_t off, uint32_t v) {
     aper_write16(ctx, off + 2u, (uint16_t)v);
 }
 
-// ============================================================
-// The expansion ROM
-// ============================================================
-
-static uint8_t rom_read8(void *ctx, uint32_t off) {
-    rage128_t *r = (rage128_t *)ctx;
-    if (!r->dev->rom || off >= r->dev->rom_size)
-        return 0xFFu;
-    return r->dev->rom[off];
-}
-static uint16_t rom_read16(void *ctx, uint32_t off) {
-    return (uint16_t)((rom_read8(ctx, off) << 8) | rom_read8(ctx, off + 1u));
-}
-static uint32_t rom_read32(void *ctx, uint32_t off) {
-    return ((uint32_t)rom_read16(ctx, off) << 16) | rom_read16(ctx, off + 2u);
-}
-static void rom_write8(void *ctx, uint32_t off, uint8_t v) {
-    (void)ctx;
-    LOG(2, "Rage 128: write to the expansion ROM at +$%05X = $%02X — ignored", off, v);
-}
-static void rom_write16(void *ctx, uint32_t off, uint16_t v) {
-    rom_write8(ctx, off, (uint8_t)(v >> 8));
-}
-static void rom_write32(void *ctx, uint32_t off, uint32_t v) {
-    rom_write8(ctx, off, (uint8_t)(v >> 24));
-}
-
-// Stamp out the read_*/peek_* pairs around a face's rd8/16/32.
-#define R128_READ_FACE(face)                                                                                           \
-    static uint8_t face##_read8(void *c, uint32_t a) {                                                                 \
-        return face##_rd8(c, a, false);                                                                                \
-    }                                                                                                                  \
-    static uint16_t face##_read16(void *c, uint32_t a) {                                                               \
-        return face##_rd16(c, a, false);                                                                               \
-    }                                                                                                                  \
-    static uint32_t face##_read32(void *c, uint32_t a) {                                                               \
-        return face##_rd32(c, a, false);                                                                               \
-    }                                                                                                                  \
-    static uint8_t face##_peek8(void *c, uint32_t a) {                                                                 \
-        return face##_rd8(c, a, true);                                                                                 \
-    }                                                                                                                  \
-    static uint16_t face##_peek16(void *c, uint32_t a) {                                                               \
-        return face##_rd16(c, a, true);                                                                                \
-    }                                                                                                                  \
-    static uint32_t face##_peek32(void *c, uint32_t a) {                                                               \
-        return face##_rd32(c, a, true);                                                                                \
-    }
-R128_READ_FACE(regs)
-R128_READ_FACE(io)
-R128_READ_FACE(aper)
+// The guest's read_* and the debugger's peek_* around each face's rd8/16/32
+MEMORY_READ_FACE(regs)
+MEMORY_READ_FACE(io)
+MEMORY_READ_FACE(aper)
 
 // ============================================================
 // Scanout — the CRTC registers become a display_t
@@ -928,25 +882,27 @@ static void r128_refresh_dac(rage128_t *r) {
 // frame's depth — takes the nearest palette entry.
 static uint32_t r128_cursor_pixel(const rage128_t *r, uint32_t rgb, uint32_t bpp) {
     uint32_t cr = (rgb >> 16) & 0xFFu, cg = (rgb >> 8) & 0xFFu, cb = rgb & 0xFFu;
-    if (bpp == 1) {
-        uint32_t best = 0, best_d = 0xFFFFFFFFu;
-        for (uint32_t i = 0; i < 256; i++) {
-            int dr = (int)r->clut_view[i].r - (int)cr, dg = (int)r->clut_view[i].g - (int)cg,
-                db = (int)r->clut_view[i].b - (int)cb;
-            uint32_t d = (uint32_t)(dr * dr + dg * dg + db * db);
-            if (d < best_d) {
-                best_d = d;
-                best = i;
-            }
-        }
-        return best;
-    }
+    if (bpp == 1)
+        return display_nearest_index(r->clut_view, rgb);
     if (bpp == 2) {
         if (r->display.format == PIXEL_16BPP_565)
-            return ((cr >> 3) << 11) | ((cg >> 2) << 5) | (cb >> 3);
-        return ((cr >> 3) << 10) | ((cg >> 3) << 5) | (cb >> 3);
+            return display_pack565(cr, cg, cb);
+        return display_pack555(cr, cg, cb);
     }
     return rgb & 0xFFFFFFu;
+}
+
+// One row of the AND/XOR cursor (AND plane, then XOR plane, 8 bytes each):
+// AND set and XOR clear is transparent, both set inverts, AND clear draws
+// colour XOR.
+static void r128_cursor_row(const void *ctx, uint32_t row, uint8_t *codes) {
+    const uint8_t *line = (const uint8_t *)ctx + row * CUR_LINE_BYTES;
+    for (uint32_t col = 0; col < CUR_SIZE; col++) {
+        uint32_t bit = 7u - (col & 7u);
+        uint32_t and_bit = (line[col >> 3] >> bit) & 1u;
+        uint32_t xor_bit = (line[8 + (col >> 3)] >> bit) & 1u;
+        codes[col] = and_bit ? (xor_bit ? DISPLAY_CURSOR_INVERT : DISPLAY_CURSOR_TRANSPARENT) : (uint8_t)xor_bit;
+    }
 }
 
 // Overlay the cursor on `compose`, which holds the frame in display order.
@@ -960,28 +916,8 @@ static void r128_draw_cursor(rage128_t *r, uint32_t bpp) {
     uint32_t ox = CUR_OFF_H(off), oy = CUR_OFF_V(off);
     uint32_t clr[2] = {r128_cursor_pixel(r, r->reg[R_CUR_CLR0 / 4], bpp),
                        r128_cursor_pixel(r, r->reg[R_CUR_CLR1 / 4], bpp)};
-    uint32_t stride = r->display.stride, width = r->display.width, height = r->display.height;
-    for (uint32_t row = oy; row < CUR_SIZE; row++) {
-        uint32_t y = py + (row - oy);
-        if (y >= height)
-            break;
-        const uint8_t *line = r->vram + src + row * CUR_LINE_BYTES;
-        for (uint32_t col = ox; col < CUR_SIZE; col++) {
-            uint32_t x = px + (col - ox);
-            if (x >= width)
-                break;
-            uint32_t bit = 7u - (col & 7u);
-            uint32_t and_bit = (line[col >> 3] >> bit) & 1u;
-            uint32_t xor_bit = (line[8 + (col >> 3)] >> bit) & 1u;
-            if (and_bit && !xor_bit)
-                continue; // transparent
-            uint8_t *at = r->compose + (size_t)y * stride + (size_t)x * bpp;
-            for (uint32_t i = 0; i < bpp; i++) {
-                uint32_t shift = 8u * (bpp - 1u - i);
-                at[i] = and_bit ? (uint8_t)~at[i] : (uint8_t)(clr[xor_bit] >> shift);
-            }
-        }
-    }
+    display_cursor_overlay(r->compose, r->display.stride, r->display.width, r->display.height, bpp, px, py, ox, oy,
+                           CUR_SIZE, r128_cursor_row, r->vram + src, clr);
 }
 
 bool r128_cursor_image(rage128_t *r, uint32_t img[64 * 64], int32_t *x, int32_t *y) {
@@ -1187,6 +1123,13 @@ static display_t *r128_display(pci_device_t *dev) {
     return (r && r->blank) ? &r->display : NULL;
 }
 
+// The VRAM a power cycle loses (the bus default, pci_power_on).
+static size_t r128_vram(pci_device_t *dev, uint8_t **base) {
+    rage128_t *r = (rage128_t *)dev->priv;
+    *base = r ? r->vram : NULL;
+    return r ? r->vram_size : 0;
+}
+
 // ============================================================
 // Interrupts
 // ============================================================
@@ -1290,11 +1233,10 @@ static bool r128_cfg_read(pci_device_t *dev, uint32_t reg, uint32_t *out) {
 
 static bool r128_cfg_write(pci_device_t *dev, uint32_t reg, uint32_t byte, uint8_t value) {
     rage128_t *r = (rage128_t *)dev->priv;
-    uint32_t sh = 8u * (byte & 3u);
     switch (reg) {
     case CFG_AGP_CMD:
         if (r)
-            r->agp_cmd = (r->agp_cmd & ~(0xFFu << sh)) | ((uint32_t)value << sh);
+            le_lane8_set(&r->agp_cmd, byte, value);
         return true;
     case CFG_PMI_PMCSR:
         if (r && byte == 0)
@@ -1402,9 +1344,7 @@ static void r128_teardown(pci_device_t *dev, config_t *cfg) {
     free(r->walk_dec);
     free(r->walk_raw);
     free(r->walk_done);
-    free(r->st_cache);
-    free(r);
-    dev->priv = NULL;
+    free(r->st_cache); // `r` itself is the bus's (priv_size)
 }
 
 // ============================================================
@@ -1494,6 +1434,7 @@ static const pci_device_ops_t r128_ops = {
     .cfg_write = r128_cfg_write,
     .name = r128_name,
     .display = r128_display,
+    .vram = r128_vram,
     .on_vbl = r128_on_vbl,
     .checkpoint_save = r128_checkpoint_save,
     .checkpoint_restore = r128_checkpoint_restore,
@@ -1505,6 +1446,7 @@ static const pci_device_ops_t r128_ops = {
 
 static const char *const r128_memory_values[] = {"16m", "32m", NULL};
 static const char *const r128_memory_labels[] = {"16 MB (Rage Orion, Xclaim VR 128)", "32 MB (Nexus 128)", NULL};
+static const uint32_t r128_memory_sizes[] = {R128_VRAM_16MB, R128_VRAM_32MB};
 // The rasteriser: the emulator's own (exact, the default) or the host
 // GPU's, where the host has one (the WebGPU takeover, rage128_gpu.c).
 static const char *const r128_raster_values[] = {"sw", "webgpu", NULL};
@@ -1524,6 +1466,7 @@ static const pci_card_option_t r128_options[] = {
      .label = "Video memory",
      .values = r128_memory_values,
      .labels = r128_memory_labels,
+     .payloads = r128_memory_sizes,
      .default_value = "16m"},
     {.key = "raster",
      .label = "Rendering",
@@ -1541,21 +1484,11 @@ static const r128_monitor_t *r128_monitor_by_id(const char *value) {
     return NULL;
 }
 
-static uint32_t r128_memory_by_id(const char *value) {
-    if (strcmp(value, "16m") == 0)
-        return R128_VRAM_16MB;
-    if (strcmp(value, "32m") == 0)
-        return R128_VRAM_32MB;
-    return 0;
-}
-
+// The keys beyond the advertised memory= and raster= (which the generic check
+// takes from r128_options).
 static bool r128_accepts_option(const char *key, const char *value) {
     if (strcmp(key, "monitor") == 0)
         return r128_monitor_by_id(value) != NULL;
-    if (strcmp(key, "memory") == 0)
-        return r128_memory_by_id(value) != 0;
-    if (strcmp(key, "raster") == 0)
-        return strcmp(value, "sw") == 0 || strcmp(value, "webgpu") == 0;
     // Not advertised: when the takeover engages — on a 3D draw into a
     // screen-shaped surface (auto), or on any 3D draw (always, the tests).
     if (strcmp(key, "gpu") == 0)
@@ -1772,51 +1705,26 @@ static void r128_sync_pixels(void *ctx) {
         r128_present(r);
 }
 
-// The one builder both kinds share; they differ only in the rasteriser used
-// when the document names none.
-static pci_device_t *r128_build(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts,
-                                const char *default_raster) {
-    pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
-    rage128_t *r = (rage128_t *)calloc(1, sizeof(*r));
-    if (!dev || !r) {
-        free(dev);
-        free(r);
-        return NULL;
-    }
-    dev->ops = &r128_ops;
-    dev->decl = &rage128_decl;
-    dev->priv = r;
-    pci_cfg_reset(dev);
+// The card's three register faces (BAR0 aperture, BAR1 I/O, BAR2
+// registers).  One table each serves every card; the card rides beside it.
+MEMORY_IFACE(aper);
+MEMORY_IFACE(io);
+MEMORY_IFACE(regs);
+
+// The card's initialiser: the bus has allocated `dev` and its rage128_t and
+// reset the header.  The WebGPU variant kind is built here too, with its
+// raster=webgpu default merged into `opts` by the bus.
+static int r128_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
+    rage128_t *r = (rage128_t *)dev->priv;
     r->dev = dev;
     r->cfg = cfg;
 
-    // The card cannot enumerate without its own FCode (see mach64gx.c for
-    // why a missing ROM degrades to an empty slot rather than a failed boot).
-    uint8_t *prom = NULL;
-    size_t prom_size = 0;
-    char *prom_path = NULL;
-    if (rom && rom->data && rom->size) {
-        prom = (uint8_t *)malloc(rom->size);
-        if (prom) {
-            memcpy(prom, rom->data, rom->size);
-            prom_size = rom->size;
-        }
-    }
-    if (!prom && !prom_load_card("rage128", opts->rom[0] ? opts->rom : NULL, &prom, &prom_size, &prom_path)) {
-        LOG(0,
-            "slot %d: no expansion ROM available for the Rage 128 — the card cannot enumerate without its own "
-            "FCode, so the slot is left empty",
-            slot_index);
-        free(r);
-        free(dev);
-        return NULL;
-    }
-    dev->rom = prom;
-    dev->rom_size = prom_size;
-    free(prom_path);
+    // The expansion ROM the card runs is the bus's (requires_prom): resolved
+    // before this hook and kept as dev->rom, with the bus's default
+    // ROM-BAR face over it.
+    size_t prom_size = rom ? rom->size : 0;
 
-    const char *memory = slot_opts_option(opts, "memory");
-    r->vram_size = memory ? r128_memory_by_id(memory) : R128_VRAM_16MB;
+    r->vram_size = pci_card_option_payload(r128_options, opts, "memory", R128_VRAM_16MB);
     r->vram = (uint8_t *)calloc(1, r->vram_size);
     r->blank = (uint8_t *)calloc(1, r->vram_size);
     r->compose = (uint8_t *)calloc(1, r->vram_size);
@@ -1824,10 +1732,7 @@ static pci_device_t *r128_build(int slot_index, config_t *cfg, const rom_image_t
         free(r->vram);
         free(r->blank);
         free(r->compose);
-        free(dev->rom);
-        free(r);
-        free(dev);
-        return NULL;
+        return -1;
     }
 
     const char *monitor = slot_opts_option(opts, "monitor");
@@ -1836,50 +1741,15 @@ static pci_device_t *r128_build(int slot_index, config_t *cfg, const rom_image_t
 
     r128_reset(dev, cfg);
 
-    r->regs_if = (memory_interface_t){.read_uint8 = regs_read8,
-                                      .read_uint16 = regs_read16,
-                                      .read_uint32 = regs_read32,
-                                      .write_uint8 = regs_write8,
-                                      .write_uint16 = regs_write16,
-                                      .write_uint32 = regs_write32,
-                                      .peek_uint8 = regs_peek8,
-                                      .peek_uint16 = regs_peek16,
-                                      .peek_uint32 = regs_peek32};
-    r->io_if = (memory_interface_t){.read_uint8 = io_read8,
-                                    .read_uint16 = io_read16,
-                                    .read_uint32 = io_read32,
-                                    .write_uint8 = io_write8,
-                                    .write_uint16 = io_write16,
-                                    .write_uint32 = io_write32,
-                                    .peek_uint8 = io_peek8,
-                                    .peek_uint16 = io_peek16,
-                                    .peek_uint32 = io_peek32};
-    r->aper_if = (memory_interface_t){.read_uint8 = aper_read8,
-                                      .read_uint16 = aper_read16,
-                                      .read_uint32 = aper_read32,
-                                      .write_uint8 = aper_write8,
-                                      .write_uint16 = aper_write16,
-                                      .write_uint32 = aper_write32,
-                                      .peek_uint8 = aper_peek8,
-                                      .peek_uint16 = aper_peek16,
-                                      .peek_uint32 = aper_peek32};
-    r->rom_if = (memory_interface_t){.read_uint8 = rom_read8,
-                                     .read_uint16 = rom_read16,
-                                     .read_uint32 = rom_read32,
-                                     .write_uint8 = rom_write8,
-                                     .write_uint16 = rom_write16,
-                                     .write_uint32 = rom_write32};
-
-    pci_bar_backing_iface(dev, R128_BAR_APER, &r->aper_if, r);
-    pci_bar_backing_iface(dev, R128_BAR_IO, &r->io_if, r);
-    pci_bar_backing_iface(dev, R128_BAR_REGS, &r->regs_if, r);
-    pci_bar_backing_iface(dev, PCI_ROM_BAR_INDEX, &r->rom_if, r);
+    pci_bar_backing_iface(dev, R128_BAR_APER, &aper_iface, r);
+    pci_bar_backing_iface(dev, R128_BAR_IO, &io_iface, r);
+    pci_bar_backing_iface(dev, R128_BAR_REGS, &regs_iface, r);
 
     // The rasteriser: WebGPU where the host has a GPU worker to attach,
     // the software walker otherwise (and always natively).
     const char *raster = slot_opts_option(opts, "raster");
     if (!raster)
-        raster = default_raster;
+        raster = "sw"; // r128_options' default
     if (strcmp(raster, "webgpu") == 0) {
         const char *policy = slot_opts_option(opts, "gpu");
         r->gpu =
@@ -1890,28 +1760,20 @@ static pci_device_t *r128_build(int slot_index, config_t *cfg, const rom_image_t
         }
     }
 
-    LOG(1, "Rage 128: seated in slot %d: %u MB VRAM, monitor '%s', %zu-byte expansion ROM, %s rasteriser", slot_index,
-        r->vram_size >> 20, r->mon->id, prom_size, r->gpu ? "WebGPU" : "software");
+    LOG(1, "Rage 128: seated in slot %d: %u MB VRAM, monitor '%s', %zu-byte expansion ROM, %s rasteriser",
+        dev->slot_index, r->vram_size >> 20, r->mon->id, prom_size, r->gpu ? "WebGPU" : "software");
     watch_add_reporter(r128_watch_report, r);
-    return dev;
-}
-
-static pci_device_t *r128_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
-    return r128_build(slot_index, cfg, rom, opts, "sw");
+    return 0;
 }
 
 // The WebGPU variant: the same card, its 3D drawn by the host GPU unless
 // the boot document named a rasteriser itself.  Falls back to the
 // software rasteriser at creation where no GPU worker attaches (a native
 // build, a checkpoint restored without WebGPU), which regs.raster reports.
-static pci_device_t *r128_webgpu_factory(int slot_index, config_t *cfg, const rom_image_t *rom,
-                                         const slot_opts_t *opts) {
-    return r128_build(slot_index, cfg, rom, opts, "webgpu");
-}
-
-static bool r128_webgpu_offered(void) {
-    return platform_v2gpu_available();
-}
+static const pci_option_default_t r128_webgpu_defaults[] = {
+    {"raster", "webgpu"},
+    {NULL,     NULL    },
+};
 
 const pci_card_kind_t rage128_kind = {
     .id = "rage128",
@@ -1920,7 +1782,10 @@ const pci_card_kind_t rage128_kind = {
     .requires_prom = true,
     .card_class = "display",
     .monitors = r128_monitors,
-    .factory = r128_factory,
+    .ops = &r128_ops,
+    .decl = &rage128_decl,
+    .priv_size = sizeof(rage128_t),
+    .init = r128_init,
     .options = r128_options,
     .accepts_option = r128_accepts_option,
     .attach_objects = r128_attach_objects,
@@ -1933,10 +1798,8 @@ const pci_card_kind_t rage128_webgpu_kind = {
     .requires_prom = true,
     .card_class = "display",
     .monitors = r128_monitors,
-    .factory = r128_webgpu_factory,
-    .options = NULL,
-    .accepts_option = r128_accepts_option,
     .attach_objects = r128_attach_objects,
-    .offered = r128_webgpu_offered,
+    .offered = platform_v2gpu_available,
     .variant_of = "rage128", // its "Rendering: WebGPU" option
+    .variant_defaults = r128_webgpu_defaults,
 };

@@ -7,7 +7,7 @@
 // Directory Block or an HFS Plus Volume Header), loads the catalog file
 // into RAM, and exposes path-lookup, directory-enumerate, and fork-read
 // entry points for the image_vfs backend.  HFS and HFS+ share the same
-// opaque handle and public types; hfs_open sniffs the on-disk signature
+// opaque handle and public types; hfs_open_source sniffs the on-disk signature
 // and routes to the right parser, so callers don't distinguish the two.
 //
 // Scope:
@@ -73,22 +73,25 @@ typedef struct hfs_dirent {
 // Opaque volume handle.
 typedef struct hfs_volume hfs_volume_t;
 
-// Open an HFS volume backed by `img`.  `partition_byte_offset` is the byte
-// offset within the image at which the volume starts (0 for a bare floppy;
-// start_block*512 for an APM partition).  `partition_byte_size` caps reads.
-// Returns NULL on any error (not HFS, malformed catalog, OOM).
-hfs_volume_t *hfs_open(image_t *img, uint64_t partition_byte_offset, uint64_t partition_byte_size);
-
-// The same over a byte source holding the disk (retained by the volume):
-// a partition of an image, a file inside another volume, an archive member.
-struct peel_source;
-hfs_volume_t *hfs_open_source(struct peel_source *src, uint64_t partition_byte_offset, uint64_t partition_byte_size);
+// Open an HFS or HFS+ volume over a byte source holding the disk (retained
+// by the volume): an image (image_source), a file inside another volume,
+// an archive member.  `partition_byte_offset` is the byte offset within the
+// disk at which the volume starts (0 for a bare floppy; start_block*512 for
+// an APM partition).  `partition_byte_size` caps reads.  Returns NULL on any
+// error (not HFS, malformed catalog, OOM).
+typedef struct peel_source source_t; // source.h's byte source, without peeler.h
+hfs_volume_t *hfs_open_source(source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size);
 
 // Release a volume and all cached state.  Safe on NULL.
 void hfs_close(hfs_volume_t *vol);
 
 // Retrieve the on-disk volume name (UTF-8).  Valid for the volume's lifetime.
 const char *hfs_volume_name(const hfs_volume_t *vol);
+
+// How many B-tree leaf records (catalog and extents overflow) the open
+// dropped as malformed; each tree also logs its count.  The files or
+// extents they describe are not reachable.
+size_t hfs_malformed_records(const hfs_volume_t *vol);
 
 // Look up a file or folder by path components (UTF-8).  `nc == 0` returns the
 // root folder record.  Returns 0 on hit and populates *out, -ENOENT on miss,

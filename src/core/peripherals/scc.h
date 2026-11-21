@@ -10,6 +10,7 @@
 // === Includes ===
 #include "checkpoint.h"
 #include "common.h"
+#include "irq_line.h"
 #include "memory.h"
 
 // === Forward Declarations ===
@@ -20,7 +21,7 @@ struct scc;
 typedef struct scc scc_t;
 
 // Callback for SCC interrupt line changes (per-instance routing)
-typedef void (*scc_irq_fn)(void *context, bool active);
+typedef irq_fn scc_irq_fn;
 
 // Callback for a frame the guest finished transmitting in SDLC mode on
 // channel B, the LocalTalk port: the LLAP header and payload, no CRC.

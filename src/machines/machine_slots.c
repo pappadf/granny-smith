@@ -94,20 +94,6 @@ static int sugar_slot(const hw_profile_t *p, slots_bus_t bus) {
     return 0;
 }
 
-// The entry for `slot` in `o`, created empty when absent.  NULL when full.
-static slot_opts_t *entry_for(machine_build_opts_t *o, int slot) {
-    for (int i = 0; i < o->n_slots; i++) {
-        if (o->slots[i].slot == slot)
-            return &o->slots[i];
-    }
-    if (o->n_slots >= MACHINE_SLOTS_MAX)
-        return NULL;
-    slot_opts_t *e = &o->slots[o->n_slots++];
-    memset(e, 0, sizeof(*e));
-    e->slot = slot;
-    return e;
-}
-
 // Copy `src` into a fixed field, failing when it does not fit.
 static bool copy_field(char *dst, size_t size, const char *src) {
     return snprintf(dst, size, "%s", src) < (int)size;
@@ -196,7 +182,7 @@ static value_t parse_slots(const hw_profile_t *p, slots_bus_t bus, const char *s
             err = val_err("machine.boot: slots= names slot %d twice", slot);
             break;
         }
-        slot_opts_t *e = entry_for(o, slot);
+        slot_opts_t *e = machine_build_opts_slot_get_or_add(o, slot);
         if (!e) {
             err = val_err("machine.boot: slots= names too many slots");
             break;
@@ -296,7 +282,7 @@ static value_t apply_socket_sugar(const hw_profile_t *p, slots_bus_t bus, const 
     if (!slot)
         return val_err("machine.boot: model '%s' has no slot for video_card= / pci_card=", p->id);
     bool existed = machine_build_opts_slot(o, slot) != NULL;
-    slot_opts_t *e = entry_for(o, slot);
+    slot_opts_t *e = machine_build_opts_slot_get_or_add(o, slot);
     if (!e)
         return val_err("machine.boot: slots= names too many slots");
     const char *card = bus == SLOTS_NUBUS ? doc->video_card : doc->pci_card;
@@ -419,7 +405,7 @@ static value_t apply_rom_sugar(const hw_profile_t *p, slots_bus_t bus, const boo
         if (strcmp(kind_id, card_id) != 0)
             continue;
         matched++;
-        slot_opts_t *e = entry_for(o, slot);
+        slot_opts_t *e = machine_build_opts_slot_get_or_add(o, slot);
         if (!e)
             return val_err("machine.boot: slots= names too many slots");
         if (e->rom[0] || e->substitute)

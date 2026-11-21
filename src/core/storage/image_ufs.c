@@ -42,7 +42,7 @@
 #define SB_OFF_NINDIR   116
 #define SB_OFF_IPG      184
 #define SB_OFF_FPG      188
-#define SB_OFF_MAGIC    1372
+#define SB_OFF_MAGIC    UFS_SB_MAGIC_OFF
 
 // ---- Dinode offsets ------------------------------------------------------
 // 4.3BSD-Tahoe dinode.  Size is 128 bytes on disk.
@@ -130,7 +130,7 @@ static uint64_t inode_byte_offset(const ufs_volume_t *vol, uint32_t ino) {
 // Load one dinode into `di[DI_SIZE]`.
 static int load_dinode(ufs_volume_t *vol, uint32_t ino, uint8_t *di) {
     // Compute the limit in 64-bit to dodge `ncg * ipg` int32 overflow on a
-    // hostile / corrupted superblock that survived `ufs_open`'s sanity check.
+    // hostile / corrupted superblock that survived `ufs_open_source`'s sanity check.
     uint64_t inode_limit = (uint64_t)vol->ncg * (uint64_t)vol->ipg;
     if (ino < UFS_ROOT_ID || (uint64_t)ino >= inode_limit)
         return -ENOENT;
@@ -262,29 +262,15 @@ static int read_file_by_dinode(ufs_volume_t *vol, const uint8_t *di, uint64_t of
 
 // ---- Superblock probe + open --------------------------------------------
 
-bool ufs_probe(image_t *img, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
-    source_t *src = image_source(img);
-    bool yes = ufs_probe_source(src, partition_byte_offset, partition_byte_size);
-    source_release(src);
-    return yes;
-}
-
 bool ufs_probe_source(source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
-    // The size ufs_open needs, so a probe never passes what open refuses.
+    // The size ufs_open_source needs, so a probe never passes what open refuses.
     if (!src || partition_byte_size < UFS_SBOFF + 2048)
         return false;
-    // Only the magic: big-endian, the order A/UX writes and ufs_open reads.
+    // Only the magic: big-endian, the order A/UX writes and ufs_open_source reads.
     uint8_t magic[4];
     if (source_read_exact(src, partition_byte_offset + UFS_SBOFF + SB_OFF_MAGIC, magic, sizeof(magic)) != 0)
         return false;
     return RD_BE32(magic) == UFS_FS_MAGIC;
-}
-
-ufs_volume_t *ufs_open(image_t *img, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
-    source_t *src = image_source(img);
-    ufs_volume_t *vol = ufs_open_source(src, partition_byte_offset, partition_byte_size);
-    source_release(src); // the volume holds its own reference
-    return vol;
 }
 
 ufs_volume_t *ufs_open_source(source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
@@ -294,7 +280,7 @@ ufs_volume_t *ufs_open_source(source_t *src, uint64_t partition_byte_offset, uin
     if (source_read_exact(src, partition_byte_offset + UFS_SBOFF, sb, sizeof(sb)) != 0)
         return NULL;
     // Big-endian only: A/UX writes BE, and a little-endian UFS (a PC BSD
-    // volume) is out of scope -- ufs_probe refuses it too.
+    // volume) is out of scope -- ufs_probe_source refuses it too.
     if (RD_BE32(sb + SB_OFF_MAGIC) != UFS_FS_MAGIC)
         return NULL;
 

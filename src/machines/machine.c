@@ -16,6 +16,7 @@
 #include "machine_parts.h"
 #include "nubus.h"
 #include "object.h"
+#include "object_order.h"
 #include "out.h"
 #include "platform.h"
 #include "prom.h"
@@ -412,7 +413,7 @@ static DEF_GETTER(attr_machine_ram) {
 // IPL from it, and neither was readable from anywhere: an investigation
 // could see a controller's own view through machine.<chip> and the CPU's
 // behaviour, with the step between them invisible.  The bit meanings are
-// per family (MAC030_GLUE_IRQ_* and the family equivalents), which is why
+// per family (M68K_BOARD_IRQ_* and the family equivalents), which is why
 // this is a bitmap and not an enum.
 static DEF_GETTER(attr_machine_irq) {
     config_t *cfg = system_running();
@@ -1152,7 +1153,7 @@ struct object *machine_object(void) {
     if (!s_machine_object) {
         s_machine_object = object_new(&machine_class, NULL, "machine");
         if (s_machine_object) {
-            object_set_order(s_machine_object, 0); // machine sorts first under the root
+            object_set_order(s_machine_object, OBJ_ORDER_MACHINE); // machine sorts first under the root
             object_set_domain(s_machine_object, OBJ_DOMAIN_MACHINE);
             object_attach(object_root(), s_machine_object);
         }
@@ -1213,12 +1214,9 @@ static struct object *s_catalog_object = NULL;
 void catalog_init(void) {
     if (s_catalog_object)
         return;
-    s_catalog_object = object_new(&catalog_class, NULL, "catalog");
+    s_catalog_object = object_attach_new(object_root(), &catalog_class, NULL, "catalog", "Catalog", OBJ_ORDER_CATALOG);
     if (!s_catalog_object)
         return;
-    object_set_label(s_catalog_object, "Catalog");
-    object_set_order(s_catalog_object, 70);
-    object_attach(object_root(), s_catalog_object);
     vrom_init(s_catalog_object); // catalog.vroms
     prom_init(s_catalog_object); // catalog.proms
 }

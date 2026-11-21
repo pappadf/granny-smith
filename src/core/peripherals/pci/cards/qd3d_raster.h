@@ -37,7 +37,7 @@
 //           pthread; sync() is a fence.  The DEFAULT on every build (in the
 //           browser a Web Worker created on demand).  A build can default
 //           to sw with -DGS_QD3D_RASTER_DEFAULT='"sw"', or leave the
-//           backend out with -DGS_QD3D_THREAD_BACKEND=0; any boot can pick
+//           backend out with -DGS_RASTER_THREAD_BACKEND=0; any boot can pick
 //           one with pci_option="raster=...".
 //
 // Queue order is submission order and every read of the target fences

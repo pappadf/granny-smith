@@ -145,7 +145,7 @@ static int cp_walk_entries(cp_archive_t *ar, const uint8_t *data, size_t size, s
             // cpt.md § 3.2.2 — directory entry has 2-byte subtree count
             if (*cursor + 2 > size)
                 return -1;
-            uint16_t child_cnt = rd16be(data + *cursor);
+            uint16_t child_cnt = codec_be16(data + *cursor);
             *cursor += 2;
             // The folder itself is an entry of the listing.
             cp_entry_t de;
@@ -178,29 +178,29 @@ static int cp_walk_entries(cp_archive_t *ar, const uint8_t *data, size_t size, s
         size_t off = 0;
         fe.volume = m[off];
         off += 1;
-        fe.file_offset = rd32be(m + off);
+        fe.file_offset = codec_be32(m + off);
         off += 4;
-        fe.type = rd32be(m + off);
+        fe.type = codec_be32(m + off);
         off += 4;
-        fe.creator = rd32be(m + off);
+        fe.creator = codec_be32(m + off);
         off += 4;
-        fe.create_date = rd32be(m + off);
+        fe.create_date = codec_be32(m + off);
         off += 4;
-        fe.mod_date = rd32be(m + off);
+        fe.mod_date = codec_be32(m + off);
         off += 4;
-        fe.finder_flags = rd16be(m + off);
+        fe.finder_flags = codec_be16(m + off);
         off += 2;
-        fe.data_crc = rd32be(m + off);
+        fe.data_crc = codec_be32(m + off);
         off += 4;
-        fe.flags = rd16be(m + off);
+        fe.flags = codec_be16(m + off);
         off += 2;
-        fe.rsrc_uncomp = rd32be(m + off);
+        fe.rsrc_uncomp = codec_be32(m + off);
         off += 4;
-        fe.data_uncomp = rd32be(m + off);
+        fe.data_uncomp = codec_be32(m + off);
         off += 4;
-        fe.rsrc_comp = rd32be(m + off);
+        fe.rsrc_comp = codec_be32(m + off);
         off += 4;
-        fe.data_comp = rd32be(m + off);
+        fe.data_comp = codec_be32(m + off);
         off += 4;
         (void)off;
 
@@ -222,7 +222,7 @@ static int cp_parse_directory(cp_archive_t *ar, const uint8_t *data, size_t size
         return -1;
 
     // Skip the 4-byte directory CRC (not validated)
-    uint16_t total = rd16be(data + dir_off + 4);
+    uint16_t total = codec_be16(data + dir_off + 4);
     uint8_t comment_len = data[dir_off + 6];
     size_t cursor = (size_t)dir_off + 7 + comment_len;
     if (cursor > size)
@@ -251,7 +251,7 @@ bool cpt_detect(const uint8_t *src, size_t len) {
         return false;
 
     // Validate directory offset is within sane bounds
-    uint32_t dir_off = rd32be(src + 4);
+    uint32_t dir_off = codec_be32(src + 4);
     if (dir_off < 8 || dir_off > 0x10000000)
         return false;
     return true;
@@ -284,7 +284,7 @@ static int cpt_open(peel_archive_t *a, const peel_probe_t *p, peel_err_t **err) 
         return -1;
     }
     // cpt.md § 3.1 "Initial Archive Header" — directory offset at bytes 4..7
-    uint32_t dir_off = rd32be(src + 4);
+    uint32_t dir_off = codec_be32(src + 4);
     if (dir_off < 8 || dir_off > 0x10000000 || (uint64_t)dir_off >= p->size) {
         *err = make_err("CPT: directory offset out of range (%u)", dir_off);
         return -1;
@@ -390,7 +390,7 @@ static peel_buf_t cpt_decode_fork(peel_archive_t *a, int i, int fork, peel_err_t
     codec_dec_t *d = cpt_decoder(a, i, fork, err);
     if (!d)
         return (peel_buf_t){0};
-    return peel_decoder_drain(d, fork == PEEL_FORK_RSRC ? e->rsrc_uncomp : e->data_uncomp, "CPT", err);
+    return peel_decoder_drain(d, fork == PEEL_FORK_RSRC ? e->rsrc_uncomp : e->data_uncomp, "CPT", NULL, NULL, err);
 }
 
 static void cpt_close(peel_archive_t *a) {

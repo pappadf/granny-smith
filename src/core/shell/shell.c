@@ -47,6 +47,9 @@ static bool shell_initialized = false;
 
 // === Value printing (the REPL formatting surface) ==========================
 
+// What the REPL prints in place of a VFLAG_SENSITIVE value
+#define SHELL_SENSITIVE_TEXT "<sensitive>"
+
 // Print one scalar value inline (no trailing newline). Used as the
 // rhs in the object-attribute table dump and inside list expansion.
 // Mirrors the per-kind formatting in format_value_print but without
@@ -54,6 +57,11 @@ static bool shell_initialized = false;
 static void format_scalar_inline(const value_t *v) {
     if (!v)
         return;
+    // A sensitive value (VFLAG_SENSITIVE: a password, a key) never prints
+    if (v->flags & VFLAG_SENSITIVE) {
+        out_puts(SHELL_SENSITIVE_TEXT);
+        return;
+    }
     vbuf_t b = {0};
     value_format(v, VFMT_INLINE, &b);
     if (b.p)
@@ -112,7 +120,7 @@ static void format_object_table(struct object *o) {
             continue;
         if (!mb->attr.get)
             continue;
-        value_t v = mb->attr.get(o, mb);
+        value_t v = object_attr_get(o, mb);
         print_name_cell(mb->name, width);
         out_puts(" = ");
         format_scalar_inline(&v);
@@ -133,6 +141,10 @@ static void format_object_table(struct object *o) {
 // Render one cell of the object-list table into buf. Scalar kinds only;
 // structured kinds render as compact placeholders.
 static void format_cell(const value_t *v, char *buf, size_t buf_size) {
+    if (v->flags & VFLAG_SENSITIVE) {
+        snprintf(buf, buf_size, "%s", SHELL_SENSITIVE_TEXT);
+        return;
+    }
     value_format_into(v, VFMT_CELL, buf, buf_size);
 }
 
@@ -177,7 +189,7 @@ static bool try_print_object_table(const value_t *v) {
     for (size_t i = 0; i < v->list.len; i++) {
         for (int c = 0; c < n_cols; c++) {
             const member_t *mb = &cls->members[cols[c]];
-            value_t cv = mb->attr.get(v->list.items[i].obj, mb);
+            value_t cv = object_attr_get(v->list.items[i].obj, mb);
             format_cell(&cv, cell, sizeof(cell));
             value_free(&cv);
             int len = (int)strlen(cell);
@@ -191,7 +203,7 @@ static bool try_print_object_table(const value_t *v) {
     for (size_t i = 0; i < v->list.len; i++) {
         for (int c = 0; c < n_cols; c++) {
             const member_t *mb = &cls->members[cols[c]];
-            value_t cv = mb->attr.get(v->list.items[i].obj, mb);
+            value_t cv = object_attr_get(v->list.items[i].obj, mb);
             format_cell(&cv, cell, sizeof(cell));
             value_free(&cv);
             out_printf("%-*s%s", width[c], cell, c + 1 < n_cols ? "  " : "\n");
@@ -268,6 +280,10 @@ static void format_value_print(const value_t *v) {
         break;
 
     default: {
+        if (v->flags & VFLAG_SENSITIVE) {
+            out_puts(SHELL_SENSITIVE_TEXT "\n");
+            break;
+        }
         vbuf_t b = {0};
         value_format(v, VFMT_REPL, &b);
         if (b.p)
