@@ -35,11 +35,25 @@ struct value;
 struct mailbox;
 typedef struct job job_t;
 
-// Records the calling thread as the emulator thread.  Once, at core_init.
+// Records the calling thread as the emulator thread: the one latch, once, at
+// core_init (docs/internals/core/job/seam.md).  A debug build asserts that no
+// other thread latched first.
 void job_layer_init(void);
 
 // True on the emulator thread (or before job_layer_init: single-threaded).
 bool job_on_emulator_thread(void);
+
+// The thread-affinity guard for the gateways into emulator state
+// (object_eval, shell_complete, llap_receive, afp_handle_command): asserts
+// the caller is the emulator thread, latching it when nothing has yet.
+// Compiled out unless GS_DEBUG; `where` names the gateway and is not
+// evaluated in a release build.
+#ifdef GS_DEBUG
+void job_emulator_thread_check(const char *where);
+#define EMU_THREAD_CHECK(where) job_emulator_thread_check(where)
+#else
+#define EMU_THREAD_CHECK(where) ((void)0)
+#endif
 
 // Starts the job thread with the given stack.  Platforms with one call it
 // once at boot; false when the thread could not be created (scripts then

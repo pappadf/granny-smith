@@ -15,51 +15,10 @@
 import { test, expect, type Page } from '../helpers/test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { bootIsolated, opfsFiles, uploadViaPicker } from '../helpers/upload';
 
 const TNT_ROM = path.resolve(__dirname, '../../data/roms/pm7500-pm8500-pm9500-96cd923d.rom');
 const STORED_ROM = '/opfs/images/rom/96cd923d-c241cd82bf90797a';
-
-// Boot the app as a first-time visitor.
-async function bootIsolated(page: Page): Promise<void> {
-  await page.goto('/index.html');
-  const hasOpfs = await page.evaluate(() => typeof navigator.storage?.getDirectory === 'function');
-  test.skip(!hasOpfs, 'engine has no OPFS');
-  await page.waitForFunction(
-    () => (window as unknown as { __gsReady?: boolean }).__gsReady === true,
-    null,
-    { timeout: 60_000 },
-  );
-  const cont = page.getByRole('button', { name: 'Continue' });
-  if (await cont.isVisible().catch(() => false)) await cont.click();
-}
-
-// Upload one file through the Welcome "Load ROM..." picker, which probes it
-// against every media type rather than being told what it is.
-async function uploadViaPicker(page: Page, name: string, buffer: Buffer): Promise<void> {
-  const [chooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Load ROM...' }).click(),
-  ]);
-  await chooser.setFiles({ name, mimeType: 'application/octet-stream', buffer });
-}
-
-// Every file in OPFS, as /opfs/... paths.
-async function opfsFiles(page: Page): Promise<string[]> {
-  return page.evaluate(async () => {
-    const out: string[] = [];
-    const walk = async (dir: unknown, prefix: string): Promise<void> => {
-      for await (const [n, h] of (
-        dir as { entries(): AsyncIterable<[string, { kind: string }]> }
-      ).entries()) {
-        const p = `${prefix}/${n}`;
-        if (h.kind === 'directory') await walk(h, p);
-        else out.push(p);
-      }
-    };
-    await walk(await navigator.storage.getDirectory(), '/opfs');
-    return out.sort();
-  });
-}
 
 test('a ROM is stored by content id; a damaged dump of it is refused, not stored', async ({ page }) => {
   test.setTimeout(120_000);

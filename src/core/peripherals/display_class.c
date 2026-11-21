@@ -7,6 +7,7 @@
 #include "display_class.h"
 
 #include "machine_profile.h"
+#include "object_order.h"
 
 static display_fb_node_t *fb_node(struct object *self) {
     return (display_fb_node_t *)object_data(self);
@@ -103,7 +104,7 @@ struct object *display_attach_video_node(display_fb_node_t *node, const char *la
     if (!video)
         return NULL;
     object_set_label(video, label ? label : "Video");
-    object_set_order(video, 120);
+    object_set_order(video, OBJ_ORDER_VIDEO);
     struct object *fb = object_new(&display_fb_class, node, "framebuffer");
     if (fb) {
         object_set_label(fb, "Framebuffer");
@@ -121,6 +122,5 @@ void display_detach_video_node(struct object *video) {
     // object_delete frees only the node it is given -- it would orphan the
     // child, one leaked object per machine.boot.  Caught by ASan on a
     // pm9500 boot, where Control attaches one of these.
-    object_detach(video);
-    object_delete_tree(video);
+    object_destroy(&video);
 }

@@ -29,15 +29,19 @@ LOG_USE_CATEGORY_NAME("mace");
 
 #define AV_MACE_REGS 32 // $000-$1F0 on a $10 stride
 
-// Register indices (offset >> 4).
+// Register indices (offset >> 4), the Am79C940 map
+// (docs/reference/machines/av/mace.md §2.1, the one tnt_mace.c uses).  These
+// used to sit one to eight slots off it -- BIUCC 12, FIFOCC 13, PLSCC 15 and
+// the chip ID at 24/25 (MPC and a reserved slot) -- so a read of registers
+// 16/17 found latched zero instead of the chip ID.
 #define MACE_IR       8 // interrupt register, read-to-clear
 #define MACE_IMR      9 // interrupt mask (1 = masked)
 #define MACE_PR       10 // poll register
-#define MACE_BIUCC    12 // bus interface unit config
-#define MACE_FIFOCC   13 // FIFO config
-#define MACE_PLSCC    15 // PLS config
-#define MACE_CHIPIDLO 24 // chip ID low byte
-#define MACE_CHIPIDHI 25 // chip ID high byte
+#define MACE_BIUCC    11 // bus interface unit config
+#define MACE_FIFOCC   12 // FIFO config
+#define MACE_PLSCC    14 // PLS config
+#define MACE_CHIPIDLO 16 // chip ID low byte
+#define MACE_CHIPIDHI 17 // chip ID high byte
 
 // Am79C940 revision the Curio integrates (chip-ID register).
 #define MACE_CHIPID 0x0940
@@ -119,6 +123,9 @@ void av_mace_prom_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t 
 // Lifecycle
 // ============================================================
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(av_mace_t, cfg);
+
 av_mace_t *av_mace_init(config_t *cfg, checkpoint_t *cp) {
     av_mace_t *m = calloc(1, sizeof(*m));
     if (!m)
@@ -128,8 +135,7 @@ av_mace_t *av_mace_init(config_t *cfg, checkpoint_t *cp) {
     m->regs[MACE_FIFOCC] = 0x00;
     m->regs[MACE_PLSCC] = 0x00;
     if (cp) {
-        size_t data_size = offsetof(av_mace_t, cfg);
-        system_read_checkpoint_data(cp, m, data_size);
+        checkpoint_load_prefix(cp, m, av_mace_t);
     }
     return m;
 }
@@ -141,6 +147,5 @@ void av_mace_delete(av_mace_t *mace) {
 void av_mace_checkpoint(av_mace_t *mace, checkpoint_t *cp) {
     if (!mace || !cp)
         return;
-    size_t data_size = offsetof(av_mace_t, cfg);
-    system_write_checkpoint_data(cp, mace, data_size);
+    checkpoint_save_prefix(cp, mace, av_mace_t);
 }

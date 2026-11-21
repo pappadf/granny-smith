@@ -74,6 +74,36 @@ extern const arg_decl_t debug_mmu_map_args[DEBUG_MMU_MAP_NARGS];
 extern const value_t debug_mmu_desc_count_default;
 uint32_t debug_mmu_desc_count(int argc, const value_t *argv);
 
+// One peek read: `size` (1, 2 or 4) bytes at `addr`, big-endian, through the
+// MMU unless `physical`.  Returns val_none() with *out set, or the error to
+// hand back (an address with no translation, a refused space).
+typedef value_t (*debug_mmu_read_fn)(void *ctx, uint32_t addr, unsigned size, bool physical, uint32_t *out);
+
+// The peek method body: argv is (addr, [size], [space]); the space is checked
+// before the size, every error starts "peek:", and the result is a plain
+// VK_UINT of `size` bytes on every MMU kind.
+value_t debug_mmu_peek(debug_mmu_read_fn fn, void *ctx, int argc, const value_t *argv);
+
+// peek's (addr, size, space) table; `addr_doc` and `space_doc` are what
+// differ between MMU kinds, so each kind keeps its own table built from this.
+#define DEBUG_MMU_PEEK_NARGS 3
+#define DEBUG_MMU_PEEK_ARGS(addr_doc, space_doc)                                                                       \
+    {                                                                                                                  \
+        {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = (addr_doc)},                         \
+            {.name = "size",                                                                                           \
+             .kind = VK_UINT,                                                                                          \
+             .validation_flags = OBJ_ARG_OPTIONAL,                                                                     \
+             .default_value = &debug_mmu_peek_size_default,                                                            \
+             .doc = "1, 2 or 4 bytes"},                                                                                \
+        {                                                                                                              \
+            .name = "space", .kind = VK_ENUM, .enum_values = debug_space_values, .validation_flags = OBJ_ARG_OPTIONAL, \
+            .doc = (space_doc), .default_doc = "logical"                                                               \
+        }                                                                                                              \
+    }
+
+// peek's default size (4).
+extern const value_t debug_mmu_peek_size_default;
+
 // Helpers for descriptor decoders: put a hex / bool field into a map.
 void debug_mmu_put_hex(value_map_builder_t *b, const char *key, uint32_t v);
 void debug_mmu_put_bool(value_map_builder_t *b, const char *key, bool v);

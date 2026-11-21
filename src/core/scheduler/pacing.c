@@ -16,6 +16,7 @@
 #include "scheduler_internal.h"
 
 #include "object.h"
+#include "object_order.h"
 #include "system.h"
 #include "value.h"
 
@@ -226,7 +227,7 @@ void pacing_init(void) {
         return;
     s_pacing_object = object_new(&pacing_class, NULL, "pacing");
     if (s_pacing_object) {
-        object_set_order(s_pacing_object, 21);
+        object_set_order(s_pacing_object, OBJ_ORDER_PACING);
         // The toolbar's mode buttons are its everyday interface; in a tree it
         // is an advanced node, like the vrom and prom registries.
         object_set_category(s_pacing_object, M_CAT_ADVANCED);

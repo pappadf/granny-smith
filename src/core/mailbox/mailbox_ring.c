@@ -8,11 +8,14 @@
 #include "mailbox_ring.h"
 
 #include "common.h"
+#include "gs_assert.h"
 #include "spsc_index.h"
 
 #include <string.h>
 
 void mbx_ring_init(mbx_ring_t *r, volatile uint32_t *ctrl, int head_word, int tail_word, uint8_t *buf, uint32_t size) {
+    // The slot arithmetic masks with size - 1, as the header requires
+    GS_ASSERT(spsc_size_ok(size));
     memset(r, 0, sizeof(*r));
     r->ctrl = ctrl;
     r->head_word = head_word;

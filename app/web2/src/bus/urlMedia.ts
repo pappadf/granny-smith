@@ -50,7 +50,14 @@
 // every file is listed up front and its download progress reported for the
 // progress view that stands in for Welcome (components/display/UrlBootView).
 
-import { gsEval, gsEvalWithProgress, gsErrorText, gsOk, isModuleReady } from './emulator';
+import {
+  gsEval,
+  gsEvalWithProgress,
+  gsErrorText,
+  gsOk,
+  isGsObject,
+  isModuleReady,
+} from './emulator';
 import { xferReadAll } from './xfer';
 import { reconcileUiWithMachine, prepareFreshMachine } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
@@ -679,7 +686,7 @@ async function storeCompact(
         updateUrlFile(slot, { stored: { done, total } });
       },
     );
-    if (!r || typeof r !== 'object' || 'error' in (r as object)) {
+    if (!isGsObject(r)) {
       // The caller stores the staged file as it is.
       if (before) updateUrlFile(slot, { status: before });
       return false;

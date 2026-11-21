@@ -5,7 +5,7 @@
 // The Filesystem tree uses this for descent; plain OPFS paths keep going
 // through opfs.ts, with the core asked which of their files are expandable.
 
-import { gsEval, gsErrorText } from './emulator';
+import { gsEval, gsErrorText, gsOk } from './emulator';
 import { opfs } from './opfs';
 import { listViaVfs, isExpandable, markExpandable } from '@/lib/diskImage';
 import type { OpfsEntry } from './types';
@@ -83,4 +83,34 @@ export async function listDir(dir: string): Promise<OpfsEntry[]> {
     return vfsList(entries[0].path);
   }
   return entries;
+}
+
+// One directory's raw `files.list` entries, unrouted and unannotated (the
+// path field's browser), or the core's reason when it cannot list it.
+export async function listRaw(dir: string): Promise<unknown[] | string> {
+  const r = await gsEval('files.list', [dir]);
+  return Array.isArray(r) ? r : gsErrorText(r);
+}
+
+// The Mac OS volumes of a disk image (files.partitions, numbered as the
+// attached disk's partitions); none for an image the core cannot read.
+export async function diskPartitions(path: string): Promise<unknown[]> {
+  const r = await gsEval('files.partitions', [path]).catch(() => null);
+  return Array.isArray(r) ? r : [];
+}
+
+// A file's size in bytes, or null when the core cannot say.
+export async function pathSize(path: string): Promise<number | null> {
+  const r = await gsEval('files.path_size', [path]);
+  return typeof r === 'number' ? r : null;
+}
+
+// Whether anything exists at `path`.
+export async function pathExists(path: string): Promise<boolean> {
+  return (await gsEval('files.path_exists', [path])) === true;
+}
+
+// Remove a file or directory tree through the core; true when it is gone.
+export async function rmPath(path: string): Promise<boolean> {
+  return gsOk(await gsEval('files.rm', [path]));
 }

@@ -178,6 +178,10 @@ struct object *object_new(const class_desc_t *cls, void *instance_data, const ch
 void object_delete(struct object *o) {
     (void)o;
 }
+void object_destroy(struct object **slot) {
+    if (slot)
+        *slot = NULL;
+}
 void object_attach(struct object *parent, struct object *child) {
     (void)parent;
     (void)child;
@@ -219,7 +223,7 @@ value_t val_bool(bool b) {
 }
 
 // --- memory map / checkpoint: unused paths (asc_init gets map == NULL) ---
-void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
+void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, const memory_interface_t *iface,
                     void *device) {
     (void)mem;
     (void)addr;

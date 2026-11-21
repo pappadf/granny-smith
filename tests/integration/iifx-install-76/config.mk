@@ -20,7 +20,7 @@
 # with `--var REGEN=1` to recapture the references.
 #
 # Regression guard for the SWIM IOP 24-bit DMA-address fix
-# (src/machines/oss/iop_swim.c, swim_host_dma_ptr).  Mac OS 7.6 runs the IIfx
+# (src/core/peripherals/iop_swim.c, swim_host_dma_ptr).  Mac OS 7.6 runs the IIfx
 # in 24-bit addressing mode (68030 PMMU tree, TC.IS=8), and the Installer hands
 # the .Sony driver a *locked* handle's master pointer as the read buffer — high
 # byte $80, i.e. $80592D18 for a block at $00592D18.  Those flag bits never

@@ -1,0 +1,16 @@
+[
+  "iifx-aux3-realtime.spec.ts",
+  "scheduler-accelerated.spec.ts",
+  "perf-bench.spec.ts",
+  "perf-headbase.spec.ts",
+  "perf-jit.spec.ts",
+  "perf-osx-interactive.spec.ts",
+  "perf-quake3-gpu.spec.ts",
+  "av-camera.spec.ts",
+  "av-microphone.spec.ts",
+  "av-sound-record.spec.ts",
+  "av-speech-recognition.spec.ts",
+  "checkpoint-stall.spec.ts",
+  "copy-jitter.spec.ts",
+  "highlight.spec.ts"
+]

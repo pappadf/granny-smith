@@ -368,14 +368,11 @@ static uint8_t ariel_read(config_t *cfg, uint32_t off, bool peek) {
     pdm_amic_t *a = &pdm_st(cfg)->amic;
     switch (off & 3) {
     case 0:
-        return a->clut_addr;
+        return ramdac_seq_addr(&a->clut_seq);
     case 1: { // data reads auto-advance the RGB phase / address
-        uint8_t v = a->clut[a->clut_addr][a->clut_phase];
-        if (!peek && ++a->clut_phase == 3) {
-            a->clut_phase = 0;
-            a->clut_addr++;
-        }
-        return v;
+        uint8_t comp;
+        uint8_t idx = ramdac_seq_read(&a->clut_seq, peek, &comp);
+        return a->clut[idx][comp];
     }
     case 2:
         return (uint8_t)(a->clut_ctrl & 0x7Fu);
@@ -397,18 +394,17 @@ void pdm_ariel_write(config_t *cfg, uint32_t off, uint8_t value) {
     pdm_amic_t *a = &st->amic;
     switch (off & 3) {
     case 0:
-        a->clut_addr = value;
-        a->clut_phase = 0; // address write resets the RGB byte index
+        ramdac_seq_set_waddr(&a->clut_seq, value); // address write resets the RGB byte index
         break;
-    case 1:
-        a->clut[a->clut_addr][a->clut_phase] = value;
-        if (++a->clut_phase == 3) {
-            a->clut_phase = 0;
-            a->clut_addr++;
+    case 1: { // latched R, G, B; the entry is stored on B
+        uint8_t idx;
+        if (ramdac_seq_write(&a->clut_seq, value, &idx)) {
+            memcpy(a->clut[idx], a->clut_seq.pending, 3);
             if (st->video.blank)
                 pdm_video_refresh_clut(st);
         }
         break;
+    }
     case 2:
         // Low 3 bits mirror the depth code; the driver always programs
         // VdColrReg in the same blanking window, which is where the

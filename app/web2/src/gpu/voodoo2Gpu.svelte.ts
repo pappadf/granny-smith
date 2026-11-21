@@ -1,8 +1,8 @@
 // The page side of the Voodoo2 WebGPU takeover: starts the GPU worker
 // once with the overlay canvas, answers the core's availability
 // question through the bridge, and relays the core's attach/detach
-// requests (Module.onVoodooGpuAttach / onVoodooGpuDetach, fired from
-// em_gpu.c) to the worker.  The worker then talks to the emulator
+// requests (Module.onGpuAttach / onGpuDetach, fired from em_gpu.c and
+// routed here by bus/emulator.ts) to the worker.  The worker then talks to the emulator
 // through shared memory only; this module never sees a frame.
 //
 // The overlay: `#screen3d` sits over `#screen` and is shown exactly
@@ -10,7 +10,7 @@
 // MODE records it consumes), so the pass-through switch is literally
 // which canvas is on top.
 
-import { getModule, setGpuUnavailable } from '@/bus/emulator';
+import { attachSharedWorker, getModule, setGpuUnavailable } from '@/bus/emulator';
 import { showNotification } from '@/state/toasts.svelte';
 
 // Reactive overlay state, read by ScreenView.
@@ -114,7 +114,7 @@ export function whenVoodooGpuReady(timeoutMs: number): Promise<boolean> {
   });
 }
 
-// Module.onVoodooGpuAttach: the core allocated a shared region at
+// Module.onGpuAttach: the core allocated a shared region at
 // `ctrl`; hand the worker the wasm memory and the address.
 export function onVoodooGpuAttach(ctrl: number): void {
   const mod = getModule();
@@ -123,16 +123,12 @@ export function onVoodooGpuAttach(ctrl: number): void {
     console.warn('[voodoo2-gpu] attach request with no GPU device: not attached');
     return;
   }
-  const memory =
-    (mod as unknown as { wasmMemory?: WebAssembly.Memory }).wasmMemory ?? mod.HEAPU8.buffer;
-  if (!(memory instanceof WebAssembly.Memory) && !(memory instanceof SharedArrayBuffer)) return;
-  // Diagnostics: the control block's address and the memory, for a page
-  // script to read HEAD/TAIL/ACK/STATUS when something stalls.
-  (window as unknown as { __v2gpu?: unknown }).__v2gpu = { memory, ctrl, worker };
-  worker.postMessage({ type: 'attach', memory, ctrl });
+  // window.__v2gpu: the control block's address and the memory, for a
+  // page script to read HEAD/TAIL/ACK/STATUS when something stalls.
+  attachSharedWorker(worker, ctrl, '__v2gpu');
 }
 
-// Module.onVoodooGpuOverlay(0): the display path drew a fresh frame on
+// Module.onGpuOverlay(0): the display path drew a fresh frame on
 // the canvas underneath — the overlay may go.
 export function onVoodooGpuOverlay(visible: number): void {
   gpuOverlay.visible = visible !== 0;

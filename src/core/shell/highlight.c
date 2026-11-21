@@ -80,12 +80,6 @@ static bool at_end(const hl_t *h, const char *p) {
 
 // === Characters ===============================================================
 
-static bool ident_start(char c) {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
-}
-static bool ident_char(char c) {
-    return ident_start(c) || (c >= '0' && c <= '9');
-}
 static bool digit(char c) {
     return c >= '0' && c <= '9';
 }
@@ -95,7 +89,7 @@ static const char *skip_ws(const hl_t *h, const char *p) {
     return p;
 }
 static const char *ident_end(const char *p) {
-    while (ident_char(*p))
+    while (script_ident_char(*p))
         p++;
     return p;
 }
@@ -190,7 +184,7 @@ static const char *format_colon(const char *p, const char *close) {
     if (!colon || colon + 1 == close)
         return NULL;
     for (const char *q = colon + 1; q < close; q++)
-        if (!(ident_char(*q) || strchr("%.-+# ", *q)))
+        if (!(script_ident_char(*q) || strchr("%.-+# ", *q)))
             return NULL;
     return colon;
 }
@@ -241,7 +235,7 @@ static const char *dq_string(hl_t *h, const char *p, bool curly) {
             q = run = r;
             continue;
         }
-        if (*q == '$' && ident_start(q[1])) {
+        if (*q == '$' && script_ident_start(q[1])) {
             emit(h, run, q, "string");
             const char *e = ident_end(q + 1);
             emit(h, q, e, "variable");
@@ -322,7 +316,7 @@ static const char *path_rest(hl_t *h, const char *p, prefix_t *pf) {
     for (;;) {
         if (at_end(h, p))
             return p;
-        if (*p == '.' && ident_char(p[1]) && p + 1 < h->limit) {
+        if (*p == '.' && script_ident_char(p[1]) && p + 1 < h->limit) {
             const char *s = p + 1, *e = ident_end(s);
             if (pf->known) {
                 prefix_add(pf, s, e, true);
@@ -388,7 +382,7 @@ static const char *path(hl_t *h, const char *p, node_t *out) {
 // `$name` (a variable, or an alias when one of that name exists) and its
 // path continuation (resolved through the alias's path).
 static const char *binding(hl_t *h, const char *p) {
-    if (!ident_start(p[1])) {
+    if (!script_ident_start(p[1])) {
         emit(h, p, p + 1, "operator");
         return p + 1;
     }
@@ -439,7 +433,7 @@ static const char *expr_until(hl_t *h, const char *p, char close) {
             p = e;
         } else if (c == '$') {
             p = binding(h, p);
-        } else if (ident_start(c)) {
+        } else if (script_ident_start(c)) {
             const char *e = ident_end(p);
             if (word_is(p, e, "true") || word_is(p, e, "false") || word_is(p, e, "none") || word_is(p, e, "in")) {
                 emit(h, p, e, "keyword");
@@ -522,7 +516,7 @@ static void arguments(hl_t *h, const char *p, node_t m) {
         if (at_end(h, p))
             return;
         // name=VALUE
-        if (ident_start(*p)) {
+        if (script_ident_start(*p)) {
             const char *e = ident_end(p);
             if (*e == '=' && e[1] != '=') {
                 emit(h, p, e, "attribute");
@@ -552,7 +546,7 @@ static bool attr_enum(node_t n, const char *s, const char *e) {
 // word is an enum, anything else an expression.
 static void rhs(hl_t *h, const char *p, node_t target) {
     p = skip_ws(h, p);
-    if (ident_start(*p)) {
+    if (script_ident_start(*p)) {
         const char *e = ident_end(p);
         if (attr_enum(target, p, e) && at_end(h, skip_ws(h, e))) {
             emit(h, p, e, "enum");
@@ -565,7 +559,7 @@ static void rhs(hl_t *h, const char *p, node_t target) {
 // A path where a declaration wants one (`alias`, `command`), else an
 // expression.
 static void path_or_expr(hl_t *h, const char *p) {
-    if (!at_end(h, p) && ident_start(*p))
+    if (!at_end(h, p) && script_ident_start(*p))
         path(h, p, NULL);
     else
         expr_until(h, p, '\0');
@@ -582,7 +576,7 @@ static void def_params(hl_t *h, const char *q) {
         q = skip_ws(h, q);
         if (at_end(h, q))
             return;
-        if (ident_start(*q)) {
+        if (script_ident_start(*q)) {
             const char *pe = ident_end(q);
             emit(h, q, pe, "variable");
             q = pe;

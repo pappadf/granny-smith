@@ -39,6 +39,7 @@ LOCAL_SRCS := dump.c \
 # uses the same resource-fork parser and decompressors (src/codec) as the emulator —
 # both halves of the boundary that just landed in PR #43.
 CORE_SRCS := $(CORE_CPU_DIR)/cpu_disasm.c \
+             ../../src/platform/gs_assert_abort.c \
              $(CORE_CPU_DIR)/ppc/ppc_disasm.c \
              $(CORE_DBG_DIR)/mac_traps_data.c \
              $(CORE_DBG_DIR)/mac_globals_data.c \

@@ -8,6 +8,7 @@
 
 #include "memory.h"
 #include "mmu.h"
+#include "page_fill.h"
 #include "test_assert.h"
 
 #include <stdint.h>
@@ -289,6 +290,44 @@ TEST(test_mmu_slow_write_lands) {
     memory_map_delete(mem);
 }
 
+// A read-only 68K page fill (the ROM overlay going on over a RAM page that
+// holds code) drops the page's refused-write record with its write entries,
+// as memory.h requires.  The GLUE/MDU/MCU/AV fill used to leave the record
+// standing, so with the MMU on the slow path completed a store through the
+// read entry -- straight into the ROM image now mapped there.
+TEST(test_read_only_fill_drops_refused_record) {
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x080000, MEMORY_BUS_ERR_NONE, NULL, NULL);
+    memory_populate_pages(mem, 0x40800000, 0x40900000);
+    uint8_t *ram = ram_native_pointer(mem, 0);
+    uint8_t *rom = (uint8_t *)memory_rom_bytes(mem);
+    mmu_state_t *mmu = mmu_init(ram, 0x400000, 0x40000000, rom, 0x080000, 0x40800000, 0x40900000);
+    ASSERT_TRUE(mmu != NULL);
+    g_mmu = mmu;
+    // RAM page $20 holds code: its write entries are refused and recorded.
+    page_fill_68k(0x20, ram + 0x20 * MEM_PAGE_SIZE, true);
+    memory_code_page_mark(ram + 0x20 * MEM_PAGE_SIZE);
+    ASSERT_TRUE(memory_write_refused(0x20, true));
+    ASSERT_TRUE(memory_write_refused(0x20, false));
+    // The overlay maps a ROM page there read-only.
+    page_fill_68k(0x20, rom, false);
+    ASSERT_EQ_INT(0, (int)g_supervisor_write[0x20]);
+    ASSERT_EQ_INT(0, (int)g_user_write[0x20]);
+    ASSERT_TRUE(!memory_write_refused(0x20, true));
+    ASSERT_TRUE(!memory_write_refused(0x20, false));
+    // A store under the MMU (transparent translation) leaves the ROM alone.
+    mmu->tt0 = 0x00FF8043u;
+    mmu->enabled = true;
+    g_active_read = g_supervisor_read;
+    g_active_write = g_supervisor_write;
+    uint32_t rom_word = LOAD_BE32(rom + 0x10);
+    memory_write_uint32(0x20010, ~rom_word);
+    ASSERT_TRUE(LOAD_BE32(rom + 0x10) == rom_word);
+    mmu->enabled = false;
+    g_mmu = NULL;
+    mmu_delete(mmu);
+    memory_map_delete(mem);
+}
+
 // A second registered region (a unit-test buffer) gets its own marks.
 TEST(test_extra_region) {
     memory_map_t *mem = make_plus();
@@ -322,6 +361,7 @@ int main(void) {
     RUN(test_alias_mirror);
     RUN(test_refill_sites_honour_mark);
     RUN(test_mmu_slow_write_lands);
+    RUN(test_read_only_fill_drops_refused_record);
     RUN(test_extra_region);
     printf("[PASS] All memory_codepage tests passed\n");
     return 0;

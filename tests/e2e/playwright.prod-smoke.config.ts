@@ -29,7 +29,11 @@ export default defineConfig({
   retries: 0,
   reporter: process.env.CI ? 'github' : 'list',
   webServer: {
-    command: `node scripts/prod-smoke-server.mjs --port=${PORT} --subpath=${SUBPATH}`,
+    // app/web2/dist under the subpath, deliberately WITHOUT the COOP/COEP
+    // headers: the bundle must bring up cross-origin isolation through its
+    // own coi-serviceworker, as on GitHub Pages (`make run` sends them, and
+    // serves from the root, masking both failure modes).
+    command: `python3 ../../scripts/dev_server.py --root ../../app/web2/dist --port ${PORT} --host 0.0.0.0 --strict-port --no-coi-headers --subpath ${SUBPATH}`,
     cwd: __dirname,
     url: `http://${HOST}:${PORT}${SUBPATH}`,
     reuseExistingServer: !process.env.CI,

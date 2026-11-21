@@ -129,7 +129,7 @@ static uint32_t bart_fault_peek32(void *ctx, uint32_t offset) {
     return 0xFFFFFFFFu;
 }
 
-static memory_interface_t bart_fault_iface = {
+static const memory_interface_t bart_fault_iface = {
     .read_uint8 = bart_fault_read8,
     .read_uint16 = bart_fault_read16,
     .read_uint32 = bart_fault_read32,

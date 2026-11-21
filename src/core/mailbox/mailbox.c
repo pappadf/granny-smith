@@ -6,7 +6,9 @@
 #include "mailbox.h"
 
 #include "common.h"
+#include "json_escape.h"
 #include "log.h"
+#include "spsc_index.h"
 #include "io/io_worker.h"
 #include "job/job.h"
 
@@ -453,15 +455,14 @@ static bool cancel_request(uint32_t client, uint32_t target) {
 void mailbox_result_complete_error(uint32_t token, const char *message) {
     char buf[512];
     size_t o = (size_t)snprintf(buf, sizeof buf, "{\"error\":\"");
-    for (const char *c = message ? message : "failed"; *c && o + 8 < sizeof buf; c++) {
-        if (*c == '"' || *c == '\\') {
-            buf[o++] = '\\';
+    // A long message is cut, never the document: room is kept for an
+    // escape and the closing "}
+    for (const char *c = message ? message : "failed"; *c && o + JSON_ESCAPE_MAX + 3 < sizeof buf; c++) {
+        size_t k = json_escape_char((unsigned char)*c, buf + o);
+        if (k)
+            o += k;
+        else
             buf[o++] = *c;
-        } else if ((unsigned char)*c < 0x20) {
-            buf[o++] = ' ';
-        } else {
-            buf[o++] = *c;
-        }
     }
     snprintf(buf + o, sizeof buf - o, "\"}");
     mailbox_result_complete(token, false, buf);
@@ -480,7 +481,7 @@ bool mailbox_emit(mailbox_t *m, uint32_t kind, const char *json) {
     // logging at full speed) must leave room for state events and answers
     if (kind == GS_MBX_EVT_LOG) {
         uint32_t tail = mbx_load(m->evt.ctrl, m->evt.tail_word);
-        if (m->evt.size - (m->evt.wr - tail) < m->evt.size / 2u + MBX_PAD8(len)) {
+        if (spsc_room(m->evt.size, m->evt.wr, tail) < m->evt.size / 2u + MBX_PAD8(len)) {
             stat_add(m, GS_MBX_C_STAT_DROPPED, 1);
             return false;
         }

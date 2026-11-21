@@ -32,19 +32,11 @@ struct nubus_card;
 
 // IIsi state is the unified MDU+RBV state struct (mdu_io.h).  The IIsi uses
 // the egret companion.
-typedef mac030_mdu_state_t iisi_state_t;
+typedef mdu_state_t iisi_state_t;
 
 static inline iisi_state_t *iisi_state(config_t *cfg) {
     return (iisi_state_t *)cfg->machine_context;
 }
-
-// IRQ source bit assignments (identical to the IIci: RBV at level 2 carries
-// the combined slot/SCSI/sound IFR; Egret rides VIA1's shift-register
-// interrupt at level 1, so it needs no separate source).
-#define IISI_IRQ_VIA1 (1 << 0)
-#define IISI_IRQ_RBV  (1 << 1)
-#define IISI_IRQ_SCC  (1 << 2)
-#define IISI_IRQ_NMI  (1 << 3)
 
 // (I/O penalties + window offsets live with the shared dispatcher, mdu_io.c.)
 

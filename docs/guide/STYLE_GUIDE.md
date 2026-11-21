@@ -207,12 +207,19 @@ Example implementation section comment:
 ### Other Conventions
 
 - Avoid magic numbers; use named constants.
+- A fallible call returns 0 (or a count) on success and a negative errno on
+  failure, spelled by its `<errno.h>` name (`-EIO`, `-ENOMEM`), never as a
+  number: errno is numbered differently under Emscripten (`EIO` is 29
+  there).  `status_t` (`src/core/status.h`) is the typed spelling of the
+  same values; a library with its own codes translates at a named bridge
+  (`codec_errno`).  A sentinel that is not an error gets a named constant of
+  its own.  An error-text out-parameter is `char *err, size_t err_len`.
 - Use `bool`, `true`, `false` from `<stdbool.h>`.
 - Free all allocated memory; avoid leaks.
 
 ### Device module conventions
 
-Three rules that had been re-derived from scratch in four different files
+Rules that had been re-derived from scratch in four different files
 before anyone wrote them down. The first is stated in full in
 [`../core/storage/checkpointing.md`](../internals/core/checkpointing.md) under
 "Struct layout guideline"; it is repeated here because that is not where
@@ -225,7 +232,10 @@ the whole value region in one block and no host address ever reaches the
 stream. The checkpoint stream is positional and carries no version field — a
 build-ID mismatch is rejected outright — so **layout is free to change, but a
 save and its restore must land in the same commit.** Mark the boundary in the
-struct with a comment; several modules already do.
+struct with a comment; several modules already do.  Name it once with
+`CHECKPOINT_PREFIX(dev_t, first_pointer)` (`src/core/checkpoint.h`) and save
+and restore it with `checkpoint_save_prefix` / `checkpoint_load_prefix`,
+which also tag the block with the type's name.
 
 **2. `scheduler_forget_source` in destructors, and nowhere else.**
 Every `*_delete` that owns a scheduler-visible object calls it before `free`.
@@ -255,6 +265,17 @@ See `src/core/gs_assert.h` for the first two.
 `GS_ASSERT` vanish under `GS_FAST` (the shipped build sets `-DGS_FAST
 -DNDEBUG`), and `gs_assert_fail` returns anyway, so neither one prevents the
 overrun it appears to guard.
+
+**4. Tree placement: a named order weight, and one facade rule.**
+A node attached under the root or the machine node takes its display weight
+from `src/core/object/object_order.h` (`OBJ_ORDER_*`), never a literal, and
+no two nodes that can be siblings share one: siblings of equal weight fall to
+attach order, which a checkpoint load need not repeat.  Children inside one
+device keep local small numbers.  `object_attach_new(parent, cls, data, name,
+label, order)` is the constructor's one call for new + label + order +
+attach.  A process-wide facade (a node that exists with or without a
+machine) is a `<module>_class_register()` called from `core_init`, declared
+in `src/core/core_singletons.h`.
 
 ---
 

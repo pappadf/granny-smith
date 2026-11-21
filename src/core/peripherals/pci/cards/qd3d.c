@@ -73,11 +73,13 @@
 // the time its size gives it, whichever backend drew them.
 
 #include "checkpoint.h"
+#include "common.h"
 #include "log.h"
 #include "machine_build_opts.h"
 #include "object.h"
 #include "pci.h"
 #include "qd3d_raster.h"
+#include "regfile.h"
 #include "scheduler.h"
 #include "system.h"
 #include "system_internal.h"
@@ -186,7 +188,6 @@ typedef struct qd3d {
     // ---- runtime only ----
     pci_device_t *dev;
     config_t *cfg;
-    memory_interface_t bar_if;
     qd3d_dma_t dma;
     q3_target_t tgt; // the renderer's own state (qd3d_raster.h)
     q3_raster_t *raster; // where the renderer runs: sw, null or thread
@@ -198,11 +199,6 @@ typedef struct qd3d {
 // Small helpers
 // ============================================================
 
-// Big-endian 32/16-bit loads from a byte buffer.
-static uint32_t be32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
-}
-
 static float f32_bits(uint32_t bits) {
     float f;
     memcpy(&f, &bits, sizeof(f));
@@ -213,7 +209,7 @@ static float f32_bits(uint32_t bits) {
 static uint32_t dma_word(qd3d_t *q, uint32_t phys) {
     uint8_t b[4];
     pci_dma_read(q->dev, phys, b, 4);
-    return be32(b);
+    return RD_BE32(b);
 }
 
 // This card's position among cooperating cards: index and count.
@@ -262,10 +258,10 @@ static bool dma_load(qd3d_t *q) {
         uint8_t desc[16];
         pci_dma_read(q->dev, d->next, desc, sizeof(desc));
         d->next += 16;
-        uint32_t w0 = be32(desc);
+        uint32_t w0 = RD_BE32(desc);
         d->cmd = (w0 >> 24) & 0xFu;
         d->remaining = w0 & 0xFFFFu;
-        d->addr = be32(desc + 4);
+        d->addr = RD_BE32(desc + 4);
         if (d->cmd == DESC_STOP) {
             d->stopped = 1;
             break;
@@ -385,26 +381,26 @@ static bool obj_decode(qd3d_t *q, uint32_t w, uint32_t header, q3_obj_t *o) {
     if (log_would_log(log_local_category(), 6)) {
         char hex[68 * 3 + 1];
         for (int i = 0; i < 68; i += 4)
-            snprintf(hex + i * 2 + i / 4, 10, "%08X ", be32(rec + i));
+            snprintf(hex + i * 2 + i / 4, 10, "%08X ", RD_BE32(rec + i));
         LOG(6, "record at $%08X: %s", w, hex);
     }
     if (header & HDR_BITMAP) {
         // A 32 x 12 one-bit tile: depth, left/top, colour (twice), 12 rows
         // with bit 31 the leftmost pixel.
         o->kind = Q3_OBJ_BITMAP;
-        o->a0[Q3_A_DEPTH] = f32_bits(be32(rec + 4));
-        uint32_t xy = be32(rec + 8);
+        o->a0[Q3_A_DEPTH] = f32_bits(RD_BE32(rec + 4));
+        uint32_t xy = RD_BE32(rec + 8);
         o->bx = (int)(xy >> 19);
         o->by = (int)((xy & 0xFFFFu) >> 3);
-        o->colour = be32(rec + 12);
+        o->colour = RD_BE32(rec + 12);
         for (int r = 0; r < 12; r++)
-            o->mask[r] = be32(rec + 20 + 4 * r);
+            o->mask[r] = RD_BE32(rec + 20 + 4 * r);
         o->first = o->by;
         o->last = o->by + 11;
         return true;
     }
     for (int i = 0; i < 3; i++) {
-        uint32_t xy = be32(rec + 4 + 4 * i);
+        uint32_t xy = RD_BE32(rec + 4 + 4 * i);
         o->x13[i] = (uint16_t)(xy >> 16);
         o->y13[i] = (uint16_t)xy;
     }
@@ -415,7 +411,7 @@ static bool obj_decode(qd3d_t *q, uint32_t w, uint32_t header, q3_obj_t *o) {
     float v[3][Q3_A_NATTR];
     memset(v, 0, sizeof(v));
     for (int i = 0; i < 3; i++)
-        v[i][Q3_A_DEPTH] = f32_bits(be32(rec + 16 + 4 * i));
+        v[i][Q3_A_DEPTH] = f32_bits(RD_BE32(rec + 16 + 4 * i));
     if (header & HDR_TEXTURED) {
         // Per vertex: alpha, the low mantissa nibbles of v and u, a bfloat16
         // mip footprint; v and u's top 16 bits; grey kd (1.7) and ks (0.8).
@@ -426,9 +422,9 @@ static bool obj_decode(qd3d_t *q, uint32_t w, uint32_t header, q3_obj_t *o) {
         }
         o->tex_levels = o->tex_size == 256 ? 9 : 8;
         for (int i = 0; i < 3; i++) {
-            uint32_t a = be32(rec + 28 + 4 * i);
-            uint32_t vu = be32(rec + 40 + 4 * i);
-            uint32_t ks = be32(rec + 52 + 4 * i);
+            uint32_t a = RD_BE32(rec + 28 + 4 * i);
+            uint32_t vu = RD_BE32(rec + 40 + 4 * i);
+            uint32_t ks = RD_BE32(rec + 52 + 4 * i);
             v[i][Q3_A_ALPHA] = (float)(a >> 24) / 255.0f;
             v[i][Q3_A_V] = f20(vu >> 16, (a >> 20) & 0xFu);
             v[i][Q3_A_U] = f20(vu & 0xFFFFu, (a >> 16) & 0xFu);
@@ -439,7 +435,7 @@ static bool obj_decode(qd3d_t *q, uint32_t w, uint32_t header, q3_obj_t *o) {
     } else {
         o->kind = Q3_OBJ_GOURAUD;
         for (int i = 0; i < 3; i++) {
-            uint32_t c = be32(rec + 28 + 4 * i);
+            uint32_t c = RD_BE32(rec + 28 + 4 * i);
             v[i][Q3_A_ALPHA] = (float)(c >> 24) / 255.0f;
             v[i][Q3_A_R] = (float)((c >> 16) & 0xFFu) / 255.0f;
             v[i][Q3_A_G] = (float)((c >> 8) & 0xFFu) / 255.0f;
@@ -485,7 +481,7 @@ static void control_block(qd3d_t *q, uint32_t w, uint32_t *width, uint32_t *cur)
     pci_dma_read(q->dev, w, blk, sizeof(blk));
     uint32_t me = card_index(q);
     for (int i = 0; i < 7; i++) {
-        uint32_t cmd = be32(blk + 4 * i);
+        uint32_t cmd = RD_BE32(blk + 4 * i);
         uint32_t op = cmd >> HDR_OPCODE_SHIFT;
         if (op == 0)
             continue; // an empty slot
@@ -510,7 +506,7 @@ static void control_block(qd3d_t *q, uint32_t w, uint32_t *width, uint32_t *cur)
             continue;
         if (i == 6)
             break; // a data-carrying write with no room for its data
-        uint32_t data = be32(blk + 4 * ++i);
+        uint32_t data = RD_BE32(blk + 4 * ++i);
         if ((rr & ~3u) == REG_Y) {
             // One register for all cards; the low address bits say whose.
             if ((rr & 3u) == me)
@@ -575,9 +571,8 @@ static void frame_output(qd3d_t *q) {
     if (dma_load(q))
         LOG(1, "frame %u: control program ended with output descriptors left ($%08X)", q->frames, q->dma.next - 16);
     if (log_would_log(log_local_category(), 3)) {
-        uint32_t hash = 2166136261u; // FNV-1a over the frame's pixels: a cheap identity for comparisons
-        for (size_t i = 0; i < t->out_len; i++)
-            hash = (hash ^ t->out[i]) * 16777619u;
+        // FNV-1a over the frame's pixels: a cheap identity for comparisons
+        uint32_t hash = fnv1a32(FNV1A32_INIT, t->out, t->out_len);
         LOG(3, "frame %u: %u records, %llu objects, %llu pixels, hash %08X", q->frames, q->frame_records,
             (unsigned long long)q->frame_objects, (unsigned long long)q->frame_pixels, hash);
     }
@@ -766,8 +761,7 @@ static bool qd3d_cfg_read(pci_device_t *dev, uint32_t reg, uint32_t *out) {
 static bool qd3d_cfg_write(pci_device_t *dev, uint32_t reg, uint32_t byte, uint8_t value) {
     qd3d_t *q = (qd3d_t *)dev->priv;
     if (reg == QD3D_CFG_POSITION) {
-        uint32_t shift = 8u * byte;
-        q->cfg_position = (q->cfg_position & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+        le_lane8_set(&q->cfg_position, byte, value);
         LOG(3, "position register = $%08X", q->cfg_position);
         return true;
     }
@@ -800,9 +794,7 @@ static void qd3d_teardown(pci_device_t *dev, config_t *cfg) {
         return;
     scheduler_forget_source(q->cfg->scheduler, q);
     q3_raster_destroy(q->raster); // fences and joins the worker before the target goes
-    q3_target_free(&q->tgt);
-    free(q);
-    dev->priv = NULL;
+    q3_target_free(&q->tgt); // `q` itself is the bus's (priv_size)
 }
 
 static const char *qd3d_name(const pci_device_t *dev) {
@@ -810,13 +802,16 @@ static const char *qd3d_name(const pci_device_t *dev) {
     return "QuickDraw 3D Accelerator";
 }
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(qd3d_t, dev);
+
 // The plain-data head, then the output of a frame still in flight (its
 // pixels reach host memory only when it completes): a byte count and the
 // bytes.
 static void qd3d_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
     qd3d_t *q = (qd3d_t *)dev->priv;
     q3_raster_sync(q->raster);
-    system_write_checkpoint_data(cp, q, offsetof(qd3d_t, dev));
+    checkpoint_save_prefix(cp, q, qd3d_t);
     uint32_t len = q->irq_pending ? (uint32_t)q->tgt.out_len : 0u;
     system_write_checkpoint_data(cp, &len, sizeof(len));
     if (len)
@@ -827,7 +822,7 @@ static void qd3d_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     qd3d_t *q = (qd3d_t *)dev->priv;
     uint32_t irq = 0, len = 0;
     q3_raster_sync(q->raster);
-    system_read_checkpoint_data(cp, q, offsetof(qd3d_t, dev));
+    checkpoint_load_prefix(cp, q, qd3d_t);
     system_read_checkpoint_data(cp, &len, sizeof(len));
     q->tgt.out_len = 0;
     q->tgt.out_failed = false;
@@ -879,10 +874,10 @@ static const pci_config_decl_t qd3d_decl = {
 // for the tests and the terminal, as on the Voodoo2.  The default is the
 // worker thread on every build: its output is byte-identical to the
 // normative walker's.  -DGS_QD3D_RASTER_DEFAULT='"sw"' (EXTRA_CFLAGS) makes a
-// build default to the walker; -DGS_QD3D_THREAD_BACKEND=0 compiles the
+// build default to the walker; -DGS_RASTER_THREAD_BACKEND=0 compiles the
 // thread backend out of qd3d_raster.c, and the default follows.
 #ifndef GS_QD3D_RASTER_DEFAULT
-#if defined(GS_QD3D_THREAD_BACKEND) && !GS_QD3D_THREAD_BACKEND
+#if defined(GS_RASTER_THREAD_BACKEND) && !GS_RASTER_THREAD_BACKEND
 #define GS_QD3D_RASTER_DEFAULT "sw"
 #else
 #define GS_QD3D_RASTER_DEFAULT "thread"
@@ -895,46 +890,41 @@ static bool qd3d_accepts_option(const char *key, const char *value) {
     return false;
 }
 
-static pci_device_t *qd3d_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
+// The one BAR face.  Reads have no side effect, so the peeks are the reads.
+static const memory_interface_t qd3d_bar_iface = {
+    .read_uint8 = bar_read8,
+    .read_uint16 = bar_read16,
+    .read_uint32 = bar_read32,
+    .write_uint8 = bar_write8,
+    .write_uint16 = bar_write16,
+    .write_uint32 = bar_write32,
+    .peek_uint8 = bar_read8,
+    .peek_uint16 = bar_read16,
+    .peek_uint32 = bar_read32,
+};
+
+// The bus has allocated `dev` and its qd3d_t and reset the header.
+static int qd3d_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     (void)rom;
-    pci_device_t *dev = calloc(1, sizeof(*dev));
-    qd3d_t *q = calloc(1, sizeof(*q));
-    if (!dev || !q || !q3_target_init(&q->tgt, q->tex)) {
-        free(q);
-        free(dev);
-        return NULL;
-    }
+    qd3d_t *q = (qd3d_t *)dev->priv;
+    if (!q3_target_init(&q->tgt, q->tex))
+        return -1;
     const char *raster = slot_opts_option(opts, "raster");
     q->raster = q3_raster_create(raster ? raster : GS_QD3D_RASTER_DEFAULT, &q->tgt, build_state, q);
     if (!q->raster) {
         q3_target_free(&q->tgt);
-        free(q);
-        free(dev);
-        return NULL;
+        return -1;
     }
     q->dev = dev;
     q->cfg = cfg;
-    dev->ops = &qd3d_ops;
-    dev->decl = &qd3d_decl;
-    dev->priv = q;
-    pci_cfg_reset(dev);
 
-    q->bar_if.read_uint8 = bar_read8;
-    q->bar_if.read_uint16 = bar_read16;
-    q->bar_if.read_uint32 = bar_read32;
-    q->bar_if.write_uint8 = bar_write8;
-    q->bar_if.write_uint16 = bar_write16;
-    q->bar_if.write_uint32 = bar_write32;
-    q->bar_if.peek_uint8 = bar_read8;
-    q->bar_if.peek_uint16 = bar_read16;
-    q->bar_if.peek_uint32 = bar_read32;
-    pci_bar_backing_iface(dev, 0, &q->bar_if, q);
+    pci_bar_backing_iface(dev, 0, &qd3d_bar_iface, q);
 
     scheduler_new_event_type(cfg->scheduler, "qd3d", q, "frame-done", frame_done_event);
     q->port_state = PORT_HEADER;
-    LOG(1, "seated in slot %d (revision %u, %u texels), raster backend %s", slot_index, QD3D_REVISION, QD3D_TEX_TEXELS,
-        q3_raster_name(q->raster));
-    return dev;
+    LOG(1, "seated in slot %d (revision %u, %u texels), raster backend %s", dev->slot_index, QD3D_REVISION,
+        QD3D_TEX_TEXELS, q3_raster_name(q->raster));
+    return 0;
 }
 
 // ============================================================
@@ -1061,7 +1051,10 @@ const pci_card_kind_t qd3d_kind = {
     .display_name = "Apple QuickDraw 3D Accelerator Card",
     .attach = PCI_ATTACH_PCI,
     .card_class = "other",
-    .factory = qd3d_factory,
+    .ops = &qd3d_ops,
+    .decl = &qd3d_decl,
+    .priv_size = sizeof(qd3d_t),
+    .init = qd3d_init,
     .accepts_option = qd3d_accepts_option,
     .attach_objects = qd3d_attach_objects,
 };

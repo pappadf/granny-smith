@@ -135,7 +135,7 @@ source_t *source_decode_through(source_t *src, chunk_cache_t *cache) {
         dt_close(&tmp);
         return NULL;
     }
-    return peel_source_new(&dt_ops, d, NULL);
+    return source_new(&dt_ops, d, NULL);
 }
 
 // ============================================================================
@@ -196,7 +196,7 @@ source_t *source_locked(source_t *src) {
         return NULL;
     l->src = source_retain(src);
     pthread_mutex_init(&l->mu, NULL);
-    return peel_source_new(&lock_ops, l, NULL);
+    return source_new(&lock_ops, l, NULL);
 }
 
 // ============================================================================
@@ -225,7 +225,7 @@ static int64_t fsink_read(source_t *s, uint64_t off, void *buf, size_t len) {
 
 static uint64_t fsink_size(source_t *s) {
     file_sink_t *f = s->ctx;
-    if (f->expected == PEEL_SIZE_UNKNOWN)
+    if (f->expected == GS_SIZE_UNKNOWN)
         return f->written;
     return f->expected > f->written ? f->expected : f->written;
 }
@@ -275,7 +275,7 @@ static source_t *sink_create(void *ctx, const char *key, uint64_t expected_len) 
         return NULL;
     }
     f->expected = expected_len;
-    return peel_source_new(&fsink_ops, f, NULL);
+    return source_new(&fsink_ops, f, NULL);
 }
 
 static int64_t sink_write(source_t *sink, uint64_t off, const void *buf, size_t len) {

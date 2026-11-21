@@ -116,14 +116,6 @@ static inline void bus_fault_snapshot_regs(unsigned size) {
     }
 }
 uint32_t *g_bus_error_instr_ptr = NULL;
-// The running 68k core's data registers (set per sprint), snapshotted at the
-// first MMU fault of an instruction.  Our cores run an instruction to the end
-// with the faulted read yielding a fill value, then deliver a retry frame; the
-// hardware never writes a destination whose operand read faulted, so the
-// retry path restores D0-D7 from this snapshot (exception_bus_error_retry).
-uint32_t *g_fault_dregs_src = NULL;
-uint32_t g_fault_dregs[8];
-bool g_fault_dregs_valid = false;
 // Physical page-fill hook for machines whose page table is NOT owned by a
 // 68k mmu_state_t (the PowerPC families).  memory_map_host_region() routes
 // card-registered host regions through it so their pages land in the
@@ -1167,9 +1159,6 @@ static inline __attribute__((always_inline)) uint32_t read_slow_n(uint32_t addr,
         } else if (!g_bus_error_pending) {
             // MMU fault: invalid descriptor, unmapped physical, permission.
             g_bus_error_pending = true;
-            g_fault_dregs_valid = g_fault_dregs_src != NULL;
-            if (g_fault_dregs_valid)
-                memcpy(g_fault_dregs, g_fault_dregs_src, sizeof g_fault_dregs);
             g_bus_error_address = addr;
             g_bus_error_rw = true; // read
             g_bus_error_fc = supervisor ? 5 : 1;
@@ -1278,66 +1267,50 @@ static inline void debug_dev_write(const page_entry_t *pe, uint32_t phys, unsign
 //     registers stay inspectable (e.g. NuBus video regs in iicx-video-modes),
 //   - return an all-ones sentinel for unmapped/invalid pages,
 //   - never call mmu_handle_fault, never touch the SoA cache or g_bus_error_pending.
-uint8_t memory_debug_read_uint8(uint32_t addr) {
+//
+// One size-generic body serves the three widths; the exported accessors are
+// thin wrappers.  An access that straddles a page splits into two halves
+// (a long into two words, a word into two bytes), each re-entering here.
+static uint32_t debug_read_n(uint32_t addr, unsigned size) {
     addr &= g_address_mask;
+    bool super = g_active_read == g_supervisor_read;
     if (__builtin_expect(g_lisa_mmu != NULL, 0))
-        return (uint8_t)lisa_mmu_debug_read(addr, 1, g_active_read == g_supervisor_read);
-    uint32_t phys = addr;
-    if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_read == g_supervisor_read, &phys))
-        return 0xFF;
-    uint32_t page = phys >> MEM_PAGE_SHIFT;
-    if (page >= g_page_count)
-        return 0xFF;
-    page_entry_t *pe = &g_page_table[page];
-    if (pe->host_base)
-        return LOAD_BE8(pe->host_base + (phys & MEM_PAGE_MASK));
-    if (pe->dev)
-        return (uint8_t)debug_dev_read(pe, phys, 1);
-    return 0xFF;
+        return lisa_mmu_debug_read(addr, size, super);
+    uint32_t ones = size == 4 ? 0xFFFFFFFFu : (1u << (size * 8)) - 1; // the unmapped sentinel
+    // Single-page reads hit the device's own width handler
+    if ((addr & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - size) {
+        uint32_t phys = addr;
+        if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, super, &phys))
+            return ones;
+        uint32_t page = phys >> MEM_PAGE_SHIFT;
+        if (page < g_page_count) {
+            page_entry_t *pe = &g_page_table[page];
+            if (pe->host_base) {
+                const uint8_t *hp = pe->host_base + (phys & MEM_PAGE_MASK);
+                return size == 1 ? LOAD_BE8(hp) : size == 2 ? LOAD_BE16(hp) : LOAD_BE32(hp);
+            }
+            if (pe->dev)
+                return debug_dev_read(pe, phys, size);
+        }
+        return ones;
+    }
+    // Straddles a page: compose from the two halves
+    unsigned half = size / 2;
+    uint32_t hi = debug_read_n(addr, half);
+    uint32_t lo = debug_read_n(addr + half, half);
+    return (hi << (half * 8)) | lo;
+}
+
+uint8_t memory_debug_read_uint8(uint32_t addr) {
+    return (uint8_t)debug_read_n(addr, 1);
 }
 
 uint16_t memory_debug_read_uint16(uint32_t addr) {
-    addr &= g_address_mask;
-    if (__builtin_expect(g_lisa_mmu != NULL, 0))
-        return (uint16_t)lisa_mmu_debug_read(addr, 2, g_active_read == g_supervisor_read);
-    // Single-page word reads hit the device's own width handler; byte-split
-    // only when the access straddles a page.
-    if ((addr & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 2) {
-        uint32_t phys = addr;
-        if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_read == g_supervisor_read, &phys))
-            return 0xFFFF;
-        uint32_t page = phys >> MEM_PAGE_SHIFT;
-        if (page < g_page_count) {
-            page_entry_t *pe = &g_page_table[page];
-            if (pe->host_base)
-                return LOAD_BE16(pe->host_base + (phys & MEM_PAGE_MASK));
-            if (pe->dev)
-                return (uint16_t)debug_dev_read(pe, phys, 2);
-        }
-        return 0xFFFF;
-    }
-    return (uint16_t)((memory_debug_read_uint8(addr) << 8) | memory_debug_read_uint8(addr + 1));
+    return (uint16_t)debug_read_n(addr, 2);
 }
 
 uint32_t memory_debug_read_uint32(uint32_t addr) {
-    addr &= g_address_mask;
-    if (__builtin_expect(g_lisa_mmu != NULL, 0))
-        return lisa_mmu_debug_read(addr, 4, g_active_read == g_supervisor_read);
-    if ((addr & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
-        uint32_t phys = addr;
-        if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_read == g_supervisor_read, &phys))
-            return 0xFFFFFFFFu;
-        uint32_t page = phys >> MEM_PAGE_SHIFT;
-        if (page < g_page_count) {
-            page_entry_t *pe = &g_page_table[page];
-            if (pe->host_base)
-                return LOAD_BE32(pe->host_base + (phys & MEM_PAGE_MASK));
-            if (pe->dev)
-                return debug_dev_read(pe, phys, 4);
-        }
-        return 0xFFFFFFFFu;
-    }
-    return ((uint32_t)memory_debug_read_uint16(addr) << 16) | memory_debug_read_uint16(addr + 2);
+    return debug_read_n(addr, 4);
 }
 
 uint32_t memory_debug_read_phys(uint32_t phys, unsigned size, bool *ok) {
@@ -1414,89 +1387,58 @@ void memory_debug_read_block(uint32_t addr, uint8_t *dst, uint32_t len) {
 // the device write, drop ROM/unmapped silently, and NEVER fault or latch
 // g_bus_error_pending (a stray poke must not inject a bus error into the guest).
 // Returns true if the byte landed in writable host RAM / a device.
-bool memory_debug_write_uint8(uint32_t addr, uint8_t value) {
+//
+// One size-generic body, like debug_read_n; a straddling write splits into
+// two halves and succeeds only if both land.
+static bool debug_write_n(uint32_t addr, unsigned size, uint32_t value) {
     addr &= g_address_mask;
+    bool super = g_active_write == g_supervisor_write;
     if (__builtin_expect(g_lisa_mmu != NULL, 0))
-        return lisa_mmu_debug_write(addr, 1, g_active_write == g_supervisor_write, value);
-    uint32_t phys = addr;
-    if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_write == g_supervisor_write, &phys))
+        return lisa_mmu_debug_write(addr, size, super, value);
+    if ((addr & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - size) {
+        uint32_t phys = addr;
+        if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, super, &phys))
+            return false;
+        uint32_t page = phys >> MEM_PAGE_SHIFT;
+        if (page < g_page_count) {
+            page_entry_t *pe = &g_page_table[page];
+            if (pe->host_base) {
+                if (!pe->writable)
+                    return false; // ROM/VROM — drop silently
+                uint8_t *hp = pe->host_base + (phys & MEM_PAGE_MASK);
+                memory_host_written(hp, size);
+                if (size == 1)
+                    STORE_BE8(hp, (uint8_t)value);
+                else if (size == 2)
+                    STORE_BE16(hp, (uint16_t)value);
+                else
+                    STORE_BE32(hp, value);
+                return true;
+            }
+            if (pe->dev) {
+                debug_dev_write(pe, phys, size, value);
+                return true;
+            }
+        }
         return false;
-    uint32_t page = phys >> MEM_PAGE_SHIFT;
-    if (page >= g_page_count)
-        return false;
-    page_entry_t *pe = &g_page_table[page];
-    if (pe->host_base) {
-        if (!pe->writable)
-            return false; // ROM/VROM — drop silently
-        memory_host_written(pe->host_base + (phys & MEM_PAGE_MASK), 1);
-        STORE_BE8(pe->host_base + (phys & MEM_PAGE_MASK), value);
-        return true;
     }
-    if (pe->dev) {
-        debug_dev_write(pe, phys, 1, value);
-        return true;
-    }
-    return false;
+    // Straddles a page: write both halves, then report whether both landed
+    unsigned half = size / 2;
+    bool a = debug_write_n(addr, half, value >> (half * 8));
+    bool b = debug_write_n(addr + half, half, value & ((1u << (half * 8)) - 1));
+    return a && b;
+}
+
+bool memory_debug_write_uint8(uint32_t addr, uint8_t value) {
+    return debug_write_n(addr, 1, value);
 }
 
 bool memory_debug_write_uint16(uint32_t addr, uint16_t value) {
-    addr &= g_address_mask;
-    if (__builtin_expect(g_lisa_mmu != NULL, 0))
-        return lisa_mmu_debug_write(addr, 2, g_active_write == g_supervisor_write, value);
-    if ((addr & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 2) {
-        uint32_t phys = addr;
-        if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_write == g_supervisor_write, &phys))
-            return false;
-        uint32_t page = phys >> MEM_PAGE_SHIFT;
-        if (page < g_page_count) {
-            page_entry_t *pe = &g_page_table[page];
-            if (pe->host_base) {
-                if (!pe->writable)
-                    return false;
-                memory_host_written(pe->host_base + (phys & MEM_PAGE_MASK), 2);
-                STORE_BE16(pe->host_base + (phys & MEM_PAGE_MASK), value);
-                return true;
-            }
-            if (pe->dev) {
-                debug_dev_write(pe, phys, 2, value);
-                return true;
-            }
-        }
-        return false;
-    }
-    bool a = memory_debug_write_uint8(addr, (uint8_t)(value >> 8));
-    bool b = memory_debug_write_uint8(addr + 1, (uint8_t)value);
-    return a && b;
+    return debug_write_n(addr, 2, value);
 }
 
 bool memory_debug_write_uint32(uint32_t addr, uint32_t value) {
-    addr &= g_address_mask;
-    if (__builtin_expect(g_lisa_mmu != NULL, 0))
-        return lisa_mmu_debug_write(addr, 4, g_active_write == g_supervisor_write, value);
-    if ((addr & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
-        uint32_t phys = addr;
-        if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_write == g_supervisor_write, &phys))
-            return false;
-        uint32_t page = phys >> MEM_PAGE_SHIFT;
-        if (page < g_page_count) {
-            page_entry_t *pe = &g_page_table[page];
-            if (pe->host_base) {
-                if (!pe->writable)
-                    return false;
-                memory_host_written(pe->host_base + (phys & MEM_PAGE_MASK), 4);
-                STORE_BE32(pe->host_base + (phys & MEM_PAGE_MASK), value);
-                return true;
-            }
-            if (pe->dev) {
-                debug_dev_write(pe, phys, 4, value);
-                return true;
-            }
-        }
-        return false;
-    }
-    bool a = memory_debug_write_uint16(addr, (uint16_t)(value >> 16));
-    bool b = memory_debug_write_uint16(addr + 2, (uint16_t)value);
-    return a && b;
+    return debug_write_n(addr, 4, value);
 }
 
 // Slow path for 8-bit writes: device I/O, MMU TLB miss, or unmapped
@@ -1668,9 +1610,6 @@ static inline __attribute__((always_inline)) void write_slow_n(uint32_t addr, ui
         } else if (!g_bus_error_pending) {
             // MMU fault: invalid descriptor, unmapped physical, permission.
             g_bus_error_pending = true;
-            g_fault_dregs_valid = g_fault_dregs_src != NULL;
-            if (g_fault_dregs_valid)
-                memcpy(g_fault_dregs, g_fault_dregs_src, sizeof g_fault_dregs);
             g_bus_error_address = addr;
             g_bus_error_rw = false; // write
             g_bus_error_fc = supervisor ? 5 : 1;
@@ -2288,7 +2227,7 @@ void memory_host_written(const uint8_t *host, uint32_t len) {
 // ============================================================================
 
 // Add a memory-mapped device to the memory map (linked list + page table)
-void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
+void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, const memory_interface_t *iface,
                     void *device) {
     // Add to linked list (for memory_map_print / memory_map_remove)
     mapping_t *map = (mapping_t *)calloc(1, sizeof(mapping_t));

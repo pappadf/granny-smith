@@ -534,14 +534,14 @@ typedef enum {
 static synth_kind_t classify_synth_at(const char *const *components, size_t n_components, size_t anchor,
                                       uint8_t type_out[4], int16_t *id_out) {
     size_t after = n_components - anchor - 1;
-    if (strcmp(components[anchor], "finf") == 0)
+    if (strcmp(components[anchor], VFS_FORK_FINF) == 0)
         return (after == 0) ? SYNTH_FINF : SYNTH_NONE;
 
     if (after == 0)
         return SYNTH_RSRC_DIR;
     if (after == 1) {
         const char *next = components[anchor + 1];
-        if (strcmp(next, "_raw") == 0)
+        if (strcmp(next, VFS_RAW_ESCAPE) == 0)
             return SYNTH_RSRC_RAW;
         if (rfork_type_from_path(next, type_out) == 0)
             return SYNTH_RSRC_TYPE_DIR;
@@ -670,7 +670,7 @@ static int resolve_synthetic(image_mount_t *m, const image_path_t *ip, synth_t *
     sy->kind = SYNTH_NONE;
     for (size_t a = 1; a < ip->n_components; a++) {
         const char *c = ip->components[a];
-        if (strcmp(c, "rsrc") != 0 && strcmp(c, "finf") != 0)
+        if (!vfs_is_fork_keyword(c, strlen(c)))
             continue;
         synth_kind_t kind = classify_synth_at(ip->components, ip->n_components, a, sy->type, &sy->id);
         if (kind == SYNTH_NONE)
@@ -882,7 +882,7 @@ static int img_readdir(vfs_dir_t *vd, vfs_dirent_t *out) {
         // exhausted, then EOF.
         if (!d->rsrc_emit_raw_next) {
             d->rsrc_emit_raw_next = true;
-            snprintf(out->name, sizeof(out->name), "_raw");
+            snprintf(out->name, sizeof(out->name), "%s", VFS_RAW_ESCAPE);
             out->st.mode = VFS_MODE_FILE;
             out->st.readonly = true;
             out->has_stat = true;

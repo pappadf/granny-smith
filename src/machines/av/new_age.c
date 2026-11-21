@@ -115,13 +115,16 @@ void av_new_age_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t va
 // Lifecycle
 // ============================================================
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(new_age_t, fd);
+
 av_new_age_t *av_new_age_init(config_t *cfg, checkpoint_t *cp) {
     av_new_age_t *fdc = calloc(1, sizeof(*fdc));
     if (!fdc)
         return NULL;
     fdc->cfg = cfg;
     if (cp)
-        system_read_checkpoint_data(cp, &fdc->chip, offsetof(new_age_t, fd));
+        checkpoint_load_prefix(cp, &fdc->chip, new_age_t);
     av_new_age_bind(fdc);
     if (!cp)
         new_age_reset(&fdc->chip); // power-on state
@@ -145,5 +148,5 @@ void av_new_age_delete(av_new_age_t *fdc) {
 void av_new_age_checkpoint(av_new_age_t *fdc, checkpoint_t *cp) {
     if (!fdc || !cp)
         return;
-    system_write_checkpoint_data(cp, &fdc->chip, offsetof(new_age_t, fd));
+    checkpoint_save_prefix(cp, &fdc->chip, new_age_t);
 }

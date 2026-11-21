@@ -70,7 +70,7 @@ void jmfb_apply_scanout(jmfb_regs_t *r, const jmfb_bind_t *b) {
 // Decode the three completed long writes into one palette entry.  Two
 // protocols share the register: at 24 bpp the driver puts all three components
 // in the last long, otherwise each long's LSB is one component.
-static void clut_finalize_entry(jmfb_regs_t *r, const jmfb_bind_t *b) {
+static void clut_finalize_entry(jmfb_regs_t *r, const jmfb_bind_t *b, uint8_t idx) {
     uint32_t w0 = r->clut_pending[0];
     uint32_t w1 = r->clut_pending[1];
     uint32_t w2 = r->clut_pending[2];
@@ -88,9 +88,7 @@ static void clut_finalize_entry(jmfb_regs_t *r, const jmfb_bind_t *b) {
     }
     e.a = 255;
     if (b->clut)
-        b->clut[r->clut_idx] = e;
-    r->clut_idx++; // auto-increment for run-write
-    r->clut_phase = 0;
+        b->clut[idx] = e;
     if (b->display)
         b->display->clut_dirty = true;
 }
@@ -126,7 +124,7 @@ static void jmfb_block_write16(jmfb_regs_t *r, const jmfb_bind_t *b, uint32_t of
             // RAMDAC sub-counter.  Sense lines are a hardware property and are
             // NOT cleared.
             r->csr &= JMFB_CSR_MASK_SENSE;
-            r->clut_phase = 0;
+            ramdac_seq_set_waddr(&r->clut_seq, ramdac_seq_addr(&r->clut_seq));
             LOG(2, "%s CSR: VRSTB master reset", b->tag);
         }
         if (val & JMFB_CSR_REFEN)
@@ -278,16 +276,17 @@ static void clut_write16(jmfb_regs_t *r, const jmfb_bind_t *b, uint32_t off, uin
     case JMFB_REG_CLUT_ADDR + 2:
         // The index maps into the low byte; a write resets the R/G/B
         // sub-counter so the next three data writes load the new entry.
-        r->clut_idx = (uint8_t)(val & 0xFFu);
-        r->clut_phase = 0;
+        ramdac_seq_set_waddr(&r->clut_seq, (uint8_t)(val & 0xFFu));
         return;
     case JMFB_REG_CLUT_DATA + 2: {
         uint32_t full = ((uint32_t)r->clut_long_hi << 16) | val;
         r->clut_long_hi = 0;
-        if (r->clut_phase < 3)
-            r->clut_pending[r->clut_phase++] = full;
-        if (r->clut_phase == 3)
-            clut_finalize_entry(r, b);
+        // The sequencer latches the low byte; the whole long is kept here,
+        // since the 24 bpp protocol carries all three components in the last long
+        uint8_t idx;
+        r->clut_pending[r->clut_seq.phase % 3u] = full;
+        if (ramdac_seq_write(&r->clut_seq, (uint8_t)full, &idx))
+            clut_finalize_entry(r, b, idx);
         return;
     }
     case JMFB_REG_CLUT_PBCR + 2: {
@@ -317,7 +316,7 @@ static uint16_t clut_read16(jmfb_regs_t *r, const jmfb_bind_t *b, uint32_t off) 
     case JMFB_REG_CLUT_PBCR:
         return 0; // high half of a long read -- bus drives zero
     case JMFB_REG_CLUT_ADDR + 2:
-        return r->clut_idx;
+        return ramdac_seq_addr(&r->clut_seq);
     case JMFB_REG_CLUT_PBCR + 2:
         return r->clut_pbcr;
     default:

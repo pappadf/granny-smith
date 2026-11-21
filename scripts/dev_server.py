@@ -2,9 +2,12 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) pappadf
 from __future__ import annotations
-"""Dev server with cache bust avoidance and optional fallback root.
+"""The project's one static server: `make run`, the release package and every
+Playwright config serve through it.  No caching, COOP/COEP headers (unless
+--no-coi-headers), an optional fallback root and an optional URL subpath.
 Usage: python scripts/dev_server.py --root build --port 8080
        python scripts/dev_server.py --root build --port 8080 --fallback-root .
+       python scripts/dev_server.py --root dist --strict-port --no-coi-headers --subpath /sub/path/
 """
 import argparse, os, urllib.parse
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
@@ -49,6 +52,17 @@ class Handler(SimpleHTTPRequestHandler):
     default_params = None
     # When True, skip COOP/COEP headers (let the service worker handle them).
     no_coi_headers = False
+    # Optional URL prefix ("/sub/path/") the root is served under, the way a
+    # project page is; a request outside it is a 404.
+    subpath = None
+    # The types a page's modules and the core need, whatever the host's
+    # mime.types says (a module script served as text/plain does not run).
+    extensions_map = {
+        **SimpleHTTPRequestHandler.extensions_map,
+        '.js': 'text/javascript',
+        '.mjs': 'text/javascript',
+        '.wasm': 'application/wasm',
+    }
 
     def end_headers(self):
         self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0')
@@ -60,7 +74,20 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header('Cross-Origin-Embedder-Policy', 'require-corp')
         super().end_headers()
 
+    def outside_subpath(self):
+        """True (and answered with a 404) when the request is outside --subpath."""
+        if self.subpath and not self.path.startswith(self.subpath):
+            self.send_error(404, 'Not under ' + self.subpath)
+            return True
+        return False
+
+    def do_HEAD(self):  # noqa: N802
+        if not self.outside_subpath():
+            super().do_HEAD()
+
     def do_GET(self):  # noqa: N802
+        if self.outside_subpath():
+            return
         # Rewrite bare "/" to "/index.html" so the response carries full
         # COOP/COEP headers (302 redirects can lose headers through proxies
         # such as GitHub Codespaces port-forwarding).
@@ -80,6 +107,9 @@ class Handler(SimpleHTTPRequestHandler):
 
     def translate_path(self, path):
         """Resolve path in the main root; fall back to fallback_root if missing."""
+        if self.subpath:
+            # do_GET / do_HEAD refused anything outside it
+            path = '/' + path[len(self.subpath):]
         primary = super().translate_path(path)
         if os.path.exists(primary) or not self.fallback_root:
             return primary
@@ -99,6 +129,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--root', default='build')
     ap.add_argument('--port', type=int, default=8080)
+    ap.add_argument('--host', default='localhost',
+                    help='Address to listen on (0.0.0.0: every IPv4 interface)')
     ap.add_argument('--fallback-root', default=None,
                     help='Secondary directory to serve files from when not found in --root')
     ap.add_argument('--param', action='append', default=[], metavar='KEY=VALUE',
@@ -111,6 +143,8 @@ def main():
                     help='Skip COOP/COEP headers (let the service worker inject them instead)')
     ap.add_argument('--strict-port', action='store_true',
                     help='Fail if --port is taken instead of moving to the next free one')
+    ap.add_argument('--subpath', default=None, metavar='/PREFIX/',
+                    help='Serve the root under this URL prefix only (a project page\'s path)')
     a = ap.parse_args()
     params = []
     for kv in a.param:
@@ -134,6 +168,9 @@ def main():
         Handler.default_params = default_params
     if a.no_coi_headers:
         Handler.no_coi_headers = True
+    if a.subpath:
+        # Always "/x/y/", so a prefix test can never match "/x/yz"
+        Handler.subpath = '/' + a.subpath.strip('/') + '/' if a.subpath.strip('/') else None
     # One thread per connection.  A COOP/COEP page opens several module and
     # worker fetches at once and a pthread worker can hold a connection while
     # it blocks; on the single-threaded HTTPServer any one of those stalled
@@ -141,18 +178,18 @@ def main():
     handler = partial(Handler, directory=root)
     if a.strict_port:
         try:
-            httpd = Server(('localhost', a.port), handler)
+            httpd = Server((a.host, a.port), handler)
         except OSError as e:
             raise SystemExit(f"Cannot listen on port {a.port}: {e.strerror} "
                              "(drop --strict-port to take the next free one)")
     else:
-        httpd = serve_on_free_port(handler, a.port)
+        httpd = serve_on_free_port(handler, a.port, a.host)
         port = httpd.server_address[1]
         if port != a.port:
             print(f"Port {a.port} is in use (another instance?); using {port}")
         a.port = port
     httpd.daemon_threads = True
-    url = f"http://localhost:{a.port}"
+    url = f"http://localhost:{a.port}{Handler.subpath or ''}"
     parts = [f"Serving UI on {url} --"]
     parts.append(f"root {root}")
     if a.fallback_root:

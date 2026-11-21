@@ -108,7 +108,7 @@ the devcontainer image.)
 **What to test locally, and what to leave to CI.** Test what you work
 on: the row for the specific use case, and the rows of the specific
 machine family whose code you modified (a change to shared machinery —
-`av/cuda.c`, the SCSI model, the SCRIPTS engine — means the rows of every
+`core/peripherals/cuda.c`, the SCSI model, the SCRIPTS engine — means the rows of every
 family that uses it). Beyond that, broad testing — `make integration-test`
 over all rows — is in general left to CI: push the branch and open (or
 update) a PR, and CI runs the whole suite while the local machine stays

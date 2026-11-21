@@ -43,6 +43,10 @@ typedef enum {
 // `err_buf` (if non-NULL) receives a one-line message.
 status_t alias_register_builtin(const char *name, const char *path, char *err_buf, size_t err_size);
 
+// alias_register_builtin for a module's init, which has nowhere to return a
+// failure to: a rejection is logged as "<owner>: built-in alias '$name' ...".
+void alias_register_builtin_or_log(const char *owner, const char *name, const char *path);
+
 // User-side `shell.alias.add NAME PATH`. Fails if name is a reserved
 // word or collides with a built-in. Replaces an existing user alias
 // of the same name.

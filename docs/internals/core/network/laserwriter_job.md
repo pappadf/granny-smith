@@ -187,10 +187,14 @@ build.
 
 ## The document sink
 
-`laserwriter_sink_document` is a weak symbol the platform overrides:
+A finished document goes to `printer_sink_document` (`printer_sink.h`, the
+ImageWriter's sink too) as printer `LaserWriter` with no file-name prefix,
+and a capture (`appletalk.printer.capture`) to `printer_sink_capture` as
+`<job>.ps`; both are weak symbols the platform overrides:
 
 - **headless** (`headless_main.c`) writes `<print-dir>/<job>-<title>.pdf`
-  under `--print-dir` / `$GS_PRINT_DIR` and logs pages and any error.
+  (named by `printer_file_name`) under `--print-dir` / `$GS_PRINT_DIR` and
+  logs pages and any error.
 - **wasm** has no override: the ring transport never produces bytes here —
   the interpreter worker posts the PDF to the page, which shows it in the
   viewer dialog

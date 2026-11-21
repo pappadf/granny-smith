@@ -337,10 +337,6 @@ int dsp3210_load(dsp3210_t *s, uint32_t addr, const void *buf, size_t len);
 int dsp3210_peek(dsp3210_t *s, uint32_t addr, int size, uint32_t *out);
 int dsp3210_poke(dsp3210_t *s, uint32_t addr, int size, uint32_t val);
 
-// DSP32 32-bit floating-point format [IM §3.4.2] <-> host double.
-double dsp3210_dsp32_to_double(uint32_t w);
-uint32_t dsp3210_double_to_dsp32(double v);
-
 const char *dsp3210_step_name(int status);
 
 #ifdef __cplusplus

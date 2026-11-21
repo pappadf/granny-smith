@@ -479,6 +479,38 @@ TEST(integer_ops_run_on_040_decoder) {
     ASSERT_EQ_INT((int)cpu->d[2], 8);
 }
 
+// support/stub_checkpoint.c: capture what a save writes
+void stub_checkpoint_capture(uint8_t *buf, size_t cap);
+size_t stub_checkpoint_captured(void);
+
+// Save the CPU into `buf`, returning the byte count
+static size_t save_into(cpu_t *cpu, uint8_t *buf, size_t cap) {
+    static int dummy; // cpu_checkpoint wants a non-NULL handle
+    stub_checkpoint_capture(buf, cap);
+    cpu_checkpoint(cpu, (checkpoint_t *)&dummy);
+    size_t n = stub_checkpoint_captured();
+    stub_checkpoint_capture(NULL, 0);
+    return n;
+}
+
+// The 040 MMU register file goes into the checkpoint without its host-side
+// bus backlink: two saves that differ only in that pointer are identical.
+TEST(checkpoint_carries_no_mmu040_host_pointer) {
+    cpu_t *cpu = test_get_cpu(test_get_active_context());
+    make_68040(cpu);
+    mmu040_state_t *mmu = (mmu040_state_t *)cpu->mmu;
+    struct mmu_state *saved_bus = mmu->bus;
+    static uint8_t a[64 * 1024], b[64 * 1024];
+    mmu->bus = (struct mmu_state *)(uintptr_t)0x1111111111110000ull;
+    size_t na = save_into(cpu, a, sizeof a);
+    mmu->bus = (struct mmu_state *)(uintptr_t)0x2222222222220000ull;
+    size_t nb = save_into(cpu, b, sizeof b);
+    mmu->bus = saved_bus;
+    ASSERT_TRUE(na > 0 && na < sizeof a);
+    ASSERT_EQ_INT((int)na, (int)nb);
+    ASSERT_TRUE(memcmp(a, b, na) == 0);
+}
+
 int main(void) {
     test_context_t *ctx = test_harness_init();
     if (!ctx) {
@@ -507,6 +539,7 @@ int main(void) {
     RUN(fsave_null_and_idle_frames);
     RUN(frestore_null_resets_and_idle_rearms);
     RUN(integer_ops_run_on_040_decoder);
+    RUN(checkpoint_carries_no_mmu040_host_pointer);
 
     test_harness_destroy(ctx);
     printf("[cpu040] all tests passed\n");

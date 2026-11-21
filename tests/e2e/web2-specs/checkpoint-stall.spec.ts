@@ -19,8 +19,8 @@ import { test, expect } from "../helpers/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { gotoWeb2, stageOpfsFile } from "../helpers/web2-fs";
+import { DATA } from "../helpers/paths";
 
-const DATA = path.resolve(__dirname, "../../data");
 const ROM = path.join(DATA, "roms", "iix-iicx-se30-97221136.rom");
 const WINDOW_MS = 50_000; // covers three auto checkpoints
 

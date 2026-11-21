@@ -291,6 +291,10 @@ void object_set_category(struct object *o, uint16_t category) {
 void object_delete(struct object *o) {
     (void)o;
 }
+void object_destroy(struct object **slot) {
+    if (slot)
+        *slot = NULL;
+}
 void *object_data(struct object *o) {
     (void)o;
     return NULL;

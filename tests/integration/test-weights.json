@@ -29,6 +29,7 @@
     "appletalk-print-persist": 36,
     "archive-confined": 0,
     "archive-fork-unpack": 0,
+    "archive-import-rsrc": 0,
     "av-sound-roundtrip": 49,
     "boot-config": 1,
     "boot-vrom-unoffered": 0,

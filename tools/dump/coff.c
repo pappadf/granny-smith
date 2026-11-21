@@ -64,10 +64,6 @@
 #define COFF_SCNHDR_SIZE 40
 #define COFF_SYMENT_SIZE 18
 
-static int16_t be_i16(const uint8_t *p) {
-    return (int16_t)RD_BE16(p);
-}
-
 struct coff {
     const uint8_t *data;
     size_t len;
@@ -264,7 +260,7 @@ coff_t *coff_parse(const uint8_t *data, size_t len, const char **errmsg) {
                 FAIL("out of memory");
             resolve_name(e, cf->strtab, cf->strtab_len, s->name, sizeof(s->name));
             s->value = RD_BE32(e + 8);
-            s->scnum = be_i16(e + 12);
+            s->scnum = RD_BE16S(e + 12);
             s->type = RD_BE16(e + 14);
             s->sclass = e[16];
             uint8_t n_aux = e[17];

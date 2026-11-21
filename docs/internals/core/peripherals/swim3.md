@@ -11,7 +11,7 @@ backend:
 | Part | File | What it owns |
 |---|---|---|
 | register file + drive protocol | `src/core/peripherals/swim3.c` | the 16 registers, their readback / read-to-clear semantics, the interrupt contract, the Sony drive-register sense/strobe protocol, head routing |
-| transfer engine | `src/core/peripherals/swim3_xfer.c` | header hunt, sector read and write, whole-track format, raw capture, the GCR nibble codec, the rotational model |
+| transfer engine | `src/core/peripherals/swim3_xfer.c` | header hunt, sector read and write, whole-track format, raw capture, the GCR nibble stream (the codec, shared with the IWM/SWIM track codec and the MOOF reader, is `src/core/storage/gcr.c`), the rotational model |
 | drive and media | `src/core/peripherals/floppy.c` | head position, motor, the disk image, `machine.floppy.*` |
 | board backend | `src/machines/pdm/swim3.c`, `src/machines/tnt/swim3.c` | register stride, the DMA byte movers, the interrupt sink |
 

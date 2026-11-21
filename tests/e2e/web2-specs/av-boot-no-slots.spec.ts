@@ -23,17 +23,10 @@
 import { test, expect, type Page } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
+import { uploadRomViaWelcome } from '../helpers/upload';
 
 const SE30_ROM = path.resolve(__dirname, '../../data/roms/iix-iicx-se30-97221136.rom');
 const AV_ROM = path.resolve(__dirname, '../../data/roms/q840av-q660av-5bf10fd1.rom');
-
-async function uploadRom(page: Page, file: string): Promise<void> {
-  const [chooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Load ROM...' }).click(),
-  ]);
-  await chooser.setFiles(file);
-}
 
 // Wait for the machine to come up, harvesting toast text on every tick.
 // Toasts auto-expire, so a boot rejection would otherwise vanish before the
@@ -72,8 +65,8 @@ test('a slotless model boots after a carded model ran in the same session', asyn
   page.on('pageerror', (e) => pageErrors.push(e.message));
 
   await gotoWeb2(page);
-  await uploadRom(page, SE30_ROM);
-  await uploadRom(page, AV_ROM);
+  await uploadRomViaWelcome(page, SE30_ROM);
+  await uploadRomViaWelcome(page, AV_ROM);
 
   // 1. Boot the SE/30. Its builtin slot has two sibling card kinds, so the
   // boot record captures a real video_card ('se30', the generic kind).

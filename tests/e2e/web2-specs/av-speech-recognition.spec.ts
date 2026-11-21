@@ -53,7 +53,7 @@ import {
   micStats,
   moveTo,
   openSelected,
-  probe,
+  probeValue,
   probeNumber,
   ticksMs,
 } from "../helpers/av";
@@ -154,12 +154,12 @@ test("PlainTalk recognises speech from the browser microphone", async ({ page })
   await page.waitForTimeout(ticksMs(600));
   await shot("04-listening");
 
-  expect(await probe(page, "machine.dsp.state"), "the DSP is not running after the recognizer started").toBe(
+  expect(await probeValue(page, "machine.dsp.state"), "the DSP is not running after the recognizer started").toBe(
     "running",
   );
-  expect(await probe(page, "machine.dsp.emr"), "the DSP kernel died bringing the recognizer up").toBe("0x8000");
+  expect(await probeValue(page, "machine.dsp.emr"), "the DSP kernel died bringing the recognizer up").toBe("0x8000");
   expect(
-    await probe(page, "machine.sound.in_enabled"),
+    await probeValue(page, "machine.sound.in_enabled"),
     "input DMA is not running — the recognizer is not listening",
   ).toBe("true");
 
@@ -171,9 +171,9 @@ test("PlainTalk recognises speech from the browser microphone", async ({ page })
   await expect(micBtn).toHaveCount(1);
   await micBtn.click();
   await expect(micBtn).toHaveAttribute("aria-pressed", "true");
-  await expect.poll(async () => probe(page, "machine.audioin.source")).toBe("host");
+  await expect.poll(async () => probeValue(page, "machine.audioin.source")).toBe("host");
   await expect
-    .poll(async () => probe(page, "machine.audioin.connected"), { timeout: 30_000 })
+    .poll(async () => probeValue(page, "machine.audioin.connected"), { timeout: 30_000 })
     .toBe("true");
 
   // --- 5a. Wait for AUDIO before judging anything. -------------------------
@@ -188,7 +188,7 @@ test("PlainTalk recognises speech from the browser microphone", async ({ page })
   // cannot judge the product at all — that is a skip, not a failure. The
   // browser-mic transport itself is covered by av-microphone.spec.ts with
   // the default fake device, so nothing goes unwatched.
-  const rectBeforeAudio = await probe(page, "machine.screen.checksum", TRASH_RECT);
+  const rectBeforeAudio = await probeValue(page, "machine.screen.checksum", TRASH_RECT);
   let peak = 0;
   const audioDeadline = Date.now() + 45_000;
   while (Date.now() < audioDeadline && peak <= AUDIO_FLOOR) {
@@ -204,7 +204,7 @@ test("PlainTalk recognises speech from the browser microphone", async ({ page })
       "utterance to recognise",
   );
 
-  const baseline = await probe(page, "machine.screen.checksum", TRASH_RECT);
+  const baseline = await probeValue(page, "machine.screen.checksum", TRASH_RECT);
   console.log(`  Trash-window rectangle: ${rectBeforeAudio} before audio, ${baseline} at baseline`);
   if (baseline !== rectBeforeAudio) {
     // Not fatal — recognition genuinely can fire during the audio wait, and
@@ -231,7 +231,7 @@ test("PlainTalk recognises speech from the browser microphone", async ({ page })
     const p = await probeNumber(page, "machine.audioin.peak");
     if (Number.isFinite(p)) peak = Math.max(peak, p);
     last = await micStats(page);
-    const now = await probe(page, "machine.screen.checksum", TRASH_RECT);
+    const now = await probeValue(page, "machine.screen.checksum", TRASH_RECT);
     if (now !== baseline) opened = true;
     console.log(
       `  t+${Math.round((180_000 - (deadline - Date.now())) / 1000)}s  peak ${peak}  ` +
@@ -263,10 +263,10 @@ test("PlainTalk recognises speech from the browser microphone", async ({ page })
   // the codec gain down and reject the utterance.
   console.log(`  codec saw a peak of ${peak} counts (headless av-sr-command sees ~12600 for this asset)`);
   console.log(`  final micStats: ${JSON.stringify(last)}`);
-  console.log(`  audioin.level=${await probe(page, "machine.audioin.level")}`);
-  console.log(`  scheduler.mode=${await probe(page, "scheduler.mode")}`);
+  console.log(`  audioin.level=${await probeValue(page, "machine.audioin.level")}`);
+  console.log(`  scheduler.mode=${await probeValue(page, "scheduler.mode")}`);
 
-  expect(await probe(page, "machine.dsp.emr"), "the DSP kernel died while listening").toBe("0x8000");
+  expect(await probeValue(page, "machine.dsp.emr"), "the DSP kernel died while listening").toBe("0x8000");
 
   // Transport before outcome. Until this existed, a browser that delivered no
   // audio failed as "the recognizer did not act on the utterance", which sent

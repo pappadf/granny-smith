@@ -32,12 +32,6 @@
 #include "slot_tables.h"
 #include "tnt.h"
 
-// Eight DIMM slots in four interleaved bank pairs; 512 MB is the ROM's
-// decode ceiling (see ans500.c).  48 MB is this model's shipping default.
-static const uint32_t ans700_ram_options_kb[] = {
-    16384,  32768,  49152,  65536,  81920,  98304,  114688, 131072, 147456, 163840, 180224, 196608, 212992, 229376,
-    245760, 262144, 278528, 294912, 311296, 327680, 344064, 360448, 393216, 409600, 425984, 458752, 524288, 0};
-
 // Bus 1 carries the same front bays 4-6 as the 500, PLUS the two rear bays
 // this model adds -- which is how Apple's count works out: "The buses
 // accommodate four, five, and seven SCSI devices, respectively."  Four on
@@ -94,7 +88,10 @@ const hw_profile_t machine_ans700 = {
     .ram_max = 0x20000000, // 512 MB — the ROM's decode ceiling
     .rom_size = 0x400000, // 4 MB ($962F6C13 production / $49B2BE8F prototype)
 
-    .ram_options = ans700_ram_options_kb,
+    // Eight DIMM slots in four interleaved bank pairs; 512 MB is the ROM's
+    // decode ceiling (tnt.c, ans_ram_options_kb).  48 MB is this model's
+    // shipping default.
+    .ram_options = ans_ram_options_kb,
     .floppy_slots = mac_floppy_slots_1hd,
     .storage = ans700_storage,
     .default_storage = ans_default_storage,

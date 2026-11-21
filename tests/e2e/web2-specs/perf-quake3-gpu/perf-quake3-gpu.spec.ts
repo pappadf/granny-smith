@@ -34,6 +34,7 @@ import * as path from "node:path";
 import { gotoWeb2, stageOpfsFileStreaming } from "../../helpers/web2-fs";
 import { gsCallInPage, gsEvalInPage } from "../../helpers/web2-eval";
 import { WorkerProfiler, summarize } from "./profile";
+import { uploadRomViaWelcome } from "../../helpers/upload";
 
 const ENABLED = process.env.GS_Q3_GPU === "1";
 const ALLOW_SOFTWARE_GPU = process.env.GS_Q3_ALLOW_SOFTWARE_GPU === "1";
@@ -242,11 +243,7 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
     [ROM, "pmg3dt-pmg3mt-78f57389.rom added"],
     [PROM, "PCI expansion ROM for 'rage128'"],
   ] as const) {
-    const [chooser] = await Promise.all([
-      page.waitForEvent("filechooser"),
-      page.getByRole("button", { name: "Load ROM..." }).click(),
-    ]);
-    await chooser.setFiles(file);
+    await uploadRomViaWelcome(page, file);
     await expect(
       page.locator(".toast .msg").filter({ hasText: toast }),
     ).toBeVisible({ timeout: 120_000 });

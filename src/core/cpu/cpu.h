@@ -101,7 +101,15 @@ void cpu_attach_mmu_node(cpu_t *cpu, const struct class_desc *cls, void *data);
 // Run the model's decoder until the burn-down counter *instructions reaches 0.
 void cpu_run_sprint(cpu_t *restrict cpu, uint32_t *instructions);
 
-// Disassemble the instruction in instr[] into buf; returns its length in words.
+// The buffer cpu_disasm writes into: an exhaustive sweep puts the longest
+// line at 76 bytes (see debug.h's disasm seam)
+#define CPU_DISASM_BUF_SIZE 100
+
+// Disassemble the instruction in instr[] into buf, at most `cap` bytes
+// including the NUL (a longer line is truncated); returns its length in words.
+int cpu_disasm_n(uint16_t *instr, char *buf, size_t cap);
+
+// cpu_disasm_n into a buffer of CPU_DISASM_BUF_SIZE bytes.
 int cpu_disasm(uint16_t *instr, char *buf);
 
 uint32_t cpu_get_an(cpu_t *restrict cpu, int n);

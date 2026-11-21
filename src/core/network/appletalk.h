@@ -215,9 +215,10 @@ int atalk_imagewriter_publish(bool on);
 // AppleTalk ImageWriter, a part of each machine, attaches under it.
 struct object *atalk_object(void);
 bool atalk_imagewriter_published(void);
-// The NBP object name ("Virtual ImageWriter"); renaming re-publishes.
+// The NBP object name ("Virtual ImageWriter"); renaming re-publishes.  The
+// name follows NBP's rule (atalk_nbp_name_check); -1 with `err` saying why.
 const char *atalk_imagewriter_name(void);
-int atalk_imagewriter_set_name(const char *name);
+int atalk_imagewriter_set_name(const char *name, char *err, size_t err_len);
 
 // === Printer (object model: `appletalk.printer`) ============================
 
@@ -234,7 +235,7 @@ const char *atalk_printer_get_status(void);
 bool atalk_printer_has_interpreter(void);
 
 // Whether each job's PostScript is also handed to the platform, as it was
-// sent (laserwriter_sink_capture): a .ps beside the PDF, or a download.
+// sent (printer_sink_capture): a .ps beside the PDF, or a download.
 bool atalk_printer_get_capture(void);
 void atalk_printer_set_capture(bool enabled);
 

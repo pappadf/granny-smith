@@ -289,7 +289,7 @@ static bool parse_classic(peel_reader_t *rd, uint64_t archive_off, sit_entry_lis
     }
 
     // sit.md § 4.2 "Main Archive Header" — file_count at offset 4
-    uint16_t file_count = rd16be(top + 4);
+    uint16_t file_count = codec_be16(top + 4);
     uint64_t cursor = SIT_CLASSIC_HDR_SIZE;
     uint32_t done = 0;
 
@@ -376,17 +376,17 @@ static bool parse_classic(peel_reader_t *rd, uint64_t archive_off, sit_entry_lis
         peel_append_segment(path, sizeof(path), &p, (const uint8_t *)fname, strlen(fname));
 
         // sit.md § 4.3 — type at 66, creator at 70, finder flags at 74
-        uint32_t ftype = rd32be(hdr + 66);
-        uint32_t fcreator = rd32be(hdr + 70);
-        uint16_t fflags = rd16be(hdr + 74);
+        uint32_t ftype = codec_be32(hdr + 66);
+        uint32_t fcreator = codec_be32(hdr + 70);
+        uint16_t fflags = codec_be16(hdr + 74);
 
         // sit.md § 4.3 — fork lengths and CRCs
-        uint32_t rulen = rd32be(hdr + 84);
-        uint32_t dulen = rd32be(hdr + 88);
-        uint32_t rclen = rd32be(hdr + 92);
-        uint32_t dclen = rd32be(hdr + 96);
-        uint16_t rcrc = rd16be(hdr + 100);
-        uint16_t dcrc = rd16be(hdr + 102);
+        uint32_t rulen = codec_be32(hdr + 84);
+        uint32_t dulen = codec_be32(hdr + 88);
+        uint32_t rclen = codec_be32(hdr + 92);
+        uint32_t dclen = codec_be32(hdr + 96);
+        uint16_t rcrc = codec_be16(hdr + 100);
+        uint16_t dcrc = codec_be16(hdr + 102);
 
         // sit.md § 4.5 "Fork Data Layout" — rsrc first, then data
         uint64_t rsrc_off = archive_off + cursor + SIT_ENTRY_HDR_SIZE;
@@ -479,8 +479,8 @@ static bool parse_sit5_walk(peel_reader_t *rd, uint64_t archive_off, sit_entry_l
     }
 
     // sit.md § 5.2 "Top Header" — entry count at offset 92, cursor at 94
-    uint16_t entry_count = rd16be(top + 92);
-    uint32_t cursor = rd32be(top + 94);
+    uint16_t entry_count = codec_be16(top + 92);
+    uint32_t cursor = codec_be32(top + 94);
     uint32_t remaining = entry_count;
 
     while (remaining > 0 && cursor != 0 && (uint64_t)cursor + 48 <= avail) {
@@ -491,7 +491,7 @@ static bool parse_sit5_walk(peel_reader_t *rd, uint64_t archive_off, sit_entry_l
         }
 
         // sit.md § 5.3 "Entry Header" — validate entry magic
-        if (rd32be(h1) != SIT5_ENTRY_MAGIC) {
+        if (codec_be32(h1) != SIT5_ENTRY_MAGIC) {
             *err = make_err("SIT5: invalid entry magic at offset %u", cursor);
             return false;
         }
@@ -502,8 +502,8 @@ static bool parse_sit5_walk(peel_reader_t *rd, uint64_t archive_off, sit_entry_l
             return false;
         }
 
-        uint16_t h1_len = rd16be(h1 + 6);
-        uint16_t namelen = rd16be(h1 + 30);
+        uint16_t h1_len = codec_be16(h1 + 6);
+        uint16_t namelen = codec_be16(h1 + 30);
         if ((uint64_t)cursor + h1_len > avail) {
             *err = make_err("SIT5: header1 extends past archive end");
             return false;
@@ -537,7 +537,7 @@ static bool parse_sit5_walk(peel_reader_t *rd, uint64_t archive_off, sit_entry_l
             memcpy(tmp, h1, h1_len);
             tmp[32] = tmp[33] = 0;
             uint16_t computed = codec_crc16_arc(0, tmp, h1_len);
-            uint16_t stored = rd16be(h1 + 32);
+            uint16_t stored = codec_be16(h1 + 32);
             free(tmp);
             if (computed != stored) {
                 *err = make_err("SIT5: header CRC mismatch at offset %u", cursor);
@@ -547,11 +547,11 @@ static bool parse_sit5_walk(peel_reader_t *rd, uint64_t archive_off, sit_entry_l
 
         uint32_t h2_off = cursor + h1_len;
         uint8_t flags = h1[9];
-        uint32_t parent_off = rd32be(h1 + 26);
-        uint32_t d_raw_len = rd32be(h1 + 34);
-        uint32_t d_packed_len = rd32be(h1 + 38);
-        uint16_t d_crc = rd16be(h1 + 42);
-        uint16_t child_count = rd16be(h1 + 46);
+        uint32_t parent_off = codec_be32(h1 + 26);
+        uint32_t d_raw_len = codec_be32(h1 + 34);
+        uint32_t d_packed_len = codec_be32(h1 + 38);
+        uint16_t d_crc = codec_be16(h1 + 42);
+        uint16_t child_count = codec_be16(h1 + 46);
         uint8_t d_algo = h1[46];
         uint8_t d_passlen = h1[47];
         uint8_t h1_version = h1[4];
@@ -583,10 +583,10 @@ static bool parse_sit5_walk(peel_reader_t *rd, uint64_t archive_off, sit_entry_l
             *err = make_err("SIT5: header2 extends past archive end");
             return false;
         }
-        uint16_t flags2 = rd16be(h2 + 0);
-        uint32_t ftype = rd32be(h2 + 4);
-        uint32_t fcreator = rd32be(h2 + 8);
-        uint16_t fflags = rd16be(h2 + 12);
+        uint16_t flags2 = codec_be16(h2 + 0);
+        uint32_t ftype = codec_be32(h2 + 4);
+        uint32_t fcreator = codec_be32(h2 + 8);
+        uint16_t fflags = codec_be16(h2 + 12);
 
         // sit.md § 5.4 — version-dependent skip past header 2 prefix
         uint32_t skip_extra = (h1_version == 1) ? 22 : 18;
@@ -606,9 +606,9 @@ static bool parse_sit5_walk(peel_reader_t *rd, uint64_t archive_off, sit_entry_l
                 *err = make_err("SIT5: resource info past archive end");
                 return false;
             }
-            r_raw_len = rd32be(ri + 0);
-            r_packed_len = rd32be(ri + 4);
-            r_crc = rd16be(ri + 8);
+            r_raw_len = codec_be32(ri + 0);
+            r_packed_len = codec_be32(ri + 4);
+            r_crc = codec_be16(ri + 8);
             r_algo = ri[12];
             payload_off = after_off + 14 + ri[13]; // + the password blob
         }
@@ -807,7 +807,7 @@ static peel_buf_t sit_decode_fork(peel_archive_t *a, int i, int fork, peel_err_t
     const sit_entry_t *se = &priv->entries.items[i];
     const sit_fork_info_t *fi = fork == PEEL_FORK_RSRC ? &se->rsrc_fork : &se->data_fork;
     codec_dec_t *d = sit_fork_decoder(fi, a->src, err);
-    return d ? peel_decoder_drain(d, fi->raw_len, "SIT", err) : (peel_buf_t){0};
+    return d ? peel_decoder_drain(d, fi->raw_len, "SIT", NULL, NULL, err) : (peel_buf_t){0};
 }
 
 static codec_dec_t *sit_decoder(peel_archive_t *a, int i, int fork, peel_err_t **err) {

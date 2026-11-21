@@ -50,7 +50,7 @@ void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, 
     (void)tag;
     (void)cp, (void)data, (void)size, (void)file, (void)line;
 }
-void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
+void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, const memory_interface_t *iface,
                     void *device) {
     (void)mem, (void)addr, (void)size, (void)name, (void)iface, (void)device;
 }
@@ -145,6 +145,22 @@ static scc_t *make_async(void) {
     wr(scc, CH_A_CTL, 9, 0x08); // MIE
     wr(scc, CH_A_CTL, 4, 0x44);
     return scc;
+}
+
+// The SCC decodes no 16/32-bit access: a wide read floats the bus to
+// all-ones with a log line.  A debugger's wide peek must read the same
+// all-ones WITHOUT it -- its peek slots used to be the logging read slots,
+// so a memory.dump across the chip logged a line per word.
+TEST(test_wide_peek_is_silent_open_bus) {
+    scc_t *scc = make_async();
+    const memory_interface_t *mi = scc_get_memory_interface(scc);
+    ASSERT_TRUE(mi->peek_uint16 && mi->peek_uint32);
+    ASSERT_TRUE(mi->peek_uint16 != mi->read_uint16); // not the logging read
+    ASSERT_TRUE(mi->peek_uint32 != mi->read_uint32);
+    ASSERT_EQ_INT(mi->peek_uint16(scc, CH_A_CTL), 0xFFFF);
+    ASSERT_TRUE(mi->peek_uint32(scc, CH_A_CTL) == 0xFFFFFFFFu);
+    ASSERT_EQ_INT(mi->read_uint16(scc, CH_A_CTL), 0xFFFF); // the guest's read: the same open bus
+    scc_delete(scc);
 }
 
 // A scratch path for an output file, unique per run.
@@ -536,6 +552,7 @@ int main(void) {
     RUN(test_tx_eom_interrupt_waits_for_the_frame);
     RUN(test_tx_eom_latch_without_interrupt);
     RUN(test_end_of_frame_survives_the_crc_reads);
+    RUN(test_wide_peek_is_silent_open_bus);
     printf("[PASS] All scc_port tests passed\n");
     return 0;
 }

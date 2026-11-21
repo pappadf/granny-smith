@@ -1158,6 +1158,31 @@ TEST(a_jobs_output_arrives_as_output_records_before_its_result) {
     ASSERT_TRUE(strstr(outputs, "two\\n") != NULL);
 }
 
+// Two jobs that finish between drains are answered in the order they ran,
+// as the I/O worker reports its completions (work_queue.h is both FIFOs).
+TEST(jobs_finished_between_drains_are_answered_in_the_order_they_ran) {
+    fresh();
+    ASSERT_TRUE(job_thread_start(256u << 10));
+    g_scripts = 0;
+    ASSERT_TRUE(post_script(201, "echo first"));
+    ASSERT_TRUE(post_script(202, "echo second"));
+    int base = g_notified;
+    mailbox_drain(&g_m, 0, NULL); // both handed to the job thread
+    // Both have run and been reported finished (each wakes the emulator).
+    double deadline = wait_deadline();
+    while (__atomic_load_n(&g_scripts, __ATOMIC_ACQUIRE) < 2 ||
+           __atomic_load_n(&g_notified, __ATOMIC_ACQUIRE) < base + 2)
+        WAIT_TICK(deadline, "both jobs to finish");
+    usleep(10000); // the second job's wake follows its push; let it land
+    mailbox_drain(&g_m, 0, NULL);
+    uint32_t id, ok;
+    char json[512];
+    ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
+    ASSERT_EQ_INT(id, 201);
+    ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
+    ASSERT_EQ_INT(id, 202);
+}
+
 int main(void) {
     RUN(the_control_block_is_laid_out_and_versioned);
     RUN(a_request_is_served_and_its_id_comes_back);
@@ -1184,5 +1209,6 @@ int main(void) {
     RUN(an_io_leaf_answering_a_map_delivers_the_map);
     RUN(cancelling_a_request_cancels_the_io_job_answering_it);
     RUN(a_jobs_output_arrives_as_output_records_before_its_result);
+    RUN(jobs_finished_between_drains_are_answered_in_the_order_they_ran);
     return 0;
 }

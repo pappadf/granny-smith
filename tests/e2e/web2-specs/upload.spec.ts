@@ -38,58 +38,11 @@
 import { test, expect, type Page } from '../helpers/test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { bootIsolated, opfsFiles, uploadViaPicker } from '../helpers/upload';
 
 // A real, in-catalog SE/30 onboard-video VROM (32 KB). Named with a space +
 // parentheses to match the reported "SE30 (1).vrom".
 const SE30_VROM = path.resolve(__dirname, '../../data/roms/builtin-se30-video-4f71ff1a.vrom');
-
-// Boot the app as a first-time visitor. Skips on engines without OPFS (Linux
-// WebKitGTK) — there the emulator can't boot at all, which is a different issue.
-async function bootIsolated(page: Page): Promise<string[]> {
-  const consoleLog: string[] = [];
-  page.on('console', (m) => consoleLog.push(`[${m.type()}] ${m.text()}`));
-  page.on('pageerror', (e) => consoleLog.push(`[pageerror] ${e.message}`));
-
-  await page.goto('/index.html');
-  const hasOpfs = await page.evaluate(() => typeof navigator.storage?.getDirectory === 'function');
-  test.skip(!hasOpfs, 'engine has no OPFS (Linux WebKitGTK) — run on macOS Safari to reproduce');
-
-  await page.waitForFunction(
-    () => (window as unknown as { __gsReady?: boolean }).__gsReady === true,
-    null,
-    { timeout: 60_000 },
-  );
-  const cont = page.getByRole('button', { name: 'Continue' });
-  if (await cont.isVisible().catch(() => false)) await cont.click();
-  return consoleLog;
-}
-
-// Upload one file through the real Welcome "Load ROM..." picker.
-async function uploadViaPicker(page: Page, name: string, buffer: Buffer): Promise<void> {
-  const [chooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Load ROM...' }).click(),
-  ]);
-  await chooser.setFiles({ name, mimeType: 'application/octet-stream', buffer });
-}
-
-// Read the whole OPFS tree (read-only) to prove where the upload landed.
-async function opfsFiles(page: Page): Promise<string[]> {
-  return page.evaluate(async () => {
-    const out: string[] = [];
-    const walk = async (dir: unknown, prefix: string): Promise<void> => {
-      for await (const [n, h] of (
-        dir as { entries(): AsyncIterable<[string, { kind: string }]> }
-      ).entries()) {
-        const p = `${prefix}/${n}`;
-        if (h.kind === 'directory') await walk(h, p);
-        else out.push(p);
-      }
-    };
-    await walk(await navigator.storage.getDirectory(), '/opfs');
-    return out.sort();
-  });
-}
 
 // Wait for the async upload pipeline (stage → probe → files.cp → cleanup) to
 // land the file under `dir` AND clear the staging area, then assert no

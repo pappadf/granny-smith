@@ -48,6 +48,27 @@ bool macroman_name_to_host(const uint8_t *mac, size_t len, char *dst, size_t dst
 // -- how names written before the server transcoded look.
 int macroman_name_from_host(const char *host, uint8_t *dst, size_t dst_cap);
 
+// === Mac file names in the VFS ============================================
+//
+// How the read-only volume walkers (HFS, HFS+, MFS) show and match names:
+// UTF-8, a Mac '/' shown as ':' (as above), compared the way the Finder
+// compares them.
+
+// The VFS name for the Mac name `mac` (MacRoman, `len` bytes): UTF-8 with
+// each '/' shown as ':'.  Always NUL-terminated (when cap > 0); truncated,
+// never overflowed.
+void mac_name_to_vfs(const uint8_t *mac, size_t len, char *out, size_t cap);
+
+// Whether two UTF-8 names name the same Mac file: case-blind over ASCII and
+// over the Latin-1 letters MacRoman shares (U+00E0..U+00FE but U+00F7, so
+// "café" finds "CAFÉ", as the Finder would), with '/' and ':' alike so a
+// name holding a slash on disk is addressable through a '/'-separated path.
+// Diacriticals stay significant, and the MacRoman letters outside Latin-1
+// (œ, ÿ) and the rest of Unicode compare exactly.  Upper and lower case of
+// the folded letters are the same length in UTF-8, so names still compare
+// byte for byte.
+bool mac_name_eq(const char *a, const char *b);
+
 // === Case =====================================================================
 
 // The uppercase equivalent of MacRoman byte `c` by Inside AppleTalk Appendix

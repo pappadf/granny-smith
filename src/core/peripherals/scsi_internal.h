@@ -11,6 +11,7 @@
 #include "image.h"
 #include "memory.h"
 #include "scsi.h"
+#include "scsi_msgsession.h"
 #include "via.h"
 
 #include <stdbool.h>
@@ -425,6 +426,10 @@ struct scsi_5380 {
     bool dma_out_engine_started;
     uint8_t cdr_pipeline[3];
     int cdr_idx;
+    // The MESSAGE OUT the initiator is sending and the target's reply to it
+    // (scsi_msgsession.c, the conversation MESH and the 53C8xx hold too).
+    // Plain data, so a checkpoint between two message bytes keeps the bytes.
+    scsi_msgsession_t msg;
 
     // ---- NOT saved -------------------------------------------------------
     // Runtime pointers: re-bound by the machine after a restore.  Its DRQ

@@ -30,8 +30,10 @@
 #include "log.h"
 #include "machine.h"
 #include "object.h"
+#include "object_order.h"
 #include "scheduler.h"
 #include "system.h"
+#include "via.h" // via_setclr
 
 #include <stddef.h>
 #include <stdlib.h>
@@ -178,7 +180,7 @@ uint16_t av_psc_snd_read16(av_psc_t *psc, uint32_t off) {
     off &= 0x1F;
     if (off + 1u >= sizeof(psc->snd))
         return 0; // $21C-$21F hold no sound latches (the array is $1C bytes)
-    return (uint16_t)((psc->snd[off] << 8) | psc->snd[off + 1]);
+    return RD_BE16(&psc->snd[off]);
 }
 
 uint32_t av_psc_snd_read32(av_psc_t *psc, uint32_t off) {
@@ -238,10 +240,7 @@ void av_psc_via2_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t v
         psc_update_via2_ipl(psc);
         break;
     case 0x1C00:
-        if (value & 0x80)
-            psc->via2_ier |= (uint8_t)(value & 0x7F);
-        else
-            psc->via2_ier &= (uint8_t)~value;
+        psc->via2_ier = via_setclr(psc->via2_ier, value, 0x7F);
         psc_update_via2_ipl(psc);
         break;
     case 0x1E00:
@@ -262,9 +261,9 @@ void av_psc_via2_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t v
 // at the programmed codec rate.
 static uint32_t psc_snd_phase(av_psc_t *psc) {
     static const uint32_t rates[4] = {24000, 32000, 48000, 48000};
-    uint32_t com = (uint32_t)((psc->snd[0x00] << 8) | psc->snd[0x01]); // sndComCtl
+    uint32_t com = RD_BE16(psc->snd); // sndComCtl
     uint32_t rate = rates[(com >> 9) & 3];
-    uint32_t snd_size = (uint32_t)((psc->snd[0x18] << 8) | psc->snd[0x19]);
+    uint32_t snd_size = RD_BE16(psc->snd + 0x18);
     uint32_t wrap = snd_size ? 2 * snd_size : 0x10000; // frames per pass
     double ns = scheduler_time_ns(psc->cfg->scheduler);
     uint64_t total_64ths = (uint64_t)(ns * (double)rate * 64.0 / 1e9);
@@ -603,10 +602,7 @@ void av_psc_reg_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t va
             psc_update_level_ipl(psc, level);
         } else if (reg == 4) {
             // Sense-bit enable write.
-            if (value & 0x80)
-                psc->l_ier[level] |= (uint8_t)(value & 0x7F);
-            else
-                psc->l_ier[level] &= (uint8_t)~value;
+            psc->l_ier[level] = via_setclr(psc->l_ier[level], value, 0x7F);
             psc_update_level_ipl(psc, level);
         }
         return;
@@ -662,10 +658,7 @@ void av_psc_reg_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t va
     case 0x21C:
         if ((off & 3) == 0) {
             // dspOverRun: sense-bit convention on bits 0-2.
-            if (value & 0x80)
-                psc->dsp_overrun |= (uint8_t)(value & 0x07);
-            else
-                psc->dsp_overrun &= (uint8_t) ~(value & 0x07);
+            psc->dsp_overrun = via_setclr(psc->dsp_overrun, value, 0x07);
             LOG(2, "dspOverRun write $%02X -> $%02X (pc=%08X)", value, psc->dsp_overrun, cpu_get_pc(cfg->cpu));
             // FRMOVRN (L5 bit 1) is a level view of the sticky bit: it
             // re-latches until the host clears pdspFrameOvr itself.
@@ -800,34 +793,29 @@ static const class_desc_t psc_class = {
     .n_members = sizeof(psc_members) / sizeof(psc_members[0]),
 };
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(av_psc_t, cfg);
+
 av_psc_t *av_psc_init(config_t *cfg, checkpoint_t *cp) {
     av_psc_t *psc = calloc(1, sizeof(*psc));
     if (!psc)
         return NULL;
     psc->cfg = cfg;
     if (cp) {
-        size_t data_size = offsetof(av_psc_t, cfg);
-        system_read_checkpoint_data(cp, psc, data_size);
+        checkpoint_load_prefix(cp, psc, av_psc_t);
     }
-    psc->object = object_new(&psc_class, psc, "psc");
-    if (psc->object) {
-        object_set_order(psc->object, 45);
-        object_attach(machine_object(), psc->object);
-    }
+    psc->object = object_attach_new(machine_object(), &psc_class, psc, "psc", NULL, OBJ_ORDER_IO_CONTROLLER);
     return psc;
 }
 
 void av_psc_delete(av_psc_t *psc) {
-    if (psc && psc->object) {
-        object_detach(psc->object);
-        object_delete(psc->object);
-    }
+    if (psc)
+        object_destroy(&psc->object);
     free(psc);
 }
 
 void av_psc_checkpoint(av_psc_t *psc, checkpoint_t *cp) {
     if (!psc || !cp)
         return;
-    size_t data_size = offsetof(av_psc_t, cfg);
-    system_write_checkpoint_data(cp, psc, data_size);
+    checkpoint_save_prefix(cp, psc, av_psc_t);
 }

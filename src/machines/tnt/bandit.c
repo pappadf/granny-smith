@@ -58,6 +58,7 @@
 #include "checkpoint.h"
 #include "log.h"
 #include "pci.h"
+#include "regfile.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -196,8 +197,7 @@ static bool bridge_cfg_write(pci_device_t *dev, uint32_t reg, uint32_t byte, uin
         return false;
     // The documented latch: whatever the OS writes reads back (the
     // coherency handshake is "read, OR in $40, write, read back").
-    uint32_t shift = 8u * (byte & 3u);
-    b->mode_select = (b->mode_select & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+    le_lane8_set(&b->mode_select, byte, value);
     LOG(2, "mode-select now $%08X (coherency %s, lanes %s)", b->mode_select,
         (b->mode_select & BANDIT_COHERENT) ? "on" : "off",
         (b->mode_select & BANDIT_BIG_ENDIAN) ? "straight" : "reversed");
@@ -274,12 +274,11 @@ static void config_write(tnt_bandit_t *b, uint32_t byte, uint32_t value, uint32_
 
 // The straight (big-endian bus) view of the port.
 static uint8_t addr_raw_read8(tnt_bandit_t *b, uint32_t offset) {
-    return (uint8_t)(b->cfg_addr >> (8 * (offset & 3u)));
+    return le_lane8(b->cfg_addr, offset);
 }
 
 static void addr_raw_write8(tnt_bandit_t *b, uint32_t offset, uint8_t value) {
-    uint32_t shift = 8 * (offset & 3u);
-    b->cfg_addr = (b->cfg_addr & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+    le_lane8_set(&b->cfg_addr, offset, value);
     LOG(3, "$%08X config addr = $%08X", b->base, b->cfg_addr);
     // Bandit 1's latch doubles as the dual-processor card's start-vector
     // mailbox ($F2800000, mp.c).  Writing it starts no config cycle.
@@ -338,7 +337,7 @@ static void addr_write32(void *ctx, uint32_t offset, uint32_t value) {
 // The straight view of the port (see the address port for the pattern).
 static uint8_t data_raw_read8(tnt_bandit_t *b, uint32_t offset) {
     uint32_t v = config_read(b);
-    uint8_t byte = (uint8_t)(v >> (8 * (offset & 3u)));
+    uint8_t byte = le_lane8(v, offset);
     LOG(3, "$%08X config data[%u] -> $%02X (addr $%08X)", b->base, offset & 7u, byte, b->cfg_addr);
     return byte;
 }

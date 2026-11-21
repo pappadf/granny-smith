@@ -25,6 +25,7 @@
 #include "shell_internal.h"
 #include "shell_var.h"
 #include "status.h"
+#include "storage_util.h"
 #include "syntax.h"
 #include "value.h"
 
@@ -87,13 +88,6 @@ struct script {
 
 // === Small helpers ==========================================================
 
-static bool ident_start(char c) {
-    return isalpha((unsigned char)c) || c == '_';
-}
-static bool ident_char(char c) {
-    return isalnum((unsigned char)c) || c == '_';
-}
-
 static const char *skip_sp(const char *p) {
     while (*p == ' ' || *p == '\t')
         p++;
@@ -121,46 +115,17 @@ static const char *kw_match(const char *p, const char *kw) {
     size_t n = strlen(kw);
     if (strncmp(p, kw, n) != 0)
         return NULL;
-    if (ident_char(p[n]))
+    if (script_ident_char(p[n]))
         return NULL;
     return p + n;
-}
-
-// Quote-aware scan state used by comment stripping and brace counting.
-typedef struct qstate {
-    char quote; // 0, '"' or '\''
-    bool esc;
-} qstate_t;
-
-static void qstate_step(qstate_t *q, char c) {
-    if (q->esc) {
-        q->esc = false;
-        return;
-    }
-    if (c == '\\') {
-        q->esc = true;
-        return;
-    }
-    if (q->quote) {
-        if (c == q->quote)
-            q->quote = 0;
-        return;
-    }
-    if (c == '"' || c == '\'')
-        q->quote = c;
 }
 
 // Strip an unquoted trailing `# comment` and trailing whitespace, in
 // place.
 static void strip_comment(char *line) {
-    qstate_t q = {0};
-    for (char *p = line; *p; p++) {
-        if (!q.quote && !q.esc && *p == '#') {
-            *p = '\0';
-            break;
-        }
-        qstate_step(&q, *p);
-    }
+    char *hash = (char *)script_comment_start(line, line + strlen(line));
+    if (hash)
+        *hash = '\0';
     size_t n = strlen(line);
     while (n > 0 && isspace((unsigned char)line[n - 1]))
         line[--n] = '\0';
@@ -168,7 +133,7 @@ static void strip_comment(char *line) {
 
 // Net brace depth delta of a line (unquoted braces only).
 static int line_brace_delta(const char *line) {
-    qstate_t q = {0};
+    script_quote_t q = {0};
     int d = 0;
     for (const char *p = line; *p; p++) {
         if (!q.quote && !q.esc) {
@@ -177,20 +142,15 @@ static int line_brace_delta(const char *line) {
             else if (*p == '}')
                 d--;
         }
-        qstate_step(&q, *p);
+        script_quote_step(&q, *p);
     }
     return d;
 }
 
-// Find the first unquoted occurrence of `c`; NULL if none.
+// Find the first unquoted occurrence of `c` in a NUL-terminated line; NULL
+// if none.
 static const char *find_unquoted(const char *line, char c) {
-    qstate_t q = {0};
-    for (const char *p = line; *p; p++) {
-        if (!q.quote && !q.esc && *p == c)
-            return p;
-        qstate_step(&q, *p);
-    }
-    return NULL;
+    return script_find_unquoted(line, line + strlen(line), c);
 }
 
 bool script_needs_continuation(const char *buf) {
@@ -571,12 +531,12 @@ static stmt_t *parse_if(parser_t *ps, const char *line, int line_no) {
 static bool parse_def_params(parser_t *ps, const char *head, int line_no, char **out_name, char ***out_params,
                              int *out_n) {
     const char *p = skip_sp(kw_match(head, "def"));
-    if (!ident_start(*p)) {
+    if (!script_ident_start(*p)) {
         parse_error(ps, line_no, "def: expected function name");
         return false;
     }
     const char *ns = p;
-    while (ident_char(*p))
+    while (script_ident_char(*p))
         p++;
     char *name = dup_trim(ns, p);
     if (!name) {
@@ -594,12 +554,12 @@ static bool parse_def_params(parser_t *ps, const char *head, int line_no, char *
     int n = 0;
     if (*p != ')') {
         while (1) {
-            if (!ident_start(*p)) {
+            if (!script_ident_start(*p)) {
                 parse_error(ps, line_no, "def: expected parameter name");
                 goto fail;
             }
             const char *s = p;
-            while (ident_char(*p))
+            while (script_ident_char(*p))
                 p++;
             char *param = dup_trim(s, p);
             char **np = param ? (char **)realloc(params, (size_t)(n + 1) * sizeof(char *)) : NULL;
@@ -787,14 +747,14 @@ static stmt_t *parse_stmt(parser_t *ps) {
             return NULL;
         // `for NAME in EXPR`
         const char *q = skip_sp(kw_match(head, "for"));
-        if (!ident_start(*q)) {
+        if (!script_ident_start(*q)) {
             parse_error(ps, line_no, "for: expected a loop variable name");
             free(head);
             script_block_free(body);
             return NULL;
         }
         const char *ns = q;
-        while (ident_char(*q))
+        while (script_ident_char(*q))
             q++;
         char *name = dup_trim(ns, q);
         if (!name) {
@@ -996,6 +956,10 @@ void script_expr_ctx(expr_ctx_t *out) {
 // Per thread: a job on the job thread and an inline script on the emulator
 // thread (a breakpoint action, shell.eval) each have their own chain.
 #define INCLUDE_MAX_DEPTH 16
+
+// Largest script file read (`include`, script_run_file): far past any
+// real script, short of reading a disk image by mistake.
+#define SCRIPT_FILE_MAX (16u << 20)
 static _Thread_local char *g_include_stack[INCLUDE_MAX_DEPTH];
 static _Thread_local int g_include_depth = 0;
 
@@ -1156,27 +1120,6 @@ static char *include_resolve(const char *path) {
     return r;
 }
 
-// Read a whole file into a malloc'd NUL-terminated buffer; NULL on error.
-static char *slurp_script_file(const char *path) {
-    FILE *f = fopen(path, "r");
-    if (!f)
-        return NULL;
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (size < 0)
-        size = 0;
-    char *src = (char *)malloc((size_t)size + 1);
-    if (!src) {
-        fclose(f);
-        return NULL;
-    }
-    size_t got = fread(src, 1, (size_t)size, f);
-    src[got] = '\0';
-    fclose(f);
-    return src;
-}
-
 // Parse + execute one script file with the include stack maintained —
 // the shared engine behind `include` and script_run_file(). Returns the
 // terminating signal (SIG_NONE on success) with a one-line diagnostic
@@ -1195,9 +1138,10 @@ static exec_sig_t include_exec_file(const char *path, char **err) {
             return SIG_ERROR;
         }
     }
-    char *src = slurp_script_file(path);
-    if (!src) {
-        *err = format_msg("cannot open '%s'", path);
+    char *src = NULL;
+    int rc = read_text_file(path, SCRIPT_FILE_MAX, &src, NULL);
+    if (rc != 0) {
+        *err = format_msg("cannot open '%s': %s", path, strerror(-rc));
         return SIG_ERROR;
     }
     char perr[SCRIPT_ERR_MAX];
@@ -1263,11 +1207,11 @@ static bool resolve_path_head_ex(const char **p, const expr_ctx_t *ectx, node_t 
         (*p)++;
         char name[OBJ_IDENT_MAX + 1];
         size_t i = 0;
-        if (!ident_start(**p)) {
+        if (!script_ident_start(**p)) {
             *errv = val_err("expected binding name after '$'");
             return false;
         }
-        while (ident_char(**p)) {
+        while (script_ident_char(**p)) {
             // Fail rather than look up a truncated (other) binding
             if (i + 1 >= sizeof(name)) {
                 *errv = val_err("identifier too long (max %zu)", sizeof(name) - 1);
@@ -1329,12 +1273,12 @@ static bool resolve_path_head_ex(const char **p, const expr_ctx_t *ectx, node_t 
         return false;
     }
     // Bare path: leading identifier then continuation.
-    if (!ident_start(**p)) {
+    if (!script_ident_start(**p)) {
         *errv = val_err("expected a path");
         return false;
     }
     size_t i = 0;
-    while (ident_char(**p)) {
+    while (script_ident_char(**p)) {
         if (i + 1 >= sizeof(path)) {
             *errv = val_err("identifier too long (max %zu)", sizeof(path) - 1);
             return false;
@@ -1364,8 +1308,6 @@ static bool resolve_path_head(const char **p, const expr_ctx_t *ectx, node_t *ou
 }
 
 // --- argument mode ----------------------------------------------------------
-
-#define CMD_MAX_ARGS_V2 16
 
 // Extract a bare word token: maximal run up to unescaped whitespace.
 // Backslash escapes the next character. Returns malloc'd text.
@@ -1530,9 +1472,9 @@ static value_t parse_arg_value(const char **p, const expr_ctx_t *ectx, bool raw_
 // Parse the argument tail of a command (positional then named), then
 // dispatch. `fn` selects a user function instead of a tree node.
 static value_t exec_command_tail(const char *p, const expr_ctx_t *ectx, node_t node, script_func_t *fn) {
-    value_t vals[CMD_MAX_ARGS_V2];
-    char named_names[CMD_MAX_ARGS_V2][OBJ_IDENT_MAX + 1];
-    named_arg_t named[CMD_MAX_ARGS_V2];
+    value_t vals[OBJ_BIND_MAX_ARGS];
+    char named_names[OBJ_BIND_MAX_ARGS][OBJ_IDENT_MAX + 1];
+    named_arg_t named[OBJ_BIND_MAX_ARGS];
     int pos_n = 0, named_n = 0, total = 0;
     value_t result = val_none();
 
@@ -1540,15 +1482,15 @@ static value_t exec_command_tail(const char *p, const expr_ctx_t *ectx, node_t n
         p = skip_sp(p);
         if (*p == '\0')
             break;
-        if (total >= CMD_MAX_ARGS_V2) {
-            result = val_err("too many arguments (max %d)", CMD_MAX_ARGS_V2);
+        if (total >= OBJ_BIND_MAX_ARGS) {
+            result = val_err("too many arguments (max %d)", OBJ_BIND_MAX_ARGS);
             goto out;
         }
         // Named argument: IDENT '=' VALUE, no spaces at '='.
         const char *name = NULL;
-        if (ident_start(*p)) {
+        if (script_ident_start(*p)) {
             const char *q = p;
-            while (ident_char(*q))
+            while (script_ident_char(*q))
                 q++;
             if (*q == '=' && q[1] != '=') {
                 // A name too long to hold is an error, not a positional word
@@ -1594,17 +1536,7 @@ static value_t exec_command_tail(const char *p, const expr_ctx_t *ectx, node_t n
     if (fn) {
         result = shell_func_call(fn, pos_n, vals, named_n, named);
     } else if (node.member && node.member->kind == MK_METHOD) {
-        if (named_n > 0) {
-            value_t bound[OBJ_BIND_MAX_ARGS];
-            int bound_n = 0;
-            value_t err = node_bind_args(node, pos_n, vals, named_n, named, bound, &bound_n);
-            if (val_is_error(&err))
-                result = err;
-            else
-                result = node_call(node, bound_n, bound);
-        } else {
-            result = node_call(node, pos_n, vals);
-        }
+        result = node_call_named(node, pos_n, vals, named_n, named_n > 0 ? named : NULL);
     } else if (total == 0) {
         // Bare non-method path: attribute / object / collection read.
         result = node_get(node);
@@ -1637,9 +1569,9 @@ static void exec_command(stmt_t *st, exec_ctx_t *cx) {
         // A single bare word: a `def` function, else a command (the word
         // runs the method it names).  commands.h has the order.
         const char *q = head;
-        if (ident_start(*q)) {
+        if (script_ident_start(*q)) {
             const char *s = q;
-            while (ident_char(*q))
+            while (script_ident_char(*q))
                 q++;
             shell_head_t h = SHELL_HEAD_NONE;
             if (*q != '.' && *q != '[')
@@ -1711,7 +1643,7 @@ static void exec_assign(stmt_t *st, exec_ctx_t *cx) {
         p++;
         char name[OBJ_IDENT_MAX + 1];
         size_t i = 0;
-        while (ident_char(*p)) {
+        while (script_ident_char(*p)) {
             // Fail rather than assign to a truncated (other) binding
             if (i + 1 >= sizeof(name)) {
                 exec_error(cx, st->line, "identifier too long (max %zu)", sizeof(name) - 1);

@@ -41,8 +41,8 @@ int re_decode_bndl(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt_fp
     }
     fprintf(json_fp, "{\"signature\":");
     write_ostype(json_fp, bytes);
-    int16_t res_id = (int16_t)((bytes[4] << 8) | bytes[5]);
-    int16_t group_count_m1 = (int16_t)((bytes[6] << 8) | bytes[7]);
+    int16_t res_id = RD_BE16S(bytes + 4);
+    int16_t group_count_m1 = RD_BE16S(bytes + 6);
     int n_groups = (int)group_count_m1 + 1;
     fprintf(json_fp, ",\"res_id\":%d,\"groups\":[", res_id);
     if (txt_fp) {
@@ -53,7 +53,7 @@ int re_decode_bndl(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt_fp
     for (int g = 0; g < n_groups && off + 6 <= len; g++) {
         const uint8_t *type = bytes + off;
         off += 4;
-        int16_t cm1 = (int16_t)((bytes[off] << 8) | bytes[off + 1]);
+        int16_t cm1 = RD_BE16S(&bytes[off]);
         off += 2;
         int n_pairs = (int)cm1 + 1;
         if (!gfirst)
@@ -64,8 +64,8 @@ int re_decode_bndl(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt_fp
         fprintf(json_fp, ",\"mappings\":[");
         bool pfirst = true;
         for (int p = 0; p < n_pairs && off + 4 <= len; p++) {
-            int16_t local = (int16_t)((bytes[off] << 8) | bytes[off + 1]);
-            int16_t on_disk = (int16_t)((bytes[off + 2] << 8) | bytes[off + 3]);
+            int16_t local = RD_BE16S(&bytes[off]);
+            int16_t on_disk = RD_BE16S(&bytes[off + 2]);
             off += 4;
             if (!pfirst)
                 fputc(',', json_fp);
@@ -83,13 +83,13 @@ int re_decode_fref(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt_fp
         fprintf(json_fp, "{\"error\":\"FREF too short\"}\n");
         return -1;
     }
-    int16_t icon_id = (int16_t)((bytes[4] << 8) | bytes[5]);
+    int16_t icon_id = RD_BE16S(bytes + 4);
     char name[256];
     re_pstring_to_utf8(bytes, len, 6, name, sizeof(name));
     fprintf(json_fp, "{\"file_type\":");
     write_ostype(json_fp, bytes);
     fprintf(json_fp, ",\"icon_local_id\":%d,\"name\":", icon_id);
-    re_json_write_string(json_fp, name);
+    json_fputs(json_fp, name);
     fprintf(json_fp, "}\n");
     if (txt_fp)
         fprintf(txt_fp, "FREF: type=%c%c%c%c icon_local=%d name=%s\n", bytes[0], bytes[1], bytes[2], bytes[3], icon_id,

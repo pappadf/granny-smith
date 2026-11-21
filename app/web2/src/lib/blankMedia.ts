@@ -28,6 +28,7 @@
 // implemented; a value with a comma is refused.)
 
 import type { BlankDisk } from '@/bus/profile';
+import { sanitizeName } from './fileName';
 
 // `blank:` / `blank!:` (any case), then the spec.
 const BLANK_PREFIX = /^blank(!?):/i;
@@ -71,7 +72,7 @@ export function blankUrlHash(media: Array<[string, string]>): string {
 // The file name of `slot`'s blank disk: `blank_<spec>_<slot>_<hash><ext>`,
 // the spec as typed with anything but letters, digits, '.' and '-' made '_'.
 export function blankDiskName(slot: string, spec: string, hash: string, ext: string): string {
-  const safe = spec.replace(/[^A-Za-z0-9.-]/g, '_') || 'disk';
+  const safe = sanitizeName(spec, { collapse: false }) || 'disk';
   return `blank_${safe}_${slot}_${hash}${ext}`;
 }
 

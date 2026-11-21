@@ -115,6 +115,7 @@ suite can add one with `STUBS` or drop one with `OMIT_STUBS`.
 | `stub_assert.c` | isolated, cpu | `gs_assert_fail()`, `unimplemented_fail()`, `init_tests()` |
 | `stub_breadcrumb.c` | | No-op breadcrumbs (`crumb_tick_begin()`, `crumb_after_vbl()`, ...), for suites linking `scheduler.c` without the machine |
 | `stub_checkpoint.c` | isolated, cpu | No-op checkpoint read/write (`system_read_checkpoint_data_loc()`, `checkpoint_has_error()`, ...) |
+| `stub_checkpoint_strings.c` | isolated, cpu | `checkpoint_read_count()` and the length-prefixed string readers of `checkpoint.c`, over whatever block I/O the suite links, so string and image-reference round-trips use the real format |
 | `stub_cpu.c` | | `cpu_set_an()`, `cpu_set_pc()` |
 | `stub_debugger.c` | isolated, cpu | No-op debugger hooks (`debugger_init()`, `debug_break_and_trace()`, ...) |
 | `stub_display_class.c` | | `display_attach_video_node()` / `display_detach_video_node()`, for a device linked without the framebuffer object |

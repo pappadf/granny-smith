@@ -15,7 +15,6 @@
 //   PD_STEP_NAME       the one-instruction executor (defined here from cpu_decode.h)
 //   PD_TREE_NAME       the classifier's tree instantiation name
 //   PD_CLASSIFY_NAME   the classifier entry point (cpu_pd_classify.h, included last)
-//   PD_HW_RESET(cpu)   the double-bus-fault reset (the board /RESET, then the vector)
 // plus the model macros CPU_DECODER_IS_68030 / CPU_DECODER_IS_68040.
 
 #include "cpu_pd_ids.h"
@@ -871,7 +870,7 @@ static inline void pd_movem_from_regs_predec(cpu_t *restrict cpu, uint16_t mask,
         if (mask & (1 << i)) {
             addr -= (uint32_t)step;
             uint32_t val = cpu->a[7 - i];
-            if (cpu->cpu_model >= CPU_MODEL_68030 && (7 - i) == an)
+            if (CPU_IS_020PLUS(cpu) && (7 - i) == an)
                 val -= (uint32_t)step; // 030+: An-step when An is the base
             if (bits == 16)
                 WRITE16(addr, (uint16_t)val);
@@ -974,33 +973,8 @@ static inline void pd_movem_from_regs(cpu_t *restrict cpu, uint16_t mask, uint32
 // ============================================================================
 
 void PD_RUN_NAME(cpu_t *restrict cpu, uint32_t *instructions) {
-    // --- sprint entry: the switch core's prologue minus the loop ---
-    if (__builtin_expect(cpu->halted, 0)) {
-        cpu->halted = 0;
-        PD_HW_RESET(cpu);
-    }
-    // Active SoA pair from the current mode: a restored or swapped-in machine
-    // arrives with the supervisor pair selected whatever its SR says.
-    cpu_select_soa(cpu->supervisor);
-    g_bus_error_instr_ptr = instructions; // let memory slow paths force exit
-#ifndef CPU_DECODER_IS_68000
-    // MMU faults snapshot D0-D7 for the retry: 68020/030 only, as a 68000 has
-    // no MMU to fault, and its run loop is kept free of the store.
-    g_fault_dregs_src = cpu->d;
-#endif
-    cpu_check_interrupt(cpu);
-    // The same-PC retry latch is decided here and in write_sr, never per
-    // instruction (m68k_bus_error_latch_settle).
-    if (__builtin_expect(cpu->last_bus_error_pc != 0, 0))
-        m68k_bus_error_latch_settle(cpu, instructions);
-#ifdef CPU_DECODER_IS_68030
-    uint32_t _saved_trace = cpu->trace;
-    if (__builtin_expect(_saved_trace & 2, 0))
-        if (*instructions > 1) {
-            g_sprint_io.unrun_slots += *instructions - 1; // the rest of the plan is not run
-            *instructions = 1;
-        }
-#endif
+    // --- sprint entry: the switch core's prologue minus the loop (cpu_sprint.h) ---
+    uint32_t saved_trace = m68k_sprint_enter(cpu, instructions);
     pd_block_t *blk = NULL; // the block of the page being executed (NULL: generic tier)
     bool pd_held = false; // the current uncached page was declined by the pool (stay generic until it changes)
     pd_entry_t *cur = NULL; // the entry to dispatch next
@@ -1581,34 +1555,8 @@ done:
     }
     cpu->instruction_pc = ipc;
     predecode_enter(NULL, *instructions);
-    // --- sprint exit: the switch core's epilogue ---
-#ifdef CPU_DECODER_IS_68030
-    if (__builtin_expect(g_bus_error_pending, 0)) {
-        g_bus_error_pending = false;
-#ifdef CPU_DECODER_IS_68040
-        if (g_bus_error_is_pmmu)
-#else
-        GS_ASSERT(cpu->mmu == (void *)g_mmu);
-        if (cpu->mmu && ((mmu_state_t *)cpu->mmu)->enabled && g_bus_error_is_pmmu)
-#endif
-            exception_bus_error_retry(cpu, g_bus_error_address, g_bus_error_rw);
-        else
-            exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw, cpu->pc);
-        cpu_select_soa(cpu->supervisor);
-    } else if (__builtin_expect((_saved_trace & 2) && (cpu->trace & 2), 0)) {
-        exception(cpu, 0x024, cpu->pc, cpu_get_sr(cpu));
-    }
-#else
-    if (__builtin_expect(g_bus_error_pending, 0)) {
-        g_bus_error_pending = false;
-        // An address error keeps the PC the instruction reached; a bus
-        // error stacks the faulting instruction + 2 (cpu_68000.c).
-        exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw,
-                            g_bus_error_is_address ? cpu->pc : cpu->instruction_pc + 2);
-        cpu_select_soa(cpu->supervisor);
-    }
-#endif
-    cpu_check_interrupt(cpu);
+    // --- sprint exit: the switch core's epilogue (cpu_sprint.h) ---
+    m68k_sprint_exit(cpu, saved_trace);
 }
 
 // ============================================================================

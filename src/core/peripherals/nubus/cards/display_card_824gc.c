@@ -34,6 +34,7 @@
 #include "gsvrom.h"
 #include "log.h"
 #include "memory.h"
+#include "memory_iface_sized.h"
 #include "nubus.h"
 #include "object.h"
 #include "system.h"
@@ -755,17 +756,14 @@ static void gc_write(display_card_824gc_priv_t *p, uint32_t phys, uint32_t val, 
             // ACDC RAMDAC address port: a write sets the palette index and
             // resets the R/G/B phase.  (The ACDC probe / loadCRTCandCLUT write
             // this too — harmless: they never follow with DATA-port writes.)
-            p->acdc_addr = (uint8_t)(val & 0xFFu);
-            p->acdc_phase = 0;
+            ramdac_seq_set_waddr(&p->acdc, (uint8_t)(val & 0xFFu));
         } else if (cl == GC824_REG_ACDC_DATA) {
             // ACDC RAMDAC data port: three successive byte writes are R, G, B
             // (8 bpc); after B, commit clut[index] and auto-increment the index.
-            if (p->acdc_phase < 3)
-                p->acdc_rgb[p->acdc_phase] = (uint8_t)(val & 0xFFu);
-            if (++p->acdc_phase >= 3) {
-                p->clut[p->acdc_addr] = (rgba8_t){p->acdc_rgb[0], p->acdc_rgb[1], p->acdc_rgb[2], 255};
-                p->acdc_addr++;
-                p->acdc_phase = 0;
+            uint8_t idx;
+            if (ramdac_seq_write(&p->acdc, (uint8_t)(val & 0xFFu), &idx)) {
+                const uint8_t *c = p->acdc.pending;
+                p->clut[idx] = (rgba8_t){c[0], c[1], c[2], 255};
                 p->display.clut_dirty = true;
             }
         }
@@ -786,71 +784,15 @@ static void gc_write(display_card_824gc_priv_t *p, uint32_t phys, uint32_t val, 
 
 // === Memory interface (single dispatcher over every region) =================
 
-static uint8_t io_read8(void *dev, uint32_t addr) {
-    gc_reg_ctx_t *c = dev;
-    return (uint8_t)gc_read(c->p, c->region_base + addr, 1, false);
+// The sized handlers over one region's context: its offset within the card.
+static uint32_t gc824_io_read(gc_reg_ctx_t *c, uint32_t addr, unsigned width, bool peek) {
+    return gc_read(c->p, c->region_base + addr, width, peek);
 }
-static uint16_t io_read16(void *dev, uint32_t addr) {
-    gc_reg_ctx_t *c = dev;
-    return (uint16_t)gc_read(c->p, c->region_base + addr, 2, false);
-}
-static uint32_t io_read32(void *dev, uint32_t addr) {
-    gc_reg_ctx_t *c = dev;
-    return gc_read(c->p, c->region_base + addr, 4, false);
-}
-static uint8_t io_peek8(void *dev, uint32_t addr) {
-    gc_reg_ctx_t *c = dev;
-    return (uint8_t)gc_read(c->p, c->region_base + addr, 1, true);
-}
-static uint16_t io_peek16(void *dev, uint32_t addr) {
-    gc_reg_ctx_t *c = dev;
-    return (uint16_t)gc_read(c->p, c->region_base + addr, 2, true);
-}
-static uint32_t io_peek32(void *dev, uint32_t addr) {
-    gc_reg_ctx_t *c = dev;
-    return gc_read(c->p, c->region_base + addr, 4, true);
-}
-static void io_write8(void *dev, uint32_t addr, uint8_t val) {
-    gc_reg_ctx_t *c = dev;
-    gc_write(c->p, c->region_base + addr, val, 1);
-}
-static void io_write16(void *dev, uint32_t addr, uint16_t val) {
-    gc_reg_ctx_t *c = dev;
-    gc_write(c->p, c->region_base + addr, val, 2);
-}
-static void io_write32(void *dev, uint32_t addr, uint32_t val) {
-    gc_reg_ctx_t *c = dev;
-    gc_write(c->p, c->region_base + addr, val, 4);
+static void gc824_io_write(gc_reg_ctx_t *c, uint32_t addr, uint32_t val, unsigned width) {
+    gc_write(c->p, c->region_base + addr, val, width);
 }
 
-static memory_interface_t s_gc824_mem_iface = {
-    .read_uint8 = io_read8,
-    .read_uint16 = io_read16,
-    .read_uint32 = io_read32,
-    .write_uint8 = io_write8,
-    .write_uint16 = io_write16,
-    .write_uint32 = io_write32,
-    .peek_uint8 = io_peek8,
-    .peek_uint16 = io_peek16,
-    .peek_uint32 = io_peek32,
-};
-
-// === VROM load ==============================================================
-// Content-driven (Format-Block CRC): loads whichever of the three known GC
-// declaration ROMs (v1.1 64 KB / v1.0 / alpha 32 KB) is actually present —
-// the slot's own ROM file when the document names one (any filename), else
-// the offered candidates in catalog order (see vrom.h).  A 32 KB revision
-// lands in the top half of the 256 KB bus window (the Format Block always
-// ends at the slot top).
-static bool load_vrom(display_card_824gc_priv_t *p, const char *rom) {
-    char *path = NULL;
-    if (!declrom_load_vrom_card(p->card, display_card_824gc_kind.id, rom, p->vrom, GC824_DECLROM_BUS_SIZE, &path))
-        return false;
-    free(p->vrom_path);
-    p->vrom_path = path;
-    p->vrom_size = GC824_DECLROM_BUS_SIZE;
-    return true;
-}
+MEMORY_IFACE_SIZED(s_gc824_mem_iface, gc_reg_ctx_t, gc824_io_read, gc824_io_write);
 
 static const nubus_monitor_t display_card_824gc_monitors[]; // fwd
 
@@ -872,24 +814,6 @@ static pixel_format_t format_for_bpp(int bpp) {
         return PIXEL_8BPP;
     }
 }
-static uint8_t spdepth_for_bpp(int bpp) {
-    switch (bpp) {
-    case 1:
-        return 0x80;
-    case 2:
-        return 0x81;
-    case 4:
-        return 0x82;
-    case 8:
-        return 0x83;
-    case 16:
-        return 0x84;
-    case 32:
-        return 0x85;
-    default:
-        return 0x83;
-    }
-}
 
 // === Card vtable ============================================================
 
@@ -904,11 +828,9 @@ static void set_poweron_defaults(display_card_824gc_priv_t *p) {
     p->jmfb.csr = 0;
     p->jmfb.video_base = 0xA00 / 32; // $A00 byte offset (driver convention)
     p->jmfb.row_words = p->display.width ? (uint16_t)(p->display.width / 32u) : (640u / 32u);
-    p->jmfb.clut_idx = 0;
-    p->jmfb.clut_phase = 0;
+    ramdac_seq_init(&p->jmfb.clut_seq, 0);
     p->jmfb.clut_pbcr = 0;
-    p->acdc_addr = 0;
-    p->acdc_phase = 0;
+    ramdac_seq_init(&p->acdc, 0);
     p->jmfb.clut_long_hi = 0;
 
     // The GC decl-ROM video driver (config 0 → 640×480) brings the screen up
@@ -945,10 +867,7 @@ static void set_poweron_defaults(display_card_824gc_priv_t *p) {
     p->display.clut = p->clut;
     p->display.clut_len = 256;
     p->display.crt_response = NULL;
-    p->display.shape_dirty = true;
-    p->display.clut_dirty = true;
-    p->display.fb_dirty = true;
-    p->display.response_dirty = true;
+    display_mark_all_dirty(&p->display);
 
     // Accelerator: cold, no firmware.  DRAM/SRAM buffers keep their contents
     // (the ROM re-downloads the firmware on reboot).
@@ -1005,7 +924,6 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
         seeded_depth_bpp = 0;
 
     p->vram = calloc(1, GC824_VRAM_SIZE);
-    p->vrom = calloc(1, GC824_DECLROM_BUS_SIZE);
     p->sram = calloc(1, GC824_SRAM_SIZE);
     p->dram = calloc(1, GC824_DRAM_SIZE);
     p->blank = calloc(1, GC824_DRAM_SIZE);
@@ -1014,10 +932,9 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
     p->gc_blitmask = calloc(1, (size_t)GC824_CLIP_STRIDE * GC824_CLIP_ROWS);
     p->gc_cliprgn = calloc(1, GC824_RGN_MAX);
     p->gc_visrgn = calloc(1, GC824_RGN_MAX);
-    if (!p->vram || !p->vrom || !p->sram || !p->dram || !p->blank || !p->regs || !p->gc_clipmask || !p->gc_blitmask ||
+    if (!p->vram || !p->sram || !p->dram || !p->blank || !p->regs || !p->gc_clipmask || !p->gc_blitmask ||
         !p->gc_cliprgn || !p->gc_visrgn) {
         free(p->vram);
-        free(p->vrom);
         free(p->sram);
         free(p->dram);
         free(p->blank);
@@ -1042,45 +959,6 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
                                  .card = card,
                                  .tag = "8*24 GC"};
 
-    if (opts->substitute) {
-        // The substitute ROM: the GS declaration ROM generated here -- the
-        // boot family + 32-bit sister family from the substitute's monitor
-        // rows, code fragments (incl. SecondaryInit) spliced, CRC stamped in
-        // C; the offer registry is never consulted.
-        declrom_builder_t *bld = gsvrom_generate(GSVROM_MDCGC, display_card_824gc_kind.substitute_monitors);
-        size_t img_size = 0;
-        const uint8_t *img = bld ? declrom_builder_bytes(bld, &img_size) : NULL;
-        if (img && declrom_install_builtin(p->card, display_card_824gc_kind.id, img, img_size, p->vrom,
-                                           GC824_DECLROM_BUS_SIZE))
-            p->vrom_size = GC824_DECLROM_BUS_SIZE;
-        else
-            LOG(0, "8*24 GC: the substitute declaration ROM failed to generate; declaration ROM is zero-filled");
-        declrom_builder_free(bld);
-    } else if (!load_vrom(p, opts->rom[0] ? opts->rom : NULL)) {
-        // The bus seats Apple's ROM only when it is offered (else the
-        // substitute), so this is a file that went away or a checkpoint whose
-        // ROM is not this card's: the slot stays empty.
-        LOG(0,
-            "8*24 GC: slot $%X: the 8\xe2\x80\xa2"
-            "24 GC declaration ROM could not be loaded",
-            card->slot);
-        free(p->vram);
-        free(p->vrom);
-        free(p->sram);
-        free(p->dram);
-        free(p->blank);
-        free(p->regs);
-        free(p->gc_clipmask);
-        free(p->gc_blitmask);
-        free(p->gc_cliprgn);
-        free(p->gc_visrgn);
-        free(p);
-        return -1;
-    }
-
-    card->declrom = p->vrom;
-    card->declrom_size = p->vrom_size;
-
     // The monitor on the connector: its seat's row and sense code (640×480
     // geometry with none plugged in), and the slot's video-mode depth.  The
     // seeded depth persists in priv (not just PRAM) so set_poweron_defaults
@@ -1102,7 +980,7 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
     // --- Standard slot space: VRAM, framebuffer alias, declrom, display regs.
     memory_map_host_region(cfg->memory_map, "gc824_vram", p->vram, p->slot_base, GC824_VRAM_SIZE, /*writable*/ true);
     memory_map_host_region_alias(cfg->memory_map, p->slot_base + GC824_FB_ALIAS_OFFSET, p->slot_base);
-    memory_map_host_region(cfg->memory_map, "gc824_declrom", p->vrom, p->slot_base + GC824_DECLROM_BUS_OFFSET,
+    memory_map_host_region(cfg->memory_map, "gc824_declrom", card->declrom, p->slot_base + GC824_DECLROM_BUS_OFFSET,
                            GC824_DECLROM_BUS_SIZE, /*writable*/ false);
     p->ctx_jmfb = (gc_reg_ctx_t){.p = p, .region_base = p->slot_base + GC824_JMFB_BLOCK_OFFSET};
     memory_map_add(cfg->memory_map, p->slot_base + GC824_JMFB_BLOCK_OFFSET, GC824_REGISTER_SIZE, "gc824_jmfb_regs",
@@ -1134,7 +1012,6 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
     if (!p)
         return;
     free(p->vram);
-    // p->vrom is published as card->declrom; nubus_delete owns and frees it.
     free(p->sram);
     free(p->dram);
     free(p->blank);
@@ -1145,7 +1022,6 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
     free(p->gc_visrgn);
     gc824_font_caches_flush(p);
     gc824_pixpats_flush(p, 0);
-    free(p->vrom_path);
     free(p);
     card->priv = NULL;
 }
@@ -1181,6 +1057,13 @@ static display_t *card_display(nubus_card_t *card) {
     return p ? &p->display : NULL;
 }
 
+// The VRAM a power cycle loses (the bus default, nubus_power_on).
+static size_t card_vram(nubus_card_t *card, uint8_t **base) {
+    display_card_824gc_priv_t *p = card->priv;
+    *base = p ? p->vram : NULL;
+    return p ? GC824_VRAM_SIZE : 0;
+}
+
 // === Checkpoint ==============================================================
 //
 // The scalar state is ONE range (see display_card_824gc_priv.h: field order is
@@ -1191,91 +1074,39 @@ static display_t *card_display(nubus_card_t *card) {
 // against ~4 MB for vram+dram+sram combined would be absurd.
 #define GC824_CKPT_PAGE 4096u
 
-static void ckpt_save_sparse(checkpoint_t *cp, const uint8_t *buf, uint32_t size) {
-    uint32_t pages = size / GC824_CKPT_PAGE, live = 0;
-    for (uint32_t i = 0; i < pages; i++) {
-        const uint8_t *pg = buf + (size_t)i * GC824_CKPT_PAGE;
-        for (uint32_t b = 0; b < GC824_CKPT_PAGE; b++)
-            if (pg[b]) {
-                live++;
-                break;
-            }
-    }
-    system_write_checkpoint_data(cp, &live, sizeof(live));
-    for (uint32_t i = 0; i < pages; i++) {
-        const uint8_t *pg = buf + (size_t)i * GC824_CKPT_PAGE;
-        uint32_t b = 0;
-        while (b < GC824_CKPT_PAGE && !pg[b])
-            b++;
-        if (b == GC824_CKPT_PAGE)
-            continue;
-        system_write_checkpoint_data(cp, &i, sizeof(i));
-        system_write_checkpoint_data(cp, (void *)(uintptr_t)pg, GC824_CKPT_PAGE);
-    }
-}
-
-static void ckpt_restore_sparse(checkpoint_t *cp, uint8_t *buf, uint32_t size) {
-    memset(buf, 0, size); // pages absent from the stream are zero by definition
-    uint32_t live = 0;
-    system_read_checkpoint_data(cp, &live, sizeof(live));
-    for (uint32_t n = 0; n < live; n++) {
-        uint32_t i = 0;
-        system_read_checkpoint_data(cp, &i, sizeof(i));
-        if ((uint64_t)i * GC824_CKPT_PAGE + GC824_CKPT_PAGE > size)
-            return; // a short/again-corrupt stream must not write past the buffer
-        system_read_checkpoint_data(cp, buf + (size_t)i * GC824_CKPT_PAGE, GC824_CKPT_PAGE);
-    }
-}
-
-// A host-keyed cache entry: {key, size, bytes}.  Serialised, NOT flushed --
+// A host-keyed cache entry: {key, blob}.  Serialised, NOT flushed --
 // see the note in display_card_824gc_priv.h.
 static void ckpt_save_cache(checkpoint_t *cp, uint32_t key, uint32_t size, const uint8_t *data) {
-    if (!data)
-        size = 0;
     system_write_checkpoint_data(cp, &key, sizeof(key));
-    system_write_checkpoint_data(cp, &size, sizeof(size));
-    if (size)
-        system_write_checkpoint_data(cp, (void *)(uintptr_t)data, size);
+    checkpoint_write_blob(cp, data, size, NULL);
 }
 
 // The caches hold copies of data the guest keeps in the card's DRAM, so no
-// entry is larger than it; the count bounds what the file may ask us to
+// entry is larger than it; the cap bounds what the file may ask us to
 // allocate.
 static uint8_t *ckpt_restore_cache(checkpoint_t *cp, uint32_t *key, uint32_t *size, uint8_t *old) {
     free(old);
     system_read_checkpoint_data(cp, key, sizeof(*key));
-    if (!checkpoint_read_count(cp, size, GC824_DRAM_SIZE, "8*24 GC cache bytes") || !*size) {
+    uint8_t *d = checkpoint_read_blob(cp, GC824_DRAM_SIZE, size, "8*24 GC cache bytes");
+    if (!d)
         *key = 0;
-        *size = 0;
-        return NULL;
-    }
-    uint8_t *d = (uint8_t *)calloc(1, *size);
-    if (!d) {
-        *key = 0;
-        *size = 0;
-        return NULL;
-    }
-    system_read_checkpoint_data(cp, d, *size);
     return d;
 }
+
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(display_card_824gc_priv_t, card);
 
 static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
     display_card_824gc_priv_t *p = card ? card->priv : NULL;
     if (!p)
         return;
-    system_write_checkpoint_data(cp, p, offsetof(struct display_card_824gc_priv, card));
-    {
-        // Fixed widths, not a raw struct prefix: the prefix carried a bare
-        // pixel_format_t, whose size is implementation-defined (see
-        // display.h).
-        display_head_t head = display_head_of(&p->display);
-        system_write_checkpoint_data(cp, &head, sizeof head);
-    }
+    checkpoint_save_prefix(cp, p, display_card_824gc_priv_t);
+    display_head_save(cp, &p->display);
 
     system_write_checkpoint_data(cp, p->vram, GC824_VRAM_SIZE);
     system_write_checkpoint_data(cp, p->sram, GC824_SRAM_SIZE);
     system_write_checkpoint_data(cp, p->dram, GC824_DRAM_SIZE);
-    ckpt_save_sparse(cp, p->regs, GC824_REGS_SIZE);
+    checkpoint_write_sparse(cp, p->regs, GC824_REGS_SIZE, GC824_CKPT_PAGE);
 
     for (int i = 0; i < 4; i++) {
         const struct gc_pixpat *pp = &p->gc_pixpats[i];
@@ -1297,17 +1128,13 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
     display_card_824gc_priv_t *p = card ? card->priv : NULL;
     if (!p)
         return;
-    system_read_checkpoint_data(cp, p, offsetof(struct display_card_824gc_priv, card));
-    {
-        display_head_t head;
-        system_read_checkpoint_data(cp, &head, sizeof head);
-        display_head_apply(&p->display, &head);
-    }
+    checkpoint_load_prefix(cp, p, display_card_824gc_priv_t);
+    display_head_restore(cp, &p->display);
 
     system_read_checkpoint_data(cp, p->vram, GC824_VRAM_SIZE);
     system_read_checkpoint_data(cp, p->sram, GC824_SRAM_SIZE);
     system_read_checkpoint_data(cp, p->dram, GC824_DRAM_SIZE);
-    ckpt_restore_sparse(cp, p->regs, GC824_REGS_SIZE);
+    checkpoint_read_sparse(cp, p->regs, GC824_REGS_SIZE, GC824_CKPT_PAGE);
 
     for (int i = 0; i < 4; i++) {
         struct gc_pixpat *pp = &p->gc_pixpats[i];
@@ -1338,10 +1165,7 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
     jmfb_apply_scanout(&p->jmfb, &p->jmfb_bind);
     gc824_clip_rebuild(p); // masks derive from the restored regions
 
-    p->display.shape_dirty = true;
-    p->display.clut_dirty = true;
-    p->display.fb_dirty = true;
-    p->display.response_dirty = true;
+    display_mark_all_dirty(&p->display);
 }
 
 static const nubus_card_ops_t display_card_824gc_ops = {
@@ -1352,6 +1176,7 @@ static const nubus_card_ops_t display_card_824gc_ops = {
     .reset = card_reset,
     .on_vbl = card_on_vbl,
     .display = card_display,
+    .vram = card_vram,
 };
 
 // === Factory + kind descriptor ==============================================
@@ -1512,6 +1337,8 @@ const nubus_card_kind_t display_card_824gc_kind = {
     .substitute = true,
     .monitors = display_card_824gc_monitors,
     .substitute_monitors = display_card_824gc_substitute_monitors,
+    .declrom_bus_size = GC824_DECLROM_BUS_SIZE,
+    .gsvrom = GSVROM_MDCGC,
     .ops = &display_card_824gc_ops,
     .startup_record = startup_record,
     .attach_objects = display_card_824gc_attach_objects,
@@ -1533,7 +1360,8 @@ static bool startup_record(const slot_opts_t *e, uint8_t rec[8]) {
     int depth = 0;
     if (!e->video_mode[0] || !video_mode_lookup(e->video_mode, &row, &depth))
         return false;
-    const uint8_t r[8] = {0x00, 0x2C, spdepth_for_bpp(depth), row->srsrc_sister, row->srsrc_sister, 0, 0, 0};
+    uint8_t sp_depth = nubus_spdepth_for_bpp(depth, 0x83);
+    const uint8_t r[8] = {0x00, 0x2C, sp_depth, row->srsrc_sister, row->srsrc_sister, 0, 0, 0};
     memcpy(rec, r, sizeof r);
     return true;
 }

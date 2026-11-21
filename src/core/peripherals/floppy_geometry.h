@@ -19,6 +19,7 @@
 #ifndef FLOPPY_GEOMETRY_H
 #define FLOPPY_GEOMETRY_H
 
+#include "gcr.h"
 #include "image.h"
 
 #include <stdbool.h>
@@ -142,26 +143,9 @@ double floppy_media_rev_ns(const floppy_media_t *m, int track, int dd_mfm_rpm);
 // flooring.
 int floppy_media_next_header(const floppy_media_t *m, int track, double rev_ns, double now_ns, double *delay_ns);
 
-// decode_gcr() returns this for a byte that is not one of the 64 legal GCR
-// codewords.  It is out of the 6-bit range, so a caller that ignores it still
-// cannot silently fold a corrupt nibble into valid data.
-#define GCR_BAD_CODEWORD 0xFFu
-
-// The 64-entry 6-to-8 GCR codeword table, and the Apple rotate-add-xor
-// checksum chain.  Both existed twice -- the table byte-identically, the chain
-// once as dst-capturing macros and once as these functions.  The chain is
-// subtle (the carry feed between ca/cb/cc, and the final pair-not-triplet
-// case), so one implementation with a unit test beats two that happen to
-// agree.
-extern const uint8_t gcr_codewords[];
-
-// Three bytes -> four six-bit values, advancing the checksum registers.
-void gcr_encode_triplet(const uint8_t *src, uint16_t *ca, uint16_t *cb, uint16_t *cc, uint8_t *dst);
-// Four six-bit values -> three bytes, advancing the checksum registers.
-void gcr_decode_triplet(const uint8_t *src, uint16_t *ca, uint16_t *cb, uint16_t *cc, uint8_t *dst);
-
-// Converts a GCR codeword to its 6-bit value, or GCR_BAD_CODEWORD.
-uint8_t decode_gcr(uint8_t gcr_codeword);
+// The 6-and-2 GCR codec itself (codeword tables, the sector nibblizer and
+// its checksum chain, the address field) is storage's gcr.h, shared with
+// the MOOF reader and writer.
 
 // === Index / tachometer =====================================================
 //
@@ -199,6 +183,11 @@ int floppy_index_signal(floppy_index_mode_t mode, double now_ns, double rev_ns, 
 // format-dependent and nothing in the SWIM or SWIM3 specs pins the numbers
 // these two chose, so preserving each caller's behaviour is the honest option
 // until a source settles it.  It remains an open question.
+
+// The MFM ID/data-field CRC (CRC-16/XMODEM, codec_crc16_xmodem) starts from
+// this value, reset on each mark byte: the SWIM ISM's checker and this
+// layout's emitter both.
+#define FLOPPY_MFM_CRC_INIT 0xFFFFu
 
 // Emits one byte of the layout.  `is_mark` marks the $A1/$C2 bytes written
 // with a missing clock transition.

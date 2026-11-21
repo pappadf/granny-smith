@@ -7,6 +7,7 @@
 // 601/604/750 (--arch ppc / ppc604 / ppc750).  Minimal dependencies in every mode.
 
 #include "annotate_disasm.h"
+#include "common.h"
 #include "cpu.h"
 #include "dsp3210_disasm.h"
 #include "ppc_disasm.h"
@@ -176,7 +177,7 @@ int main(int argc, char *argv[]) {
         while (pos < word_count) {
             uint32_t addr = address_offset + offset + pos * 4;
             const uint8_t *bp = raw_buf + (size_t)pos * 4;
-            uint32_t w = (uint32_t)bp[0] << 24 | (uint32_t)bp[1] << 16 | (uint32_t)bp[2] << 8 | bp[3];
+            uint32_t w = RD_BE32(bp);
             ppc_insn ins;
             ppc_disassemble_model(w, addr, ppc_model, &ins);
             // "mnemonic\toperands" -> single aligned column pair
@@ -206,7 +207,7 @@ int main(int argc, char *argv[]) {
         uint32_t pos = 0, instr_count = 0;
         while (pos < word_count) {
             uint32_t addr = address_offset + offset + pos * 4;
-            uint32_t w = dsp3210_read_be32(raw_buf + (size_t)pos * 4);
+            uint32_t w = RD_BE32(raw_buf + (size_t)pos * 4);
             dsp3210_insn ins;
             dsp3210_disassemble(w, addr, &ins);
             printf("$%08X  %08x  %s\n", (unsigned int)addr, w, ins.text);

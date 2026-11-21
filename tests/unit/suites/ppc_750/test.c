@@ -19,9 +19,12 @@
 //     936-942 readable from user mode and not writable;
 //   - mtdec signals the decrementer request on a 0 -> 1 change of bit 0;
 //   - PIR (1023) and SDA (959) do not exist on the 750; tlbia and fsqrt
-//     take the illegal-instruction program exception (§2.3.1.2, §2.3.6.3.3).
+//     take the illegal-instruction program exception (§2.3.1.2, §2.3.6.3.3);
+//   - the SPR table (ppc_spr.h) matches what mfspr/mtspr decode on the 604
+//     and the 750, model by model and privilege by privilege.
 
 #include "ppc_internal.h"
+#include "ppc_spr.h"
 
 #include "harness.h"
 #include "memory.h"
@@ -30,26 +33,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int failures, checks;
-
-#define CHECK(cond)                                                                                                    \
-    do {                                                                                                               \
-        checks++;                                                                                                      \
-        if (!(cond)) {                                                                                                 \
-            printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);                                                     \
-            failures++;                                                                                                \
-        }                                                                                                              \
-    } while (0)
-
-#define CHECK_EQ(got, want)                                                                                            \
-    do {                                                                                                               \
-        checks++;                                                                                                      \
-        uint32_t g_ = (uint32_t)(got), w_ = (uint32_t)(want);                                                          \
-        if (g_ != w_) {                                                                                                \
-            printf("FAIL %s:%d: %s = $%08X, want $%08X\n", __FILE__, __LINE__, #got, g_, w_);                          \
-            failures++;                                                                                                \
-        }                                                                                                              \
-    } while (0)
+#define TEST_ASSERT_COUNTING
+#include "test_assert.h"
 
 static ppc_t *P;
 
@@ -287,6 +272,71 @@ static void test_other_models_reject(void) {
     P->cpu_model = CPU_MODEL_PPC750;
 }
 
+// The SPR table (ppc_spr.h) against what mfspr and mtspr do, its hand-
+// written arms included: on the 604 and the 750 an SPR number decodes
+// exactly where a row has that direction and the model (else the
+// illegal-instruction exception), and a defined one raises the privilege
+// exception from user mode exactly where the row says supervisor-only.
+static void spr_step(uint32_t n, int to_spr, bool user) {
+    ppc_reset(P);
+    P->msr = PPC_MSR_ME | PPC_MSR_FP | (user ? PPC_MSR_PR : 0);
+    ppc_update_active_maps(P);
+    P->gpr[3] = 0;
+    step1(e_spr(3, n, to_spr));
+}
+
+static void test_spr_table(void) {
+#define SPR_DIR_PLAIN 1
+#define SPR_DIR_OWN   1
+#define SPR_DIR_NO    0
+    static const struct {
+        uint16_t n;
+        uint8_t dir[2], priv, models;
+    } rows[] = {
+    // clang-format off
+#define X(n_, name_, mf_, mt_, field_, flags_, models_) {n_, {SPR_DIR_##mf_, SPR_DIR_##mt_}, ((flags_) & PPC_SPR_PRIV) != 0, models_},
+        PPC_SPRS(X)
+#undef X
+        // clang-format on
+    };
+    static const int models[2] = {CPU_MODEL_PPC604, CPU_MODEL_PPC750};
+    static const uint32_t bits[2] = {PPC_SPR_M604, PPC_SPR_M750};
+    for (int m = 0; m < 2; m++) {
+        P->cpu_model = models[m];
+        for (uint32_t n = 0; n < 1024; n++) {
+            int r = -1;
+            for (int i = 0; i < (int)(sizeof rows / sizeof rows[0]); i++)
+                if (rows[i].n == n)
+                    r = i;
+            for (int to_spr = 0; to_spr < 2; to_spr++) {
+                bool defined = r >= 0 && rows[r].dir[to_spr] && (rows[r].models & bits[m]);
+                spr_step(n, to_spr, false);
+                bool illegal = P->pc == 0x00000700u && (P->srr1 & PPC_SRR1_PROG_ILLEGAL);
+                if (illegal == defined) {
+                    printf("FAIL %s spr %u on the %d: %s\n", to_spr ? "mtspr" : "mfspr", n, models[m],
+                           defined ? "illegal, the table defines it" : "decoded, the table does not define it");
+                    failures++;
+                }
+                checks++;
+                if (!defined)
+                    continue;
+                spr_step(n, to_spr, true);
+                bool priv = P->pc == 0x00000700u && (P->srr1 & PPC_SRR1_PROG_PRIV);
+                if (priv != (bool)rows[r].priv) {
+                    printf("FAIL %s spr %u on the %d from user mode: %s\n", to_spr ? "mtspr" : "mfspr", n, models[m],
+                           priv ? "privileged, the table says user" : "runs, the table says supervisor");
+                    failures++;
+                }
+                checks++;
+            }
+        }
+    }
+#undef SPR_DIR_PLAIN
+#undef SPR_DIR_OWN
+#undef SPR_DIR_NO
+    P->cpu_model = CPU_MODEL_PPC750;
+}
+
 int main(void) {
     // 32-bit map with RAM at 0 (the vectors land at $00000xxx).
     test_context_t *ctx = calloc(1, sizeof(test_context_t));
@@ -313,6 +363,7 @@ int main(void) {
     test_isa();
     test_dec_write_signal();
     test_other_models_reject();
+    test_spr_table();
 
     ppc_delete(P);
     printf("ppc_750: %d checks, %d failures\n", checks, failures);

@@ -332,6 +332,22 @@ TEST(identify_then_sdtr_in_one_stream_is_parsed_in_order) {
     ASSERT_EQ_INT(s.out_len, 0);
 }
 
+// ABORT and BUS DEVICE RESET are reported, so a front-end that plays the
+// target (the 5380) can release the bus; neither is answered.
+TEST(abort_and_bus_device_reset_are_reported) {
+    const uint8_t msgs[] = {0x06, 0x0C};
+    for (unsigned i = 0; i < sizeof(msgs); i++) {
+        scsi_msgsession_t s;
+        scsi_msg_reset(&s);
+        feed(&s, &msgs[i], 1);
+        scsi_msg_result_t r;
+        scsi_msg_complete(&s, &MESH_CAPS, &r);
+        ASSERT_TRUE(r.abort);
+        ASSERT_TRUE(!r.identify && !r.sdtr && !r.wdtr && !r.rejected && !r.incomplete);
+        ASSERT_TRUE(!scsi_msg_pending(&s));
+    }
+}
+
 int main(void) {
     RUN(identify_alone_is_consumed_with_no_reply);
     RUN(sdtr_within_the_parts_limits_is_agreed_verbatim);
@@ -346,6 +362,7 @@ int main(void) {
     RUN(a_length_byte_past_the_end_does_not_read_out_of_bounds);
     RUN(a_zero_length_extended_message_is_rejected);
     RUN(collect_reports_a_full_buffer_instead_of_dropping_silently);
+    RUN(abort_and_bus_device_reset_are_reported);
     RUN(reset_clears_a_reply_that_was_never_read);
     RUN(a_second_negotiation_replaces_the_first_reply);
     RUN(identify_then_sdtr_in_one_stream_is_parsed_in_order);

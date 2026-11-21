@@ -35,7 +35,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -171,42 +170,39 @@ void image_close(image_t *image) {
 // instance ids and as scratch-name salt.  `out` holds 16 chars + NUL; the
 // [static 17] lets the compiler reject a smaller buffer at the call site.
 static void mint_random_hex_id(char out[static 17]) {
-    uint8_t bytes[8] = {0};
-    bool got = false;
-#if !defined(_WIN32)
-    int fd = open("/dev/urandom", O_RDONLY);
-    if (fd >= 0) {
-        ssize_t n = read(fd, bytes, sizeof(bytes));
-        close(fd);
-        if (n == (ssize_t)sizeof(bytes))
-            got = true;
+    uint8_t bytes[8];
+    random_bytes(bytes, sizeof bytes);
+    hex_encode(out, bytes, sizeof bytes, false);
+}
+
+// Give `image` ghost sidecars: a delta and a journal under a fresh id in the
+// scratch root, removed on close, so they never land beside the media or in
+// a user directory.  0, or -ENOMEM (either path may be left NULL).
+static int ghost_paths(image_t *image) {
+    mkdir_p(image_scratch_dir());
+    char id[17];
+    mint_random_hex_id(id);
+    image->ghost_instance = true;
+    image->delta_path = str_printf("%s/%s.delta", image_scratch_dir(), id);
+    image->journal_path = str_printf("%s/%s.journal", image_scratch_dir(), id);
+    return image->delta_path && image->journal_path ? 0 : -ENOMEM;
+}
+
+// The message and code of an export whose writer stopped with `rc` (a
+// negative errno; a storage status is one): cancelled, an unreadable disk
+// image (`unreadable`: the view's own read failed), or a failed write to
+// `dest`.  Which of the last two is the caller's record, not the number:
+// both are -EIO.  The words are user-visible.
+static int export_fail(int rc, bool unreadable, const char *dest, char *err, size_t err_cap) {
+    if (rc == -ECANCELED) {
+        if (err)
+            snprintf(err, err_cap, "cancelled");
+        return -ECANCELED;
     }
-#endif
-    if (!got) {
-        // Fallback: combine PID + time + a counter for uniqueness within a
-        // process even if /dev/urandom is unavailable.  Unique only while
-        // ids are minted on one thread (the emulator's; the counter is a
-        // plain static) -- two threads minting in the same second could
-        // collide.
-        static uint32_t ctr = 0;
-        uint32_t pid = (uint32_t)getpid();
-        uint32_t now = (uint32_t)time(NULL);
-        uint32_t c = ++ctr;
-        bytes[0] = (uint8_t)(pid);
-        bytes[1] = (uint8_t)(pid >> 8);
-        bytes[2] = (uint8_t)(pid >> 16);
-        bytes[3] = (uint8_t)(pid >> 24);
-        bytes[4] = (uint8_t)(now ^ c);
-        bytes[5] = (uint8_t)((now >> 8) ^ (c >> 8));
-        bytes[6] = (uint8_t)((now >> 16) ^ (c >> 16));
-        bytes[7] = (uint8_t)((now >> 24) ^ (c >> 24));
-    }
-    for (size_t i = 0; i < 8; i++) {
-        static const char hex[] = "0123456789abcdef";
-        out[i * 2] = hex[bytes[i] >> 4];
-        out[i * 2 + 1] = hex[bytes[i] & 0xf];
-    }
-    out[16] = '\0';
+    if (err)
+        snprintf(err, err_cap,
+                 unreadable ? "the disk image could not be read; '%s' not written" : "write to '%s' failed", dest);
+    return -EIO;
 }
 
 // Normalise a geometry's block size, treating 0 as the default (512).
@@ -427,13 +423,8 @@ static image_t *image_open_source(const char *name, source_t *data, source_t *rs
         image->instance_path = str_printf("%s/%s", dir, id);
     } else {
         // A read-only mount's delta+journal are ghosts in the scratch root,
-        // so they never land beside the media.
-        mkdir_p(image_scratch_dir());
-        char id[17];
-        mint_random_hex_id(id);
-        image->ghost_instance = true;
-        image->delta_path = str_printf("%s/%s.delta", image_scratch_dir(), id);
-        image->journal_path = str_printf("%s/%s.journal", image_scratch_dir(), id);
+        // so they never land beside the media (a NULL path is caught below).
+        ghost_paths(image);
     }
     if (image->instance_path) {
         image->delta_path = str_printf("%s.delta", image->instance_path);
@@ -561,18 +552,11 @@ image_t *image_create_blank(uint64_t block_count, image_geometry_t geom) {
     image->type = image_hd;
     image->writable = true;
     image->from_diskcopy = false;
-    image->ghost_instance = true; // delta+journal are scratch, removed on close
-
     // Place the delta+journal in the scratch root so the blank disk's
     // sidecars don't clutter any user directory; ghost_instance unlinks them on
     // image_close.  The image is ephemeral unless exported via image_export_to.
-    mkdir_p(image_scratch_dir());
-    char id[17];
-    mint_random_hex_id(id);
     image->instance_path = NULL; // never serialized
-    image->delta_path = str_printf("%s/%s.delta", image_scratch_dir(), id);
-    image->journal_path = str_printf("%s/%s.journal", image_scratch_dir(), id);
-    if (!image->delta_path || !image->journal_path) {
+    if (ghost_paths(image) != 0) {
         image->writable = false; // never registered
         image_close(image);
         return NULL;
@@ -790,12 +774,16 @@ struct image_export {
     uint8_t dc42_name[DC42_NAME_FIELD]; // the header's name field
     uint8_t disk_format;
     uint8_t format_byte;
+    bool unreadable; // the view could not read the disk (export_view_write)
 };
 
-// True when `path` ends in `ext` (case-insensitive).
-static bool path_has_ext(const char *path, const char *ext) {
-    size_t n = strlen(path), e = strlen(ext);
-    return n > e && strcasecmp(path + n - e, ext) == 0;
+// Stream the view through `write_cb`, noting whether a failure was the
+// disk's (STATUS_E_IO: the view's reads) rather than the writer's
+// (STATUS_ERROR) or a cancel.  The status passes through.
+static int export_view_write(image_export_t *e, void *ctx, storage_write_callback_t write_cb) {
+    int rc = storage_export_view_write(e->view, ctx, write_cb);
+    e->unreadable = rc == STATUS_E_IO;
+    return rc;
 }
 
 // DiskCopy 4.2's disk-format code for a floppy kind, or -1 for anything else.
@@ -927,19 +915,10 @@ static int image_export_run_udif(image_export_t *e, char *err, size_t err_cap) {
     udif_writer_t *w = udif_writer_open(e->dest, &o, err, err_cap);
     if (!w)
         return -EIO;
-    int rc = storage_export_view_write(e->view, w, udif_write_cb);
+    int rc = export_view_write(e, w, udif_write_cb);
     if (rc != STATUS_OK) {
-        udif_writer_abort(w);
-        if (rc == -ECANCELED) {
-            if (err)
-                snprintf(err, err_cap, "cancelled");
-            return -ECANCELED;
-        }
-        if (err)
-            snprintf(err, err_cap,
-                     rc == STATUS_E_IO ? "the disk image could not be read; '%s' not written" : "write to '%s' failed",
-                     e->dest);
-        return -EIO;
+        udif_writer_abort(w); // removes the partial file
+        return export_fail(rc, e->unreadable, e->dest, err, err_cap);
     }
     rc = udif_writer_finish(w, NULL);
     if (rc != 0 && err)
@@ -972,7 +951,7 @@ static int image_export_run_dc42(image_export_t *e, FILE *f) {
     if (fwrite(hdr, sizeof hdr, 1, f) != 1)
         return -EIO;
     dc42_stream_t d = {.f = f};
-    int rc = storage_export_view_write(e->view, &d, dc42_write_cb);
+    int rc = export_view_write(e, &d, dc42_write_cb);
     if (rc != STATUS_OK)
         return rc; // STATUS_E_IO (the disk could not be read), -ECANCELED, or a write failure
     if (d.bytes > UINT32_MAX)
@@ -1018,7 +997,7 @@ static int image_export_run_moof(image_export_t *e, FILE *f) {
     m.buf = (uint8_t *)malloc(m.cap);
     if (!m.buf)
         return -ENOMEM;
-    int rc = storage_export_view_write(e->view, &m, mem_write_cb);
+    int rc = export_view_write(e, &m, mem_write_cb);
     uint32_t sectors = (uint32_t)(m.len / STORAGE_BLOCK_SIZE);
     // The tags, when the image has one per sector (else zeros).
     const uint8_t *tags = e->tags && e->tag_bytes == MOOF_TAG_BYTES && e->tag_count >= sectors ? e->tags : NULL;
@@ -1051,21 +1030,12 @@ int image_export_run(image_export_t *e, char *err, size_t err_cap) {
     char *iobuf = stream_set_large_buffer(f);
     int rc = e->format == EXPORT_DC42   ? image_export_run_dc42(e, f)
              : e->format == EXPORT_MOOF ? image_export_run_moof(e, f)
-                                        : storage_export_view_write(e->view, f, file_write_cb);
+                                        : export_view_write(e, f, file_write_cb);
     bool closed = fclose(f) == 0;
     free(iobuf);
     if (rc != STATUS_OK || !closed) {
         remove(e->dest);
-        if (rc == -ECANCELED) {
-            if (err)
-                snprintf(err, err_cap, "cancelled");
-            return -ECANCELED;
-        }
-        if (err)
-            snprintf(err, err_cap,
-                     rc == STATUS_E_IO ? "the disk image could not be read; '%s' not written" : "write to '%s' failed",
-                     e->dest);
-        return -EIO;
+        return export_fail(rc, e->unreadable, e->dest, err, err_cap);
     }
     return 0;
 }
@@ -1218,15 +1188,7 @@ image_t *images_find(const image_list_t *images, const char *name) {
 void image_checkpoint(const image_t *image, checkpoint_t *checkpoint) {
     if (!image || !checkpoint)
         return;
-    uint32_t len = 0;
-    const char *name = image->filename;
-    if (name && *name) {
-        size_t n = strlen(name) + 1;
-        len = (uint32_t)n;
-    }
-    system_write_checkpoint_data(checkpoint, &len, sizeof(len));
-    if (len)
-        system_write_checkpoint_data(checkpoint, name, len);
+    checkpoint_write_string(checkpoint, image->filename);
 
     // Bit 0: writable.  Bit 1: wrapped by the bare-volume wrapper — the
     // restore re-wraps rather than trusting the file to say so (the prefix
@@ -1240,20 +1202,21 @@ void image_checkpoint(const image_t *image, checkpoint_t *checkpoint) {
     system_write_checkpoint_data(checkpoint, &raw_size, sizeof(raw_size));
 
     // Persist the instance path so a future restore can reopen the same delta
-    // directory without relying on adjacent-to-base sidecars.  Empty
-    // string for read-only / ghost mounts.
+    // directory without relying on adjacent-to-base sidecars.  None
+    // (length 0) for read-only / ghost mounts.  Written here rather than
+    // through checkpoint_write_string: the path names this run's own storage
+    // cache, and the checkpoint decoders (scripts/lib/gscheckpoint.py,
+    // is_storage_block) skip it as host bookkeeping by its writer's file.
     const char *instance = (image->writable && image->instance_path) ? image->instance_path : "";
-    uint32_t instance_len = (uint32_t)(strlen(instance) + 1);
+    uint32_t instance_len = *instance ? (uint32_t)(strlen(instance) + 1) : 0;
     system_write_checkpoint_data(checkpoint, &instance_len, sizeof(instance_len));
-    system_write_checkpoint_data(checkpoint, instance, instance_len);
+    if (instance_len)
+        system_write_checkpoint_data(checkpoint, instance, instance_len);
 
     // The key of the source the path opened (source.h): a restore that
     // reuses the base checks it is still the same bytes -- the same file,
     // size and time stamp, or the same member of the same archive.
-    const char *key = image->source_key ? image->source_key : "";
-    uint32_t key_len = (uint32_t)(strlen(key) + 1);
-    system_write_checkpoint_data(checkpoint, &key_len, sizeof(key_len));
-    system_write_checkpoint_data(checkpoint, key, key_len);
+    checkpoint_write_string(checkpoint, image->source_key);
 
     if (image->storage) {
         status_t rc = storage_checkpoint(image->storage, checkpoint);

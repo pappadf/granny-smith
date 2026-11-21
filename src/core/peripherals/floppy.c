@@ -9,6 +9,7 @@
 #include "floppy.h"
 #include "floppy_internal.h"
 #include "log.h"
+#include "memory_iface_sized.h"
 #include "event/event.h"
 
 static void floppy_notify_present(int drive, bool present);
@@ -16,6 +17,7 @@ static void floppy_notify_present(int drive, bool present);
 #include "gs_assert.h"
 #include "memory.h"
 #include "object.h"
+#include "object_order.h"
 #include "platform.h"
 #include "shell.h"
 #include "system.h"
@@ -38,11 +40,7 @@ static const class_desc_t floppy_controller_class;
 #include <string.h>
 
 #include "image.h"
-
-// The I/O-job export (io_leaf.h).  Weak: a unit suite of the controller
-// alone links no I/O leaves and exports here and now.
-value_t io_leaf_export_image(struct image *img, const char *dest, const char *codec, const char *what)
-    __attribute__((weak));
+#include "medium_export.h"
 
 LOG_USE_CATEGORY_NAME("floppy");
 
@@ -755,7 +753,7 @@ bool floppy_is_inserted(floppy_t *floppy, int drive) {
 
 // Get the memory-mapped I/O interface for machine-level address decode
 const memory_interface_t *floppy_get_memory_interface(floppy_t *floppy) {
-    return &floppy->memory_interface;
+    return floppy->memory_interface;
 }
 
 // === Read-only views for the object model ===================================
@@ -979,29 +977,7 @@ static uint8_t iwm_peek_uint8(void *floppy, uint32_t addr) {
 // than aborting, so any guest executing `move.w $D80000,d0`, buggy or hostile,
 // halted the emulator and surfaced in CI as an unexplained hang.  Log it and
 // return open bus, as grand_central.c does.
-static uint16_t iwm_read_uint16(void *floppy, uint32_t addr) {
-    (void)floppy;
-    LOG(1, "IWM: 16-bit access at 0x%08X is not decoded; reading open bus", addr);
-    return 0xFFFF;
-}
-
-static uint32_t iwm_read_uint32(void *floppy, uint32_t addr) {
-    (void)floppy;
-    LOG(1, "IWM: 32-bit access at 0x%08X is not decoded; reading open bus", addr);
-    return 0xFFFFFFFFu;
-}
-
-// The wide reads' open bus, without their log lines.
-static uint16_t iwm_peek_uint16(void *floppy, uint32_t addr) {
-    (void)floppy;
-    (void)addr;
-    return 0xFFFF;
-}
-static uint32_t iwm_peek_uint32(void *floppy, uint32_t addr) {
-    (void)floppy;
-    (void)addr;
-    return 0xFFFFFFFFu;
-}
+MEMORY_IFACE_OPEN_BUS_WIDE(iwm_wide, "IWM")
 
 // Memory interface handler for 8-bit writes to IWM address space
 static void iwm_write_uint8(void *floppy, uint32_t addr, uint8_t value) {
@@ -1014,31 +990,18 @@ static void iwm_write_uint8(void *floppy, uint32_t addr, uint8_t value) {
     floppy_iwm_write(s, (addr >> 9) & 0x0F, value);
 }
 
-static void iwm_write_uint16(void *floppy, uint32_t addr, uint16_t value) {
-    (void)floppy;
-    (void)value;
-    LOG(1, "IWM: 16-bit write at 0x%08X is not decoded; dropped", addr);
-}
-
-static void iwm_write_uint32(void *floppy, uint32_t addr, uint32_t value) {
-    (void)floppy;
-    (void)value;
-    LOG(1, "IWM: 32-bit write at 0x%08X is not decoded; dropped", addr);
-}
+// The IWM's register window; every controller shares it
+static const memory_interface_t iwm_iface = {
+    .read_uint8 = iwm_read_uint8,
+    .peek_uint8 = iwm_peek_uint8,
+    .write_uint8 = iwm_write_uint8,
+    MEMORY_IFACE_OPEN_BUS_WIDE_FIELDS(iwm_wide),
+};
 
 // Sets up the IWM memory interface callbacks on the floppy controller
 static void floppy_iwm_setup(floppy_t *floppy, memory_map_t *map) {
-    floppy->memory_interface.read_uint8 = &iwm_read_uint8;
-    floppy->memory_interface.read_uint16 = &iwm_read_uint16;
-    floppy->memory_interface.read_uint32 = &iwm_read_uint32;
-    floppy->memory_interface.peek_uint8 = &iwm_peek_uint8;
-    floppy->memory_interface.peek_uint16 = &iwm_peek_uint16;
-    floppy->memory_interface.peek_uint32 = &iwm_peek_uint32;
-    floppy->memory_interface.write_uint8 = &iwm_write_uint8;
-    floppy->memory_interface.write_uint16 = &iwm_write_uint16;
-    floppy->memory_interface.write_uint32 = &iwm_write_uint32;
-
-    memory_map_add(map, 0x00d80000, 0x00080000, "floppy", &floppy->memory_interface, floppy);
+    floppy->memory_interface = &iwm_iface;
+    memory_map_add(map, 0x00d80000, 0x00080000, "floppy", &iwm_iface, floppy);
 }
 
 // Initializes a floppy controller of the given type and maps it to memory
@@ -1093,31 +1056,13 @@ floppy_t *floppy_init(floppy_type_t type, memory_map_t *map, struct scheduler *s
 
         // Restore disk images by filename
         for (int i = 0; i < NUM_DRIVES; i++) {
-            floppy->disk[i] = NULL;
-            uint32_t len = 0;
-            system_read_checkpoint_data(checkpoint, &len, sizeof(len));
-            if (len > 0) {
-                char *name = malloc(len);
-                if (name) {
-                    system_read_checkpoint_data(checkpoint, name, len);
-                    name[len - 1] = '\0';
-                    floppy->disk[i] = images_find(images, name);
-                    if (!floppy->disk[i]) {
-                        // The drive held a disk: a restore without it is not
-                        // the machine that was saved.
-                        LOG(0, "floppy drive %d: the checkpoint's disk '%s' is not among its images", i, name);
-                        checkpoint_set_error(checkpoint);
-                    }
-                    floppy_notify_present(i, floppy->disk[i] != NULL);
-                    free(name);
-                } else {
-                    // Consume bytes to keep stream aligned
-                    for (uint32_t k = 0; k < len; k++) {
-                        char tmp;
-                        system_read_checkpoint_data(checkpoint, &tmp, 1);
-                    }
-                }
-            }
+            char what[24];
+            snprintf(what, sizeof what, "floppy drive %d", i);
+            bool named = false;
+            floppy->disk[i] = checkpoint_read_image_ref(checkpoint, images, what, &named);
+            // A drive that held a disk tells the frontend whether it is back
+            if (named)
+                floppy_notify_present(i, floppy->disk[i] != NULL);
         }
 
         // Restore GCR track buffers.  trk->size comes from the file, but
@@ -1171,7 +1116,7 @@ floppy_t *floppy_init(floppy_type_t type, memory_map_t *map, struct scheduler *s
     floppy->object = object_new(&floppy_class, floppy, "floppy");
     if (floppy->object) {
         object_set_label(floppy->object, "Floppy");
-        object_set_order(floppy->object, 80);
+        object_set_order(floppy->object, OBJ_ORDER_FLOPPY);
         object_attach(machine_object(), floppy->object);
         floppy->controller_object = object_new(&floppy_controller_class, floppy, "controller");
         if (floppy->controller_object) {
@@ -1264,21 +1209,9 @@ void floppy_delete(floppy_t *floppy) {
             floppy->drive_objects[i] = NULL;
         }
     }
-    if (floppy->drives_object) {
-        object_detach(floppy->drives_object);
-        object_delete(floppy->drives_object);
-        floppy->drives_object = NULL;
-    }
-    if (floppy->controller_object) {
-        object_detach(floppy->controller_object);
-        object_delete(floppy->controller_object);
-        floppy->controller_object = NULL;
-    }
-    if (floppy->object) {
-        object_detach(floppy->object);
-        object_delete(floppy->object);
-        floppy->object = NULL;
-    }
+    object_destroy(&floppy->drives_object);
+    object_destroy(&floppy->controller_object);
+    object_destroy(&floppy->object);
 
     // Flush and free track data for both drives
     for (int d = 0; d < NUM_DRIVES; d++) {
@@ -1326,13 +1259,8 @@ void floppy_checkpoint(floppy_t *restrict floppy, checkpoint_t *checkpoint) {
     free(prefix);
 
     // Write disk filenames for each drive
-    for (int i = 0; i < NUM_DRIVES; i++) {
-        const char *name = floppy->disk[i] ? image_get_filename(floppy->disk[i]) : NULL;
-        uint32_t len = (name && *name) ? (uint32_t)strlen(name) + 1 : 0;
-        system_write_checkpoint_data(checkpoint, &len, sizeof(len));
-        if (len)
-            system_write_checkpoint_data(checkpoint, name, len);
-    }
+    for (int i = 0; i < NUM_DRIVES; i++)
+        checkpoint_write_image_ref(checkpoint, floppy->disk[i]);
 
     // Save GCR track buffers (preserves in-flight write data)
     for (int d = 0; d < NUM_DRIVES; d++) {
@@ -1695,11 +1623,7 @@ static DEF_METHOD(floppy_disk_method_export) {
     if (!img)
         return val_err("disk.export: no disk inserted");
     const char *codec = argc > 1 && argv[1].kind == VK_STRING ? argv[1].s : NULL;
-    if (io_leaf_export_image)
-        return io_leaf_export_image(img, argv[0].s, codec, "disk.export");
-    if (image_export_to_codec(img, argv[0].s, codec) != 0)
-        return val_err("disk.export: failed to write '%s' (refuses to overwrite an existing file)", argv[0].s);
-    return val_bool(true);
+    return medium_export_image(img, argv[0].s, codec, "disk.export");
 }
 
 static const arg_decl_t floppy_disk_export_args[] = {

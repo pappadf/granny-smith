@@ -38,7 +38,7 @@ Current values: the Plus uses 10 (calibrated against its 7.8336 MHz 68000 —
 real hardware sustains ~0.7 MIPS); the 68030 machines use 4 and the 68040
 machines 1 (Apple's MIPS ratings read as MHz / MIPS give about 4.0 for every
 68030 Mac and 1.14 for the 68040 Quadras; the shared core in
-`mac030_build_core` picks by CPU model; the AV Quadras also price reads of
+`m68k_board_build_core` picks by CPU model; the AV Quadras also price reads of
 cache-inhibited RAM at their DRAM read time, `g_uncached_read_cycles`, which
 the ROM's DSP handshake needs, see [dsp.md](../../machines/av/dsp.md)); the
 Lisa/Mac XL uses 10 (its video fetch owns every other 400 ns memory slot, so
@@ -443,7 +443,8 @@ reset to zero.
 | `src/core/scheduler/scheduler.c` | Sprint loop, event queue, cycle accounting, VBL timing |
 | `src/core/memory/memory.h` | `memory_io_penalty()` inline, penalty globals |
 | `src/core/memory/memory.c` | Penalty global definitions, slow-path device dispatch |
-| `src/machines/mac030/mac030_glue_io.c` | The 030-family I/O dispatcher with per-device penalty constants |
+| `src/machines/runtime/board_io.c` | The I/O-island dispatch engine that charges each window's penalty |
+| `src/machines/glue/glue_io.c` | The GLUE family's window table with its per-device penalty constants |
 | `docs/internals/core/scheduler/scheduler.md` | Detailed scheduler internals (sprint model, event lifecycle) |
 
 ## See Also

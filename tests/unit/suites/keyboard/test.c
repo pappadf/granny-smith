@@ -117,7 +117,7 @@ void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, 
 }
 
 // The VIA shift register is the keyboard's only output.
-static uint8_t s_sr[64];
+static uint8_t s_sr[512];
 static int s_sr_len;
 
 void via_input_sr(via_t *via, uint8_t value) {
@@ -222,10 +222,101 @@ TEST(test_a_key_answers_the_inquiry_and_cancels_the_timeout) {
     keyboard_delete(kbd);
 }
 
+// Drains the queue the way the Mac does when it wants an answer now: an
+// INSTANT per byte until the keyboard answers NULL.  Returns where the
+// drained bytes start in s_sr.
+static int drain(keyboard_t *kbd) {
+    int start = s_sr_len;
+    for (int guard = 0; guard < 400; guard++) {
+        keyboard_input(kbd, CMD_INSTANT);
+        fire_event(s_tx_cb);
+        ASSERT_TRUE(s_sr_len > 0);
+        if (s_sr[s_sr_len - 1] == NULL_RESPONSE) {
+            s_sr_len--; // the NULL is the end marker, not a transition
+            return start;
+        }
+    }
+    ASSERT_TRUE(0 && "queue never drained");
+    return start;
+}
+
+// Press and release one main-keyboard key `n` times: 2n queued bytes.
+static void tap(keyboard_t *kbd, int adb, int n) {
+    for (int i = 0; i < n; i++) {
+        keyboard_update(kbd, key_down, adb);
+        keyboard_update(kbd, key_up, adb);
+    }
+}
+
+// Where `byte` first occurs in s_sr[from..), or -1.
+static int find_byte(int from, uint8_t byte) {
+    for (int i = from; i < s_sr_len; i++)
+        if (s_sr[i] == byte)
+            return i;
+    return -1;
+}
+
+// A queued key RELEASE survives a burst that overflows the queue.  The
+// press of 'A' has already gone to the Mac; its release ($81) waits, and
+// 128 more bytes arrive behind it.  Dropping the oldest byte to make room
+// -- what the Plus queue did -- drops exactly that release, and the Mac
+// holds 'A' down for good (for Shift, every later key arrives shifted).
+// adb.c's queue already preserves releases; this is the same policy.
+TEST(test_overflow_keeps_a_queued_release) {
+    keyboard_t *kbd = setup();
+    fire_event(s_tx_cb); // the INQUIRY waits
+
+    keyboard_update(kbd, key_down, 0x00); // 'A' goes out at once
+    ASSERT_EQ_INT(1, s_sr_len);
+    ASSERT_EQ_INT(0x01, s_sr[0]);
+
+    keyboard_update(kbd, key_up, 0x00); // its release is queued
+    tap(kbd, 0x0B, 64); // 'B' x64: 128 bytes, past the queue's depth
+
+    int from = drain(kbd);
+    ASSERT_TRUE(find_byte(from, 0x81) >= 0); // 'A' was let go
+    // and the last transition of 'B' the Mac sees is a release
+    int last_b = -1;
+    for (int i = from; i < s_sr_len; i++)
+        if ((s_sr[i] & 0x7F) == 0x17)
+            last_b = i;
+    ASSERT_TRUE(last_b >= 0 && s_sr[last_b] == 0x97);
+
+    keyboard_delete(kbd);
+}
+
+// A keypad transition is a two-byte sequence ($79, then the code), and the
+// overflow policy keeps it whole: the release of Left ($79 $8D) arrives
+// intact behind a burst, never as a bare $8D (which would read as the
+// main-keyboard key sharing its raw code) and never with its $79 dropped
+// as if it were a press.
+TEST(test_overflow_keeps_a_keypad_release_whole) {
+    keyboard_t *kbd = setup();
+    fire_event(s_tx_cb);
+
+    keyboard_update(kbd, key_down, 0x3B); // Left: $79 now, $0D queued
+    keyboard_update(kbd, key_up, 0x3B); // $79 $8D queued
+    tap(kbd, 0x0B, 64);
+
+    int from = drain(kbd);
+    int rel = find_byte(from, 0x8D);
+    ASSERT_TRUE(rel > 0);
+    ASSERT_EQ_INT(0x79, s_sr[rel - 1]);
+    // Every $79 in the stream is followed by a keypad code, never by
+    // another prefix or a main-keyboard 'B'
+    for (int i = from; i < s_sr_len; i++)
+        if (s_sr[i] == 0x79)
+            ASSERT_TRUE(i + 1 < s_sr_len && (s_sr[i + 1] & 0x7F) == 0x0D);
+
+    keyboard_delete(kbd);
+}
+
 int main(void) {
     RUN(test_instant_after_inquiry_cancels_the_stale_timeout);
     RUN(test_a_waiting_inquiry_keeps_its_timeout);
     RUN(test_a_key_answers_the_inquiry_and_cancels_the_timeout);
+    RUN(test_overflow_keeps_a_queued_release);
+    RUN(test_overflow_keeps_a_keypad_release_whole);
     printf("[PASS] All keyboard tests passed\n");
     return 0;
 }

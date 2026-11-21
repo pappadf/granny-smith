@@ -186,11 +186,12 @@ static int g_captures;
 static uint8_t g_captured[256];
 static size_t g_captured_len;
 static bool g_captured_complete;
-void laserwriter_sink_capture(const laserwriter_capture_t *cap) {
+void printer_sink_capture(const printer_capture_t *cap) {
     g_captures++;
-    g_captured_len = cap->ps_len < sizeof(g_captured) ? cap->ps_len : sizeof(g_captured);
-    memcpy(g_captured, cap->ps, g_captured_len);
+    g_captured_len = cap->len < sizeof(g_captured) ? cap->len : sizeof(g_captured);
+    memcpy(g_captured, cap->data, g_captured_len);
     g_captured_complete = cap->complete;
+    ASSERT_EQ_INT(0, strcmp(cap->ext, "ps"));
 }
 
 // --- driving a job -------------------------------------------------------------

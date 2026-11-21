@@ -16,8 +16,8 @@ import { test, expect, type Page } from "../helpers/test";
 import * as path from "node:path";
 import { gotoWeb2, stageOpfsFile } from "../helpers/web2-fs";
 import { gsEvalInPage } from "../helpers/web2-eval";
+import { DATA } from "../helpers/paths";
 
-const DATA = path.resolve(__dirname, "../../data");
 const ROM = path.join(DATA, "roms", "iix-iicx-se30-97221136.rom");
 const ROM_OPFS = "/opfs/images/rom/97221136";
 

@@ -50,7 +50,6 @@ CORE_INCLUDES := $(CODEC_INCLUDES) \
                  -I$(CORE_DIR)/vfs \
                  -I$(MACHINES_DIR) \
                  -I$(MACHINES_DIR)/runtime \
-                 -I$(MACHINES_DIR)/mac030 \
                  -I$(MACHINES_DIR)/glue \
                  -I$(MACHINES_DIR)/mdu \
                  -I$(MACHINES_DIR)/mcu \

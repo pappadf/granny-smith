@@ -10,6 +10,7 @@
 #include "irq_controller.h"
 #include "machine.h"
 #include "object.h"
+#include "object_order.h"
 #include "regfile.h"
 #include "scheduler.h"
 #include "system.h"
@@ -352,11 +353,8 @@ static const class_desc_t oss_class = {
 };
 
 static void oss_attach_object(oss_t *oss) {
-    oss->object = object_new(&oss_class, oss, "oss");
-    if (!oss->object)
-        return;
-    object_set_order(oss->object, 45); // between the VIAs (40) and the RTC (60)
-    object_attach(machine_object(), oss->object);
+    oss->object = object_attach_new(machine_object(), &oss_class, oss, "oss", NULL,
+                                    OBJ_ORDER_IO_CONTROLLER); // between the VIAs and the RTC
 }
 
 // The register state oss_init constructs -- shared with oss_power_on, so a
@@ -400,6 +398,9 @@ static void oss_set_power_on_defaults(oss_t *oss) {
     oss->level[14] = 7;
 }
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(oss_t, memory_interface);
+
 oss_t *oss_init(oss_irq_fn irq_cb, oss_control_fn control_cb, void *context, struct scheduler *scheduler,
                 checkpoint_t *checkpoint) {
     oss_t *oss = calloc(1, sizeof(*oss));
@@ -424,7 +425,7 @@ oss_t *oss_init(oss_irq_fn irq_cb, oss_control_fn control_cb, void *context, str
 
     if (checkpoint) {
         // Mirrors oss_checkpoint: one blob, so the two halves cannot drift.
-        system_read_checkpoint_data(checkpoint, oss, offsetof(oss_t, memory_interface), "oss");
+        checkpoint_load_prefix(checkpoint, oss, oss_t);
     }
 
     oss_attach_object(oss);
@@ -447,10 +448,8 @@ void oss_power_on(oss_t *oss) {
 }
 
 void oss_delete(oss_t *oss) {
-    if (oss && oss->object) {
-        object_detach(oss->object);
-        object_delete(oss->object);
-    }
+    if (oss)
+        object_destroy(&oss->object);
     free(oss);
 }
 
@@ -465,7 +464,7 @@ void oss_delete(oss_t *oss) {
 void oss_checkpoint(oss_t *oss, checkpoint_t *checkpoint) {
     if (!oss || !checkpoint)
         return;
-    system_write_checkpoint_data(checkpoint, oss, offsetof(oss_t, memory_interface), "oss");
+    checkpoint_save_prefix(checkpoint, oss, oss_t);
 }
 
 // Returns the OSS memory interface.

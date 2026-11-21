@@ -14,7 +14,7 @@ lives in [src/machines/av/vdc.c](../../../../src/machines/av/vdc.c) /
 | **CIVIC** | the VRAM port the VDC writes through: timing window, row stride, clock gate, field interrupt | serial registers at `$50036000` |
 
 The I²C bus is **not** on the CPU bus. It hangs off Cuda and is driven with
-pseudo-command **`$22` (`RdWrIIC`)** — see [cuda.md](cuda.md).
+pseudo-command **`$22` (`RdWrIIC`)** — see [cuda.md](../../core/peripherals/cuda.md).
 
 Register semantics are ROM-verified against the disassembled
 `'vdig'`/`'i2c '` components, plus both Philips datasheets. Hardware

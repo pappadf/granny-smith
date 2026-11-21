@@ -17,8 +17,10 @@ Usage: scripts/check-doc-inventories.py      Exit: 0 clean, 1 drift.
 
 import os
 import re
-import subprocess
 import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import repo  # the tracked-file listing
 
 # (pattern of tracked files, the document that must name each one)
 INVENTORIES = [
@@ -28,8 +30,7 @@ INVENTORIES = [
 
 
 def tracked(pattern):
-    out = subprocess.run(["git", "ls-files", "--", pattern], capture_output=True, text=True, check=True)
-    return out.stdout.split()
+    return repo.tracked(pattern)
 
 
 def main():

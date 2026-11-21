@@ -35,5 +35,8 @@
 #define PPC_FRC(iw)  (((iw) >> 6) & 31) // A-form third operand
 #define PPC_CRFD(iw) (((iw) >> 23) & 7)
 #define PPC_CRFS(iw) (((iw) >> 18) & 7)
+// mfspr/mtspr/mftb: the SPR (TBR) number, its two 5-bit halves swapped
+// (601UM mfspr page)
+#define PPC_SPR_NUMBER(iw) (PPC_RA(iw) | PPC_RB(iw) << 5)
 
 #endif // PPC_FIELDS_H

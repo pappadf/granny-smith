@@ -1,103 +1,22 @@
 <script lang="ts">
-  import Icon from '@/components/common/Icon.svelte';
-  import Hint from '@/components/ui/Hint.svelte';
-  import ListRow from '@/components/ui/ListRow.svelte';
-  import { onMount } from 'svelte';
-  import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
-  import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
+  // The Breakpoints section: a DebugPointList whose add form takes an
+  // optional condition and whose rows show the MMU-translated address.
+  import DebugPointList from './DebugPointList.svelte';
   import { listBreakpoints, addBreakpoint, removeBreakpoint, type Breakpoint } from '@/bus/debug';
   import { machine } from '@/state/machine.svelte';
-  import { showNotification } from '@/state/toasts.svelte';
-  import { debug, setSection, toggleSection, bumpBreakpoints } from '@/state/debug.svelte';
+  import { debug, bumpBreakpoints } from '@/state/debug.svelte';
   import { translateMany, addrLabel, type Translation } from '@/bus/mmu';
-  import { fmtHex32, parseHex } from '@/lib/hex';
-  import Button from '@/components/ui/Button.svelte';
-  import IconButton from '@/components/ui/IconButton.svelte';
+  import { fmtHex32 } from '@/lib/hex';
   import TextInput from '@/components/ui/TextInput.svelte';
 
   let rows = $state<Breakpoint[]>([]);
-  let showAdd = $state(false);
-  let addAddr = $state('');
   let addCond = $state('');
 
-  // Only the latest listing is shown.  A listing is several round trips, so
-  // one started before a remove (the refresh after a repeated add, say) can
-  // finish after the remove's own refresh and would put the row back.
-  let listGen = 0;
-  async function refresh() {
-    const gen = ++listGen;
-    const list = await listBreakpoints();
-    if (gen === listGen) rows = list;
-  }
-
-  onMount(() => {
-    void refresh();
-  });
-
-  // Also after a breakpoint is added or removed elsewhere (the Disassembly
-  // pane's context menu).
-  $effect(() => {
-    void machine.status;
-    void debug.breakpointsGen;
-    if (debug.sections.breakpoints) void refresh();
-  });
-
-  function onAddrKey(ev: KeyboardEvent) {
-    if (ev.key === 'Enter') {
-      ev.preventDefault();
-      void commitAdd();
-    } else if (ev.key === 'Escape') {
-      cancelAdd();
-    }
-  }
-
-  async function commitAdd() {
-    const v = parseHex(addAddr);
-    if (v === null) {
-      showNotification('Invalid breakpoint address', 'error');
-      return;
-    }
-    // A condition that does not parse is refused by the core, with its
-    // reason; the form stays open to correct it.
-    const added = await addBreakpoint(v, addCond.trim() || undefined);
-    if (added !== true) {
-      showNotification(`Failed to add breakpoint: ${added}`, 'error');
-      return;
-    }
-    showNotification(`Breakpoint set at $${fmtHex32(v)}`, 'info');
-    addAddr = '';
-    addCond = '';
-    showAdd = false;
-    bumpBreakpoints();
-    await refresh();
-  }
-
-  function cancelAdd() {
-    addAddr = '';
-    addCond = '';
-    showAdd = false;
-  }
-
-  function onRowContext(row: Breakpoint, ev: MouseEvent) {
-    ev.preventDefault();
-    const items: ContextMenuItem[] = [
-      {
-        label: 'Remove',
-        danger: true,
-        action: () => void doRemove(row),
-      },
-    ];
-    openContextMenu(items, ev.clientX, ev.clientY);
-  }
-
-  async function doRemove(row: Breakpoint) {
-    const ok = await removeBreakpoint(row.id);
-    if (!ok) {
-      showNotification('Failed to remove breakpoint', 'error');
-      return;
-    }
-    bumpBreakpoints();
-    await refresh();
+  // A condition that does not parse is refused by the core, with its
+  // reason; the form stays open to correct it.
+  async function add(addr: number): Promise<true | string> {
+    const added = await addBreakpoint(addr, addCond.trim() || undefined);
+    return added === true ? true : `Failed to add breakpoint: ${added}`;
   }
 
   // Real translations for the L:/P: labels (the core's, bus/mmu.ts).
@@ -114,89 +33,43 @@
   }
 </script>
 
-<CollapsibleSection
+<!-- Also refreshed after a breakpoint is added or removed elsewhere (the
+     Disassembly pane's context menu): debug.breakpointsGen. -->
+<DebugPointList
   title="Breakpoints"
-  open={debug.sections.breakpoints}
-  onToggle={() => toggleSection('breakpoints')}
+  noun="breakpoint"
+  section="breakpoints"
+  rowClass="bp-row"
+  list={listBreakpoints}
+  {add}
+  remove={removeBreakpoint}
+  onChanged={bumpBreakpoints}
+  gen={() => debug.breakpointsGen}
+  onReset={() => (addCond = '')}
+  bind:rows
 >
-  {#snippet actions()}
-    <IconButton
-      class="add-btn"
-      icon="plus"
-      size="sm"
-      tone="panel"
-      rest="faded"
-      iconSize="md"
-      label="Add breakpoint"
-      onclick={() => {
-        // The form is in the section's body: a collapsed section opens to show it.
-        setSection('breakpoints', true);
-        showAdd = true;
-      }}
+  {#snippet fields(keydown: (ev: KeyboardEvent) => void)}
+    <TextInput
+      class="add-cond"
+      mono
+      style="flex: 1 1 auto"
+      placeholder="condition (optional)"
+      bind:value={addCond}
+      onkeydown={keydown}
+      aria-label="Breakpoint condition"
     />
   {/snippet}
-  {#if showAdd}
-    <div class="add-row">
-      <TextInput
-        class="add-addr"
-        mono
-        widthCh={12}
-        placeholder="address ($hex)"
-        bind:value={addAddr}
-        onkeydown={onAddrKey}
-        aria-label="Breakpoint address"
-      />
-      <TextInput
-        class="add-cond"
-        mono
-        style="flex: 1 1 auto"
-        placeholder="condition (optional)"
-        bind:value={addCond}
-        onkeydown={onAddrKey}
-        aria-label="Breakpoint condition"
-      />
-      <Button variant="primary" class="btn" onclick={commitAdd}>Add</Button>
-      <Button class="btn" onclick={cancelAdd}>Cancel</Button>
-    </div>
-  {/if}
-  {#if rows.length === 0 && !showAdd}
-    <Hint class="hint" inset="section">No breakpoints. Click + to add one.</Hint>
-  {:else}
-    {#each rows as r (r.id)}
-      <ListRow class="bp-row" density="compact" mono oncontextmenu={(ev) => onRowContext(r, ev)}>
-        <span class="enable" data-state={r.enabled ? 'on' : 'off'}
-          ><Icon name={r.enabled ? 'circle-filled' : 'circle-outline'} size="xs" /></span
-        >
-        <span class="addr">{labelFor(r.addr)}</span>
-        {#if r.condition}
-          <span class="cond">if {r.condition}</span>
-        {/if}
-        {#if r.hits > 0}
-          <span class="hits">{r.hits}×</span>
-        {/if}
-      </ListRow>
-    {/each}
-  {/if}
-</CollapsibleSection>
+  {#snippet label(r: Breakpoint)}
+    <span class="addr">{labelFor(r.addr)}</span>
+    {#if r.condition}
+      <span class="cond">if {r.condition}</span>
+    {/if}
+  {/snippet}
+</DebugPointList>
 
 <style>
-  .add-row {
-    display: flex;
-    gap: var(--gs-space-1-5);
-    padding: var(--gs-space-1-5) var(--gs-space-3);
-  }
-  .enable {
-    display: inline-flex;
-    color: var(--gs-code-breakpoint-off);
-  }
-  .enable[data-state='on'] {
-    color: var(--gs-code-breakpoint);
-  }
   .cond {
     color: var(--gs-text-muted);
     font-style: italic;
-  }
-  .hits {
-    color: var(--gs-text-muted);
   }
 </style>

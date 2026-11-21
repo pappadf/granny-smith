@@ -14,4 +14,6 @@ EXTRA_LDFLAGS := -lpthread
 RUN_ENV       := ASAN_OPTIONS=detect_leaks=1
 EXTRA_SRCS    := ../../../../src/core/peripherals/nubus/cards/display_card_824gc_qd.c \
                  ../../../../src/core/object/value.c
+# The display head checkpoint block the card saves
+EXTRA_SRCS += ../../../../src/core/peripherals/nubus/display.c
 include ../../common.mk

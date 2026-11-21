@@ -7,6 +7,7 @@
 
 #include "adb.h"
 #include "debug_mac.h"
+#include "host_keys.h"
 #include "log.h"
 #include "machine_profile.h"
 #include "object.h"
@@ -63,7 +64,7 @@ static host_input_t *hi_from(struct object *self) {
 //
 // `keyboard.press(key)` — inject a key-down + key-up via the keyboard
 // subsystem. The arg is either a string name ("return", "space",
-// "esc", a-z, 0-9 …) resolved by debug_mac_resolve_key_name, or an
+// "esc", "f8", a-z, 0-9 …) resolved by host_keymap_name_to_adb, or an
 // integer ADB raw keycode (0x00–0x7F).
 
 // Shared arg decode for press/down/up: a key NAME or an ADB raw keycode.
@@ -77,7 +78,7 @@ static host_input_t *hi_from(struct object *self) {
 // form has its own method now (`keyboard.raw`).
 static int keyboard_arg_keycode(const value_t *arg) {
     if (arg->kind == VK_STRING)
-        return arg->s ? debug_mac_resolve_key_name(arg->s) : -1;
+        return arg->s ? host_keymap_name_to_adb(arg->s) : -1;
     if (arg->kind == VK_INT || arg->kind == VK_UINT) {
         long long raw = (arg->kind == VK_INT) ? (long long)arg->i : (long long)arg->u;
         return (raw >= 0 && raw <= 0x7F) ? (int)raw : -1;
@@ -196,7 +197,7 @@ static value_t keyboard_method_type(struct object *self, const member_t *m, int 
     size_t cost = 0;
     for (const char *p = text; *p; p++) {
         bool shift = false;
-        if (debug_mac_resolve_ascii(*p, &shift) < 0)
+        if (host_keymap_ascii_to_adb(*p, &shift) < 0)
             return val_err("keyboard.type: no US-layout key types '%c' (0x%02x)", *p, (unsigned char)*p);
         cost += shift ? 4 : 2;
     }
@@ -219,7 +220,7 @@ static value_t keyboard_method_type(struct object *self, const member_t *m, int 
     uint64_t typed = 0;
     for (const char *p = text; *p; p++) {
         bool shift = false;
-        int code = debug_mac_resolve_ascii(*p, &shift);
+        int code = host_keymap_ascii_to_adb(*p, &shift);
         // data: bit 0 = down, bits 7:1 = the ADB keycode
         if (shift) {
             scheduler_new_cpu_event(hi->sched, &host_typed_key, hi, (KEY_SHIFT << 1) | 1u, 0, at - now);
@@ -339,10 +340,7 @@ host_input_t *host_input_init(struct config *cfg, struct scheduler *scheduler) {
 void host_input_delete(host_input_t *hi) {
     if (!hi)
         return;
-    if (hi->node) {
-        object_detach(hi->node);
-        object_delete(hi->node);
-    }
+    object_destroy(&hi->node);
     // Typing still in flight dies with the machine it was aimed at.
     if (hi->sched)
         scheduler_forget_source(hi->sched, hi);

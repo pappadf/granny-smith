@@ -8,7 +8,8 @@
 // must never appear.  A file of its own because launchOptions are per file.
 
 import { test, expect } from "../helpers/test";
-import { BASE_ARGS, bootWithCard, probe } from "../helpers/voodoo2";
+import { BASE_ARGS, bootWithCard } from "../helpers/tnt";
+import { terminalEval } from "../helpers/terminal";
 
 test.use({ launchOptions: { args: BASE_ARGS } });
 
@@ -17,15 +18,15 @@ test("voodoo2_webgpu falls back to the thread backend, honestly, at creation", a
 }) => {
   test.setTimeout(6 * 60 * 1000);
   await bootWithCard(page, "voodoo2_webgpu");
-  expect(await probe(page, "machine.pci.slot[1].card.regs.raster")).toBe(
+  expect(await terminalEval(page, "machine.pci.slot[1].card.regs.raster")).toBe(
     "thread",
   );
   // ...and the dialog would not have offered it: the WebGPU kind is the
   // card's Rendering value, never a card of its own, so the tree lists the
   // Mach64, the Cirrus 54M30, the Voodoo2, the Rage 128, the QuickDraw 3D
   // Accelerator and the Symbios SCSI card alone.
-  expect(await probe(page, 'len(catalog.profile("pm7500").cards)')).toBe("6");
-  expect(await probe(page, "machine.pci.slot[1].card.regs.gpu_engaged")).toBe(
+  expect(await terminalEval(page, 'len(catalog.profile("pm7500").cards)')).toBe("6");
+  expect(await terminalEval(page, "machine.pci.slot[1].card.regs.gpu_engaged")).toBe(
     "false",
   );
   await expect(page.locator("#screen3d")).toBeHidden();

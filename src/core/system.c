@@ -338,6 +338,8 @@ void system_machine_power_cycle(void) {
     // is its substrate's power_on).
     if (cfg->nubus)
         nubus_power_on(cfg->nubus);
+    if (cfg->pci)
+        pci_power_on(cfg->pci); // and PCI display devices theirs
     system_machine_reset();
 }
 
@@ -358,15 +360,16 @@ void system_machine_power_cycle(void) {
 void system_reset_common_devices(config_t *cfg) {
     if (!cfg)
         return;
-    // NOTE: no second SCSI bus here.  The Network Servers have one, but there
-    // is no `cfg->scsi2` field -- config_t carries one `scsi`, and the ANS's
-    // second bus lives in the TNT state, so its family bus_reset is where it
-    // belongs.
     if (cfg->scsi)
         // A reset condition on the wire: the bus goes free and every target
         // returns to its power-on state (scsi_bus_reset, called from
         // scsi_reset); on a 5380 machine the chip's registers clear too.
         scsi_reset_pin(cfg->scsi);
+    // The second bus is on the same net: a CD the OS locked with PREVENT
+    // ALLOW MEDIUM REMOVAL on the 7500/8500/9500's 53C94 bus is released by
+    // a restart, as on the first.
+    if (cfg->scsi2)
+        scsi_reset_pin(cfg->scsi2);
     // Both VIAs: on the net per the Guide's destination list, and the reason
     // the ROM overlay comes back (VIA1's Overlay output goes high when the
     // chip resets).  via2 is NULL on the single-VIA machines.
@@ -767,8 +770,7 @@ static int do_create_hd(const char *path, const char *size_str) {
     // A .dmg is a UDIF of one zero run -- a couple of KB however large the
     // disk; any other name is a raw file of the full size (which the browser
     // charges in full).
-    size_t plen = strlen(path);
-    bool udif = plen >= 4 && strcasecmp(path + plen - 4, ".dmg") == 0;
+    bool udif = path_has_ext(path, ".dmg");
     int rc = udif ? image_create_empty_udif(path, size) : image_create_empty(path, size);
     if (rc != 0) {
         out_printf("hd create: failed to create image: %s\n", path);
@@ -1039,21 +1041,21 @@ static int clear_checkpoint_files(void) {
         const char *name = entry->d_name;
         if (!name || name[0] == '.')
             continue;
-        size_t len = strlen(name);
         bool match = false;
         if (strcmp(name, "state.checkpoint") == 0)
             match = true;
-        else if (len >= 4 && strcmp(name + len - 4, ".tmp") == 0)
+        else if (path_has_suffix(name, ".tmp"))
             match = true;
-        else if (len >= 11 && strcmp(name + len - 11, ".checkpoint") == 0)
+        else if (path_has_suffix(name, ".checkpoint"))
             match = true; // legacy
         else if (strstr(name, ".complete") || strstr(name, ".pending"))
             match = true; // legacy
-        else if ((len >= 6 && strcmp(name + len - 6, ".delta") == 0) ||
-                 (len >= 8 && strcmp(name + len - 8, ".journal") == 0))
+        else if (path_has_suffix(name, ".delta") || path_has_suffix(name, ".journal"))
             match = true; // an image delta or journal, unless still open below
         if (match) {
-            snprintf(path, sizeof(path), "%s/%s", dir_path, name);
+            // A path cut short names some other file: never unlink that
+            if (!path_join(path, sizeof(path), dir_path, name))
+                continue;
             if (image_file_in_use(path))
                 continue;
             if (unlink(path) == 0)
@@ -1098,7 +1100,8 @@ int system_find_media(const char *dir_path, const char *dest) {
         if (entry->d_name[0] == '.')
             continue;
         char full[1024];
-        snprintf(full, sizeof(full), "%s/%s", dir_path, entry->d_name);
+        if (!path_join(full, sizeof(full), dir_path, entry->d_name))
+            continue; // too long to name exactly
         struct stat st;
         if (stat(full, &st) != 0 || !S_ISREG(st.st_mode))
             continue;
@@ -1217,6 +1220,19 @@ static void reselect_active_map(uintptr_t *active_read, uintptr_t *active_write)
     }
 }
 
+// The bracket around every substrate teardown: stop the scheduler so no
+// device callback fires mid-teardown, let the family delete what it built
+// (machine_teardown_config_devices does the config_t-owned rest), then free
+// the family's private state.  Tolerates a partially-constructed machine.
+static void machine_teardown_bracket(config_t *cfg) {
+    if (cfg->scheduler)
+        scheduler_stop(cfg->scheduler);
+    if (cfg->machine && cfg->machine->substrate->teardown)
+        cfg->machine->substrate->teardown(cfg);
+    free(cfg->machine_context);
+    cfg->machine_context = NULL;
+}
+
 // Create an emulator instance for the given machine profile: allocate the
 // config_t, wire the machine descriptor, and call profile->substrate->init().
 config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t *opts, checkpoint_t *checkpoint) {
@@ -1272,8 +1288,7 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
         s_constructing = false;
         event_hold(0);
         LOG(0, "Error: failed to construct %s", profile->name);
-        if (profile->substrate->teardown)
-            profile->substrate->teardown(cfg);
+        machine_teardown_bracket(cfg);
         image_table_free(cfg);
         machine_parts_free(cfg);
         free(cfg);
@@ -1477,9 +1492,7 @@ void system_destroy(config_t *config) {
     }
 
     // Delegate machine-specific teardown to the profile
-    if (config->machine && config->machine->substrate->teardown) {
-        config->machine->substrate->teardown(config);
-    }
+    machine_teardown_bracket(config);
 
     // Free all tracked images (managed at the system level)
     image_table_free(config);
@@ -1663,7 +1676,7 @@ bool system_attach_scsi_cdrom(struct config *restrict config, struct scsi *bus, 
 
 // === Media attach ===========================================================
 //
-// The standard substrate implementation over cfg->floppy + cfg->scsi, bound
+// The standard substrate implementation over cfg->floppy + cfg->scsi/scsi2, bound
 // into every Mac substrate's vtable (the Lisa implements its own: parallel
 // FDC + ProFile).  It hands an opened image to the same device paths a fresh
 // mount uses, minus the open-by-path step.
@@ -1671,6 +1684,19 @@ bool system_attach_scsi_cdrom(struct config *restrict config, struct scsi *bus, 
 // Attach one opened medium to the running machine.  Returns 0 on success
 // (the machine owns the handle), <0 when the medium cannot be attached (the
 // caller must close the handle).
+// The machine-level SCSI bus a media bus names (machine.scsi, machine.scsi2),
+// or NULL for any other bus kind or a machine without it.
+static scsi_t *media_scsi_bus(config_t *cfg, media_bus_t bus) {
+    switch (bus) {
+    case MEDIA_BUS_SCSI:
+        return cfg->scsi;
+    case MEDIA_BUS_SCSI2:
+        return cfg->scsi2;
+    default:
+        return NULL;
+    }
+}
+
 int system_media_attach_std(config_t *cfg, const media_slot_t *slot) {
     switch (slot->bus) {
     case MEDIA_BUS_FLOPPY:
@@ -1679,7 +1705,8 @@ int system_media_attach_std(config_t *cfg, const media_slot_t *slot) {
         config_add_image(cfg, slot->img);
         return 0;
     case MEDIA_BUS_SCSI:
-        return system_media_attach_scsi_bus(cfg, cfg->scsi, slot);
+    case MEDIA_BUS_SCSI2:
+        return system_media_attach_scsi_bus(cfg, media_scsi_bus(cfg, slot->bus), slot);
     case MEDIA_BUS_CARD: {
         media_slot_t on_card = *slot;
         on_card.unit = slot->unit % CARD_SCSI_IDS; // the SCSI id on that card's bus
@@ -1753,7 +1780,8 @@ bool system_media_present_std(config_t *cfg, media_bus_t bus, int unit) {
     case MEDIA_BUS_FLOPPY:
         return sys_fd_is_inserted(cfg, unit);
     case MEDIA_BUS_SCSI:
-        return system_media_present_scsi_bus(cfg->scsi, unit);
+    case MEDIA_BUS_SCSI2:
+        return system_media_present_scsi_bus(media_scsi_bus(cfg, bus), unit);
     case MEDIA_BUS_CARD:
         return system_media_present_scsi_bus(system_card_scsi_bus(cfg, unit), unit % CARD_SCSI_IDS);
     default:
@@ -1766,7 +1794,8 @@ int system_media_eject_std(config_t *cfg, media_bus_t bus, int unit) {
     case MEDIA_BUS_FLOPPY:
         return (cfg->floppy && unit >= 0 && floppy_drive_eject(cfg->floppy, (unsigned)unit)) ? 0 : -1;
     case MEDIA_BUS_SCSI:
-        return system_media_eject_scsi_bus(cfg->scsi, unit);
+    case MEDIA_BUS_SCSI2:
+        return system_media_eject_scsi_bus(media_scsi_bus(cfg, bus), unit);
     case MEDIA_BUS_CARD:
         return system_media_eject_scsi_bus(system_card_scsi_bus(cfg, unit), unit % CARD_SCSI_IDS);
     default:
@@ -1777,7 +1806,7 @@ int system_media_eject_std(config_t *cfg, media_bus_t bus, int unit) {
 image_t *system_media_image_std(config_t *cfg, media_bus_t bus, int unit) {
     if (bus == MEDIA_BUS_CARD)
         return system_media_image_scsi_bus(system_card_scsi_bus(cfg, unit), unit % CARD_SCSI_IDS);
-    return bus == MEDIA_BUS_SCSI ? system_media_image_scsi_bus(cfg->scsi, unit) : NULL;
+    return system_media_image_scsi_bus(media_scsi_bus(cfg, bus), unit);
 }
 
 image_t *system_media_image(config_t *cfg, media_bus_t bus, int unit) {

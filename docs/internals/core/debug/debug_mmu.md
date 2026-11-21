@@ -57,6 +57,7 @@ debug reads always have.
 | `ppc_mmu_debug_translate` | `ppc_mmu.c` | 601/604 (`ppc_mmu_translate_debug_ex` is now a wrapper) |
 | `lisa_mmu_debug_translate` | `lisa_mmu.c` | the segment MMU |
 | `debug_mmu_translate` / `_walk` / `_map` | `debug_mmu.c` | the method bodies over a `debug_mmu_xlate_fn` |
+| `debug_mmu_peek`, `DEBUG_MMU_PEEK_ARGS` | `debug_mmu.c` | the peek body (space, then size; a plain `VK_UINT` on every kind) over a `debug_mmu_read_fn` |
 
 `span_bits` is the log2 size of the aligned region around the address that
 translates the same way: linear `phys` with the same `via`/`access`, or

@@ -4,7 +4,9 @@
 // json_value.h
 // Parse a JSON text into a value_t tree (VK_MAP / VK_LIST / VK_STRING / VK_INT /
 // VK_FLOAT / VK_BOOL / VK_NONE for null).  The one reader of whole JSON
-// documents: machine.boot's config= and the headless config=<file>.
+// documents: machine.boot's config=, the headless config=<file>, the job
+// records headless prints, object_eval's args_json and a deferred call's
+// error answer.
 
 #ifndef GS_OBJECT_JSON_VALUE_H
 #define GS_OBJECT_JSON_VALUE_H

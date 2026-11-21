@@ -93,7 +93,7 @@ void scheduler_new_event_type(scheduler_t *sch, const char *owner, void *source,
 // --- memory: civic installs VRAM pages + the low alias; not exercised here
 // (the page-table globals come from support/stub_memory.c) ---
 
-void mac030_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
+void page_fill_68k(uint32_t page_index, uint8_t *host_ptr, bool writable) {
     (void)page_index;
     (void)host_ptr;
     (void)writable;
@@ -107,7 +107,7 @@ void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host, ui
     (void)size;
     (void)writable;
 }
-void memory_map_add(memory_map_t *m, uint32_t base, uint32_t size, const char *name, memory_interface_t *iface,
+void memory_map_add(memory_map_t *m, uint32_t base, uint32_t size, const char *name, const memory_interface_t *iface,
                     void *ctx) {
     (void)m;
     (void)base;

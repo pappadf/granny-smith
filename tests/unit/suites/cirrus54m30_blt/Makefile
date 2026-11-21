@@ -16,8 +16,10 @@ TEST_NAME     := cirrus54m30_blt
 TEST_SRCS     := test.c
 TEST_HARNESS  := none
 EXTRA_SRCS    := ../../../../src/core/peripherals/pci/pci.c \
+                 ../../../../src/core/peripherals/card_registry.c \
+                 ../../../../src/core/object/value.c \
                  ../../../../src/core/peripherals/pci/config_space.c \
                  ../../../../src/core/peripherals/pci/cards/cirrus54m30.c
-STUBS         := checkpoint prom
+STUBS         := assert checkpoint prom
 EXTRA_CFLAGS  := -Wno-unused-parameter
 include ../../common.mk

@@ -199,7 +199,7 @@ static void pro_commit_write(lisa_profile_t *pf, uint32_t block) {
 // === Command frame ==========================================================
 
 static uint32_t pro_cmd_block(const lisa_profile_t *pf) {
-    return ((uint32_t)pf->cmd[1] << 16) | ((uint32_t)pf->cmd[2] << 8) | pf->cmd[3];
+    return RD_BE24(pf->cmd + 1);
 }
 
 // All 6 command bytes are in; decide the next handshake's state byte + phase.

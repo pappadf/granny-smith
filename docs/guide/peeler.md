@@ -24,6 +24,11 @@ formats:
 A *wrapper* holds exactly one file; an *archive* holds a tree. Nesting
 is handled by the caller opening an entry's fork as a new source, so a
 `.sit.hqx`, a `.dsk.gz` or a zip of zips each unpack layer by layer.
+`peel_innermost_source()` is the one stepper through wrapper layers whose
+payload is itself an archive (its data fork, and with `PEEL_UNWRAP_RSRC`
+its resource fork, as in a `.sea.bin`); `files.archive.import` and the
+`peeler` CLI both use it, and `PEEL_MAX_WRAP_DEPTH` (8) is the one cap on
+wrapper layers, shared by `peel()` and the core's format registry.
 
 peeler parses containers; every compression method it meets -- StuffIt's
 methods 1, 2, 3, 13 and 15, Compact Pro's LZH and RLE, BinHex's RLE,
@@ -250,7 +255,8 @@ git add -A && git commit -m "Sync from granny-smith"
   core's side: decode-through sources, the chunk cache and nested
   archive/image descent.
 - Integration rows `archive-fork-unpack` and `archive-confined` cover
-  `files.archive.extract`; the web2 e2e specs `filesystem-tab.spec.ts`,
+  `files.archive.extract`, `archive-import-rsrc` `files.archive.import`
+  through a resource-fork wrapper; the web2 e2e specs `filesystem-tab.spec.ts`,
   `url-archive-boot.spec.ts` and `display-drop.spec.ts` cover the UI.
 
 ## References

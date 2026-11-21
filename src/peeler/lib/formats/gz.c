@@ -37,10 +37,6 @@
 
 #define GZ_BGZF_MAX_BLOCK 65536u
 
-static uint32_t le32(const uint8_t *p) {
-    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
-}
-
 // ============================================================================
 // Header
 // ============================================================================
@@ -59,7 +55,7 @@ static int gz_parse_header(const uint8_t *p, size_t len, gz_header_t *h) {
     if (len < 10 || p[0] != GZ_ID1 || p[1] != GZ_ID2 || p[2] != GZ_CM_DEFLATE || (p[3] & GZ_FRESERVED))
         return -1;
     uint8_t flg = p[3];
-    h->mtime = le32(p + 4);
+    h->mtime = codec_le32(p + 4);
     size_t pos = 10;
     if (flg & GZ_FEXTRA) {
         if (len - pos < 2)
@@ -181,7 +177,7 @@ static int bgzf_index(peel_archive_t *a, gz_priv_t *g, uint64_t *total) {
         uint8_t isz[4];
         if (peel_source_read_exact(a->src, coff + h.bsize - 4, isz, 4) != 0)
             return -1;
-        uint32_t usize = le32(isz);
+        uint32_t usize = codec_le32(isz);
         if (usize > GZ_BGZF_MAX_BLOCK)
             return -1;
         if (g->n_blocks == cap) {
@@ -242,7 +238,7 @@ static int gz_open(peel_archive_t *a, const peel_probe_t *p, peel_err_t **err) {
         free(g->blocks);
         g->blocks = NULL;
         g->n_blocks = 0;
-        e->data_len = p->tail_len >= 4 ? le32(p->tail + p->tail_len - 4) : 0;
+        e->data_len = p->tail_len >= 4 ? codec_le32(p->tail + p->tail_len - 4) : 0;
         e->data_tier = PEEL_TIER_EARNED;
     }
     return 0;
@@ -285,19 +281,19 @@ typedef struct {
     uint8_t cbuf[GZ_BGZF_MAX_BLOCK];
 } bgzf_src_t;
 
-// Inflate block `b` into s->buf.  0 or -5.
+// Inflate block `b` into s->buf.  0 or -EIO.
 static int bgzf_load(bgzf_src_t *s, size_t b) {
     if (s->cur == b)
         return 0;
     const bgzf_block_t *blk = &s->blocks[b];
     if (blk->csize > sizeof(s->cbuf) || peel_source_read_exact(s->src, blk->coff, s->cbuf, blk->csize) != 0)
-        return -5;
+        return -EIO;
     gz_header_t h;
     if (gz_parse_header(s->cbuf, blk->csize, &h) != 0 || h.header_len + 8 > blk->csize)
-        return -5;
+        return -EIO;
     // One member: CODEC_GZIP checks its CRC-32 and size.
     if (codec_decode(CODEC_GZIP, s->cbuf, blk->csize, s->buf, sizeof(s->buf)) != (int64_t)blk->usize)
-        return -5;
+        return -EIO;
     s->cur = b;
     return 0;
 }

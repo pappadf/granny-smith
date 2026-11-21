@@ -1205,6 +1205,8 @@ static int card_monitors(const doc_card_t *c, const char **out, int max) {
     return table_monitors(t, out, max);
 }
 
+static void displays_from_cards(const hw_profile_t *p, doc_t *d);
+
 // The model's defaults.
 static void doc_defaults(const hw_profile_t *p, doc_t *d) {
     memset(d, 0, sizeof *d);
@@ -1247,24 +1249,7 @@ static void doc_defaults(const hw_profile_t *p, doc_t *d) {
     d->cards_given = true;
     // Displays: one monitor, on the built-in video if there is one, else on
     // the first display card (D6).
-    bool connected = false;
-    if (p->builtin_video && builtin_default_monitor(p)) {
-        doc_display_t *x = &d->displays[d->n_displays++];
-        copy_str(x->device, sizeof x->device, "builtin");
-        copy_str(x->monitor, sizeof x->monitor, builtin_default_monitor(p));
-        connected = true;
-    }
-    for (int i = 0; i < d->n_cards; i++) {
-        if (!doc_card_is_display(&d->cards[i]))
-            continue;
-        doc_display_t *x = &d->displays[d->n_displays++];
-        machine_slot_id(d->cards[i].pci, d->cards[i].slot, x->device, sizeof x->device);
-        const char *mons[MONITORS_MAX];
-        int nm = card_monitors(&d->cards[i], mons, MONITORS_MAX);
-        copy_str(x->monitor, sizeof x->monitor, (!connected && nm) ? mons[0] : MONITOR_NONE);
-        if (!connected && nm)
-            connected = true;
-    }
+    displays_from_cards(p, d);
 }
 
 // The document as a value (what catalog.default_config returns).
@@ -2072,7 +2057,7 @@ static value_t apply_displays(const hw_profile_t *p, const doc_t *d, machine_bui
                     if (strcmp(m->id, given) == 0 && m->monitor && strcmp(m->monitor, x->monitor) == 0)
                         row_id = NULL;
             }
-            if (row_id && k && k->accepts_option && k->accepts_option("monitor", row_id)) {
+            if (row_id && k && pci_card_accepts_option(k, "monitor", row_id)) {
                 slot_option_t *o = NULL;
                 for (int n = 0; n < e->n_options && !o; n++)
                     if (strcmp(e->options[n].key, "monitor") == 0)
@@ -2096,19 +2081,6 @@ static value_t apply_displays(const hw_profile_t *p, const doc_t *d, machine_bui
     if (connected > 1)
         return bad("displays: %d monitors connected; this build supports 1", connected);
     return val_none();
-}
-
-// The slot entry of `slot`, created when absent.
-static slot_opts_t *entry_for(machine_build_opts_t *o, int slot) {
-    for (int i = 0; i < o->n_slots; i++)
-        if (o->slots[i].slot == slot)
-            return &o->slots[i];
-    if (o->n_slots >= MACHINE_SLOTS_MAX)
-        return NULL;
-    slot_opts_t *e = &o->slots[o->n_slots++];
-    memset(e, 0, sizeof *e);
-    e->slot = slot;
-    return e;
 }
 
 // video_sense= is a debug override of the connected device's sense code: a
@@ -2173,7 +2145,7 @@ static void legacy_displays(const hw_profile_t *p, const boot_config_t *legacy, 
             best = d->slot;
     }
     if (best >= 0) {
-        slot_opts_t *e = entry_for(out, best);
+        slot_opts_t *e = machine_build_opts_slot_get_or_add(out, best);
         if (e)
             e->connected = true;
     }
@@ -2364,7 +2336,7 @@ value_t machine_config_resolve(const hw_profile_t *p, const value_t *config, con
         if (strcmp(d->options[i].id, "video_rom") != 0 || strcmp(d->options[i].value, "generic") != 0)
             continue;
         const nubus_slot_decl_t *bv = builtin_video_slot(p);
-        slot_opts_t *e = bv ? entry_for(out, bv->slot) : NULL;
+        slot_opts_t *e = bv ? machine_build_opts_slot_get_or_add(out, bv->slot) : NULL;
         if (!e) {
             err = bad("options.video_rom: the built-in video has no slot entry");
             goto done;

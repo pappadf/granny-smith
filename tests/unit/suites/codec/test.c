@@ -23,6 +23,7 @@
 
 void stuffit_tests(void); // stuffit.c
 
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -222,6 +223,28 @@ TEST(concatenated_streams) {
 // A bzip2 block in the "randomised" form (bzip2 before 0.9.5) is refused as
 // unsupported, not decoded wrongly.  Its flag is the bit after the 48-bit
 // block magic and the 32-bit block CRC: byte 14, top bit.
+// The bridge to negative errno keeps each code's meaning: nothing comes out
+// as the errno its CODEC_ERR_* number happens to equal (TRUNCATED is -2,
+// which is -ENOENT on Linux; UNSUPPORTED is -5, -EIO there).
+TEST(codec_errno_keeps_the_meaning) {
+    ASSERT_EQ_INT(0, codec_errno(0));
+    ASSERT_EQ_INT(0, codec_errno(4096));
+    ASSERT_EQ_INT(-EIO, codec_errno(CODEC_ERR_DATA));
+    ASSERT_EQ_INT(-EIO, codec_errno(CODEC_ERR_TRUNCATED));
+    ASSERT_EQ_INT(-EIO, codec_errno(CODEC_ERR_OVERFLOW));
+    ASSERT_EQ_INT(-EIO, codec_errno(CODEC_ERR_CHECKSUM));
+    ASSERT_EQ_INT(-EIO, codec_errno(CODEC_ERR_INPUT));
+    ASSERT_EQ_INT(-ENOMEM, codec_errno(CODEC_ERR_NOMEM));
+    ASSERT_EQ_INT(-EINVAL, codec_errno(CODEC_ERR_ARG));
+    ASSERT_EQ_INT(-ENOTSUP, codec_errno(CODEC_ERR_UNSUPPORTED));
+    // A real decode failure, end to end.
+    static const uint8_t junk[16] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    uint8_t out[64];
+    int64_t rc = codec_decode(CODEC_ZLIB, junk, sizeof junk, out, sizeof out);
+    ASSERT_TRUE(rc < 0);
+    ASSERT_EQ_INT(-EIO, codec_errno(rc));
+}
+
 TEST(bzip2_randomised_block_is_unsupported) {
     const vector_t *v = find("text3k/bz9");
     uint8_t *b = dup_bytes(v->enc, v->enc_len);
@@ -993,6 +1016,15 @@ TEST(checksums_match_check_values) {
         ASSERT_TRUE(codec_crc16_arc(codec_crc16_arc(0, s, k), s + k, 9 - k) == 0xBB3D);
     }
     ASSERT_TRUE(codec_crc32(0, NULL, 0) == 0 && codec_crc64(0, NULL, 0) == 0);
+    // The per-byte form keeps the same register; CRC-16/IBM-3740 (XMODEM's
+    // polynomial seeded 0xFFFF, the MFM field CRC) over the check string
+    uint16_t x = 0, ibm = 0xFFFF;
+    for (size_t k = 0; k < 9; k++) {
+        x = codec_crc16_xmodem_byte(x, (uint8_t)s[k]);
+        ibm = codec_crc16_xmodem_byte(ibm, (uint8_t)s[k]);
+    }
+    ASSERT_TRUE(x == 0x31C3);
+    ASSERT_TRUE(ibm == 0x29B1 && codec_crc16_xmodem(0xFFFF, s, 9) == 0x29B1);
 }
 
 // ---- dispatch ------------------------------------------------------------
@@ -1021,6 +1053,7 @@ int main(void) {
     RUN(vectors_decode_exactly);
     RUN(truncation_fails_cleanly);
     RUN(corruption_is_contained);
+    RUN(codec_errno_keeps_the_meaning);
     RUN(checksummed_formats_detect_corruption);
     RUN(concatenated_streams);
     RUN(bzip2_randomised_block_is_unsupported);

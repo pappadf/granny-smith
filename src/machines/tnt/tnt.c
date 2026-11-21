@@ -29,7 +29,7 @@
 #include "tnt.h"
 #include "config_seed.h"
 
-#include "cuda.h" // the shared behavioral Cuda model (machines/av/)
+#include "cuda.h" // the shared behavioral Cuda model (core/peripherals/)
 #include "dbdma.h"
 
 #include "adb.h"
@@ -43,8 +43,10 @@
 #include "machine_checkpoint.h"
 #include "machine_teardown.h" // the shared config_t-owned delete chain
 #include "of_nvram.h"
+#include "page_fill.h"
 #include "pci.h"
 #include "ppc.h"
+#include "ppc_build.h"
 #include "rtc.h"
 #include "scc.h"
 #include "scheduler.h"
@@ -61,45 +63,6 @@
 #include <string.h>
 
 LOG_USE_CATEGORY_NAME("board");
-
-// ============================================================
-// Page-table helpers (the pdm_fill_page shape, kept local so the TNT
-// family does not pull 68K-family headers)
-// ============================================================
-
-void tnt_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
-    if (page_index >= (uint32_t)g_page_count)
-        return;
-    memory_page_set_host(page_index, host_ptr, writable);
-    uint32_t guest_base = page_index << MEM_PAGE_SHIFT;
-    uintptr_t adjusted = MEM_RAM_ENTRY((uintptr_t)host_ptr - guest_base);
-    // Supervisor arrays hold the eager physical identity view; the USER
-    // arrays belong to the PPC MMU front end (logical fills, ppc_mmu.c)
-    // and are only ever cleared here.
-    if (g_supervisor_read)
-        g_supervisor_read[page_index] = adjusted;
-    if (g_supervisor_write) // write entry refused on a predecoded code page (memory.h)
-        g_supervisor_write[page_index] = writable ? memory_write_fill(page_index, host_ptr, adjusted, MEM_WT_SUPER) : 0;
-    if (g_user_read)
-        g_user_read[page_index] = 0;
-    if (g_user_write)
-        g_user_write[page_index] = 0;
-    memory_logpoint_guard_page(page_index);
-}
-
-void tnt_clear_page(uint32_t page_index) {
-    if (page_index >= (uint32_t)g_page_count)
-        return;
-    memory_page_clear(page_index);
-    if (g_supervisor_read)
-        g_supervisor_read[page_index] = 0;
-    if (g_supervisor_write)
-        g_supervisor_write[page_index] = 0;
-    if (g_user_read)
-        g_user_read[page_index] = 0;
-    if (g_user_write)
-        g_user_write[page_index] = 0;
-}
 
 // ============================================================
 // Grand Central island interface ($F3000000, 128 KB)
@@ -271,7 +234,7 @@ static void tnt_memory_layout(config_t *cfg, checkpoint_t *cp) {
     // ROM: 4 MB at $FFC00000 (direct read-only pages).
     uint8_t *rom = ram_native_pointer(cfg->memory_map, cfg->ram_size);
     for (uint32_t p = 0; p < (cfg->machine->rom_size >> MEM_PAGE_SHIFT); p++)
-        tnt_fill_page((TNT_ROM_BASE >> MEM_PAGE_SHIFT) + p, rom + (p << MEM_PAGE_SHIFT), false);
+        page_fill_identity_sv((TNT_ROM_BASE >> MEM_PAGE_SHIFT) + p, rom + (p << MEM_PAGE_SHIFT), false);
 
     // Grand Central: the 128 KB island.
     st->gc_interface.read_uint8 = gc_read8;
@@ -437,12 +400,12 @@ static void tnt_dbdma_irq(void *ctx, int chan) {
 // out — the classic Cuda bit positions); the SR shift-out is a command byte.
 static void tnt_via1_output(void *context, uint8_t port, uint8_t value) {
     tnt_state_t *st = tnt_st((config_t *)context);
-    av_cuda_via1_port_output(st ? st->cuda : NULL, port, value);
+    cuda_via1_port_output(st ? st->cuda : NULL, port, value);
 }
 
 static void tnt_via1_shift_out(void *context, uint8_t byte) {
     tnt_state_t *st = tnt_st((config_t *)context);
-    av_cuda_via1_shift_input(st ? st->cuda : NULL, byte);
+    cuda_via1_shift_input(st ? st->cuda : NULL, byte);
 }
 
 // VIA1 aggregate IRQ -> Grand Central interrupt 18 (level-sensitive; the
@@ -539,8 +502,7 @@ static void tnt_scsi0_port_init(config_t *cfg) {
 // — and channel 1 gets the second one.  A Macintosh board seats neither
 // card and this does nothing.
 static void tnt_fwscsi_attach(config_t *cfg) {
-    tnt_state_t *st = tnt_st(cfg);
-    struct scsi *bus[2] = {cfg->scsi, st->scsi2};
+    struct scsi *bus[2] = {cfg->scsi, cfg->scsi2};
     for (const pci_slot_decl_t *d = cfg->machine->pci_slots; d && d->slot; d++) {
         // A 53C825A card in a socket brings its own bus (machine_card_scsi_buses).
         if (d->kind == PCI_SLOT_SOCKET)
@@ -607,50 +569,49 @@ void tnt_nvram_clear(config_t *cfg) {
 }
 
 // Checkpoint parts of the TNT board's own (machine_parts.h).
-static void part_save_dbdma(void *obj, checkpoint_t *cp) {
-    dbdma_checkpoint(obj, cp);
-}
-
-static void part_save_mesh(void *obj, checkpoint_t *cp) {
-    mesh_checkpoint(obj, cp);
-}
-
 // Hammerhead, Grand Central and the bridges' mode registers.
+#define TNT_BOARD_CP_FIELDS(OP, cp, st)                                                                                \
+    CP_FIELD(OP, cp, (st)->hh);                                                                                        \
+    CP_FIELD(OP, cp, (st)->gc);                                                                                        \
+    for (int i_ = 0; i_ < (st)->bridge_count; i_++) {                                                                  \
+        CP_FIELD(OP, cp, (st)->bridge[i_].cfg_addr);                                                                   \
+        CP_FIELD(OP, cp, (st)->bridge[i_].mode_select);                                                                \
+    }
+
+// Saves the board's own part.
 static void part_save_tnt_board(void *obj, checkpoint_t *cp) {
     tnt_state_t *st = obj;
-    system_write_checkpoint_data(cp, &st->hh, sizeof(st->hh));
-    system_write_checkpoint_data(cp, &st->gc, sizeof(st->gc));
-    for (int i = 0; i < st->bridge_count; i++) {
-        system_write_checkpoint_data(cp, &st->bridge[i].cfg_addr, sizeof(st->bridge[i].cfg_addr));
-        system_write_checkpoint_data(cp, &st->bridge[i].mode_select, sizeof(st->bridge[i].mode_select));
-    }
+    TNT_BOARD_CP_FIELDS(system_write_checkpoint_data, cp, st);
 }
 
-// AWACS and Control, with Control's VRAM where the board has Control.
+// AWACS and Control, with Control's VRAM where the board has Control.  A
+// Network Server's video is a PCI card in a socket, so `vram` is NULL and
+// the block is absent on both sides.
+#define TNT_AV_CP_FIELDS(OP, cp, st)                                                                                   \
+    CP_FIELD(OP, cp, (st)->awacs);                                                                                     \
+    CP_FIELD(OP, cp, (st)->control);                                                                                   \
+    if ((st)->vram)                                                                                                    \
+    OP((cp), (st)->vram, TNT_VRAM_SIZE)
+
+// Saves AWACS, Control and Control's VRAM.
 static void part_save_tnt_av(void *obj, checkpoint_t *cp) {
     tnt_state_t *st = obj;
-    system_write_checkpoint_data(cp, &st->awacs, sizeof(st->awacs));
-    system_write_checkpoint_data(cp, &st->control, sizeof(st->control));
-    if (st->vram)
-        system_write_checkpoint_data(cp, st->vram, TNT_VRAM_SIZE);
+    TNT_AV_CP_FIELDS(system_write_checkpoint_data, cp, st);
 }
 
 // The GBUS island (Network Servers only; zeroed and unread elsewhere), and
-// the floppy controller with its DBDMA byte ring.
+// the floppy controller (its plain-data prefix) with its DBDMA byte ring.
+#define TNT_IO_CP_FIELDS(OP, cp, st)                                                                                   \
+    CP_FIELD(OP, cp, (st)->gbus);                                                                                      \
+    CP_FIELD(OP, cp, (st)->lcd);                                                                                       \
+    SWIM3_CP(OP, cp, &(st)->swim3);                                                                                    \
+    CP_FIELD(OP, cp, (st)->fdport.ring);                                                                               \
+    CP_FIELD(OP, cp, (st)->mace)
+
+// Saves the GBUS island, the floppy controller and the MACE.
 static void part_save_tnt_io(void *obj, checkpoint_t *cp) {
     tnt_state_t *st = obj;
-    system_write_checkpoint_data(cp, &st->gbus, sizeof(st->gbus));
-    system_write_checkpoint_data(cp, &st->lcd, sizeof(st->lcd));
-    // offsetof, not sizeof: swim3_t's tail is `struct floppy *fd; struct
-    // scheduler *sched; swim3_backend_t be;` and swim3.h labels it "not
-    // checkpointed; swim3_bind".  Writing the whole struct put host pointers
-    // in a user-shareable save file, and made two saves of the same guest
-    // state differ -- which defeats any diff-based checkpoint testing.  The
-    // restore re-binds through *_swim3_bind either way, so the values were
-    // harmless; the leak and the non-reproducibility were not.
-    system_write_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
-    system_write_checkpoint_data(cp, &st->fdring, sizeof(st->fdring));
-    system_write_checkpoint_data(cp, &st->mace, sizeof(st->mace));
+    TNT_IO_CP_FIELDS(system_write_checkpoint_data, cp, st);
 }
 
 static int tnt_init(config_t *cfg, checkpoint_t *cp) {
@@ -663,55 +624,33 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     tnt_nvram_factory(cfg); // a checkpoint below restores over it
 
     // Core: memory map, the 601/604 per profile, the scheduler on the PPC
-    // seam.  CPI 1.0 — the same determinism-and-measurement rationale as
-    // PDM; whether any TNT guest code times itself against the TB and
-    // cares is a ladder observable.
-    machine_part_begin(cfg, cp, "memory");
-    cfg->memory_map =
-        memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, MEMORY_BUS_ERR_NONE,
-                        &cfg->build_opts.rom, cp); // no bus-error watchdog: unanswered floats to $FF
-    machine_part(cfg, cp, "memory", part_save_memory, cfg->memory_map);
-    // No 68k MMU owns this machine's page table; host-backed regions that
-    // core code registers on the bus map are filled through our filler.
-    memory_map_set_host_fill(cfg->memory_map, tnt_fill_page);
-    const int cpu_model = cfg->machine->cpu_model;
-    machine_part_begin(cfg, cp, "cpu");
-    cfg->ppc = ppc_init(cp, cpu_model);
-    if (cfg->ppc) {
-        memory_cpu_hooks_t hooks = ppc_memory_hooks(cfg->ppc);
-        memory_map_set_cpu_hooks(cfg->memory_map, &hooks);
-    }
-    if (!cfg->ppc) {
-        LOG(0, "Error: out of memory constructing the PowerPC core");
-        return -1;
-    }
-    machine_part(cfg, cp, "cpu", part_save_ppc, cfg->ppc);
-    sched_cpu_if_t cpu_if = ppc_sched_if(cfg->ppc);
-    machine_part_begin(cfg, cp, "scheduler");
-    cfg->scheduler = scheduler_init(&cpu_if, cp);
-    machine_part(cfg, cp, "scheduler", part_save_scheduler, cfg->scheduler);
-    scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
+    // seam; no 68k MMU owns this machine's page table, so host-backed
+    // regions that core code registers on the bus map are filled through
+    // our filler.
+    //
     // CPI 2: a real 601/604 under Mac OS sustains well under one
     // instruction per clock (cache misses, the 68k emulator's dispatch);
     // CPI 1 over-modeled the chip and demanded 100+ host MIPS to pace
     // real time — beyond what the wasm build delivers, which surfaced as
     // stretched guest time and a jumpy, accelerated-step mouse.
-    scheduler_set_cpi(cfg->scheduler, 2);
+    //
     // Time: the 601's RTC input keeps the PDM 7.8336 MHz assumption until
     // ladder rung T2 proves otherwise; the 604's timebase/DEC tick at a
     // quarter of the bus clock (Motorola, MPC604UM/AD, §1.3.2.2).
-    uint32_t tick_hz = (cpu_model == CPU_MODEL_PPC601) ? 7833600u : tnt_board(cfg)->bus_hz / 4u;
-    ppc_bind_time(cfg->ppc, cfg->scheduler, cfg->machine->freq, tick_hz);
-    if (tnt_board(cfg)->pvr && !cp)
-        ppc_set_identity(cfg->ppc, tnt_board(cfg)->pvr, 0);
+    const int cpu_model = cfg->machine->cpu_model;
+    const ppc_core_opts_t core = {
+        .fill_page = page_fill_identity_sv,
+        .cpi = 2,
+        .tb_hz = (cpu_model == CPU_MODEL_PPC601) ? 7833600u : tnt_board(cfg)->bus_hz / 4u,
+        .set_identity = tnt_board(cfg)->pvr != 0 && !cp,
+        .pvr = tnt_board(cfg)->pvr,
+    };
+    if (ppc_build_core(cfg, cp, &core) != 0)
+        return -1;
     // The dual-processor card's second 604, parked until system software
     // rings its start doorbell (mp.c).  Nothing on a uniprocessor board.
-    if (tnt_mp_init(cfg, cp, tick_hz) < 0)
+    if (tnt_mp_init(cfg, cp, core.tb_hz) < 0)
         return -1;
-
-    machine_part_begin(cfg, cp, "rtc");
-    cfg->rtc = rtc_init(cfg->scheduler, cp, true, cfg->machine->pram);
-    machine_part(cfg, cp, "rtc", part_save_rtc, cfg->rtc);
 
     // The ESCC cell behind the Grand Central decode, reachable through two
     // apertures (legacy +$12000 for the 68k Serial Driver, ESCC +$13000
@@ -719,60 +658,36 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // the PDM values pending a TNT-specific measurement.  The chip's one
     // INT line fans to Grand Central interrupts 15/16 (ch A/B) — per-
     // channel splitting belongs to the serial datapath.
-    machine_part_begin(cfg, cp, "scc");
-    cfg->scc = scc_init(NULL, cfg->scheduler, tnt_scc_irq, cfg, cp);
-    machine_part(cfg, cp, "scc", part_save_scc, cfg->scc);
-    scc_set_clocks(cfg->scc, 15667200, 3672000);
-
+    //
     // AppleTalk rides the SCC's LocalTalk channel, so it is built as soon as
     // the SCC exists.  LocalTalk is the only AppleTalk path these machines have here: the
     // Grand Central MACE window is a #define and nothing else, so there is no
     // EtherTalk to prefer.  NOTE: the stack has only ever been exercised
     // against a Mac Plus guest (tests/integration/appletalk-*), so this wires
     // the family up rather than proving it.
-    machine_part_begin(cfg, cp, "appletalk");
-    cfg->atalk = atalk_conn_new(appletalk_network(), cfg->scheduler, cfg->scc, cp);
-    machine_part(cfg, cp, "appletalk", part_save_atalk, cfg->atalk);
-    machine_part_imagewriter(cfg, cp, false);
-
+    //
     // VIA1: one real 6522 behind the Grand Central decode, byte-wide on
     // $200 centres.  Timer clock: 783.36 kHz is the classic rate and the
     // starting assumption — the actual TNT VIA input clock is pinned at
     // the ladder's tick-rate rung (T8).
-    uint8_t via_ff = via_freq_factor_for_clock(cfg->machine->freq);
-    machine_part_begin(cfg, cp, "via1");
-    cfg->via1 =
-        via_init(NULL, cfg->scheduler, via_ff, "via1", tnt_via1_output, tnt_via1_shift_out, tnt_via1_irq, cfg, cp);
-    machine_part(cfg, cp, "via1", part_save_via, cfg->via1);
-    via_set_exact_clock(cfg->via1, cfg->machine->freq);
+    const ppc_lowspeed_opts_t lowspeed = {
+        .scc_irq = tnt_scc_irq,
+        .scc_rtxc_hz = 3672000,
+        .via1_output = tnt_via1_output,
+        .via1_shift_out = tnt_via1_shift_out,
+        .via1_irq = tnt_via1_irq,
+    };
+    ppc_build_lowspeed(cfg, cp, &lowspeed);
 
-    // VIA1 idle input levels: PB3 is Cuda TREQ (active-low, idle high);
-    // CA1 and the Cuda CB1/CB2 lines idle high.
-    via_input(cfg->via1, 1, 3, 1);
-    via_input_c(cfg->via1, 0, 0, 1);
-    via_input_c(cfg->via1, 1, 0, 1);
-    via_input_c(cfg->via1, 1, 1, 1);
-
-    // ADB device state, serviced through Cuda packets (the AV pattern).
-    machine_part_begin(cfg, cp, "adb");
-    cfg->adb = adb_init(NULL, cfg->scheduler, cp);
-    machine_part(cfg, cp, "adb", part_save_adb, cfg->adb);
-
-    // The behavioral Cuda (firmware 2.37 — the same 341S0788 part as the
-    // AV and PDM machines) on the VIA1 shift register + PB3/4/5.  The
-    // Mode3Clock tick is on, as on PDM: the guest clock lives behind
-    // Cuda RdTime/PRAM here too and needs the real seed.
-    machine_part_begin(cfg, cp, "cuda");
-    st->cuda = av_cuda_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp, /*mode3_clock=*/true);
-    if (!st->cuda) {
-        LOG(0, "Error: out of memory constructing the Cuda");
+    // ADB, and the behavioral Cuda (firmware 2.37 — the same 341S0788 part
+    // as the AV and PDM machines) on the VIA1 shift register + PB3/4/5.
+    st->cuda = ppc_build_cuda(cfg, cp);
+    if (!st->cuda)
         return -1;
-    }
-    machine_part(cfg, cp, "cuda", part_save_cuda, st->cuda);
     // Control's pixel-clock synthesiser hangs off Cuda's I2C bus (device
     // $50): the video driver programs it with three RdWrIIC packets per
     // mode-set, and the retrace period derives from what it wrote.
-    av_cuda_attach_i2c_write(st->cuda, tnt_control_i2c_write, cfg);
+    cuda_attach_i2c_write(st->cuda, tnt_control_i2c_write, cfg);
 
     // The DBDMA engine behind the island's +$8000 channel windows.  No
     // device ports are attached yet — each datapath phase (AWACS ch 8,
@@ -818,6 +733,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // Board state + memory map.
     tnt_hh_init(cfg);
     tnt_gc_init(cfg);
+    tnt_gc_io_bind(cfg); // the island byte decode; construction only, not on reset
     tnt_gc_attach_object(cfg); // machine.gc; construction only, not on reset
     // The Network Server's GBUS island — built before the memory layout so
     // the LCD is answering from the very first POST write.  That ordering is
@@ -844,13 +760,8 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // line is recomputed below.
     machine_part_begin(cfg, cp, "tnt");
     if (cp) {
-        system_read_checkpoint_data(cp, &st->hh, sizeof(st->hh));
-        tnt_hh_remap(cfg);
-        system_read_checkpoint_data(cp, &st->gc, sizeof(st->gc));
-        for (int i = 0; i < st->bridge_count; i++) {
-            system_read_checkpoint_data(cp, &st->bridge[i].cfg_addr, sizeof(st->bridge[i].cfg_addr));
-            system_read_checkpoint_data(cp, &st->bridge[i].mode_select, sizeof(st->bridge[i].mode_select));
-        }
+        TNT_BOARD_CP_FIELDS(system_read_checkpoint_data, cp, st);
+        tnt_hh_remap(cfg); // reads only the Hammerhead's fields
         tnt_bandit_modes_restored(cfg); // the buses are rebuilt, not restored
     }
     machine_part(cfg, cp, "tnt", part_save_tnt_board, st);
@@ -860,18 +771,12 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
         pci_replay_decode(cfg->pci);
     machine_part_begin(cfg, cp, "tnt.av");
     if (cp) {
-        system_read_checkpoint_data(cp, &st->awacs, sizeof(st->awacs));
         // Control's registers.  The monitor strap is not chip state: it was
         // set at construction from the slot entry (tnt_control_init), and
         // the saved copy does not replace it.
         uint8_t mon_grounded = st->control.mon_grounded;
-        system_read_checkpoint_data(cp, &st->control, sizeof(st->control));
+        TNT_AV_CP_FIELDS(system_read_checkpoint_data, cp, st);
         st->control.mon_grounded = mon_grounded;
-        // Control's VRAM is only there on a board that has Control.  A
-        // Network Server's video is a PCI card in a socket, so `st->vram`
-        // is NULL and the block is absent on both sides.
-        if (st->vram)
-            system_read_checkpoint_data(cp, st->vram, TNT_VRAM_SIZE);
     }
     machine_part(cfg, cp, "tnt.av", part_save_tnt_av, st);
     if (cp) {
@@ -900,8 +805,8 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // it as `machine.scsi2`.  On the Macintosh boards `machine.scsi2` is
     // the 53C94's bus instead (below), so every board has one.
     machine_part_begin(cfg, cp, "scsi2");
-    st->scsi2 = machine_scsi_bus_init(cfg, cp, "scsi2");
-    machine_part(cfg, cp, "scsi2", part_save_scsi, st->scsi2);
+    cfg->scsi2 = machine_scsi_bus_init(cfg, cp, "scsi2");
+    machine_part(cfg, cp, "scsi2", part_save_scsi, cfg->scsi2);
     machine_part_begin(cfg, cp, "scsi96");
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp); // 25 MHz (OF clock-frequency)
     machine_part(cfg, cp, "scsi96", part_save_scsi96, st->scsi96);
@@ -910,7 +815,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // connector ("a SCSI bus for external SCSI devices and for the internal
     // CD-ROM drive", Power Macintosh 7500/8500 Developer Note, S3)
     if (tnt_board(cfg)->kind == TNT_BOARD_MAC)
-        scsi_53c96_attach_bus(st->scsi96, st->scsi2);
+        scsi_53c96_attach_bus(st->scsi96, cfg->scsi2);
     if (tnt_board(cfg)->has_mesh) {
         // MESH is a controller like any other: the machine builds it, tells it
         // where its interrupt goes and which bus it drives, and registers its
@@ -939,13 +844,8 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
 
     machine_part_begin(cfg, cp, "tnt.io");
     if (cp) {
-        system_read_checkpoint_data(cp, &st->gbus, sizeof(st->gbus));
-        system_read_checkpoint_data(cp, &st->lcd, sizeof(st->lcd));
-        // The prefix only; *_swim3_bind re-attaches the pointer tail.
-        system_read_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
-        system_read_checkpoint_data(cp, &st->fdring, sizeof(st->fdring));
-        system_read_checkpoint_data(cp, &st->mace, sizeof(st->mace));
-        tnt_swim3_bind(cfg); // the restore overwrote the chip's pointer tail
+        TNT_IO_CP_FIELDS(system_read_checkpoint_data, cp, st);
+        tnt_swim3_bind(cfg); // wires the SWIM3's pointer tail
         tnt_gc_recompute(cfg); // mesh/53C94 lines fold into the fabric
     }
     machine_part(cfg, cp, "tnt.io", part_save_tnt_io, st);
@@ -970,7 +870,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
 // A power cycle's power-on-only half (machine_profile.h): Cuda stays
 // powered, but the host side of its VIA1 handshake went down under it.
 static void tnt_power_on(config_t *cfg) {
-    av_cuda_host_power_cycle(tnt_st(cfg)->cuda);
+    cuda_host_power_cycle(tnt_st(cfg)->cuda);
 }
 
 static void tnt_bus_reset(config_t *cfg) {
@@ -1017,8 +917,6 @@ static void tnt_bus_reset(config_t *cfg) {
 }
 
 static void tnt_teardown(config_t *cfg) {
-    if (cfg->scheduler)
-        scheduler_stop(cfg->scheduler);
     tnt_state_t *st = tnt_st(cfg);
     if (st) {
         tnt_mp_teardown(cfg); // the peer core references the scheduler: before it goes
@@ -1052,33 +950,25 @@ static void tnt_teardown(config_t *cfg) {
     //
     // The single ordering change is that cfg->scsi is now freed after these
     // four instead of before the first of them.  Safe on both counts that
-    // matter: none of scsi_delete(scsi2), dbdma_delete, av_cuda_delete or
+    // matter: none of scsi_delete(scsi2), dbdma_delete, cuda_delete or
     // adb_delete reads cfg->scsi, and the controllers that DO hold the two
     // buses are already gone -- MESH/53C96 just above, and the 53C825As with
     // the PCI root, which system_destroy frees before this runs.  DBDMA still
     // goes after the floppy and before the SCC whose channels it serves, and
     // Cuda still goes before the via1, rtc and adb it was handed at init.
-    if (st && st->scsi2) {
-        scsi_delete(st->scsi2);
-        st->scsi2 = NULL;
+    if (cfg->scsi2) {
+        scsi_delete(cfg->scsi2);
+        cfg->scsi2 = NULL;
     }
     if (st && st->dbdma) {
         dbdma_delete(st->dbdma);
         st->dbdma = NULL;
     }
     if (st && st->cuda) {
-        av_cuda_delete(st->cuda);
+        cuda_delete(st->cuda);
         st->cuda = NULL;
     }
-    if (cfg->adb) {
-        adb_delete(cfg->adb);
-        cfg->adb = NULL;
-    }
-    machine_teardown_config_devices(cfg);
-    if (st) {
-        free(st);
-        cfg->machine_context = NULL;
-    }
+    machine_teardown_config_devices(cfg); // the adb after the Cuda above, then the rest
 }
 
 // Frame tick (scheduler-paced, one per VBL frame-unit): the 60.15 Hz
@@ -1092,46 +982,10 @@ static void tnt_teardown(config_t *cfg) {
 // Also: media insertion polling and the display's re-upload mark (guest
 // CPU writes into VRAM bypass the renderer).
 static void tnt_trigger_vbl(config_t *cfg) {
-    via_input_c(cfg->via1, 0, 0, 0);
-    via_input_c(cfg->via1, 0, 0, 1);
+    via_pulse_c(cfg->via1, 0, 0); // VBL: CA1 low then high
     image_tick_all(cfg);
     tnt_control_host_vbl(cfg);
     pci_tick_vbl(cfg->pci);
-}
-
-// Media attach, with the Network Servers' SECOND SCSI bus: on a Shiner a
-// medium in a rear bay is on `machine.scsi2`.
-static int tnt_media_attach(config_t *cfg, const media_slot_t *slot) {
-    if (slot->bus == MEDIA_BUS_SCSI2) {
-        tnt_state_t *st = tnt_st(cfg);
-        return system_media_attach_scsi_bus(cfg, st ? st->scsi2 : NULL, slot);
-    }
-    return system_media_attach_std(cfg, slot);
-}
-
-// The runtime attach/eject verbs' view of the same second bus.
-static bool tnt_media_present(config_t *cfg, media_bus_t bus, int unit) {
-    if (bus == MEDIA_BUS_SCSI2) {
-        tnt_state_t *st = tnt_st(cfg);
-        return system_media_present_scsi_bus(st ? st->scsi2 : NULL, unit);
-    }
-    return system_media_present_std(cfg, bus, unit);
-}
-
-static image_t *tnt_media_image(config_t *cfg, media_bus_t bus, int unit) {
-    if (bus == MEDIA_BUS_SCSI2) {
-        tnt_state_t *st = tnt_st(cfg);
-        return system_media_image_scsi_bus(st ? st->scsi2 : NULL, unit);
-    }
-    return system_media_image_std(cfg, bus, unit);
-}
-
-static int tnt_media_eject(config_t *cfg, media_bus_t bus, int unit) {
-    if (bus == MEDIA_BUS_SCSI2) {
-        tnt_state_t *st = tnt_st(cfg);
-        return system_media_eject_scsi_bus(st ? st->scsi2 : NULL, unit);
-    }
-    return system_media_eject_std(cfg, bus, unit);
 }
 
 // A PCI slot's strapped INTA-D line.  The slot table names the Grand
@@ -1155,7 +1009,8 @@ static void tnt_pci_slot_irq(config_t *cfg, int slot, bool active) {
 // The board's one internal SuperDrive is the same shape the Quadras and the
 // PDM Power Macs present, so the five profiles reference the shared
 // mac_floppy_slots_1hd (slot_tables.h) rather than the TNT keeping a seventh
-// identical copy.  tnt_fd_insert below is what makes one slot the right count.
+// identical copy.  The shared mac_fd_* (MAC_SUBSTRATE_HOST_IO) refuse
+// every drive past that one slot.
 
 // The Power Macintosh boards' internal bus, MESH: the hard disk bay at ID 0
 // and the 3.5" bay at ID 1 (the 8500 and 9500 add a second 3.5" bay at ID 2).
@@ -1283,6 +1138,69 @@ const builtin_video_desc_t ans_builtin_video = {
     .monitor_at = ans_monitor_at,
     .default_monitor = "vga",
 };
+
+// The Power Macintosh boards' DIMM totals (8500, 9500; the 7500 adds 8 MB):
+// 168-pin DIMMs in 8 slots, interleaved in pairs; 1 GB architectural max.
+// Offered: the totals Hammerhead's four-pair carve maps today (DIMMs of at
+// most 64 MB); larger and odd totals wait on the carve.
+const uint32_t tnt_ram_options_kb[] = {16384,  24576,  32768,  40960,  49152,  57344,  65536,  73728,  81920,  90112,
+                                       98304,  106496, 114688, 122880, 131072, 139264, 147456, 155648, 163840, 172032,
+                                       180224, 188416, 196608, 204800, 212992, 221184, 229376, 237568, 245760, 262144,
+                                       270336, 278528, 286720, 294912, 303104, 311296, 327680, 335872, 344064, 360448,
+                                       393216, 401408, 409600, 425984, 458752, 524288, 0};
+
+// The one-Bandit boards' PCI topology (7500, 8500).  Three sockets on Bandit
+// 1 at IDSEL 13/14/15 — the ROM's own `slot-names` bitmask ($0000E000) on
+// the bandit node, corroborated by Apple's Network Server developer note
+// IDSEL table — with their strapped INTA-D lines on Grand Central
+// externals 23/24/25 (Apple's 9500 external-interrupt table, §1.4).
+// Control is the soldered-down video device the machine names, on the
+// Chaos display bus.
+const pci_slot_decl_t tnt_pci_slots_1bandit[] = {
+    {.slot = 1,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "PCI slot A1",
+     .detail = "A1",
+     .fill_order = 1,
+     .bus = TNT_PCI_BUS_1,
+     .device = 13,
+     .int_line = 23},
+    {.slot = 2,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "PCI slot B1",
+     .detail = "B1",
+     .fill_order = 2,
+     .bus = TNT_PCI_BUS_1,
+     .device = 14,
+     .int_line = 24},
+    {.slot = 3,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "PCI slot C1",
+     .detail = "C1",
+     .fill_order = 3,
+     .bus = TNT_PCI_BUS_1,
+     .device = 15,
+     .int_line = 25},
+    {.slot = 4,
+     .kind = PCI_SLOT_BUILTIN,
+     .label = "Built-in video",
+     .detail = "VCI",
+     .bus = TNT_PCI_BUS_VCI,
+     .device = 11,
+     .int_line = TNT_INT_VBL,
+     .builtin_card_id = "tnt_control"},
+    {0},
+};
+
+// The Network Servers' DIMM totals (500 and 700).  Eight DIMM slots in four interleaved bank pairs (against the 9500's
+// twelve), and a hard 512 MB ceiling that is a ROM DECODE limit, not a
+// Hammerhead one: "Production ROMs through (TBD) August 1996? provide
+// decoding of up to 512 Mbytes" (the Network Server developer note, §5), and the documented failure
+// mode above it is a HANG during the RAM test rather than a clean error.
+// Being less permissive than the silicon is the faithful choice here.
+const uint32_t ans_ram_options_kb[] = {16384,  32768,  49152,  65536,  81920,  98304,  114688, 131072, 147456, 163840,
+                                       180224, 196608, 212992, 229376, 245760, 262144, 278528, 294912, 311296, 327680,
+                                       344064, 360448, 393216, 409600, 425984, 458752, 524288, 0};
 
 // The Shiner backplane -- the PCI topology of BOTH Network Servers, which
 // share one board ("Shiner LE" = 500/132, "Shiner HE" = 700/150).  The two
@@ -1418,37 +1336,14 @@ const pci_slot_decl_t ans_pci_slots[] = {
     {0},
 };
 
-static int tnt_fd_insert(config_t *cfg, int drive, struct image *disk) {
-    if (!cfg->floppy || drive != 0)
-        return -1;
-    return floppy_insert(cfg->floppy, drive, disk);
-}
-
-// A drive the board does not have holds no disk (see pdm_fd_present: the
-// auto-select no longer needs a phantom "occupied" to stay off drive 1).
-static bool tnt_fd_present(config_t *cfg, int drive) {
-    if (!cfg->floppy || drive != 0)
-        return false;
-    return floppy_is_inserted(cfg->floppy, drive);
-}
-
 // The seeding step: Mac OS keeps its PRAM in the NVRAM's XPRAM partition
 // here, not in Cuda, so the SysParam and startup-device records go there.
 static void tnt_seed(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     if (!st)
         return;
-    mac_seed_xpram_sysparam(st->gc.nvram + OF_NVRAM_XPRAM, cfg, of_nvram_defaults_tnt.pram);
-    int id = mac_seed_startup_scsi_id(cfg, "scsi");
-    if (id != -2)
-        of_nvram_set_startup_scsi(st->gc.nvram, id, &of_nvram_defaults_tnt);
-    // The configuration's own Open Firmware variables ("nvram"), last, so
-    // its boot-device wins over the record above.  machine_config_resolve
-    // set each on a factory store already; a failure here is a bug.
-    const char *bad = NULL;
-    const char *err = of_nvram_setenv_packed(st->gc.nvram, cfg->build_opts.n_of_vars, cfg->build_opts.of_vars, &bad);
-    if (err)
-        LOG(0, "configuration nvram %s: %s", bad, err);
+    mac_seed_of_nvram(st->gc.nvram, cfg, &of_nvram_defaults_tnt);
+    mac_seed_of_config_vars(st->gc.nvram, cfg); // last: its boot-device wins
 }
 
 const machine_substrate_t tnt_substrate = {
@@ -1459,13 +1354,6 @@ const machine_substrate_t tnt_substrate = {
     .seed = tnt_seed,
     .pci_slot_irq = tnt_pci_slot_irq,
     .trigger_vbl = tnt_trigger_vbl,
-    .fd_insert = tnt_fd_insert,
-    .fd_present = tnt_fd_present,
-    .input_key = mac_input_key,
-    .input_mouse_move = mac_input_mouse_move,
-    .input_mouse_button = mac_input_mouse_button,
-    .media_attach = tnt_media_attach,
-    .media_present = tnt_media_present,
-    .media_eject = tnt_media_eject,
-    .media_image = tnt_media_image,
+    MAC_SUBSTRATE_HOST_IO,
+    MAC_SUBSTRATE_MEDIA_STD,
 };

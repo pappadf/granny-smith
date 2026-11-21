@@ -220,6 +220,7 @@ static uint32_t v2gpu_reserve(v2_gpu_t *g, uint32_t kind, uint32_t len) {
             return UINT32_MAX;
         v2gpu_publish(g); // the worker can only free what it can see
         platform_v2gpu_wait(&g->ctrl[V2GPU_C_TAIL], tail, 20);
+        platform_v2gpu_keepalive(); // the page's stall watch: busy, not dead
         if (v2gpu_now_ms() - t0 > (double)V2GPU_ACK_MS) {
             v2gpu_mark_lost(g, "the GPU worker stopped consuming the op ring");
             return UINT32_MAX;
@@ -252,6 +253,7 @@ static bool v2gpu_wait_ack(v2_gpu_t *g, uint32_t seq) {
         if (v2gpu_worker_lost(g))
             return false;
         platform_v2gpu_wait(&g->ctrl[V2GPU_C_ACK], ack, 20);
+        platform_v2gpu_keepalive(); // the page's stall watch: busy, not dead
         if (v2gpu_now_ms() - t0 > (double)V2GPU_ACK_MS) {
             v2gpu_mark_lost(g, "the GPU worker stopped answering");
             return false;
@@ -1092,23 +1094,8 @@ static void v2gpu_fallback(v2_gpu_t *g, const v2_draw_state_t *st, v2_target_t *
 static void v2gpu_triangle(v2_gpu_t *g, const v2_draw_state_t *st, v2_target_t *tgt, const v2_cmd_t *cmd) {
     const voodoo2_tri_t *T = &cmd->u.tri;
     uint32_t fbz = st->fbz, amode = st->amode;
-    int32_t minx = T->ax, maxx = T->ax, miny = T->ay, maxy = T->ay;
-    if (T->bx < minx)
-        minx = T->bx;
-    if (T->cx < minx)
-        minx = T->cx;
-    if (T->bx > maxx)
-        maxx = T->bx;
-    if (T->cx > maxx)
-        maxx = T->cx;
-    if (T->by < miny)
-        miny = T->by;
-    if (T->cy < miny)
-        miny = T->cy;
-    if (T->by > maxy)
-        maxy = T->by;
-    if (T->cy > maxy)
-        maxy = T->cy;
+    int32_t minx, maxx, miny, maxy;
+    v2_tri_bbox(T, &minx, &maxx, &miny, &maxy);
     int32_t bx0 = minx >> 4, bx1 = (maxx + 15) >> 4, by0 = miny >> 4, by1 = (maxy + 15) >> 4;
     // The fallbacks: a rotate-mode stipple MASK (per-pixel register order),
     // the "colour before fog" destination factor, and the zaColor depth
@@ -1677,6 +1664,7 @@ v2_gpu_t *v2_gpu_create(v2_target_t *tgt) {
             return NULL;
         }
         platform_v2gpu_wait(&g->ctrl[V2GPU_C_STATUS], V2GPU_STATUS_DETACHED, 20);
+        platform_v2gpu_keepalive(); // the page's stall watch: busy, not dead
     }
     g->attached = true;
     LOG(1, "raster=webgpu: GPU worker attached (op ring %u KB)", g->ring.size >> 10);

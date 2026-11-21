@@ -110,7 +110,7 @@ void pci_cfg_reset(pci_device_t *dev) {
 uint8_t mesh_read(struct mesh *m, uint32_t offset) {
     (void)m;
     (void)offset;
-    return 0;
+    return 0x4D; // a mark: the board-guard test tells a decoded MESH from open bus
 }
 uint8_t mesh_peek(struct mesh *m, uint32_t offset) {
     return mesh_read(m, offset); // the stubs have no side effects to avoid
@@ -201,7 +201,7 @@ void tnt_mace_write(config_t *cfg, uint32_t off, uint8_t value) {
 uint8_t tnt_lcd_read8(config_t *cfg, uint32_t offset) {
     (void)cfg;
     (void)offset;
-    return 0;
+    return 0x1C; // a mark: the board-guard test tells a decoded LCD from open bus
 }
 // The dual-processor card (mp.c): a uniprocessor board here.
 bool tnt_mp_present(config_t *cfg) {
@@ -234,6 +234,17 @@ bool scsi_53c96_dreq(struct scsi_53c96 *c) {
     return false;
 }
 
+// --- The shared island engine (board_io.c) charges bus penalties (Grand
+// Central's rows charge none; a zero cpi_x256 makes memory_io_penalty a no-op
+// besides) and can signal a bus error (Grand Central declares no bus-error
+// span, so that is never called) ---
+sprint_io_t g_sprint_io;
+void memory_signal_bus_error(uint32_t addr, bool write) {
+    (void)addr;
+    (void)write;
+    ASSERT_TRUE(false);
+}
+
 // --- VIA/SCC apertures are not exercised here; the island dispatch
 // references the accessors, so give them inert interfaces ---
 static uint8_t stub_read8(void *d, uint32_t a) {
@@ -251,9 +262,27 @@ const memory_interface_t *via_get_memory_interface(via_t *via) {
     (void)via;
     return &s_stub_if;
 }
+
+// The SCC side records what reaches the cell, so the ESCC aperture's decode
+// (which offsets are channel registers) can be asserted.
+static int s_scc_writes; // stores that reached the cell
+static int s_scc_reads; // loads that reached the cell
+static uint8_t scc_rec_read8(void *d, uint32_t a) {
+    (void)d;
+    (void)a;
+    s_scc_reads++;
+    return 0x5A;
+}
+static void scc_rec_write8(void *d, uint32_t a, uint8_t v) {
+    (void)d;
+    (void)a;
+    (void)v;
+    s_scc_writes++;
+}
+static memory_interface_t s_scc_if = {.read_uint8 = scc_rec_read8, .write_uint8 = scc_rec_write8};
 const memory_interface_t *scc_get_memory_interface(scc_t *scc) {
     (void)scc;
-    return &s_stub_if;
+    return &s_scc_if;
 }
 
 // ============================================================================
@@ -303,6 +332,7 @@ static void fixture(void) {
     dbdma_set_irq_hook(s_st.dbdma, dbdma_irq, &s_cfg);
     memset(s_mem, 0, sizeof(s_mem));
     tnt_gc_init(&s_cfg);
+    tnt_gc_io_bind(&s_cfg); // the island byte decode (the machine does this once at construction)
     tnt_gc_recompute(&s_cfg);
     s_line = -1;
     s_line_edges = 0;
@@ -565,6 +595,46 @@ TEST(test_dbdma_island_routing) {
     ASSERT_EQ_INT((int)(reg_read(0x8800 + DBDMA_REG_STATUS) & DBDMA_RUN), 0);
 }
 
+// The ESCC aperture (+$13000) carries the four channel registers at
+// +$00..+$3F and nothing else reaches the cell: Open Transport's LocalTalk
+// driver stores $00, $01 to +$A0, which decoded as channel A control once
+// left the WR pointer at 1 (the Heathrow guard, now shared).
+#define OFF_ESCC_TEST 0x13000u
+TEST(test_escc_aperture_decodes_channel_regs_only) {
+    fixture();
+    s_scc_writes = 0;
+    s_scc_reads = 0;
+    tnt_gc_write8(&s_cfg, OFF_ESCC_TEST + 0xA0u, 0x00);
+    tnt_gc_write8(&s_cfg, OFF_ESCC_TEST + 0xA0u, 0x01);
+    ASSERT_EQ_INT(s_scc_writes, 0);
+    ASSERT_EQ_INT(tnt_gc_read8(&s_cfg, OFF_ESCC_TEST + 0xA0u), 0);
+    ASSERT_EQ_INT(s_scc_reads, 0);
+    // The channel registers themselves still reach the cell
+    tnt_gc_write8(&s_cfg, OFF_ESCC_TEST + 0x20u, 0x09); // A control
+    ASSERT_EQ_INT(s_scc_writes, 1);
+    ASSERT_EQ_INT(tnt_gc_read8(&s_cfg, OFF_ESCC_TEST + 0x30u), 0x5A); // A data
+    ASSERT_EQ_INT(s_scc_reads, 1);
+}
+
+// The board deltas are row guards on the island table: the MESH aperture
+// decodes only where the board has MESH, the GBUS LCD only on a Network
+// Server, and an absent block reads the island's open-bus 0.  Asked per
+// access, so flipping the board flags takes effect at once.
+TEST(test_board_guards) {
+    fixture();
+    s_board.has_mesh = true;
+    s_board.has_gbus = false;
+    ASSERT_EQ_INT(tnt_gc_read8(&s_cfg, 0x18000u), 0x4D); // MESH decoded
+    ASSERT_EQ_INT(tnt_gc_peek8(&s_cfg, 0x18010u), 0x4D);
+    ASSERT_EQ_INT(tnt_gc_read8(&s_cfg, 0x1C000u), 0); // no GBUS: the LCD block floats
+    s_board.has_mesh = false;
+    s_board.has_gbus = true;
+    ASSERT_EQ_INT(tnt_gc_read8(&s_cfg, 0x18000u), 0); // no MESH on a Network Server
+    ASSERT_EQ_INT(tnt_gc_read8(&s_cfg, 0x1C000u), 0x1C); // the LCD answers
+    s_board.has_mesh = false;
+    s_board.has_gbus = false;
+}
+
 int main(void) {
     RUN(test_mklinux_init_and_ack);
     RUN(test_mode0_pulse_w1c);
@@ -575,5 +645,7 @@ int main(void) {
     RUN(test_nvram_banking);
     RUN(test_boxid);
     RUN(test_dbdma_island_routing);
+    RUN(test_escc_aperture_decodes_channel_regs_only);
+    RUN(test_board_guards);
     return 0;
 }

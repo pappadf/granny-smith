@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { dispatchCoreEvent } from '@/bus/emulator';
 import { EVT_STATE } from '@/bus/mailbox';
 
@@ -11,6 +11,11 @@ type Ev = { kind: string; event: string; data: Record<string, unknown> };
 const trace = () => (window as unknown as { __gsCoreEvents?: Ev[] }).__gsCoreEvents ?? [];
 
 describe('the core event trace', () => {
+  // The trace is a debug global: under automation, as the specs run.
+  beforeAll(() => {
+    Object.defineProperty(navigator, 'webdriver', { value: true, configurable: true });
+  });
+
   it('keeps the rare events when a chatty one floods it', () => {
     dispatchCoreEvent(EVT_STATE, '{"event":"mode_ended","reason":"stop_request"}');
     dispatchCoreEvent(EVT_STATE, '{"event":"mode_started"}');

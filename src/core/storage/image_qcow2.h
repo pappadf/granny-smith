@@ -102,8 +102,9 @@ void qcow2_compressed_extent(uint64_t entry, uint32_t cluster_bits, uint64_t *of
 // Inflate one compressed cluster (a raw DEFLATE stream, no zlib header):
 // `src`/`src_len` the stored bytes (they may run past the stream's end),
 // into `dst`, of which the first `dst_len` bytes are wanted (at most the
-// cluster; less for a final cluster cut by the virtual size).  0, or -EINVAL
-// when the stream does not decode to a whole cluster.
+// cluster; less for a final cluster cut by the virtual size).  0, -EINVAL
+// for bad arguments, or the stream's failure as an errno (codec_errno): -EIO
+// when it does not decode, or decodes to other than a whole cluster.
 int qcow2_decode_cluster(const uint8_t *src, size_t src_len, uint32_t cluster_bits, uint8_t *dst, size_t dst_len);
 
 #endif // GS_IMAGE_QCOW2_H

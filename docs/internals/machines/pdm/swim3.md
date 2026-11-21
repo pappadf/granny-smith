@@ -121,9 +121,10 @@ the presence gates, §4.4–§4.8 for the read/write/format driver paths.)
 `pdm_init` creates the drive with `floppy_init(FLOPPY_TYPE_SWIM3, NULL,
 …)`, cabling the profile's one drive — the NULL map is deliberate: PDM decodes SWIM3 through the AMIC
 island, not through a memory-mapped floppy region, so the shared module
-carries only the drive and the media.  `pdm_fd_insert` / `pdm_fd_present`
-forward to it for drive 0 and refuse drive 1, which does not exist on this
-family.
+carries only the drive and the media.  The shared `mac_fd_insert` /
+`mac_fd_present` (`runtime/mac_host_io.c`, bounded by the profile's
+floppy slots) forward to it for drive 0 and refuse drive 1, which does not
+exist on this family.
 
 The chip state is the `swim3` member of `pdm_amic_t`, checkpointed
 positionally with the island; `pdm_swim3_bind` re-attaches the drive,

@@ -3,6 +3,7 @@
 // final filename. Mirrors app/web/js/media-types.js.
 
 import { ROMS_DIR, VROMS_DIR, PROMS_DIR, FD_DIR, HD_DIR, CD_DIR } from './opfsPaths';
+import { isGsObject } from './gsResult';
 
 export type MediaTypeId = 'rom' | 'vrom' | 'prom' | 'fd' | 'hd' | 'cdrom';
 
@@ -107,7 +108,7 @@ interface PromIdentifyResult {
 async function parseRomIdentify(gsEval: GsEval, path: string): Promise<RomIdentifyResult | null> {
   // rom.identify returns a native object (VK_MAP) — no inner JSON.parse.
   const r = await gsEval('machine.rom.identify', [path]);
-  if (!r || typeof r !== 'object' || 'error' in (r as object)) return null;
+  if (!isGsObject(r)) return null;
   return r as RomIdentifyResult;
 }
 
@@ -118,7 +119,7 @@ async function parseCardRomIdentify(
 ): Promise<PromIdentifyResult | null> {
   // catalog.vroms.identify / catalog.proms.identify return a native object (VK_MAP).
   const r = await gsEval(`catalog.${what}s.identify`, [path]); // catalog.vroms / catalog.proms
-  if (!r || typeof r !== 'object' || 'error' in (r as object)) return null;
+  if (!isGsObject(r)) return null;
   return r as PromIdentifyResult;
 }
 

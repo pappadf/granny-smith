@@ -105,7 +105,7 @@ typedef struct dbdma_port {
     //
     // Set it only together with something that will kick, or the channel
     // parks for good.  Last in the struct so positional initialisers stay
-    // valid, like mac030_io_range_t.esync.
+    // valid, like board_io_range_t.esync.
     int burst;
     // Packet boundaries, for a device that moves frames rather than a byte
     // stream (BMAC).  Both optional.

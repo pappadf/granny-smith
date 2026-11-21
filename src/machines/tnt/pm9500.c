@@ -24,15 +24,6 @@
 #include "slot_tables.h"
 #include "tnt.h"
 
-// Twelve DIMM slots, interleaved in pairs; 1.5 GB architectural max.
-// Offered: the totals Hammerhead's four-pair carve maps today (DIMMs of at
-// most 64 MB); the six-pair and larger totals wait on the carve.
-static const uint32_t pm9500_ram_options_kb[] = {
-    16384,  24576,  32768,  40960,  49152,  57344,  65536,  73728,  81920,  90112,  98304,  106496,
-    114688, 122880, 131072, 139264, 147456, 155648, 163840, 172032, 180224, 188416, 196608, 204800,
-    212992, 221184, 229376, 237568, 245760, 262144, 270336, 278528, 286720, 294912, 303104, 311296,
-    327680, 335872, 344064, 360448, 393216, 401408, 409600, 425984, 458752, 524288, 0};
-
 // The internal fast-SCSI (MESH) bus carries the boot disks; the
 // 53C94 carries the CD-ROM drive and the external chain (machine.scsi2).
 
@@ -146,7 +137,11 @@ const hw_profile_t machine_pm9500 = {
     .ram_max = 0x60000000, // 1.5 GB
     .rom_size = 0x400000, // 4 MB ($96CD923D / $9630C68B)
 
-    .ram_options = pm9500_ram_options_kb,
+    // Twelve DIMM slots, interleaved in pairs; 1.5 GB architectural max.
+    // Offered: the totals Hammerhead's four-pair carve maps today (DIMMs of
+    // at most 64 MB), the 8500's list; the six-pair and larger totals wait
+    // on the carve.
+    .ram_options = tnt_ram_options_kb,
     .storage = tnt_storage_8500,
     .default_storage = tnt_default_storage, // the CD-ROM drive on the 53C94: see pm7500.c
     .appletalk = true,
@@ -198,7 +193,7 @@ const hw_profile_t machine_pm9500mp = {
     .ram_max = 0x60000000, // 1.5 GB
     .rom_size = 0x400000, // 4 MB ($96CD923D / $9630C68B)
 
-    .ram_options = pm9500_ram_options_kb,
+    .ram_options = tnt_ram_options_kb,
     .storage = tnt_storage_8500,
     .default_storage = tnt_default_storage,
     .appletalk = true,
@@ -208,5 +203,6 @@ const hw_profile_t machine_pm9500mp = {
     .pci_slots = pm9500_pci_slots,
 
     .substrate = &tnt_substrate,
+    .of_nvram_check = of_nvram_check_tnt,
     .board = &pm9500mp_board,
 };

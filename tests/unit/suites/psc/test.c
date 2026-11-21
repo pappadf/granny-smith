@@ -63,7 +63,7 @@ static void mem_write(void *ctx, uint32_t phys, uint32_t value, unsigned width) 
 }
 
 // ============================================================================
-// Register access helpers (byte-lane shaped, like the mac030 engine)
+// Register access helpers (byte-lane shaped, like the board_io engine)
 // ============================================================================
 
 // Handler rows take (cfg, win_off, addr): the engine decodes the

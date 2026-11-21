@@ -17,6 +17,7 @@
 #include "memory.h"
 #include "mmu.h"
 #include "object.h"
+#include "object_order.h"
 #include "out.h"
 #include "system.h"
 #include "value.h"
@@ -444,7 +445,7 @@ struct object *memory_object_new(memory_map_t *mem, struct object **peek_out, st
     if (!obj)
         return NULL;
     object_set_label(obj, "Memory");
-    object_set_order(obj, 20);
+    object_set_order(obj, OBJ_ORDER_MEMORY);
     object_attach(machine_object(), obj);
     // memory.peek's accessors call into the global memory_read_* helpers
     // directly, so its instance_data is unused (likewise poke).
@@ -458,11 +459,8 @@ struct object *memory_object_new(memory_map_t *mem, struct object **peek_out, st
 }
 
 void memory_object_delete(struct object *obj, struct object *peek, struct object *poke) {
-    struct object *nodes[3] = {peek, poke, obj}; // children first
-    for (int i = 0; i < 3; i++) {
-        if (!nodes[i])
-            continue;
-        object_detach(nodes[i]);
-        object_delete(nodes[i]);
-    }
+    // Children first
+    object_destroy(&peek);
+    object_destroy(&poke);
+    object_destroy(&obj);
 }

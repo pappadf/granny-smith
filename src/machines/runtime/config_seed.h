@@ -35,9 +35,27 @@ void mac_seed_rtc_pram(struct config *cfg);
 // there is the family's own of_nvram_set_startup_scsi.
 void mac_seed_xpram_sysparam(uint8_t xpram[256], const struct config *cfg, const pram_defaults_t *pram);
 
-// The startup SCSI ID the configuration names on bus `bus_id`, -1 for "no
-// default" (or a device on another bus), -2 when the configuration says
-// nothing (keep the factory record).
+// mac_seed_startup_scsi_id's two answers that are not an ID (sentinels,
+// not errors).
+#define SEED_STARTUP_NONE  (-1) // "no default", or a device on another bus
+#define SEED_STARTUP_UNSET (-2) // the configuration says nothing: keep the factory record
+
+// The startup SCSI ID the configuration names on bus `bus_id`,
+// SEED_STARTUP_NONE or SEED_STARTUP_UNSET.
 int mac_seed_startup_scsi_id(const struct config *cfg, const char *bus_id);
+
+struct of_nvram_defaults;
+
+// The head of an Open Firmware machine's seed hook: the SysParam records into
+// the NVRAM's XPRAM partition (mac_seed_xpram_sysparam, around d->pram) and,
+// when the configuration names a SCSI startup device on bus "scsi", the
+// family's startup record (of_nvram_set_startup_scsi).
+void mac_seed_of_nvram(uint8_t *nv, const struct config *cfg, const struct of_nvram_defaults *d);
+
+// The tail of that hook: the configuration's own Open Firmware variables
+// ("nvram"), applied last so its boot-device wins over the records before.
+// machine_config_resolve set each on a factory store already, so a failure
+// here is a bug and is logged.
+void mac_seed_of_config_vars(uint8_t *nv, const struct config *cfg);
 
 #endif // GS_MACHINES_RUNTIME_CONFIG_SEED_H

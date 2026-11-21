@@ -1,5 +1,5 @@
 # AV video-in unit test.
-# Links the real av/vdc.c + av/civic.c + av/cuda.c against recording stubs
+# Links the real av/vdc.c + av/civic.c + core/peripherals/cuda.c against recording stubs
 # and pins: the Cuda $22 RdWrIIC wire framing (direction bit, subaddress,
 # multi-byte auto-increment, unknown-slave error packet), the golden DMSD/
 # VDC open-sequence replay, the two synthesized status bytes, and the frame
@@ -12,5 +12,6 @@ TEST_HARNESS := none
 STUBS        := memory checkpoint display_class
 EXTRA_SRCS   := ../../../../src/machines/av/vdc.c \
                 ../../../../src/machines/av/civic.c \
-                ../../../../src/machines/av/cuda.c
+                ../../../../src/core/peripherals/cuda.c \
+                ../../../../src/core/peripherals/adb_mcu_link.c
 include ../../common.mk

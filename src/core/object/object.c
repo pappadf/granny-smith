@@ -219,6 +219,14 @@ void object_delete_tree(struct object *o) {
     object_delete(o);
 }
 
+void object_destroy(struct object **slot) {
+    if (!slot || !*slot)
+        return;
+    // object_delete detaches, so no caller needs its own object_detach
+    object_delete_tree(*slot);
+    *slot = NULL;
+}
+
 void object_set_destructor(struct object *o, object_dtor_fn dtor) {
     if (o)
         o->dtor = dtor;
@@ -396,6 +404,19 @@ DEF_GETTER(obj_u64_field_get) {
     return obj_u64_at(object_data(self), m);
 }
 
+value_t obj_u32_at(const void *block, const member_t *m) {
+    if (!block)
+        return val_uint(4, 0);
+    size_t offset = (size_t)(uintptr_t)m->attr.user_data;
+    uint32_t v;
+    memcpy(&v, (const uint8_t *)block + offset, sizeof(v));
+    return val_uint(4, v);
+}
+
+DEF_GETTER(obj_u32_field_get) {
+    return obj_u32_at(object_data(self), m);
+}
+
 struct object *object_parent(struct object *o) {
     return o ? o->parent : NULL;
 }
@@ -493,6 +514,18 @@ void object_set_order(struct object *o, int order) {
         o->order = order;
 }
 
+struct object *object_attach_new(struct object *parent, const class_desc_t *cls, void *instance_data, const char *name,
+                                 const char *label, int order) {
+    struct object *o = object_new(cls, instance_data, name);
+    if (!o)
+        return NULL;
+    if (label)
+        object_set_label(o, label);
+    object_set_order(o, order);
+    object_attach(parent, o);
+    return o;
+}
+
 int object_order(struct object *o) {
     return o ? o->order : 0;
 }
@@ -579,6 +612,45 @@ void object_each_attached_ordered(struct object *o, void (*fn)(struct object *pa
     }
     for (size_t i = 0; i < n; i++)
         fn(o, buf[i], ud);
+}
+
+// The growing name list object_member_names builds
+typedef struct {
+    value_t *items;
+    size_t len;
+    size_t cap;
+    bool oom; // a push failed; the list must not be returned short
+} member_names_acc_t;
+
+// Append `name` (NULL is skipped), noting a failed push
+static void member_names_push(member_names_acc_t *acc, const char *name) {
+    if (name && !val_list_push(&acc->items, &acc->len, &acc->cap, val_str(name)))
+        acc->oom = true;
+}
+
+// object_each_attached_ordered visitor: collect the child's name
+static void member_names_collect(struct object *parent, struct object *child, void *ud) {
+    (void)parent;
+    member_names_push((member_names_acc_t *)ud, object_name(child));
+}
+
+value_t object_member_names(struct object *o, member_kind_t kind) {
+    member_names_acc_t acc = {0};
+    const class_desc_t *cls = o ? object_class(o) : NULL;
+    for (size_t i = 0; cls && i < cls->n_members; i++)
+        if (cls->members[i].kind == kind)
+            member_names_push(&acc, cls->members[i].name);
+    // Children also include the runtime-attached ones, in display order
+    if (o && kind == MK_CHILD)
+        object_each_attached_ordered(o, member_names_collect, &acc);
+    if (acc.oom) {
+        // A truncated schema reads as the complete one: error instead
+        for (size_t i = 0; i < acc.len; i++)
+            value_free(&acc.items[i]);
+        free(acc.items);
+        return val_err("out of memory");
+    }
+    return val_list(acc.items, acc.len);
 }
 
 const member_t *class_find_member(const class_desc_t *cls, const char *name) {
@@ -2132,29 +2204,33 @@ static void assert_return_matches(const typed_slot_t *slot, const value_t *out, 
 }
 #endif
 
+value_t object_attr_get(struct object *o, const member_t *m) {
+    if (!m || m->kind != MK_ATTR)
+        return val_err("not an attribute");
+    if (!m->attr.get)
+        return val_err("attribute '%s' has no getter", m->name);
+    value_t v = m->attr.get(o, m);
+    // Propagate display flags from the slot's presentation_flags
+    // (VFLAG_HEX/VFLAG_DEC/VFLAG_BIN/VFLAG_VOLATILE/VFLAG_SENSITIVE) onto the
+    // value so formatters see the intent without consulting the
+    // descriptor separately.
+    v.flags |= m->attr.presentation_flags;
+#ifndef NDEBUG
+    typed_slot_t slot;
+    slot_from_attr(&slot, m);
+    assert_return_matches(&slot, &v, "attr.get");
+#endif
+    return v;
+}
+
 static value_t node_get_here(node_t n) {
     if (!node_valid(n))
         return val_err("invalid node");
     if (!n.member)
         return val_obj(n.obj); // points at the object itself
     switch (n.member->kind) {
-    case MK_ATTR: {
-        if (!n.member->attr.get)
-            return val_err("attribute '%s' has no getter", n.member->name);
-        value_t v = n.member->attr.get(n.obj, n.member);
-        // Propagate display flags from the slot's presentation_flags
-        // (VFLAG_HEX/VFLAG_DEC/VFLAG_BIN/VFLAG_VOLATILE/VFLAG_SENSITIVE) onto the
-        // value so formatters see the intent without consulting the
-        // descriptor separately.
-        // and does not propagate (it controls writability, not display).
-        v.flags |= n.member->attr.presentation_flags;
-#ifndef NDEBUG
-        typed_slot_t slot;
-        slot_from_attr(&slot, n.member);
-        assert_return_matches(&slot, &v, "attr.get");
-#endif
-        return v;
-    }
+    case MK_ATTR:
+        return object_attr_get(n.obj, n.member);
     case MK_METHOD:
         return val_err("'%s' is a method; use a call form", n.member->name);
     case MK_CHILD: {
@@ -2358,6 +2434,18 @@ static void format_declared_names(char *buf, size_t buf_size, const arg_decl_t *
             break;
         pos += (size_t)wrote;
     }
+}
+
+value_t node_call_named(node_t n, int argc, const value_t *argv, int named_n, const named_arg_t *named) {
+    // Positional only: the call validates its own arguments
+    if (!named)
+        return node_call(n, argc, argv);
+    if (named_n > OBJ_BIND_MAX_ARGS)
+        return val_err("too many named arguments (limit %d)", OBJ_BIND_MAX_ARGS);
+    value_t bound[OBJ_BIND_MAX_ARGS];
+    int bound_n = 0;
+    value_t err = node_bind_args(n, argc, argv, named_n, named, bound, &bound_n);
+    return val_is_error(&err) ? err : node_call(n, bound_n, bound);
 }
 
 value_t node_bind_args(node_t n, int pos_argc, const value_t *pos_argv, int named_n, const named_arg_t *named,

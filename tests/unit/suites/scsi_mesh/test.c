@@ -83,7 +83,7 @@ config_t *system_config(void) {
     return NULL;
 }
 
-void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
+void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, const memory_interface_t *iface,
                     void *context) {
     (void)mem, (void)addr, (void)size, (void)name, (void)iface, (void)context;
 }
@@ -105,6 +105,12 @@ image_t *images_find(const image_list_t *images, const char *name) {
 // scsi_init flags a checkpoint whose bus lacks the CD bay's drive.
 void checkpoint_set_error(checkpoint_t *checkpoint) {
     (void)checkpoint;
+}
+
+// No restore here flags the stream
+bool checkpoint_has_error(checkpoint_t *checkpoint) {
+    (void)checkpoint;
+    return false;
 }
 int system_hd_attach(const char *path, int scsi_id) {
     (void)path, (void)scsi_id;

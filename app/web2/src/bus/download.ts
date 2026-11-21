@@ -18,6 +18,7 @@
 
 import { ackTransferBuffer, heapBytes } from './emulator';
 import { showNotification } from '@/state/toasts.svelte';
+import { saveBlob as saveAnchor } from '@/lib/saveBlob';
 import { showPrintedDocument } from '@/state/printer.svelte';
 
 interface Pending {
@@ -95,22 +96,11 @@ function deliverDocument(p: Pending): void {
   }
 }
 
-// The transient-anchor save (the same shape fsOps and the platen use).
+// Save a Blob through the shared anchor helper, toasting when it cannot.
+// Checkpoint downloads hand it a lazy OPFS File, which is why the helper
+// holds the URL past the click.
 export function saveBlob(blob: Blob, filename: string): void {
-  try {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.style.display = 'none';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 0);
-  } catch (e) {
-    console.error('[download] failed:', e);
-    showNotification(`Could not save ${filename}`, 'error');
-  }
+  if (!saveAnchor(blob, filename)) showNotification(`Could not save ${filename}`, 'error');
 }
 
 // For tests: what is in flight.

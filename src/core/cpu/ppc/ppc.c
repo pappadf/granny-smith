@@ -8,6 +8,7 @@
 
 #include "ppc_internal.h"
 #include "ppc_softfp.h"
+#include "ppc_spr.h"
 
 #include <stddef.h> // offsetof
 #include <stdio.h>
@@ -20,6 +21,7 @@
 #include "log.h"
 #include "machine_profile.h"
 #include "object.h"
+#include "object_order.h"
 #include "ppc_disasm.h"
 #include "predecode.h"
 #include "scheduler.h"
@@ -275,9 +277,13 @@ static bool spr_priv_fault(ppc_t *p, uint32_t iw) {
     return false;
 }
 
-// SPR number: the two 5-bit instruction halves are swapped (601UM mfspr page)
-static inline uint32_t spr_number(uint32_t iw) {
-    return (((iw) >> 16) & 0x1Fu) | ((((iw) >> 11) & 0x1Fu) << 5);
+// Whether the active model has an SPR of the table's `models` (ppc_spr.h);
+// constant-folds away for the every-model rows
+static inline bool ppc_spr_on(const ppc_t *p, uint32_t models) {
+    if (models == PPC_SPR_MALL)
+        return true;
+    uint32_t m = ppc_is_750(p) ? PPC_SPR_M750 : ppc_is_604(p) ? PPC_SPR_M604 : PPC_SPR_M601;
+    return (models & m) != 0;
 }
 
 // SPR number not defined for the active model.  Both models: SPR[0]=1 from
@@ -361,18 +367,29 @@ static uint32_t ppc_thrm_read(ppc_t *p, int n) {
 }
 
 bool ppc_mfspr(ppc_t *p, uint32_t iw) {
-    uint32_t n = spr_number(iw);
+    uint32_t n = PPC_SPR_NUMBER(iw);
     uint32_t d = PPC_RT(iw);
     uint32_t v;
     switch (n) {
-    case 0: // MQ: 601-only (the 604 rejects the POWER SPRs — 604UM §2.3)
-        if (ppc_is_604(p))
-            goto undefined;
-        v = p->mq;
+        // The table's plain reads (ppc_spr.h): the model gate, the
+        // privilege gate, the field
+#define MF_PLAIN(n_, field_, flags_, models_)                                                                          \
+    case n_:                                                                                                           \
+        if (!ppc_spr_on(p, models_))                                                                                   \
+            goto undefined;                                                                                            \
+        if (((flags_) & PPC_SPR_PRIV) && spr_priv_fault(p, iw))                                                        \
+            return false;                                                                                              \
+        v = p->field_;                                                                                                 \
         break;
-    case 1:
-        v = p->xer;
-        break;
+#define MF_OWN(n_, field_, flags_, models_)
+#define MF_NO(n_, field_, flags_, models_)
+#define X(n_, name_, mf_, mt_, field_, flags_, models_) MF_##mf_(n_, field_, flags_, models_)
+        PPC_SPRS(X)
+#undef X
+#undef MF_PLAIN
+#undef MF_OWN
+#undef MF_NO
+        // The rest: arms of their own
     case 4: // RTC reads use SPR 4/5 in EVERY mode (601 asymmetry); no RTC on the 604
         if (ppc_is_604(p))
             goto undefined;
@@ -388,85 +405,33 @@ bool ppc_mfspr(ppc_t *p, uint32_t iw) {
             goto undefined;
         v = ppc_dec_now(p);
         break;
-    case 8:
-        v = p->lr;
-        break;
-    case 9:
-        v = p->ctr;
-        break;
-    // The timebase through mfspr (604-class).  The architecture reads TB
-    // with mftb (xo 371), but leaves "mfspr and mftb implemented
-    // identically" to the implementation (PEM mftb page), and the 60x
-    // parts do exactly that: they ignore the bit that tells the two
-    // opcodes apart (MPC603e UM §2.3.5.1, "ignoring bit 25 of both
-    // instructions and treating them identically").  So mfspr from the
-    // TBR numbers 268/269 reads TB, and so does mfspr from the write-side
-    // numbers 284/285.  Both ran on 604 hardware: IBM's OS/2 Warp PowerPC
-    // Edition boot loader (December 1995, for the 604-based Power Series
-    // 830/850) reads TB with `mfspr r3,269` / `mfspr r3,268` on every
-    // non-601 CPU, and BeOS's kernel samples it with `mfspr r3,285 /
-    // mfspr r4,284 / mfspr r5,285` at its boot-time clock calibration --
-    // taking the illegal-instruction exception there leaves its clock
-    // scale at zero and every snooze() spinning forever.
-    case 268:
-    case 284:
-        if (!ppc_is_604(p))
-            goto undefined;
-        v = (uint32_t)ppc_tb_now(p);
-        break;
-    case 269:
-    case 285:
-        if (!ppc_is_604(p))
-            goto undefined;
-        v = (uint32_t)(ppc_tb_now(p) >> 32);
-        break;
-    case 18:
-        if (spr_priv_fault(p, iw))
-            return false;
-        v = p->dsisr;
-        break;
-    case 19:
-        if (spr_priv_fault(p, iw))
-            return false;
-        v = p->dar;
-        break;
     case 22:
         if (spr_priv_fault(p, iw))
             return false;
         v = ppc_dec_now(p);
         break;
-    case 25:
-        if (spr_priv_fault(p, iw))
+    // The timebase through mfspr (604-class).  The architected read is mftb
+    // (xo 371), but the 60x decodes the mfspr form as the same read: the
+    // parts ignore the bit that tells the two opcodes apart (MPC603e UM
+    // §2.3.5.1, "ignoring bit 25 of both instructions and treating them
+    // identically").  So the TBR numbers 268/269 read TB, and so do the
+    // write-side numbers 284/285 (supervisor, as their SPR field says).
+    // Both ran on 604 hardware: IBM's OS/2 Warp PowerPC Edition boot loader
+    // (December 1995, for the 604-based Power Series 830/850) reads TB with
+    // `mfspr r3,269` / `mfspr r3,268` on every non-601 CPU, and BeOS's
+    // kernel samples it with `mfspr r3,285 / mfspr r4,284 / mfspr r5,285`
+    // at its boot-time clock calibration -- taking the illegal-instruction
+    // exception there leaves its clock scale at zero and every snooze()
+    // spinning forever.
+    case 268:
+    case 269:
+    case 284:
+    case 285:
+        if (!ppc_is_604(p))
+            goto undefined;
+        if (n >= 284 && spr_priv_fault(p, iw))
             return false;
-        v = p->sdr1;
-        break;
-    case 26:
-        if (spr_priv_fault(p, iw))
-            return false;
-        v = p->srr0;
-        break;
-    case 27:
-        if (spr_priv_fault(p, iw))
-            return false;
-        v = p->srr1;
-        break;
-    case 272:
-    case 273:
-    case 274:
-    case 275:
-        if (spr_priv_fault(p, iw))
-            return false;
-        v = p->sprg[n - 272];
-        break;
-    case 282:
-        if (spr_priv_fault(p, iw))
-            return false;
-        v = p->ear;
-        break;
-    case 287:
-        if (spr_priv_fault(p, iw))
-            return false;
-        v = p->pvr;
+        v = (n & 1) ? (uint32_t)(ppc_tb_now(p) >> 32) : (uint32_t)ppc_tb_now(p);
         break;
     case 528:
     case 529:
@@ -498,31 +463,6 @@ bool ppc_mfspr(ppc_t *p, uint32_t iw) {
         v = (n & 1) ? p->dbatl[pair] : p->dbatu[pair];
         break;
     }
-    case 936: // UMMCR0 — 750 user-level read-only mirrors of the monitor (750UM Table 2-49)
-    case 937: // UPMC1
-    case 938: // UPMC2
-    case 939: // USIA
-    case 940: // UMMCR1
-    case 941: // UPMC3
-    case 942: // UPMC4
-        if (!ppc_is_750(p))
-            goto undefined;
-        if (n == 936 || n == 940)
-            v = p->mmcr[n == 940]; // UMMCR0 / UMMCR1
-        else if (n == 939)
-            v = p->sia;
-        else
-            v = p->pmc[(n <= 938) ? n - 937 : n - 939]; // UPMC1/2 at 937/938, UPMC3/4 at 941/942
-        break;
-    case 956: // MMCR1 (750)
-    case 957: // PMC3
-    case 958: // PMC4
-        if (!ppc_is_750(p))
-            goto undefined;
-        if (spr_priv_fault(p, iw))
-            return false;
-        v = (n == 956) ? p->mmcr[1] : p->pmc[n - 955];
-        break;
     case 952: // MMCR0 — 604: read-zero stubs; 750: store-and-readback
     case 953: // PMC1     (the $00F00 interrupt never fires)
     case 954: // PMC2
@@ -537,31 +477,12 @@ bool ppc_mfspr(ppc_t *p, uint32_t iw) {
         else
             v = 0;
         break;
-    case 1008:
-        if (spr_priv_fault(p, iw))
-            return false;
-        v = p->hid0;
-        break;
-    case 1009: // HID1: 601 store-and-readback; 750 read-only PLL_CFG image; the 604 defines none
-        if (ppc_is_604(p) && !ppc_is_750(p))
-            goto undefined;
-        if (spr_priv_fault(p, iw))
-            return false;
-        v = p->hid1;
-        break;
     case 1017: // L2CR (750)
         if (!ppc_is_750(p))
             goto undefined;
         if (spr_priv_fault(p, iw))
             return false;
         v = ppc_l2cr_read(p);
-        break;
-    case 1019: // ICTC (750)
-        if (!ppc_is_750(p))
-            goto undefined;
-        if (spr_priv_fault(p, iw))
-            return false;
-        v = p->ictc;
         break;
     case 1020: // THRM1-3 (750)
     case 1021:
@@ -571,23 +492,6 @@ bool ppc_mfspr(ppc_t *p, uint32_t iw) {
         if (spr_priv_fault(p, iw))
             return false;
         v = ppc_thrm_read(p, (int)(n - 1020));
-        break;
-    case 1010:
-        if (spr_priv_fault(p, iw))
-            return false;
-        v = p->iabr;
-        break;
-    case 1013:
-        if (spr_priv_fault(p, iw))
-            return false;
-        v = p->dabr;
-        break;
-    case 1023: // PIR: 601/604 (the 750 has none — 750UM Table 2-49)
-        if (ppc_is_750(p))
-            goto undefined;
-        if (spr_priv_fault(p, iw))
-            return false;
-        v = p->pir;
         break;
     default:
     undefined:
@@ -603,7 +507,7 @@ bool ppc_mfspr(ppc_t *p, uint32_t iw) {
 // (TBL) / 269 (TBU) are defined — anything else is an invalid form
 // taking the illegal-instruction program exception (PEM mftb page).
 void ppc_do_mftb(ppc_t *p, uint32_t iw) {
-    uint32_t n = spr_number(iw);
+    uint32_t n = PPC_SPR_NUMBER(iw);
     uint64_t tb = ppc_tb_now(p);
     if (n == 268)
         p->gpr[PPC_RT(iw)] = (uint32_t)tb;
@@ -614,35 +518,32 @@ void ppc_do_mftb(ppc_t *p, uint32_t iw) {
 }
 
 bool ppc_mtspr(ppc_t *p, uint32_t iw) {
-    uint32_t n = spr_number(iw);
+    uint32_t n = PPC_SPR_NUMBER(iw);
     uint32_t v = p->gpr[PPC_RT(iw)];
     switch (n) {
-    case 0: // MQ: 601-only
-        if (ppc_is_604(p))
-            goto undefined;
-        p->mq = v;
+        // The table's plain writes (ppc_spr.h)
+#define MT_PLAIN(n_, field_, flags_, models_)                                                                          \
+    case n_:                                                                                                           \
+        if (!ppc_spr_on(p, models_))                                                                                   \
+            goto undefined;                                                                                            \
+        if (((flags_) & PPC_SPR_PRIV) && spr_priv_fault(p, iw))                                                        \
+            return false;                                                                                              \
+        p->field_ = v;                                                                                                 \
         break;
+#define MT_OWN(n_, field_, flags_, models_)
+#define MT_NO(n_, field_, flags_, models_)
+#define X(n_, name_, mf_, mt_, field_, flags_, models_) MT_##mt_(n_, field_, flags_, models_)
+        PPC_SPRS(X)
+#undef X
+#undef MT_PLAIN
+#undef MT_OWN
+#undef MT_NO
+        // The rest: arms of their own
     case 1:
         // MPC601UM 2.2.5.2: the 601's XER reserved bits (3-15, 24) read as
         // zero.  The 604 leaves them implementation-defined (PEM), so it
         // keeps what was written.
         p->xer = ppc_is_604(p) ? v : (v & (PPC_XER_SO | PPC_XER_OV | PPC_XER_CA | PPC_XER_CMPBYTE | PPC_XER_BYTES));
-        break;
-    case 8:
-        p->lr = v;
-        break;
-    case 9:
-        p->ctr = v;
-        break;
-    case 18:
-        if (spr_priv_fault(p, iw))
-            return false;
-        p->dsisr = v;
-        break;
-    case 19:
-        if (spr_priv_fault(p, iw))
-            return false;
-        p->dar = v;
         break;
     case 20: // RTC writes use SPR 20/21 (supervisor); reads use 4/5; 601-only
         if (ppc_is_604(p))
@@ -687,29 +588,6 @@ bool ppc_mtspr(ppc_t *p, uint32_t iw) {
             p->sdr1 = v;
             ppc_mmu_invalidate_all(p); // the whole HTAB moved
         }
-        break;
-    case 26:
-        if (spr_priv_fault(p, iw))
-            return false;
-        p->srr0 = v;
-        break;
-    case 27:
-        if (spr_priv_fault(p, iw))
-            return false;
-        p->srr1 = v;
-        break;
-    case 272:
-    case 273:
-    case 274:
-    case 275:
-        if (spr_priv_fault(p, iw))
-            return false;
-        p->sprg[n - 272] = v;
-        break;
-    case 282:
-        if (spr_priv_fault(p, iw))
-            return false;
-        p->ear = v;
         break;
     case 284: // TBL write (604; reads go through mftb — PEM §2.3.1)
         if (!ppc_is_604(p))
@@ -787,18 +665,6 @@ bool ppc_mtspr(ppc_t *p, uint32_t iw) {
                 p->pmc[n - 953] = v;
         }
         break;
-    case 956: // MMCR1 / PMC3 / PMC4 (750)
-    case 957:
-    case 958:
-        if (!ppc_is_750(p))
-            goto undefined;
-        if (spr_priv_fault(p, iw))
-            return false;
-        if (n == 956)
-            p->mmcr[1] = v;
-        else
-            p->pmc[n - 955] = v;
-        break;
     case 1008:
         if (spr_priv_fault(p, iw))
             return false;
@@ -821,13 +687,6 @@ bool ppc_mtspr(ppc_t *p, uint32_t iw) {
             return false;
         ppc_l2cr_write(p, v);
         break;
-    case 1019: // ICTC (750): accepted, no throttling modelled
-        if (!ppc_is_750(p))
-            goto undefined;
-        if (spr_priv_fault(p, iw))
-            return false;
-        p->ictc = v;
-        break;
     case 1020: // THRM1-3 (750): stored; TIN/TIV are read-only and derived
     case 1021:
     case 1022:
@@ -836,23 +695,6 @@ bool ppc_mtspr(ppc_t *p, uint32_t iw) {
         if (spr_priv_fault(p, iw))
             return false;
         p->thrm[n - 1020] = v & 0x3FFFFFFFu;
-        break;
-    case 1010:
-        if (spr_priv_fault(p, iw))
-            return false;
-        p->iabr = v;
-        break;
-    case 1013:
-        if (spr_priv_fault(p, iw))
-            return false;
-        p->dabr = v;
-        break;
-    case 1023: // PIR: 601/604
-        if (ppc_is_750(p))
-            goto undefined;
-        if (spr_priv_fault(p, iw))
-            return false;
-        p->pir = v;
         break;
     default:
     undefined:
@@ -978,24 +820,19 @@ void ppc_reset(ppc_t *p) {
 
 // === `$reg` aliases (main-CPU privilege per cores.md) =======================
 
-static void register_alias_or_warn(const char *name, const char *path) {
-    char err[160];
-    if (alias_register_builtin(name, path, err, sizeof(err)) != STATUS_OK)
-        LOG(0, "ppc: built-in alias '$%s' → '%s' rejected: %s", name, path, err);
-}
-
+// Register the PPC `$reg` aliases (alias_register_builtin_or_log logs a rejection)
 static void register_ppc_aliases(void) {
-    register_alias_or_warn("pc", "machine.cpu.pc");
-    register_alias_or_warn("lr", "machine.cpu.lr");
-    register_alias_or_warn("ctr", "machine.cpu.ctr");
-    register_alias_or_warn("cr", "machine.cpu.cr");
-    register_alias_or_warn("msr", "machine.cpu.msr");
-    register_alias_or_warn("xer", "machine.cpu.xer");
+    alias_register_builtin_or_log("ppc", "pc", "machine.cpu.pc");
+    alias_register_builtin_or_log("ppc", "lr", "machine.cpu.lr");
+    alias_register_builtin_or_log("ppc", "ctr", "machine.cpu.ctr");
+    alias_register_builtin_or_log("ppc", "cr", "machine.cpu.cr");
+    alias_register_builtin_or_log("ppc", "msr", "machine.cpu.msr");
+    alias_register_builtin_or_log("ppc", "xer", "machine.cpu.xer");
     for (int i = 0; i < 32; i++) {
         char name[8], path[24];
         snprintf(name, sizeof(name), "r%d", i);
         snprintf(path, sizeof(path), "machine.cpu.r%d", i);
-        register_alias_or_warn(name, path);
+        alias_register_builtin_or_log("ppc", name, path);
     }
 }
 
@@ -1053,6 +890,9 @@ static const char *ppc_pd_id_name(uint16_t id) {
     return "?";
 }
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(ppc_t, cpu_object);
+
 static ppc_t *ppc_init_common(checkpoint_t *checkpoint, int cpu_model, const char *node_name, bool primary) {
     ppc_t *p = (ppc_t *)malloc(sizeof(ppc_t));
     if (!p)
@@ -1072,7 +912,7 @@ static ppc_t *ppc_init_common(checkpoint_t *checkpoint, int cpu_model, const cha
         // The bindings below are then rebuilt for THIS machine (the cpu.c
         // same-process-restore double-free precedent).
         memset(p, 0, sizeof(ppc_t));
-        system_read_checkpoint_data(checkpoint, p, offsetof(struct ppc, cpu_object));
+        checkpoint_load_prefix(checkpoint, p, ppc_t);
         p->mmu_ctx = ctx;
         p->tick_mul = p->tick_div = 0;
         g_mem_lines = p->dlines.count ? &p->dlines : NULL;
@@ -1094,7 +934,7 @@ static ppc_t *ppc_init_common(checkpoint_t *checkpoint, int cpu_model, const cha
     p->cpu_object = object_new(&ppc_cpu_class, p, node_name);
     if (p->cpu_object) {
         object_set_label(p->cpu_object, primary ? "CPU" : "CPU (peer)");
-        object_set_order(p->cpu_object, primary ? 10 : 11);
+        object_set_order(p->cpu_object, primary ? OBJ_ORDER_CPU : OBJ_ORDER_CPU_PEER);
         object_attach(machine_object(), p->cpu_object);
         // machine.cpu.mmu: the translation debug window.
         p->mmu_object = object_new(&ppc_mmu_class, p, "mmu");
@@ -1156,21 +996,9 @@ void ppc_delete(ppc_t *p) {
     memory_lines_drop_all(&p->dlines);
     // The decrementer event carries `p`; only the live re-arm path removed it.
     scheduler_forget_source(p->scheduler, p);
-    if (p->fpu_object) {
-        object_detach(p->fpu_object);
-        object_delete(p->fpu_object);
-        p->fpu_object = NULL;
-    }
-    if (p->mmu_object) {
-        object_detach(p->mmu_object);
-        object_delete(p->mmu_object);
-        p->mmu_object = NULL;
-    }
-    if (p->cpu_object) {
-        object_detach(p->cpu_object);
-        object_delete(p->cpu_object);
-        p->cpu_object = NULL;
-    }
+    object_destroy(&p->fpu_object);
+    object_destroy(&p->mmu_object);
+    object_destroy(&p->cpu_object);
     if (p->mmu_ctx != ppc_mmu_ctx_primary())
         ppc_mmu_ctx_free(p->mmu_ctx);
     free(p);
@@ -1187,7 +1015,7 @@ void ppc_checkpoint(ppc_t *restrict p, checkpoint_t *checkpoint) {
     // checkpoint testing.  Measured: four 4-byte runs at 8-byte stride,
     // exactly cpu_object/fpu_object/mmu_object/scheduler.  cpu.c's 68k
     // checkpoint stops short of its pointers the same way.
-    system_write_checkpoint_data(checkpoint, p, offsetof(struct ppc, cpu_object));
+    checkpoint_save_prefix(checkpoint, p, ppc_t);
 }
 
 // === Scheduler adapter (the main-CPU seam) ==================================
@@ -1370,28 +1198,21 @@ enum ppc_attr_id {
     PA_PC = 0,
     PA_MSR,
     PA_CR,
-    PA_XER,
-    PA_LR,
-    PA_CTR,
-    PA_MQ,
-    PA_SRR0,
-    PA_SRR1,
-    PA_DEC,
-    PA_RTCU,
-    PA_RTCL,
-    PA_SDR1,
     PA_FPSCR,
-    PA_DAR,
-    PA_DSISR,
-    PA_PVR,
-    PA_HID0,
-    PA_HID1,
-    PA_L2CR,
     PA_GPR0 = 0x100, // ..0x11F
     PA_SR0 = 0x200, // ..0x20F
     PA_BAT0U = 0x300, // U/L interleaved ..0x307 (601 unified / 604 IBATs)
     PA_DBAT0U = 0x400, // U/L interleaved ..0x407 (604 DBATs)
+    PA_SPR0 = 0x1000, // + an SPR number (ppc_spr.h) ..0x13FF
 };
+#define PA_SPR(n) (PA_SPR0 + (n))
+// The SPR attributes with code of their own: the time-derived registers
+// (read live, as mfspr does), L2CR (L2IP) and SDR1 (a poke invalidates)
+#define PA_RTCU PA_SPR(20)
+#define PA_RTCL PA_SPR(21)
+#define PA_DEC  PA_SPR(22)
+#define PA_SDR1 PA_SPR(25)
+#define PA_L2CR PA_SPR(1017)
 
 static uint32_t *ppc_attr_slot(ppc_t *p, int id) {
     if (id >= PA_GPR0 && id < PA_GPR0 + 32)
@@ -1413,38 +1234,27 @@ static uint32_t *ppc_attr_slot(ppc_t *p, int id) {
         return &p->msr;
     case PA_CR:
         return &p->cr;
-    case PA_XER:
-        return &p->xer;
-    case PA_LR:
-        return &p->lr;
-    case PA_CTR:
-        return &p->ctr;
-    case PA_MQ:
-        return &p->mq;
-    case PA_SRR0:
-        return &p->srr0;
-    case PA_SRR1:
-        return &p->srr1;
-    case PA_DEC:
-        return &p->dec;
+    case PA_FPSCR:
+        return &p->fpscr;
+        // The SPR table's plainly read registers: their fields
+#define SLOT_PLAIN(n_, field_)                                                                                         \
+    case PA_SPR(n_):                                                                                                   \
+        return &p->field_;
+#define SLOT_OWN(n_, field_)
+#define SLOT_NO(n_, field_)
+#define X(n_, name_, mf_, mt_, field_, flags_, models_) SLOT_##mf_(n_, field_)
+        PPC_SPRS(X)
+#undef X
+#undef SLOT_PLAIN
+#undef SLOT_OWN
+#undef SLOT_NO
+    // ...and the stored halves of the ones mfspr computes
     case PA_RTCU:
         return &p->rtcu;
     case PA_RTCL:
         return &p->rtcl;
-    case PA_SDR1:
-        return &p->sdr1;
-    case PA_FPSCR:
-        return &p->fpscr;
-    case PA_DAR:
-        return &p->dar;
-    case PA_DSISR:
-        return &p->dsisr;
-    case PA_PVR:
-        return &p->pvr;
-    case PA_HID0:
-        return &p->hid0;
-    case PA_HID1:
-        return &p->hid1;
+    case PA_DEC:
+        return &p->dec;
     case PA_L2CR:
         return &p->l2cr;
     }
@@ -1553,26 +1363,26 @@ static DEF_METHOD(ppc_method_frame) {
 
 // clang-format off
 static const member_t ppc_members[] = {
-    PPC_ATTR("pc",    PA_PC,    "Program counter — address of the next instruction to execute"),
-    PPC_ATTR("msr",   PA_MSR,   "Machine state register: privilege level, interrupt enables, and the MMU translation bits"),
-    PPC_ATTR("cr",    PA_CR,    "Condition register — eight 4-bit fields the compare and record-form instructions set"),
-    PPC_ATTR("xer",   PA_XER,   "Fixed-point exception register: summary overflow, overflow and carry"),
-    PPC_ATTR("lr",    PA_LR,    "Link register — the return address a branch-and-link leaves behind"),
-    PPC_ATTR("ctr",   PA_CTR,   "Count register, used as a loop counter and as an indirect branch target"),
-    PPC_ATTR("mq",    PA_MQ,    "MQ register — a 601-only holding register for multiply, divide and shift"),
-    PPC_ATTR("srr0",  PA_SRR0,  "Save/restore register 0 — the PC an exception interrupted, where rfi returns to"),
-    PPC_ATTR("srr1",  PA_SRR1,  "Save/restore register 1 — the MSR an exception interrupted, plus its status bits"),
-    PPC_ATTR("dec",   PA_DEC,   "Decrementer — counts down and raises a decrementer exception when it passes zero"),
-    PPC_ATTR("rtcu",  PA_RTCU,  "Real-time clock, upper half (601); the timebase upper half on the 604"),
-    PPC_ATTR("rtcl",  PA_RTCL,  "Real-time clock, lower half (601); the timebase lower half on the 604"),
-    PPC_ATTR("sdr1",  PA_SDR1,  "Page-table base address and size — where hashed address translation looks"),
-    PPC_ATTR("fpscr", PA_FPSCR, "Floating-point status and control: rounding mode, exception enables and sticky flags"),
-    PPC_ATTR("dar",   PA_DAR,   "Data address register — the effective address that caused the last data storage exception"),
-    PPC_ATTR("dsisr", PA_DSISR, "Data storage interrupt status — why that access faulted"),
-    PPC_ATTR("pvr",   PA_PVR,   "Processor version register — the model and revision the firmware keys on"),
-    PPC_ATTR("hid0",  PA_HID0,  "Hardware implementation register 0 — cache enables, power modes and branch-prediction controls"),
-    PPC_ATTR("hid1",  PA_HID1,  "Hardware implementation register 1 — 601 debug modes; on the 750 the read-only PLL configuration"),
-    PPC_ATTR("l2cr",  PA_L2CR,  "L2 cache control register (750) — backside L2 size, clock ratio, enable and invalidate"),
+    PPC_ATTR("pc",    PA_PC,        "Program counter — address of the next instruction to execute"),
+    PPC_ATTR("msr",   PA_MSR,       "Machine state register: privilege level, interrupt enables, and the MMU translation bits"),
+    PPC_ATTR("cr",    PA_CR,        "Condition register — eight 4-bit fields the compare and record-form instructions set"),
+    PPC_ATTR("xer",   PA_SPR(1),    "Fixed-point exception register: summary overflow, overflow and carry"),
+    PPC_ATTR("lr",    PA_SPR(8),    "Link register — the return address a branch-and-link leaves behind"),
+    PPC_ATTR("ctr",   PA_SPR(9),    "Count register, used as a loop counter and as an indirect branch target"),
+    PPC_ATTR("mq",    PA_SPR(0),    "MQ register — a 601-only holding register for multiply, divide and shift"),
+    PPC_ATTR("srr0",  PA_SPR(26),   "Save/restore register 0 — the PC an exception interrupted, where rfi returns to"),
+    PPC_ATTR("srr1",  PA_SPR(27),   "Save/restore register 1 — the MSR an exception interrupted, plus its status bits"),
+    PPC_ATTR("dec",   PA_DEC,       "Decrementer — counts down and raises a decrementer exception when it passes zero"),
+    PPC_ATTR("rtcu",  PA_RTCU,      "Real-time clock, upper half (601); the timebase upper half on the 604"),
+    PPC_ATTR("rtcl",  PA_RTCL,      "Real-time clock, lower half (601); the timebase lower half on the 604"),
+    PPC_ATTR("sdr1",  PA_SDR1,      "Page-table base address and size — where hashed address translation looks"),
+    PPC_ATTR("fpscr", PA_FPSCR,     "Floating-point status and control: rounding mode, exception enables and sticky flags"),
+    PPC_ATTR("dar",   PA_SPR(19),   "Data address register — the effective address that caused the last data storage exception"),
+    PPC_ATTR("dsisr", PA_SPR(18),   "Data storage interrupt status — why that access faulted"),
+    PPC_ATTR("pvr",   PA_SPR(287),  "Processor version register — the model and revision the firmware keys on"),
+    PPC_ATTR("hid0",  PA_SPR(1008), "Hardware implementation register 0 — cache enables, power modes and branch-prediction controls"),
+    PPC_ATTR("hid1",  PA_SPR(1009), "Hardware implementation register 1 — 601 debug modes; on the 750 the read-only PLL configuration"),
+    PPC_ATTR("l2cr",  PA_L2CR,      "L2 cache control register (750) — backside L2 size, clock ratio, enable and invalidate"),
     PPC_GPR(0),  PPC_GPR(1),  PPC_GPR(2),  PPC_GPR(3),  PPC_GPR(4),  PPC_GPR(5),  PPC_GPR(6),  PPC_GPR(7),
     PPC_GPR(8),  PPC_GPR(9),  PPC_GPR(10), PPC_GPR(11), PPC_GPR(12), PPC_GPR(13), PPC_GPR(14), PPC_GPR(15),
     PPC_GPR(16), PPC_GPR(17), PPC_GPR(18), PPC_GPR(19), PPC_GPR(20), PPC_GPR(21), PPC_GPR(22), PPC_GPR(23),
@@ -1698,38 +1508,34 @@ static DEF_METHOD(mmu_method_descriptor) {
     return val_list(items, len);
 }
 
-// peek(addr, [size], [space]) -> the value, big-endian.  "logical" (default)
-// reads through the data-side translation; "physical" reads the address as
-// is.  (machine.memory.peek on a PowerPC machine is physical; this is the
+// One peek read: "logical" goes through the data-side translation byte by
+// byte (a word may straddle pages); "physical" reads the address as is.
+static value_t ppc_peek_read(void *ctx, uint32_t addr, unsigned size, bool physical, uint32_t *out) {
+    ppc_t *p = (ppc_t *)ctx;
+    uint32_t raw = 0;
+    for (uint32_t i = 0; i < size; i++) {
+        uint32_t pa = addr + i;
+        if (!physical) {
+            bool ok;
+            pa = ppc_mmu_translate_debug(p, pa, true, &ok);
+            if (!ok)
+                return val_err("peek: no translation for $%08X", addr + i);
+        }
+        raw = (raw << 8) | memory_debug_read_uint8(pa);
+    }
+    *out = raw;
+    return val_none();
+}
+
+// peek(addr, [size], [space]) -> the value, big-endian (debug_mmu_peek).
+// (machine.memory.peek on a PowerPC machine is physical; this is the
 // logical read a debugger wants.)
 static DEF_METHOD(mmu_method_peek) {
     ppc_t *p = (ppc_t *)object_data(self);
     if (!p)
         return val_err("cpu not initialised");
-    uint32_t size = (argc >= 2 && argv[1].kind == VK_UINT) ? (uint32_t)argv[1].u : 4u;
-    if (size != 1 && size != 2 && size != 4)
-        return val_err("size must be 1, 2 or 4");
-    bool physical;
-    if (!debug_parse_space(argc, argv, 2, &physical))
-        return val_err("peek: space must be \"logical\" or \"physical\"");
-    uint32_t raw = 0;
-    for (uint32_t i = 0; i < size; i++) {
-        uint32_t pa = (uint32_t)argv[0].u + i;
-        if (!physical) {
-            bool ok;
-            pa = ppc_mmu_translate_debug(p, pa, true, &ok);
-            if (!ok)
-                return val_err("no translation for $%08X", (uint32_t)argv[0].u + i);
-        }
-        raw = (raw << 8) | memory_debug_read_uint8(pa);
-    }
-    value_t v = val_uint((int)size, raw);
-    v.flags |= VFLAG_HEX;
-    return v;
+    return debug_mmu_peek(ppc_peek_read, p, argc, argv);
 }
-
-// peek's default size.
-static const value_t k_peek_size4 = {.kind = VK_UINT, .u = 4};
 
 // descriptor formats: the one PowerPC page-table entry layout.
 static const char *const ppc_desc_formats[] = {"pte", NULL};
@@ -1748,20 +1554,8 @@ static const arg_decl_t mmu_desc_args[] = {
      .doc = "\"pte\", the one PowerPC entry layout (accepted for the uniform signature)",
      .default_doc = "pte"},
 };
-static const arg_decl_t mmu_peek_args[] = {
-    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "effective (logical) address"},
-    {.name = "size",
-     .kind = VK_UINT,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &k_peek_size4,
-     .doc = "1, 2 or 4 bytes"},
-    {.name = "space",
-     .kind = VK_ENUM,
-     .enum_values = debug_space_values,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "\"logical\" or \"physical\"",
-     .default_doc = "logical"},
-};
+static const arg_decl_t mmu_peek_args[DEBUG_MMU_PEEK_NARGS] =
+    DEBUG_MMU_PEEK_ARGS("effective (logical) address", "\"logical\" or \"physical\"");
 
 static const member_t ppc_mmu_members[] = {
     {.kind = MK_METHOD,
@@ -1804,7 +1598,7 @@ static const member_t ppc_mmu_members[] = {
      .name = "peek",
      .examples = EXAMPLES("machine.cpu.mmu.peek 0x5fff8000", "machine.cpu.mmu.peek 0x3000 2 physical"),
      .doc = "Read memory, logical (through the translation) or physical; side-effect-free",
-     .method = {.args = mmu_peek_args, .nargs = 3, .result = VK_UINT, .fn = mmu_method_peek}},
+     .method = {.args = mmu_peek_args, .nargs = DEBUG_MMU_PEEK_NARGS, .result = VK_UINT, .fn = mmu_method_peek}},
 };
 
 static const class_desc_t ppc_mmu_class = {

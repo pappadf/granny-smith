@@ -532,6 +532,10 @@
       "instr": 389140998,
       "tolerance": 0.2
     },
+    "suite-iisi/iisi-checkpoint": {
+      "instr": 295423279,
+      "tolerance": 0.2
+    },
     "suite-iisi/iisi-chime": {
       "instr": 10095757,
       "tolerance": 0.2

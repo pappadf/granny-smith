@@ -8,34 +8,19 @@
 // the card's colour formats, expanded to rgba8) and how textures arrive
 // (each texel converted and raw, an rg32uint atlas).
 //
-// Threading: the translator publishes bytes by advancing HEAD and
-// notifying; this worker parks in Atomics.waitAsync on HEAD, consumes
-// every complete record, and advances TAIL as it goes.  A READBACK, FENCE
-// or SHUTDOWN record carries a sequence number the worker stores into ACK
-// when done; the translator waits on ACK (the emulator thread blocks).
+// The transport -- the page's messages, attaching the region, the consume
+// loop, ACK and TAIL (the translator waits on ACK: the emulator thread
+// blocks) -- is takeoverWorker.ts, shared with the Voodoo2's worker.
 
 import {
   PROTOCOL_VERSION,
   MAGIC,
-  C_VERSION,
-  C_RING_OFF,
-  C_RING_SIZE,
-  C_RB_OFF,
-  C_RB_SIZE,
-  C_HEAD,
-  C_TAIL,
-  C_ACK,
-  C_STATUS,
   C_STAT_FRAMES,
   C_STAT_DRAWS,
   C_STAT_FLUSHES,
   C_STAT_PIPELINES,
   C_STAT_READBACKS,
   C_PRESENTS_DONE,
-  STATUS_DETACHED,
-  STATUS_ATTACHED,
-  STATUS_LOST,
-  R_PAD,
   R_SURFACE,
   R_SURFACE_FREE,
   R_UPLOAD,
@@ -74,29 +59,20 @@ import {
   U_BYTES,
   VERTEX_BYTES,
 } from './rage128Protocol';
-import { recordOk } from '@/bus/mailboxRing';
+import {
+  ack,
+  ctrl,
+  heap,
+  markLost,
+  rbBase,
+  rbSize,
+  runTakeoverWorker,
+  st,
+  stat,
+  u32,
+  u8,
+} from './takeoverWorker';
 import { RAGE128_WGSL, PRESENT_WGSL, DEPTH_RESTORE_WGSL } from './rage128.wgsl';
-
-// --- messages from the page -----------------------------------------------
-
-interface InitMsg {
-  type: 'init';
-  canvas: OffscreenCanvas;
-}
-interface AttachMsg {
-  type: 'attach';
-  memory: WebAssembly.Memory | SharedArrayBuffer;
-  ctrl: number;
-}
-interface DetachMsg {
-  type: 'detach';
-  ctrl: number;
-}
-interface DebugMsg {
-  type: 'debug';
-}
-type StatsMsg = { type: 'stats' };
-type InMsg = InitMsg | AttachMsg | DetachMsg | DebugMsg | StatsMsg;
 
 // --- device state -------------------------------------------------------
 
@@ -124,44 +100,10 @@ const VERTEX_RING_BYTES = 32 << 20;
 let uniformCursor = 0; // slot
 let vertexCursor = 0; // bytes
 
-// --- attached region -----------------------------------------------------
+// --- per-region state (the region itself: takeoverWorker.ts) -------------
 
-let ctrl: Int32Array | null = null; // the control block (Int32 for Atomics.wait)
-let u32: Uint32Array | null = null; // the whole heap
-let u8: Uint8Array | null = null;
-let ctrlBase = 0;
-let ringBase = 0;
-let ringSize = 0;
-let rbBase = 0;
-let rbSize = 0;
-let consumed = 0; // bytes consumed (mod 2^32)
-let attached = false;
-let lost = false;
-let loopRunning = false;
 let readbackPending = false;
-let lastKind = -1;
-
-// What this worker did since the page last asked (a 'stats' message; the
-// page's perf monitor and diagnostics print it): records and bytes
-// consumed, time spent consuming, readbacks and their latency, presents
-// and how far the GPU's completion of them lags.
-const st = {
-  t0: performance.now(),
-  records: 0,
-  bytes: 0,
-  drains: 0,
-  drainMs: 0,
-  drainMaxMs: 0,
-  readbacks: 0,
-  readbackMs: 0,
-  readbackMaxMs: 0,
-  presents: 0,
-  presentLagMaxMs: 0,
-  draws: 0,
-  idleWaits: 0,
-};
-let drainingSince = 0; // performance.now() the current drain began (0: idle)
-let readbackSince = 0; // ...the readback in flight began
+let readbackSince = 0; // performance.now() the readback in flight began
 
 // --- GPU-side resources --------------------------------------------------
 
@@ -188,14 +130,6 @@ let passScissor = '';
 // Resources the open encoder references: a queue write into one must
 // wait for the encoder to be submitted (queue writes run before it).
 const usedInEncoder = new Set<string>();
-
-function heap(): GPUAllowSharedBufferSource {
-  return u8 as unknown as GPUAllowSharedBufferSource;
-}
-
-function stat(word: number, delta: number): void {
-  if (ctrl) Atomics.add(ctrl, word, delta);
-}
 
 // --- pixel formats -------------------------------------------------------
 // The colour datatypes, packed little-endian as VRAM holds them, and the
@@ -289,28 +223,32 @@ function readPacked(fmt: number, src: Uint8Array, o: number): number {
 
 // --- device setup --------------------------------------------------------
 
+// Why initDevice found no device, for the page's log (as the Voodoo2's).
+let unavailableReason = '';
+
 async function initDevice(cv: OffscreenCanvas): Promise<boolean> {
-  if (!('gpu' in navigator)) return false;
+  if (!('gpu' in navigator)) {
+    unavailableReason = 'no WebGPU in this browser (navigator.gpu is missing in workers)';
+    return false;
+  }
   const adapter = await navigator.gpu.requestAdapter();
-  if (!adapter) return false;
+  if (!adapter) {
+    unavailableReason = 'navigator.gpu.requestAdapter() returned null';
+    return false;
+  }
   const d = await adapter.requestDevice();
   device = d;
   canvas = cv;
-  d.lost.then((info) => {
-    lost = true;
-    if (ctrl) {
-      Atomics.store(ctrl, C_STATUS, STATUS_LOST);
-      Atomics.notify(ctrl, C_STATUS);
-      Atomics.notify(ctrl, C_TAIL);
-      Atomics.notify(ctrl, C_ACK);
-    }
-    postMessage({ type: 'lost', reason: `${info.reason}: ${info.message}` });
-  });
+  // The device is gone: tell the translator and the page.
+  d.lost.then((info) => markLost(`${info.reason}: ${info.message}`));
   d.addEventListener('uncapturederror', (e) => {
     console.error('[rage128-gpu] uncaptured error:', (e as GPUUncapturedErrorEvent).error.message);
   });
   context = cv.getContext('webgpu') as GPUCanvasContext | null;
-  if (!context) return false;
+  if (!context) {
+    unavailableReason = 'getContext("webgpu") returned null on the overlay canvas';
+    return false;
+  }
   canvasFormat = navigator.gpu.getPreferredCanvasFormat();
   context.configure({ device: d, format: canvasFormat, alphaMode: 'opaque' });
   mainModule = d.createShaderModule({ label: 'rage128-pipe', code: RAGE128_WGSL });
@@ -960,12 +898,6 @@ async function onReadback(seq: number, id: number, y0: number, y1: number): Prom
   ack(seq);
 }
 
-function ack(seq: number): void {
-  if (!ctrl) return;
-  Atomics.store(ctrl, C_ACK, seq | 0);
-  Atomics.notify(ctrl, C_ACK);
-}
-
 function freeEverything(): void {
   endPass();
   encoder = null;
@@ -977,250 +909,82 @@ function freeEverything(): void {
   bindGroups.clear();
 }
 
-// --- the consume loop --------------------------------------------------
-
-function advanceTail(): void {
-  Atomics.store(ctrl!, C_TAIL, consumed | 0);
-  Atomics.notify(ctrl!, C_TAIL);
-}
-
-async function drain(head: number): Promise<boolean> {
-  const t0 = performance.now();
-  drainingSince = t0;
-  st.drains++;
-  try {
-    return await drainRecords(head);
-  } finally {
-    const ms = performance.now() - t0;
-    drainingSince = 0;
-    st.drainMs += ms;
-    if (ms > st.drainMaxMs) st.drainMaxMs = ms;
-  }
-}
-
-async function drainRecords(head: number): Promise<boolean> {
-  const mask = ringSize - 1;
-  while (consumed !== head) {
-    const off = consumed & mask;
-    const at = ringBase + off;
-    const kind = u32![at >> 2];
-    const len = u32![(at >> 2) + 1];
-    if (!recordOk(len, off, ringSize, (head - consumed) >>> 0)) {
-      console.error('[rage128-gpu] corrupt record', kind, len);
+// One record of the Rage 128's own kinds (takeoverWorker.ts TakeoverCard.record;
+// PAD, FENCE and SHUTDOWN are the transport's).  A readback's promise is
+// what the drain waits out.
+function record(kind: number, p: number, at: number): void | Promise<void> | false {
+  switch (kind) {
+    case R_SURFACE:
+      onSurface(u32![p], u32![p + 1], u32![p + 2], u32![p + 3], u32![p + 4]);
+      return;
+    case R_SURFACE_FREE:
+      onSurfaceFree(u32![p]);
+      return;
+    case R_UPLOAD:
+      onUpload(u32![p], u32![p + 1], u32![p + 2], u32![p + 3], at + 24);
+      return;
+    case R_TEX:
+      onTex(u32![p], u32![p + 1], u32![p + 2]);
+      return;
+    case R_TEX_UPLOAD:
+      onTexUpload(u32![p], u32![p + 1], u32![p + 2], u32![p + 3], at + 24);
+      return;
+    case R_TEX_FREE:
+      onTexFree(u32![p]);
+      return;
+    case R_DRAW:
+      onDraw(at + 8);
+      return;
+    case R_FILL:
+      onFill(u32![p], u32![p + 1], u32![p + 2], u32![p + 3], u32![p + 4], u32![p + 5], u32![p + 6]);
+      return;
+    case R_PRESENT:
+      onPresent(u32![p], u32![p + 1], u32![p + 2], u32![p + 3], u32![p + 4], u32![p + 5]);
+      return;
+    case R_LUT:
+      onLut(at + 8);
+      return;
+    case R_READBACK:
+      return onReadback(u32![p], u32![p + 1], u32![p + 2], u32![p + 3]);
+    case R_MODE:
+      onMode(u32![p], u32![p + 1], u32![p + 2]);
+      return;
+    case R_CURSOR:
+      onCursor(p, at + 24);
+      return;
+    default:
       return false;
-    }
-    const p = (at >> 2) + 2;
-    lastKind = kind;
-    st.records++;
-    st.bytes += len;
-    switch (kind) {
-      case R_PAD:
-        break;
-      case R_SURFACE:
-        onSurface(u32![p], u32![p + 1], u32![p + 2], u32![p + 3], u32![p + 4]);
-        break;
-      case R_SURFACE_FREE:
-        onSurfaceFree(u32![p]);
-        break;
-      case R_UPLOAD:
-        onUpload(u32![p], u32![p + 1], u32![p + 2], u32![p + 3], at + 24);
-        break;
-      case R_TEX:
-        onTex(u32![p], u32![p + 1], u32![p + 2]);
-        break;
-      case R_TEX_UPLOAD:
-        onTexUpload(u32![p], u32![p + 1], u32![p + 2], u32![p + 3], at + 24);
-        break;
-      case R_TEX_FREE:
-        onTexFree(u32![p]);
-        break;
-      case R_DRAW:
-        onDraw(at + 8);
-        break;
-      case R_FILL:
-        onFill(
-          u32![p],
-          u32![p + 1],
-          u32![p + 2],
-          u32![p + 3],
-          u32![p + 4],
-          u32![p + 5],
-          u32![p + 6],
-        );
-        break;
-      case R_PRESENT:
-        onPresent(u32![p], u32![p + 1], u32![p + 2], u32![p + 3], u32![p + 4], u32![p + 5]);
-        break;
-      case R_LUT:
-        onLut(at + 8);
-        break;
-      case R_READBACK:
-        await onReadback(u32![p], u32![p + 1], u32![p + 2], u32![p + 3]);
-        break;
-      case R_MODE:
-        onMode(u32![p], u32![p + 1], u32![p + 2]);
-        break;
-      case R_CURSOR:
-        onCursor(p, at + 24);
-        break;
-      case R_FENCE:
-        flush();
-        ack(u32![p]);
-        break;
-      case R_SHUTDOWN: {
-        flush();
-        freeEverything();
-        const seq = u32![p];
-        consumed = (consumed + len) >>> 0;
-        advanceTail();
-        attached = false;
-        Atomics.store(ctrl!, C_STATUS, STATUS_DETACHED);
-        ack(seq);
-        return false;
-      }
-      default:
-        console.error('[rage128-gpu] unknown record kind', kind);
-        return false;
-    }
-    consumed = (consumed + len) >>> 0;
-    advanceTail();
-  }
-  return true;
-}
-
-async function loop(): Promise<void> {
-  if (loopRunning) return;
-  loopRunning = true;
-  try {
-    while (attached && !lost) {
-      const head = Atomics.load(ctrl!, C_HEAD) >>> 0;
-      if (head === consumed) {
-        st.idleWaits++;
-        const r = Atomics.waitAsync(ctrl!, C_HEAD, head | 0, 1000);
-        if (r.async) await r.value;
-        continue;
-      }
-      if (!(await drain(head))) break;
-    }
-  } catch (e) {
-    console.error('[rage128-gpu] worker loop failed:', e);
-    if (ctrl) {
-      Atomics.store(ctrl, C_STATUS, STATUS_LOST);
-      Atomics.notify(ctrl, C_STATUS);
-      Atomics.notify(ctrl, C_ACK);
-      Atomics.notify(ctrl, C_TAIL);
-    }
-  } finally {
-    loopRunning = false;
   }
 }
 
-function attach(memory: WebAssembly.Memory | SharedArrayBuffer, ctrlPtr: number): void {
-  const buffer = memory instanceof SharedArrayBuffer ? memory : memory.buffer;
-  u8 = new Uint8Array(buffer);
-  u32 = new Uint32Array(buffer);
-  ctrl = new Int32Array(buffer, ctrlPtr, 32);
-  ctrlBase = ctrlPtr;
-  if (u32[ctrlPtr >> 2] >>> 0 !== MAGIC || u32[(ctrlPtr >> 2) + C_VERSION] !== PROTOCOL_VERSION) {
-    console.error(
-      '[rage128-gpu] control block mismatch',
-      u32[ctrlPtr >> 2].toString(16),
-      u32[(ctrlPtr >> 2) + C_VERSION],
-    );
-    return;
-  }
-  ringBase = ctrlBase + u32[(ctrlPtr >> 2) + C_RING_OFF];
-  ringSize = u32[(ctrlPtr >> 2) + C_RING_SIZE];
-  rbBase = ctrlBase + u32[(ctrlPtr >> 2) + C_RB_OFF];
-  rbSize = u32[(ctrlPtr >> 2) + C_RB_SIZE];
-  consumed = Atomics.load(ctrl, C_HEAD) >>> 0;
-  presentsSeen = Atomics.load(ctrl, C_PRESENTS_DONE) >>> 0;
-  uniformCursor = 0;
-  vertexCursor = 0;
-  freeEverything();
-  attached = true;
-  Atomics.store(ctrl, C_STATUS, STATUS_ATTACHED);
-  Atomics.notify(ctrl, C_STATUS);
-  void loop();
-}
-
-function detach(): void {
-  if (!attached) return;
-  attached = false;
-  flush();
-  freeEverything();
-  if (ctrl) {
-    Atomics.store(ctrl, C_STATUS, STATUS_DETACHED);
-    Atomics.notify(ctrl, C_STATUS);
-  }
-  ctrl = null;
-}
-
-// Attach requests that arrive while the device is still being created
-// (the page starts this worker lazily, on the card's first attach).
-let deviceReady: Promise<boolean> | null = null;
-
-self.onmessage = (ev: MessageEvent<InMsg>) => {
-  const msg = ev.data;
-  if (msg.type === 'init') {
-    deviceReady = initDevice(msg.canvas).catch(() => false);
-    void deviceReady.then((ok) => postMessage({ type: ok ? 'ready' : 'unavailable' }));
-  } else if (msg.type === 'attach') {
-    void (deviceReady ?? Promise.resolve(false)).then((ok) => {
-      if (ok && !lost) attach(msg.memory, msg.ctrl);
-    });
-  } else if (msg.type === 'detach') {
-    if (ctrl && ctrlBase === msg.ctrl) detach();
-  } else if (msg.type === 'stats') {
-    const now = performance.now();
-    postMessage({
-      type: 'stats',
-      seconds: (now - st.t0) / 1000,
-      ...st,
-      t0: undefined,
-      attached,
-      lost,
-      loopRunning,
-      readbackPending,
-      readbackForMs: readbackSince ? now - readbackSince : 0,
-      drainingForMs: drainingSince ? now - drainingSince : 0,
-      consumed: consumed >>> 0,
-      head: ctrl ? Atomics.load(ctrl, C_HEAD) >>> 0 : -1,
-      lastKind,
-      surfaces: surfaces.size,
-      atlases: atlases.size,
-      pipelines: pipelines.size,
-    });
-    Object.assign(st, {
-      t0: now,
-      records: 0,
-      bytes: 0,
-      drains: 0,
-      drainMs: 0,
-      drainMaxMs: 0,
-      readbacks: 0,
-      readbackMs: 0,
-      readbackMaxMs: 0,
-      presents: 0,
-      presentLagMaxMs: 0,
-      draws: 0,
-      idleWaits: 0,
-    });
-  } else if (msg.type === 'debug') {
-    postMessage({
-      type: 'debug',
-      attached,
-      lost,
-      loopRunning,
-      consumed,
-      head: ctrl ? Atomics.load(ctrl, C_HEAD) >>> 0 : -1,
-      ack: ctrl ? Atomics.load(ctrl, C_ACK) : -1,
-      status: ctrl ? Atomics.load(ctrl, C_STATUS) : -1,
-      readbackPending,
-      surfaces: surfaces.size,
-      atlases: atlases.size,
-      pipelines: pipelines.size,
-      lastKind,
-    });
-  }
-};
+runTakeoverWorker({
+  name: 'rage128-gpu',
+  magic: MAGIC,
+  version: PROTOCOL_VERSION,
+  fence: R_FENCE,
+  shutdown: R_SHUTDOWN,
+  initDevice,
+  unavailableReason: () => unavailableReason,
+  attached() {
+    presentsSeen = Atomics.load(ctrl!, C_PRESENTS_DONE) >>> 0;
+    uniformCursor = 0;
+    vertexCursor = 0;
+    freeEverything();
+  },
+  record,
+  flush,
+  freeAll: freeEverything,
+  debugInfo: () => ({
+    readbackPending,
+    surfaces: surfaces.size,
+    atlases: atlases.size,
+    pipelines: pipelines.size,
+  }),
+  statsInfo: (now) => ({
+    readbackPending,
+    readbackForMs: readbackSince ? now - readbackSince : 0,
+    surfaces: surfaces.size,
+    atlases: atlases.size,
+    pipelines: pipelines.size,
+  }),
+});

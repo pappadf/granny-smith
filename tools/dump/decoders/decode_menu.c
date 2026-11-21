@@ -31,10 +31,9 @@ int re_decode_menu(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt_fp
         fprintf(json_fp, "{\"error\":\"MENU too short\"}\n");
         return -1;
     }
-    int16_t menu_id = (int16_t)((bytes[0] << 8) | bytes[1]);
-    int16_t menu_proc = (int16_t)((bytes[6] << 8) | bytes[7]);
-    uint32_t enable_flags =
-        ((uint32_t)bytes[10] << 24) | ((uint32_t)bytes[11] << 16) | ((uint32_t)bytes[12] << 8) | bytes[13];
+    int16_t menu_id = RD_BE16S(bytes);
+    int16_t menu_proc = RD_BE16S(bytes + 6);
+    uint32_t enable_flags = RD_BE32(bytes + 10);
 
     char title[256];
     size_t off = 14;
@@ -43,7 +42,7 @@ int re_decode_menu(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt_fp
 
     fprintf(json_fp, "{\"menu_id\":%d,\"menu_proc\":%d,\"enable_flags\":\"0x%08x\",\"title\":", menu_id, menu_proc,
             enable_flags);
-    re_json_write_string(json_fp, title);
+    json_fputs(json_fp, title);
     fprintf(json_fp, ",\"items\":[");
     if (txt_fp)
         fprintf(txt_fp, "MENU %d: %s\n", menu_id, title);
@@ -69,7 +68,7 @@ int re_decode_menu(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt_fp
             fputc(',', json_fp);
         first = false;
         fprintf(json_fp, "{\"text\":");
-        re_json_write_string(json_fp, text);
+        json_fputs(json_fp, text);
         fprintf(json_fp, ",\"icon\":%u,\"cmd_key\":%u,\"mark\":%u,\"style\":\"0x%02x\"}", icon, cmd, mark, style);
         if (txt_fp) {
             fprintf(txt_fp, "  %-30s", text);
@@ -87,7 +86,7 @@ int re_decode_mbar(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt_fp
         fprintf(json_fp, "{\"error\":\"MBAR too short\"}\n");
         return -1;
     }
-    uint16_t n = (uint16_t)((bytes[0] << 8) | bytes[1]);
+    uint16_t n = RD_BE16(bytes);
     fprintf(json_fp, "{\"count\":%u,\"menus\":[", n);
     for (uint16_t i = 0; i < n; i++) {
         if (2 + (size_t)i * 2 + 2 > len)

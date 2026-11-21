@@ -17,6 +17,7 @@
 
 #include "pef_dump.h"
 
+#include "common.h"
 #include "pef.h"
 #include "ppc_disasm.h"
 #include "storage_util.h"
@@ -27,11 +28,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-// Big-endian word reader
-static uint32_t rd32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
-}
 
 // Label sources, best first: when two passes name the same address the
 // lower-numbered source wins.
@@ -94,7 +90,10 @@ static int pd_write_blob(const char *path, const void *bytes, size_t len) {
 // fopen for writing, with a message on failure.
 static FILE *pd_open(const char *dir, const char *name) {
     char path[PATH_MAX];
-    snprintf(path, sizeof(path), "%s/%s", dir, name);
+    if (!path_join(path, sizeof(path), dir, name)) {
+        fprintf(stderr, "re: output path '%s/%s' too long\n", dir, name);
+        return NULL;
+    }
     FILE *fp = fopen(path, "wb");
     if (!fp)
         fprintf(stderr, "re: cannot create '%s': %s\n", path, strerror(errno));
@@ -353,7 +352,7 @@ static void build_labels(pd_ctx_t *c) {
         }
         // bl targets: glue stubs are named after the import they reach
         for (uint32_t off = 0; off + 4 <= s->unpacked_size; off += 4) {
-            uint32_t w = rd32(s->contents + off);
+            uint32_t w = RD_BE32(s->contents + off);
             if ((w & 0xFC000003) != 0x48000001) // bl (AA=0, LK=1)
                 continue;
             int32_t disp = (int32_t)(w & 0x03FFFFFC);
@@ -362,7 +361,7 @@ static void build_labels(pd_ctx_t *c) {
             int64_t tgt = (int64_t)off + disp;
             if (tgt < 0 || tgt + 4 > (int64_t)s->unpacked_size)
                 continue;
-            int imp = toc_load_import(c, rd32(s->contents + tgt));
+            int imp = toc_load_import(c, RD_BE32(s->contents + tgt));
             if (imp >= 0) {
                 snprintf(buf, sizeof(buf), "glue_%s", pef->imports[imp].name);
                 sym_add(&c->syms[i], (uint32_t)tgt, SRC_GLUE, buf);
@@ -529,7 +528,7 @@ static void write_code_listing(const pd_ctx_t *c, int idx, FILE *fp) {
         const pd_sym_t *sym = sym_at(syms, off);
         if (sym)
             fprintf(fp, "\n%s:\n", sym->name);
-        uint32_t w = rd32(s->contents + off);
+        uint32_t w = RD_BE32(s->contents + off);
         // Traceback tables are data: show them as words, not instructions.
         while (next_tb < c->n_tb[idx] && c->tb[idx][next_tb].tb_end <= off)
             next_tb++;
@@ -572,21 +571,21 @@ static void write_manifest(const pd_ctx_t *c, const char *src_label, int disasm_
     char arch[16];
     ostype_str(pef->architecture, arch, sizeof(arch));
     fprintf(fp, "{\n  \"schema_version\": 1,\n  \"generator\": \"granny-smith dump v1 (pef)\",\n  \"source\": ");
-    re_json_write_string(fp, src_label);
+    json_fputs(fp, src_label);
     fprintf(fp, ",\n  \"container\": {\"architecture\": ");
-    re_json_write_string(fp, arch);
+    json_fputs(fp, arch);
     fprintf(fp,
             ", \"format_version\": %u, \"timestamp\": %u, \"current_version\": %u, \"old_def_version\": %u, "
             "\"old_imp_version\": %u},\n",
             pef->format_version, pef->date_time_stamp, pef->current_version, pef->old_def_version,
             pef->old_imp_version);
     fprintf(fp, "  \"warning\": ");
-    re_json_write_string(fp, pef->warning);
+    json_fputs(fp, pef->warning);
     fprintf(fp, ",\n  \"sections\": [\n");
     for (int i = 0; i < pef->section_count; i++) {
         const pef_section_t *s = &pef->sections[i];
         fprintf(fp, "    {\"index\": %d, \"label\": ", i);
-        re_json_write_string(fp, c->label[i]);
+        json_fputs(fp, c->label[i]);
         fprintf(fp, ", \"kind\": \"%s\", \"total_size\": %u, \"unpacked_size\": %u, \"packed_size\": %u, ",
                 pef_section_kind_name(s->kind), s->total_size, s->unpacked_size, s->packed_size);
         if (s->instantiated)
@@ -608,13 +607,13 @@ static void write_manifest(const pd_ctx_t *c, const char *src_label, int disasm_
     fprintf(fp, "  \"libraries\": [\n");
     for (size_t l = 0; l < pef->n_libraries; l++) {
         fprintf(fp, "    {\"name\": ");
-        re_json_write_string(fp, pef->libraries[l].name);
+        json_fputs(fp, pef->libraries[l].name);
         fprintf(fp, ", \"symbols\": [");
         bool first = true;
         for (size_t k = 0; k < pef->n_imports; k++)
             if (pef->imports[k].library == (int)l) {
                 fprintf(fp, "%s", first ? "" : ", ");
-                re_json_write_string(fp, pef->imports[k].name);
+                json_fputs(fp, pef->imports[k].name);
                 first = false;
             }
         fprintf(fp, "]}%s\n", l + 1 < pef->n_libraries ? "," : "");
@@ -623,7 +622,7 @@ static void write_manifest(const pd_ctx_t *c, const char *src_label, int disasm_
     for (size_t i = 0; i < pef->n_exports; i++) {
         const pef_export_t *ex = &pef->exports[i];
         fprintf(fp, "    {\"name\": ");
-        re_json_write_string(fp, ex->name);
+        json_fputs(fp, ex->name);
         fprintf(fp, ", \"class\": \"%s\", \"section\": %d, \"value\": %u}%s\n", pef_symbol_class_name(ex->sym_class),
                 ex->section, ex->value, i + 1 < pef->n_exports ? "," : "");
     }

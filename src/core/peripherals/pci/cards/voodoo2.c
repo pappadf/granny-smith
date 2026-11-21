@@ -69,6 +69,7 @@
 #include "object.h"
 #include "pci.h"
 #include "platform_hooks.h"
+#include "regfile.h"
 #include "scheduler.h"
 #include "system.h"
 #include "system_internal.h"
@@ -441,8 +442,6 @@ typedef struct voodoo2 {
     bool warned_cfg_unknown;
     bool warned_tex_read;
     bool warned_cmdfifo;
-
-    memory_interface_t bar_if;
 } voodoo2_t;
 
 // GS_V2_STATS=1 — the producer side of the decomposition: TSC ticks
@@ -471,11 +470,11 @@ static inline uint64_t v2_tsc(void) {
 // the goldens are indifferent and the CPU emulation gets the overlap.
 // -DGS_V2_RASTER_DEFAULT='"sw"' (EXTRA_CFLAGS) makes a build default to
 // the synchronous walker; pci_option="raster=..." overrides per boot.
-// -DGS_V2_THREAD_BACKEND=0 compiles the thread backend out of
+// -DGS_RASTER_THREAD_BACKEND=0 compiles the thread backend out of
 // voodoo2_raster.c; the default then falls back to the walker at
 // create time, but say so here so the default's name is honest too.
 #ifndef GS_V2_RASTER_DEFAULT
-#if defined(GS_V2_THREAD_BACKEND) && !GS_V2_THREAD_BACKEND
+#if defined(GS_RASTER_THREAD_BACKEND) && !GS_RASTER_THREAD_BACKEND
 #define GS_V2_RASTER_DEFAULT "sw"
 #else
 #define GS_V2_RASTER_DEFAULT "thread"
@@ -730,17 +729,17 @@ static bool v2_lfb_expand16(uint32_t fmt, uint32_t lanes, uint16_t d, uint32_t *
         c1 = (d >> 11) & 0x1Fu;
         c2 = (d >> 5) & 0x3Fu;
         c3 = d & 0x1Fu;
-        c1 = (c1 << 3) | (c1 >> 2);
-        c2 = (c2 << 2) | (c2 >> 4);
-        c3 = (c3 << 3) | (c3 >> 2);
+        c1 = display_expand5(c1);
+        c2 = display_expand6(c2);
+        c3 = display_expand5(c3);
         *a = 255;
     } else { // x-5-5-5 or 1-5-5-5
         c1 = (d >> 10) & 0x1Fu;
         c2 = (d >> 5) & 0x1Fu;
         c3 = d & 0x1Fu;
-        c1 = (c1 << 3) | (c1 >> 2);
-        c2 = (c2 << 3) | (c2 >> 2);
-        c3 = (c3 << 3) | (c3 >> 2);
+        c1 = display_expand5(c1);
+        c2 = display_expand5(c2);
+        c3 = display_expand5(c3);
         if (fmt == 2u || fmt == 14u) {
             *a = (d >> 15) ? 255u : 0u;
             has_a = true;
@@ -2426,24 +2425,8 @@ static uint8_t v2_bar_rd8(voodoo2_t *v, uint32_t off, bool peek) {
     return 0xFFu;
 }
 
-static uint8_t v2_bar_read8(void *ctx, uint32_t off) {
-    return v2_bar_rd8(ctx, off, false);
-}
-static uint16_t v2_bar_read16(void *ctx, uint32_t off) {
-    return v2_bar_rd16(ctx, off, false);
-}
-static uint32_t v2_bar_read32(void *ctx, uint32_t off) {
-    return v2_bar_rd32(ctx, off, false);
-}
-static uint8_t v2_bar_peek8(void *ctx, uint32_t off) {
-    return v2_bar_rd8(ctx, off, true);
-}
-static uint16_t v2_bar_peek16(void *ctx, uint32_t off) {
-    return v2_bar_rd16(ctx, off, true);
-}
-static uint32_t v2_bar_peek32(void *ctx, uint32_t off) {
-    return v2_bar_rd32(ctx, off, true);
-}
+// The guest's read_* and the debugger's peek_* around the BAR's rd8/16/32
+MEMORY_READ_FACE(v2_bar)
 
 static void v2_bar_write8(void *ctx, uint32_t off, uint8_t data) {
     voodoo2_t *v = (voodoo2_t *)ctx;
@@ -2521,24 +2504,23 @@ static bool v2_cfg_read(pci_device_t *dev, uint32_t reg, uint32_t *out) {
 
 static bool v2_cfg_write(pci_device_t *dev, uint32_t reg, uint32_t byte, uint8_t value) {
     voodoo2_t *v = (voodoo2_t *)dev->priv;
-    uint32_t shift = 8u * byte, mask = 0xFFu << shift;
     switch (reg) {
     case CFG_INIT_ENABLE:
-        v->init_enable = (v->init_enable & ~mask) | ((uint32_t)value << shift);
+        le_lane8_set(&v->init_enable, byte, value);
         return true;
     case CFG_BUS_SNOOP0:
-        v->bus_snoop[0] = (v->bus_snoop[0] & ~mask) | ((uint32_t)value << shift);
+        le_lane8_set(&v->bus_snoop[0], byte, value);
         return true;
     case CFG_BUS_SNOOP1:
-        v->bus_snoop[1] = (v->bus_snoop[1] & ~mask) | ((uint32_t)value << shift);
+        le_lane8_set(&v->bus_snoop[1], byte, value);
         return true;
     case CFG_STATUS:
         return true; // the alias is read-only
     case CFG_SCRATCH:
-        v->cfg_scratch = (v->cfg_scratch & ~mask) | ((uint32_t)value << shift);
+        le_lane8_set(&v->cfg_scratch, byte, value);
         return true;
     case CFG_SIPROCESS:
-        v->si_process = (v->si_process & ~mask) | ((uint32_t)value << shift);
+        le_lane8_set(&v->si_process, byte, value);
         return true;
     default:
         if (reg >= 0x58u && !v->warned_cfg_unknown) {
@@ -2624,9 +2606,7 @@ static void v2_teardown(pci_device_t *dev, config_t *cfg) {
     free(v->fb_ram);
     free(v->scanout);
     for (int t = 0; t < V2_NUM_TMUS; t++)
-        free(v->tex_ram[t]);
-    free(v);
-    dev->priv = NULL;
+        free(v->tex_ram[t]); // `v` itself is the bus's (priv_size)
 }
 
 static const char *v2_name(const pci_device_t *dev) {
@@ -3444,37 +3424,29 @@ static void v2_attach_objects(pci_device_t *dev, struct object *card_node) {
 // Options, factory, and the card kind
 // ============================================================
 
-// No ADVERTISED options: the two the card accepts — the board memory
-// and the rasteriser — are not choices a user should have to make.
-// Nothing needs the 8 MB board, and the rasteriser is the difference
-// between the two REGISTERED KINDS below: "voodoo2" draws exactly on its
-// worker thread, "voodoo2_webgpu" on the host GPU.  Both keys stay
+// One ADVERTISED option, the rasteriser (v2_options below).  The board
+// memory is not a choice a user should have to make -- nothing needs the
+// 8 MB board -- and neither are the rasteriser's other backends; they stay
 // accepted through pci_option for the tests and the terminal:
-// memory=8m|12m, raster=thread|sw|null|webgpu.
+// memory=8m|12m, raster=thread|sw|null.
 
 static bool v2_accepts_option(const char *key, const char *value) {
     if (strcmp(key, "memory") == 0)
         return strcmp(value, "8m") == 0 || strcmp(value, "12m") == 0;
     if (strcmp(key, "raster") == 0)
-        return strcmp(value, "thread") == 0 || strcmp(value, "sw") == 0 || strcmp(value, "null") == 0 ||
-               strcmp(value, "webgpu") == 0;
+        return strcmp(value, "thread") == 0 || strcmp(value, "sw") == 0 || strcmp(value, "null") == 0;
     return false;
 }
 
-// The one builder both kinds share; they differ only in the rasteriser used
-// when the document names none (`default_raster`).
-static pci_device_t *v2_build(int slot_index, config_t *cfg, const slot_opts_t *opts, const char *default_raster) {
-    pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
-    voodoo2_t *v = (voodoo2_t *)calloc(1, sizeof(*v));
-    if (!dev || !v) {
-        free(dev);
-        free(v);
-        return NULL;
-    }
-    dev->ops = &v2_ops;
-    dev->decl = &v2_decl;
-    dev->priv = v;
-    pci_cfg_reset(dev); // power-on header state, including status_reset
+// The one BAR face; the card rides beside the table at the mapping.
+MEMORY_IFACE(v2_bar);
+
+// The card's initialiser: the bus has allocated `dev` and its voodoo2_t and
+// reset the header.  The WebGPU variant kind is built here too, with its
+// raster=webgpu default merged into `opts` by the bus.
+static int v2_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
+    (void)rom;
+    voodoo2_t *v = (voodoo2_t *)dev->priv;
     v->dev = dev;
     v->cfg = cfg;
 
@@ -3492,7 +3464,7 @@ static pci_device_t *v2_build(int slot_index, config_t *cfg, const slot_opts_t *
     v->tgt.tex[0] = v->tex_ram[0];
     v->tgt.tex[1] = v->tex_ram[1];
     const char *raster = slot_opts_option(opts, "raster");
-    v->raster = v2_raster_create(raster ? raster : default_raster, &v->tgt, v2_build_state, v);
+    v->raster = v2_raster_create(raster ? raster : V2_DEFAULT_RASTER, &v->tgt, v2_build_state, v);
     {
         const char *st = getenv("GS_V2_STATS");
         s_prod_stats = st && *st && *st != '0';
@@ -3505,49 +3477,29 @@ static pci_device_t *v2_build(int slot_index, config_t *cfg, const slot_opts_t *
         free(v->scanout);
         free(v->tex_ram[0]);
         free(v->tex_ram[1]);
-        free(v);
-        free(dev);
-        return NULL;
+        return -1;
     }
 
     v2_reset(dev, cfg);
 
-    v->bar_if.read_uint8 = v2_bar_read8;
-    v->bar_if.read_uint16 = v2_bar_read16;
-    v->bar_if.read_uint32 = v2_bar_read32;
-    v->bar_if.write_uint8 = v2_bar_write8;
-    v->bar_if.write_uint16 = v2_bar_write16;
-    v->bar_if.write_uint32 = v2_bar_write32;
-    v->bar_if.peek_uint8 = v2_bar_peek8;
-    v->bar_if.peek_uint16 = v2_bar_peek16;
-    v->bar_if.peek_uint32 = v2_bar_peek32;
-    pci_bar_backing_iface(dev, 0, &v->bar_if, v);
+    pci_bar_backing_iface(dev, 0, &v2_bar_iface, v);
 
-    LOG(1, "seated in slot %d: 4 MB framebuffer + 2 x %u MB texture (%u MB board), raster backend %s", slot_index,
+    LOG(1, "seated in slot %d: 4 MB framebuffer + 2 x %u MB texture (%u MB board), raster backend %s", dev->slot_index,
         v->tex_size >> 20, (V2_FB_SIZE + 2u * v->tex_size) >> 20, v2_raster_name(v->raster));
-    return dev;
-}
-
-static pci_device_t *v2_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
-    (void)rom;
-    return v2_build(slot_index, cfg, opts, V2_DEFAULT_RASTER);
+    return 0;
 }
 
 // The WebGPU variant: the same card, rasterised by the host's GPU unless
 // the boot document named a rasteriser itself.  Falls back to the exact
 // thread backend at creation where no GPU worker attaches (a checkpoint
 // restored without WebGPU, a native build), which regs.raster reports.
-static pci_device_t *v2_webgpu_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
-    (void)rom;
-    return v2_build(slot_index, cfg, opts, "webgpu");
-}
-
 // Offered only where a WebGPU device exists (the page writes the answer
 // before it reports ready, so no boot or catalog read precedes it);
 // registered everywhere so the id resolves regardless.
-static bool v2_webgpu_offered(void) {
-    return platform_v2gpu_available();
-}
+static const pci_option_default_t v2_webgpu_defaults[] = {
+    {"raster", "webgpu"},
+    {NULL,     NULL    },
+};
 
 // The rasteriser is the one option a user is offered: the emulator's own
 // (software) or the host GPU's, where the host has one.  WebGPU is a way of
@@ -3579,7 +3531,10 @@ const pci_card_kind_t voodoo2_kind = {
                         // never retire a machine's builtin-fallback video
     .monitors = NULL, // it drives a monitor, but it is not the machine's
                       // display device
-    .factory = v2_factory,
+    .ops = &v2_ops,
+    .decl = &v2_decl,
+    .priv_size = sizeof(voodoo2_t),
+    .init = v2_init,
     .options = v2_options,
     .accepts_option = v2_accepts_option,
     .attach_objects = v2_attach_objects,
@@ -3592,10 +3547,8 @@ const pci_card_kind_t voodoo2_webgpu_kind = {
     .requires_prom = false,
     .card_class = "3d",
     .monitors = NULL,
-    .factory = v2_webgpu_factory,
-    .options = NULL,
-    .accepts_option = v2_accepts_option,
     .attach_objects = v2_attach_objects,
-    .offered = v2_webgpu_offered,
+    .offered = platform_v2gpu_available,
     .variant_of = "voodoo2", // its "Rendering: WebGPU" option
+    .variant_defaults = v2_webgpu_defaults,
 };

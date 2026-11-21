@@ -7,7 +7,7 @@ TEST_SRCS    := test.c
 # hooks the SCSI bus model reaches for; from support/ it takes only the
 # assert stub.
 TEST_HARNESS := none
-STUBS        := assert
+STUBS        := assert checkpoint_strings
 EXTRA_SRCS   := ../../../../src/core/job/seam.c \
                 ../../../../src/core/peripherals/ata.c \
                 ../../../../src/core/peripherals/scsi.c \
@@ -20,7 +20,8 @@ EXTRA_SRCS   := ../../../../src/core/job/seam.c \
                 ../../../../src/core/object/value.c \
                 ../../../../src/core/object/meta.c \
                 ../../../../src/core/object/api.c \
-                ../../../../src/core/object/value_format.c
+                ../../../../src/core/object/json_value.c \
+                ../../../../src/core/object/value_format.c ../../../../src/core/vbuf.c
 # scsi.c identifies CD-ROM contents through the format registry
 # (image_source in image_part.c), as in the other SCSI suites.
 EXTRA_SRCS += ../../../../src/core/storage/image_part.c
@@ -28,4 +29,6 @@ USE_SOURCE_LAYER := 1
 EXTRA_SRCS += ../../../../src/core/storage/image_iso9660.c
 # The real image_t accessors; the rest of the image layer is faked here
 EXTRA_SRCS += ../../../../src/core/storage/image_access.c
+# The drive-to-image checkpoint reference the media controllers write
+EXTRA_SRCS += ../../../../src/core/storage/image_ref.c
 include ../../common.mk

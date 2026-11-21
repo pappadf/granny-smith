@@ -11,23 +11,13 @@
 //   - rejection of non-COFF buffers
 
 #include "coff.h"
+#include "common.h"
 #include "test_assert.h"
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-static void w_u16(uint8_t *p, uint16_t v) {
-    p[0] = (uint8_t)(v >> 8);
-    p[1] = (uint8_t)v;
-}
-static void w_u32(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v >> 24);
-    p[1] = (uint8_t)(v >> 16);
-    p[2] = (uint8_t)(v >> 8);
-    p[3] = (uint8_t)v;
-}
 
 // Build a minimal COFF M68K binary with two sections (.text, .data),
 // three symbols (one with a long name forcing string-table use, plus
@@ -80,39 +70,39 @@ static uint8_t *build_coff(size_t *out_len) {
         return NULL;
 
     // filhdr
-    w_u16(buf + filhdr_off + 0, 0x0150); // f_magic
-    w_u16(buf + filhdr_off + 2, 2); // f_nscns
-    w_u32(buf + filhdr_off + 4, 0x12345678); // f_timdat
-    w_u32(buf + filhdr_off + 8, (uint32_t)symtab_off); // f_symptr
-    w_u32(buf + filhdr_off + 12, (uint32_t)n_symbols); // f_nsyms
-    w_u16(buf + filhdr_off + 16, 28); // f_opthdr
-    w_u16(buf + filhdr_off + 18, 0x0203); // f_flags
+    WR_BE16(buf + filhdr_off + 0, 0x0150); // f_magic
+    WR_BE16(buf + filhdr_off + 2, 2); // f_nscns
+    WR_BE32(buf + filhdr_off + 4, 0x12345678); // f_timdat
+    WR_BE32(buf + filhdr_off + 8, (uint32_t)symtab_off); // f_symptr
+    WR_BE32(buf + filhdr_off + 12, (uint32_t)n_symbols); // f_nsyms
+    WR_BE16(buf + filhdr_off + 16, 28); // f_opthdr
+    WR_BE16(buf + filhdr_off + 18, 0x0203); // f_flags
 
     // aouthdr
-    w_u16(buf + opthdr_off + 0, 0x0108); // magic
-    w_u16(buf + opthdr_off + 2, 0); // vstamp
-    w_u32(buf + opthdr_off + 4, 4); // tsize
-    w_u32(buf + opthdr_off + 8, 4); // dsize
-    w_u32(buf + opthdr_off + 12, 0); // bsize
-    w_u32(buf + opthdr_off + 16, 0x10000000); // entry
-    w_u32(buf + opthdr_off + 20, 0x10000000); // text_start
-    w_u32(buf + opthdr_off + 24, 0x11000000); // data_start
+    WR_BE16(buf + opthdr_off + 0, 0x0108); // magic
+    WR_BE16(buf + opthdr_off + 2, 0); // vstamp
+    WR_BE32(buf + opthdr_off + 4, 4); // tsize
+    WR_BE32(buf + opthdr_off + 8, 4); // dsize
+    WR_BE32(buf + opthdr_off + 12, 0); // bsize
+    WR_BE32(buf + opthdr_off + 16, 0x10000000); // entry
+    WR_BE32(buf + opthdr_off + 20, 0x10000000); // text_start
+    WR_BE32(buf + opthdr_off + 24, 0x11000000); // data_start
 
     // .text section header
     memcpy(buf + scn1_off + 0, ".text\0\0\0", 8);
-    w_u32(buf + scn1_off + 8, 0x10000000); // s_paddr
-    w_u32(buf + scn1_off + 12, 0x10000000); // s_vaddr
-    w_u32(buf + scn1_off + 16, 4); // s_size
-    w_u32(buf + scn1_off + 20, (uint32_t)text_raw_off); // s_scnptr
-    w_u32(buf + scn1_off + 36, 0x20); // s_flags = STYP_TEXT
+    WR_BE32(buf + scn1_off + 8, 0x10000000); // s_paddr
+    WR_BE32(buf + scn1_off + 12, 0x10000000); // s_vaddr
+    WR_BE32(buf + scn1_off + 16, 4); // s_size
+    WR_BE32(buf + scn1_off + 20, (uint32_t)text_raw_off); // s_scnptr
+    WR_BE32(buf + scn1_off + 36, 0x20); // s_flags = STYP_TEXT
 
     // .data section header
     memcpy(buf + scn2_off + 0, ".data\0\0\0", 8);
-    w_u32(buf + scn2_off + 8, 0x11000000);
-    w_u32(buf + scn2_off + 12, 0x11000000);
-    w_u32(buf + scn2_off + 16, 4);
-    w_u32(buf + scn2_off + 20, (uint32_t)data_raw_off);
-    w_u32(buf + scn2_off + 36, 0x40); // STYP_DATA
+    WR_BE32(buf + scn2_off + 8, 0x11000000);
+    WR_BE32(buf + scn2_off + 12, 0x11000000);
+    WR_BE32(buf + scn2_off + 16, 4);
+    WR_BE32(buf + scn2_off + 20, (uint32_t)data_raw_off);
+    WR_BE32(buf + scn2_off + 36, 0x40); // STYP_DATA
 
     // Section raw bytes
     memcpy(buf + text_raw_off, text_bytes, 4);
@@ -122,9 +112,9 @@ static uint8_t *build_coff(size_t *out_len) {
     // section=1 (.text), sclass=C_EXT=2, n_aux=1 (forcing skip of next).
     uint8_t *s0 = buf + symtab_off;
     memcpy(s0 + 0, "_start\0\0", 8);
-    w_u32(s0 + 8, 0x10000000);
-    w_u16(s0 + 12, 1); // scnum
-    w_u16(s0 + 14, 0); // type
+    WR_BE32(s0 + 8, 0x10000000);
+    WR_BE16(s0 + 12, 1); // scnum
+    WR_BE16(s0 + 14, 0); // type
     s0[16] = COFF_C_EXT;
     s0[17] = 1; // n_aux
 
@@ -138,17 +128,17 @@ static uint8_t *build_coff(size_t *out_len) {
     // first u32 is 0, second u32 is the offset within the string table.
     // String table offset 4 = first byte after the length prefix.
     uint8_t *s2 = buf + symtab_off + 36;
-    w_u32(s2 + 0, 0);
-    w_u32(s2 + 4, 4); // offset 4 = "very_long_function_name"
-    w_u32(s2 + 8, 0x11000000);
-    w_u16(s2 + 12, 2); // .data
-    w_u16(s2 + 14, 0);
+    WR_BE32(s2 + 0, 0);
+    WR_BE32(s2 + 4, 4); // offset 4 = "very_long_function_name"
+    WR_BE32(s2 + 8, 0x11000000);
+    WR_BE16(s2 + 12, 2); // .data
+    WR_BE16(s2 + 14, 0);
     s2[16] = COFF_C_STAT;
     s2[17] = 0;
 
     // String table: length prefix at +0 (includes the 4-byte length
     // itself), then "very_long_function_name\0".
-    w_u32(buf + strtab_off + 0, (uint32_t)strtab_len);
+    WR_BE32(buf + strtab_off + 0, (uint32_t)strtab_len);
     memcpy(buf + strtab_off + 4, long_name, long_name_len);
     // Trailing NUL plus optional even-padding byte already zero from calloc.
 

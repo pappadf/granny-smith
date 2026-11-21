@@ -45,7 +45,7 @@ LOG_USE_CATEGORY_NAME("scheduler");
 #define CYCLES_PER_INSTR_DEFAULT 12
 // Fallback clock, used only until a machine calls scheduler_set_frequency().
 // Every substrate now does so from hw_profile_t.freq -- five call sites, three
-// direct and the rest through mac030_build_core -- so no machine's timing
+// direct and the rest through m68k_board_build_core -- so no machine's timing
 // depends on this value any more.  It stays for the unit-test harness, which
 // builds a scheduler with no profile behind it.
 #define MAC_CPU_FREQUENCY 7833600.0

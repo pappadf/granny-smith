@@ -193,4 +193,19 @@ bool declrom_load_vrom_card(struct nubus_card *card, const char *card_id, const 
 bool declrom_install_builtin(struct nubus_card *card, const char *card_id, const uint8_t *chip, size_t chip_size,
                              uint8_t *bus_buf, size_t bus_size);
 
+// Seat a card's declaration ROM, the bus's step before ops->init for a kind
+// with declrom_bus_size (card.h): allocate card->declrom at that size, then
+// generate the substitute (opts->substitute; a generation failure leaves the
+// ROM zero-filled and declrom_size 0, and the card up) or load Apple's
+// through declrom_load_vrom_card.  Apple's ROM that cannot be loaded fails
+// the seat -- the buffer is freed and the slot stays empty -- unless the kind
+// falls back to its substitute (declrom_falls_back), which also flags
+// card->substitute and, on a restore, the checkpoint's error.  The bus owns
+// the buffer either way.
+struct nubus_card_kind;
+struct slot_opts;
+struct checkpoint;
+bool declrom_seat(struct nubus_card *card, const struct nubus_card_kind *kind, const struct slot_opts *opts,
+                  struct checkpoint *cp);
+
 #endif // NUBUS_DECLROM_H

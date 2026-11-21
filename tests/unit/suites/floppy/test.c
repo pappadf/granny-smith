@@ -10,9 +10,11 @@
 // zone geometry each existed twice) was cheap to make safe with a round-trip
 // test and dangerous without one.  These tests exist to make the codec merge
 // safe -- they pin the behaviour that must survive it -- and to catch the class
-// of bug test_track_rpm and test_codeword_round_trip describe.
+// of bug test_track_rpm describes.  The codec itself (storage/gcr.c: tables,
+// sector nibblizer, address field) has its own suite, suites/gcr; here it is
+// exercised through the IWM / SWIM track encoder and decoder.
 //
-// floppy_gcr.c is #included so the tests can reach its static codec.
+// floppy_gcr.c is #included so the tests can reach its static track codec.
 // Deterministic; no emulator, ROM, MMU or scheduler.
 
 #include "gs_assert.h"
@@ -86,32 +88,6 @@ TEST(test_track_length_by_zone) {
     // Every track must hold its sectors' encoded form with room for gaps.
     for (int t = 0; t < NUM_TRACKS; t++)
         ASSERT_TRUE(iwm_track_length(t) > (size_t)iwm_sectors_per_track(t) * 700u);
-}
-
-// ---------------------------------------------------------------------------
-// The GCR codeword table
-// ---------------------------------------------------------------------------
-
-// 64 six-bit values map to 64 legal disk bytes.  Two properties the decoder
-// depends on, and which decode_gcr's lookup shows are not free: every codeword
-// has bit 7 set, and the table is strictly increasing (so it is a bijection).
-TEST(test_codeword_table_shape) {
-    for (int i = 0; i < 64; i++) {
-        ASSERT_TRUE(gcr_codewords[i] >= 0x96);
-        ASSERT_TRUE((gcr_codewords[i] & 0x80) != 0);
-        if (i > 0)
-            ASSERT_TRUE(gcr_codewords[i] > gcr_codewords[i - 1]);
-    }
-}
-
-// decode_gcr keys its lookup on `codeword & 0x7F`.  Since every legal codeword
-// has bit 7 set, that aliases 64 illegal bytes ($16 -> $96, $1F -> $9F, ...)
-// onto legal values -- defeating the very check meant to catch corrupt nibbles.
-// This test pins the round trip that must hold, and records the aliasing so the
-// fix has a home.
-TEST(test_codeword_round_trip) {
-    for (int i = 0; i < 64; i++)
-        ASSERT_EQ_INT(decode_gcr(gcr_codewords[i]), i);
 }
 
 // ---------------------------------------------------------------------------
@@ -592,9 +568,9 @@ TEST(test_decode_sector_rejects_corruption) {
 
     // A byte that is not a legal codeword must be refused, not aliased.  $16
     // is exactly the case the old `& 0x7F` lookup folded onto $96.
-    ASSERT_EQ_INT(decode_gcr(0x16), GCR_BAD_CODEWORD);
-    ASSERT_EQ_INT(decode_gcr(0x00), GCR_BAD_CODEWORD);
-    ASSERT_EQ_INT(decode_gcr(0x95), GCR_BAD_CODEWORD);
+    ASSERT_EQ_INT(gcr_decode6[0x16], GCR_BAD_CODEWORD);
+    ASSERT_EQ_INT(gcr_decode6[0x00], GCR_BAD_CODEWORD);
+    ASSERT_EQ_INT(gcr_decode6[0x95], GCR_BAD_CODEWORD);
     uint8_t save = mark[3];
     mark[3] = 0x16;
     ASSERT_TRUE(decode_sector(out_tag, out, mark, end, &t, &sd, &sc) == NULL);
@@ -609,47 +585,86 @@ TEST(test_decode_sector_rejects_corruption) {
     ASSERT_TRUE(decode_sector(out_tag, out, buf, buf + sizeof buf, &t, &sd, &sc) == NULL);
 }
 
-// The two forms of the checksum chain must agree.  ENCODE_TRIPLET is the
-// whole-track variant (advances a source pointer, captures in place);
-// gcr_encode_triplet is the DMA-stream variant SWIM3 uses.  They were two
-// independent transcriptions of the same subtle algorithm with nothing holding
-// them together; this is what holds them together.
-TEST(test_triplet_forms_agree) {
-    uint8_t src[3 * 64];
-    for (unsigned i = 0; i < sizeof src; i++)
-        src[i] = (uint8_t)(i * 31 + 7);
+// FNV-1a over `n` bytes: a compact fingerprint for the golden encodings.
+static uint32_t fnv1a(const uint8_t *p, size_t n) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < n; i++)
+        h = (h ^ p[i]) * 16777619u;
+    return h;
+}
 
-    // Function form over the whole buffer.
-    uint8_t fn_out[4 * 64];
-    uint16_t fa = 0, fb = 0, fc = 0;
-    for (unsigned i = 0; i < sizeof src; i += 3)
-        gcr_encode_triplet(src + i, &fa, &fb, &fc, fn_out + (i / 3) * 4);
+// The bytes encode_sector lays down are on disk (and in checkpoints' track
+// buffers): pinned byte for byte, with a good and a deliberately bad data
+// checksum, on an outer double-sided and an inner single-sided track.
+TEST(test_encode_sector_golden) {
+    static uint8_t buf[1024];
+    uint8_t data[512], tag[12];
+    for (int i = 0; i < 512; i++)
+        data[i] = (uint8_t)(i * 37 + 11);
+    for (int i = 0; i < 12; i++)
+        tag[i] = (uint8_t)(0x5C + i * 3);
+    static const struct {
+        int track, sector, side, sides;
+        bool bad;
+        uint32_t want;
+    } cases[] = {
+        {37, 3, 1, 2, false, 0x9C52AA3Eu},
+        {37, 3, 1, 2, true,  0xF26E7F97u},
+        {70, 7, 0, 1, false, 0xC186A1BAu},
+        {79, 0, 1, 2, false, 0x97C06971u},
+    };
+    for (size_t c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+        memset(buf, 0, sizeof buf);
+        uint8_t *end =
+            encode_sector(buf, tag, data, cases[c].track, cases[c].sector, cases[c].side, cases[c].sides, cases[c].bad);
+        // sync 5, marks 3, address 5, slip 3; sync 5, marks 3, sector 1, 703 values, slip 3
+        ASSERT_EQ_INT((int)(end - buf), 731);
+        uint32_t h = fnv1a(buf, (size_t)(end - buf));
+        if (h != cases[c].want)
+            printf("  case %zu: fnv 0x%08X\n", c, h);
+        ASSERT_EQ_INT((int)h, (int)cases[c].want);
+    }
+}
 
-    // Macro form over the same buffer.
-    uint8_t mac_out[4 * 64];
-    uint8_t *dst = mac_out;
-    const uint8_t *sp = src;
-    uint16_t ma = 0, mb = 0, mc = 0;
-    uint8_t ba, bb, bc;
-    for (unsigned i = 0; i < sizeof src; i += 3)
-        ENCODE_TRIPLET(sp, ma, mb, mc, ba, bb, bc);
-
-    // The macro emits ENCODED disk bytes (its GCR() applies the 6-to-8 table);
-    // the function emits the raw six-bit values the DMA stream carries.  Same
-    // chain, different output form -- so map one onto the other.
-    for (unsigned i = 0; i < sizeof fn_out; i++)
-        ASSERT_EQ_INT(mac_out[i], gcr_codewords[fn_out[i] & 0x3F]);
-    // ...and the checksum registers must have advanced identically.
-    ASSERT_EQ_INT((int)(fa & 0xFF), (int)(ma & 0xFF));
-    ASSERT_EQ_INT((int)(fb & 0xFF), (int)(mb & 0xFF));
-    ASSERT_EQ_INT((int)(fc & 0xFF), (int)(mc & 0xFF));
-
-    // Decode agrees too: the function form must invert the macro's output.
-    uint8_t back[3 * 64];
-    uint16_t da = 0, db = 0, dc = 0;
-    for (unsigned i = 0; i < sizeof src; i += 3)
-        gcr_decode_triplet(fn_out + (i / 3) * 4, &da, &db, &dc, back + i);
-    ASSERT_TRUE(memcmp(back, src, sizeof src) == 0);
+// A data field whose nibbles are not all legal codewords is refused even
+// when the corrupt byte happens to leave the checksum intact.  An illegal
+// byte decodes as $FF; put one where the legal codeword $FF (six-bit $3F)
+// stood under a high-bits nibble of %11, and the reassembled byte -- and so
+// the checksum -- is what it was.  The MOOF reader always refused it; the
+// IWM / SWIM path accepted it as data.
+TEST(test_decode_sector_rejects_illegal_data_codeword) {
+    static uint8_t buf[1024];
+    uint8_t data[512], tag[12], out[512], out_tag[12];
+    memset(tag, 0, sizeof tag);
+    bool planted = false;
+    for (uint32_t seed = 1; seed < 64 && !planted; seed++) {
+        for (int i = 0; i < 512; i++)
+            data[i] = (uint8_t)((i + 1) * seed * 2654435761u >> 24);
+        memset(buf, 0, sizeof buf);
+        uint8_t *end = encode_sector(buf, tag, data, 12, 2, 0, 2, false);
+        uint8_t *mark = find_address_mark(buf, end);
+        ASSERT_TRUE(mark != NULL);
+        int t, sd, sc;
+        ASSERT_TRUE(decode_sector(out_tag, out, mark, end, &t, &sd, &sc) != NULL);
+        // The 699 data nibbles start after the data mark and sector byte.
+        uint8_t *field = mark + 3 + 5 + 3 + 5 + 3 + 1; // marks, address, slip, sync, marks, sector
+        ASSERT_TRUE(field[-4] == 0xD5 && field[-3] == 0xAA && field[-2] == 0xAD);
+        // Groups of four: high bits, then the low six bits of three bytes.
+        for (int g = 0; g < 174 && !planted; g++) {
+            uint8_t *grp = field + g * 4;
+            uint8_t hi = gcr_decode6[grp[0]];
+            for (int k = 1; k <= 3 && !planted; k++) {
+                uint8_t hi_bits = (uint8_t)((hi << (2 * k)) & 0xC0);
+                if (grp[k] == 0xFF && hi_bits == 0xC0) {
+                    grp[k] = 0x16; // no codeword; decodes as $FF all the same
+                    planted = true;
+                }
+            }
+        }
+        if (planted)
+            ASSERT_TRUE(decode_sector(out_tag, out, mark, end, &t, &sd, &sc) == NULL);
+    }
+    ASSERT_TRUE(planted);
 }
 
 // ---------------------------------------------------------------------------
@@ -834,14 +849,13 @@ int main(void) {
     RUN(test_track_rpm);
     RUN(test_disk_image_offset);
     RUN(test_track_length_by_zone);
-    RUN(test_codeword_table_shape);
-    RUN(test_codeword_round_trip);
     RUN(test_sector_round_trip);
     RUN(test_sector_round_trip_edge_payloads);
     RUN(test_track_round_trip);
     RUN(test_track_unreadable_sector_fails_its_checksum);
     RUN(test_decode_sector_rejects_corruption);
-    RUN(test_triplet_forms_agree);
+    RUN(test_encode_sector_golden);
+    RUN(test_decode_sector_rejects_illegal_data_codeword);
     RUN(test_media_descriptor);
     RUN(test_media_class_vs_format);
     RUN(test_media_sector_offset);

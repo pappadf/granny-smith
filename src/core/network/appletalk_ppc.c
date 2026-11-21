@@ -943,18 +943,8 @@ int atalk_ppc_set_host_port(const char *name, bool enabled, char *err, size_t er
     // Published -- or renamed in place -- before the name is stored: a name
     // another machine holds leaves the port advertised as it was.  The old
     // advertisement was withdrawn first, so the port vanished.
-    atalk_nbp_service_desc_t desc = {
-        .object = port,
-        .type = PPC_NBP_TYPE,
-        .zone = "*",
-        .socket = PPC_HOST_SOCKET,
-        .node = ATALK_HOST_NODE,
-        .net = 0,
-    };
-    if (atalk_nbp_publish(&g_host->nbp, &desc) != 0) {
-        snprintf(err, err_len, "the name '%s' is already taken on the network", port);
+    if (atalk_nbp_rename(&g_host->nbp, "port name", port, PPC_NBP_TYPE, PPC_HOST_SOCKET, true, err, err_len) != 0)
         return -1;
-    }
     if (port != g_host->port)
         snprintf(g_host->port, sizeof(g_host->port), "%s", port);
     if (!g_host->enabled) {

@@ -27,15 +27,19 @@
 
 #include "tnt.h"
 
+#include "byte_store.h"
 #include "checkpoint.h"
 #include "dbdma.h"
+#include "escc_dbdma.h"
 #include "irq_controller.h"
 #include "log.h"
 #include "machine.h"
 #include "object.h"
+#include "object_order.h"
 #include "of_nvram.h"
 #include "pci.h"
 #include "ppc.h"
+#include "regfile.h"
 #include "scc.h"
 #include "scsi_53c96.h"
 #include "via.h"
@@ -421,67 +425,14 @@ static uint8_t *nvram_store(struct object *self) {
     return st ? st->gc.nvram : NULL;
 }
 
-static DEF_METHOD(nvram_method_peek) {
-    uint8_t *nv = nvram_store(self);
-    if (!nv)
-        return val_err("nvram not available");
-    uint64_t addr = argv[0].u;
-    if (addr >= TNT_NVRAM_SIZE)
-        return val_err("nvram.peek: offset 0x%llX is outside the %u-byte store", (unsigned long long)addr,
-                       TNT_NVRAM_SIZE);
-    return val_uint(1, nv[addr]);
-}
-
-static DEF_METHOD(nvram_method_poke) {
-    uint8_t *nv = nvram_store(self);
-    if (!nv)
-        return val_err("nvram not available");
-    uint64_t addr = argv[0].u;
-    const value_t *bytes = &argv[1];
-    if (bytes->kind != VK_BYTES || !bytes->bytes.p)
-        return val_err("nvram.poke: bytes argument must be VK_BYTES (use the :N width suffix, e.g. 0x80:1)");
-    size_t n = bytes->bytes.n;
-    if (n == 0)
-        return val_err("nvram.poke: bytes argument is empty");
-    if (addr >= TNT_NVRAM_SIZE || addr + n > TNT_NVRAM_SIZE)
-        return val_err("nvram.poke: write of %zu bytes at 0x%llX would overflow the %u-byte store", n,
-                       (unsigned long long)addr, TNT_NVRAM_SIZE);
-    memcpy(nv + addr, bytes->bytes.p, n);
-    return val_none();
-}
-
-static DEF_METHOD(nvram_method_dump) {
-    uint8_t *nv = nvram_store(self);
-    if (!nv)
-        return val_err("nvram not available");
-    uint64_t addr = argv[0].u;
-    uint64_t n = argv[1].u;
-    if (addr >= TNT_NVRAM_SIZE || n == 0 || addr + n > TNT_NVRAM_SIZE)
-        return val_err("nvram.dump: read of %llu bytes at 0x%llX would overflow the %u-byte store",
-                       (unsigned long long)n, (unsigned long long)addr, TNT_NVRAM_SIZE);
-    return val_bytes(nv + addr, (size_t)n);
-}
-
-static DEF_METHOD(nvram_method_snapshot) {
-    uint8_t *nv = nvram_store(self);
-    if (!nv)
-        return val_err("nvram not available");
-    return val_bytes(nv, TNT_NVRAM_SIZE);
-}
-
-// Whole-store restore from a snapshot: how a row seeds one boot's formatted
-// store into another.
-static DEF_METHOD(nvram_method_restore) {
-    uint8_t *nv = nvram_store(self);
-    if (!nv)
-        return val_err("nvram not available");
-    const value_t *bytes = &argv[0];
-    if (bytes->kind != VK_BYTES || bytes->bytes.n != TNT_NVRAM_SIZE || !bytes->bytes.p)
-        return val_err("nvram.restore: expected VK_BYTES of length %u (got len=%zu)", TNT_NVRAM_SIZE,
-                       bytes->kind == VK_BYTES ? bytes->bytes.n : 0);
-    memcpy(nv, bytes->bytes.p, TNT_NVRAM_SIZE);
-    return val_none();
-}
+// peek/poke/dump/snapshot/restore: the shared byte-store methods.
+static const byte_store_ops_t tnt_nvram_ops = {
+    .store = nvram_store,
+    .size = TNT_NVRAM_SIZE,
+    .what = "nvram",
+    .missing = "nvram not available",
+};
+BYTE_STORE_METHODS(nvram_method, tnt_nvram_ops)
 
 // `machine.nvram.clear()` — the battery pull, on every TNT board (the
 // Network Server's `machine.board.clear_nvram()` is the same call).
@@ -693,31 +644,20 @@ void tnt_gc_attach_object(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     if (!st || st->gc_object)
         return;
-    st->gc_object = object_new(&gc_class, cfg, "gc");
+    st->gc_object = object_attach_new(machine_object(), &gc_class, cfg, "gc", NULL, OBJ_ORDER_IO_CONTROLLER);
     if (!st->gc_object)
         return;
-    object_set_order(st->gc_object, 45);
-    object_attach(machine_object(), st->gc_object);
     // The non-volatile store beside it: machine.nvram.
-    st->nvram_object = object_new(&nvram_class, cfg, "nvram");
-    if (st->nvram_object) {
-        object_set_label(st->nvram_object, "NVRAM");
-        object_set_order(st->nvram_object, 46);
-        object_attach(machine_object(), st->nvram_object);
-    }
+    st->nvram_object = object_attach_new(machine_object(), &nvram_class, cfg, "nvram", "NVRAM", OBJ_ORDER_NVRAM);
 }
 
 void tnt_gc_detach_object(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     if (st && st->nvram_object) {
-        object_detach(st->nvram_object);
-        object_delete(st->nvram_object);
-        st->nvram_object = NULL;
+        object_destroy(&st->nvram_object);
     }
     if (st && st->gc_object) {
-        object_detach(st->gc_object);
-        object_delete(st->gc_object);
-        st->gc_object = NULL;
+        object_destroy(&st->gc_object);
     }
 }
 
@@ -788,245 +728,256 @@ void tnt_gc_pci_attach(config_t *cfg, pci_bus_t *bus, checkpoint_t *cp) {
     pci_device_part(cfg, cp, &st->gc_dev, "pci.gc");
 }
 
-// Map an ESCC-aperture offset (+$13000: B ctl +$00 / B data +$10 /
-// A ctl +$20 / A data +$30) onto the SCC cell's classic address pins
-// (A/B on address bit 1, D/C on bit 2 — the legacy-aperture layout the
-// shared model decodes natively).
-static uint32_t escc_pins(uint32_t off) {
-    uint32_t ab = (off >> 5) & 1u; // A channel at +$20
-    uint32_t dc = (off >> 4) & 1u; // data register at +$10
-    return (ab << 1) | (dc << 2);
-}
-
-// --- The ESCC's four DBDMA channels ------------------------------------------
+// --- The ESCC aperture and its four DBDMA channels --------------------------
 //
-// Grand Central gives each SCC channel a transmit and a receive DBDMA
-// channel (4/5 for A, 6/7 for B).  An OUTPUT command hands the port a run
-// of bytes, which go to the channel's data register one at a time -- the
-// same path as a CPU store to it, so local loopback (WR14 LOOP) and the
-// cross-channel cable behave as they do under PIO; an INPUT command asks
-// for what the channel has received, which the port serves from the
-// receive queue and kicks again whenever a data register is written.
-// (Bytes arriving from the host side -- `machine.scc.a.receive` -- reach
-// an INPUT program at its next kick; the diagnostic utility's DMA tests
-// are loopbacks and never wait on that.)  Fitted to the Network Server
-// Diagnostic Utility's serial DMA tests (SccDMA: channel 4 OUTPUT of an
-// 80-byte pattern, channel 5 INPUT of the loopback, byte-for-byte compare).
+// The aperture decode and the DBDMA ports are shared with Heathrow
+// (runtime/escc_dbdma.c).  Grand Central gives each SCC channel a transmit
+// and a receive DBDMA channel: 4/5 for A, 6/7 for B.
 
-#define SCC_DMA_TX(ch) (4u + 2u * (ch))
-#define SCC_DMA_RX(ch) (5u + 2u * (ch))
-
-static uint32_t scc_data_pins(unsigned ch) {
-    // The cell's address pins: A/B on bit 1 (A = 1), D/C on bit 2 -- so
-    // channel 0 (A) data is 6, channel 1 (B) data is 4 (escc_pins).
-    return (ch == 0 ? 2u : 0u) | 4u;
-}
-
-static void scc_dma_kick_rx(config_t *cfg) {
-    tnt_state_t *st = tnt_st(cfg);
-    if (!st->dbdma)
-        return;
-    for (unsigned ch = 0; ch < 2; ch++)
-        if (dbdma_active(st->dbdma, SCC_DMA_RX(ch)))
-            dbdma_kick(st->dbdma, SCC_DMA_RX(ch));
-}
-
-static int scc_port_out(void *ctx, const uint8_t *buf, int len) {
-    tnt_scc_dma_ctx_t *c = (tnt_scc_dma_ctx_t *)ctx;
-    const memory_interface_t *mi = scc_get_memory_interface(c->cfg->scc);
-    for (int n = 0; n < len; n++)
-        mi->write_uint8(c->cfg->scc, scc_data_pins(c->ch), buf[n]);
-    scc_dma_kick_rx(c->cfg);
-    return len;
-}
-
-static int scc_port_in(void *ctx, uint8_t *buf, int len) {
-    tnt_scc_dma_ctx_t *c = (tnt_scc_dma_ctx_t *)ctx;
-    const memory_interface_t *mi = scc_get_memory_interface(c->cfg->scc);
-    int n = 0;
-    while (n < len && scc_channel_rx_pending(c->cfg->scc, c->ch) > 0)
-        buf[n++] = mi->read_uint8(c->cfg->scc, scc_data_pins(c->ch));
-    return n;
-}
+#define SCC_DMA_TX_A 4 // channel A transmit (B transmit is 6)
+#define SCC_DMA_RX_A 5 // channel A receive (B receive is 7)
 
 void tnt_scc_dma_init(config_t *cfg) {
-    tnt_state_t *st = tnt_st(cfg);
-    for (unsigned ch = 0; ch < 2; ch++) {
-        st->scc_dma_ctx[ch].cfg = cfg;
-        st->scc_dma_ctx[ch].ch = ch;
-        dbdma_port_t tx = {.out = scc_port_out, .in = NULL, .s_bits = NULL, .ctx = &st->scc_dma_ctx[ch]};
-        dbdma_port_t rx = {.out = NULL, .in = scc_port_in, .s_bits = NULL, .ctx = &st->scc_dma_ctx[ch]};
-        dbdma_set_port(st->dbdma, SCC_DMA_TX(ch), &tx);
-        dbdma_set_port(st->dbdma, SCC_DMA_RX(ch), &rx);
-    }
+    escc_dbdma_init(&tnt_st(cfg)->escc_dma, cfg, tnt_st(cfg)->dbdma, SCC_DMA_TX_A, SCC_DMA_RX_A);
 }
 
-// One island byte: the guest's read, or an inspection (`peek`) routed to each
-// chip's side-effect-free peek.
-static uint8_t gc_access8(config_t *cfg, uint32_t offset, bool peek) {
-    uint32_t block = offset & 0x1F000u;
-    if (offset >= OFF_DBDMA && offset < OFF_DBDMA_END) {
-        // Byte j of a DBDMA channel's little-endian register: the SCSI
-        // Manager reads channel 0's device status bits (s0-s7) this way
-        int chan = (int)((offset - OFF_DBDMA) >> 8);
-        uint32_t reg = dbdma_reg_read(tnt_st(cfg)->dbdma, chan, offset & 0xFCu);
-        return (uint8_t)(reg >> (8 * (offset & 3u)));
-    }
-    switch (block) {
-    case OFF_VIA:
-    case OFF_VIA + 0x1000: // 16 regs at stride $200 span the 8 KB window
-        return memory_iface_read8(via_get_memory_interface(cfg->via1), cfg->via1, offset - OFF_VIA, peek);
-    case OFF_SCCLEG:
-        // Legacy aperture: +0 bCtl / +2 aCtl / +4 bData / +6 aData — the
-        // low offset bits carry the chip's A/B and D/C pins directly.
-        return memory_iface_read8(scc_get_memory_interface(cfg->scc), cfg->scc, offset - OFF_SCCLEG, peek);
-    case OFF_ESCC:
-        return memory_iface_read8(scc_get_memory_interface(cfg->scc), cfg->scc, escc_pins(offset - OFF_ESCC), peek);
-    case OFF_NVPORT:
-        return tnt_st(cfg)->gc.nvram_bank;
-    case OFF_NVDATA:
-        return nvram_read(cfg, offset - OFF_NVDATA);
-    case OFF_BOXID: {
-        // Byte j of the little-endian register (the ROM reads it both as
-        // lwbrx and byte-wise).  On the Network Servers this is Board
-        // Register 1 and the ROM reads bytes +0 and +1 only.
-        uint8_t b = (uint8_t)(tnt_gc_boxid(cfg) >> (8 * (offset & 3u)));
-        LOG(3, "BoxID byte read +%u -> $%02X", offset & 3u, b);
-        return b;
-    }
-    case OFF_LCDGB: // GBUS device 3 — LCD + timebase enable (ANS only)
-        if (tnt_board(cfg)->has_gbus)
-            return tnt_lcd_read8(cfg, offset - OFF_LCDGB);
-        break;
-    case OFF_EPROM: // Ethernet address PROM + MP doorbell
-        // On the dual-processor Macintosh card the chip select is the
-        // secondary-to-primary interrupt (mp.c); the read itself rings it.
-        if (!peek && tnt_mp_present(cfg))
-            tnt_mp_eprom_access(cfg);
-        // fall through
-    case OFF_BREG2: // Board Register 2 — the environmental halfword
-        if (tnt_board(cfg)->has_gbus)
-            return peek ? tnt_gbus_peek8(cfg, offset) : tnt_gbus_read8(cfg, offset);
-        if (block == OFF_EPROM && tnt_mp_present(cfg))
-            return 0;
-        break;
-    case OFF_RADACAL:
-        return peek ? tnt_control_rad_peek(cfg, offset - OFF_RADACAL) : tnt_control_rad_read(cfg, offset - OFF_RADACAL);
-    case OFF_SCSI0:
-        // 53C94: sixteen byte-wide registers on $10 centres.
-        {
-            unsigned reg = ((offset - OFF_SCSI0) >> 4) & 0xFu;
-            return peek ? scsi_53c96_peek(tnt_st(cfg)->scsi96, reg) : scsi_53c96_read(tnt_st(cfg)->scsi96, reg);
-        }
-    case OFF_SWIM3:
-        // SWIM3: sixteen byte-wide registers on $10 centres (swim3.c).
-        return peek ? tnt_swim3_peek(cfg, offset - OFF_SWIM3) : tnt_swim3_read(cfg, offset - OFF_SWIM3);
-    case OFF_MACE:
-        // MACE: thirty-two byte-wide registers on $10 centres (tnt_mace.c).
-        // Wired on the Macintosh boards only for now: the Network Servers
-        // carry the same cell, but their AIX/NT paths were validated
-        // against the open-bus aperture.
-        if (!tnt_board(cfg)->has_gbus)
-            return peek ? tnt_mace_peek(cfg, offset - OFF_MACE) : tnt_mace_read(cfg, offset - OFF_MACE);
-        break;
-    case OFF_MESH:
-        // Absent on the Network Servers (board delta #4): the aperture
-        // decodes nothing, so it falls through to the open-bus log.
-        if (tnt_board(cfg)->has_mesh)
-            return peek ? mesh_peek(tnt_st(cfg)->mesh, offset - OFF_MESH)
-                        : mesh_read(tnt_st(cfg)->mesh, offset - OFF_MESH);
-        LOG(1, "byte read of the absent MESH aperture +$%05X", offset);
-        return 0;
-    default:
-        break;
-    }
-    LOG(1, "byte read of unwired island offset +$%05X", offset);
-    return 0;
+// --- Island byte decode ------------------------------------------------------
+//
+// One row per register block, read / peek / write side by side, walked by the
+// shared I/O engine (board_io.h).  The board deltas (the Network Servers'
+// GBUS blocks, the Macintosh boards' MESH and MACE) are row guards, so each
+// block and its guard are written once for both directions.
+
+// The Network Server boards (Shiner) carry the GBUS island.
+static bool gc_has_gbus(config_t *cfg) {
+    return tnt_board(cfg)->has_gbus;
+}
+
+// The Macintosh boards: no GBUS island.  MACE is wired on these only for
+// now: the Network Servers carry the same cell, but their AIX/NT paths were
+// validated against the open-bus aperture.
+static bool gc_no_gbus(config_t *cfg) {
+    return !tnt_board(cfg)->has_gbus;
+}
+
+// MESH is absent on the Network Servers (board delta #4): the aperture
+// decodes nothing there.
+static bool gc_has_mesh(config_t *cfg) {
+    return tnt_board(cfg)->has_mesh;
+}
+
+// A byte store to a block that only answers reads (or only longwords):
+// nothing latches it.
+static void gc_open_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)cfg, (void)win_off;
+    LOG(1, "byte write of unwired island offset +$%05X = $%02X", addr, value);
+}
+
+// Byte j of a DBDMA channel's little-endian register: the SCSI Manager reads
+// channel 0's device status bits (s0-s7) this way.
+static uint8_t gc_dbdma_read8(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)addr;
+    uint32_t reg = dbdma_reg_read(tnt_st(cfg)->dbdma, (int)(win_off >> 8), win_off & 0xFCu);
+    return le_lane8(reg, win_off);
+}
+
+// 53C94: sixteen byte-wide registers on $10 centres (the row's STRIDE_16
+// hands over the register number).
+static uint8_t gc_scsi_read(config_t *cfg, uint32_t reg, uint32_t addr) {
+    (void)addr;
+    return scsi_53c96_read(tnt_st(cfg)->scsi96, reg);
+}
+static uint8_t gc_scsi_peek(config_t *cfg, uint32_t reg, uint32_t addr) {
+    (void)addr;
+    return scsi_53c96_peek(tnt_st(cfg)->scsi96, reg);
+}
+static void gc_scsi_write(config_t *cfg, uint32_t reg, uint32_t addr, uint8_t value) {
+    (void)addr;
+    tnt_state_t *st = tnt_st(cfg);
+    scsi_53c96_write(st->scsi96, reg, value);
+    // A command that raised DREQ (a DMA select's CDB, a DMA data phase)
+    // restarts DBDMA channel 0, which may have stalled waiting for it
+    if (st->dbdma && scsi_53c96_dreq(st->scsi96) && dbdma_active(st->dbdma, 0))
+        dbdma_kick(st->dbdma, 0);
+}
+
+// MACE: thirty-two byte-wide registers on $10 centres (tnt_mace.c).
+BOARD_IO_ROW_READ(gc_mace_read, tnt_mace_read)
+BOARD_IO_ROW_READ(gc_mace_peek, tnt_mace_peek)
+BOARD_IO_ROW_WRITE(gc_mace_write, tnt_mace_write)
+
+// The ESCC aperture: only the four channel registers (+$00..+$3F) reach the
+// cell (runtime/escc_dbdma.c).
+static uint8_t gc_escc_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)addr;
+    return escc_aperture_read(cfg->scc, win_off, false);
+}
+static uint8_t gc_escc_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)addr;
+    return escc_aperture_read(cfg->scc, win_off, true);
+}
+static void gc_escc_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)addr;
+    if (!escc_aperture_write(&tnt_st(cfg)->escc_dma, cfg->scc, win_off, value))
+        LOG(3, "ESCC +$%03X = $%02X (not a channel register; ignored)", win_off, value);
+}
+
+// SWIM3: sixteen byte-wide registers on $10 centres (swim3.c).
+BOARD_IO_ROW_READ(gc_swim3_read, tnt_swim3_read)
+BOARD_IO_ROW_READ(gc_swim3_peek, tnt_swim3_peek)
+BOARD_IO_ROW_WRITE(gc_swim3_write, tnt_swim3_write)
+
+// MESH, the internal-bus SCSI controller.
+static uint8_t gc_mesh_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)addr;
+    return mesh_read(tnt_st(cfg)->mesh, win_off);
+}
+static uint8_t gc_mesh_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)addr;
+    return mesh_peek(tnt_st(cfg)->mesh, win_off);
+}
+static void gc_mesh_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)addr;
+    mesh_write(tnt_st(cfg)->mesh, win_off, value);
+}
+
+// The GBUS blocks (the Ethernet address PROM + MP doorbell, Board Register
+// 2): gbus.c decodes them by island offset, which is the bus address here.
+static uint8_t gc_gbus_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off;
+    return tnt_gbus_read8(cfg, addr);
+}
+static uint8_t gc_gbus_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off;
+    return tnt_gbus_peek8(cfg, addr);
+}
+static void gc_gbus_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off;
+    tnt_gbus_write8(cfg, addr, value);
+}
+
+// The Ethernet-PROM chip select.  On the Network Servers it is a GBUS block
+// (above); on the dual-processor Macintosh card it is the secondary-to-
+// primary interrupt, which a read rings (mp.c) and which reads as 0 there.
+static bool gc_has_eprom(config_t *cfg) {
+    return tnt_board(cfg)->has_gbus || tnt_mp_present(cfg);
+}
+static uint8_t gc_eprom_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    if (tnt_mp_present(cfg))
+        tnt_mp_eprom_access(cfg);
+    return tnt_board(cfg)->has_gbus ? gc_gbus_read(cfg, win_off, addr) : 0;
+}
+static uint8_t gc_eprom_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    return tnt_board(cfg)->has_gbus ? gc_gbus_peek(cfg, win_off, addr) : 0;
+}
+static void gc_eprom_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    if (tnt_board(cfg)->has_gbus)
+        gc_gbus_write(cfg, win_off, addr, value);
+    else
+        gc_open_write(cfg, win_off, addr, value);
+}
+
+// Byte j of the little-endian BoxID register (the ROM reads it both as lwbrx
+// and byte-wise).  On the Network Servers this is Board Register 1 and the
+// ROM reads bytes +0 and +1 only.
+static uint8_t gc_boxid_read8(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)addr;
+    uint8_t b = le_lane8(tnt_gc_boxid(cfg), win_off);
+    LOG(3, "BoxID byte read +%u -> $%02X", win_off & 3u, b);
+    return b;
+}
+
+// RaDACal colormap bank (control.c).
+BOARD_IO_ROW_READ(gc_rad_read, tnt_control_rad_read)
+BOARD_IO_ROW_READ(gc_rad_peek, tnt_control_rad_peek)
+BOARD_IO_ROW_WRITE(gc_rad_write, tnt_control_rad_write)
+
+// GBUS device 3: the ANS front-panel LCD and timebase enable (lcd.c).
+BOARD_IO_ROW_READ(gc_lcd_read, tnt_lcd_read8)
+BOARD_IO_ROW_WRITE(gc_lcd_write, tnt_lcd_write8)
+
+// The NVRAM bank-select port reads back the selected bank.
+static uint8_t gc_nvport_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off, (void)addr;
+    return tnt_st(cfg)->gc.nvram_bank;
+}
+
+// The bank-select port is ONE byte-wide cell on the $10 centre.
+// Load-bearing: the ROM's XPRam trap path selects the bank with a 16-bit
+// write of the byte-swapped bank number (ROM $FFC5831E, `move.w` of
+// bank<<8) — the bus splits it into the +$1D000 byte (the bank) and a
+// +$1D001 byte ($00) that lands on NO cell.  A model that latches the
+// off-centre byte clobbers the bank back to 0 and every trap-path PRAM read
+// serves bank 0 — the T12 "XPRAM $77 reads 0" wall.
+static void gc_nvport_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)addr;
+    if ((win_off & 0xFu) == 0)
+        tnt_st(cfg)->gc.nvram_bank = value;
+    else
+        LOG(3, "NVRAM bank-port off-centre byte +$%03X = $%02X ignored", win_off, value);
+}
+
+// The NVRAM data window: byte j at +j*$10 of the selected bank.
+BOARD_IO_ROW_READ(gc_nvdata_read, nvram_read)
+BOARD_IO_ROW_WRITE(gc_nvdata_write, nvram_write)
+
+// Grand Central's byte-wide island map.  The little-endian longword blocks
+// (the interrupt registers, AWACS) answer 32-bit cycles only (gc_access32);
+// a byte cycle there falls to the unmapped value like any other hole.  No
+// bus penalty on any row (the island is untimed).  The legacy SCC aperture is
+// +0 bCtl / +2 aCtl / +4 bData / +6 aData: the low offset bits carry the
+// chip's A/B and D/C pins directly, so it is a plain device route.
+//
+//   base         end                  device           pen xform  rd wr  read_fn  write_fn  name
+static const board_io_range_t gc_io_ranges[] = {
+    {OFF_DBDMA, OFF_DBDMA_END, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_dbdma_read8, gc_open_write, "dbdma"},
+    {OFF_SCSI0, OFF_SCSI0 + 0x1000u, 0, 0, BOARD_IO_STRIDE_16, 0, 0, gc_scsi_read, gc_scsi_write, "scsi0",
+     .peek_fn = gc_scsi_peek},
+    {OFF_MACE, OFF_MACE + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_mace_read, gc_mace_write, "mace",
+     .peek_fn = gc_mace_peek, .present = gc_no_gbus},
+    {OFF_SCCLEG, OFF_SCCLEG + 0x1000u, BOARD_DEV_SCC, 0, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scc_legacy"},
+    {OFF_ESCC, OFF_ESCC + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_escc_read, gc_escc_write, "escc",
+     .peek_fn = gc_escc_peek},
+    {OFF_SWIM3, OFF_SWIM3 + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_swim3_read, gc_swim3_write, "swim3",
+     .peek_fn = gc_swim3_peek},
+    // VIA1/Cuda: 16 regs at stride $200 span the 8 KB window
+    {OFF_VIA, OFF_VIA + 0x2000u, BOARD_DEV_VIA1, 0, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "via1"},
+    {OFF_MESH, OFF_MESH + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_mesh_read, gc_mesh_write, "mesh",
+     .peek_fn = gc_mesh_peek, .present = gc_has_mesh},
+    {OFF_EPROM, OFF_EPROM + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_eprom_read, gc_eprom_write, "eprom",
+     .peek_fn = gc_eprom_peek, .present = gc_has_eprom},
+    {OFF_BOXID, OFF_BOXID + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_boxid_read8, gc_open_write, "boxid"},
+    {OFF_RADACAL, OFF_RADACAL + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_rad_read, gc_rad_write, "radacal",
+     .peek_fn = gc_rad_peek},
+    {OFF_LCDGB, OFF_LCDGB + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_lcd_read, gc_lcd_write, "lcd",
+     .present = gc_has_gbus},
+    {OFF_NVPORT, OFF_NVPORT + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_nvport_read, gc_nvport_write, "nvram_port"},
+    {OFF_BREG2, OFF_BREG2 + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_gbus_read, gc_gbus_write, "breg2",
+     .peek_fn = gc_gbus_peek, .present = gc_has_gbus},
+    {OFF_NVDATA, OFF_NVDATA + 0x1000u, 0, 0, BOARD_IO_NORMAL, 0, 0, gc_nvdata_read, gc_nvdata_write, "nvram_data"},
+    {0}, // sentinel: end == 0
+};
+
+void tnt_gc_io_bind(config_t *cfg) {
+    board_io_t *io = &tnt_st(cfg)->gc_io;
+    // Undecoded island space reads 0, as it always has here.
+    board_io_install_table(io, cfg, gc_io_ranges, TNT_GC_ISLAND_SIZE - 1u, 0);
+    board_io_mark_untimed(io);
+    board_io_bind_dev(io, BOARD_DEV_VIA1, cfg->via1, via_get_memory_interface(cfg->via1));
+    board_io_bind_dev(io, BOARD_DEV_SCC, cfg->scc, scc_get_memory_interface(cfg->scc));
+    board_io_validate(io, cfg->machine->id);
 }
 
 uint8_t tnt_gc_read8(config_t *cfg, uint32_t offset) {
-    return gc_access8(cfg, offset, false);
+    return board_io_direct_read_uint8(&tnt_st(cfg)->gc_io, offset);
 }
 
 uint8_t tnt_gc_peek8(config_t *cfg, uint32_t offset) {
-    return gc_access8(cfg, offset, true);
+    return board_io_direct_peek_uint8(&tnt_st(cfg)->gc_io, offset);
 }
 
 void tnt_gc_write8(config_t *cfg, uint32_t offset, uint8_t value) {
-    uint32_t block = offset & 0x1F000u;
-    switch (block) {
-    case OFF_VIA:
-    case OFF_VIA + 0x1000:
-        via_get_memory_interface(cfg->via1)->write_uint8(cfg->via1, offset - OFF_VIA, value);
-        return;
-    case OFF_SCCLEG:
-        scc_get_memory_interface(cfg->scc)->write_uint8(cfg->scc, offset - OFF_SCCLEG, value);
-        return;
-    case OFF_ESCC:
-        scc_get_memory_interface(cfg->scc)->write_uint8(cfg->scc, escc_pins(offset - OFF_ESCC), value);
-        scc_dma_kick_rx(cfg);
-        return;
-    case OFF_NVPORT:
-        // The bank-select port is ONE byte-wide cell on the $10 centre.
-        // Load-bearing: the ROM's XPRam trap path selects the bank with
-        // a 16-bit write of the byte-swapped bank number (ROM $FFC5831E,
-        // `move.w` of bank<<8) — the bus splits it into the +$1D000 byte
-        // (the bank) and a +$1D001 byte ($00) that lands on NO cell.  A
-        // model that latches the off-centre byte clobbers the bank back
-        // to 0 and every trap-path PRAM read serves bank 0 — the T12
-        // "XPRAM $77 reads 0" wall.
-        if (((offset - OFF_NVPORT) & 0xFu) == 0)
-            tnt_st(cfg)->gc.nvram_bank = value;
-        else
-            LOG(3, "NVRAM bank-port off-centre byte +$%03X = $%02X ignored", offset - OFF_NVPORT, value);
-        return;
-    case OFF_NVDATA:
-        nvram_write(cfg, offset - OFF_NVDATA, value);
-        return;
-    case OFF_RADACAL:
-        tnt_control_rad_write(cfg, offset - OFF_RADACAL, value);
-        return;
-    case OFF_LCDGB: // GBUS device 3 — the write-only LCD ports (ANS only)
-        if (tnt_board(cfg)->has_gbus) {
-            tnt_lcd_write8(cfg, offset - OFF_LCDGB, value);
-            return;
-        }
-        break;
-    case OFF_EPROM:
-    case OFF_BREG2:
-        if (tnt_board(cfg)->has_gbus) {
-            tnt_gbus_write8(cfg, offset, value);
-            return;
-        }
-        break;
-    case OFF_SCSI0: {
-        tnt_state_t *st = tnt_st(cfg);
-        scsi_53c96_write(st->scsi96, ((offset - OFF_SCSI0) >> 4) & 0xFu, value);
-        // A command that raised DREQ (a DMA select's CDB, a DMA data phase)
-        // restarts DBDMA channel 0, which may have stalled waiting for it
-        if (st->dbdma && scsi_53c96_dreq(st->scsi96) && dbdma_active(st->dbdma, 0))
-            dbdma_kick(st->dbdma, 0);
-        return;
-    }
-    case OFF_SWIM3:
-        tnt_swim3_write(cfg, offset - OFF_SWIM3, value);
-        return;
-    case OFF_MACE:
-        if (!tnt_board(cfg)->has_gbus) {
-            tnt_mace_write(cfg, offset - OFF_MACE, value);
-            return;
-        }
-        break;
-    case OFF_MESH:
-        if (tnt_board(cfg)->has_mesh)
-            mesh_write(tnt_st(cfg)->mesh, offset - OFF_MESH, value);
-        else
-            LOG(1, "byte write of the absent MESH aperture +$%05X = $%02X", offset, value);
-        return;
-    default:
-        break;
-    }
-    LOG(1, "byte write of unwired island offset +$%05X = $%02X", offset, value);
+    board_io_direct_write_uint8(&tnt_st(cfg)->gc_io, offset, value);
 }
 
 // 32-bit access: the LE register blocks.  `value` at this boundary is the
