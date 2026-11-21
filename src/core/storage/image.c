@@ -72,7 +72,7 @@ uint32_t disk_block_size(image_t *disk) {
 static image_t *g_open_writable;
 
 // Resolve `path` through realpath() so every spelling of the same file — the
-// relative one a script passes to files.probe, the absolute one the VFS
+// relative one a script passes to files.identify, the absolute one the VFS
 // resolves, a symlink — reduces to one string.  Falls back to the input
 // when realpath cannot resolve it (a path through an image, or a file just
 // deleted).

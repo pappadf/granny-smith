@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// Unit tests for drive_catalog.c: the size strings files.hd_create takes
+// Unit tests for drive_catalog.c: the size strings files.create takes for an hd
 // and the model lookups the SCSI attach path makes.
 
 #include "drive_catalog.h"

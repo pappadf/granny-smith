@@ -131,7 +131,7 @@ def assert_desktop(label) {
 def row_wrap_layout() {
     machine.boot model="iici" ram=8192 rom="${$ROM}"
     let file_size = files.path_size("${$vol753}")
-    assert scsi_identify_ok() "wrap-layout: identify_hd refused the bare volume"
+    assert scsi_identify_ok() "wrap-layout: files.identify did not fit hd for the bare volume"
     assert machine.scsi.attach_hd("${$vol753}", 0) "wrap-layout: attach_hd failed"
     assert machine.scsi.device[0].type == "hd" "wrap-layout: SCSI 0 is not a hard disk"
     let i = image_index($vol753)

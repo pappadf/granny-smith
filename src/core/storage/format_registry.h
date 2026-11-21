@@ -100,7 +100,7 @@ struct ns *format_open_namespace(source_t *data, source_t *rsrc, const char **fo
 bool format_is_namespace(source_t *data, source_t *rsrc);
 
 // The namespace format the registry recognises (`data` already unwrapped),
-// or NULL: what files.probe and scsi.identify_cdrom report.
+// or NULL: what files.identify reports.
 const format_t *format_contents(source_t *data, source_t *rsrc);
 
 // Opener the registry uses to show a peeler wrapper as a one-file

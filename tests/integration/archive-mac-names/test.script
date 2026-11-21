@@ -46,9 +46,9 @@ assert !files.path_exists("${$zip}/CAFÉ") "zip names match exactly"
 let fd = "${$sit}/Système.dsk"
 machine.floppy.drive[0].insert($fd)
 scheduler.run 2000000
-assert machine.floppy.drive[0].disk.filename == $fd "the floppy names the member in UTF-8"
+assert machine.floppy.drive[0].image.source == $fd "the floppy names the member in UTF-8"
 assert checkpoint.save("${$WORK_DIR}/state.checkpoint") "consolidated checkpoint saved"
 assert checkpoint.load("${$WORK_DIR}/state.checkpoint") "checkpoint loaded"
-assert machine.floppy.drive[0].disk.filename == $fd "the restored floppy is the member"
+assert machine.floppy.drive[0].image.source == $fd "the restored floppy is the member"
 
 quit
