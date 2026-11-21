@@ -30,6 +30,7 @@
 
 import { gsEval, gsEvalWithProgress, gsErrorText, gsOk, isGsObject } from './emulator';
 import { streamToOpfs } from './upload';
+import { rmPath, uniquePath } from './vfs';
 import { xferChunkBytes, xferUdifAppend, xferRead } from './xfer';
 import { showNotification } from '@/state/toasts.svelte';
 import { bumpImagesRevision } from '@/state/images.svelte';
@@ -303,25 +304,6 @@ export function storageFullHint(free: number | null, stored: number): string {
 
 // --- The pipeline ----------------------------------------------------------------
 
-// A unique path for `name` in `dir` (name, name_2, name_3, ...).
-async function uniquePath(dir: string, name: string): Promise<string> {
-  const dot = name.lastIndexOf('.');
-  const stem = dot > 0 ? name.slice(0, dot) : name;
-  const ext = dot > 0 ? name.slice(dot) : '';
-  for (let i = 1; ; i++) {
-    const p = `${dir}/${i === 1 ? name : `${stem}_${i}${ext}`}`;
-    if ((await gsEval('files.path_exists', [p])) !== true) return p;
-  }
-}
-
-async function rmQuiet(path: string): Promise<void> {
-  try {
-    await gsEval('files.rm', [path]);
-  } catch {
-    /* already gone */
-  }
-}
-
 // Validate the UDIF at `part` as the first of `categories` it is (`unstated`:
 // see ImportOptions), and move it into that category's directory.  Removes
 // `part` either way.
@@ -340,17 +322,25 @@ async function placeUdif(
       continue;
     }
     await gsEval('files.mkdir', [d.persistDir]);
-    const dest = await uniquePath(d.persistDir, storedDmgName(name));
+    // The same image imported again is the one stored already; a different
+    // one of that name is stored beside it ("name 2.dmg").
+    const { path: dest, same } = await uniquePath(d.persistDir, storedDmgName(name), {
+      sameAs: part,
+    });
+    if (same) {
+      await rmPath(part);
+      return { path: dest, category: cat };
+    }
     const moved = await gsEval('files.mv', [part, dest]);
     if (!gsOk(moved)) {
       showNotification(`Could not store ${name}: ${gsErrorText(moved)}`, 'error');
-      await rmQuiet(part);
+      await rmPath(part);
       return null;
     }
     bumpImagesRevision();
     return { path: dest, category: cat };
   }
-  await rmQuiet(part);
+  await rmPath(part);
   const what = categories.map((c) => MEDIA_TYPES[c].label).join(' or ');
   // The reason, when the core has one (a UDIF in a compression it cannot
   // decode), in place of the bare verdict.
@@ -396,7 +386,7 @@ async function writeUdif(
     } catch {
       /* finish already released it */
     }
-    await rmQuiet(part);
+    await rmPath(part);
     throw e;
   }
 }
@@ -433,9 +423,9 @@ async function settleUdif(part: string, name: string, origin?: string): Promise<
   const rechunked = `${part}.re`;
   if (!inPlace) showNotification(`Re-chunking ${name} so it can be read in place...`, 'info');
   const r = await gsEval('files.convert', [part, rechunked, 64, 1, 'udif', name, origin ?? '']);
-  await rmQuiet(part);
+  await rmPath(part);
   if (!isGsObject(r)) {
-    await rmQuiet(rechunked);
+    await rmPath(rechunked);
     throw new Error(`${name}: ${gsErrorText(r)}`);
   }
   return rechunked;
@@ -483,7 +473,7 @@ async function importDecoded(
         if (!(await streamToOpfs(staged, bytes))) throw new Error('could not stage the file');
         return { handled: true, path: await opts.onSmall(staged, name) };
       } finally {
-        await rmQuiet(staged);
+        await rmPath(staged);
       }
     }
   }
@@ -515,7 +505,7 @@ async function importDecoded(
         // The reason names the staged copy; the user knows the file by its name.
         if (!isGsObject(r)) throw new Error(gsErrorText(r).split(staged).join(name));
       } finally {
-        await rmQuiet(staged);
+        await rmPath(staged);
       }
       const placed = await placeUdif(part, shown, opts.categories, opts.unstated);
       if (placed) showNotification(`${shown} stored`, 'info');
@@ -537,7 +527,7 @@ async function importDecoded(
           name,
           opts.origin ?? '',
         ]);
-        await rmQuiet(part);
+        await rmPath(part);
         if (!isGsObject(r)) throw new Error(gsErrorText(r));
         const placed = await placeUdif(dmg, shown, opts.categories, opts.unstated);
         if (placed) showNotification(`${shown} stored`, 'info');
@@ -559,8 +549,8 @@ async function importDecoded(
     return { handled: true, path: placed?.path ?? null, category: placed?.category };
   } finally {
     // Gone already when it was placed; left by a failure or a cancel otherwise.
-    await rmQuiet(part);
-    await rmQuiet(`${part}.re`);
+    await rmPath(part);
+    await rmPath(`${part}.re`);
   }
 }
 
@@ -622,8 +612,8 @@ async function importMacArchive(
     // Not a disk (a floppy, a ROM, an application): the staged flow.
     return leave();
   } finally {
-    if (!handedOver) await rmQuiet(staged);
-    await rmQuiet(part);
+    if (!handedOver) await rmPath(staged);
+    await rmPath(part);
   }
 }
 

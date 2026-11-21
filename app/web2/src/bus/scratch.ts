@@ -2,6 +2,7 @@
 // and the parts no live tab holds.
 
 import { gsEval } from './emulator';
+import { rmPath } from './vfs';
 import { SCRATCH_DIR, SCRATCH_ID, SCRATCH_LOCK_PREFIX, TAB_SCRATCH_DIR } from '@/lib/opfsPaths';
 
 // Take this tab's part of the scratch area, then remove what no live tab
@@ -34,6 +35,6 @@ export async function claimScratch(): Promise<void> {
     // A tab's part goes when nobody holds its lock; a loose file (written
     // before parts existed) only when no other tab is alive to own it.
     const abandoned = e.kind === 'directory' ? !held.has(SCRATCH_LOCK_PREFIX + e.name) : !others;
-    if (abandoned) await gsEval('files.rm', [`${SCRATCH_DIR}/${e.name}`]);
+    if (abandoned) await rmPath(`${SCRATCH_DIR}/${e.name}`);
   }
 }

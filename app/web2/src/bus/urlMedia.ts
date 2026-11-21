@@ -50,14 +50,7 @@
 // every file is listed up front and its download progress reported for the
 // progress view that stands in for Welcome (components/display/UrlBootView).
 
-import {
-  gsEval,
-  gsEvalWithProgress,
-  gsErrorText,
-  gsOk,
-  isGsObject,
-  isModuleReady,
-} from './emulator';
+import { gsEval, gsEvalWithProgress, gsErrorText, isGsObject, isModuleReady } from './emulator';
 import { xferReadAll } from './xfer';
 import { reconcileUiWithMachine, prepareFreshMachine } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
@@ -90,13 +83,8 @@ import {
   isUrlConfigParam,
   type UrlConfigParams,
 } from '@/lib/urlConfig';
-import {
-  persistAs,
-  storeRomPair,
-  streamToOpfs,
-  discardStaging,
-  stagedArchiveFormat,
-} from './upload';
+import { persistAs, storeRomPair, streamToOpfs, stagedArchiveFormat } from './upload';
+import { rmPath, walkFiles } from './vfs';
 import { scratchPath, FD_DIR, HD_DIR } from '@/lib/opfsPaths';
 import {
   parseBlankValue,
@@ -497,8 +485,11 @@ async function provideBlank(
       if (!urlBoot.requested) showNotification(`${label}: ${name} (blank, already stored)`, 'info');
       return path;
     }
-    const rm = await gsEval('files.rm', [path]);
-    if (!gsOk(rm)) return fail(`could not replace ${name}: ${gsErrorText(rm)}`);
+    try {
+      await rmPath(path, { checked: true });
+    } catch (e) {
+      return fail(`could not replace ${name}: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
   const made = await gsEval(plan.method, [path, plan.arg]);
   if (made !== true) {
@@ -648,7 +639,7 @@ async function fetchAndPersist(
     rejectDownload(slot, staged.name, stored.reason);
     return undefined;
   } finally {
-    await discardStaging(staged.path);
+    await rmPath(staged.path);
   }
 }
 
@@ -700,7 +691,7 @@ async function storeCompact(
     rejectDownload(slot, staged.name, stored.reason);
     return undefined;
   } finally {
-    await discardStaging(part);
+    await rmPath(part);
   }
 }
 
@@ -837,8 +828,8 @@ async function fetchRomPair(urlA: string, urlB: string): Promise<string | undefi
     rejectDownload('rom', name, stored.reason);
     return undefined;
   } finally {
-    await discardStaging(a.path);
-    if (b) await discardStaging(b.path);
+    await rmPath(a.path);
+    if (b) await rmPath(b.path);
   }
 }
 
@@ -876,7 +867,7 @@ async function fetchAndStage(
     const msg = fetchFailureText(e, url);
     showNotification(`${label}: ${msg}`, 'error');
     updateUrlFile(slot, { status: 'failed', error: msg });
-    if (downloaded) await discardStaging(downloaded);
+    if (downloaded) await rmPath(downloaded);
     return null;
   }
   const storeAs = urlMediaNameFor(slot, url);
@@ -926,7 +917,7 @@ async function fetchAndStage(
           c.close();
         },
       }).pipeThrough(decompressor('gzip'));
-      await discardStaging(staged);
+      await rmPath(staged);
       if (!(await streamToOpfs(staged, body))) return null;
     } else if (archive === 'zip' || /\bzip/i.test(ct)) {
       // A bare zip: its first file, as before member paths existed.
@@ -955,7 +946,7 @@ async function fetchAndStage(
     return null;
   } finally {
     // Every exit but the one handing the file to the caller discards it.
-    if (!handedOver) await discardStaging(staged);
+    if (!handedOver) await rmPath(staged);
   }
 }
 
@@ -998,7 +989,11 @@ async function unpackArchive(
       await gsEval('files.find_media', [extractDir, staged]);
       return true;
     }
-    const names = await listTree(extractDir);
+    // A subdirectory that cannot be listed rejects the URL's media, never
+    // passes for an empty one.
+    const names = await walkFiles(extractDir, { relative: true }).catch((e: unknown) => {
+      throw new MediaUrlError(e instanceof Error ? e.message : String(e));
+    });
     let hit: string | null;
     if (pick === 'first') {
       // A file's resource fork and Finder info come out as a "._" sidecar
@@ -1011,28 +1006,8 @@ async function unpackArchive(
     }
     return (await gsEval('files.cp', [`${extractDir}/${hit}`, staged])) === true;
   } finally {
-    await discardStaging(extractDir);
+    await rmPath(extractDir);
   }
-}
-
-// Every file under `dir`, as paths relative to it.  Each entry says what it is
-// (files.list), so a subdirectory that cannot be listed is an error -- the
-// URL's media is rejected -- never taken for a file.
-async function listTree(dir: string, prefix = ''): Promise<string[]> {
-  const at = prefix ? `${dir}/${prefix}` : dir;
-  const entries = await gsEval('files.list', [at]);
-  // An unreadable or oversized listing is the core's error: said, not taken
-  // for an empty one.
-  if (!Array.isArray(entries))
-    throw new MediaUrlError(`cannot list ${at}: ${gsErrorText(entries)}`);
-  const out: string[] = [];
-  for (const e of entries as { name?: unknown; kind?: unknown }[]) {
-    if (typeof e?.name !== 'string' || e.name === '.' || e.name === '..') continue;
-    const rel = prefix ? `${prefix}/${e.name}` : e.name;
-    if (e.kind === 'directory') out.push(...(await listTree(dir, rel)));
-    else out.push(rel);
-  }
-  return out;
 }
 
 // The error for a member path that is not in its container.
