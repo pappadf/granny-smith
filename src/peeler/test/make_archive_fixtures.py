@@ -93,6 +93,26 @@ def finder_info(ftype, creator, flags):
     return struct.pack(">4s4sH", ftype, creator, flags) + bytes(22)
 
 
+# A write-only stream that cannot seek or tell: zipfile then writes data
+# descriptors instead of going back to fill in the local headers.
+class Unseekable(io.RawIOBase):
+    def __init__(self):
+        self.data = bytearray()
+
+    def writable(self):
+        return True
+
+    def seekable(self):
+        return False
+
+    def write(self, b):
+        self.data += b
+        return len(b)
+
+    def tell(self):
+        raise io.UnsupportedOperation("unseekable")
+
+
 def zip_cli(srcdir, args, members):
     out = os.path.join(srcdir, "..", "out.zip")
     if os.path.exists(out):
@@ -130,6 +150,25 @@ def main():
                     w.write(SOURCES[p])
         with open(buf, "rb") as f:
             case("zip_py64.zip", f.read(), nonempty(SOURCES))
+
+        # 4b. Data descriptors (general-purpose flag bit 3): a writer that
+        #     cannot seek back leaves the local header's CRC and sizes zero
+        #     and writes them after the data.  Info-ZIP writing to a pipe...
+        piped = subprocess.run(["sh", "-c", 'zip -q -X - "$@" | cat', "zip"] + members, cwd=src, check=True,
+                               capture_output=True).stdout
+        case("zip_descriptor.zip", piped, nonempty(SOURCES))
+
+        # ...and Python's zipfile on an unseekable stream: stored and deflated
+        #    members, every one with a Zip64 (8-byte-size) data descriptor.
+        sink = Unseekable()
+        with zipfile.ZipFile(sink, "w") as z:
+            for i, p in enumerate(members):
+                info = zipfile.ZipInfo(p, date_time=(2001, 2, 3, 4, 5, 6))
+                info.compress_type = zipfile.ZIP_STORED if i % 2 else zipfile.ZIP_DEFLATED
+                with z.open(info, "w", force_zip64=True) as w:
+                    w.write(SOURCES[p])
+        assert all(i.flag_bits & 0x08 for i in zipfile.ZipFile(io.BytesIO(sink.data)).infolist())
+        case("zip_py64_descriptor.zip", bytes(sink.data), nonempty(SOURCES))
 
         # 5. Self-extracting: an executable stub in front.  zip -A adjusts the
         #    offsets to the whole file; the plain concatenation leaves them
