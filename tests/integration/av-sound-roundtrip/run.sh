@@ -19,7 +19,7 @@ echo "Step 1: record the utterance through the Sound control panel"
 "$HEADLESS_BIN" \
     rom="$ROM_PATH" \
     model=q840av ram=16384 \
-    script=record.script \
+    script=record.lua \
     --var WORK_DIR="$WORK_DIR" \
     --var TEST_RESULTS_DIR="$TEST_RESULTS_DIR" \
     $TEST_VAR_ARGS \

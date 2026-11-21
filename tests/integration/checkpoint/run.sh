@@ -35,7 +35,7 @@ cd "$TEST_RESULTS_DIR"
 GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN \
     rom="$ROM_PATH" \
     fd="$FD_IMAGE" \
-    script="$SCRIPT_DIR/step1.script" \
+    script="$SCRIPT_DIR/step1.lua" \
     --var TEST_DIR="$SCRIPT_DIR" \
     --var TEST_RESULTS_DIR="$TEST_RESULTS_DIR" \
     $TEST_VAR_ARGS \
@@ -55,7 +55,7 @@ cd "$TEST_RESULTS_DIR"
 GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN \
     rom="$ROM_PATH" \
     hd="$HD_IMAGE" \
-    script="$SCRIPT_DIR/step2.script" \
+    script="$SCRIPT_DIR/step2.lua" \
     --var TEST_DIR="$SCRIPT_DIR" \
     --var TEST_RESULTS_DIR="$TEST_RESULTS_DIR" \
     $TEST_VAR_ARGS \

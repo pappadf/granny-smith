@@ -1,0 +1,82 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- Integration test: SE/30 MacTest Boot
+-- Boots SE/30 from MacTest SE/30 floppy disk (800K DiskCopy),
+-- IMPORTANT: DON'T ADD LONGPOINTS TOO EARLY IN THE SCRIPT
+-- AS THEY HAVE A SIGNIFICANT PERFORMANCE IMPACT
+
+-- Enable external loopback cable emulation between SCC ports
+machine.scc.loopback = true
+
+-- Enable SCSI loopback test card before boot.
+-- MacTest detects the card during startup and skips the SCSI warning dialog.
+machine.scsi.loopback = true
+
+-- Boot past Happy Mac through splash screens
+scheduler.run(200000000)
+
+-- Match the MacTest main screen
+machine.screen.match("main.png")
+
+-- Start the test
+machine.adb.mouse.move(100, 121, "global")
+scheduler.run(5000000)
+machine.adb.mouse.click(true)
+scheduler.run(5000000)
+machine.adb.mouse.click(false)
+scheduler.run(20000000)
+
+-- We should be running the VIA tests now
+machine.screen.match("via.png")
+
+scheduler.run(150000000)
+
+-- The test now asks us to insert a 800K floppy
+machine.screen.match("insert-800k-floppy.png")
+
+-- Insert 800K floppy
+machine.floppy.create(F"${vars.WORK_DIR}/blank800.dsk", 0)
+
+-- Let it run a short bit - detect the floppy
+scheduler.run(10000000)
+
+-- Click the OK button on the "insert floppy" dialog
+machine.adb.mouse.move(370, 185, "global")
+scheduler.run(5000000)
+machine.adb.mouse.click(true)
+scheduler.run(5000000)
+machine.adb.mouse.click(false)
+
+scheduler.run(250000000)
+
+-- The test now asks us to insert a 1.4MB floppy
+machine.screen.match("insert-1.4mb-floppy.png")
+
+-- Insert 1.4MB HD floppy and click immediately (before .Sony VBL auto-mounts)
+machine.floppy.create(F"${vars.WORK_DIR}/blankHD.dsk", "hd")
+machine.adb.mouse.move(370, 185, "global")
+scheduler.run(5000000)
+machine.adb.mouse.click(true)
+scheduler.run(5000000)
+machine.adb.mouse.click(false)
+
+scheduler.run(100000000)
+
+-- Screen should now say that floppy tests succeeded and prompt us to re-insert app disk
+machine.screen.match("floppy-test-success.png")
+
+-- Insert the original application disk
+machine.floppy.drive[0].insert("../../data/apps/MacTest-SE30.image", true)
+
+-- The destructive RAM test fills + verifies all 4 MB with multiple patterns
+-- (~4 min at 16 MHz). After all passes, the test code returns through the
+-- destroyed stack, triggers a double bus error, and the GLU resets the
+-- machine automatically.
+-- Budget: ~5B for the test + ~1B for the reboot + ~200M for MacTest reload.
+scheduler.run(7000000000)
+
+-- After the reboot, MacTest should have reloaded from the floppy and reached
+-- its main screen.  It reads the PRAM flag set before the test and knows the
+-- memory test passed.
+machine.screen.match("main-after-reboot.png")
+
+quit()

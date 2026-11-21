@@ -65,6 +65,14 @@ uint32_t cpu_get_pc(struct cpu *cpu) {
 const char *system_machine_model_id(void) {
     return "";
 }
+// shell_init hands the Lua runner its error reporter (gs_lua.h, script.h).
+void script_report_error(const char *file, int line, const char *msg, const char *text) {
+    (void)file, (void)line, (void)msg, (void)text;
+}
+typedef void (*gs_lua_reporter_fn)(const char *file, int line, const char *msg, const char *text);
+void gs_lua_set_reporter(gs_lua_reporter_fn fn) {
+    (void)fn;
+}
 
 // === A toy class ============================================================
 

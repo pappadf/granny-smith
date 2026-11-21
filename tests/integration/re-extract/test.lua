@@ -1,0 +1,3 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- Logic lives in run.sh — this file is present only to make the test
+-- directory discoverable by the integration runner's wildcard.

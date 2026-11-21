@@ -1,0 +1,58 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- RTC seeding and continuity -- see config.mk.
+
+local PIN = 0xE0000000
+local pdm_rom = "../../data/roms/pm6100-pm7100-pm8100-9feb69b3.rom"
+local plus_rom = "../../data/roms/plus-v3-4d1f8172.rom"
+
+-- The clock advanced by the simulated seconds a run took, and by nothing else.
+local function advanced_by_simulated_time(model, n)
+    machine.rtc.time = PIN
+    local c0 = scheduler.cycles
+    scheduler.run(n)
+    local secs = (scheduler.cycles - c0) // scheduler.frequency
+    local dt = machine.rtc.time - PIN
+    assert(secs >= 1, F"${model}: the run was too short to cross a second")
+    assert(dt >= secs and dt <= secs + 1, F"${model}: the pinned clock moved ${dt}s in ${secs} simulated seconds")
+end
+
+-- --- positive control: a 68k board and a PDM ---------------------------------
+machine.boot{model = "se30", ram = 8192, rom = vars.ROM}
+advanced_by_simulated_time("se30", 60000000)
+machine.boot{model = "pm7100", ram = 16384, rom = pdm_rom}
+advanced_by_simulated_time("pm7100", 150000000)
+
+-- --- negative control: a pin does not leak into the next machine ------------
+machine.boot{model = "se30", ram = 8192, rom = vars.ROM}
+machine.rtc.time = 3000000000
+machine.boot{model = "se30", ram = 8192, rom = vars.ROM}
+assert(machine.rtc.time > 3700000000, "a pinned clock leaked into the next machine (a staged seed is back)")
+
+-- --- continuity: reset and restart keep the counter ticking ------------------
+machine.rtc.time = PIN
+scheduler.run(60000000)
+local t1 = machine.rtc.time
+assert(t1 > PIN, "the pinned clock did not tick")
+machine.reset()
+assert(machine.rtc.time == t1, "machine.reset restarted the clock")
+machine.restart()
+assert(machine.rtc.time == t1, "machine.restart restarted the clock")
+scheduler.run(60000000)
+assert(machine.rtc.time > t1, "the clock stopped across machine.restart")
+machine.boot{model = "se30", ram = 8192, rom = vars.ROM}
+assert(machine.rtc.time > 3700000000, "a new machine kept the old RTC instead of building a new one")
+
+-- --- determinism: a pinned boot run twice is byte-identical ------------------
+machine.boot{model = "plus", ram = 4096, rom = plus_rom}
+machine.rtc.time = PIN
+machine.floppy.drive[0].insert("../../data/systems/System_6_0_8.dsk", false)
+scheduler.run(60000000)
+local frame1 = machine.screen.checksum()
+machine.boot{model = "plus", ram = 4096, rom = plus_rom}
+machine.rtc.time = PIN
+machine.floppy.drive[0].insert("../../data/systems/System_6_0_8.dsk", false)
+scheduler.run(60000000)
+assert(machine.screen.checksum() == frame1, "a pinned boot run twice drew different frames")
+
+echo("rtc-seed ok")
+quit()

@@ -1,0 +1,132 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- Integration: `scsi` object class.
+-- A SCSI HD image is attached at boot, so devices.N has at least one
+-- populated slot. We verify the path resolves, the bus phase enum
+-- reports a known phase, the device collection enumerates correctly
+-- (sparse semantics — empty IDs are holes), and the legacy loopback
+-- command shares state with scsi.loopback.
+
+scheduler.run(50000)
+
+-- Top-level object. Loopback default is false at boot.
+local _ = machine.scsi
+assert(machine.scsi.loopback == false)
+
+-- Bus child: phase is a VK_ENUM, target / initiator are ints. After a
+-- brief warmup the bus has settled back to bus_free.
+local _ = machine.scsi.bus
+assert(machine.scsi.bus.phase == "bus_free")
+local _ = machine.scsi.bus.target
+local _ = machine.scsi.bus.initiator
+
+-- Devices collection — at least one populated slot from hd1.img.
+local _ = machine.scsi.device
+-- Boot HD lands on SCSI id 0; assert the populated-slot attributes
+-- match the expected catalog entry for the test image.
+assert(machine.scsi.device[0].id == 0)
+assert(machine.scsi.device[0].type == "hd")
+assert(machine.scsi.device[0].block_size == 512)
+assert(machine.scsi.device[0].medium_present == true)
+assert(machine.scsi.device[0].read_only == false)
+-- hd1.img matches the HD20SC catalog entry. vendor / product are the
+-- raw SCSI INQUIRY fields stored on the device — vendor is the 8-char
+-- catalog literal " SEAGATE" (leading space); product_id is left-
+-- padded to 16 chars by scsi_attach (see scsi.c:1188).
+assert(machine.scsi.device[0].vendor == " SEAGATE", "boot HD vendor regressed")
+assert(machine.scsi.device[0].product == "ST225N          ", "boot HD product regressed")
+
+-- Empty slot 5 (no CD attached) reports an "empty" error from node_get,
+-- which is the correct sparse-collection behavior.
+assert(not gs.ok(function() return machine.scsi.device[5] end), "empty slot 5 must read as an error")
+
+-- Loopback: flip via attr setter, observe via the same attr (round-trip
+-- through the same path the legacy `hd loopback` command writes).
+machine.scsi.loopback = true
+assert(machine.scsi.loopback == true)
+machine.scsi.loopback = false
+assert(machine.scsi.loopback == false)
+
+-- --- identify_hd / identify_cdrom / identify_iso ----------------------------
+-- The typed classifiers the web2 upload pipeline gates on (lib/media.ts):
+-- a file dropped into the HD/CD slot must identify as that media type or
+-- the upload is rejected. Previously only exercised through the legacy
+-- web UI's `hd validate` / `cdrom validate` commands (retired with it).
+--
+-- HD: accepts anything that opens and isn't floppy-sized; a fresh
+-- catalog-model image is the positive case, a blank 800K floppy the
+-- negative one.
+assert(files.hd_create(F"${vars.WORK_DIR}/ident-hd.img", "HD20SC"), "hd_create failed")
+assert(files.fd_create(F"${vars.WORK_DIR}/ident-fd.img"), "fd_create failed")
+assert(machine.scsi.identify_hd(F"${vars.WORK_DIR}/ident-hd.img") == true, "HD image not identified as HD")
+assert(machine.scsi.identify_hd(F"${vars.WORK_DIR}/ident-fd.img") == false, "floppy wrongly identified as HD")
+assert(machine.scsi.identify_hd(F"${vars.WORK_DIR}/does-not-exist.img") == false, "missing file identified as HD")
+-- A disk smaller than the smallest floppy is no hard disk (S1018-26): a
+-- 32 KB PCI card ROM opens and is not floppy-sized, but is refused.
+assert(machine.scsi.identify_hd("../../data/roms/mach64-gx-104-437584e0.prom") == false, "a 32 KB card ROM identified as HD")
+-- The floor is the disk's size, not the file's: the UDIF of the blank 20 MB
+-- disk above is a few KB, and still a hard disk.
+assert(files.convert(F"${vars.WORK_DIR}/ident-hd.img", F"${vars.WORK_DIR}/ident-hd.dmg"), "convert to UDIF failed")
+assert(files.path_size(F"${vars.WORK_DIR}/ident-hd.dmg") < 409600, "the blank disk's UDIF is not smaller than a floppy")
+assert(machine.scsi.identify_hd(F"${vars.WORK_DIR}/ident-hd.dmg") == true, "a compact UDIF of a 20 MB disk not identified as HD")
+
+-- CD-ROM: requires a recognised filesystem (ISO 9660 / HFS / APM). The
+-- retail A/UX install disc is the positive case; a blank (all-zero) HD
+-- image and a floppy are the negatives.
+assert(machine.scsi.identify_cdrom("../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso") == true, "A/UX retail ISO not identified as CD-ROM")
+assert(machine.scsi.identify_cdrom(F"${vars.WORK_DIR}/ident-hd.img") == false, "blank HD image wrongly identified as CD-ROM")
+assert(machine.scsi.identify_cdrom(F"${vars.WORK_DIR}/ident-fd.img") == false, "floppy wrongly identified as CD-ROM")
+
+-- identify_iso: what files an upload of no stated kind (a drop, Load ROM)
+-- as a CD-ROM (S1018-06).  A partitioned or bare HFS disk passes
+-- identify_cdrom (the CD-ROM section's own Add takes it as a disc) but holds
+-- no ISO 9660, so a drop files it as a hard disk -- the A/UX disc, all
+-- partition map, too.
+-- The positive cases are in image-iso9660, which builds an ISO disc.
+assert(machine.scsi.identify_iso("../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso") == false, "the A/UX disc (APM, no ISO side) seen as ISO 9660")
+assert(machine.scsi.identify_cdrom("../../data/systems/system_6_0_8_20mb_8_24gc.img") == true, "partitioned HFS disk not accepted as a CD-ROM")
+assert(machine.scsi.identify_iso("../../data/systems/system_6_0_8_20mb_8_24gc.img") == false, "partitioned HFS disk seen as ISO 9660")
+assert(machine.scsi.identify_cdrom("../../data/systems/system_7_0_1_10mb_bare_plus.img") == true, "bare HFS disk not accepted as a CD-ROM")
+assert(machine.scsi.identify_iso("../../data/systems/system_7_0_1_10mb_bare_plus.img") == false, "bare HFS disk seen as ISO 9660")
+assert(machine.scsi.identify_iso(F"${vars.WORK_DIR}/ident-fd.img") == false, "floppy seen as ISO 9660")
+
+-- --- eject / insert round-trip ----------------------------------------------
+-- eject() is deliberately type-agnostic: on a hard disk it is "detach this
+-- disk" (scsi_eject_device takes any id, and the CD-ROM's PREVENT lock is the
+-- only thing that refuses it).  insert() has to be its counterpart, and was
+-- not: it called system_attach_scsi_cdrom() whatever the slot held, so putting a hard
+-- disk back turned it into a read-only SONY CDU-8002 with 2048-byte blocks.
+--
+-- The slot's type survives an eject -- scsi_eject_device clears
+-- medium_present and the image pointer, never the type -- so insert() asks it.
+
+-- Hard disk: out and back in as a hard disk.
+assert(machine.scsi.device[0].type == "hd", "slot 0 should start as a hard disk")
+assert(machine.scsi.device[0].eject(), "ejecting the boot HD failed")
+assert(machine.scsi.device[0].medium_present == false, "HD still reports a medium after eject")
+assert(machine.scsi.device[0].insert(F"${vars.WORK_DIR}/ident-hd.img"), "re-inserting the HD failed")
+assert(machine.scsi.device[0].type == "hd", F"HD came back as ${machine.scsi.device[0].type} after insert")
+assert(machine.scsi.device[0].read_only == false, "HD came back read-only after insert")
+assert(machine.scsi.device[0].block_size == 512, F"HD came back with ${machine.scsi.device[0].block_size}-byte blocks")
+
+-- CD-ROM: the case that always worked, pinned so the type lookup cannot
+-- regress it in the other direction.
+assert(machine.scsi.attach_cdrom("../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso", 3), "attach_cdrom failed")
+assert(machine.scsi.device[3].type == "cdrom", "slot 3 should be a CD-ROM")
+assert(machine.scsi.device[3].eject(), "ejecting the CD failed")
+assert(machine.scsi.device[3].insert("../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso"), "re-inserting the CD failed")
+assert(machine.scsi.device[3].type == "cdrom", F"CD came back as ${machine.scsi.device[3].type} after insert")
+assert(machine.scsi.device[3].read_only == true, "CD came back writable after insert")
+assert(machine.scsi.device[3].block_size == 2048, F"CD came back with ${machine.scsi.device[3].block_size}-byte blocks")
+
+-- An attach that cannot open its file must SAY so.  system_attach_scsi_hd and
+-- system_attach_scsi_cdrom returned void and their callers reported success
+-- unconditionally, so `attach_hd` on a missing file printed "Failed to open
+-- image" and then answered true -- which is how the first version of the
+-- round-trip test above passed while inserting nothing at all.
+assert(machine.scsi.attach_hd(F"${vars.WORK_DIR}/no-such-file.img", 4) == false, "attach_hd invented a disk")
+assert(not gs.ok(function() return machine.scsi.device[4] end), "slot 4 must still be empty")
+assert(machine.scsi.attach_cdrom(F"${vars.WORK_DIR}/no-such-file.iso", 5) == false, "attach_cdrom invented a disc")
+assert(not gs.ok(function() return machine.scsi.device[5] end), "slot 5 must still be empty")
+assert(machine.scsi.device[0].insert(F"${vars.WORK_DIR}/no-such-file.img") == false, "insert invented a medium")
+
+quit()

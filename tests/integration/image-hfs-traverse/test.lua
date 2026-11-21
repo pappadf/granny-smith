@@ -1,0 +1,50 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- Integration test: image-VFS descent into an HFS floppy.
+-- Runner cd's into this directory; paths are relative.
+
+-- Probe the image: expected to surface as a bare HFS volume.
+files.probe("../../data/systems/System_6_0_8.dsk")
+
+-- Root of the synthesised partition layer (one entry since no APM).
+files.ls("../../data/systems/System_6_0_8.dsk")
+
+-- HFS root directory.  Expected entries (System 6.0.8 floppy) include
+-- "System Folder" and "TeachText".
+files.ls("../../data/systems/System_6_0_8.dsk/partition1")
+
+-- Descend one level inside a folder with a space in its name.
+files.ls("../../data/systems/System_6_0_8.dsk/partition1/System Folder")
+
+-- Structured JSON listing (files.list) backs the web Filesystem tree's image
+-- descent. Must return a non-empty array for the synthesised partition root
+-- and the HFS volume root — same opendir/readdir path as files.ls above.
+assert(files.list("../../data/systems/System_6_0_8.dsk"), "files.list: empty partition listing")
+assert(files.list("../../data/systems/System_6_0_8.dsk/partition1"), "files.list: empty HFS root listing")
+
+-- Reserved /finf fork sub-path.  Confirm it exists as a virtual file.
+-- (size returns the file size as exit code, which would flag the test
+-- runner as failed — use exists for the presence check instead.)
+files.path_exists("../../data/systems/System_6_0_8.dsk/partition1/System Folder/Finder/finf")
+files.path_exists("../../data/systems/System_6_0_8.dsk/partition1/System Folder/Finder/rsrc")
+
+-- Writes into an image path must be structurally refused (EROFS).
+assert(gs.try(function() return files.mkdir("../../data/systems/System_6_0_8.dsk/partition1/newdir") end, "refused") == "refused", "mkdir into the image is refused")
+
+-- Recursive cp out of the image into WORK_DIR (host path provided by runner).
+files.cp("../../data/systems/System_6_0_8.dsk/partition1/System Folder", F"${vars.WORK_DIR}/dump", {recursive = true})
+files.ls(F"${vars.WORK_DIR}/dump")
+
+-- Auto-mount cache visible to the user.
+echo(F"cached mounts: ${files.mounts.count}")
+
+-- Attached writable to SCSI, the file is refused by the VFS (EBUSY); the
+-- image-attach-busy test covers the cases.
+machine.scsi.attach_hd("../../data/systems/System_6_0_8.dsk", 2)
+assert(not gs.truthy(function() return files.list("../../data/systems/System_6_0_8.dsk/partition1") end), "attached disk still served")
+
+-- Force-unmount releases the cache entry.
+local n = files.mounts.find("../../data/systems/System_6_0_8.dsk")
+files.mounts[n].unmount()
+echo(F"cached mounts: ${files.mounts.count}")
+
+quit()

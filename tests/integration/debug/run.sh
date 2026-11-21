@@ -1,10 +1,10 @@
 #!/bin/bash
 # Integration test: Debug tooling — `find` family. Runs the headless
-# emulator with test.script, captures stdout, and greps for expected
+# emulator with test.lua, captures stdout, and greps for expected
 # markers. Each `debug.find.<sub>` method returns a typed list of hits
 # (src/core/debug/cmd_find.c); the script echoes markers derived from it.
 
-# Note: no `set -e` — the test.script deliberately exercises error paths
+# Note: no `set -e` — the test.lua deliberately exercises error paths
 # (bad pattern, bad range, non-hex tokens, out-of-range values), which
 # can make the headless exit non-zero. We accept that exit status;
 # verification comes from the post-hoc grep assertions below.
@@ -15,10 +15,10 @@
 LOG="$TEST_RESULTS_DIR/debug.log"
 mkdir -p "$TEST_RESULTS_DIR"
 
-echo "Running headless with test.script; capturing output to $LOG"
+echo "Running headless with test.lua; capturing output to $LOG"
 GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN \
     rom="$ROM_PATH" \
-    script=test.script \
+    script=test.lua \
     --speed=turbo \
     >"$LOG" 2>&1 || true
 
@@ -55,9 +55,9 @@ expect 'word-first=0040a714' "debug.find.word should hit at the 'Apple' offset"
 expect 'long-first=0040a714' "debug.find.long should hit at the 'Apple' offset"
 expect 'nop-count=' "debug.find.bytes should report its hit count"
 
-# Error paths are exercised in-script with try(...) asserts; if any of
-# them regressed, an ASSERT FAILED marker appears.
-expect_not "ASSERT FAILED" "all in-script assertions must pass"
+# Error paths are exercised in-script with gs.ok(...) asserts; a failed
+# assertion aborts the script with a Lua traceback.
+expect_not "stack traceback" "all in-script assertions must pass"
 
 # Breakpoint entries (dedupe, meta.indices, enabled, remove by id): the
 # section ends with a marker, so an assert that aborts it cannot pass.
@@ -68,15 +68,13 @@ expect "log-file-probe-done" "the log-file probe must not end the script"
 expect "cannot set log file '/nonexistent-gs-dir/cpu.log': No such file or directory" \
     "log.set file= must report fopen's errno"
 
-# Format specs in ${expr:fmt}. The literal $ is doubled here so the
-# shell that runs run.sh doesn't expand the value before grep sees it.
+# Format specs in F"${expr:fmt}".
 expect "ab" "format spec :x should produce lowercase hex without prefix"
 expect "000000ab" "format spec :08x should zero-pad to width 8"
 expect "[      AB]" "format spec :8X should space-pad and uppercase"
 expect "171" "format spec :d should print 0xab decimal"
 expect "[   42]" "format spec :5d should space-pad"
 expect "fmt-marker[000000ab]" "format spec must apply inside string interpolation"
-expect_not "trailing garbage in expression" "format-spec colon must not leak into expr parser"
 
 # debug.disasm with an explicit address (two-arg form). The address
 # tag printed at the start of each line is the stable marker.

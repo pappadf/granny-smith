@@ -1,0 +1,293 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- Macintosh Plus suite (see config.mk for the RAM-config rationale and
+-- what this suite absorbed).
+--
+-- Row map (former directory / boot-matrix row → row; **bold** = new):
+--
+--   plus-beep      plus-boot-beep: sample-exact PWM boot beep
+--                  (frame-exact window — the constants are load-bearing)
+--   plus-20-fd     System 2.0 @ 1 MB (factory-default RAM)
+--   plus-32-fd     System 3.2 @ 2 MB
+--   plus-4x-fd     **System 4.1 @ 2.5 MB** — one of the unused
+--                  single-disk system images, on the asymmetric-bank
+--                  RAM config
+--   plus-42-fd     System 4.2, moved to the 4 MB maximum
+--   plus-608-fd    System 6.0.8 @ 2 MB + the blank-floppy initialize
+--                  dialog and Finder eject flow, absorbed from
+--                  plus-floppy-blank
+--   plus-71-hd     **Plus x 7.1**: the `scsi` HD-boot row re-media'd to
+--                  the universal 7.1 image — System 7 on a 68000, with
+--                  genuine 7.1 rather than hd1's System 6
+--
+-- All four supported Plus RAM totals (1 / 2 / 2.5 / 4 MB) appear across
+-- the rows, so the version axis and the RAM-sizing axis fill together.
+
+local mac = dofile("../lib/mac.lua")
+
+local ssw_20 = "../../data/systems/SSW-2.0-400K/System Disk.image"
+local ssw_32 = "../../data/systems/SSW-3.2-400K/System Installation v1.0.image"
+local sys_41 = "../../data/systems/System_4_1_0.dsk"
+local ssw_42 = "../../data/systems/SSW-4.2-800K/System Tools 1.image"
+local ssw_608 = "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
+-- The 7.1 image without the 8•24 GC extension: that INIT is 68020+ code
+-- (BSR.L at $A5388) and a real 68000 takes an address error on it — the
+-- 68000 core does too since 2026-09-02 — so the GC variant only boots on the
+-- 020+ rows that use it.
+local hd_71 = "../../data/systems/system_7_1_20mb_24ac_cd_32bit.img"
+
+-- Boot the Plus at `ram` KB off `media`, wait for `golden`, and assert
+-- the machine facts every floppy row shares. Returns the spend.
+local function plus_fd_row(label, ram, media, golden, ceiling)
+    machine.boot{model = "plus", ram = ram, rom = vars.ROM}
+    machine.floppy.drive[0].insert(media)
+    local spent = mac.wait_match(golden, ceiling, 5000000)
+    assert(machine.id == "plus", F"${label}: machine.id != plus")
+    assert(machine.ram == ram, F"${label}: machine.ram != ${ram}")
+    assert(machine.screen.width == 512, F"${label}: screen.width != 512")
+    assert(machine.screen.height == 342, F"${label}: screen.height != 342")
+    return spent
+end
+
+-- ---- plus-beep --------------------------------------------------------------
+-- Deterministic PWM audio through the generalized audio path. The fixed window
+-- and the exact frame count are both the assertion, not padding.  The
+-- machine boots with its parameter RAM already valid (the configuration's
+-- seed), so the ROM skips its own PRAMInit and the window holds 15112 frames.
+local function row_plus_beep()
+    machine.boot{model = "plus", ram = 1024, rom = vars.ROM}
+    machine.sound.capture.start()
+    scheduler.run(1000000)
+    machine.sound.capture.stop()
+    assert(machine.sound.capture.frames == 15112, F"plus-beep: capture length ${machine.sound.capture.frames}, want 15112")
+    machine.sound.match("goldens/plus-beep.wav")
+    mac.report_perf("suite-plus/plus-beep", scheduler.instr_count)
+end
+
+-- ---- the floppy rows --------------------------------------------------------
+
+local function row_plus_20_fd()
+    local t0 = scheduler.host_user_ns
+    local spent = plus_fd_row("plus-20-fd", 1024, ssw_20, "goldens/plus-2.0-512x342-finder.png", 80000000)
+    mac.mips_floor("plus-20-fd", t0, 20)
+    mac.report_row("2.0", "builtin", "fd-boot iwm 400k-gcr")
+    mac.report_perf("suite-plus/plus-20-fd", spent)
+end
+
+local function row_plus_32_fd()
+    local t0 = scheduler.host_user_ns
+    local spent = plus_fd_row("plus-32-fd", 2048, ssw_32, "goldens/plus-3.2-512x342-finder.png", 90000000)
+    mac.mips_floor("plus-32-fd", t0, 20)
+    mac.report_row("3.2", "builtin", "fd-boot iwm 400k-gcr")
+    mac.report_perf("suite-plus/plus-32-fd", spent)
+end
+
+-- NEW ROW: System 4.1 — one of the single-disk system images that sat unused in
+-- tests/data, on the asymmetric two-bank RAM config.
+local function row_plus_4x_fd()
+    local t0 = scheduler.host_user_ns
+    local spent = plus_fd_row("plus-4x-fd", 2560, sys_41, "goldens/plus-4.1-512x342-finder.png", 90000000)
+    mac.mips_floor("plus-4x-fd", t0, 20)
+    mac.report_row("4.1", "builtin", "fd-boot iwm 400k-gcr")
+    mac.report_perf("suite-plus/plus-4x-fd", spent)
+end
+
+local function row_plus_42_fd()
+    local t0 = scheduler.host_user_ns
+    local spent = plus_fd_row("plus-42-fd", 4096, ssw_42, "goldens/plus-4.2-512x342-finder.png", 100000000)
+    mac.mips_floor("plus-42-fd", t0, 20)
+    mac.report_row("4.2", "builtin", "fd-boot iwm 800k-gcr")
+    mac.report_perf("suite-plus/plus-42-fd", spent)
+end
+
+-- ---- plus-608-fd ------------------------------------------------------------
+-- 6.0.8, then the blank-floppy flow absorbed from plus-floppy-blank:
+-- create an image, insert it in the second drive, the System offers to
+-- initialize it, and Eject in that dialog removes it again. wait_stable
+-- (not wait_match) throughout because the row interacts.
+local function row_plus_608_fd()
+    machine.boot{model = "plus", ram = 2048, rom = vars.ROM}
+    machine.floppy.drive[0].insert(ssw_608)
+    scheduler.run(30000000)
+    mac.wait_stable(300000000)
+    assert(machine.ram == 2048, "plus-608-fd: machine.ram != 2048")
+    mac.check("goldens/plus-6.0.8-512x342-finder.png")
+    -- No assert_addr here: the Plus is a 68000, always 24-bit, and it has
+    -- no MMU32bit global (the axis is n/a for this class).
+    mac.report_row("6.0.8", "builtin", "fd-boot iwm 800k-gcr")
+
+    -- Blank second floppy → the System's initialize-disk dialog.
+    assert(files.fd_create(F"${vars.WORK_DIR}/blank.dsk"), "plus-608-fd: fd_create failed")
+    machine.floppy.drive[1].insert(F"${vars.WORK_DIR}/blank.dsk", true)
+    mac.wait_stable(300000000)
+    assert(machine.floppy.drive[1].present, "plus-608-fd: blank floppy not present in drive 1")
+    mac.check("goldens/plus-6.0.8-512x342-init-dialog.png")
+
+    -- Eject. Quadrature-mouse machine: plain positional moves, no warp.
+    machine.adb.mouse.move(157, 155)
+    mac.run_ticks(6)
+    machine.adb.mouse.click(true)
+    mac.run_ticks(6)
+    machine.adb.mouse.click(false)
+    mac.wait_stable(300000000)
+    assert(machine.floppy.drive[1].present == false, "plus-608-fd: blank floppy still present after Eject")
+    mac.check("goldens/plus-6.0.8-512x342-after-eject.png")
+    mac.report_perf("suite-plus/plus-608-fd", scheduler.instr_count)
+end
+
+-- ---- plus-71-hd -------------------------------------------------------------
+-- NEW CELL Plus x 7.1: the SCSI HD-boot row (formerly the `scsi` test, on
+-- hd1's System 6) re-media'd to the universal 7.1 image — System 7 on a
+-- 68000 — and the Plus's only HD-boot path coverage.
+--
+-- Booting this universal image on a 68000 surfaces a real System 7.1
+-- behaviour the row now pins: Apple Photo Access (a QuickTime file-system
+-- module that needs a 68020+) fails to install, so the System raises "One
+-- of the File System Access modules could not be installed" and waits.
+-- The row matches that dialog, clicks Continue, and only then expects the
+-- desktop — so a regression that changed WHICH modules fail, or that lost
+-- the dialog entirely, shows up as a golden mismatch.
+local function row_plus_71_hd()
+    machine.boot{model = "plus", ram = 4096, rom = vars.ROM}
+    machine.rtc.time = 3000000000
+    machine.scsi.attach_hd(hd_71, 0)
+    scheduler.run(60000000)
+    mac.wait_stable(1200000000)
+    assert(machine.id == "plus", "plus-71-hd: machine.id != plus")
+    assert(machine.screen.width == 512, "plus-71-hd: screen.width != 512")
+    mac.check("goldens/plus-7.1-512x342-fsaccess-dialog.png")
+
+    -- Continue (quadrature mouse: plain positional moves, no warp).
+    machine.adb.mouse.move(357, 245)
+    mac.run_ticks(8)
+    machine.adb.mouse.click(true)
+    mac.run_ticks(8)
+    machine.adb.mouse.click(false)
+    mac.wait_stable(900000000)
+    mac.check("goldens/plus-7.1-512x342-finder.png")
+    mac.report_row("7.1", "builtin", "hd-boot scsi fs-access-dialog")
+    mac.report_perf("suite-plus/plus-71-hd", scheduler.instr_count)
+end
+
+-- ---- plus-keyboard ----------------------------------------------------------
+-- The Plus keypad sends aliased raw codes: every keypad key shares its byte
+-- with a main-keyboard key, and the $79 / $71 prefixes are what make the
+-- Keyboard Driver add $40 and produce the keypad key code instead.  Until
+-- 2026-09-21 the model omitted the $71 Shift prefix entirely and gave Clear
+-- no prefix at all, so five keys delivered the wrong character to the guest:
+-- Clear typed X, and + * / = arrived as Left, Right, Up and Down.
+--
+-- The oracle is the ROM's own KeyMap bitmap at $174 (keyboard.md §8.5): 16
+-- bytes, byte = code >> 3, bit = code & 7, LSB-first within the byte.  It is
+-- maintained by the keyboard VBL task hooked at JKybdTask, so it is live long
+-- before the Finder -- but rather than guess how early, the row proves the
+-- oracle with a control key first.
+local function keymap_bit(code)
+    local byte = machine.memory.peek.b(0x174 + (code >> 3))
+    return (byte >> (code & 7)) & 1
+end
+
+local function row_plus_keyboard()
+    machine.boot{model = "plus", ram = 4096, rom = vars.ROM}
+    machine.scsi.attach_hd(hd_71, 0)
+    scheduler.run(60000000)
+    mac.wait_stable(1200000000)
+
+    -- KbdType is non-zero once the Model Number handshake has completed
+    -- (Guide 2e p.281: the first command the computer sends is Model Number,
+    -- and normal Inquiry operation only begins after a successful reply).
+    assert(debug.mac.globals.read("KbdType") ~= 0, "plus-keyboard: keyboard handshake did not complete")
+
+    -- Positive control.  Space is $31 -- deliberately NOT X ($07), because X
+    -- is the very bit keypad Clear used to collide with, and a control that
+    -- shared the bit under test would mask the defect it is there to catch.
+    machine.adb.keyboard.down(0x31)
+    mac.run_ticks(10)
+    assert(keymap_bit(0x31) == 1, "plus-keyboard: control key (space) did not reach KeyMap -- oracle not live")
+    machine.adb.keyboard.up(0x31)
+    mac.run_ticks(10)
+    assert(keymap_bit(0x31) == 0, "plus-keyboard: control key (space) stuck down")
+
+    -- Keypad Clear must be $47, not X ($07).
+    machine.adb.keyboard.down(0x47)
+    mac.run_ticks(10)
+    assert(keymap_bit(0x47) == 1, "plus-keyboard: keypad Clear did not set $47")
+    assert(keymap_bit(0x07) == 0, "plus-keyboard: keypad Clear also typed X ($07)")
+    machine.adb.keyboard.up(0x47)
+    mac.run_ticks(10)
+
+    -- The four Shift-prefixed operators.  On a Plus the keypad symbol and its
+    -- arrow SHARE the key code, so the assertion is not "not the arrow bit" --
+    -- it is that Shift is down alongside it.  Shift is $38.
+    machine.adb.keyboard.down(0x45)
+    mac.run_ticks(10)
+    assert(keymap_bit(0x38) == 1, "plus-keyboard: keypad + did not assert Shift")
+    machine.adb.keyboard.up(0x45)
+    mac.run_ticks(10)
+    -- ... and the Shift latch must clear on release, or every later keystroke
+    -- arrives shifted.  This is the guard on the inferred $F1 release byte.
+    assert(keymap_bit(0x38) == 0, "plus-keyboard: Shift latch stuck down after keypad + release")
+
+    machine.adb.keyboard.down(0x4B)
+    mac.run_ticks(10)
+    assert(keymap_bit(0x38) == 1, "plus-keyboard: keypad / did not assert Shift")
+    machine.adb.keyboard.up(0x4B)
+    mac.run_ticks(10)
+    assert(keymap_bit(0x38) == 0, "plus-keyboard: Shift latch stuck down after keypad / release")
+
+    -- keyboard.press("a") used to fail on EVERY machine, Mac included --
+    -- debug_mac_resolve_key_name knew fourteen named keys and the hex form and
+    -- nothing else, while adb.c's own argument doc promised
+    -- `Key name ("return"/"esc"/"a"/...)`.  Letters and digits now resolve
+    -- through the layout table that was already there.
+    machine.adb.keyboard.down("a")
+    mac.run_ticks(10)
+    assert(keymap_bit(0x00) == 1, "plus-keyboard: keyboard.press(\"a\") did not resolve")
+    machine.adb.keyboard.up("a")
+    mac.run_ticks(10)
+    assert(keymap_bit(0x00) == 0, "plus-keyboard: 'a' stuck down")
+
+    machine.adb.keyboard.down("7")
+    mac.run_ticks(10)
+    assert(keymap_bit(0x1A) == 1, "plus-keyboard: keyboard.press(\"7\") did not resolve")
+    machine.adb.keyboard.up("7")
+    mac.run_ticks(10)
+
+    mac.report_row("7.1", "builtin", "hd-boot keypad-prefix keymap key-names")
+end
+
+-- ---- plus-checkpoint --------------------------------------------------------
+-- The Plus had no save/restore round trip at all, which is the coverage the
+-- family needed before it could move onto the shared checkpoint prefix: the
+-- checkpoint stream is positional and has no version field, so a save and its
+-- restore that drift apart do not fail at the drift -- they cross-load and die
+-- later at whichever block first disagrees on size (the IIfx did exactly that).
+-- Boot to the 6.0.8 Finder, save, boot a DIFFERENT machine, load, and require
+-- the restored machine to be the saved one down to the pixel.
+local function row_plus_checkpoint()
+    machine.boot{model = "plus", ram = 2048, rom = vars.ROM}
+    machine.floppy.drive[0].insert(ssw_608)
+    mac.reach("goldens/plus-6.0.8-512x342-finder.png", 30000000, 300000000, 5000000)
+    mac.check("goldens/plus-6.0.8-512x342-finder.png")
+    assert(checkpoint.save(F"${vars.WORK_DIR}/suite-plus.gsc"), "plus-checkpoint: save failed")
+    machine.boot{model = "plus", ram = 1024, rom = vars.ROM}
+    assert(checkpoint.load(F"${vars.WORK_DIR}/suite-plus.gsc"), "plus-checkpoint: load failed")
+    scheduler.run(5000000)
+    assert(machine.ram == 2048, "plus-checkpoint: restored RAM size wrong")
+    mac.check("goldens/plus-6.0.8-512x342-finder.png")
+    mac.report_perf("suite-plus/plus-checkpoint", scheduler.instr_count)
+end
+
+-- ---- row dispatch -----------------------------------------------------------
+
+mac.row("plus-beep", row_plus_beep)
+mac.row("plus-20-fd", row_plus_20_fd)
+mac.row("plus-32-fd", row_plus_32_fd)
+mac.row("plus-4x-fd", row_plus_4x_fd)
+mac.row("plus-42-fd", row_plus_42_fd)
+mac.row("plus-608-fd", row_plus_608_fd)
+mac.row("plus-71-hd", row_plus_71_hd)
+mac.row("plus-keyboard", row_plus_keyboard)
+mac.row("plus-checkpoint", row_plus_checkpoint)
+
+mac.suite_done()
+quit()

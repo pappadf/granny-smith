@@ -12,7 +12,7 @@ cd "$TEST_RESULTS_DIR"
 # shellcheck disable=SC2086 — TEST_VAR_ARGS is intentionally word-split
 out=$(GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN \
     rom="$ROM_PATH" \
-    script="$SCRIPT_DIR/step1.script" \
+    script="$SCRIPT_DIR/step1.lua" \
     --checkpoint-dir="$TEST_RESULTS_DIR/cp" \
     --var TEST_RESULTS_DIR="$TEST_RESULTS_DIR" \
     $TEST_VAR_ARGS \
