@@ -33,9 +33,11 @@ test('a download arrives in transfer-buffer chunks and lands as one file', async
 
   // A 9 MB blank image (an I/O job itself), then its download.
   await terminalRun(page, 'files.create("/tmp/dl.img", "hd", "9m")');
-  await expect(page.locator('.console-output')).toContainText('hd create: created', {
-    timeout: 60_000,
-  });
+  // files.create answers true once the file is written.
+  await expect(page.locator('.console-output')).toContainText(
+    /files\.create\("\/tmp\/dl\.img", "hd", "9m"\)\s*true/,
+    { timeout: 60_000 },
+  );
   const download = page.waitForEvent('download', { timeout: 60_000 });
   await terminalRun(page, 'files.download "/tmp/dl.img"');
   const dl = await download;
