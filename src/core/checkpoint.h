@@ -139,6 +139,15 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
 #define CP_FIELD(OP, cp, lv) OP((cp), &(lv), sizeof(lv))
 #define CP_ARRAY(OP, cp, a)  OP((cp), (a), sizeof(a))
 
+// An entry whose save and restore are two functions picks one by OP, as
+// SWIM3_CP does (swim3.h): the plain-data prefix and a sparse buffer.
+#define CP_PREFIX(OP, cp, p, type)                            CP_PREFIX_##OP(cp, p, type)
+#define CP_PREFIX_system_write_checkpoint_data(cp, p, type)   checkpoint_save_prefix(cp, p, type)
+#define CP_PREFIX_system_read_checkpoint_data(cp, p, type)    checkpoint_load_prefix(cp, p, type)
+#define CP_SPARSE(OP, cp, buf, size, page)                    CP_SPARSE_##OP(cp, buf, size, page)
+#define CP_SPARSE_system_write_checkpoint_data(cp, b, sz, pg) checkpoint_write_sparse((cp), (b), (sz), (pg))
+#define CP_SPARSE_system_read_checkpoint_data(cp, b, sz, pg)  checkpoint_read_sparse((cp), (b), (sz), (pg))
+
 // === Bounded reads from an untrusted stream ===
 //
 // A checkpoint is a user-supplied file and the build-ID gate is not a defence
