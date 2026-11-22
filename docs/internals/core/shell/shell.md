@@ -122,6 +122,11 @@ context:
   breakpoint condition is checked this way when it is added
   (`debug.breakpoints.add`) or edited (`.condition = …`), and refused
   if it does not parse; one that parses but fails at a hit still fires.
+  Integer literals and most register values are unsigned; an unsigned
+  `a - b` whose result would be negative gives the signed difference
+  (`16 - 245` is `-229`, and `(16 - 245) / 17` is `-13`) rather than a
+  2^64 wrap, while a non-negative difference stays unsigned, so address
+  arithmetic is unchanged.
 
 ## Strings and interpolation
 

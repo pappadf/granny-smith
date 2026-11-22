@@ -1519,6 +1519,17 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char *err
             z = x + y;
             break;
         case '-':
+            // A difference below zero is negative, not a 2^64 wrap: `16 - 245`
+            // is -229 (a signed result, as unary '-' gives), so `x0 + (x1 -
+            // x0) * i / n` works leftwards too.  An unsigned result stays
+            // unsigned, so address arithmetic ($pc - 4) is unchanged.
+            if (x < y && y - x <= (uint64_t)INT64_MAX + 1) {
+                r = val_int((int64_t)(0 - (y - x)));
+                value_free(&pa);
+                value_free(&pb);
+                err[0] = '\0';
+                return r;
+            }
             z = x - y;
             break;
         case '*':
