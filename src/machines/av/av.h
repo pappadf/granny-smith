@@ -46,7 +46,7 @@ struct adb;
 struct av_civic;
 struct cuda;
 struct av_dsp;
-struct av_mace;
+struct av_enet;
 struct av_new_age;
 struct av_psc;
 struct av_singer;
@@ -144,7 +144,7 @@ typedef struct av_state {
     struct av_civic *civic; // CIVIC frame buffer + Sebastian RAMDAC
     struct av_vdc *vdc; // video digitizer: DMSD + VDC models + frame engine
     struct av_new_age *fdc; // New Age floppy controller (the drive is cfg->floppy)
-    struct av_mace *mace; // MACE Ethernet register stub
+    struct av_enet *enet; // built-in Ethernet: MACE + PSC channels 1/2 (enet.c)
     struct scsi_53c96 *scsi96; // NCR 53C96 inside Curio
 
     m68k_board_overlay_t overlay; // ROM-at-zero until the aperture is touched

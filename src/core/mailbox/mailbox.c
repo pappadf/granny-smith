@@ -8,6 +8,7 @@
 #include "common.h"
 #include "json_escape.h"
 #include "log.h"
+#include "platform_hooks.h"
 #include "spsc_index.h"
 #include "io/io_worker.h"
 #include "job/job.h"
@@ -18,10 +19,6 @@
 
 LOG_USE_CATEGORY_NAME("mailbox");
 
-__attribute__((weak)) void mailbox_notify(volatile uint32_t *word) {
-    (void)word;
-}
-
 // The I/O worker's completions wake the emulator thread the way a request
 // does: on REQ_HEAD, where the idle wait parks.
 static volatile uint32_t *g_wake_word;
@@ -31,7 +28,7 @@ static mailbox_t *g_serving_mailbox;
 static mailbox_t *g_mailbox_for_completion;
 static void wake_on_req_head(void) {
     if (g_wake_word)
-        mailbox_notify(g_wake_word);
+        platform_wake(g_wake_word);
 }
 
 // A quarter of the event ring (mailbox_set_record_max); the default holds
@@ -172,7 +169,7 @@ void mailbox_transfer_release(uint32_t handle) {
 
 void mailbox_set_ready(mailbox_t *m) {
     mbx_store(m->ctrl, GS_MBX_C_READY, 1u);
-    mailbox_notify(&m->ctrl[GS_MBX_C_READY]);
+    platform_wake(&m->ctrl[GS_MBX_C_READY]);
 }
 
 void mailbox_heartbeat(mailbox_t *m) {
@@ -397,7 +394,7 @@ void mailbox_result_complete(uint32_t token, bool ok, const char *json) {
             return;
         }
         mbx_publish(&m->evt);
-        mailbox_notify(&m->ctrl[GS_MBX_C_EVT_HEAD]);
+        platform_wake(&m->ctrl[GS_MBX_C_EVT_HEAD]);
         return;
     }
 }
@@ -496,7 +493,7 @@ bool mailbox_emit(mailbox_t *m, uint32_t kind, const char *json) {
     memcpy(p + 4 * GS_MBX_EVENT_WORDS, json, n);
     stat_add(m, GS_MBX_C_STAT_EVENTS, 1);
     mbx_publish(&m->evt);
-    mailbox_notify(&m->ctrl[GS_MBX_C_EVT_HEAD]);
+    platform_wake(&m->ctrl[GS_MBX_C_EVT_HEAD]);
     return true;
 }
 
@@ -536,7 +533,7 @@ int mailbox_drain(mailbox_t *m, double budget_us, double (*now_us)(void)) {
             LOG(0, "mailbox: request ring corrupt at %u; mailbox lost", (unsigned)m->req.rd);
             mbx_store(m->ctrl, GS_MBX_C_STATUS, GS_MBX_STATUS_LOST);
             mbx_abandon(&m->req, head);
-            mailbox_notify(&m->ctrl[GS_MBX_C_STATUS]);
+            platform_wake(&m->ctrl[GS_MBX_C_STATUS]);
             break;
         }
         if (rec.kind == MBX_R_PAD) {
@@ -592,7 +589,7 @@ int mailbox_drain(mailbox_t *m, double budget_us, double (*now_us)(void)) {
     io_worker_service();
     if (written || mbx_unpublished(&m->evt)) {
         mbx_publish(&m->evt);
-        mailbox_notify(&m->ctrl[GS_MBX_C_EVT_HEAD]);
+        platform_wake(&m->ctrl[GS_MBX_C_EVT_HEAD]);
         if (now_us) {
             double us = now_us() - t0;
             if (us > (double)m->ctrl[GS_MBX_C_STAT_DRAIN_US])

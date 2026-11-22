@@ -13,11 +13,13 @@ assert(machine.memory.peek.b(mace + 0x190) == 0x00, F"reserved register 25 reads
 -- The configuration registers latch at their data-sheet slots, and the chip
 -- ID ignores a write
 machine.memory.poke.b(mace + 0xB0, 0x20)
-machine.memory.poke.b(mace + 0xC0, 0x2C)
+machine.memory.poke.b(mace + 0xC0, 0x5C)
 machine.memory.poke.b(mace + 0xE0, 0x01)
 machine.memory.poke.b(mace + 0x100, 0x55)
 assert(machine.memory.peek.b(mace + 0xB0) == 0x20, "BIUCC (register 11) did not latch")
-assert(machine.memory.peek.b(mace + 0xC0) == 0x2C, "FIFOCC (register 12) did not latch")
+-- FIFOCC: the watermarks latch; XMTFWU/RCVFWU (bits 3/2) load them and
+-- clear themselves (Am79C940 data manual, FIFOCC, p. 66)
+assert(machine.memory.peek.b(mace + 0xC0) == 0x50, F"FIFOCC (register 12) reads ${machine.memory.peek.b(mace + 0xC0):02x}, not the latched watermarks with the update bits cleared")
 assert(machine.memory.peek.b(mace + 0xE0) == 0x01, "PLSCC (register 14) did not latch")
 assert(machine.memory.peek.b(mace + 0x100) == 0x40, "CHIPID took a write")
 

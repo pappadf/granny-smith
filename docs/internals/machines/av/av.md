@@ -136,14 +136,22 @@ hangs forever inside `SCSIComplete`'s phase wait (whose deadline is
 | CIVIC + Sebastian | [civic.c](../../../../src/machines/av/civic.c) | frame buffer, bit-serial registers, RAMDAC — [civic.md](civic.md) |
 | Cuda | [cuda.c](../../../../src/core/peripherals/cuda.c) | ADB/PRAM/RTC behind VIA1's shift register — [cuda.md](../../core/peripherals/cuda.md) |
 | New Age | [new_age.c](../../../../src/machines/av/new_age.c) | µPD72070 FDC: the shared chip model (`core/peripherals`) on PSC DMA channel 3 and VIA2 bit 5, driving one internal SuperDrive — [new_age.md](../../core/peripherals/new_age.md) |
-| MACE | [mace.c](../../../../src/machines/av/mace.c) | Am79C940 register stub + the Apple address PROM; no datapath, so `.ENET` does not load |
+| Ethernet | [enet.c](../../../../src/machines/av/enet.c) | the shared MACE core (`core/peripherals/mace.c`) on PSC channels 1/2 and level 3, the Apple address PROM, the AAUI port cabled to the AppleTalk network (EtherTalk) — [enet.md](enet.md) |
 | SCSI | 53C96 (`core/peripherals`) | at `$18000`, `$10` stride; real DMA on PSC channel 0, which the HAL polls |
 | SCC | `scc.c` (`core/peripherals`) | single base `$50F04000`, offsets bCtl/aCtl/bData/aData = 0/2/4/6 |
 
 ## Testing
 
-- `tests/unit/suites/psc/` — the DMA engine against the three known-good
-  register sequences the shipping drivers issue.
+- `tests/unit/suites/psc/` — the DMA engine against the known-good
+  register sequences the shipping drivers issue, the Ethernet channels'
+  chain-mode receive included.
+- `tests/unit/suites/mace/` — the shared MACE core ([enet.md](enet.md)).
+- `tests/integration/av-ethertalk-afp/` — EtherTalk end to end: `.ENET`
+  opens (its three MACE loopback self-tests pass through PSC channels 1/2),
+  the Chooser lists the emulated AppleShare server over Ethernet, and the
+  840AV mounts it and copies a 410 KB file off it.
+- `tests/integration/av-appletalk-afp/` — the same over LocalTalk (PSC
+  channel 5).
 - `tests/unit/suites/civic/` — the bit-serial codec, sense protocol, CLUT and
   VBL ack dance.
 - `tests/integration/suite-av/` — identity, RAM sizing, video bring-up
@@ -157,8 +165,9 @@ hangs forever inside `SCSIComplete`'s phase wait (whose deadline is
 
 ## What is deliberately not modelled
 
-GeoPort serial receive DMA (transmit DMA is modelled, for LocalTalk: [psc.md](psc.md)), Ethernet beyond the register stub, and
-NuBus cards in the AV slots.  The DSP3210 **is** modelled — a live core
+GeoPort serial receive DMA (transmit DMA is modelled, for LocalTalk: [psc.md](psc.md)), Ethernet
+beyond the emulator's AppleTalk network (no host network bridge: the cable carries EtherTalk to the
+built-in AppleTalk servers only), and NuBus cards in the AV slots.  The DSP3210 **is** modelled — a live core
 executing Apple's RTM kernel out of the ROM ([dsp.md](dsp.md)) — as is the
 Singer sound datapath in both directions ([singer.md](singer.md):
 `machine.sound` with the golden-WAV capture sink, and `machine.audioin`,

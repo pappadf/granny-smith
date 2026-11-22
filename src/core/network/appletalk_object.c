@@ -159,6 +159,8 @@ static DEF_GETTER(atalk_stats_get) {
 static const member_t atalk_stats_members[] = {
     OBJ_U64_FIELD_WITH(atalk_stats_t, llap_rx, "LLAP frames received", atalk_stats_get),
     OBJ_U64_FIELD_WITH(atalk_stats_t, llap_tx, "LLAP frames transmitted", atalk_stats_get),
+    OBJ_U64_FIELD_WITH(atalk_stats_t, elap_rx, "EtherTalk frames received (DDP and AARP)", atalk_stats_get),
+    OBJ_U64_FIELD_WITH(atalk_stats_t, elap_tx, "EtherTalk frames transmitted", atalk_stats_get),
     OBJ_U64_FIELD_WITH(atalk_stats_t, malformed, "Frames discarded as malformed, at any layer", atalk_stats_get),
     OBJ_U64_FIELD_WITH(atalk_stats_t, unhandled, "Well-formed frames nothing here serves", atalk_stats_get),
     OBJ_U64_FIELD_WITH(atalk_stats_t, tx_dropped, "Frames the stack gave up transmitting", atalk_stats_get),

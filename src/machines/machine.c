@@ -209,9 +209,7 @@ const struct scsi_cd_drive *machine_cd_drive_model(const hw_profile_t *p, const 
 }
 
 // A card bus's checkpoint part: the bus and its drives.
-static void card_scsi_part_save(void *obj, checkpoint_t *cp) {
-    scsi_checkpoint(obj, cp);
-}
+MACHINE_PART_SAVE(scsi_checkpoint, scsi_t)
 
 void machine_card_scsi_buses(struct config *cfg, checkpoint_t *cp) {
     for (const pci_slot_decl_t *d = cfg->machine->pci_slots; d && d->slot; d++) {
@@ -229,7 +227,7 @@ void machine_card_scsi_buses(struct config *cfg, checkpoint_t *cp) {
         snprintf(name, sizeof names[0], "pci_%d", d->slot);
         machine_part_begin(cfg, cp, name);
         scsi_t *bus = machine_scsi_bus_init(cfg, cp, name);
-        machine_part(cfg, cp, name, card_scsi_part_save, bus);
+        machine_part(cfg, cp, name, scsi_checkpoint_part, bus);
         cfg->card_scsi[d->slot] = bus;
         kind->attach_scsi_bus(dev, bus);
         LOG(1, "%s: SCSI bus of the card in %s", name, d->label ? d->label : "the slot");

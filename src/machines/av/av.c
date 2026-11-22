@@ -20,8 +20,8 @@
 #include "civic.h"
 #include "cuda.h"
 #include "dsp.h"
+#include "enet.h"
 #include "floppy.h"
-#include "mace.h"
 #include "psc.h"
 #include "singer.h"
 #include "vdc.h"
@@ -220,12 +220,12 @@ const board_io_range_t av_io_ranges[] = {
     {0x00000, 0x02000, BOARD_DEV_VIA1, AV_VIA_IO_PENALTY, BOARD_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},
     {0x02000, 0x04000, 0, AV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, av_psc_via2_read, av_psc_via2_write, "psc_via2"},
     {0x04000, 0x08000, BOARD_DEV_SCC, AV_SCC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
-    {0x08000, 0x08080, 0, AV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, av_mace_prom_read, av_mace_prom_write, "mac_prom"},
+    {0x08000, 0x08080, 0, AV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, av_enet_prom_read, av_enet_prom_write, "mac_prom"},
     {0x18000, 0x18100, BOARD_DEV_SCSI96, AV_IO_PENALTY, BOARD_IO_STRIDE_16, 0, 0, NULL, NULL, "scsi_53c96"},
     {0x18100, 0x18200, BOARD_DEV_SCSI96, AV_IO_PENALTY, BOARD_IO_FIXED, SCSI_53C96_PDMA_SUB, SCSI_53C96_PDMA_SUB, NULL,
      NULL, "scsi_rdma"},
-    {0x1C000, 0x1C200, 0, AV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, av_mace_read, av_mace_write, "mace",
-     .peek_fn = av_mace_peek},
+    {0x1C000, 0x1C200, 0, AV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, av_enet_mace_read, av_enet_mace_write, "mace",
+     .peek_fn = av_enet_mace_peek},
     {0x2A000, 0x2A200, 0, AV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, av_new_age_read, av_new_age_write, "new_age",
      .peek_fn = av_new_age_peek},
     {0x2E000, 0x2E100, 0, AV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, av_civic_clk_read, av_civic_clk_write, "clock"},
@@ -653,7 +653,7 @@ MACHINE_PART_SAVE(av_psc_checkpoint, av_psc_t)
 MACHINE_PART_SAVE(av_dsp_checkpoint, av_dsp_t)
 MACHINE_PART_SAVE(av_singer_checkpoint, av_singer_t)
 MACHINE_PART_SAVE(av_new_age_checkpoint, av_new_age_t)
-MACHINE_PART_SAVE(av_mace_checkpoint, av_mace_t)
+MACHINE_PART_SAVE(av_enet_checkpoint, av_enet_t)
 MACHINE_PART_SAVE(av_civic_checkpoint, av_civic_t)
 MACHINE_PART_SAVE(av_vdc_checkpoint, av_vdc_t)
 
@@ -718,14 +718,15 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
     }
     machine_part(cfg, cp, "cuda", part_save_cuda, st->cuda);
 
-    // MACE Ethernet register stub + address PROM (no wire).
+    // The built-in Ethernet: the MACE on PSC channels 1/2 and level 3, the
+    // address PROM, and the AAUI port cabled to the AppleTalk network.
     machine_part_begin(cfg, cp, "mace");
-    st->mace = av_mace_init(cfg, cp);
-    if (!st->mace) {
+    st->enet = av_enet_init(cfg, cp);
+    if (!st->enet) {
         LOG(0, "Error: out of memory constructing the MACE Ethernet");
         return -1;
     }
-    machine_part(cfg, cp, "mace", av_mace_checkpoint_part, st->mace);
+    machine_part(cfg, cp, "mace", av_enet_checkpoint_part, st->enet);
 
     // CIVIC + Sebastian video (Hi-Res 640x480 monitor, 2 MB VRAM).
     machine_part_begin(cfg, cp, "civic");
@@ -906,6 +907,9 @@ static void av_bus_reset(config_t *cfg) {
     // The 53C96 is on /RESET as on PDM and TNT: its configuration and FIFO
     // clear (the bus itself is reset by the shared chain).
     scsi_53c96_reset(st->scsi96);
+    // The MACE is on /RESET too: its registers to their reset values and
+    // its FIFOs empty (the station address RAM survives).
+    av_enet_reset(st->enet);
     system_reset_common_devices(cfg);
 }
 
@@ -920,9 +924,9 @@ static void av_teardown(config_t *cfg) {
             av_civic_delete(st->civic);
             st->civic = NULL;
         }
-        if (st->mace) {
-            av_mace_delete(st->mace);
-            st->mace = NULL;
+        if (st->enet) {
+            av_enet_delete(st->enet);
+            st->enet = NULL;
         }
         if (st->scsi96) {
             scsi_53c96_delete(st->scsi96);

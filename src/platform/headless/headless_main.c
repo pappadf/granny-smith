@@ -56,9 +56,6 @@
 #include <execinfo.h>
 #endif
 
-// Nothing to redraw: headless has no screen of its own (platform.h)
-void platform_force_redraw(void) {}
-
 // The host directory published as the default AppleShare volume, resolved at
 // startup from --shared-dir or $GS_SHARED_DIR.  The path literal lives here in
 // the platform layer, never in src/core (PR #69): core only ever executes the
@@ -869,29 +866,6 @@ void platform_print_host_callstack(void) {
     }
 #endif
     printf("(unavailable)\n");
-}
-
-// No host audio sink headless: deterministic capture for golden-WAV tests
-// lives core-side in audio_out.c, ahead of this boundary.
-void platform_audio_open(uint32_t src_rate_hz, int channels) {
-    (void)src_rate_hz;
-    (void)channels;
-}
-
-void platform_audio_push(const int16_t *frames, int nframes, int vol_0_7) {
-    (void)frames;
-    (void)nframes;
-    (void)vol_0_7;
-}
-
-void platform_audio_set_rate(uint32_t src_rate_hz) {
-    (void)src_rate_hz;
-}
-
-// No host audio ring: the governor's audio signal is simply absent (and the
-// governor itself never runs on the budget-driven headless path).
-double platform_audio_ring_fill(void) {
-    return -1.0;
 }
 
 // Limits on the repeatable arguments.  Going past one is an error, not a
