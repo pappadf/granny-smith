@@ -68,7 +68,7 @@ static void iicx_via2_output(void *context, uint8_t port, uint8_t output);
 // ============================================================
 
 void iicx_set_rom_overlay(config_t *cfg, bool overlay) {
-    m68k_board_overlay_set_line(&iicx_state(cfg)->overlay, overlay);
+    m68k_board_overlay_set_line(&iicx_st(cfg)->overlay, overlay);
 }
 
 // ============================================================
@@ -87,7 +87,7 @@ void iicx_set_rom_overlay(config_t *cfg, bool overlay) {
 // (glue_memory_layout); these two machines differ from the SE/30 only
 // in having card slots instead of a framebuffer on the board.
 void iicx_memory_layout_tail(config_t *cfg) {
-    iicx_state_t *st = iicx_state(cfg);
+    iicx_state_t *st = iicx_st(cfg);
 
     // Populate page-table entries for any host-backed slot regions
     // registered by NuBus cards (matches the SE/30 pattern of explicit
@@ -133,7 +133,7 @@ void iicx_via1_output(void *context, uint8_t port, uint8_t output) {
 // stop the scheduler so the headless run exits cleanly.
 static void iicx_via2_output(void *context, uint8_t port, uint8_t output) {
     config_t *cfg = (config_t *)context;
-    iicx_state_t *st = iicx_state(cfg);
+    iicx_state_t *st = iicx_st(cfg);
     if (port != 1)
         return;
 

@@ -1106,61 +1106,71 @@ static uint8_t *ckpt_restore_cache(checkpoint_t *cp, uint32_t *key, uint32_t *si
     return d;
 }
 
+// A pattern-cache entry: the tile's w*h pixels while it is keyed.
+static void ckpt_save_pixpat(checkpoint_t *cp, const struct gc_pixpat *pp) {
+    uint32_t bytes = pp->key ? (uint32_t)pp->w * pp->h * 4u : 0u;
+    ckpt_save_cache(cp, pp->key, bytes, (const uint8_t *)pp->pix);
+}
+
+// Read what ckpt_save_pixpat wrote; w/h/fmt come back with the prefix.
+static void ckpt_restore_pixpat(checkpoint_t *cp, struct gc_pixpat *pp) {
+    uint32_t bytes = 0;
+    pp->pix = (uint32_t *)ckpt_restore_cache(cp, &pp->key, &bytes, (uint8_t *)pp->pix);
+}
+
+// A font or width-table cache entry.
+static void ckpt_save_ent(checkpoint_t *cp, const struct gc_cache_ent *e) {
+    ckpt_save_cache(cp, e->key, e->size, e->data);
+}
+
+// Read what ckpt_save_ent wrote.
+static void ckpt_restore_ent(checkpoint_t *cp, struct gc_cache_ent *e) {
+    e->data = ckpt_restore_cache(cp, &e->key, &e->size, e->data);
+}
+
+// The cache entries as entries of GC824_CP_FIELDS: OP picks the direction.
+#define GC824_PIXPAT_CP(OP, cp, pp)                          GC824_PIXPAT_CP_##OP((cp), (pp))
+#define GC824_PIXPAT_CP_system_write_checkpoint_data(cp, pp) ckpt_save_pixpat((cp), (pp))
+#define GC824_PIXPAT_CP_system_read_checkpoint_data(cp, pp)  ckpt_restore_pixpat((cp), (pp))
+#define GC824_ENT_CP(OP, cp, e)                              GC824_ENT_CP_##OP((cp), (e))
+#define GC824_ENT_CP_system_write_checkpoint_data(cp, e)     ckpt_save_ent((cp), (e))
+#define GC824_ENT_CP_system_read_checkpoint_data(cp, e)      ckpt_restore_ent((cp), (e))
+
 // The checkpointed plain-data prefix, up to the first host pointer
 CHECKPOINT_PREFIX(display_card_824gc_priv_t, card);
+
+// The card's checkpoint, one list for save and restore: the prefix, the
+// display head, the memories, the sparse register window, the host-keyed
+// caches, and the clip/vis REGIONS (guest state: ops $6A/$6C replace them;
+// the two masks derive from them and are rebuilt on restore).
+#define GC824_CP_FIELDS(OP, cp, p)                                                                                     \
+    CP_PREFIX(OP, cp, p, display_card_824gc_priv_t);                                                                   \
+    DISPLAY_HEAD_CP(OP, cp, &(p)->display);                                                                            \
+    OP((cp), (p)->vram, GC824_VRAM_SIZE);                                                                              \
+    OP((cp), (p)->sram, GC824_SRAM_SIZE);                                                                              \
+    OP((cp), (p)->dram, GC824_DRAM_SIZE);                                                                              \
+    CP_SPARSE(OP, cp, (p)->regs, GC824_REGS_SIZE, GC824_CKPT_PAGE);                                                    \
+    for (int i_ = 0; i_ < 4; i_++)                                                                                     \
+        GC824_PIXPAT_CP(OP, cp, &(p)->gc_pixpats[i_]);                                                                 \
+    for (int i_ = 0; i_ < 8; i_++)                                                                                     \
+        GC824_ENT_CP(OP, cp, &(p)->gc_fonts[i_]);                                                                      \
+    for (int i_ = 0; i_ < 4; i_++)                                                                                     \
+        GC824_ENT_CP(OP, cp, &(p)->gc_wtabs[i_]);                                                                      \
+    OP((cp), (p)->gc_cliprgn, GC824_RGN_MAX);                                                                          \
+    OP((cp), (p)->gc_visrgn, GC824_RGN_MAX)
 
 static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
     display_card_824gc_priv_t *p = card ? card->priv : NULL;
     if (!p)
         return;
-    checkpoint_save_prefix(cp, p, display_card_824gc_priv_t);
-    display_head_save(cp, &p->display);
-
-    system_write_checkpoint_data(cp, p->vram, GC824_VRAM_SIZE);
-    system_write_checkpoint_data(cp, p->sram, GC824_SRAM_SIZE);
-    system_write_checkpoint_data(cp, p->dram, GC824_DRAM_SIZE);
-    checkpoint_write_sparse(cp, p->regs, GC824_REGS_SIZE, GC824_CKPT_PAGE);
-
-    for (int i = 0; i < 4; i++) {
-        const struct gc_pixpat *pp = &p->gc_pixpats[i];
-        uint32_t bytes = pp->key ? (uint32_t)pp->w * pp->h * 4u : 0u;
-        ckpt_save_cache(cp, pp->key, bytes, (const uint8_t *)pp->pix);
-    }
-    for (int i = 0; i < 8; i++)
-        ckpt_save_cache(cp, p->gc_fonts[i].key, p->gc_fonts[i].size, p->gc_fonts[i].data);
-    for (int i = 0; i < 4; i++)
-        ckpt_save_cache(cp, p->gc_wtabs[i].key, p->gc_wtabs[i].size, p->gc_wtabs[i].data);
-
-    // The clip/vis REGIONS are guest state (ops $6A/$6C replace them); the two
-    // masks derive from them and are rebuilt below on restore.
-    system_write_checkpoint_data(cp, p->gc_cliprgn, GC824_RGN_MAX);
-    system_write_checkpoint_data(cp, p->gc_visrgn, GC824_RGN_MAX);
+    GC824_CP_FIELDS(system_write_checkpoint_data, cp, p);
 }
 
 static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
     display_card_824gc_priv_t *p = card ? card->priv : NULL;
     if (!p)
         return;
-    checkpoint_load_prefix(cp, p, display_card_824gc_priv_t);
-    display_head_restore(cp, &p->display);
-
-    system_read_checkpoint_data(cp, p->vram, GC824_VRAM_SIZE);
-    system_read_checkpoint_data(cp, p->sram, GC824_SRAM_SIZE);
-    system_read_checkpoint_data(cp, p->dram, GC824_DRAM_SIZE);
-    checkpoint_read_sparse(cp, p->regs, GC824_REGS_SIZE, GC824_CKPT_PAGE);
-
-    for (int i = 0; i < 4; i++) {
-        struct gc_pixpat *pp = &p->gc_pixpats[i];
-        uint32_t bytes = 0;
-        pp->pix = (uint32_t *)ckpt_restore_cache(cp, &pp->key, &bytes, (uint8_t *)pp->pix);
-    }
-    for (int i = 0; i < 8; i++)
-        p->gc_fonts[i].data = ckpt_restore_cache(cp, &p->gc_fonts[i].key, &p->gc_fonts[i].size, p->gc_fonts[i].data);
-    for (int i = 0; i < 4; i++)
-        p->gc_wtabs[i].data = ckpt_restore_cache(cp, &p->gc_wtabs[i].key, &p->gc_wtabs[i].size, p->gc_wtabs[i].data);
-
-    system_read_checkpoint_data(cp, p->gc_cliprgn, GC824_RGN_MAX);
-    system_read_checkpoint_data(cp, p->gc_visrgn, GC824_RGN_MAX);
+    GC824_CP_FIELDS(system_read_checkpoint_data, cp, p);
 
     // gc_cur_wt / gc_cur_strike point INTO the caches above, so they are
     // re-resolved rather than restored -- the buffers just moved.

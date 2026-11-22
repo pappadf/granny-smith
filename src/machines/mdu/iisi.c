@@ -61,7 +61,7 @@ LOG_USE_CATEGORY_NAME("board");
 // ============================================================
 
 static void iisi_set_rom_overlay(config_t *cfg, bool overlay) {
-    m68k_board_overlay_set_line(&iisi_state(cfg)->overlay, overlay);
+    m68k_board_overlay_set_line(&iisi_st(cfg)->overlay, overlay);
 }
 
 // ============================================================
@@ -77,7 +77,7 @@ static void iisi_set_rom_overlay(config_t *cfg, bool overlay) {
 // ============================================================
 
 static void iisi_memory_layout_init(config_t *cfg) {
-    iisi_state_t *st = iisi_state(cfg);
+    iisi_state_t *st = iisi_st(cfg);
 
     uint32_t ram_size = cfg->ram_size;
     uint32_t rom_size = cfg->machine->rom_size;
@@ -132,7 +132,7 @@ static void iisi_memory_layout_init(config_t *cfg) {
 // (PB3 xcvrSes / PB4 viaFull / PB5 sysSes), routed wholesale to the Egret chip.
 static void iisi_via1_output(void *context, uint8_t port, uint8_t output) {
     config_t *cfg = (config_t *)context;
-    iisi_state_t *st = iisi_state(cfg);
+    iisi_state_t *st = iisi_st(cfg);
 
     if (port == 0) {
         if (cfg->floppy)
@@ -155,7 +155,7 @@ static void iisi_via1_output(void *context, uint8_t port, uint8_t output) {
 
 // VIA1 shift-out: bytes the host shifts to Egret (command packets).
 static void iisi_via1_shift_out(void *context, uint8_t byte) {
-    egret_via1_shift_input(iisi_state((config_t *)context)->egret, byte);
+    egret_via1_shift_input(iisi_st((config_t *)context)->egret, byte);
 }
 
 // ============================================================
@@ -198,7 +198,7 @@ static const m68k_board_desc_t iisi_board_desc = {
 // the shared core/RTC/SCC/VIA1 prefix and before m68k_board_finish.  No
 // rtc_set_via — the IIsi drives the RTC through Egret, not the VIA1 transceiver.
 static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
-    iisi_state_t *st = iisi_state(cfg);
+    iisi_state_t *st = iisi_st(cfg);
 
     // Machine-ID readback on VIA1 port A: PA6/PA4/PA2/PA1 = 0/1/1/1 for the
     // IIsi ("Erickson") — mask $56, value $16 per InfoMacIIsi.

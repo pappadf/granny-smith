@@ -409,11 +409,6 @@ int platform_wait(volatile uint32_t *word, uint32_t expect, uint32_t timeout_ms)
     return emscripten_futex_wait(word, expect, (double)timeout_ms);
 }
 
-// The page parks in Atomics.waitAsync on READY and EVT_HEAD.
-void mailbox_notify(volatile uint32_t *word) {
-    platform_wake(word);
-}
-
 static double mailbox_now_us(void) {
     return emscripten_get_now() * 1000.0;
 }
@@ -442,15 +437,15 @@ void checkpoint_busy_heartbeat(void) {
 }
 
 // A GPU wait on the emulator thread (platform_hooks.h,
-// platform_v2gpu_keepalive): the core is busy, not dead.
-void platform_v2gpu_keepalive(void) {
+// platform_gpu_keepalive): the core is busy, not dead.
+void platform_gpu_keepalive(void) {
     mailbox_heartbeat(&g_mailbox);
 }
 
 int shell_poll(void) {
     int n = mailbox_drain(&g_mailbox, GS_MAILBOX_DRAIN_US, mailbox_now_us);
     if (n > 0)
-        mailbox_notify(&g_mailbox.ctrl[GS_MBX_C_EVT_HEAD]);
+        platform_wake(&g_mailbox.ctrl[GS_MBX_C_EVT_HEAD]);
     return n;
 }
 
@@ -750,11 +745,6 @@ void laserwriter_ring_attach_requested(uintptr_t ctrl_addr) {
         { if (typeof Module.onPrinterAttach === 'function') Module.onPrinterAttach($0, UTF8ToString($1)); },
         (uint32_t)ctrl_addr, version);
     // clang-format on
-}
-
-// Wakes the worker parked in Atomics.waitAsync on a control word.
-void laserwriter_ring_notify(volatile uint32_t *addr) {
-    platform_wake(addr);
 }
 
 // ============================================================================
@@ -1267,12 +1257,6 @@ void em_print_host_callstack(void) {
         printf("%s\n", stackbuf);
     else
         printf("(unavailable)\n");
-}
-
-// Nothing to walk: the browser's card ROMs live under /opfs/images/vrom and
-// /opfs/images/prom, offered at startup and on every upload (persistAs).
-void platform_offer_sibling_card_roms(const char *rom_path) {
-    (void)rom_path;
 }
 
 // Platform-specific callstack function (exposed to core via platform.h)

@@ -14,10 +14,10 @@
 // The region is allocated on the first open and the platform is asked to
 // attach the worker (laserwriter_ring_attach_requested); until it does,
 // records accumulate in the ring and the worker consumes them when it
-// attaches.  The two platform hooks below are weak no-ops so the build
-// links without the browser side (part 2B implements them: the attach
-// posts the control block's address to the page, the notify wakes the
-// worker with Atomics.notify / emscripten_futex_wake).
+// attaches.  The attach hook below is a weak no-op so the build links
+// without the browser side (em_main.c posts the control block's address to
+// the page); the worker is woken through platform_wake (platform_hooks.h,
+// emscripten_futex_wake in the browser).
 //
 // Compiles natively too (tests/unit/suites/laserwriter_ring drives it with
 // a simulated worker); the atomics are the compiler's builtins.
@@ -27,6 +27,7 @@
 
 #include "laserwriter_ring_protocol.h"
 #include "log.h"
+#include "platform_hooks.h"
 #include "printer_sink.h"
 #include "mailbox/mailbox_ring.h"
 
@@ -84,12 +85,6 @@ static ring_state_t g_ring;
 __attribute__((weak)) void laserwriter_ring_attach_requested(uintptr_t ctrl_addr) {
     (void)ctrl_addr;
     LOG(1, "laserwriter: no interpreter worker on this platform (ring transport unattached)");
-}
-
-// Wakes a worker parked on `addr` (OUT_HEAD after a publish, IN_TAIL
-// after a consume).  The default does nothing.
-__attribute__((weak)) void laserwriter_ring_notify(volatile uint32_t *addr) {
-    (void)addr;
 }
 
 // ============================================================================
@@ -153,7 +148,7 @@ static uint8_t *ring_reserve(uint32_t kind, uint32_t len) {
 // Publishes everything reserved so far and wakes the worker.
 static void ring_publish(void) {
     mbx_publish(&g_ring.out);
-    laserwriter_ring_notify(&g_ring.ctrl[LWRING_C_OUT_HEAD]);
+    platform_wake(&g_ring.ctrl[LWRING_C_OUT_HEAD]);
 }
 
 // Marks a request of `kind` outstanding (the bridge keeps one at a time).
@@ -488,7 +483,7 @@ void laserwriter_transport_poll(void) {
         consumed = true;
     }
     if (consumed)
-        laserwriter_ring_notify(&g_ring.ctrl[LWRING_C_IN_TAIL]);
+        platform_wake(&g_ring.ctrl[LWRING_C_IN_TAIL]);
     // A worker that gave up fails whatever is waiting on it
     if (g_ring.outstanding && ring_load(LWRING_C_STATUS) == LWRING_STATUS_LOST)
         ring_fail_outstanding("interpreter worker lost");

@@ -6,6 +6,7 @@
 #include "job.h"
 
 #include "json_escape.h"
+#include "platform_hooks.h"
 #include "work_queue.h"
 #include "io/io_worker.h"
 #include "mailbox/mailbox.h"
@@ -143,7 +144,7 @@ bool job_output_append(const char *text, size_t len) {
     job_append_locked(j, text, len);
     pthread_mutex_unlock(&g_wq.mu);
     if (g_wake_word)
-        mailbox_notify(g_wake_word);
+        platform_wake(g_wake_word);
     return true;
 }
 
@@ -314,7 +315,7 @@ static void jobs_flush_output(struct mailbox *m) {
 // stopped, and the platform's notify targets that word.
 static void wake_emulator(void) {
     if (g_wake_word)
-        mailbox_notify(g_wake_word);
+        platform_wake(g_wake_word);
 }
 
 // --- the job thread -------------------------------------------------------

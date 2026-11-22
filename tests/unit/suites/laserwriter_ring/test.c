@@ -55,7 +55,7 @@ void laserwriter_ring_attach_requested(uintptr_t ctrl_addr) {
 }
 
 // The wake hook: counted, nothing to wake here.
-void laserwriter_ring_notify(volatile uint32_t *addr) {
+void platform_wake(volatile uint32_t *addr) {
     (void)addr;
     g_notify_calls++;
 }

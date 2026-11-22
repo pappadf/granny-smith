@@ -3338,26 +3338,32 @@ typedef struct mach64_ckpt {
     uint8_t pll[64]; // Rage Pro PLL file
 } mach64_ckpt_t;
 
+// The fields staged through mach64_ckpt_t, one list for both directions
+// (checkpoint.h, "Staging structs").  vram_size is not among them: the save
+// records it and the restore resizes to it, below.
+#define MACH64_STAGE_FIELDS(OP, c, m)                                                                                  \
+    OP((c)->reg, (m)->reg);                                                                                            \
+    OP((c)->io_base, (m)->io_base);                                                                                    \
+    OP((c)->mon_id_dir, (m)->mon_id_dir);                                                                              \
+    OP((c)->mon_id_out, (m)->mon_id_out);                                                                              \
+    OP((c)->sense_primary, (m)->sense_primary);                                                                        \
+    OP((c)->sense_ext, (m)->sense_ext);                                                                                \
+    OP##_BOOL((c)->sense_seen, (m)->sense_seen);                                                                       \
+    OP((c)->dac_index, (m)->dac_index);                                                                                \
+    OP((c)->dac_index_lo, (m)->dac_index_lo);                                                                          \
+    OP((c)->dac_pixel_mask, (m)->dac_pixel_mask);                                                                      \
+    OP((c)->pal, (m)->pal);                                                                                            \
+    OP((c)->dac_indexed, (m)->dac_indexed);                                                                            \
+    OP((c)->clut, (m)->clut);                                                                                          \
+    OP((c)->reg1, (m)->reg1);                                                                                          \
+    OP((c)->pll, (m)->pll)
+
 static void mach64_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
     mach64_t *m = (mach64_t *)dev->priv;
     mach64_ckpt_t c;
     memset(&c, 0, sizeof(c));
-    memcpy(c.reg, m->reg, sizeof(c.reg));
-    c.io_base = m->io_base;
+    MACH64_STAGE_FIELDS(CP_STAGE_OUT, &c, m);
     c.vram_size = m->vram_size;
-    c.mon_id_dir = m->mon_id_dir;
-    c.mon_id_out = m->mon_id_out;
-    c.sense_primary = m->sense_primary;
-    c.sense_ext = m->sense_ext;
-    c.sense_seen = m->sense_seen ? 1u : 0u;
-    c.dac_index = m->dac_index;
-    c.dac_index_lo = m->dac_index_lo;
-    c.dac_pixel_mask = m->dac_pixel_mask;
-    c.pal = m->pal;
-    memcpy(c.dac_indexed, m->dac_indexed, sizeof(c.dac_indexed));
-    memcpy(c.clut, m->clut, sizeof(c.clut));
-    memcpy(c.reg1, m->reg1, sizeof(c.reg1));
-    memcpy(c.pll, m->pll, sizeof(c.pll));
     system_write_checkpoint_data(cp, &c, sizeof(c));
     system_write_checkpoint_data(cp, m->vram, m->vram_size);
 }
@@ -3366,21 +3372,7 @@ static void mach64_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     mach64_t *m = (mach64_t *)dev->priv;
     mach64_ckpt_t c;
     system_read_checkpoint_data(cp, &c, sizeof(c));
-    memcpy(m->reg, c.reg, sizeof(m->reg));
-    m->io_base = c.io_base;
-    m->mon_id_dir = c.mon_id_dir;
-    m->mon_id_out = c.mon_id_out;
-    m->sense_primary = c.sense_primary;
-    m->sense_ext = c.sense_ext;
-    m->sense_seen = c.sense_seen != 0;
-    m->dac_index = c.dac_index;
-    m->dac_index_lo = c.dac_index_lo;
-    m->dac_pixel_mask = c.dac_pixel_mask;
-    m->pal = c.pal;
-    memcpy(m->dac_indexed, c.dac_indexed, sizeof(m->dac_indexed));
-    memcpy(m->clut, c.clut, sizeof(m->clut));
-    memcpy(m->reg1, c.reg1, sizeof(m->reg1));
-    memcpy(m->pll, c.pll, sizeof(m->pll));
+    MACH64_STAGE_FIELDS(CP_STAGE_IN, &c, m);
     // A checkpoint taken on a 4 MB card must not be restored into a 2 MB
     // buffer: resize rather than truncate the stream.  The card is built from
     // the STAGED options (`pci_option="vram=2m"`) and the stream is replayed

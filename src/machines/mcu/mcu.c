@@ -455,9 +455,7 @@ static void part_save_dafb_monitor(void *obj, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &monitor, sizeof monitor, "dafb.monitor");
 }
 
-static void part_save_dafb(void *obj, checkpoint_t *cp) {
-    dafb_checkpoint(obj, cp);
-}
+MACHINE_PART_SAVE(dafb_checkpoint, dafb_t)
 
 int mcu_build_dafb(config_t *cfg, checkpoint_t *cp) {
     mcu_state_t *st = mcu_st(cfg);
@@ -477,7 +475,7 @@ int mcu_build_dafb(config_t *cfg, checkpoint_t *cp) {
         LOG(0, "Error: out of memory constructing the DAFB");
         return -1;
     }
-    machine_part(cfg, cp, "dafb", part_save_dafb, st->dafb);
+    machine_part(cfg, cp, "dafb", dafb_checkpoint_part, st->dafb);
     dafb_attach_scheduler(st->dafb, cfg->scheduler, cp);
     dafb_set_irq_callback(st->dafb, mcu_dafb_irq, cfg);
     dafb_attach_objects(st->dafb); // machine.video{,.framebuffer}
