@@ -126,8 +126,20 @@ discarded — and the clock does not tick: it answers with the instant it was
 last set to. Nothing in the corpus reads it twice expecting movement, and a
 guest that did would see a stopped clock.
 
-Set-modes (`$2x` other than `$2C`/`$25`) and NMI-key nibbles (`$5n`/`$6n`)
-are accepted today; key-driven NMI lands with the input work.
+A `$2x` mode byte with `p = 0` (`$20`, `$21`, `$23`: the OS's `PowerDown`,
+the boot ROM's `PowerOff`) **switches the machine off**: the COPS drops the
+ON line (`supply_off`, checkpointed with the COPS) and calls the machine's
+handler, `lisa_power_down` in `lisa.c`, which holds the CPU
+(`cpu_power_off`: stopped, levels 1–6 masked), ends the run in progress and
+emits a `power` state event; the web UI's status bar then says "Powered
+off". `machine.power.state` reads `on`/`off`; `machine.power.on` (or
+`machine.restart`) power-cycles the machine, keeping parameter memory and
+media, and `lisa_power_on` tells the COPS the supply is back. The `$23`
+wake-up alarm is not modelled: the machine stays off. Before this the CPU
+went on looping in the OS with a black screen.
+
+Other set-modes and NMI-key nibbles (`$5n`/`$6n`) are accepted today;
+key-driven NMI lands with the input work.
 
 ### CRDY (VIA1 PB6) — free-running ready/busy toggle
 The host hands a command byte to the COPS in sync with `CRDY` (VIA1 **PB6**),

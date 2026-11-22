@@ -148,5 +148,28 @@ assert machine.cpu.pc == $fa "the breakpoint did not fire"
 assert machine.cpu.mmu.translate($fa, false).valid "the breakpoint fired before the segment was present"
 debug.breakpoints.clear
 
+# ---- Soft power-off, and on again -------------------------------------------
+# The OS puts everything away and tells the COPS to switch the supply off.
+# The machine then stops (it used to loop on with a black screen); powering
+# it on again is a power cycle that keeps the ProFile and parameter memory.
+assert machine.power.state == "on" "the machine starts off"
+machine.power.off
+let budget = 0
+while machine.power.state == "on" && $budget < 40 {
+    scheduler.run 5000000
+    $budget = $budget + 1
+}
+assert machine.power.state == "off" "the OS never switched the supply off"
+let off_at = machine.cpu.instr_count
+scheduler.run 5000000
+assert machine.cpu.instr_count == $off_at "the CPU kept executing after power-off"
+assert try(machine.power.on(), "x") != "x" "power.on failed"
+assert machine.power.state == "on" "power.on did not switch the machine on"
+assert try(machine.power.on(), "refused") == "refused" "power.on accepted a machine already on"
+# The ROM's self-test and the OS come up again from the ProFile.
+scheduler.run 120000000
+assert machine.hd.present "the ProFile went with the power"
+assert machine.cpu.mmu.start == false "the OS did not come back after power-on"
+
 echo "lisa-debugger: all checks passed"
 quit

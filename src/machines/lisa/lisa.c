@@ -33,11 +33,13 @@
 #include "memory.h"
 #include "object.h"
 #include "object_order.h"
+#include "out.h"
 #include "scc.h"
 #include "scheduler.h"
 #include "system.h"
 #include "value.h"
 #include "via.h"
+#include "event/event.h"
 
 #include <assert.h>
 #include <ctype.h>
@@ -932,14 +934,59 @@ static DEF_METHOD(lisa_power_off) {
     return val_none();
 }
 
+// The COPS dropped the ON line (cops_set_power_off_handler): the machine is
+// off.  The CPU executes nothing more, the run in progress ends, and the page
+// hears of it (a `power` state event), as a real Lisa goes dark and silent.
+// RAM, parameter memory and media stay as they are, for the next power-on.
+static void lisa_power_down(void *ctx) {
+    config_t *cfg = (config_t *)ctx;
+    lisa_state_t *ls = lisa_st(cfg);
+    if (!ls)
+        return;
+    // The supply is off (the COPS keeps that, checkpointed): the CPU is held
+    // until machine.power.on or machine.restart power-cycles the machine.
+    cpu_power_off(cfg->cpu);
+    if (cfg->scheduler)
+        scheduler_stop(cfg->scheduler);
+    event_emitf(GS_EVENT_STATE, "{\"event\":\"power\",\"state\":\"off\"}");
+    out_printf("machine powered off (machine.power.on starts it again)\n");
+    LOG(1, "power off: the machine is off");
+}
+
+// `state`: "on", or "off" once the OS has switched the supply off.
+static DEF_GETTER(lisa_power_state) {
+    lisa_state_t *ls = lisa_st((config_t *)object_data(self));
+    return val_str(ls && cops_powered_off(ls->cops) ? "off" : "on");
+}
+
+// Press the power switch of a machine that is off: a power cycle, keeping
+// RAM's contents out (cold), parameter memory and media in, as on a real Lisa.
+static DEF_METHOD(lisa_power_on_method) {
+    lisa_state_t *ls = lisa_st((config_t *)object_data(self));
+    if (!ls)
+        return val_err("power: no machine");
+    if (!cops_powered_off(ls->cops))
+        return val_err("power.on: the machine is already on (machine.power.off asks the OS to shut down)");
+    system_machine_power_cycle(); // lisa_power_on tells the COPS the supply is back
+    return val_none();
+}
+
 static const member_t lisa_power_members[] = {
+    {.kind = MK_ATTR,
+     .name = "state",
+     .doc = "\"on\", or \"off\" once the OS has switched the supply off through the COPS",
+     .attr = {.type = VK_STRING, .get = lisa_power_state}     },
     {.kind = MK_METHOD,
      .name = "off",
-     .doc = "Press the soft power-off switch (COPS $FB); LOS does an orderly shutdown",
-     .method = {.result = VK_NONE, .fn = lisa_power_off}},
+     .doc = "Press the soft power-off switch (COPS $FB); LOS does an orderly shutdown and switches the machine off",
+     .method = {.result = VK_NONE, .fn = lisa_power_off}      },
+    {.kind = MK_METHOD,
+     .name = "on",
+     .doc = "Switch a machine that is off on again: a power cycle that keeps parameter memory and media",
+     .method = {.result = VK_NONE, .fn = lisa_power_on_method}},
 };
 static const class_desc_t lisa_power_class = {
-    .name = "power", .doc = "The Lisa's soft power switch", .members = lisa_power_members, .n_members = 1};
+    .name = "power", .doc = "The Lisa's power switch", .members = lisa_power_members, .n_members = 3};
 
 static void lisa_register_power_object(config_t *cfg) {
     lisa_state_t *ls = lisa_st(cfg);
@@ -1062,6 +1109,7 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // COPS keyboard/mouse/clock/power microcontroller on VIA1 port A.
     machine_part_begin(cfg, checkpoint, "cops");
     ls->cops = cops_init(cfg->via1, cfg->scheduler, checkpoint);
+    cops_set_power_off_handler(ls->cops, lisa_power_down, cfg); // the OS switching the supply off
     machine_part(cfg, checkpoint, "cops", cops_checkpoint_part, ls->cops);
 
     // Intelligent floppy controller: 6504 + 1 KB shared RAM on the ODD bus
@@ -1373,6 +1421,10 @@ static void lisa_seed(config_t *cfg) {
 // into the ROM monitor instead of a cold start.  A reset touches neither.
 static void lisa_power_on(config_t *cfg) {
     lisa_state_t *ls = lisa_st(cfg);
+    if (ls && cops_powered_off(ls->cops)) {
+        cops_power_restored(ls->cops); // the supply is on again
+        event_emitf(GS_EVENT_STATE, "{\"event\":\"power\",\"state\":\"on\"}");
+    }
     if (ls)
         lisa_mmu_power_on(ls->mmu);
 }

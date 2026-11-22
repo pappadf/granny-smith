@@ -838,6 +838,18 @@ function routeCoreEvent(ev: CoreEvent): void {
     case 'state:mode_ended':
       handleRunStateChange(false);
       break;
+    case 'state:power':
+      // The machine switched its own supply off (the Lisa's OS through the
+      // COPS) or was switched on again: the status bar says "Powered off"
+      // until machine.power.on (or a restart) brings it back.
+      if (d.state === 'off') {
+        isRunningUI = false;
+        machine.poweredOff = true;
+        if (machine.status === 'running') machine.status = 'paused';
+      } else if (d.state === 'on') {
+        machine.poweredOff = false;
+      }
+      break;
     case 'state:speed':
       setCpuSpeed(num(d.x256) / 256);
       break;
