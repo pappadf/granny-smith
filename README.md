@@ -101,7 +101,7 @@ For build, test, and contribution instructions, see [CONTRIBUTING.md](CONTRIBUTI
 
 - **Safari** - starts and runs (v0.9.0 fixed startup on static hosts and mouse grabbing), but known rendering and audio issues remain
 - **Firefox** - works partially; some compatibility problems remain
-- **Ethernet** - the Quadras' SONIC, the AV machines' MACE and the beige G3's BMAC controllers are modeled at the register level (BMAC down to its transmit/receive filters) but are not bridged to a network; networking is AppleTalk over LocalTalk (serial) only
+- **Ethernet** - the AV machines' built-in Ethernet (MACE) carries EtherTalk to the emulated AppleTalk network (choose "EtherTalk Built In" in the Network control panel); the Quadras' SONIC, the PCI Power Macs' MACE and the beige G3's BMAC are modeled at the register level but have no cable; nothing is bridged to a host network, and everywhere else networking is AppleTalk over LocalTalk (serial)
 - **Sound input** - modeled on the AV machines (Singer): the browser microphone reaches the guest's Sound control panel and PlainTalk speech recognition. The PDM and TNT machines' AWACS plays sound but its input is not modeled, and the Quadras' EASC runs as an ASC-compatible core
 
 ## A Note on AI

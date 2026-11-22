@@ -89,9 +89,33 @@ only lapENQ and lapRTS by hand. Without this the AV Quadras sent no DDP
 frame at all, and the Chooser listed nothing. Receive DMA (channel 4, port A
 only) is not modelled: the port B LocalTalk driver reads by hand.
 
-**Not modelled:** the MACE receive channel's "chain mode" (where Cnt counts
-buffers rather than bytes), and FIFO depth/latency — nothing in scope needs
-either.
+**The Ethernet channels (1, 2).** Writes to their registers call a third
+hook (`av_psc_set_enet_touch_hook`), which wakes the Ethernet pump in
+[enet.c](enet.md). Channel 2 (ENetWr) is an ordinary byte channel: one
+frame per set, Cnt in bytes, the set's terminal count being the frame's
+EOF into the MACE. Channel 1 (ENetRd) runs in **chain mode**
+(`av_psc_dma_chain_in`), the receive model Apple's AV Ethernet driver
+programs (`Mace.a` `InitRecv`/`PSCInterrupt`/`MaceRecv`; reference
+[psc.md](../../../reference/machines/av/psc.md) §4.6):
+
+- Addr is the physical base of a chain of 2048-byte buffers and **Cnt the
+  number of buffers left**, not bytes — `InitRecv` writes the chain's Limit
+  there and `MaceRecv` computes `In = Limit − Cnt`.
+- One frame fills one buffer: the status block at the buffer's start (the
+  four RCVFS bytes, each on both halves of a word), the frame from `+$10`
+  (`RecvBuff`: `MaceStat` 8, fill 8, `Packet`). Addr then steps to the
+  next buffer and Cnt drops by one.
+- **IF is set per frame**, not only at terminal count: `PSCInterrupt`
+  clears IF and IE on a set whose chain is not full and relies on the next
+  frame (or the deferred task's IE re-enable) to interrupt again.
+- The buffer that takes Cnt to 0 is the set's terminal count — the usual
+  completion (ENABLED clears, TERMCNT, the active set flips) — and the next
+  frame lands in the other set's chain.
+- DIR is never written on either Ethernet channel; their direction is
+  fixed, so the chain path does not check it.
+
+**Not modelled:** FIFO depth and latency; DMAFLUSH completes at once
+(nothing is ever in flight inside the PSC).
 
 ## Sound and DSP
 
@@ -126,11 +150,23 @@ DSP3210 sits behind the reset latch ([dsp.md](dsp.md)).
   is undocumented; the serial HAL only uses bits 16..47 as a multi-millisecond
   timeout reference, so ~1 MHz is a safe choice.
 
+## Checkpoint
+
+The PSC saves an explicit field list (`AV_PSC_CP_FIELDS` /
+`AV_PSC_CHAN_CP_FIELDS`, checkpoint.h "Field lists"): the VIA2 window and
+L3–L6 files, the sound/DSP latches, and per channel both sets' Addr, Cnt
+and CmdStat, the active set and the PAUSE/CIE/BERR/SENSE bits. Host
+pointers (hooks, the memory port, the object node) are rebound at
+construction, never saved.
+
 ## Testing
 
-`tests/unit/suites/psc/` replays the three known-good client sequences the
+`tests/unit/suites/psc/` replays the known-good client sequences the
 shipping drivers issue: the SCSI HAL's
 `StartPSC`/`PausePSC`/`StopPSCRead`, `MaceInit`'s interrupt gating plus
-`ResetMACE`'s SWRESET, and the New Age driver's both-sets dance across the
-automatic set switch — plus the direction gate and the ≥`$40000000`
-restriction.
+`ResetMACE`'s SWRESET, the New Age driver's both-sets dance across the
+automatic set switch, the Ethernet driver's chain-mode receive
+(`InitRecv`, `PSCInterrupt`'s IF/IE handling, the chain-full switch) and
+double-buffered transmit (`PrimeXmitRS`) — plus the direction gate, the
+≥`$40000000` restriction, the Ethernet touch hook and a checkpoint round
+trip of the field list.
