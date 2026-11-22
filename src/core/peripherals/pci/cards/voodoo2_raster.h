@@ -163,6 +163,13 @@ typedef struct v2_target {
     uint32_t pal_gen[V2_RASTER_TMUS];
     uint32_t lut_key[V2_RASTER_TMUS];
     uint32_t lut[V2_RASTER_TMUS][256];
+    // The card's debug instruments, set when it is created (voodoo2.c,
+    // from the voodoo2 log category's level): the pixel-provenance
+    // watch's pixel (-1: disarmed) and whether the watched pixel is the
+    // one in the pipe now, and the walker cross-check.
+    int32_t watch_x, watch_y;
+    bool watch_now;
+    bool xcheck;
 } v2_target_t;
 
 // The command stream.  Order is submission order, always.
@@ -234,10 +241,19 @@ typedef struct v2_cmd {
 // Execute one command against the target with the given snapshot.
 void v2_raster_execute(const v2_draw_state_t *st, v2_target_t *tgt, const v2_cmd_t *cmd);
 
-// Is the GS_V2_WATCH pixel-provenance instrument armed?  (Read once
-// from the environment.)  A threaded backend refuses to start while it
-// is: diagnosis uses the synchronous walker.
-bool v2_raster_watch_armed(void);
+// The debug instruments' thresholds on the `voodoo2` log category
+// (`log.set voodoo2 N` before the card is created, which reads them):
+//   V2_LOG_STATS   the producer and raster=thread decompositions at teardown
+//   V2_LOG_WATCH   the pixel-provenance watch on pci_option watch=XxY's pixel
+//   V2_LOG_XCHECK  the soak-run cross-check: every walker shortcut is
+//                  recomputed the long way and a mismatch aborts
+#define V2_LOG_STATS  1
+#define V2_LOG_WATCH  1
+#define V2_LOG_XCHECK 3
+
+// Is `tgt`'s pixel-provenance watch armed?  A threaded backend refuses
+// to start while it is: diagnosis uses the synchronous walker.
+bool v2_raster_watch_armed(const v2_target_t *tgt);
 
 // --- the backend context ---------------------------------------------------
 

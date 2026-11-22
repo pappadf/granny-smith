@@ -332,8 +332,8 @@ pages overlap a render buffer (the fifo ring lives inside `fb_ram`
 programmed and logs the overlapping configuration once).
 `fbiTrianglesOut` counts at *submission*, on the producer, and needs
 no fence — part of the contract.  Under `raster=thread` the level-5
-`tri` trace still comes from the producer; the `GS_V2_WATCH`
-instrument logs from inside the executor, so a thread backend refuses
+`tri` trace still comes from the producer; the pixel-provenance
+watch logs from inside the executor, so a thread backend refuses
 to start while it is armed and diagnosis uses the synchronous walker.
 
 **Equivalence is asserted, not assumed.**  `tnt-pci-voodoo2` draws
@@ -352,9 +352,9 @@ elsewhere at the same instruction count, so the restored frame is a golden
 of its own.)
 
 **The walker-optimization ladder** (bit-exact by construction; the
-three rows above are the oracle, `GS_V2_XCHECK=1` is the soak-run
-cross-check that recomputes every shortcut the long way and aborts on
-a mismatch):
+three rows above are the oracle; the soak-run cross-check, on with
+`log.set voodoo2 3` before the card is created, recomputes every
+shortcut the long way and aborts on a mismatch):
 
 | rung | what | how it stays exact |
 |---|---|---|
@@ -385,7 +385,8 @@ step):
 Two findings the numbers carry.  **The thread backend cannot show a
 wall-clock win on this box**: the devcontainer has ONE physical core
 with two SMT threads (`lscpu`), so the producer and the worker share
-one core's execution units.  The `GS_V2_STATS=1` decomposition of that
+one core's execution units.  The decomposition (`log.set voodoo2 1`
+before the card is created, printed at teardown) of that
 run — 2.5 M commands, 2 076 fences of which 265 waited, 512 k
 queue-full waits totalling 179 s, 425 worker sleeps — says the design
 behaves as intended: the fences are rare and the worker is the longer
@@ -523,7 +524,7 @@ even its counters are exact), and the rectangle is uploaded again.
 Counted by reason in `regs.gpu_stats`, beside engagements, storms,
 readback bands, texture uploads and the worker's own frame/draw/
 pipeline counts; `regs.gpu_engaged` says whether the GPU presents
-right now.  The pixel-provenance watch (`GS_V2_WATCH`) refuses this
+right now.  The pixel-provenance watch (`pci_option="watch=XxY"`) refuses this
 backend as it refuses `thread`.
 
 **Availability.**  web2 starts the GPU worker at page load with the
@@ -602,10 +603,21 @@ Mac Glide render path travels through the CMDFIFO: a trace blind to it
 shows a card nobody is drawing on — the guest-software diagnosis lost an hour to
 exactly that.
 
+The card's debug instruments are levels of the same category, read when
+the card is created (so `log.set voodoo2 N` goes before `machine.boot`),
+and each card keeps its own — an SLI pair or a re-created card never
+shares or resets another's (`voodoo2_raster.h`, `V2_LOG_*`):
+
+| level | instrument |
+|---|---|
+| 1 | the decomposition at teardown: the producer side (`producer stats:`, the card's aperture handlers and their fifo / setup / LFB / texture buckets as fractions of the run) and, on `raster=thread`, the queue's (`raster=thread stats:`); and the pixel-provenance watch, when `pci_option` names a `watch=` pixel |
+| 3 | the soak-run cross-check: every walker shortcut recomputed the long way, a mismatch logged (`xcheck: ...`) and aborted on |
+
 Two further tools trace a single wrong pixel to its texels:
 
-- **`GS_V2_WATCH="x,y"`** (environment variable, needs
-  `log.set voodoo2 1`): logs every colour-buffer store to that pixel
+- **`pci_option="watch=XxY"`** (screen pixel X, Y; armed when the
+  card is created with `log.set voodoo2 1` or higher already set, and
+  the card then takes the synchronous walker): logs every colour-buffer store to that pixel
   with the full shading state, every texel fetch that fed it
   (`watch texel tmuN lodN (s,t) addr lodbase raw argb`), and one
   pipe-internals line per pixel (`watch pipe tex= iter= cc= fogmode=

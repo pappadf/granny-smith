@@ -181,6 +181,10 @@ struct r128_gpu {
     // Waits on the worker (the perf line): how many, and host ms spent
     uint64_t n_wait_ring, n_wait_ack, n_wait_pace;
     double ms_wait_ring, ms_wait_ack, ms_wait_pace, ms_wait_max;
+    // The long-ack console throttle (wait_ack_inner): when it last
+    // reported, and the waits folded since
+    double long_wait_last_ms, long_wait_folded_ms;
+    unsigned long_wait_folded;
 };
 
 // ============================================================
@@ -309,18 +313,16 @@ static bool wait_ack_inner(r128_gpu_t *g, uint32_t seq, double t0) {
             // A wait of a second or more holds the whole emulator: say so on
             // the console (at most every 10 s, with what was folded)
             if (dt >= 1000.0) {
-                static double s_last_ms, s_folded_ms;
-                static unsigned s_folded;
                 double now = host_time_ms();
-                s_folded++;
-                s_folded_ms += dt;
-                if (now - s_last_ms >= 10000.0) {
+                g->long_wait_folded++;
+                g->long_wait_folded_ms += dt;
+                if (now - g->long_wait_last_ms >= 10000.0) {
                     log_status("Rage 128 webgpu: the emulator waited %.1f s for the GPU worker (%u such waits, %.1f s, "
                                "since the last report)",
-                               dt / 1000.0, s_folded, s_folded_ms / 1000.0);
-                    s_last_ms = now;
-                    s_folded = 0;
-                    s_folded_ms = 0;
+                               dt / 1000.0, g->long_wait_folded, g->long_wait_folded_ms / 1000.0);
+                    g->long_wait_last_ms = now;
+                    g->long_wait_folded = 0;
+                    g->long_wait_folded_ms = 0;
                 }
             }
             return true;
