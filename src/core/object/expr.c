@@ -527,8 +527,60 @@ static char *lex_named_arg_ident(lex_t *L) {
 // has already been consumed. On success, consumes the closing `)` and writes the
 // positional argv/argc plus the named list; caller frees everything via
 // free_call_args.
+//
+// `method` (may be NULL) is the member being called: a "..." literal that
+// lands in one of its OBJ_ARG_TEMPLATE slots (a logpoint's message) is kept
+// raw -- no escape decoding, no interpolation -- for the subsystem to fill
+// in at each fire, exactly as argument mode keeps it.  Interpolating it
+// here, once, at add time, made every hit print the same stale values.
+static bool parse_call_args_for(lex_t *L, const expr_ctx_t *ctx, const member_t *method, value_t **out_argv,
+                                int *out_argc, call_named_t **out_named, int *out_named_n);
 static bool parse_call_args(lex_t *L, const expr_ctx_t *ctx, value_t **out_argv, int *out_argc,
                             call_named_t **out_named, int *out_named_n) {
+    return parse_call_args_for(L, ctx, NULL, out_argv, out_argc, out_named, out_named_n);
+}
+
+// The declared argument a call argument lands in: by name, else the
+// positional index; -1 when the member declares none such.
+static int call_arg_slot(const member_t *method, int pos, const char *name) {
+    if (!method || method->kind != MK_METHOD || !method->method.args)
+        return -1;
+    if (!name)
+        return pos < method->method.nargs ? pos : -1;
+    for (int i = 0; i < method->method.nargs; i++)
+        if (method->method.args[i].name && strcmp(method->method.args[i].name, name) == 0)
+            return i;
+    return -1;
+}
+
+// A whole "..." argument at L->p kept raw (its body, undecoded), when the
+// literal is the entire argument -- followed by ',' or ')'.  Anything else
+// (a concatenation, a method call on it) is an ordinary expression: false.
+static bool take_raw_template_arg(lex_t *L, value_t *out) {
+    if (*L->p != '"')
+        return false;
+    const char *body = L->p + 1;
+    const char *end = expr_scan_dq_body(body);
+    if (!end)
+        return false;
+    const char *after = end + 1;
+    while (*after == ' ' || *after == '\t')
+        after++;
+    if (*after != ',' && *after != ')')
+        return false;
+    char *copy = (char *)malloc((size_t)(end - body) + 1);
+    if (!copy)
+        return false;
+    memcpy(copy, body, (size_t)(end - body));
+    copy[end - body] = '\0';
+    *out = val_str(copy);
+    free(copy);
+    L->p = end + 1;
+    return true;
+}
+
+static bool parse_call_args_for(lex_t *L, const expr_ctx_t *ctx, const member_t *method, value_t **out_argv,
+                                int *out_argc, call_named_t **out_named, int *out_named_n) {
     *out_argv = NULL;
     *out_argc = 0;
     *out_named = NULL;
@@ -544,7 +596,11 @@ static bool parse_call_args(lex_t *L, const expr_ctx_t *ctx, value_t **out_argv,
     int argc = 0, named_n = 0;
     while (1) {
         char *name = lex_named_arg_ident(L);
-        value_t a = parse_expr(L, ctx);
+        value_t a;
+        int slot = call_arg_slot(method, argc, name);
+        bool templ = slot >= 0 && (method->method.args[slot].validation_flags & OBJ_ARG_TEMPLATE);
+        if (!(templ && !parse_only(ctx) && take_raw_template_arg(L, &a)))
+            a = parse_expr(L, ctx);
         if (L->err_set || val_is_error(&a)) {
             if (val_is_error(&a) && !L->err_set)
                 lex_error(L, "%s", a.err ? a.err : "bad argument");
@@ -628,7 +684,7 @@ static value_t call_node_with_args(lex_t *L, const expr_ctx_t *ctx, node_t n) {
     value_t *argv = NULL;
     call_named_t *named = NULL;
     int argc = 0, named_n = 0;
-    if (!parse_call_args(L, ctx, &argv, &argc, &named, &named_n))
+    if (!parse_call_args_for(L, ctx, n.member, &argv, &argc, &named, &named_n))
         return val_err("bad call");
     named_arg_t nb[OBJ_BIND_MAX_ARGS];
     value_t r;

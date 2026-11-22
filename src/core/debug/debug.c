@@ -2804,7 +2804,9 @@ static const arg_decl_t lp_add_args[] = {
     {.name = "message",
      .kind = VK_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_TEMPLATE,
-     .doc = "fire-time template; $value/$addr/$size bind per fire"},
+     .doc = "fire-time template; $value/$addr/$size bind per fire.  A whole \"...\" literal stays a template in "
+            "call form too (message=\"pc=${machine.cpu.pc}\"); a message built by an expression (\"a\" + \"b\") is "
+            "evaluated once, when added"},
     {.name = "level",
      .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
