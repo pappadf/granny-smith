@@ -1070,9 +1070,7 @@ static void storage_part(config_t *cfg, checkpoint_t *cp) {
     machine_part(cfg, cp, "storage", storage_part_save, cfg);
 }
 
-static void events_part_save(void *obj, checkpoint_t *cp) {
-    scheduler_checkpoint_events(obj, cp);
-}
+MACHINE_PART_SAVE(scheduler_checkpoint_events, struct scheduler)
 
 // Put the running machine's memory map back after a build selected its own:
 // the aliases memory_map_select derives, plus the access pair the CPU had
@@ -1204,7 +1202,7 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
     machine_part_begin(cfg, checkpoint, "events");
     if (checkpoint)
         scheduler_restore_events(cfg->scheduler, checkpoint);
-    machine_part(cfg, checkpoint, "events", events_part_save, cfg->scheduler);
+    machine_part(cfg, checkpoint, "events", scheduler_checkpoint_events_part, cfg->scheduler);
     s_constructing = false;
     event_hold(0);
 

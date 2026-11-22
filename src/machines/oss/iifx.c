@@ -1383,9 +1383,7 @@ static const m68k_board_desc_t iifx_board_desc = {
 };
 
 // Checkpoint parts of the IIfx's own (machine_parts.h).
-static void part_save_oss(void *obj, checkpoint_t *cp) {
-    oss_checkpoint(obj, cp);
-}
+MACHINE_PART_SAVE(oss_checkpoint, oss_t)
 
 // The SCSI DMA engine's registers, which live in the machine state: one
 // list for the save and the restore (checkpoint.h, "Field lists").
@@ -1478,7 +1476,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     machine_part_begin(cfg, checkpoint, "oss");
     st->oss = oss_init(iifx_oss_irq_changed, iifx_oss_control, cfg, cfg->scheduler, checkpoint);
-    machine_part(cfg, checkpoint, "oss", part_save_oss, st->oss);
+    machine_part(cfg, checkpoint, "oss", oss_checkpoint_part, st->oss);
     st->oss_iface = oss_get_memory_interface(st->oss);
     asc_set_irq_handler(st->asc, iifx_asc_irq, cfg); // sound IRQ → OSS source 8
     scsi_set_irq_callback(cfg->scsi, iifx_scsi_irq, cfg);

@@ -92,9 +92,7 @@ int mdu_init(config_t *cfg, checkpoint_t *cp, const mdu_board_t *board) {
     return 0;
 }
 
-void part_save_rbv(void *obj, checkpoint_t *cp) {
-    rbv_checkpoint(obj, cp);
-}
+MACHINE_PART_SAVE_EXTERN(rbv, rbv_checkpoint, rbv_t)
 
 static int mdu_substrate_init(config_t *cfg, checkpoint_t *cp) {
     if (mdu_init(cfg, cp, mdu_board(cfg)) != 0)
