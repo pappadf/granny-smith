@@ -268,7 +268,7 @@ describe('WelcomeConfigSlide: storage', () => {
     const boot = lastBoot();
     expect(boot.config.storage).toEqual([{ bus: 'scsi', unit: 3, type: 'cd' }]);
     expect(boot.config.startup).toBeNull();
-    expect([...toasts.active, ...toasts.queued].some((t) => t.msg.includes('has no image'))).toBe(
+    expect([...toasts.active, ...toasts.queued].some((t) => t.msg.includes('no hard disk at'))).toBe(
       true,
     );
     await waitFor(() => {
