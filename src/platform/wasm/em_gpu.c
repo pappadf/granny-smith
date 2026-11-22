@@ -50,11 +50,3 @@ void platform_gpu_detach(void *ctrl) {
         (uint32_t)(uintptr_t)ctrl);
     // clang-format on
 }
-
-int platform_gpu_wait(volatile uint32_t *addr, uint32_t expected, uint32_t timeout_ms) {
-    return platform_wait(addr, expected, timeout_ms);
-}
-
-void platform_gpu_notify(volatile uint32_t *addr) {
-    platform_wake(addr);
-}

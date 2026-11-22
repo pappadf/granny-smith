@@ -233,7 +233,7 @@ static void publish(r128_gpu_t *g) {
     if (!mbx_unpublished(&g->ring))
         return;
     mbx_publish(&g->ring);
-    platform_gpu_notify(&g->ctrl[R128GPU_C_HEAD]);
+    platform_wake(&g->ctrl[R128GPU_C_HEAD]);
 }
 
 // Reserve a record (header included) that does not wrap, waiting for
@@ -264,7 +264,7 @@ static uint32_t reserve(r128_gpu_t *g, uint32_t kind, uint32_t len) {
         if (worker_lost(g))
             break;
         publish(g);
-        platform_gpu_wait(&g->ctrl[R128GPU_C_TAIL], tail, 20);
+        platform_wait(&g->ctrl[R128GPU_C_TAIL], tail, 20);
         platform_gpu_keepalive();
         if (host_time_ms() - t0 > (double)R128GPU_ACK_MS) {
             mark_lost(g, "the GPU worker stopped consuming the op ring");
@@ -327,7 +327,7 @@ static bool wait_ack_inner(r128_gpu_t *g, uint32_t seq, double t0) {
         }
         if (worker_lost(g))
             return false;
-        platform_gpu_wait(&g->ctrl[R128GPU_C_ACK], ack, 20);
+        platform_wait(&g->ctrl[R128GPU_C_ACK], ack, 20);
         platform_gpu_keepalive();
         if (host_time_ms() - t0 > (double)R128GPU_ACK_MS) {
             mark_lost(g, "the GPU worker stopped answering");
@@ -1336,7 +1336,7 @@ static bool pace(r128_gpu_t *g) {
         if (worker_lost(g))
             break;
         publish(g);
-        platform_gpu_wait(&g->ctrl[R128GPU_C_PRESENTS_DONE], done, 20);
+        platform_wait(&g->ctrl[R128GPU_C_PRESENTS_DONE], done, 20);
         platform_gpu_keepalive();
         if (host_time_ms() - t0 > (double)R128GPU_ACK_MS) {
             mark_lost(g, "the GPU worker stopped completing frames");
@@ -1577,7 +1577,7 @@ r128_gpu_t *r128_gpu_create(rage128_t *r, int engage_policy) {
             free(g);
             return NULL;
         }
-        platform_gpu_wait(&g->ctrl[R128GPU_C_STATUS], R128GPU_STATUS_DETACHED, 20);
+        platform_wait(&g->ctrl[R128GPU_C_STATUS], R128GPU_STATUS_DETACHED, 20);
         platform_gpu_keepalive();
     }
     g->attached = true;

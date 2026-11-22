@@ -37,7 +37,7 @@ static int g_evals;
 static char g_last_path[256];
 static char g_last_args[256];
 
-void mailbox_notify(volatile uint32_t *word) {
+void platform_wake(volatile uint32_t *word) {
     (void)word;
     g_notified++;
 }

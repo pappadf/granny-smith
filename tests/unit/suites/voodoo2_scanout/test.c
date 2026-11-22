@@ -50,10 +50,10 @@ bool platform_gpu_attach(void *ctrl, uint32_t bytes) {
 void platform_gpu_detach(void *ctrl) {
     (void)ctrl;
 }
-void platform_gpu_notify(volatile uint32_t *addr) {
+void platform_wake(volatile uint32_t *addr) {
     (void)addr;
 }
-int platform_gpu_wait(volatile uint32_t *addr, uint32_t expected, uint32_t timeout_ms) {
+int platform_wait(volatile uint32_t *addr, uint32_t expected, uint32_t timeout_ms) {
     (void)addr;
     (void)expected;
     (void)timeout_ms;

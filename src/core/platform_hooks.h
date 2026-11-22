@@ -84,9 +84,8 @@ void platform_video_in_state(bool active);
 // `platform_wait` blocks the CALLING thread until *word != expect or
 // `timeout_ms` passes (0 when woken, negative on a timeout).  The weak
 // defaults model a host with no such waiter: wake is a no-op, and wait
-// returns -1 at once (timed out).  The wasm build overrides both (em_main.c)
-// and routes its mailbox_notify / laserwriter_ring_notify /
-// platform_gpu_notify / platform_gpu_wait through them.
+// returns -1 at once (timed out).  The wasm build overrides both (em_main.c);
+// every transport wakes and waits through these two, never a hook of its own.
 void platform_wake(volatile uint32_t *word);
 int platform_wait(volatile uint32_t *word, uint32_t expect, uint32_t timeout_ms);
 
@@ -95,13 +94,11 @@ int platform_wait(volatile uint32_t *word, uint32_t expect, uint32_t timeout_ms)
 // attaches a GPU worker to a shared region in the wasm heap and wakes it
 // through Atomics; the defaults model "no GPU" so native builds fall back to
 // the thread backend.  `ctrl` is the region's control block (the card's
-// *_gpu_protocol.h); `wait` blocks the CALLING pthread until *addr !=
-// expected or the timeout (returns 0 when woken).
+// *_gpu_protocol.h); the two sides wake each other through platform_wake /
+// platform_wait on its words.
 bool platform_gpu_available(void);
 bool platform_gpu_attach(void *ctrl, uint32_t bytes);
 void platform_gpu_detach(void *ctrl);
-int platform_gpu_wait(volatile uint32_t *addr, uint32_t expected, uint32_t timeout_ms);
-void platform_gpu_notify(volatile uint32_t *addr);
 // The Rage 128's takeover (rage128_gpu.c) shares this seam but waits on
 // the EMULATOR thread itself: a wait that may be long (a software adapter
 // compiling a pipeline on first use) calls this to tell the page the core

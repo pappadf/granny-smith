@@ -202,7 +202,7 @@ static void v2gpu_publish(v2_gpu_t *g) {
     if (!mbx_unpublished(&g->ring))
         return;
     mbx_publish(&g->ring);
-    platform_gpu_notify(&g->ctrl[V2GPU_C_HEAD]);
+    platform_wake(&g->ctrl[V2GPU_C_HEAD]);
 }
 
 // Reserve a record of `len` bytes (header included; the ring rounds it
@@ -219,7 +219,7 @@ static uint32_t v2gpu_reserve(v2_gpu_t *g, uint32_t kind, uint32_t len) {
         if (v2gpu_worker_lost(g))
             return UINT32_MAX;
         v2gpu_publish(g); // the worker can only free what it can see
-        platform_gpu_wait(&g->ctrl[V2GPU_C_TAIL], tail, 20);
+        platform_wait(&g->ctrl[V2GPU_C_TAIL], tail, 20);
         platform_gpu_keepalive(); // the page's stall watch: busy, not dead
         if (v2gpu_now_ms() - t0 > (double)V2GPU_ACK_MS) {
             v2gpu_mark_lost(g, "the GPU worker stopped consuming the op ring");
@@ -252,7 +252,7 @@ static bool v2gpu_wait_ack(v2_gpu_t *g, uint32_t seq) {
             return true;
         if (v2gpu_worker_lost(g))
             return false;
-        platform_gpu_wait(&g->ctrl[V2GPU_C_ACK], ack, 20);
+        platform_wait(&g->ctrl[V2GPU_C_ACK], ack, 20);
         platform_gpu_keepalive(); // the page's stall watch: busy, not dead
         if (v2gpu_now_ms() - t0 > (double)V2GPU_ACK_MS) {
             v2gpu_mark_lost(g, "the GPU worker stopped answering");
@@ -1663,7 +1663,7 @@ v2_gpu_t *v2_gpu_create(v2_target_t *tgt) {
             v2_gpu_destroy(g);
             return NULL;
         }
-        platform_gpu_wait(&g->ctrl[V2GPU_C_STATUS], V2GPU_STATUS_DETACHED, 20);
+        platform_wait(&g->ctrl[V2GPU_C_STATUS], V2GPU_STATUS_DETACHED, 20);
         platform_gpu_keepalive(); // the page's stall watch: busy, not dead
     }
     g->attached = true;

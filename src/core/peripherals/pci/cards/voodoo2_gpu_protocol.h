@@ -28,7 +28,7 @@
 // the byte count the translator has published (monotonic, mod 2^32),
 // TAIL the count the worker has consumed; both sides wake the other
 // with Atomics.notify on those words (the C side through the
-// platform_gpu_* seam).  A record whose completion the translator must
+// platform_wake / platform_wait).  A record whose completion the translator must
 // wait for carries a `seq`; the worker stores it into ACK when done.
 
 #ifndef VOODOO2_GPU_PROTOCOL_H

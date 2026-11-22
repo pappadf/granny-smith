@@ -409,11 +409,6 @@ int platform_wait(volatile uint32_t *word, uint32_t expect, uint32_t timeout_ms)
     return emscripten_futex_wait(word, expect, (double)timeout_ms);
 }
 
-// The page parks in Atomics.waitAsync on READY and EVT_HEAD.
-void mailbox_notify(volatile uint32_t *word) {
-    platform_wake(word);
-}
-
 static double mailbox_now_us(void) {
     return emscripten_get_now() * 1000.0;
 }
@@ -450,7 +445,7 @@ void platform_gpu_keepalive(void) {
 int shell_poll(void) {
     int n = mailbox_drain(&g_mailbox, GS_MAILBOX_DRAIN_US, mailbox_now_us);
     if (n > 0)
-        mailbox_notify(&g_mailbox.ctrl[GS_MBX_C_EVT_HEAD]);
+        platform_wake(&g_mailbox.ctrl[GS_MBX_C_EVT_HEAD]);
     return n;
 }
 
@@ -750,11 +745,6 @@ void laserwriter_ring_attach_requested(uintptr_t ctrl_addr) {
         { if (typeof Module.onPrinterAttach === 'function') Module.onPrinterAttach($0, UTF8ToString($1)); },
         (uint32_t)ctrl_addr, version);
     // clang-format on
-}
-
-// Wakes the worker parked in Atomics.waitAsync on a control word.
-void laserwriter_ring_notify(volatile uint32_t *addr) {
-    platform_wake(addr);
 }
 
 // ============================================================================

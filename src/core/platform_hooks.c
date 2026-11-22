@@ -94,17 +94,6 @@ __attribute__((weak)) void platform_gpu_detach(void *ctrl) {
     (void)ctrl;
 }
 
-__attribute__((weak)) int platform_gpu_wait(volatile uint32_t *addr, uint32_t expected, uint32_t timeout_ms) {
-    (void)addr;
-    (void)expected;
-    (void)timeout_ms;
-    return -1;
-}
-
-__attribute__((weak)) void platform_gpu_notify(volatile uint32_t *addr) {
-    (void)addr;
-}
-
 __attribute__((weak)) void platform_gpu_keepalive(void) {}
 
 // Host audio-input seam: the defaults model "no microphone attached" —
