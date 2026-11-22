@@ -31,8 +31,8 @@ The left side has collapsible sections:
 |---|---|
 | **Registers** (Control) | The processor registers: PC, status register, stack pointers, data and address registers on 68K; the PowerPC registers on Power Macs |
 | **FPU** | The floating-point registers, on machines that have an FPU |
-| **Memory** | A hex and text view of memory at an address you enter, by logical or physical address |
-| **MMU** | On machines with a memory-management unit: its **State**, the address **Map**, the translation **Descriptors**, and **Translate** (look up one address), for supervisor or user mode |
+| **Memory** | A hex and text view of memory at an address you enter, by logical or physical address (on a Lisa, logical addresses in the context you choose, shared with the MMU section) |
+| **MMU** | On machines with a memory-management unit: its **State**, the address **Map**, the translation **Descriptors**, and **Translate** (look up one address), for supervisor or user mode. **State** keeps updating while the machine runs. On a Lisa, choose one of the MMU's four contexts instead (**0 OS** is the operating system's, **1**–**3** user programs'; **Now** is whichever the processor uses, and a dot marks the one selected for user programs); **Translate** can show one address in **All four contexts** at once |
 | **Breakpoints** | Stop when the processor reaches an address. Click **+** to add one, optionally with a condition — an expression such as `machine.cpu.d0 == 0`, so it stops only when that is true. A condition that is not a valid expression is refused, with the reason |
 | **Watchpoints** | Stop when memory at an address is read or written. Click **+** to add one |
 | **Call stack** | The chain of subroutine calls leading to the current instruction |

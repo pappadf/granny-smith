@@ -1,8 +1,26 @@
 // Reactive state for the Debug panel view. UI-only — not persisted.
 // Section expansion lives here.
 
+import { machine } from './machine.svelte';
+
 export type MmuSubtab = 'state' | 'translate' | 'map' | 'descriptors';
 export type MemoryMode = 'logical' | 'physical';
+// The Lisa's MMU context the MMU section and the Memory view look through:
+// one of the four, or 'current' -- what the CPU uses now (context 0 in
+// supervisor mode, else the latch context).
+export type LisaContextChoice = 'current' | '0' | '1' | '2' | '3';
+
+// The context argument for a choice (undefined: the CPU's own).
+export function contextArg(choice: LisaContextChoice): number | undefined {
+  return choice === 'current' ? undefined : Number(choice);
+}
+
+// The privilege / context the MMU tabs read through: the S/U toggle, or on
+// the Lisa the context selector in its place ('current' = the CPU's own).
+export function mmuView(): { supervisor?: boolean; context?: number } {
+  if (machine.mmuKind === 'lisa_segment') return { context: contextArg(debug.mmuContext) };
+  return { supervisor: debug.mmuSupervisor };
+}
 
 interface DebugState {
   currentPc: number;
@@ -11,6 +29,11 @@ interface DebugState {
   mmuSubtab: MmuSubtab;
   mmuTransAddr: number;
   mmuSupervisor: boolean;
+  /** The Lisa only: which MMU context Translate, Map, Descriptors and the
+   *  Memory view read (bus/mmu.ts). */
+  mmuContext: LisaContextChoice;
+  /** The Lisa only: Translate shows the address in all four contexts. */
+  mmuCompare: boolean;
   sections: {
     registers: boolean;
     fpu: boolean;
@@ -49,6 +72,8 @@ export const debug: DebugState = $state({
   mmuSubtab: 'state',
   mmuTransAddr: 0x00400000,
   mmuSupervisor: false,
+  mmuContext: 'current',
+  mmuCompare: false,
   // Only the Disassembly pane (rendered above the sections, not a
   // CollapsibleSection) is visible by default; every collapsible
   // section starts closed so first-paint stays compact. The user's

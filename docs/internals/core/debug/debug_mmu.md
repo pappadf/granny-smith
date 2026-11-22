@@ -199,10 +199,23 @@ echo "${$s.step} ${$s.outcome} ${$s.reason}"
 The web Debug view's MMU section has four tabs, each reading these
 methods through `app/web2/src/bus/mmu.ts`:
 
-- **State:** the MMU's registers.
+- **State:** the MMU's registers. It is the one tab that keeps reading
+  while the machine runs (four times a second, `MmuSection.svelte`), so a
+  register that changes — the Lisa's context latch — can be watched live;
+  the other tabs walk tables and ask for a pause.
 - **Translate:** `walk`, one line per step.
 - **Map:** `map`; clicking a run walks its start.
 - **Descriptors:** `descriptor`, seeded from the PC's walk.
+
+On the Lisa the S/U toggle gives way to a context selector — **Now** (the
+CPU's own choice), **0 OS**, **1**, **2**, **3**, the latch's context marked
+with a dot — that Translate, Map and Descriptors pass as `context`.
+Translate adds **All four contexts**: the address translated in each, one
+row per context (valid or not, physical address, RAM/I/O/ROM, access).
+Descriptors shows a segment table in words (number, logical base, type,
+length in pages and bytes, physical base, then the raw SOR/SLR). The
+Memory section shares the selector for its logical reads and offers
+Physical (main memory).
 
 ## 5. Checkpointing
 

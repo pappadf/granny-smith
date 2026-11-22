@@ -232,13 +232,18 @@ export async function peekL(addr: number): Promise<number | null> {
 // explicitly: "logical" reads through the CPU's own translation on every
 // architecture (68K MMU, Lisa segment MMU, PowerPC), "physical" reads the
 // physical address.  The C side serialises VK_BYTES as "0x<hex>".
+// On the Lisa, `context` (0-3) reads a logical address through that MMU
+// context's segments; "physical" there is main memory by physical address.
 export async function peekBytes(
   addr: number,
   count: number,
   space: 'logical' | 'physical' = 'logical',
+  context?: number,
 ): Promise<Uint8Array | null> {
   if (!isModuleReady()) return null;
-  const r = await gsEval('machine.memory.peek.bytes', [addr >>> 0, count, space]);
+  const args: unknown[] = [addr >>> 0, count, space];
+  if (context !== undefined && space === 'logical') args.push(context);
+  const r = await gsEval('machine.memory.peek.bytes', args);
   if (typeof r !== 'string') return null;
   const hex = r.startsWith('0x') ? r.slice(2) : r;
   const bytes = hex.length / 2;

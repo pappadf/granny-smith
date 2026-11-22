@@ -159,3 +159,87 @@ export function fmtSize(size: number): string {
   for (const [n, u] of units) if (size >= n && size % n === 0) return `${size / n}${u}`;
   return `$${size.toString(16).toUpperCase()}`;
 }
+
+// === The Lisa's segment MMU in words ========================================
+//
+// For a viewer who is not an MMU expert: what a segment is, how big, and
+// where it lives, instead of the raw SOR/SLR words.
+
+// A translation's physical space (the core's `space`) as a noun.
+export function lisaSpaceLabel(space: string | undefined): string {
+  switch (space) {
+    case 'ram':
+      return 'RAM';
+    case 'io':
+      return 'I/O';
+    case 'rom':
+      return 'ROM';
+    case 'mmureg':
+      return 'MMU registers';
+    default:
+      return space ?? '';
+  }
+}
+
+// A segment descriptor's `type` (lisa_acc_name in lisa_mmu.c) in words.
+export function lisaSegmentType(type: string): string {
+  switch (type) {
+    case 'ram-ro':
+      return 'read-only RAM';
+    case 'ram-rw':
+      return 'read-write RAM';
+    case 'ram-ro-stack':
+      return 'stack (read-only RAM)';
+    case 'ram-rw-stack':
+      return 'stack (read-write RAM)';
+    case 'io':
+      return 'I/O';
+    case 'special':
+      return 'ROM';
+    case 'invalid':
+      return 'not present';
+    default:
+      return type;
+  }
+}
+
+// A byte count as B / KB, with one decimal when it is not whole.
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  const kb = n / 1024;
+  return `${Number.isInteger(kb) ? kb : kb.toFixed(1)} KB`;
+}
+
+// One Lisa segment descriptor (machine.cpu.mmu.descriptor) as a row: its
+// number, logical base, type, length and physical base -- and the raw
+// SOR/SLR words for whoever wants them.
+export interface LisaSegmentRow {
+  segment: number;
+  logical: string; // "$020000": where the valid pages start
+  type: string; // "read-only RAM"
+  present: boolean;
+  length: string; // "7 pages (3.5 KB)", or "" when not present
+  physical: string; // "$03F400" (of the first valid page), or ""
+  raw: string; // "SOR=$1FA SLR=$5F9"
+}
+
+export function formatLisaSegment(d: Record<string, number | boolean | string>): LisaSegmentRow {
+  const hex = (v: number, w: number) => (v >>> 0).toString(16).toUpperCase().padStart(w, '0');
+  const seg = Number(d.segment ?? 0);
+  const base = Number(d.base ?? seg * 0x20000);
+  const type = String(d.type ?? '');
+  const present = type !== 'invalid' && d.pages !== undefined;
+  const pages = Number(d.pages ?? 0);
+  const first = Number(d.first_page ?? 0);
+  // The first valid page's physical address (a stack's window starts high).
+  const phys = Number(d.phys ?? 0) + first * 512;
+  return {
+    segment: seg,
+    logical: `$${hex(base + first * 512, 6)}`,
+    type: lisaSegmentType(type),
+    present,
+    length: present ? `${pages} page${pages === 1 ? '' : 's'} (${fmtBytes(pages * 512)})` : '',
+    physical: present ? `$${hex(phys, 6)}` : '',
+    raw: `SOR=$${hex(Number(d.sor ?? 0), 3)} SLR=$${hex(Number(d.slr ?? 0), 3)}`,
+  };
+}
