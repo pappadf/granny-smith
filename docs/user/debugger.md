@@ -61,10 +61,24 @@ and so on. All categories are quiet until you turn one up.
    (0 is off; higher numbers report more detail). Or type
    `log.set <category> <level>` in the terminal, for example
    `log.set scsi 2`.
-2. Messages appear in the panel as they happen. The footer counts lines and
-   categories.
+2. Messages appear in the panel as they happen, each with the time, its
+   category and level. The footer counts lines and categories. The panel
+   keeps the last 10,000 lines.
 3. **autoscroll** keeps the newest line in view; **Clear** empties the
    panel; **Download** saves the log as a text file.
+4. The bar above the lines filters what is shown without discarding
+   anything: **Levels** shows only lines up to a level, **Categories**
+   shows or hides each category, **pause** holds the view still while
+   lines go on collecting, and **Copy** puts the lines shown on the
+   clipboard.
+5. Logpoint output appears here too: each line shows the logpoint's
+   message first and, muted after it, where it fired (the address, or the
+   memory access and its value).
+
+Every log line reaches this panel. A category's lines are also printed in
+the Terminal while its **Terminal** box in **Levels** is ticked (the
+default; the same as `log.set <category> stdout=on`); untick it — for
+example for the `logpoint` category — to keep the Terminal for commands.
 
 High levels on busy categories (the processor, memory) produce a great
 deal of output and slow the machine down; turn them off again with level 0.
