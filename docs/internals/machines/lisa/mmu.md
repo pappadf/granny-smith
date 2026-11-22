@@ -100,6 +100,16 @@ outlives one request. `memory_debug_read_phys` on the Lisa reads main
 memory the same way (`lisa_mmu_debug_read_phys`); a debugger read of RAM
 never raises the parity NMI, as a bus cycle would.
 
+**Breakpoints in an absent segment.** A process's code segment is loaded on
+demand: the first fetch from it takes a bus error, the operating system
+maps the segment and returns to the same PC. The debugger checks
+breakpoints before an instruction executes, so a breakpoint there used to
+report a hit before the fetch faulted. `check_breakpoints` (`debug.c`)
+now skips a PC whose translation fails in the context the CPU uses
+(`pc_fetch_faults`); the breakpoint fires when the instruction really
+runs. The Lisa's MMU makes no instruction/data distinction, so the debug
+translation is exact for a fetch.
+
 ## Control strobes ($00E000-$00E01E)
 
 Each is a *strobe*: any access (read or write, value ignored) toggles the latch.

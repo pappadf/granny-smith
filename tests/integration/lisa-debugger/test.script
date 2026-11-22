@@ -66,5 +66,48 @@ assert try(debug.disasm($la, 2, 9), "refused") == "refused" "disasm accepted con
 # The view is restored after each request: the plain read is the CPU's again.
 assert machine.memory.peek.l($la) == machine.cpu.mmu.peek($la, 4) "a context outlived its request"
 
+# ---- A breakpoint in a segment that is not present --------------------------
+# Open the Calculator: its process faults on its first code segment, the
+# operating system loads it and returns to the faulting instruction.  A
+# breakpoint there must fire when the instruction runs, not before the
+# fetch faults (as it did).
+def lclick(x, y) {
+    machine.adb.mouse.move($x, $y, "global")
+    scheduler.run 3000000
+    machine.adb.mouse.click true
+    scheduler.run 800000
+    machine.adb.mouse.click false
+    scheduler.run 800000
+}
+def menu_pick(mx, ix, iy) {
+    machine.adb.mouse.move($mx, 8, "global")
+    scheduler.run 3000000
+    machine.adb.mouse.click true
+    scheduler.run 3000000
+    machine.adb.mouse.move($ix, $iy, "global")
+    scheduler.run 3000000
+    machine.adb.mouse.click false
+}
+lclick(657, 340)
+scheduler.run 5000000
+menu_pick(100, 140, 83)
+scheduler.run 60000000
+lclick(309, 62)
+scheduler.run 5000000
+menu_pick(100, 140, 83)
+# The operating system's bus-error handler, entered for the new process
+# (context 1); the fault address is in its exception frame.
+debug.breakpoints.add 0x2E257E "machine.cpu.mmu.context == 1"
+scheduler.run 30000000
+assert machine.cpu.pc == 0x2E257E "the Calculator never faulted"
+let fa = machine.memory.peek.l(machine.cpu.a7 + 34) & 0xFFFFFF
+assert machine.cpu.mmu.descriptor($fa >> 17, 1, 1)[0].type == "invalid" "the faulting segment is present"
+debug.breakpoints.clear
+debug.breakpoints.add $fa "machine.cpu.mmu.context == 1"
+scheduler.run 60000000
+assert machine.cpu.pc == $fa "the breakpoint did not fire"
+assert machine.cpu.mmu.translate($fa, false).valid "the breakpoint fired before the segment was present"
+debug.breakpoints.clear
+
 echo "lisa-debugger: all checks passed"
 quit

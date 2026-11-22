@@ -1029,9 +1029,26 @@ void debugger_disasm_pc(char *buf, size_t buf_size) {
     debugger_disasm(buf, buf_size, dif->get_pc(dif->ctx));
 }
 
+// True when the instruction at `pc` cannot even be fetched: on the Lisa, its
+// segment is not present (or out of limit) in the context the CPU uses now,
+// so the fetch takes a bus error and the operating system loads the segment
+// and returns to `pc` -- where the instruction then really executes.  A
+// breakpoint there means the latter.  (The Lisa's MMU makes no
+// instruction/data distinction, so its debug translation is exact for a
+// fetch; the other MMU kinds keep their behaviour.)
+static bool pc_fetch_faults(uint32_t pc) {
+    if (!g_lisa_mmu)
+        return false;
+    return !lisa_mmu_translate(g_lisa_mmu, pc, debug_cpu_is_supervisor(), NULL, NULL);
+}
+
 // Check the breakpoints at current_pc, the instruction about to execute.
 // A hit prints, counts, and arms the resume skip; returns true on a hit.
 static bool check_breakpoints(debug_t *debug, uint32_t current_pc) {
+    // An instruction whose fetch faults is not about to execute: no
+    // breakpoint is hit there, nor its condition evaluated or counted.
+    if (pc_fetch_faults(current_pc))
+        return false;
     breakpoint_t *bp = debug->breakpoints;
     while (bp != NULL) {
         // A disabled breakpoint is kept but ignored.
