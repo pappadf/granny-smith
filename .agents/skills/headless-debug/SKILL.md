@@ -301,9 +301,9 @@ checkpoint.save "/tmp/a.gscp"
 checkpoint.load "/tmp/a.gscp"
 ```
 
-`checkpoint.load` drops all breakpoints and logpoints. Memory (read/write)
-logpoints added after a load do not fire, though pc logpoints and
-breakpoints do. For memory watches, boot fresh instead.
+`checkpoint.load` drops all breakpoints and logpoints. Logpoints of every
+kind, memory ones included, added after a load fire (checked on the Plus
+and the Lisa, RAM and the Lisa's MMU latches).
 
 ## Devices and input
 

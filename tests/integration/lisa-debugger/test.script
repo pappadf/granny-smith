@@ -159,6 +159,12 @@ assert checkpoint.save("${$WORK_DIR}/user-stop.gscp") "checkpoint.save failed"
 assert checkpoint.load("${$WORK_DIR}/user-stop.gscp") "checkpoint.load failed"
 assert machine.memory.peek.w(machine.cpu.pc) == $code_word "the code at the PC reads differently after a load"
 assert debug.frame(machine.cpu.pc, 1, 0).rows[0].mnem != "DC.W" "the disassembly after a load is not code"
+# A memory logpoint added after a load fires, on RAM and on the MMU's
+# context latch alike.
+let latch = debug.logpoints.add(addr=0xFCE008, end=0xFCE00F, mode="write", level=9)
+scheduler.run 3000000
+assert debug.logpoints[$latch.id].hit_count > 0 "a latch logpoint added after a load never fired"
+debug.logpoints.clear
 
 # ---- Soft power-off, and on again -------------------------------------------
 # The OS puts everything away and tells the COPS to switch the supply off.
