@@ -333,6 +333,14 @@ def row_xl_macworks_boot() {
     # debugger's Macintosh views apply (debug.mac.mode "auto").
     assert debug.mac.active "debug.mac does not apply under MacWorks"
     assert debug.mac.atrap(0xA022) == "_NewHandle" "no Macintosh trap names under MacWorks"
+    # The absolute mouse move steers the Macintosh cursor (the Mouse global,
+    # v then h) under MacWorks; it used to read the LOS cursor and do nothing.
+    machine.adb.mouse.move(300, 200, "global")
+    scheduler.run 10000000
+    let mw_mouse = debug.mac.globals.read("Mouse")
+    let mw_h = $mw_mouse & 0xFFFF
+    let mw_v = $mw_mouse >> 16
+    assert $mw_h >= 297 && $mw_h <= 303 && $mw_v >= 197 && $mw_v <= 203 "the global mouse move missed under MacWorks"
     report_row("MacWorks 3.0", "builtin", "fd-boot loader-eject")
     report_perf("suite-lisa/xl-macworks-boot", scheduler.instr_count)
 }

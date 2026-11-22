@@ -3444,24 +3444,11 @@ static const char *const mac_mode_names[] = {"auto", "on", "off", NULL};
 enum { MAC_MODE_AUTO, MAC_MODE_ON, MAC_MODE_OFF, MAC_MODE_COUNT };
 static int g_mac_mode = MAC_MODE_AUTO;
 
-// True when a Lisa runs MacWorks: the Macintosh ROM image MacWorks loads
-// into RAM is where the low-memory global ROMBase ($2AE) points, and the
-// line-A vector ($28) leads into it.  Under the Lisa's own systems neither
-// holds (LOS keeps ROMBase's bytes for something else and its line-A
-// vector in the boot ROM).  Read in context 0, the supervisor's view.
-static bool lisa_runs_macworks(void) {
-    int prev = lisa_mmu_debug_view_set(0);
-    uint32_t rom_base = memory_debug_read_uint32(0x2AE) & 0x00FFFFFFu;
-    uint32_t line_a = memory_debug_read_uint32(0x28) & 0x00FFFFFFu;
-    lisa_mmu_debug_view_set(prev);
-    return rom_base >= 0x400000u && rom_base < 0xF00000u && line_a - rom_base < 0x80000u;
-}
-
 // The emulator's g_debug_mac_world_fn (debug_mac.h).
 static bool debug_mac_world(void) {
     if (g_mac_mode != MAC_MODE_AUTO)
         return g_mac_mode == MAC_MODE_ON;
-    return !g_lisa_mmu || lisa_runs_macworks();
+    return !g_lisa_mmu || lisa_mmu_runs_macworks();
 }
 
 // The refusal every debug.mac method gives where the Macintosh views do

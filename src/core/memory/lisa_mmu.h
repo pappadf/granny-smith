@@ -62,6 +62,12 @@ void lisa_mmu_power_on(lisa_mmu_t *m);
 // for API compatibility but ignored (the cursor lives in supervisor space).
 bool lisa_mmu_get_cursor(int ctx, int *x, int *y);
 
+// True while the machine runs MacWorks (the Macintosh system on Lisa
+// hardware): ROMBase and the line-A vector, read in context 0, point at the
+// Macintosh ROM image MacWorks loaded.  The cursor warp and the debugger's
+// Macintosh views follow it.
+bool lisa_mmu_runs_macworks(void);
+
 // Side-effect-free translation of a logical address, for debuggers: the
 // physical address and, in *space (may be NULL), which physical space it is
 // in -- "ram", "io", "rom" or "mmureg" (descriptor RAM in START mode).

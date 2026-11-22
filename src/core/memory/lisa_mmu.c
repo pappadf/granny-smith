@@ -812,13 +812,37 @@ static void lisa_ram_write(lisa_mmu_t *m, uint32_t phys, unsigned size, uint32_t
 // globals block is not currently mapped (e.g. before the OS is up).  `ctx` is
 // accepted for API compatibility but ignored — the cursor lives in supervisor
 // (context 0) space.
+// Under MacWorks the cursor is the Macintosh's: the low-memory global Mouse
+// ($830, a QuickDraw Point: v then h), in the flat map MacWorks sets up in
+// context 0.  The LOS globals above mean nothing there, which is why the
+// "global" mouse move did nothing under MacWorks.
+#define MAC_MOUSE_V_ADDR 0x00000830u
+#define MAC_MOUSE_H_ADDR 0x00000832u
+
+bool lisa_mmu_runs_macworks(void) {
+    lisa_mmu_t *m = g_lisa_mmu;
+    if (!m || m->start)
+        return false;
+    // ROMBase ($2AE) points at the Macintosh ROM image MacWorks loads into
+    // RAM, above $400000, and the line-A vector ($28) leads into it.  Under
+    // LOS and Xenix neither holds.
+    lisa_resolved_t rb = lisa_resolve(m, 0x2AE, true, false);
+    lisa_resolved_t va = lisa_resolve(m, 0x28, true, false);
+    if (rb.route != L_RAM || va.route != L_RAM)
+        return false;
+    uint32_t rom_base = lisa_mmu_debug_read_phys(rb.phys, 4, NULL) & 0x00FFFFFFu;
+    uint32_t line_a = lisa_mmu_debug_read_phys(va.phys, 4, NULL) & 0x00FFFFFFu;
+    return rom_base >= 0x400000u && rom_base < 0xF00000u && line_a - rom_base < 0x80000u;
+}
+
 bool lisa_mmu_get_cursor(int ctx, int *x, int *y) {
     (void)ctx;
     lisa_mmu_t *m = g_lisa_mmu;
     if (!m)
         return false;
-    lisa_resolved_t rx = lisa_resolve(m, LISA_CURSOR_X_ADDR, /*supervisor=*/true, /*is_write=*/false);
-    lisa_resolved_t ry = lisa_resolve(m, LISA_CURSOR_Y_ADDR, /*supervisor=*/true, /*is_write=*/false);
+    bool mac = lisa_mmu_runs_macworks();
+    lisa_resolved_t rx = lisa_resolve(m, mac ? MAC_MOUSE_H_ADDR : LISA_CURSOR_X_ADDR, /*supervisor=*/true, false);
+    lisa_resolved_t ry = lisa_resolve(m, mac ? MAC_MOUSE_V_ADDR : LISA_CURSOR_Y_ADDR, /*supervisor=*/true, false);
     if (rx.route != L_RAM || ry.route != L_RAM)
         return false;
     if (x)

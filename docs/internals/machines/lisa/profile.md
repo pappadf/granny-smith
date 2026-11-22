@@ -127,6 +127,10 @@ for the device-info block), with
   `cops_mouse_tick`). NB: the OS does **not** draw the cursor sprite on the idle menu,
   so a menu screenshot looks cursor-less; the click still hit-tests against the tracked
   position, and the cursor becomes visible once a dialog appears.
+  Under MacWorks the loop reads the Macintosh cursor instead, the low-memory
+  global `Mouse` (`$830`, v then h, context 0), since the LOS globals mean
+  nothing there (`lisa_mmu_get_cursor`, which asks `lisa_mmu_runs_macworks`);
+  the same corrective deltas converge on it.
 - **INSTALLER NOW DETECTS THE ProFile (session 16) — root-caused from the LisaOS
   source + floppy-I/O analysis.** Clicking Install with a ProFile attached now
   reaches *"Do you want to use the disk attached to the parallel connector?"*
