@@ -185,6 +185,35 @@ typedef struct {
     void *ctx;
 } nbp_lookup_t;
 
+// EtherTalk Phase 2 on a machine's Ethernet port (Inside AppleTalk, 2nd ed.,
+// ch. 3, "EtherTalk and TokenTalk"; ch. 2, "AARP").
+#define ELAP_LLC_SIZE    8 // AA AA 03 + the SNAP protocol identifier
+#define ELAP_HEADER_SIZE (14 + ELAP_LLC_SIZE)
+#define ELAP_MAX_FRAME   (ELAP_HEADER_SIZE + DDP_EXTENDED_HEADER_SIZE + DDP_MAX_DATA_SIZE)
+#define AARP_PACKET_SIZE 28
+#define AARP_REQUEST     1
+#define AARP_RESPONSE    2
+#define AARP_PROBE       3
+#define ELAP_AARP_CACHE  8
+
+// What the network knows of the Ethernet cable: the port's hooks, the
+// host's address on it, and the stations it has heard.
+typedef struct {
+    atalk_ether_send_fn send; // NULL: no Ethernet port attached
+    void *ctx;
+    uint16_t net; // the host's network number on the cable (the guest's)
+    bool net_known;
+    uint8_t guest_mac[6]; // the last station heard: the default destination
+    bool guest_known;
+    struct {
+        bool valid;
+        uint16_t net;
+        uint8_t node;
+        uint8_t mac[6];
+    } aarp[ELAP_AARP_CACHE];
+    int aarp_next; // round-robin replacement cursor
+} atalk_ether_t;
+
 // Every timer one connection has registered with its machine's scheduler,
 // so unplugging it can drop their pending events: the link and transport
 // timers below, and those of the layers above (ASP, ADSP, the printer's PAP
@@ -220,6 +249,12 @@ struct atalk_conn {
     // its data frame: the wire is reserved for that dialog, and our own lapRTS
     // must wait (see llap_wire_note_peer_frame).
     bool peer_reserved;
+
+    // EtherTalk (the machine's Ethernet port, when it has one cabled)
+    atalk_ether_t ether;
+    // The port the guest last sent DDP on: where traffic this host
+    // originates (ATP requests, ADSP, NBP lookups) goes.
+    uint8_t ddp_port;
 
     // ATP
     atp_request_handle_t atp_requests[ATP_MAX_OUTGOING];
@@ -370,6 +405,7 @@ typedef struct {
 // Lower layers at top of file, higher at bottom. These prototypes resolve circular references.
 static void ddp_short_in(atalk_conn_t *c, llap_header_t *llap, const uint8_t *buf, size_t len);
 static void ddp_in(atalk_conn_t *c, ddp_header_t *ddp, const uint8_t *buf, size_t len);
+static int elap_send_ddp(atalk_conn_t *c, const ddp_header_t *header, const uint8_t *data, int size);
 static void nbp_in(atalk_conn_t *c, ddp_header_t *ddp, const uint8_t *buf, size_t len);
 static void atp_in(atalk_conn_t *c, const ddp_header_t *ddp, const uint8_t *buf, int len);
 static void atp_timers_init(atalk_conn_t *c);
@@ -796,6 +832,7 @@ static void ddp_setup_reply(const ddp_header_t *request, ddp_header_t *reply) {
     reply->llap.dst = request->llap.src;
     reply->llap.src = ATALK_HOST_NODE;
     reply->llap.type = request->llap.type;
+    reply->port = request->port; // the reply goes back the way the request came
 
     reply->len = request->len;
     reply->dst_net = request->src_net;
@@ -815,7 +852,10 @@ static void ddp_header_to(ddp_header_t *ddp, const atalk_socket_addr_t *dest, ui
     ddp->llap.src = ATALK_HOST_NODE;
     ddp->llap.type = LLAP_DDP_SHORT;
     ddp->len = (uint16_t)(payload_len + DDP_SHORT_HEADER_SIZE);
-    ddp->dst_net = dest->net; // not on the wire in a short header; kept for the logs
+    ddp->dst_net = dest->net; // on the wire only in an extended header (EtherTalk)
+    ddp->port = g_net.plugged ? g_net.plugged->ddp_port : ATALK_PORT_LOCALTALK;
+    if (ddp->port == ATALK_PORT_ETHER)
+        ddp->llap.type = LLAP_DDP_EXTENDED;
     ddp->dst_socket = dest->socket;
     ddp->src_socket = src_socket;
     ddp->type = type;
@@ -1064,6 +1104,9 @@ static int ddp_send(atalk_conn_t *c, const ddp_header_t *header, const uint8_t *
     if (!header || size <= 0 || size > DDP_MAX_DATA_SIZE)
         return -1;
 
+    if (header->port == ATALK_PORT_ETHER)
+        return elap_send_ddp(c, header, data, size);
+
     uint8_t buffer[DDP_SHORT_HEADER_SIZE + DDP_MAX_DATA_SIZE];
     uint16_t length = (uint16_t)(size + DDP_SHORT_HEADER_SIZE);
 
@@ -1198,6 +1241,8 @@ static void ddp_short_in(atalk_conn_t *c, llap_header_t *llap, const uint8_t *bu
     }
 
     ddp.llap = *llap;
+    ddp.port = ATALK_PORT_LOCALTALK;
+    c->ddp_port = ATALK_PORT_LOCALTALK; // the guest is on LocalTalk (again)
     ddp.checksum = 0;
     ddp.dst_net = 0;
     ddp.src_net = 0;
@@ -1213,6 +1258,263 @@ static void ddp_short_in(atalk_conn_t *c, llap_header_t *llap, const uint8_t *bu
     log_hex(log_local_category(), 9, "DDP rx dump", buf, len, 0);
     ddp_in(c, &ddp, buf + 5, len - 5);
     LOG_INDENT(-4);
+}
+
+// =============================== ELAP / AARP (EtherTalk Phase 2) ===============================
+//
+// The machine's Ethernet port (appletalk.h, "EtherTalk").  Frames are 802.3
+// with an 802.2 LLC/SNAP header: AA AA 03, then the protocol identifier --
+// 08 00 07 80 9B for DDP, 00 00 00 80 F3 for AARP (Inside AppleTalk, 2nd
+// ed., ch. 3, "EtherTalk and TokenTalk").  DDP rides with the 13-byte
+// extended header; AARP maps (network, node) to station addresses and lets
+// a node probe for a tentative address (ch. 2, "AARP").  There is no
+// router: the guest, finding none, keeps its startup-range address, and the
+// host answers on the guest's network at ATALK_HOST_NODE.
+
+static const uint8_t k_host_mac[6] = ATALK_HOST_MAC_INIT;
+static const uint8_t k_elap_snap_ddp[ELAP_LLC_SIZE] = {0xAA, 0xAA, 0x03, 0x08, 0x00, 0x07, 0x80, 0x9B};
+static const uint8_t k_elap_snap_aarp[ELAP_LLC_SIZE] = {0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00, 0x80, 0xF3};
+static const uint8_t k_elap_broadcast[6] = {0x09, 0x00, 0x07, 0xFF, 0xFF, 0xFF}; // AppleTalk broadcast
+
+void atalk_conn_attach_ether(atalk_conn_t *c, atalk_ether_send_fn send, void *ctx) {
+    if (!c)
+        return;
+    c->ether.send = send;
+    c->ether.ctx = ctx;
+}
+
+// Remember that (net, node) is at `mac`.
+static void aarp_learn(atalk_conn_t *c, uint16_t net, uint8_t node, const uint8_t mac[6]) {
+    atalk_ether_t *e = &c->ether;
+    memcpy(e->guest_mac, mac, 6);
+    e->guest_known = true;
+    if (node == 0 || node >= 0xFE)
+        return; // not a node address
+    int slot = -1;
+    for (int i = 0; i < ELAP_AARP_CACHE; i++)
+        if (e->aarp[i].valid && e->aarp[i].net == net && e->aarp[i].node == node)
+            slot = i;
+    if (slot < 0) {
+        slot = e->aarp_next;
+        e->aarp_next = (e->aarp_next + 1) % ELAP_AARP_CACHE;
+    }
+    e->aarp[slot].valid = true;
+    e->aarp[slot].net = net;
+    e->aarp[slot].node = node;
+    memcpy(e->aarp[slot].mac, mac, 6);
+}
+
+// The station address of (net, node): the broadcast for node $FF, the cached
+// mapping, or else the station last heard (the only other one on the cable).
+static bool aarp_resolve(const atalk_conn_t *c, uint16_t net, uint8_t node, uint8_t mac[6]) {
+    const atalk_ether_t *e = &c->ether;
+    if (node == 0xFF) {
+        memcpy(mac, k_elap_broadcast, 6);
+        return true;
+    }
+    for (int i = 0; i < ELAP_AARP_CACHE; i++)
+        if (e->aarp[i].valid && e->aarp[i].node == node && (e->aarp[i].net == net || net == 0)) {
+            memcpy(mac, e->aarp[i].mac, 6);
+            return true;
+        }
+    if (!e->guest_known)
+        return false;
+    memcpy(mac, e->guest_mac, 6);
+    return true;
+}
+
+// Put one 802.3 frame with `snap` and `payload` on the cable to `dst`.
+static int elap_wire_send(atalk_conn_t *c, const uint8_t dst[6], const uint8_t *snap, const uint8_t *payload, int len) {
+    if (!c->enabled || !c->ether.send) {
+        c->stats.tx_dropped++;
+        return -1;
+    }
+    uint8_t frame[ELAP_MAX_FRAME];
+    if (len < 0 || ELAP_HEADER_SIZE + len > (int)sizeof(frame)) {
+        c->stats.tx_dropped++;
+        return -1;
+    }
+    memcpy(frame, dst, 6);
+    memcpy(frame + 6, k_host_mac, 6);
+    int field = ELAP_LLC_SIZE + len; // 802.3 length: LLC header and data
+    frame[12] = (uint8_t)(field >> 8);
+    frame[13] = (uint8_t)field;
+    memcpy(frame + 14, snap, ELAP_LLC_SIZE);
+    memcpy(frame + ELAP_HEADER_SIZE, payload, (size_t)len);
+    log_hex(llap_log_category(), 11, "ELAP tx dump", frame, (size_t)(ELAP_HEADER_SIZE + len), 0);
+    c->stats.elap_tx++;
+    c->ether.send(c->ether.ctx, frame, (size_t)(ELAP_HEADER_SIZE + len));
+    return 0;
+}
+
+// Send a DDP datagram on the Ethernet port, with the extended header.
+static int elap_send_ddp(atalk_conn_t *c, const ddp_header_t *header, const uint8_t *data, int size) {
+    uint8_t mac[6];
+    if (!aarp_resolve(c, header->dst_net, header->llap.dst, mac)) {
+        atalk_drop(c, ATALK_DROP_TX, "no station address for node %u", (unsigned)header->llap.dst);
+        return -1;
+    }
+    uint8_t buffer[DDP_EXTENDED_HEADER_SIZE + DDP_MAX_DATA_SIZE];
+    uint16_t length = (uint16_t)(size + DDP_EXTENDED_HEADER_SIZE);
+    ddp_log_summary(5, "-> Mac (EtherTalk)", header, length, (size_t)size);
+    buffer[0] = (uint8_t)((length >> 8) & 0x03); // hop count 0
+    buffer[1] = (uint8_t)length;
+    buffer[2] = 0; // no checksum
+    buffer[3] = 0;
+    buffer[4] = (uint8_t)(header->dst_net >> 8);
+    buffer[5] = (uint8_t)header->dst_net;
+    buffer[6] = (uint8_t)(c->ether.net >> 8); // the host's network, whatever the request said
+    buffer[7] = (uint8_t)c->ether.net;
+    buffer[8] = header->llap.dst;
+    buffer[9] = ATALK_HOST_NODE;
+    buffer[10] = header->dst_socket;
+    buffer[11] = header->src_socket;
+    buffer[12] = header->type;
+    memcpy(&buffer[DDP_EXTENDED_HEADER_SIZE], data, (size_t)size);
+    c->stats.ddp_out++;
+    return elap_wire_send(c, mac, k_elap_snap_ddp, buffer, length);
+}
+
+// The host's AppleTalk address on the cable: its network (once heard) and
+// ATALK_HOST_NODE.  True when (net, node) is that address.  Before any
+// network is known, any network's ATALK_HOST_NODE is ours to defend.
+static bool elap_is_host(const atalk_conn_t *c, uint16_t net, uint8_t node) {
+    return node == ATALK_HOST_NODE && (!c->ether.net_known || net == c->ether.net || net == 0);
+}
+
+// The host takes its network number from the guest's first frame.
+static void elap_adopt_net(atalk_conn_t *c, uint16_t net) {
+    if (c->ether.net_known || net == 0)
+        return;
+    c->ether.net = net;
+    c->ether.net_known = true;
+    LOG(2, "EtherTalk: the host is node %u on network $%04X", (unsigned)ATALK_HOST_NODE, (unsigned)net);
+}
+
+// An AARP packet: requests and probes for the host's address are answered.
+static void aarp_in(atalk_conn_t *c, const uint8_t *p, size_t len) {
+    if (len < AARP_PACKET_SIZE) {
+        atalk_drop(c, ATALK_DROP_MALFORMED, "AARP packet of %zu bytes", len);
+        return;
+    }
+    // Hardware Ethernet ($0001), protocol AppleTalk ($809B), sizes 6 and 4.
+    if (p[0] != 0x00 || p[1] != 0x01 || p[2] != 0x80 || p[3] != 0x9B || p[4] != 6 || p[5] != 4) {
+        atalk_drop(c, ATALK_DROP_UNHANDLED, "AARP for another hardware/protocol pair");
+        return;
+    }
+    unsigned function = ((unsigned)p[6] << 8) | p[7];
+    const uint8_t *src_hw = p + 8;
+    uint16_t src_net = (uint16_t)((p[15] << 8) | p[16]);
+    uint8_t src_node = p[17];
+    uint16_t dst_net = (uint16_t)((p[25] << 8) | p[26]);
+    uint8_t dst_node = p[27];
+    LOG(4, "AARP %u from $%04X.%u for $%04X.%u", function, src_net, src_node, dst_net, dst_node);
+    if (function == AARP_PROBE) {
+        // A probe's source is only tentative: nothing to learn, but a probe
+        // for the host's own address is answered, so the guest picks another.
+        if (!elap_is_host(c, dst_net, dst_node))
+            return;
+    } else {
+        aarp_learn(c, src_net, src_node, src_hw);
+        if (function == AARP_RESPONSE)
+            return;
+        if (function != AARP_REQUEST) {
+            atalk_drop(c, ATALK_DROP_UNHANDLED, "AARP function %u", function);
+            return;
+        }
+        if (!elap_is_host(c, dst_net, dst_node))
+            return;
+        elap_adopt_net(c, dst_net ? dst_net : src_net);
+    }
+    uint16_t net = c->ether.net_known ? c->ether.net : dst_net;
+    uint8_t r[AARP_PACKET_SIZE];
+    memcpy(r, p, 6); // hardware/protocol type and sizes
+    r[6] = 0;
+    r[7] = AARP_RESPONSE;
+    memcpy(r + 8, k_host_mac, 6);
+    r[14] = 0;
+    r[15] = (uint8_t)(net >> 8);
+    r[16] = (uint8_t)net;
+    r[17] = ATALK_HOST_NODE;
+    memcpy(r + 18, src_hw, 6);
+    memcpy(r + 24, p + 14, 4); // back to the asker's (tentative) address
+    elap_wire_send(c, src_hw, k_elap_snap_aarp, r, AARP_PACKET_SIZE);
+}
+
+// An extended DDP datagram from the Ethernet port.
+static void elap_ddp_in(atalk_conn_t *c, const uint8_t *buf, size_t len) {
+    if (len < DDP_EXTENDED_HEADER_SIZE) {
+        atalk_drop(c, ATALK_DROP_MALFORMED, "extended DDP of %zu bytes", len);
+        return;
+    }
+    ddp_header_t ddp;
+    memset(&ddp, 0, sizeof(ddp));
+    ddp.hop = (uint8_t)((buf[0] >> 2) & 0x0F);
+    ddp.len = (uint16_t)(((buf[0] & 0x03) << 8) | buf[1]);
+    // The 802.3 frame may carry padding past the datagram, never less.
+    if (ddp.len < DDP_EXTENDED_HEADER_SIZE || ddp.len > len || ddp.len > DDP_EXTENDED_HEADER_SIZE + DDP_MAX_DATA_SIZE) {
+        atalk_drop(c, ATALK_DROP_MALFORMED, "DDP length field %u in a %zu-byte datagram", (unsigned)ddp.len, len);
+        return;
+    }
+    ddp.checksum = (uint16_t)((buf[2] << 8) | buf[3]);
+    ddp.dst_net = (uint16_t)((buf[4] << 8) | buf[5]);
+    ddp.src_net = (uint16_t)((buf[6] << 8) | buf[7]);
+    ddp.llap.dst = buf[8];
+    ddp.llap.src = buf[9];
+    ddp.llap.type = LLAP_DDP_EXTENDED;
+    ddp.dst_socket = buf[10];
+    ddp.src_socket = buf[11];
+    ddp.type = buf[12];
+    ddp.port = ATALK_PORT_ETHER;
+    if (ddp.llap.dst != 0xFF && !elap_is_host(c, ddp.dst_net, ddp.llap.dst)) {
+        atalk_drop(c, ATALK_DROP_UNHANDLED, "DDP for $%04X.%u", (unsigned)ddp.dst_net, (unsigned)ddp.llap.dst);
+        return;
+    }
+    elap_adopt_net(c, ddp.src_net);
+    c->ddp_port = ATALK_PORT_ETHER; // the guest is on the Ethernet port now
+    size_t payload = (size_t)ddp.len - DDP_EXTENDED_HEADER_SIZE;
+    ddp_log_summary(4, "<- Mac (EtherTalk)", &ddp, ddp.len, payload);
+    LOG_INDENT(4);
+    log_hex(log_local_category(), 9, "DDP rx dump", buf, ddp.len, 0);
+    ddp_in(c, &ddp, buf + DDP_EXTENDED_HEADER_SIZE, payload);
+    LOG_INDENT(-4);
+}
+
+// A frame the machine's Ethernet controller transmitted.
+void atalk_conn_ether_input(atalk_conn_t *c, const uint8_t *frame, size_t len) {
+    EMU_THREAD_CHECK("atalk_conn_ether_input");
+    if (!c || g_net.plugged != c || !c->enabled)
+        return;
+    if (len < ELAP_HEADER_SIZE)
+        return; // runts and bare headers carry nothing for AppleTalk
+    // Only frames for the host or the AppleTalk multicasts concern it; the
+    // guest's self-addressed loopback test frames, for one, do not.
+    static const uint8_t k_bcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    bool for_us = memcmp(frame, k_host_mac, 6) == 0 || memcmp(frame, k_bcast, 6) == 0 ||
+                  (frame[0] == 0x09 && frame[1] == 0x00 && frame[2] == 0x07);
+    if (!for_us)
+        return;
+    unsigned field = ((unsigned)frame[12] << 8) | frame[13];
+    if (field > 1500)
+        return; // an Ethernet II frame (Phase 1 EtherTalk): not served here
+    size_t body = len - 14;
+    if (field < ELAP_LLC_SIZE || field > body) {
+        atalk_drop(c, ATALK_DROP_MALFORMED, "802.3 length %u in a %zu-byte frame", field, len);
+        return;
+    }
+    const uint8_t *llc = frame + 14;
+    log_hex(llap_log_category(), 11, "ELAP rx dump", frame, len, 0);
+    if (memcmp(llc, k_elap_snap_ddp, ELAP_LLC_SIZE) == 0) {
+        c->stats.elap_rx++;
+        const uint8_t *d = llc + ELAP_LLC_SIZE;
+        if (field >= ELAP_LLC_SIZE + DDP_EXTENDED_HEADER_SIZE) // the sender's address is in its header
+            aarp_learn(c, (uint16_t)((d[6] << 8) | d[7]), d[9], frame + 6);
+        elap_ddp_in(c, d, field - ELAP_LLC_SIZE);
+    } else if (memcmp(llc, k_elap_snap_aarp, ELAP_LLC_SIZE) == 0) {
+        c->stats.elap_rx++;
+        aarp_in(c, llc + ELAP_LLC_SIZE, field - ELAP_LLC_SIZE);
+    }
+    // Any other SNAP protocol (IP over SNAP, ...) is not AppleTalk's.
 }
 
 #define NBP_BRRQ       1
@@ -1633,6 +1935,19 @@ static void nbp_send_reply_batch(atalk_conn_t *c, const ddp_header_t *request, u
     nbp_header.function = NBP_LKUP_REPLY;
     nbp_header.tuple_count = (count > 15) ? 15 : count;
     nbp_header.nbp_id = nbp_id;
+    if (reply.port == ATALK_PORT_ETHER) {
+        // An extended network needs the host's real network number in the
+        // tuple: the entries carry 0, LocalTalk's "this network".
+        nbp_tuple_t on_net[NBP_MAX_TUPLES_PER_PACKET];
+        int n = count < NBP_MAX_TUPLES_PER_PACKET ? count : NBP_MAX_TUPLES_PER_PACKET;
+        memcpy(on_net, tuples, sizeof(on_net[0]) * (size_t)n);
+        for (int i = 0; i < n; i++)
+            if (on_net[i].net == 0)
+                on_net[i].net = c->ether.net;
+        nbp_header.tuple_count = (uint8_t)n;
+        nbp_send(c, &reply, &nbp_header, on_net);
+        return;
+    }
     nbp_send(c, &reply, &nbp_header, tuples);
 }
 
