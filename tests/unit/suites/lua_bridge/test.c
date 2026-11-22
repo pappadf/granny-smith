@@ -242,6 +242,7 @@ TEST(test_vars_and_library) {
     ASSERT_EQ_INT(0, run("local v = 0xab; assert(F'${v:d}-${probe.s}-${#probe.items}' == '171-hello-3')"));
     ASSERT_EQ_INT(0, run("assert(#gs.bytes(0x0102, 2) == 2); assert(tostring(gs.bytes(0x0102, 2)) == '0102')"));
     ASSERT_EQ_INT(0, run("assert(gs.hex(255, 4) == '00ff'); assert(gs.contains('abc', 'b'))"));
+    ASSERT_EQ_INT(0, run("assert(gs.contains({'hd', 'cd'}, 'cd')); assert(not gs.contains({'hd'}, 'h'))"));
     ASSERT_EQ_INT(0, run("assert(debug == nil or gs.is_node(debug)); assert(type(luadebug.getinfo) == 'function')"));
 }
 

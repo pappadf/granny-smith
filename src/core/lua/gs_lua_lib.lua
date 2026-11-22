@@ -203,8 +203,16 @@ gs.str = str
 -- echo(map) and tostring(map) read as the JSON text too.
 MAPMT.__tostring = str
 
--- gs.contains(haystack, needle): plain substring test.
+-- gs.contains(haystack, needle): a plain substring test over two strings,
+-- or, over a list haystack (files.identify(p).fits), whether one of its
+-- items is `needle`.
 function gs.contains(haystack, needle)
+  if type(haystack) == "table" then
+    for _, v in ipairs(haystack) do
+      if v == needle then return true end
+    end
+    return false
+  end
   return string.find(haystack, needle, 1, true) ~= nil
 end
 

@@ -125,7 +125,7 @@ Lua's own `string`, `table`, `math`, `utf8`, `coroutine`, `luadebug` and the
 | `F"text ${expr} ${expr:08x}"` | a template filled from the caller's locals, parameters, upvalues and the globals; `:spec` is a `string.format` spec |
 | `gs.template(s)` | the compiled template, a function of an environment table |
 | `gs.bytes(v, w)` | a bytes value, big-endian; `gs.bytes("…")` the string's bytes |
-| `gs.hex(v [, width])`, `gs.contains(s, needle)` | formatting and a plain substring test |
+| `gs.hex(v [, width])`, `gs.contains(s, needle)` | formatting, and a plain substring test (over a list, whether an item is `needle`, as `files.identify(p).fits`) |
 | `gs.node(path)` | what a path names (a proxy, or an attribute's value); `gs.path(p)`, `gs.is_node(x)` |
 | `gs.list(x)`, `gs.map(t)` | a collection or list read as a sequence; a table tagged as a map value (so a call passes it positionally, and `gs.str` renders it `{}` when empty) |
 | `gs.fmt(path)` | the attribute's plain text |
