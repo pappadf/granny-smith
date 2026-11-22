@@ -7,7 +7,7 @@
 # escaper writes printed as the letters r, b and f: an assert message with a
 # carriage return reached stderr with a stray `r`.
 TEST_NAME := Headless unframed text
-TEST_DESC := job output and error lines with CR/BS/FF/quote/backslash/non-ASCII reach stdout/stderr byte-exact
+TEST_DESC := job output and error lines with CR/BS/FF/quote/backslash/non-ASCII reach stdout/stderr byte-exact, threaded and --jobs=inline alike
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 TEST_RUNNER := run.sh
 

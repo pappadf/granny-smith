@@ -252,15 +252,16 @@ static display_t *ariel_fb_resolve(void *owner) {
     return pdm_video_display((config_t *)owner);
 }
 static uint64_t ariel_fb_base(void *owner) {
-    // A PHYSICAL address: there is no framebuffer-base register on Ariel, the
-    // scan window is picked by an HMC serial-config bit and the raster lives
-    // in main RAM.
+    // The guest physical address of the first displayed byte.  There is no
+    // framebuffer-base register on Ariel: the scan window is picked by an HMC
+    // serial-config bit and the raster lives in main RAM, which starts at
+    // physical 0 -- so Mac OS's window reads 0 here, the same as "blanked".
     config_t *cfg = (config_t *)owner;
     pdm_state_t *st = cfg ? pdm_st(cfg) : NULL;
-    if (!st || !st->video.display.bits || st->video.display.bits == st->video.blank)
+    if (!st)
         return 0;
-    const uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
-    return ram ? (uint64_t)(st->video.display.bits - ram) : 0;
+    return display_guest_addr(&st->video.display, ram_native_pointer(cfg->memory_map, 0),
+                              memory_ram_size(cfg->memory_map), 0);
 }
 
 void pdm_video_init(config_t *cfg, uint8_t monitor) {

@@ -1,0 +1,54 @@
+# A Mac archive's member names are MacRoman; the VFS shows them as UTF-8 and
+# finds them as the Finder would.  names.sit (built at setup) holds a folder
+# "Dossier é" with a file "Café", and a floppy image "Système.dsk", each é
+# stored as the MacRoman byte 0x8E and the è as 0x8F.  utf8.zip names its member "Café" in
+# UTF-8 already: zip names are not MacRoman and are not converted.
+
+# The names, in archive order, as files.list (and the page) shows them.
+def names(dir) {
+    let s = ""
+    for e in files.list($dir) {
+        $s = "${$s}|${$e.name}"
+    }
+    return $s
+}
+
+let sit = "${$WORK_DIR}/names.sit"
+assert names($sit) == "|Dossier é|Système.dsk" "the members, in UTF-8 (got ${names($sit)})"
+assert names("${$sit}/Dossier é") == "|Café" "the folder's member, in UTF-8"
+
+# Reachable by its UTF-8 name, in either case, and not by a bare e.
+files.cat "${$sit}/Dossier é/Café"
+assert files.path_size("${$sit}/Dossier é/Café") == 7 "the member by its UTF-8 name"
+assert files.path_size("${$sit}/DOSSIER É/CAFÉ") == 7 "the member matched without case, as the Finder would"
+assert !files.path_exists("${$sit}/Dossier e/Cafe") "diacriticals stay significant"
+
+# The disk image is a disk in turn, under its UTF-8 name.
+assert files.list("${$sit}/Système.dsk/partition1/System Folder") "the HFS volume of the member named in UTF-8"
+
+# Extracting writes the UTF-8 names to the host.
+assert files.archive.extract($sit, "${$WORK_DIR}/out") "extract the archive"
+assert files.path_compare("${$WORK_DIR}/out/Dossier é/Café", "${$sit}/Dossier é/Café") == -1 "the extracted file under its UTF-8 name"
+
+# files.archive.import takes the member by the same name, matched the same way.
+assert !files.archive.import($sit, "${$WORK_DIR}/wrong.dmg", "SYSTÉME.DSK") "a different accent is a different name"
+assert files.archive.import($sit, "${$WORK_DIR}/system.dmg", "SYSTÈME.DSK") "the member by its UTF-8 name, without case"
+assert files.list("${$WORK_DIR}/system.dmg/partition1/System Folder") "the imported image"
+
+# A zip's UTF-8 name is shown as stored and matched exactly.
+let zip = "${$WORK_DIR}/utf8.zip"
+assert names($zip) == "|Café" "the zip member's UTF-8 name, unchanged"
+assert files.path_size("${$zip}/Café") == 6 "the zip member by its name"
+assert !files.path_exists("${$zip}/CAFÉ") "zip names match exactly"
+
+# A checkpoint records a floppy read from the archive by its UTF-8 member
+# path, and a load finds it there again.
+let fd = "${$sit}/Système.dsk"
+machine.floppy.drive[0].insert($fd)
+scheduler.run 2000000
+assert machine.floppy.drive[0].image.source == $fd "the floppy names the member in UTF-8"
+assert checkpoint.save("${$WORK_DIR}/state.checkpoint") "consolidated checkpoint saved"
+assert checkpoint.load("${$WORK_DIR}/state.checkpoint") "checkpoint loaded"
+assert machine.floppy.drive[0].image.source == $fd "the restored floppy is the member"
+
+quit

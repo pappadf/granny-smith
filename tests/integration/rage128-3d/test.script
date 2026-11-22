@@ -461,11 +461,11 @@ wr(0x0224, 0)                     # CRTC_OFFSET 0: the CRTC is now running...
 wr(0x0224, $SURF)                 # ...so the back buffer waits for the blank
 assert (rd(0x0224) & 0x40000000) != 0 "CRTC_GUI_TRIG_OFFSET: the new offset is not displayed yet"
 assert (rd(0x0228) & 0x40000000) != 0 "CRTC_OFFSET_CNTL mirrors CRTC_GUI_TRIG_OFFSET"
-assert machine.pci.slot[1].card.framebuffer.base == 0 "the display still scans the front buffer"
+assert machine.pci.slot[1].card.framebuffer.base == $APER "the display still scans the front buffer (base is aperture 0 + the scan offset)"
 wr(0x0228, 0x00010000)            # CRTC_OFFSET_FLIP_CNTL: take it on the next line
 wr(0x0224, $SURF)
 assert (rd(0x0224) & 0x40000000) == 0 "FLIP_CNTL: the offset applies at once"
-assert machine.pci.slot[1].card.framebuffer.base == $SURF "the display scans the back buffer"
+assert machine.pci.slot[1].card.framebuffer.base == $APER + $SURF "the display scans the back buffer"
 
 # --- 13. The palette is the DAC table in the direct-colour depths ---------------
 # At 32 bpp every channel still goes through the palette on its way to the

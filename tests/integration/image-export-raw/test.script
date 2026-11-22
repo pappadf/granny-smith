@@ -13,7 +13,7 @@ assert files.path_size("${$WORK_DIR}/exported.img") == 819200 "exported image wr
 
 # Round-trip: the exported raw image re-mounts as a bare HFS volume and its
 # root directory lists entries (same opendir/readdir path as the source).
-files.probe "$WORK_DIR/exported.img"
+assert files.identify("${$WORK_DIR}/exported.img").opens "the export opens as a disk image"
 assert files.list("${$WORK_DIR}/exported.img/partition1") "exported raw image did not re-mount as HFS"
 
 # Sanity: the source still lists too (no state clobbered by the export).

@@ -72,6 +72,7 @@ echo "core-layering: OK — no path fabrication in the ROM/vROM loader areas"
 ALLOWED_EXTERNAL_CLASSES="
 display_fb_class
 find_class
+image_class
 shell_alias_class
 shell_command_class
 shell_class

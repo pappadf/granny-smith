@@ -75,28 +75,6 @@ void memory_write_bytes_slow(uint32_t addr, const uint8_t *bytes, uint32_t len) 
         memory_write_uint8_slow(addr + i, bytes[i]);
 }
 
-// The card publishes its framebuffer as an object node (the shared display
-// framebuffer class).  Nothing here walks the object tree, so the node is
-// created and dropped: these rows drive the engine, not the tree.
-const class_desc_t display_fb_class = {0};
-static char s_fake_object;
-struct object *object_new(const class_desc_t *cls, void *data, const char *name) {
-    (void)cls, (void)data, (void)name;
-    return (struct object *)&s_fake_object;
-}
-void object_attach(struct object *parent, struct object *child) {
-    (void)parent, (void)child;
-}
-void object_set_label(struct object *o, const char *l) {
-    (void)o, (void)l;
-}
-void object_set_order(struct object *o, int order) {
-    (void)o, (void)order;
-}
-void pci_card_set_framebuffer_object(pci_device_t *dev, struct object *fb) {
-    (void)dev, (void)fb;
-}
-
 // The one card kind this suite does NOT stub: cirrus54m30.c is linked in and defines it.
 extern const pci_card_kind_t cirrus_54m30_kind;
 

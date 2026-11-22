@@ -30,10 +30,12 @@
 
 import { gsEval, gsEvalWithProgress, gsErrorText, gsOk, isGsObject } from './emulator';
 import { streamToOpfs } from './upload';
+import { rmPath, uniquePath } from './vfs';
 import { xferChunkBytes, xferUdifAppend, xferRead } from './xfer';
 import { showNotification } from '@/state/toasts.svelte';
 import { bumpImagesRevision } from '@/state/images.svelte';
 import { setActivityCancel, setActivityDetail } from '@/state/activity.svelte';
+import { formatSize } from '@/lib/format';
 import { sanitizeName } from '@/lib/fileName';
 import { scratchPath } from '@/lib/opfsPaths';
 import { MEDIA_TYPES, LARGE_IMPORT_BYTES, validateUnstated, type MediaTypeId } from '@/lib/media';
@@ -138,12 +140,6 @@ export async function isQcow2File(blob: Blob): Promise<boolean> {
 export async function isGzipFile(blob: Blob): Promise<boolean> {
   if (blob.size < 2) return false;
   return sniffContainer(new Uint8Array(await blob.slice(0, 2).arrayBuffer())) === 'gzip';
-}
-
-function sizeText(bytes: number): string {
-  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
 class ImportCancelled extends Error {}
@@ -287,10 +283,7 @@ async function preflight(
     // The stored image is at most about the decoded size, at least what the
     // source compresses to; the source's own size is the cheap bound.
     if (free !== null && sourceBytes !== null && free < Math.min(sourceBytes, 64 * 1024 * 1024)) {
-      showNotification(
-        `Not enough browser storage for ${name}: ${sizeText(Math.max(0, free))} free`,
-        'error',
-      );
+      showNotification(`Not enough browser storage for ${name}: ${formatSize(free)} free`, 'error');
       return { ok: false, free };
     }
     return { ok: true, free };
@@ -306,29 +299,10 @@ async function preflight(
 // so an estimate then shows space again.
 export function storageFullHint(free: number | null, stored: number): string {
   if (free === null || stored < 0.9 * free) return '';
-  return ` (the browser's storage is full: it had ${sizeText(Math.max(0, free))} free)`;
+  return ` (the browser's storage is full: it had ${formatSize(free)} free)`;
 }
 
 // --- The pipeline ----------------------------------------------------------------
-
-// A unique path for `name` in `dir` (name, name_2, name_3, ...).
-async function uniquePath(dir: string, name: string): Promise<string> {
-  const dot = name.lastIndexOf('.');
-  const stem = dot > 0 ? name.slice(0, dot) : name;
-  const ext = dot > 0 ? name.slice(dot) : '';
-  for (let i = 1; ; i++) {
-    const p = `${dir}/${i === 1 ? name : `${stem}_${i}${ext}`}`;
-    if ((await gsEval('files.path_exists', [p])) !== true) return p;
-  }
-}
-
-async function rmQuiet(path: string): Promise<void> {
-  try {
-    await gsEval('files.rm', [path]);
-  } catch {
-    /* already gone */
-  }
-}
 
 // Validate the UDIF at `part` as the first of `categories` it is (`unstated`:
 // see ImportOptions), and move it into that category's directory.  Removes
@@ -348,17 +322,25 @@ async function placeUdif(
       continue;
     }
     await gsEval('files.mkdir', [d.persistDir]);
-    const dest = await uniquePath(d.persistDir, storedDmgName(name));
+    // The same image imported again is the one stored already; a different
+    // one of that name is stored beside it ("name 2.dmg").
+    const { path: dest, same } = await uniquePath(d.persistDir, storedDmgName(name), {
+      sameAs: part,
+    });
+    if (same) {
+      await rmPath(part);
+      return { path: dest, category: cat };
+    }
     const moved = await gsEval('files.mv', [part, dest]);
     if (!gsOk(moved)) {
       showNotification(`Could not store ${name}: ${gsErrorText(moved)}`, 'error');
-      await rmQuiet(part);
+      await rmPath(part);
       return null;
     }
     bumpImagesRevision();
     return { path: dest, category: cat };
   }
-  await rmQuiet(part);
+  await rmPath(part);
   const what = categories.map((c) => MEDIA_TYPES[c].label).join(' or ');
   // The reason, when the core has one (a UDIF in a compression it cannot
   // decode), in place of the bare verdict.
@@ -404,7 +386,7 @@ async function writeUdif(
     } catch {
       /* finish already released it */
     }
-    await rmQuiet(part);
+    await rmPath(part);
     throw e;
   }
 }
@@ -441,9 +423,9 @@ async function settleUdif(part: string, name: string, origin?: string): Promise<
   const rechunked = `${part}.re`;
   if (!inPlace) showNotification(`Re-chunking ${name} so it can be read in place...`, 'info');
   const r = await gsEval('files.convert', [part, rechunked, 64, 1, 'udif', name, origin ?? '']);
-  await rmQuiet(part);
+  await rmPath(part);
   if (!isGsObject(r)) {
-    await rmQuiet(rechunked);
+    await rmPath(rechunked);
     throw new Error(`${name}: ${gsErrorText(r)}`);
   }
   return rechunked;
@@ -491,7 +473,7 @@ async function importDecoded(
         if (!(await streamToOpfs(staged, bytes))) throw new Error('could not stage the file');
         return { handled: true, path: await opts.onSmall(staged, name) };
       } finally {
-        await rmQuiet(staged);
+        await rmPath(staged);
       }
     }
   }
@@ -517,13 +499,13 @@ async function importDecoded(
           [staged, part, 64, 1, 'udif', name, opts.origin ?? ''],
           (done, total) =>
             setActivityDetail(
-              `converting the QCOW2 image: ${sizeText(done)}${total ? ` of ${sizeText(total)}` : ''}`,
+              `converting the QCOW2 image: ${formatSize(done)}${total ? ` of ${formatSize(total)}` : ''}`,
             ),
         );
         // The reason names the staged copy; the user knows the file by its name.
         if (!isGsObject(r)) throw new Error(gsErrorText(r).split(staged).join(name));
       } finally {
-        await rmQuiet(staged);
+        await rmPath(staged);
       }
       const placed = await placeUdif(part, shown, opts.categories, opts.unstated);
       if (placed) showNotification(`${shown} stored`, 'info');
@@ -545,7 +527,7 @@ async function importDecoded(
           name,
           opts.origin ?? '',
         ]);
-        await rmQuiet(part);
+        await rmPath(part);
         if (!isGsObject(r)) throw new Error(gsErrorText(r));
         const placed = await placeUdif(dmg, shown, opts.categories, opts.unstated);
         if (placed) showNotification(`${shown} stored`, 'info');
@@ -561,14 +543,14 @@ async function importDecoded(
     const placed = await placeUdif(part, shown, opts.categories, opts.unstated);
     if (placed)
       showNotification(
-        `${shown}: ${sizeText(st.bytes_in)} disk stored in ${sizeText(st.stored_bytes)}`,
+        `${shown}: ${formatSize(st.bytes_in)} disk stored in ${formatSize(st.stored_bytes)}`,
         'info',
       );
     return { handled: true, path: placed?.path ?? null, category: placed?.category };
   } finally {
     // Gone already when it was placed; left by a failure or a cancel otherwise.
-    await rmQuiet(part);
-    await rmQuiet(`${part}.re`);
+    await rmPath(part);
+    await rmPath(`${part}.re`);
   }
 }
 
@@ -621,7 +603,7 @@ async function importMacArchive(
         const placed = await placeUdif(part, shown, [cat], opts.unstated);
         if (placed && r.bytes_in && r.stored_bytes)
           showNotification(
-            `${shown}: ${sizeText(r.bytes_in)} disk stored in ${sizeText(r.stored_bytes)}`,
+            `${shown}: ${formatSize(r.bytes_in)} disk stored in ${formatSize(r.stored_bytes)}`,
             'info',
           );
         return { handled: true, path: placed?.path ?? null, category: placed?.category };
@@ -630,8 +612,8 @@ async function importMacArchive(
     // Not a disk (a floppy, a ROM, an application): the staged flow.
     return leave();
   } finally {
-    if (!handedOver) await rmQuiet(staged);
-    await rmQuiet(part);
+    if (!handedOver) await rmPath(staged);
+    await rmPath(part);
   }
 }
 
@@ -661,7 +643,7 @@ export async function importImage(
     onProgress(read, t, stored) {
       storedSoFar = Math.max(storedSoFar, stored);
       setActivityDetail(
-        `${sizeText(read)}${t ? ` of ${sizeText(t)}` : ''} read, ${sizeText(stored)} stored`,
+        `${formatSize(read)}${t ? ` of ${formatSize(t)}` : ''} read, ${formatSize(stored)} stored`,
       );
       report?.(read, t, stored);
     },

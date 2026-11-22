@@ -558,6 +558,8 @@ bool tnt_control_i2c_write(void *ctx, uint8_t slave, const uint8_t *data, int le
 // Presentation: the primary display descriptor (NULL before init), and the
 // host-frame dirty mark (guest CPU writes bypass the renderer).
 struct display *tnt_control_display(config_t *cfg);
+// Guest physical address of the first byte Control scans (its VRAM BAR), 0 while blanked.
+uint64_t tnt_control_fb_base(config_t *cfg);
 void tnt_control_host_vbl(config_t *cfg);
 
 // === grand_central.c ========================================================

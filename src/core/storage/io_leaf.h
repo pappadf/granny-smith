@@ -28,8 +28,8 @@ struct io_leaf {
     uint32_t io_id; // the worker job (0: inline)
     char *a, *b; // paths
     bool flag;
-    char size_str[64];
-    uint32_t blocks;
+    uint64_t size; // files.create: data bytes
+    int kind; // files.create: image_kind_t
     char err[256];
     void *ud; // the leaf's own
     int (*work)(io_leaf_t *j); // the work, on either thread: 0 or -errno, err filled
@@ -42,8 +42,9 @@ struct io_leaf {
 io_leaf_t *io_leaf_new(const char *a, const char *b);
 
 // Runs the leaf's work as an I/O job when it can answer later, else now.
-// Consumes `j`.  `what` names the leaf in an error.
-value_t io_leaf_dispatch(io_leaf_t *j, const char *what);
+// Consumes `j`.  A failure is the work's reason (j->err) as is, whichever
+// way it ran.
+value_t io_leaf_dispatch(io_leaf_t *j);
 
 // A destination under a device is never written over (E_BUSY): the guest
 // is using it.  (image_vfs.c applies the same predicate to descents.)

@@ -5,8 +5,8 @@
 # Human-readable partition map.
 files.partmap ../../data/aux/hd-with-aux-partition.img
 
-# Format probe — exercises the APM sniff path.
-files.probe ../../data/aux/hd-with-aux-partition.img
+# Identify — exercises the APM sniff path.
+assert files.identify("../../data/aux/hd-with-aux-partition.img").map == "apm" "the image carries a partition map"
 
 # Mount table: partmap and probe open the image directly, so it was never
 # mounted -- find reports no mount rather than failing.

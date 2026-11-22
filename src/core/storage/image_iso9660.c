@@ -7,6 +7,7 @@
 #include "image_iso9660.h"
 
 #include "common.h"
+#include "macroman.h"
 #include "source.h"
 
 #include <errno.h>
@@ -347,7 +348,8 @@ int iso_readdir_next(iso_dir_iter_t *it, iso_dirent_t *out) {
     return it->pos >= it->len ? 0 : -EIO;
 }
 
-// Names compare case-insensitively over ASCII.
+// Plain ISO 9660 (and Rock Ridge) names compare case-insensitively over
+// ASCII: d-characters are ASCII to begin with.
 static bool iso_name_eq(const char *a, const char *b) {
     for (;; a++, b++) {
         unsigned char ca = (unsigned char)*a, cb = (unsigned char)*b;
@@ -379,7 +381,9 @@ int iso_lookup(iso_volume_t *vol, const char *const *comp, size_t nc, iso_dirent
         int rc;
         bool found = false;
         while ((rc = iso_readdir_next(it, &e)) > 0) {
-            if (iso_name_eq(e.name, comp[i])) {
+            // Joliet names are UCS-2, so any character: matched as the
+            // Finder matches a Mac name ("café" finds "CAFÉ").
+            if (vol->joliet ? mac_name_eq(e.name, comp[i]) : iso_name_eq(e.name, comp[i])) {
                 found = true;
                 break;
             }

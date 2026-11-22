@@ -9,6 +9,7 @@
 // 6504A floppy controller, and a parallel-port hard disk — none of which are
 // Mac architecture.  See docs/reference/machines/lisa/lisa.md for the hardware reference.
 
+#include "image_class.h"
 #include "machine.h"
 #include "machine_checkpoint.h"
 #include "machine_irq.h"
@@ -22,6 +23,7 @@
 #include "debug.h"
 #include "display.h"
 #include "image.h"
+#include "image_kind.h"
 #include "io_leaf.h"
 #include "lisa_fdc.h"
 #include "lisa_keymap.h"
@@ -74,6 +76,9 @@ typedef struct lisa_state {
     display_t display; // 720x364 1bpp framebuffer (direct, in main RAM)
     struct object *fd_obj, *fd_drives_obj, *fd_drive_obj; // `floppy` object tree
     struct object *hd_obj; // `profile` object (parallel hard disk)
+    // The `image` nodes of the Sony drive and the ProFile (image_class.h).
+    struct object *fd_image_obj, *hd_image_obj;
+    image_node_t fd_image_node, hd_image_node;
     struct object *power_obj; // `power` object (soft power-off switch)
     // Which keys the host holds down, by ADB raw code.  A repeated down (a
     // host's auto-repeat) or an up with no down is not a key transition, and
@@ -513,8 +518,8 @@ static bool lisa_fd_present(config_t *cfg, int drive) {
 
 // hw_profile_t.media_attach.  The Lisa has no cfg->floppy/cfg->scsi, so the
 // std core implementation covers nothing here: the Sony disk lives in the
-// 6504A FDC (owned by the tracked images, system.c) and the hard disk is the parallel ProFile
-// (which owns its image itself, hence attach_image).
+// 6504A FDC and the hard disk is the parallel ProFile.  Both images belong to
+// the machine's image table (system.c), like every other drive's.
 static int lisa_media_attach(config_t *cfg, const media_slot_t *slot) {
     lisa_state_t *ls = lisa_state(cfg);
     switch (slot->bus) {
@@ -526,6 +531,7 @@ static int lisa_media_attach(config_t *cfg, const media_slot_t *slot) {
     case MEDIA_BUS_PROFILE:
         if (!ls || !ls->profile || !lisa_profile_attach_image(ls->profile, slot->img))
             return -1;
+        config_add_image(cfg, slot->img);
         lisa_profile_update_lines(cfg); // drive OCD//BSY so the ROM sees the drive
         return 0;
     default:
@@ -561,7 +567,8 @@ static int lisa_media_eject(config_t *cfg, media_bus_t bus, int unit) {
         lisa_fdc_eject(ls->fdc);
         return 0;
     }
-    lisa_profile_detach(ls->profile);
+    // The image goes back to the table, which closes it: the file is free.
+    config_release_image(cfg, lisa_profile_detach(ls->profile));
     lisa_profile_update_lines(cfg);
     return 0;
 }
@@ -577,7 +584,7 @@ static int lisa_media_eject(config_t *cfg, media_bus_t bus, int unit) {
 // object's instance_data is the config_t.
 
 static DEF_METHOD(lisa_fd_drive_insert) {
-    bool writable = (argc >= 2) ? argv[1].b : false;
+    bool writable = (argc >= 2) ? argv[1].b : true;
     return val_bool(system_fd_insert(argv[0].s, 0, writable) == 0);
 }
 
@@ -594,39 +601,44 @@ static DEF_METHOD(lisa_fd_drive_eject) {
     return val_none();
 }
 
-// `export(path)` — write the diskette as it is now to a NEW file; the name
-// picks the format (image_export_to).  A .dc42 or .image destination is a
-// self-contained DiskCopy 4.2 file with the 12-byte sector tags, which the
-// Lisa file system needs (they hold the file ids and page links) and which
-// neither the source file nor a raw export carries.  An I/O job, like
-// profile.save: snapshotted here, streamed on the I/O worker.
-static DEF_METHOD(lisa_fd_drive_export) {
-    lisa_state_t *ls = lisa_state((config_t *)object_data(self));
-    image_t *img = (ls && ls->fdc) ? lisa_fdc_image(ls->fdc) : NULL;
-    if (!img)
-        return val_err("floppy.drive.0: no disk inserted");
-    return io_leaf_export_image(img, argv[0].s, NULL, "floppy.export");
-}
-
-// The source path the inserted diskette was loaded from ("" when empty):
-// the web UI's Save As suggests it, so a .dc42 disk saves as DiskCopy.
-static DEF_GETTER(lisa_fd_drive_filename) {
-    lisa_state_t *ls = lisa_state((config_t *)object_data(self));
-    image_t *img = (ls && ls->fdc) ? lisa_fdc_image(ls->fdc) : NULL;
-    const char *name = img ? image_get_filename(img) : NULL;
-    return val_str(name ? name : "");
-}
-
 static DEF_GETTER(lisa_fd_drive_present) {
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));
     return val_bool(ls && ls->fdc && lisa_fdc_disk_present(ls->fdc));
+}
+
+// The image nodes' view of the two bays (image_class.h).  The diskette's
+// image outlives an eject (the controller keeps it for a reinsert), so only
+// a clamped disk has one here.
+static image_t *lisa_node_image(void *dev, unsigned slot) {
+    config_t *cfg = (config_t *)dev;
+    lisa_state_t *ls = lisa_state(cfg);
+    if (!ls)
+        return NULL;
+    if (slot == MEDIA_BUS_FLOPPY)
+        return (ls->fdc && lisa_fdc_disk_present(ls->fdc)) ? lisa_fdc_image(ls->fdc) : NULL;
+    return lisa_media_image(cfg, MEDIA_BUS_PROFILE, 0);
+}
+static int lisa_node_eject(void *dev, unsigned slot) {
+    return lisa_media_eject((config_t *)dev, (media_bus_t)slot, 0) == 0 ? IMAGE_EJECT_OK : IMAGE_EJECT_EMPTY;
+}
+static const image_node_ops_t lisa_image_ops = {.image = lisa_node_image, .eject = lisa_node_eject};
+
+// `image` child of the drive and of machine.hd: present only when loaded.
+static struct object *lisa_fd_image_lookup(struct object *self, const char *name) {
+    (void)name;
+    lisa_state_t *ls = lisa_state((config_t *)object_data(self));
+    return (ls && lisa_node_image(object_data(self), MEDIA_BUS_FLOPPY)) ? ls->fd_image_obj : NULL;
+}
+static struct object *lisa_hd_image_lookup(struct object *self, const char *name) {
+    (void)name;
+    lisa_state_t *ls = lisa_state((config_t *)object_data(self));
+    return (ls && lisa_node_image(object_data(self), MEDIA_BUS_PROFILE)) ? ls->hd_image_obj : NULL;
 }
 
 static DEF_GETTER(lisa_fd_drive_index) {
     return val_int(0);
 }
 
-static const value_t lisa_false = {.kind = VK_BOOL, .b = false};
 static const value_t lisa_true = {.kind = VK_BOOL, .b = true};
 static const arg_decl_t lisa_fd_insert_args[] = {
     {.name = "path",
@@ -636,49 +648,37 @@ static const arg_decl_t lisa_fd_insert_args[] = {
     {.name = "writable",
      .kind = VK_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &lisa_false,
-     .doc = "Mount writable"},
-};
-
-static const arg_decl_t lisa_fd_export_args[] = {
-    {.name = "path",
-     .kind = VK_STRING,
-     .presentation_flags = VFLAG_PATH,
-     .doc = "New file: .dc42/.image = DiskCopy 4.2 with tags, else raw"},
+     .default_value = &lisa_true,
+     .doc = "Mount writable; false = write-protected"},
 };
 
 static const member_t lisa_fd_drive_members[] = {
     {.kind = MK_ATTR,
      .name = "index",
      .doc = "Drive number on the Sony floppy controller (0 = upper, 1 = lower on a Lisa 2/10)",
-     .attr = {.type = VK_INT, .get = lisa_fd_drive_index}                                              },
+     .attr = {.type = VK_INT, .get = lisa_fd_drive_index}},
     {.kind = MK_ATTR,
      .name = "present",
      .doc = "True when a disk is clamped in this drive",
-     .attr = {.type = VK_BOOL, .get = lisa_fd_drive_present}                                           },
-    {.kind = MK_ATTR,
-     .name = "filename",
-     .doc = "Source path the inserted diskette was loaded from",
-     .attr = {.type = VK_STRING, .get = lisa_fd_drive_filename}                                        },
+     .attr = {.type = VK_BOOL, .get = lisa_fd_drive_present}},
     {.kind = MK_METHOD,
      .name = "eject",
      .doc = "Eject the disk (unclamp)",
-     .method = {.result = VK_NONE, .fn = lisa_fd_drive_eject}                                          },
+     .method = {.result = VK_NONE, .fn = lisa_fd_drive_eject}},
     {.kind = MK_METHOD,
      .name = "insert",
      .doc = "Mount a disk image into the Sony drive",
      .method = {.args = lisa_fd_insert_args, .nargs = 2, .result = VK_BOOL, .fn = lisa_fd_drive_insert}},
-    {.kind = MK_METHOD,
-     .name = "export",
-     .doc = "Save the diskette as it is now to a new image file (Save As)",
-     .method = {.ui_flags = MM_MUTATE | MM_IO,
-                .args = lisa_fd_export_args,
-                .nargs = 1,
-                .result = VK_BOOL,
-                .fn = lisa_fd_drive_export}                                                            },
+    {.kind = MK_CHILD,
+     .name = "image",
+     .doc = "The diskette's image (present only when a disk is clamped)",
+     .label = "Image",
+     .child = {.cls = &image_class, .lookup = lisa_fd_image_lookup}},
 };
-static const class_desc_t lisa_fd_drive_class = {
-    .name = "floppy_drive", .members = lisa_fd_drive_members, .n_members = 6};
+static const class_desc_t lisa_fd_drive_class = {.name = "floppy_drive",
+                                                 .members = lisa_fd_drive_members,
+                                                 .n_members =
+                                                     sizeof(lisa_fd_drive_members) / sizeof(lisa_fd_drive_members[0])};
 
 static struct object *lisa_fd_drives_get(struct object *self, int index) {
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));
@@ -711,6 +711,12 @@ static void lisa_register_floppy_object(config_t *cfg) {
     if (ls->fd_drives_obj)
         object_attach(ls->fd_obj, ls->fd_drives_obj);
     ls->fd_drive_obj = object_new(&lisa_fd_drive_class, cfg, NULL); // returned by the indexed get
+    ls->fd_image_node = (image_node_t){.ops = &lisa_image_ops, .dev = cfg, .slot = MEDIA_BUS_FLOPPY};
+    ls->fd_image_obj = object_new(&image_class, &ls->fd_image_node, "image");
+    if (ls->fd_drive_obj && ls->fd_drives_obj)
+        object_set_logical_parent(ls->fd_drive_obj, ls->fd_drives_obj, NULL, 0, NULL);
+    if (ls->fd_image_obj && ls->fd_drive_obj)
+        object_set_logical_parent(ls->fd_image_obj, ls->fd_drive_obj, "image", -1, NULL);
 }
 
 // ============================================================
@@ -721,29 +727,41 @@ static void lisa_register_floppy_object(config_t *cfg) {
 // small object.  `attach` opens (or creates blank) a 532-bytes/block image and
 // drives the OCD/ line; `detach` flushes and disconnects.  instance_data = cfg.
 
-static DEF_METHOD(lisa_hd_attach) {
+static DEF_METHOD(lisa_hd_insert) {
     config_t *cfg = (config_t *)object_data(self);
     lisa_state_t *ls = lisa_state(cfg);
     // Read by kind: `path` now has a VK_NONE default so that
-    // `profile.attach(writable=false)` -- a blank in-memory disk, mounted
+    // `hd.insert(writable=false)` -- a blank in-memory disk, mounted
     // read-only -- is expressible at all.
     const char *path = (argc >= 1 && argv[0].kind == VK_STRING) ? argv[0].s : NULL; // NULL = blank in-memory disk
     bool writable = (argc >= 2 && argv[1].kind == VK_BOOL) ? argv[1].b : true;
     if (!ls || !ls->profile)
         return val_err("profile: no controller");
-    if (!lisa_profile_attach(ls->profile, path, writable))
-        return val_err("profile.attach: cannot open '%s'", path ? path : "(blank)");
-    lisa_profile_update_lines(cfg);
+    // A blank disk of the canonical 5 MB geometry, or the file as a ProFile
+    // image (its base never modified; writes go to its delta).
+    char err[256] = "";
+    image_t *img = path ? image_open_kind(path, &(image_open_opts_t){.kind = IMAGE_KIND_PROFILE, .writable = writable},
+                                          err, sizeof err)
+                        : image_create_blank_kind(IMAGE_KIND_PROFILE, LISA_PROFILE_DEFAULT_BLOCKS, NULL);
+    if (!img)
+        return val_err("hd.insert: %s", err[0] ? err : "cannot create a blank disk");
+    // The disk there goes out first (back to the table, which closes it).
+    if (lisa_profile_attached(ls->profile))
+        lisa_media_eject(cfg, MEDIA_BUS_PROFILE, 0);
+    media_slot_t slot = {.bus = MEDIA_BUS_PROFILE, .img = img};
+    if (lisa_media_attach(cfg, &slot) != 0) {
+        image_close(img);
+        return val_err("hd.insert: the ProFile cannot take '%s'", path ? path : "(blank)");
+    }
     return val_bool(true);
 }
 
-static DEF_METHOD(lisa_hd_detach) {
+static DEF_METHOD(lisa_hd_eject) {
     config_t *cfg = (config_t *)object_data(self);
     lisa_state_t *ls = lisa_state(cfg);
     if (!ls || !ls->profile || !lisa_profile_attached(ls->profile))
         return val_err("profile: no disk attached");
-    lisa_profile_detach(ls->profile);
-    lisa_profile_update_lines(cfg);
+    lisa_media_eject(cfg, MEDIA_BUS_PROFILE, 0);
     return val_none();
 }
 
@@ -751,27 +769,6 @@ static DEF_GETTER(lisa_hd_present) {
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));
     return val_bool(ls && lisa_profile_attached(ls->profile));
 }
-
-static DEF_METHOD(lisa_hd_save) {
-    config_t *cfg = (config_t *)object_data(self);
-    lisa_state_t *ls = lisa_state(cfg);
-    if (!ls || !ls->profile || !lisa_profile_attached(ls->profile))
-        return val_err("profile: no disk attached");
-    const char *path = (argc >= 1) ? argv[0].s : NULL;
-    if (!path || !*path)
-        return val_err("profile.save: a destination path is required");
-    // An I/O job (io_leaf.h): the consolidated 532-bytes/block disk = base
-    // merged with the delta, streamed on the I/O worker from a snapshot
-    // taken here; image_export refuses to overwrite an existing file.
-    return io_leaf_export_image(lisa_profile_image(ls->profile), path, NULL, "profile.save");
-}
-
-static const arg_decl_t lisa_hd_save_args[] = {
-    {.name = "path",
-     .kind = VK_STRING,
-     .presentation_flags = VFLAG_PATH,
-     .doc = "Destination path for the consolidated single-file ProFile image"},
-};
 
 // The Lisa's battery-backed parameter memory ($FCC181 in the FDC shared RAM)
 // holds the OS's boot volume + device-configuration table.  The installer adds
@@ -856,53 +853,54 @@ static const arg_decl_t lisa_hd_pram_args[] = {
     {.name = "path", .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = "Parameter-memory (PRAM) file path"},
 };
 
-static const arg_decl_t lisa_hd_attach_args[] = {
+static const arg_decl_t lisa_hd_insert_args[] = {
     {.name = "path",
      .kind = VK_STRING,
      .presentation_flags = VFLAG_PATH,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Host path of the ProFile image, created blank if missing (omit for a blank in-memory disk)"},
+     .doc = "Host path of the ProFile image (omit for a blank in-memory disk)"},
     {.name = "writable",
      .kind = VK_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &lisa_true,
-     .doc = "Mount writable"                                                                            },
+     .doc = "Mount writable"                                                  },
 };
 
 static const member_t lisa_hd_members[] = {
     {.kind = MK_ATTR,
      .name = "present",
      .doc = "True when a ProFile image is attached to the parallel port",
-     .attr = {.type = VK_BOOL, .get = lisa_hd_present}                                                                                                                                                            },
+     .attr = {.type = VK_BOOL, .get = lisa_hd_present}},
     {.kind = MK_METHOD,
-     .name = "detach",
-     .doc = "Flush and disconnect the ProFile",
-     .method = {.result = VK_NONE, .fn = lisa_hd_detach}                                                                                                                                                          },
+     .name = "eject",
+     .doc = "Flush and disconnect the ProFile (its image goes back to the table, which closes it)",
+     .method = {.result = VK_NONE, .fn = lisa_hd_eject}},
     {.kind = MK_METHOD,
-     .name = "attach",
-     .doc = "Attach a ProFile image (created blank if missing; omit path for a blank in-memory disk)",
-     .method = {.args = lisa_hd_attach_args, .nargs = 2, .result = VK_BOOL, .fn = lisa_hd_attach}                                                                                                                 },
-    {.kind = MK_METHOD,
-     .name = "save",
-     .doc = "Write the current ProFile contents to a new self-contained single-file image (consolidated; not a "
-            "base+delta pair)",                                                                        .method = {.ui_flags = MM_IO, .args = lisa_hd_save_args, .nargs = 1, .result = VK_BOOL, .fn = lisa_hd_save}},
+     .name = "insert",
+     .doc = "Insert a ProFile image (omit path for a blank in-memory disk)",
+     .method = {.args = lisa_hd_insert_args, .nargs = 2, .result = VK_BOOL, .fn = lisa_hd_insert}},
+    {.kind = MK_CHILD,
+     .name = "image",
+     .doc = "The ProFile's image (present only when one is inserted)",
+     .label = "Image",
+     .child = {.cls = &image_class, .lookup = lisa_hd_image_lookup}},
     {.kind = MK_METHOD,
      .name = "pram_init",
      .doc = "Seed the parameter memory in the model: BootVol nibble, checksum validity, and optionally the LOS "
-            "installer's device table",                                                                .method = {.args = lisa_hd_pram_init_args, .nargs = 3, .result = VK_BOOL, .fn = lisa_hd_pram_init}         },
+            "installer's device table", .method = {.args = lisa_hd_pram_init_args, .nargs = 3, .result = VK_BOOL, .fn = lisa_hd_pram_init}},
     {.kind = MK_METHOD,
      .name = "pram_save",
      .doc = "Save the machine parameter memory (battery-backed NVRAM at $FCC181) to a file",
-     .method = {.args = lisa_hd_pram_args, .nargs = 1, .result = VK_BOOL, .fn = lisa_hd_pram_save}                                                                                                                },
+     .method = {.args = lisa_hd_pram_args, .nargs = 1, .result = VK_BOOL, .fn = lisa_hd_pram_save}},
     {.kind = MK_METHOD,
      .name = "pram_load",
      .doc = "Load the machine parameter memory from a file (call before booting)",
-     .method = {.args = lisa_hd_pram_args, .nargs = 1, .result = VK_BOOL, .fn = lisa_hd_pram_load}                                                                                                                },
+     .method = {.args = lisa_hd_pram_args, .nargs = 1, .result = VK_BOOL, .fn = lisa_hd_pram_load}},
 };
 static const class_desc_t lisa_hd_class = {.name = "profile",
                                            .doc = "The ProFile hard disk on the parallel port, and its PRAM",
                                            .members = lisa_hd_members,
-                                           .n_members = 6};
+                                           .n_members = sizeof(lisa_hd_members) / sizeof(lisa_hd_members[0])};
 
 static void lisa_register_profile_object(config_t *cfg) {
     lisa_state_t *ls = lisa_state(cfg);
@@ -911,6 +909,10 @@ static void lisa_register_profile_object(config_t *cfg) {
     // (the resolver finds members before attached children). The ProFile is
     // the Lisa's hard disk, so machine.hd reads correctly.
     ls->hd_obj = object_attach_new(machine_object(), &lisa_hd_class, cfg, "hd", "ProFile", OBJ_ORDER_PROFILE);
+    ls->hd_image_node = (image_node_t){.ops = &lisa_image_ops, .dev = cfg, .slot = MEDIA_BUS_PROFILE};
+    ls->hd_image_obj = object_new(&image_class, &ls->hd_image_node, "image");
+    if (ls->hd_image_obj && ls->hd_obj)
+        object_set_logical_parent(ls->hd_image_obj, ls->hd_obj, "image", -1, NULL);
 }
 
 // ============================================================
@@ -919,7 +921,7 @@ static void lisa_register_profile_object(config_t *cfg) {
 
 // Press the soft power-off switch.  The COPS reports it ($80 $FB) and LOS runs
 // its orderly shutdown, cleanly unmounting the boot volume (mountinfo :=
-// unmounted) — so a `profile.save` afterwards yields an image that cold-boots
+// unmounted) — so a `machine.hd.image.export` afterwards yields an image that cold-boots
 // without the "startup disk was in use" scavenge prompt.  No-op pre-boot / on a
 // machine whose OS isn't listening; harmless either way (the code just queues).
 static DEF_METHOD(lisa_power_off) {
@@ -1106,7 +1108,7 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // ProFile parallel hard disk on VIA2: control lines via the port-B output
     // callback (lisa_via2_output), data via the port-A hooks, BSY back to PB1/CA1.
     machine_part_begin(cfg, checkpoint, "profile");
-    ls->profile = lisa_profile_init(cfg->scheduler, lisa_profile_bsy, cfg, checkpoint);
+    ls->profile = lisa_profile_init(cfg->scheduler, lisa_profile_bsy, cfg, checkpoint, config_images(cfg));
     machine_part(cfg, checkpoint, "profile", lisa_profile_checkpoint_part, ls->profile);
     via_set_porta_hooks(cfg->via2, lisa_profile_porta_read_cb, lisa_profile_porta_write_cb, cfg);
     lisa_profile_update_lines(cfg); // no disk yet → OCD/ high (disconnected)
@@ -1168,6 +1170,14 @@ static void lisa_teardown(config_t *cfg) {
     if (ls0) {
         // Tear down the `floppy` object tree (entry is unattached, like the IWM
         // floppy object, so delete it directly).
+        if (ls0->fd_image_obj) {
+            object_delete(ls0->fd_image_obj);
+            ls0->fd_image_obj = NULL;
+        }
+        if (ls0->hd_image_obj) {
+            object_delete(ls0->hd_image_obj);
+            ls0->hd_image_obj = NULL;
+        }
         if (ls0->fd_drive_obj) {
             object_delete(ls0->fd_drive_obj);
             ls0->fd_drive_obj = NULL;

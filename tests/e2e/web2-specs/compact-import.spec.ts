@@ -279,8 +279,9 @@ test("a blank 2 GB disk made as .dmg costs a few KB", async ({ page }) => {
   await waitReady(page);
   const before = await usageGrowth(page);
   expect(
-    await gsEvalInPage(page, "files.hd_create", [
+    await gsEvalInPage(page, "files.create", [
       "/opfs/images/hd/blank.dmg",
+      "hd",
       "2147483648",
     ]),
   ).toBe(true);

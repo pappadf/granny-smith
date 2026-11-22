@@ -980,11 +980,23 @@ static value_t eval_builtin_len(int argc, const value_t *argv) {
 // Both arguments must be strings — a substring test over a number would be
 // a coercion nobody asked for.  An empty needle is contained in anything,
 // which is what strstr() says and what every other language agrees on.
+//
+// A list haystack asks membership instead: is one of its items the string
+// `needle` (files.identify's `fits`, a list of drive kinds).
 static value_t eval_builtin_contains(int argc, const value_t *argv) {
     if (argc != 2)
         return val_err("contains: expected (haystack, needle)");
+    if (argv[0].kind == VK_LIST && argv[1].kind == VK_STRING) {
+        const char *needle = argv[1].s ? argv[1].s : "";
+        for (size_t i = 0; i < argv[0].list.len; i++) {
+            const value_t *it = &argv[0].list.items[i];
+            if (it->kind == VK_STRING && strcmp(it->s ? it->s : "", needle) == 0)
+                return val_bool(true);
+        }
+        return val_bool(false);
+    }
     if (argv[0].kind != VK_STRING || argv[1].kind != VK_STRING)
-        return val_err("contains: both arguments must be strings");
+        return val_err("contains: a string haystack and needle, or a list haystack and a string needle");
     const char *hay = argv[0].s ? argv[0].s : "";
     const char *needle = argv[1].s ? argv[1].s : "";
     return val_bool(strstr(hay, needle) != NULL);

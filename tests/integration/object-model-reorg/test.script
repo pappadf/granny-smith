@@ -14,7 +14,7 @@ assert $verbs == " objects attributes methods help time quit echo" "root methods
 
 # === files: one node for host files, images, mounts, archives ==============
 assert files.path_exists("../../data/systems/System_6_0_8.dsk") "files.path_exists"
-assert files.archive.identify("../../data/systems/System_6_0_8.dsk") == "" "files.archive.identify"
+assert files.identify("../../data/systems/System_6_0_8.dsk").archive == "" "files.identify: no archive"
 assert files.images.meta.path == "files.images" "files.images path"
 
 # files.mounts: indexed by a never-reused serial.  Descend into the floppy to

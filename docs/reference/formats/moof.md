@@ -245,7 +245,7 @@ and tags when the image is opened and serves the result as a DiskCopy 4.2 image 
 reports it as `moof+dc42` and the floppy controllers, the boot and the VFS see an ordinary disk; guest writes go to
 the image's delta. Missing sectors read as zeros and are logged with any data-checksum failures. MFM and Twiggy
 MOOFs are refused. Only what decodes to sectors survives: protection that relies on bit timing or non-standard
-nibbles between sectors is not reproduced. `disk.export` to a `.moof` name writes a bitstream MOOF (creator
+nibbles between sectors is not reproduced. `image.export` to a `.moof` name writes a bitstream MOOF (creator
 `Granny Smith`, 2:1 interleave, gaps sized to each zone's revolution at 394-590 rpm). See
 `docs/internals/core/storage/image.md`.
 

@@ -28,6 +28,7 @@ static const monitor_catalog_entry_t s_catalog[] = {
     {"multiscan_17",        "17" IN " Apple Multiple Scan Display",    1024, 768, false},
     {"multiscan_20",        "20" IN " Apple Multiple Scan Display",    1152, 870, false},
     {"vga",                 "VGA monitor",                             640,  480, false},
+    {"vga_noddc",           "VGA monitor without DDC",                 640,  480, false},
     {"svga",                "SVGA monitor",                            800,  600, false},
     {"ntsc",                "NTSC television",                         640,  480, false},
     {"pal",                 "PAL television",                          768,  576, false},

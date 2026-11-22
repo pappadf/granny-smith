@@ -1125,18 +1125,12 @@ const config_option_decl_t ans700_options[] = {
 };
 
 // The Cirrus Logic 54M30's VGA port: a multisync monitor the guest drives at
-// its own choice of raster, so there is no monitor to pick.
-static bool ans_monitor_at(size_t i, const char **id, const char **monitor) {
-    if (i != 0)
-        return false;
-    *id = *monitor = "vga";
-    return true;
-}
-
+// its own choice of raster, so there is no monitor to pick (the 54M30 kind's
+// one row).
 const builtin_video_desc_t ans_builtin_video = {
     .detail = "Cirrus Logic 54M30",
-    .monitor_at = ans_monitor_at,
     .default_monitor = "vga",
+    .slot_monitors = true,
 };
 
 // The Power Macintosh boards' DIMM totals (8500, 9500; the 7500 adds 8 MB):

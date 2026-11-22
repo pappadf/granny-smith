@@ -11,6 +11,7 @@
 
 import { scratchPath } from '@/lib/opfsPaths';
 import { gsEval, gsErrorText, gsOk } from './emulator';
+import { rmPath } from './vfs';
 import { reconcileUiWithMachine } from './boot';
 import { machine } from '@/state/machine.svelte';
 import {
@@ -92,7 +93,7 @@ export async function saveCheckpoint(): Promise<SaveCheckpointResult> {
     // The download has already copied it out, so remove it on every exit
     // (one left by a closed tab goes when the scratch area is emptied at
     // the next startup).
-    await gsEval('files.rm', [dir]);
+    await rmPath(dir);
   }
 }
 
@@ -113,7 +114,7 @@ export async function saveLabelledCheckpoint(
   await gsEval('files.mkdir', [dir]);
   const ok = await gsEval('checkpoint.save', [`${dir}/state.checkpoint`]);
   if (ok !== true) {
-    await gsEval('files.rm', [dir]);
+    await rmPath(dir);
     return { ok: false, reason: gsErrorText(ok) };
   }
   return { ok: true };

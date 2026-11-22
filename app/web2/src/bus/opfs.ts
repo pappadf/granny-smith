@@ -309,6 +309,8 @@ export class BrowserOpfs implements OpfsBackend {
     // As with move(): once the module is up, a worker-reported failure is
     // propagated, never retried main-thread — and propagating is also what
     // makes the UI's per-item failure accounting real instead of dead code.
+    // (The checked bus/vfs rmPath in all but name: vfs builds on this module,
+    // so this one call stays here rather than import it back.)
     if (isModuleReady()) {
       const res = await gsEval('files.rm', [path]);
       if (!gsOk(res)) throw new Error(gsErrorText(res));

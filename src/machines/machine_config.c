@@ -14,6 +14,7 @@
 
 #include "machine_config.h"
 
+#include "card_registry.h"
 #include "drive_catalog.h"
 #include "machine_profile.h"
 #include "monitor_catalog.h"
@@ -511,13 +512,13 @@ static int unit_count(const storage_bus_decl_t *b) {
 }
 
 // One blank hard disk a bus's drives take, as the Create dialog offers it:
-// its label, the files.* method that creates it with `arg`, and the file
+// its label, the `kind` and `size` files.create makes it with, and the file
 // name's stem and extension.
-static value_t blank_disk(const char *label, const char *method, const char *arg, const char *name, const char *ext) {
+static value_t blank_disk(const char *label, const char *kind, uint64_t size, const char *name, const char *ext) {
     value_map_builder_t *m = val_map_new();
     val_map_put(m, "label", val_str(label));
-    val_map_put(m, "method", val_str(method));
-    val_map_put(m, "arg", val_str(arg));
+    val_map_put(m, "kind", val_str(kind));
+    val_map_put(m, "size", val_uint(8, size));
     val_map_put(m, "name", val_str(name));
     val_map_put(m, "ext", val_str(ext));
     return val_map_finish(m);
@@ -532,10 +533,9 @@ static value_t blank_disks_value(const storage_bus_decl_t *b) {
     if (!(b->accepts & STORAGE_DEV_HD))
         return vl_finish(&l);
     if (b->kind == STORAGE_KIND_PROFILE) {
-        vl_push(&l, blank_disk("5 MB ProFile (9728 blocks)", "files.profile_create", "9728", "blank_profile_5MB",
-                               ".image"));
-        vl_push(&l, blank_disk("10 MB Widget (19448 blocks)", "files.profile_create", "19448", "blank_profile_10MB",
-                               ".image"));
+        vl_push(&l, blank_disk("5 MB ProFile (9728 blocks)", "profile", 9728u * 512u, "blank_profile_5MB", ".image"));
+        vl_push(&l,
+                blank_disk("10 MB Widget (19448 blocks)", "profile", 19448u * 512u, "blank_profile_10MB", ".image"));
         return vl_finish(&l);
     }
     int n = drive_catalog_count();
@@ -550,11 +550,10 @@ static value_t blank_disks_value(const storage_bus_decl_t *b) {
         if (superseded)
             continue;
         unsigned mb = (unsigned)((md->size + 512u * 1024u) / (1024u * 1024u));
-        char label[64], arg[24], name[32];
+        char label[64], name[32];
         snprintf(label, sizeof label, "%u MB (%s)", mb, md->label);
-        snprintf(arg, sizeof arg, "%zu", md->size);
         snprintf(name, sizeof name, "blank_%uMB", mb);
-        vl_push(&l, blank_disk(label, "files.hd_create", arg, name, ".dmg"));
+        vl_push(&l, blank_disk(label, "hd", md->size, name, ".dmg"));
     }
     return vl_finish(&l);
 }
@@ -997,16 +996,38 @@ static bool builtin_video_rom_offered(const hw_profile_t *p) {
     return d && vrom_card_resolvable(d->builtin_card_id, NULL);
 }
 
+// The monitor rows of the built-in port, where they are a card kind's
+// (builtin_video_desc_t.slot_monitors): its BUILTIN NuBus pseudo-slot's card,
+// else its BUILTIN PCI device's.  NULL otherwise.
+static const nubus_monitor_t *builtin_rows(const hw_profile_t *p) {
+    if (!p->builtin_video || !p->builtin_video->slot_monitors)
+        return NULL;
+    const nubus_slot_decl_t *d = builtin_video_slot(p);
+    if (d)
+        return nubus_card_find(d->builtin_card_id)->monitors;
+    for (const pci_slot_decl_t *x = p->pci_slots; x && x->slot; x++) {
+        const pci_card_kind_t *k = x->kind == PCI_SLOT_BUILTIN ? pci_card_find(x->builtin_card_id) : NULL;
+        if (k && pci_card_monitors(k))
+            return pci_card_monitors(k);
+    }
+    return NULL;
+}
+
+// The built-in port's row for catalogue monitor `mon`, or NULL (none).
+static const nubus_monitor_t *builtin_row(const hw_profile_t *p, const char *mon) {
+    for (const nubus_monitor_t *m = builtin_rows(p); m && m->id; m++)
+        if (m->monitor && strcmp(m->monitor, mon) == 0)
+            return m;
+    return NULL;
+}
+
 // The catalogue ids the built-in port takes, "none" left out.
 static int builtin_monitors(const hw_profile_t *p, const char **out, int max) {
     const builtin_video_desc_t *bv = p->builtin_video;
     if (!bv)
         return 0;
-    if (bv->slot_monitors) {
-        const nubus_slot_decl_t *d = builtin_video_slot(p);
-        const nubus_card_kind_t *k = d ? nubus_card_find(d->builtin_card_id) : NULL;
-        return k ? table_monitors(k->monitors, out, max) : 0;
-    }
+    if (bv->slot_monitors)
+        return table_monitors(builtin_rows(p), out, max);
     int n = 0;
     const char *id = NULL, *mon = NULL;
     for (size_t i = 0; bv->monitor_at && bv->monitor_at(i, &id, &mon) && n < max; i++) {
@@ -1196,8 +1217,7 @@ static bool doc_card_is_display(const doc_card_t *c) {
 static int card_monitors(const doc_card_t *c, const char **out, int max) {
     const nubus_monitor_t *t = NULL;
     if (c->pci) {
-        const pci_card_kind_t *k = pci_card_find(c->card);
-        t = k ? k->monitors : NULL;
+        t = pci_card_monitors(pci_card_find(c->card));
     } else {
         const nubus_card_kind_t *k = nubus_card_find(c->card);
         t = nubus_kind_monitors(k, c->generic);
@@ -1964,27 +1984,16 @@ static const doc_display_t *find_display(const doc_t *d, const char *id) {
 }
 
 // The code the built-in port's sense lines read with catalogue monitor `mon`
-// plugged in: the family's resolver's, MACHINE_SENSE_NONE with none.  A port
-// without sense lines has no resolver, and nothing reads its code.  An empty
-// port is the resolver's own "none" where it has one: the Rage Pro's resolver
-// indexes its rows, so its "nothing attached" is not MACHINE_SENSE_NONE.
+// plugged in: its row's (a port whose monitors are a card kind's rows), else
+// the family's resolver's; MACHINE_SENSE_NONE with none.  A port without
+// sense lines has no resolver, and nothing reads its code.
 static uint8_t builtin_sense(const hw_profile_t *p, const char *mon) {
     const builtin_video_desc_t *bv = p->builtin_video;
-    if (!bv)
+    if (!bv || strcmp(mon, MONITOR_NONE) == 0)
         return MACHINE_SENSE_NONE;
-    if (strcmp(mon, MONITOR_NONE) == 0) {
-        uint8_t s = MACHINE_SENSE_NONE;
-        if (!bv->slot_monitors && bv->monitor_sense && bv->monitor_sense(MONITOR_NONE, &s))
-            return s;
-        return MACHINE_SENSE_NONE;
-    }
     if (bv->slot_monitors) {
-        const nubus_slot_decl_t *d = builtin_video_slot(p);
-        const nubus_card_kind_t *k = d ? nubus_card_find(d->builtin_card_id) : NULL;
-        for (const nubus_monitor_t *m = k ? k->monitors : NULL; m && m->id; m++)
-            if (m->monitor && strcmp(m->monitor, mon) == 0)
-                return m->sense_code;
-        return MACHINE_SENSE_NONE;
+        const nubus_monitor_t *m = builtin_row(p, mon);
+        return m ? m->sense_code : MACHINE_SENSE_NONE;
     }
     const char *id = NULL, *cat = NULL;
     for (size_t i = 0; bv->monitor_at && bv->monitor_at(i, &id, &cat); i++) {
@@ -1995,14 +2004,23 @@ static uint8_t builtin_sense(const hw_profile_t *p, const char *mon) {
     return MACHINE_SENSE_NONE;
 }
 
-// Apply the displays to the resolved slot entries: each card's monitor and
-// sense (or its monitor option, on PCI), the built-in port's, and which
-// device is connected.  Every display device gets a definite monitor --
-// "none" where the document plugs none in.
+// The built-in port's monitor row (NULL: none plugged in), where the port's
+// monitors are a card kind's rows; the build hands it to that device's slot
+// entry (machine_build_opts_t.builtin_monitor).
+static void builtin_set_monitor(const hw_profile_t *p, const nubus_monitor_t *row, machine_build_opts_t *out) {
+    out->builtin_monitor[0] = '\0';
+    if (builtin_rows(p))
+        copy_str(out->builtin_monitor, sizeof out->builtin_monitor, row ? row->id : MONITOR_NONE);
+}
+
+// Apply the displays to the resolved slot entries: each card's monitor row and
+// sense, the built-in port's, and which device is connected.  Every display
+// device gets a definite monitor -- "none" where the document plugs none in.
 static value_t apply_displays(const hw_profile_t *p, const doc_t *d, machine_build_opts_t *out) {
     int connected = 0;
     out->builtin_connected = false;
     out->builtin_sense = MACHINE_SENSE_NONE;
+    out->builtin_monitor[0] = '\0';
     for (int i = 0; i < d->n_displays; i++) {
         const doc_display_t *x = &d->displays[i];
         bool on = strcmp(x->monitor, MONITOR_NONE) != 0;
@@ -2010,6 +2028,7 @@ static value_t apply_displays(const hw_profile_t *p, const doc_t *d, machine_bui
         if (strcmp(x->device, "builtin") == 0) {
             out->builtin_connected = on;
             out->builtin_sense = builtin_sense(p, x->monitor);
+            builtin_set_monitor(p, builtin_row(p, x->monitor), out);
             if (x->mode[0]) {
                 // The startup mode: the record the port's ROM keeps for it.
                 const builtin_startup_t *r = on ? builtin_startup_row(p, x->monitor) : NULL;
@@ -2039,44 +2058,13 @@ static value_t apply_displays(const hw_profile_t *p, const doc_t *d, machine_bui
         if (!e)
             continue;
         e->connected = on;
-        if (pci) {
-            // A PCI display card straps its monitor through its own option.
-            const pci_card_kind_t *k = pci_card_find(e->card);
-            const char *row_id = NULL;
-            for (const nubus_monitor_t *m = k ? k->monitors : NULL; m && m->id; m++)
-                if (m->monitor && strcmp(m->monitor, x->monitor) == 0 && !row_id)
-                    row_id = m->id;
-            if (!on)
-                row_id = MONITOR_NONE;
-            // A monitor= the card entry already names stands when it is a row
-            // of the same display (the Rage 128's VGA without DDC); one that
-            // names another display yields to the document's monitor.
-            const char *given = slot_opts_option(e, "monitor");
-            if (given && on) {
-                for (const nubus_monitor_t *m = k ? k->monitors : NULL; m && m->id; m++)
-                    if (strcmp(m->id, given) == 0 && m->monitor && strcmp(m->monitor, x->monitor) == 0)
-                        row_id = NULL;
-            }
-            if (row_id && k && pci_card_accepts_option(k, "monitor", row_id)) {
-                slot_option_t *o = NULL;
-                for (int n = 0; n < e->n_options && !o; n++)
-                    if (strcmp(e->options[n].key, "monitor") == 0)
-                        o = &e->options[n];
-                if (!o && e->n_options < SLOT_OPTIONS_MAX)
-                    o = &e->options[e->n_options++];
-                if (o) {
-                    copy_str(o->key, sizeof o->key, "monitor");
-                    copy_str(o->value, sizeof o->value, row_id);
-                }
-            }
-        } else {
-            const nubus_card_kind_t *k = nubus_card_find(e->card);
-            int depth = 0;
-            const nubus_monitor_t *t = nubus_kind_monitors(k, e->substitute);
-            const nubus_monitor_t *row = on ? nubus_row(t, x->monitor, x->mode[0] ? x->mode : NULL, &depth) : NULL;
-            copy_str(e->monitor, sizeof e->monitor, row ? row->id : MONITOR_NONE);
-            e->sense = row ? row->sense_code : MACHINE_SENSE_NONE;
-        }
+        // The card's row for the monitor (and the mode, on a NuBus card), the
+        // one channel a monitor reaches a card through on either bus.
+        const nubus_monitor_t *t = pci ? pci_card_monitors(pci_card_find(e->card))
+                                       : nubus_kind_monitors(nubus_card_find(e->card), e->substitute);
+        int depth = 0;
+        const nubus_monitor_t *row = on ? nubus_row(t, x->monitor, x->mode[0] ? x->mode : NULL, &depth) : NULL;
+        card_entry_set_monitor(e, row);
     }
     if (connected > 1)
         return bad("displays: %d monitors connected; this build supports 1", connected);
@@ -2086,14 +2074,14 @@ static value_t apply_displays(const hw_profile_t *p, const doc_t *d, machine_bui
 // video_sense= is a debug override of the connected device's sense code: a
 // card's connector (whose monitor row stays, so its geometry does), or the
 // built-in port, which on a Quadra's DAFB also takes Apple's indexed codes
-// 8..14.  A PCI card senses through its monitor option instead.
+// 8..14.  A PCI card senses the monitor its entry names instead.
 static value_t override_sense(const hw_profile_t *p, int sense, machine_build_opts_t *out) {
     for (int i = 0; i < out->n_slots; i++) {
         slot_opts_t *e = &out->slots[i];
         if (!e->connected)
             continue;
         if (p->pci_slots)
-            return bad("video_sense=: the connected display is a PCI card, which takes its monitor= option instead");
+            return bad("video_sense=: the connected display is a PCI card, which senses its configured monitor");
         if (sense > MACHINE_SENSE_NONE)
             return bad("video_sense=%d: a card's connector reads a code 0..7", sense);
         const nubus_slot_decl_t *d = NULL;
@@ -2315,9 +2303,22 @@ value_t machine_config_resolve(const hw_profile_t *p, const value_t *config, con
         // The legacy arguments: monitor= straps the built-in port (a family
         // token, "none" among them), else its default monitor; each card
         // keeps the monitor the bus gives it.
-        out->builtin_sense = p->builtin_video ? builtin_sense(p, builtin_default_monitor(p)) : MACHINE_SENSE_NONE;
-        if (legacy_monitor) {
-            if (!p->builtin_video || p->builtin_video->slot_monitors || !p->builtin_video->monitor_sense) {
+        const char *def = p->builtin_video ? builtin_default_monitor(p) : NULL;
+        out->builtin_sense = def ? builtin_sense(p, def) : MACHINE_SENSE_NONE;
+        if (def)
+            builtin_set_monitor(p, builtin_row(p, def), out);
+        if (legacy_monitor && p->builtin_video && p->builtin_video->slot_monitors) {
+            // A port whose monitors are a card kind's rows: the argument names
+            // a row ("none" among them).
+            const nubus_monitor_t *row = card_monitor_row(builtin_rows(p), legacy->monitor);
+            if (!row && strcmp(legacy->monitor, MONITOR_NONE) != 0) {
+                err = bad("unknown monitor id '%s' (see catalog.profile)", legacy->monitor);
+                goto done;
+            }
+            out->builtin_sense = row ? row->sense_code : MACHINE_SENSE_NONE;
+            builtin_set_monitor(p, row, out);
+        } else if (legacy_monitor) {
+            if (!p->builtin_video || !p->builtin_video->monitor_sense) {
                 err = bad("model '%s' has no configurable built-in video port", p->id);
                 goto done;
             }

@@ -10,6 +10,7 @@
 // === Includes ===
 #include "checkpoint.h"
 #include "common.h"
+#include "image_kind.h"
 #include "storage.h"
 
 #include <stdbool.h>
@@ -21,48 +22,16 @@ struct config;
 typedef struct config config_t;
 
 // === Type Definitions ===
-// Floppy kinds are named by capacity because that is what distinguishes them
-// on the wire; the encoding follows from it.  image_fd_dd_mfm (720K) was
-// missing, so a 737,280-byte floppy classified as a hard disk and every
-// consumer got a wrong answer.  Ask "is this MFM media?" with
-// image_is_mfm_floppy(), never `type == image_fd_hd`.
-enum image_type {
-    image_other,
-    image_fd_ss, // 400K GCR, single-sided
-    image_fd_ds, // 800K GCR, double-sided
-    image_fd_dd_mfm, // 720K MFM, double-density
-    image_fd_hd, // 1440K MFM, high-density
-    image_hd,
-    image_cdrom // an ISO 9660 disc (a primary volume descriptor at 32 KB)
-};
-
-// True for media the drive reads with MFM framing rather than Apple GCR.
-static inline bool image_is_mfm_floppy(enum image_type t) {
-    return t == image_fd_dd_mfm || t == image_fd_hd;
-}
-
-// True for any floppy geometry, GCR or MFM.
-static inline bool image_is_floppy(enum image_type t) {
-    return t == image_fd_ss || t == image_fd_ds || image_is_mfm_floppy(t);
-}
-
-// Per-image geometry.  The default openers use { .block_size = 512 }; devices
-// with a different on-disk block (e.g. the Lisa ProFile's 532-byte block) open
-// with the matching size via the *_with_geometry variants.  Has room to grow
-// (tag size, sector-header layout) without churning the opener signatures.
-typedef struct image_geometry {
-    uint32_t block_size; // Bytes per block; 0 is treated as STORAGE_BLOCK_SIZE (512)
-} image_geometry_t;
-
 // A disk image: opaque outside the storage module (image_internal.h)
 struct image;
 typedef struct image image_t;
 
 // === Accessors ===
-// Detected type (floppy geometry, hard disk, CD-ROM)
-enum image_type image_get_type(const image_t *image);
-// Re-classify an image (a floppy-sized file attached as a CD-ROM)
-void image_set_type(image_t *image, enum image_type type);
+// The kind the device that opened it presents it as (image_open_kind);
+// IMAGE_KIND_NONE for an image no device holds
+image_kind_t image_get_kind(const image_t *image);
+// The floppy layout its size implies (IMAGE_LAYOUT_NONE: not floppy-sized)
+image_layout_t image_layout(const image_t *image);
 // True when the caller opened the image for writing
 bool image_is_writable(const image_t *image);
 // Logical size in bytes (a synthesised wrapper prefix included)
@@ -79,10 +48,10 @@ storage_t *image_get_storage(const image_t *image);
 // disk_read_data / disk_write_data calls since open (drive_activity.h)
 uint64_t image_get_reads(const image_t *image);
 uint64_t image_get_writes(const image_t *image);
-// Replace the per-sector tags (a checkpoint restore): the image takes
-// ownership of `tags` (tag_count * tag_bytes bytes, malloc'd) and frees the
-// old ones.  A NULL image frees `tags`.
-void image_set_tags(image_t *image, uint8_t *tags, uint32_t tag_bytes, uint32_t tag_count);
+// Reads the backing store could not serve (each a guest read error)
+uint64_t image_get_read_errors(const image_t *image);
+// Tag bytes stored beside each 512-byte sector: 12 (GCR floppy), 20 (ProFile) or 0
+uint32_t image_get_tag_bytes(const image_t *image);
 
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
 //
@@ -124,21 +93,6 @@ image_t *image_create(const char *base_path, const char *delta_dir);
 // Fails if the delta+journal files are missing.
 image_t *image_open(const char *base_path, const char *instance_path);
 
-// Geometry-aware variants of the three openers above.  Identical behaviour but
-// the base is interpreted as `geom.block_size`-byte blocks (0 ⇒ 512).  The
-// default openers are thin wrappers over these with { .block_size = 512 }.
-image_t *image_open_readonly_with_geometry(const char *base_path, image_geometry_t geom);
-image_t *image_create_with_geometry(const char *base_path, const char *delta_dir, image_geometry_t geom);
-image_t *image_open_with_geometry(const char *base_path, const char *instance_path, image_geometry_t geom);
-
-// Create a brand-new, writable, all-zero image with NO backing base file:
-// `block_count` blocks of geom.block_size bytes, every block reading back as
-// zeros until written.  The delta+journal live in a process-local scratch dir
-// and are removed when the image is closed (like a read-only ghost mount), so
-// the image is ephemeral unless its contents are written out via
-// image_export_to().  Used for a blank ProFile (no source file to open).
-image_t *image_create_blank(uint64_t block_count, image_geometry_t geom);
-
 // Returns the instance path stem for a writable image, suitable for
 // persisting in checkpoints and feeding back into image_open().
 // Returns NULL for read-only images.
@@ -164,20 +118,30 @@ bool image_key_is_open_writable(const char *key);
 #define IMAGE_CKPT_WRITABLE 0x01
 #define IMAGE_CKPT_WRAPPED  0x02 // re-wrap on restore (image_wrap.h)
 
-// Write image metadata to checkpoint (ends with the sector tags)
+// Write image metadata to checkpoint, then its storage (blocks, tags in-band)
 void image_checkpoint(const image_t *image, checkpoint_t *checkpoint);
 
 // === Operations ===
 
-// Read/write raw data from/to the disk image
+// The data plane: whole 512-byte sectors' data at `offset` (whole blocks of
+// disk_block_size on an image without tags).  A tagged image's sectors keep
+// their tags on a write.
 size_t disk_read_data(image_t *disk, uint64_t offset, uint8_t *buf, size_t size);
 
-// Read a logical sector's DiskCopy tag (per-sector metadata) into `buf`.
-// Returns the number of tag bytes copied (0 if the image has no tags or the
-// sector is out of range).  Used by the Lisa floppy controller to populate the
-// boot-block header the ROM validates (FILEID = $AAAA).
+// A sector's tag (the 12 bytes beside a GCR sector, a ProFile block's 20):
+// in-band, in the sector's block, so it lands in the delta with the data.
+// Returns the bytes copied, at most the image's tag size (0 for an image
+// without tags, a sector out of range, or a write to a write-protected
+// image).  The floppy controllers read and write them with each sector (the
+// Lisa boot ROM validates the boot block's FILEID = $AAAA).
 size_t disk_read_tag(image_t *disk, size_t sector, uint8_t *buf, size_t size);
 size_t disk_write_tag(image_t *disk, size_t sector, const uint8_t *buf, size_t size);
+
+// Whole blocks as stored, tag first ([tag][512 data]): `count` blocks of
+// disk_block_size from block `first`.  What a ProFile moves (its 532-byte
+// wire block is its stored one).  Bytes moved, 0 on failure.
+size_t disk_read_units(image_t *disk, uint64_t first, uint8_t *buf, size_t count);
+size_t disk_write_units(image_t *disk, uint64_t first, const uint8_t *buf, size_t count);
 
 // Label the disk for a DiskCopy 4.2 export: the name and format byte its
 // header gets.  A machine whose disks differ from the Mac's defaults (the
@@ -187,13 +151,13 @@ void image_set_diskcopy_identity(image_t *image, const char *name, uint8_t forma
 
 size_t disk_write_data(image_t *disk, uint64_t offset, uint8_t *buf, size_t size);
 
-// Get the size of the disk image in bytes.  0 for a NULL image -- no opened
-// image is empty (the openers refuse a zero-length one), so 0 always means
-// "no image".
+// The disk's data bytes (sectors x 512; a tagged image's tags not counted).
+// 0 for a NULL image -- no opened image is empty (the openers refuse a
+// zero-length one), so 0 always means "no image".
 uint64_t disk_size(image_t *disk);
 
-// Bytes per block the image was opened with (512 unless a geometry said
-// otherwise); disk_read_data/disk_write_data work in whole blocks of it.
+// Bytes per stored block: 512 plus the tags each sector carries (524 for a
+// GCR floppy, 532 for a ProFile).  disk_read_units moves whole ones.
 uint32_t disk_block_size(image_t *disk);
 
 // Tick all tracked images (drives storage consolidation)
@@ -203,26 +167,29 @@ void image_tick_all(config_t *config);
 const char *image_get_filename(const image_t *image);
 
 // A machine's restored images, handed to the media controllers as a
-// construction argument: each resolves the media it saved by name.
+// construction argument: each resolves the media it saved by position.
 typedef struct image_list {
     image_t *const *items;
     int n;
 } image_list_t;
 
-// The image in `images` whose image_get_filename is `name`, or NULL (also
-// when `images` is NULL).
-image_t *images_find(const image_list_t *images, const char *name);
+// What checkpoint_write_image_ref writes for an empty drive.
+#define IMAGE_REF_NONE UINT32_MAX
 
-// Write which image a drive holds, by name (image_ref.c): the
-// checkpoint_write_string form, so NULL or a nameless image writes length 0.
+// Record `img`'s position in the image list a checkpoint is saving (the
+// images part, before any drive refers to it); IMAGE_REF_NONE for an image
+// the list does not hold.
+void image_set_checkpoint_index(image_t *img, uint32_t index);
+
+// Write which image a drive holds (image_ref.c): its position in the
+// checkpoint's image list, or IMAGE_REF_NONE for NULL.
 void checkpoint_write_image_ref(checkpoint_t *cp, const image_t *img);
 
 // Read what checkpoint_write_image_ref wrote and resolve it in `images`.
-// NULL for "no image"; a name that does not resolve logs "<what>: the
-// checkpoint's image '...' is not among its images" and flags `cp`, as does a
-// length over CHECKPOINT_MAX_PATH.  `named` (may be NULL) is set to whether
-// the stream held a name at all.
-image_t *checkpoint_read_image_ref(checkpoint_t *cp, const image_list_t *images, const char *what, bool *named);
+// NULL for "no image"; a position the list does not hold logs "<what>: the
+// checkpoint's image N is not among its images" and flags `cp`.  `held` (may
+// be NULL) is set to whether the drive held an image at all.
+image_t *checkpoint_read_image_ref(checkpoint_t *cp, const image_list_t *images, const char *what, bool *held);
 
 // Create an empty disk image file of the specified size (for checkpoint restore)
 int image_create_empty(const char *filename, uint64_t size);
@@ -232,27 +199,12 @@ int image_create_empty(const char *filename, uint64_t size);
 // existing file).
 int image_create_empty_udif(const char *filename, uint64_t size);
 
-// What the blank-image creators below return for an existing file they will
-// not overwrite (0 is success, -1 any other failure).
+// A new all-zero file of `bytes` bytes at `filename` (parent directories
+// made), created exclusively: 0, IMAGE_CREATE_EXISTS when the file is there
+// already (it is never overwritten), -1 on any other error.  files.create
+// (image_create_file_kind) is its caller.
 #define IMAGE_CREATE_EXISTS (-2)
-
-// Create a new blank floppy image file (800K or 1440K).  Without `overwrite`
-// an existing file is refused (IMAGE_CREATE_EXISTS), atomically: the file is
-// created exclusively, so a file appearing meanwhile is never truncated.
-int image_create_blank_floppy(const char *filename, bool overwrite, bool high_density);
-
-// On-the-wire ProFile block size: 512 data bytes + a 20-byte inline tag (see
-// src/machines/lisa/lisa_profile.c).  A raw ProFile image is simply
-// block_count × this, all zero for a blank disk.
-#define PROFILE_BLOCK_BYTES 532u
-
-// Create a new blank ProFile (Lisa/XL parallel hard disk) image file: a raw,
-// all-zero file of block_count × PROFILE_BLOCK_BYTES bytes.  The controller's
-// synthesized device-info block reports this block count, so the OS sizes the
-// volume from it (5 MB ProFile = 9728 blocks; 10 MB Widget ≈ 19448 blocks).
-// Refuses to overwrite an existing file.  Returns 0 on success,
-// IMAGE_CREATE_EXISTS if the file already exists, -1 on any other error.
-int image_create_blank_profile(const char *filename, uint32_t block_count);
+int image_create_zeros(const char *filename, uint64_t bytes);
 
 // Export the full disk content (base + delta) of an open image to a new file.
 // The destination's name picks the format: .dmg is UDIF; .dc42 and

@@ -4,10 +4,14 @@
 // object-model method, which returns [{name, kind, size, mtime, expandable}].
 // The Filesystem tree uses this for descent; plain OPFS paths keep going
 // through opfs.ts, with the core asked which of their files are expandable.
+// Also the path helpers every store route shares: uniquePath (the one
+// de-duplicating name scheme), walkFiles (the one recursive file list) and
+// rmPath (files.rm, quiet or checked).
 
 import { gsEval, gsErrorText, gsOk } from './emulator';
 import { opfs } from './opfs';
 import { listViaVfs, isExpandable, markExpandable } from '@/lib/diskImage';
+import { identifyFile } from '@/lib/media';
 import type { OpfsEntry } from './types';
 
 interface VfsRawEntry {
@@ -92,11 +96,11 @@ export async function listRaw(dir: string): Promise<unknown[] | string> {
   return Array.isArray(r) ? r : gsErrorText(r);
 }
 
-// The Mac OS volumes of a disk image (files.partitions, numbered as the
-// attached disk's partitions); none for an image the core cannot read.
+// The Mac OS volumes of a disk image (files.identify's volumes, numbered as
+// the attached disk's partitions); none for an image the core cannot read.
 export async function diskPartitions(path: string): Promise<unknown[]> {
-  const r = await gsEval('files.partitions', [path]).catch(() => null);
-  return Array.isArray(r) ? r : [];
+  const id = await identifyFile(gsEval, path).catch(() => null);
+  return id?.volumes ?? [];
 }
 
 // A file's size in bytes, or null when the core cannot say.
@@ -110,7 +114,67 @@ export async function pathExists(path: string): Promise<boolean> {
   return (await gsEval('files.path_exists', [path])) === true;
 }
 
-// Remove a file or directory tree through the core; true when it is gone.
-export async function rmPath(path: string): Promise<boolean> {
-  return gsOk(await gsEval('files.rm', [path]));
+// Remove a file or directory tree through the core (on the worker, so its
+// WasmFS view stays coherent).  By default quiet: true when it is gone,
+// false when the core refused, never throwing -- for best-effort cleanup.
+// `checked`: a refusal throws the core's reason instead.
+export async function rmPath(path: string, opts: { checked?: boolean } = {}): Promise<boolean> {
+  let res: unknown;
+  try {
+    res = await gsEval('files.rm', [path]);
+  } catch (e) {
+    if (opts.checked) throw e;
+    return false;
+  }
+  if (gsOk(res)) return true;
+  if (opts.checked) throw new Error(gsErrorText(res));
+  return false;
+}
+
+// A free path for `name` in `dir`: the name itself when nothing is there,
+// else the first "name 2.ext", "name 3.ext", ... (the Finder's scheme).
+// With `sameAs`, a file already there that is byte-identical to that one is
+// the answer (`same`: it is stored already) rather than a reason to move on.
+export async function uniquePath(
+  dir: string,
+  name: string,
+  opts: { sameAs?: string } = {},
+): Promise<{ path: string; same: boolean }> {
+  const dot = name.lastIndexOf('.');
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : '';
+  for (let n = 1; ; n++) {
+    const path = n === 1 ? `${dir}/${name}` : `${dir}/${stem} ${n}${ext}`;
+    if (!(await pathExists(path))) return { path, same: false };
+    // files.path_compare answers -1 for identical files, else an offset.
+    if (
+      opts.sameAs !== undefined &&
+      (await gsEval('files.path_compare', [opts.sameAs, path])) === -1
+    )
+      return { path, same: true };
+  }
+}
+
+// Every file under `dir` (depth first, in listing order), as full paths or,
+// with `relative`, as paths relative to `dir`.  Each entry says what it is
+// (files.list), so a subdirectory is descended, never taken for a file.
+// THROWS when a directory cannot be listed (an unreadable or oversized
+// listing is the core's error, not an empty directory); callers decide
+// whether to say so.
+export async function walkFiles(dir: string, opts: { relative?: boolean } = {}): Promise<string[]> {
+  const out: string[] = [];
+  // Descend one directory: `rel` is its path relative to `dir`.
+  const walk = async (rel: string): Promise<void> => {
+    const at = rel ? `${dir}/${rel}` : dir;
+    const entries = await gsEval('files.list', [at]);
+    if (!Array.isArray(entries)) throw new Error(`cannot list ${at}: ${gsErrorText(entries)}`);
+    for (const e of entries as { name?: unknown; kind?: unknown }[]) {
+      if (typeof e?.name !== 'string' || e.name === '.' || e.name === '..') continue;
+      const child = rel ? `${rel}/${e.name}` : e.name;
+      if (e.kind === 'directory') await walk(child);
+      else out.push(opts.relative ? child : `${dir}/${child}`);
+    }
+  };
+  await walk('');
+  return out;
 }

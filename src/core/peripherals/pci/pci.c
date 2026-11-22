@@ -163,6 +163,11 @@ const pci_card_kind_t *pci_card_base(const pci_card_kind_t *k) {
     return base ? base : k;
 }
 
+const struct nubus_monitor *pci_card_monitors(const pci_card_kind_t *k) {
+    k = pci_card_base(k);
+    return k ? k->monitors : NULL;
+}
+
 // The row of `options` for `key`, or NULL.
 static const pci_card_option_t *option_row(const pci_card_option_t *options, const char *key) {
     for (const pci_card_option_t *o = options; o && o->key; o++) {
@@ -801,6 +806,9 @@ bool pci_slot_entry_check(const pci_slot_decl_t *slots, const char *model, const
             return card_refuse(why, why_len, "slot %d's card '%s' does not take option %s=%s", e->slot,
                                k ? k->id : "(none)", e->options[i].key, e->options[i].value);
     }
+    if (!card_monitor_check(pci_card_monitors(k), e->monitor))
+        return card_refuse(why, why_len, "monitor '%s' is not one slot %d's card '%s' drives", e->monitor, e->slot,
+                           k ? k->id : "(none)");
     if (e->rom[0]) {
         prom_id_t pid;
         if (!prom_identify_card(e->rom, &pid))
@@ -950,12 +958,16 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
                 root->entry[e->slot] = *e;
         }
         // A built-in video's monitor is an argument of its construction, so
-        // its slot entry carries the build's sense and connection (as the
-        // NuBus seats do), and the table's block gives them back on a restore.
+        // its slot entry carries the build's monitor, sense and connection (as
+        // the NuBus seats do), and the table's block gives them back on a
+        // restore.
         for (const pci_slot_decl_t *s = root->slots; s && s->slot != 0; s++) {
             if (s->kind != PCI_SLOT_BUILTIN || s->slot <= 0 || s->slot >= PCI_MAX_SLOTS)
                 continue;
             root->entry[s->slot].slot = s->slot;
+            if (pci_card_monitors(pci_card_find(s->builtin_card_id)))
+                snprintf(root->entry[s->slot].monitor, sizeof root->entry[s->slot].monitor, "%s",
+                         root->cfg->build_opts.builtin_monitor);
             root->entry[s->slot].sense = root->cfg->build_opts.builtin_sense;
             root->entry[s->slot].connected = root->cfg->build_opts.builtin_connected;
         }
@@ -1031,8 +1043,14 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
             device_part_open(root->cfg, cp, part, &rom);
             // A slot the document says nothing about builds with the card's
             // defaults.
-            slot_opts_t none = {.slot = s->slot, .sense = MACHINE_SENSE_NONE};
-            const slot_opts_t *opts = entry ? entry : &none;
+            slot_opts_t seat = {.slot = s->slot, .sense = MACHINE_SENSE_NONE};
+            if (entry)
+                seat = *entry;
+            // A display card always reads a definite monitor: the entry's, else
+            // its kind's first row (whose sense the connector then reads).
+            if (!seat.monitor[0] && pci_card_monitors(kind))
+                card_entry_set_monitor(&seat, card_monitor_row(pci_card_monitors(kind), ""));
+            const slot_opts_t *opts = &seat;
             // A card that runs its own FCode is useless without it: Open
             // Firmware runs it to build the node, and Mac OS loads the ndrv
             // the same image publishes.  A card the document named that cannot
@@ -1258,23 +1276,27 @@ void pci_tick_vbl(pci_root_t *root) {
 }
 
 // A stand-in that seats takes the place of the display card it stands in for:
-// that card's monitor (the first socket's default card's first monitor; with
-// no default card, the stand-in's own), and the connection when no other
-// display device has it.
+// that card's monitor (the first socket's default card's first monitor, as
+// the stand-in's own row for that monitor; else the stand-in's default), and
+// the connection when no other display device has it.
 static void fallback_seat(pci_root_t *root, const pci_slot_decl_t *s) {
     slot_opts_t *e = &root->entry[s->slot];
     bool taken = root->cfg->build_opts.builtin_connected;
     for (int i = 0; i < PCI_MAX_SLOTS; i++)
         taken |= i != s->slot && root->entry[i].connected;
-    const pci_card_kind_t *stood_for = NULL;
+    const nubus_monitor_t *stood_for = NULL;
     for (const pci_slot_decl_t *x = root->slots; x->slot && !stood_for; x++)
         if (x->kind == PCI_SLOT_SOCKET && x->default_card)
-            stood_for = pci_card_find(x->default_card);
-    if (!stood_for || !stood_for->monitors)
-        stood_for = pci_card_find(s->builtin_card_id);
+            stood_for = card_monitor_row(pci_card_monitors(pci_card_find(x->default_card)), "");
+    const nubus_monitor_t *own = pci_card_monitors(pci_card_find(s->builtin_card_id));
+    const nubus_monitor_t *row = card_monitor_row(own, "");
+    for (const nubus_monitor_t *m = own; stood_for && m && m->id; m++)
+        if (m->monitor && stood_for->monitor && strcmp(m->monitor, stood_for->monitor) == 0) {
+            row = m;
+            break;
+        }
     e->slot = s->slot;
-    e->sense = (stood_for && stood_for->monitors && stood_for->monitors->id) ? stood_for->monitors->sense_code
-                                                                             : MACHINE_SENSE_NONE;
+    card_entry_set_monitor(e, row);
     e->connected = !taken;
 }
 

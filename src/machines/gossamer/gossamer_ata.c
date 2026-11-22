@@ -366,7 +366,15 @@ int gos_media_eject(config_t *cfg, media_bus_t bus, int unit) {
     gossamer_state_t *st = gos_st(cfg);
     if (!st || !st->ata_ready || !unit_ok(unit))
         return -1;
-    // A hard disk is not removable media: only a disc comes out.
+    // A hard disk comes off the bus as a SCSI disk does (the host's detach,
+    // not the guest's eject); a disc comes out of its ATAPI drive.  Either
+    // way the image goes back to the table, which closes it.
+    image_t *hd = st->ata[unit >> 1].img[unit & 1];
+    if (hd) {
+        ata_detach(&st->ata[unit >> 1], unit & 1);
+        config_release_image(cfg, hd);
+        return 0;
+    }
     return system_media_eject_scsi_bus(st->atapi, unit);
 }
 
@@ -399,57 +407,121 @@ static value_t ata_method_attach_cdrom(struct object *self, const member_t *m, i
     return ata_attach(self, argv, true);
 }
 
-// `ata.export(unit, path)`: write a hard disk's current contents (base
-// image plus every write since) to a flat file.
-static value_t ata_method_export(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    config_t *cfg = (config_t *)object_data(self);
-    gossamer_state_t *st = gos_st(cfg);
-    int64_t unit = argv[0].i;
-    if (!unit_ok((int)unit))
-        return val_err("ata.export: unit must be 0..3 (cell * 2 + device)");
-    image_t *img = (st && st->ata_ready) ? st->ata[unit >> 1].img[unit & 1] : NULL;
-    if (!img)
-        return val_err("ata.export: no hard disk at unit %d", (int)unit);
-    if (image_export_to(img, argv[1].s) != 0)
-        return val_err("ata.export: cannot write '%s'", argv[1].s);
-    return val_bool(true);
+// ---- machine.ata.device[U] ------------------------------------------------------
+//
+// One entry per unit (U = cell * 2 + device), whatever it holds: its `type`,
+// `present`, `eject()` and, while loaded, the `image` node (image_class.h).
+// A disc in an ATAPI drive is the same image the ATAPI back end's
+// machine.atapi.device[U].image shows.
+
+static image_t *ata_node_image(void *dev, unsigned slot) {
+    return gos_media_image((config_t *)dev, MEDIA_BUS_ATA, (int)slot);
+}
+static int ata_node_eject(void *dev, unsigned slot) {
+    if (!gos_media_present((config_t *)dev, MEDIA_BUS_ATA, (int)slot))
+        return IMAGE_EJECT_EMPTY;
+    int rc = gos_media_eject((config_t *)dev, MEDIA_BUS_ATA, (int)slot);
+    return rc == 0 ? IMAGE_EJECT_OK : rc == -2 ? IMAGE_EJECT_LOCKED : IMAGE_EJECT_EMPTY;
+}
+static const image_node_ops_t ata_image_ops = {.image = ata_node_image, .eject = ata_node_eject};
+
+static const image_node_t *ata_dev_node(struct object *self) {
+    return (const image_node_t *)object_data(self);
 }
 
-static value_t ata_attr_devices(struct object *self, const member_t *m) {
-    (void)m;
-    config_t *cfg = (config_t *)object_data(self);
-    gossamer_state_t *st = gos_st(cfg);
-    char buf[64];
-    size_t n = 0;
-    for (int c = 0; st && st->ata_ready && c < 2; c++)
-        ata_refresh_devices(&st->ata[c]);
-    for (int u = 0; u < 4; u++) {
-        ata_dev_kind_t k = st && st->ata_ready ? ata_device_kind(&st->ata[u >> 1], u & 1) : ATA_DEV_NONE;
-        n += (size_t)snprintf(buf + n, sizeof buf - n, "%s%s", u ? " " : "",
-                              k == ATA_DEV_HD      ? "hd"
-                              : k == ATA_DEV_ATAPI ? "atapi"
-                                                   : "-");
-    }
-    return val_str(buf);
+static const char *const ATA_DEV_TYPE_NAMES[3] = {"none", "hd", "atapi"};
+
+static DEF_GETTER(ata_dev_attr_type) {
+    const image_node_t *n = ata_dev_node(self);
+    gossamer_state_t *st = gos_st((config_t *)n->dev);
+    if (!st || !st->ata_ready)
+        return val_enum(0, ATA_DEV_TYPE_NAMES, 3);
+    ata_channel_t *ch = &st->ata[n->slot >> 1];
+    ata_refresh_devices(ch);
+    ata_dev_kind_t k = ata_device_kind(ch, n->slot & 1);
+    return val_enum(k == ATA_DEV_HD ? 1 : k == ATA_DEV_ATAPI ? 2 : 0, ATA_DEV_TYPE_NAMES, 3);
 }
+
+static DEF_GETTER(ata_dev_attr_present) {
+    const image_node_t *n = ata_dev_node(self);
+    return val_bool(gos_media_present((config_t *)n->dev, MEDIA_BUS_ATA, (int)n->slot));
+}
+
+static DEF_METHOD(ata_dev_method_eject) {
+    const image_node_t *n = ata_dev_node(self);
+    switch (ata_node_eject(n->dev, n->slot)) {
+    case IMAGE_EJECT_OK:
+        return val_bool(true);
+    case IMAGE_EJECT_LOCKED:
+        return val_err("ata.device[%u].eject: the guest has locked the drive (PREVENT MEDIUM REMOVAL)", n->slot);
+    default:
+        return val_bool(false);
+    }
+}
+
+static struct object *ata_dev_image_lookup(struct object *self, const char *name) {
+    (void)name;
+    const image_node_t *n = ata_dev_node(self);
+    gossamer_state_t *st = gos_st((config_t *)n->dev);
+    if (!st || n->slot >= 4 || !ata_node_image(n->dev, n->slot))
+        return NULL;
+    return st->ata_image_objects[n->slot];
+}
+
+static const member_t ata_device_members[] = {
+    {.kind = MK_ATTR,
+     .name = "type",
+     .doc = "What the unit holds: hd (an ATA disk), atapi (a CD-ROM drive) or none",
+     .attr = {.type = VK_ENUM, .get = ata_dev_attr_type, .set = NULL}},
+    {.kind = MK_ATTR,
+     .name = "present",
+     .doc = "True when an image is loaded",
+     .attr = {.type = VK_BOOL, .get = ata_dev_attr_present, .set = NULL}},
+    {.kind = MK_METHOD,
+     .name = "eject",
+     .doc = "Eject the image (a hard disk comes off the bus; an ATAPI drive stays, empty)",
+     .method = {.args = NULL, .nargs = 0, .result = VK_BOOL, .fn = ata_dev_method_eject}},
+    {.kind = MK_CHILD,
+     .name = "image",
+     .doc = "The image in this unit (present only when loaded)",
+     .label = "Image",
+     .child = {.cls = &image_class, .lookup = ata_dev_image_lookup}},
+};
+
+static const class_desc_t ata_device_class = {
+    .name = "ata_device",
+    .members = ata_device_members,
+    .n_members = sizeof(ata_device_members) / sizeof(ata_device_members[0]),
+};
+
+static struct object *ata_devices_get(struct object *self, int index) {
+    gossamer_state_t *st = gos_st((config_t *)object_data(self));
+    if (!st || index < 0 || index > 3)
+        return NULL;
+    return st->ata_device_objects[index];
+}
+
+static const collection_desc_t ata_devices_entries = {
+    .entry = &ata_device_class, .by_index = {.get = ata_devices_get, .slots = 4}
+};
+
+static const member_t ata_devices_members[] = {
+    OBJ_ENTRIES(&ata_devices_entries, NULL),
+};
+
+static const class_desc_t ata_devices_class = {
+    .name = "ata_devices",
+    .doc = "ATA units, by U = cell * 2 + device",
+    .members = ata_devices_members,
+    .n_members = 1,
+};
 
 static const arg_decl_t ata_attach_args[] = {
     {.name = "path", .kind = VK_STRING, .doc = "image path"              },
     {.name = "unit", .kind = VK_INT,    .doc = "cell * 2 + device (0..3)"},
 };
 
-static const arg_decl_t ata_export_args[] = {
-    {.name = "unit", .kind = VK_INT,    .doc = "cell * 2 + device (0..3)"},
-    {.name = "path", .kind = VK_STRING, .doc = "destination file"        },
-};
-
 static const member_t ata_members[] = {
-    {.kind = MK_ATTR,
-     .name = "devices",
-     .doc = "What each unit holds (cell 0 device 0/1, cell 1 device 0/1): hd, atapi or -",
-     .attr = {.type = VK_STRING, .get = ata_attr_devices, .set = NULL}                                },
     {.kind = MK_METHOD,
      .name = "attach_hd",
      .doc = "Attach a hard-disk image as an ATA disk at a unit",
@@ -458,10 +530,6 @@ static const member_t ata_members[] = {
      .name = "attach_cdrom",
      .doc = "Attach a CD-ROM image as an ATAPI drive at a unit",
      .method = {.args = ata_attach_args, .nargs = 2, .result = VK_BOOL, .fn = ata_method_attach_cdrom}},
-    {.kind = MK_METHOD,
-     .name = "export",
-     .doc = "Write a unit's hard-disk contents to a flat image file",
-     .method = {.args = ata_export_args, .nargs = 2, .result = VK_BOOL, .fn = ata_method_export}      },
 };
 
 static const class_desc_t ata_class = {
@@ -475,11 +543,36 @@ void gos_ata_attach_objects(config_t *cfg) {
     if (!st || st->ata_object)
         return;
     st->ata_object = object_attach_new(machine_object(), &ata_class, cfg, "ata", "ATA", OBJ_ORDER_ATA);
+    if (!st->ata_object)
+        return;
+    st->ata_devices_object = object_new(&ata_devices_class, cfg, "device");
+    if (!st->ata_devices_object)
+        return;
+    object_set_label(st->ata_devices_object, "Devices");
+    object_attach(st->ata_object, st->ata_devices_object);
+    for (int u = 0; u < 4; u++) {
+        st->ata_nodes[u] = (image_node_t){.ops = &ata_image_ops, .dev = cfg, .slot = (unsigned)u};
+        st->ata_device_objects[u] = object_new(&ata_device_class, &st->ata_nodes[u], NULL);
+        st->ata_image_objects[u] = object_new(&image_class, &st->ata_nodes[u], "image");
+        object_set_logical_parent(st->ata_device_objects[u], st->ata_devices_object, NULL, u, NULL);
+        object_set_logical_parent(st->ata_image_objects[u], st->ata_device_objects[u], "image", -1, NULL);
+    }
 }
 
 void gos_ata_detach_objects(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
     if (st && st->ata_object) {
+        for (int u = 0; u < 4; u++) {
+            if (st->ata_image_objects[u]) {
+                object_delete(st->ata_image_objects[u]);
+                st->ata_image_objects[u] = NULL;
+            }
+            if (st->ata_device_objects[u]) {
+                object_delete(st->ata_device_objects[u]);
+                st->ata_device_objects[u] = NULL;
+            }
+        }
+        object_destroy(&st->ata_devices_object);
         object_destroy(&st->ata_object);
     }
 }

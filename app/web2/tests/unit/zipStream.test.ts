@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import JSZip from 'jszip';
 import { crc32, zipEntries, sniffContainer, sniffDisk, ZipStreamError } from '@/lib/zipStream';
 import { storedDmgName, isQcow2Head } from '@/bus/importImage';
+import { makeZip } from '../helpers/zipWriter';
 
 // A stream of `bytes` in pieces of `piece` bytes (network-chunk-sized).
 function streamOf(bytes: Uint8Array, piece = 777): ReadableStream<Uint8Array> {
@@ -46,17 +46,16 @@ function content(n: number, seed: number): Uint8Array {
   return b;
 }
 
-async function makeZip(opts: { compression: 'STORE' | 'DEFLATE'; streamFiles: boolean }) {
-  const zip = new JSZip();
-  zip.file('__MACOSX/._disk.img', new Uint8Array([1, 2, 3]));
-  zip.file('readme.txt', 'hello');
-  zip.file('dir/disk.img', content(300_000, 7));
-  zip.file('second.img', content(70_000, 9));
-  return zip.generateAsync({
-    type: 'uint8array',
-    compression: opts.compression,
-    streamFiles: opts.streamFiles,
-  });
+function sampleZip(opts: { compression: 'STORE' | 'DEFLATE'; streamFiles: boolean }) {
+  return makeZip(
+    [
+      { name: '__MACOSX/._disk.img', data: new Uint8Array([1, 2, 3]) },
+      { name: 'readme.txt', data: 'hello' },
+      { name: 'dir/disk.img', data: content(300_000, 7) },
+      { name: 'second.img', data: content(70_000, 9) },
+    ],
+    { method: opts.compression === 'DEFLATE' ? 'deflate' : 'store', descriptors: opts.streamFiles },
+  );
 }
 
 describe('crc32', () => {
@@ -74,7 +73,7 @@ describe('zipEntries', () => {
   for (const compression of ['STORE', 'DEFLATE'] as const) {
     for (const streamFiles of [false, true]) {
       it(`reads ${compression}${streamFiles ? ' with data descriptors' : ''} members in order`, async () => {
-        const bytes = await makeZip({ compression, streamFiles });
+        const bytes = await sampleZip({ compression, streamFiles });
         const names: string[] = [];
         let disk: Uint8Array | null = null;
         let second: Uint8Array | null = null;
@@ -93,9 +92,7 @@ describe('zipEntries', () => {
   }
 
   it('fails a member whose CRC does not match', async () => {
-    const zip = new JSZip();
-    zip.file('a.img', content(5000, 3));
-    const bytes = await zip.generateAsync({ type: 'uint8array', compression: 'STORE' });
+    const bytes = await makeZip([{ name: 'a.img', data: content(5000, 3) }]);
     // Flip a byte of the stored data (after the 30-byte header and the name).
     bytes[30 + 'a.img'.length + 100] ^= 0xff;
     const it = zipEntries(streamOf(bytes));

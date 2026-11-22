@@ -97,9 +97,11 @@ static inline cpu_arch_t cpu_arch_for_model(int cpu_model) {
 // whatever per-monitor data it needs private: the PDM's table carries a
 // 3-bit sense strap the registry has no business seeing.
 //
-// On a machine whose built-in video is a BUILTIN NuBus pseudo-slot (SE/30,
-// IIci, IIsi) the card kind in that slot supplies the monitors; such a
-// profile sets only the label fields here and `slot_monitors` true.
+// On a machine whose built-in video is a BUILTIN slot's card kind -- a NuBus
+// pseudo-slot (SE/30, IIci, IIsi) or a PCI device (Control, the Rage Pro, the
+// Network Server's 54M30) -- that kind's monitor rows supply the monitors;
+// such a profile sets only the label fields (and default_monitor) here and
+// `slot_monitors` true.
 // One saved mode a built-in video port starts in (the startup video mode):
 // its depth, and the savedMode byte the port's slot PRAM record holds for it.
 typedef struct builtin_startup_mode {
@@ -141,8 +143,9 @@ typedef struct builtin_video_desc {
     // saved mode, and the modes by monitor.  0 / NULL: it offers none.
     int startup_slot;
     const builtin_startup_t *startup;
-    // The monitors come from the card kind in the machine's BUILTIN NuBus
-    // slot (its nubus_monitor_t list); monitor_at / monitor_sense are NULL.
+    // The monitors come from the card kind in the machine's BUILTIN NuBus or
+    // PCI slot (its nubus_monitor_t rows); monitor_at / monitor_sense are
+    // NULL, and the legacy monitor= argument names a row's id.
     bool slot_monitors;
 } builtin_video_desc_t;
 

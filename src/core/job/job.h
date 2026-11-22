@@ -111,6 +111,15 @@ bool job_serving_call(void);
 uint32_t job_call_defer(void); // 0 when no call is being served
 void job_call_complete(uint32_t token, bool ok, const char *json);
 bool job_call_take_failure(char *err, size_t cap);
+// A deferred call's success answer as a value (an I/O leaf's), kept whole
+// for the job thread -- its kind and presentation intact, which the JSON of
+// a request's answer would not keep -- and taken with job_call_take_answer
+// right after the seam returns, in place of the provisional value the leaf
+// returned at once.  False when `token` is not a job's call (a request's
+// deferral, answered with mailbox_result_complete).
+struct value;
+bool job_call_complete_value(uint32_t token, const struct value *v);
+bool job_call_take_answer(struct value *out); // false: none (out untouched)
 // The I/O job answering the deferred call (a cancel of the script cancels
 // it), and the request id of the script the call belongs to.
 void job_call_bind_io(uint32_t token, uint32_t io_job);

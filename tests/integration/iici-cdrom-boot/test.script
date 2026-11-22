@@ -58,7 +58,7 @@ def row_cd_device() {
     machine.scsi.attach_cdrom "${$disc}" 3
     assert machine.scsi.device[3].type == "cdrom" "cd-device: SCSI 3 is not a CD-ROM"
     assert machine.scsi.device[3].read_only "cd-device: CD-ROM is not read-only"
-    assert machine.scsi.device[3].medium_present "cd-device: no medium present"
+    assert machine.scsi.device[3].present "cd-device: no medium present"
     assert machine.scsi.device[3].vendor == "SONY    " "cd-device: unexpected vendor"
     # A CD-ROM drive presents 2048-byte blocks — the Mode 1 sector — whatever
     # the disc's DDM says its partition map is addressed in.  A guest that

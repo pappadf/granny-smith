@@ -35,10 +35,6 @@ void pci_bar_backing_iface(pci_device_t *dev, int bar, const memory_interface_t 
 void pci_cfg_reset(pci_device_t *dev) {
     (void)dev;
 }
-void pci_card_set_framebuffer_object(pci_device_t *dev, struct object *fb) {
-    (void)dev;
-    (void)fb;
-}
 uint64_t scheduler_cpu_cycles(struct scheduler *s) {
     (void)s;
     return 0;
@@ -73,6 +69,16 @@ struct object *object_new(const class_desc_t *cls, void *data, const char *name)
 void object_attach(struct object *parent, struct object *child) {
     (void)parent;
     (void)child;
+}
+struct object *object_attach_new(struct object *parent, const class_desc_t *cls, void *data, const char *name,
+                                 const char *label, int order) {
+    (void)parent;
+    (void)cls;
+    (void)data;
+    (void)name;
+    (void)label;
+    (void)order;
+    return NULL;
 }
 void *object_data(struct object *o) {
     (void)o;

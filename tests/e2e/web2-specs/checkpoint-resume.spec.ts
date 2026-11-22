@@ -158,7 +158,7 @@ test.describe('checkpoint save → reload → resume', () => {
       path: '/opfs/images/fd/System_6_0_8.dsk',
       writable: true,
     });
-    expect(await gsEvalInPage(page, 'files.images[0].filename')).toBe('/opfs/images/fd/System_6_0_8.dsk');
+    expect(await gsEvalInPage(page, 'files.images[0].source')).toBe('/opfs/images/fd/System_6_0_8.dsk');
     await page.waitForTimeout(2_000);
     await createCheckpoint(page);
 
@@ -169,7 +169,7 @@ test.describe('checkpoint save → reload → resume', () => {
       page.locator('.toast .msg').filter({ hasText: 'Resumed from saved checkpoint' }),
     ).toBeVisible({ timeout: 60_000 });
     await expect(statusLabel(page)).toHaveText('Running', { timeout: 15_000 });
-    expect(await gsEvalInPage(page, 'files.images[0].filename')).toBe('/opfs/images/fd/System_6_0_8.dsk');
+    expect(await gsEvalInPage(page, 'files.images[0].source')).toBe('/opfs/images/fd/System_6_0_8.dsk');
   });
 
   test('Start fresh discards the checkpoint and a second reload does not re-prompt', async ({

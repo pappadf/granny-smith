@@ -3,7 +3,6 @@ import {
   parseCheckpointDirName,
   formatCheckpointLabel,
   checkpointCreatedToDate,
-  formatBytes,
   manifestMachine,
   describeMachine,
 } from '@/lib/checkpointMeta';
@@ -61,21 +60,6 @@ describe('checkpointCreatedToDate', () => {
   });
 });
 
-describe('formatBytes', () => {
-  it('formats small numbers in bytes', () => {
-    expect(formatBytes(512)).toBe('512 B');
-  });
-  it('scales up through KB / MB / GB', () => {
-    expect(formatBytes(2 * 1024)).toBe('2.0 KB');
-    expect(formatBytes(5 * 1024 * 1024)).toBe('5.0 MB');
-    expect(formatBytes(2 * 1024 * 1024 * 1024)).toBe('2.0 GB');
-  });
-  it('zero and negative return "0 B"', () => {
-    expect(formatBytes(0)).toBe('0 B');
-    expect(formatBytes(-1)).toBe('0 B');
-  });
-});
-
 describe('manifestMachine', () => {
   it('reads the core manifest object', () => {
     expect(manifestMachine({ model: 'plus', ram_bytes: 4194304 })).toEqual({
@@ -94,5 +78,6 @@ describe('manifestMachine', () => {
   it('describes the machine with its RAM', () => {
     expect(describeMachine('Macintosh Plus', 4194304)).toBe('Macintosh Plus · 4 MB');
     expect(describeMachine('Macintosh Plus', 0)).toBe('Macintosh Plus');
+    expect(describeMachine('Macintosh Plus', 2.5 * 1024 * 1024)).toBe('Macintosh Plus · 2.5 MB');
   });
 });

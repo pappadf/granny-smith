@@ -42,7 +42,7 @@ typedef struct boot_config {
     // .prom files.
     const char *prom;
     // Options for that same card, as "key=value" pairs separated by commas
-    // ("vram=4m", "vram=4m,monitor=15in_multi").  Which keys mean anything
+    // ("vram=4m", "memory=32m,raster=webgpu").  Which keys mean anything
     // is the CARD's business: the kind's accepts_option() hook accepts or
     // rejects each one before the boot begins, so no card identity leaks
     // into the boot path.

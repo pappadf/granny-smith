@@ -1,16 +1,18 @@
-# The sector tags a guest writes survive a checkpoint.  They live only in
-# memory (image->tags, disk_write_tag), not in the delta, so image_checkpoint
-# writes them and checkpoint_images.c reads them back.  The suite saves an
-# image into an in-memory checkpoint (test.c replaces the checkpoint stubs)
-# and restores it through the real mac_checkpoint_restore_one_image.
+# A GCR floppy's sector tags are in-band (each sector one [12 tag][512 data]
+# block), so they live in the delta and travel with the data: through a
+# checkpoint and through reopening the delta.  The suite saves an image into
+# an in-memory checkpoint (test.c replaces the checkpoint stubs) and restores
+# it through the real mac_checkpoint_restore_one_image.
 
-TEST_NAME    := image_checkpoint_tags
+TEST_NAME    := image_tags
 TEST_SRCS    := test.c
 TEST_HARNESS := isolated
 OMIT_STUBS   := checkpoint
 EXTRA_SRCS   := ../../../../src/machines/runtime/checkpoint_images.c \
                 ../../../../src/core/job/seam.c \
                 ../../../../src/core/storage/image.c \
+                ../../../../src/core/storage/image_kind.c \
+                ../../../../src/core/platform_hooks.c \
                 ../../../../src/core/storage/image_access.c \
                 ../../../../src/core/storage/image_wrap_sniff.c \
                 ../../../../src/core/storage/image_apm.c \

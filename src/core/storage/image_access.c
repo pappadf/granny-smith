@@ -14,12 +14,15 @@
 #include <stdlib.h>
 
 // The accessors below are NULL-safe: a NULL image reads as empty.
-enum image_type image_get_type(const image_t *image) {
-    return image ? image->type : image_other;
+image_kind_t image_get_kind(const image_t *image) {
+    return image ? image->kind : IMAGE_KIND_NONE;
 }
-void image_set_type(image_t *image, enum image_type type) {
+image_layout_t image_layout(const image_t *image) {
+    return image ? image_layout_of_size(image->raw_size) : IMAGE_LAYOUT_NONE;
+}
+void image_set_checkpoint_index(image_t *image, uint32_t index) {
     if (image)
-        image->type = type;
+        image->checkpoint_index = index;
 }
 bool image_is_writable(const image_t *image) {
     return image && image->writable;
@@ -48,13 +51,11 @@ uint64_t image_get_reads(const image_t *image) {
 uint64_t image_get_writes(const image_t *image) {
     return image ? image->writes : 0;
 }
-void image_set_tags(image_t *image, uint8_t *tags, uint32_t tag_bytes, uint32_t tag_count) {
-    if (!image) {
-        free(tags); // nobody to own them
-        return;
-    }
-    free(image->tags); // drop the tags the image had
-    image->tags = tags;
-    image->tag_bytes = tags ? tag_bytes : 0;
-    image->tag_count = tags ? tag_count : 0;
+
+uint64_t image_get_read_errors(const image_t *image) {
+    return image ? image->read_errors : 0;
+}
+
+uint32_t image_get_tag_bytes(const image_t *image) {
+    return image ? image->tag_bytes : 0;
 }

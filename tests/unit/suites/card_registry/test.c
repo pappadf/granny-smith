@@ -5,6 +5,7 @@
 // Runs them over a registry of a stand-in kind laid out as both buses' are:
 // `const char *id` first, anything after it.
 
+#include "card.h"
 #include "card_registry.h"
 #include "test_assert.h"
 
@@ -98,12 +99,55 @@ TEST(slot_table_check) {
     ASSERT_TRUE(why[0] == '\0');
 }
 
+// A card's monitor rows, as a kind declares them.
+static const nubus_monitor_t s_rows[] = {
+    {.id = "13in_rgb", .monitor = "13in_rgb", .sense_code = 6},
+    {.id = "multiscan_17", .monitor = "multiscan_17", .sense_code = 6, .ext_sense = 0x0B},
+    {.id = "21in_rgb", .monitor = "21in_rgb", .sense_code = 0},
+    {.id = NULL},
+};
+
+// The one check of an entry's monitor: a row of the card's, the default ("")
+// or "none"; nothing else, and nothing but those on a card without rows.
+TEST(monitor_check) {
+    ASSERT_TRUE(card_monitor_check(s_rows, "21in_rgb"));
+    ASSERT_TRUE(card_monitor_check(s_rows, ""));
+    ASSERT_TRUE(card_monitor_check(s_rows, "none"));
+    ASSERT_TRUE(!card_monitor_check(s_rows, "vga"));
+    ASSERT_TRUE(!card_monitor_check(s_rows, "17in_multi"));
+    ASSERT_TRUE(!card_monitor_check(NULL, "13in_rgb"));
+    ASSERT_TRUE(card_monitor_check(NULL, "none"));
+}
+
+// The row an entry names drives what the card's sense lines read.
+TEST(monitor_row_drives_the_sense) {
+    ASSERT_TRUE(card_monitor_row(s_rows, "21in_rgb") == &s_rows[2]);
+    ASSERT_TRUE(card_monitor_row(s_rows, "") == &s_rows[0]); // the default
+    ASSERT_TRUE(card_monitor_row(s_rows, "none") == NULL);
+    ASSERT_TRUE(card_monitor_row(NULL, "") == NULL);
+    slot_opts_t e = {.slot = 1};
+    card_entry_set_monitor(&e, card_monitor_row(s_rows, "21in_rgb"));
+    ASSERT_TRUE(strcmp(e.monitor, "21in_rgb") == 0);
+    ASSERT_EQ_INT(e.sense, 0);
+    card_entry_set_monitor(&e, NULL);
+    ASSERT_TRUE(strcmp(e.monitor, "none") == 0);
+    ASSERT_EQ_INT(e.sense, MACHINE_SENSE_NONE);
+    // Extended codes: a strap's own (14" $2B, 21" $00), a row's ($0B), and
+    // no cable ($3F).
+    ASSERT_EQ_INT(card_monitor_ext_sense(&s_rows[0]), 0x2B);
+    ASSERT_EQ_INT(card_monitor_ext_sense(&s_rows[1]), 0x0B);
+    ASSERT_EQ_INT(card_monitor_ext_sense(&s_rows[2]), 0x00);
+    ASSERT_EQ_INT(card_monitor_ext_sense(NULL), 0x3F);
+}
+
 int main(void) {
     RUN(find_by_id);
     RUN(suggest_ignores_underscores);
     RUN(refuse_formats);
     RUN(list_names_every_id);
     RUN(slot_table_check);
+    RUN(monitor_check);
+    RUN(monitor_row_drives_the_sense);
     fprintf(stderr, "card_registry: all tests passed\n");
     return 0;
 }

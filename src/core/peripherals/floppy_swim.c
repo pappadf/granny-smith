@@ -443,6 +443,12 @@ static void ism_write_capture_flush(floppy_t *floppy) {
         LOG(2, "ISM write: invalid sector %d (max %d)", sector, sectors_per_track);
         return;
     }
+    // A write-protected disk takes no data field (the drive's sense says so;
+    // a guest that writes anyway lays nothing down).
+    if (!image_is_writable(img)) {
+        LOG(2, "ISM write: T=%d S=%d Sec=%d refused, the disk is write-protected", track, side, sector);
+        return;
+    }
 
     // MFM layout: block = (track * 2 + side) * sectors_per_track + (sector - 1)
     size_t block = (size_t)(track * 2 + side) * sectors_per_track + (sector - 1);

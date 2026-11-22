@@ -264,7 +264,9 @@ simulated network are its siblings at the root:
   `docs/internals/core/debug/debug_mmu.md`),
   `machine.memory`, `machine.rom`, `machine.via1`/`via2`,
   `machine.scc`, `machine.rtc`, `machine.adb.keyboard` / `machine.adb.mouse`,
-  `machine.floppy.drive[N].disk`, `machine.scsi.device[N].image`,
+  `machine.floppy.drive[N].image`, `machine.scsi.device[N].image` (one
+  `image` node under every drive and in `files.images[N]`:
+  `docs/internals/core/storage/image_kind.md` §3),
   `machine.sound`, `machine.screen`, `machine.nubus` / `machine.pci` (only
   on a machine with that bus; `slot[N]` collections); the AV machines add
   `machine.dsp` (the DSP3210 aux core), `machine.videoin` and
@@ -272,10 +274,11 @@ simulated network are its siblings at the root:
   dual-processor `pm9500mp` adds `machine.cpu1` (the second 604, a peer
   core with the same register surface as `machine.cpu`, no `$` aliases) and
   `machine.mp` (the card: `running`, `calls`, `entry`, `cpu1_instr`).
-  (Lisa adds `machine.hd` (ProFile) and `machine.power`.)
+  (Lisa adds `machine.hd` (ProFile, `machine.hd.image`) and `machine.power`;
+  the G3 desktop adds `machine.ata.device[U].image`.)
 - **emulator services** (siblings of `machine`, in this fixed root order):
   `scheduler`, `checkpoint`, `files` (host files, disk images and mounts:
-  `files.ls`/`cp`/`hd_create`/…, `files.images[N]`, `files.mounts[N]`,
+  `files.ls`/`cp`/`create`/…, `files.images[N]`, `files.mounts[N]`,
   `files.archive`), `debug` (+ `.find`, `.mac`, `breakpoints`/`logpoints`/
   `watchpoints`), `log` (`log.set`, `log.levels`, `log.category["scsi"]`),
   `shell`, `catalog` (what the emulator can build or fit: `models`,

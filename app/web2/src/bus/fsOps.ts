@@ -11,6 +11,7 @@ import { isInImageSpace } from '@/lib/diskImage';
 import { scratchPath } from '@/lib/opfsPaths';
 import { xferReadDisk } from './xfer';
 import { saveBlob } from '@/lib/saveBlob';
+import { formatSize } from '@/lib/format';
 
 // Per-item progress hook (e.g. to drive the status-bar indicator).
 export type ProgressFn = (name: string, index: number, total: number) => void;
@@ -243,7 +244,7 @@ export async function downloadRawImage(
     if (total > RAW_DOWNLOAD_IN_MEMORY_MAX)
       return {
         ok: false,
-        error: `this browser cannot save a ${Math.round(total / (1024 * 1024))} MB raw image (no save picker); save the .dmg instead`,
+        error: `this browser cannot save a ${formatSize(total)} raw image (no save picker); save the .dmg instead`,
       };
     const parts: Uint8Array[] = [];
     for (let at = 0; at < total;) {

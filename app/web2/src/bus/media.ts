@@ -11,6 +11,7 @@
 import { gsEval, gsEvalWithProgress, gsOk, gsErrorText, isGsError, isGsObject } from './emulator';
 import {
   MEDIA_TYPES,
+  identifyFile,
   identifyRom,
   identifyCardRom,
   type MediaTypeId,
@@ -169,7 +170,7 @@ export async function readMounts(): Promise<Record<string, MountInfo>> {
   const out: Record<string, MountInfo> = {};
   const count = await detectFdDriveCount(true);
   for (let d = 0; d < count; d++) {
-    const name = await gsEval(`machine.floppy.drive[${d}].disk.filename`);
+    const name = await gsEval(`machine.floppy.drive[${d}].image.source`);
     if (gsOk(name) && typeof name === 'string' && name)
       out[name] = { kind: 'fd', bus: 'floppy', drive: d };
   }
@@ -177,8 +178,8 @@ export async function readMounts(): Promise<Record<string, MountInfo>> {
   if (!Array.isArray(devices)) return out;
   for (const d of devices as Record<string, unknown>[]) {
     const bay = d.media as Partial<MediaBay> | undefined;
-    if (d.present !== true || typeof d.filename !== 'string' || !d.filename || !bay) continue;
-    out[d.filename] = {
+    if (d.present !== true || typeof d.source !== 'string' || !d.source || !bay) continue;
+    out[d.source] = {
       kind: d.type === 'cd' ? 'cd' : 'hd',
       bus: bay.bus ?? '',
       drive: bay.id ?? 0,
@@ -229,10 +230,10 @@ export async function fdDrivePresent(d: number): Promise<boolean> {
   return (await gsEval(`machine.floppy.drive[${d}].present`)) === true;
 }
 
-// The density the machine's floppy controller reads `path` as ("" or an
-// error when it is no floppy it takes).
-export async function identifyFloppy(path: string): Promise<unknown> {
-  return gsEval('machine.floppy.identify', [path]);
+// The floppy layout `path` is (gcr400, gcr800, mfm720, mfm1440), or "" when
+// it is no floppy (files.identify).
+export async function identifyFloppy(path: string): Promise<string> {
+  return (await identifyFile(gsEval, path))?.floppy ?? '';
 }
 
 // Whether the core takes `path` as a medium of type `id` (lib/media).
@@ -253,17 +254,14 @@ export function cardRomIdentity(
   return identifyCardRom(gsEval, what, path);
 }
 
-// Create a blank image at `path`: a hard disk through the method the
-// profile's blank-disk entry names (with its argument), or a floppy.
-// true when made, or the core's reason.
+// Create a blank image of `kind` and `size` at `path` (files.create): a
+// profile's blank-disk entry, or a floppy of its size.  true when made, or
+// the core's reason.
 export async function createBlankImage(
-  disk: { method: string; arg: unknown } | { highDensity: boolean },
+  disk: { kind: string; size: number | string },
   path: string,
 ): Promise<true | string> {
-  const res =
-    'method' in disk
-      ? await gsEval(disk.method, [path, disk.arg])
-      : await gsEval('files.fd_create', [path, disk.highDensity]);
+  const res = await gsEval('files.create', [path, disk.kind, disk.size]);
   return res === true ? true : gsErrorText(res);
 }
 
@@ -278,9 +276,9 @@ export async function convertImage(
   return isGsObject(r) ? (r as { bytes_in?: number; stored_bytes?: number }) : gsErrorText(r);
 }
 
-// The file name an attached image suggests for itself (`<target>.filename`).
+// The file name an attached image suggests for itself (`<image>.source`).
 export async function imageFileName(target: string): Promise<string> {
-  const r = await gsEval(`${target}.filename`);
+  const r = await gsEval(`${target}.source`);
   return typeof r === 'string' ? r : '';
 }
 

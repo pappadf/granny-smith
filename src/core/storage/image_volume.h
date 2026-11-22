@@ -5,7 +5,7 @@
 // The one "what is on this disk" classifier: an Apple Partition Map, or a
 // bare HFS, HFS Plus, HFSX, MFS, UFS or ISO 9660 volume, from the disk's
 // first bytes.  The format registry's disk detector, the VFS disk
-// namespace, files.probe, the bare-volume wrapper's sniff and the UDIF
+// namespace, files.identify, the bare-volume wrapper's sniff and the UDIF
 // writer's block-table name all ask it, so a disk one of them claims is one
 // the others recognise too.  Each test is the signature check of the
 // module that opens that kind (image_apm, image_hfs, image_mfs, image_ufs,

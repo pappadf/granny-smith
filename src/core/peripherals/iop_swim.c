@@ -691,17 +691,17 @@ static void swim_format_masks(const image_t *img, uint16_t *current, uint16_t *a
     uint16_t all = SWIM_FMT_MASK(SWIM_FMT_BIT_400K) | SWIM_FMT_MASK(SWIM_FMT_BIT_800K) |
                    SWIM_FMT_MASK(SWIM_FMT_BIT_720K) | SWIM_FMT_MASK(SWIM_FMT_BIT_1440K);
     if (img) {
-        if (image_get_type(img) == image_fd_ss) {
+        if (image_layout(img) == IMAGE_LAYOUT_GCR400) {
             cur = SWIM_FMT_MASK(SWIM_FMT_BIT_400K);
             all = cur;
-        } else if (image_get_type(img) == image_fd_ds) {
+        } else if (image_layout(img) == IMAGE_LAYOUT_GCR800) {
             cur = SWIM_FMT_MASK(SWIM_FMT_BIT_800K);
             all = SWIM_FMT_MASK(SWIM_FMT_BIT_400K) | cur;
-        } else if (image_get_type(img) == image_fd_dd_mfm) {
+        } else if (image_layout(img) == IMAGE_LAYOUT_MFM720) {
             cur = SWIM_FMT_MASK(SWIM_FMT_BIT_720K);
             // DD media: any DD capacity, but not 1440K -- that needs HD media.
             all = SWIM_FMT_MASK(SWIM_FMT_BIT_400K) | SWIM_FMT_MASK(SWIM_FMT_BIT_800K) | cur;
-        } else if (image_get_type(img) == image_fd_hd) {
+        } else if (image_layout(img) == IMAGE_LAYOUT_MFM1440) {
             cur = SWIM_FMT_MASK(SWIM_FMT_BIT_1440K);
             // HD media takes every floppy capacity.
         } else {
@@ -728,9 +728,9 @@ static void swim_fill_drive_status(iop_t *iop, int floppy_idx) {
     // MfmDrive/MfmDisk ask "is this MFM media"; MfmFormat asks "is it 1440K"
     // ($FF = 1440K, $00 = 720K -- IOP SWIM Driver ERS).  One flag used to
     // drive both, so a 720K disk could never have been reported correctly.
-    bool is_mfm = present && image_is_mfm_floppy(image_get_type(img));
-    bool is_1440 = present && image_get_type(img) == image_fd_hd;
-    bool is_ds = present && image_get_type(img) != image_fd_ss;
+    bool is_mfm = present && image_layout_is_mfm(image_layout(img));
+    bool is_1440 = present && image_layout(img) == IMAGE_LAYOUT_MFM1440;
+    bool is_ds = present && image_layout(img) != IMAGE_LAYOUT_GCR400;
 
     int track = (floppy && floppy_idx >= 0) ? floppy_drive_track(floppy, (unsigned)floppy_idx) : 0;
     if (track < 0)

@@ -11,6 +11,7 @@
   import ProgressBar, { type ProgressState } from '../ui/ProgressBar.svelte';
   import SectionHeading from '../ui/SectionHeading.svelte';
   import Spinner from '../ui/Spinner.svelte';
+  import { formatSize } from '@/lib/format';
   import type { IconName } from '@/lib/icons';
   import { urlBoot, dismissUrlBoot, type UrlFile } from '@/state/urlBoot.svelte';
 
@@ -19,13 +20,6 @@
     if (slot.startsWith('hd')) return 'hd';
     if (slot === 'cd') return 'cd';
     return 'chip';
-  }
-
-  // "512 KB", "25.0 MB", "1.20 GB".
-  function size(bytes: number): string {
-    if (bytes < 1024 * 1024) return `${Math.max(0, Math.round(bytes / 1024))} KB`;
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
   }
 
   // The file's completed fraction, or null when it cannot be known (no
@@ -61,15 +55,15 @@
       case 'done':
         // A blank disk's file is a few KB however large the disk: no size.
         if (f.blank) return f.reused ? 'Blank disk · already stored' : 'Blank disk · created';
-        return f.reused ? `Already stored · ${size(f.received)}` : size(f.received);
+        return f.reused ? `Already stored · ${formatSize(f.received)}` : formatSize(f.received);
       case 'failed':
         return 'Failed';
       case 'skipped':
         return 'Not needed';
       default: {
         const fr = fraction(f);
-        if (fr === null) return size(f.received);
-        return `${size(f.received)} of ${size(f.total ?? 0)} · ${Math.floor(fr * 100)}%`;
+        if (fr === null) return formatSize(f.received);
+        return `${formatSize(f.received)} of ${formatSize(f.total ?? 0)} · ${Math.floor(fr * 100)}%`;
       }
     }
   }

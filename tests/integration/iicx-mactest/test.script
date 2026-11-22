@@ -128,7 +128,8 @@ scheduler.run 35000000
 run_until_match("insert-800k-internal.png", 140000000, 5000000)
 machine.screen.match insert-800k-internal.png
 
-machine.floppy.create "$WORK_DIR/blank800-int.dsk" 0
+files.create "$WORK_DIR/blank800-int.dsk" "floppy" "800K"
+machine.floppy.drive[0].insert "$WORK_DIR/blank800-int.dsk"
 scheduler.run 10000000
 
 # OK on the "insert disk" dialog (~454, 245).
@@ -143,7 +144,13 @@ run_until_match("insert-1.4mb-internal.png", 265000000, 6000000)
 machine.screen.match insert-1.4mb-internal.png
 
 machine.adb.mouse.click false "global"
-machine.floppy.create "$WORK_DIR/blankHD-int.dsk" "hd"
+files.create "$WORK_DIR/blankHD-int.dsk" "floppy" "1440K"
+# The first free drive, as machine.floppy.create picked.
+if !machine.floppy.drive[0].present {
+    machine.floppy.drive[0].insert "$WORK_DIR/blankHD-int.dsk"
+} else {
+    machine.floppy.drive[1].insert "$WORK_DIR/blankHD-int.dsk"
+}
 # Move the cursor away then back to the OK button: it was parked on OK by
 # the previous step's click, so a same-spot move emits no ADB motion and
 # the click has no fresh position event to bind to under E-clock-synced
@@ -173,7 +180,8 @@ run_until_match("insert-800k-external.png", 140000000, 5000000)
 machine.screen.match insert-800k-external.png
 
 machine.adb.mouse.click false "global"
-machine.floppy.create "$WORK_DIR/blank800-ext.dsk" 1
+files.create "$WORK_DIR/blank800-ext.dsk" "floppy" "800K"
+machine.floppy.drive[1].insert "$WORK_DIR/blank800-ext.dsk"
 # Settle wait BEFORE clicking OK.  On real hardware a user inserts the external
 # blank in response to this prompt and the OS detects it (drive light / diskEvt)
 # — completing the .Sony disk-in-place debounce — well before clicking OK.  The
@@ -209,7 +217,13 @@ run_until_match("insert-1.4mb-external.png", 1200000000, 30000000)
 machine.screen.match insert-1.4mb-external.png
 
 machine.adb.mouse.click false "global"
-machine.floppy.create "$WORK_DIR/blankHD-ext.dsk" "hd"
+files.create "$WORK_DIR/blankHD-ext.dsk" "floppy" "1440K"
+# The first free drive, as machine.floppy.create picked.
+if !machine.floppy.drive[0].present {
+    machine.floppy.drive[0].insert "$WORK_DIR/blankHD-ext.dsk"
+} else {
+    machine.floppy.drive[1].insert "$WORK_DIR/blankHD-ext.dsk"
+}
 machine.floppy.drive[0].eject
 machine.floppy.drive[1].insert "$WORK_DIR/blankHD-ext.dsk" true
 

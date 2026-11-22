@@ -21,6 +21,7 @@
 #include "gs_assert.h"
 #include "host_input.h"
 #include "image.h"
+#include "image_kind.h"
 #include "image_wrap.h"
 #include "keyboard.h"
 #include "log.h"
@@ -71,17 +72,6 @@ LOG_USE_CATEGORY_NAME("system");
 // never reads it (it uses the cfg it was given; the system_*() accessors
 // assert this).
 static config_t *global_emulator = NULL;
-
-// Pick the delta directory for a fresh writable mount.  Default is the
-// active machine directory (so deltas live alongside state.checkpoint and
-// the manifest).  For a base on volatile scratch storage -- which paths those
-// are is the platform's knowledge (platform_path_is_volatile) -- fall back to NULL
-// so image_create places deltas in its scratch root.
-static const char *pick_delta_dir(const char *path) {
-    if (platform_path_is_volatile(path))
-        return NULL;
-    return checkpoint_machine_dir();
-}
 
 // The most disk images one machine tracks; also the bound a restored
 // checkpoint's image list is checked against (config_max_images).
@@ -461,9 +451,8 @@ void system_drive_io_counts(uint64_t reads[DRIVE_KIND_COUNT], uint64_t writes[DR
         const image_t *img = config_get_image(cfg, i);
         if (!img)
             continue;
-        int k = image_is_floppy(image_get_type(img)) ? DRIVE_KIND_FD
-                : image_get_type(img) == image_cdrom ? DRIVE_KIND_CD
-                                                     : DRIVE_KIND_HD;
+        image_kind_t kind = image_get_kind(img);
+        int k = kind == IMAGE_KIND_FLOPPY ? DRIVE_KIND_FD : kind == IMAGE_KIND_CD ? DRIVE_KIND_CD : DRIVE_KIND_HD;
         reads[k] += image_get_reads(img);
         writes[k] += image_get_writes(img);
     }
@@ -634,9 +623,11 @@ static int do_insert_fd(const char *path, int preferred, int writable_flag) {
     if (target < 0)
         return -1;
 
-    image_t *disk = writable ? image_create(path, pick_delta_dir(path)) : image_open_readonly(path);
+    char err[256];
+    image_t *disk =
+        image_open_kind(path, &(image_open_opts_t){.kind = IMAGE_KIND_FLOPPY, .writable = writable}, err, sizeof err);
     if (!disk) {
-        out_printf("fd insert: failed to open disk image: %s\n", path);
+        out_printf("fd insert: %s\n", err);
         return -1;
     }
 
@@ -652,131 +643,6 @@ static int do_insert_fd(const char *path, int preferred, int writable_flag) {
     // The drive by its object path, 0-based like the path: the page's own
     // messages number drives from 1, and a bare "drive 0" read as another one.
     out_printf("fd insert: inserted %s into machine.floppy.drive[%d].\n", path, target);
-    return 0;
-}
-
-// Probe a file to check if it's a valid floppy image (without inserting).
-// Returns 0 if valid floppy, 1 if not.
-int system_probe_floppy(const char *path) {
-    image_t *disk = image_open_readonly(path);
-    if (!disk) {
-        out_printf("%s: NOT a supported format\n", path);
-        return 1;
-    }
-
-    if (!image_is_floppy(image_get_type(disk))) {
-        out_printf("%s: Valid disk image but not a floppy (size: %llu bytes)\n", path,
-                   (unsigned long long)image_get_raw_size(disk));
-        image_close(disk);
-        return 1;
-    }
-
-    const char *type_str = "unknown";
-    if (image_get_type(disk) == image_fd_ss)
-        type_str = "single-sided 400KB";
-    else if (image_get_type(disk) == image_fd_ds)
-        type_str = "double-sided 800KB";
-    else if (image_get_type(disk) == image_fd_dd_mfm)
-        type_str = "double-density 720KB MFM";
-    else if (image_get_type(disk) == image_fd_hd)
-        type_str = "high-density 1440KB";
-
-    out_printf("%s: Valid floppy image (%s)\n", path, type_str);
-    image_close(disk);
-    return 0;
-}
-
-// Create a new blank floppy image and insert it.
-// Returns 0 on success, -1 on failure.
-int system_create_floppy(const char *path, bool high_density, int preferred) {
-    config_t *config = global_emulator;
-    if (!config) {
-        out_printf("fd create: emulator config not initialized.\n");
-        return -1;
-    }
-
-    // The preferred drive when it exists and is free, else the first free one.
-    int target = (preferred >= 0 && preferred < sys_fd_count(config) && !sys_fd_is_inserted(config, preferred))
-                     ? preferred
-                     : sys_fd_pick(config, -1, "fd create");
-    if (target < 0)
-        return -1;
-
-    int rc = image_create_blank_floppy(path, false, high_density);
-    if (rc != 0) {
-        if (rc == IMAGE_CREATE_EXISTS)
-            out_printf("fd create: file already exists: %s (won't overwrite)\n", path);
-        else
-            out_printf("fd create: failed to create blank floppy file: %s\n", path);
-        return -1;
-    }
-
-    image_t *disk = image_create(path, pick_delta_dir(path));
-    if (!disk) {
-        out_printf("fd create: failed to open newly created image: %s\n", path);
-        return -1;
-    }
-
-    if (sys_fd_insert(config, target, disk) != 0) {
-        out_printf("fd create: machine.floppy.drive[%d] refused %s.\n", target, path);
-        image_close(disk);
-        return -1;
-    }
-    config_add_image(config, disk);
-    out_printf("fd create: created %s (%s) and inserted into machine.floppy.drive[%d].\n", path,
-               high_density ? "1440K" : "800K", target);
-    return 0;
-}
-
-// Size limits for hd create
-#define HD_CREATE_MAX_SIZE (2ULL * 1024 * 1024 * 1024) // 2 GiB
-
-// Floppy sizes that should be rejected.  Named _BYTES because machine_profile.h
-// (included above) declares floppy_kind_t with FLOPPY_400K / FLOPPY_800K as
-// ENUM CONSTANTS: bare macros of the same name silently shadowed them for the
-// rest of this file, so anything here that later meant the kind would have got
-// a byte count instead.
-#define FLOPPY_400K_BYTES  409600
-#define FLOPPY_800K_BYTES  819200
-#define FLOPPY_1440K_BYTES 1474560
-
-// Create a new blank hard disk image at the given path.
-// Returns 0 on success, -1 on failure.
-static int do_create_hd(const char *path, const char *size_str) {
-    size_t size = drive_catalog_parse_size(size_str);
-    if (size == 0) {
-        out_printf("hd create: invalid size: %s\n", size_str);
-        out_printf("  Use a drive model (e.g. HD20SC), human size (e.g. 40mb),\n");
-        out_printf("  or exact bytes/suffix (e.g. 20M, 512K, 21411840)\n");
-        out_printf("  Run 'hd models' to see available drive sizes.\n");
-        return -1;
-    }
-    if (size > HD_CREATE_MAX_SIZE) {
-        out_printf("hd create: size %zu exceeds maximum (2 GiB)\n", size);
-        return -1;
-    }
-    // reject floppy-sized images
-    if (size == FLOPPY_400K_BYTES || size == FLOPPY_800K_BYTES || size == FLOPPY_1440K_BYTES) {
-        out_printf("hd create: size %zu matches a floppy format, use fd create instead\n", size);
-        return -1;
-    }
-    // refuse to overwrite existing files
-    FILE *exist = fopen(path, "rb");
-    if (exist) {
-        fclose(exist);
-        out_printf("hd create: file already exists: %s (won't overwrite)\n", path);
-        return -1;
-    }
-    // A .dmg is a UDIF of one zero run -- a couple of KB however large the
-    // disk; any other name is a raw file of the full size (which the browser
-    // charges in full).
-    bool udif = path_has_ext(path, ".dmg");
-    int rc = udif ? image_create_empty_udif(path, size) : image_create_empty(path, size);
-    if (rc != 0) {
-        out_printf("hd create: failed to create image: %s\n", path);
-        return -1;
-    }
-    out_printf("hd create: created %s (%zu bytes%s)\n", path, size, udif ? ", UDIF" : "");
     return 0;
 }
 
@@ -1108,7 +974,7 @@ int system_find_media(const char *dir_path, const char *dest) {
         // Try as floppy image
         image_t *img = image_open_readonly(full);
         if (img) {
-            bool is_floppy = image_is_floppy(image_get_type(img));
+            bool is_floppy = (image_layout(img) != IMAGE_LAYOUT_NONE);
             image_close(img);
             if (is_floppy) {
                 snprintf(found_path, sizeof(found_path), "%s", full);
@@ -1531,11 +1397,12 @@ static bool media_open(media_bus_t bus, bool cdrom, const char *path, media_slot
         out_printf("Cannot attach: no image path\n");
         return false;
     }
+    char err[256];
     if (bus == MEDIA_BUS_PROFILE) {
-        const image_geometry_t geom = {.block_size = PROFILE_BLOCK_SIZE};
-        slot->img = image_create_with_geometry(path, pick_delta_dir(path), geom);
+        slot->img =
+            image_open_kind(path, &(image_open_opts_t){.kind = IMAGE_KIND_PROFILE, .writable = true}, err, sizeof err);
         if (!slot->img)
-            out_printf("Failed to open ProFile image: %s\n", path);
+            out_printf("Failed to open ProFile image: %s\n", err);
         return slot->img != NULL;
     }
     if (cdrom) {
@@ -1545,20 +1412,17 @@ static bool media_open(media_bus_t bus, bool cdrom, const char *path, media_slot
             out_printf("Cannot attach a CD-ROM: this machine takes no CD-ROM drive\n");
             return false;
         }
-        // CD-ROM images are always opened read-only
-        slot->img = image_open_readonly(path);
+        // A CD-ROM medium is always read-only (image_open_kind).
+        slot->img = image_open_kind(path, &(image_open_opts_t){.kind = IMAGE_KIND_CD}, err, sizeof err);
         if (!slot->img) {
-            out_printf("Failed to open CD-ROM image: %s\n", path);
+            out_printf("Failed to open CD-ROM image: %s\n", err);
             return false;
         }
-        // The attach names the medium a CD-ROM, and that wins over the size
-        // heuristic image_open_readonly applied (a small ISO can look like a
-        // floppy).  Say so when the two disagree on a floppy: the image_t
-        // keeps no floppy-specific state, but the caller may have picked the
+        // The attach names the medium a CD-ROM, whatever its size says.  Say
+        // so when the size is a floppy's: the caller may have picked the
         // wrong file.
-        if (image_is_floppy(image_get_type(slot->img)))
+        if (image_layout(slot->img) != IMAGE_LAYOUT_NONE)
             LOG(1, "%s: floppy-sized image attached as a CD-ROM", path);
-        image_set_type(slot->img, image_cdrom);
         // A CD-ROM drive presents 2048-byte logical blocks — that is the Mode 1
         // sector, not a property of the disc — so serve every disc at 2048 and let
         // the guest ask for anything else.  A host that wants 512-byte addressing
@@ -1587,9 +1451,9 @@ static bool media_open(media_bus_t bus, bool cdrom, const char *path, media_slot
                    (unsigned long long)disk_size(slot->img), slot->block_size);
         return true;
     }
-    slot->img = image_create(path, pick_delta_dir(path));
+    slot->img = image_open_kind(path, &(image_open_opts_t){.kind = IMAGE_KIND_HD, .writable = true}, err, sizeof err);
     if (!slot->img) {
-        out_printf("Failed to open image: %s\n", path);
+        out_printf("Failed to open image: %s\n", err);
         return false;
     }
     // An HFS volume with no driver in front of it (a bare volume, or a
@@ -1758,7 +1622,7 @@ int system_media_attach_scsi_bus(config_t *cfg, struct scsi *bus, const media_sl
 // One verb for "put this disk in that bay", whatever bus the bay is on: the
 // one substrate dispatch (media_attach), fed by media_open.  Before,
 // every caller branched on hd_bus itself and chose between scsi.attach_hd,
-// scsi2.attach_hd and hd.attach -- and several chose wrong.
+// scsi2.attach_hd and hd.attach (now hd.insert) -- and several chose wrong.
 
 image_t *system_media_image_scsi_bus(struct scsi *bus, int unit) {
     return (bus && unit >= 0 && unit <= 6) ? scsi_device_image(bus, (unsigned)unit) : NULL;
@@ -1990,7 +1854,7 @@ bool system_checkpoint_probe(void) {
 
 // ===== Typed object-model entry points =====================================
 // Thin wrappers the typed methods (floppy.drives[N].insert,
-// scsi.attach_hd, files.hd_create) call directly — no line
+// scsi.attach_hd) call directly — no line
 // re-tokenisation, no legacy command framework.
 
 // Insert a floppy image into a drive (or the first free drive when
@@ -2011,6 +1875,3 @@ int system_hd_attach_on(struct scsi *bus, const char *path, int scsi_id) {
 
 // Create a blank SCSI hard-disk image sized per `size_str` (a drive
 // model, human size, or byte count). Returns 0 / negative.
-int system_hd_create(const char *path, const char *size_str) {
-    return do_create_hd(path, size_str);
-}

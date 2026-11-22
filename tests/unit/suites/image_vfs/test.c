@@ -3,6 +3,7 @@
 
 // The image VFS backend over in-memory HFS+ volumes.  See Makefile.
 
+#include "codec.h"
 #include "format_registry.h"
 #include "hfsplus_builder.h"
 #include "image.h"
@@ -674,7 +675,203 @@ TEST(test_disk_detection_agrees_with_open) {
     }
 }
 
+// ---- Archive member names ----------------------------------------------------
+
+static void be16(uint8_t *p, uint16_t v) {
+    p[0] = (uint8_t)(v >> 8);
+    p[1] = (uint8_t)v;
+}
+static void be32(uint8_t *p, uint32_t v) {
+    be16(p, (uint16_t)(v >> 16));
+    be16(p + 2, (uint16_t)v);
+}
+static void le16(uint8_t *p, uint16_t v) {
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+}
+static void le32(uint8_t *p, uint32_t v) {
+    le16(p, (uint16_t)v);
+    le16(p + 2, (uint16_t)(v >> 16));
+}
+
+// A StuffIt 5 archive of one stored file named `name` (raw bytes), into
+// `a`; its length.  The layout tests/unit/suites/peeler builds (build_sit5).
+static size_t sit5_one(uint8_t *a, size_t cap, const char *name, const char *data) {
+    size_t nl = strlen(name), dl = strlen(data), h1 = 48 + nl;
+    size_t total = 100 + h1 + 36 + dl;
+    ASSERT_TRUE(total <= cap);
+    memset(a, 0, total);
+    memcpy(a, "StuffIt (c)1997-2001", 20);
+    memcpy(a + 20, " Aladdin Systems, Inc., http://www.aladdinsys.com/StuffIt/", 58);
+    a[78] = '\r';
+    a[79] = '\n';
+    be16(a + 92, 1); // one entry
+    be32(a + 94, 100); // at 100
+    uint8_t *h = a + 100;
+    be32(h, 0xA5A5A5A5u);
+    h[4] = 1; // version
+    be16(h + 6, (uint16_t)h1);
+    be16(h + 30, (uint16_t)nl);
+    be32(h + 34, (uint32_t)dl);
+    be32(h + 38, (uint32_t)dl);
+    be16(h + 42, codec_crc16_arc(0, data, dl));
+    memcpy(h + 48, name, nl);
+    be16(h + 32, codec_crc16_arc(0, h, h1)); // over header 1, its own CRC zero
+    memcpy(h + h1 + 4, "TEXTttxt", 8);
+    memcpy(h + h1 + 36, data, dl);
+    return total;
+}
+
+// A MacBinary II file named `name` (raw bytes) holding data fork `data`.
+static size_t macbinary_one(uint8_t *a, size_t cap, const char *name, const char *data) {
+    size_t nl = strlen(name), dl = strlen(data);
+    size_t total = 128 + ((dl + 127) & ~(size_t)127);
+    ASSERT_TRUE(total <= cap && nl <= 63);
+    memset(a, 0, total);
+    a[1] = (uint8_t)nl;
+    memcpy(a + 2, name, nl);
+    memcpy(a + 65, "TEXTttxt", 8);
+    be32(a + 83, (uint32_t)dl);
+    a[122] = 129; // written by MacBinary II
+    a[123] = 129;
+    be16(a + 124, codec_crc16_xmodem(0, a, 124));
+    memcpy(a + 128, data, dl);
+    return total;
+}
+
+// A zip of one stored file named `name` (raw bytes; general-purpose flags
+// `flags`, bit 11 being "the name is UTF-8").
+static size_t zip_one(uint8_t *a, size_t cap, const char *name, const char *data, uint16_t flags) {
+    size_t nl = strlen(name), dl = strlen(data);
+    size_t total = 30 + nl + dl + 46 + nl + 22;
+    ASSERT_TRUE(total <= cap);
+    memset(a, 0, total);
+    uint32_t crc = codec_crc32(0, data, dl);
+    uint8_t *l = a; // local header
+    le32(l, 0x04034b50u);
+    le16(l + 4, 20);
+    le16(l + 6, flags);
+    le32(l + 14, crc);
+    le32(l + 18, (uint32_t)dl);
+    le32(l + 22, (uint32_t)dl);
+    le16(l + 26, (uint16_t)nl);
+    memcpy(l + 30, name, nl);
+    memcpy(l + 30 + nl, data, dl);
+    uint8_t *c = l + 30 + nl + dl; // central directory
+    le32(c, 0x02014b50u);
+    le16(c + 4, 20);
+    le16(c + 6, 20);
+    le16(c + 8, flags);
+    le32(c + 16, crc);
+    le32(c + 20, (uint32_t)dl);
+    le32(c + 24, (uint32_t)dl);
+    le16(c + 28, (uint16_t)nl);
+    memcpy(c + 46, name, nl);
+    uint8_t *e = c + 46 + nl; // end of central directory
+    le32(e, 0x06054b50u);
+    le16(e + 8, 1);
+    le16(e + 10, 1);
+    le32(e + 12, (uint32_t)(46 + nl));
+    le32(e + 16, (uint32_t)(c - a));
+    return total;
+}
+
+// The one member's listed name, in `out`.
+static void only_name(ns_t *ns, char *out, size_t cap) {
+    ns_dirent_t *d = NULL;
+    int n = 0;
+    ASSERT_EQ_INT(0, ns_list(ns, "", &d, &n));
+    ASSERT_EQ_INT(1, n);
+    snprintf(out, cap, "%s", d[0].name);
+    free(d);
+}
+
+// Whether `path` opens, and its data fork reads back as `data`.
+static bool reads_as(ns_t *ns, const char *path, const char *data) {
+    int err = 0;
+    source_t *s = ns_open(ns, path, GS_FORK_DATA, &err);
+    if (!s)
+        return false;
+    char buf[64] = {0};
+    size_t dl = strlen(data);
+    bool ok = source_size(s) == dl && source_read_exact(s, 0, buf, dl) == 0 && memcmp(buf, data, dl) == 0;
+    source_release(s);
+    return ok;
+}
+
+// A Mac archive's MacRoman names list as UTF-8 (0x8E is "é"), a '/' inside
+// one as ':', and are found by that name as the Finder would find it --
+// in either case, never by the raw byte.
+TEST(test_mac_archive_names_are_utf8) {
+    static uint8_t a[1024];
+    size_t len = sit5_one(a, sizeof(a), "Caf\x8E", "payload");
+    source_t *src = source_memory(a, len, false, "names.sit");
+    ns_t *ns = ns_open_archive(src, "sit");
+    ASSERT_TRUE(ns != NULL);
+    char name[256];
+    only_name(ns, name, sizeof(name));
+    ASSERT_TRUE(strcmp(name, "Caf\xC3\xA9") == 0);
+    ASSERT_TRUE(reads_as(ns, "Caf\xC3\xA9", "payload"));
+    ASSERT_TRUE(reads_as(ns, "CAF\xC3\x89", "payload")); // "CAFÉ"
+    ASSERT_TRUE(!reads_as(ns, "Caf\x8E", "payload")); // the raw byte names nothing
+    ASSERT_TRUE(!reads_as(ns, "Cafe", "payload")); // diacriticals are significant
+    ns_dirent_t st;
+    ASSERT_EQ_INT(0, ns_stat(ns, "/caf\xC3\xA9/", &st));
+    ASSERT_TRUE(strcmp(st.name, "Caf\xC3\xA9") == 0); // named as the archive names it
+    ns_close(ns);
+    source_release(src);
+
+    len = sit5_one(a, sizeof(a), "A/\x8E", "slash");
+    src = source_memory(a, len, false, "slash.sit");
+    ns = ns_open_archive(src, "sit");
+    ASSERT_TRUE(ns != NULL);
+    only_name(ns, name, sizeof(name));
+    ASSERT_TRUE(strcmp(name, "A:\xC3\xA9") == 0);
+    ASSERT_TRUE(reads_as(ns, "a:\xC3\x89", "slash"));
+    ns_close(ns);
+    source_release(src);
+
+    len = macbinary_one(a, sizeof(a), "R\x8Esum\x8E", "cv");
+    src = source_memory(a, len, false, "resume.bin");
+    ns = ns_open_archive(src, "bin");
+    ASSERT_TRUE(ns != NULL);
+    only_name(ns, name, sizeof(name));
+    ASSERT_TRUE(strcmp(name, "R\xC3\xA9sum\xC3\xA9") == 0);
+    ASSERT_TRUE(reads_as(ns, "r\xC3\x89SUM\xC3\x89", "cv"));
+    ns_close(ns);
+    source_release(src);
+}
+
+// Zip names are not MacRoman: a UTF-8 one lists as stored, a byte of
+// another encoding stays that byte, and both match exactly.
+TEST(test_zip_names_are_not_converted) {
+    static uint8_t a[1024];
+    size_t len = zip_one(a, sizeof(a), "Caf\xC3\xA9", "utf8", 0x0800);
+    source_t *src = source_memory(a, len, false, "utf8.zip");
+    ns_t *ns = ns_open_archive(src, "zip");
+    ASSERT_TRUE(ns != NULL);
+    char name[256];
+    only_name(ns, name, sizeof(name));
+    ASSERT_TRUE(strcmp(name, "Caf\xC3\xA9") == 0);
+    ASSERT_TRUE(reads_as(ns, "Caf\xC3\xA9", "utf8"));
+    ASSERT_TRUE(!reads_as(ns, "caf\xC3\xA9", "utf8"));
+    ns_close(ns);
+    source_release(src);
+
+    len = zip_one(a, sizeof(a), "Caf\x82", "cp437", 0); // CP437 0x82 is "é"
+    src = source_memory(a, len, false, "cp437.zip");
+    ns = ns_open_archive(src, "zip");
+    ASSERT_TRUE(ns != NULL);
+    only_name(ns, name, sizeof(name));
+    ASSERT_TRUE(strcmp(name, "Caf\x82") == 0);
+    ASSERT_TRUE(reads_as(ns, "Caf\x82", "cp437"));
+    ns_close(ns);
+    source_release(src);
+}
+
 int main(void) {
+    RUN(test_mac_archive_names_are_utf8);
+    RUN(test_zip_names_are_not_converted);
     RUN(test_volume_sniff_names_each_kind);
     RUN(test_disk_detection_agrees_with_open);
     RUN(test_reads_a_data_fork_and_a_resource);

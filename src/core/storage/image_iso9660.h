@@ -56,7 +56,8 @@ void iso_close(iso_volume_t *vol);
 // The volume identifier (UTF-8, trailing spaces dropped).
 const char *iso_volume_name(const iso_volume_t *vol);
 
-// Look up a path (UTF-8 components, case-insensitive) from the root;
+// Look up a path (UTF-8 components, case-insensitive: as a Mac name,
+// mac_name_eq, on a Joliet volume; over ASCII otherwise) from the root;
 // `nc` 0 is the root itself.  0, -ENOENT, -ENOTDIR, or another negative
 // errno.
 int iso_lookup(iso_volume_t *vol, const char *const *comp, size_t nc, iso_dirent_t *out);

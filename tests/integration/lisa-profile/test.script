@@ -33,7 +33,7 @@ assert machine.via2.freq_factor == 10 "via2 not at the 2/5's CPU/10"
 assert machine.cpu.pc == 0x00FE2DC6 "did not reach the boot-menu input wait"
 
 # Attach a blank in-memory ProFile (drives OCD/ low; the ROM now sees it connected).
-machine.hd.attach
+machine.hd.insert
 assert machine.hd.present == true "ProFile should be attached"
 
 # Set up the PROREAD call: D1 = block $FFFFFF (device-info), D2 = timeout,
