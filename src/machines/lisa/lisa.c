@@ -1389,10 +1389,13 @@ static const machine_substrate_t lisa_substrate = {
     .fd_present = lisa_fd_present,
     .input_key = lisa_input_key,
     .input_key_raw = lisa_input_key_raw,
-    // The COPS response FIFO is 32 bytes (cops.c COPS_FIFO) and carries mouse
-    // reports as well as keys, so keyboard.type gets a quarter of the ADB
-    // budget and leaves the rest as headroom.
-    .key_queue_bytes = 24,
+    // No key_queue_bytes of its own: keyboard.type takes the default budget.
+    // It used to be 24 bytes (11 unshifted characters), sized as if a whole
+    // line landed in the 32-byte COPS response FIFO at once.  It does not:
+    // keyboard.type paces transitions 4 ms apart (host_input.c), and the OS
+    // drains each byte within ~100 us of its arrival, so the FIFO only ever
+    // holds what the guest has not yet read -- a 20-character mixed-case
+    // file name (60 bytes) arrives intact in LOS's desktop.
     .input_mouse_move = lisa_input_mouse_move,
     .input_mouse_button = lisa_input_mouse_button,
     .media_attach = lisa_media_attach,

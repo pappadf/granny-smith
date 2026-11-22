@@ -99,6 +99,12 @@ assert debug.mac.atrap(0xA022) == "_NewHandle" "debug.mac.mode = on does not for
 assert debug.frame($la_word, 1, 0).rows[0].mnem == "_NewHandle" "the disassembler ignores debug.mac.mode"
 debug.mac.mode = "auto"
 
+# ---- keyboard.type takes a whole line --------------------------------------
+# The transitions are paced in guest time, so a line longer than the COPS
+# FIFO is not refused (it was, past 24 bytes: 11 plain characters).
+assert machine.adb.keyboard.type("A1b2C3d4E5f6G7h8I9j0") == 20 "a 20-character line was refused"
+scheduler.run 10000000
+
 # ---- A breakpoint in a segment that is not present --------------------------
 # Open the Calculator: its process faults on its first code segment, the
 # operating system loads it and returns to the faulting instruction.  A
