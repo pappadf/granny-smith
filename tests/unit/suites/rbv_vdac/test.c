@@ -25,7 +25,7 @@
 // === Bus stubs ===============================================================
 
 // The card asks the bus which kind is seated, to decode its monitor.
-const nubus_card_kind_t *nubus_slot_kind(nubus_bus_t *bus, int slot) {
+const nubus_card_kind_t *nubus_seated_kind(nubus_bus_t *bus, int slot) {
     (void)bus;
     (void)slot;
     return &builtin_rbv_video_kind;

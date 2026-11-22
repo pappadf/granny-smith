@@ -22,9 +22,13 @@ assert(machine.id == "iicx", "model from CLI")
 assert(machine.ram == 8192, "ram from CLI")
 assert(machine.rom.id == "97221136", "rom from CLI")
 
--- --- Slot nodes describe what is installed: an empty socket has none. ---
+-- --- Every declared socket has a slot node; an empty one says so and has
+-- no card under it. ---
 assert(machine.nubus.slot[9].number == 9, "populated socket $9 missing from object model")
-assert(not gs.ok(function() return machine.nubus.slot[10].number end), "an empty socket has no slot node")
+assert(machine.nubus.slot[9].empty == false, "socket $9 holds the card")
+assert(machine.nubus.slot[10].number == 10, "empty socket $A missing from object model")
+assert(machine.nubus.slot[10].empty == true, "socket $A is empty")
+assert(not gs.ok(function() return machine.nubus.slot[10].card.id end), "an empty socket has no card node")
 
 -- --- A log line written while a machine is built carries the running
 -- machine's PC and instruction count; it used to reach for the machine
