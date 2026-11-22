@@ -1015,6 +1015,217 @@ TEST(a_publish_that_fails_changes_nothing) {
     link_delete();
 }
 
+// --- EtherTalk: the machine's Ethernet port ----------------------------------
+//
+// The port as the AV Quadras' MACE attaches it (appletalk.h, "EtherTalk"):
+// 802.3 frames with the 802.2 LLC/SNAP header, extended DDP and AARP.
+
+#define ETH_MAX 1600
+static uint8_t g_eth[16][ETH_MAX];
+static size_t g_eth_len[16];
+static int g_neth;
+
+// The port's send hook: what the network puts on the Ethernet cable.
+static void eth_capture(void *ctx, const uint8_t *frame, size_t len) {
+    (void)ctx;
+    ASSERT_TRUE(g_neth < 16 && len <= ETH_MAX);
+    memcpy(g_eth[g_neth], frame, len);
+    g_eth_len[g_neth++] = len;
+}
+
+static const uint8_t k_guest_mac[6] = {0x02, 0x00, 0x00, 0x09, 0x07, 0x02};
+static const uint8_t k_host_mac[6] = ATALK_HOST_MAC_INIT;
+static const uint8_t k_at_bcast[6] = {0x09, 0x00, 0x07, 0xFF, 0xFF, 0xFF};
+static const uint8_t k_snap_ddp[8] = {0xAA, 0xAA, 0x03, 0x08, 0x00, 0x07, 0x80, 0x9B};
+static const uint8_t k_snap_aarp[8] = {0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00, 0x80, 0xF3};
+#define GUEST_NET 0xFF12u
+
+// Boot with an Ethernet port attached and nothing captured yet.
+static void ether_boot(void) {
+    link_boot();
+    atalk_conn_attach_ether(link_conn(), eth_capture, NULL);
+    g_neth = 0;
+}
+
+// An 802.3 frame from the guest to `dst`: SNAP `snap`, then `body`.
+static void guest_ether(const uint8_t *dst, const uint8_t *snap, const uint8_t *body, size_t blen) {
+    uint8_t f[ETH_MAX];
+    memcpy(f, dst, 6);
+    memcpy(f + 6, k_guest_mac, 6);
+    size_t field = 8 + blen;
+    f[12] = (uint8_t)(field >> 8);
+    f[13] = (uint8_t)field;
+    memcpy(f + 14, snap, 8);
+    memcpy(f + 22, body, blen);
+    size_t len = 22 + blen;
+    while (len < 60)
+        f[len++] = 0; // the minimum frame: padding the 802.3 length excludes
+    atalk_conn_ether_input(link_conn(), f, len);
+}
+
+// An AARP packet from the guest at GUEST_NET.`node`, asking about
+// `dst_net`.`dst_node`.
+static void guest_aarp(uint8_t function, uint8_t node, uint16_t dst_net, uint8_t dst_node) {
+    uint8_t p[28] = {0x00, 0x01, 0x80, 0x9B, 6, 4, 0x00, function};
+    memcpy(p + 8, k_guest_mac, 6);
+    p[15] = (uint8_t)(GUEST_NET >> 8);
+    p[16] = (uint8_t)GUEST_NET;
+    p[17] = node;
+    p[25] = (uint8_t)(dst_net >> 8);
+    p[26] = (uint8_t)dst_net;
+    p[27] = dst_node;
+    guest_ether(k_at_bcast, k_snap_aarp, p, sizeof p);
+}
+
+// An extended-DDP datagram from the guest at GUEST_NET.GUEST_NODE.
+static void guest_ext_ddp(const uint8_t *dst_mac, uint16_t dst_net, uint8_t dst_node, uint8_t dst_sock,
+                          uint8_t src_sock, uint8_t type, const uint8_t *payload, size_t plen) {
+    uint8_t d[600];
+    size_t len = 13 + plen;
+    d[0] = (uint8_t)(len >> 8);
+    d[1] = (uint8_t)len;
+    d[2] = d[3] = 0;
+    d[4] = (uint8_t)(dst_net >> 8);
+    d[5] = (uint8_t)dst_net;
+    d[6] = (uint8_t)(GUEST_NET >> 8);
+    d[7] = (uint8_t)GUEST_NET;
+    d[8] = dst_node;
+    d[9] = GUEST_NODE;
+    d[10] = dst_sock;
+    d[11] = src_sock;
+    d[12] = type;
+    memcpy(d + 13, payload, plen);
+    guest_ether(dst_mac, k_snap_ddp, d, len);
+}
+
+// A probe for a tentative address is none of the host's business -- unless
+// it is the host's own node, which AARP defends with a response, so the
+// guest picks another (Inside AppleTalk ch. 2).  A request for the host's
+// address is answered the same way.
+TEST(aarp_defends_and_resolves_the_host_address) {
+    ether_boot();
+    guest_aarp(3, GUEST_NODE, GUEST_NET, GUEST_NODE); // probing its own tentative address
+    ASSERT_EQ_INT(0, g_neth);
+    guest_aarp(3, HOST_NODE, GUEST_NET, HOST_NODE); // probing ours
+    ASSERT_EQ_INT(1, g_neth);
+    const uint8_t *r = g_eth[0];
+    ASSERT_EQ_INT(0, memcmp(r, k_guest_mac, 6)); // straight back to the prober
+    ASSERT_EQ_INT(0, memcmp(r + 6, k_host_mac, 6));
+    ASSERT_EQ_INT(8 + 28, (r[12] << 8) | r[13]); // the 802.3 length
+    ASSERT_EQ_INT(0, memcmp(r + 14, k_snap_aarp, 8));
+    ASSERT_EQ_INT(2, r[22 + 7]); // AARP response
+    ASSERT_EQ_INT(0, memcmp(r + 22 + 8, k_host_mac, 6));
+    ASSERT_EQ_INT(HOST_NODE, r[22 + 17]);
+
+    // A request for the host, once the guest has its address.
+    guest_aarp(1, GUEST_NODE, GUEST_NET, HOST_NODE);
+    ASSERT_EQ_INT(2, g_neth);
+    r = g_eth[1];
+    ASSERT_EQ_INT(2, r[22 + 7]);
+    ASSERT_EQ_INT((int)GUEST_NET, (r[22 + 15] << 8) | r[22 + 16]); // the host is on the guest's network
+    ASSERT_EQ_INT(HOST_NODE, r[22 + 17]);
+    ASSERT_EQ_INT(GUEST_NODE, r[22 + 27]); // back to the asker
+    // A request for some other node goes unanswered.
+    guest_aarp(1, GUEST_NODE, GUEST_NET, 77);
+    ASSERT_EQ_INT(2, g_neth);
+    ASSERT_EQ_INT(4, (int)atalk_get_stats()->elap_rx);
+    ASSERT_EQ_INT(2, (int)atalk_get_stats()->elap_tx);
+    link_delete();
+}
+
+// The Chooser's lookup on an extended network: broadcast to the AppleTalk
+// multicast address with an extended header (destination network 0), and
+// answered straight to the guest's station with the host's real network in
+// both the DDP header and the tuple -- not the 0 a LocalTalk tuple carries.
+// Nothing goes out on the LocalTalk wire.
+TEST(an_nbp_lookup_over_ethertalk_is_answered_with_extended_ddp) {
+    ether_boot();
+    atalk_nbp_service_desc_t desc = {.object = "Ether Host", .type = "EtherTest", .socket = 200};
+    atalk_nbp_entry_t *entry = NULL;
+    ASSERT_EQ_INT(0, atalk_nbp_publish(&entry, &desc));
+    uint8_t lkup[64];
+    size_t n = 0;
+    lkup[n++] = 0x21; // LkUp, one tuple
+    lkup[n++] = 0x42;
+    lkup[n++] = (uint8_t)(GUEST_NET >> 8);
+    lkup[n++] = (uint8_t)GUEST_NET;
+    lkup[n++] = GUEST_NODE;
+    lkup[n++] = 253;
+    lkup[n++] = 0;
+    const char *parts[3] = {"=", "EtherTest", "*"};
+    for (int i = 0; i < 3; i++) {
+        size_t l = strlen(parts[i]);
+        lkup[n++] = (uint8_t)l;
+        memcpy(lkup + n, parts[i], l);
+        n += l;
+    }
+    guest_ext_ddp(k_at_bcast, 0, 0xFF, 2, 253, 2, lkup, n);
+    ASSERT_EQ_INT(1, g_neth);
+    ASSERT_EQ_INT(0, wire_count());
+    const uint8_t *r = g_eth[0];
+    ASSERT_EQ_INT(0, memcmp(r, k_guest_mac, 6));
+    ASSERT_EQ_INT(0, memcmp(r + 14, k_snap_ddp, 8));
+    const uint8_t *d = r + 22;
+    int dlen = ((d[0] & 3) << 8) | d[1];
+    ASSERT_EQ_INT(dlen + 8, (r[12] << 8) | r[13]);
+    ASSERT_EQ_INT((int)GUEST_NET, (d[4] << 8) | d[5]); // destination network
+    ASSERT_EQ_INT((int)GUEST_NET, (d[6] << 8) | d[7]); // source: the host on the same network
+    ASSERT_EQ_INT(GUEST_NODE, d[8]);
+    ASSERT_EQ_INT(HOST_NODE, d[9]);
+    ASSERT_EQ_INT(253, d[10]);
+    ASSERT_EQ_INT(2, d[11]);
+    ASSERT_EQ_INT(2, d[12]); // NBP
+    ASSERT_EQ_INT(0x31, d[13]); // LkUp-Reply, one tuple
+    ASSERT_EQ_INT((int)GUEST_NET, (d[15] << 8) | d[16]); // the tuple's network
+    ASSERT_EQ_INT(HOST_NODE, d[17]);
+    ASSERT_EQ_INT(200, d[18]);
+    atalk_nbp_withdraw(&entry);
+    link_delete();
+}
+
+// An echo request to the host over Ethernet comes back over Ethernet; the
+// stack's traffic follows the port the guest last spoke on.
+TEST(the_echoer_answers_over_ethertalk) {
+    ether_boot();
+    uint8_t ping[] = {1, 'e', 't', 'h'};
+    guest_ext_ddp(k_host_mac, GUEST_NET, HOST_NODE, 4, 200, 4, ping, sizeof ping);
+    ASSERT_EQ_INT(1, g_neth);
+    const uint8_t *d = g_eth[0] + 22;
+    ASSERT_EQ_INT(4, d[12]); // AEP
+    ASSERT_EQ_INT(2, d[13]); // Echo Reply
+    ASSERT_EQ_INT(0, memcmp(d + 14, ping + 1, 3));
+    ASSERT_EQ_INT(0, wire_count());
+    link_delete();
+}
+
+// What is not EtherTalk Phase 2 for the host is ignored: a frame for another
+// station (the guest's own loopback self-test frame), an Ethernet II frame,
+// a datagram for another node; and nothing goes out with no port attached or
+// the stack detached.
+TEST(ethertalk_ignores_what_is_not_its_own) {
+    ether_boot();
+    uint8_t ping[] = {1, 'x'};
+    guest_ext_ddp(k_guest_mac, GUEST_NET, HOST_NODE, 4, 200, 4, ping, sizeof ping); // to itself
+    guest_ext_ddp(k_host_mac, GUEST_NET, 77, 4, 200, 4, ping, sizeof ping); // to node 77
+    uint8_t e2[64] = {0};
+    memcpy(e2, k_host_mac, 6);
+    memcpy(e2 + 6, k_guest_mac, 6);
+    e2[12] = 0x80; // an EtherType, not an 802.3 length
+    e2[13] = 0x9B;
+    atalk_conn_ether_input(link_conn(), e2, sizeof e2);
+    ASSERT_EQ_INT(0, g_neth);
+    atalk_conn_attach_ether(link_conn(), NULL, NULL);
+    guest_ext_ddp(k_host_mac, GUEST_NET, HOST_NODE, 4, 200, 4, ping, sizeof ping);
+    ASSERT_EQ_INT(0, g_neth);
+    ASSERT_TRUE(atalk_get_stats()->tx_dropped >= 1);
+    atalk_conn_attach_ether(link_conn(), eth_capture, NULL);
+    set_enabled(false);
+    guest_ext_ddp(k_host_mac, GUEST_NET, HOST_NODE, 4, 200, 4, ping, sizeof ping);
+    ASSERT_EQ_INT(0, g_neth);
+    set_enabled(true);
+    link_delete();
+}
+
 int main(void) {
     RUN(a_publish_that_fails_changes_nothing);
     RUN(boot_installs_the_frame_sink_and_delete_removes_it);
@@ -1047,6 +1258,10 @@ int main(void) {
     RUN(a_session_waiting_on_a_deferred_command_stays_open);
     RUN(two_sessions_write_at_once);
     RUN(a_restored_connection_is_a_restarted_server);
+    RUN(aarp_defends_and_resolves_the_host_address);
+    RUN(an_nbp_lookup_over_ethertalk_is_answered_with_extended_ddp);
+    RUN(the_echoer_answers_over_ethertalk);
+    RUN(ethertalk_ignores_what_is_not_its_own);
     printf("[PASS] All atalk_link tests passed\n");
     return 0;
 }

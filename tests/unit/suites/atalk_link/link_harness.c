@@ -411,6 +411,10 @@ bool sched_registered(const char *name) {
     return false;
 }
 
+struct atalk_conn *link_conn(void) {
+    return g_conns[g_machine];
+}
+
 bool link_sink_installed(void) {
     return g_sink != NULL;
 }

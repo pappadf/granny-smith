@@ -54,6 +54,8 @@ void link_boot_from_checkpoint(bool read_fails);
 void link_load(bool fails);
 // True if the stack's frame sink is installed on machine 0 or 1's SCC.
 bool link_sink_on(int machine);
+// The running machine's connection (to attach an Ethernet port to).
+struct atalk_conn *link_conn(void);
 
 // --- the guest's side of the wire -------------------------------------------
 
