@@ -134,4 +134,34 @@ bool platform_audio_in_debug(char *buf, size_t buflen);
 // plays the same file from its own storage).  Weak default: silent.
 void platform_audio_in_injected(const char *path);
 
+// Host audio (em_audio.c; the weak defaults model "no host audio").
+// One parameterized stream for all machines: open sets the source rate and
+// channel count, push feeds interleaved int16 frames (vol_0_7 is the guest's
+// 3-bit volume), set_rate restarts the stream at a new source rate.
+void platform_audio_open(uint32_t src_rate_hz, int channels);
+void platform_audio_push(const int16_t *frames, int nframes, int vol_0_7);
+void platform_audio_set_rate(uint32_t src_rate_hz);
+// The host ring's fill against its target depth (0.0 empty, 1.0 at target),
+// or < 0 when there is no fresh signal (no stream, no host audio) -- optional
+// feedback for the accelerated-mode governor.
+double platform_audio_ring_fill(void);
+
+// Redraw the whole screen from the active display now, whatever its dirty
+// flags say (a restored checkpoint's framebuffer).  The weak default (a host
+// with no screen of its own: headless) does nothing.
+void platform_force_redraw(void);
+
+// Print the host's callstack, for the failure handler.  The weak default
+// prints nothing; headless and wasm each print theirs.
+void platform_print_host_callstack(void);
+
+// A ROM at `rom_path` is about to boot (machine_boot_apply, after the
+// document validated): the host's chance to offer the card ROMs it keeps
+// beside it (vrom_offer_dir / prom_offer_dir).  Core builds no search path
+// of its own (docs/reference/formats/mac-rom.md).  Headless walks the ROM's directory
+// for *.vrom / *.prom, as it does for the CLI's rom= at startup; the browser
+// has nothing to do, its card ROMs live in OPFS and are offered on upload,
+// so it keeps the weak default, which does nothing.
+void platform_offer_sibling_card_roms(const char *rom_path);
+
 #endif // PLATFORM_HOOKS_H

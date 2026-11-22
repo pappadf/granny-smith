@@ -123,3 +123,36 @@ __attribute__((weak)) bool platform_audio_in_debug(char *buf, size_t buflen) {
     (void)buflen;
     return false;
 }
+
+// Host audio output: no sink (headless).  Deterministic capture for
+// golden-WAV tests lives core-side in audio_out.c, ahead of this boundary.
+__attribute__((weak)) void platform_audio_open(uint32_t src_rate_hz, int channels) {
+    (void)src_rate_hz;
+    (void)channels;
+}
+
+__attribute__((weak)) void platform_audio_push(const int16_t *frames, int nframes, int vol_0_7) {
+    (void)frames;
+    (void)nframes;
+    (void)vol_0_7;
+}
+
+__attribute__((weak)) void platform_audio_set_rate(uint32_t src_rate_hz) {
+    (void)src_rate_hz;
+}
+
+// No host audio ring: the governor's audio signal is simply absent.
+__attribute__((weak)) double platform_audio_ring_fill(void) {
+    return -1.0;
+}
+
+// No screen of the host's own to redraw.
+__attribute__((weak)) void platform_force_redraw(void) {}
+
+// No host callstack to print.
+__attribute__((weak)) void platform_print_host_callstack(void) {}
+
+// No card ROMs kept beside the machine ROM.
+__attribute__((weak)) void platform_offer_sibling_card_roms(const char *rom_path) {
+    (void)rom_path;
+}
