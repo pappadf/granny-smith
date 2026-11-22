@@ -86,27 +86,27 @@ void platform_video_in_state(bool active);
 // defaults model a host with no such waiter: wake is a no-op, and wait
 // returns -1 at once (timed out).  The wasm build overrides both (em_main.c)
 // and routes its mailbox_notify / laserwriter_ring_notify /
-// platform_v2gpu_notify / platform_v2gpu_wait through them.
+// platform_gpu_notify / platform_gpu_wait through them.
 void platform_wake(volatile uint32_t *word);
 int platform_wait(volatile uint32_t *word, uint32_t expect, uint32_t timeout_ms);
 
-// Host GPU-transport seam for the Voodoo2's WebGPU takeover
-// (voodoo2_gpu.c): the browser build attaches a GPU worker to a shared
-// region in the wasm heap and wakes it through Atomics; the defaults
-// model "no GPU" so native builds fall back to the thread backend.  `ctrl`
-// is the region's control block (voodoo2_gpu_protocol.h); `wait` blocks the
-// CALLING pthread until *addr != expected or the timeout (returns 0 when
-// woken).
-bool platform_v2gpu_available(void);
-bool platform_v2gpu_attach(void *ctrl, uint32_t bytes);
-void platform_v2gpu_detach(void *ctrl);
-int platform_v2gpu_wait(volatile uint32_t *addr, uint32_t expected, uint32_t timeout_ms);
-void platform_v2gpu_notify(volatile uint32_t *addr);
+// Host GPU-transport seam for the WebGPU takeovers (the Voodoo2's,
+// voodoo2_gpu.c, and the Rage 128's, rage128_gpu.c): the browser build
+// attaches a GPU worker to a shared region in the wasm heap and wakes it
+// through Atomics; the defaults model "no GPU" so native builds fall back to
+// the thread backend.  `ctrl` is the region's control block (the card's
+// *_gpu_protocol.h); `wait` blocks the CALLING pthread until *addr !=
+// expected or the timeout (returns 0 when woken).
+bool platform_gpu_available(void);
+bool platform_gpu_attach(void *ctrl, uint32_t bytes);
+void platform_gpu_detach(void *ctrl);
+int platform_gpu_wait(volatile uint32_t *addr, uint32_t expected, uint32_t timeout_ms);
+void platform_gpu_notify(volatile uint32_t *addr);
 // The Rage 128's takeover (rage128_gpu.c) shares this seam but waits on
 // the EMULATOR thread itself: a wait that may be long (a software adapter
 // compiling a pipeline on first use) calls this to tell the page the core
 // is busy, not dead.  A no-op natively.
-void platform_v2gpu_keepalive(void);
+void platform_gpu_keepalive(void);
 
 // Host audio-input seam (the AV Singer codec's microphone source,
 // mirroring the video-in seam).  The weak defaults model "no microphone":

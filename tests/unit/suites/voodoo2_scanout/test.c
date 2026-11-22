@@ -39,27 +39,27 @@ uint64_t scheduler_cpu_cycles(struct scheduler *s) {
     (void)s;
     return 0;
 }
-bool platform_v2gpu_available(void) {
+bool platform_gpu_available(void) {
     return false;
 }
-bool platform_v2gpu_attach(void *ctrl, uint32_t bytes) {
+bool platform_gpu_attach(void *ctrl, uint32_t bytes) {
     (void)ctrl;
     (void)bytes;
     return false;
 }
-void platform_v2gpu_detach(void *ctrl) {
+void platform_gpu_detach(void *ctrl) {
     (void)ctrl;
 }
-void platform_v2gpu_notify(volatile uint32_t *addr) {
+void platform_gpu_notify(volatile uint32_t *addr) {
     (void)addr;
 }
-int platform_v2gpu_wait(volatile uint32_t *addr, uint32_t expected, uint32_t timeout_ms) {
+int platform_gpu_wait(volatile uint32_t *addr, uint32_t expected, uint32_t timeout_ms) {
     (void)addr;
     (void)expected;
     (void)timeout_ms;
     return -1;
 }
-void platform_v2gpu_keepalive(void) {}
+void platform_gpu_keepalive(void) {}
 struct object *object_new(const class_desc_t *cls, void *data, const char *name) {
     (void)cls;
     (void)data;

@@ -1465,7 +1465,7 @@ static const char *const r128_raster_values[] = {"sw", "webgpu", NULL};
 static const char *const r128_raster_labels[] = {"Software", "WebGPU", NULL};
 
 static bool r128_raster_offered(const char *value) {
-    return strcmp(value, "webgpu") != 0 || platform_v2gpu_available();
+    return strcmp(value, "webgpu") != 0 || platform_gpu_available();
 }
 
 // The monitor is not among the options: it is the slot entry's monitor (a
@@ -1777,7 +1777,7 @@ const pci_card_kind_t rage128_webgpu_kind = {
     .requires_prom = true,
     .card_class = "display",
     .attach_objects = r128_attach_objects,
-    .offered = platform_v2gpu_available,
+    .offered = platform_gpu_available,
     .variant_of = "rage128", // its "Rendering: WebGPU" option
     .variant_defaults = r128_webgpu_defaults,
 };

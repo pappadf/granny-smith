@@ -80,32 +80,32 @@ __attribute__((weak)) int platform_wait(volatile uint32_t *word, uint32_t expect
 }
 
 // Host GPU-transport seam (platform_hooks.h): no GPU on a native host.
-__attribute__((weak)) bool platform_v2gpu_available(void) {
+__attribute__((weak)) bool platform_gpu_available(void) {
     return false;
 }
 
-__attribute__((weak)) bool platform_v2gpu_attach(void *ctrl, uint32_t bytes) {
+__attribute__((weak)) bool platform_gpu_attach(void *ctrl, uint32_t bytes) {
     (void)ctrl;
     (void)bytes;
     return false;
 }
 
-__attribute__((weak)) void platform_v2gpu_detach(void *ctrl) {
+__attribute__((weak)) void platform_gpu_detach(void *ctrl) {
     (void)ctrl;
 }
 
-__attribute__((weak)) int platform_v2gpu_wait(volatile uint32_t *addr, uint32_t expected, uint32_t timeout_ms) {
+__attribute__((weak)) int platform_gpu_wait(volatile uint32_t *addr, uint32_t expected, uint32_t timeout_ms) {
     (void)addr;
     (void)expected;
     (void)timeout_ms;
     return -1;
 }
 
-__attribute__((weak)) void platform_v2gpu_notify(volatile uint32_t *addr) {
+__attribute__((weak)) void platform_gpu_notify(volatile uint32_t *addr) {
     (void)addr;
 }
 
-__attribute__((weak)) void platform_v2gpu_keepalive(void) {}
+__attribute__((weak)) void platform_gpu_keepalive(void) {}
 
 // Host audio-input seam: the defaults model "no microphone attached" —
 // the headless build drives capture from the deterministic

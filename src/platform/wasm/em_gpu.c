@@ -3,7 +3,7 @@
 
 // em_gpu.c
 // The browser side of the WebGPU takeovers' transport (the Voodoo2's and
-// the Rage 128's): the WASM overrides of the platform_v2gpu_* seam
+// the Rage 128's): the WASM overrides of the platform_gpu_* seam
 // (platform_hooks.h), which reach the page as Module.onGpuAttach /
 // onGpuDetach (bus/emulator.ts routes each to its card by the region's
 // magic).  The translator on the
@@ -30,11 +30,11 @@
 #include <emscripten/threading.h>
 #include <stdint.h>
 
-bool platform_v2gpu_available(void) {
+bool platform_gpu_available(void) {
     return mbx_load(get_mailbox(), GS_MBX_C_GPU_AVAILABLE) != 0;
 }
 
-bool platform_v2gpu_attach(void *ctrl, uint32_t bytes) {
+bool platform_gpu_attach(void *ctrl, uint32_t bytes) {
     // clang-format off
     MAIN_THREAD_ASYNC_EM_ASM(
         { if (typeof Module.onGpuAttach === 'function') Module.onGpuAttach($0, $1); },
@@ -43,7 +43,7 @@ bool platform_v2gpu_attach(void *ctrl, uint32_t bytes) {
     return true;
 }
 
-void platform_v2gpu_detach(void *ctrl) {
+void platform_gpu_detach(void *ctrl) {
     // clang-format off
     MAIN_THREAD_ASYNC_EM_ASM(
         { if (typeof Module.onGpuDetach === 'function') Module.onGpuDetach($0); },
@@ -51,10 +51,10 @@ void platform_v2gpu_detach(void *ctrl) {
     // clang-format on
 }
 
-int platform_v2gpu_wait(volatile uint32_t *addr, uint32_t expected, uint32_t timeout_ms) {
+int platform_gpu_wait(volatile uint32_t *addr, uint32_t expected, uint32_t timeout_ms) {
     return platform_wait(addr, expected, timeout_ms);
 }
 
-void platform_v2gpu_notify(volatile uint32_t *addr) {
+void platform_gpu_notify(volatile uint32_t *addr) {
     platform_wake(addr);
 }

@@ -65,7 +65,7 @@ LOG_USE_CATEGORY_NAME("video");
 // How long a wait for the worker may last before the device counts as
 // lost.  Generous: a software adapter compiles a pipeline on its first use
 // and can take seconds; the waits keep the page's stall watch fed
-// (platform_v2gpu_keepalive) meanwhile.
+// (platform_gpu_keepalive) meanwhile.
 #ifndef R128GPU_ACK_MS
 #define R128GPU_ACK_MS 20000
 #endif
@@ -233,7 +233,7 @@ static void publish(r128_gpu_t *g) {
     if (!mbx_unpublished(&g->ring))
         return;
     mbx_publish(&g->ring);
-    platform_v2gpu_notify(&g->ctrl[R128GPU_C_HEAD]);
+    platform_gpu_notify(&g->ctrl[R128GPU_C_HEAD]);
 }
 
 // Reserve a record (header included) that does not wrap, waiting for
@@ -264,8 +264,8 @@ static uint32_t reserve(r128_gpu_t *g, uint32_t kind, uint32_t len) {
         if (worker_lost(g))
             break;
         publish(g);
-        platform_v2gpu_wait(&g->ctrl[R128GPU_C_TAIL], tail, 20);
-        platform_v2gpu_keepalive();
+        platform_gpu_wait(&g->ctrl[R128GPU_C_TAIL], tail, 20);
+        platform_gpu_keepalive();
         if (host_time_ms() - t0 > (double)R128GPU_ACK_MS) {
             mark_lost(g, "the GPU worker stopped consuming the op ring");
             break;
@@ -327,8 +327,8 @@ static bool wait_ack_inner(r128_gpu_t *g, uint32_t seq, double t0) {
         }
         if (worker_lost(g))
             return false;
-        platform_v2gpu_wait(&g->ctrl[R128GPU_C_ACK], ack, 20);
-        platform_v2gpu_keepalive();
+        platform_gpu_wait(&g->ctrl[R128GPU_C_ACK], ack, 20);
+        platform_gpu_keepalive();
         if (host_time_ms() - t0 > (double)R128GPU_ACK_MS) {
             mark_lost(g, "the GPU worker stopped answering");
             return false;
@@ -1336,8 +1336,8 @@ static bool pace(r128_gpu_t *g) {
         if (worker_lost(g))
             break;
         publish(g);
-        platform_v2gpu_wait(&g->ctrl[R128GPU_C_PRESENTS_DONE], done, 20);
-        platform_v2gpu_keepalive();
+        platform_gpu_wait(&g->ctrl[R128GPU_C_PRESENTS_DONE], done, 20);
+        platform_gpu_keepalive();
         if (host_time_ms() - t0 > (double)R128GPU_ACK_MS) {
             mark_lost(g, "the GPU worker stopped completing frames");
             break;
@@ -1522,7 +1522,7 @@ const char *r128_gpu_wait_stats(r128_gpu_t *g, char *buf, size_t n) {
 }
 
 r128_gpu_t *r128_gpu_create(rage128_t *r, int engage_policy) {
-    if (!platform_v2gpu_available()) {
+    if (!platform_gpu_available()) {
         LOG(1, "Rage 128 raster=webgpu: no WebGPU transport on this host — the software rasteriser draws");
         return NULL;
     }
@@ -1556,7 +1556,7 @@ r128_gpu_t *r128_gpu_create(rage128_t *r, int engage_policy) {
     g->ctrl[R128GPU_C_RB_OFF] = ctrl_bytes + ring_size;
     g->ctrl[R128GPU_C_RB_SIZE] = g->rb_size;
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    if (!platform_v2gpu_attach((void *)g->ctrl, ctrl_bytes + ring_size + g->rb_size)) {
+    if (!platform_gpu_attach((void *)g->ctrl, ctrl_bytes + ring_size + g->rb_size)) {
         LOG_ALERT("Rage 128 raster=webgpu: the host refused to attach a GPU worker — the software rasteriser draws");
         free(g->tex);
         free(g->page_gen);
@@ -1570,15 +1570,15 @@ r128_gpu_t *r128_gpu_create(rage128_t *r, int engage_policy) {
             LOG_ALERT(
                 "Rage 128 raster=webgpu: the GPU worker did not attach within %u ms — the software rasteriser draws",
                 R128GPU_ATTACH_MS);
-            platform_v2gpu_detach((void *)g->ctrl);
+            platform_gpu_detach((void *)g->ctrl);
             free(g->tex);
             free(g->page_gen);
             free(g->region);
             free(g);
             return NULL;
         }
-        platform_v2gpu_wait(&g->ctrl[R128GPU_C_STATUS], R128GPU_STATUS_DETACHED, 20);
-        platform_v2gpu_keepalive();
+        platform_gpu_wait(&g->ctrl[R128GPU_C_STATUS], R128GPU_STATUS_DETACHED, 20);
+        platform_gpu_keepalive();
     }
     g->attached = true;
     LOG(1, "Rage 128 raster=webgpu: GPU worker attached (op ring %u KB)", g->ring.size >> 10);
@@ -1597,7 +1597,7 @@ void r128_gpu_destroy(r128_gpu_t *g) {
         wait_ack(g, seq);
     }
     if (g->attached)
-        platform_v2gpu_detach((void *)g->ctrl);
+        platform_gpu_detach((void *)g->ctrl);
     g->r->gpu_page_gen = NULL;
     g->r->gpu_lo = g->r->gpu_hi = 0;
     free(g->region);

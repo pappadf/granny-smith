@@ -3432,7 +3432,7 @@ static const char *const v2_raster_labels[] = {"Software", "WebGPU", NULL};
 
 // WebGPU is offered only where a WebGPU device exists.
 static bool v2_raster_offered(const char *value) {
-    return strcmp(value, "webgpu") != 0 || platform_v2gpu_available();
+    return strcmp(value, "webgpu") != 0 || platform_gpu_available();
 }
 
 static const pci_card_option_t v2_options[] = {
@@ -3471,7 +3471,7 @@ const pci_card_kind_t voodoo2_webgpu_kind = {
     .card_class = "3d",
     .monitors = NULL,
     .attach_objects = v2_attach_objects,
-    .offered = platform_v2gpu_available,
+    .offered = platform_gpu_available,
     .variant_of = "voodoo2", // its "Rendering: WebGPU" option
     .variant_defaults = v2_webgpu_defaults,
 };
