@@ -48,6 +48,7 @@ static const class_desc_t bp_collection_class;
 static const class_desc_t lp_collection_class;
 static const class_desc_t wp_collection_class;
 static const class_desc_t debug_mac_class;
+static bool debug_mac_world(void);
 static const class_desc_t debug_mac_globals_class;
 
 #include <ctype.h>
@@ -781,7 +782,7 @@ void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, 
     // when streaming is on — the read is a debug-path memory access.
     const char *trap_name = "";
     char trap_buf[8];
-    if (vector == 0x028 && log_get_level(cat) >= 1)
+    if (vector == 0x028 && log_get_level(cat) >= 1 && debug_mac_naming_active())
         trap_name = debug_mac_atrap_name(memory_debug_read_uint16(faulting_pc), trap_buf, sizeof(trap_buf));
     LOG_WITH(cat, 1, "[EXC] vec=$%03X %s fmt=$%X rw=%s addr=$%08X pc=$%08X saved_pc=$%08X sr=$%04X vbr=$%08X%s", vector,
              trap_name, format_frame, rw ? "R" : "W", fault_addr, faulting_pc, saved_pc, sr, vbr,
@@ -1938,6 +1939,7 @@ debug_t *debug_init(void) {
             object_set_label(debug->find_object, "Find");
             object_attach(debug->object, debug->find_object);
         }
+        g_debug_mac_world_fn = debug_mac_world; // the disassembler's trap names follow debug.mac.mode
         debug->mac_object = object_new(&debug_mac_class, debug, "mac");
         if (debug->mac_object) {
             object_attach(debug->object, debug->mac_object);
@@ -3434,7 +3436,61 @@ static const class_desc_t debug_class = {
 // Lookup is a binary search over a name index (mac_global_find,
 // mac_globals_data.c).
 
+// debug.mac.mode: whether the Macintosh views (trap names, low-memory
+// globals) apply.  "auto" decides per machine (debug_mac_world).
+static const char *const mac_mode_names[] = {"auto", "on", "off", NULL};
+enum { MAC_MODE_AUTO, MAC_MODE_ON, MAC_MODE_OFF, MAC_MODE_COUNT };
+static int g_mac_mode = MAC_MODE_AUTO;
+
+// True when a Lisa runs MacWorks: the Macintosh ROM image MacWorks loads
+// into RAM is where the low-memory global ROMBase ($2AE) points, and the
+// line-A vector ($28) leads into it.  Under the Lisa's own systems neither
+// holds (LOS keeps ROMBase's bytes for something else and its line-A
+// vector in the boot ROM).  Read in context 0, the supervisor's view.
+static bool lisa_runs_macworks(void) {
+    int prev = lisa_mmu_debug_view_set(0);
+    uint32_t rom_base = memory_debug_read_uint32(0x2AE) & 0x00FFFFFFu;
+    uint32_t line_a = memory_debug_read_uint32(0x28) & 0x00FFFFFFu;
+    lisa_mmu_debug_view_set(prev);
+    return rom_base >= 0x400000u && rom_base < 0xF00000u && line_a - rom_base < 0x80000u;
+}
+
+// The emulator's g_debug_mac_world_fn (debug_mac.h).
+static bool debug_mac_world(void) {
+    if (g_mac_mode != MAC_MODE_AUTO)
+        return g_mac_mode == MAC_MODE_ON;
+    return !g_lisa_mmu || lisa_runs_macworks();
+}
+
+// The refusal every debug.mac method gives where the Macintosh views do
+// not apply.
+static value_t mac_not_here(const char *who) {
+    return val_err("%s: this machine is not running the Macintosh system (a Lisa runs Macintosh software only under "
+                   "MacWorks), so Macintosh traps and globals do not apply; debug.mac.mode = \"on\" forces them",
+                   who);
+}
+
+static DEF_GETTER(mac_attr_mode_get) {
+    return val_enum(g_mac_mode, mac_mode_names, MAC_MODE_COUNT);
+}
+
+static DEF_SETTER(mac_attr_mode_set) {
+    if (in.kind != VK_ENUM || in.enm.idx < 0 || in.enm.idx >= MAC_MODE_COUNT) {
+        value_free(&in);
+        return val_err("debug.mac.mode: expected auto, on or off");
+    }
+    g_mac_mode = in.enm.idx;
+    value_free(&in);
+    return val_none();
+}
+
+static DEF_GETTER(mac_attr_active_get) {
+    return val_bool(debug_mac_world());
+}
+
 static DEF_METHOD(method_mac_globals_read) {
+    if (!debug_mac_world())
+        return mac_not_here("debug.mac.globals.read");
     const mac_global_info_t *g = mac_global_find(argv[0].s);
     if (!g)
         return val_err("debug.mac.globals.read: unknown global '%s'", argv[0].s);
@@ -3477,6 +3533,8 @@ static DEF_METHOD(method_mac_globals_read) {
 }
 
 static DEF_METHOD(method_mac_globals_write) {
+    if (!debug_mac_world())
+        return mac_not_here("debug.mac.globals.write");
     const mac_global_info_t *g = mac_global_find(argv[0].s);
     if (!g)
         return val_err("debug.mac.globals.write: unknown global '%s'", argv[0].s);
@@ -3514,6 +3572,8 @@ static DEF_METHOD(method_mac_globals_write) {
 }
 
 static DEF_METHOD(method_mac_globals_address) {
+    if (!debug_mac_world())
+        return mac_not_here("debug.mac.globals.address");
     const mac_global_info_t *g = mac_global_find(argv[0].s);
     if (!g)
         return val_err("debug.mac.globals.address: unknown global '%s'", argv[0].s);
@@ -3596,6 +3656,8 @@ static const class_desc_t debug_mac_globals_class = {
 // in time; for now this covers the typed-bridge needs.
 
 static DEF_METHOD(method_mac_atrap) {
+    if (!debug_mac_world())
+        return mac_not_here("debug.mac.atrap");
     char buf[8];
     return val_str(debug_mac_atrap_name((uint16_t)argv[0].u, buf, sizeof(buf)));
 }
@@ -3605,6 +3667,14 @@ static const arg_decl_t mac_atrap_args[] = {
 };
 
 static const member_t debug_mac_members[] = {
+    {.kind = MK_ATTR,
+     .name = "mode",
+     .doc = "Whether the Macintosh views (trap names here and in the disassembly, low-memory globals) apply: auto "
+            "(every Macintosh, and a Lisa only while it runs MacWorks), on or off", .attr = {.type = VK_ENUM, .enum_values = mac_mode_names, .get = mac_attr_mode_get, .set = mac_attr_mode_set}},
+    {.kind = MK_ATTR,
+     .name = "active",
+     .doc = "True when the Macintosh views apply to this machine now (debug.mac.mode decides)",
+     .attr = {.type = VK_BOOL, .get = mac_attr_active_get, .set = NULL}},
     {.kind = MK_METHOD,
      .name = "atrap",
      .examples = EXAMPLES("debug.mac.atrap 0xa9a0"),

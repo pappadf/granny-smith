@@ -17,6 +17,15 @@
 // Defined in mac_traps_data.c, beside its table.
 const char *debug_mac_atrap_name(uint16_t trap, char *buf, size_t buf_size);
 
+// Whether Macintosh trap names and low-memory globals apply to the machine
+// being debugged.  The emulator installs g_debug_mac_world_fn (debug.c:
+// debug.mac.mode, "auto" = every Macintosh, and a Lisa only while it runs
+// MacWorks); with none installed -- the standalone tools, the unit tests --
+// they always apply.  The disassembler shows a line-A word as LINEA when
+// they do not.  Both defined in mac_traps_data.c.
+extern bool (*g_debug_mac_world_fn)(void);
+bool debug_mac_naming_active(void);
+
 // Initializes the Mac debug subsystem
 
 // Prints process information (same as 'pi' debugger command)

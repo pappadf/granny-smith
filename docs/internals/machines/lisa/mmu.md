@@ -118,6 +118,17 @@ physical ranges against the RAM address `lisa_mmu_translate` gives. Only
 main memory has physical addresses here: an I/O or ROM access never
 matches a physical range.
 
+**No Macintosh names under the Lisa's own systems.** The disassembler and
+`debug.mac.*` name line-A words and low-memory globals as a Macintosh
+does. Under LOS or Xenix those words are not Macintosh traps, so
+`debug.mac.mode` (`auto`, `on`, `off`; `debug.c`) decides: in `auto` the
+Macintosh views apply on every Macintosh and on a Lisa only while it runs
+MacWorks — told apart by ROMBase (`$2AE`, read in context 0) pointing at
+the Macintosh ROM image MacWorks loads above `$400000` and the line-A
+vector (`$28`) leading into it. Elsewhere `debug.mac.*` refuses, saying
+why, and a line-A word disassembles as `LINEA $Axxx`
+(`debug_mac_naming_active`, `mac_traps_data.c`).
+
 ## Control strobes ($00E000-$00E01E)
 
 Each is a *strobe*: any access (read or write, value ignored) toggles the latch.

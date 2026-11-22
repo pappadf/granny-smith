@@ -318,6 +318,10 @@ def row_xl_macworks_boot() {
     # Verify the Finder desktop: menu bar (File/Edit/View/Special), the open
     # "MacWorks System Disk" window with its icons, the Trash, and the gray desktop.
     check("goldens/xl-macworks3.0-608x431x1-finder.png")
+    # Under MacWorks the Lisa hardware runs the Macintosh system, so the
+    # debugger's Macintosh views apply (debug.mac.mode "auto").
+    assert debug.mac.active "debug.mac does not apply under MacWorks"
+    assert debug.mac.atrap(0xA022) == "_NewHandle" "no Macintosh trap names under MacWorks"
     report_row("MacWorks 3.0", "builtin", "fd-boot loader-eject")
     report_perf("suite-lisa/xl-macworks-boot", scheduler.instr_count)
 }

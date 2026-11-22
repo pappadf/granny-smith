@@ -85,6 +85,20 @@ scheduler.run 3000000
 assert debug.watchpoints[$wp.id].hit_count >= 1 "a physical watchpoint did not stop the machine"
 debug.watchpoints.clear
 
+# ---- No Macintosh names under the Lisa's own system -------------------------
+# A line-A word in LOS code is not a Macintosh trap: the disassembler shows
+# it raw, and debug.mac refuses -- unless asked for explicitly.
+assert debug.mac.mode == "auto" "debug.mac.mode does not start at auto"
+assert debug.mac.active == false "the Macintosh views apply under LOS"
+let la_word = debug.find.word(0xA022, 0x500000, 0x540000)[0]
+assert debug.frame($la_word, 1, 0).rows[0].mnem == "LINEA" "a line-A word disassembles as a Macintosh trap"
+assert try(debug.mac.atrap(0xA022), "refused") == "refused" "debug.mac.atrap answered on a Lisa"
+assert try(debug.mac.globals.read("Ticks"), "refused") == "refused" "debug.mac.globals.read answered on a Lisa"
+debug.mac.mode = "on"
+assert debug.mac.atrap(0xA022) == "_NewHandle" "debug.mac.mode = on does not force the names"
+assert debug.frame($la_word, 1, 0).rows[0].mnem == "_NewHandle" "the disassembler ignores debug.mac.mode"
+debug.mac.mode = "auto"
+
 # ---- A breakpoint in a segment that is not present --------------------------
 # Open the Calculator: its process faults on its first code segment, the
 # operating system loads it and returns to the faulting instruction.  A
