@@ -1043,8 +1043,8 @@ TEST(test_variant_builds_the_base_with_its_defaults) {
     ASSERT_TRUE(strcmp(g_factory_raster[0], "webgpu") == 0); // the variant's default
     ASSERT_TRUE(strcmp(g_factory_raster[1], "thread") == 0); // the document's choice stands
     ASSERT_TRUE(strcmp(g_factory_raster[2], "") == 0); // the base card: nothing merged
-    ASSERT_TRUE(pci_slot_kind(root, 1) == &voodoo2_webgpu_kind);
-    ASSERT_TRUE(pci_slot_kind(root, 3) == &voodoo2_kind);
+    ASSERT_TRUE(pci_seated_kind(root, 1) == &voodoo2_webgpu_kind);
+    ASSERT_TRUE(pci_seated_kind(root, 3) == &voodoo2_kind);
     ASSERT_EQ_INT(cfg->build_opts.slots[0].n_options, 0); // the document is not rewritten
     pci_root_delete(root);
     cfg->build_opts = machine_build_opts_default();

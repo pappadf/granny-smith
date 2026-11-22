@@ -101,7 +101,7 @@ struct pci_root {
     pci_bus_t *bus[PCI_MAX_BUSES];
     int bus_count;
     pci_device_t *slot_dev[PCI_MAX_SLOTS]; // device seated in slot N
-    const pci_card_kind_t *slot_kind[PCI_MAX_SLOTS]; // and the kind that made it
+    const pci_card_kind_t *seated_kind[PCI_MAX_SLOTS]; // and the kind that made it
     // What the document said about each slot (the card a socket seats, its
     // ROM and options): the root's checkpoint block, so a restore seats
     // exactly these.  A slot it says nothing about has slot == 0.
@@ -741,10 +741,10 @@ pci_device_t *pci_slot_device(pci_root_t *root, int slot) {
     return root->slot_dev[slot];
 }
 
-const pci_card_kind_t *pci_slot_kind(pci_root_t *root, int slot) {
+const pci_card_kind_t *pci_seated_kind(pci_root_t *root, int slot) {
     if (!root || slot < 0 || slot >= PCI_MAX_SLOTS)
         return NULL;
-    return root->slot_kind[slot];
+    return root->seated_kind[slot];
 }
 
 // The card a SOCKET seats: the boot document's entry for it (machine_slots.c
@@ -1105,7 +1105,7 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
             }
             bus->owns[s->device] = true; // our factory made it; we free it
             root->slot_dev[s->slot] = dev;
-            root->slot_kind[s->slot] = kind;
+            root->seated_kind[s->slot] = kind;
             // Seed the interrupt LINE register: early Apple OF publishes
             // AAPL,interrupts and the OSes copy the number into $3C, so
             // the slot table and the header cannot disagree.
@@ -1306,7 +1306,7 @@ pci_device_t *pci_connected_display_card(pci_root_t *root) {
     // then the monitor shows it, whichever device it is connected to.
     for (int i = 0; root && i < PCI_MAX_SLOTS; i++) {
         pci_device_t *dev = root->slot_dev[i];
-        const pci_card_kind_t *k = pci_slot_kind(root, i);
+        const pci_card_kind_t *k = pci_seated_kind(root, i);
         if (dev && k && k->card_class && strcmp(k->card_class, "3d") == 0 && dev->ops && dev->ops->display &&
             dev->ops->display(dev))
             return dev;

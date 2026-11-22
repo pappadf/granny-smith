@@ -223,7 +223,7 @@ static DEF_GETTER(card_attr_name) {
 }
 static DEF_GETTER(card_attr_id) {
     pci_device_t *d = card_dev(self);
-    const pci_card_kind_t *k = d && g_obj_root ? pci_slot_kind(g_obj_root, d->slot_index) : NULL;
+    const pci_card_kind_t *k = d && g_obj_root ? pci_seated_kind(g_obj_root, d->slot_index) : NULL;
     return val_str(k && k->id ? k->id : "");
 }
 static DEF_GETTER(card_attr_vendor) {
@@ -448,7 +448,7 @@ void pci_objects_build(pci_root_t *root) {
 
         // Card-specific children, through the KIND that actually seated
         // this slot — pci_class.c never tests a device's identity.
-        const pci_card_kind_t *kind = pci_slot_kind(root, i);
+        const pci_card_kind_t *kind = pci_seated_kind(root, i);
         if (kind && kind->attach_objects)
             kind->attach_objects(n->dev, n->card);
     }
