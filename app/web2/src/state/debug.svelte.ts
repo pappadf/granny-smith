@@ -15,6 +15,18 @@ export function contextArg(choice: LisaContextChoice): number | undefined {
   return choice === 'current' ? undefined : Number(choice);
 }
 
+// The privilege the CPU runs at in a debug frame: 68K SR.S, PowerPC
+// MSR[PR] = 0; undefined when the frame does not say.
+export function frameSupervisor(f: {
+  arch: string;
+  rawRegs: Record<string, number>;
+}): boolean | undefined {
+  const r = f.rawRegs;
+  if (f.arch === 'm68k' && typeof r.sr === 'number') return (r.sr & 0x2000) !== 0;
+  if (f.arch === 'ppc' && typeof r.msr === 'number') return (r.msr & 0x4000) === 0;
+  return undefined;
+}
+
 // The privilege / context the MMU tabs read through: the S/U toggle, or on
 // the Lisa the context selector in its place ('current' = the CPU's own).
 export function mmuView(): { supervisor?: boolean; context?: number } {

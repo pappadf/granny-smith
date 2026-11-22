@@ -5,6 +5,7 @@
   import Tabs from '@/components/ui/Tabs.svelte';
   import {
     debug,
+    frameSupervisor,
     toggleSection,
     type LisaContextChoice,
     type MmuSubtab,
@@ -34,6 +35,17 @@
   const visible = $derived(machine.mmuKind !== 'none');
   const isLisa = $derived(machine.mmuKind === 'lisa_segment');
   const running = $derived(machine.status === 'running');
+
+  // At each stop the S/U toggle follows the privilege the CPU stopped at, so
+  // the tabs read what the CPU would use now (it used to stay on U, and the
+  // operating system's addresses read INVALID until S was pressed); the
+  // user can still flip it.  The Lisa's "Now" choice is the same idea.
+  $effect(() => {
+    const f = debugFrame.current;
+    if (!f) return;
+    const sup = frameSupervisor(f);
+    if (sup !== undefined) debug.mmuSupervisor = sup;
+  });
 
   // The MMU's registers, read here for the State tab and for the Lisa's
   // context labels: with each new debug frame while paused, and a few
