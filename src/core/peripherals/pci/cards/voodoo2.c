@@ -2859,6 +2859,37 @@ typedef struct v2_ckpt {
     uint32_t clut[33];
 } v2_ckpt_t;
 
+// The fields staged through v2_ckpt_t, one list for both directions
+// (checkpoint.h, "Staging structs").  tex_size is not among them: the save
+// records it and the restore resizes to it, below.
+#define V2_STAGE_FIELDS(OP, c, v)                                                                                      \
+    OP((c)->reg, (v)->reg);                                                                                            \
+    OP((c)->tmu_reg, (v)->tmu_reg);                                                                                    \
+    OP((c)->tmu_param, (v)->tmu_param);                                                                                \
+    OP((c)->ncc, (v)->tgt.ncc);                                                                                        \
+    OP((c)->palette, (v)->tgt.palette);                                                                                \
+    OP((c)->sv_cur, (v)->sv_cur);                                                                                      \
+    OP((c)->sv, (v)->sv);                                                                                              \
+    OP((c)->sv_count, (v)->sv_count);                                                                                  \
+    OP##_BOOL((c)->sv_flip, (v)->sv_flip);                                                                             \
+    OP((c)->init_enable, (v)->init_enable);                                                                            \
+    OP((c)->bus_snoop, (v)->bus_snoop);                                                                                \
+    OP((c)->cfg_scratch, (v)->cfg_scratch);                                                                            \
+    OP((c)->si_process, (v)->si_process);                                                                              \
+    OP((c)->dac_direct, (v)->dac_direct);                                                                              \
+    OP((c)->dac_pll, (v)->dac_pll);                                                                                    \
+    OP((c)->dac_pll_wr_addr, (v)->dac_pll_wr_addr);                                                                    \
+    OP((c)->dac_pll_rd_addr, (v)->dac_pll_rd_addr);                                                                    \
+    OP((c)->dac_pll_wr_phase, (v)->dac_pll_wr_phase);                                                                  \
+    OP((c)->dac_pll_rd_phase, (v)->dac_pll_rd_phase);                                                                  \
+    OP((c)->dac_read_latch, (v)->dac_read_latch);                                                                      \
+    OP((c)->swaps_pending, (v)->swaps_pending);                                                                        \
+    OP((c)->swap_issue_frame, (v)->swap_issue_frame);                                                                  \
+    OP((c)->displayed_buffer, (v)->displayed_buffer);                                                                  \
+    OP##_BOOL((c)->driving, (v)->driving);                                                                             \
+    OP##_BOOL((c)->clut_written, (v)->clut_written);                                                                   \
+    OP((c)->clut, (v)->clut)
+
 static void v2_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
     voodoo2_t *v = (voodoo2_t *)dev->priv;
     // Retire the queue and mirror the executor's counters/stipple into
@@ -2870,34 +2901,8 @@ static void v2_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
     v2_raster_sync_fb(v->raster, 0, V2_FB_SIZE, false);
     v2_ckpt_t c;
     memset(&c, 0, sizeof(c));
-    memcpy(c.reg, v->reg, sizeof(c.reg));
-    memcpy(c.tmu_reg, v->tmu_reg, sizeof(c.tmu_reg));
-    memcpy(c.tmu_param, v->tmu_param, sizeof(c.tmu_param));
-    memcpy(c.ncc, v->tgt.ncc, sizeof(c.ncc));
-    memcpy(c.palette, v->tgt.palette, sizeof(c.palette));
-    memcpy(c.sv_cur, &v->sv_cur, sizeof(c.sv_cur));
-    memcpy(c.sv, v->sv, sizeof(c.sv));
-    c.sv_count = v->sv_count;
-    c.sv_flip = v->sv_flip ? 1u : 0u;
-    c.init_enable = v->init_enable;
-    c.bus_snoop[0] = v->bus_snoop[0];
-    c.bus_snoop[1] = v->bus_snoop[1];
-    c.cfg_scratch = v->cfg_scratch;
-    c.si_process = v->si_process;
-    memcpy(c.dac_direct, v->dac_direct, sizeof(c.dac_direct));
-    memcpy(c.dac_pll, v->dac_pll, sizeof(c.dac_pll));
-    c.dac_pll_wr_addr = v->dac_pll_wr_addr;
-    c.dac_pll_rd_addr = v->dac_pll_rd_addr;
-    c.dac_pll_wr_phase = v->dac_pll_wr_phase;
-    c.dac_pll_rd_phase = v->dac_pll_rd_phase;
-    c.dac_read_latch = v->dac_read_latch;
-    c.swaps_pending = v->swaps_pending;
-    c.swap_issue_frame = v->swap_issue_frame;
-    c.displayed_buffer = v->displayed_buffer;
-    c.driving = v->driving ? 1u : 0u;
-    c.clut_written = v->clut_written ? 1u : 0u;
+    V2_STAGE_FIELDS(CP_STAGE_OUT, &c, v);
     c.tex_size = v->tex_size;
-    memcpy(c.clut, v->clut, sizeof(c.clut));
     system_write_checkpoint_data(cp, &c, sizeof(c));
     system_write_checkpoint_data(cp, v->fb_ram, V2_FB_SIZE);
     for (int t = 0; t < V2_NUM_TMUS; t++)
@@ -2913,11 +2918,7 @@ static void v2_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     v2_raster_sync(v->raster);
     v2_ckpt_t c;
     system_read_checkpoint_data(cp, &c, sizeof(c));
-    memcpy(v->reg, c.reg, sizeof(v->reg));
-    memcpy(v->tmu_reg, c.tmu_reg, sizeof(v->tmu_reg));
-    memcpy(v->tmu_param, c.tmu_param, sizeof(v->tmu_param));
-    memcpy(v->tgt.ncc, c.ncc, sizeof(v->tgt.ncc));
-    memcpy(v->tgt.palette, c.palette, sizeof(v->tgt.palette));
+    V2_STAGE_FIELDS(CP_STAGE_IN, &c, v);
     // The executor-owned counters and stipple were mirrored into the
     // register file at save; seed them back, and re-snapshot.
     v->tgt.pixels_in = c.reg[R_PIXELS_IN];
@@ -2929,24 +2930,6 @@ static void v2_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     v->tgt.pal_gen[0]++;
     v->tgt.pal_gen[1]++;
     v2_raster_state_dirty(v->raster);
-    memcpy(&v->sv_cur, c.sv_cur, sizeof(v->sv_cur));
-    memcpy(v->sv, c.sv, sizeof(v->sv));
-    v->sv_count = c.sv_count;
-    v->sv_flip = c.sv_flip != 0;
-    v->init_enable = c.init_enable;
-    v->bus_snoop[0] = c.bus_snoop[0];
-    v->bus_snoop[1] = c.bus_snoop[1];
-    v->cfg_scratch = c.cfg_scratch;
-    v->si_process = c.si_process;
-    memcpy(v->dac_direct, c.dac_direct, sizeof(v->dac_direct));
-    memcpy(v->dac_pll, c.dac_pll, sizeof(v->dac_pll));
-    v->dac_pll_wr_addr = c.dac_pll_wr_addr;
-    v->dac_pll_rd_addr = c.dac_pll_rd_addr;
-    v->dac_pll_wr_phase = c.dac_pll_wr_phase;
-    v->dac_pll_rd_phase = c.dac_pll_rd_phase;
-    v->dac_read_latch = c.dac_read_latch;
-    v->swaps_pending = c.swaps_pending;
-    v->swap_issue_frame = c.swap_issue_frame;
     // A checkpoint from a 12 MB board must not restore into 8 MB
     // buffers: resize rather than truncate (the mach64gx.c pattern).
     // All TMUs resize or none do, and tex_size moves only with them: setting
@@ -2972,10 +2955,6 @@ static void v2_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
                 c.tex_size);
         }
     }
-    v->displayed_buffer = c.displayed_buffer;
-    v->driving = c.driving != 0;
-    v->clut_written = c.clut_written != 0;
-    memcpy(v->clut, c.clut, sizeof(v->clut));
     v->clut_dirty = true; // gamma_lut is derived state
     system_read_checkpoint_data(cp, v->fb_ram, V2_FB_SIZE);
     for (int t = 0; t < V2_NUM_TMUS; t++)

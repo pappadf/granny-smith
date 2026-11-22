@@ -12,6 +12,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 // Opaque checkpoint stream; modules receive a pointer to it when saving and
 // restoring state.  A header that only passes the pointer through can
@@ -147,6 +148,31 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
 #define CP_SPARSE(OP, cp, buf, size, page)                    CP_SPARSE_##OP(cp, buf, size, page)
 #define CP_SPARSE_system_write_checkpoint_data(cp, b, sz, pg) checkpoint_write_sparse((cp), (b), (sz), (pg))
 #define CP_SPARSE_system_read_checkpoint_data(cp, b, sz, pg)  checkpoint_read_sparse((cp), (b), (sz), (pg))
+
+// === Staging structs ===
+//
+// A device that saves a fixed-width snapshot struct (so `bool`s and the
+// padding have one defined layout in the stream) still writes its field list
+// once: the list moves each field between the snapshot and the live device,
+// and OP picks the direction.
+//     #define DEV_STAGE_FIELDS(OP, c, d) OP((c)->regs, (d)->regs); OP##_BOOL((c)->on, (d)->on)
+//     DEV_STAGE_FIELDS(CP_STAGE_OUT, &c, d);   // save: live -> snapshot
+//     DEV_STAGE_FIELDS(CP_STAGE_IN, &c, d);    // restore: snapshot -> live
+// A snapshot field has the live field's size (checked at compile time); a
+// `bool` is staged as a byte through the _BOOL forms, and reads back as
+// "non-zero", whatever byte the file holds.
+#define CP_STAGE_OUT(snap, live)                                                                                       \
+    do {                                                                                                               \
+        _Static_assert(sizeof(snap) == sizeof(live), "staged field size");                                             \
+        memcpy(&(snap), &(live), sizeof(snap));                                                                        \
+    } while (0)
+#define CP_STAGE_IN(snap, live)                                                                                        \
+    do {                                                                                                               \
+        _Static_assert(sizeof(snap) == sizeof(live), "staged field size");                                             \
+        memcpy(&(live), &(snap), sizeof(live));                                                                        \
+    } while (0)
+#define CP_STAGE_OUT_BOOL(snap, live) ((snap) = (live) ? 1u : 0u)
+#define CP_STAGE_IN_BOOL(snap, live)  ((live) = (snap) != 0)
 
 // === Bounded reads from an untrusted stream ===
 //

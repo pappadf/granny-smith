@@ -1385,24 +1385,30 @@ typedef struct r128_ckpt {
     uint8_t flip_pending;
 } r128_ckpt_t;
 
+// The fields staged through r128_ckpt_t, one list for both directions
+// (checkpoint.h, "Staging structs").  vram_size is not among them: the save
+// records it and the restore checks it, below.
+#define R128_STAGE_FIELDS(OP, c, r)                                                                                    \
+    OP((c)->reg, (r)->reg);                                                                                            \
+    OP((c)->pll, (r)->pll);                                                                                            \
+    OP((c)->agp_cmd, (r)->agp_cmd);                                                                                    \
+    OP((c)->pmcsr, (r)->pmcsr);                                                                                        \
+    OP((c)->clut, (r)->clut);                                                                                          \
+    OP((c)->pal_w, (r)->pal_w);                                                                                        \
+    OP((c)->pal_r, (r)->pal_r);                                                                                        \
+    OP((c)->ddc, (r)->ddc);                                                                                            \
+    OP((c)->host, (r)->host);                                                                                          \
+    OP((c)->fog_table, (r)->fog_table);                                                                                \
+    OP((c)->fog_index, (r)->fog_index);                                                                                \
+    OP((c)->crtc_offset_live, (r)->crtc_offset_live);                                                                  \
+    OP##_BOOL((c)->flip_pending, (r)->flip_pending)
+
 static void r128_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
     rage128_t *r = (rage128_t *)dev->priv;
     r128_ckpt_t c;
     memset(&c, 0, sizeof(c));
-    memcpy(c.reg, r->reg, sizeof(c.reg));
-    memcpy(c.pll, r->pll, sizeof(c.pll));
-    c.agp_cmd = r->agp_cmd;
-    c.pmcsr = r->pmcsr;
+    R128_STAGE_FIELDS(CP_STAGE_OUT, &c, r);
     c.vram_size = r->vram_size;
-    memcpy(c.clut, r->clut, sizeof(c.clut));
-    c.pal_w = r->pal_w;
-    c.pal_r = r->pal_r;
-    c.ddc = r->ddc;
-    memcpy(c.host, &r->host, sizeof(c.host));
-    memcpy(c.fog_table, r->fog_table, sizeof(c.fog_table));
-    c.fog_index = r->fog_index;
-    c.crtc_offset_live = r->crtc_offset_live;
-    c.flip_pending = r->flip_pending;
     system_write_checkpoint_data(cp, &c, sizeof(c));
     // The CCE (microcode, partial packets) is large: written on its own,
     // not through the stack-allocated header.
@@ -1417,20 +1423,8 @@ static void r128_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     rage128_t *r = (rage128_t *)dev->priv;
     r128_ckpt_t c;
     system_read_checkpoint_data(cp, &c, sizeof(c));
-    memcpy(r->reg, c.reg, sizeof(r->reg));
-    memcpy(r->pll, c.pll, sizeof(r->pll));
-    r->agp_cmd = c.agp_cmd;
-    r->pmcsr = c.pmcsr;
-    memcpy(r->clut, c.clut, sizeof(r->clut));
-    r->pal_w = c.pal_w;
-    r->pal_r = c.pal_r;
-    r->ddc = c.ddc;
-    memcpy(&r->host, c.host, sizeof(r->host));
-    memcpy(r->fog_table, c.fog_table, sizeof(r->fog_table));
-    r->fog_index = c.fog_index;
+    R128_STAGE_FIELDS(CP_STAGE_IN, &c, r);
     r->st_valid = false;
-    r->crtc_offset_live = c.crtc_offset_live;
-    r->flip_pending = c.flip_pending != 0;
     system_read_checkpoint_data(cp, &r->cce, sizeof(r->cce));
     if (r->gpu)
         r128_gpu_disengage(r->gpu, true); // the restored VRAM is the truth
