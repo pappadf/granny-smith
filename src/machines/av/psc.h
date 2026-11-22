@@ -78,6 +78,9 @@ void av_psc_set_scsi_touch_hook(av_psc_t *psc, av_psc_chan_touch_fn fn, void *ct
 // The same for the three SCC channels (SCC A rx, SCC B, SCC A tx): their
 // transmit engine lives with the SCC in av.c.
 void av_psc_set_scc_touch_hook(av_psc_t *psc, av_psc_chan_touch_fn fn, void *ctx);
+// The same for the two Ethernet channels (ENetRd 1, ENetWr 2): their pump
+// lives with the MACE in enet.c.
+void av_psc_set_enet_touch_hook(av_psc_t *psc, av_psc_chan_touch_fn fn, void *ctx);
 
 // Drive a level-sensitive VIA2-window source (SCSI interrupt, bit 3).
 void av_psc_via2_source(av_psc_t *psc, int bit, bool active);
@@ -155,6 +158,20 @@ bool av_psc_dma_ready(av_psc_t *psc, int chan);
 // pin) reads this before moving a byte: a transfer of the set's last byte
 // is the one the PSC terminates the count on.
 uint32_t av_psc_dma_remaining(av_psc_t *psc, int chan);
+
+// Chain mode, the receive model of the Ethernet read channel (ENetRd, 1):
+// the active set's Addr is the physical base of a chain of `stride`-byte
+// buffers and its Cnt the number of buffers left, not bytes.  One received
+// frame fills one buffer: `head` (the status block) at the buffer's start,
+// the frame's `len` bytes from `data_off`; then Addr steps to the next
+// buffer, Cnt drops by one and IF is set -- per frame, not only at terminal
+// count.  The buffer that takes Cnt to 0 is the set's terminal count (the
+// usual completion dance: ENABLED clears, TERMCNT, the active set flips).
+// The channel's direction is fixed: the driver never sets DIR on it.  True
+// when the frame was deposited; false (nothing changed) when the active set
+// is not armed and running.
+bool av_psc_dma_chain_in(av_psc_t *psc, int chan, const uint8_t *head, int head_len, const uint8_t *data, int len,
+                         uint32_t stride, uint32_t data_off);
 
 // Armed direction of the channel's active set: 1 = device→memory (DIR
 // set), 0 = memory→device, -1 = not armed/paused.  A device pump reads

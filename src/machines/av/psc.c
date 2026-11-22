@@ -71,7 +71,7 @@ typedef struct av_psc_chan {
 } av_psc_chan_t;
 
 struct av_psc {
-    // --- plain data (checkpointed up to the first pointer field) ---
+    // --- plain data (checkpointed: AV_PSC_CP_FIELDS) ---
     uint8_t via2_level; // live VIA2-window source levels
     uint8_t via2_latched; // latched VIA2-window bits (FDC, sound frame)
     uint8_t via2_ier; // VIA2-window interrupt enables
@@ -94,6 +94,8 @@ struct av_psc {
     void *scsi_touch_ctx;
     av_psc_chan_touch_fn scc_touch_fn; // "the guest programmed an SCC channel"
     void *scc_touch_ctx;
+    av_psc_chan_touch_fn enet_touch_fn; // "the guest programmed an Ethernet channel"
+    void *enet_touch_ctx;
     void *dreq_ctx;
     dma_mem_port_t mem; // guest-physical port for DMA (dma_mem.h)
     av_psc_dsp_fn dsp_fn; // dspOverRun latch observer (the DSP glue)
@@ -320,6 +322,18 @@ void av_psc_set_scc_touch_hook(av_psc_t *psc, av_psc_chan_touch_fn fn, void *ctx
     psc->scc_touch_ctx = ctx;
 }
 
+void av_psc_set_enet_touch_hook(av_psc_t *psc, av_psc_chan_touch_fn fn, void *ctx) {
+    if (!psc)
+        return;
+    psc->enet_touch_fn = fn;
+    psc->enet_touch_ctx = ctx;
+}
+
+// True for the Ethernet channels (1 ENetRd, 2 ENetWr).
+static bool psc_is_enet_chan(int n) {
+    return n == AV_PSC_DMA_MACE_RX || n == AV_PSC_DMA_MACE_TX;
+}
+
 // True for the SCC's channels (4 SCC A rx, 5 SCC B, 6 SCC A tx).
 static bool psc_is_scc_chan(int n) {
     return n == AV_PSC_DMA_SCCA_RX || n == AV_PSC_DMA_SCCB || n == AV_PSC_DMA_SCCA_TX;
@@ -360,7 +374,7 @@ static int psc_dma_transfer(av_psc_t *psc, int n, const uint8_t *in, uint8_t *ou
         return 0;
     if (((ch->cs[s] & PSC_CS_DIR) != 0) != to_memory)
         return 0; // direction mismatch — the set is armed the other way
-    uint32_t remain = ch->cnt[s]; // (MACE-receive chain mode not modelled)
+    uint32_t remain = ch->cnt[s]; // bytes (the ENetRd chain mode is av_psc_dma_chain_in)
     if (remain == 0)
         return 0;
     if (ch->addr[s] >= 0x40000000u) {
@@ -382,6 +396,34 @@ static int psc_dma_transfer(av_psc_t *psc, int n, const uint8_t *in, uint8_t *ou
     if (ch->cnt[s] == 0)
         psc_dma_complete(psc, n);
     return (int)count;
+}
+
+bool av_psc_dma_chain_in(av_psc_t *psc, int chan, const uint8_t *head, int head_len, const uint8_t *data, int len,
+                         uint32_t stride, uint32_t data_off) {
+    av_psc_chan_t *ch = &psc->chan[chan];
+    int s = ch->active_set;
+    if (ch->pause || !(ch->cs[s] & PSC_CS_ENABLED) || ch->cnt[s] == 0)
+        return false;
+    uint32_t base = ch->addr[s];
+    if (base >= 0x40000000u) {
+        ch->berr = true; // no DMA into ROM/NuBus space, as for the byte channels
+        LOG(1, "DMA ch%d bus error: chain buffer $%08X >= $40000000", chan, base);
+        return false;
+    }
+    // A frame longer than the buffer's data area is cut at its end.
+    uint32_t room = stride > data_off ? stride - data_off : 0;
+    uint32_t n = (uint32_t)len < room ? (uint32_t)len : room;
+    dma_mem_write_block(&psc->mem, base + data_off, data, n);
+    dma_mem_write_block(&psc->mem, base, head, (uint32_t)head_len);
+    ch->addr[s] = base + stride;
+    ch->cnt[s]--;
+    ch->cs[s] |= PSC_CS_IF; // every buffer interrupts (Mace.a PSCInterrupt)
+    LOG(3, "DMA ch%d set %d: %d-byte frame into $%08X, %u buffers left", chan, s, len, base, ch->cnt[s]);
+    if (ch->cnt[s] == 0)
+        psc_dma_complete(psc, chan);
+    else
+        psc_update_dma_ipl(psc);
+    return true;
 }
 
 int av_psc_dma_device_in(av_psc_t *psc, int chan, const uint8_t *buf, int len) {
@@ -628,6 +670,8 @@ void av_psc_reg_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t va
             psc->scsi_touch_fn(psc->scsi_touch_ctx);
         if (psc_is_scc_chan(n) && psc->scc_touch_fn)
             psc->scc_touch_fn(psc->scc_touch_ctx);
+        if (psc_is_enet_chan(n) && psc->enet_touch_fn)
+            psc->enet_touch_fn(psc->enet_touch_ctx);
         return;
     }
     if (off >= 0x1000 && off < 0x1000 + 0x20 * AV_PSC_DMA_CHANNELS) {
@@ -638,6 +682,8 @@ void av_psc_reg_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t va
             psc->scsi_touch_fn(psc->scsi_touch_ctx);
         if (psc_is_scc_chan(n) && psc->scc_touch_fn)
             psc->scc_touch_fn(psc->scc_touch_ctx);
+        if (psc_is_enet_chan(n) && psc->enet_touch_fn)
+            psc->enet_touch_fn(psc->enet_touch_ctx);
         return;
     }
 
@@ -793,8 +839,36 @@ static const class_desc_t psc_class = {
     .n_members = sizeof(psc_members) / sizeof(psc_members[0]),
 };
 
-// The checkpointed plain-data prefix, up to the first host pointer
-CHECKPOINT_PREFIX(av_psc_t, cfg);
+// One DMA channel's registers and control state, for both directions.
+#define AV_PSC_CHAN_CP_FIELDS(OP, cp, ch)                                                                              \
+    CP_ARRAY(OP, cp, (ch)->addr);                                                                                      \
+    CP_ARRAY(OP, cp, (ch)->cnt);                                                                                       \
+    CP_ARRAY(OP, cp, (ch)->cs);                                                                                        \
+    CP_FIELD(OP, cp, (ch)->active_set);                                                                                \
+    CP_FIELD(OP, cp, (ch)->pause);                                                                                     \
+    CP_FIELD(OP, cp, (ch)->cie);                                                                                       \
+    CP_FIELD(OP, cp, (ch)->berr);                                                                                      \
+    CP_FIELD(OP, cp, (ch)->sense_last)
+
+// The PSC's checkpointed state (checkpoint.h, "Field lists"): the interrupt
+// files, the sound/DSP latches and the seven DMA channels.
+#define AV_PSC_CP_FIELDS(OP, cp, psc)                                                                                  \
+    CP_FIELD(OP, cp, (psc)->via2_level);                                                                               \
+    CP_FIELD(OP, cp, (psc)->via2_latched);                                                                             \
+    CP_FIELD(OP, cp, (psc)->via2_ier);                                                                                 \
+    CP_FIELD(OP, cp, (psc)->sint_active);                                                                              \
+    CP_ARRAY(OP, cp, (psc)->l_level);                                                                                  \
+    CP_ARRAY(OP, cp, (psc)->l_latched);                                                                                \
+    CP_ARRAY(OP, cp, (psc)->l_ier);                                                                                    \
+    CP_FIELD(OP, cp, (psc)->berrie);                                                                                   \
+    CP_ARRAY(OP, cp, (psc)->psctest);                                                                                  \
+    CP_ARRAY(OP, cp, (psc)->snd);                                                                                      \
+    CP_FIELD(OP, cp, (psc)->phase_snap);                                                                               \
+    CP_FIELD(OP, cp, (psc)->phase_lane);                                                                               \
+    CP_FIELD(OP, cp, (psc)->dsp_overrun);                                                                              \
+    for (int n_ = 0; n_ < AV_PSC_DMA_CHANNELS; n_++) {                                                                 \
+        AV_PSC_CHAN_CP_FIELDS(OP, cp, &(psc)->chan[n_]);                                                               \
+    }
 
 av_psc_t *av_psc_init(config_t *cfg, checkpoint_t *cp) {
     av_psc_t *psc = calloc(1, sizeof(*psc));
@@ -802,7 +876,7 @@ av_psc_t *av_psc_init(config_t *cfg, checkpoint_t *cp) {
         return NULL;
     psc->cfg = cfg;
     if (cp) {
-        checkpoint_load_prefix(cp, psc, av_psc_t);
+        AV_PSC_CP_FIELDS(system_read_checkpoint_data, cp, psc);
     }
     psc->object = object_attach_new(machine_object(), &psc_class, psc, "psc", NULL, OBJ_ORDER_IO_CONTROLLER);
     return psc;
@@ -817,5 +891,5 @@ void av_psc_delete(av_psc_t *psc) {
 void av_psc_checkpoint(av_psc_t *psc, checkpoint_t *cp) {
     if (!psc || !cp)
         return;
-    checkpoint_save_prefix(cp, psc, av_psc_t);
+    AV_PSC_CP_FIELDS(system_write_checkpoint_data, cp, psc);
 }
