@@ -34,7 +34,7 @@ struct nubus_card;
 // the egret companion.
 typedef mdu_state_t iisi_state_t;
 
-static inline iisi_state_t *iisi_state(config_t *cfg) {
+static inline iisi_state_t *iisi_st(config_t *cfg) {
     return (iisi_state_t *)cfg->machine_context;
 }
 

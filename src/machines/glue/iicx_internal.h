@@ -29,7 +29,7 @@ struct floppy;
 // the SE/30 vram/vrom/video_card members NULL.
 typedef glue_state_t iicx_state_t;
 
-static inline iicx_state_t *iicx_state(config_t *cfg) {
+static inline iicx_state_t *iicx_st(config_t *cfg) {
     return (iicx_state_t *)cfg->machine_context;
 }
 

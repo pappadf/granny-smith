@@ -32,7 +32,7 @@ struct nubus_card;
 // the egret member NULL.
 typedef mdu_state_t iici_state_t;
 
-static inline iici_state_t *iici_state(config_t *cfg) {
+static inline iici_state_t *iici_st(config_t *cfg) {
     return (iici_state_t *)cfg->machine_context;
 }
 

@@ -167,7 +167,7 @@ static const lisa_board_desc_t *lisa_board_of(const config_t *cfg) {
     return (const lisa_board_desc_t *)cfg->machine->board;
 }
 
-static inline lisa_state_t *lisa_state(config_t *cfg) {
+static inline lisa_state_t *lisa_st(config_t *cfg) {
     return (lisa_state_t *)cfg->machine_context;
 }
 
@@ -180,7 +180,7 @@ static inline lisa_state_t *lisa_state(config_t *cfg) {
 // write (the ROM moves the screen during sizing) takes effect.  Marks the
 // framebuffer dirty only when the base actually moves.
 static void lisa_refresh_framebuffer(config_t *cfg) {
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     const lisa_board_desc_t *board = lisa_board_of(cfg);
     const uint8_t *prev = ls->display.bits;
     uint32_t base = lisa_mmu_video_base(ls->mmu);
@@ -199,7 +199,7 @@ static void lisa_refresh_framebuffer(config_t *cfg) {
 }
 
 static void lisa_display_init(config_t *cfg) {
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     const lisa_board_desc_t *board = lisa_board_of(cfg);
     ls->display.width = board->screen_w;
     ls->display.height = board->screen_h;
@@ -216,7 +216,7 @@ static void lisa_display_init(config_t *cfg) {
 
 // hw_profile_t.display callback — surface the framebuffer on the non-NuBus path.
 static display_t *lisa_display(config_t *cfg) {
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     return ls && ls->display.bits ? &ls->display : NULL;
 }
 
@@ -315,12 +315,12 @@ static void lisa_via1_irq(void *ctx, bool active) {
 // Level 1 is the OR of the VIA2 IRQ and the video VBL retrace interrupt.
 // Recompute it from the tracked sub-sources so neither clobbers the other.
 static void lisa_update_l1(config_t *cfg) {
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     lisa_update_ipl(cfg, 1, ls->l1_via2 || ls->l1_vbl || ls->l1_floppy);
 }
 static void lisa_via2_irq(void *ctx, bool active) {
     config_t *cfg = (config_t *)ctx;
-    lisa_state(cfg)->l1_via2 = active;
+    lisa_st(cfg)->l1_via2 = active;
     lisa_update_l1(cfg);
 }
 // VIA1 port output → COPS (port A command jam / port B reset line).  VIA1 PB7
@@ -328,7 +328,7 @@ static void lisa_via2_irq(void *ctx, bool active) {
 // it low on handshake-retry); act on the falling edge.
 static void lisa_via1_output(void *ctx, uint8_t port, uint8_t value) {
     config_t *cfg = (config_t *)ctx;
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     cops_via_output(ls->cops, port, value);
     if (port == 1) { // port B
         bool pb7 = (value & 0x80) != 0;
@@ -353,7 +353,7 @@ static void lisa_via2_output(void *ctx, uint8_t port, uint8_t value) {
     uint8_t dir = via_port_direction(cfg->via2, 1);
     uint8_t out = via_port_output(cfg->via2, 1);
     uint8_t level = (uint8_t)((out & dir) | ~dir); // undriven pins pull high
-    lisa_profile_portb(lisa_state(cfg)->profile, level);
+    lisa_profile_portb(lisa_st(cfg)->profile, level);
 }
 static void lisa_via_shift_out(void *ctx, uint8_t byte) {
     (void)ctx;
@@ -373,16 +373,16 @@ static void lisa_profile_bsy(void *ctx, bool busy) {
 
 // VIA2 port-A data hooks → ProFile (handshake = the CA2/PSTRB-strobed register).
 static uint8_t lisa_profile_porta_read_cb(void *ctx, bool handshake) {
-    return lisa_profile_porta_read(lisa_state((config_t *)ctx)->profile, handshake);
+    return lisa_profile_porta_read(lisa_st((config_t *)ctx)->profile, handshake);
 }
 static void lisa_profile_porta_write_cb(void *ctx, uint8_t value, bool handshake) {
-    lisa_profile_porta_write(lisa_state((config_t *)ctx)->profile, value, handshake);
+    lisa_profile_porta_write(lisa_st((config_t *)ctx)->profile, value, handshake);
 }
 
 // Drive the controller's static input lines: OCD/ (PB0, 0 = a disk is connected)
 // and the idle BSY level.  Called at init and after any attach/detach.
 static void lisa_profile_update_lines(config_t *cfg) {
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     bool connected = lisa_profile_connected(ls->profile);
     if (cfg->via2)
         via_input(cfg->via2, 1, 0, !connected); // PB0 = OCD/ (0 = connected)
@@ -397,7 +397,7 @@ static void lisa_profile_update_lines(config_t *cfg) {
 // `keyboard.press("return")` failed with "unknown key" and no chord could
 // hold a modifier.
 static int lisa_input_key(config_t *cfg, int adb_code, bool down) {
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     if (!ls || !ls->cops)
         return -1;
     uint8_t code = lisa_keycode_for_adb(adb_code);
@@ -415,7 +415,7 @@ static int lisa_input_key(config_t *cfg, int adb_code, bool down) {
 // that is what they are testing; it is not a portable key press, and the
 // substrate hook is NULL on every other machine.
 static int lisa_input_key_raw(config_t *cfg, uint8_t byte) {
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     if (!ls || !ls->cops)
         return -1;
     cops_inject_key(ls->cops, byte);
@@ -431,7 +431,7 @@ static int lisa_input_key_raw(config_t *cfg, uint8_t byte) {
 // pixel coordinate.  mouse.click → the COPS button keycode, which the OS hit-tests
 // against the cursor it has tracked there.
 static int lisa_input_mouse_move(config_t *cfg, int x, int y, const char *mode) {
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     if (!ls || !ls->cops)
         return -1;
     if (mode && strcmp(mode, "global") == 0) {
@@ -446,7 +446,7 @@ static int lisa_input_mouse_move(config_t *cfg, int x, int y, const char *mode) 
 }
 static int lisa_input_mouse_button(config_t *cfg, bool down, const char *mode) {
     (void)mode;
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     if (!ls || !ls->cops)
         return -1;
     cops_inject_mouse(ls->cops, 0, 0, down ? 1 : 0);
@@ -494,7 +494,7 @@ static const memory_interface_t lisa_fdc_iface = {
 // after its first interrupt-driven read.  The level-1 handler reads $00C05F.
 static void lisa_fdc_fdir(void *ctx, bool asserted) {
     config_t *cfg = (config_t *)ctx;
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     if (cfg->via1)
         via_input(cfg->via1, 1, 4, asserted); // PB4 = FDIR (polled by the ROM)
     ls->l1_floppy = asserted;
@@ -503,14 +503,14 @@ static void lisa_fdc_fdir(void *ctx, bool asserted) {
 
 // hw_profile_t.fd_insert / fd_present — the Lisa uses lisa_fdc, not cfg->floppy.
 static int lisa_fd_insert(config_t *cfg, int drive, struct image *disk) {
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     if (drive != 0 || !ls || !ls->fdc)
         return -1; // one Sony drive
     lisa_fdc_insert(ls->fdc, (image_t *)disk);
     return 0;
 }
 static bool lisa_fd_present(config_t *cfg, int drive) {
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     if (drive != 0)
         return false; // only drive 0 exists; the others hold nothing
     return ls && ls->fdc && lisa_fdc_disk_present(ls->fdc);
@@ -521,7 +521,7 @@ static bool lisa_fd_present(config_t *cfg, int drive) {
 // 6504A FDC and the hard disk is the parallel ProFile.  Both images belong to
 // the machine's image table (system.c), like every other drive's.
 static int lisa_media_attach(config_t *cfg, const media_slot_t *slot) {
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     switch (slot->bus) {
     case MEDIA_BUS_FLOPPY:
         if (lisa_fd_insert(cfg, slot->unit, slot->img) != 0)
@@ -541,7 +541,7 @@ static int lisa_media_attach(config_t *cfg, const media_slot_t *slot) {
 
 // The runtime attach/eject verbs' view: the one Sony drive and the ProFile.
 static bool lisa_media_present(config_t *cfg, media_bus_t bus, int unit) {
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     switch (bus) {
     case MEDIA_BUS_FLOPPY:
         return unit == 0 && ls && ls->fdc && lisa_fdc_disk_present(ls->fdc);
@@ -555,12 +555,12 @@ static bool lisa_media_present(config_t *cfg, media_bus_t bus, int unit) {
 // The ProFile's image: the Lisa's only hard-disk bay.
 static image_t *lisa_media_image(config_t *cfg, media_bus_t bus, int unit) {
     (void)unit;
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     return (bus == MEDIA_BUS_PROFILE && ls) ? lisa_profile_image(ls->profile) : NULL;
 }
 
 static int lisa_media_eject(config_t *cfg, media_bus_t bus, int unit) {
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     if (!lisa_media_present(cfg, bus, unit))
         return -1;
     if (bus == MEDIA_BUS_FLOPPY) {
@@ -589,7 +589,7 @@ static DEF_METHOD(lisa_fd_drive_insert) {
 }
 
 static DEF_METHOD(lisa_fd_drive_eject) {
-    lisa_state_t *ls = lisa_state((config_t *)object_data(self));
+    lisa_state_t *ls = lisa_st((config_t *)object_data(self));
     if (!ls || !ls->fdc)
         return val_err("floppy.drives.0: no controller");
     // Ejecting an empty drive is a harmless no-op (idempotent): a multi-disk
@@ -602,7 +602,7 @@ static DEF_METHOD(lisa_fd_drive_eject) {
 }
 
 static DEF_GETTER(lisa_fd_drive_present) {
-    lisa_state_t *ls = lisa_state((config_t *)object_data(self));
+    lisa_state_t *ls = lisa_st((config_t *)object_data(self));
     return val_bool(ls && ls->fdc && lisa_fdc_disk_present(ls->fdc));
 }
 
@@ -611,7 +611,7 @@ static DEF_GETTER(lisa_fd_drive_present) {
 // a clamped disk has one here.
 static image_t *lisa_node_image(void *dev, unsigned slot) {
     config_t *cfg = (config_t *)dev;
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     if (!ls)
         return NULL;
     if (slot == MEDIA_BUS_FLOPPY)
@@ -626,12 +626,12 @@ static const image_node_ops_t lisa_image_ops = {.image = lisa_node_image, .eject
 // `image` child of the drive and of machine.hd: present only when loaded.
 static struct object *lisa_fd_image_lookup(struct object *self, const char *name) {
     (void)name;
-    lisa_state_t *ls = lisa_state((config_t *)object_data(self));
+    lisa_state_t *ls = lisa_st((config_t *)object_data(self));
     return (ls && lisa_node_image(object_data(self), MEDIA_BUS_FLOPPY)) ? ls->fd_image_obj : NULL;
 }
 static struct object *lisa_hd_image_lookup(struct object *self, const char *name) {
     (void)name;
-    lisa_state_t *ls = lisa_state((config_t *)object_data(self));
+    lisa_state_t *ls = lisa_st((config_t *)object_data(self));
     return (ls && lisa_node_image(object_data(self), MEDIA_BUS_PROFILE)) ? ls->hd_image_obj : NULL;
 }
 
@@ -681,7 +681,7 @@ static const class_desc_t lisa_fd_drive_class = {.name = "floppy_drive",
                                                      sizeof(lisa_fd_drive_members) / sizeof(lisa_fd_drive_members[0])};
 
 static struct object *lisa_fd_drives_get(struct object *self, int index) {
-    lisa_state_t *ls = lisa_state((config_t *)object_data(self));
+    lisa_state_t *ls = lisa_st((config_t *)object_data(self));
     return (ls && index == 0) ? ls->fd_drive_obj : NULL;
 }
 static const collection_desc_t lisa_fd_drives_entries = {
@@ -700,7 +700,7 @@ static const class_desc_t lisa_fd_class = {
 
 // Attach the `floppy` → `drives` → `drives[0]` object tree for this machine.
 static void lisa_register_floppy_object(config_t *cfg) {
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     (void)lisa_fd_members;
     ls->fd_obj = object_attach_new(machine_object(), &lisa_fd_class, cfg, "floppy", "Floppy", OBJ_ORDER_FLOPPY);
     if (!ls->fd_obj)
@@ -729,7 +729,7 @@ static void lisa_register_floppy_object(config_t *cfg) {
 
 static DEF_METHOD(lisa_hd_insert) {
     config_t *cfg = (config_t *)object_data(self);
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     // Read by kind: `path` now has a VK_NONE default so that
     // `hd.insert(writable=false)` -- a blank in-memory disk, mounted
     // read-only -- is expressible at all.
@@ -758,7 +758,7 @@ static DEF_METHOD(lisa_hd_insert) {
 
 static DEF_METHOD(lisa_hd_eject) {
     config_t *cfg = (config_t *)object_data(self);
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     if (!ls || !ls->profile || !lisa_profile_attached(ls->profile))
         return val_err("profile: no disk attached");
     lisa_media_eject(cfg, MEDIA_BUS_PROFILE, 0);
@@ -766,7 +766,7 @@ static DEF_METHOD(lisa_hd_eject) {
 }
 
 static DEF_GETTER(lisa_hd_present) {
-    lisa_state_t *ls = lisa_state((config_t *)object_data(self));
+    lisa_state_t *ls = lisa_st((config_t *)object_data(self));
     return val_bool(ls && lisa_profile_attached(ls->profile));
 }
 
@@ -788,7 +788,7 @@ static DEF_GETTER(lisa_hd_present) {
 // clean-shutdown snapshot rather than on a pre-seeded hardware entry masking
 // a broken one.
 static DEF_METHOD(lisa_hd_pram_init) {
-    lisa_state_t *ls = lisa_state((config_t *)object_data(self));
+    lisa_state_t *ls = lisa_st((config_t *)object_data(self));
     if (!ls || !ls->fdc)
         return val_err("pram: no controller");
     uint64_t boot_vol = (argc >= 1) ? argv[0].u : 1;
@@ -801,7 +801,7 @@ static DEF_METHOD(lisa_hd_pram_init) {
 }
 
 static DEF_METHOD(lisa_hd_pram_save) {
-    lisa_state_t *ls = lisa_state((config_t *)object_data(self));
+    lisa_state_t *ls = lisa_st((config_t *)object_data(self));
     const char *path = (argc >= 1) ? argv[0].s : NULL;
     if (!ls || !ls->fdc)
         return val_err("pram: no controller");
@@ -813,7 +813,7 @@ static DEF_METHOD(lisa_hd_pram_save) {
 }
 
 static DEF_METHOD(lisa_hd_pram_load) {
-    lisa_state_t *ls = lisa_state((config_t *)object_data(self));
+    lisa_state_t *ls = lisa_st((config_t *)object_data(self));
     const char *path = (argc >= 1) ? argv[0].s : NULL;
     if (!ls || !ls->fdc)
         return val_err("pram: no controller");
@@ -903,7 +903,7 @@ static const class_desc_t lisa_hd_class = {.name = "profile",
                                            .n_members = sizeof(lisa_hd_members) / sizeof(lisa_hd_members[0])};
 
 static void lisa_register_profile_object(config_t *cfg) {
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     // Named "hd" (not "profile") under the machine node: a child named
     // "profile" would be shadowed by the machine class's `profile` *method*
     // (the resolver finds members before attached children). The ProFile is
@@ -925,7 +925,7 @@ static void lisa_register_profile_object(config_t *cfg) {
 // without the "startup disk was in use" scavenge prompt.  No-op pre-boot / on a
 // machine whose OS isn't listening; harmless either way (the code just queues).
 static DEF_METHOD(lisa_power_off) {
-    lisa_state_t *ls = lisa_state((config_t *)object_data(self));
+    lisa_state_t *ls = lisa_st((config_t *)object_data(self));
     if (!ls || !ls->cops)
         return val_err("power: no COPS");
     cops_soft_power_off(ls->cops);
@@ -942,7 +942,7 @@ static const class_desc_t lisa_power_class = {
     .name = "power", .doc = "The Lisa's soft power switch", .members = lisa_power_members, .n_members = 1};
 
 static void lisa_register_power_object(config_t *cfg) {
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     ls->power_obj = object_attach_new(machine_object(), &lisa_power_class, cfg, "power", "Power", OBJ_ORDER_POWER);
 }
 
@@ -1166,7 +1166,7 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
 }
 
 static void lisa_teardown(config_t *cfg) {
-    lisa_state_t *ls0 = lisa_state(cfg);
+    lisa_state_t *ls0 = lisa_st(cfg);
     if (ls0) {
         // Tear down the `floppy` object tree (entry is unattached, like the IWM
         // floppy object, so delete it directly).
@@ -1199,7 +1199,7 @@ static void lisa_teardown(config_t *cfg) {
         cops_delete(ls0->cops);
         ls0->cops = NULL;
     }
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     if (ls && ls->mmu) {
         lisa_mmu_delete(ls->mmu);
         ls->mmu = NULL;
@@ -1227,7 +1227,7 @@ static void lisa_teardown(config_t *cfg) {
 static void lisa_vbl_off(void *source, uint64_t data) {
     (void)data;
     config_t *cfg = (config_t *)source;
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     if (ls && ls->mmu) {
         lisa_mmu_set_vbl_active(ls->mmu, false);
         // Retrace window ended: drop the VBL contribution to level 1.
@@ -1246,7 +1246,7 @@ static void lisa_vbl_off(void *source, uint64_t data) {
 // autovector is taken once per retrace).
 static void lisa_vbl_ack(void *source) {
     config_t *cfg = (config_t *)source;
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     if (ls && ls->l1_vbl) {
         ls->l1_vbl = false;
         lisa_update_l1(cfg);
@@ -1254,7 +1254,7 @@ static void lisa_vbl_ack(void *source) {
 }
 
 static void lisa_trigger_vbl(config_t *cfg) {
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     if (ls && ls->mmu) {
         // VBL is an IPL-1 interrupt source (docs/reference/machines/lisa/lisa.md §8) gated by the VTMSK
         // latch ($E01A on / $E018 off).  Real hardware FIREs the video
@@ -1359,7 +1359,7 @@ static const builtin_video_desc_t lisa_builtin_video = {
 // the OS restores its device table from the boot volume's own snapshot.
 // "No default" leaves the factory content: BootVol = the floppy.
 static void lisa_seed(config_t *cfg) {
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     const machine_startup_t *st = &cfg->build_opts.startup;
     if (!ls || !ls->fdc || !cfg->build_opts.storage_given || st->none || strcmp(st->bus, "profile") != 0)
         return;
@@ -1372,7 +1372,7 @@ static void lisa_seed(config_t *cfg) {
 // warm-start check (segment 126 still reading $x901) would take the reset path
 // into the ROM monitor instead of a cold start.  A reset touches neither.
 static void lisa_power_on(config_t *cfg) {
-    lisa_state_t *ls = lisa_state(cfg);
+    lisa_state_t *ls = lisa_st(cfg);
     if (ls)
         lisa_mmu_power_on(ls->mmu);
 }
