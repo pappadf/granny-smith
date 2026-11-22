@@ -31,4 +31,5 @@ EXTRA_CFLAGS  = -I$(EMU_ROOT)/machines/lisa
 USE_SOURCE_LAYER := 1
 # The drive-to-image checkpoint reference the media controllers write
 EXTRA_SRCS += ../../../../src/core/storage/image_ref.c
+EXTRA_SRCS += ../../../../src/core/storage/image_access.c
 include ../../common.mk

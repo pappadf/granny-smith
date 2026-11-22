@@ -28,7 +28,6 @@ static void floppy_notify_present(int drive, bool present);
 // floppy_init / floppy_delete reference them.
 static const class_desc_t floppy_class;
 static const class_desc_t floppy_drive_class;
-static const class_desc_t floppy_disk_class;
 static const class_desc_t floppy_drives_collection_class;
 static const class_desc_t floppy_controller_class;
 
@@ -40,7 +39,6 @@ static const class_desc_t floppy_controller_class;
 #include <string.h>
 
 #include "image.h"
-#include "medium_export.h"
 
 LOG_USE_CATEGORY_NAME("floppy");
 
@@ -325,7 +323,7 @@ int floppy_disk_status_at(floppy_t *floppy, int drv, uint8_t lines, bool peek) {
             // 1440K only: the deviation from swim.md's "2 pulses per
             // revolution unconditionally" is justified by MacTest for HD
             // media specifically, so 720K MFM stays on the 2/rev path.
-            bool is_hd = (img && image_get_type(img) == image_fd_hd);
+            bool is_hd = (img && image_layout(img) == IMAGE_LAYOUT_MFM1440);
             ret = floppy_index_signal(FLOPPY_INDEX_ISM, now_ns, ns_per_rev, is_hd ? 1 : 2);
             desc = is_hd ? "INDEX(HD)" : "INDEX(800K)";
         } else {
@@ -356,7 +354,7 @@ int floppy_disk_status_at(floppy_t *floppy, int drv, uint8_t lines, bool peek) {
         desc = "NEWINTF";
         if (floppy->type == FLOPPY_TYPE_SWIM) {
             // Report new interface (0) only for HD disks
-            ret = (floppy->disk[drv] && image_get_type(floppy->disk[drv]) == image_fd_hd) ? 0 : 1;
+            ret = (floppy->disk[drv] && image_layout(floppy->disk[drv]) == IMAGE_LAYOUT_MFM1440) ? 0 : 1;
         } else {
             ret = 1; // 800K drive
         }
@@ -813,6 +811,15 @@ image_t *floppy_drive_image(const floppy_t *floppy, unsigned drive) {
     return floppy->disk[drive];
 }
 
+// The image node's view of a drive (image_class.h).
+static image_t *floppy_node_image(void *dev, unsigned slot) {
+    return floppy_drive_image((const floppy_t *)dev, slot);
+}
+static int floppy_node_eject(void *dev, unsigned slot) {
+    return floppy_drive_eject((floppy_t *)dev, slot) ? IMAGE_EJECT_OK : IMAGE_EJECT_EMPTY;
+}
+static const image_node_ops_t floppy_image_ops = {.image = floppy_node_image, .eject = floppy_node_eject};
+
 // Frees and clears a drive's cached GCR track buffers.  iwm_track_data
 // malloc()s a buffer per (side, track) on first touch; zeroing the array
 // without freeing first leaks every one of them -- up to ~1.2 MB for a
@@ -1133,12 +1140,13 @@ floppy_t *floppy_init(floppy_type_t type, memory_map_t *map, struct scheduler *s
             floppy->drive_links[i].floppy = floppy;
             floppy->drive_links[i].slot = i;
             floppy->drive_objects[i] = object_new(&floppy_drive_class, &floppy->drive_links[i], NULL);
-            // Per-drive medium node, sharing the same drive link.
-            floppy->disk_objects[i] = object_new(&floppy_disk_class, &floppy->drive_links[i], "disk");
+            // Per-drive image node: the one image class (image_class.h).
+            floppy->image_nodes[i] = (image_node_t){.ops = &floppy_image_ops, .dev = floppy, .slot = (unsigned)i};
+            floppy->image_objects[i] = object_new(&image_class, &floppy->image_nodes[i], "image");
             // Callback-backed children: drive[i] under the collection,
-            // drive[i].disk under its drive (for its path).
+            // drive[i].image under its drive (for its path).
             object_set_logical_parent(floppy->drive_objects[i], floppy->drives_object, NULL, i, NULL);
-            object_set_logical_parent(floppy->disk_objects[i], floppy->drive_objects[i], "disk", -1, NULL);
+            object_set_logical_parent(floppy->image_objects[i], floppy->drive_objects[i], "image", -1, NULL);
         }
     }
 
@@ -1200,9 +1208,9 @@ void floppy_delete(floppy_t *floppy) {
     for (int i = 0; i < NUM_DRIVES; i++) {
         // Medium nodes (children of the entries) first, then the entries.
         // Neither is attached, so cascade does not reach them.
-        if (floppy->disk_objects[i]) {
-            object_delete(floppy->disk_objects[i]);
-            floppy->disk_objects[i] = NULL;
+        if (floppy->image_objects[i]) {
+            object_delete(floppy->image_objects[i]);
+            floppy->image_objects[i] = NULL;
         }
         if (floppy->drive_objects[i]) {
             object_delete(floppy->drive_objects[i]);
@@ -1316,77 +1324,6 @@ static DEF_GETTER(floppy_attr_sel) {
     return val_bool(floppy_get_sel(floppy_self_from(self)));
 }
 
-// `floppy.identify(path)` — return density string for a recognised floppy
-// image ("400K" / "800K" / "1.4MB"), or empty string otherwise. Empty is
-// falsy under the predicate-truthy rule, so callers can do
-//   `assert ${floppy.identify(path)} "not a floppy"`.
-static DEF_METHOD(floppy_method_identify) {
-    image_t *img = image_open_readonly(argv[0].s);
-    if (!img)
-        return val_str("");
-    const char *density = "";
-    switch (image_get_type(img)) {
-    case image_fd_ss:
-        density = "400K";
-        break;
-    case image_fd_ds:
-        density = "800K";
-        break;
-    case image_fd_dd_mfm:
-        density = "720K";
-        break;
-    case image_fd_hd:
-        density = "1.4MB";
-        break;
-    default:
-        density = "";
-        break;
-    }
-    image_close(img);
-    return val_str(density);
-}
-
-// `floppy.create(path, [hd])` — create a blank floppy image and auto-mount
-// it. `hd` is the optional density flag: "hd" / true → 1.44 MB, anything
-// else → 800 KB. The legacy `--hd` string spelling is also accepted.
-static DEF_METHOD(floppy_method_create) {
-    bool high_density = false;
-    int preferred = -1;
-    // hd is VK_NONE-kind: body discriminates string / bool / integer.
-    if (argc >= 2) {
-        if (argv[1].kind == VK_STRING && argv[1].s) {
-            if (strcmp(argv[1].s, "hd") == 0 || strcmp(argv[1].s, "--hd") == 0) {
-                high_density = true;
-            } else if (argv[1].s[0] >= '0' && argv[1].s[0] <= '1' && argv[1].s[1] == '\0') {
-                preferred = argv[1].s[0] - '0';
-            } else if (*argv[1].s) {
-                return val_err("floppy.create: second arg must be \"hd\" or drive index 0/1");
-            }
-        } else if (argv[1].kind == VK_BOOL) {
-            high_density = argv[1].b;
-        } else if (argv[1].kind == VK_INT || argv[1].kind == VK_UINT) {
-            int64_t d = (argv[1].kind == VK_INT) ? argv[1].i : (int64_t)argv[1].u;
-            if (d != 0 && d != 1)
-                return val_err("floppy.create: drive index must be 0 or 1");
-            preferred = (int)d;
-        }
-    }
-    int rc = system_create_floppy(argv[0].s, high_density, preferred);
-    return val_bool(rc == 0);
-}
-
-static const arg_decl_t floppy_path_arg[] = {
-    {.name = "path", .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = "Floppy image path"},
-};
-
-static const arg_decl_t floppy_create_args[] = {
-    {.name = "path", .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = "Output path"},
-    {.name = "hd",
-     .kind = VK_NONE,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_POLY,
-     .doc = "\"hd\" / true for 1.44 MB; drive index 0/1 to pick a slot"                       },
-};
-
 static const member_t floppy_members[] = {
     {.kind = MK_ATTR,
      .name = "type",
@@ -1395,18 +1332,7 @@ static const member_t floppy_members[] = {
     {.kind = MK_ATTR,
      .name = "sel",
      .doc = "VIA-driven head-select signal",
-     .attr = {.type = VK_BOOL, .get = floppy_attr_sel, .set = NULL}},
-    {.kind = MK_METHOD,
-     .name = "identify",
-     .flags = M_CAT_ADVANCED,
-     .doc = "Return floppy density (\"400K\" / \"800K\" / \"1.4MB\") or empty if not a floppy",
-     .method = {.args = floppy_path_arg, .nargs = 1, .result = VK_STRING, .fn = floppy_method_identify}},
-    {.kind = MK_METHOD,
-     .name = "create",
-     .examples = EXAMPLES("machine.floppy.create \"/opfs/images/fd/blank.dsk\"",
-     "machine.floppy.create \"/opfs/images/fd/blank-hd.dsk\" hd"),
-     .doc = "Create a blank floppy image and auto-mount it",
-     .method = {.args = floppy_create_args, .nargs = 2, .result = VK_BOOL, .fn = floppy_method_create}},
+     .attr = {.type = VK_BOOL, .get = floppy_attr_sel, .set = NULL} },
 };
 
 static const class_desc_t floppy_class = {
@@ -1543,148 +1469,8 @@ static DEF_GETTER(floppy_drive_attr_motor_on) {
     return val_bool(floppy_drive_motor_on(floppy, slot));
 }
 
-// --- Medium (disk) node: machine.floppy.drive[N].disk ----------------------
-//
-// First-class node for the disk currently in this drive, mirroring
-// machine.scsi.device[N].image. instance_data is the same drive link as the
-// parent entry; present/path are read live. Returned by the drive's `disk`
-// child lookup only when a disk is inserted.
-
-static DEF_GETTER(floppy_disk_attr_present) {
-    unsigned slot = 0;
-    floppy_t *floppy = floppy_drive_floppy(self, &slot);
-    return val_bool(floppy && floppy_is_inserted(floppy, (int)slot));
-}
-
-// Write-protect is user-visible state the UI had no way to read back, and
-// density is what distinguishes the four capacities the drive can hold.  Both
-// come straight from the medium.
-static DEF_GETTER(floppy_disk_attr_writable) {
-    unsigned slot = 0;
-    floppy_t *floppy = floppy_drive_floppy(self, &slot);
-    image_t *img = floppy ? floppy_drive_image(floppy, slot) : NULL;
-    return val_bool(img && image_is_writable(img));
-}
-
-static DEF_GETTER(floppy_disk_attr_density) {
-    unsigned slot = 0;
-    floppy_t *floppy = floppy_drive_floppy(self, &slot);
-    image_t *img = floppy ? floppy_drive_image(floppy, slot) : NULL;
-    if (!img)
-        return val_str("");
-    switch (image_get_type(img)) {
-    case image_fd_ss:
-        return val_str("400k");
-    case image_fd_ds:
-        return val_str("800k");
-    case image_fd_dd_mfm:
-        return val_str("720k");
-    case image_fd_hd:
-        return val_str("1440k");
-    default:
-        return val_str("");
-    }
-}
-
-static DEF_GETTER(floppy_disk_attr_path) {
-    unsigned slot = 0;
-    floppy_t *floppy = floppy_drive_floppy(self, &slot);
-    const char *p = floppy_drive_disk_path(floppy, slot);
-    return val_str(p ? p : "");
-}
-
-static DEF_GETTER(floppy_disk_attr_filename) {
-    unsigned slot = 0;
-    floppy_t *floppy = floppy_drive_floppy(self, &slot);
-    image_t *img = floppy_drive_image(floppy, slot);
-    const char *s = img ? image_get_filename(img) : NULL;
-    return val_str(s ? s : "");
-}
-
-// `eject()` — proxy to the owning drive's eject.
-static DEF_METHOD(floppy_disk_method_eject) {
-    unsigned slot = 0;
-    floppy_t *floppy = floppy_drive_floppy(self, &slot);
-    if (!floppy)
-        return val_err("floppy not available");
-    if (!floppy_drive_eject(floppy, slot))
-        return val_err("drive %u: no disk inserted", slot);
-    return val_none();
-}
-
-// `export(path, [codec])` — write this disk as it is now (source + delta,
-// and the sector tags for a DiskCopy destination) to a NEW file; the name
-// picks the format (image_export_to), and a .dmg is compressed with `codec`
-// (zlib or xz).  Never overwrites, never touches the source.
-static DEF_METHOD(floppy_disk_method_export) {
-    unsigned slot = 0;
-    floppy_t *floppy = floppy_drive_floppy(self, &slot);
-    image_t *img = floppy ? floppy_drive_image(floppy, slot) : NULL;
-    if (!img)
-        return val_err("disk.export: no disk inserted");
-    const char *codec = argc > 1 && argv[1].kind == VK_STRING ? argv[1].s : NULL;
-    return medium_export_image(img, argv[0].s, codec, "disk.export");
-}
-
-static const arg_decl_t floppy_disk_export_args[] = {
-    {.name = "path",
-     .kind = VK_STRING,
-     .presentation_flags = VFLAG_PATH,
-     .doc = "New file: .dc42/.diskcopy/.image = DiskCopy 4.2 with tags, .dmg = UDIF, else raw"},
-    {.name = "codec",
-     .kind = VK_STRING,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "A .dmg's compression: zlib (UDZO) or xz (ULMO: 14-16% smaller on system disks, decodes ~4x slower)",
-     .default_doc = "zlib"},
-};
-
-static const member_t floppy_disk_members[] = {
-    {.kind = MK_ATTR,
-     .name = "present",
-     .doc = "True if a disk is inserted",
-     .attr = {.type = VK_BOOL, .get = floppy_disk_attr_present, .set = NULL}   },
-    {.kind = MK_ATTR,
-     .name = "writable",
-     .doc = "False when the medium is write-protected",
-     .attr = {.type = VK_BOOL, .get = floppy_disk_attr_writable, .set = NULL}  },
-    {.kind = MK_ATTR,
-     .name = "density",
-     .doc = "Medium capacity: 400k, 800k, 720k or 1440k",
-     .attr = {.type = VK_STRING, .get = floppy_disk_attr_density, .set = NULL} },
-    {.kind = MK_ATTR,
-     .name = "path",
-     .doc = "Storage-instance stem of the live image (the delta), not the source file — see filename",
-     .attr = {.type = VK_STRING, .get = floppy_disk_attr_path, .set = NULL}    },
-    {.kind = MK_ATTR,
-     .name = "filename",
-     .doc = "Source path the disk was loaded from",
-     .attr = {.type = VK_STRING, .get = floppy_disk_attr_filename, .set = NULL}},
-    {.kind = MK_METHOD,
-     .name = "eject",
-     .doc = "Eject the disk from the owning drive",
-     .method = {.args = NULL,
-                .nargs = 0,
-                .result = VK_NONE,
-                .fn = floppy_disk_method_eject,
-                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}                        },
-    {.kind = MK_METHOD,
-     .name = "export",
-     .doc = "Save the disk as it is now to a new image file (Save As)",
-     .method = {.ui_flags = MM_MUTATE | MM_IO,
-                .args = floppy_disk_export_args,
-                .nargs = 2,
-                .result = VK_BOOL,
-                .fn = floppy_disk_method_export}                               },
-};
-
-static const class_desc_t floppy_disk_class = {
-    .name = "disk",
-    .members = floppy_disk_members,
-    .n_members = sizeof(floppy_disk_members) / sizeof(floppy_disk_members[0]),
-};
-
-// `disk` child lookup — the medium node, present only when a disk is inserted.
-static struct object *floppy_drive_disk_lookup(struct object *self, const char *name) {
+// `image` child lookup — the image node, present only when a disk is inserted.
+static struct object *floppy_drive_image_lookup(struct object *self, const char *name) {
     (void)name;
     unsigned slot = 0;
     floppy_t *floppy = floppy_drive_floppy(self, &slot);
@@ -1692,7 +1478,30 @@ static struct object *floppy_drive_disk_lookup(struct object *self, const char *
         return NULL;
     if (slot >= NUM_DRIVES)
         return NULL;
-    return floppy->disk_objects[slot];
+    return floppy->image_objects[slot];
+}
+
+// The format of the disk in the drive (its image's layout): gcr400, gcr800,
+// mfm720 or mfm1440; "" with no disk in.
+static DEF_GETTER(floppy_drive_attr_format) {
+    unsigned slot = 0;
+    floppy_t *floppy = floppy_drive_floppy(self, &slot);
+    image_t *img = floppy ? floppy_drive_image(floppy, slot) : NULL;
+    if (!img)
+        return val_str("");
+    switch (image_layout(img)) {
+    case IMAGE_LAYOUT_GCR400:
+        return val_str("gcr400");
+    case IMAGE_LAYOUT_GCR800:
+        return val_str("gcr800");
+    case IMAGE_LAYOUT_MFM720:
+        return val_str("mfm720");
+    case IMAGE_LAYOUT_MFM1440:
+        return val_str("mfm1440");
+    default:
+        break;
+    }
+    return val_str("");
 }
 
 static DEF_METHOD(floppy_drive_method_eject) {
@@ -1712,11 +1521,11 @@ static DEF_METHOD(floppy_drive_method_insert) {
     unsigned slot = 0;
     if (!floppy_drive_floppy(self, &slot))
         return val_err("floppy.drives.N.insert: floppy controller not available");
-    bool writable = (argc >= 2) ? argv[1].b : false;
+    bool writable = (argc >= 2) ? argv[1].b : true;
     return val_bool(system_fd_insert(argv[0].s, (int)slot, writable) == 0);
 }
 
-static const value_t floppy_false = {.kind = VK_BOOL, .b = false};
+static const value_t floppy_true = {.kind = VK_BOOL, .b = true};
 static const arg_decl_t floppy_drive_insert_args[] = {
     {.name = "path",
      .kind = VK_STRING,
@@ -1725,8 +1534,8 @@ static const arg_decl_t floppy_drive_insert_args[] = {
     {.name = "writable",
      .kind = VK_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &floppy_false,
-     .doc = "Mount writable"},
+     .default_value = &floppy_true,
+     .doc = "Mount writable; false = write-protected"},
 };
 
 static const member_t floppy_drive_members[] = {
@@ -1754,11 +1563,15 @@ static const member_t floppy_drive_members[] = {
      .name = "eject",
      .doc = "Remove the inserted disk",
      .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = floppy_drive_method_eject}},
+    {.kind = MK_ATTR,
+     .name = "format",
+     .doc = "The format the disk carries now: gcr400, gcr800, mfm720 or mfm1440 (\"\" with no disk in)",
+     .attr = {.type = VK_STRING, .get = floppy_drive_attr_format, .set = NULL}},
     {.kind = MK_CHILD,
-     .name = "disk",
-     .doc = "The disk currently in this drive (present only when inserted)",
-     .label = "Disk",
-     .child = {.cls = &floppy_disk_class, .lookup = floppy_drive_disk_lookup}},
+     .name = "image",
+     .doc = "The disk image in this drive (present only when inserted)",
+     .label = "Image",
+     .child = {.cls = &image_class, .lookup = floppy_drive_image_lookup}},
     {.kind = MK_METHOD,
      .name = "insert",
      .doc = "Mount a disk image into this drive",

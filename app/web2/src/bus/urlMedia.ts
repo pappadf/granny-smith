@@ -491,10 +491,10 @@ async function provideBlank(
       return fail(`could not replace ${name}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
-  const made = await gsEval(plan.method, [path, plan.arg]);
+  const made = await gsEval('files.create', [path, plan.kind, plan.size]);
   if (made !== true) {
-    // The core parses an hd_create spec; its refusal is the spec's fault.
-    if (plan.method === 'files.hd_create') return fail(hardDiskSpecRefused(blank.spec));
+    // The core parses a hard disk's spec; its refusal is the spec's fault.
+    if (plan.kind === 'hd') return fail(hardDiskSpecRefused(blank.spec));
     return fail(`could not create ${name}: ${gsErrorText(made)}`);
   }
   updateUrlFile(slot, { status: 'done' });

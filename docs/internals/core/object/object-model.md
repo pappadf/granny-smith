@@ -185,7 +185,7 @@ entries (and perhaps a verb or two) is built from the descriptor alone by
 `category["scsi"]`; keys are short identifiers, `[A-Za-z0-9_.-]{1,63}`
 (`object_valid_key`).
 
-Entries, and lookup-backed named children such as `drive[n].disk` and
+Entries, and lookup-backed named children such as `drive[n].image` and
 `device[n].image`, are handed out by callbacks and never attached, so they
 have no parent of their own. They get a **logical parent**
 (`object_set_logical_parent(obj, parent, name, index, key)`): a
@@ -219,7 +219,7 @@ weights named in `src/core/object/object_order.h`), fall in three domains:
 | 21 | `pacing` | emulator | the host's pacing setting (`mode`, `speed`, `min_speed`, `max_speed`), there with or without a machine; advanced |
 | 22 | `predecode` | emulator | the predecoded executors' switch (`enabled`), tuning (`elide`, `pool_cap`, the thrash rule), counters and `hist` ([predecode.md](../cpu/predecode.md)); advanced |
 | 23 | `jit` | emulator | the PowerPC translation tier's switch (`enabled`), tuning, counters and `trace` ([ppc_jit.md](../cpu/ppc/ppc_jit.md)); `available` is 0 in native builds; advanced |
-| 30 | `files` | emulator | host files and disk images (`ls`, `cp`, `hd_create`, …, `download`), `files.images[n]` (the machine's configured images), `files.mounts[n]` (the image-VFS auto-mount cache, indexed by a never-reused mount serial; `find(path)`, `[n].unmount()`), `files.archive` |
+| 30 | `files` | emulator | host files and disk images (`ls`, `cp`, `create`, …, `download`), `files.images[n]` (the machine's configured images), `files.mounts[n]` (the image-VFS auto-mount cache, indexed by a never-reused mount serial; `find(path)`, `[n].unmount()`), `files.archive` |
 | 40 | `debug` | emulator | breakpoints, logpoints, watchpoints, `debug.find` (memory search), `debug.mac` |
 | 50 | `log` | emulator | `log.set(cat, level=, …)`, `log.levels`, `log.category["<cat>"]` with `level` / `stdout` / `file` / `ts` / `pc` |
 | 60 | `shell` | emulator | bindings, functions, `shell.alias` |
@@ -850,7 +850,7 @@ machine with no drives; `"startup": null` is "no default startup device"
 -- one of the Apple drives `docs/internals/core/peripherals/scsi_cdrom.md`
 §1.1 lists; absent, it is the profile's (`hw_profile_t.cdrom_drive`).
 `startup` may also name a `partition`: the startup
-volume's partition number on that disk as attached (`files.partitions`),
+volume's partition number on that disk as attached (`files.identify`'s `volumes`),
 which a family whose firmware boots a partition seeds (the G3's Open
 Firmware `boot-device`, for an ATA disk); the others ignore it.  A `model` member must agree with `model=`.  Images
 are not configuration: they are attached after the boot to the device at a

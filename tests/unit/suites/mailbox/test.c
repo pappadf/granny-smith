@@ -222,6 +222,7 @@ static uint32_t g_mode_owner; // 0: no mode running
 static uint32_t g_mode_id;
 static int g_stops;
 int job_glue_run_source_threaded(const char *src);
+int job_glue_run_source_seam_io(const char *src);
 static void print_on_emulator(void *ud) {
     (void)ud;
     out_puts("two\n"); // the emulator thread, serving the job's call
@@ -238,6 +239,8 @@ int job_glue_run_source(const char *src, bool interactive) {
         return job_glue_run_source_threaded(src);
     if (strcmp(src, "printing") == 0)
         return job_glue_run_source_printing(src);
+    if (strcmp(src, "seam_io") == 0)
+        return job_glue_run_source_seam_io(src);
     g_scripts++;
     snprintf(g_last_script, sizeof g_last_script, "%s", src);
     return strncmp(src, "fail", 4) == 0 ? -1 : 0;
@@ -1027,7 +1030,7 @@ static int leaf_eval(const char *path, const char *args, char *out, size_t out_s
         io_leaf_t *j = io_leaf_new(NULL, NULL);
         j->work = leaf_work;
         j->answer = leaf_answer;
-        value_t provisional = io_leaf_dispatch(j, "leaf");
+        value_t provisional = io_leaf_dispatch(j);
         value_free(&provisional);
         snprintf(out, out_size, "true");
         return 0;
@@ -1049,6 +1052,144 @@ TEST(an_io_leaf_answering_a_map_delivers_the_map) {
     ASSERT_TRUE(json[0] == '{');
     ASSERT_TRUE(strstr(json, "\"blocks\"") != NULL);
     ASSERT_TRUE(strstr(json, "disk.img") != NULL);
+}
+
+// An I/O leaf whose work fails with a reason: the reason is the failure,
+// as is, whether the leaf deferred and the worker ran it, deferred with no
+// worker, or could not defer and worked there and then (a script on the
+// emulator thread, --jobs=inline).  The last two once lost it to "failed"
+// (the work's reason was copied onto itself) and the last added the leaf's
+// name, so inline and threaded scripts printed different errors.
+#define LEAF_REASON "cannot create '/no/dir/out': No such file or directory"
+static int failing_work(io_leaf_t *j) {
+    snprintf(j->err, sizeof j->err, "%s", LEAF_REASON);
+    return -ENOENT;
+}
+static int silent_failing_work(io_leaf_t *j) {
+    (void)j;
+    return -EIO; // gives no reason
+}
+static value_t dispatch_failing(int (*work)(io_leaf_t *)) {
+    io_leaf_t *j = io_leaf_new(NULL, NULL);
+    j->work = work;
+    return io_leaf_dispatch(j);
+}
+static int failing_leaf_eval(const char *path, const char *args, char *out, size_t out_size) {
+    if (strcmp(path, "leaf_fail") == 0) {
+        value_t provisional = dispatch_failing(failing_work);
+        value_free(&provisional);
+        snprintf(out, out_size, "true");
+        return 0;
+    }
+    return stub_eval(path, args, out, out_size);
+}
+static const char failing_leaf_json[] = "{\"error\":\"" LEAF_REASON "\"}";
+
+TEST(a_failing_io_leaf_says_why_with_or_without_a_deferral) {
+    fresh();
+    // Nothing being served: no deferral, the work runs now.
+    value_t v = dispatch_failing(failing_work);
+    ASSERT_EQ_INT(v.kind, VK_ERROR);
+    ASSERT_TRUE(strcmp(v.s, LEAF_REASON) == 0);
+    value_free(&v);
+    v = dispatch_failing(silent_failing_work);
+    ASSERT_EQ_INT(v.kind, VK_ERROR);
+    ASSERT_TRUE(strcmp(v.s, "failed") == 0);
+    value_free(&v);
+    // A request's deferral with no worker: answered at once, with the reason.
+    g_m.eval = failing_leaf_eval;
+    ASSERT_TRUE(post(85, "leaf_fail", NULL));
+    mailbox_drain(&g_m, 0, NULL);
+    uint32_t id = 0, ok = 1;
+    char json[512];
+    ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
+    ASSERT_EQ_INT(id, 85);
+    ASSERT_EQ_INT(ok, 0);
+    ASSERT_TRUE(strcmp(json, failing_leaf_json) == 0);
+}
+
+TEST(a_failing_io_leaf_on_the_worker_says_why) {
+    fresh();
+    ASSERT_TRUE(io_worker_start(0));
+    g_m.eval = failing_leaf_eval;
+    ASSERT_TRUE(post(86, "leaf_fail", NULL));
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 0); // deferred to the worker
+    uint32_t id = 0, ok = 1;
+    char json[512];
+    double deadline = wait_deadline();
+    while (take(&id, &ok, json, sizeof json) == 0) {
+        mailbox_drain(&g_m, 0, NULL);
+        WAIT_TICK(deadline, "request 86's answer from the worker");
+    }
+    ASSERT_EQ_INT(id, 86);
+    ASSERT_EQ_INT(ok, 0);
+    ASSERT_TRUE(strcmp(json, failing_leaf_json) == 0);
+}
+
+// A script's call of an I/O leaf through the seam (a job on the job thread,
+// the leaf on the emulator thread, its work on the worker): the call ends
+// with what the work produced -- a count it read, or its reason for failing
+// -- not the provisional value the leaf returned at once, so a threaded
+// script sees what an inline one does.
+static int counting_work(io_leaf_t *j) {
+    j->size = 42; // what the work found out
+    return 0;
+}
+static value_t counting_answer(io_leaf_t *j) {
+    return val_uint(4, (uint32_t)j->size);
+}
+static void call_counting_leaf(void *ud) {
+    io_leaf_t *j = io_leaf_new(NULL, NULL);
+    j->work = counting_work;
+    j->answer = counting_answer;
+    *(value_t *)ud = io_leaf_dispatch(j);
+}
+static void call_failing_leaf(void *ud) {
+    *(value_t *)ud = dispatch_failing(failing_work);
+}
+static volatile int g_seam_io_verdict; // 0 running, 1 as expected, -n the step that differed
+int job_glue_run_source_seam_io(const char *src) {
+    (void)src;
+    value_t provisional = {0}, answer = {0};
+    char err[256] = "";
+    job_on_emulator(call_counting_leaf, &provisional);
+    int verdict = 1;
+    if (provisional.kind != VK_UINT || provisional.u != 0)
+        verdict = -1; // the leaf answered at once, before its work
+    else if (job_call_take_failure(err, sizeof err))
+        verdict = -2;
+    else if (!job_call_take_answer(&answer) || answer.kind != VK_UINT || answer.u != 42)
+        verdict = -3;
+    value_free(&provisional);
+    value_free(&answer);
+    if (verdict == 1) {
+        job_on_emulator(call_failing_leaf, &provisional);
+        value_free(&provisional);
+        if (!job_call_take_failure(err, sizeof err) || strcmp(err, LEAF_REASON) != 0)
+            verdict = -4;
+        else if (job_call_take_answer(&answer))
+            verdict = -5; // a failure has no answer
+    }
+    g_seam_io_verdict = verdict;
+    return 0;
+}
+
+TEST(a_scripts_io_leaf_call_ends_with_the_works_answer_or_reason) {
+    fresh();
+    ASSERT_TRUE(job_thread_start(256u << 10));
+    ASSERT_TRUE(io_worker_start(0));
+    g_seam_io_verdict = 0;
+    ASSERT_TRUE(post_script(111, "seam_io"));
+    uint32_t id = 0, ok = 0;
+    char json[256];
+    double deadline = wait_deadline();
+    while (take(&id, &ok, json, sizeof json) == 0) {
+        mailbox_drain(&g_m, 0, NULL);
+        WAIT_TICK(deadline, "job 111's result");
+    }
+    ASSERT_EQ_INT(id, 111);
+    ASSERT_EQ_INT(ok, 1);
+    ASSERT_EQ_INT(g_seam_io_verdict, 1);
 }
 
 // The image layer io_leaf.c links against; the leaf above uses none of it.
@@ -1207,7 +1348,10 @@ int main(void) {
     RUN(a_transfer_buffer_ack_goes_to_its_job_until_the_job_releases_it);
     RUN(an_eval_over_the_result_limit_is_an_error_naming_its_size_and_the_limit);
     RUN(an_io_leaf_answering_a_map_delivers_the_map);
+    RUN(a_failing_io_leaf_says_why_with_or_without_a_deferral);
     RUN(cancelling_a_request_cancels_the_io_job_answering_it);
+    RUN(a_failing_io_leaf_on_the_worker_says_why);
+    RUN(a_scripts_io_leaf_call_ends_with_the_works_answer_or_reason);
     RUN(a_jobs_output_arrives_as_output_records_before_its_result);
     RUN(jobs_finished_between_drains_are_answered_in_the_order_they_ran);
     return 0;

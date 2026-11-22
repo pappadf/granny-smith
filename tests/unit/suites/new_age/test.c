@@ -234,7 +234,7 @@ static void fresh(void) {
     s_motor = false;
     s_track = 5;
     s_img.writable = true;
-    s_img.type = image_fd_hd; // a 1.44 MB MFM medium
+    s_img.raw_size = 1440 * 1024; // a 1.44 MB MFM medium
     const new_age_backend_t be = {.dma_put = dma_put, .dma_get = dma_get, .set_irq = set_irq};
     new_age_bind(&s_na, (floppy_t *)&s_img /* any non-NULL handle */, (struct scheduler *)1, &be);
     new_age_reset(&s_na);

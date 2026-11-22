@@ -112,7 +112,9 @@ context:
   `range(start, stop[, step])`, `len(x)`,
   `contains(haystack, needle)` (substring test over two strings —
   what a row uses to assert on a guest serial console's text, since
-  the machines that boot Unix narrate rather than draw).
+  the machines that boot Unix narrate rather than draw — or, over a
+  list haystack, whether one of its items is the string `needle`:
+  `contains(files.identify(p).fits, "hd")`).
   `expr_check` runs the same grammar as a syntax check only
   (`expr_ctx_t.parse_only`): no path, binding, method or user function
   is touched, both sides of `&&` / `||` / `?:` are parsed for their

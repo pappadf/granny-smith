@@ -368,7 +368,7 @@ struct object *object_parent(struct object *o);
 // === Logical parents =========================================================
 //
 // Objects handed out by a child callback -- collection entries (get/lookup)
-// and lookup-backed named children such as drive[n].disk -- are never
+// and lookup-backed named children such as drive[n].image -- are never
 // attached, so they have no parent and, without this, no path.  Their
 // creator registers the node whose member produces them: a non-owning
 // back-link (not added to the parent's child list, not cascade-deleted),

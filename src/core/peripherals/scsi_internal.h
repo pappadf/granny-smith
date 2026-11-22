@@ -9,6 +9,7 @@
 
 #include "common.h"
 #include "image.h"
+#include "image_class.h"
 #include "memory.h"
 #include "scsi.h"
 #include "scsi_msgsession.h"
@@ -375,7 +376,8 @@ struct scsi {
     struct object *bus_object; // scsi.bus child
     struct object *devices_object; // scsi.device collection
     struct object *device_objects[8]; // per-slot entry objects
-    struct object *image_objects[8]; // per-slot medium (image) nodes — device[N].image
+    struct object *image_objects[8]; // per-slot image nodes — device[N].image
+    image_node_t image_nodes[8]; // their data: this bus and the slot (image_class.h)
     // Per-slot back-link used as instance_data on each device entry
     // object so accessors can recover (scsi, slot) cheaply.
     scsi_device_link_t device_links[8];

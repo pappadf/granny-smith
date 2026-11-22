@@ -136,12 +136,23 @@ A file's resource fork and Finder info are reachable as
 `<file>/rsrc/_raw` and the Finder-info leaf, the same as on an HFS
 volume.
 
+Names are UTF-8 there. Peeler itself hands names out as the archive
+stores them; the core converts the MacRoman names of the Mac formats
+(`sit`, `cpt`, `hqx`, `bin`) to UTF-8 and matches them as the Finder
+does (`café` finds `CAFÉ`), and leaves zip, tar and gzip names as stored,
+matched exactly (see `namespace.md`). `extract` therefore writes UTF-8
+host names, and `files.archive.import`'s `member` is one of these names.
+
 ### `files.archive`
 
 | Path | Result | Description |
 |------|--------|-------------|
-| `files.archive.identify(path)` | `VK_STRING` — `"sit"` / `"cpt"` / `"zip"` / `"tar"` / `"hqx"` / `"bin"` / `"gz"`, or empty string when the file isn't a recognised archive | Bounded format probe; doesn't extract |
 | `files.archive.extract(path, [out_dir])` | `VK_BOOL` — `true` on success | Copy every file in the archive to `out_dir` (defaults to the current working directory) |
+
+Which archive a file is comes from `files.identify(path)`: its `archive` is
+`"sit"` / `"cpt"` / `"zip"` / `"tar"` / `"hqx"` / `"bin"` / `"gz"`, or `""`
+when the file isn't a recognised archive (a bounded format probe; nothing
+is extracted).
 
 Both go through the VFS, so `path` may itself be inside an image or
 another archive. `extract` is a recursive copy of the archive's tree:
@@ -149,13 +160,12 @@ data forks become regular files, and a file with a resource fork or
 non-trivial Finder info also gets an AppleDouble `._<name>` sidecar.
 Entry names are confined: none may escape `out_dir`.
 
-Empty / missing return values follow the predicate-truthy rule: an
-unrecognised file produces an empty string, which scripts can test as
-a falsy `${...}`.
+An unrecognised file's `archive` is an empty string, which scripts can
+test as a falsy `${...}`.
 
 Both are reachable everywhere the object model is: the interactive
 shell, headless scripts, the JavaScript bridge
-(`gsEval('files.archive.identify', [path])`) and the inspector UI.
+(`gsEval('files.identify', [path])`) and the inspector UI.
 `extract` is dispatched as an I/O-job leaf (`MM_IO`), so decoding and
 writing a large archive never blocks the emulator thread.
 
@@ -168,7 +178,7 @@ attaches under `files` from `archive_init`.
 ### Interactive shell
 
 ```
-> files.archive.identify /tmp/myarchive.sit.hqx
+> files.identify("/tmp/myarchive.sit.hqx").archive
 hqx
 > ls /tmp/myarchive.sit.hqx
 > files.archive.extract /tmp/myarchive.sit.hqx /tmp/out
@@ -178,13 +188,13 @@ true
 ### Script form
 
 ```
-${files.archive.identify("/tmp/myarchive.sit")}
+${files.identify("/tmp/myarchive.sit").archive}
 assert ${files.archive.extract("/tmp/myarchive.sit", "/tmp/out")}
 ```
 
 ### Web drag-and-drop
 
-The browser frontend asks the core (`files.archive.identify`) whether a
+The browser frontend asks the core (`files.identify`'s `archive`) whether a
 dropped file is an archive. A recognised archive is not extracted: its
 members are probed for media through the archive's VFS path, and only the
 medium found is copied out. See [`web.md`](web.md) for the full upload
@@ -258,8 +268,9 @@ git add -A && git commit -m "Sync from granny-smith"
   archive/image descent.
 - Integration rows `archive-fork-unpack` and `archive-confined` cover
   `files.archive.extract`, `archive-import-rsrc` `files.archive.import`
-  through a resource-fork wrapper; the web2 e2e specs `filesystem-tab.spec.ts`,
-  `url-archive-boot.spec.ts` and `display-drop.spec.ts` cover the UI.
+  through a resource-fork wrapper, `archive-mac-names` member names (MacRoman
+  converted to UTF-8 by the core, zip names left as stored); the web2 e2e
+  specs `filesystem-tab.spec.ts`, `url-archive-boot.spec.ts` and `display-drop.spec.ts` cover the UI.
 
 ## References
 

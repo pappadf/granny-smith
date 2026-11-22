@@ -20,7 +20,7 @@ mkdir -p "$EXTRACT" "$OUT" "$SNAP"
 GS_STORAGE_CACHE="$STORAGE_CACHE" "$HEADLESS_BIN" \
     rom="$ROM_PATH" \
     --no-prompt --script-stdin --speed=turbo <<EOF
-files.probe $IMG
+files.identify "$IMG"
 files.cp "$FINDER/rsrc/_raw" "$EXTRACT/rsrc"
 let n = files.mounts.find("$IMG")
 files.mounts[\$n].unmount

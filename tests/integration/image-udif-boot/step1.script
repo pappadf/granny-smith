@@ -18,7 +18,7 @@ machine.boot model="iici" ram=8192 rom="${$ROM}"
 machine.register "0123456789abcdef" "20261003T000000Z"
 machine.rtc.time = 3000000000
 machine.scsi.attach_hd $dmg 0
-assert machine.scsi.device[0].image.filename != "" "the UDIF did not attach"
+assert machine.scsi.device[0].image.source != "" "the UDIF did not attach"
 scheduler.run 60000000
 wait_stable(900000000)
 check("${$TEST_DIR}/desktop.png")

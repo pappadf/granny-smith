@@ -9,6 +9,7 @@
 // the full handshake sequence, the synthesized device-info block, and a
 // write→read round-trip.  Deterministic, no emulator/ROM/MMU required.
 
+#include "image_kind.h"
 #include "lisa_profile.h"
 #include "test_assert.h"
 
@@ -71,23 +72,36 @@ static void write_block(lisa_profile_t *pf, uint32_t block, const uint8_t *data)
         (void)lisa_profile_porta_read(pf, true); // drain status
 }
 
-// ============================================================================
+// Attach a blank disk of the canonical 5 MB geometry (what machine.hd.attach
+// with no path makes).  The suite owns the image: there is no image table.
+static bool attach_blank(lisa_profile_t *pf) {
+    image_t *img = image_create_blank_kind(IMAGE_KIND_PROFILE, LISA_PROFILE_DEFAULT_BLOCKS, NULL);
+    return img && lisa_profile_attach_image(pf, img);
+}
 
-TEST(test_attach_detection) {
-    lisa_profile_t *pf = lisa_profile_init(NULL, bsy_cb, NULL, NULL);
-    ASSERT_TRUE(pf != NULL);
-    ASSERT_TRUE(!lisa_profile_connected(pf)); // nothing attached yet
-    ASSERT_TRUE(lisa_profile_attach(pf, NULL, true)); // blank in-memory image
-    ASSERT_TRUE(lisa_profile_connected(pf));
-    ASSERT_TRUE(lisa_profile_attached(pf));
-    lisa_profile_detach(pf);
-    ASSERT_TRUE(!lisa_profile_connected(pf));
+// Take the disk off and close it, then the device.
+static void done(lisa_profile_t *pf) {
+    image_close(lisa_profile_detach(pf));
     lisa_profile_delete(pf);
 }
 
+// ============================================================================
+
+TEST(test_attach_detection) {
+    lisa_profile_t *pf = lisa_profile_init(NULL, bsy_cb, NULL, NULL, NULL);
+    ASSERT_TRUE(pf != NULL);
+    ASSERT_TRUE(!lisa_profile_connected(pf)); // nothing attached yet
+    ASSERT_TRUE(attach_blank(pf)); // blank in-memory image
+    ASSERT_TRUE(lisa_profile_connected(pf));
+    ASSERT_TRUE(lisa_profile_attached(pf));
+    image_close(lisa_profile_detach(pf));
+    ASSERT_TRUE(!lisa_profile_connected(pf));
+    done(pf);
+}
+
 TEST(test_device_info_block) {
-    lisa_profile_t *pf = lisa_profile_init(NULL, bsy_cb, NULL, NULL);
-    ASSERT_TRUE(lisa_profile_attach(pf, NULL, true));
+    lisa_profile_t *pf = lisa_profile_init(NULL, bsy_cb, NULL, NULL, NULL);
+    ASSERT_TRUE(attach_blank(pf));
 
     uint8_t buf[PRO_RDLEN];
     read_block(pf, 0xFFFFFF, buf, PRO_RDLEN); // device-info / spare-table block
@@ -102,12 +116,12 @@ TEST(test_device_info_block) {
     ASSERT_EQ_INT(blocks, 9728); // 5 MB ProFile
     uint16_t bpb = ((uint16_t)info[21] << 8) | info[22];
     ASSERT_EQ_INT(bpb, PRO_BLOCK); // 532 bytes per block
-    lisa_profile_delete(pf);
+    done(pf);
 }
 
 TEST(test_write_read_roundtrip) {
-    lisa_profile_t *pf = lisa_profile_init(NULL, bsy_cb, NULL, NULL);
-    ASSERT_TRUE(lisa_profile_attach(pf, NULL, true));
+    lisa_profile_t *pf = lisa_profile_init(NULL, bsy_cb, NULL, NULL, NULL);
+    ASSERT_TRUE(attach_blank(pf));
 
     // A distinctive 532-byte block (20-byte tag + 512 data).
     uint8_t out[PRO_BLOCK];
@@ -126,7 +140,7 @@ TEST(test_write_read_roundtrip) {
     read_block(pf, 43, other, PRO_RDLEN);
     for (int i = 4; i < PRO_RDLEN; i++)
         ASSERT_EQ_INT(other[i], 0);
-    lisa_profile_delete(pf);
+    done(pf);
 }
 
 // A block the image holds and cannot read (here, the host file cut short
@@ -144,8 +158,9 @@ TEST(test_unreadable_block_reports_crc_error) {
         ASSERT_TRUE(write(fd, blk, sizeof blk) == (ssize_t)sizeof blk);
     }
     close(fd);
-    lisa_profile_t *pf = lisa_profile_init(NULL, bsy_cb, NULL, NULL);
-    ASSERT_TRUE(lisa_profile_attach(pf, path, false));
+    lisa_profile_t *pf = lisa_profile_init(NULL, bsy_cb, NULL, NULL, NULL);
+    image_t *img = image_open_kind(path, &(image_open_opts_t){.kind = IMAGE_KIND_PROFILE}, NULL, 0);
+    ASSERT_TRUE(img && lisa_profile_attach_image(pf, img));
     ASSERT_TRUE(truncate(path, 50 * PRO_BLOCK) == 0);
 
     uint8_t in[PRO_RDLEN];
@@ -157,21 +172,21 @@ TEST(test_unreadable_block_reports_crc_error) {
         ASSERT_EQ_INT(in[i], 0);
     ASSERT_EQ_INT(in[4], 10);
     ASSERT_EQ_INT(in[4 + PRO_BLOCK - 1], 10);
-    lisa_profile_delete(pf);
+    done(pf);
     unlink(path);
 }
 
 TEST(test_decline_aborts) {
     // A handshake reply other than $55 (e.g. the boot ROM's $00 "probe") must
     // abort the transaction, leaving the controller idle for the next command.
-    lisa_profile_t *pf = lisa_profile_init(NULL, bsy_cb, NULL, NULL);
-    ASSERT_TRUE(lisa_profile_attach(pf, NULL, true));
+    lisa_profile_t *pf = lisa_profile_init(NULL, bsy_cb, NULL, NULL, NULL);
+    ASSERT_TRUE(attach_blank(pf));
     ASSERT_EQ_INT(handshake(pf, 0x00), 0x01); // probe: present $01, decline
     // A following real read still works from a clean state.
     uint8_t buf[PRO_RDLEN];
     read_block(pf, 0xFFFFFF, buf, PRO_RDLEN);
     ASSERT_TRUE(memcmp(&buf[4], "PROFILE", 7) == 0);
-    lisa_profile_delete(pf);
+    done(pf);
 }
 
 // One handshake the way MacWorks XL's boot block does it: the state byte read
@@ -186,8 +201,8 @@ static uint8_t handshake_strobed(lisa_profile_t *pf, uint8_t reply) {
 }
 
 TEST(test_handshake_through_strobed_register) {
-    lisa_profile_t *pf = lisa_profile_init(NULL, bsy_cb, NULL, NULL);
-    ASSERT_TRUE(lisa_profile_attach(pf, NULL, true));
+    lisa_profile_t *pf = lisa_profile_init(NULL, bsy_cb, NULL, NULL, NULL);
+    ASSERT_TRUE(attach_blank(pf));
     ASSERT_EQ_INT(handshake_strobed(pf, 0x55), 0x01);
     send_command(pf, 0x00 /*read*/, 0xFFFFFF);
     ASSERT_EQ_INT(handshake_strobed(pf, 0x55), 0x02);
@@ -197,7 +212,7 @@ TEST(test_handshake_through_strobed_register) {
     for (int i = 0; i < 4; i++)
         ASSERT_EQ_INT(buf[i], 0); // status OK
     ASSERT_TRUE(memcmp(&buf[4], "PROFILE", 7) == 0); // the reply was taken as $55
-    lisa_profile_delete(pf);
+    done(pf);
 }
 
 int main(void) {

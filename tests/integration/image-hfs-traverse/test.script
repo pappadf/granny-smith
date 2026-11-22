@@ -2,7 +2,7 @@
 # Runner cd's into this directory; paths are relative.
 
 # Probe the image: expected to surface as a bare HFS volume.
-files.probe ../../data/systems/System_6_0_8.dsk
+assert files.identify("../../data/systems/System_6_0_8.dsk").opens "the floppy opens as a disk image"
 
 # Root of the synthesised partition layer (one entry since no APM).
 files.ls ../../data/systems/System_6_0_8.dsk

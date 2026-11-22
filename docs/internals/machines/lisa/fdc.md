@@ -157,7 +157,8 @@ controller — verified headless: `fdc read trk=0 sec=0 → status=00`, then
 The boot ROM validates the boot block by reading sector 0's **tag** (12-byte
 header) and checking `FILEID` (tag offset 4) `== $AAAA` (`BOOTPAT`). DiskCopy
 4.2 images store these per-sector tags in a section after the data; the image
-layer now loads that section (`image_load_diskcopy_tags`) and exposes
+layer serves them in-band (each sector stored as its 12 tag bytes then its
+512 data bytes, the DiskCopy file seen through a tagged view) and exposes
 `disk_read_tag()`, and this controller fills the header buffer with the real
 sector tag on every read. So the boot block validates (its tag is all `$AA` →
 `FILEID = $AAAA`) and other blocks carry their true file-ids — exactly what the
@@ -167,7 +168,8 @@ loaded OS expects.
 sector **and** its 12-byte tag (pagelabel) together; modelling only the data
 would drop the FS's pagelabel updates (the OS writes a sector's tag on every
 write). So `RWTS_WRITE` calls `disk_write_tag()` (a `disk_read_tag` mirror that
-updates the in-memory `image->tags`) in addition to `disk_write_data()`. (The
+writes the tag into its sector's block, so it lands in the delta beside the
+data) in addition to `disk_write_data()`. (The
 read-only base image is never touched — both data and tag writes land in the
 per-run delta / in-memory tag buffer.)
 

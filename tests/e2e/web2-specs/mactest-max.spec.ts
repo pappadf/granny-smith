@@ -178,7 +178,7 @@ test('MacTest Pro (68k) on a IIci with a 24AC and an 8*24 GC passes at Max speed
   await shot(page, '4-insert-disk');
   expect(promptMs, 'the floppy test asks for a disk').toBeGreaterThanOrEqual(0);
 
-  await gsCallInPage(page, 'files.fd_create', ['/opfs/upload/mtmax/blank-hd.dsk', true]);
+  await gsCallInPage(page, 'files.create', ['/opfs/upload/mtmax/blank-hd.dsk', 'floppy', '1440K']);
   await gsCallInPage(page, 'machine.floppy.drive[0].insert', ['/opfs/upload/mtmax/blank-hd.dsk', true]);
   log('blank HD floppy inserted');
 

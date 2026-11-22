@@ -177,7 +177,7 @@ export function setDeviceUnit(doc: ConfigDocument, index: number, unit: number):
   return next;
 }
 
-// A Mac OS volume of a hard disk image, as files.partitions reports it: its
+// A Mac OS volume of a hard disk image, as files.identify's volumes report it: its
 // partition number on the disk as attached, its name, its filesystem, and
 // whether its partition carries PowerPC boot code (Mac OS X's BootX).
 export interface DiskPartition {

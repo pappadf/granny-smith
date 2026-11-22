@@ -49,6 +49,7 @@ import { fileHasCheckpointSignature, scratchPath, ROMS_DIR, HD_DIR, CD_DIR } fro
 import {
   MEDIA_TYPES,
   LARGE_IMPORT_BYTES,
+  identifyFile,
   identifyRom,
   validateUnstated,
   type MediaTypeId,
@@ -617,11 +618,11 @@ async function probeArchive(stagingPath: string, quiet: boolean): Promise<FileOu
 
 // The archive format of the file at `path` ("zip", "sit", "cpt", "hqx",
 // "bin", "gz"), or '' when it is none -- decided by the core from the file's
-// content (a bounded read of its head and tail), whatever it is called.
+// content (a bounded read of its head and tail), whatever it is called
+// (files.identify).
 export async function stagedArchiveFormat(path: string): Promise<string> {
   try {
-    const fmt = await gsEval('files.archive.identify', [path]);
-    return typeof fmt === 'string' ? fmt : '';
+    return (await identifyFile(gsEval, path))?.archive ?? '';
   } catch {
     return '';
   }

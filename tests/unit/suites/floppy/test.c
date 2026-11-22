@@ -367,7 +367,7 @@ static int write_through_side(int hdr_side) {
     drive.write_hdr_start = -1;
     image_t img;
     memset(&img, 0, sizeof img);
-    img.type = image_fd_ss;
+    img.raw_size = 400 * 1024;
     img.writable = true;
     stub_disk_size = 400 * 1024;
     stub_write_count = 0;
@@ -411,7 +411,7 @@ enum { W_DATA = 0, W_MARK = 1, W_CRC = 2, W_SETUP = 5, W_ZEROS = 6, W_ONES = 7 }
 static void swim_ism_rig(floppy_t *f, image_t *img, uint8_t *disk, int track, int cur_sector) {
     memset(f, 0, sizeof *f);
     memset(img, 0, sizeof *img);
-    img->type = image_fd_hd;
+    img->raw_size = 1440 * 1024;
     img->writable = true;
     stub_disk_size = 1440 * 1024;
     stub_disk_buf = disk;
@@ -674,23 +674,23 @@ TEST(test_decode_sector_rejects_illegal_data_codeword) {
 // The four Macintosh floppy capacities, each pinning an encoding, a side count
 // and a sector layout.  720K is the one that used to be missing: it classified
 // as a hard disk, so the GCR path encoded MFM-laid-out bytes as if they were an
-// 800K disk, the media senses reported DD GCR, and floppy.identify said "not a
+// 800K disk, the media senses reported DD GCR, and files.identify said "not a
 // floppy".
 TEST(test_media_descriptor) {
     struct {
-        enum image_type type;
+        uint64_t size;
         bool mfm, hd;
         int sides, mfm_spt;
     } cases[] = {
-        {image_fd_ss,     false, false, 1, 0 },
-        {image_fd_ds,     false, false, 2, 0 },
-        {image_fd_dd_mfm, true,  false, 2, 9 },
-        {image_fd_hd,     true,  true,  2, 18},
+        {400 * 1024,  false, false, 1, 0 },
+        {800 * 1024,  false, false, 2, 0 },
+        {720 * 1024,  true,  false, 2, 9 },
+        {1440 * 1024, true,  true,  2, 18},
     };
     for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
         image_t img;
         memset(&img, 0, sizeof img);
-        img.type = cases[i].type;
+        img.raw_size = cases[i].size;
         floppy_media_t m;
         ASSERT_TRUE(floppy_media_from_image(&img, &m));
         ASSERT_TRUE(m.valid);
@@ -699,9 +699,9 @@ TEST(test_media_descriptor) {
         ASSERT_EQ_INT(m.sides, cases[i].sides);
         ASSERT_EQ_INT(m.mfm_spt, cases[i].mfm_spt);
         ASSERT_TRUE(m.img == &img);
-        // The predicate callers should ask with, rather than == image_fd_hd.
-        ASSERT_EQ_INT(image_is_mfm_floppy(cases[i].type), cases[i].mfm);
-        ASSERT_TRUE(image_is_floppy(cases[i].type));
+        // The predicate callers should ask with, rather than == MFM1440.
+        ASSERT_EQ_INT(image_layout_is_mfm(image_layout(&img)), cases[i].mfm);
+        ASSERT_TRUE(image_layout(&img) != IMAGE_LAYOUT_NONE);
     }
 
     // An empty drive and a hard disk are both "not a floppy geometry".
@@ -710,9 +710,9 @@ TEST(test_media_descriptor) {
     ASSERT_TRUE(!m.valid);
     image_t hd;
     memset(&hd, 0, sizeof hd);
-    hd.type = image_hd;
+    hd.raw_size = 20u * 1024 * 1024;
     ASSERT_TRUE(!floppy_media_from_image(&hd, &m));
-    ASSERT_TRUE(!image_is_floppy(image_hd));
+    ASSERT_TRUE(image_layout(&hd) == IMAGE_LAYOUT_NONE);
 }
 
 // The medium's CLASS and its FORMAT are different facts.  An 800K image and a
@@ -726,18 +726,18 @@ TEST(test_media_class_vs_format) {
     floppy_media_t m;
 
     // Every DD format shares one class.
-    const enum image_type dd[] = {image_fd_ss, image_fd_ds, image_fd_dd_mfm};
+    const uint64_t dd[] = {400 * 1024, 800 * 1024, 720 * 1024};
     for (unsigned i = 0; i < sizeof dd / sizeof dd[0]; i++) {
-        img.type = dd[i];
+        img.raw_size = dd[i];
         ASSERT_TRUE(floppy_media_from_image(&img, &m));
         ASSERT_TRUE(!m.hd); // class: double density
     }
-    img.type = image_fd_hd;
+    img.raw_size = 1440 * 1024;
     ASSERT_TRUE(floppy_media_from_image(&img, &m));
     ASSERT_TRUE(m.hd);
 
     // The format that a size implies is only the starting guess.
-    img.type = image_fd_ds;
+    img.raw_size = 800 * 1024;
     ASSERT_TRUE(floppy_media_from_image(&img, &m));
     ASSERT_EQ_INT(m.format, FLOPPY_FMT_GCR_800K);
     ASSERT_TRUE(!m.mfm);
@@ -767,7 +767,7 @@ TEST(test_media_sector_offset) {
     memset(&img, 0, sizeof img);
     floppy_media_t m;
 
-    img.type = image_fd_hd; // 1440K: 18 spt, uniform
+    img.raw_size = 1440 * 1024; // 1440K: 18 spt, uniform
     ASSERT_TRUE(floppy_media_from_image(&img, &m));
     ASSERT_EQ_INT(floppy_media_spt(&m, 0), 18);
     ASSERT_EQ_INT(floppy_media_spt(&m, 79), 18);
@@ -775,12 +775,12 @@ TEST(test_media_sector_offset) {
     ASSERT_EQ_INT((int)floppy_media_sector_offset(&m, 0, 1, 0), 18 * 512);
     ASSERT_EQ_INT((int)floppy_media_sector_offset(&m, 1, 0, 0), 2 * 18 * 512);
 
-    img.type = image_fd_dd_mfm; // 720K: 9 spt
+    img.raw_size = 720 * 1024; // 720K: 9 spt
     ASSERT_TRUE(floppy_media_from_image(&img, &m));
     ASSERT_EQ_INT(floppy_media_spt(&m, 40), 9);
     ASSERT_EQ_INT((int)floppy_media_sector_offset(&m, 1, 0, 0), 2 * 9 * 512);
 
-    img.type = image_fd_ds; // 800K GCR: zoned, and the offset accumulates
+    img.raw_size = 800 * 1024; // 800K GCR: zoned, and the offset accumulates
     ASSERT_TRUE(floppy_media_from_image(&img, &m));
     ASSERT_EQ_INT(floppy_media_spt(&m, 0), 12);
     ASSERT_EQ_INT(floppy_media_spt(&m, 79), 8);
@@ -797,17 +797,17 @@ TEST(test_media_rotation) {
     memset(&img, 0, sizeof img);
     floppy_media_t m;
 
-    img.type = image_fd_hd;
+    img.raw_size = 1440 * 1024;
     ASSERT_TRUE(floppy_media_from_image(&img, &m));
     ASSERT_EQ_INT((int)(floppy_media_rev_ns(&m, 0, FLOPPY_MFM_RPM) / 1e3), 200000); // 300 rpm
     ASSERT_EQ_INT((int)(floppy_media_rev_ns(&m, 0, FLOPPY_MFM_DD_RPM_NA) / 1e3), 200000);
 
-    img.type = image_fd_dd_mfm;
+    img.raw_size = 720 * 1024;
     ASSERT_TRUE(floppy_media_from_image(&img, &m));
     ASSERT_EQ_INT((int)(floppy_media_rev_ns(&m, 0, FLOPPY_MFM_RPM) / 1e3), 200000);
     ASSERT_EQ_INT((int)(floppy_media_rev_ns(&m, 0, FLOPPY_MFM_DD_RPM_NA) / 1e3), 100000); // 600 rpm
 
-    img.type = image_fd_ds; // GCR: the zone's speed whatever the caller says
+    img.raw_size = 800 * 1024; // GCR: the zone's speed whatever the caller says
     ASSERT_TRUE(floppy_media_from_image(&img, &m));
     ASSERT_TRUE(floppy_media_rev_ns(&m, 0, FLOPPY_MFM_RPM) == 60.0e9 / 394.0);
     ASSERT_TRUE(floppy_media_rev_ns(&m, 79, FLOPPY_MFM_DD_RPM_NA) == 60.0e9 / 590.0);
@@ -816,7 +816,7 @@ TEST(test_media_rotation) {
     // standing exactly on a slot boundary -- an event aimed at a header --
     // is handed the NEXT header, not the one just delivered, even when the
     // division comes out a hair under the integer.
-    img.type = image_fd_hd;
+    img.raw_size = 1440 * 1024;
     ASSERT_TRUE(floppy_media_from_image(&img, &m));
     double rev = floppy_media_rev_ns(&m, 0, FLOPPY_MFM_RPM);
     double slot = rev / 18.0;
@@ -836,7 +836,7 @@ TEST(test_media_sector_bounds) {
     floppy_media_t m;
     uint8_t buf[512];
 
-    img.type = image_fd_ss; // 400K: one side, 12 sectors on track 0
+    img.raw_size = 400 * 1024; // 400K: one side, 12 sectors on track 0
     ASSERT_TRUE(floppy_media_from_image(&img, &m));
     ASSERT_TRUE(!floppy_media_read_sector(&m, 0, 1, 0, buf)); // no side 1
     ASSERT_TRUE(!floppy_media_read_sector(&m, 0, 0, 12, buf)); // no sector 12

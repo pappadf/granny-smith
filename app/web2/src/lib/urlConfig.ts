@@ -28,7 +28,7 @@
 //   CD-ROM drive may name its model (`scsi:3:cd@applecd600i`).
 // - startup=<bus>:<unit>[:<partition>] (or `none`): the startup device, and
 //   on a machine whose firmware boots a partition (the G3) the volume's
-//   partition number on that disk (files.partitions).  Without it, a
+//   partition number on that disk (files.identify's volumes).  Without it, a
 //   storage= boots from its first hard disk, as the core picks.  A model
 //   with no startup-device setting (the Plus) leaves it out.
 // - nvram.<variable>=<value>: an Open Firmware variable, as setenv sets it

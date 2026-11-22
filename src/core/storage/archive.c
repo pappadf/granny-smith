@@ -16,6 +16,8 @@
 
 #include "image_chunkmap.h"
 #include "log.h"
+#include "macroman.h"
+#include "namespace.h"
 #include "object.h"
 #include "peeler.h"
 #include "shell.h"
@@ -199,16 +201,21 @@ static void isink_commit(source_t *s) {
 
 static const peel_sink_ops_t import_sink_ops = {isink_create, isink_write, isink_commit};
 
-// True when `name` (an entry path) matches `member` exactly, case-blind, or
-// by its last component.
-static bool member_matches(const char *name, const char *member) {
+// True when `name` (an entry's VFS path, ns_archive_member_path) in an
+// archive of `format` matches `member` exactly, case-blind, or by its last
+// component.  Case-blind is the Finder's rule (mac_name_eq) for a Mac
+// format's names, ASCII for the others.
+static bool member_matches(const char *format, const char *name, const char *member) {
     while (*member == '/')
         member++;
-    if (strcmp(name, member) == 0 || strcasecmp(name, member) == 0)
+    bool mac = ns_archive_names_are_macroman(format);
+    if (strcmp(name, member) == 0 || (mac ? ns_archive_member_eq(format, name, member) : strcasecmp(name, member) == 0))
         return true;
     const char *nb = strrchr(name, '/');
     const char *mb = strrchr(member, '/');
-    return strcasecmp(nb ? nb + 1 : name, mb ? mb + 1 : member) == 0;
+    nb = nb ? nb + 1 : name;
+    mb = mb ? mb + 1 : member;
+    return mac ? mac_name_eq(nb, mb) : strcasecmp(nb, mb) == 0;
 }
 
 // Junk an archive carries besides its media.
@@ -219,7 +226,7 @@ static bool member_is_junk(const peel_entry_t *e) {
 }
 
 typedef struct {
-    char member[512];
+    char member[1536]; // the member's VFS path (ns_archive_member_path)
     char *want; // the member asked for, or NULL
     char *origin; // recorded in the image as gs-origin, or NULL
     udif_writer_stats_t st;
@@ -264,7 +271,9 @@ static int work_archive_import(io_leaf_t *j) {
     for (int i = 0; a && i < peel_count(a); i++) {
         const peel_entry_t *en = peel_entry(a, i);
         if (u->want) {
-            if (!en->is_dir && member_matches(en->path, u->want)) {
+            char vpath[sizeof u->member];
+            ns_archive_member_path(peel_format(a), en->path, vpath, sizeof vpath);
+            if (!en->is_dir && member_matches(peel_format(a), vpath, u->want)) {
                 pick = i;
                 break;
             }
@@ -275,7 +284,8 @@ static int work_archive_import(io_leaf_t *j) {
     }
     bool ndif = false;
     if (a && pick >= 0) {
-        snprintf(u->member, sizeof u->member, "%s", peel_entry(a, pick)->path);
+        // Named as the VFS names it (UTF-8 for a Mac format's names).
+        ns_archive_member_path(peel_format(a), peel_entry(a, pick)->path, u->member, sizeof u->member);
         // An NDIF image's block map is its resource fork, which a UDIF's
         // payload cannot carry: that one is extracted (forks kept) instead.
         if (peel_entry(a, pick)->rsrc_len > 0) {
@@ -382,15 +392,6 @@ static void cleanup_archive_import(io_leaf_t *j) {
 // Object-model class descriptor
 // ============================================================================
 
-// `files.archive.identify(path)` — return the format short name for a recognised
-// archive ("sit" / "cpt" / "zip" / "hqx" / "bin" / "gz"), or empty string
-// when the file is unreadable or not an archive. Empty is falsy under
-// the predicate-truthy rule — same shape as floppy.identify.
-static DEF_METHOD(archive_method_identify) {
-    const char *format = archive_identify_file(argv[0].s);
-    return val_str(format ? format : "");
-}
-
 // `files.archive.extract(path, [out_dir])` — extract a Mac archive into out_dir
 // (defaults to the current working directory). Returns true on success.
 static DEF_METHOD(archive_method_extract) {
@@ -400,7 +401,7 @@ static DEF_METHOD(archive_method_extract) {
     if (!j)
         return val_err("files.archive.extract: out of memory");
     j->work = work_extract;
-    return io_leaf_dispatch(j, "files.archive.extract");
+    return io_leaf_dispatch(j);
 }
 
 // `files.archive.import(path, dst, [member])` — decode one member of a Mac
@@ -424,7 +425,7 @@ static DEF_METHOD(archive_method_import) {
     j->work = work_archive_import;
     j->answer = answer_archive_import;
     j->cleanup = cleanup_archive_import;
-    return io_leaf_dispatch(j, "files.archive.import");
+    return io_leaf_dispatch(j);
 }
 
 static const arg_decl_t archive_import_args[] = {
@@ -442,10 +443,6 @@ static const arg_decl_t archive_import_args[] = {
                                                           .default_doc = "none"            },
 };
 
-static const arg_decl_t archive_path_arg[] = {
-    ARG_PATH("path", "Archive file path"),
-};
-
 static const arg_decl_t archive_extract_args[] = {
     ARG_PATH("path", "Archive file path"),
     {.name = "out_dir",
@@ -457,16 +454,6 @@ static const arg_decl_t archive_extract_args[] = {
 };
 
 static const member_t archive_members[] = {
-    {.kind = MK_METHOD,
-     .name = "identify",
-     .examples = EXAMPLES("files.archive.identify \"/opfs/downloads/app.sit\""),
-     .doc = "Identify a Mac archive's format",
-     .method = {.result_doc =
-                    "\"sit\", \"cpt\", \"zip\", \"tar\", \"hqx\", \"bin\" or \"gz\"; empty when not an archive",
-                .args = archive_path_arg,
-                .nargs = 1,
-                .result = VK_STRING,
-                .fn = archive_method_identify}},
     {.kind = MK_METHOD,
      .name = "extract",
      .examples = EXAMPLES("files.archive.extract \"/opfs/downloads/app.sit\"",
@@ -488,7 +475,7 @@ static const member_t archive_members[] = {
                 .args = archive_import_args,
                 .nargs = 4,
                 .result = VK_MAP,
-                .fn = archive_method_import}},
+                .fn = archive_method_import} },
 };
 
 static const class_desc_t archive_class = {

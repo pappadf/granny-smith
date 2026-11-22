@@ -1,5 +1,5 @@
 # Integration test configuration: Apple Lisa 2 — export the Sony diskette.
-# machine.floppy.drive.0.export writes the inserted diskette (source + delta +
+# machine.floppy.drive[0].image.export writes the inserted diskette (source + delta +
 # the in-memory sector tags) to a new file; a .dc42 name makes it a
 # self-contained DiskCopy 4.2 file (image_export_to).
 

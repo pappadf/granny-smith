@@ -118,7 +118,7 @@ typedef struct machine_startup {
     int unit;
     unsigned type;
     // The partition to start up from, as the disk's partition map numbers
-    // it once attached (files.partitions); 0 names none -- the disk.  Only
+    // it once attached (files.identify volumes); 0 names none -- the disk.  Only
     // a family whose firmware boots a partition (the G3's Open Firmware
     // boot-device) reads it.
     int partition;

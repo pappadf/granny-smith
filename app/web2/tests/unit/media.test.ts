@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { MEDIA_TYPES, type GsEval } from '@/lib/media';
+import { MEDIA_TYPES, validateUnstated, type GsEval } from '@/lib/media';
 import { VROMS_DIR } from '@/lib/opfsPaths';
 
 // The OPFS store is content-addressed for both media types: CPU ROMs are
@@ -128,20 +128,33 @@ describe('rom media descriptor — a cut-short dump', () => {
   });
 });
 
-describe('hd media descriptor', () => {
-  const core =
-    (size: number, isHd: boolean): GsEval =>
-    async (path: string) =>
-      path === 'files.path_size' ? size : path === 'machine.scsi.identify_hd' ? isHd : '';
+// A files.identify answer (src/core/storage/storage_class.c), defaults filled.
+const identity = (o: Record<string, unknown>) => ({
+  opens: true,
+  refusal: '',
+  archive: '',
+  encoding: 'raw',
+  floppy: '',
+  fits: [],
+  kind: '',
+  volumes: [],
+  ...o,
+});
+const identifies =
+  (o: Record<string, unknown>): GsEval =>
+  async (path: string) =>
+    path === 'files.identify' ? identity(o) : '';
 
-  // S1018-26: a 32 KB PCI ROM is refused by identify_hd, which measures the
-  // disk (src/core/peripherals/scsi.c).  The file's size is not the disk's:
-  // the UDIF the import stores for a mostly empty 64 MB disk is a few
-  // hundred KB, and it is a hard disk.
-  it("takes identify_hd's verdict, not the file's size", async () => {
-    expect((await MEDIA_TYPES.hd.validate('/x.prom', core(32 * 1024, false))).valid).toBe(false);
-    expect((await MEDIA_TYPES.hd.validate('/x.dmg', core(300 * 1024, true))).valid).toBe(true);
-    expect((await MEDIA_TYPES.hd.validate('/x.img', core(20 * 1024 * 1024, true))).valid).toBe(
+describe('hd media descriptor', () => {
+  // S1018-26: a 32 KB PCI ROM is refused by the core, which measures the
+  // disk.  The file's size is not the disk's: the UDIF the import stores for
+  // a mostly empty 64 MB disk is a few hundred KB, and it is a hard disk.
+  it("takes the core's verdict (files.identify fits), not the file's size", async () => {
+    expect((await MEDIA_TYPES.hd.validate('/x.prom', identifies({ fits: [] }))).valid).toBe(false);
+    expect(
+      (await MEDIA_TYPES.hd.validate('/x.dmg', identifies({ fits: ['hd', 'cd'] }))).valid,
+    ).toBe(true);
+    expect((await MEDIA_TYPES.hd.validate('/x.img', identifies({ fits: ['hd'] }))).valid).toBe(
       true,
     );
   });
@@ -151,9 +164,8 @@ describe('hd media descriptor', () => {
   it('refuses a container image the core cannot read, with its reason', async () => {
     const why =
       'a UDIF image that cannot be read in place (it uses a compression this emulator does not decode)';
-    const gsEval: GsEval = async (path: string) =>
-      path === 'files.path_size' ? 20 * 1024 * 1024 : path === 'files.image_error' ? why : false;
-    for (const cat of ['hd', 'cdrom'] as const) {
+    const gsEval = identifies({ opens: false, refusal: why });
+    for (const cat of ['hd', 'cdrom', 'fd'] as const) {
       const r = await MEDIA_TYPES[cat].validate('/x.dmg', gsEval);
       expect(r.valid).toBe(false);
       expect(r.reject).toBe(`is ${why}`);
@@ -162,42 +174,34 @@ describe('hd media descriptor', () => {
 });
 
 describe('fd media descriptor', () => {
-  const sized = (size: number) =>
-    (async (path: string) => (path === 'files.path_size' ? size : null)) as unknown as GsEval;
-
-  it('accepts raw and Disk Copy 4.2 floppy sizes, with and without tag data', async () => {
-    for (const size of [
-      409600,
-      819200,
-      737280,
-      1474560, // raw
-      409684,
-      819284,
-      737364,
-      1474644, // Disk Copy 4.2, no tags
-      419284,
-      838484, // Disk Copy 4.2 with 12 tag bytes per sector (GCR disks)
-    ])
-      expect((await MEDIA_TYPES.fd.validate('/x', sized(size))).valid, String(size)).toBe(true);
+  // Whatever wraps it -- a DiskCopy 4.2 header and tags, a MOOF (1.3 MB for
+  // an 800K disk), a floppy inside a .dmg -- the image layer says what it
+  // opens as.
+  it('takes the image layer word for what is a floppy', async () => {
+    expect((await MEDIA_TYPES.fd.validate('/x.moof', identifies({ fits: ['floppy'] }))).valid).toBe(
+      true,
+    );
+    expect((await MEDIA_TYPES.fd.validate('/x.img', identifies({ fits: ['hd'] }))).valid).toBe(
+      false,
+    );
+    expect((await MEDIA_TYPES.fd.validate('/x.txt', identifies({ opens: false }))).valid).toBe(
+      false,
+    );
   });
+});
 
-  it('rejects other sizes', async () => {
-    for (const size of [0, 409601, 20971520])
-      expect((await MEDIA_TYPES.fd.validate('/x', sized(size))).valid, String(size)).toBe(false);
-  });
-
-  // A MOOF (1.3 MB for an 800K disk) is no floppy size: the core's image
-  // layer, which decodes it, says what it opens as.
-  it('accepts a file of another size the image layer opens as a floppy', async () => {
-    const core = (fd: boolean): GsEval =>
-      (async (path: string) =>
-        path === 'files.path_size'
-          ? 1296302
-          : path === 'files.identify_floppy'
-            ? fd
-            : '') as unknown as GsEval;
-    expect((await MEDIA_TYPES.fd.validate('/x.moof', core(true))).valid).toBe(true);
-    expect((await MEDIA_TYPES.fd.validate('/x.moof', core(false))).valid).toBe(false);
+describe('an upload of no stated kind', () => {
+  // A disc only when it holds ISO 9660 (S1018-06): a bare HFS or partitioned
+  // image fits a CD-ROM drive but is filed as a hard disk.
+  it('is a CD-ROM only when the core files it as one', async () => {
+    expect(
+      (await validateUnstated('cdrom', '/a.iso', identifies({ fits: ['hd', 'cd'], kind: 'cd' })))
+        .valid,
+    ).toBe(true);
+    expect(
+      (await validateUnstated('cdrom', '/b.img', identifies({ fits: ['hd', 'cd'], kind: 'hd' })))
+        .valid,
+    ).toBe(false);
   });
 });
 

@@ -328,6 +328,7 @@ static void job_run(work_queue_t *q, wq_item_t *item) {
     job_t *j = (job_t *)item;
     job_seam_set_current(j, j->client, &j->cancel);
     job_call_take_failure(NULL, 0); // a failure the last job never took is not this one's
+    job_call_take_answer(NULL); // nor an answer
     j->rc = job_glue_run_source(j->src, true);
     job_seam_set_current(NULL, 0, NULL);
 }
@@ -417,6 +418,40 @@ void job_call_complete(uint32_t token, bool ok, const char *json) {
         job_seam_note_failure(error);
     }
     pthread_mutex_unlock(&g_wq.mu);
+}
+
+// The deferred call's success answer, for the job thread (g_wq.mu).
+static value_t g_call_answer;
+static bool g_call_answered;
+
+bool job_call_complete_value(uint32_t token, const value_t *v) {
+    if (!(token & 0x80000000u))
+        return false; // a request's deferral: its answer is JSON
+    pthread_mutex_lock(&g_wq.mu);
+    if (g_call.defer_token == token) {
+        g_call.defer_token = 0;
+        g_call.defer_io = 0;
+        if (g_call_answered)
+            value_free(&g_call_answer);
+        g_call_answer = value_dup(v);
+        g_call_answered = true;
+    }
+    pthread_mutex_unlock(&g_wq.mu);
+    return true;
+}
+
+bool job_call_take_answer(value_t *out) {
+    pthread_mutex_lock(&g_wq.mu);
+    bool got = g_call_answered;
+    value_t v = g_call_answer;
+    g_call_answered = false;
+    memset(&g_call_answer, 0, sizeof g_call_answer);
+    pthread_mutex_unlock(&g_wq.mu);
+    if (got && out)
+        *out = v;
+    else if (got)
+        value_free(&v);
+    return got;
 }
 
 // --- submission and cancel (any thread) -------------------------------------

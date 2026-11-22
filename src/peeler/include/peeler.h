@@ -60,6 +60,9 @@ typedef struct {
     // a component of only dots ('.', '..', legal Mac names) gets a '_' prefix;
     // an empty one becomes '_'.  So peeler's own names always pass
     // peel_path_is_confined -- but check anyway before writing (below).
+    // The bytes are otherwise the archive's own, in its own encoding
+    // (MacRoman for the Mac formats, UTF-8 or CP437 for zip): converting
+    // them is the caller's business.
     char name[256];
     uint32_t mac_type; // Classic Mac file type  (e.g. 'TEXT')
     uint32_t mac_creator; // Classic Mac creator    (e.g. 'ttxt')

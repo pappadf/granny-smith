@@ -42,7 +42,6 @@ void catalog_init(void);
 // Class registrations for singletons whose node is attached from elsewhere.
 void mouse_class_register(void);
 void screen_class_register(void);
-void scsi_class_register(void);
 
 #ifdef __cplusplus
 }

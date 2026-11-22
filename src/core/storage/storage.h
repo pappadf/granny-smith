@@ -56,6 +56,10 @@ typedef struct {
     const char *journal_path; // Path to preimage journal (created if missing)
     uint64_t block_count; // Number of logical blocks
     uint32_t block_size; // Bytes per block: a multiple of 4 in [512, STORAGE_MAX_BLOCK_SIZE] (512 default, 532 ProFile)
+    // Create the delta and journal on the first write rather than now, when
+    // they do not exist yet: a read-only image's scratch pair, which a probe
+    // or a mount that never writes then never puts on disk.
+    bool lazy;
 } storage_config_t;
 
 // Callback signatures for streaming block data.
