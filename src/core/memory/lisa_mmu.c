@@ -850,11 +850,24 @@ static void lisa_mmureg_write(lisa_mmu_t *m, const lisa_resolved_t *r, uint16_t 
 // maintains, so it costs one array lookup per access when no logpoint is set
 // and nothing more.  (Like the generic path, this only sees CPU accesses, not
 // the device engines' own writes — there are none on the Lisa.)
-static inline void lisa_logpoint_notify(uint32_t addr, unsigned size, uint32_t value, bool is_write) {
-    if (!g_mem_logpoint_hook || !g_mem_logpoint_page_count)
+//
+// A physical-space logpoint or watchpoint bumps the physical page count
+// instead, and on the Lisa only main memory has physical addresses: an
+// access that resolved to RAM is checked against its physical page too
+// (`r`), so a physical watch fires whichever context or alias reached it.
+// (This used to look at the logical page alone, so physical logpoints
+// never fired on the Lisa.)  The hook recomputes the physical address
+// itself (debug.c, through lisa_mmu_translate).
+static inline void lisa_logpoint_notify(uint32_t addr, unsigned size, uint32_t value, bool is_write,
+                                        const lisa_resolved_t *r) {
+    if (!g_mem_logpoint_hook)
         return;
-    uint32_t page = addr >> MEM_PAGE_SHIFT;
-    if (page < g_page_count && g_mem_logpoint_page_count[page])
+    uint32_t page = (addr & 0x00FFFFFFu) >> MEM_PAGE_SHIFT;
+    bool logical = g_mem_logpoint_page_count && page < g_page_count && g_mem_logpoint_page_count[page];
+    uint32_t ppage = r->phys >> MEM_PAGE_SHIFT;
+    bool physical = r->route == L_RAM && g_mem_logpoint_phys_page_count && ppage < g_page_count &&
+                    g_mem_logpoint_phys_page_count[ppage];
+    if (logical || physical)
         g_mem_logpoint_hook(addr, size, value, is_write);
 }
 
@@ -882,7 +895,7 @@ static uint32_t lisa_read(uint32_t addr, unsigned size, bool supervisor) {
         lisa_raise_bus_error(addr, true, supervisor);
         return 0xFFFFFFFFu >> ((4 - size) * 8);
     }
-    lisa_logpoint_notify(addr, size, v, false);
+    lisa_logpoint_notify(addr, size, v, false, &r);
     return v;
 }
 
@@ -906,7 +919,7 @@ static void lisa_write(uint32_t addr, unsigned size, bool supervisor, uint32_t v
         lisa_raise_bus_error(addr, false, supervisor);
         return;
     }
-    lisa_logpoint_notify(addr, size, value, true);
+    lisa_logpoint_notify(addr, size, value, true, &r);
 }
 
 uint8_t lisa_mmu_read8(uint32_t addr, bool supervisor) {

@@ -110,6 +110,14 @@ now skips a PC whose translation fails in the context the CPU uses
 runs. The Lisa's MMU makes no instruction/data distinction, so the debug
 translation is exact for a fetch.
 
+**Physical logpoints and watchpoints.** The Lisa's accesses bypass
+`memory.c`'s slow path, so `lisa_logpoint_notify` calls the memory-logpoint
+hook itself. It checks the logical page count and, for an access that
+resolved to RAM, the physical page count too; the hook then compares
+physical ranges against the RAM address `lisa_mmu_translate` gives. Only
+main memory has physical addresses here: an I/O or ROM access never
+matches a physical range.
+
 ## Control strobes ($00E000-$00E01E)
 
 Each is a *strobe*: any access (read or write, value ignored) toggles the latch.

@@ -864,6 +864,7 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
         return;
     uint32_t phys_addr = addr;
     bool phys_computed = false;
+    bool phys_valid = true; // false: the access has no physical address to compare (a Lisa I/O or ROM access)
     for (logpoint_t *lp = debug->mem_logpoints; lp; lp = lp->kind_next) {
         if (lp->disabled)
             continue;
@@ -877,7 +878,13 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
         if (lp->space == ADDR_SPACE_PHYSICAL) {
             if (!phys_computed) {
                 bool supervisor = current_access_is_supervisor();
-                if (g_mmu && g_mmu->enabled) {
+                if (g_lisa_mmu) {
+                    // The Lisa: main memory's physical address; its I/O and ROM
+                    // spaces have none (lisa_mmu.c, lisa_logpoint_notify).
+                    const char *space = NULL;
+                    phys_valid = lisa_mmu_translate(g_lisa_mmu, addr, supervisor, &phys_addr, &space) && space &&
+                                 strcmp(space, "ram") == 0;
+                } else if (g_mmu && g_mmu->enabled) {
                     phys_addr = mmu_translate_debug(g_mmu, addr, supervisor);
                 } else if (g_mem_logical_xlate && g_mem_logpoint_page_count &&
                            g_mem_logpoint_page_count[addr >> MEM_PAGE_SHIFT]) {
@@ -892,6 +899,8 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
                 }
                 phys_computed = true;
             }
+            if (!phys_valid)
+                continue;
             cmp_addr = phys_addr;
         } else {
             cmp_addr = addr;

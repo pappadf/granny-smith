@@ -66,6 +66,25 @@ assert try(debug.disasm($la, 2, 9), "refused") == "refused" "disasm accepted con
 # The view is restored after each request: the plain read is the CPU's again.
 assert machine.memory.peek.l($la) == machine.cpu.mmu.peek($la, 4) "a context outlived its request"
 
+# ---- Physical memory logpoints and watchpoints ------------------------------
+# The screen lives at the top of main memory; the operating system reaches
+# it through a logical segment in context 0.  A physical logpoint used to
+# count nothing on the Lisa (only logical pages were checked).
+let scr = machine.cpu.mmu.translate(0xFA0200, context=0)
+assert $scr.valid && $scr.space == "ram" "the screen segment is not RAM"
+let lphys = debug.logpoints.add(addr=$scr.phys, end=$scr.phys + 0x7DFF, mode="write", space="physical", level=9)
+let llog = debug.logpoints.add(addr=0xFA0200, end=0xFA7FFF, mode="write", level=9)
+machine.adb.mouse.move 30 20
+scheduler.run 3000000
+assert debug.logpoints[$llog.id].hit_count > 0 "the pointer drew nothing on the screen"
+assert debug.logpoints[$lphys.id].hit_count == debug.logpoints[$llog.id].hit_count "physical and logical logpoints disagree"
+debug.logpoints.clear
+let wp = debug.watchpoints.add(addr=$scr.phys, end=$scr.phys + 0x7DFF, mode="write", space="physical")
+machine.adb.mouse.move -30 -20
+scheduler.run 3000000
+assert debug.watchpoints[$wp.id].hit_count >= 1 "a physical watchpoint did not stop the machine"
+debug.watchpoints.clear
+
 # ---- A breakpoint in a segment that is not present --------------------------
 # Open the Calculator: its process faults on its first code segment, the
 # operating system loads it and returns to the faulting instruction.  A
