@@ -166,6 +166,23 @@ scheduler.run 3000000
 assert debug.logpoints[$latch.id].hit_count > 0 "a latch logpoint added after a load never fired"
 debug.logpoints.clear
 
+# ---- The absolute mouse move after a checkpoint save and load ---------------
+# Reported to do nothing until one relative move; it must steer the cursor
+# (the OS's globals $CC00F0/$CC00F2, context 0) straight away.
+def cursor_at(x, y) {
+    let cx = machine.cpu.mmu.peek(0xCC00F0, 2, "logical", 0)
+    let cy = machine.cpu.mmu.peek(0xCC00F2, 2, "logical", 0)
+    return $cx + 3 >= $x && $cx <= $x + 3 && $cy + 3 >= $y && $cy <= $y + 3
+}
+assert checkpoint.save("${$WORK_DIR}/mouse.gscp") "checkpoint.save failed"
+machine.adb.mouse.move(150, 40, "global")
+scheduler.run 3000000
+assert cursor_at(150, 40) "the global move after a save did not reach (150, 40)"
+assert checkpoint.load("${$WORK_DIR}/mouse.gscp") "checkpoint.load failed"
+machine.adb.mouse.move(500, 250, "global")
+scheduler.run 3000000
+assert cursor_at(500, 250) "the global move after a load did not reach (500, 250)"
+
 # ---- Soft power-off, and on again -------------------------------------------
 # The OS puts everything away and tells the COPS to switch the supply off.
 # The machine then stops (it used to loop on with a black screen); powering
