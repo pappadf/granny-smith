@@ -8,6 +8,7 @@
 
 #include "card.h"
 #include "card_registry.h"
+#include "card_slots.h"
 #include "display.h"
 #include "display_class.h"
 #include "machine_profile.h"
@@ -53,12 +54,14 @@ bool nubus_video_mode_known(const char *id) {
 // node objects are created by nubus_objects_build() (called from nubus_init,
 // once the cards exist) and live here keyed by slot; nubus_objects_teardown()
 // (from nubus_delete) frees the trees before the cards they read go away.
-// The card node and its resource children carry the nubus_card_t as
-// instance_data, so their accessors read live card state (the display_t,
-// the declrom, the card engine) and copy nothing; the slot wrapper carries
-// only its slot number.
+// The slot nodes are the shared slot collection's (card_slots.h, the same
+// as PCI's): one per slot the machine declares (socket or built in),
+// `empty` with no `card` child when nothing is seated.  The card node and
+// its resource children carry the nubus_card_t as instance_data, so their
+// accessors read live card state (the display_t, the declrom, the card
+// engine) and copy nothing; the slot node carries only its card_slot_t.
 // Resolution and SYSTEM-tab enumeration both work through object_attach: the
-// `slot` indexed member returns the slot wrapper, whose attached `card` child
+// `slot` indexed member returns the slot node, whose attached `card` child
 // (and its attached resource children) the resolver/meta-walker discover.
 
 #define NUBUS_OBJ_SLOTS 16 // slot index space ($0..$F); cards seat in $9..$E
@@ -66,20 +69,29 @@ bool nubus_video_mode_known(const char *id) {
 #define NUBUS_OBJ_LAST  14
 
 typedef struct {
-    struct object *slot; // slot wrapper (returned by the indexed `slot` member)
+    card_slot_t rec; // the slot node's instance data
+    struct object *slot; // slot node (returned by the indexed `slot` member)
     struct object *card; // the seated card
     struct object *fb; // framebuffer
     struct object *declrom; // declaration ROM
     struct object *clut; // palette
     struct object *mode; // current monitor / depth
+    char card_label[96]; // the card node's label (borrowed by the object)
     display_fb_node_t fb_node; // instance data for the shared framebuffer class
 } nubus_slot_nodes_t;
 
-static nubus_bus_t *g_obj_bus = NULL;
 static nubus_slot_nodes_t g_slot_nodes[NUBUS_OBJ_SLOTS];
-// The slot wrapper objects, by slot number.
-static const class_desc_t nubus_slot_class;
-static object_cache_t g_slot_objects = OBJECT_CACHE(&nubus_slot_class, "slot");
+// The slot collection (machine.nubus and its slot nodes), the shared shape.
+static const class_desc_t nubus_class, nubus_slot_class;
+static const collection_desc_t nubus_slots;
+static card_slot_bus_t g_slots = {
+    .name = "nubus",
+    .label = "NuBus",
+    .order = OBJ_ORDER_NUBUS,
+    .bus_class = &nubus_class,
+    .slots_desc = &nubus_slots,
+    .nodes = CARD_SLOT_NODES(&nubus_slot_class),
+};
 
 static nubus_card_t *node_card(struct object *self) {
     return (nubus_card_t *)object_data(self);
@@ -257,50 +269,34 @@ static const member_t card_members[] = {
 static const class_desc_t nubus_card_class = {
     .name = "card", .members = card_members, .n_members = sizeof(card_members) / sizeof(card_members[0])};
 
-// --- slot wrapper node ------------------------------------------------------
+// --- slot node ----------------------------------------------------------------
 //
-// Slot nodes describe what is installed: one per populated slot, carrying its
-// number and the card child.  Instance data is a per-slot int (the slot
-// number); the card CHILD node keeps the card pointer.
-static int s_slot_numbers[NUBUS_OBJ_SLOTS]; // instance data for slot nodes
-
-static int node_slot_number(struct object *self) {
-    const int *n = (const int *)object_data(self);
-    return n ? *n : -1;
-}
-
-static DEF_GETTER(slot_attr_number) {
-    return val_int(node_slot_number(self));
-}
+// One per declared slot (card_slots.h): its number, whether it is empty, and
+// the card child when it is not.
 
 static const member_t slot_members[] = {
     {.kind = MK_ATTR,
      .name = "number",
      .doc = "NuBus slot number ($9..$E)",
-     .attr = {.type = VK_INT, .presentation_flags = VFLAG_HEX, .get = slot_attr_number}},
+     .attr = {.type = VK_INT, .presentation_flags = VFLAG_HEX, .get = card_slot_attr_number}},
+    {.kind = MK_ATTR,
+     .name = "empty",
+     .doc = "True when no card is seated in the slot (it then has no `card` child)",
+     .attr = {.type = VK_BOOL, .get = card_slot_attr_empty}                                 },
 };
 static const class_desc_t nubus_slot_class = {
     .name = "slot", .members = slot_members, .n_members = sizeof(slot_members) / sizeof(slot_members[0])};
-
-// --- indexed `slot` member: enumerate declared slots -------------------------
-// A slot node exists for every populated slot -- nubus_objects_build decides;
-// enumeration keys off the node's existence so the two can't disagree.
-static struct object *nubus_slot_get(struct object *self, int index) {
-    (void)self;
-    if (!g_obj_bus || index < 0 || index >= NUBUS_OBJ_SLOTS)
-        return NULL;
-    return g_slot_nodes[index].slot;
-}
 
 // `machine.nubus.slot` -- the slot collection: a container (attached under
 // `machine.nubus` by the install hook below) whose entries are the declared
 // slots.
 static const collection_desc_t nubus_slots = {
     .entry = &nubus_slot_class,
-    .by_index = {.get = nubus_slot_get, .slots = NUBUS_OBJ_LAST + 1},
+    .by_index = {.get = card_slots_entry, .slots = NUBUS_OBJ_LAST + 1},
     .name = "nubus_slots",
     .doc = "NuBus slots, by slot number",
-    .entries_doc = "Populated NuBus slots ($9..$E); index by slot number, e.g. slot[9].card.framebuffer",
+    .entries_doc = "Declared NuBus slots ($9..$E), populated or empty; index by slot number, e.g. "
+                   "slot[9].card.framebuffer",
 };
 
 // `machine.nubus` itself carries no members of its own: its `slot` child is
@@ -312,21 +308,9 @@ static const class_desc_t nubus_class = {
     .n_members = 0,
 };
 
-// `machine.nubus` and its slot collection, under the machine node (they are
-// emulated hardware, not meta objects), on a machine with that bus.
+// `machine.nubus` and its slot collection, on a machine with that bus.
 static void nubus_root_install(struct config *cfg) {
-    if (!cfg || !cfg->nubus)
-        return;
-    struct object *bus = root_attach_stub(machine_object(), object_new(&nubus_class, cfg, "nubus"));
-    if (!bus)
-        return;
-    object_set_label(bus, "NuBus");
-    object_set_order(bus, OBJ_ORDER_NUBUS);
-    struct object *slots = root_attach_stub(bus, object_collection_new(&nubus_slots, cfg, "slot"));
-    if (slots) {
-        object_set_label(slots, "Slots");
-        object_cache_set_parent(&g_slot_objects, slots);
-    }
+    card_slots_install(&g_slots, cfg, cfg && cfg->nubus);
 }
 
 // === Object-tree build / teardown ===========================================
@@ -336,26 +320,22 @@ void nubus_objects_build(nubus_bus_t *bus) {
     if (!bus)
         return;
     root_register_install(nubus_root_install, NULL); // idempotent
-    g_obj_bus = bus;
+    card_slots_begin(&g_slots, bus);
     for (int i = NUBUS_OBJ_FIRST; i <= NUBUS_OBJ_LAST; i++) {
-        nubus_card_t *card = nubus_card(bus, i);
-        if (!card)
-            continue; // a node exists for every populated slot
+        const nubus_slot_decl_t *decl = nubus_slot_decl_get(bus, i);
+        if (!decl || (decl->kind != NUBUS_SLOT_SOCKET && decl->kind != NUBUS_SLOT_BUILTIN))
+            continue; // a node exists for every slot that takes a card
         nubus_slot_nodes_t *n = &g_slot_nodes[i];
+        n->rec.number = i;
+        n->slot = card_slot_open(&g_slots, &n->rec, decl->label);
+        nubus_card_t *card = nubus_card(bus, i);
+        if (!n->slot || !card)
+            continue; // empty: the slot node only
 
-        s_slot_numbers[i] = i;
-        n->slot = object_cache_at(&g_slot_objects, i, &s_slot_numbers[i]);
-        if (!n->slot)
-            continue;
-        object_set_label(n->slot, "Slot");
-        object_set_order(n->slot, i);
-
-        n->card = object_new(&nubus_card_class, card, "card");
+        // The label is the node's own: object_set_label borrows the string
+        card_label(card, n->card_label, sizeof n->card_label);
+        n->card = card_slot_seat(n->slot, &n->rec, &nubus_card_class, card, n->card_label);
         if (n->card) {
-            char label[96];
-            card_label(card, label, sizeof label);
-            object_set_label(n->card, label);
-            object_attach(n->slot, n->card);
             n->fb_node = (display_fb_node_t){.owner = card, .resolve = nubus_fb_resolve, .base = nubus_fb_base};
             n->fb = object_attach_new(n->card, &display_fb_class, &n->fb_node, "framebuffer", "Framebuffer", 10);
             n->declrom = object_attach_new(n->card, &nubus_declrom_class, card, "declrom", "Declaration ROM", 20);
@@ -373,28 +353,25 @@ void nubus_objects_build(nubus_bus_t *bus) {
 }
 
 void nubus_objects_teardown(void) {
-    object_cache_clear(&g_slot_objects); // frees each slot + attached subtree
+    card_slots_clear(&g_slots); // frees each slot + attached subtree
     memset(g_slot_nodes, 0, sizeof(g_slot_nodes));
-    g_obj_bus = NULL;
 }
 
 void nubus_objects_teardown_owned(nubus_bus_t *bus) {
-    // Tear down the node trees only when they describe THIS bus.  On
-    // checkpoint restore the new machine (and its tree) is built BEFORE the
-    // old machine is destroyed; the old bus's teardown must not rip down
-    // the new machine's freshly built tree.
-    if (g_obj_bus == bus)
+    // Only when the trees describe THIS bus (card_slots_owned_by)
+    if (card_slots_owned_by(&g_slots, bus))
         nubus_objects_teardown();
 }
 
 struct object *nubus_active_framebuffer_object(void) {
-    if (!g_obj_bus)
+    nubus_bus_t *bus = (nubus_bus_t *)g_slots.owner;
+    if (!bus)
         return NULL;
-    nubus_card_t *card = nubus_connected_display_card(g_obj_bus);
+    nubus_card_t *card = nubus_connected_display_card(bus);
     if (!card)
         return NULL;
     for (int i = 0; i < NUBUS_OBJ_SLOTS; i++)
-        if (g_slot_nodes[i].slot && nubus_card(g_obj_bus, i) == card)
+        if (g_slot_nodes[i].card && nubus_card(bus, i) == card)
             return g_slot_nodes[i].fb;
     return NULL;
 }

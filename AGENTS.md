@@ -268,7 +268,9 @@ simulated network are its siblings at the root:
   `image` node under every drive and in `files.images[N]`:
   `docs/internals/core/storage/image_kind.md` §3),
   `machine.sound`, `machine.screen`, `machine.nubus` / `machine.pci` (only
-  on a machine with that bus; `slot[N]` collections); the AV machines add
+  on a machine with that bus; `slot[N]` collections with a node for every
+  declared slot, `empty` true and no `card` child when nothing is seated);
+  the AV machines add
   `machine.dsp` (the DSP3210 aux core), `machine.videoin` and
   `machine.audioin` (host camera/microphone source surfaces). (Lisa adds
   `machine.hd` (ProFile, `machine.hd.image`) and `machine.power`; the G3

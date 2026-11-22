@@ -548,10 +548,9 @@ void q3_raster_destroy(q3_raster_t *r) {
     bool threaded = r->kind == Q3_BACKEND_THREAD;
     rq_stats_t st;
     rq_fini(&r->rq, &st);
-    // GS_QD3D_STATS=1: the thread backend's decomposition, at teardown
-    const char *stats = getenv("GS_QD3D_STATS");
-    if (threaded && stats && *stats && *stats != '0')
-        LOG(0,
+    // The thread backend's decomposition, at teardown (Q3_LOG_STATS)
+    if (threaded)
+        LOG(Q3_LOG_STATS,
             "raster=thread stats: %llu commands, %llu syncs (%llu waited), %llu room waits, %llu state waits, "
             "%.3f s waited total, %llu worker sleeps, worker cpu %.1f s",
             (unsigned long long)st.n_submit, (unsigned long long)st.n_sync, (unsigned long long)st.n_sync_wait,

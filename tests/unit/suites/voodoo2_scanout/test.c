@@ -96,6 +96,29 @@ void object_set_order(struct object *o, int order) {
     (void)o;
     (void)order;
 }
+// The pixel watch's entry cache (card.watch): no entries are made here.
+struct object *object_cache_at(object_cache_t *c, int index, void *data) {
+    (void)c;
+    (void)index;
+    (void)data;
+    return NULL;
+}
+void object_cache_set_parent(object_cache_t *c, struct object *parent) {
+    (void)c;
+    (void)parent;
+}
+void object_cache_sweep(object_cache_t *c, bool (*live)(struct object *entry, void *ud), void *ud) {
+    (void)c;
+    (void)live;
+    (void)ud;
+}
+void object_cache_clear(object_cache_t *c) {
+    (void)c;
+}
+int object_entry_index(struct object *entry) {
+    (void)entry;
+    return -1;
+}
 
 // --- The card's register face, as the bus sees it ---------------------------
 

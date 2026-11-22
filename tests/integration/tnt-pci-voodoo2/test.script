@@ -214,6 +214,36 @@ include "glide-init.script"
 include "draw.script"
 assert machine.pci.slot[1].card.regs.raster == "sw" "the replay ran on the normative walker"
 
+# --- The debug instruments: the pixel watch and the cross-check. -----------
+# The same section once more, on the INSTRUMENTED walker copy, against the
+# same pinned values: xcheck=on recomputes every walker shortcut the long
+# way (a mismatch aborts the row), and card.watch -- a logpoint on screen
+# pixels -- counts the colour-buffer stores to its pixels.  The watch needs
+# the synchronous walker: its first add swaps the thread backend for it at
+# a fence and its last removal swaps the thread back (voodoo2.md, "The
+# trace instrument").  With neither on, the walker is the plain copy.
+machine.boot model="pm7500" ram=32768 rom="${$ROM}" pci_card="voodoo2" pci_option="memory=8m,xcheck=on"
+cfg_wr(0x10, 0x81000000)
+cfg_wr(0x04, 0x0002)
+let BAR = machine.pci.slot[1].card.config.bar[0].base
+assert machine.pci.slot[1].card.regs.raster == "thread" "the cross-check runs on the default backend too"
+machine.pci.slot[1].card.watch.add x=55 y=52
+machine.pci.slot[1].card.watch.add x=60 y=51
+assert machine.pci.slot[1].card.regs.raster == "sw" "the first watch swapped in the synchronous walker"
+assert len(machine.pci.slot[1].card.watch.entries) == 2 "two pixels watched"
+assert machine.pci.slot[1].card.watch.entries[0].x == 55 && machine.pci.slot[1].card.watch.entries[0].y == 52 "entry #0 is (55,52)"
+assert try(machine.pci.slot[1].card.watch.add(70000, 0), none) == none "a pixel off every screen is refused"
+include "glide-init.script"
+include "draw.script"
+assert machine.pci.slot[1].card.watch.entries[0].hit_count > 0 "the watch saw the stores to (55,52)"
+machine.pci.slot[1].card.watch.entries[1].remove()
+assert len(machine.pci.slot[1].card.watch.entries) == 1 "remove drops one entry"
+assert machine.pci.slot[1].card.regs.raster == "sw" "...and the walker stays while a pixel is watched"
+machine.pci.slot[1].card.watch.clear
+assert len(machine.pci.slot[1].card.watch.entries) == 0 "clear drops the rest"
+assert machine.pci.slot[1].card.regs.raster == "thread" "the last removal put the thread backend back"
+assert !machine.boot(model="pm7500", ram=32768, rom="${$ROM}", pci_card="voodoo2", pci_option="xcheck=maybe") "xcheck takes on or off only"
+
 # --- The board memory: 12 MB by default, the 8 MB SKU on request. ----------
 # Both SKUs carry the same 4 MB framebuffer (both reach 800x600); the
 # choice changes texture capacity only, and nothing needs less — so it
