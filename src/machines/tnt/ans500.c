@@ -56,16 +56,7 @@ static const storage_bay_decl_t ans500_bays_bus1[] = {
 
 static const storage_bus_decl_t ans500_storage[] = {
     ANS_STORAGE_BUS0,
-    {.id = "scsi2",
-      .label = "Internal SCSI bus 1",
-      .detail = ANS_SCSI_DETAIL,
-      .kind = STORAGE_KIND_SCSI,
-      .wide = true,
-      .media_bus = MEDIA_BUS_SCSI2,
-      .units = MAC_SCSI_UNITS, // any ID 0-6; a bay is a physical place, not an ID
-     .reserved = 0x80u,
-      .bays = ans500_bays_bus1,
-      .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD},
+    ANS_STORAGE_BUS1(ans500_bays_bus1),
     {0},
 };
 
