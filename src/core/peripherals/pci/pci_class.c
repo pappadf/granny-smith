@@ -5,14 +5,16 @@
 // The `machine.pci.*` object-model surface (docs/internals/core/peripherals/pci.md,
 // "Object model").
 //
-// The nubus_class.c shape, ported.  A slot node exists for every declared
-// slot and describes the board: its declaration (number, label, bus, device,
-// irq) and, when populated, a `card` subtree whose `config` child exposes the
+// The slot nodes are the shared slot collection's (card_slots.h, the same as
+// NuBus's).  A slot node exists for every declared slot and describes the
+// board: its declaration (number, label, bus, device, irq), whether it is
+// `empty`, and, when populated, a `card` subtree whose `config` child exposes the
 // live header (command/status and the six BARs plus the
 // expansion-ROM BAR).  Card-specific children are attached through the
 // KIND's attach_objects() hook, never by identity tests here.
 
 #include "card_registry.h"
+#include "card_slots.h"
 #include "config_space.h"
 #include "display_class.h"
 #include "machine_profile.h"
@@ -31,6 +33,7 @@
 
 // One declared slot's node tree.  `dev` is NULL for an empty socket.
 typedef struct pci_slot_nodes {
+    card_slot_t rec; // the slot node's instance data
     struct object *slot;
     struct object *card;
     struct object *config;
@@ -38,14 +41,25 @@ typedef struct pci_slot_nodes {
     struct object *fb; // the device's framebuffer node, when it has a display
     display_fb_node_t fb_node; // instance data for the shared framebuffer class
     pci_device_t *dev;
-    int number; // instance data for the slot wrapper
 } pci_slot_nodes_t;
 
-static pci_root_t *g_obj_root = NULL;
 static pci_slot_nodes_t g_slot_nodes[PCI_OBJ_SLOTS];
-// The slot wrapper objects, by slot number.
-static const class_desc_t pci_slot_class;
-static object_cache_t g_slot_objects = OBJECT_CACHE(&pci_slot_class, "slot");
+// The slot collection (machine.pci and its slot nodes), the shared shape.
+static const class_desc_t pci_class, pci_slot_class;
+static const collection_desc_t pci_slots;
+static card_slot_bus_t g_slots = {
+    .name = "pci",
+    .label = "PCI",
+    .order = OBJ_ORDER_PCI,
+    .bus_class = &pci_class,
+    .slots_desc = &pci_slots,
+    .nodes = CARD_SLOT_NODES(&pci_slot_class),
+};
+
+// The root the slot nodes describe (NULL: none built).
+static pci_root_t *obj_root(void) {
+    return (pci_root_t *)g_slots.owner;
+}
 
 // === catalog.pci_cards ======================================================
 
@@ -223,7 +237,7 @@ static DEF_GETTER(card_attr_name) {
 }
 static DEF_GETTER(card_attr_id) {
     pci_device_t *d = card_dev(self);
-    const pci_card_kind_t *k = d && g_obj_root ? pci_seated_kind(g_obj_root, d->slot_index) : NULL;
+    const pci_card_kind_t *k = d && obj_root() ? pci_seated_kind(obj_root(), d->slot_index) : NULL;
     return val_str(k && k->id ? k->id : "");
 }
 static DEF_GETTER(card_attr_vendor) {
@@ -261,19 +275,11 @@ static const member_t card_members[] = {
 static const class_desc_t pci_card_class = {
     .name = "card", .members = card_members, .n_members = sizeof(card_members) / sizeof(card_members[0])};
 
-// === slot wrapper node ======================================================
-
-static int node_slot_number(struct object *self) {
-    const int *n = (const int *)object_data(self);
-    return n ? *n : -1;
-}
+// === slot node ==============================================================
 
 static const pci_slot_decl_t *node_slot_decl(struct object *self) {
-    return pci_slot_decl_get(g_obj_root, node_slot_number(self));
-}
-
-static DEF_GETTER(slot_attr_number) {
-    return val_int(node_slot_number(self));
+    const card_slot_t *rec = (const card_slot_t *)object_data(self);
+    return rec ? pci_slot_decl_get(obj_root(), rec->number) : NULL;
 }
 static DEF_GETTER(slot_attr_label) {
     const pci_slot_decl_t *d = node_slot_decl(self);
@@ -300,7 +306,11 @@ static const member_t slot_members[] = {
     {.kind = MK_ATTR,
      .name = "number",
      .doc = "Logical slot number (1-based, in the machine's declared order)",
-     .attr = {.type = VK_INT, .get = slot_attr_number}          },
+     .attr = {.type = VK_INT, .get = card_slot_attr_number}     },
+    {.kind = MK_ATTR,
+     .name = "empty",
+     .doc = "True when no card is seated in the slot (it then has no `card` child)",
+     .attr = {.type = VK_BOOL, .get = card_slot_attr_empty}     },
     {.kind = MK_ATTR,
      .name = "label",
      .doc = "The slot's name, as Apple's documentation gives it (\"PCI slot A1\")",
@@ -325,24 +335,15 @@ static const member_t slot_members[] = {
 static const class_desc_t pci_slot_class = {
     .name = "slot", .members = slot_members, .n_members = sizeof(slot_members) / sizeof(slot_members[0])};
 
-// --- indexed `slot` member ---------------------------------------------------
-
-static struct object *pci_slot_get(struct object *self, int index) {
-    (void)self;
-    if (!g_obj_root || index < 0 || index >= PCI_OBJ_SLOTS)
-        return NULL;
-    return g_slot_nodes[index].slot;
-}
-
 // `machine.pci.slot` -- the slot collection: a container (attached under
 // `machine.pci` by the install hook below) whose entries are the declared
 // slots.
 static const collection_desc_t pci_slots = {
     .entry = &pci_slot_class,
-    .by_index = {.get = pci_slot_get, .slots = PCI_OBJ_SLOTS},
+    .by_index = {.get = card_slots_entry, .slots = PCI_OBJ_SLOTS},
     .name = "pci_slots",
     .doc = "PCI slots, by slot number",
-    .entries_doc = "Declared PCI slots; index by slot number, e.g. slot[1].card.config",
+    .entries_doc = "Declared PCI slots, populated or empty; index by slot number, e.g. slot[1].card.config",
 };
 
 // `machine.pci` itself carries no members of its own: its `slot` child is
@@ -354,21 +355,9 @@ static const class_desc_t pci_class = {
     .n_members = 0,
 };
 
-// `machine.pci` and its slot collection, under the machine node (they are
-// emulated hardware, not meta objects), on a machine with that bus.
+// `machine.pci` and its slot collection, on a machine with that bus.
 static void pci_root_install(struct config *cfg) {
-    if (!cfg || !cfg->pci)
-        return;
-    struct object *bus = root_attach_stub(machine_object(), object_new(&pci_class, cfg, "pci"));
-    if (!bus)
-        return;
-    object_set_label(bus, "PCI");
-    object_set_order(bus, OBJ_ORDER_PCI);
-    struct object *slots = root_attach_stub(bus, object_collection_new(&pci_slots, cfg, "slot"));
-    if (slots) {
-        object_set_label(slots, "Slots");
-        object_cache_set_parent(&g_slot_objects, slots);
-    }
+    card_slots_install(&g_slots, cfg, cfg && cfg->pci);
 }
 
 // === Framebuffer node =======================================================
@@ -391,27 +380,22 @@ void pci_objects_build(pci_root_t *root) {
     if (!root)
         return;
     root_register_install(pci_root_install, NULL); // idempotent
-    g_obj_root = root;
+    card_slots_begin(&g_slots, root);
     for (int i = 0; i < PCI_OBJ_SLOTS; i++) {
         const pci_slot_decl_t *decl = pci_slot_decl_get(root, i);
         if (!decl)
             continue; // only DECLARED slots get nodes
         pci_slot_nodes_t *n = &g_slot_nodes[i];
-        n->number = i;
+        n->rec.number = i;
         n->dev = pci_slot_device(root, i);
-        n->slot = object_cache_at(&g_slot_objects, i, &n->number);
-        if (!n->slot)
-            continue;
-        object_set_label(n->slot, decl->label ? decl->label : "Slot");
-        object_set_order(n->slot, i);
-        if (!n->dev)
+        n->slot = card_slot_open(&g_slots, &n->rec, decl->label);
+        if (!n->slot || !n->dev)
             continue; // empty socket: its declaration only
 
-        n->card = object_new(&pci_card_class, n->dev, "card");
+        n->card = card_slot_seat(n->slot, &n->rec, &pci_card_class, n->dev,
+                                 (n->dev->ops && n->dev->ops->name) ? n->dev->ops->name(n->dev) : "Card");
         if (!n->card)
             continue;
-        object_set_label(n->card, (n->dev->ops && n->dev->ops->name) ? n->dev->ops->name(n->dev) : "Card");
-        object_attach(n->slot, n->card);
 
         // The live config header, Advanced so it doesn't clutter the
         // default SYSTEM tree.  Its instance data is the slot record: the
@@ -455,9 +439,9 @@ void pci_objects_build(pci_root_t *root) {
 }
 
 struct object *pci_active_framebuffer_object(void) {
-    if (!g_obj_root)
+    if (!obj_root())
         return NULL;
-    pci_device_t *dev = pci_connected_display_card(g_obj_root);
+    pci_device_t *dev = pci_connected_display_card(obj_root());
     if (!dev)
         return NULL;
     for (int i = 0; i < PCI_OBJ_SLOTS; i++)
@@ -471,14 +455,12 @@ void pci_objects_teardown(void) {
     // serves them), so free them first; then each slot with its subtree.
     for (int i = 0; i < PCI_OBJ_SLOTS; i++)
         object_cache_clear(&g_slot_nodes[i].bars);
-    object_cache_clear(&g_slot_objects);
+    card_slots_clear(&g_slots);
     memset(g_slot_nodes, 0, sizeof(g_slot_nodes));
-    g_obj_root = NULL;
 }
 
 void pci_objects_teardown_owned(pci_root_t *root) {
-    // On checkpoint restore the new machine's tree is built BEFORE the old
-    // machine is destroyed; the old root's teardown must not rip it down.
-    if (g_obj_root == root)
+    // Only when the trees describe THIS root (card_slots_owned_by)
+    if (card_slots_owned_by(&g_slots, root))
         pci_objects_teardown();
 }
