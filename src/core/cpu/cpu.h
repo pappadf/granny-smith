@@ -157,6 +157,12 @@ void cpu_poll_interrupt(cpu_t *restrict cpu);
 // keeps time.  Only a reset (a power cycle) brings it back.
 void cpu_power_off(cpu_t *restrict cpu);
 
+// Point the memory system's active view (the supervisor or user tables) at
+// the CPU's own privilege.  The CPU re-derives it when it runs; a debugger
+// read before that -- right after a checkpoint load, which selects the
+// supervisor view -- needs it now.
+void cpu_select_active_view(cpu_t *restrict cpu);
+
 // Get/set vector base register (68010+)
 uint32_t cpu_get_vbr(cpu_t *restrict cpu);
 

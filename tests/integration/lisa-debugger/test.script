@@ -148,6 +148,18 @@ assert machine.cpu.pc == $fa "the breakpoint did not fire"
 assert machine.cpu.mmu.translate($fa, false).valid "the breakpoint fired before the segment was present"
 debug.breakpoints.clear
 
+# ---- Memory reads right after a checkpoint load -----------------------------
+# Stopped in user code (context 1): a save and load must leave the debugger
+# reading through the CPU's own context at once, not the supervisor's (it
+# read $FFFF at the PC until the next step).
+assert (machine.cpu.sr & 0x2000) == 0 "not stopped in user mode"
+let code_word = machine.memory.peek.w(machine.cpu.pc)
+assert $code_word != 0xFFFF "the code at the PC does not read"
+assert checkpoint.save("${$WORK_DIR}/user-stop.gscp") "checkpoint.save failed"
+assert checkpoint.load("${$WORK_DIR}/user-stop.gscp") "checkpoint.load failed"
+assert machine.memory.peek.w(machine.cpu.pc) == $code_word "the code at the PC reads differently after a load"
+assert debug.frame(machine.cpu.pc, 1, 0).rows[0].mnem != "DC.W" "the disassembly after a load is not code"
+
 # ---- Soft power-off, and on again -------------------------------------------
 # The OS puts everything away and tells the COPS to switch the supply off.
 # The machine then stops (it used to loop on with a black screen); powering
