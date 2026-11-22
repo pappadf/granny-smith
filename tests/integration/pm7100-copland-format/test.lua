@@ -57,7 +57,7 @@ local function phase1_host_desktop()
     -- catalog entry above the installer's 230 MB floor.  The label form (not a
     -- raw byte count) makes the image exactly the mechanism's capacity, so
     -- READ CAPACITY and the INQUIRY product ID agree.
-    assert(files.hd_create(target, "HD230SC"), "hd_create HD230SC failed")
+    assert(files.create(target, "hd", "HD230SC"), "files.create HD230SC failed")
     assert(files.path_size(target) == 245427200, "HD230SC wrong image size")
 
     -- Clock set AFTER boot (machine.boot reseeds the RTC from the host wall
@@ -85,7 +85,7 @@ local function phase1_host_desktop()
     -- Driver Descriptor Map addresses its partition map in.
     assert(machine.scsi.device[3].type == "cdrom", "SCSI 3 is not a CD-ROM")
     assert(machine.scsi.device[3].read_only, "SCSI 3 CD-ROM is not read-only")
-    assert(machine.scsi.device[3].medium_present, "SCSI 3 has no medium")
+    assert(machine.scsi.device[3].present, "SCSI 3 has no medium")
     assert(machine.scsi.device[3].block_size == 2048, F"SCSI 3 block_size ${machine.scsi.device[3].block_size}, want 2048 (a CD-ROM's Mode 1 sector)")
 
     -- Chip init, bus scan, driver load, DQE post; parks in WaitForPollDrive.

@@ -234,7 +234,7 @@ local function row_iici_71_cd_insert()
     machine.rtc.time = 3000000000
     machine.scsi.attach_hd(hd_71, 0)
     assert(machine.scsi.device[3].type == "cdrom", "iici-71-cd-insert: no CD-ROM drive at ID 3")
-    assert(not machine.scsi.device[3].medium_present, "iici-71-cd-insert: the drive is not empty")
+    assert(not machine.scsi.device[3].present, "iici-71-cd-insert: the drive is not empty")
     scheduler.run(300000000)
     mac.wait_stable(1200000000)
     machine.scsi.device[3].insert(iso_plain)

@@ -30,7 +30,7 @@
 
 local mac = dofile("../lib/mac.lua")
 
-machine.hd.attach()
+machine.hd.insert()
 scheduler.run(50000000)
 
 assert(machine.id == "lisa", "machine.id != lisa")
@@ -184,5 +184,5 @@ mac.check("expected_poweroff.png")
 
 -- Save the cleanly-unmounted, self-contained single-file image (flat 532-byte
 -- blocks) as the bootable LOS-on-HD artifact (suite-lisa's lisa-los31-profile row consumes it).
-assert(machine.hd.save(F"${vars.WORK_DIR}/lisa-los-installed.image"), "profile.save failed")
+assert(machine.hd.image.export(F"${vars.WORK_DIR}/lisa-los-installed.image"), "profile.save failed")
 quit()

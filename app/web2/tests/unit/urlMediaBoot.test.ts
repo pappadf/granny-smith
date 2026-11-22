@@ -64,6 +64,23 @@ const JUNK = new Uint8Array(1000).fill(0x33);
 const VROM = new Uint8Array(32 * 1024).fill(0x56);
 
 let files: Map<string, Uint8Array>;
+
+// files.identify as the fake core answers it: an 800K file is a floppy,
+// anything else a hard disk; `extra` overrides (an archive, a disc).
+const identifyAs = (path: string, extra: Record<string, unknown> = {}) => {
+  const f = files.get(path);
+  const floppy = !!f && f.length === 819200;
+  return {
+    opens: !!f,
+    refusal: '',
+    archive: '',
+    floppy: floppy ? 'gcr800' : '',
+    fits: !f ? [] : floppy ? ['floppy'] : ['hd'],
+    kind: !f ? '' : floppy ? 'floppy' : 'hd',
+    volumes: [],
+    ...extra,
+  };
+};
 let served: Record<string, Uint8Array<ArrayBuffer>>;
 const written: string[] = [];
 
@@ -86,10 +103,7 @@ beforeEach(() => {
       size: f.length,
     };
   });
-  bridge.reply('machine.scsi.identify_hd', (args: unknown) => {
-    const f = files.get((args as [string])[0]);
-    return !!f && f.length !== 819200;
-  });
+  bridge.reply('files.identify', (args: unknown) => identifyAs((args as [string])[0]));
   bridge.reply('machine.boot', true);
   bridge.reply('machine.id', 'plus');
   bridge.reply('catalog.vroms.identify', (args: unknown) => {
@@ -151,9 +165,12 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
   it('a gzipped floppy is unpacked, stored and inserted', async () => {
     served['plus.rom'] = PLUS_ROM;
     served['sys.dsk.gz'] = gzipSync(FLOPPY) as Uint8Array<ArrayBuffer>;
-    bridge.reply('files.archive.identify', (args: unknown) => {
+    bridge.reply('files.identify', (args: unknown) => {
       const f = files.get((args as [string])[0]);
-      return f && f[0] === 0x1f && f[1] === 0x8b ? 'gz' : '';
+      return identifyAs(
+        (args as [string])[0],
+        f && f[0] === 0x1f && f[1] === 0x8b ? { archive: 'gz' } : {},
+      );
     });
     await processUrlMedia(new URLSearchParams('rom=plus.rom&fd0=sys.dsk.gz'));
     const stored = [...files.keys()].find((p) => p.startsWith('/opfs/images/fd/'));
@@ -250,9 +267,9 @@ describe('URL media: a zip member comes out through the core', () => {
   }
   beforeEach(() => {
     zips.clear();
-    bridge.reply('files.archive.identify', (args: unknown) => {
+    bridge.reply('files.identify', (args: unknown) => {
       const f = files.get((args as [string])[0]);
-      return f && zips.has(key(f)) ? 'zip' : '';
+      return identifyAs((args as [string])[0], f && zips.has(key(f)) ? { archive: 'zip' } : {});
     });
     bridge.reply('files.archive.extract', (args: unknown) => {
       const [from, dir] = args as [string, string];
@@ -448,7 +465,7 @@ describe('URL media: a disk an earlier download stored is used, not fetched agai
 });
 
 describe('URL media: blank: creates a blank disk, reused on reload', () => {
-  // The Plus's shape: one SCSI bus whose hd0 is ID 0, taking hd_create disks.
+  // The Plus's shape: one SCSI bus whose hd0 is ID 0, taking hard disks.
   async function scsiProfile(): Promise<void> {
     const profile = await import('@/bus/profile');
     vi.mocked(profile.getProfile).mockResolvedValueOnce({
@@ -459,8 +476,8 @@ describe('URL media: blank: creates a blank disk, reused on reload', () => {
           blank_disks: [
             {
               label: '20 MB',
-              method: 'files.hd_create',
-              arg: '21411840',
+              kind: 'hd',
+              size: 21411840,
               name: 'blank_20MB',
               ext: '.dmg',
             },
@@ -470,30 +487,28 @@ describe('URL media: blank: creates a blank disk, reused on reload', () => {
       defaults: { floppies: { fd0: '800k' }, storage: [{ bus: 'scsi', unit: 0, type: 'hd' }] },
     } as never);
   }
-  // files.hd_create / fd_create: a small file, or the core's refusal of a spec.
+  // files.create: a small file, or the core's refusal of a hard disk's spec.
   function creators(): void {
-    bridge.reply('files.hd_create', (args: unknown) => {
-      const [path, size] = args as [string, string];
-      if (!/^\d+mb?$/i.test(size)) return { error: `files.hd_create: could not create '${path}'` };
-      files.set(path, new Uint8Array(2048));
-      return true;
-    });
-    bridge.reply('files.fd_create', (args: unknown) => {
-      const [path, hd] = args as [string, boolean];
-      files.set(path, new Uint8Array(hd ? 1474560 : 819200));
+    bridge.reply('files.create', (args: unknown) => {
+      const [path, kind, size] = args as [string, string, string];
+      if (kind === 'hd' && !/^\d+mb?$/i.test(size))
+        return { error: `files.create: could not create '${path}'` };
+      files.set(path, new Uint8Array(kind === 'floppy' ? 819200 : 2048));
       return true;
     });
   }
   const BLANK_HD = /^\/opfs\/images\/hd\/blank_20mb_hd0_[0-9a-f]{8}\.dmg$/;
-  const created = () => bridge.calls.filter((c) => c.path === 'files.hd_create');
+  const createdOf = (kind: string) =>
+    bridge.calls.filter((c) => c.path === 'files.create' && (c.args as string[])[1] === kind);
+  const created = () => createdOf('hd');
 
-  it('hd0=blank:20mb is created by files.hd_create with the spec, then attached', async () => {
+  it('hd0=blank:20mb is created by files.create with the spec, then attached', async () => {
     served['plus.rom'] = PLUS_ROM;
     await scsiProfile();
     creators();
     expect(await processUrlMedia(new URLSearchParams('rom=plus.rom&hd0=blank:20mb'))).toBe(true);
     expect(created()).toHaveLength(1);
-    const [path, size] = created()[0].args as [string, string];
+    const [path, , size] = created()[0].args as [string, string, string];
     expect(path).toMatch(BLANK_HD);
     expect(size).toBe('20mb');
     expect(media.attachHardDisk).toHaveBeenCalledWith(path, 0);
@@ -531,31 +546,32 @@ describe('URL media: blank: creates a blank disk, reused on reload', () => {
     expect(bridge.paths()).toContain('machine.boot');
   });
 
-  it('fd0=blank:800k is created by files.fd_create and inserted', async () => {
+  it('fd0=blank:800k is created by files.create and inserted', async () => {
     served['plus.rom'] = PLUS_ROM;
     creators();
     await processUrlMedia(new URLSearchParams('rom=plus.rom&fd0=blank:800k'));
-    const call = bridge.calls.find((c) => c.path === 'files.fd_create');
-    const [path, hd] = call?.args as [string, boolean];
+    const [path, , size] = createdOf('floppy')[0]?.args as [string, string, string];
     expect(path).toMatch(/^\/opfs\/images\/fd\/blank_800k_fd0_[0-9a-f]{8}\.dsk$/);
-    expect(hd).toBe(false);
+    expect(size).toBe('800K');
     expect(media.insertFloppy).toHaveBeenCalledWith(path, true, 0);
   });
 
-  it('fd0=blank:400k is refused with its reason, and nothing is inserted', async () => {
+  it('fd0=blank:500k is refused with its reason, and nothing is inserted', async () => {
     served['plus.rom'] = PLUS_ROM;
     creators();
-    expect(await processUrlMedia(new URLSearchParams('rom=plus.rom&fd0=blank:400k'))).toBe(true);
+    expect(await processUrlMedia(new URLSearchParams('rom=plus.rom&fd0=blank:500k'))).toBe(true);
     expect(media.insertFloppy).not.toHaveBeenCalled();
-    expect(toastText()).toMatch(/FD0: a blank 400K floppy cannot be created/);
+    expect(toastText()).toMatch(/FD0: "500k" is not a floppy size/);
   });
 });
 
 describe("URL media: cd= is the configuration's CD-ROM drive", () => {
-  // An ISO 9660 disc: 2 KB blocks, as the fake core's identify_cdrom sees it.
+  // An ISO 9660 disc: 2 KB blocks, as the fake core's identify sees it.
   const DISC = new Uint8Array(4096).fill(0x43);
   beforeEach(() => {
-    bridge.reply('machine.scsi.identify_cdrom', () => true);
+    bridge.reply('files.identify', (args: unknown) =>
+      identifyAs((args as [string])[0], { fits: ['hd', 'cd'], kind: 'cd' }),
+    );
   });
   afterEach(() => vi.mocked(media.machineDevices).mockImplementation(async () => []));
 

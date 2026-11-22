@@ -27,7 +27,7 @@ local mac = dofile("../lib/mac.lua")
 
 -- Create a blank HD20SC hard disk (21,307,392 bytes, zero-filled), stored as
 -- the web app stores one: a .dmg of one zero run, a few KB.
-files.hd_create(F"${vars.WORK_DIR}/blank.dmg", "HD20SC")
+files.create(F"${vars.WORK_DIR}/blank.dmg", "hd", "HD20SC")
 assert(files.path_size(F"${vars.WORK_DIR}/blank.dmg") < 8192, "a blank .dmg is not a few KB")
 
 -- Built-in RBV named explicitly: this row's declared cell is the RBV one, and an

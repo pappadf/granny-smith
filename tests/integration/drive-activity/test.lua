@@ -1,7 +1,7 @@
 -- Converted from test.script by scripts/script-to-lua.py
 -- The floppy is attached but nothing has read it yet.
-assert(files.images[0].type == "fd_ds", "fd0 is the System 6.0.8 disk")
-assert(files.images[0].format == "raw", "fd0 carries no wrapper layer")
+assert(files.images[0].kind == "floppy", "fd0 is the System 6.0.8 disk")
+assert(files.images[0].encoding == "raw", "fd0 carries no wrapper layer")
 assert(files.images[0].reads == 0, "no I/O before the machine runs")
 assert(files.images[0].writes == 0)
 

@@ -25,12 +25,15 @@ local installed = F"${vars.WORK_DIR}/g3-ata-installed.img"
 
 if mac.have_media(cd) then
     -- --- A1 ---------------------------------------------------------------------
-    assert(files.hd_create(hd, "HD500SC"), "A1: create the blank disk")
+    assert(files.create(hd, "hd", "HD500SC"), "A1: create the blank disk")
     machine.boot{model = "pmg3dt", ram = 65536, rom = vars.ROM}
     machine.rtc.time = "2026-10-01T12:00:00"
     assert(machine.ata.attach_hd(hd, 0), "A1: attach the disk as ATA unit 0")
     assert(machine.ata.attach_cdrom(cd, 1), "A1: attach the CD as ATAPI unit 1")
-    assert(machine.ata.devices == "hd atapi - -", "A1: cell 0 does not hold the disk and the CD")
+    assert(machine.ata.device[0].type == "hd", "A1: cell 0 does not hold the disk and the CD")
+    assert(machine.ata.device[1].type == "atapi", "A1: cell 0 does not hold the disk and the CD")
+    assert(machine.ata.device[2].type == "none", "A1: cell 0 does not hold the disk and the CD")
+    assert(machine.ata.device[3].type == "none", "A1: cell 0 does not hold the disk and the CD")
     scheduler.run(26000000000)
     mac.check_ex("finder-cd.png", 0, 440, 20, 640)
 
@@ -38,7 +41,7 @@ if mac.have_media(cd) then
     gos_install_921("install-finished.png")
     mac.click(453, 288) -- Quit
     mac.run_ticks(900)
-    assert(machine.ata.export(0, installed), "A2: export the installed disk")
+    assert(machine.ata.device[0].image.export(installed), "A2: export the installed disk")
 
     -- --- A3 ---------------------------------------------------------------------
     assert(files.path_exists(F"${installed}/partition6/System Folder/System"), "A3: no System on the installed disk")

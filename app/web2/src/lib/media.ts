@@ -38,16 +38,47 @@ export interface MediaTypeDescriptor {
 // Function type for the gsEval injection — keeps lib/ free of bus imports.
 export type GsEval = (path: string, args?: unknown[]) => Promise<unknown>;
 
-// Common floppy disk sizes (matches detect_diskcopy: 400/800/1440 KB, +84 if
-// the image is wrapped with a DiskCopy 4.2 header, plus 12 bytes of tag data
-// per 512-byte sector when the image carries tags -- GCR disks do; Disk
-// Copy writes none for a 1.44 MB MFM disk).
-const FD_400 = 400 * 1024;
-const FD_800 = 800 * 1024;
-const FD_720 = 720 * 1024; // MFM double density (PC Exchange / DOS)
-const FD_HD = 1440 * 1024;
-const DC42_HEADER = 0x54;
-const DC42_TAGS = (data: number) => (data / 512) * 12;
+// What the core makes of a file (`files.identify`, src/core/storage/
+// storage_class.c): whether the image layer opens it and why not, the
+// archive it is, the floppy layout its size implies, which kinds of drive
+// take it (`fits`: floppy, hd, cd, profile) and the one an upload of no
+// stated kind is filed as (`kind`), and its Mac OS volumes.  The one
+// identify for every drive; it answers before a machine exists.
+export interface FileIdentity {
+  opens: boolean;
+  refusal: string;
+  archive: string;
+  floppy: string;
+  fits: string[];
+  kind: string;
+  volumes: unknown[];
+}
+
+// The file at `path` as the core identifies it, or null when it cannot say.
+export async function identifyFile(gsEval: GsEval, path: string): Promise<FileIdentity | null> {
+  const r = await gsEval('files.identify', [path]);
+  if (!isGsObject(r)) return null;
+  const o = r as Record<string, unknown>;
+  return {
+    opens: o.opens === true,
+    refusal: typeof o.refusal === 'string' ? o.refusal : '',
+    archive: typeof o.archive === 'string' ? o.archive : '',
+    floppy: typeof o.floppy === 'string' ? o.floppy : '',
+    fits: Array.isArray(o.fits) ? o.fits.filter((k): k is string => typeof k === 'string') : [],
+    kind: typeof o.kind === 'string' ? o.kind : '',
+    volumes: Array.isArray(o.volumes) ? o.volumes : [],
+  };
+}
+
+// The validate of a drive kind: valid when a drive of `kind` takes the file,
+// else the core's reason when the file is a container it cannot read (a
+// UDIF, NDIF, QCOW2 or MOOF): "is a QCOW2 image that cannot be read in place
+// (it uses ...)".  The upload said only "is not a valid Hard Disk image".
+async function validateFits(path: string, gsEval: GsEval, kind: string): Promise<ValidateResult> {
+  const id = await identifyFile(gsEval, path);
+  if (id?.fits.includes(kind)) return { valid: true };
+  return { valid: false, reject: id?.refusal ? `is ${id.refusal}` : undefined };
+}
 
 // Shape returned by C-side `machine.rom.identify` (src/core/memory/rom.c).
 // `id` is the ROM's own stored checksum, the only thing a ROM file is ever
@@ -179,15 +210,6 @@ export async function identifyCardRom(
   };
 }
 
-// Why a disk image that did not validate cannot be read, when it is a UDIF,
-// NDIF, QCOW2 or MOOF image the core cannot read ("is a QCOW2 image that cannot
-// be read in place (it uses ...)"), else undefined: the upload said only
-// "is not a valid Hard Disk image", the reason was in the terminal.
-async function containerRefusal(path: string, gsEval: GsEval): Promise<string | undefined> {
-  const why = await gsEval('files.image_error', [path]);
-  return typeof why === 'string' && why ? `is ${why}` : undefined;
-}
-
 export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
   rom: {
     id: 'rom',
@@ -293,33 +315,12 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     label: 'Floppy Disk image',
     persistDir: FD_DIR,
     async validate(path, gsEval) {
-      // The Configuration slide validates before machine.boot, so the
-      // per-machine `floppy` object isn't on the root yet. Use the size-
-      // based classifier (same as image.c::classify_image + detect_diskcopy).
-      // All floppy densities — 400 KB / 800 KB / 720 KB / 1.44 MB, with or without a
-      // DiskCopy 4.2 header — live together under FD_DIR so the Images tab's
-      // single "fd" section lists them all. (An earlier revision split HD
-      // floppies into a separate /opfs/images/fdhd/ that no category ever
-      // scanned, so they became invisible; see BrowserOpfs.scanImages, which
-      // still folds any stragglers from that directory back in.)
-      const size = (await gsEval('files.path_size', [path])) as number | null;
-      if (typeof size !== 'number') return { valid: false };
-      const recognised =
-        size === FD_400 ||
-        size === FD_400 + DC42_HEADER ||
-        size === FD_800 ||
-        size === FD_800 + DC42_HEADER ||
-        size === FD_400 + DC42_TAGS(FD_400) + DC42_HEADER ||
-        size === FD_800 + DC42_TAGS(FD_800) + DC42_HEADER ||
-        size === FD_720 ||
-        size === FD_720 + DC42_HEADER ||
-        size === FD_HD ||
-        size === FD_HD + DC42_HEADER;
-      if (recognised) return { valid: true };
-      // A wrapper the size does not give away (an Applesauce MOOF, a
-      // floppy inside a .dmg): ask the image layer what it opens as.
-      if ((await gsEval('files.identify_floppy', [path])) === true) return { valid: true };
-      return { valid: false, reject: await containerRefusal(path, gsEval) };
+      // Whatever wraps it -- a DiskCopy 4.2 header and tags, a MOOF, a
+      // floppy inside a .dmg -- the image layer decides from the disk it
+      // opens.  All floppy densities (400 KB / 800 KB / 720 KB / 1.44 MB)
+      // live together under FD_DIR so the Images tab's single "fd" section
+      // lists them all.
+      return validateFits(path, gsEval, 'floppy');
     },
   },
 
@@ -328,12 +329,11 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     label: 'Hard Disk image',
     persistDir: HD_DIR,
     async validate(path, gsEval) {
-      // identify_hd refuses a disk smaller than the smallest floppy (a ROM, a
-      // card's ROM or a cut-short dump, S1018-26).  It measures the disk, not
+      // A disk smaller than the smallest floppy is refused (a ROM, a card's
+      // ROM or a cut-short dump, S1018-26).  The core measures the disk, not
       // the file: a UDIF or QCOW2 of a mostly empty disk is far smaller than
       // the disk it holds, so the file's size says nothing here.
-      if ((await gsEval('machine.scsi.identify_hd', [path])) === true) return { valid: true };
-      return { valid: false, reject: await containerRefusal(path, gsEval) };
+      return validateFits(path, gsEval, 'hd');
     },
   },
 
@@ -342,8 +342,7 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     label: 'CD-ROM image',
     persistDir: CD_DIR,
     async validate(path, gsEval) {
-      if ((await gsEval('machine.scsi.identify_cdrom', [path])) === true) return { valid: true };
-      return { valid: false, reject: await containerRefusal(path, gsEval) };
+      return validateFits(path, gsEval, 'cd');
     },
   },
 };
@@ -360,6 +359,6 @@ export async function validateUnstated(
 ): Promise<ValidateResult> {
   const result = await MEDIA_TYPES[id].validate(path, gsEval);
   if (id !== 'cdrom' || !result.valid) return result;
-  if ((await gsEval('machine.scsi.identify_iso', [path])) === true) return result;
+  if ((await identifyFile(gsEval, path))?.kind === 'cd') return result;
   return { valid: false };
 }

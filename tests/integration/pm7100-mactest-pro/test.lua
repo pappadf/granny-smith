@@ -82,7 +82,7 @@ if mac.have_media(cd) then
     -- it.  3 G instructions after the prompt is a moment that works.
     scheduler.run(3000000000)
     local blank = F"${vars.WORK_DIR}/blank-hd.dsk"
-    assert(files.fd_create(blank, true), "could not create a blank 1.44 MB image")
+    assert(files.create(blank, "floppy", "1440K"), "could not create a blank 1.44 MB image")
     machine.floppy.drive[0].insert(blank, true)
 
     -- ~20 G instructions for the ten tests.

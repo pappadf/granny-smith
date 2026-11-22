@@ -54,7 +54,7 @@ local function second_bus_reset(model, chip, id)
     prevent(model, chip, id)
     machine.reset()
     machine.eject_media("scsi2", id)
-    assert(machine.scsi2.device[id].medium_present == false, F"${model}: /RESET did not release the lock on machine.scsi2")
+    assert(machine.scsi2.device[id].present == false, F"${model}: /RESET did not release the lock on machine.scsi2")
 end
 
 -- --- Quadra 700: the one 53C96 at $50F0F000.
@@ -75,7 +75,7 @@ assert(machine.scsi2.device[3].type == "cdrom", "q900: a CD-ROM drive at machine
 prevent("q900", 0x50F0F400, 3)
 machine.reset()
 machine.eject_media("scsi2", 3)
-assert(machine.scsi2.device[3].medium_present == false, "q900: /RESET did not release the lock on machine.scsi2")
+assert(machine.scsi2.device[3].present == false, "q900: /RESET did not release the lock on machine.scsi2")
 
 -- --- Quadra 840AV: the one 53C96 at $50F18000.
 machine.boot{model = "q840av", ram = 8192, rom = F"${vars.TEST_DATA}/roms/q840av-q660av-5bf10fd1.rom"}

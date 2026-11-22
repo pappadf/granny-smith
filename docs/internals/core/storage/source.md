@@ -182,7 +182,7 @@ the I/O worker while the guest reads it.
 - `files.cache` — the chunk cache: `memory_mb` and `spill_mb` (read-write;
   `spill_mb` 0 is unbounded), and the counters `memory_bytes`,
   `spill_bytes`, `hits`, `misses`, `evictions`.
-- `files.images[n].format` reports each image's wrapper chain (`raw`,
+- `files.images[n].encoding` reports each image's wrapper chain (`raw`,
   `dc42`, `bin+ndif`, …); the VFS listing's `expandable` flag comes from
   `format_is_namespace`.
 

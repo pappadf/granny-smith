@@ -15,7 +15,7 @@
 
 local mac = dofile("../lib/mac.lua")
 
-machine.hd.attach()
+machine.hd.insert()
 assert(machine.id == "lisa", "machine.id != lisa")
 assert(machine.rom.id == "3f7b", "rom.id != 3f7b (rev-H)")
 assert(machine.hd.present == true, "ProFile should be attached")
@@ -239,5 +239,5 @@ machine.screen.match("expected_complete.png")
 -- is no soft power-off to press here: the OS has already halted itself.  Persist the
 -- fully-installed, cleanly-shut-down image as the bootable artifact (consumed by the
 -- lisa-xenix-boot test).
-assert(machine.hd.save(F"${vars.WORK_DIR}/xenix-installed.image"), "profile.save failed")
+assert(machine.hd.image.export(F"${vars.WORK_DIR}/xenix-installed.image"), "profile.save failed")
 quit()

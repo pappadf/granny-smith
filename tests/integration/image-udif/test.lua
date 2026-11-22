@@ -17,11 +17,11 @@ assert(files.path_size(raw) == 21411840, "raw source image changed size")
 -- Opening it decodes the whole container.  Every block table's stored CRC-32
 -- is verified during that decode, so reaching this line at the right geometry
 -- already means the decoded bytes match what the writer recorded.
-files.probe(dmg)
-assert(files.list(F"${dmg}/partition1"), "decoded UDIF did not mount as HFS")
+assert(files.identify(dmg).encoding == "udif", "the .dmg decodes as UDIF")
+assert(#files.list(F"${dmg}/partition1") > 0, "decoded UDIF did not mount as HFS")
 
 -- The volume inside is the same one the raw source carries.
-files.probe(raw)
+assert(files.identify(raw).opens, "the raw source opens")
 local from_dmg = files.list(F"${dmg}/partition1")
 local from_raw = files.list(F"${raw}/partition1")
 assert(#from_dmg == #from_raw, "decoded volume has a different entry count")
@@ -30,13 +30,13 @@ for i = 0, #from_raw - 1 do
 end
 
 -- A nested directory reads too, so the decode holds up past the volume header.
-assert(files.list(F"${dmg}/partition1/System Folder"), "System Folder unreadable in the decoded image")
+assert(#files.list(F"${dmg}/partition1/System Folder") > 0, "System Folder unreadable in the decoded image")
 
 -- The same image addressed two ways decodes once, not once per spelling: the
 -- scratch name is keyed on the canonicalised path.  Checked by total bytes in
 -- the storage cache, which a second decode would roughly double (the decoded
 -- disk is 21,411,840 bytes; the delta/journal sidecars beside it are tiny).
-assert(files.probe(F"${vars.WORK_DIR}/./fixture.dmg"), "second spelling of the .dmg did not open")
+assert(files.identify(F"${vars.WORK_DIR}/./fixture.dmg").opens, "second spelling of the .dmg did not open")
 local cached = 0
 for _, e in ipairs(files.list(F"${vars.WORK_DIR}/storage-cache")) do
     cached = cached + e.size

@@ -11,7 +11,7 @@ machine.rtc.time = 3000000000
 -- The VFS opens a MOOF like any disk image: the HFS volume and its files.
 local d1 = "../../data/apps/Beyond-Dark-Castle-Disk-1.moof"
 local d2 = "../../data/apps/Beyond-Dark-Castle-Disk-2.moof"
-assert(files.identify_floppy(d1), "MOOF not identified as a floppy")
+assert(gs.contains(files.identify(d1).fits, "floppy"), "MOOF not identified as a floppy")
 assert(files.path_exists(F"${d1}/partition1/System"), "no System on disk 1")
 assert(files.path_exists(F"${d1}/partition1/Beyond Dark Castle"), "no game on disk 1")
 assert(files.path_exists(F"${d2}/partition1/BDC Data B"), "no BDC Data B on disk 2")
@@ -19,8 +19,8 @@ assert(files.path_exists(F"${d2}/partition1/BDC Data B"), "no BDC Data B on disk
 -- Both MOOFs decode (to DiskCopy 4.2, then the disk) and mount as 800K.
 machine.floppy.drive[0].insert(d1)
 machine.floppy.drive[1].insert(d2)
-assert(machine.floppy.drive[0].disk.density == "800k", "disk 1 is not an 800K disk")
-assert(machine.floppy.drive[1].disk.density == "800k", "disk 2 is not an 800K disk")
+assert(machine.floppy.drive[0].format == "gcr800", "disk 1 is not an 800K disk")
+assert(machine.floppy.drive[1].format == "gcr800", "disk 2 is not an 800K disk")
 
 -- Boot: the Launcher starts the game, which shows its title.
 scheduler.run(112000000)

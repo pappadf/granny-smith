@@ -236,14 +236,14 @@ local function row_av_hd_device()
     machine.scsi.attach_hd(av_hd, 0)
     assert(machine.scsi.device[0].type == "hd", "av-hd-device: SCSI 0 is not a hard disk")
     assert(not machine.scsi.device[0].read_only, "av-hd-device: disk came up read-only")
-    assert(machine.scsi.device[0].medium_present, "av-hd-device: no medium present")
+    assert(machine.scsi.device[0].present, "av-hd-device: no medium present")
     assert(machine.scsi.device[0].block_size == 512, F"av-hd-device: block_size ${machine.scsi.device[0].block_size}, want 512 (from the image's DDM)")
     -- No other MEDIUM on the bus: any boot below can only come from this disk.
     -- The CD bay itself is always there — a machine with a CD drive carries it
     -- from power-on, empty or not, because SCSI is not hot-plug and a drive the
     -- boot scan never saw is one the guest will never poll (system_create).
     assert(machine.scsi.device[3].type == "cdrom", "av-hd-device: SCSI 3 is not the empty CD bay")
-    assert(not machine.scsi.device[3].medium_present, "av-hd-device: a disc is in the CD bay")
+    assert(not machine.scsi.device[3].present, "av-hd-device: a disc is in the CD bay")
 end
 
 -- golden-collision-ok: q840av-7.1-640x480x8-hd-finder.png q660av-7.1-640x480x8-hd-finder.png — both
@@ -472,7 +472,7 @@ local function row_av_floppy_write_eject()
     machine.floppy.drive[0].insert(av_fd_144, true)
     scheduler.run(2400000000) -- ~60 s at 40 MIPS: the mount and window open
     mac.wait_stable(900000000)
-    local inst = machine.floppy.drive[0].disk.path
+    local inst = machine.floppy.drive[0].image.delta
     local delta = F"${inst}.delta"
     local before = files.path_size(delta)
 
@@ -513,7 +513,7 @@ end
 local function row_av_floppy_format()
     av_hd_desktop("q840av")
     local blank = F"${vars.WORK_DIR}/av-blank-1440.img"
-    assert(files.fd_create(blank, true), "could not create a blank 1.44 MB image")
+    assert(files.create(blank, "floppy", "1440K"), "could not create a blank 1.44 MB image")
     machine.floppy.drive[0].insert(blank, true)
     mac.reach("goldens/q840av-7.1-floppy-initdialog.png", 900000000, 900000000, 20000000)
     -- "This is not a Macintosh disk" -> Initialize -> Erase -> name (Return).

@@ -20,14 +20,14 @@ assert(debug.mac.globals.read("SysMap") ~= 0, "first boot: no System file opened
 
 -- A floppy in the first drive must survive the power cycle too.  Inserted
 -- after the boot so the ROM's boot scan never touches it.
-assert(files.fd_create(F"${vars.WORK_DIR}/scratch.fd", false), "blank floppy created")
+assert(files.create(F"${vars.WORK_DIR}/scratch.fd", "floppy", "800K"), "blank floppy created")
 machine.floppy.drive[0].insert(F"${vars.WORK_DIR}/scratch.fd", true)
-assert(machine.floppy.drive[0].disk.present, "floppy inserted")
+assert(machine.floppy.drive[0].present, "floppy inserted")
 
 -- Capture the identity of everything that must survive.
-local hd_stem0 = machine.scsi.device[0].image.path
-local hd_file0 = machine.scsi.device[0].image.filename
-local fd_file0 = machine.floppy.drive[0].disk.filename
+local hd_stem0 = machine.scsi.device[0].image.delta
+local hd_file0 = machine.scsi.device[0].image.source
+local fd_file0 = machine.floppy.drive[0].image.source
 
 -- --- Power-cycle (level 3): nothing is torn down. ---------------------------
 -- PRAM is the same chip, so a byte the guest wrote is still there; the RTC is
@@ -38,18 +38,18 @@ local pram0 = machine.rtc.pram.peek(0x10)
 local rtc0 = machine.rtc.time
 machine.memory.poke.b(0x500000, 0xA5)
 machine.restart()
-assert(machine.scsi.device[0].image.path == hd_stem0, "restart: HD is the same open instance")
-assert(machine.floppy.drive[0].disk.filename == fd_file0, "restart: floppy still inserted")
+assert(machine.scsi.device[0].image.delta == hd_stem0, "restart: HD is the same open instance")
+assert(machine.floppy.drive[0].image.source == fd_file0, "restart: floppy still inserted")
 assert(machine.rtc.pram.peek(0x10) == pram0, "restart: PRAM survives a power cycle")
 assert(machine.rtc.time >= rtc0, "restart: the clock keeps ticking (no reseed)")
 assert(machine.rtc.time < rtc0 + 5, "restart: the clock keeps ticking (no reseed)")
 assert(machine.memory.peek.b(0x500000) == 0, "restart: RAM is cold")
-machine.floppy.drive[0].disk.eject()
+machine.floppy.drive[0].image.eject()
 scheduler.run(200000000)
 assert(debug.mac.globals.read("BootDrive") ~= 0, "post-restart boot: nothing booted")
 assert(debug.mac.globals.read("SysMap") ~= 0, "post-restart boot: no System file opened")
 machine.floppy.drive[0].insert(F"${vars.WORK_DIR}/scratch.fd", true)
-assert(machine.floppy.drive[0].disk.present, "floppy re-inserted")
+assert(machine.floppy.drive[0].present, "floppy re-inserted")
 
 -- --- Checkpoint interaction: checkpoint.load brings the saved machine back,
 -- media included.
@@ -58,16 +58,16 @@ machine.boot{model = "iicx", rom = vars.ROM}
 assert(not gs.ok(function() return machine.scsi.device[0].type end), "fresh boot must start with empty drives")
 assert(checkpoint.load(F"${vars.WORK_DIR}/restart.checkpoint"), "checkpoint load")
 -- The live controller answers directly after the load -- no restart in
--- between.  (checkpoint.load builds the new machine before it
--- destroys the old one; the old controller's teardown once re-attached the
--- pre-machine probe node then, shadowing machine.scsi until the next boot.)
-assert(machine.scsi.device[0].image.present, "after restore: HD attached")
-assert(machine.scsi.device[0].image.filename == hd_file0, "after restore: same medium")
+-- between.  (checkpoint.load builds the new machine before it destroys the
+-- old one; the old controller's teardown once re-attached a pre-machine
+-- stand-in then, shadowing machine.scsi until the next boot.)
+assert(machine.scsi.device[0].present, "after restore: HD attached")
+assert(machine.scsi.device[0].image.source == hd_file0, "after restore: same medium")
 assert(gs.ok(function() return machine.scsi.loopback end), "after restore: live controller surface")
-assert(machine.scsi.hd_models ~= nil, "after restore: probe surface")
-assert(files.hd_create(F"${vars.WORK_DIR}/after-load.img", "5M"), "create a second disk")
+assert(#catalog.hd_models > 0, "after restore: the hard disk models")
+assert(files.create(F"${vars.WORK_DIR}/after-load.img", "hd", "5M"), "create a second disk")
 local bay = machine.attach_media("scsi", 1, "hd", F"${vars.WORK_DIR}/after-load.img")
-assert(machine.scsi.device[bay.id].image.present, "after restore: attach_media reaches the live controller")
+assert(machine.scsi.device[bay.id].present, "after restore: attach_media reaches the live controller")
 assert(machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24 GC", "after restore: the saved card")
 
 quit()

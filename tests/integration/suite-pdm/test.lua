@@ -298,7 +298,7 @@ local function row_pdm_cd_device()
     machine.scsi.attach_cdrom(cd_disc, 3)
     assert(machine.scsi.device[3].type == "cdrom", "cd-device: SCSI 3 is not a CD-ROM")
     assert(machine.scsi.device[3].read_only, "cd-device: CD-ROM is not read-only")
-    assert(machine.scsi.device[3].medium_present, "cd-device: no medium present")
+    assert(machine.scsi.device[3].present, "cd-device: no medium present")
     assert(machine.scsi.device[3].block_size == 2048, F"cd-device: block_size ${machine.scsi.device[3].block_size}, want 2048 (a CD-ROM's Mode 1 sector)")
     -- The HD slots the same bus already served must be undisturbed by it.
     assert(not gs.ok(function() return machine.scsi.device[0].type end), "cd-device: something is attached at SCSI 0")
@@ -332,7 +332,7 @@ local function row_pdm_floppy_mount()
 
     machine.floppy.drive[0].insert(fd_144)
     assert(machine.floppy.drive[0].present, "FD0 empty after insert")
-    assert(machine.floppy.drive[0].disk.present, "FD0 disk node absent after insert")
+    assert(machine.floppy.drive[0].present, "FD0 disk node absent after insert")
     -- A fixed budget BEFORE the stability wait, deliberately: nothing on the
     -- desktop changes while the drive spins up, seeks and reads the volume,
     -- so a bare wait_stable would return three polls later having watched an
@@ -401,7 +401,7 @@ local function row_pdm_floppy_write_eject()
     machine.floppy.drive[0].insert(fd_144, true)
     scheduler.run(600000000)
     mac.wait_stable(900000000)
-    local inst = machine.floppy.drive[0].disk.path
+    local inst = machine.floppy.drive[0].image.delta
     local delta = F"${inst}.delta"
     local before = files.path_size(delta)
 
@@ -449,7 +449,7 @@ end
 local function row_pdm_floppy_format()
     boot_pdm_75("pm7100", 24576, 0)
     local blank = F"${vars.WORK_DIR}/pdm-blank-1440.img"
-    assert(files.fd_create(blank, true), "could not create a blank 1.44 MB image")
+    assert(files.create(blank, "floppy", "1440K"), "could not create a blank 1.44 MB image")
     machine.floppy.drive[0].insert(blank, true)
     mac.run_until_match_ex("goldens/pm7100-floppy-initdialog.png", 0, 440, 20, 640, 600000000, 50000000)
     mac.wait_stable(900000000)

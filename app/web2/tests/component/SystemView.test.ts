@@ -472,7 +472,7 @@ describe('SystemView menus', () => {
     // it in the app); cancelling ends it.
     await waitFor(() => expect(dialogs.current?.kind).toBe('text'));
     expect(dialogs.current?.title).toBe('Save image as');
-    expect(calls).toContainEqual(['files.filename', []]);
+    expect(calls).toContainEqual(['files.source', []]);
     expect(document.querySelector('[role="dialog"]')).toBeNull();
     answerText(null);
   });

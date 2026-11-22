@@ -26,7 +26,7 @@ local function menu_pick(mx, ix, iy)
     machine.adb.mouse.click(false)
 end
 
-machine.hd.attach(F"${vars.WORK_DIR}/profile.image")
+machine.hd.insert(F"${vars.WORK_DIR}/profile.image")
 assert(machine.hd.present == true, "ProFile should be attached")
 assert(machine.hd.pram_init(2, false), "pram_init failed")
 

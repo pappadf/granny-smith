@@ -540,7 +540,7 @@ TEST(writer_emits_interop_samples) {
     emit_sample(dir, m, "text-xz", text, text_len, 128, -1, UDIF_CODEC_XZ);
     free(text);
 
-    // A blank disk, as files.hd_create makes one, and the zeros it is.
+    // A blank disk, as files.create makes one, and the zeros it is.
     snprintf(path, sizeof(path), "%s/blank.dmg", dir);
     unlink(path);
     ASSERT_EQ_INT(0, udif_create_empty(path, 64u << 20));

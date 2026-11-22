@@ -27,7 +27,7 @@ assert(files.verify(dmg), "verify failed")
 assert(not gs.truthy(function() return files.convert(raw, dmg) end), "convert overwrote an existing file")
 
 -- The volume inside is read in place, and it is the raw disk's volume.
-files.probe(dmg)
+assert(files.identify(dmg).opens, "the .dmg opens")
 local from_dmg = files.list(F"${dmg}/partition1")
 local from_raw = files.list(F"${raw}/partition1")
 assert(#from_dmg == #from_raw, "the UDIF's volume has a different entry count")
@@ -48,7 +48,7 @@ assert(rechunked.max_chunk_bytes <= 262144, "re-chunking kept the old chunks")
 
 -- A blank 2 GB disk as .dmg is one zero run: a few KB, not 2 GB.
 local blank = F"${vars.WORK_DIR}/blank.dmg"
-assert(files.hd_create(blank, "2147483648"), "hd_create of a .dmg failed")
+assert(files.create(blank, "hd", "2147483648"), "files.create of a .dmg failed")
 assert(files.path_size(blank) < 4096, "a blank 2 GB .dmg is not a few KB")
 assert(files.verify(blank), "a blank .dmg does not verify")
 local bv = files.udif_info(blank)
@@ -56,7 +56,7 @@ assert(bv.extents == 1, "a blank disk is more than one zero run")
 assert(bv.bytes == 2147483648, "the blank disk has the wrong size")
 
 -- A raw blank (any other name) is still the full size, as before.
-assert(files.hd_create(F"${vars.WORK_DIR}/blank.img", "20M"), "hd_create of a raw image failed")
+assert(files.create(F"${vars.WORK_DIR}/blank.img", "hd", "20M"), "files.create of a raw image failed")
 
 -- A disk image inside a Mac archive (here BinHex around StuffIt around a
 -- DiskCopy 4.2 floppy) is decoded straight into a UDIF: nothing extracted.
@@ -67,8 +67,8 @@ local mi = files.udif_info(mt)
 assert(mi.source_name == "MacTest Disk.image", "the member was not recorded")
 -- The UDIF holds the member as it was (a DiskCopy 4.2 file); the format
 -- registry peels both layers, so it opens as the 800 KB floppy inside.
-files.probe(mt)
-assert(files.list(mt), "the imported floppy does not mount")
+assert(files.identify(mt).opens, "the blank .dmg opens")
+assert(#files.list(mt) > 0, "the imported floppy does not mount")
 assert(not gs.truthy(function() return files.archive.import("../../data/apps/MacTest_Disk.image_.sit_.hqx", F"${vars.WORK_DIR}/no.dmg", "Nope") end), "a missing member was imported")
 
 quit()

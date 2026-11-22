@@ -136,6 +136,9 @@ static void build(bool joliet, bool rock_ridge) {
         p += record(jr + p, readme, sizeof(readme), 25, 3000, 0, NULL, 0);
         static const uint8_t folder[] = {0, 'F', 0, 'o', 0, 'l', 0, 'd', 0, 'e', 0, 'r'};
         p += record(jr + p, folder, sizeof(folder), 21, SEC, 0x02, NULL, 0);
+        // "ÉTÉ.txt": U+00C9, a capital only a Unicode name can hold.
+        static const uint8_t ete[] = {0x00, 0xC9, 0, 'T', 0x00, 0xC9, 0, '.', 0, 't', 0, 'x', 0, 't'};
+        p += record(jr + p, ete, sizeof(ete), 27, 5, 0, NULL, 0);
     }
 }
 
@@ -202,13 +205,32 @@ TEST(test_iso_joliet_names_win) {
     ASSERT_TRUE(v != NULL);
     char list[256];
     names(v, 22, SEC, list, sizeof(list));
-    ASSERT_TRUE(strcmp(list, "Read Me.txt, Folder") == 0);
+    ASSERT_TRUE(strcmp(list, "Read Me.txt, Folder, \xC3\x89T\xC3\x89.txt") == 0);
     iso_dirent_t e;
     const char *path[] = {"folder", "INNER.TXT"}; // the Joliet tree's folder, the ISO tree below it
     ASSERT_EQ_INT(-ENOENT, iso_lookup(v, path, 2, &e)); // its records are ISO names, not Joliet
     const char *root[] = {"read me.txt"};
     ASSERT_EQ_INT(0, iso_lookup(v, root, 1, &e));
     ASSERT_EQ_INT(3000, (int)e.size);
+    iso_close(v);
+    source_release(s);
+}
+
+// A Joliet name matches as a Mac name does: an accented capital finds its
+// lowercase form (and the reverse), while the diacritical stays significant.
+TEST(test_iso_joliet_names_match_as_mac_names) {
+    build(true, false);
+    source_t *s = src();
+    iso_volume_t *v = iso_open_source(s, 0, sizeof(disc));
+    ASSERT_TRUE(v != NULL);
+    iso_dirent_t e;
+    const char *lower[] = {"\xC3\xA9t\xC3\xA9.txt"}; // "été.txt"
+    ASSERT_EQ_INT(0, iso_lookup(v, lower, 1, &e));
+    ASSERT_EQ_INT(5, (int)e.size);
+    const char *exact[] = {"\xC3\x89T\xC3\x89.TXT"}; // "ÉTÉ.TXT"
+    ASSERT_EQ_INT(0, iso_lookup(v, exact, 1, &e));
+    const char *bare[] = {"ete.txt"};
+    ASSERT_EQ_INT(-ENOENT, iso_lookup(v, bare, 1, &e));
     iso_close(v);
     source_release(s);
 }
@@ -323,6 +345,7 @@ TEST(test_iso_corrupt_records_are_refused) {
 int main(void) {
     RUN(test_iso_plain_tree);
     RUN(test_iso_joliet_names_win);
+    RUN(test_iso_joliet_names_match_as_mac_names);
     RUN(test_iso_rock_ridge_names);
     RUN(test_iso_apple_finder_info);
     RUN(test_iso_corrupt_records_are_refused);

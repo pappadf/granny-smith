@@ -26,7 +26,7 @@ function row_lisa_los31_profile() -- global: included file
     -- resolves the ProFile from that snapshot and boots; a non-clean-shutdown image
     -- leaves a floppy-only snapshot and fails with error 10738.
 
-    machine.hd.attach(F"${vars.WORK_DIR}/profile.image")
+    machine.hd.insert(F"${vars.WORK_DIR}/profile.image")
     assert(machine.id == "lisa", "machine.id != lisa")
     assert(machine.rom.id == "3f7b", "rom.id != 3f7b (rev-H)")
     assert(machine.hd.present == true, "ProFile should be attached")
@@ -82,7 +82,7 @@ function row_lisa_xenix_hdinit() -- global: included file
 
     -- Attach a blank in-memory ProFile to the parallel port (the Lisa 2/5 install
     -- target).  Without it the kernel panics "pf0 not on line".
-    machine.hd.attach()
+    machine.hd.insert()
     assert(machine.id == "lisa", "machine.id != lisa")
     assert(machine.rom.id == "3f7b", "rom.id != 3f7b (rev-H)")
     assert(machine.hd.present == true, "ProFile should be attached")
@@ -159,7 +159,7 @@ function row_lisa_xenix_boot() -- global: included file
     -- parens in "pf(0,0)xenix" hold SHIFT (kc 0x7e) around the digit with a short
     -- settle.  Keycodes: p=44 f=69 e=60 x=7a 0=51 9=50 comma=5d Return=48 shift=7e.
 
-    machine.hd.attach(F"${vars.WORK_DIR}/xenix-profile.image")
+    machine.hd.insert(F"${vars.WORK_DIR}/xenix-profile.image")
     assert(machine.id == "lisa", "machine.id != lisa")
     assert(machine.rom.id == "3f7b", "rom.id != 3f7b (rev-H)")
     assert(machine.hd.present == true, "ProFile should be attached")
@@ -234,7 +234,7 @@ function row_lisa_xenix_nofloppy() -- global: included file
     -- "boot :" prompt is pre-filled with the default pf(0,0)xenix, so a bare Return
     -- (0xC8/0x48) boots it.
 
-    machine.hd.attach(F"${vars.WORK_DIR}/xenix-profile.image")
+    machine.hd.insert(F"${vars.WORK_DIR}/xenix-profile.image")
     assert(machine.id == "lisa", "machine.id != lisa")
     assert(machine.rom.id == "3f7b", "rom.id != 3f7b (rev-H)")
     assert(machine.hd.present == true, "ProFile should be attached")
@@ -432,7 +432,7 @@ function row_lisa_los31_lisaem() -- global: included file
     -- layer's "lisaem" wrapper serves it as 532-byte ProFile blocks in
     -- drive order (format_registry.c, docs/internals/machines/lisa/profile.md).
     -- Writes land in the image's delta; the file itself is never written.
-    machine.hd.attach("../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-apps.dc42")
+    machine.hd.insert("../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-apps.dc42")
     assert(machine.hd.present == true, "ProFile should be attached")
     assert(machine.hd.pram_init(2, false), "pram_init failed")
     scheduler.run(112000000)

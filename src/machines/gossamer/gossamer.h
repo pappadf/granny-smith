@@ -44,6 +44,7 @@
 #include "checkpoint.h"
 #include "davbus.h" // the DAVbus sound cell (Screamer face)
 #include "escc_dbdma.h"
+#include "image_class.h"
 #include "machine.h"
 #include "machine_profile.h"
 #include "memory.h"
@@ -258,6 +259,10 @@ typedef struct gossamer_state {
     struct scsi *atapi;
     bool ata_ready;
     struct object *ata_object; // machine.ata
+    struct object *ata_devices_object; // machine.ata.device
+    struct object *ata_device_objects[4]; // machine.ata.device[U], U = cell * 2 + device
+    struct object *ata_image_objects[4]; // machine.ata.device[U].image
+    image_node_t ata_nodes[4]; // both nodes' data: the config and U (image_class.h)
     // The Ethernet cell at +$11000 (gossamer_bmac.c).
     struct bmac *bmac;
     struct object *bmac_object; // machine.bmac

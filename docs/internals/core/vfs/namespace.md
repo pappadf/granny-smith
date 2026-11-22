@@ -34,6 +34,15 @@ The user-visible path grammar is unchanged:
   gzip) are transparent: `foo.img.bin/partition1` works, and `foo.img.bin`
   lists partitions.
 - HFS names containing `/` are spelled with `:`.
+- Names are UTF-8. Peeler hands out member names as the archive stores
+  them (it stays encoding-agnostic); `ns_archive.c` converts them. The Mac
+  formats (StuffIt, Compact Pro, BinHex, MacBinary —
+  `ns_archive_names_are_macroman`) store MacRoman, so each name goes through
+  `mac_name_to_vfs` and is matched as an HFS name is (`mac_name_eq`:
+  `café` finds `CAFÉ`). Zip names (UTF-8, or CP437 without the UTF-8 flag),
+  tar names and gzip's `FNAME` are shown as stored and matched exactly.
+  `files.archive.import`'s `member` argument is matched against the same
+  converted names.
 
 ## 2. Key types & files
 
@@ -93,12 +102,15 @@ Mounts are not checkpointed; they are rebuilt on demand.
 
 - Unit: `image_vfs`, `vfs`.
 - Integration: `image-hfs-traverse`, `image-partmap`, `vfs-rsrc`,
-  `image-attach-busy`, `image-export-raw`, `image-iso9660`, `archive-confined`.
+  `image-attach-busy`, `image-export-raw`, `image-iso9660`, `archive-confined`,
+  `archive-mac-names` (MacRoman member names as UTF-8).
 
 ## 7. Known debts
 
-- Zip names are matched case-sensitively and HFS names case-insensitively;
-  each adapter matches its own way.
+- Zip, tar and gzip names are matched case-sensitively, HFS and Mac-archive
+  names as the Finder does; each adapter matches its own way. A zip name
+  stored in CP437 (no UTF-8 flag) with high-bit bytes is shown as those
+  bytes, not converted.
 
 ## 8. See also
 

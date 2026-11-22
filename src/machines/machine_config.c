@@ -512,13 +512,13 @@ static int unit_count(const storage_bus_decl_t *b) {
 }
 
 // One blank hard disk a bus's drives take, as the Create dialog offers it:
-// its label, the files.* method that creates it with `arg`, and the file
+// its label, the `kind` and `size` files.create makes it with, and the file
 // name's stem and extension.
-static value_t blank_disk(const char *label, const char *method, const char *arg, const char *name, const char *ext) {
+static value_t blank_disk(const char *label, const char *kind, uint64_t size, const char *name, const char *ext) {
     value_map_builder_t *m = val_map_new();
     val_map_put(m, "label", val_str(label));
-    val_map_put(m, "method", val_str(method));
-    val_map_put(m, "arg", val_str(arg));
+    val_map_put(m, "kind", val_str(kind));
+    val_map_put(m, "size", val_uint(8, size));
     val_map_put(m, "name", val_str(name));
     val_map_put(m, "ext", val_str(ext));
     return val_map_finish(m);
@@ -533,10 +533,9 @@ static value_t blank_disks_value(const storage_bus_decl_t *b) {
     if (!(b->accepts & STORAGE_DEV_HD))
         return vl_finish(&l);
     if (b->kind == STORAGE_KIND_PROFILE) {
-        vl_push(&l, blank_disk("5 MB ProFile (9728 blocks)", "files.profile_create", "9728", "blank_profile_5MB",
-                               ".image"));
-        vl_push(&l, blank_disk("10 MB Widget (19448 blocks)", "files.profile_create", "19448", "blank_profile_10MB",
-                               ".image"));
+        vl_push(&l, blank_disk("5 MB ProFile (9728 blocks)", "profile", 9728u * 512u, "blank_profile_5MB", ".image"));
+        vl_push(&l,
+                blank_disk("10 MB Widget (19448 blocks)", "profile", 19448u * 512u, "blank_profile_10MB", ".image"));
         return vl_finish(&l);
     }
     int n = drive_catalog_count();
@@ -551,11 +550,10 @@ static value_t blank_disks_value(const storage_bus_decl_t *b) {
         if (superseded)
             continue;
         unsigned mb = (unsigned)((md->size + 512u * 1024u) / (1024u * 1024u));
-        char label[64], arg[24], name[32];
+        char label[64], name[32];
         snprintf(label, sizeof label, "%u MB (%s)", mb, md->label);
-        snprintf(arg, sizeof arg, "%zu", md->size);
         snprintf(name, sizeof name, "blank_%uMB", mb);
-        vl_push(&l, blank_disk(label, "files.hd_create", arg, name, ".dmg"));
+        vl_push(&l, blank_disk(label, "hd", md->size, name, ".dmg"));
     }
     return vl_finish(&l);
 }

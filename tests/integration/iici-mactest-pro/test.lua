@@ -67,7 +67,7 @@ if mac.have_media(cd) then
     mac.reach("insert-disk.png", 1500000000, 1000000000, 50000000)
     mac.check("insert-disk.png")
     local blank = F"${vars.WORK_DIR}/blank-hd.dsk"
-    assert(files.fd_create(blank, true), "could not create a blank 1.44 MB image")
+    assert(files.create(blank, "floppy", "1440K"), "could not create a blank 1.44 MB image")
     machine.floppy.drive[0].insert(blank, true)
 
     mac.run_until_match("passed.png", 20000000000, 500000000)

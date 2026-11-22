@@ -128,7 +128,7 @@ test('?fd0= media is persisted to /opfs/images/fd and inserted from there', asyn
   if (await cont.isVisible().catch(() => false)) await cont.click();
 
   const STORED = /\/opfs\/images\/fd\/url-system(?: \d+)?\.dsk$/;
-  expect(await gsEvalInPage(page, 'machine.floppy.drive[0].disk.filename')).toMatch(STORED);
+  expect(await gsEvalInPage(page, 'machine.floppy.drive[0].image.source')).toMatch(STORED);
   const stored = (await opfsFiles(page)).find((p) => STORED.test(p));
   expect(stored).toBeDefined();
   expect(await gsEvalInPage(page, 'files.path_exists', [stored])).toBe(true);
@@ -152,7 +152,7 @@ test('?fd0= naming a floppy inside a Mac archive is stored and inserted', async 
     .toBeVisible({ timeout: 60_000 });
   await expect(page.locator('.toast .msg').filter({ hasText: /Failed to save|could not be stored/ })).toHaveCount(0);
   const STORED = /\/opfs\/images\/fd\/MacTest Disk(?: \d+)?\.image$/;
-  expect(await gsEvalInPage(page, 'machine.floppy.drive[0].disk.filename')).toMatch(STORED);
+  expect(await gsEvalInPage(page, 'machine.floppy.drive[0].image.source')).toMatch(STORED);
   expect((await opfsFiles(page)).filter((p) => p.startsWith('/opfs/upload/'))).toEqual([]);
 });
 

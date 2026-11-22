@@ -88,10 +88,35 @@ TEST(test_no_cache_uses_the_scratch_root) {
     mount_and_check(image_scratch_dir());
 }
 
+// A read-only image is write-protected and puts nothing on disk: its scratch
+// pair is never created (a probe or a mount used to create and delete two
+// files), and a write is refused rather than kept in a scratch delta.
+TEST(test_read_only_image_creates_nothing_and_refuses_writes) {
+    char cache[64];
+    strcpy(cache, "/tmp/gs-image-sidecars-ro-XXXXXX");
+    ASSERT_TRUE(mkdtemp(cache) != NULL);
+    setenv("GS_STORAGE_CACHE", cache, 1);
+    image_t *img = image_open_readonly(g_base);
+    ASSERT_TRUE(img != NULL);
+    uint8_t buf[BLK];
+    ASSERT_EQ_INT((int)disk_read_data(img, 0, buf, sizeof(buf)), (int)sizeof(buf));
+    ASSERT_EQ_INT(entries_in(cache), 0); // nothing written: no delta, no journal
+    memset(buf, 0x5A, sizeof(buf));
+    ASSERT_EQ_INT((int)disk_write_data(img, 0, buf, sizeof(buf)), 0); // write-protected
+    ASSERT_EQ_INT(entries_in(cache), 0);
+    ASSERT_EQ_INT((int)disk_read_data(img, 0, buf, sizeof(buf)), (int)sizeof(buf));
+    ASSERT_EQ_INT(buf[0], 0); // the base's bytes, unchanged
+    image_close(img);
+    unsetenv("GS_STORAGE_CACHE");
+    ASSERT_EQ_INT(entries_in(cache), 0);
+    rmdir(cache);
+}
+
 int main(void) {
     make_media();
     RUN(test_cache_dir_takes_the_sidecars);
     RUN(test_no_cache_uses_the_scratch_root);
+    RUN(test_read_only_image_creates_nothing_and_refuses_writes);
     unlink(g_base);
     rmdir(g_media);
     fprintf(stderr, "image_sidecars: all tests passed\n");

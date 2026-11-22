@@ -5,15 +5,14 @@
 // creates the disk.
 //
 // The size or model after `blank:` is the core's to parse: on a SCSI or ATA
-// bus it goes unchanged to files.hd_create, whose parser
-// (drive_catalog_parse_size, src/core/storage/drive_catalog.c) the shell's
-// `hd create` and the New Machine dialog's Create blank image share -- a
-// catalog model (`HD20SC` … `HD1000SC`), a decimal size that snaps to the
-// nearest model at or above it (`80mb`, `1gb`), or an exact binary size
-// (`100m`, `512k`).  A Lisa's ProFile port takes the two sizes the dialog
-// offers there (`5mb`, `10mb`; files.profile_create), a floppy drive the two
-// the core creates (`800k`, `1440k`; files.fd_create).  A 400K floppy is not
-// offered: the core has no blank 400K image.
+// bus it goes unchanged to files.create (kind hd), whose parser
+// (drive_catalog_parse_size, src/core/storage/drive_catalog.c) the New
+// Machine dialog's Create blank image shares -- a catalog model (`HD20SC` …
+// `HD1000SC`), a decimal size that snaps to the nearest model at or above it
+// (`80mb`, `1gb`), or an exact binary size (`100m`, `512k`).  A Lisa's
+// ProFile port takes the two sizes the dialog offers there (`5mb`, `10mb`;
+// kind profile), a floppy drive the floppy sizes (`400k`, `800k`, `720k`,
+// `1440k`; kind floppy).
 //
 // Reloads reuse: the disk is named for its slot, its spec and a short hash of
 // the page URL's media parameters (blank_HD230SC_hd0_<hash>.dmg), and a disk
@@ -76,10 +75,10 @@ export function blankDiskName(slot: string, spec: string, hash: string, ext: str
   return `blank_${safe}_${slot}_${hash}${ext}`;
 }
 
-// How to create one blank disk: the files.* method and its size argument
-// (after the path), and the new file's extension; or why it cannot be.
+// How to create one blank disk: files.create's kind and size (after the
+// path), and the new file's extension; or why it cannot be.
 export type BlankPlan =
-  { ok: true; method: string; arg: string | boolean; ext: string } | { ok: false; reason: string };
+  { ok: true; kind: string; size: string | number; ext: string } | { ok: false; reason: string };
 
 // What every spec must be before a bus is asked: non-empty, no options.
 function specProblem(spec: string): string | null {
@@ -89,21 +88,25 @@ function specProblem(spec: string): string | null {
   return null;
 }
 
-// The plan for a blank floppy: 800K or 1440K, as the dialog creates them.
+// The floppy sizes, by what a link may spell them as.
+const FLOPPY_SIZES: Array<[string[], string]> = [
+  [['400k', '400kb'], '400K'],
+  [['800k', '800kb'], '800K'],
+  [['720k', '720kb'], '720K'],
+  [['1440k', '1440kb', '1.44mb', '1.4mb'], '1440K'],
+];
+
+// The plan for a blank floppy: one of the four floppy sizes.
 export function floppyBlankPlan(spec: string): BlankPlan {
   const problem = specProblem(spec);
   if (problem) return { ok: false, reason: problem };
   const s = spec.toLowerCase().replace(/\s+/g, '');
-  if (s === '800k' || s === '800kb')
-    return { ok: true, method: 'files.fd_create', arg: false, ext: '.dsk' };
-  if (['1440k', '1440kb', '1.44mb', '1.4mb'].includes(s))
-    return { ok: true, method: 'files.fd_create', arg: true, ext: '.dsk' };
-  if (s === '400k' || s === '400kb')
-    return {
-      ok: false,
-      reason: 'a blank 400K floppy cannot be created; blank floppies are 800k or 1440k',
-    };
-  return { ok: false, reason: `"${spec}" is not a floppy size; blank floppies are 800k or 1440k` };
+  const hit = FLOPPY_SIZES.find(([names]) => names.includes(s));
+  if (hit) return { ok: true, kind: 'floppy', size: hit[1], ext: '.dsk' };
+  return {
+    ok: false,
+    reason: `"${spec}" is not a floppy size; blank floppies are 400k, 800k, 720k or 1440k`,
+  };
 }
 
 // The ProFile size an entry of the bus's blank disks is (its name stem
@@ -115,23 +118,23 @@ function profileMb(disk: BlankDisk): number | null {
 
 // The plan for a blank hard disk on a bus that takes `disks` (the bus's
 // blank_disks, bus/profile.ts): the spec as the core's size argument where
-// the bus's disks are files.hd_create ones (the core parses and validates
-// it), else -- the ProFile port -- the entry whose size the spec names.
+// the bus's disks are hard disks (the core parses and validates it), else
+// -- the ProFile port -- the entry whose size the spec names.
 export function hardDiskBlankPlan(spec: string, disks: BlankDisk[]): BlankPlan {
   const problem = specProblem(spec);
   if (problem) return { ok: false, reason: problem };
-  const hd = disks.find((d) => d.method === 'files.hd_create');
-  if (hd) return { ok: true, method: hd.method, arg: spec, ext: hd.ext };
+  const hd = disks.find((d) => d.kind === 'hd');
+  if (hd) return { ok: true, kind: 'hd', size: spec, ext: hd.ext };
   const sized = disks.filter((d) => profileMb(d) !== null);
   if (!sized.length) return { ok: false, reason: 'this drive takes no blank disk' };
   const m = /^(\d+)\s*(mb?)?$/i.exec(spec);
   const hit = m ? sized.find((d) => profileMb(d) === Number(m[1])) : undefined;
-  if (hit) return { ok: true, method: hit.method, arg: hit.arg, ext: hit.ext };
+  if (hit) return { ok: true, kind: hit.kind, size: hit.size, ext: hit.ext };
   const offered = sized.map((d) => `${profileMb(d)}mb`).join(' or ');
   return { ok: false, reason: `"${spec}" is not a size this drive takes; it takes ${offered}` };
 }
 
-// The reason shown when the core refuses a files.hd_create spec: not a
+// The reason shown when the core refuses a hard disk's spec: not a
 // catalog model or size, or out of range.
 export function hardDiskSpecRefused(spec: string): string {
   return (

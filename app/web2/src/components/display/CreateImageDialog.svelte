@@ -62,9 +62,8 @@
         name = `${disk.name}_${stamp()}${disk.ext}`;
         res = await createBlankImage(disk, `${HD_DIR}/${name}`);
       } else {
-        const highDensity = fdDensity === '1440K';
         name = `blank_${fdDensity}_${stamp()}.dsk`;
-        res = await createBlankImage({ highDensity }, `${FD_DIR}/${name}`);
+        res = await createBlankImage({ kind: 'floppy', size: fdDensity }, `${FD_DIR}/${name}`);
       }
       if (res !== true) {
         error = `Failed to create the disk image: ${res}`;

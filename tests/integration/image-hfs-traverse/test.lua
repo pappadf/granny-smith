@@ -3,7 +3,7 @@
 -- Runner cd's into this directory; paths are relative.
 
 -- Probe the image: expected to surface as a bare HFS volume.
-files.probe("../../data/systems/System_6_0_8.dsk")
+assert(files.identify("../../data/systems/System_6_0_8.dsk").opens, "the floppy opens as a disk image")
 
 -- Root of the synthesised partition layer (one entry since no APM).
 files.ls("../../data/systems/System_6_0_8.dsk")
@@ -18,8 +18,8 @@ files.ls("../../data/systems/System_6_0_8.dsk/partition1/System Folder")
 -- Structured JSON listing (files.list) backs the web Filesystem tree's image
 -- descent. Must return a non-empty array for the synthesised partition root
 -- and the HFS volume root — same opendir/readdir path as files.ls above.
-assert(files.list("../../data/systems/System_6_0_8.dsk"), "files.list: empty partition listing")
-assert(files.list("../../data/systems/System_6_0_8.dsk/partition1"), "files.list: empty HFS root listing")
+assert(#files.list("../../data/systems/System_6_0_8.dsk") > 0, "files.list: empty partition listing")
+assert(#files.list("../../data/systems/System_6_0_8.dsk/partition1") > 0, "files.list: empty HFS root listing")
 
 -- Reserved /finf fork sub-path.  Confirm it exists as a virtual file.
 -- (size returns the file size as exit code, which would flag the test

@@ -273,12 +273,6 @@ const char *system_machine_model_id(void);
 // Whether the current machine's main CPU is a PowerPC (false with none)
 bool system_cpu_is_ppc(void);
 
-// Create a blank floppy image at `path` and auto-mount it. high_density
-// chooses 1.44 MB vs 800 KB. preferred is the target drive (0 or 1; pass
-// -1 to let the system pick the first free drive). Returns 0 on success
-// or -1 on failure (file exists, both drives full, image system error).
-int system_create_floppy(const char *path, bool high_density, int preferred);
-
 // Attach a read-only CD-ROM image on `bus` at `scsi_id`: opens the image,
 // registers it as a SCSI device and prints the "Attaching CD-ROM" line.  The
 // bus is explicit because a machine can have more than one -- the Apple
@@ -290,23 +284,17 @@ bool system_attach_scsi_cdrom(struct config *restrict config, struct scsi *bus, 
 // presented as the closest catalog drive.  NULL bus: refused (no SCSI).
 bool system_attach_scsi_hd(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id);
 
-// Probe a floppy image at `path`: opens it read-only and prints the
-// detected density.
-// Returns 0 if the image is a recognised floppy, non-zero otherwise.
-int system_probe_floppy(const char *path);
-
 // Whether a disk is in floppy drive `drive` (routes through the machine
 // substrate's fd_present hook — Mac IWM/SWIM or the Lisa FDC).  Used by the
 // platform tick to push drive-present changes to the UI.
 bool system_fd_present(int drive);
 
 // Typed object-model entry points for disk operations. The typed
-// methods (floppy.drives[N].insert, scsi.attach_hd, files.hd_create)
+// methods (floppy.drives[N].insert, scsi.attach_hd)
 // call these directly. Each returns 0 on success, negative on error.
 int system_fd_insert(const char *path, int drive, bool writable);
 int system_hd_attach(const char *path, int scsi_id);
 int system_hd_attach_on(struct scsi *bus, const char *path, int scsi_id);
-int system_hd_create(const char *path, const char *size_str);
 
 // The quick save's publish ended (emulator thread, from checkpoint.c): the
 // checkpoint_saved event goes out here.

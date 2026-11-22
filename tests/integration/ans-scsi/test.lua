@@ -61,7 +61,7 @@ end
 
 -- One disk, created fresh in the work directory so the row owns what it
 -- writes to.
-assert(files.hd_create(F"${vars.WORK_DIR}/ansdisk.img", "500M"), "could not create the test disk")
+assert(files.create(F"${vars.WORK_DIR}/ansdisk.img", "hd", "500M"), "could not create the test disk")
 
 probe("ans500", 32768)
 probe("ans700", 49152)

@@ -34,7 +34,8 @@ scheduler.run(150000000)
 machine.screen.match("insert-800k-floppy.png")
 
 -- Insert 800K floppy
-machine.floppy.create(F"${vars.WORK_DIR}/blank800.dsk", 0)
+files.create(F"${vars.WORK_DIR}/blank800.dsk", "floppy", "800K")
+machine.floppy.drive[0].insert(F"${vars.WORK_DIR}/blank800.dsk")
 
 -- Let it run a short bit - detect the floppy
 scheduler.run(10000000)
@@ -52,7 +53,13 @@ scheduler.run(250000000)
 machine.screen.match("insert-1.4mb-floppy.png")
 
 -- Insert 1.4MB HD floppy and click immediately (before .Sony VBL auto-mounts)
-machine.floppy.create(F"${vars.WORK_DIR}/blankHD.dsk", "hd")
+files.create(F"${vars.WORK_DIR}/blankHD.dsk", "floppy", "1440K")
+-- The first free drive, as machine.floppy.create picked.
+if not machine.floppy.drive[0].present then
+    machine.floppy.drive[0].insert(F"${vars.WORK_DIR}/blankHD.dsk")
+else
+    machine.floppy.drive[1].insert(F"${vars.WORK_DIR}/blankHD.dsk")
+end
 machine.adb.mouse.move(370, 185, "global")
 scheduler.run(5000000)
 machine.adb.mouse.click(true)

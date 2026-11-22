@@ -69,7 +69,6 @@ int core_init(void) {
     // system_create (host_input.h).  It needs a scheduler source that lives
     // and dies with the machine, which a process-lifetime facade cannot have.
     screen_class_register();
-    scsi_class_register();
 
     // Install the cfg-scoped namespace stubs (shell, files, ...) with a NULL
     // cfg so their pre-boot surfaces resolve — particularly files.cp and

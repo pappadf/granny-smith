@@ -188,15 +188,15 @@
     const fits = fitsUnder(fdPaths, max);
     return fdNames.filter((n) => fits(n) && !MFM_720K.has(mediaSizes[fdPaths[n]]));
   }
-  // A bus whose blank disks are ProFile images (files.profile_create, the
-  // argument a block count) takes ProFile-sized disks: its menu left out
-  // nothing, so the Lisa's ProFile port offered 170 MB SCSI disks.  Twice
-  // the largest blank disk at 1 KB a block is a generous ceiling.
+  // A bus whose blank disks are no hard disks (the ProFile port's) takes
+  // disks of their size: its menu left out nothing, so the Lisa's ProFile
+  // port offered 170 MB SCSI disks.  Four times the largest blank disk's
+  // data size (twice its blocks at 1 KB each) is a generous ceiling.
   function diskChoices(bus: StorageBus): string[] {
     const blanks = bus.blank_disks;
-    const profile = blanks.length > 0 && blanks.every((b) => b.method === 'files.profile_create');
-    if (!profile) return hdNames;
-    const max = 2 * 1024 * Math.max(...blanks.map((b) => Number(b.arg) || 0));
+    const small = blanks.length > 0 && blanks.every((b) => b.kind !== 'hd');
+    if (!small) return hdNames;
+    const max = 4 * Math.max(...blanks.map((b) => Number(b.size) || 0));
     return hdNames.filter(fitsUnder(hdPaths, max));
   }
 
@@ -305,7 +305,7 @@
     profile && doc ? mc.dropImagelessDisks(profile, doc, mediaImages).doc : null,
   );
   // The Mac OS volumes of each hard disk image chosen, by OPFS path
-  // (files.partitions, numbered as the attached disk's partitions), and by
+  // (files.identify's volumes, numbered as the attached disk's partitions), and by
   // storage position: "Start up from" offers a disk's volumes by name.
   let volumesByPath = $state<Record<string, mc.DiskPartition[]>>({});
   // eslint-disable-next-line svelte/prefer-svelte-reactivity -- bookkeeping, not state

@@ -79,7 +79,7 @@ local PREFIX_BYTES = 96 * 512
 local function image_index(path)
     local i = 0
     while i < files.images.count do
-        if files.images[i].filename == path then return i end
+        if files.images[i].source == path then return i end
         i = i + 1
     end
     error(F"no attached image ${path}")
@@ -133,18 +133,18 @@ end
 local function row_wrap_layout()
     machine.boot{model = "iici", ram = 8192, rom = vars.ROM}
     local file_size = files.path_size(vol753)
-    assert(scsi_identify_ok(), "wrap-layout: identify_hd refused the bare volume")
+    assert(scsi_identify_ok(), "wrap-layout: files.identify did not fit hd for the bare volume")
     assert(machine.scsi.attach_hd(vol753, 0), "wrap-layout: attach_hd failed")
     assert(machine.scsi.device[0].type == "hd", "wrap-layout: SCSI 0 is not a hard disk")
     local i = image_index(vol753)
-    assert(files.images[i].raw_size == file_size + PREFIX_BYTES, "wrap-layout: disk is " .. tostring(files.images[i].raw_size) .. " bytes, want " .. tostring(file_size) .. " + " .. tostring(PREFIX_BYTES))
+    assert(files.images[i].size == file_size + PREFIX_BYTES, "wrap-layout: disk is " .. tostring(files.images[i].size) .. " bytes, want " .. tostring(file_size) .. " + " .. tostring(PREFIX_BYTES))
     assert(files.path_size(vol753) == file_size, "wrap-layout: the volume file changed size")
     assert(machine.scsi.attach_cdrom(vol753, 3), "wrap-layout: attach_cdrom failed")
     assert(machine.scsi.device[3].type == "cdrom", "wrap-layout: SCSI 3 is not a CD-ROM")
 end
 
 function scsi_identify_ok()
-    return machine.scsi.identify_hd(vol753)
+    return gs.contains(files.identify(vol753).fits, "hd")
 end
 
 -- ---- boot rows ------------------------------------------------------------------
@@ -298,7 +298,7 @@ local function row_checkpoint()
     assert(checkpoint.save(F"${vars.WORK_DIR}/bare-volume.checkpoint"), "checkpoint: save failed")
     assert(checkpoint.load(F"${vars.WORK_DIR}/bare-volume.checkpoint"), "checkpoint: load failed")
     local i = image_index(vol753)
-    assert(files.images[i].raw_size == files.path_size(vol753) + PREFIX_BYTES, "checkpoint: restored disk is not wrapped")
+    assert(files.images[i].size == files.path_size(vol753) + PREFIX_BYTES, "checkpoint: restored disk is not wrapped")
     -- Keep running off the restored disk: the Finder must still be there.
     scheduler.run(200000000)
     assert_desktop("checkpoint")
@@ -316,7 +316,7 @@ local function row_driverless()
     local file_size = files.path_size(voldl753)
     assert(machine.scsi.attach_hd(voldl753, 0), "driverless: attach_hd failed")
     local i = image_index(voldl753)
-    assert(files.images[i].raw_size == files.path_size(vol753) + PREFIX_BYTES, "driverless: disk is " .. tostring(files.images[i].raw_size) .. " bytes, want the HFS partition + " .. tostring(PREFIX_BYTES))
+    assert(files.images[i].size == files.path_size(vol753) + PREFIX_BYTES, "driverless: disk is " .. tostring(files.images[i].size) .. " bytes, want the HFS partition + " .. tostring(PREFIX_BYTES))
     scheduler.run(150000000)
     mac.wait_stable(1600000000)
     assert_desktop("driverless")
@@ -326,7 +326,7 @@ local function row_driverless()
     assert(checkpoint.save(F"${vars.WORK_DIR}/driverless.checkpoint"), "driverless: checkpoint save failed")
     assert(checkpoint.load(F"${vars.WORK_DIR}/driverless.checkpoint"), "driverless: checkpoint load failed")
     local j = image_index(voldl753)
-    assert(files.images[j].raw_size == files.path_size(vol753) + PREFIX_BYTES, "driverless: restored disk is not wrapped")
+    assert(files.images[j].size == files.path_size(vol753) + PREFIX_BYTES, "driverless: restored disk is not wrapped")
     scheduler.run(200000000)
     assert_desktop("driverless (restored)")
     check_desktop("goldens/iici-7.5.3-640x480x1-bare-finder.png")
@@ -343,7 +343,7 @@ local function row_trimmed()
     assert(file_size < files.path_size(vol753), "trimmed: the volume was not trimmed")
     assert(machine.scsi.attach_hd(voltrim753, 0), "trimmed: attach_hd failed")
     local i = image_index(voltrim753)
-    assert(files.images[i].raw_size == files.path_size(vol753) + PREFIX_BYTES, "trimmed: disk is " .. tostring(files.images[i].raw_size) .. " bytes, want the whole volume + " .. tostring(PREFIX_BYTES))
+    assert(files.images[i].size == files.path_size(vol753) + PREFIX_BYTES, "trimmed: disk is " .. tostring(files.images[i].size) .. " bytes, want the whole volume + " .. tostring(PREFIX_BYTES))
     scheduler.run(150000000)
     mac.wait_stable(1600000000)
     assert_desktop("trimmed")

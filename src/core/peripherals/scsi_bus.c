@@ -1978,8 +1978,13 @@ int scsi_eject_device(scsi_t *scsi, int id) {
     if (scsi->devices[id].prevent_removal)
         return -2;
 
+    image_t *img = scsi->device_images[id];
     scsi->devices[id].medium_present = false;
     scsi->device_images[id] = NULL;
+    // The machine's image table owns the image: closed now, as the floppy's
+    // eject does, so the file is free at once.  It used to stay open, holding
+    // a table slot, until the machine went away.
+    config_release_image(system_running(), img);
     // Deliberately NOT clearing prevent_removal: S5.2.14 terminates the lock on
     // ALLOW, BUS DEVICE RESET or a reset condition, and never on removal.  It
     // cannot be set here anyway -- the check above returned, and a locked-but-

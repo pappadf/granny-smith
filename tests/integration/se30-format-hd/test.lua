@@ -12,7 +12,7 @@
 -- Create a blank 80 MB hard disk image (exact HD80SC size, zero-filled)
 local mac = dofile("../lib/mac.lua")
 
-files.hd_create(F"${vars.WORK_DIR}/blank80.img", "HD20SC")
+files.create(F"${vars.WORK_DIR}/blank80.img", "hd", "HD20SC")
 
 -- Attach the blank image at SCSI ID 0
 machine.scsi.attach_hd(F"${vars.WORK_DIR}/blank80.img", 0)

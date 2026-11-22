@@ -12,7 +12,7 @@
 local mac = dofile("../lib/mac.lua")
 
 files.cp("../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-ProFile.image", F"${vars.WORK_DIR}/profile.image")
-machine.hd.attach(F"${vars.WORK_DIR}/profile.image")
+machine.hd.insert(F"${vars.WORK_DIR}/profile.image")
 assert(machine.hd.pram_init(2, false), "pram_init failed")
 machine.floppy.drive[0].insert("../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-2.image")
 assert(machine.floppy.drive[0].present, "diskette not inserted")

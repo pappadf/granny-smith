@@ -2,8 +2,8 @@
 -- An ISO 9660 disc (built at setup: a primary tree and a Joliet tree) is a
 -- bare volume: one synthetic partition holding the disc's files.
 local iso = F"${vars.WORK_DIR}/disc.iso"
-assert(files.probe(iso), "the disc is recognised as a disk")
-assert(machine.scsi.identify_iso(iso), "an upload of the disc is filed as a CD-ROM")
+assert(files.identify(iso).opens, "the disc is recognised as a disk")
+assert(files.identify(iso).kind == "cd", "an upload of the disc is filed as a CD-ROM")
 local names = ""
 for _, e in ipairs(files.list(F"${iso}/partition1")) do
     names = F"${names}|${e.name}"
@@ -19,7 +19,7 @@ assert(files.path_size(F"${iso}/partition1/read me.txt") > 0, "names are matched
 -- A floppy image on the disc is a disk in turn: descend into its HFS volume.
 local fd = F"${iso}/partition1/Disk Images/System 6.0.8.dsk"
 assert(files.path_size(fd) == 819200, "the floppy image on the disc")
-assert(files.list(F"${fd}/partition1/System Folder"), "the HFS volume inside the floppy image on the disc")
+assert(#files.list(F"${fd}/partition1/System Folder") > 0, "the HFS volume inside the floppy image on the disc")
 assert(files.path_size(F"${fd}/partition1/System Folder/System/rsrc/_raw") > 0, "a resource fork two levels down")
 
 -- A hybrid disc: the partition map's HFS volume and, beside it, the ISO side.
@@ -33,7 +33,7 @@ assert(files.path_compare(F"${hy}/partition2/Hello.txt", "config.mk") == -1, "th
 assert(files.path_compare(F"${hy}/ISO9660/Read Me.txt", "config.mk") == -1, "the ISO side reads (name matched without case)")
 assert(not gs.truthy(function() return files.path_exists(F"${iso}/iso9660") end), "a disc that is only ISO has no iso9660 entry")
 assert(not gs.truthy(function() return files.path_exists(F"${hy}/partition3") end), "the ISO side is not a partitionN")
-assert(machine.scsi.identify_iso(hy), "an upload of the hybrid is filed as a CD-ROM")
+assert(files.identify(hy).kind == "cd", "an upload of the hybrid is filed as a CD-ROM")
 
 -- Apple's "AA" entry is the file's Finder info, and a copy out keeps it.
 assert(files.path_compare(F"${hy}/iso9660/Read Me.txt/finf", F"${vars.WORK_DIR}/readme.finf") == -1, "Finder info from AA")

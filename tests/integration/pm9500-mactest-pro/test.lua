@@ -75,7 +75,7 @@ if mac.have_media(cd) then
     -- reached the Finder ("This disk is unreadable") instead.
     scheduler.run(6000000000)
     local blank = F"${vars.WORK_DIR}/blank-hd.dsk"
-    assert(files.fd_create(blank, true), "could not create a blank 1.44 MB image")
+    assert(files.create(blank, "floppy", "1440K"), "could not create a blank 1.44 MB image")
     machine.floppy.drive[0].insert(blank, true)
 
     mac.run_until_match("passed.png", 40000000000, 500000000)

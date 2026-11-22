@@ -91,7 +91,7 @@ end
 -- --- Part 1: format a blank HD160SC ------------------------------------------
 
 -- Create a blank HD160SC hard-disk image (177,269,760 bytes, zero-filled).
-files.hd_create(F"${vars.WORK_DIR}/blank.img", "HD160SC")
+files.create(F"${vars.WORK_DIR}/blank.img", "hd", "HD160SC")
 
 -- Pin the RTC so the boot is deterministic run-to-run.
 

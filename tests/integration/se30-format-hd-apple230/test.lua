@@ -21,7 +21,7 @@
 -- whether the installer means decimal MB or MiB.
 local mac = dofile("../lib/mac.lua")
 
-assert(files.hd_create(F"${vars.WORK_DIR}/apple230.img", "HD230SC"), "hd_create HD230SC failed")
+assert(files.create(F"${vars.WORK_DIR}/apple230.img", "hd", "HD230SC"), "files.create HD230SC failed")
 assert(files.path_size(F"${vars.WORK_DIR}/apple230.img") == 245427200, "HD230SC wrong image size")
 
 machine.scsi.attach_hd(F"${vars.WORK_DIR}/apple230.img", 0)

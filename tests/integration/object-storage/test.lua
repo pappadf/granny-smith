@@ -13,15 +13,14 @@ local _ = files.images
 -- regression in files.images enumeration order or attribute mapping
 -- fails fast. raw_size is the hd1.img file size (HD20SC catalog).
 local _ = files.images[0]
-assert(files.images[0].index == 0)
-assert(files.images[0].type == "hd")
+assert(files.images[0].kind == "hd")
 assert(files.images[0].writable == true)
-assert(files.images[0].raw_size == 21411840)
-local _ = files.images[0].filename
+assert(files.images[0].size == 21411840)
+local _ = files.images[0].source
 
 -- Second image: the System 6 floppy.
-assert(files.images[1].type == "fd_ds")
-local _ = files.images[1].filename
+assert(files.images[1].kind == "floppy")
+local _ = files.images[1].source
 
 -- files.import — copy a small file to a chosen destination.  The
 -- destination is required: the core does not choose where media lives.

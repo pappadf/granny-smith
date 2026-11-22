@@ -23,7 +23,7 @@ local installed = F"${vars.WORK_DIR}/g3-scsi-installed.img"
 
 if mac.have_media(cd) then
     -- --- I1 ---------------------------------------------------------------------
-    assert(files.hd_create(hd, "HD500SC"), "I1: create the blank disk")
+    assert(files.create(hd, "hd", "HD500SC"), "I1: create the blank disk")
     machine.boot{model = "pmg3dt", ram = 65536, rom = vars.ROM}
     machine.rtc.time = "2026-10-01T12:00:00"
     machine.scsi.attach_hd(hd, 0)

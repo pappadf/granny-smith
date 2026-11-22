@@ -129,7 +129,8 @@ scheduler.run(35000000)
 mac.run_until_match("insert-800k-internal.png", 140000000, 5000000)
 machine.screen.match("insert-800k-internal.png")
 
-machine.floppy.create(F"${vars.WORK_DIR}/blank800-int.dsk", 0)
+files.create(F"${vars.WORK_DIR}/blank800-int.dsk", "floppy", "800K")
+machine.floppy.drive[0].insert(F"${vars.WORK_DIR}/blank800-int.dsk")
 scheduler.run(10000000)
 
 -- OK on the "insert disk" dialog (~454, 245).
@@ -144,7 +145,13 @@ mac.run_until_match("insert-1.4mb-internal.png", 265000000, 6000000)
 machine.screen.match("insert-1.4mb-internal.png")
 
 machine.adb.mouse.click(false, "global")
-machine.floppy.create(F"${vars.WORK_DIR}/blankHD-int.dsk", "hd")
+files.create(F"${vars.WORK_DIR}/blankHD-int.dsk", "floppy", "1440K")
+-- The first free drive, as machine.floppy.create picked.
+if not machine.floppy.drive[0].present then
+    machine.floppy.drive[0].insert(F"${vars.WORK_DIR}/blankHD-int.dsk")
+else
+    machine.floppy.drive[1].insert(F"${vars.WORK_DIR}/blankHD-int.dsk")
+end
 -- Move the cursor away then back to the OK button: it was parked on OK by
 -- the previous step's click, so a same-spot move emits no ADB motion and
 -- the click has no fresh position event to bind to under E-clock-synced
@@ -174,7 +181,8 @@ mac.run_until_match("insert-800k-external.png", 140000000, 5000000)
 machine.screen.match("insert-800k-external.png")
 
 machine.adb.mouse.click(false, "global")
-machine.floppy.create(F"${vars.WORK_DIR}/blank800-ext.dsk", 1)
+files.create(F"${vars.WORK_DIR}/blank800-ext.dsk", "floppy", "800K")
+machine.floppy.drive[1].insert(F"${vars.WORK_DIR}/blank800-ext.dsk")
 -- Settle wait BEFORE clicking OK.  On real hardware a user inserts the external
 -- blank in response to this prompt and the OS detects it (drive light / diskEvt)
 -- — completing the .Sony disk-in-place debounce — well before clicking OK.  The
@@ -210,7 +218,13 @@ mac.run_until_match("insert-1.4mb-external.png", 1200000000, 30000000)
 machine.screen.match("insert-1.4mb-external.png")
 
 machine.adb.mouse.click(false, "global")
-machine.floppy.create(F"${vars.WORK_DIR}/blankHD-ext.dsk", "hd")
+files.create(F"${vars.WORK_DIR}/blankHD-ext.dsk", "floppy", "1440K")
+-- The first free drive, as machine.floppy.create picked.
+if not machine.floppy.drive[0].present then
+    machine.floppy.drive[0].insert(F"${vars.WORK_DIR}/blankHD-ext.dsk")
+else
+    machine.floppy.drive[1].insert(F"${vars.WORK_DIR}/blankHD-ext.dsk")
+end
 machine.floppy.drive[0].eject()
 machine.floppy.drive[1].insert(F"${vars.WORK_DIR}/blankHD-ext.dsk", true)
 

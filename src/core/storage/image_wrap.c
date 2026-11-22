@@ -194,7 +194,6 @@ int image_wrap_volume(image_t *image) {
     image->wrap_base = (uint64_t)start * BLK;
     image->wrap_storage_size = image->raw_size;
     image->raw_size = (uint64_t)(IMAGE_WRAP_PREFIX_BLOCKS + blocks) * BLK;
-    image->type = image_hd;
     if (kind == IMAGE_WRAP_BARE)
         LOG(1, "wrapped bare volume %s: %u-block partition map + GSDisk driver in front of %llu blocks",
             image->filename ? image->filename : "?", IMAGE_WRAP_PREFIX_BLOCKS, (unsigned long long)blocks);

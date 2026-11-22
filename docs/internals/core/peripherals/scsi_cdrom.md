@@ -987,13 +987,14 @@ A raw HFS volume image. Identified by the Master Directory Block (MDB) signature
 
 ### 8.3 Image Validation
 
-The `machine.scsi.identify_cdrom(path)` method checks for:
+`files.identify(path)` lists `cd` among the drives that take a file
+(`fits`) when it finds:
 
 1. **ISO 9660 signature:** Bytes at offset 32769 (sector 16, byte 1) = `"CD001"` (5 bytes). This is the Primary Volume Descriptor identifier defined by ISO 9660.
 
 2. **HFS signature:** Big-endian uint16 at byte offset 1024 = `0x4244`. This is the drSigWord field of the HFS Master Directory Block.
 
-3. **Floppy rejection:** Images matching floppy sizes (400K, 800K, 1440K) are rejected — use `floppy.identify(path)` instead.
+3. **Floppy rejection:** Images matching floppy sizes (400K, 800K, 720K, 1440K) are rejected — a floppy drive takes them (`fits` lists `floppy`).
 
 4. **Size range:** Typical CD-ROM images are 100 MB to 700 MB. Images outside this range produce a warning but are not rejected.
 
@@ -1065,18 +1066,18 @@ The retired legacy `cdrom` shell command family (`cdrom validate/attach/
 eject/info`) was removed with the typed object model; the same operations
 now live on `machine.scsi`:
 
-### 10.1 `machine.scsi.identify_cdrom(path)`
+### 10.1 `files.identify(path)`
 
-Validate a CD-ROM image file. Returns `true` if the file looks like a
-CD-ROM image (ISO 9660, HFS, or Apple Partition Map), `false` otherwise.
-What it detected (size, filesystem), or why it refused, goes to the `scsi`
-log category at level 2 (`log.set scsi 2`); nothing is printed.
+Validate a CD-ROM image file: `cd` is in its `fits` when the file looks like
+a CD-ROM image (ISO 9660, HFS, or Apple Partition Map).  It is the one
+identify for every kind of drive, not a SCSI method, and it answers before a
+machine exists (`files` is a root service).
 
-`machine.scsi.identify_iso(path)` is the narrower test an upload of no
-stated kind (a drop, Home's Load ROM) files a CD-ROM by: `true` only when
-the image holds an ISO 9660 volume (alone or beside a partition map), so a
-bare HFS or partitioned image dropped is a hard disk.  The Images panel's
-CD-ROM section validates with `identify_cdrom`.
+Its `kind` is the narrower test an upload of no stated kind (a drop, Home's
+Load ROM) files a CD-ROM by: `cd` only when the image holds an ISO 9660
+volume (alone or beside a partition map), so a bare HFS or partitioned image
+dropped is a hard disk.  The Images panel's CD-ROM section validates with
+`fits`.
 
 ### 10.2 `machine.scsi.attach_cdrom(path, id)`
 
@@ -1105,7 +1106,7 @@ type, image size, current block size, and SCSI ID.
 |--------|----|--------|
 | Attach | `machine.scsi.attach_hd(path, id)` | `machine.scsi.attach_cdrom(path, id)` |
 | Default ID | 0 | 3 |
-| Validate | `machine.scsi.identify_hd(path)` | `machine.scsi.identify_cdrom(path)` |
+| Validate | `"hd"` in `files.identify(path).fits` | `"cd"` in `files.identify(path).fits` |
 | Read-only | No | Yes |
 | Eject | `machine.scsi.device[id].eject()` | `machine.scsi.device[id].eject()` |
 | Info | `machine.scsi.device[id].info` | `machine.scsi.device[id].info` |

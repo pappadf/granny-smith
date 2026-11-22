@@ -27,11 +27,30 @@ struct image {
     char *instance_path; // Stem for delta/journal: "<dir>/<id>" — NULL for read-only ghost mounts
     char *delta_path; // Path to delta file (<instance_path>.delta)
     char *journal_path; // Path to preimage journal (<instance_path>.journal)
-    uint64_t raw_size; // Logical size of the image in bytes
-    uint32_t block_size; // Bytes per logical block (512 default, 532 for a ProFile)
+    uint64_t raw_size; // Data bytes: sectors x 512 (tags not counted), plus any wrapper prefix
+    // Bytes per stored block: a sector stored tag first, [tag_bytes][512 data]
+    // -- the unit the base view, the delta and the journal are made of.
+    uint32_t block_size;
+    // Tag bytes beside each 512-byte sector: 12 for a 400K/800K GCR floppy
+    // (the Lisa file system keeps its page labels there and the Lisa boot ROM
+    // checks the boot block's FILEID = $AAAA; the Mac file systems write
+    // them too), 20 for a ProFile, else 0.  They are in-band, in every
+    // block, so base + delta is the whole disk: the delta and a checkpoint
+    // carry them with the data, and a DiskCopy 4.2 or MOOF export writes
+    // them out.  The base file is never touched.
+    uint32_t tag_bytes;
+    // The base file itself holds whole blocks, tags in-band (a ProFile's
+    // 532-byte layout); otherwise it holds 512-byte sectors and its tags,
+    // if any, come from a DiskCopy tag section or are zeros.
+    bool units_in_file;
+    // Tag bytes per sector the file itself carries (a DiskCopy tag section,
+    // a ProFile's in-band 20), whatever the image was opened with: what
+    // files.identify reports.
+    uint32_t file_tag_bytes;
     bool writable; // True when the caller requested write access
     bool ghost_instance; // True when delta+journal are ephemeral scratch (read-only mounts)
-    enum image_type type; // Detected image type (floppy, hd, ...)
+    image_kind_t kind; // What the opening device presents it as (image_open_kind); IMAGE_KIND_NONE unheld
+    uint32_t checkpoint_index; // position in the image list the last checkpoint saved (image_ref.c)
     bool from_diskcopy; // True if a DiskCopy 4.2 layer was peeled
 
     // disk_read_data / disk_write_data calls since open: the drive-activity
@@ -42,18 +61,6 @@ struct image {
     // archive member, a host I/O error): the guest gets a device-level read
     // error for each; only the first is logged at level 0.
     uint64_t read_errors;
-
-    // Per-sector tags: the 12 bytes a GCR sector carries beside its 512 data
-    // bytes.  The Lisa file system keeps its page labels (file id, page
-    // links) there and the Lisa boot ROM checks the boot block's FILEID =
-    // $AAAA; the Mac file systems write them too.  Loaded from a DiskCopy
-    // 4.2 file's tag section, else zero for a 400K/800K GCR disk; NULL for
-    // anything else.  Guest writes land here, travel in checkpoints
-    // (image_checkpoint, image_set_tags) and leave in a DiskCopy 4.2
-    // export -- the base file is never touched.
-    uint8_t *tags; // tag_count * tag_bytes bytes, or NULL
-    uint32_t tag_bytes; // tag bytes per sector (12 on a Lisa 400 KB disk)
-    uint32_t tag_count; // number of tagged sectors
 
     // How a DiskCopy 4.2 export names and labels the disk: the source
     // header's own values for a DiskCopy image, a machine's for one it
@@ -73,5 +80,31 @@ struct image {
     uint64_t wrap_base;
     uint64_t wrap_storage_size;
 };
+
+// Per-image geometry: the tags a sector carries.  The kind decides it; only
+// the storage module opens with one, through image_open_kind.
+typedef struct image_geometry {
+    // Fixed tag bytes per sector, which the kind's files hold in-band (a
+    // ProFile: 20, its files 532-byte blocks).  0 for none.
+    uint32_t tag_bytes;
+    // A floppy: 12 tag bytes per sector when the disk is a 400K/800K GCR one,
+    // from a DiskCopy tag section or zeros; none for an MFM one.
+    bool gcr_tags;
+} image_geometry_t;
+
+// Tag bytes per sector a 400K/800K GCR floppy carries.
+#define IMAGE_GCR_TAG_BYTES 12u
+
+// The three openers of image.h with a given geometry.
+image_t *image_open_readonly_with_geometry(const char *base_path, image_geometry_t geom);
+image_t *image_create_with_geometry(const char *base_path, const char *delta_dir, image_geometry_t geom);
+image_t *image_open_with_geometry(const char *base_path, const char *instance_path, image_geometry_t geom);
+
+// A brand-new, writable, all-zero image with NO backing base file:
+// `block_count` sectors of the geometry's blocks, every block reading back as
+// zeros until written (image_create_blank_kind).  Its delta is a fresh
+// instance in `delta_dir` (NULL: the scratch root), or the existing
+// `instance` stem (a checkpoint restore), so it survives like any other.
+image_t *image_create_blank(uint64_t block_count, image_geometry_t geom, const char *delta_dir, const char *instance);
 
 #endif // IMAGE_INTERNAL_H

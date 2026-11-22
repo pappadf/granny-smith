@@ -8,8 +8,8 @@ local ro = "../../data/systems/System_6_0_8.dsk"
 local raw = F"${vars.WORK_DIR}/hd.img"
 
 -- Readable through the VFS while nothing holds them.
-assert(files.list(F"${dmg}/partition1"), "the .dmg is not readable before attach")
-assert(files.list(F"${fd}/partition1"), "the floppy is not readable before insert")
+assert(#files.list(F"${dmg}/partition1") > 0, "the .dmg is not readable before attach")
+assert(#files.list(F"${fd}/partition1") > 0, "the floppy is not readable before insert")
 
 -- A hard disk attached writable: the mount made above now refuses.  The
 -- image the SCSI disk opened is the decoded scratch copy of the .dmg, so a
@@ -30,7 +30,7 @@ assert(checkpoint.save(F"${vars.WORK_DIR}/in.checkpoint"), "checkpoint save with
 -- open until the machine went away ("cannot read resource fork ... Resource
 -- busy").
 machine.floppy.drive[0].eject()
-assert(files.list(F"${fd}/partition1"), "an ejected floppy is still refused by the VFS")
+assert(#files.list(F"${fd}/partition1") > 0, "an ejected floppy is still refused by the VFS")
 files.cp(F"${fd}/partition1/System Folder/Finder", F"${vars.WORK_DIR}/Finder")
 assert(files.path_exists(F"${vars.WORK_DIR}/._Finder"), "the Finder copied out of the ejected floppy without its resource fork")
 
@@ -42,14 +42,14 @@ files.cp(ro, fd)
 machine.floppy.drive[0].insert(fd, true)
 assert(not gs.truthy(function() return files.list(F"${fd}/partition1") end), "the re-inserted floppy is served by the VFS")
 machine.floppy.drive[0].eject()
-assert(files.list(F"${fd}/partition1"), "the floppy ejected a second time is still refused")
+assert(#files.list(F"${fd}/partition1") > 0, "the floppy ejected a second time is still refused")
 
 -- A checkpoint taken while the disk was in restores after the eject, disk and
 -- all; one taken after it restores with the drive empty.
 assert(checkpoint.save(F"${vars.WORK_DIR}/out.checkpoint"), "checkpoint save with the drive empty")
 assert(checkpoint.load(F"${vars.WORK_DIR}/in.checkpoint"), "the checkpoint taken with the floppy in does not restore")
 assert(machine.floppy.drive[0].present, "the restored machine lost its floppy")
-assert(machine.floppy.drive[0].disk.filename == fd, "the restored drive holds another disk")
+assert(machine.floppy.drive[0].image.source == fd, "the restored drive holds another disk")
 assert(checkpoint.load(F"${vars.WORK_DIR}/out.checkpoint"), "the checkpoint taken with the drive empty does not restore")
 assert(not machine.floppy.drive[0].present, "the drive ejected before the save holds a disk after the restore")
 machine.floppy.drive[0].insert(fd, true)
@@ -64,8 +64,9 @@ assert(not gs.truthy(function() return files.list(F"${raw}/partition1") end), "a
 machine.restart()
 assert(not gs.truthy(function() return files.list(F"${dmg}/partition1") end), "a .dmg is served by the VFS after machine.restart")
 
--- A read-only insert leaves nothing the VFS cannot see: still served.
-machine.floppy.drive[1].insert(ro)
-assert(files.list(F"${ro}/partition1"), "a read-only floppy is refused by the VFS")
+-- A read-only (write-protected) insert leaves nothing the VFS cannot see:
+-- still served.
+machine.floppy.drive[1].insert(ro, false)
+assert(#files.list(F"${ro}/partition1") > 0, "a read-only floppy is refused by the VFS")
 
 quit()

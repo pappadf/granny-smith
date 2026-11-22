@@ -15,18 +15,18 @@ local function restarts(model, ram_kb)
     -- One medium per channel, so a power cycle that confused the two would
     -- show up as the wrong device rather than as silence.  Channel 0's is in
     -- bay 1: bay 0 is the CD bay, which takes only the CD-ROM drive.
-    assert(files.hd_create(F"${vars.WORK_DIR}/${model}-bay1.img", "80M"), "could not create the channel 0 disk")
-    assert(files.hd_create(F"${vars.WORK_DIR}/${model}-bay4.img", "80M"), "could not create the channel 1 disk")
+    assert(files.create(F"${vars.WORK_DIR}/${model}-bay1.img", "hd", "80M"), "could not create the channel 0 disk")
+    assert(files.create(F"${vars.WORK_DIR}/${model}-bay4.img", "hd", "80M"), "could not create the channel 1 disk")
     machine.scsi.attach_hd(F"${vars.WORK_DIR}/${model}-bay1.img", 1)
     machine.scsi2.attach_hd(F"${vars.WORK_DIR}/${model}-bay4.img", 4)
     assert(machine.scsi.device[1].type == "hd", F"${model}: channel 0 bay 1 not mounted")
     assert(machine.scsi2.device[4].type == "hd", F"${model}: channel 1 bay 4 not mounted")
 
     -- Everything that must survive the power cycle.
-    local ch0_stem = machine.scsi.device[1].image.path
-    local ch0_file = machine.scsi.device[1].image.filename
-    local ch1_stem = machine.scsi2.device[4].image.path
-    local ch1_file = machine.scsi2.device[4].image.filename
+    local ch0_stem = machine.scsi.device[1].image.delta
+    local ch0_file = machine.scsi.device[1].image.source
+    local ch1_stem = machine.scsi2.device[4].image.delta
+    local ch1_file = machine.scsi2.device[4].image.source
 
     machine.restart()
 
@@ -37,12 +37,12 @@ local function restarts(model, ram_kb)
 
     -- Both media still attached, on the SAME buses, as the SAME open
     -- instances: nothing was torn down, so nothing was reopened.
-    assert(machine.scsi.device[1].image.present, F"${model}: channel 0 medium gone")
-    assert(machine.scsi.device[1].image.filename == ch0_file, F"${model}: channel 0 is a different medium")
-    assert(machine.scsi.device[1].image.path == ch0_stem, F"${model}: channel 0 was reopened")
-    assert(machine.scsi2.device[4].image.present, F"${model}: channel 1 medium gone")
-    assert(machine.scsi2.device[4].image.filename == ch1_file, F"${model}: channel 1 is a different medium")
-    assert(machine.scsi2.device[4].image.path == ch1_stem, F"${model}: channel 1 was reopened")
+    assert(machine.scsi.device[1].present, F"${model}: channel 0 medium gone")
+    assert(machine.scsi.device[1].image.source == ch0_file, F"${model}: channel 0 is a different medium")
+    assert(machine.scsi.device[1].image.delta == ch0_stem, F"${model}: channel 0 was reopened")
+    assert(machine.scsi2.device[4].present, F"${model}: channel 1 medium gone")
+    assert(machine.scsi2.device[4].image.source == ch1_file, F"${model}: channel 1 is a different medium")
+    assert(machine.scsi2.device[4].image.delta == ch1_stem, F"${model}: channel 1 was reopened")
     -- And they did not swap buses on the way through.
     assert(not gs.ok(function() return machine.scsi.device[4].type end), F"${model}: channel 1's drive landed on channel 0")
     assert(not gs.ok(function() return machine.scsi2.device[1].type end), F"${model}: channel 0's drive landed on channel 1")

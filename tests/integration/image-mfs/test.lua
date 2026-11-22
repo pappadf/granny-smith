@@ -1,8 +1,8 @@
 -- Converted from test.script by scripts/script-to-lua.py
 -- A System 2.0.1 floppy: MFS, one flat directory of nine files.
 local d = "../../data/systems/System_2_0_1.dsk"
-assert(files.probe(d), "the MFS floppy is recognised as a disk")
-assert(machine.floppy.identify(d) == "400K", "it is a 400K floppy")
+assert(files.identify(d).opens, "the MFS floppy is recognised as a disk")
+assert(files.identify(d).floppy == "gcr400", "it is a 400K floppy")
 local names = ""
 for _, e in ipairs(files.list(F"${d}/partition1")) do
     names = F"${names}|${e.name}"

@@ -75,6 +75,29 @@ const checkpoint = () =>
 
 let files: Map<string, Uint8Array>;
 
+// files.identify as the fake core answers it: a floppy by its size; a disk
+// of at least 400 KB the fake finds a filesystem in (HFS: 'H', ISO 9660: 'I')
+// fits a hard disk and a CD-ROM drive, and is filed as a disc only for ISO.
+const FLOPPY_SIZES = [409600, 819200, 737280, 1474560];
+const fakeIdentify = (path: string) => {
+  const f = files.get(path);
+  const base = {
+    opens: !!f,
+    refusal: '',
+    archive: '',
+    floppy: '',
+    fits: [] as string[],
+    kind: '',
+    volumes: [],
+  };
+  if (!f) return base;
+  if (FLOPPY_SIZES.includes(f.length))
+    return { ...base, floppy: 'gcr800', fits: ['floppy'], kind: 'floppy' };
+  if (f.length >= 400 * 1024 && (f[0] === 0x48 || f[0] === 0x49))
+    return { ...base, fits: ['hd', 'cd'], kind: f[0] === 0x49 ? 'cd' : 'hd' };
+  return base;
+};
+
 beforeEach(() => {
   bridge.reset();
   _resetForTests();
@@ -95,9 +118,7 @@ beforeEach(() => {
   });
   bridge.reply('catalog.vroms.identify', { recognised: false });
   bridge.reply('catalog.proms.identify', { recognised: false });
-  bridge.reply('machine.scsi.identify_cdrom', false);
-  // Too small to be a disk.
-  bridge.reply('machine.scsi.identify_hd', false);
+  bridge.reply('files.identify', (args: unknown) => fakeIdentify((args as [string])[0]));
   bridge.reply('machine.boot', true);
   bridge.reply('checkpoint.load', true);
   bridge.reply('catalog.vroms.offer', true);
@@ -302,12 +323,6 @@ describe('a dropped disk image', () => {
   // A 2 MB image the fake core finds a disk (HFS: 'H', ISO 9660: 'I').
   const disk = (name: string, kind: 'H' | 'I') =>
     new File([new Uint8Array(2 * 1024 * 1024).fill(kind.charCodeAt(0))], name);
-  const kindOf = (args: unknown) => files.get((args as [string])[0])?.[0];
-  beforeEach(() => {
-    bridge.reply('machine.scsi.identify_hd', (a: unknown) => kindOf(a) !== undefined);
-    bridge.reply('machine.scsi.identify_cdrom', (a: unknown) => kindOf(a) !== undefined);
-    bridge.reply('machine.scsi.identify_iso', (a: unknown) => kindOf(a) === 0x49);
-  });
   const stored = () => [...files.keys()].filter((p) => p.startsWith('/opfs/images/')).sort();
 
   it('is a hard disk when it holds no ISO 9660', async () => {
@@ -335,9 +350,10 @@ describe('a floppy in a dropped Mac archive', () => {
       'm.sit.hqx',
     );
     const isArchive = (p: string) => /m\.sit\.hqx$/.test(p);
-    bridge.reply('files.archive.identify', (a: unknown) =>
-      isArchive((a as [string])[0]) ? 'hqx' : '',
-    );
+    bridge.reply('files.identify', (a: unknown) => {
+      const p = (a as [string])[0];
+      return isArchive(p) ? { ...fakeIdentify(p), opens: false, archive: 'hqx' } : fakeIdentify(p);
+    });
     bridge.reply('files.list', (a: unknown) => {
       const dir = (a as [string])[0];
       if (!isArchive(dir)) return [];

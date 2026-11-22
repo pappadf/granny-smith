@@ -2195,6 +2195,38 @@ def find_lib(script_path):
     return None
 
 
+def strict_list_asserts(lua):
+    """`assert files.list(p)` failed on an empty listing in the old language,
+    but a Lua table is always true: assert the listing's length instead."""
+    key, out, i = "assert(files.list(", [], 0
+    while True:
+        j = lua.find(key, i)
+        if j < 0:
+            out.append(lua[i:])
+            return "".join(out)
+        out.append(lua[i:j])
+        k = j + len("assert(")
+        q, depth, quote = lua.index("(", k), 0, None
+        while True:
+            c = lua[q]
+            if quote:
+                if c == "\\":
+                    q += 1
+                elif c == quote:
+                    quote = None
+            elif c in "\"'":
+                quote = c
+            elif c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            q += 1
+        out.append("assert(#" + lua[k:q + 1] + " > 0")
+        i = q + 1
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Convert a shell-v2 .script file to Lua 5.4.")
     ap.add_argument("input")
@@ -2212,7 +2244,7 @@ def main(argv=None):
     with open(args.input, encoding="utf-8") as f:
         text = f.read()
     conv = Converter(args.input, text, lib_path=lib, lib_names=lib_names, module=args.module)
-    lua = conv.convert()
+    lua = strict_list_asserts(conv.convert())
     if args.output:
         os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
         with open(args.output, "w", encoding="utf-8") as f:

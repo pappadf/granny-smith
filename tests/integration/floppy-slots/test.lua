@@ -1,7 +1,7 @@
 -- Converted from test.script by scripts/script-to-lua.py
 -- The q700 started with fd=a fd=b: a in drive 0, b nowhere.
 assert(machine.floppy.drive[0].present, "fd= filled drive 0")
-assert(machine.floppy.drive[0].disk.filename == F"${vars.WORK_DIR}/a.dsk", "drive 0 holds the first fd=")
+assert(machine.floppy.drive[0].image.source == F"${vars.WORK_DIR}/a.dsk", "drive 0 holds the first fd=")
 assert(gs.try(function() return machine.floppy.drive[1].present end, "none") == "none", "no drive 1 on a Quadra 700")
 
 -- The same on the PDM and TNT boards, whose drive 1 was a phantom "occupied".

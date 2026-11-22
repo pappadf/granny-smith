@@ -116,7 +116,7 @@ local function row_plus_608_fd()
     mac.report_row("6.0.8", "builtin", "fd-boot iwm 800k-gcr")
 
     -- Blank second floppy → the System's initialize-disk dialog.
-    assert(files.fd_create(F"${vars.WORK_DIR}/blank.dsk"), "plus-608-fd: fd_create failed")
+    assert(files.create(F"${vars.WORK_DIR}/blank.dsk", "floppy", "800K"), "plus-608-fd: create failed")
     machine.floppy.drive[1].insert(F"${vars.WORK_DIR}/blank.dsk", true)
     mac.wait_stable(300000000)
     assert(machine.floppy.drive[1].present, "plus-608-fd: blank floppy not present in drive 1")

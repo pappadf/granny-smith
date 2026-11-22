@@ -99,7 +99,7 @@ Quick checkpoints assume that disk image base files and their delta/journal pair
 
 ### How It Works
 
-`fd insert` / `hd attach` open the image at the given path via `image_create(base, pick_delta_dir(base))`. `pick_delta_dir` returns `checkpoint_machine_dir()` for OPFS-backed bases, so the delta and journal are created under `/opfs/checkpoints/<machine_id>-<created>/`. Quick checkpoints record the per-image `instance_path` so a future restore can reopen the same files via `image_open(base, instance_path)`.
+`fd insert` / `hd attach` open the image at the given path via `image_open_kind` (`image_kind.h`), whose fresh writable instance goes to `image_delta_dir(base)`. `image_delta_dir` returns `checkpoint_machine_dir()` for OPFS-backed bases, so the delta and journal are created under `/opfs/checkpoints/<machine_id>-<created>/`. Quick checkpoints record the per-image `instance_path` so a future restore can reopen the same files via `image_open(base, instance_path)`.
 
 A volatile path (`/tmp/…`) attached from the shell or API stays volatile: the image, its delta and the checkpoint's reference to it are gone after a reload. Copy it under `/opfs/` first to keep it.
 
@@ -133,7 +133,9 @@ Until 2026-09 the core copied every non-OPFS image to a flat, hash-named `/opfs/
 
 A single OPFS mount at `/opfs` is created in C `main()`. Subdirectories inside `/opfs/images` are created via `mkdir()` on the worker thread; the `<machine_id>-<created>` directory is created lazily by `checkpoint_machine_set()`.
 
-Read-only image opens (`image_open_readonly`) park their throwaway delta and journal under `/tmp/gs-image-ro/<random>.{delta,journal}` and delete those on `image_close`. They never touch `/opfs/images/`.
+Read-only image opens (`image_open_readonly`, a CD, a write-protected floppy) are write-protected and create no delta: their throwaway pair under `/tmp/gs-image-ro/<random>.{delta,journal}` is made only if a consolidated restore over a missing base writes to it, and is deleted on `image_close`. They never touch `/opfs/images/`.
+
+Which image a drive holds is saved as its **position** in the images part (`checkpoint_write_image_ref`): the images part is saved before any drive refers to it and stamps each image with its position as it goes, and a drive's restore resolves the position in the restored list (`checkpoint_read_image_ref`). A position rather than the file name, because a blank image has none and two drives may hold images of the same file. Every drive's image — the Lisa's ProFile included — is in that list; the ProFile no longer saves its own.
 
 
 ### Details and Best Practices
@@ -165,11 +167,11 @@ Read-only image opens (`image_open_readonly`) park their throwaway delta and jou
   - If a command or state spans multiple subsystems (e.g., floppy + image paths), keep the serialization logic in `system.c` or at an appropriate orchestration layer to avoid tight coupling inside a device subsystem.
 
 - Disk images and storage backends
-  - `image_checkpoint` writes the on-disk filename, a flags byte (`IMAGE_CKPT_WRITABLE`, and `IMAGE_CKPT_WRAPPED` for a bare volume attached through the wrapper — the restore re-wraps it; see `docs/internals/core/storage/bare-volume-wrapper.md`), the storage's raw size (`raw_size`, without any wrapper prefix), the per-image `instance_path` stem, and then delegates to `storage_checkpoint`. The `instance_path` field is what lets a future restore reopen the same delta+journal pair without relying on adjacent-to-base sidecars.
+  - `image_checkpoint` writes the on-disk filename, a flags byte (`IMAGE_CKPT_WRITABLE`, and `IMAGE_CKPT_WRAPPED` for a bare volume attached through the wrapper — the restore re-wraps it; see `docs/internals/core/storage/bare-volume-wrapper.md`), the kind byte (what the drive presents it as: the restore reopens it as the same), the storage's raw size (`raw_size`, without any wrapper prefix), the per-image `instance_path` stem, and then delegates to `storage_checkpoint`. The `instance_path` field is what lets a future restore reopen the same delta+journal pair without relying on adjacent-to-base sidecars.
   - `storage_checkpoint` inspects `checkpoint_get_kind(checkpoint)` to decide whether to write only the delta's index (quick checkpoints: the bitmap, then `cluster_blocks`, the slots in use and the cluster table of a v2 delta — snapshot version 3; see `docs/internals/core/storage/storage.md` §3, §7) or stream the entire disk (consolidated checkpoints).
   - During restore the image-restore helper (`mac_checkpoint_restore_one_image` in `src/machines/runtime/checkpoint_images.c`) reads `(name, writable, raw_size, instance_path)` and picks an opener based on `(writable, kind)`:
-    - **Consolidated + writable** → `image_create_empty(name, raw_size)` (`image_create_empty_udif` for a `.dmg` name) recreates the base file (only when absent: looked up through the source path opener, so a base inside an archive is found), then `image_create_with_geometry(name, checkpoint_machine_dir(), geom)` mints a fresh writable instance; `storage_restore_from_checkpoint` populates the delta from the embedded data — only the blocks that differ from the base (zeros where the base was recreated empty), so a restore costs the size of the changes, not of the disk (`storage_load_state`).
-    - **Quick + writable** → `image_open_with_geometry(name, instance_path, geom)` reopens the same delta+journal that were live at save time. `storage_restore_from_checkpoint` rolls the delta back to its last commit, reads the bitmap and cluster table from the checkpoint stream, and sets them as the current state. The delta's block data is already correct (OPFS auto-persisted every write).
+    - **Consolidated + writable** → `image_create_empty(name, raw_size)` (`image_create_empty_udif` for a `.dmg` name) recreates the base file (only when absent: looked up through the source path opener, so a base inside an archive is found), then `image_open_kind` mints a fresh writable instance in `checkpoint_machine_dir()`, as the kind the entry records; `storage_restore_from_checkpoint` populates the delta from the embedded data — only the blocks that differ from the base (zeros where the base was recreated empty), so a restore costs the size of the changes, not of the disk (`storage_load_state`).
+    - **Quick + writable** → `image_open_kind` with the saved `instance` reopens the same delta+journal that were live at save time. `storage_restore_from_checkpoint` rolls the delta back to its last commit, reads the bitmap and cluster table from the checkpoint stream, and sets them as the current state. The delta's block data is already correct (OPFS auto-persisted every write).
     - **Read-only** → `image_open_readonly(name)`. Per-instance scratch under `/tmp/gs-image-ro/` is fresh.
   - Old checkpoints written before the format change become unreadable naturally through `checkpoint_validate_build_id`; no migration code exists.
 

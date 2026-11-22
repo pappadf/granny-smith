@@ -10,8 +10,8 @@ local dmg = F"${vars.WORK_DIR}/hd.dmg"
 -- base and its delta again, not by a copy.
 machine.register("0123456789abcdef", "20261003T000000Z")
 assert(checkpoint.load(), "quick checkpoint load failed")
-assert(machine.scsi.device[0].image.filename == dmg, "the quick checkpoint did not reopen the UDIF base")
-assert(files.path_exists(F"${machine.scsi.device[0].image.path}.delta"), "the drive is not served through its delta")
+assert(machine.scsi.device[0].image.source == dmg, "the quick checkpoint did not reopen the UDIF base")
+assert(files.path_exists(F"${machine.scsi.device[0].image.delta}.delta"), "the drive is not served through its delta")
 assert(files.verify(dmg), "the base changed under the restore")
 mac.check(F"${vars.TEST_DIR}/desktop.png")
 scheduler.run(20000000)

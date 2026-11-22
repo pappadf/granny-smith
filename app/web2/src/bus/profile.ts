@@ -76,10 +76,11 @@ export interface StorageBus {
   card_slot?: string;
 }
 
+// One blank disk a bus's drives take: files.create(path, kind, size).
 export interface BlankDisk {
   label: string;
-  method: string;
-  arg: string;
+  kind: string;
+  size: number;
   name: string;
   ext: string;
 }
@@ -155,7 +156,7 @@ export interface ConfigDocument {
   floppies: Record<string, string>;
   storage: StorageDevice[];
   // partition: the startup volume's partition number on that disk
-  // (files.partitions), when one is chosen.
+  // (files.identify's volumes), when one is chosen.
   startup: { bus: string; unit: number; partition?: number } | null;
   cards: CardEntry[];
   displays: Record<string, DisplayEntry>;

@@ -13,9 +13,9 @@ assert(d.startup.bus == "scsi" and d.startup.unit == 2, "the startup device is t
 -- machine.storage names what is in each device and the bay eject_media
 -- takes it from -- what the web app rebuilds its mounts from after a
 -- checkpoint restore, which attached nothing through it.
-assert(machine.storage[2].filename == F"${vars.WORK_DIR}/hd.img", "storage names the hard disk's image")
+assert(machine.storage[2].source == F"${vars.WORK_DIR}/hd.img", "storage names the hard disk's image")
 assert(machine.storage[2].media.bus == "scsi" and machine.storage[2].media.id == 2, "and its bay")
-assert(machine.storage[1].filename == F"${vars.WORK_DIR}/cd.iso", "storage names the disc")
+assert(machine.storage[1].source == F"${vars.WORK_DIR}/cd.iso", "storage names the disc")
 assert(catalog.profile("lisa").storage[1].id == "profile", "the Lisa's disk is on the ProFile port")
 assert(#catalog.profile("lisa").storage == 1, "no phantom SCSI bus on the Lisa")
 assert(catalog.default_config("plus").storage[2].type == "cd", "the Plus has an external CD-ROM drive")
@@ -78,8 +78,8 @@ assert(gs.try(function() return machine.scsi.device[3].type end, "none") ~= "cdr
 machine.boot{model = "pmg3dt", rom = F"${vars.TEST_DATA}/roms/pmg3dt-pmg3mt-78f57389.rom", config = "{\"storage\":[{\"bus\":\"ata0\",\"unit\":0,\"type\":\"hd\"},{\"bus\":\"ata1\",\"unit\":0,\"type\":\"hd\"}]}"}
 machine.attach_media("ata1", 0, "hd", F"${vars.WORK_DIR}/hd2.img")
 assert(machine.storage[2].media.bus == "ata" and machine.storage[2].media.id == 2, "ata1 is ATA unit 2")
-assert(machine.storage[2].filename == F"${vars.WORK_DIR}/hd2.img", "storage names the ATA disk's image")
-assert(machine.storage[1].filename == "", "an empty device names no image")
+assert(machine.storage[2].source == F"${vars.WORK_DIR}/hd2.img", "storage names the ATA disk's image")
+assert(machine.storage[1].source == "", "an empty device names no image")
 
 -- An ATA bus takes an ATAPI CD-ROM drive too: the secondary bus's master
 -- (ata1 unit 0, ATA unit 2), where the Mac OS X 10.0 install CD boots from.
@@ -87,7 +87,7 @@ machine.boot{model = "pmg3dt", rom = F"${vars.TEST_DATA}/roms/pmg3dt-pmg3mt-78f5
 assert(machine.storage[2].type == "cd", "the configuration's ATA CD-ROM drive is in storage")
 machine.attach_media("ata1", 0, "cd", F"${vars.WORK_DIR}/hd2.img")
 assert(machine.storage[2].media.bus == "ata" and machine.storage[2].media.id == 2, "the ATA CD-ROM drive is ATA unit 2")
-assert(machine.storage[2].filename == F"${vars.WORK_DIR}/hd2.img", "storage names the disc's image")
+assert(machine.storage[2].source == F"${vars.WORK_DIR}/hd2.img", "storage names the disc's image")
 
 echo("media-bays-ok")
 quit()

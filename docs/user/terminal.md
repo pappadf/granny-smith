@@ -42,7 +42,7 @@ help                         what is at the top level
 objects machine              the parts of the machine
 methods files                what files can do
 attributes machine.screen    the values machine.screen has
-help files.hd_create         usage, arguments and an example
+help files.create            usage, arguments and an example
 ```
 
 Reading and changing a value:
@@ -56,7 +56,7 @@ Calling a method: arguments after the name, separated by spaces, or in
 parentheses:
 
 ```
-files.hd_create /opfs/images/hd/work.img 80mb
+files.create /opfs/images/hd/work.img hd 80mb
 machine.screen.save("/opfs/upload/screen.png")
 ```
 
@@ -74,13 +74,11 @@ tree; right-click a row there and **Copy path** to get the name to type.
 | `cat <file>` | Print a file |
 | `files.list <path>` | List a folder, and also the inside of disk images and archives |
 | `files.download <path>` | Download a file to your computer |
-| `files.probe <image>` | Say what kind of disk image a file is |
+| `files.identify <image>` | Say what a file is: whether it opens as a disk image (and why not), its archive and wrapper layers, size, floppy layout, partition map, Mac OS volumes (numbered as the machine numbers its partitions once attached, behind the GSDisk map when the disk has no driver), and which kinds of drive take it (`fits`) |
 | `files.partmap <image>` | Print a disk's partition map |
-| `files.partitions <image>` | A hard disk's Mac OS volumes as the machine numbers its partitions once attached (behind the GSDisk map when the disk has no driver): number, name, filesystem, and whether it holds Mac OS X's PowerPC booter |
 | `files.convert <in> <out>` | Write a compact `.dmg`; add `codec=xz` for one about 15% smaller (slower to read; opens in macOS 10.15 and later, not in 7-Zip or `dmg2img`), or `format=raw` for a plain image |
 | `files.archive.extract <archive> [dir]` | Unpack a `.sit`, `.cpt`, `.zip`, … |
-| `files.hd_create <path> <size>` | Make a blank hard disk (`80mb`, `HD230SC`, `100m`) |
-| `files.fd_create <path> <size>` | Make a blank floppy (`800k`, `1440k`) |
+| `files.create <path> <kind> <size>` | Make a blank image: `hd` (`80mb`, `HD230SC`, `100m`; a `.dmg` name makes a compact UDIF), `floppy` (`400k`, `800k`, `720k`, `1440k`) or `profile` (data bytes, `4980736` for the 5 MB ProFile); then put it in a drive with its `insert` |
 
 The browser storage is `/opfs`; your images are in `/opfs/images/<kind>/`.
 `/tmp` is temporary and is lost when the page reloads.
