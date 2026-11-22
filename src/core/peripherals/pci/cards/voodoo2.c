@@ -454,7 +454,20 @@ typedef struct voodoo2 {
         int depth; // aperture-handler nesting (the fifo re-enters it)
         uint64_t run0, card, fifo, setup, lfb, tex;
     } stats;
+
+    // The pixel-provenance watch's object surface (card.watch; the pixels
+    // themselves are the target's, tgt.watch[]): the entry objects by id,
+    // the next id, and the backend the first add swapped out for the
+    // synchronous walker ("" when it swapped none), put back by the last
+    // removal.
+    struct {
+        object_cache_t entries;
+        int next_id;
+        char restore[8];
+    } watch;
 } voodoo2_t;
+
+static const class_desc_t v2_watch_entry_class; // card.watch's entries (below)
 
 static inline uint64_t v2_tsc(void) {
 #if defined(__x86_64__) || defined(__i386__)
@@ -2599,6 +2612,7 @@ static void v2_teardown(pci_device_t *dev, config_t *cfg) {
     voodoo2_t *v = (voodoo2_t *)dev->priv;
     if (!v)
         return;
+    object_cache_clear(&v->watch.entries); // the watch's entry objects
     if (v->stats.on) {
         double run = (double)(v2_tsc() - v->stats.run0);
         LOG(V2_LOG_STATS,
@@ -3071,13 +3085,23 @@ static DEF_GETTER(regs_attr_raster) {
     voodoo2_t *v = node_card(self);
     return val_str(v ? v2_raster_name(v->raster) : "");
 }
-// Swap the raster backend in place: fence and join the old one, then build
+// Swap the raster backend in place (regs.raster, card.watch): fence and join the old one, then build
 // the new one on the same target.  The backends are equivalent by contract
 // (queue order is submission order, every observation point fences), so a
 // run can switch at any instruction boundary; tests use it to replay one
 // restored checkpoint under each backend.  The WebGPU takeover holds
 // pixels outside the shadow, so it neither gives up nor takes the card
 // here.
+static bool v2_swap_raster(voodoo2_t *v, const char *kind) {
+    v2_raster_sync(v->raster);
+    v2_raster_t *next = v2_raster_create(kind, &v->tgt, v2_build_state, v);
+    if (!next)
+        return false;
+    v2_raster_destroy(v->raster);
+    v->raster = next;
+    v2_raster_state_dirty(v->raster);
+    return true;
+}
 static DEF_SETTER(regs_attr_raster_set) {
     voodoo2_t *v = node_card(self);
     char kind[8];
@@ -3089,13 +3113,11 @@ static DEF_SETTER(regs_attr_raster_set) {
         return val_err("regs.raster: %s is not one of thread, sw, null", kind);
     if (strcmp(v2_raster_name(v->raster), "webgpu") == 0)
         return val_err("regs.raster: the webgpu backend cannot be swapped at run time");
-    v2_raster_sync(v->raster);
-    v2_raster_t *next = v2_raster_create(kind, &v->tgt, v2_build_state, v);
-    if (!next)
+    if (v2_raster_watch_armed(&v->tgt) && strcmp(kind, "sw") != 0)
+        return val_err("regs.raster: the pixel watch needs the synchronous walker (watch.clear first)");
+    if (!v2_swap_raster(v, kind))
         return val_err("regs.raster: could not create the %s backend", kind);
-    v2_raster_destroy(v->raster);
-    v->raster = next;
-    v2_raster_state_dirty(v->raster);
+    v->watch.restore[0] = '\0'; // chosen by hand: the watch puts nothing back
     return val_none();
 }
 static DEF_GETTER(regs_attr_gpu_engaged) {
@@ -3338,6 +3360,204 @@ static const class_desc_t v2_video_class = {
     .n_members = sizeof(video_members) / sizeof(video_members[0]),
 };
 
+// --- card.watch: the pixel-provenance watch ---------------------------------
+//
+// A logpoint on screen pixels, in the debug.logpoints shape: `add x y`
+// returns the entry, `entries` lists them by id, `clear` and each entry's
+// `remove` take them away.  While any is armed every colour-buffer store to
+// a watched pixel, the texels that shaded it and the pipe's stages are
+// logged under `voodoo2` at level 1 (V2_LOG_WATCH; `log.set voodoo2 1`).
+// The instrument runs inside the executor, so it needs the synchronous
+// walker: the first add swaps a thread backend for it at a fence (as
+// regs.raster does) and the last removal swaps the thread back; the WebGPU
+// takeover cannot be swapped at run time and the null backend draws no
+// triangles, so there an add is refused.  The pixels live in the target
+// (tgt.watch[]), written here only while the walker is the backend, i.e.
+// while no worker reads them.
+
+// The watch pixel entry `id` names, or NULL.
+static v2_watch_px_t *v2_watch_by_id(voodoo2_t *v, int id) {
+    for (int i = 0; i < v->tgt.n_watch; i++)
+        if (v->tgt.watch[i].id == id)
+            return &v->tgt.watch[i];
+    return NULL;
+}
+
+// Is a cached entry object still a watch pixel? (object_cache_sweep)
+static bool v2_watch_entry_live(struct object *entry, void *ud) {
+    return v2_watch_by_id((voodoo2_t *)ud, object_entry_index(entry)) != NULL;
+}
+
+// The pixel set changed: pick the walker copy, drop dead entry objects, and
+// once the last pixel is gone put back the backend the first add swapped out.
+static void v2_watch_changed(voodoo2_t *v) {
+    v2_raster_instruments_changed(v->raster);
+    object_cache_sweep(&v->watch.entries, v2_watch_entry_live, v);
+    if (v->tgt.n_watch == 0 && v->watch.restore[0]) {
+        if (!v2_swap_raster(v, v->watch.restore))
+            LOG(0, "watch: could not put the %s backend back -- staying on the synchronous walker", v->watch.restore);
+        v->watch.restore[0] = '\0';
+    }
+}
+
+// The card an entry or the container belongs to.
+static voodoo2_t *watch_card(struct object *self) {
+    return (voodoo2_t *)object_data(self);
+}
+
+static DEF_GETTER(watch_entry_attr_x) {
+    v2_watch_px_t *w = watch_card(self) ? v2_watch_by_id(watch_card(self), object_entry_index(self)) : NULL;
+    return w ? val_int(w->x) : val_err("watch entry removed");
+}
+static DEF_GETTER(watch_entry_attr_y) {
+    v2_watch_px_t *w = watch_card(self) ? v2_watch_by_id(watch_card(self), object_entry_index(self)) : NULL;
+    return w ? val_int(w->y) : val_err("watch entry removed");
+}
+static DEF_GETTER(watch_entry_attr_id) {
+    return val_int(object_entry_index(self));
+}
+static DEF_GETTER(watch_entry_attr_hits) {
+    voodoo2_t *v = watch_card(self);
+    v2_watch_px_t *w = v ? v2_watch_by_id(v, object_entry_index(self)) : NULL;
+    if (!w)
+        return val_err("watch entry removed");
+    v2_raster_sync(v->raster); // the walker counts (synchronous: a no-op)
+    return val_uint(4, w->hits);
+}
+static DEF_METHOD(watch_entry_method_remove) {
+    voodoo2_t *v = watch_card(self);
+    int id = object_entry_index(self);
+    v2_watch_px_t *w = v ? v2_watch_by_id(v, id) : NULL;
+    if (!w)
+        return val_err("watch entry #%d already removed", id);
+    v2_raster_sync(v->raster);
+    *w = v->tgt.watch[--v->tgt.n_watch]; // order is not observable
+    v2_watch_changed(v); // frees this entry object: touch nothing after
+    return val_none();
+}
+
+static const member_t watch_entry_members[] = {
+    {.kind = MK_ATTR,
+     .name = "x",
+     .doc = "Screen pixel column watched",
+     .attr = {.type = VK_INT, .get = watch_entry_attr_x}                                     },
+    {.kind = MK_ATTR,
+     .name = "y",
+     .doc = "Screen pixel row watched",
+     .attr = {.type = VK_INT, .get = watch_entry_attr_y}                                     },
+    {.kind = MK_ATTR,
+     .name = "hit_count",
+     .doc = "Colour-buffer stores to this pixel since it was added",
+     .attr = {.type = VK_UINT, .get = watch_entry_attr_hits}                                 },
+    {.kind = MK_ATTR,
+     .name = "id",
+     .doc = "Stable identifier; survives the removal of other entries",
+     .attr = {.type = VK_INT, .get = watch_entry_attr_id}                                    },
+    {.kind = MK_METHOD,
+     .name = "remove",
+     .doc = "Stop watching this pixel",
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = watch_entry_method_remove}},
+};
+static const class_desc_t v2_watch_entry_class = {
+    .name = "watch_pixel",
+    .doc = "One watched screen pixel",
+    .members = watch_entry_members,
+    .n_members = sizeof(watch_entry_members) / sizeof(watch_entry_members[0]),
+};
+
+static struct object *watch_entries_get(struct object *self, int index) {
+    voodoo2_t *v = watch_card(self);
+    if (!v || !v2_watch_by_id(v, index))
+        return NULL;
+    return object_cache_at(&v->watch.entries, index, v);
+}
+static int watch_entries_next(struct object *self, int prev_index) {
+    voodoo2_t *v = watch_card(self);
+    int best = -1;
+    for (int i = 0; v && i < v->tgt.n_watch; i++)
+        if (v->tgt.watch[i].id > prev_index && (best < 0 || v->tgt.watch[i].id < best))
+            best = v->tgt.watch[i].id;
+    return best;
+}
+
+// `card.watch.add x=320 y=240` -- watch one screen pixel; adding a pixel
+// already watched returns its entry.
+static DEF_METHOD(watch_method_add) {
+    voodoo2_t *v = watch_card(self);
+    if (!v)
+        return val_err("watch.add: no card");
+    int64_t x = argv[0].i, y = argv[1].i;
+    if (x < 0 || y < 0 || x >= V2_SCANOUT_MAX_W || y >= V2_SCANOUT_MAX_H)
+        return val_err("watch.add: (%lld,%lld) is off the largest screen (%ux%u)", (long long)x, (long long)y,
+                       (unsigned)V2_SCANOUT_MAX_W, (unsigned)V2_SCANOUT_MAX_H);
+    for (int i = 0; i < v->tgt.n_watch; i++)
+        if (v->tgt.watch[i].x == x && v->tgt.watch[i].y == y)
+            return val_obj(object_cache_at(&v->watch.entries, v->tgt.watch[i].id, v));
+    if (v->tgt.n_watch >= V2_WATCH_MAX)
+        return val_err("watch.add: at most %d pixels are watched at once", V2_WATCH_MAX);
+    const char *backend = v2_raster_name(v->raster);
+    if (strcmp(backend, "webgpu") == 0)
+        return val_err("watch.add: the watch needs the synchronous walker, and the webgpu backend cannot be swapped "
+                       "at run time -- boot with pci_option=\"raster=sw\"");
+    if (strcmp(backend, "null") == 0)
+        return val_err("watch.add: the null backend draws no triangles -- regs.raster = \"sw\" first");
+    if (!v2_raster_is_walker(v->raster)) {
+        // The thread backend: swap in the walker at a fence, put it back on the last removal
+        snprintf(v->watch.restore, sizeof(v->watch.restore), "%s", backend);
+        if (!v2_swap_raster(v, "sw")) {
+            v->watch.restore[0] = '\0';
+            return val_err("watch.add: could not switch to the synchronous walker");
+        }
+    }
+    v2_watch_px_t *w = &v->tgt.watch[v->tgt.n_watch++];
+    *w = (v2_watch_px_t){.x = (int32_t)x, .y = (int32_t)y, .id = v->watch.next_id++, .hits = 0};
+    v2_raster_instruments_changed(v->raster);
+    return val_obj(object_cache_at(&v->watch.entries, w->id, v));
+}
+
+static DEF_METHOD(watch_method_clear) {
+    voodoo2_t *v = watch_card(self);
+    if (!v)
+        return val_err("watch.clear: no card");
+    v2_raster_sync(v->raster);
+    v->tgt.n_watch = 0;
+    v2_watch_changed(v);
+    return val_none();
+}
+
+static const arg_decl_t watch_add_args[] = {
+    {.name = "x", .kind = VK_INT, .doc = "Screen pixel column"},
+    {.name = "y", .kind = VK_INT, .doc = "Screen pixel row"   },
+};
+
+static const collection_desc_t v2_watch_entries = {
+    .entry = &v2_watch_entry_class, .by_index = {.get = watch_entries_get, .next = watch_entries_next}
+};
+
+static const member_t watch_members[] = {
+    {.kind = MK_METHOD,
+     .name = "add",
+     .examples = EXAMPLES("machine.pci.slot[1].card.watch.add x=320 y=240"),
+     .doc = "Watch a screen pixel: log every colour-buffer store to it, the texels that shaded it and the pipe's "
+            "stages, under voodoo2 at level 1; adding a watched pixel returns its entry", .method = {.result_doc = "the watch entry",
+                .args = watch_add_args,
+                .nargs = 2,
+                .result = VK_OBJECT,
+                .fn = watch_method_add}},
+    {.kind = MK_METHOD,
+     .name = "clear",
+     .examples = EXAMPLES("machine.pci.slot[1].card.watch.clear"),
+     .doc = "Stop watching every pixel",
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = watch_method_clear}                                          },
+    OBJ_ENTRIES(&v2_watch_entries, NULL),
+};
+static const class_desc_t v2_watch_class = {
+    .name = "voodoo2_watch",
+    .doc = "The pixel-provenance watch: logpoints on screen pixels; entries by id",
+    .members = watch_members,
+    .n_members = sizeof(watch_members) / sizeof(watch_members[0]),
+};
+
 static void v2_attach_objects(pci_device_t *dev, struct object *card_node) {
     voodoo2_t *v = (voodoo2_t *)dev->priv;
     if (!v || !card_node)
@@ -3347,6 +3567,9 @@ static void v2_attach_objects(pci_device_t *dev, struct object *card_node) {
     object_set_category(regs, M_CAT_ADVANCED);
     struct object *dac = object_attach_new(card_node, &v2_dac_class, v, "dac", "DAC (ICS5342)", 40);
     object_set_category(dac, M_CAT_ADVANCED);
+    struct object *watch = object_attach_new(card_node, &v2_watch_class, v, "watch", "Pixel watch", 50);
+    object_set_category(watch, M_CAT_ADVANCED);
+    object_cache_set_parent(&v->watch.entries, watch);
 }
 
 // ============================================================
@@ -3357,34 +3580,17 @@ static void v2_attach_objects(pci_device_t *dev, struct object *card_node) {
 // memory is not a choice a user should have to make -- nothing needs the
 // 8 MB board -- and neither are the rasteriser's other backends; they stay
 // accepted through pci_option for the tests and the terminal:
-// memory=8m|12m, raster=thread|sw|null, and the pixel-provenance watch's
-// pixel, watch=XxY (screen pixel X, Y; armed only with the voodoo2 log
-// category at V2_LOG_WATCH when the card is made).
-
-// Parse a watch=XxY value into the screen pixel; false when malformed.
-static bool v2_parse_watch(const char *value, int *x, int *y) {
-    char *end;
-    long px = strtol(value, &end, 10);
-    if (end == value || *end != 'x' || px < 0 || px > 0xFFFF)
-        return false;
-    const char *ys = end + 1;
-    long py = strtol(ys, &end, 10);
-    if (end == ys || *end || py < 0 || py > 0xFFFF)
-        return false;
-    *x = (int)px;
-    *y = (int)py;
-    return true;
-}
+// memory=8m|12m, raster=thread|sw|null, and the walker cross-check,
+// xcheck=on|off (the soak run: every walker shortcut recomputed the long
+// way, a mismatch logged and aborted on; off by default).
 
 static bool v2_accepts_option(const char *key, const char *value) {
     if (strcmp(key, "memory") == 0)
         return strcmp(value, "8m") == 0 || strcmp(value, "12m") == 0;
     if (strcmp(key, "raster") == 0)
         return strcmp(value, "thread") == 0 || strcmp(value, "sw") == 0 || strcmp(value, "null") == 0;
-    if (strcmp(key, "watch") == 0) {
-        int x, y;
-        return v2_parse_watch(value, &x, &y);
-    }
+    if (strcmp(key, "xcheck") == 0)
+        return strcmp(value, "on") == 0 || strcmp(value, "off") == 0;
     return false;
 }
 
@@ -3413,14 +3619,12 @@ static int v2_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom, con
     v->tgt.fb = v->fb_ram;
     v->tgt.tex[0] = v->tex_ram[0];
     v->tgt.tex[1] = v->tex_ram[1];
-    // The debug instruments, this card's own, from the voodoo2 log
-    // category's level now: the watched pixel (pci_option watch=XxY),
-    // the walker cross-check, the producer decomposition
-    v->tgt.watch_x = v->tgt.watch_y = -1;
-    const char *watch = slot_opts_option(opts, "watch");
-    if (watch && log_would_log(log_local_category(), V2_LOG_WATCH))
-        v2_parse_watch(watch, &v->tgt.watch_x, &v->tgt.watch_y);
-    v->tgt.xcheck = log_would_log(log_local_category(), V2_LOG_XCHECK);
+    // The debug instruments, this card's own: the walker cross-check
+    // (pci_option xcheck=on), the producer decomposition (the voodoo2 log
+    // category's level now), and the watch's entries (card.watch, none yet)
+    const char *xcheck = slot_opts_option(opts, "xcheck");
+    v->tgt.xcheck = xcheck && strcmp(xcheck, "on") == 0;
+    v->watch.entries = (object_cache_t)OBJECT_CACHE(&v2_watch_entry_class, NULL);
     v->stats.on = log_would_log(log_local_category(), V2_LOG_STATS);
     v->stats.run0 = v2_tsc();
     const char *raster = slot_opts_option(opts, "raster");

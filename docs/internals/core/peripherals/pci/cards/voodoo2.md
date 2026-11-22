@@ -333,8 +333,9 @@ programmed and logs the overlapping configuration once).
 `fbiTrianglesOut` counts at *submission*, on the producer, and needs
 no fence — part of the contract.  Under `raster=thread` the level-5
 `tri` trace still comes from the producer; the pixel-provenance
-watch logs from inside the executor, so a thread backend refuses
-to start while it is armed and diagnosis uses the synchronous walker.
+watch logs from inside the executor, so it runs on the synchronous
+walker (its first `watch.add` swaps a thread backend for it at a fence,
+its last removal swaps the thread back).
 
 **Equivalence is asserted, not assumed.**  `tnt-pci-voodoo2` draws
 its drawing section on the default (the thread) and replays it
@@ -352,9 +353,9 @@ elsewhere at the same instruction count, so the restored frame is a golden
 of its own.)
 
 **The walker-optimization ladder** (bit-exact by construction; the
-three rows above are the oracle; the soak-run cross-check, on with
-`log.set voodoo2 3` before the card is created, recomputes every
-shortcut the long way and aborts on a mismatch):
+three rows above are the oracle; the soak-run cross-check,
+`pci_option="xcheck=on"`, recomputes every shortcut the long way and
+aborts on a mismatch):
 
 | rung | what | how it stays exact |
 |---|---|---|
@@ -364,7 +365,7 @@ shortcut the long way and aborts on a mismatch):
 | TMU skip | TMU1 not sampled when TMU0's combine consumes nothing from its chain input (`tc_zero_other`, `tca_zero_other`, no `a_other` mselect, not echoing config); the chain not run when `fbzColorPath` never reads `tex_argb` | dataflow: the dead value is multiplied by zero or never selected |
 | incremental | edge functions and every iterator evaluated in closed form at the first pixel of a row's inside run, then stepped by the X gradient; the row scan stops when the run ends | integer fixed point: `start + k·d` accumulated equals the closed form; a convex polygon's row is one interval |
 | pinned LOD | with `lodmin == lodmax` and equal min/mag filters the estimate (four divides and a `log2` per pixel) is never computed | the clamp pins `lod4` and `magnify` selects nothing |
-| inlining | the per-pixel leaf helpers are `always_inline`; the watch test is one predicted branch | no semantic content |
+| inlining | the per-pixel leaf helpers are `always_inline`; the debug instruments are compiled out of the walker the normal run takes (below) | no semantic content |
 
 Measured on the canonical launch (`scripts/voodoo2/bench.sh`: the
 glide row to its golden — Mac OS 8.1 boot, Finder launch, the attract
@@ -524,8 +525,9 @@ even its counters are exact), and the rectangle is uploaded again.
 Counted by reason in `regs.gpu_stats`, beside engagements, storms,
 readback bands, texture uploads and the worker's own frame/draw/
 pipeline counts; `regs.gpu_engaged` says whether the GPU presents
-right now.  The pixel-provenance watch (`pci_option="watch=XxY"`) refuses this
-backend as it refuses `thread`.
+right now.  The pixel-provenance watch (`card.watch`) refuses this
+backend: the takeover cannot be swapped at run time, so a watch on a
+`voodoo2_webgpu` card means booting it with `pci_option="raster=sw"`.
 
 **Availability.**  web2 starts the GPU worker at page load with the
 overlay canvas and writes whether a device exists into the bridge
@@ -603,21 +605,41 @@ Mac Glide render path travels through the CMDFIFO: a trace blind to it
 shows a card nobody is drawing on — the guest-software diagnosis lost an hour to
 exactly that.
 
-The card's debug instruments are levels of the same category, read when
-the card is created (so `log.set voodoo2 N` goes before `machine.boot`),
-and each card keeps its own — an SLI pair or a re-created card never
-shares or resets another's (`voodoo2_raster.h`, `V2_LOG_*`):
+The card's debug instruments, each card's own — an SLI pair or a
+re-created card never shares or resets another's:
 
-| level | instrument |
-|---|---|
-| 1 | the decomposition at teardown: the producer side (`producer stats:`, the card's aperture handlers and their fifo / setup / LFB / texture buckets as fractions of the run) and, on `raster=thread`, the queue's (`raster=thread stats:`); and the pixel-provenance watch, when `pci_option` names a `watch=` pixel |
-| 3 | the soak-run cross-check: every walker shortcut recomputed the long way, a mismatch logged (`xcheck: ...`) and aborted on |
+| instrument | turned on by | reports |
+|---|---|---|
+| the decomposition | `log.set voodoo2 1` before the card is created (`V2_LOG_STATS`) | at teardown, under `voodoo2` level 1: the producer side (`producer stats:`, the card's aperture handlers and their fifo / setup / LFB / texture buckets as fractions of the run) and, on `raster=thread`, the queue's (`raster=thread stats:`) |
+| the pixel-provenance watch | `card.watch.add x= y=`, any time (below) | under `voodoo2` level 1 (`V2_LOG_WATCH`, `log.set voodoo2 1`), like a level-gated logpoint; each entry's `hit_count` counts whatever the level |
+| the walker cross-check | `pci_option="xcheck=on"` (read when the card is created; `off` is the default) | nothing while every shortcut holds; a mismatch is an always-on (level 0) `xcheck: ...` line, then an abort |
+
+**No instrument costs the normal run anything.**  Every walker function
+that carries one is written once over a constant `dbg` and compiled
+twice (`voodoo2_raster.c`): the plain copy has no watch or cross-check
+code in it at all, and the backend picks the instrumented copy only
+while an instrument is on — the synchronous walker's `sw` kind turns
+into its instrumented twin while a pixel is watched or `xcheck=on`, and
+a worker started with `xcheck=on` takes the instrumented step.  With
+both off there is no per-pixel, per-span or per-command test.  The
+decomposition's TSC reads stay behind one per-call flag of the card,
+as before.
 
 Two further tools trace a single wrong pixel to its texels:
 
-- **`pci_option="watch=XxY"`** (screen pixel X, Y; armed when the
-  card is created with `log.set voodoo2 1` or higher already set, and
-  the card then takes the synchronous walker): logs every colour-buffer store to that pixel
+- **`machine.pci.slot[N].card.watch`** — logpoints on screen pixels, in
+  the `debug.logpoints` shape: `watch.add x=320 y=240` returns the entry
+  (adding a watched pixel returns its entry; at most 8 at once),
+  `watch.entries` lists them by id (`x`, `y`, `hit_count`, `id`,
+  `remove()`), `watch.clear` removes them all.  The instrument runs
+  inside the executor, so it needs the synchronous walker: on the thread
+  backend the first add swaps the walker in at a fence (as
+  `regs.raster = "sw"` does; `regs.raster` reads `sw` meanwhile, and
+  refuses anything else until the watch is cleared) and the last removal
+  swaps the thread back.  The WebGPU takeover cannot be swapped at run
+  time and the null backend draws no triangles, so there `watch.add` is
+  refused: boot with `pci_option="raster=sw"`.  Each watched pixel
+  logs every colour-buffer store to it
   with the full shading state, every texel fetch that fed it
   (`watch texel tmuN lodN (s,t) addr lodbase raw argb`), and one
   pipe-internals line per pixel (`watch pipe tex= iter= cc= fogmode=
