@@ -230,13 +230,8 @@ static void part_save_gossamer_swim3(void *obj, checkpoint_t *cp) {
     CP_FIELD(system_write_checkpoint_data, cp, st->fdport.ring);
 }
 
-static void part_save_gossamer_ata(void *obj, checkpoint_t *cp) {
-    gos_ata_checkpoint_save(obj, cp);
-}
-
-static void part_save_gossamer_bmac(void *obj, checkpoint_t *cp) {
-    gos_bmac_checkpoint_save(obj, cp);
-}
+MACHINE_PART_SAVE(gos_ata_checkpoint_save, config_t)
+MACHINE_PART_SAVE(gos_bmac_checkpoint_save, config_t)
 
 static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     gossamer_state_t *st = calloc(1, sizeof(*st));
@@ -393,11 +388,11 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     // The two ATA cells and their ATAPI back end.
     machine_part_begin(cfg, cp, "ata");
     gos_ata_init(cfg, cp);
-    machine_part(cfg, cp, "ata", part_save_gossamer_ata, cfg);
+    machine_part(cfg, cp, "ata", gos_ata_checkpoint_save_part, cfg);
     gos_ata_attach_objects(cfg);
     machine_part_begin(cfg, cp, "bmac");
     gos_bmac_init(cfg, cp);
-    machine_part(cfg, cp, "bmac", part_save_gossamer_bmac, cfg);
+    machine_part(cfg, cp, "bmac", gos_bmac_checkpoint_save_part, cfg);
     gos_bmac_attach_objects(cfg);
     if (cp)
         gos_recompute_irq(cfg);

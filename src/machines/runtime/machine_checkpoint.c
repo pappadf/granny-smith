@@ -65,9 +65,7 @@ MACHINE_PART_SAVE_EXTERN(cuda, cuda_checkpoint, cuda_t)
 MACHINE_PART_SAVE_EXTERN(dbdma, dbdma_checkpoint, dbdma_t)
 MACHINE_PART_SAVE_EXTERN(mesh, mesh_checkpoint, mesh_t)
 
-static void part_save_imagewriter(void *obj, checkpoint_t *cp) {
-    iw_printer_checkpoint(obj, cp);
-}
+MACHINE_PART_SAVE(iw_printer_checkpoint, iw_printer_t)
 
 // A Macintosh print job's title: the foreground application's name, the
 // Pascal string in the low-memory global CurApName ($910, 32 bytes).
@@ -120,7 +118,7 @@ void machine_part_imagewriter(config_t *cfg, checkpoint_t *cp, bool lisa) {
         iw_model_t model = strcmp(choice, "imagewriter") == 0 ? IW_MODEL_IW1 : IW_MODEL_IW2;
         iw_printer_install(cfg->imagewriter, model, conn);
     }
-    machine_part(cfg, cp, "imagewriter", part_save_imagewriter, cfg->imagewriter);
+    machine_part(cfg, cp, "imagewriter", iw_printer_checkpoint_part, cfg->imagewriter);
     // The AppleTalk ImageWriter: on the network beside the LaserWriter on
     // every machine with AppleTalk, whatever is on the serial ports (#345)
     if (!cfg->atalk)
@@ -133,7 +131,7 @@ void machine_part_imagewriter(config_t *cfg, checkpoint_t *cp, bool lisa) {
     }
     if (!lisa)
         iw_printer_set_title_source(cfg->atalk_imagewriter, mac_print_title);
-    machine_part(cfg, cp, "atalk_imagewriter", part_save_imagewriter, cfg->atalk_imagewriter);
+    machine_part(cfg, cp, "atalk_imagewriter", iw_printer_checkpoint_part, cfg->atalk_imagewriter);
 }
 
 static void part_save_irq(void *obj, checkpoint_t *cp) {
@@ -170,13 +168,11 @@ void machine_part_pmmu(config_t *cfg, checkpoint_t *cp, mmu_state_t *mmu, via_t 
     machine_part(cfg, cp, "mmu", part_save_mmu, mmu);
 }
 
-static void part_save_images(void *obj, checkpoint_t *cp) {
-    mac_checkpoint_save_images(obj, cp);
-}
+MACHINE_PART_SAVE(mac_checkpoint_save_images, config_t)
 
 void machine_part_images(config_t *cfg, checkpoint_t *cp) {
     machine_part_begin(cfg, cp, "images");
     if (cp)
         mac_checkpoint_restore_images(cfg, cp);
-    machine_part(cfg, cp, "images", part_save_images, cfg);
+    machine_part(cfg, cp, "images", mac_checkpoint_save_images_part, cfg);
 }

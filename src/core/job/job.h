@@ -86,7 +86,7 @@ uint32_t job_current_client(void);
 bool job_current_cancelled(void);
 
 // The word the emulator thread parks on when idle (mailbox.c sets it): a
-// job wakes it through mailbox_notify on that word.
+// job wakes it through platform_wake on that word.
 void job_layer_set_wake_word(volatile uint32_t *word);
 
 // Emulator thread: is there a call or a finished job to serve?  Cheap.

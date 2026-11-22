@@ -62,7 +62,7 @@ LOG_USE_CATEGORY_NAME("board");
 // ============================================================
 
 static void iici_set_rom_overlay(config_t *cfg, bool overlay) {
-    m68k_board_overlay_set_line(&iici_state(cfg)->overlay, overlay);
+    m68k_board_overlay_set_line(&iici_st(cfg)->overlay, overlay);
 }
 
 // ============================================================
@@ -117,7 +117,7 @@ static void iici_split_ram_banks(uint32_t ram_size, uint32_t *bank_a, uint32_t *
 }
 
 static void iici_memory_layout_init(config_t *cfg) {
-    iici_state_t *st = iici_state(cfg);
+    iici_state_t *st = iici_st(cfg);
 
     uint32_t ram_size = cfg->ram_size;
     uint32_t rom_size = cfg->machine->rom_size;
@@ -241,7 +241,7 @@ static const m68k_board_desc_t iici_board_desc = {
 // IIci device construction (mdu_board_t.build_devices): everything after
 // the shared core/RTC/SCC/VIA1 prefix and before m68k_board_finish.
 static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
-    iici_state_t *st = iici_state(cfg);
+    iici_state_t *st = iici_st(cfg);
     // The IIci bit-bangs the RTC on VIA1 (classic transceiver path).
     rtc_set_via(cfg->rtc, cfg->via1);
 

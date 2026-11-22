@@ -289,7 +289,7 @@ typedef struct iifx_state {
 } iifx_state_t;
 
 // Returns the IIfx state for a config.
-static inline iifx_state_t *iifx_state(config_t *cfg) {
+static inline iifx_state_t *iifx_st(config_t *cfg) {
     return (iifx_state_t *)cfg->machine_context;
 }
 
@@ -387,7 +387,7 @@ static void iifx_trigger_vbl(config_t *cfg);
 // Used by the phase-$90 invert mechanism (toggled on each 0→1
 // transition of OSS_ROM_CTRL bit 3 in `iifx_oss_control()`).
 static void iifx_apply_fmc_rom_invert(config_t *cfg, bool enable) {
-    iifx_state_t *st = iifx_state(cfg);
+    iifx_state_t *st = iifx_st(cfg);
     uint32_t rom_size = cfg->machine->rom_size;
     if (rom_size == 0)
         return;
@@ -557,7 +557,7 @@ static void scsidma_fifo_clear(iifx_state_t *st) {
 // from scratch, and not clearing the engine state would leave a
 // stale active flag and FIFO content.
 static void iifx_scsidma_reset_chip_only(config_t *cfg) {
-    iifx_state_t *st = iifx_state(cfg);
+    iifx_state_t *st = iifx_st(cfg);
     st->scsi_dma_active = false;
     st->scsi_dma_done_latch = false;
     st->scsi_dma_bus_error_latch = false;
@@ -567,7 +567,7 @@ static void iifx_scsidma_reset_chip_only(config_t *cfg) {
 // The SCSI DMA wrapper as construction leaves it: no transfer, no latches,
 // every register zero.  A power cycle's half (iifx_power_on).
 static void iifx_scsidma_power_on(config_t *cfg) {
-    iifx_state_t *st = iifx_state(cfg);
+    iifx_state_t *st = iifx_st(cfg);
     iifx_scsidma_reset_chip_only(cfg);
     st->scsi_dma_ctrl = 0;
     st->scsi_dma_count = 0;
@@ -584,7 +584,7 @@ static void iifx_scsidma_power_on(config_t *cfg) {
 
 // Successful Apple DMA completion (spec §17).
 static void iifx_scsidma_finish_success(config_t *cfg) {
-    iifx_state_t *st = iifx_state(cfg);
+    iifx_state_t *st = iifx_st(cfg);
     st->scsi_dma_active = false;
     st->scsi_dma_done_latch = true;
     scsi_signal_eop(cfg->scsi);
@@ -614,7 +614,7 @@ static uint32_t iifx_scsidma_read_ctrl_status(const iifx_state_t *st, scsi_t *sc
 // if DMAEN cleared, abort active DMA; if ARBEN cleared, clear
 // WONARB latch.
 static void iifx_scsidma_write_ctrl(config_t *cfg, uint32_t data) {
-    iifx_state_t *st = iifx_state(cfg);
+    iifx_state_t *st = iifx_st(cfg);
     uint32_t prev = st->scsi_dma_ctrl;
 
     if (data & SCSIDMA_RESET)
@@ -677,7 +677,7 @@ static void iifx_scsidma_write_ctrl(config_t *cfg, uint32_t data) {
 // model its register-visible behaviour without driving a redundant
 // IRQ source.
 static void iifx_scsidma_update_int(config_t *cfg) {
-    iifx_state_t *st = iifx_state(cfg);
+    iifx_state_t *st = iifx_st(cfg);
     bool scsi_side = scsi_get_irq_active(cfg->scsi);
     bool wd_side = st->scsi_dma_watchdog_irq_latch;
     bool asserted =
@@ -692,7 +692,7 @@ static void iifx_scsidma_update_int(config_t *cfg) {
 // the embedded 53C80; $080..$1FF are wrapper-local.  An inspection (`peek`)
 // reads the same value and clears no latch.
 static uint8_t iifx_scsidma_read_uint8(config_t *cfg, uint32_t offset, bool peek) {
-    iifx_state_t *st = iifx_state(cfg);
+    iifx_state_t *st = iifx_st(cfg);
     uint32_t off = offset & 0x1fff;
 
     if (off < 0x80) {
@@ -727,7 +727,7 @@ static uint8_t iifx_scsidma_read_uint8(config_t *cfg, uint32_t offset, bool peek
 
 // Writes one SCSI DMA register byte.
 static void iifx_scsidma_write_uint8(config_t *cfg, uint32_t offset, uint8_t value) {
-    iifx_state_t *st = iifx_state(cfg);
+    iifx_state_t *st = iifx_st(cfg);
     uint32_t off = offset & 0x1fff;
 
     // Per-register PC trace for the SCSI-DMA discriminator investigation.
@@ -892,7 +892,7 @@ static inline uint32_t iifx_scsidma_bus_addr(uint32_t addr) {
 // REQ/ACK / EOP / phase transitions internally; we re-check phase
 // on each iteration so a phase change mid-burst cleanly exits.
 static void iifx_scsidma_pump(config_t *cfg) {
-    iifx_state_t *st = iifx_state(cfg);
+    iifx_state_t *st = iifx_st(cfg);
     scsi_t *scsi = cfg->scsi;
 
     // Engine runs whenever:
@@ -1026,7 +1026,7 @@ static void iifx_io_biu_write(config_t *cfg, uint32_t win_off, uint32_t addr, ui
 // right-shifting serial register (POST phase $8F: writes insert at bit 15,
 // reads take bit 0 and shift right); the rest is a plain R/W backing array.
 static uint8_t ossext_read(config_t *cfg, uint32_t addr, bool peek) {
-    iifx_state_t *st = iifx_state(cfg);
+    iifx_state_t *st = iifx_st(cfg);
     uint32_t offset = addr & IIFX_IO_MIRROR;
     if (offset == IO_OSS_EXT_SHIFT) {
         uint8_t v = (uint8_t)(st->oss_ext_shift & 1u);
@@ -1046,7 +1046,7 @@ static uint8_t iifx_io_ossext_peek(config_t *cfg, uint32_t win_off, uint32_t add
 }
 static void iifx_io_ossext_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
     (void)win_off; // this window's handler decodes from addr itself
-    iifx_state_t *st = iifx_state(cfg);
+    iifx_state_t *st = iifx_st(cfg);
     uint32_t offset = addr & IIFX_IO_MIRROR;
     if (offset == IO_OSS_EXT_SHIFT) {
         st->oss_ext_shift = (uint16_t)((st->oss_ext_shift >> 1) | ((value & 1u) << 15));
@@ -1130,7 +1130,7 @@ static uint32_t iifx_io_read_uint32(void *ctx, uint32_t addr) {
 // Recomputes the CPU IPL from OSS state.
 static void iifx_oss_irq_changed(void *context) {
     config_t *cfg = (config_t *)context;
-    iifx_state_t *st = iifx_state(cfg);
+    iifx_state_t *st = iifx_st(cfg);
     cfg->rt.irq = oss_pending(st->oss);
     cpu_set_ipl(cfg->cpu, oss_highest_ipl(st->oss));
     cpu_reschedule(cfg->scheduler);
@@ -1149,7 +1149,7 @@ static void iifx_oss_irq_changed(void *context) {
 // bitwise complement of the corresponding ROM bytes.
 static void iifx_oss_control(void *context, uint8_t value) {
     config_t *cfg = (config_t *)context;
-    iifx_state_t *st = iifx_state(cfg);
+    iifx_state_t *st = iifx_st(cfg);
     if (value & 0x80u) {
         LOG(0, "IIfx soft power-off (OSS ROM control bit 7)");
         if (cfg->scheduler)
@@ -1167,14 +1167,14 @@ static void iifx_oss_control(void *context, uint8_t value) {
 // Routes an IOP host interrupt line to its OSS source.
 static void iifx_scc_iop_irq(void *context, bool active) {
     config_t *cfg = (config_t *)context;
-    iifx_state_t *st = iifx_state(cfg);
+    iifx_state_t *st = iifx_st(cfg);
     oss_set_source(st->oss, IIFX_OSS_PSCC, active);
 }
 
 // Routes the ISM/SWIM IOP host interrupt line to OSS.
 static void iifx_swim_iop_irq(void *context, bool active) {
     config_t *cfg = (config_t *)context;
-    iifx_state_t *st = iifx_state(cfg);
+    iifx_state_t *st = iifx_st(cfg);
     oss_set_source(st->oss, IIFX_OSS_PSWM, active);
 }
 
@@ -1184,7 +1184,7 @@ static void iifx_swim_iop_irq(void *context, bool active) {
 // every VIA2/RBV/OSS machine (MskSound).
 static void iifx_asc_irq(void *context, bool active) {
     config_t *cfg = (config_t *)context;
-    iifx_state_t *st = iifx_state(cfg);
+    iifx_state_t *st = iifx_st(cfg);
     if (st && st->oss)
         oss_set_source(st->oss, IIFX_OSS_SOUND, active);
 }
@@ -1192,7 +1192,7 @@ static void iifx_asc_irq(void *context, bool active) {
 // Routes a direct SCC interrupt to the SCC IOP OSS source.
 static void iifx_scc_irq(void *context, bool active) {
     config_t *cfg = (config_t *)context;
-    iifx_state_t *st = iifx_state(cfg);
+    iifx_state_t *st = iifx_st(cfg);
     if (st && st->oss)
         oss_set_source(st->oss, IIFX_OSS_PSCC, active);
 }
@@ -1217,7 +1217,7 @@ static void iifx_via1_shift_out(void *context, uint8_t byte) {
 // Routes VIA1 aggregate interrupts through OSS source 11.
 static void iifx_via1_irq(void *context, bool active) {
     config_t *cfg = (config_t *)context;
-    iifx_state_t *st = iifx_state(cfg);
+    iifx_state_t *st = iifx_st(cfg);
     oss_set_source(st->oss, IIFX_OSS_VIA1, active);
 }
 
@@ -1237,7 +1237,7 @@ static void iifx_via1_irq(void *context, bool active) {
 static void iifx_scsi_irq(void *context, bool irq, bool drq) {
     (void)irq;
     config_t *cfg = (config_t *)context;
-    iifx_state_t *st = iifx_state(cfg);
+    iifx_state_t *st = iifx_st(cfg);
     if (!st || !st->oss)
         return;
     iifx_scsidma_update_int(cfg);
@@ -1260,7 +1260,7 @@ static void iifx_nubus_slot_irq(config_t *cfg, int slot, bool active) {
     int source = slot - 0x9;
     if (source < 0 || source > 5)
         return;
-    iifx_state_t *st = iifx_state(cfg);
+    iifx_state_t *st = iifx_st(cfg);
     if (!st || !st->oss)
         return;
     oss_set_source_mask(st->oss, (uint16_t)(1u << source), active);
@@ -1268,7 +1268,7 @@ static void iifx_nubus_slot_irq(config_t *cfg, int slot, bool active) {
 
 // Pulses the IIfx 60 Hz sources.
 static void iifx_trigger_vbl(config_t *cfg) {
-    iifx_state_t *st = iifx_state(cfg);
+    iifx_state_t *st = iifx_st(cfg);
     via_pulse_c(cfg->via1, 0, 0); // VBL: CA1 low then high
     if (st && st->oss)
         oss_set_source(st->oss, IIFX_OSS_60HZ, true);
@@ -1280,7 +1280,7 @@ static void iifx_trigger_vbl(config_t *cfg) {
 
 // Initializes IIfx physical memory, ROM switching, I/O, and NuBus aliases.
 static void iifx_memory_layout_init(config_t *cfg) {
-    iifx_state_t *st = iifx_state(cfg);
+    iifx_state_t *st = iifx_st(cfg);
     uint32_t ram_size = cfg->ram_size;
     uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
 
@@ -1328,7 +1328,7 @@ static void iifx_memory_layout_init(config_t *cfg) {
 
 // Reasserts reset-time IIfx hardware state.
 static void iifx_bus_reset(config_t *cfg) {
-    iifx_state_t *st = iifx_state(cfg);
+    iifx_state_t *st = iifx_st(cfg);
     m68k_board_overlay_arm(&st->overlay);
     system_reset_common_devices(cfg);
     // Both IOPs are on the net (iop_reset cites the F19 theory of operation).
@@ -1343,7 +1343,7 @@ static void iifx_bus_reset(config_t *cfg) {
 // the ROM downloads their firmware again), the ASC's Power On Clear and the
 // FMC's ROM-invert flip-flop.
 static void iifx_power_on(config_t *cfg) {
-    iifx_state_t *st = iifx_state(cfg);
+    iifx_state_t *st = iifx_st(cfg);
     iop_power_on(st->scc_iop);
     iop_power_on(st->swim_iop);
     oss_power_on(st->oss);
@@ -1383,9 +1383,7 @@ static const m68k_board_desc_t iifx_board_desc = {
 };
 
 // Checkpoint parts of the IIfx's own (machine_parts.h).
-static void part_save_oss(void *obj, checkpoint_t *cp) {
-    oss_checkpoint(obj, cp);
-}
+MACHINE_PART_SAVE(oss_checkpoint, oss_t)
 
 // The SCSI DMA engine's registers, which live in the machine state: one
 // list for the save and the restore (checkpoint.h, "Field lists").
@@ -1478,7 +1476,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     machine_part_begin(cfg, checkpoint, "oss");
     st->oss = oss_init(iifx_oss_irq_changed, iifx_oss_control, cfg, cfg->scheduler, checkpoint);
-    machine_part(cfg, checkpoint, "oss", part_save_oss, st->oss);
+    machine_part(cfg, checkpoint, "oss", oss_checkpoint_part, st->oss);
     st->oss_iface = oss_get_memory_interface(st->oss);
     asc_set_irq_handler(st->asc, iifx_asc_irq, cfg); // sound IRQ → OSS source 8
     scsi_set_irq_callback(cfg->scsi, iifx_scsi_irq, cfg);
@@ -1519,7 +1517,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
 
 // Tears down an IIfx machine.
 static void iifx_teardown(config_t *cfg) {
-    iifx_state_t *st = iifx_state(cfg);
+    iifx_state_t *st = iifx_st(cfg);
     if (st) {
         if (st->scc_iop) {
             iop_delete(st->scc_iop);

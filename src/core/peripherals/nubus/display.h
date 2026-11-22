@@ -376,6 +376,13 @@ void display_head_save(struct checkpoint *cp, const display_t *d);
 // Read what display_head_save wrote and apply it to `d`.
 void display_head_restore(struct checkpoint *cp, display_t *d);
 
+// The head as an entry of a card's CP_FIELD list (checkpoint.h): OP is
+// system_write_checkpoint_data or system_read_checkpoint_data, and picks
+// display_head_save or display_head_restore.
+#define DISPLAY_HEAD_CP(OP, cp, d)                          DISPLAY_HEAD_CP_##OP((cp), (d))
+#define DISPLAY_HEAD_CP_system_write_checkpoint_data(cp, d) display_head_save((cp), (d))
+#define DISPLAY_HEAD_CP_system_read_checkpoint_data(cp, d)  display_head_restore((cp), (d))
+
 // One pixel of a row, as RGB.
 //
 // `clut_len` of zero used to reach `idx % clut_len` and divide by zero; a

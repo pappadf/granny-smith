@@ -14,7 +14,7 @@
 // ring through shared wasm memory (app/web2/src/bus/mailbox.ts is the
 // mirror of this header), the headless daemon will feed it from a socket,
 // and the unit suite feeds it from the same process.  The platform decides
-// where the region lives, who wakes whom (mailbox_notify) and what the
+// where the region lives, who wakes whom (platform_wake) and what the
 // drain budget is; this file decides what the records mean.
 //
 // Control block, 32 uint32 words, 64-byte aligned, then the two rings:
@@ -364,9 +364,5 @@ void mailbox_result_bind_io(uint32_t token, uint32_t io_job);
 void mailbox_result_progress(uint32_t token, uint64_t done, uint64_t total);
 // The request id a token answers (0: unknown), for events that name it.
 uint32_t mailbox_result_request_id(uint32_t token);
-
-// Platform hook: wake whoever waits on a control word (the client parks in
-// Atomics.waitAsync on EVT_HEAD and READY).  Weak no-op by default.
-void mailbox_notify(volatile uint32_t *word);
 
 #endif // GS_MAILBOX_H

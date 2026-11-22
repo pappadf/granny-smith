@@ -95,7 +95,7 @@
 typedef glue_state_t se30_state_t;
 
 // Helper: return the SE/30-specific state from a config handle
-static inline se30_state_t *se30_state(config_t *cfg) {
+static inline se30_state_t *se30_st(config_t *cfg) {
     return (se30_state_t *)cfg->machine_context;
 }
 
@@ -120,7 +120,7 @@ static void se30_via1_output(void *context, uint8_t port, uint8_t output);
 // On reset, ROM is overlaid at $00000000 for the initial vector fetch.
 // The ROM boot code disables the overlay by writing 0 to VIA1 PA4.
 static void se30_set_rom_overlay(config_t *cfg, bool overlay) {
-    m68k_board_overlay_set_line(&se30_state(cfg)->overlay, overlay);
+    m68k_board_overlay_set_line(&se30_st(cfg)->overlay, overlay);
 }
 
 // ============================================================
@@ -149,7 +149,7 @@ static void se30_set_rom_overlay(config_t *cfg, bool overlay) {
 // window and the I/O dispatcher are the family's (glue_memory_layout);
 // this is the part only a machine with a framebuffer on the board has.
 static void se30_memory_layout_tail(config_t *cfg) {
-    se30_state_t *se30 = se30_state(cfg);
+    se30_state_t *se30 = se30_st(cfg);
 
     // --- VRAM: $FEE00000 - $FEE0FFFF (64 KB writable) ---
     // Mirror the 64 KB across the 1 MB decode window $FEE00000-$FEEFFFFF
@@ -194,7 +194,7 @@ static void se30_memory_layout_tail(config_t *cfg) {
 // VIA1 output callback: routes port A/B changes to peripherals
 static void se30_via1_output(void *context, uint8_t port, uint8_t output) {
     config_t *cfg = (config_t *)context;
-    se30_state_t *se30 = se30_state(cfg);
+    se30_state_t *se30 = se30_st(cfg);
 
     if (port == 0) {
         // Port A outputs:
@@ -353,7 +353,7 @@ static const nubus_slot_decl_t se30_slots[] = {
 // ROM never writes TT registers; the GLUE chip routes $F0-$FF to NuBus, and TT1
 // identity-maps that for supervisor FCs so phys_to_host resolves the VRAM).
 static void se30_post_nubus(config_t *cfg) {
-    se30_state_t *se30 = se30_state(cfg);
+    se30_state_t *se30 = se30_st(cfg);
     se30->video_card = nubus_card(cfg->nubus, 0xE);
     assert(se30->video_card != NULL);
     se30->vram = builtin_se30_video_vram(se30->video_card);

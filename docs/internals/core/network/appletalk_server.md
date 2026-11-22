@@ -2550,9 +2550,11 @@ restarts, so no print job runs on from one machine into the next.
 
 ```
 appletalk                        the network
-  enabled          rw  bool      attach/detach from the SCC link (default true)
+  enabled          rw  bool      attach/detach from the SCC link and the
+                                 Ethernet port (default true)
   node_id          ro  uint      current LLAP node ID (0 while detached)
-  stats            ro  child     llap_rx/tx, malformed, unhandled,
+  stats            ro  child     llap_rx/tx, elap_rx/tx (EtherTalk frames,
+                                 DDP and AARP), malformed, unhandled,
                                  tx_dropped, ddp_in/out,
                                  atp_requests/retries, nbp_packets
   nbp              ro  collection every advertised entity: object / type /

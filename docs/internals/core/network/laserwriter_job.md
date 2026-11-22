@@ -40,10 +40,11 @@ One implementation is linked per build:
   ring; results are records the bridge drains from the inbound ring in
   `laserwriter_transport_poll()`. The worker keeps one `platen_printer` per
   id. The PDF never enters the ring: the worker posts it to the page, which
-  shows it in the viewer dialog. The platform provides two hooks
-  (`laserwriter_ring_attach_requested`, `laserwriter_ring_notify`; weak
-  no-ops in the transport, overridden in `em_main.c`: the first fires
-  `Module.onPrinterAttach`, the second `emscripten_futex_wake`). The FINISH
+  shows it in the viewer dialog. The platform provides the attach hook
+  (`laserwriter_ring_attach_requested`, a weak no-op in the transport,
+  overridden in `em_main.c` to fire `Module.onPrinterAttach`); the worker is
+  woken through the core's one wake primitive, `platform_wake`
+  (`emscripten_futex_wake` in the browser). The FINISH
   record carries the bridge's `%%Title:` name so the worker can name the
   download; the browser side is
   [`laserwriter-session.md`](../../../reference/protocols/laserwriter-session.md) §5.5.

@@ -36,7 +36,7 @@ import {
   onRage128GpuDetach,
 } from '@/gpu/rage128Gpu.svelte';
 
-// The core's GPU transport seam is one for both 3D takeovers (platform_v2gpu_*,
+// The core's GPU transport seam is one for both 3D takeovers (platform_gpu_*,
 // em_gpu.c; Module.onGpuAttach / onGpuDetach / onGpuOverlay): an attach goes
 // to the worker whose MAGIC its control block carries, and the display
 // path's "hide the overlay" covers both.

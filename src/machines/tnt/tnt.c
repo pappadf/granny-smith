@@ -606,7 +606,8 @@ static void part_save_tnt_av(void *obj, checkpoint_t *cp) {
     CP_FIELD(OP, cp, (st)->lcd);                                                                                       \
     SWIM3_CP(OP, cp, &(st)->swim3);                                                                                    \
     CP_FIELD(OP, cp, (st)->fdport.ring);                                                                               \
-    CP_FIELD(OP, cp, (st)->mace)
+    if ((st)->mace)                                                                                                    \
+    MACE_CP(OP, cp, (st)->mace)
 
 // Saves the GBUS island, the floppy controller and the MACE.
 static void part_save_tnt_io(void *obj, checkpoint_t *cp) {
@@ -661,8 +662,8 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     //
     // AppleTalk rides the SCC's LocalTalk channel, so it is built as soon as
     // the SCC exists.  LocalTalk is the only AppleTalk path these machines have here: the
-    // Grand Central MACE window is a #define and nothing else, so there is no
-    // EtherTalk to prefer.  NOTE: the stack has only ever been exercised
+    // MACE (tnt_mace.c) has no cable bound, so there is no EtherTalk to
+    // prefer.  NOTE: the stack has only ever been exercised
     // against a Mac Plus guest (tests/integration/appletalk-*), so this wires
     // the family up rather than proving it.
     //
@@ -710,8 +711,10 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     tnt_swim3_init(cfg);
     tnt_scc_dma_init(cfg);
     // The on-board MACE (Macintosh boards; see the island decode).
-    if (!tnt_board(cfg)->has_gbus)
-        tnt_mace_init(cfg);
+    if (!tnt_board(cfg)->has_gbus && tnt_mace_init(cfg) != 0) {
+        LOG(0, "Error: out of memory constructing the MACE Ethernet");
+        return -1;
+    }
     static const dma_mem_port_t dbdma_port = {
         .read = tnt_dbdma_mem_read1,
         .write = tnt_dbdma_mem_write1,
@@ -924,6 +927,7 @@ static void tnt_teardown(config_t *cfg) {
         tnt_awacs_teardown(cfg);
         tnt_gbus_teardown(cfg);
         tnt_lcd_teardown(cfg);
+        tnt_mace_teardown(cfg);
     }
     // The PCI root is NOT deleted here: system_destroy owns both expansion
     // buses and tears them down before calling this, which is what frees

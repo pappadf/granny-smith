@@ -616,11 +616,16 @@ core and the PSC. What is established:
   the high half so frames land in ascending order in memory. Nothing in the shipped software ever
   sets BSWP [3].
 - How the status bytes reach **offset zero** of the driver's receive buffer, when the MACE emits
-  status *after* data, is the one large hole in the receive story: the arrangement consistent with
-  all observed behaviour is that the PSC's Ethernet receive engine skips the first 16-byte granule
-  of each buffer, streams frame data from offset $10 until EOF, then performs the four FIFO-direct
-  status reads and back-fills the first granule, consuming one buffer per frame (§4.5)
-  (*inferred — unverified*).
+  status *after* data. The AV driver's source [5] pins everything software can observe, and it is
+  consistent only with a receive engine that skips the first 16-byte granule of each buffer,
+  streams frame data from offset $10 until EOF, performs the four FIFO-direct status reads and
+  back-fills the first granule, consuming one buffer per frame (§4.5): the buffer template is
+  status (8), fill (8, "PSC DMAs quad-lw chunks"), packet, 2048-aligned; the driver reads the
+  status block only after the channel has interrupted for the frame, and at no other time; and
+  nothing in the driver ever reads a partly filled buffer. *How* the PSC sequences the two
+  writes — buffering the first granule, or a second write pass — is invisible to software and
+  remains unverified; any engine that has both parts in memory when it raises the frame's
+  interrupt is indistinguishable from it.
 
 ## 4. Programming model
 
@@ -744,10 +749,26 @@ transfers [2] p. 29. The driver's arrangement [3]:
   receiver or transmitter, software-reset the channel, reinitialize and re-enable [3].
 
 How the receive channel gets status into offset 0 of the buffer when the MACE emits it after the
-data is the inference of §3.8; the driver's decode of the result is fixed regardless: the eight
-status bytes are read as four words whose low halves are RFS0-RFS3, then the frame length is taken
-from the assembled RCVCNT, and packets with any of OFLO/CLSN/FRAM/FCS set are dropped before
-protocol dispatch [3].
+data is §3.8's; the driver's decode of the result is fixed regardless: the eight status bytes are
+read as four words whose low halves are RFS0-RFS3, then the frame length is taken from the
+assembled RCVCNT, and packets with any of OFLO/CLSN/FRAM/FCS set are dropped before protocol
+dispatch [3].
+
+The driver source [5] also settles the channel protocol around the chain:
+
+- **Every frame interrupts.** The channel sets the set's IF per buffer filled, not only at
+  terminal count. The completion handler clears IF *and IE* on a set whose chain is not full
+  (Cnt ≠ 0) and schedules its deferred task; frames that arrive meanwhile set IF without
+  interrupting; the deferred task drains buffers up to `In = Limit − Cnt` and re-enables IE on
+  its way out, so a frame that arrived while it ran interrupts at once.
+- **The chain-full switch.** The buffer that takes Cnt to 0 is the set's terminal count, and the
+  channel continues in the other set's chain. The handler recognises the full chain by Cnt = 0,
+  re-primes that set with a fresh chain and loops to service the other set, whose first frame
+  has already raised its IF.
+- **Addr advances** by one buffer per frame: the bus-error path reports the set's Addr as "the
+  address that caused the bus error".
+- **DIR is never written** on either Ethernet channel — not in `InitRecv`, `PrimeXmitRS` or
+  `ResetMACE` — so the channels' directions are fixed in the PSC.
 
 ### 4.6 Interrupt service
 
@@ -920,10 +941,11 @@ confirms the duplication is a PSC-channel behaviour, not a property of the MACE 
    the MACE core and PSC channels 1 and 2 inside Curio, whether the embedded core exposes the TC
    (2 vs 3 SCLK cycle) and SCLK choices of the discrete part, and what logic — if any — a driver
    could use to reconfigure them. Only the externally observable behaviour is established (§3.8).
-2. **The receive-status back-fill.** The mechanism that puts the four status bytes at offset 0
-   of each receive buffer — first-granule buffering, a separate write pass, or a Curio-side
-   modification of the core — is inferred, not proven (§3.8). Disambiguating it needs evidence
-   the current corpus does not contain.
+2. **The receive-status back-fill.** What software sees is settled by the driver source (§3.8,
+   §4.5): status at offset 0, frame at $10, both in memory when the frame's interrupt is raised,
+   one buffer and one IF per frame. The mechanism inside the PSC — first-granule buffering, a
+   separate write pass, or a Curio-side modification of the core — is not observable from
+   software and remains unproven.
 3. **The byte-lane crossing in Curio** (§3.6, §3.8): inferred from BSWP clear plus working
    big-endian software; no schematic of the AV logic board is in the evidence set to confirm it,
    nor to say what a word read of a byte register would return.
@@ -938,7 +960,8 @@ confirms the duplication is a PSC-channel behaviour, not a property of the MACE 
    nothing in the shipped software says who ever installs one (§4.3).
 7. **Does `.ENET` open on a bare machine?** EXTLPB requires a transceiver to loop the AUI port;
    whether an unpopulated AAUI passes the third self-test on real hardware (and thus whether the
-   driver fails to open without a transceiver attached) is unverified (§4.7).
+   driver fails to open without a transceiver attached) is unverified (§4.7). (The emulator
+   models a transceiver on the port: EXTLPB loops the frame and also puts it on the cable.)
 8. **The SCLK actually feeding the core.** The Developer Note's C20M 20.0000 MHz crystal is
    labeled for "MACE Ethernet", but whether it is the core's SCLK directly, divided, or only the
    wire-side timing reference is not documented (§1.5).
@@ -1014,3 +1037,12 @@ confirms the duplication is a PSC-channel behaviour, not a property of the MACE 
    the 80-byte loopback self-test frame; promiscuous mode compiled out; and the packed four-byte
    receive status longword of the AMIC ring, contrasted with the AV chain buffers'
    word-duplicated status.
+5. Apple Computer, Inc., SuperMario Macintosh ROM project source snapshot, internal, dated 1994-02-09 — <!-- lint-allow: SuperMario -->
+   the AV Ethernet driver, `DeclData/DeclNet/Mace/`: `Mace.a` (`RecvBuff` — `MaceStat DS.b 8`, `DS.b 8 ; fill,
+   PSC DMAs quad-lw chunks`, `Packet`, `ALIGN 2048`; `InitRecv` writing the chain's Limit into Cnt with
+   `SENSE|IE|ENABLED` and never DIR; `PrimeRecv`/`PrimeXmitRS`; `PSCInterrupt`'s per-set IF/IE handling and its
+   chain-full test `Cnt == 0`; `MaceRecv`'s `In = Limit - Cnt` and the IE re-enable at its exit; `GetPkt`'s
+   status decode; `RecvBusErr` reading Addr as "addr that caused bus error"; `MaceInterrupt`), `MaceEnet.a` (the
+   open: `'ecfg'` by machine type, the address-PROM XOR check, the three loopback tests) and
+   `DeclData/DeclNet/Loopback.c` (`LOOPBACKTEST`: EAttachPH `$809B`, the self-addressed frame, the 3-second
+   poll); `Internal/Asm/PSCEqu.a` (channel register sets and CmdStat bits).

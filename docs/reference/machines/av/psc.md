@@ -897,10 +897,14 @@ the driver code ships in the same ROM) owns channels 1 and 2 plus the level-3 MA
   slots, enable L3 bit 0 and the L4 DMA bit, and release the channels.
 - **Receive (channel 1, chain mode)**: Addr = the physical base of a chain of 2048-byte buffers,
   Cnt = the number of buffers in the chain; the channel consumes one buffer per received frame,
-  decrementing Cnt; the driver tracks occupancy as primed-minus-current [3]. The per-buffer
-  layout leaves a 16-byte status granule at offset 0 that the channel back-fills after the MACE
-  emits end-of-frame status — the only arrangement consistent with the codec emitting status
-  *after* data (*inferred*, §6).
+  decrementing Cnt and stepping Addr; the driver tracks occupancy as primed-minus-current [3] [5].
+  The per-buffer layout leaves a 16-byte status granule at offset 0 that the channel back-fills
+  after the MACE emits end-of-frame status — the only arrangement consistent with the codec
+  emitting status *after* data (the mechanism is *inferred*, §6). **IF is set per frame**: the
+  handler clears IF and IE on a set whose chain is not full and the deferred task re-enables IE
+  when it has drained the buffers, while the buffer that takes Cnt to 0 is the set's terminal
+  count and the channel goes on in the other set's chain [5]. DIR is never written on channel 1
+  or 2 [5].
 - **Transmit (channel 2)**: one frame per set: Addr = the packet's physical address masked to a
   16-byte boundary, Cnt = the frame length, armed with SENSE | IE | ENABLED; both sets are kept
   armed so the next frame is already primed when the current one completes [3].
@@ -1035,8 +1039,10 @@ by a PDS card" but must not be driven [1] Table 3-22 p. 49.
     SCC-visible registers never program a transmit request, yet the channel runs (§4.5). The
     request is presumably an internal Curio-to-PSC signal.
 13. **Ethernet chain-mode hardware semantics.** The driver's buffer-chain behavior is pinned
-    (§4.6); how the channel skips the status granule, back-fills it after end-of-frame, and
-   handles an end-of-frame arriving mid-granule is inferred, not documented.
+    (§4.6), including the per-frame IF and the chain-full switch [5]; how the channel skips the
+    status granule, back-fills it after end-of-frame, and handles an end-of-frame arriving
+    mid-granule is inferred, not documented. So is the FIFO depth behind DMAFLUSH on this
+    channel, which the driver flushes only with the receiver disabled.
 14. **The sound engine's input side.** Every shipped exercise of the engine observed in this
     evidence set is an output path (chime, DSP driver output frames); the input double-buffer
     and capture cadence are undescribed beyond the register layout (see [Singer](singer.md)).
@@ -1092,3 +1098,12 @@ by a PDS card" but must not be driven [1] Table 3-22 p. 49.
    `$8200` with the self-clear poll); the UTSC reader $1BE0 and its call sites $0D10 and $17CA;
    the completion handlers $1A00/$1AC0/$1B00; the special-condition handler $1840; the
    `$1FFFC` transfer cap at $0628.
+5. Apple Computer, Inc., SuperMario Macintosh ROM project source snapshot, internal, dated 1994-02-09 — <!-- lint-allow: SuperMario -->
+   the AV Ethernet driver, `DeclData/DeclNet/Mace/`: `Mace.a` (`RecvBuff` — `MaceStat DS.b 8`, `DS.b 8 ; fill,
+   PSC DMAs quad-lw chunks`, `Packet`, `ALIGN 2048`; `InitRecv` writing the chain's Limit into Cnt with
+   `SENSE|IE|ENABLED` and never DIR; `PrimeRecv`/`PrimeXmitRS`; `PSCInterrupt`'s per-set IF/IE handling and its
+   chain-full test `Cnt == 0`; `MaceRecv`'s `In = Limit - Cnt` and the IE re-enable at its exit; `GetPkt`'s
+   status decode; `RecvBusErr` reading Addr as "addr that caused bus error"; `MaceInterrupt`), `MaceEnet.a` (the
+   open: `'ecfg'` by machine type, the address-PROM XOR check, the three loopback tests) and
+   `DeclData/DeclNet/Loopback.c` (`LOOPBACKTEST`: EAttachPH `$809B`, the self-addressed frame, the 3-second
+   poll); `Internal/Asm/PSCEqu.a` (channel register sets and CmdStat bits).

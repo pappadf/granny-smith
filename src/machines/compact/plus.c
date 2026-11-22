@@ -63,7 +63,7 @@ typedef struct plus_state {
 } plus_state_t;
 
 // Helper: return the Plus-specific state from a config handle
-static inline plus_state_t *plus_state(config_t *cfg) {
+static inline plus_state_t *plus_st(config_t *cfg) {
     return (plus_state_t *)cfg->machine_context;
 }
 
@@ -119,7 +119,7 @@ static const machine_irq_route_t plus_irq_routes[] = {
 // descriptor's `bits` field and marks the framebuffer dirty so the
 // renderer re-uploads on the next frame.
 static void plus_use_video_buffer(config_t *cfg, bool main) {
-    plus_state_t *ps = plus_state(cfg);
+    plus_state_t *ps = plus_st(cfg);
     uint32_t top = cfg->ram_size;
     uint32_t addr = main ? (top - PLUS_SCREEN_FROM_TOP) : (top - PLUS_SCREEN_FROM_TOP - PLUS_ALT_SCREEN_BELOW);
     ps->display.bits = ram_native_pointer(cfg->memory_map, addr);
@@ -129,7 +129,7 @@ static void plus_use_video_buffer(config_t *cfg, bool main) {
 // Initialise the Plus display descriptor.  Called once during plus_init,
 // before plus_use_video_buffer fills in `bits`.
 static void plus_display_init(config_t *cfg) {
-    plus_state_t *ps = plus_state(cfg);
+    plus_state_t *ps = plus_st(cfg);
     ps->display.width = 512;
     ps->display.height = 342;
     ps->display.stride = 512 / 8;
@@ -143,7 +143,7 @@ static void plus_display_init(config_t *cfg) {
 // hw_profile_t.display callback — surface the Plus framebuffer to
 // system_display() on the non-NuBus path.
 static display_t *plus_display(config_t *cfg) {
-    plus_state_t *ps = plus_state(cfg);
+    plus_state_t *ps = plus_st(cfg);
     return ps && ps->display.bits ? &ps->display : NULL;
 }
 
@@ -172,7 +172,7 @@ static void plus_map_read_page(uint32_t p, uint8_t *host_ptr) {
 // after the reset vector (CLR of PA4 at $4000D2 in the v3 ROM), before it
 // touches RAM; until then its reset vectors at $0/$4 are the ROM's own.
 static void plus_set_rom_overlay(config_t *cfg, bool on) {
-    plus_state_t *ps = plus_state(cfg);
+    plus_state_t *ps = plus_st(cfg);
     if (ps->rom_overlay == on)
         return;
     ps->rom_overlay = on;
@@ -395,7 +395,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
         // main RAM, so this only touches the two visible windows, and only
         // before the guest runs — the ROM's RAM test writes and reads back its
         // own patterns over them regardless.
-        plus_state_t *ps = plus_state(cfg);
+        plus_state_t *ps = plus_st(cfg);
         size_t screen_bytes = (size_t)ps->display.stride * ps->display.height;
         uint8_t fill = display_black_fill(ps->display.format);
         for (int main_buf = 0; main_buf <= 1; main_buf++) {
@@ -426,7 +426,7 @@ static void plus_teardown(config_t *cfg) {
     // holds a scheduler handle must go before the scheduler does, which is
     // exactly what machine_teardown_config_devices guarantees by deleting the
     // scheduler itself, last.
-    plus_state_t *ps = plus_state(cfg);
+    plus_state_t *ps = plus_st(cfg);
     if (cfg->keyboard) {
         keyboard_delete(cfg->keyboard);
         cfg->keyboard = NULL;
@@ -482,7 +482,7 @@ static void plus_update_ipl(config_t *cfg, int source, bool active) {
 // Plus-specific VIA output callback: routes port changes to floppy, video, sound, RTC
 static void plus_via_output(void *context, uint8_t port, uint8_t output) {
     config_t *cfg = (config_t *)context;
-    plus_state_t *ps = plus_state(cfg);
+    plus_state_t *ps = plus_st(cfg);
 
     // via_init re-drives this callback while it restores a checkpoint, and
     // the VIA is now built before the sound chip (see plus_init), so the
@@ -549,7 +549,7 @@ static void plus_scc_irq(void *context, bool active) {
 
 // Trigger vertical blanking interval for the Plus.
 static void plus_trigger_vbl(config_t *cfg) {
-    plus_state_t *ps = plus_state(cfg);
+    plus_state_t *ps = plus_st(cfg);
 
     // Assert then deassert VIA CA1 to signal VBL to the CPU
     via_pulse_c(cfg->via1, 0, 0); // VBL: CA1 low then high

@@ -149,9 +149,12 @@ The board model is the chipset skeleton plus the DMA architecture:
   no-exception and s5 sequence-running for DBDMA conditions — Rhapsody
   DR2's driver uses all of these; absent on the Network Servers) and the
   external 53C94 chain (`+$10000`) are modelled.  The MACE Ethernet
-  (`+$11000`, `tnt_mace.c`; Mac boards only) has no wire behind it: a
-  frame on DBDMA channel 2 is dropped and completes as a good
-  transmission (XMTFS = XMTSV, XMTINT), and nothing is ever received —
+  (`+$11000`; Mac boards only) is the shared Curio core
+  ([mace.md](../../core/peripherals/mace.md)), wired by `tnt_mace.c` to
+  DBDMA channels 2/3 and Grand Central source 14, with no wire behind it:
+  a frame on channel 2 (its OUTPUT_LAST the FIFO's EOF) completes as a
+  good transmission (XMTFS = XMTSV, XMTINT; s5 follows XMTSV) and goes
+  nowhere, and nothing is ever received —
   enough for Rhapsody DR2, Open Firmware and MkLinux, whose drivers
   transmit as soon as the interface comes up and hung on a stalled
   channel.  (Reference:

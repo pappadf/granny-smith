@@ -259,7 +259,7 @@ version). The pieces:
   `app/web2/src/printer/platen.ts` starts the worker then — the module is
   fetched only now, and a first print waits for it like a printer warming
   up (the bridge's open timeout is 120 s of guest time) — and posts the
-  wasm memory and the control block's address. `laserwriter_ring_notify`
+  wasm memory and the control block's address. `platform_wake`
   wakes the worker with `emscripten_futex_wake` after every publish.
 * **The worker** — `app/web2/src/printer/platen.worker.ts` loads the module
   (`platenLib.ts` wraps the C ABI: the `platen_config` is built in the

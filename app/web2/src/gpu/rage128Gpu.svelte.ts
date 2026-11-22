@@ -5,7 +5,7 @@
 // at all is answered once, by the Voodoo2's worker at page load
 // (voodoo2Gpu.svelte.ts), and the core reads that answer for both cards.
 //
-// The core's transport seam is shared with the Voodoo2 (platform_v2gpu_* in
+// The core's transport seam is shared with the Voodoo2 (platform_gpu_* in
 // platform_hooks.h; Module.onGpuAttach in em_gpu.c): emulator.ts routes an
 // attach here when the control block's MAGIC is the Rage 128's.
 //

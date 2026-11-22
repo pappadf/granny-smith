@@ -120,8 +120,13 @@ typedef struct {
 // one and ddp_short_in parses one.  It carries the short-header fields plus
 // the extended header's network numbers, which a short header (all this
 // stack sends or accepts) does not carry: zero when parsed.
+// The link a DDP datagram came in on, and a reply goes out on.
+#define ATALK_PORT_LOCALTALK 0 // the SCC's LocalTalk channel: LLAP, short headers
+#define ATALK_PORT_ETHER     1 // the machine's Ethernet port: ELAP, extended headers
+
 typedef struct {
-    llap_header_t llap;
+    llap_header_t llap; // on EtherTalk: dst/src carry the extended header's node numbers
+    uint8_t port; // ATALK_PORT_*
     uint8_t hop;
     uint16_t len;
     uint16_t checksum;
