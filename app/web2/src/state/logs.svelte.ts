@@ -19,7 +19,9 @@ export interface LogEntry {
   msg: string; // body — preserves optional @ts / PC= prefixes
 }
 
-const MAX = 10000;
+// The most lines the buffer keeps (the oldest drop beyond it).
+export const LOG_BUFFER_MAX = 10000;
+const MAX = LOG_BUFFER_MAX;
 
 interface LogsState {
   entries: LogEntry[];

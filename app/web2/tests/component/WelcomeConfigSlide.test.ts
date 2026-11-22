@@ -268,9 +268,9 @@ describe('WelcomeConfigSlide: storage', () => {
     const boot = lastBoot();
     expect(boot.config.storage).toEqual([{ bus: 'scsi', unit: 3, type: 'cd' }]);
     expect(boot.config.startup).toBeNull();
-    expect([...toasts.active, ...toasts.queued].some((t) => t.msg.includes('no hard disk at'))).toBe(
-      true,
-    );
+    expect(
+      [...toasts.active, ...toasts.queued].some((t) => t.msg.includes('no hard disk at')),
+    ).toBe(true);
     await waitFor(() => {
       const attach = fake.calls.find((x) => x.path === 'machine.attach_media');
       expect(attach?.args).toEqual(['scsi', 3, 'cd', '/opfs/images/cd/system7.iso']);
