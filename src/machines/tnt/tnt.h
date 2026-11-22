@@ -321,16 +321,9 @@ extern const builtin_video_desc_t tnt_builtin_video;
 // checkpoint.  tnt.c holds one.
 #include "scsi_mesh.h"
 
-// The MACE Ethernet's register state (tnt_mace.c).  Plain data,
-// checkpointed whole.
-typedef struct tnt_mace {
-    uint8_t ir, imr, xmtfs;
-    uint8_t biucc, fifocc, maccc, plscc, phycc, iac, utr;
-    uint8_t padr[6], ladrf[8];
-    uint8_t addr_idx; // IAC byte pointer into PADR / LADRF
-    uint32_t tx_bytes; // bytes of the frame in flight on channel 2
-    uint32_t tx_frames; // frames sent into the void (diagnostic)
-} tnt_mace_t;
+// The MACE Ethernet core is the shared Curio model (core/peripherals/
+// mace.c); tnt_mace.c wires it to Grand Central.
+#include "mace.h"
 
 // === Family state ===========================================================
 typedef struct tnt_state {
@@ -364,8 +357,10 @@ typedef struct tnt_state {
     swim3_t swim3;
     swim3_dbdma_t fdport;
     // The on-board MACE Ethernet at +$11000 (tnt_mace.c), Macintosh boards
-    // only; checkpointed in the tnt.io part after the floppy ring.
-    tnt_mace_t mace;
+    // only (NULL on the Network Servers); checkpointed in the tnt.io part
+    // after the floppy ring.
+    mace_t *mace;
+    uint32_t mace_tx_bytes; // bytes of the frame in flight on channel 2 (diagnostic, not saved)
     // The ESCC's DBDMA ports (4/5 = A tx/rx, 6/7 = B tx/rx; runtime/
     // escc_dbdma.c): rebuilt at init, not checkpointed.
     escc_dbdma_t escc_dma;
@@ -500,9 +495,11 @@ void tnt_swim3_write(config_t *cfg, uint32_t off, uint8_t value);
 // The MACE Ethernet: Grand Central +$11000 on $10 centres, interrupt 14,
 // transmit on DBDMA channel 2 and receive on channel 3, no wire behind it
 // (transmitted frames complete and vanish; nothing is received).  init
-// attaches the two channel ports (after dbdma_init).
-void tnt_mace_init(config_t *cfg);
+// builds the core and attaches the two channel ports (after dbdma_init);
+// -1 when out of memory.  teardown frees the core.
+int tnt_mace_init(config_t *cfg);
 void tnt_mace_reset(config_t *cfg);
+void tnt_mace_teardown(config_t *cfg);
 uint8_t tnt_mace_read(config_t *cfg, uint32_t off); // off from +$11000
 uint8_t tnt_mace_peek(config_t *cfg, uint32_t off); // no read-to-clear
 void tnt_mace_write(config_t *cfg, uint32_t off, uint8_t value);
