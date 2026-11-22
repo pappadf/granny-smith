@@ -189,7 +189,7 @@ nubus_card_t *nubus_card(nubus_bus_t *bus, int slot);
 
 // The KIND that seated `slot`, or NULL.  How the object layer reaches a
 // card's attach_objects hook without knowing which cards exist.
-const nubus_card_kind_t *nubus_slot_kind(nubus_bus_t *bus, int slot);
+const nubus_card_kind_t *nubus_seated_kind(nubus_bus_t *bus, int slot);
 
 // What `slot` was built from (its seat: card, ROM, monitor, sense), or NULL
 // for a slot out of range.

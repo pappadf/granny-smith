@@ -199,7 +199,7 @@ static const class_desc_t nubus_mode_class = {
 // --- card node --------------------------------------------------------------
 // The card's display name, and which declaration ROM it runs.
 static void card_label(const nubus_card_t *c, char *buf, size_t len) {
-    const nubus_card_kind_t *k = c ? nubus_slot_kind(c->bus, c->slot) : NULL;
+    const nubus_card_kind_t *k = c ? nubus_seated_kind(c->bus, c->slot) : NULL;
     snprintf(buf, len, "%s%s", k && k->display_name ? k->display_name : "Card",
              c && c->substitute ? " (substitute ROM)" : "");
 }
@@ -228,7 +228,7 @@ static DEF_GETTER(card_attr_slot) {
 }
 static DEF_GETTER(card_attr_id) {
     nubus_card_t *c = node_card(self);
-    const nubus_card_kind_t *k = c ? nubus_slot_kind(c->bus, c->slot) : NULL;
+    const nubus_card_kind_t *k = c ? nubus_seated_kind(c->bus, c->slot) : NULL;
     return val_str(k && k->id ? k->id : "");
 }
 static const member_t card_members[] = {
@@ -365,7 +365,7 @@ void nubus_objects_build(nubus_bus_t *bus) {
             // This file never tests a card's identity -- the accelerator nodes
             // that used to live here behind is_card() belong to the cards,
             // the same way pci_class.c has always done it.
-            const nubus_card_kind_t *kind = nubus_slot_kind(bus, i);
+            const nubus_card_kind_t *kind = nubus_seated_kind(bus, i);
             if (kind && kind->attach_objects)
                 kind->attach_objects(card, n->card);
         }

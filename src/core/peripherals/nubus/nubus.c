@@ -37,7 +37,7 @@ struct nubus_bus {
     // Which KIND seated each slot.  The object layer needs it to call
     // attach_objects without testing card identity; PCI carries the same
     // per-slot record.
-    const nubus_card_kind_t *slot_kind[NUBUS_MAX_SLOTS];
+    const nubus_card_kind_t *seated_kind[NUBUS_MAX_SLOTS];
     // How each socket was built: the entry its card was seated from, with
     // the card resolved, or `empty`.  The bus's checkpoint block, so a
     // restore seats exactly these.
@@ -480,14 +480,14 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
             seat->empty = true;
             continue;
         }
-        bus->slot_kind[n] = kind;
+        bus->seated_kind[n] = kind;
         // The bus owns the allocation, so `bus` and `slot` are populated
         // BEFORE init runs -- a card may assert its slot IRQ, or touch any
         // other bus service, from card_init.
         nubus_card_t *card = calloc(1, sizeof(*card));
         if (!card) {
             LOG(0, "nubus: out of memory seating slot $%X card '%s'", n, kind->id ? kind->id : "?");
-            bus->slot_kind[n] = NULL;
+            bus->seated_kind[n] = NULL;
             seat->empty = true;
             continue;
         }
@@ -538,7 +538,7 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
             free(card->rom_path);
             free(card->rom_chip);
             free(card);
-            bus->slot_kind[n] = NULL;
+            bus->seated_kind[n] = NULL;
             seat->empty = true;
             continue;
         }
@@ -591,10 +591,10 @@ nubus_card_t *nubus_card(nubus_bus_t *bus, int slot) {
     return bus->cards[slot];
 }
 
-const nubus_card_kind_t *nubus_slot_kind(nubus_bus_t *bus, int slot) {
+const nubus_card_kind_t *nubus_seated_kind(nubus_bus_t *bus, int slot) {
     if (!bus || slot < 0 || slot >= NUBUS_MAX_SLOTS)
         return NULL;
-    return bus->slot_kind[slot];
+    return bus->seated_kind[slot];
 }
 
 const slot_opts_t *nubus_seat(nubus_bus_t *bus, int slot) {
@@ -604,7 +604,7 @@ const slot_opts_t *nubus_seat(nubus_bus_t *bus, int slot) {
 }
 
 bool nubus_startup_record(nubus_bus_t *bus, int slot, uint8_t rec[8]) {
-    const nubus_card_kind_t *k = nubus_slot_kind(bus, slot);
+    const nubus_card_kind_t *k = nubus_seated_kind(bus, slot);
     if (!k || !k->startup_record || !bus->cards[slot] || strcmp(bus->seated[slot].monitor, "none") == 0)
         return false;
     return k->startup_record(&bus->seated[slot], rec);
