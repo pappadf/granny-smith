@@ -90,3 +90,14 @@ struct cpu_debug_if;
 const struct cpu_debug_if *system_cpu_debug_if(void) {
     return NULL;
 }
+uint32_t lisa_mmu_debug_read_phys(uint32_t phys, unsigned size, bool *ok) {
+    (void)phys;
+    (void)size;
+    if (ok)
+        *ok = false;
+    return 0;
+}
+int lisa_mmu_debug_view_set(int view) {
+    (void)view;
+    return -1;
+}

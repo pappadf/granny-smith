@@ -77,6 +77,29 @@ latch context with no supervisor override** — proven by the ROM's `CONCHK`
 context test, which strobes `SEG1ON` and expects the descriptor regs to read
 back context-1's (unprogrammed) values, not context 0's.
 
+### The debugger's view of the contexts
+
+Every debugger read goes through `lisa_resolve_traced`, which takes a
+`force_ctx` beside the privilege: −1 (`LISA_CTX_CPU`) is the hardware's
+choice above, 0–3 reads that context's descriptors whatever the privilege.
+The CPU paths always pass −1 (a constant, so the inlined resolver loses
+nothing). `machine.cpu.mmu.translate/walk/map/peek` take a trailing
+`context` argument and pass it here
+([debug_mmu.md](../../core/debug/debug_mmu.md) §3.1), so one stop answers
+"where does `$20000` lead?" for all four contexts.
+
+The memory views reach the same choice through a *debug view*
+(`lisa_mmu_debug_view_set`): `LISA_VIEW_CPU`, a context 0–3, or
+`LISA_VIEW_PHYSICAL` (main memory by physical address, the RAM address a
+segment origin selects). `lisa_mmu_debug_read` — and so every
+`memory_debug_read_*` caller: `memory.dump`, `memory.peek.bytes`,
+`debug.disasm` — reads through it. A method that takes a `context` sets the
+view around its reads and restores the previous one before returning
+(`debug_view_begin` / `debug_view_end` in `debug.c`), so the setting never
+outlives one request. `memory_debug_read_phys` on the Lisa reads main
+memory the same way (`lisa_mmu_debug_read_phys`); a debugger read of RAM
+never raises the parity NMI, as a bus cycle would.
+
 ## Control strobes ($00E000-$00E01E)
 
 Each is a *strobe*: any access (read or write, value ignored) toggles the latch.

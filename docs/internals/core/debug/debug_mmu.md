@@ -70,10 +70,11 @@ block, an invalid table branch or a T=1 segment in one step.
 
 | Method | Arguments | Result |
 |---|---|---|
-| `translate` | `addr, [supervisor], [fetch]` | `{phys?, valid, via, access?, space?}` |
-| `walk` | `addr, [supervisor], [fetch]` | translate's map plus `steps: [{step, outcome, …}]` |
-| `map` | `[start], [end], [supervisor], [fetch], [limit]` | `[{start, size, phys, via, access, space?}]` |
+| `translate` | `addr, [supervisor], [fetch]` (the Lisa: `…, [context]`) | `{phys?, valid, via, access?, space?}` |
+| `walk` | `addr, [supervisor], [fetch]` (the Lisa: `…, [context]`) | translate's map plus `steps: [{step, outcome, …}]` |
+| `map` | `[start], [end], [supervisor], [fetch], [limit]` (the Lisa: `…, [context]`) | `[{start, size, phys, via, access, space?}]` |
 | `descriptor` | `addr, [count], [format]` (the Lisa: `segment, [count], [context]`) | `[{addr, desc, type, …}]` |
+| `peek` | `addr, [size], [space]` (the Lisa: `…, [context]`) | the value |
 
 - `phys` and `access` appear only for a valid translation.
 - `via` is `identity` (translation off), `tt` (68K transparent
@@ -87,6 +88,15 @@ block, an invalid table branch or a T=1 segment in one step.
   PowerPC MSR[PR]). `fetch` selects the instruction side: the 68040's ITT
   registers (consulted before the DTTs), the PowerPC's IBATs and MSR[IT].
   The 68030 and the Lisa accept it and do not distinguish.
+- The Lisa's methods take one more, trailing argument: `context` (0–3).
+  The segment MMU keeps four descriptor sets; supervisor mode always uses
+  context 0 (the operating system's) and user mode the one the SEG1/SEG2
+  latches select, so `supervisor` alone can only reach the current user
+  context. A given `context` reads that set whatever `supervisor` says;
+  omitted, the hardware's choice applies as before. `peek` reads through
+  it too, and its `physical` space is main memory by physical address
+  (the RAM address a segment's origin selects; the I/O and ROM spaces
+  have no physical name, so reach them through their segments).
 
 ### 3.2 Walk steps
 
@@ -154,7 +164,7 @@ through `descriptor`, not `map`.
 | 68030 | `short` (default), `long` | `dt`, `type` (`page` / `table`; at the last level a table type means indirect), `wp`, `u`, `s` (long), `m`, `ci`, `phys` or `next` + `next_format`, `limit` (long). The page-address mask follows TC.PS. |
 | 68040 | `page` (default), `pointer`, `root` | the level decides how a 4-byte word reads: `table` + `next`, or `page` (`wp`, `u`, `m`, `s`, `g`, `cm`, `phys`), or `indirect` + `next` |
 | PowerPC | `pte` | `vsid`, `h`, `api`, `phys`, `r`, `c`, `wimg`, `pp`, and `ea` (see below) |
-| Lisa | — (third argument is the `context`) | `segment`, `context`, `base`, `sor`, `slr`, `type`, `limit`, `stack`/`ro` (memory segments), `phys` (the segment's first page) |
+| Lisa | — (third argument is the `context`) | `segment`, `context`, `base`, `sor`, `slr`, `type`, `limit`, `stack`/`ro` (memory segments), `phys` (the segment's first page), `first_page` and `pages` (the valid page window the limit decodes to: `[0, B]` growing up, `[B, 255]` for a stack, `B = $FF − limit`) |
 
 The PowerPC decoder also reverses the hash. A PTE group's address holds
 the low ten bits of the hash, complemented for a secondary entry, and
@@ -171,6 +181,14 @@ machine.cpu.mmu.walk(0x2000, false).steps       # user root
 machine.cpu.mmu.map supervisor=false limit=32
 machine.cpu.mmu.descriptor 0x40800050 4         # 68030 short descriptors
 machine.cpu.mmu.descriptor 0x004e0000 8         # one PowerPC PTE group
+
+# The Lisa: one logical address in each of the four contexts
+for c in [0, 1, 2, 3] {
+    echo "ctx ${$c}: ${machine.cpu.mmu.translate(0x20000, context=$c)}"
+}
+machine.cpu.mmu.map context=2
+machine.cpu.mmu.peek 0x20000 4 context=1
+machine.cpu.mmu.peek 0x3f400 4 physical         # main memory, physically
 
 # Which level stopped the walk?
 let w = machine.cpu.mmu.walk(0x11004000)

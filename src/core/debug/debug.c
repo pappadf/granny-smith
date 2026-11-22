@@ -23,6 +23,7 @@
 #include "expr.h"
 #include "fpu.h"
 #include "gs_assert.h"
+#include "lisa_mmu.h"
 #include "log.h"
 #include "log_categories.h"
 #include "memory.h"
@@ -3055,12 +3056,19 @@ static DEF_METHOD(debug_method_disasm) {
     if (count > 256)
         count = 256;
 
+    // On a Lisa, `context` reads the instruction stream through that
+    // context's segments (debug_view_begin).
+    int prev_view;
+    value_t err;
+    if (!debug_view_begin(argc, argv, 2, false, &prev_view, &err))
+        return err;
     char buf[160];
     for (int i = 0; i < (int)count; i++) {
         int instr_len = debugger_disasm(buf, sizeof(buf), addr); // returns bytes
         out_printf("%s\n", buf);
         addr += (uint32_t)instr_len;
     }
+    debug_view_end(prev_view);
     return val_none();
 }
 
@@ -3072,7 +3080,12 @@ static const arg_decl_t debug_disasm_args[] = {
     {.name = "count",
      .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Number of instructions, when the first argument is an address"                                    },
+     .doc = "Number of instructions, when the first argument is an address"},
+    {.name = "context",
+     .kind = VK_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Lisa only: read the code through this MMU context's segments (0-3; 0 is the operating system's)",
+     .default_doc = "the CPU's current context"},
 };
 
 // Choose where a disassembly window starts so that `before` rows precede
@@ -3135,6 +3148,38 @@ bool debug_parse_space(int argc, const value_t *argv, int idx, bool *physical) {
         return true;
     }
     return false;
+}
+
+bool debug_view_begin(int argc, const value_t *argv, int idx, bool physical, int *prev, value_t *err) {
+    *prev = LISA_VIEW_CPU;
+    int ctx = LISA_CTX_CPU;
+    if (argc > idx && argv[idx].kind != VK_NONE) {
+        if (argv[idx].kind != VK_UINT && argv[idx].kind != VK_INT) {
+            *err = val_err("context must be a number, 0-3");
+            return false;
+        }
+        if (!g_lisa_mmu) {
+            *err = val_err("context: only the Lisa's segment MMU has contexts");
+            return false;
+        }
+        if (argv[idx].u > 3) {
+            *err = val_err("context must be 0-3 (0 is the operating system's)");
+            return false;
+        }
+        if (physical) {
+            *err = val_err("a physical read takes no context");
+            return false;
+        }
+        ctx = (int)argv[idx].u;
+    }
+    if (g_lisa_mmu)
+        *prev = lisa_mmu_debug_view_set(physical ? LISA_VIEW_PHYSICAL : ctx);
+    return true;
+}
+
+void debug_view_end(int prev) {
+    if (g_lisa_mmu)
+        lisa_mmu_debug_view_set(prev);
 }
 
 // Split one disassembled instruction (the cpu_debug_if_t `disasm` text) into
@@ -3313,9 +3358,10 @@ static const arg_decl_t debug_step_args[] = {
 static const member_t debug_members[] = {
     {.kind = MK_METHOD,
      .name = "disasm",
-     .examples = EXAMPLES("debug.disasm", "debug.disasm 8", "debug.disasm 0x40800000 20"),
+     .examples =
+         EXAMPLES("debug.disasm", "debug.disasm 8", "debug.disasm 0x40800000 20", "debug.disasm 0x20000 8 context=1"),
      .doc = "Disassemble forward from the PC, or from an address",
-     .method = {.args = debug_disasm_args, .nargs = 2, .result = VK_NONE, .fn = debug_method_disasm}},
+     .method = {.args = debug_disasm_args, .nargs = 3, .result = VK_NONE, .fn = debug_method_disasm}},
     {.kind = MK_METHOD,
      .name = "frame",
      .examples = EXAMPLES("debug.frame", "debug.frame count=8 before=3"),

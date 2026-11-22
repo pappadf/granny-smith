@@ -1,0 +1,70 @@
+# Integration test: the debugger on a running Lisa (see config.mk).
+#
+# The Office System desktop runs processes in contexts 1-3 beside the
+# operating system's context 0, which is what makes the Lisa's MMU worth
+# inspecting: one logical address leads somewhere different in each.
+
+machine.hd.insert "$WORK_DIR/profile.image"
+assert machine.hd.pram_init(2, false) "pram_init failed"
+# The desktop is complete by ~35M instructions (the suite-lisa row's golden).
+scheduler.run 45000000
+assert machine.cpu.mmu.start == false "the MMU is still in START mode"
+
+# ---- MMU: an explicit context ---------------------------------------------
+# translate / walk / map answer for any context, and agree with the
+# descriptor of that context's segment.
+let seg = 1
+let la = $seg * 0x20000
+let distinct = 0
+let prev = none
+for c in [0, 1, 2, 3] {
+    let t = machine.cpu.mmu.translate($la, context=$c)
+    let d = machine.cpu.mmu.descriptor($seg, 1, $c)[0]
+    assert $t.valid == ($d.type != "invalid") "ctx ${$c}: translate and descriptor disagree on validity"
+    if $t.valid {
+        assert $t.phys == $d.phys "ctx ${$c}: translate phys != the descriptor's page 0"
+        assert $t.space == "ram" "ctx ${$c}: segment 1 is not RAM"
+        let w = machine.cpu.mmu.walk($la, context=$c)
+        assert $w.phys == $t.phys "ctx ${$c}: walk != translate"
+        assert $w.steps[0].context == $c "ctx ${$c}: the walk read another context"
+        # The mapped run starting at the address is that context's too.
+        let r = machine.cpu.mmu.map($la, $la + 0x20000, context=$c)[0]
+        assert $r.start == $la && $r.phys == $t.phys "ctx ${$c}: map disagrees"
+        # The segment's length in pages, decoded from its limit.
+        assert $d.pages == 256 - $d.limit "ctx ${$c}: pages != 256 - limit for a growing segment"
+        # peek in the context reads the physical RAM translate names.
+        assert machine.cpu.mmu.peek($la, 4, "logical", $c) == machine.cpu.mmu.peek($t.phys, 4, "physical") "ctx ${$c}: logical and physical peeks differ"
+        if $prev != none && $prev != $t.phys {
+            $distinct = $distinct + 1
+        }
+        $prev = $t.phys
+    }
+}
+# Context 0 (the operating system) has no segment 1; the three user
+# contexts map it to three different programs.
+assert machine.cpu.mmu.translate($la, context=0).valid == false "context 0 maps segment 1"
+assert $distinct == 2 "the user contexts do not map segment 1 to three different places"
+# Omitting the context keeps the old behaviour: the CPU's own choice.
+let cur = machine.cpu.mmu.context
+assert machine.cpu.mmu.translate($la, false).phys == machine.cpu.mmu.translate($la, context=$cur).phys "user = the latch context"
+assert machine.cpu.mmu.translate($la, true).valid == machine.cpu.mmu.translate($la, context=0).valid "supervisor = context 0"
+assert try(machine.cpu.mmu.translate($la, context=4), "refused") == "refused" "context 4 accepted"
+assert try(machine.cpu.mmu.peek($la, 4, "physical", 1), "refused") == "refused" "a physical peek took a context"
+
+# ---- Memory views: a context, and physical --------------------------------
+let t1 = machine.cpu.mmu.translate($la, context=1)
+let b1 = machine.memory.peek.bytes($la, 16, "logical", 1)
+assert $b1 == machine.memory.peek.bytes($t1.phys, 16, "physical") "peek.bytes: context 1 != physical"
+assert $b1 != machine.memory.peek.bytes($la, 16, "logical", 2) "contexts 1 and 2 read the same bytes"
+assert try(machine.memory.peek.bytes($la, 16, "physical", 1), "refused") == "refused" "peek.bytes: physical took a context"
+# dump and disasm take the same argument (their text output is not checked
+# here, only that they accept it and refuse a bad one).
+machine.memory.dump $la 16 logical 1
+machine.memory.dump $t1.phys 16 physical
+debug.disasm $la 2 context=1
+assert try(debug.disasm($la, 2, 9), "refused") == "refused" "disasm accepted context 9"
+# The view is restored after each request: the plain read is the CPU's again.
+assert machine.memory.peek.l($la) == machine.cpu.mmu.peek($la, 4) "a context outlived its request"
+
+echo "lisa-debugger: all checks passed"
+quit

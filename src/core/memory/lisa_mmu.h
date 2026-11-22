@@ -72,8 +72,12 @@ bool lisa_mmu_translate(lisa_mmu_t *m, uint32_t addr, bool supervisor, uint32_t 
 // The debugger's translation for machine.cpu.mmu.translate / walk / map
 // (mmu_trace.h): the answer with its physical space and the access the
 // segment allows, and, given a trace, the segment descriptor consulted.
-// START-mode bypass resolves as "identity" with no steps.
-void lisa_mmu_debug_translate(lisa_mmu_t *m, uint32_t addr, bool supervisor, mmu_xlate_t *x, mmu_trace_t *trace);
+// START-mode bypass resolves as "identity" with no steps.  `ctx` 0-3 reads
+// that context's descriptors whatever `supervisor` says (LISA_CTX_CPU: the
+// hardware's choice -- 0 in supervisor mode, else the latch context).
+#define LISA_CTX_CPU (-1)
+void lisa_mmu_debug_translate(lisa_mmu_t *m, uint32_t addr, bool supervisor, int ctx, mmu_xlate_t *x,
+                              mmu_trace_t *trace);
 
 // Put this MMU in the object model as `machine.cpu.mmu`, the node every MMU
 // kind has (its translate/peek answer as the 68K and PowerPC ones do).
@@ -137,7 +141,24 @@ void lisa_mmu_write32(uint32_t addr, bool supervisor, uint32_t value);
 
 // Side-effect-free read for debug/inspection (memory.peek/.dump): translate and
 // read RAM/ROM, return all-ones for unmapped/invalid, never fault or strobe.
+// It reads through the debug view (lisa_mmu_debug_view_set) when one is set.
 uint32_t lisa_mmu_debug_read(uint32_t addr, unsigned size, bool supervisor);
+
+// Side-effect-free read of main memory by PHYSICAL address (the 21-bit RAM
+// address a RAM segment's SOR selects; the I/O and ROM spaces are reached
+// through their segments only).  *ok is false beyond installed RAM.
+uint32_t lisa_mmu_debug_read_phys(uint32_t phys, unsigned size, bool *ok);
+
+// The debugger's view of memory: which address space the side-effect-free
+// reads above (and so memory.dump/peek, debug.disasm, debug.frame) see.
+// LISA_VIEW_CPU (the default) is what the CPU would see now; 0-3 reads
+// through that context's segments; LISA_VIEW_PHYSICAL reads main memory by
+// physical address.  A method that takes a context sets it around its reads
+// and restores the previous view (the function returns it), so the setting
+// never outlives one request.
+#define LISA_VIEW_CPU      LISA_CTX_CPU
+#define LISA_VIEW_PHYSICAL 4
+int lisa_mmu_debug_view_set(int view);
 
 // Side-effect-free debug write (memory.poke): write only when the access
 // resolves to main RAM; never touch I/O (no strobes), ROM, or descriptors.

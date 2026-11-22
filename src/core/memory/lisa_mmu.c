@@ -569,9 +569,13 @@ static const char *lisa_acc_name(int acc) {
 // they receive the access the segment allows, how large a region resolves
 // the same way, and the segment descriptor consulted.  Every other caller
 // goes through lisa_resolve, which passes NULL and so compiles them away.
+// `force_ctx` (0-3) reads that context's descriptors whatever the privilege
+// and the latches (a debugger's question about another process); -1 is the
+// hardware's choice: context 0 in supervisor mode, else the latch context.
 static inline __attribute__((always_inline)) lisa_resolved_t lisa_resolve_traced(lisa_mmu_t *m, uint32_t addr,
                                                                                  bool supervisor, bool is_write,
-                                                                                 mmu_xlate_t *x, mmu_trace_t *trace) {
+                                                                                 int force_ctx, mmu_xlate_t *x,
+                                                                                 mmu_trace_t *trace) {
     lisa_resolved_t r = {0};
     addr &= 0x00FFFFFF;
     int latch_ctx = (m->seg2 << 1) | m->seg1;
@@ -596,7 +600,7 @@ static inline __attribute__((always_inline)) lisa_resolved_t lisa_resolve_traced
     }
 
     // Normal segment translation. Supervisor mode forces context 0.
-    int ctx = supervisor ? 0 : latch_ctx;
+    int ctx = force_ctx >= 0 ? force_ctx : supervisor ? 0 : latch_ctx;
     int seg = (addr >> 17) & 0x7F;
     uint32_t page = (addr >> 9) & 0xFF;
     uint32_t byte_off = addr & 0x1FF;
@@ -696,18 +700,25 @@ static inline __attribute__((always_inline)) lisa_resolved_t lisa_resolve_traced
 
 // The resolver every access path uses (no debugger outputs).
 static lisa_resolved_t lisa_resolve(lisa_mmu_t *m, uint32_t addr, bool supervisor, bool is_write) {
-    return lisa_resolve_traced(m, addr, supervisor, is_write, NULL, NULL);
+    return lisa_resolve_traced(m, addr, supervisor, is_write, -1, NULL, NULL);
+}
+
+// The debugger's resolver: as lisa_resolve, in an explicit context when
+// `ctx` is 0-3.
+static lisa_resolved_t lisa_resolve_ctx(lisa_mmu_t *m, uint32_t addr, bool supervisor, bool is_write, int ctx) {
+    return lisa_resolve_traced(m, addr, supervisor, is_write, ctx, NULL, NULL);
 }
 
 // Names of the physical spaces a route lands in.
 static const char *const lisa_space_names[] = {[L_RAM] = "ram", [L_IO] = "io", [L_ROM] = "rom", [L_MMUREG] = "mmureg"};
 
-void lisa_mmu_debug_translate(lisa_mmu_t *m, uint32_t addr, bool supervisor, mmu_xlate_t *x, mmu_trace_t *trace) {
+void lisa_mmu_debug_translate(lisa_mmu_t *m, uint32_t addr, bool supervisor, int ctx, mmu_xlate_t *x,
+                              mmu_trace_t *trace) {
     x->via = "segment";
     x->access = "rw";
     x->space = NULL;
     x->span_bits = 9;
-    lisa_resolved_t r = lisa_resolve_traced(m, addr, supervisor, false, x, trace);
+    lisa_resolved_t r = lisa_resolve_traced(m, addr, supervisor, false, ctx, x, trace);
     x->valid = r.route != L_FAULT;
     x->phys = !x->valid ? addr : r.route == L_MMUREG ? (addr & 0x00FFFFFF) : r.phys;
     if (x->valid)
@@ -917,14 +928,39 @@ void lisa_mmu_write32(uint32_t addr, bool supervisor, uint32_t value) {
     lisa_write(addr, 4, supervisor, value);
 }
 
+// The debugger's current view (lisa_mmu.h); LISA_VIEW_CPU unless a method
+// that takes a context or a space is inside its reads.
+static int g_lisa_debug_view = LISA_VIEW_CPU;
+
+int lisa_mmu_debug_view_set(int view) {
+    int prev = g_lisa_debug_view;
+    g_lisa_debug_view = view;
+    return prev;
+}
+
+uint32_t lisa_mmu_debug_read_phys(uint32_t phys, unsigned size, bool *ok) {
+    lisa_mmu_t *m = g_lisa_mmu;
+    bool in_ram = m && phys >= m->ram_min && phys + size <= m->ram_max;
+    if (ok)
+        *ok = in_ram;
+    if (!in_ram)
+        return 0xFFFFFFFFu >> ((4 - size) * 8);
+    uint32_t off = phys - m->ram_min, v = 0;
+    for (unsigned i = 0; i < size; i++) // no parity side effects: a debugger read is not a bus cycle
+        v = (v << 8) | m->ram[off + i];
+    return v;
+}
+
 uint32_t lisa_mmu_debug_read(uint32_t addr, unsigned size, bool supervisor) {
     lisa_mmu_t *m = g_lisa_mmu;
     if (!m)
         return 0xFFFFFFFFu >> ((4 - size) * 8);
-    lisa_resolved_t r = lisa_resolve(m, addr, supervisor, false);
+    if (g_lisa_debug_view == LISA_VIEW_PHYSICAL)
+        return lisa_mmu_debug_read_phys(addr & 0x00FFFFFFu, size, NULL);
+    lisa_resolved_t r = lisa_resolve_ctx(m, addr, supervisor, false, g_lisa_debug_view);
     switch (r.route) {
     case L_RAM:
-        return lisa_ram_read(m, r.phys, size);
+        return lisa_mmu_debug_read_phys(r.phys, size, NULL);
     case L_ROM:
         return lisa_rom_read(m, r.phys, size);
     case L_MMUREG:
@@ -974,43 +1010,76 @@ static value_t lisa_attr_context(struct object *self, const member_t *mb) {
     return m ? val_int((m->seg2 << 1) | m->seg1) : val_err("mmu not present");
 }
 
+// What the Lisa's debugger translation reads: the MMU, and the context the
+// caller named (LISA_CTX_CPU when it named none).
+typedef struct {
+    lisa_mmu_t *m;
+    int ctx;
+} lisa_xlate_ctx_t;
+
 // The Lisa's debugger translation (debug_mmu_xlate_fn).  `fetch` is
 // accepted for the uniform signature; the segment MMU makes no
 // instruction/data distinction.
 static void lisa_xlate(void *ctx, uint32_t addr, bool supervisor, bool fetch, mmu_xlate_t *out, mmu_trace_t *trace) {
     (void)fetch;
-    lisa_mmu_debug_translate((lisa_mmu_t *)ctx, addr, supervisor, out, trace);
+    const lisa_xlate_ctx_t *c = (const lisa_xlate_ctx_t *)ctx;
+    lisa_mmu_debug_translate(c->m, addr, supervisor, c->ctx, out, trace);
 }
 
-// translate(addr, [supervisor], [fetch]) -> {phys, valid, via, access,
-// space}: "segment" (or "identity" for the START-mode bypass), and which
-// physical space the address lands in.
+// Read an optional `context` argument at argv[idx]: 0-3, or LISA_CTX_CPU
+// when omitted.  False (with *err set) for any other number.
+static bool lisa_parse_context(int argc, const value_t *argv, int idx, int *ctx, value_t *err) {
+    *ctx = LISA_CTX_CPU;
+    if (argc <= idx || argv[idx].kind == VK_NONE)
+        return true;
+    if (argv[idx].kind != VK_UINT || argv[idx].u > 3) {
+        *err = val_err("context must be 0-3 (0 is the operating system's)");
+        return false;
+    }
+    *ctx = (int)argv[idx].u;
+    return true;
+}
+
+// translate(addr, [supervisor], [fetch], [context]) -> {phys, valid, via,
+// access, space}: "segment" (or "identity" for the START-mode bypass), and
+// which physical space the address lands in.  `context` names the
+// descriptor set to read; omitted, it is the one the CPU uses now.
 static value_t lisa_method_translate(struct object *self, const member_t *mb, int argc, const value_t *argv) {
     (void)mb;
-    lisa_mmu_t *m = lisa_mmu_from(self);
-    if (!m)
+    lisa_xlate_ctx_t c = {lisa_mmu_from(self), LISA_CTX_CPU};
+    value_t err;
+    if (!c.m)
         return val_err("mmu not present");
-    return debug_mmu_translate(lisa_xlate, m, debug_cpu_is_supervisor(), argc, argv);
+    if (!lisa_parse_context(argc, argv, DEBUG_MMU_XLATE_NARGS, &c.ctx, &err))
+        return err;
+    return debug_mmu_translate(lisa_xlate, &c, debug_cpu_is_supervisor(), argc, argv);
 }
 
-// walk(addr, [supervisor], [fetch]) -> translate's map plus the one step
-// the segment MMU takes: the segment descriptor (SOR/SLR) of the context.
+// walk(addr, [supervisor], [fetch], [context]) -> translate's map plus the
+// one step the segment MMU takes: the segment descriptor (SOR/SLR) of the
+// context.
 static value_t lisa_method_walk(struct object *self, const member_t *mb, int argc, const value_t *argv) {
     (void)mb;
-    lisa_mmu_t *m = lisa_mmu_from(self);
-    if (!m)
+    lisa_xlate_ctx_t c = {lisa_mmu_from(self), LISA_CTX_CPU};
+    value_t err;
+    if (!c.m)
         return val_err("mmu not present");
-    return debug_mmu_walk(lisa_xlate, m, debug_cpu_is_supervisor(), argc, argv);
+    if (!lisa_parse_context(argc, argv, DEBUG_MMU_XLATE_NARGS, &c.ctx, &err))
+        return err;
+    return debug_mmu_walk(lisa_xlate, &c, debug_cpu_is_supervisor(), argc, argv);
 }
 
-// map([start], [end], [supervisor], [fetch], [limit]) over the 24-bit
-// logical space, at 512-byte page granularity.
+// map([start], [end], [supervisor], [fetch], [limit], [context]) over the
+// 24-bit logical space, at 512-byte page granularity.
 static value_t lisa_method_map(struct object *self, const member_t *mb, int argc, const value_t *argv) {
     (void)mb;
-    lisa_mmu_t *m = lisa_mmu_from(self);
-    if (!m)
+    lisa_xlate_ctx_t c = {lisa_mmu_from(self), LISA_CTX_CPU};
+    value_t err;
+    if (!c.m)
         return val_err("mmu not present");
-    return debug_mmu_map(lisa_xlate, m, debug_cpu_is_supervisor(), 1ull << 24, 9, argc, argv);
+    if (!lisa_parse_context(argc, argv, DEBUG_MMU_MAP_NARGS, &c.ctx, &err))
+        return err;
+    return debug_mmu_map(lisa_xlate, &c, debug_cpu_is_supervisor(), 1ull << 24, 9, argc, argv);
 }
 
 // descriptor(segment, [count], [context]) -> the segment descriptors, which
@@ -1044,35 +1113,70 @@ static value_t lisa_method_descriptor(struct object *self, const member_t *mb, i
         debug_mmu_put_hex(b, "slr", slr);
         val_map_put(b, "type", val_str(lisa_acc_name(acc)));
         if (valid) {
-            val_map_put(b, "limit", val_uint(4, slr & 0xFF));
+            uint32_t limit = slr & 0xFF;
+            bool stack = (acc & 0xC) == 0x4 && !(acc & 0x1);
+            val_map_put(b, "limit", val_uint(4, limit));
             if ((acc & 0xC) == 0x4) { // memory segments carry the stack and read-only bits
-                debug_mmu_put_bool(b, "stack", !(acc & 0x1));
+                debug_mmu_put_bool(b, "stack", stack);
                 debug_mmu_put_bool(b, "ro", !(acc & 0x2));
             }
             debug_mmu_put_hex(b, "phys", (uint32_t)(sor & 0xFFF) << 9); // physical page 0 of the segment
+            // The valid pages the limit decodes to (lisa_resolve_traced): [0, B]
+            // growing up, [B, 255] for a stack, B = $FF - limit.
+            uint32_t boundary = 0xFF - limit;
+            val_map_put(b, "first_page", val_uint(4, stack ? boundary : 0));
+            val_map_put(b, "pages", val_uint(4, stack ? 256 - boundary : boundary + 1));
         }
         val_list_push(&items, &len, &cap, val_map_finish(b));
     }
     return val_list(items, len);
 }
 
-// One peek read, logical only: the Lisa has three physical spaces, and a
-// bare physical address names none.
+// One peek read (debug_mmu_read_fn): "logical" through the segments of the
+// context the caller named (LISA_CTX_CPU: the CPU's own); "physical" reads
+// main memory by its physical address -- the RAM address a segment's origin
+// selects (the I/O and ROM spaces have no physical name here: reach them
+// through their segments).
 static value_t lisa_peek_read(void *ctx, uint32_t addr, unsigned size, bool physical, uint32_t *out) {
-    (void)ctx;
-    if (physical)
-        return val_err("peek: the Lisa has three physical spaces (RAM, I/O, ROM); read a logical address");
+    const lisa_xlate_ctx_t *c = (const lisa_xlate_ctx_t *)ctx;
+    if (physical) {
+        bool ok;
+        if (c->ctx != LISA_CTX_CPU)
+            return val_err("peek: a physical read takes no context");
+        *out = lisa_mmu_debug_read_phys(addr, size, &ok);
+        if (!ok)
+            return val_err("peek: $%X is not in installed RAM", (unsigned)addr);
+        return val_none();
+    }
+    int prev = lisa_mmu_debug_view_set(c->ctx);
     *out = lisa_mmu_debug_read(addr, size, debug_cpu_is_supervisor());
+    lisa_mmu_debug_view_set(prev);
     return val_none();
 }
 
-// peek(addr, [size], [space]) -> the value, big-endian (debug_mmu_peek).
+// peek(addr, [size], [space], [context]) -> the value, big-endian
+// (debug_mmu_peek), in any context or physically.
 static value_t lisa_method_peek(struct object *self, const member_t *mb, int argc, const value_t *argv) {
     (void)mb;
     if (!lisa_mmu_from(self))
         return val_err("mmu not present");
-    return debug_mmu_peek(lisa_peek_read, NULL, argc, argv);
+    lisa_xlate_ctx_t c = {lisa_mmu_from(self), LISA_CTX_CPU};
+    value_t err;
+    if (!lisa_parse_context(argc, argv, DEBUG_MMU_PEEK_NARGS, &c.ctx, &err))
+        return err;
+    return debug_mmu_peek(lisa_peek_read, &c, argc, argv);
 }
+
+// The `context` argument translate, walk, map and peek take after the
+// arguments every MMU kind shares.
+#define LISA_CONTEXT_ARG_DECL                                                                                          \
+    {.name = "context",                                                                                                \
+     .kind = VK_UINT,                                                                                                  \
+     .validation_flags = OBJ_ARG_OPTIONAL,                                                                             \
+     .doc = "read this context's segments (0-3; 0 is the operating system's), whatever `supervisor` says",             \
+     .default_doc = "the CPU's: 0 in supervisor mode, else the one the SEG1/SEG2 latches select"}
+static const arg_decl_t lisa_xlate_args[] = {DEBUG_MMU_XLATE_ARG_DECLS, LISA_CONTEXT_ARG_DECL};
+static const arg_decl_t lisa_map_args[] = {DEBUG_MMU_MAP_ARG_DECLS, LISA_CONTEXT_ARG_DECL};
 
 static const arg_decl_t lisa_desc_args[] = {
     {.name = "segment", .kind = VK_UINT, .doc = "first segment number (0-127; logical address bits 23-17)"},
@@ -1087,8 +1191,9 @@ static const arg_decl_t lisa_desc_args[] = {
      .doc = "the context's descriptor set (0-3; supervisor mode uses 0)",
      .default_doc = "the context the SEG1/SEG2 latches select"},
 };
-static const arg_decl_t lisa_peek_args[DEBUG_MMU_PEEK_NARGS] =
-    DEBUG_MMU_PEEK_ARGS("logical address", "\"logical\"; \"physical\" is refused on the Lisa");
+static const arg_decl_t lisa_peek_args[DEBUG_MMU_PEEK_NARGS + 1] = {
+    DEBUG_MMU_PEEK_ARG_DECLS("logical address", "\"logical\", or \"physical\": main memory (RAM) by physical address"),
+    LISA_CONTEXT_ARG_DECL};
 
 static const member_t lisa_mmu_members[] = {
     {.kind = MK_ATTR,
@@ -1101,45 +1206,48 @@ static const member_t lisa_mmu_members[] = {
      .attr = {.type = VK_INT, .get = lisa_attr_context}},
     {.kind = MK_METHOD,
      .name = "translate",
-     .examples = EXAMPLES("machine.cpu.mmu.translate 0x20000"),
+     .examples = EXAMPLES("machine.cpu.mmu.translate 0x20000", "machine.cpu.mmu.translate 0x20000 context=1"),
      .doc = "Translate an address, side-effect-free (same shape on every MMU kind, plus the segment space)",
      .method = {.result_doc = "{phys, valid, via, access, space}",
-                .args = debug_mmu_xlate_args,
-                .nargs = DEBUG_MMU_XLATE_NARGS,
+                .args = lisa_xlate_args,
+                .nargs = DEBUG_MMU_XLATE_NARGS + 1,
                 .result = VK_MAP,
                 .fn = lisa_method_translate}},
     {.kind = MK_METHOD,
      .name = "walk",
-     .examples = EXAMPLES("machine.cpu.mmu.walk 0x20000"),
+     .examples = EXAMPLES("machine.cpu.mmu.walk 0x20000", "machine.cpu.mmu.walk 0x20000 context=3"),
      .doc = "Translate an address and show the segment descriptor it went through",
      .method = {.result_doc = "{phys, valid, via, access, space, steps: [{step, outcome, ...}]}",
-                .args = debug_mmu_xlate_args,
-                .nargs = DEBUG_MMU_XLATE_NARGS,
+                .args = lisa_xlate_args,
+                .nargs = DEBUG_MMU_XLATE_NARGS + 1,
                 .result = VK_MAP,
                 .fn = lisa_method_walk}},
     {.kind = MK_METHOD,
      .name = "map",
-     .examples = EXAMPLES("machine.cpu.mmu.map", "machine.cpu.mmu.map supervisor=false"),
+     .examples =
+         EXAMPLES("machine.cpu.mmu.map", "machine.cpu.mmu.map supervisor=false", "machine.cpu.mmu.map context=2"),
      .doc = "List the mapped address ranges: runs that translate linearly with the same via, access and space",
      .method = {.result_doc = "[{start, size, phys, via, access, space}]",
-                .args = debug_mmu_map_args,
-                .nargs = DEBUG_MMU_MAP_NARGS,
+                .args = lisa_map_args,
+                .nargs = DEBUG_MMU_MAP_NARGS + 1,
                 .result = VK_LIST,
                 .fn = lisa_method_map}},
     {.kind = MK_METHOD,
      .name = "descriptor",
      .examples = EXAMPLES("machine.cpu.mmu.descriptor 0 4", "machine.cpu.mmu.descriptor 127 1 0"),
      .doc = "Decode segment descriptors (SOR/SLR) from the MMU's descriptor RAM",
-     .method = {.result_doc = "[{segment, context, base, sor, slr, type, limit?, stack?, ro?, phys?}]",
+     .method = {.result_doc =
+                    "[{segment, context, base, sor, slr, type, limit?, stack?, ro?, phys?, first_page?, pages?}]",
                 .args = lisa_desc_args,
                 .nargs = 3,
                 .result = VK_LIST,
                 .fn = lisa_method_descriptor}},
     {.kind = MK_METHOD,
      .name = "peek",
-     .examples = EXAMPLES("machine.cpu.mmu.peek 0x20000"),
-     .doc = "Read memory through the segment MMU; side-effect-free",
-     .method = {.args = lisa_peek_args, .nargs = DEBUG_MMU_PEEK_NARGS, .result = VK_UINT, .fn = lisa_method_peek}},
+     .examples = EXAMPLES("machine.cpu.mmu.peek 0x20000", "machine.cpu.mmu.peek 0x20000 4 context=1",
+     "machine.cpu.mmu.peek 0x1c0a00 4 physical"),
+     .doc = "Read memory through the segment MMU (in any context) or physically; side-effect-free",
+     .method = {.args = lisa_peek_args, .nargs = DEBUG_MMU_PEEK_NARGS + 1, .result = VK_UINT, .fn = lisa_method_peek}},
 };
 
 static const class_desc_t lisa_mmu_class = {
