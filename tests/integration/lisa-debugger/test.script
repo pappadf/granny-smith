@@ -45,7 +45,19 @@ for c in [0, 1, 2, 3] {
 assert machine.cpu.mmu.translate($la, context=0).valid == false "context 0 maps segment 1"
 assert $distinct == 2 "the user contexts do not map segment 1 to three different places"
 # Omitting the context keeps the old behaviour: the CPU's own choice.
+# Compared while a desktop process holds the latch: the operating system's
+# context 0 maps no segment 1, so there would be no address to compare.
+# The OS and the processes alternate many times a second; at a fixed 45M
+# instructions this used to land inside a level-1 interrupt storm (the
+# ProFile driver's Timer-2 race, fixed with the Lisa's E-synchronized VIA
+# cycles), which happened to leave context 2 latched.
+let tries = 0
+while machine.cpu.mmu.context == 0 && $tries < 200 {
+    scheduler.run 10000
+    $tries = $tries + 1
+}
 let cur = machine.cpu.mmu.context
+assert $cur != 0 "no desktop process took the CPU within 2M instructions"
 assert machine.cpu.mmu.translate($la, false).phys == machine.cpu.mmu.translate($la, context=$cur).phys "user = the latch context"
 assert machine.cpu.mmu.translate($la, true).valid == machine.cpu.mmu.translate($la, context=0).valid "supervisor = context 0"
 assert try(machine.cpu.mmu.translate($la, context=4), "refused") == "refused" "context 4 accepted"

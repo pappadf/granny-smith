@@ -61,6 +61,47 @@ def row_lisa_los31_profile() {
     report_perf("suite-lisa/lisa-los31-profile", scheduler.instr_count)
 }
 
+# The Office System must stay responsive once its disk goes quiet.  LOS's
+# ProFile driver arms VIA2 Timer 2 as a 0.1 s poll while a request waits,
+# and on every interrupt kills it by loading 0 and then clearing T2's IFR
+# bit, counting on the zeroed one-shot to have expired first -- a race the
+# real machine wins because the clearing write is an E-synchronized VMA
+# cycle at least two E behind the load.
+# Without the Lisa's E-synchronized VIA cycles the clear landed first: the
+# flag stood, the poll chain ran on after every request, and 12.8 s later
+# its timeout left a flag nothing cleared, so the level-1 handler called
+# the driver ~33,000 times in a row -- the screen and pointer frozen for
+# 3-4 s.  The oracle is the symptom: over 20 s of idle after boot (its
+# disk traffic ends just before the desktop appears) the CPU is never held
+# at interrupt level 1 for half a second.
+def row_lisa_los31_idle() {
+    machine.boot model="lisa" ram=2048 rom="../../data/roms/lisa2-revh-098917b2.rom"
+    machine.hd.insert "$WORK_DIR/profile-idle.image"
+    assert machine.hd.pram_init(2, false) "pram_init failed"
+    run_until_match("goldens/lisa-los3.1-720x364x1-office.png", 112000000, 5000000)
+    check("goldens/lisa-los3.1-720x364x1-office.png")
+    # 2000 samples 10 ms apart (5094 instructions at 10 per cycle-slot of the
+    # 5.09375 MHz CPU); track the longest unbroken run spent at level 1.
+    let run = 0
+    let longest = 0
+    let i = 0
+    while $i < 2000 {
+        scheduler.run 5094
+        if (machine.cpu.sr & 0x0700) == 0x0100 {
+            $run = $run + 1
+        } else {
+            $run = 0
+        }
+        if $run > $longest {
+            $longest = $run
+        }
+        $i = $i + 1
+    }
+    echo "lisa-los31-idle: longest level-1 run ${$longest} x 10 ms"
+    assert $longest < 50 "level-1 handler held the CPU ${$longest}0 ms (ProFile Timer-2 storm)"
+    report_perf("suite-lisa/lisa-los31-idle", scheduler.instr_count)
+}
+
 def row_lisa_xenix_hdinit() {
     machine.boot model="lisa" ram=2048 rom="../../data/roms/lisa2-revh-098917b2.rom" config="{\"startup\":null}"
     machine.floppy.drive[0].insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-Boot-XProFile.dc42"
