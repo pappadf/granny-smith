@@ -307,6 +307,17 @@ def row_xl_macworks_boot() {
     assert machine.screen.height == 431 "screen.height != 431"
     # The loader disk has ejected itself and the machine is waiting for a system disk.
     assert machine.floppy.drive[0].present == false "loader disk should have ejected"
+    # The diskette MacWorks ejected itself can still be saved, from the
+    # machine's image list.
+    let loader_saved = false
+    let li = 0
+    while $li < 32 {
+        if try(files.images[$li].source, "") == "../../data/Lisa/MacWorksXL/MacWorksXL_3.0_May1985.dc42" {
+            $loader_saved = files.images[$li].export("${$WORK_DIR}/macworks-loader.dc42")
+        }
+        $li = $li + 1
+    }
+    assert $loader_saved "the loader diskette MacWorks ejected could not be exported"
 
     # Insert the MacWorks XL system disk, as a user would at the "?" prompt.
     machine.floppy.drive[0].insert "../../data/Lisa/MacWorksXL/MacWorksXL_Sys_Disk.dc42"
