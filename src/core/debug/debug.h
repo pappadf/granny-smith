@@ -113,6 +113,13 @@ void debug_view_end(int prev);
 // debug.mac and the globals object methods.
 uint32_t debug_mac_xlate(uint32_t addr);
 
+// True while the guest runs the Macintosh Operating System itself, not just
+// on a Macintosh: ROMBase points at the machine's ROM and, on a 68K, the
+// A-trap vector at Mac OS's dispatcher (on a Lisa: MacWorks).
+// debug.mac.mode "on"/"off" forces the answer.  debug.mac.os; the machine
+// watch's Mac OS detectors (watch.c) apply only then.
+bool debug_mac_os_running(void);
+
 struct breakpoint;
 typedef struct breakpoint breakpoint_t;
 

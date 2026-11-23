@@ -3451,6 +3451,54 @@ static bool debug_mac_world(void) {
     return !g_lisa_mmu || lisa_mmu_runs_macworks();
 }
 
+// Mac OS's low-memory globals and vector debug_mac_os_running reads
+#define MAC_ROMBASE    0x02AEu // ROMBase: the base of the ROM the system runs from
+#define MAC_SYSZONE    0x02A6u // SysZone: the system heap's zone
+#define MAC_APPLZONE   0x02AAu // ApplZone: the application heap's zone (above the system heap)
+#define MAC_LINEA_VECT 0x0028u // the line-A (A-trap) exception vector (VBR 0)
+
+// Whether the guest is running the Macintosh Operating System now (debug.h).
+// A Macintosh model is not enough: before Mac OS has started (the ROM's
+// tests) and under another system (A/UX, Xenix, the Lisa Office System) the
+// low-memory globals hold nothing of Mac OS's.  Two tests:
+//  - Mac OS sets ROMBase to the ROM it runs from, and a Macintosh ROM begins
+//    with its checksum, so the longword at ROMBase is the machine ROM's first
+//    (seen on the Plus, SE/30, Quadra 700 and Power Macintosh 6100).
+//  - On a 68K the line-A vector leads to Mac OS's trap dispatcher: in the ROM,
+//    or (System 7 on the SE/30) in the system heap, between SysZone and
+//    ApplZone.  A/UX keeps Mac OS's page 0 from the boot, ROMBase included,
+//    but takes the vector for its kernel, with both zones -1.  A PowerPC
+//    dispatches A-traps in its 68K emulator, so only the first test applies.
+// A Lisa runs Mac OS only under MacWorks, from a RAM copy of a Macintosh ROM
+// (lisa_mmu_runs_macworks).
+bool debug_mac_os_running(void) {
+    if (g_mac_mode != MAC_MODE_AUTO)
+        return g_mac_mode == MAC_MODE_ON;
+    if (g_lisa_mmu)
+        return lisa_mmu_runs_macworks();
+    memory_map_t *mem = system_memory();
+    const uint8_t *rom = mem ? memory_rom_bytes(mem) : NULL;
+    if (!rom || memory_rom_size(mem) < 4)
+        return false;
+    // The ROM's checksum, its first longword (big-endian)
+    uint32_t sum = (uint32_t)rom[0] << 24 | (uint32_t)rom[1] << 16 | (uint32_t)rom[2] << 8 | rom[3];
+    uint32_t base = memory_debug_read_uint32(debug_mac_xlate(MAC_ROMBASE));
+    // 0 is no ROMBase: at reset the ROM overlay answers at address 0
+    if (base == 0 || memory_debug_read_uint32(base) != sum)
+        return false;
+    config_t *m = system_running();
+    if (m && m->ppc)
+        return true;
+    // 24-bit pointers may carry flags in their high byte
+    uint32_t mask = base < 0x01000000u ? 0x00FFFFFFu : 0xFFFFFFFFu;
+    uint32_t line_a = memory_debug_read_uint32(debug_mac_xlate(MAC_LINEA_VECT)) & mask;
+    uint32_t sys_zone = memory_debug_read_uint32(debug_mac_xlate(MAC_SYSZONE)) & mask;
+    uint32_t appl_zone = memory_debug_read_uint32(debug_mac_xlate(MAC_APPLZONE)) & mask;
+    bool in_rom = line_a - (base & mask) < memory_rom_size(mem); // the ROM's dispatcher
+    bool in_sys_heap = sys_zone < appl_zone && line_a >= sys_zone && line_a < appl_zone; // a patched one
+    return in_rom || in_sys_heap;
+}
+
 // The refusal every debug.mac method gives where the Macintosh views do
 // not apply.
 static value_t mac_not_here(const char *who) {
@@ -3475,6 +3523,10 @@ static DEF_SETTER(mac_attr_mode_set) {
 
 static DEF_GETTER(mac_attr_active_get) {
     return val_bool(debug_mac_world());
+}
+
+static DEF_GETTER(mac_attr_os_get) {
+    return val_bool(debug_mac_os_running());
 }
 
 static DEF_METHOD(method_mac_globals_read) {
@@ -3664,6 +3716,11 @@ static const member_t debug_mac_members[] = {
      .name = "active",
      .doc = "True when the Macintosh views apply to this machine now (debug.mac.mode decides)",
      .attr = {.type = VK_BOOL, .get = mac_attr_active_get, .set = NULL}},
+    {.kind = MK_ATTR,
+     .name = "os",
+     .doc = "True while the guest runs the Macintosh Operating System (ROMBase points at the machine's ROM and, on a "
+            "68K, the A-trap vector at Mac OS's dispatcher; on a Lisa, MacWorks): the machine watch's Mac OS detectors "
+            "apply only then", .attr = {.type = VK_BOOL, .get = mac_attr_os_get, .set = NULL}},
     {.kind = MK_METHOD,
      .name = "atrap",
      .examples = EXAMPLES("debug.mac.atrap 0xa9a0"),

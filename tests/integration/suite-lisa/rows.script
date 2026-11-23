@@ -57,6 +57,9 @@ def row_lisa_los31_profile() {
     check("goldens/lisa-los3.1-720x364x1-office.png")
     # Not Mac OS: no MMU32bit global to report (report_row_foreign); the
     # Mac globals refuse on a Lisa running its own system (debug.mac.mode).
+    # Not Mac OS either for the machine watch: its Mac OS detectors (system
+    # error, Ticks frozen) would read arbitrary memory here.
+    assert !debug.mac.os "debug.mac.os under the Lisa Office System"
     report_row_foreign("LOS 3.1", "builtin", "profile-boot own-pram")
     report_perf("suite-lisa/lisa-los31-profile", scheduler.instr_count)
 }
@@ -262,6 +265,9 @@ def row_lisa_xenix_boot() {
     # ("Type CONTROL-d to proceed with normal startup, / or give root password ...").
     check("goldens/lisa-xenix3.0-720x364x1-startup.png")
     # Not Mac OS: no MMU32bit global to report (report_row_foreign).
+    # Not Mac OS for the machine watch: under Xenix $16A and $AF0 change
+    # freely, which its Mac OS detectors reported as a crashed, hung guest.
+    assert !debug.mac.os "debug.mac.os under Xenix"
     report_row_foreign("Xenix 3.0", "builtin", "fd-boot cops-typing profile")
     report_perf("suite-lisa/lisa-xenix-boot", scheduler.instr_count)
 }
@@ -377,6 +383,7 @@ def row_xl_macworks_boot() {
     # debugger's Macintosh views apply (debug.mac.mode "auto").
     assert debug.mac.active "debug.mac does not apply under MacWorks"
     assert debug.mac.atrap(0xA022) == "_NewHandle" "no Macintosh trap names under MacWorks"
+    assert debug.mac.os "MacWorks runs Mac OS, but debug.mac.os is false"
     # The absolute mouse move steers the Macintosh cursor (the Mouse global,
     # v then h) under MacWorks; it used to read the LOS cursor and do nothing.
     machine.adb.mouse.move(300, 200, "global")

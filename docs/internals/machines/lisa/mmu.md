@@ -127,7 +127,11 @@ MacWorks — told apart by ROMBase (`$2AE`, read in context 0) pointing at
 the Macintosh ROM image MacWorks loads above `$400000` and the line-A
 vector (`$28`) leading into it. Elsewhere `debug.mac.*` refuses, saying
 why, and a line-A word disassembles as `LINEA $Axxx`
-(`debug_mac_naming_active`, `mac_traps_data.c`).
+(`debug_mac_naming_active`, `mac_traps_data.c`). The same test decides
+`debug.mac.os` on a Lisa, and with it whether the machine watch's Mac OS
+detectors (system error, `Ticks` frozen; `watch.c`) apply: under LOS and
+Xenix `$16A` and `$AF0` are ordinary memory, which those detectors used to
+report as a crashed guest.
 
 ## Control strobes ($00E000-$00E01E)
 

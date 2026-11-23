@@ -38,8 +38,12 @@ let hd_71 = "../../data/systems/system_7_1_20mb_24ac_cd_32bit.img"
 # the machine facts every floppy row shares. Returns the spend.
 def plus_fd_row(label, ram, media, golden, ceiling) {
     machine.boot model="plus" ram=$ram rom="${$ROM}"
+    # At reset the ROM is not Mac OS yet: the machine watch's Mac OS
+    # detectors wait for ROMBase to point at the ROM (debug.mac.os)
+    assert !debug.mac.os "${$label}: debug.mac.os at reset"
     machine.floppy.drive[0].insert "${$media}"
     let spent = wait_match("${$golden}", $ceiling, 5000000)
+    assert debug.mac.os "${$label}: the Finder is up but debug.mac.os is false"
     assert machine.id == "plus" "${$label}: machine.id != plus"
     assert machine.ram == $ram "${$label}: machine.ram != ${$ram}"
     assert machine.screen.width == 512 "${$label}: screen.width != 512"
