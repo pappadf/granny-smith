@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { logs, refreshCatLevels, setCatLevel } from '@/state/logs.svelte';
+  import { logs, refreshCatLevels, setCatLevel, setCatStdout } from '@/state/logs.svelte';
+  import Checkbox from '@/components/ui/Checkbox.svelte';
   import NumberInput from '@/components/ui/NumberInput.svelte';
   import Modal from '@/components/common/Modal.svelte';
   import Hint from '@/components/ui/Hint.svelte';
@@ -31,6 +32,11 @@
     if (!(await setCatLevel(cat, v))) t.value = String(logs.catLevels[cat] ?? 0);
   }
 
+  // A refused change snaps the box back to what the core holds.
+  async function onStdoutChange(cat: string, on: boolean) {
+    if (!(await setCatStdout(cat, on))) logs.catStdout = { ...logs.catStdout };
+  }
+
   onMount(() => {
     if (open) void refreshCatLevels();
   });
@@ -52,10 +58,22 @@
       this list.
     </Hint>
   {:else}
+    <Hint as="p" class="cat-empty"
+      >Level: 0 is off, higher reports more. Every line shows in the Logs panel; tick
+      <strong>Terminal</strong> to print a category's lines there as well.</Hint
+    >
     <ul class="cat-list">
       {#each sortedCats as cat (cat)}
         <li class="cat-row">
           <span class="cat-name">{cat}</span>
+          <Checkbox
+            size="sm"
+            class="cat-stdout"
+            title="Also print this category's lines in the Terminal (every line reaches this panel)"
+            checked={logs.catStdout[cat] ?? true}
+            onchange={(v: boolean) => void onStdoutChange(cat, v)}
+            label="Terminal"
+          />
           <NumberInput
             min="0"
             step="1"

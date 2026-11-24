@@ -155,6 +155,15 @@ alongside its saved state. This means:
   changes. To take your work out of the Mac, copy it to the shared folder
   ([Sharing files](sharing-files.md)), or save the whole machine with
   **Save State**.
+- To start another machine from a disk *with* the changes, write the disk
+  out as a new image first. On a Lisa, `machine.hd.image.export "<new
+  name>"` in the Terminal writes the ProFile as it is now (its contents and
+  the changes, one self-contained file) and
+  `machine.floppy.drive[0].image.export "<new name>"` the diskette (one the
+  Lisa has ejected is still `files.images[N]`, which exports the same way);
+  attach that new image to the new machine.
+  Shut the Office System down first (**machine.power.off**) so the disk is
+  written in a clean state.
 
 ## 7. Storage space
 

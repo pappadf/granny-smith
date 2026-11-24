@@ -691,7 +691,7 @@
       "width": 720,
       "height": 364,
       "depth": 1,
-      "addr32": false,
+      "addr32": null,
       "suite": "suite-lisa"
     },
     {
@@ -701,7 +701,7 @@
       "width": 720,
       "height": 364,
       "depth": 1,
-      "addr32": false,
+      "addr32": null,
       "suite": "suite-lisa"
     },
     {

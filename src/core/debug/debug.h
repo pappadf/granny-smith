@@ -98,10 +98,27 @@ extern const class_desc_t find_class;
 // omitted) or "physical".  Returns false for anything else.
 bool debug_parse_space(int argc, const value_t *argv, int idx, bool *physical);
 
+// The Lisa's memory views for the inspection methods that take an optional
+// `context` (memory.dump, memory.peek.bytes, debug.disasm): read the
+// argument at argv[idx] (0-3; omitted: the CPU's current view) and, on a
+// Lisa, point the side-effect-free reads at that context -- or at physical
+// main memory when `physical` -- until debug_view_end(*prev).  A context on
+// a machine without contexts fails with *err set.  Every other machine
+// keeps its reads as they were.
+bool debug_view_begin(int argc, const value_t *argv, int idx, bool physical, int *prev, value_t *err);
+void debug_view_end(int prev);
+
 // Resolve a 68k low-memory address through the mac-world translation
 // (identity on 68K machines and when no machine is live).  Shared by
 // debug.mac and the globals object methods.
 uint32_t debug_mac_xlate(uint32_t addr);
+
+// True while the guest runs the Macintosh Operating System itself, not just
+// on a Macintosh: ROMBase points at the machine's ROM and, on a 68K, the
+// A-trap vector at Mac OS's dispatcher (on a Lisa: MacWorks).
+// debug.mac.mode "on"/"off" forces the answer.  debug.mac.os; the machine
+// watch's Mac OS detectors (watch.c) apply only then.
+bool debug_mac_os_running(void);
 
 struct breakpoint;
 typedef struct breakpoint breakpoint_t;

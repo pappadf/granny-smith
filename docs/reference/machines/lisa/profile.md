@@ -183,7 +183,7 @@ Values the released ROM and OS driver write, which together pin the required 652
 | PCR | `$6B` (bit 4 preserved) | CA1 interrupts on the **rising** edge (busy released); CA2 = **pulse output** (one `PSTRB/` pulse per port-A access); CB1 = negative edge | [3] `PROINIT`, [4] `PROF_INIT`; mode table [via.md](../../hardware/via.md) §"Peripheral Control Register" |
 | PCR bit 0 | 0 while waiting for the controller to go busy, 1 otherwise | the driver flips CA1's edge between "busy asserted" and "busy released" phases | [4] `PROFASM` `S1`/`RESPOND` |
 | ACR | bits 0–1 cleared (`ANDI #$DC`) | no input latching on ports A/B; timer/shift modes untouched | [4] `PROF_INIT` |
-| IER | `$3B` (disable) at init/down, then `$A2` (enable) | enabled sources: **CA1** (busy edge) and **T1**; the state machine's completion event is the CA1 flag | [4] `PROF_INIT`, `PROF_DOWN`, `DRIVER` entry |
+| IER | `$3B` (disable) at init/down, then `$A2` (enable) | enabled sources: **CA1** (busy edge) and **T2** (bit 5, the poll tick); the state machine's completion event is the CA1 flag | [4] `PROF_INIT`, `PROF_DOWN`, `DRIVER` entry; the level-1 handler tests IFR & IER & `$22`, "I/O completion or Timer 2" [6] `Level1` |
 | IFR | bit 1 read/cleared as completion; bit 3 cleared before and tested after parity-checked transfers; timer bits cleared as handled | | [4] `PROFASM` passim, `DRIVER` entry |
 | DDRA | `$00` (input) / `$FF` (output) | flipped around every phase change: the data bus is driven only by the current talker | [3] `PROINIT` et al., [4] `PROFASM` passim |
 | DDRB | `$1C` (bits 2,3,4 out; 0,1 in) | `DEN`, `DRW`, `CMD/` outputs; `OCD`, `BSY` inputs | [3] `PROINIT`, [4] `PROF_INIT` |
@@ -638,6 +638,19 @@ the protocol facts behind them are [3]/[4] above):
 12. **[lisa.md](lisa.md) §14.3 gives the block size as "532–536 bytes".** The wire format is 532
     (20 + 512, [3] equates); the 24 is the OS's in-memory page-label record size, which never crosses the
     interface in that form. This page pins the wire size.
+13. **The OS driver kills Timer 2 with a race it relies on winning.** Every interrupt entry clears the
+    CA1/T2/CB1 flags it read, writes `0` to T2 (low then high byte, one `MOVEP.W`), and then writes `$20`
+    to IFR; its comment says the clearing write is meant to come after the zeroed timer has expired
+    [4] `DRIVER`. A one-shot loaded with N sets its flag N + 1 E cycles after the high-byte write
+    ([via.md](../../hardware/via.md), Timer 2; the data sheet's timing diagram puts the IRQ edge half a
+    cycle later), so with N = 0 the flag must already be set when the IFR write arrives, or that write
+    clears nothing and the stale flag re-enters the driver. On the Lisa it always is: the 6522 runs on E
+    and is selected with VMA [1] §6.5.1, so each access is a synchronous 6800-type cycle aligned to E, and
+    the IFR write — an instruction later, after three program fetches — lands at least two E periods
+    after the T2 high-byte write. A model that lets two VIA writes in successive instructions land one E
+    apart loses the race: the poll tick keeps re-arming after every request, and when its 100-tick budget
+    runs out (12.8 s after the last request) nothing re-arms T2, its flag stands and the level-1 handler
+    re-enters the driver until the driver's word counter wraps (≈ 33,000 times).
 
 ---
 
@@ -710,3 +723,6 @@ the protocol facts behind them are [3]/[4] above):
 5. The Santa Cruz Operation, *SCO XENIX System V for the Lisa 2: Installation Guide*, 1984 — Lisa 2/5
    and 2/10 configurations, second ProFile on the slot-1 card's upper parallel port, `pf0`/`pf2` drive
    names, "ready" light, 5/10 MB size prompt, boot-from-hard-disk sequence.
+6. Apple Computer, *Apple Lisa hardware interface library (LIBHW) source code* — officially released
+   Lisa source archive; `LIBHW-DRIVERS.TEXT` (`Level1`, the level-1 interrupt handler that demultiplexes
+   VIA2, the floppy and the vertical retrace; the parallel-port VIA register offsets).

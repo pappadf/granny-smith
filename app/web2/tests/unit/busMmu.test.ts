@@ -10,6 +10,8 @@ const {
   readDescriptors,
   descriptorFormats,
   readMmuState,
+  translateContexts,
+  translateMany,
   MAP_LIMIT,
 } = await import('@/bus/mmu');
 
@@ -109,6 +111,39 @@ describe('bus/mmu against the machine.cpu.mmu methods', () => {
     const d = await readDescriptors(0x3000, 4, 'long');
     expect(bridge.calls[0].args).toEqual([0x3000, 4, 'long']);
     expect(d).toEqual([{ addr: 0x3000, desc: 0x19, type: 'page' }]);
+  });
+
+  // The Lisa's MMU context: a trailing argument that names the descriptor
+  // set outright, so the privilege is not sent with it.
+  it('sends a Lisa context in place of the privilege', async () => {
+    bridge.reply('machine.cpu.mmu.translate', { valid: false, via: 'segment' });
+    bridge.reply('machine.cpu.mmu.walk', { valid: false, via: 'segment', steps: [] });
+    bridge.reply('machine.cpu.mmu.map', []);
+    bridge.reply('machine.cpu.mmu.descriptor', []);
+    await translateAddr(0x20000, false, 3);
+    await walkAddr(0x20000, true, false, 0);
+    await mapRange(0, undefined, undefined, 2);
+    await readDescriptors(1, 16, undefined, 1);
+    await translateMany([0x20000], 1);
+    expect(bridge.calls.map((c) => c.args)).toEqual([
+      { addr: 0x20000, context: 3 },
+      { addr: 0x20000, context: 0 },
+      { start: 0, context: 2, limit: MAP_LIMIT },
+      [1, 16, 1],
+      { addr: 0x20000, context: 1 },
+    ]);
+  });
+
+  it('translates one address in each of the four Lisa contexts', async () => {
+    bridge.reply('machine.cpu.mmu.translate', (args: unknown) => {
+      const c = (args as { context: number }).context;
+      return c === 0
+        ? { valid: false, via: 'segment' }
+        : { phys: 0x1000 * c, valid: true, via: 'segment', access: 'ro', space: 'ram' };
+    });
+    const all = await translateContexts(0x20000);
+    expect(all.map((t) => t?.valid)).toEqual([false, true, true, true]);
+    expect(all.map((t) => t?.phys)).toEqual([undefined, 0x1000, 0x2000, 0x3000]);
   });
 
   it('offers each kind its own descriptor formats', () => {
