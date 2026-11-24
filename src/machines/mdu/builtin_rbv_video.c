@@ -161,7 +161,7 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
     // The raster follows the monitor strapped on the sense lines -- the code
     // the RBV latches in RvMonP (the bus seats the same code the chip gets).
     uint8_t sense = opts ? opts->sense : MACHINE_SENSE_NONE;
-    const display_timing_t *t = rbv_decode_sense(nubus_slot_kind(card->bus, card->slot), sense);
+    const display_timing_t *t = rbv_decode_sense(nubus_seated_kind(card->bus, card->slot), sense);
     p->halted = (t == NULL);
     if (!t)
         t = display_timing_for_sense(RBV_HALTED_SENSE);

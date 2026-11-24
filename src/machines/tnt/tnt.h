@@ -452,8 +452,9 @@ extern const uint32_t tnt_ram_options_kb[];
 extern const uint32_t ans_ram_options_kb[];
 
 // The Network Servers' shared front backplane on fast/wide 0 (tnt.c), as
-// one storage_bus_decl_t initialiser; the second controller stays per-model
-// -- that is where the bays differ.  And their default devices.
+// one storage_bus_decl_t initialiser; the second controller is the same
+// initialiser over each model's own bays (ANS_STORAGE_BUS1) -- that is where
+// the bays differ.  And their default devices.
 extern const storage_bay_decl_t ans_bays_bus0[];
 extern const storage_device_decl_t ans_default_storage[];
 // The Network Servers' options (keyswitch; the 700's power supplies) and
@@ -474,6 +475,19 @@ extern const builtin_video_desc_t ans_builtin_video;
      .bays = ans_bays_bus0,                                                                                            \
      .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD,                                                                       \
      .startup_ok = true}
+// Fast/wide 1 over the model's `bays_`: any ID 0-6 (a bay is a physical
+// place, not an ID), and not startable from the record (see ans500.c).
+#define ANS_STORAGE_BUS1(bays_)                                                                                        \
+    {.id = "scsi2",                                                                                                    \
+     .label = "Internal SCSI bus 1",                                                                                   \
+     .detail = ANS_SCSI_DETAIL,                                                                                        \
+     .kind = STORAGE_KIND_SCSI,                                                                                        \
+     .wide = true,                                                                                                     \
+     .media_bus = MEDIA_BUS_SCSI2,                                                                                     \
+     .units = MAC_SCSI_UNITS,                                                                                          \
+     .reserved = 0x80u,                                                                                                \
+     .bays = (bays_),                                                                                                  \
+     .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD}
 
 // === hammerhead.c ===========================================================
 

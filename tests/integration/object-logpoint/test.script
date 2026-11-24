@@ -22,6 +22,15 @@ debug.logpoints.add addr=0x16A width=l mode=write level=5 message="Ticks bumped 
 assert try(debug.logpoints.add(addr=0x400, category="nosuchcat"), none) == none "an unknown category was accepted"
 assert try(debug.logpoints.add(addr=0x400, end=0x3FF), none) == none "end below addr was accepted"
 
+# Call form keeps a whole "..." message as its template, as argument mode
+# does: it is filled in at each fire, not once now (it used to be
+# interpolated here, so every hit printed the same stale values).
+let lpc = debug.logpoints.add(addr=0x16A, width="l", mode="write", level=5, message="call form val=${$value:08x}")
+assert $lpc.message == 'call form val=${$value:08x}' "the call-form message was interpolated at add time"
+# A message built by an expression is an expression: evaluated now.
+let lpe = debug.logpoints.add(addr=0x16A, width="l", mode="write", level=5, message="built " + "${1 + 1}")
+assert $lpe.message == "built 2" "an expression message was not evaluated"
+
 scheduler.run 5000000
 
 echo "${len(debug.logpoints.entries)} logpoints"

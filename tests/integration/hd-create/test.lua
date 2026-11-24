@@ -1,0 +1,58 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- Integration test: files.create and the drive models
+-- Exercises files.create(path, kind, size): a hard disk with model-aware size
+-- parsing, a floppy and a ProFile of their sizes, and the refusals.
+-- Each create asserts success so a regression in size parsing fails
+-- fast instead of being silently masked by a later passing call.
+
+-- Test: hd models lists known drive models
+local _ = catalog.hd_models
+
+-- Test: hd create with a model name. The model-name parser looks up the
+-- size in the catalog (HD20SC = 20 MB).
+assert(files.create(F"${vars.WORK_DIR}/test_model.img", "hd", "HD20SC"), "create failed for model HD20SC")
+assert(files.path_exists(F"${vars.WORK_DIR}/test_model.img"), "test_model.img missing after create")
+
+-- Test: hd create with a human-friendly size (mb suffix). The "40mb"
+-- form rounds to a geometry-aligned size (40061952 bytes, ~38.2 MiB
+-- usable) — pinning the exact byte count guards the rounding rule.
+assert(files.create(F"${vars.WORK_DIR}/test_40mb.img", "hd", "40mb"), "create failed for size 40mb")
+assert(files.path_size(F"${vars.WORK_DIR}/test_40mb.img") == 40061952, "test_40mb.img wrong size")
+
+-- Test: hd create with exact byte count (backward compatible).
+assert(files.create(F"${vars.WORK_DIR}/test_exact.img", "hd", "21411840"), "create failed for exact byte count")
+assert(files.path_size(F"${vars.WORK_DIR}/test_exact.img") == 21411840, "test_exact.img wrong size")
+
+-- Test: hd create with binary suffix (backward compatible). Like the
+-- "40mb" case, "20M" geometry-aligns rather than producing an exact
+-- 20*1024*1024 byte count.
+assert(files.create(F"${vars.WORK_DIR}/test_20M.img", "hd", "20M"), "create failed for size 20M")
+files.path_size(F"${vars.WORK_DIR}/test_20M.img")
+
+-- A floppy of each size the drives read, 400K included (the old
+-- files.fd_create made only 800K and 1440K).
+assert(files.create(F"${vars.WORK_DIR}/fd400.dsk", "floppy", "400K"), "create failed for a 400K floppy")
+assert(files.path_size(F"${vars.WORK_DIR}/fd400.dsk") == 409600, "fd400.dsk wrong size")
+assert(files.create(F"${vars.WORK_DIR}/fd1440.dsk", "floppy", 1474560), "create failed for a 1440K floppy")
+assert(files.path_size(F"${vars.WORK_DIR}/fd1440.dsk") == 1474560, "fd1440.dsk wrong size")
+
+-- A ProFile's size is its data bytes, like every kind's (the image node's
+-- `size`): 9728 sectors are 9728 raw 532-byte blocks on file.
+assert(files.create(F"${vars.WORK_DIR}/pro.image", "profile", 9728 * 512), "create failed for a 5 MB ProFile")
+assert(files.path_size(F"${vars.WORK_DIR}/pro.image") == 9728 * 532, "pro.image is not 9728 532-byte blocks")
+assert(gs.contains(files.identify(F"${vars.WORK_DIR}/pro.image").fits, "profile"), "the blank ProFile does not fit a ProFile")
+
+-- The refusals: a floppy's size as a hard disk, a non-floppy size as a
+-- floppy, a CD-ROM (read-only: no blank one), an unknown kind, an existing
+-- file (never overwritten).
+assert(gs.try(function() return files.create(F"${vars.WORK_DIR}/hd800.img", "hd", "800K") end, false) == false, "a floppy-sized hard disk was created")
+assert(gs.try(function() return files.create(F"${vars.WORK_DIR}/fd500.dsk", "floppy", "500K") end, false) == false, "a 500K floppy was created")
+assert(gs.try(function() return files.create(F"${vars.WORK_DIR}/blank.iso", "cd", "650M") end, false) == false, "a blank CD-ROM was created")
+assert(gs.try(function() return files.create(F"${vars.WORK_DIR}/what.img", "tape", "20M") end, false) == false, "an unknown kind was created")
+assert(gs.try(function() return files.create(F"${vars.WORK_DIR}/test_model.img", "hd", "HD20SC") end, false) == false, "an existing file was overwritten")
+assert(not gs.truthy(function() return files.path_exists(F"${vars.WORK_DIR}/hd800.img") end), "a refused create left a file")
+
+-- Test: hd_models prints the catalog one more time (smoke check).
+local _ = catalog.hd_models
+
+quit()

@@ -316,6 +316,15 @@ void cpu_poll_interrupt(cpu_t *restrict cpu) {
     cpu_check_interrupt(cpu);
 }
 
+void cpu_select_active_view(cpu_t *restrict cpu) {
+    cpu_select_soa(cpu->supervisor != 0);
+}
+
+void cpu_power_off(cpu_t *restrict cpu) {
+    cpu_set_sr(cpu, (uint16_t)(cpu_get_sr(cpu) | 0x0700)); // mask levels 1-6
+    cpu->stopped = 1; // nothing executes until a reset clears it
+}
+
 // Get the vector base register (68010+)
 uint32_t cpu_get_vbr(cpu_t *restrict cpu) {
     return cpu->vbr;

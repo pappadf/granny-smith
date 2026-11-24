@@ -1,8 +1,9 @@
 <script lang="ts">
   import Badge from '@/components/ui/Badge.svelte';
-  import { walkAddr, type Walk } from '@/bus/mmu';
-  import { formatEntry } from '@/lib/mmu';
-  import { debug } from '@/state/debug.svelte';
+  import { translateContexts, walkAddr, type Translation, type Walk } from '@/bus/mmu';
+  import { formatEntry, lisaSpaceLabel } from '@/lib/mmu';
+  import { debug, mmuView } from '@/state/debug.svelte';
+  import { machine } from '@/state/machine.svelte';
   import { debugFrame } from '@/state/debugFrame.svelte';
   import { fmtHex32, parseHex } from '@/lib/hex';
   import { showNotification } from '@/state/toasts.svelte';
@@ -14,6 +15,9 @@
   // eslint-disable-next-line svelte/prefer-writable-derived
   let inputValue = $state(fmtHex32(debug.mmuTransAddr));
   let result = $state<Walk | null>(null);
+  // The Lisa: the same address in each of the four contexts.
+  let compare = $state<(Translation | null)[] | null>(null);
+  const isLisa = $derived(machine.mmuKind === 'lisa_segment');
 
   $effect(() => {
     inputValue = fmtHex32(debug.mmuTransAddr);
@@ -25,8 +29,18 @@
   $effect(() => {
     void debugFrame.current;
     const addr = debug.mmuTransAddr;
-    const sup = debug.mmuSupervisor;
-    void walkAddr(addr, sup).then((w) => (result = w));
+    const { supervisor, context } = mmuView();
+    void walkAddr(addr, supervisor, false, context).then((w) => (result = w));
+  });
+
+  $effect(() => {
+    void debugFrame.current;
+    const addr = debug.mmuTransAddr;
+    if (!isLisa || !debug.mmuCompare) {
+      compare = null;
+      return;
+    }
+    void translateContexts(addr).then((r) => (compare = r));
   });
 
   function translate() {
@@ -66,7 +80,44 @@
         >
       </span>
     {/if}
+    {#if isLisa}
+      <label class="compare">
+        <input type="checkbox" bind:checked={debug.mmuCompare} />
+        All four contexts
+      </label>
+    {/if}
   </div>
+  {#if compare}
+    <table class="ctx-table" aria-label="The address in each MMU context">
+      <thead>
+        <tr><th>Context</th><th>Result</th><th>Physical</th><th>Kind</th><th>Access</th></tr>
+      </thead>
+      <tbody>
+        {#each compare as t, c (c)}
+          <tr data-context={c} data-valid={t?.valid ? 'yes' : 'no'}>
+            <td>{c}{c === 0 ? ' (OS)' : ''}</td>
+            {#if t && t.valid}
+              <td>valid</td>
+              <td>$<span class="hex">{fmtHex32(t.phys ?? 0)}</span></td>
+              <td>{lisaSpaceLabel(t.space)}</td>
+              <td
+                >{t.access === 'ro'
+                  ? 'read-only'
+                  : t.access === 'rw'
+                    ? 'read-write'
+                    : (t.access ?? '')}</td
+              >
+            {:else}
+              <td class="bad">{t ? 'not mapped (faults)' : '—'}</td>
+              <td></td>
+              <td></td>
+              <td></td>
+            {/if}
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+  {/if}
   {#if result}
     {#if !result.valid}
       <p class="invalid">
@@ -115,6 +166,33 @@
   .lbl {
     color: var(--gs-text-muted);
     font-size: var(--gs-font-size-xs);
+  }
+  .compare {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--gs-space-1);
+    color: var(--gs-text-muted);
+    font-size: var(--gs-font-size-xs);
+    margin-left: var(--gs-space-3);
+  }
+  .ctx-table {
+    border-collapse: collapse;
+    font-family: var(--gs-font-mono);
+    font-size: var(--gs-font-size-xs);
+    margin-top: var(--gs-space-1);
+  }
+  .ctx-table th {
+    color: var(--gs-text-muted);
+    font-weight: normal;
+    text-align: left;
+    padding-right: var(--gs-space-3);
+  }
+  .ctx-table td {
+    color: var(--gs-text);
+    padding-right: var(--gs-space-3);
+  }
+  .ctx-table td.bad {
+    color: var(--gs-danger-fg);
   }
   .presets {
     display: inline-flex;

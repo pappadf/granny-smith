@@ -16,6 +16,7 @@
 #include "debug.h"
 #include "floppy.h"
 #include "gs_assert.h"
+#include "gs_lua.h"
 #include "image.h"
 #include "json_value.h"
 #include "log.h"
@@ -1217,6 +1218,7 @@ int main(int argc, char *argv[]) {
         // A name `$name` could not read back (too long, not an identifier,
         // reserved) is a startup error, not a binding that silently never matches
         char err[160];
+        gs_lua_var_set(name, eq + 1); // the Lua side of the same definition
         int rc = shell_var_set(name, eq + 1, err, sizeof(err));
         free(name);
         if (rc < 0) {

@@ -1835,6 +1835,13 @@ int system_checkpoint_load(const char *filename) {
     // freed pointer.)
     system_swap_in(new_config, true, platform_pacing());
 
+    // The swap selected the memory map's supervisor view; a CPU saved in
+    // user mode re-picks its own only when it next runs, so until then every
+    // debugger read (debug.disasm, the memory views) went through the wrong
+    // privilege -- on a Lisa, the wrong MMU context, reading $FFFF.
+    if (new_config->cpu)
+        cpu_select_active_view(new_config->cpu);
+
     // Force a one-shot screen redraw so the restored framebuffer appears
     platform_force_redraw();
 

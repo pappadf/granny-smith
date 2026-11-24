@@ -40,8 +40,8 @@ run_step() {
 }
 
 echo "Step 1: convert, boot from the UDIF, checkpoint, export"
-run_step step1.script
+run_step step1.lua
 echo ""
 echo "Step 2: restore both checkpoints, boot the export"
-run_step step2.script
+run_step step2.lua
 echo "image-udif-boot passed"

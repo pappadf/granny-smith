@@ -270,6 +270,7 @@ export async function shutdownEmulator(): Promise<void> {
 export async function forgetMachine(): Promise<void> {
   setRunStateMirror(false);
   machine.status = 'no-machine';
+  machine.poweredOff = false;
   machine.model = null;
   machine.ram = null;
   machine.mmuKind = 'none';

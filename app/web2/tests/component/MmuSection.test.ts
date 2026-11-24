@@ -61,3 +61,29 @@ describe('MmuSection', () => {
     expect(debug.mmuSupervisor).toBe(true);
   });
 });
+
+// At each stop the S/U toggle follows the privilege the CPU stopped at.
+describe('MmuSection S/U at a stop', () => {
+  it('follows SR.S of each new debug frame', async () => {
+    const { debugFrame } = await import('@/state/debugFrame.svelte');
+    debug.mmuSupervisor = false;
+    render(MmuSection);
+    debugFrame.current = {
+      arch: 'm68k',
+      pc: 0,
+      rawRegs: { sr: 0x2704 },
+      regs: null,
+      rows: [],
+    } as never;
+    await waitFor(() => expect(debug.mmuSupervisor).toBe(true));
+    debugFrame.current = {
+      arch: 'm68k',
+      pc: 0,
+      rawRegs: { sr: 0x0004 },
+      regs: null,
+      rows: [],
+    } as never;
+    await waitFor(() => expect(debug.mmuSupervisor).toBe(false));
+    debugFrame.current = null;
+  });
+});

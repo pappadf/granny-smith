@@ -204,11 +204,13 @@ own source bit in the machine's interrupt controller.
 
 ## Object model
 
-`machine.pci.slot[N]` carries `number`, `label`, `bus`, `device` and
-`irq`. A node exists for **every declared socket and builtin, populated or
-not** — the board's topology. It configures nothing: a different card is a
-different `machine.boot`. A populated slot
-grows a `card` subtree with the identity attributes and a `config` child
+`machine.pci.slot[N]` carries `number`, `empty`, `label`, `firmware_name`,
+`bus`, `device` and `irq`. A node exists for **every declared socket and
+builtin, populated or not** — the board's topology, built by the slot
+collection both buses share (`card_slots.c`; `machine.nubus.slot[N]` is made
+the same way). It configures nothing: a different card is a different
+`machine.boot`. An empty slot reads `empty` true and has no `card` child; a
+populated slot reads `empty` false and grows a `card` subtree with the identity attributes and a `config` child
 (Advanced) exposing the live header and one `bar[i]` node per declared BAR
 plus the expansion-ROM BAR. `catalog.pci_cards` lists the registry.
 

@@ -1316,8 +1316,12 @@ uint32_t memory_debug_read_uint32(uint32_t addr) {
 uint32_t memory_debug_read_phys(uint32_t phys, unsigned size, bool *ok) {
     if (ok)
         *ok = false;
-    if (g_lisa_mmu || (size != 1 && size != 2 && size != 4))
+    if (size != 1 && size != 2 && size != 4)
         return 0;
+    // The Lisa's physical main memory is not the logical page table: its
+    // own MMU owns the RAM (and its I/O and ROM spaces have no physical name).
+    if (__builtin_expect(g_lisa_mmu != NULL, 0))
+        return lisa_mmu_debug_read_phys(phys, size, ok);
     uint32_t value = 0;
     for (unsigned i = 0; i < size; i++) { // byte-wise: an access may straddle pages
         uint32_t a = phys + i;

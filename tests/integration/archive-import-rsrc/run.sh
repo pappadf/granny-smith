@@ -11,13 +11,13 @@ OUT="$WORK_DIR/imported.dmg"
 rm -f "$OUT"
 python3 "$(dirname "$0")/make_sea_bin.py" "$BIN" "Disk.image"
 
-SCRIPT="$WORK_DIR/import.script"
+SCRIPT="$WORK_DIR/import.lua"
 cat > "$SCRIPT" <<EOS
-assert files.archive.import("$BIN", "$OUT") "archive import failed"
-let mi = files.udif_info("$OUT")
-echo "source_name=\${\$mi.source_name}"
-echo "bytes=\${\$mi.bytes}"
-quit
+assert(files.archive.import("$BIN", "$OUT"), "archive import failed")
+local mi = files.udif_info("$OUT")
+echo("source_name=" .. mi.source_name)
+echo("bytes=" .. mi.bytes)
+quit()
 EOS
 "$HEADLESS_BIN" rom="$ROM_PATH" script="$SCRIPT" --speed=turbo > "$WORK_DIR/import.log" 2>&1 || true
 

@@ -164,12 +164,20 @@ in a retry loop cannot flood the console. `log.alerts` counts them.
 The machine watch (`watch.c`, polled from the browser's main loop) adds
 `log_status` lines: once every `log.status_every` seconds (0 by default, which
 is off; it is opt-in, like `log.perf_every`) it prints run state, PC, MIPS and the JIT's share, disk
-reads/writes per drive kind, the Mac OS `Ticks`, `CurApName` and `DSErrCode`,
-the screen's geometry and whether it is one flat colour, `checkpoint.auto`
+reads/writes per drive kind, the Mac OS `Ticks`, `CurApName` and `DSErrCode`
+(or "not Mac OS"), the screen's geometry and whether it is one flat colour, `checkpoint.auto`
 and the alert count. `log.status()` prints the line now. Its detectors raise
 alerts on a Mac OS system error (DSErrCode changes to a positive ID), `Ticks` frozen for 15 s
 while the CPU runs (armed only once Ticks has been seen moving), and a
-running machine whose CPU retires nothing for 15 s; a poll more than 3 s late
+running machine whose CPU retires nothing for 15 s. The two Mac OS detectors
+and the line's Mac OS part apply only while the guest runs Mac OS
+(`debug_mac_os_running`, `debug.mac.os`: ROMBase points at the machine's ROM,
+whose first longword is its checksum, and on a 68K the line-A vector leads to
+Mac OS's trap dispatcher, in the ROM or the system heap; on a Lisa, MacWorks).
+A/UX keeps the boot's page 0, ROMBase included, but not the vector. A Macintosh model
+is not enough: the ROM's tests, A/UX, and the Lisa's own systems leave those
+globals as arbitrary memory, and under Xenix they read as system errors and a
+frozen Ticks. The CPU detector applies to every guest; a poll more than 3 s late
 says the emulator thread was blocked that long. The headless build does not
 poll the watch, so script output is unchanged there.
 

@@ -26,8 +26,12 @@
     crashed: 'Crashed',
   };
 
+  // A machine that switched itself off (machine.poweredOff) says so.
+  const POWERED_OFF = 'Powered off';
+  const shownLabel = $derived(machine.poweredOff ? POWERED_OFF : stateLabel[machine.status]);
+
   // Every non-empty label, laid invisibly under the shown one to size the field.
-  const stateSizers = Object.values(stateLabel).filter((l) => l);
+  const stateSizers = [...Object.values(stateLabel).filter((l) => l), POWERED_OFF];
 
   const desc = $derived(
     machine.model && machine.ram ? `${shortModel(machine.model)} · ${machine.ram}` : '',
@@ -184,7 +188,7 @@
               state={barState}
             />{/if}</span
         ><span class="text"
-          ><span class="label">{stateLabel[machine.status]}</span>{#each stateSizers as s (s)}<span
+          ><span class="label">{shownLabel}</span>{#each stateSizers as s (s)}<span
               class="sizer"
               aria-hidden="true">{s}</span
             >{/each}</span

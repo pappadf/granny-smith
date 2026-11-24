@@ -1,0 +1,44 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- IIci A/UX 3.0.1 HD boot at 8 bpp on the built-in RBV — expects the graphical
+-- login window, pixel-exact (an enforced row since #183 was fixed; see config.mk).
+--
+-- Guest path: Mac OS boot → "A/UX Startup" → kernel → UFS root mount →
+-- exec(/etc/init) → fsck → CommandShell login window.  The HD attaches
+-- directly from tests/data; writes land in the .delta sidecar in the work
+-- directory, so the source stays pristine.
+--
+-- Budget = 4600 VBL frame-units x 166,251 instructions = 764,754,600 — a whole
+-- number of frame-units, so the run lands exactly on a frame boundary.  The
+-- login screen is a stable plateau from ~4000 frame-units on; the only
+-- frame-to-frame difference is the Name field's blinking text cursor, whose
+-- phase is fixed by the instruction budget.
+
+local mac = dofile("../lib/mac.lua")
+
+-- RBV-under-A/UX is a video path nothing else exercises.  It ran as a
+-- milestone (reported, not fatal) until #183 was fixed; it is enforced now.
+local function row_iici_aux3_8bpp()
+    machine.boot{model = "iici", ram = 16384, rom = vars.ROM}
+    -- The RBV's slot-PRAM record, seeded to 8 bpp as iici-701-depths does:
+    -- slot $B, so PRAM $56; BoardID $001F; depth spID $83; $86 the monitor
+    -- byte the ROM computes itself.  pram.validate first, or PRAMInit
+    -- rewrites the record during boot.
+    machine.rtc.pram.validate()
+    machine.rtc.pram.poke(0x56, gs.bytes(0x001f838600000000, 8))
+    machine.scsi.attach_hd("../../data/aux/aux_3.0.1/hd160-with-aux-301.img", 0)
+    machine.rtc.time = "2026-04-26T21:30:36"
+    scheduler.run(764754600)
+    assert(machine.id == "iici", "machine.id != iici")
+    assert(machine.rom.id == "368cadfe", "rom.id != 368cadfe")
+    assert(machine.screen.width == 640, "screen.width != 640")
+    assert(machine.screen.height == 480, "screen.height != 480")
+    assert(machine.rtc.pram.peek(0x58) == 0x83, "iici-aux3-8bpp: savedMode rewritten by the ROM")
+    assert(machine.screen.depth == 8, F"iici-aux3-8bpp: display at ${machine.screen.depth} bpp under A/UX, want 8")
+    mac.check("aux-login-8bpp.png")
+    mac.report_row("A/UX 3.0.1", "rbv", "hd-boot login 8bpp")
+    mac.report_perf("iici-aux3-8bpp/login", scheduler.instr_count)
+end
+
+mac.row("iici-aux3-8bpp", row_iici_aux3_8bpp)
+mac.suite_done()
+quit()

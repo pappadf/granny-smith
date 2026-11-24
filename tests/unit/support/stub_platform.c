@@ -35,3 +35,8 @@ const char *__attribute__((weak)) debug_mac_atrap_name(uint16_t trap, char *buf,
     (void)buf_size;
     return "ATRAP";
 }
+
+// Macintosh-world switch stub (weak, like the lookup above): always a Mac.
+bool __attribute__((weak)) debug_mac_naming_active(void) {
+    return true;
+}

@@ -37,6 +37,9 @@ export interface AuxCpu {
 
 interface MachineState {
   status: MachineStatus;
+  // The machine switched its own supply off (a Lisa after its OS's
+  // PowerDown): it executes nothing until switched on (a `power` event).
+  poweredOff: boolean;
   model: string | null;
   ram: string | null;
   // True iff the active machine has an MMU of any kind — logical and physical
@@ -118,6 +121,7 @@ export type CpuEngine = '' | 'interpreter' | 'predecoded' | 'jit';
 
 export const machine: MachineState = $state({
   status: 'no-machine',
+  poweredOff: false,
   model: null,
   ram: null,
   mmuEnabled: false,

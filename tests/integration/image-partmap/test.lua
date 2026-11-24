@@ -1,0 +1,17 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- Integration test: image partmap + probe against an APM-formatted image.
+-- The runner cd's into this directory before executing, so paths are
+-- relative to tests/integration/image-partmap/.
+
+-- Human-readable partition map.
+files.partmap("../../data/aux/hd-with-aux-partition.img")
+
+-- Identify — exercises the APM sniff path.
+assert(files.identify("../../data/aux/hd-with-aux-partition.img").map == "apm", "the image carries a partition map")
+
+-- Mount table: partmap and probe open the image directly, so it was never
+-- mounted -- find reports no mount rather than failing.
+echo(F"cached mounts: ${files.mounts.count}")
+assert(files.mounts.find("../../data/aux/hd-with-aux-partition.img") == -1, "image was never mounted")
+
+quit()

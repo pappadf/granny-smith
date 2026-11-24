@@ -218,7 +218,7 @@ void machine_card_scsi_buses(struct config *cfg, checkpoint_t *cp) {
         // Only a socket: a soldered controller is wired to the board's own bus.
         if (d->kind != PCI_SLOT_SOCKET || d->slot >= CARD_SCSI_SLOTS)
             continue;
-        const pci_card_kind_t *kind = pci_slot_kind(cfg->pci, d->slot);
+        const pci_card_kind_t *kind = pci_seated_kind(cfg->pci, d->slot);
         pci_device_t *dev = pci_slot_device(cfg->pci, d->slot);
         if (!kind || !dev || !kind->attach_scsi_bus)
             continue;

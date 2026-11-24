@@ -3,8 +3,8 @@
 # Copyright (c) pappadf
 """test-matrix.py — extract the integration-test coverage matrix.
 
-Statically parses tests/integration/*/config.mk and test.script (plus any
-*.sh TEST_RUNNER scripts) and emits:
+Statically parses tests/integration/*/config.mk and test.lua (or a test
+not yet ported, test.script; plus any *.sh TEST_RUNNER scripts) and emits:
 
   - a per-test inventory table   (--tests)
   - a machine x system pivot     (--pivot, default)
@@ -125,7 +125,7 @@ BAD_VALUES = {"bogus", "nonesuch", "none", ""}
 
 
 def unquote(v):
-    return v.strip('"\'').rstrip("),")
+    return v.strip('"\'').rstrip("),}")
 
 
 def classify_media(path):
@@ -201,9 +201,12 @@ class Test:
                 self.note_media(v, "cd")
 
 
-def parse_script(test, text):
+def parse_script(test, text, lua=False):
     for line in text.splitlines():
-        line = line.split("#", 1)[0]
+        line = line.split("--" if lua else "#", 1)[0]
+        # A Lua call's named arguments are `key = value` in a table (also in
+        # the Lua a runner script writes).
+        line = re.sub(r'(\w+)\s+=\s+(?=["\'\w$])', r'\1=', line)
         if not line.strip() or "try(" in line:
             continue
         if "machine.boot" in line:
@@ -215,17 +218,19 @@ def parse_script(test, text):
         m = re.search(r'\b\w+\(\s*"([a-z0-9]+)"', line)
         if m and m.group(1) in MACHINES:
             test.machine = m.group(1)
-        m = re.search(r'\.insert\s+("[^"]+"|\S+)', line)
+        # The image is the rest of the line: a quoted path, or one built
+        # from a binding (`"${$D}/x.dmg"`, `tostring(D) .. "/x.dmg"`).
+        m = re.search(r'\.insert\b\s*\(?(.*)', line)
         if m:
-            test.note_media(unquote(m.group(1)), "fd")
-        m = re.search(r'attach_hd\s+("[^"]+"|\S+)', line)
+            test.note_media(m.group(1), "fd")
+        m = re.search(r'attach_hd\b\s*\(?(.*)', line)
         if m:
-            test.note_media(unquote(m.group(1)), "hd")
+            test.note_media(m.group(1), "hd")
         if re.search(r'\bscreen\.match\b', line):
             test.goldens += 1
         if re.search(r'\bsound\.match\b', line):
             test.sound_goldens += 1
-        m = re.search(r'scheduler\.run\s+(\d+)', line)
+        m = re.search(r'scheduler\.run[\s(]+(\d+)', line)
         if m:
             test.cycles += int(m.group(1))
         mw = re.search(r'screen\.width\s*==\s*(\d+)', line)
@@ -250,9 +255,9 @@ def parse_test(d):
         s = classify_media(fields["SETUP"])
         if s:
             test.ms.add((test.machine, s))
-    for script in sorted(d.glob("*.script")) + sorted(d.glob("*.sh")):
+    for script in sorted(d.glob("*.lua")) + sorted(d.glob("*.script")) + sorted(d.glob("*.sh")):
         test.machine = test.default_machine     # each file starts fresh
-        parse_script(test, script.read_text(errors="replace"))
+        parse_script(test, script.read_text(errors="replace"), lua=script.suffix == ".lua")
     return test
 
 
@@ -517,7 +522,8 @@ def main():
             roms.add(rom[0])
     ROM_DEFAULT.update(rom_defaults(roms))
     tests = [parse_test(d) for d in sorted(root.iterdir())
-             if (d / "config.mk").exists() and (d / "test.script").exists()]
+             if (d / "config.mk").exists()
+             and ((d / "test.lua").exists() or (d / "test.script").exists())]
     if "--tests" in flags:
         emit_tests(tests)
     if "--video" in flags:

@@ -223,7 +223,7 @@ bool pci_slot_entry_check(const pci_slot_decl_t *slots, const char *model, const
                           char *why, size_t why_len);
 // The device seated in `slot`, or NULL, and the card kind that made it.
 pci_device_t *pci_slot_device(pci_root_t *root, int slot);
-const pci_card_kind_t *pci_slot_kind(pci_root_t *root, int slot);
+const pci_card_kind_t *pci_seated_kind(pci_root_t *root, int slot);
 
 // Make `dev`, just attached, the checkpoint part `name`: its config header
 // and its own state (ops->checkpoint_save / _restore).  A restore reads them

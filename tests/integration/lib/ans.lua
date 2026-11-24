@@ -1,0 +1,159 @@
+-- Converted from ans.script by scripts/script-to-lua.py
+local mac = dofile("mac.lua") -- NOTE: no direct mac.script include (this file is included by another); the library runs once per chunk
+-- tests/integration/lib/ans.script — shared helpers for the Apple Network
+-- Server rows.
+--
+-- Pull in with `include "../lib/ans.script"`.
+--
+-- WHY A LIBRARY AT ALL.  Two things about this machine are awkward exactly
+-- once and identical in every row that talks to its firmware:
+--
+--  1. THE CONSOLE IS THE SCREEN BY DEFAULT, and the rows need the serial
+--     port.  Open Firmware's own `(install-console)` is
+--
+--         "input-device" evaluate catch if 2drop ttya then  ['] input catch …
+--         "output-device" evaluate catch if 2drop ttya then ['] output catch …
+--         or if ttya io then
+--
+--     — it opens whatever `input-device` and `output-device` name, and only
+--     falls back to `ttya` when one of them fails to open.  A Network Server
+--     ships with `input-device kbd` / `output-device screen`, and its 54M30
+--     video and ADB keyboard both work, so out of the box the console is the
+--     monitor.  Apple documents the alternative and it is `setenv`: the rows
+--     type the two variables on the machine's own keyboard, exactly as a
+--     technician would, and cold-boot.  The Grand Central NVRAM part is
+--     non-volatile and carries across a rebuild, so the setting sticks — on
+--     the emulated machine for the same reason it does on the real one.
+--
+--     (The ROM's own progress narration — `msg-write` — goes to ttya
+--     unconditionally, which is why the boot chatter is on the serial port
+--     even when the console is not.)
+--
+--  2. OPEN FIRMWARE'S CONSOLE DROPS CHARACTERS from a burst: its input
+--     loop drains every available byte before it echoes.  The serial line
+--     now delivers text one character time apart, as a real terminal does
+--     (scc.c, line_in), so a whole command goes in at once (`ans_send`);
+--     the rows used to feed seven characters at a time with 20 M between.
+
+-- Configured (ttya-console) NVRAM per model, filled by ans_boot_serial.
+ANS_NV_500 = nil -- global: included file
+ANS_NV_700 = nil -- global: included file
+
+-- --- Console plumbing --------------------------------------------------------
+
+-- Type command text on Open Firmware's console (ttya) and run until the
+-- firmware has read all of it.
+function ans_send(s) -- global: included file
+    mac.serial_type("a", s, 200000000)
+end
+
+-- Complete the line and return everything the firmware printed in reply:
+-- run until the reply ends in the next `0 > ` prompt (Open Firmware prints
+-- it once the command has finished), in slices from 250 K doubling to 16 M.
+-- The 2 G ceiling is a hang detector, not a budget -- a reply comes back in a
+-- few M to a few hundred M -- and a reply that never ends in a prompt is
+-- returned as it stands for the caller's asserts to judge.
+function ans_go() -- global: included file
+    machine.scc.a.receive("\r")
+    return mac.run_until_sent("a", "0 > ", 250000, 2000000000)
+end
+
+-- Run the machine in bounded chunks until Open Firmware settles at its
+-- prompt, and return everything it said on the way.  Chunks rather than one
+-- guessed budget: the 700 needs materially more instructions than the 500
+-- for the same guest-visible progress, because POST's delay loops are timed
+-- against the timebase (bus/4) and a faster card spins more instructions per
+-- millisecond of the 1 ms settle it leaves between LCD characters.
+function ans_wait_prompt() -- global: included file
+    local out = ""
+    local spins = 0
+    while not gs.truthy(function() return gs.contains(out, "0 > ") end) and spins < 240 do
+        scheduler.run(25000000)
+        out = F"${out}${machine.scc.a.sent()}"
+        spins = spins + 1
+    end
+    assert(gs.contains(out, "0 > "), "Open Firmware never reached its prompt on ttya")
+    return out
+end
+
+-- Boot `model` with the serial port as the Open Firmware console, and leave
+-- the machine sitting at the `0 >` prompt.  Returns the second boot's output.
+--
+-- The first call per model is two cold boots: the first comes up on the
+-- SCREEN (the machine's shipping configuration), takes Apple's documented
+-- terminal setup on the ADB keyboard, and the second — against the
+-- now-configured non-volatile store — comes up on ttya.  Later calls for the
+-- same model restore that configured store and boot once (below).
+function ans_boot_serial(model, ram_kb) -- global: included file
+    -- A virgin non-volatile store — what "a Network Server that has never
+    -- been booted before" means in Apple's own service documentation.
+    -- machine.boot builds a new machine, and a new machine's store is its
+    -- own fresh one: nothing crosses the teardown.
+    --
+    -- This is not tidiness.  POST caches its memory configuration in NVRAM
+    -- (`init-mem-config`, `set-dimm-sizes`, `nv-dimm-size@`,
+    -- `dimm-size-tbl!`), so a 700 booting against a table an ans500 wrote
+    -- sizes its 48 MB correctly and then HANGS at `Jumping To RAM Prog.` —
+    -- the point where POST relocates into RAM and starts trusting the cached
+    -- configuration.  Every row here runs both profiles; the store used to
+    -- ride a process-wide carry across machines, and a battery pull here was
+    -- what kept the second one from wedging.
+    machine.boot{model = model, ram = ram_kb, rom = vars.ROM}
+
+    -- Once a row in this process has taken a model through the typed setup,
+    -- later rows of the same model start from that configured store -- the
+    -- machine a technician already set up -- and boot ONCE instead of twice.
+    -- Keyed by model, never shared across models (the DIMM table above).  If
+    -- a ROM does not accept the store it re-initialises it, comes up on the
+    -- screen, and this helper simply takes the typed path below again.
+    if model == "ans500" and ANS_NV_500 ~= nil then
+        machine.nvram.restore(ANS_NV_500)
+    end
+    if model == "ans700" and ANS_NV_700 ~= nil then
+        machine.nvram.restore(ANS_NV_700)
+    end
+
+    -- The firmware's own progress narration (`msg-write`) goes to ttya
+    -- whatever the console is, so `install-console>` is a bounded,
+    -- model-independent marker for "the interpreter is up".  A machine whose
+    -- store ALREADY names ttya skips the narration entirely and goes
+    -- straight to its boot attempt and prompt, which is why both markers are
+    -- watched: this helper has to be idempotent, because the store is
+    -- non-volatile and the second model in a row inherits the first's setup.
+    local out = ""
+    local spins = 0
+    while not gs.truthy(function() return gs.contains(out, "0 > ") end) and not gs.truthy(function() return gs.contains(out, "install-console>") end) and spins < 240 do
+        scheduler.run(25000000)
+        out = F"${out}${machine.scc.a.sent()}"
+        spins = spins + 1
+    end
+    -- Give a console that IS ttya a moment to print its prompt before
+    -- concluding that it is not.
+    local settle = 0
+    while not gs.truthy(function() return gs.contains(out, "0 > ") end) and settle < 50 do
+        scheduler.run(25000000)
+        out = F"${out}${machine.scc.a.sent()}"
+        settle = settle + 1
+    end
+    if gs.contains(out, "0 > ") then
+        return out
+    end
+
+    -- The console is the screen.  Apple's documented terminal setup, typed on
+    -- the machine's own keyboard; the ADB enumeration has to have finished
+    -- before a keystroke lands, which the settle above has covered.
+    assert(gs.contains(out, "install-console>"), "Open Firmware never installed its console")
+    mac.type_settle("setenv output-device ttya\n", 5000000, 400000000)
+    mac.type_settle("setenv input-device ttya\n", 5000000, 400000000)
+    local ignored = machine.scc.a.sent()
+    -- Cold-boot the SAME machine so the new console setting takes effect:
+    -- machine.restart is the power switch, and the soldered NVRAM part (with
+    -- the setenv just written into it) survives it.  A machine.boot would
+    -- build a NEW machine, which starts from a virgin store and would come
+    -- back on the screen console again.
+    machine.restart()
+    local prompt = ans_wait_prompt()
+    if model == "ans500" then ANS_NV_500 = machine.nvram.snapshot() end
+    if model == "ans700" then ANS_NV_700 = machine.nvram.snapshot() end
+    return prompt
+end

@@ -69,4 +69,14 @@ void cops_set_warp(cops_t *cops, int x, int y);
 // MDDF mountinfo := unmounted), so a saved image boots clean afterwards.
 void cops_soft_power_off(cops_t *cops);
 
+// The machine's handler for the host's power-off request: a `0010 spmm`
+// command with p = 0 ($20, $21, $23 -- what the OS's PowerDown and the boot
+// ROM's PowerOff send), on which the COPS drops the ON line.
+void cops_set_power_off_handler(cops_t *cops, void (*fn)(void *ctx), void *ctx);
+
+// True once the host has asked for power off (checkpointed with the COPS);
+// cops_power_restored clears it when the machine is power-cycled.
+bool cops_powered_off(const cops_t *cops);
+void cops_power_restored(cops_t *cops);
+
 #endif // COPS_H

@@ -4,8 +4,8 @@
 # build-rules.mk — the rules both product builds share: Makefile (wasm,
 # OBJ_ROOT = build/wasm) and Makefile.headless (OBJ_ROOT = build/headless).
 # Included after OBJ, CORE_DIR, FLAGS_STAMP and the generated-header
-# variables (vrom68k.mk, pdgen.mk, gsdisk.mk, laserwriter.mk) are set: the
-# targets below are expanded where the file is read.
+# variables (vrom68k.mk, pdgen.mk, gsdisk.mk, laserwriter.mk, gs_lua.mk)
+# are set: the targets below are expanded where the file is read.
 
 # gsvrom_data.c embeds the generated fragments header (edit a vrom68k
 # .s file → make rebuilds fragment, header, object).
@@ -20,6 +20,9 @@ $(OBJ_ROOT)/$(CORE_DIR)/storage/image_wrap.o: $(GSDISK_HEADER)
 
 # laserwriter_job.c embeds the generated prelude header.
 $(OBJ_ROOT)/$(CORE_DIR)/network/laserwriter_job.o: $(LASERWRITER_PRELUDE_HEADER)
+
+# gs_lua.c embeds the generated Lua standard-library header.
+$(OBJ_ROOT)/$(CORE_DIR)/lua/gs_lua.o: $(GS_LUA_LIB_HEADER)
 
 # The flags stamp: creating it (any flag change) outdates every object.
 $(FLAGS_STAMP):

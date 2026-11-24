@@ -266,7 +266,14 @@ other than none or the empty string), `member_is_readonly`,
 questions for meta, usage and lint.
 
 `machine` is the instance; `catalog` is the catalogue. `machine.nubus` and
-`machine.pci` are attached only on a machine with that bus. The root's own
+`machine.pci` are attached only on a machine with that bus. Both build their
+`slot` collection the same way (`peripherals/card_slots.c`): one
+`slot[N]` node for **every slot the machine declares** (a socket or a
+built-in slot), populated or not, carrying `number` and `empty`. An empty
+slot is its node with `empty` true and no `card` child; a populated one has
+`empty` false and its card under `card` (`machine.nubus.slot[N].card`,
+`machine.pci.slot[N].card`). PCI's slot nodes add the declaration (`label`,
+`firmware_name`, `bus`, `device`, `irq`). The root's own
 methods are `objects`, `attributes`, `methods`, `help`, `time`, `quit` and
 `echo`.
 

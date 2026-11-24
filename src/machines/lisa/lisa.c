@@ -33,11 +33,13 @@
 #include "memory.h"
 #include "object.h"
 #include "object_order.h"
+#include "out.h"
 #include "scc.h"
 #include "scheduler.h"
 #include "system.h"
 #include "value.h"
 #include "via.h"
+#include "event/event.h"
 
 #include <assert.h>
 #include <ctype.h>
@@ -56,6 +58,7 @@ typedef struct lisa_via_port {
     via_t *via; // the VIA instance
     const memory_interface_t *vif; // via.c's own memory interface
     uint32_t reg_shift; // offset >> reg_shift = register number (1 for VIA1, 3 for VIA2)
+    bool esync; // each access waits for the next E boundary (lisa_board_desc_t.via_esync)
 } lisa_via_port_t;
 
 // Lisa-specific peripheral state (reached via config_t.machine_context).
@@ -100,8 +103,10 @@ typedef struct lisa_state {
 #define LISA_ROM_BASE 0x00FE0000u
 // Cycles per instruction at the real machine's pace (see lisa_init).
 #define LISA_CPI 10
+// CPU cycles per 68000 E-clock period (E = CPU/10 on every 68000).
+#define LISA_E_DIVIDER 10
 
-// The Lisa-family board descriptor: the four facts that differ between the
+// The Lisa-family board descriptor: the facts that differ between the
 // Lisa 2 and the Macintosh XL, which is the same board sold with the "3A"
 // boot ROM and MacWorks.  Data only, no hooks, so hw_profile_t.board names
 // this directly -- the tnt/pdm shape rather than the mcu/av one, which
@@ -137,6 +142,21 @@ typedef struct lisa_board_desc {
     // 2/5's VIAs at CPU/4 made every LisaOS tick 8 ms, so DELAY_TIME and the
     // millisecond timer ran 2.5x fast against the COPS clock.
     uint8_t via_freq_factor;
+    // The VIAs are 6800-type peripherals on the 68000's synchronous bus: each
+    // is selected with VMA and clocked by E, the 68000's own CPU/10 (Lisa
+    // Hardware Manual, 1983, §6.5.1 and §6.6.1), so an access completes only
+    // at an E boundary -- the same E-synchronized cycle the Macintosh boards
+    // charge (memory_io_esync_penalty).  Without it two VIA writes in
+    // successive instructions land one E apart, closer than the bus allows,
+    // and LOS's ProFile driver loses a race the real machine always wins: it
+    // kills Timer 2 by loading 0 and then clearing T2's IFR bit, meaning the
+    // clear to follow the expiry (an N=0 one-shot sets its flag 1-1.5 E
+    // later).  The flag was set after the clear instead, the poll chain never
+    // stopped, and 12.8 s after every disk request the level-1 handler spun
+    // ~33,000 times through the driver (a 3-4 s freeze).  Not set for the
+    // Macintosh XL: its I/O board clocks its VIAs at CPU/4, not from E, and
+    // nothing here documents its timing.
+    bool via_esync;
 } lisa_board_desc_t;
 
 static const lisa_board_desc_t lisa_board = {
@@ -149,6 +169,7 @@ static const lisa_board_desc_t lisa_board = {
     .via2_len = 0x200,
     .fdc_diskrom = 0xA0,
     .via_freq_factor = 10,
+    .via_esync = true,
 };
 
 static const lisa_board_desc_t macxl_board = {
@@ -161,6 +182,7 @@ static const lisa_board_desc_t macxl_board = {
     .via2_len = 16 * 8,
     .fdc_diskrom = 0, // iob_pepsi
     .via_freq_factor = 4,
+    .via_esync = false,
 };
 
 static const lisa_board_desc_t *lisa_board_of(const config_t *cfg) {
@@ -272,11 +294,15 @@ static void lisa_parity_nmi(void *ctx, bool active) {
 static uint8_t lisa_via_read8(void *dev, uint32_t off) {
     lisa_via_port_t *p = (lisa_via_port_t *)dev;
     uint32_t reg = (off >> p->reg_shift) & 15;
+    if (p->esync)
+        memory_io_esync_penalty(); // a VMA cycle: stall to the next E boundary
     return p->vif->read_uint8(p->via, reg << 9);
 }
 static void lisa_via_write8(void *dev, uint32_t off, uint8_t v) {
     lisa_via_port_t *p = (lisa_via_port_t *)dev;
     uint32_t reg = (off >> p->reg_shift) & 15;
+    if (p->esync)
+        memory_io_esync_penalty(); // a VMA cycle: stall to the next E boundary
     p->vif->write_uint8(p->via, reg << 9, v);
 }
 // The Lisa addresses its VIAs with byte accesses on odd addresses; word/long
@@ -932,14 +958,59 @@ static DEF_METHOD(lisa_power_off) {
     return val_none();
 }
 
+// The COPS dropped the ON line (cops_set_power_off_handler): the machine is
+// off.  The CPU executes nothing more, the run in progress ends, and the page
+// hears of it (a `power` state event), as a real Lisa goes dark and silent.
+// RAM, parameter memory and media stay as they are, for the next power-on.
+static void lisa_power_down(void *ctx) {
+    config_t *cfg = (config_t *)ctx;
+    lisa_state_t *ls = lisa_st(cfg);
+    if (!ls)
+        return;
+    // The supply is off (the COPS keeps that, checkpointed): the CPU is held
+    // until machine.power.on or machine.restart power-cycles the machine.
+    cpu_power_off(cfg->cpu);
+    if (cfg->scheduler)
+        scheduler_stop(cfg->scheduler);
+    event_emitf(GS_EVENT_STATE, "{\"event\":\"power\",\"state\":\"off\"}");
+    out_printf("machine powered off (machine.power.on starts it again)\n");
+    LOG(1, "power off: the machine is off");
+}
+
+// `state`: "on", or "off" once the OS has switched the supply off.
+static DEF_GETTER(lisa_power_state) {
+    lisa_state_t *ls = lisa_st((config_t *)object_data(self));
+    return val_str(ls && cops_powered_off(ls->cops) ? "off" : "on");
+}
+
+// Press the power switch of a machine that is off: a power cycle, keeping
+// RAM's contents out (cold), parameter memory and media in, as on a real Lisa.
+static DEF_METHOD(lisa_power_on_method) {
+    lisa_state_t *ls = lisa_st((config_t *)object_data(self));
+    if (!ls)
+        return val_err("power: no machine");
+    if (!cops_powered_off(ls->cops))
+        return val_err("power.on: the machine is already on (machine.power.off asks the OS to shut down)");
+    system_machine_power_cycle(); // lisa_power_on tells the COPS the supply is back
+    return val_none();
+}
+
 static const member_t lisa_power_members[] = {
+    {.kind = MK_ATTR,
+     .name = "state",
+     .doc = "\"on\", or \"off\" once the OS has switched the supply off through the COPS",
+     .attr = {.type = VK_STRING, .get = lisa_power_state}     },
     {.kind = MK_METHOD,
      .name = "off",
-     .doc = "Press the soft power-off switch (COPS $FB); LOS does an orderly shutdown",
-     .method = {.result = VK_NONE, .fn = lisa_power_off}},
+     .doc = "Press the soft power-off switch (COPS $FB); LOS does an orderly shutdown and switches the machine off",
+     .method = {.result = VK_NONE, .fn = lisa_power_off}      },
+    {.kind = MK_METHOD,
+     .name = "on",
+     .doc = "Switch a machine that is off on again: a power cycle that keeps parameter memory and media",
+     .method = {.result = VK_NONE, .fn = lisa_power_on_method}},
 };
 static const class_desc_t lisa_power_class = {
-    .name = "power", .doc = "The Lisa's soft power switch", .members = lisa_power_members, .n_members = 1};
+    .name = "power", .doc = "The Lisa's power switch", .members = lisa_power_members, .n_members = 3};
 
 static void lisa_register_power_object(config_t *cfg) {
     lisa_state_t *ls = lisa_st(cfg);
@@ -1005,6 +1076,9 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // lasted under half a frame and failed with CPU error 42 whenever it
     // started in the wrong half (S1018-54).
     scheduler_set_cpi(cfg->scheduler, LISA_CPI);
+    // The 68000's E is CPU/10 whatever the board; only boards with E-clocked
+    // VIAs charge the synchronous-cycle stall against it (via_esync).
+    scheduler_set_esync_divider(cfg->scheduler, LISA_E_DIVIDER);
 
     machine_part_irq(cfg, checkpoint);
 
@@ -1053,8 +1127,11 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // ProFile is never detected.  The &15 register decode makes the two aliases
     // identical, so widening the window leaves the existing $D9xx accesses
     // unchanged.
-    ls->via1_map = (lisa_via_port_t){.via = cfg->via1, .vif = via_get_memory_interface(cfg->via1), .reg_shift = 1};
-    ls->via2_map = (lisa_via_port_t){.via = cfg->via2, .vif = via_get_memory_interface(cfg->via2), .reg_shift = 3};
+    bool esync = lisa_board_of(cfg)->via_esync;
+    ls->via1_map =
+        (lisa_via_port_t){.via = cfg->via1, .vif = via_get_memory_interface(cfg->via1), .reg_shift = 1, .esync = esync};
+    ls->via2_map =
+        (lisa_via_port_t){.via = cfg->via2, .vif = via_get_memory_interface(cfg->via2), .reg_shift = 3, .esync = esync};
     lisa_mmu_map_io(ls->mmu, 0xDD81, 16 * 2, &lisa_via_iface, &ls->via1_map);
     lisa_mmu_map_io(ls->mmu, lisa_board_of(cfg)->via2_base, lisa_board_of(cfg)->via2_len, &lisa_via_iface,
                     &ls->via2_map);
@@ -1062,6 +1139,7 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // COPS keyboard/mouse/clock/power microcontroller on VIA1 port A.
     machine_part_begin(cfg, checkpoint, "cops");
     ls->cops = cops_init(cfg->via1, cfg->scheduler, checkpoint);
+    cops_set_power_off_handler(ls->cops, lisa_power_down, cfg); // the OS switching the supply off
     machine_part(cfg, checkpoint, "cops", cops_checkpoint_part, ls->cops);
 
     // Intelligent floppy controller: 6504 + 1 KB shared RAM on the ODD bus
@@ -1373,6 +1451,10 @@ static void lisa_seed(config_t *cfg) {
 // into the ROM monitor instead of a cold start.  A reset touches neither.
 static void lisa_power_on(config_t *cfg) {
     lisa_state_t *ls = lisa_st(cfg);
+    if (ls && cops_powered_off(ls->cops)) {
+        cops_power_restored(ls->cops); // the supply is on again
+        event_emitf(GS_EVENT_STATE, "{\"event\":\"power\",\"state\":\"on\"}");
+    }
     if (ls)
         lisa_mmu_power_on(ls->mmu);
 }
@@ -1389,10 +1471,13 @@ static const machine_substrate_t lisa_substrate = {
     .fd_present = lisa_fd_present,
     .input_key = lisa_input_key,
     .input_key_raw = lisa_input_key_raw,
-    // The COPS response FIFO is 32 bytes (cops.c COPS_FIFO) and carries mouse
-    // reports as well as keys, so keyboard.type gets a quarter of the ADB
-    // budget and leaves the rest as headroom.
-    .key_queue_bytes = 24,
+    // No key_queue_bytes of its own: keyboard.type takes the default budget.
+    // It used to be 24 bytes (11 unshifted characters), sized as if a whole
+    // line landed in the 32-byte COPS response FIFO at once.  It does not:
+    // keyboard.type paces transitions 4 ms apart (host_input.c), and the OS
+    // drains each byte within ~100 us of its arrival, so the FIFO only ever
+    // holds what the guest has not yet read -- a 20-character mixed-case
+    // file name (60 bytes) arrives intact in LOS's desktop.
     .input_mouse_move = lisa_input_mouse_move,
     .input_mouse_button = lisa_input_mouse_button,
     .media_attach = lisa_media_attach,

@@ -199,3 +199,13 @@ Two FDC behaviours this relies on: the `$C05F` status byte holds **latched
 interrupt events** that `CLRSTAT` ($85) drains (not live state — see
 docs/reference/machines/lisa/lisa.md §13.3); and controller byte 10 reports the **Sony disk type** so
 the loader picks the right block→(track,sector) geometry (see above).
+
+**Saving an ejected diskette.** An eject, the guest's `unclamp` or the
+host's `eject`, empties the drive (its `image` child goes) but leaves the
+image open in the machine's tracked list, for the reinsert cache. It is
+still `files.images[N]` there, with the OS's writes and the sector tags,
+and `files.images[N].export` saves it. This is the moment worth saving:
+the Lisa ejects a diskette itself once the OS has put it away cleanly
+(Housekeeping > Eject Micro Diskette), whereas a diskette exported while
+still in the drive is one the OS later reports "in use when the Lisa
+failed".

@@ -3,7 +3,7 @@
   import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
   import { peekBytes } from '@/bus/debug';
   import { machine } from '@/state/machine.svelte';
-  import { debug, toggleSection } from '@/state/debug.svelte';
+  import { contextArg, debug, toggleSection, type LisaContextChoice } from '@/state/debug.svelte';
   import { translateMany, addrLabel, type Translation } from '@/bus/mmu';
   import { fmtHex32, parseHex } from '@/lib/hex';
   import { showNotification } from '@/state/toasts.svelte';
@@ -41,11 +41,9 @@
       // translation on every architecture (the plain read is physical on a
       // PowerPC machine), "physical" really is physical (it used to be the
       // logical read under a physical label).
-      bytes = await peekBytes(
-        debug.memoryAddress,
-        128,
-        physicalAvailable ? debug.memoryMode : 'logical',
-      );
+      // On the Lisa a logical read goes through the chosen MMU context (the
+      // MMU section's selector, shared with the one here).
+      bytes = await peekBytes(debug.memoryAddress, 128, debug.memoryMode, lisaContext);
     } finally {
       loading = false;
     }
@@ -87,9 +85,21 @@
     return '.';
   }
 
-  // The Lisa's three physical spaces (RAM, I/O, ROM) cannot be named by a
-  // bare address, so its Memory pane is logical only.
-  const physicalAvailable = $derived(machine.mmuKind !== 'lisa_segment');
+  // The Lisa: "physical" is main memory by physical address (its I/O and
+  // ROM spaces are reached through their segments), and a logical read
+  // names one of the four MMU contexts.
+  const isLisa = $derived(machine.mmuKind === 'lisa_segment');
+  const lisaContext = $derived(isLisa ? contextArg(debug.mmuContext) : undefined);
+
+  // Re-read when the Lisa's context choice changes.
+  $effect(() => {
+    void debug.mmuContext;
+    if (debug.sections.memory) void refresh();
+  });
+
+  function setContext(c: LisaContextChoice) {
+    debug.mmuContext = c;
+  }
 
   // Real translations for the row labels in logical mode (bus/mmu.ts).
   let xl = $state<Record<number, Translation>>({});
@@ -97,7 +107,7 @@
     void bytes;
     if (!machine.mmuEnabled || debug.memoryMode !== 'logical') return;
     const rowsAt = Array.from({ length: 8 }, (_, i) => (debug.memoryAddress + i * 16) >>> 0);
-    void translateMany(rowsAt).then((m) => (xl = m));
+    void translateMany(rowsAt, lisaContext).then((m) => (xl = m));
   });
 
   function rowLogicalLabel(rowIndex: number): string {
@@ -123,7 +133,7 @@
       aria-label="Memory address"
     />
     <Button class="mem-btn" onclick={commitAddress}>Go</Button>
-    {#if machine.mmuEnabled && physicalAvailable}
+    {#if machine.mmuEnabled}
       <Separator class="mem-sep" />
       <span class="mem-label">Mode:</span>
       <SegmentedControl
@@ -138,6 +148,25 @@
           { value: 'physical', label: 'Physical' },
         ]}
       />
+      {#if isLisa && debug.memoryMode === 'logical'}
+        <span class="mem-label">Context:</span>
+        <SegmentedControl
+          class="mem-ctx"
+          optionClass="mem-ctx-btn"
+          framed
+          size="sm"
+          label="MMU context"
+          value={debug.mmuContext}
+          onChange={setContext}
+          options={[
+            { value: 'current', label: 'Now', title: 'The context the CPU uses now' },
+            { value: '0', label: '0 OS', title: 'Context 0: the operating system' },
+            { value: '1', label: '1', title: 'Context 1' },
+            { value: '2', label: '2', title: 'Context 2' },
+            { value: '3', label: '3', title: 'Context 3' },
+          ]}
+        />
+      {/if}
     {/if}
   </div>
   <div class="mem-body">
