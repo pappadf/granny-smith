@@ -1,0 +1,57 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- Integration test: IIcx dual display — JMFB in $9 (default) + 8•24 GC in $A.
+--
+-- Every socket resolves its configuration independently, so a machine boots
+-- as many cards as its sockets carry.  This pins the multi-card contract
+-- end-to-end:
+--   * the boot document's entry for socket $A populates it while $9 keeps
+--     its declared default;
+--   * both cards run their full init (declaration ROMs mapped);
+--   * the IIcx ROM's boot-screen selection with virgin PRAM lands on the
+--     HIGHEST video slot — the ROM paints the gray desktop dither into the
+--     GC's framebuffer in $A (observed contract, same with a 24AC in $A);
+--   * the ROM also grays the SECONDARY screen: InitGDevices runs every
+--     card's driver, so the JMFB in $9 carries the 1-bpp dither too.  (The
+--     pre-multi-region bus map dropped these writes — the single host-region
+--     slot only resolved the last-registered card — so $9 used to read as
+--     unpainted; since the host-region list landed, both frame buffers are
+--     live and the dither rows are pinned below.)
+--   * `machine.screen` follows nubus_primary_display — the FIRST video card
+--     in declared slot order ($9).  (Multi-display UI selection is future
+--     work; the rule is deliberately deterministic.)
+
+-- The second card goes into socket $A (slot index 10); socket $9 keeps its
+-- declared default (mdc_8_24).
+machine.boot{model = "iicx", ram = 8192, rom = vars.ROM, slots = "10=824gc"}
+
+-- Same budget as the single-card ROM-only boots: the blinking-? screen is
+-- painted and stable well within 100M instructions.
+scheduler.run(100000000)
+
+assert(machine.id == "iicx", "machine.id != iicx")
+
+-- Both sockets populated: the default in $9, the document's card in $A.
+assert(machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24", "slot $9 card != 8•24 (default)")
+assert(machine.nubus.slot[10].card.name == "Macintosh Display Card 8•24 GC", "slot $A card != 8•24 GC (the document's)")
+assert(machine.nubus.slot[9].card.declrom.present, "slot $9 declrom not present")
+assert(machine.nubus.slot[10].card.declrom.present, "slot $A declrom not present")
+
+-- ROM-only boot never runs the GC accelerator (no System Folder INIT).
+assert(machine.nubus.slot[10].card.gc.state == "reset", "gc.state != reset in ROM-only boot")
+
+-- The ROM chose the highest video slot for its boot screen: the gray
+-- desktop dither sits in the GC's slot-$A framebuffer (super-slot window
+-- $AC011400), pinned by exact pattern longs.
+assert(machine.memory.peek.l(0xAC011400) == 0x6DB6DB6D, "slot $A fb: boot dither long 0 mismatch")
+assert(machine.memory.peek.l(0xAC011440) == 0xB6DB6DB6, "slot $A fb: boot dither long 1 mismatch")
+
+-- machine.screen = primary display = first video slot ($9): correct
+-- geometry, grayed by its driver like the boot screen (1-bpp dither rows
+-- alternate $55/$AA at the JMFB's standard-slot framebuffer).
+assert(machine.screen.width == 640, "screen.width != 640")
+assert(machine.screen.height == 480, "screen.height != 480")
+assert(machine.memory.peek.l(0xF9008000) == 0x55555555, "slot $9 fb: dither row 0 mismatch")
+assert(machine.memory.peek.l(0xF9008050) == 0xAAAAAAAA, "slot $9 fb: dither row 1 mismatch")
+assert(machine.screen.checksum() ~= 0, "primary ($9) framebuffer unexpectedly empty")
+
+quit()

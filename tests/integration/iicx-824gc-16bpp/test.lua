@@ -1,0 +1,130 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- Integration test: IIcx + 8•24 GC — 16-bpp rasterizers via a VidComm switch.
+--
+-- 16 bpp is runtime-only on this card (the old ROM Slot Manager caps boot
+-- depths at 8; Monitors reaches Thousands through cscSetMode -> the VidComm
+-- block at DRAM+$7300).  This drives that exact protocol: geometry longs at
+-- +$08..+$14, then GO = $80000000 — the card reprograms the display to
+-- RGB555 and acks.  Then the usual poke transport draws:
+--
+--   * patCopy of solid red -> $7C00 (RGB555, x-bit clear);
+--   * patXor flips the 15 colour bits -> $03FF;
+--   * pattern blend ($28, default $7FFF weight) of red over black ->
+--     r = ($FFFF*$7FFF)>>16 = $7FFE -> 5 bits $0F -> $3C00.
+
+machine.boot{model = "iicx", ram = 8192, video_card = "824gc", rom = vars.ROM}
+
+machine.memory.poke.l(0x9C006400, 0x42005300)
+machine.memory.poke.l(0x9C007048, 0x00000001)
+machine.memory.poke.l(0x9C00704C, 0x00000000)
+machine.memory.poke.l(0x9C007014, 0xFFFFFFFF)
+
+-- VidComm: fb $9C011400, rowBytes 1280, bpp 16, 480 scanlines, GO.
+machine.memory.poke.l(0x9C007308, 0x9C011400)
+machine.memory.poke.l(0x9C00730C, 0x00000500)
+machine.memory.poke.l(0x9C007310, 0x00000010)
+machine.memory.poke.l(0x9C007314, 0x000001E0)
+machine.memory.poke.l(0x9C007300, 0x80000000)
+assert(machine.memory.peek.l(0x9C007300) == 0, "VidComm GO not consumed")
+
+-- SetPort must accept at 16 bpp now.  The accept test reads the LIVE
+-- thePort's baseAddr: stage a minimal old-style GrafPort at $500000 whose
+-- portBits.baseAddr (+2) is the SCREEN, and point thePort (CB+$170+0) at it.
+machine.memory.poke.l(0x00500002, 0x9C011400)
+machine.memory.poke.l(0x9C007170, 0x00500000)
+machine.memory.poke.l(0x9C00717E, 0x9C011400)
+machine.memory.poke.l(0x9C007184, 0x00000000)
+machine.memory.poke.l(0x9C007048, 0x0000002D)
+machine.memory.poke.l(0x9C00704C, 0x00000000)
+machine.memory.poke.l(0x9C007014, 0xFFFFFFFF)
+assert(machine.memory.peek.l(0x9C00701C) == 1, "SetPort (func $2D) not accepted at 16 bpp")
+
+machine.memory.poke.l(0x9C0076D4, 0x00710001)
+machine.memory.poke.l(0x9C0076D8, 0xFFFFFFFF)
+machine.memory.poke.l(0x9C0076DC, 0xFFFFFFFF)
+machine.memory.poke.l(0x9C0076E0, 0x00690008)
+machine.memory.poke.l(0x9C0076E4, 0x0064FFFF)
+machine.memory.poke.l(0x9C0076E8, 0x00000000)
+machine.memory.poke.l(0x9C0076EC, 0x00000000)
+machine.memory.poke.l(0x9C0076F0, 0x00050000)
+machine.memory.poke.l(0x9C0076F4, 0x00000000)
+machine.memory.poke.l(0x9C0076F8, 0x00010004)
+machine.memory.poke.l(0x9C0076FC, 0x0069000A)
+machine.memory.poke.l(0x9C007700, 0x00050000)
+machine.memory.poke.l(0x9C007704, 0x00000000)
+machine.memory.poke.l(0x9C007708, 0x00010002)
+machine.memory.poke.l(0x9C00770C, 0x00690028)
+machine.memory.poke.l(0x9C007710, 0x00050000)
+machine.memory.poke.l(0x9C007714, 0x00000004)
+machine.memory.poke.l(0x9C007718, 0x00010006)
+machine.memory.poke.l(0x9C0071C0, 0x00000048)
+
+assert(machine.memory.peek.l(0x9C011400) == 0x03FF03FF, "xor'd red != 03ff (RGB555)")
+assert(machine.memory.peek.l(0x9C011404) == 0x7C007C00, "solid red != 7c00 (RGB555)")
+assert(machine.memory.peek.l(0x9C011408) == 0x3C003C00, "50% blend of red != 3c00 (RGB555)")
+
+-- --- 16-bpp TEXT: func $30 FontDownload must ACCEPT at the direct depths
+-- (the Rev B card accelerates text there too) and ops $67/$06 must render
+-- through the RGB555 core.  Fixtures sit in zeroed guest RAM:
+--   $510000 = Font Manager width table (0x434 B): 'A' advance 4.0 at +$104,
+--             strike cache key $525252 in the trailer at +$410;
+--   $520000 = minimal FontRec strike, one glyph 'A' (first=last=$41):
+--             fRectHeight 4, ascent 4, rowBytes/2 = 1, owTLoc 12; bitImage =
+--             4 rows of C0 00 (ink in columns 0-1 of the 4-wide box);
+--             locTable {0,4,4}; owTable {offset 0 / width 4, $FFFF missing}.
+machine.memory.poke.l(0x00510104, 0x00040000)
+machine.memory.poke.l(0x00510410, 0x00525252)
+
+machine.memory.poke.l(0x00520000, 0x00000041)
+machine.memory.poke.l(0x00520004, 0x00410004)
+machine.memory.poke.l(0x00520008, 0x00000000)
+machine.memory.poke.l(0x0052000C, 0x00000004)
+machine.memory.poke.l(0x00520010, 0x000C0004)
+machine.memory.poke.l(0x00520014, 0x00000000)
+machine.memory.poke.l(0x00520018, 0x0001C000)
+machine.memory.poke.l(0x0052001C, 0xC000C000)
+machine.memory.poke.l(0x00520020, 0xC0000000)
+machine.memory.poke.l(0x00520024, 0x00040004)
+machine.memory.poke.l(0x00520028, 0x0004FFFF)
+
+-- func $30 FontDownload, mask $03 = width table {key,ptr} + RAM strike
+-- {key,ptr,size}.  Declined (result 0) before the 16-bpp text support.
+-- Second post-HELLO doorbell → sequence word 1 (the card post-increments).
+machine.memory.poke.l(0x9C00764C, 0x00000003)
+machine.memory.poke.l(0x9C007650, 0x00515151)
+machine.memory.poke.l(0x9C007654, 0x00510000)
+machine.memory.poke.l(0x9C007658, 0x00525252)
+machine.memory.poke.l(0x9C00765C, 0x00520000)
+machine.memory.poke.l(0x9C007660, 0x0000002C)
+machine.memory.poke.l(0x9C007048, 0x00000030)
+machine.memory.poke.l(0x9C00704C, 0x00000001)
+machine.memory.poke.l(0x9C007014, 0xFFFFFFFF)
+assert(machine.memory.peek.l(0x9C00701C) == 1, "func $30 FontDownload not accepted at 16 bpp")
+
+-- Continue the published queue (base $9C0076D4, 0x48 bytes consumed):
+-- op $69 srcCopy; op $68 pen (16,0); op $67 swap to the downloaded font
+-- (fallback handle at +4, wt key at +$1C); op $06 draw "A" (advance 4.0).
+-- Copy-class text erases the measured 4x4 box to bg first — bg is the
+-- 16-bpp cycle default $7FFF (white), ink lands in fg $7C00 (red, set by
+-- the op $64 above).
+machine.memory.poke.l(0x9C00771C, 0x00690000)
+machine.memory.poke.l(0x9C007720, 0x00680000)
+machine.memory.poke.l(0x9C007724, 0x00100000)
+machine.memory.poke.l(0x9C007728, 0x00670000)
+machine.memory.poke.l(0x9C00772C, 0x00525252)
+machine.memory.poke.l(0x9C007744, 0x00515151)
+machine.memory.poke.l(0x9C007748, 0x00060001)
+machine.memory.poke.l(0x9C00774C, 0x00000000)
+machine.memory.poke.l(0x9C007750, 0x00040000)
+machine.memory.poke.l(0x9C007754, 0x00040000)
+machine.memory.poke.l(0x9C007758, 0x41000000)
+machine.memory.poke.l(0x9C0071C0, 0x00000088)
+
+-- Glyph box rows 12-15 (pen row 16 - ascent 4), columns 0-3: ink columns
+-- 0-1 = fg $7C00, erased columns 2-3 = default bg $7FFF.  Row pitch 1280.
+assert(machine.memory.peek.l(0x9C015000) == 0x7C007C00, "glyph ink row 12 != 7c00 (RGB555)")
+assert(machine.memory.peek.l(0x9C015004) == 0x7FFF7FFF, "text bg erase row 12 != 7fff (RGB555)")
+assert(machine.memory.peek.l(0x9C015F00) == 0x7C007C00, "glyph ink row 15 != 7c00 (RGB555)")
+assert(machine.memory.peek.l(0x9C015F04) == 0x7FFF7FFF, "text bg erase row 15 != 7fff (RGB555)")
+
+quit()

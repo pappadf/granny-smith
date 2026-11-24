@@ -15,6 +15,7 @@
 #include "cpu.h"
 #include "debug.h"
 #include "expr.h"
+#include "gs_lua.h"
 #include "log.h"
 #include "log_context.h"
 #include "meta.h"
@@ -386,6 +387,9 @@ int shell_init(void) {
         return 0;
 
     shell_var_init();
+
+    // A failed Lua chunk reports like a failed statement (gs_lua.h).
+    gs_lua_set_reporter(script_report_error);
 
     // Wire the Meta class's `complete(line, cursor)` method to the
     // shell's tab-completion engine.

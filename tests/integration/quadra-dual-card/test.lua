@@ -1,0 +1,49 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- Quadra 700 with two NuBus display cards (see config.mk).
+--
+-- Merged from q700-24ac + q700-824gc: one boot, both cards, every
+-- assertion either original made, plus the multi-card facts neither could
+-- check on its own.
+
+local mac = dofile("../lib/mac.lua")
+
+
+-- Both cards in one boot document: the 24AC in socket $D (13, where the
+-- single-card tests put their card) at 8 bpp — without the mode it comes up
+-- at the card default and the depth assert below fails — and the 8*24 GC in
+-- socket $E (14).
+machine.boot{model = "q700", ram = 8192, rom = vars.ROM, slots = "13=display_card_24ac,mode=rgb_640x480_8bpp;14=824gc"}
+machine.rtc.time = 3000000000
+machine.scsi.attach_hd(F"${vars.WORK_DIR}/hd.img", 0)
+scheduler.run(700000000)
+mac.wait_stable(1800000000)
+
+assert(machine.id == "q700", "machine.id != q700")
+
+-- Both cards came up, each with its declaration ROM bound.
+assert(machine.nubus.slot[13].card.name == "Macintosh Display Card 24AC", "slot $D card != 24AC")
+assert(machine.nubus.slot[14].card.name == "Macintosh Display Card 8•24 GC", "slot $E card != 8•24 GC")
+assert(machine.nubus.slot[13].card.declrom.present, "slot $D declaration ROM not present")
+assert(machine.nubus.slot[14].card.declrom.present, "slot $E declaration ROM not present")
+
+-- From q700-24ac: the 24AC's own framebuffer geometry/depth.
+assert(machine.nubus.slot[13].card.framebuffer.width == 640, "24AC fb width != 640")
+assert(machine.nubus.slot[13].card.framebuffer.depth == 8, "24AC fb depth != 8 bpp")
+
+-- From q700-824gc: on a 68040 the GC INIT must NOT start the coprocessor.
+assert(machine.nubus.slot[14].card.gc.on == false, "GC INIT unexpectedly started the coprocessor on a 68040")
+
+-- From both: the built-in DAFB stays the boot screen even with two cards in.
+assert((debug.mac.globals.read("ScrnBase") & 0xFF000000) == 0xF9000000, "ScrnBase not on the DAFB")
+-- 7.6 selects 32-bit addressing itself (measured).
+mac.assert_addr(true)
+assert(machine.screen.width == 640, "screen width != 640")
+assert(machine.screen.height == 480, "screen height != 480")
+-- 7.6 puts a clock in the menu bar, so the golden excludes that corner —
+-- the same exclusion the other 7.5/7.6 rows use. The RTC is pinned above,
+-- but the displayed minute still depends on where in guest time the
+-- settled frame lands.
+mac.check_ex("dafb-desktop.png", 0, 440, 20, 640)
+mac.report_row("7.6", "dafb+24ac+824gc", "hd-boot dual-card dafb-primary gc-declined-on-040")
+mac.report_perf("quadra-dual-card/dual", scheduler.instr_count)
+quit()

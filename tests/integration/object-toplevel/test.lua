@@ -1,0 +1,126 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- Integration: the appletalk + mouse top-level objects.
+--
+-- Exercises the AppleTalk/AFP object surface: stack enablement and node ID,
+-- the AFP server node (enabled / name / message / versions), the volumes
+-- collection (constructive add, name lookup, per-entry observability), the
+-- NBP registry view, and the printer's attribute pair.
+
+scheduler.run(50000)
+
+-- Tree shape.
+local _ = appletalk
+local _ = appletalk.stats
+local _ = appletalk.nbp
+local _ = appletalk.afp
+local _ = appletalk.afp.volumes
+local _ = appletalk.afp.sessions
+local _ = appletalk.afp.stats
+local _ = appletalk.printer
+local _ = machine.adb.mouse
+
+-- The stack is attached to the link out of the box, so it has a node ID.
+assert(appletalk.enabled == true, "stack should start enabled")
+assert(appletalk.node_id == 33, "host LLAP node is fixed at 33")
+
+-- The AFP server is on and advertising under its default name.
+assert(appletalk.afp.enabled == true, "AFP server should start enabled")
+assert(appletalk.afp.name == "Shared Folders", "default NBP object name")
+assert(appletalk.afp.message == "", "no server message by default")
+local _ = appletalk.afp.versions
+
+-- The NBP registry lists what the server and printer published. Name lookup
+-- resolves an entity without knowing its slot.
+assert(appletalk.nbp["Shared Folders"].type == "AFPServer", "AFP entity type")
+assert(appletalk.nbp["Shared Folders"].socket == 8, "AFP entity socket")
+
+-- Constructive methods return the object they made, so the volume's own
+-- attributes are reachable straight off the call.
+assert(appletalk.afp.volumes.add("docs", "/tmp").name == "docs", "add returns the volume")
+local _ = appletalk.afp.volumes
+assert(appletalk.afp.volumes[0].path == "/tmp", "volume path")
+assert(appletalk.afp.volumes[0].vol_id > 0, "volume id is assigned")
+assert(appletalk.afp.volumes[0].open_forks == 0, "a fresh volume has no open forks")
+assert(appletalk.afp.volumes[0].sessions_using == 0, "no session has it open")
+
+-- The CNID catalog is live from the moment the volume exists: the root always
+-- counts as one entry, and the generation is non-zero.
+assert(appletalk.afp.volumes[0].cnid_count >= 1, "the catalog holds at least the root")
+assert(appletalk.afp.volumes[0].catalog_generation > 0, "catalog generation is set")
+
+-- Name lookup on the collection.
+assert(appletalk.afp.volumes["docs"].vol_id == appletalk.afp.volumes[0].vol_id, "lookup by name")
+
+-- Errors come back in-band with the real reason, not "failed (see log)".
+echo(F"${gs.try(function() return appletalk.afp.volumes.add(\"docs\", \"/tmp\") end, \"dup rejected\")}")
+echo(F"${gs.try(function() return appletalk.afp.volumes.add(\"nope\", \"/definitely/not/here\") end, \"bad path rejected\")}")
+
+-- A second volume, then removal through the per-entry method and the
+-- collection method.
+appletalk.afp.volumes.add("demo", "/tmp")
+assert(appletalk.afp.volumes[1].name == "demo", "second volume")
+echo(F"${appletalk.afp.volumes[0].remove()}")
+echo(F"${appletalk.afp.volumes.remove(\"demo\")}")
+local _ = appletalk.afp.volumes
+
+-- Server identity is writable; the setter re-registers the NBP entry.
+appletalk.afp.name = "Test Server"
+assert(appletalk.afp.name == "Test Server", "server rename")
+assert(appletalk.nbp["Test Server"].type == "AFPServer", "NBP entry followed the rename")
+
+-- NBP names are MacRoman on the wire and UTF-8 here (#168): an accented name
+-- is published (as MacRoman) and reads back unchanged.  One MacRoman cannot
+-- hold is refused by the setter (atalk_link's unit tests pin the refusal).
+appletalk.afp.name = "Café Serveur"
+assert(appletalk.afp.name == "Café Serveur", "accented server name round-trips")
+assert(appletalk.nbp["Café Serveur"].type == "AFPServer", "NBP entry holds the accented name")
+appletalk.afp.name = "Test Server"
+
+-- The server message is what FPGetSrvrMsg serves.
+appletalk.afp.message = "Back at 5pm"
+assert(appletalk.afp.message == "Back at 5pm", "server message round-trips")
+
+-- Disabling the server withdraws the advertisement; re-enabling restores it.
+appletalk.afp.enabled = false
+assert(appletalk.afp.enabled == false, "server disabled")
+assert(gs.try(function() return appletalk.nbp["Test Server"].type end, "withdrawn") == "withdrawn", "NBP entry withdrawn")
+appletalk.afp.enabled = true
+assert(appletalk.nbp["Test Server"].type == "AFPServer", "NBP entry re-published")
+
+-- Stats start at zero on a machine no client has talked to.
+assert(appletalk.afp.stats.commands_served == 0, "no AFP commands yet")
+assert(appletalk.afp.stats.open_forks == 0, "no forks open")
+local _ = appletalk.afp.stats.errors_by_code
+
+-- The printer is auto-enabled at register time; `enabled` and `name` are
+-- attributes now, not enable()/disable() verbs.
+assert(appletalk.printer.enabled == true, "printer starts enabled")
+appletalk.printer.name = "Test LaserWriter"
+assert(appletalk.printer.name == "Test LaserWriter", "printer rename")
+appletalk.printer.name = "Imprimante à café"
+assert(appletalk.printer.name == "Imprimante à café", "accented printer name round-trips")
+appletalk.printer.enabled = false
+assert(appletalk.printer.enabled == false, "printer disabled")
+
+-- Taking the stack off the link zeroes the node ID.
+appletalk.enabled = false
+assert(appletalk.node_id == 0, "detached stack has no node ID")
+appletalk.enabled = true
+assert(appletalk.node_id == 33, "node ID returns on re-attach")
+
+-- Mouse methods. Plus is a non-ADB machine with no MAE, so move()
+-- falls through to the global write path via set_mouse_default.
+echo(F"${machine.adb.mouse.move(100, 200)}")
+echo(F"${machine.adb.mouse.click(true)}")
+echo(F"${machine.adb.mouse.click(false)}")
+echo(F"${machine.adb.mouse.trace(true)}")
+echo(F"${machine.adb.mouse.trace(false)}")
+
+-- Input the guest has not taken yet.  Nothing is pending on a fresh machine;
+-- typed keys are pending from the moment keyboard.type schedules them (this
+-- early in the boot the ROM is not reading the keyboard, so they stay so).
+assert(not machine.adb.keyboard.pending, "keyboard input pending before any was typed")
+machine.adb.keyboard.type("a")
+assert(machine.adb.keyboard.pending, "typed keys are not pending")
+
+quit()

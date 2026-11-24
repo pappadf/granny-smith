@@ -34,12 +34,12 @@ step() {
 cd "$TEST_RESULTS_DIR"
 bare=$(stat -c%s "$TEST_RESULTS_DIR/vol.dsk")
 echo "Step 1: attach a bare volume as the hard disk and save a consolidated checkpoint"
-saved=$(step step1.script)
+saved=$(step step1.lua)
 echo "Step 2: restore it with the image file present"
-present=$(step step2.script)
+present=$(step step2.lua)
 echo "Step 3: delete the image file, then restore"
 rm -f "$TEST_RESULTS_DIR/vol.dsk"
-missing=$(step step2.script)
+missing=$(step step2.lua)
 
 echo "disk size: bare volume=$bare, saved=$saved, restored with image=$present, restored without image=$missing"
 if [ -z "$saved" ] || [ "$saved" -le "$bare" ]; then

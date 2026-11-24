@@ -1,3 +1,0 @@
-# Unused: run.sh builds the file and drives the import.  The shared
-# runner requires the file to exist.
-quit
