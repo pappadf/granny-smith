@@ -197,4 +197,8 @@ export function shown(row: SysRow, showAdvanced: boolean): boolean {
   return row.category !== 'advanced' || showAdvanced;
 }
 
-export const REFRESH_INTERVAL_MS = 2000;
+// How often the open levels are re-read while the machine runs.  Fast
+// enough to watch a value that changes about once a second (the Lisa's MMU
+// context switching between two processes): at 2 s such a value aliased and
+// seemed to stand still.  Each tick reads only the open levels.
+export const REFRESH_INTERVAL_MS = 400;

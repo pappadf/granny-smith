@@ -57,3 +57,14 @@ bool lisa_mmu_debug_write(uint32_t addr, unsigned size, bool supervisor, uint32_
     (void)value;
     return false;
 }
+uint32_t lisa_mmu_debug_read_phys(uint32_t phys, unsigned size, bool *ok) {
+    (void)phys;
+    (void)size;
+    if (ok)
+        *ok = false;
+    return 0;
+}
+int lisa_mmu_debug_view_set(int view) {
+    (void)view;
+    return -1;
+}

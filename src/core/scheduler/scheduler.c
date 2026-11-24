@@ -1366,6 +1366,15 @@ void scheduler_set_frequency(struct scheduler *restrict s, uint32_t frequency_hz
     s->esync_period_x256 = (uint32_t)(((uint64_t)frequency_hz * 256 + 783360 / 2) / 783360);
 }
 
+// Set the E-clock period as a whole number of CPU cycles, for a machine whose
+// 6522s sit on the 68000's own E (CPU/10) rather than a 783.36 kHz clock
+void scheduler_set_esync_divider(struct scheduler *restrict s, uint32_t cpu_cycles_per_e) {
+    if (!s)
+        return;
+    GS_ASSERT(cpu_cycles_per_e > 0);
+    s->esync_period_x256 = cpu_cycles_per_e << 8;
+}
+
 // Set the per-machine cycles-per-instruction constant (mode-independent)
 void scheduler_set_cpi(struct scheduler *restrict s, uint32_t cpi) {
     if (!s)

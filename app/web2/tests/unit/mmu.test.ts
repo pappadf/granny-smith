@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { decodeTc, decodeRootPointer, formatEntry, fmtSize } from '@/lib/mmu';
+import {
+  decodeTc,
+  decodeRootPointer,
+  formatEntry,
+  fmtSize,
+  formatLisaSegment,
+  lisaSegmentType,
+  lisaSpaceLabel,
+} from '@/lib/mmu';
 
 describe('decodeTc', () => {
   it('extracts the TC fields', () => {
@@ -58,5 +66,73 @@ describe('fmtSize', () => {
     expect(fmtSize(2 ** 32)).toBe('4G');
     expect(fmtSize(0x4000)).toBe('16K');
     expect(fmtSize(0x1234)).toBe('$1234');
+  });
+});
+
+// The Lisa's segment descriptors in words, for a viewer who is no MMU expert.
+describe('formatLisaSegment', () => {
+  it('reads a code segment: number, logical base, type, length, physical base', () => {
+    const r = formatLisaSegment({
+      segment: 1,
+      context: 1,
+      base: 0x20000,
+      sor: 0x1fa,
+      slr: 0x5f9,
+      type: 'ram-ro',
+      limit: 249,
+      phys: 0x3f400,
+      first_page: 0,
+      pages: 7,
+    });
+    expect(r).toEqual({
+      segment: 1,
+      logical: '$020000',
+      type: 'read-only RAM',
+      present: true,
+      length: '7 pages (3.5 KB)',
+      physical: '$03F400',
+      raw: 'SOR=$1FA SLR=$5F9',
+    });
+  });
+
+  it('says a segment is not present, with no length or physical base', () => {
+    const r = formatLisaSegment({ segment: 5, base: 0xa0000, sor: 0, slr: 0xc00, type: 'invalid' });
+    expect(r.type).toBe('not present');
+    expect(r.present).toBe(false);
+    expect(r.length).toBe('');
+    expect(r.physical).toBe('');
+  });
+
+  it('starts a stack at its boundary page', () => {
+    const r = formatLisaSegment({
+      segment: 126,
+      base: 126 * 0x20000,
+      sor: 0x400,
+      slr: 0x600,
+      type: 'ram-rw-stack',
+      limit: 0,
+      phys: 0x80000,
+      first_page: 255,
+      pages: 1,
+    });
+    expect(r.logical).toBe('$FDFE00');
+    expect(r.physical).toBe('$09FE00');
+    expect(r.length).toBe('1 page (512 B)');
+    expect(r.type).toBe('stack (read-write RAM)');
+  });
+
+  it('names every type and space', () => {
+    expect(['ram-rw', 'ram-ro-stack', 'io', 'special'].map(lisaSegmentType)).toEqual([
+      'read-write RAM',
+      'stack (read-only RAM)',
+      'I/O',
+      'ROM',
+    ]);
+    expect(['ram', 'io', 'rom', 'mmureg'].map(lisaSpaceLabel)).toEqual([
+      'RAM',
+      'I/O',
+      'ROM',
+      'MMU registers',
+    ]);
   });
 });

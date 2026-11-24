@@ -10,6 +10,7 @@
 
 import { saveBlob } from '@/lib/saveBlob';
 import { compactLocalStamp } from '@/lib/time';
+import { entryText } from '@/lib/logView';
 
 export interface LogEntry {
   ts: number; // wall-clock ms when JS observed the line
@@ -18,19 +19,45 @@ export interface LogEntry {
   msg: string; // body — preserves optional @ts / PC= prefixes
 }
 
-const MAX = 5000;
+// The most lines the buffer keeps (the oldest drop beyond it).
+export const LOG_BUFFER_MAX = 10000;
+const MAX = LOG_BUFFER_MAX;
 
 interface LogsState {
   entries: LogEntry[];
   autoscroll: boolean;
   catLevels: Record<string, number>;
+  // Per category: whether the core also prints its lines in the Terminal
+  // (the category's `stdout`, on by default -- docs/user/debugger.md §4).
+  catStdout: Record<string, boolean>;
+  // The view's filters (lib/logView): show entries up to this level (null:
+  // all) and not of a hidden category.  The buffer keeps everything.
+  maxLevel: number | null;
+  hidden: Record<string, boolean>;
+  // Paused: the view holds the lines it had (`frozen`) while the buffer
+  // goes on collecting; resuming shows everything again.
+  frozen: LogEntry[] | null;
 }
 
 export const logs: LogsState = $state({
   entries: [],
   autoscroll: true,
   catLevels: {},
+  catStdout: {},
+  maxLevel: null,
+  hidden: {},
+  frozen: null,
 });
+
+// Pause or resume the view.
+export function setLogsPaused(paused: boolean): void {
+  logs.frozen = paused ? logs.entries.slice() : null;
+}
+
+// Show or hide one category's lines in the view.
+export function setCategoryShown(cat: string, shown: boolean): void {
+  logs.hidden[cat] = !shown;
+}
 
 // Pending emits waiting for the next frame flush.
 let pendingEmits: LogEntry[] = [];
@@ -99,6 +126,7 @@ export function appendLog(e: LogEntry): void {
 
 export function clearLogs(): void {
   logs.entries.length = 0;
+  if (logs.frozen) logs.frozen = [];
   pendingEmits.length = 0;
   dropped = 0;
   noticeShown = false;
@@ -110,7 +138,7 @@ export function setAutoscroll(on: boolean): void {
 
 // Build a Blob of the current buffer and trigger a browser download.
 export function downloadLogs(): void {
-  const lines = logs.entries.map((e) => `[${e.cat}] ${e.level} ${e.msg}`);
+  const lines = logs.entries.map(entryText);
   const blob = new Blob([lines.join('\n') + '\n'], { type: 'text/plain' });
   saveBlob(blob, `logs-${compactLocalStamp()}.txt`);
 }
@@ -131,6 +159,24 @@ export async function refreshCatLevels(): Promise<void> {
     if (typeof lvl === 'number') next[name] = lvl;
   }
   logs.catLevels = next;
+  // Whether each prints in the Terminal too (one read per category, on
+  // the popover's open only).
+  const echo: Record<string, boolean> = {};
+  for (const name of Object.keys(next)) {
+    const v = await gsEval(`log.category["${name}"].stdout`);
+    if (typeof v === 'boolean') echo[name] = v;
+  }
+  logs.catStdout = echo;
+}
+
+// Turn a category's Terminal copy on or off (its `stdout`); every line
+// still reaches the Logs panel.  Mirrors locally on success.
+export async function setCatStdout(cat: string, on: boolean): Promise<boolean> {
+  const { gsEval, gsOk, isModuleReady } = await import('@/bus/emulator');
+  if (!isModuleReady()) return false;
+  if (!gsOk(await gsEval(`log.category["${cat}"].stdout`, [on]))) return false;
+  logs.catStdout[cat] = on;
+  return true;
 }
 
 // Write a new level for one category and mirror locally on success.

@@ -56,6 +56,18 @@ for the device-info block), with
   machine's image list like every drive's: it is checkpointed there (a blank
   disk included), `hd.eject` closes it, and the device saves only which
   entry it holds.
+- **VIA cycles are E-synchronized** (`lisa_board_desc_t.via_esync`, Lisa 2/5
+  board only).  Every CPU access to either VIA charges
+  `memory_io_esync_penalty()` against the 68000's E (CPU/10,
+  `scheduler_set_esync_divider`), as the Macintosh boards do for theirs.  The
+  OS driver depends on it: its interrupt entry kills Timer 2 by loading 0 and
+  then clearing IFR bit 5 "after it expires" (reference page §5, quirk 13).
+  With untimed accesses the clearing write landed one E after the load,
+  before the one-shot's 1.5-E expiry, so the flag stood: the driver's 0.1 s
+  poll kept re-arming after every request, and when its 100-tick timeout ran
+  out (12.8 s after the last disk request) the level-1 handler re-entered the
+  driver ~33,000 times until the word counter wrapped -- a 3-4 s freeze of
+  the screen and pointer.  `suite-lisa`'s `lisa-los31-idle` row guards it.
 - **Verification.** `tests/unit/suites/lisa_profile` drives the device API
   directly (detection, device-info read, write→read round-trip, decline/abort).
   `tests/integration/lisa-profile` boots the rev-H ROM, attaches a blank ProFile,
@@ -127,6 +139,10 @@ for the device-info block), with
   `cops_mouse_tick`). NB: the OS does **not** draw the cursor sprite on the idle menu,
   so a menu screenshot looks cursor-less; the click still hit-tests against the tracked
   position, and the cursor becomes visible once a dialog appears.
+  Under MacWorks the loop reads the Macintosh cursor instead, the low-memory
+  global `Mouse` (`$830`, v then h, context 0), since the LOS globals mean
+  nothing there (`lisa_mmu_get_cursor`, which asks `lisa_mmu_runs_macworks`);
+  the same corrective deltas converge on it.
 - **INSTALLER NOW DETECTS THE ProFile (session 16) — root-caused from the LisaOS
   source + floppy-I/O analysis.** Clicking Install with a ProFile attached now
   reaches *"Do you want to use the disk attached to the parallel connector?"*

@@ -57,8 +57,54 @@ function row_lisa_los31_profile() -- global: included file
     -- parked.
     mac.run_until_match("goldens/lisa-los3.1-720x364x1-office.png", 112000000, 5000000)
     mac.check("goldens/lisa-los3.1-720x364x1-office.png")
-    mac.report_row("LOS 3.1", "builtin", "profile-boot own-pram")
+    -- Not Mac OS: no MMU32bit global to report (report_row_foreign); the
+    -- Mac globals refuse on a Lisa running its own system (debug.mac.mode).
+    -- Not Mac OS either for the machine watch: its Mac OS detectors (system
+    -- error, Ticks frozen) would read arbitrary memory here.
+    assert(not debug.mac.os, "debug.mac.os under the Lisa Office System")
+    mac.report_row_foreign("LOS 3.1", "builtin", "profile-boot own-pram")
     mac.report_perf("suite-lisa/lisa-los31-profile", scheduler.instr_count)
+end
+
+-- The Office System must stay responsive once its disk goes quiet.  LOS's
+-- ProFile driver arms VIA2 Timer 2 as a 0.1 s poll while a request waits,
+-- and on every interrupt kills it by loading 0 and then clearing T2's IFR
+-- bit, counting on the zeroed one-shot to have expired first -- a race the
+-- real machine wins because the clearing write is an E-synchronized VMA
+-- cycle at least two E behind the load.
+-- Without the Lisa's E-synchronized VIA cycles the clear landed first: the
+-- flag stood, the poll chain ran on after every request, and 12.8 s later
+-- its timeout left a flag nothing cleared, so the level-1 handler called
+-- the driver ~33,000 times in a row -- the screen and pointer frozen for
+-- 3-4 s.  The oracle is the symptom: over 20 s of idle after boot (its
+-- disk traffic ends just before the desktop appears) the CPU is never held
+-- at interrupt level 1 for half a second.
+function row_lisa_los31_idle() -- global: included file
+    machine.boot{model = "lisa", ram = 2048, rom = "../../data/roms/lisa2-revh-098917b2.rom"}
+    machine.hd.insert(F"${vars.WORK_DIR}/profile-idle.image")
+    assert(machine.hd.pram_init(2, false), "pram_init failed")
+    mac.run_until_match("goldens/lisa-los3.1-720x364x1-office.png", 112000000, 5000000)
+    mac.check("goldens/lisa-los3.1-720x364x1-office.png")
+    -- 2000 samples 10 ms apart (5094 instructions at 10 per cycle-slot of the
+    -- 5.09375 MHz CPU); track the longest unbroken run spent at level 1.
+    local run = 0
+    local longest = 0
+    local i = 0
+    while i < 2000 do
+        scheduler.run(5094)
+        if (machine.cpu.sr & 0x0700) == 0x0100 then
+            run = run + 1
+        else
+            run = 0
+        end
+        if run > longest then
+            longest = run
+        end
+        i = i + 1
+    end
+    echo(F"lisa-los31-idle: longest level-1 run ${longest} x 10 ms")
+    assert(longest < 50, F"level-1 handler held the CPU ${longest}0 ms (ProFile Timer-2 storm)")
+    mac.report_perf("suite-lisa/lisa-los31-idle", scheduler.instr_count)
 end
 
 function row_lisa_xenix_hdinit() -- global: included file
@@ -115,15 +161,15 @@ function row_lisa_xenix_hdinit() -- global: included file
     -- COPS keycodes through the boot ROM's own key table, and the transitions
     -- are paced 4 ms apart by a scheduler source that belongs to this machine
     -- rather than to an adb_t the Lisa has not got.  "hdinit\n" is 7
-    -- characters = 14 bytes, inside the Lisa's 24-byte COPS budget.
+    -- characters = 14 bytes, inside the keyboard.type budget.
     machine.adb.keyboard.type("hdinit\n")
     scheduler.run(34000000)
-    -- The budget is per machine, and it has to be: the COPS FIFO is 32 bytes
-    -- against the ADB ring's 128, so a line that is fine on a Quadra overflows
-    -- here.  Thirteen characters is 26 bytes, over the Lisa's 24, and must be
-    -- refused rather than half-typed.  (With the ADB budget in place this
-    -- line succeeds, which is what it is here to catch.)
-    assert(not gs.ok(function() return machine.adb.keyboard.type("abcdefghijklm") end), "the Lisa accepted a line its COPS FIFO cannot hold")
+    -- A line over the budget is refused rather than half-typed.  The Lisa
+    -- used to have a 24-byte budget of its own, sized as if a whole line sat
+    -- in the 32-byte COPS FIFO at once; the transitions are paced 4 ms apart
+    -- and the OS drains each byte as it arrives, so it takes the default 96
+    -- bytes now (lisa.c).  49 characters is 98 bytes: refused.
+    assert(not gs.ok(function() return machine.adb.keyboard.type("abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvw") end), "the Lisa accepted a line over the keyboard.type budget")
     -- "WARNING: ... Do you want to continue <y/n>?"
     mac.check("goldens/lisa-xenix3.0-720x364x1-hdinit-continue.png")
 
@@ -220,7 +266,11 @@ function row_lisa_xenix_boot() -- global: included file
     -- The installed Xenix has booted to its multi-user startup prompt
     -- ("Type CONTROL-d to proceed with normal startup, / or give root password ...").
     mac.check("goldens/lisa-xenix3.0-720x364x1-startup.png")
-    mac.report_row("Xenix 3.0", "builtin", "fd-boot cops-typing profile")
+    -- Not Mac OS: no MMU32bit global to report (report_row_foreign).
+    -- Not Mac OS for the machine watch: under Xenix $16A and $AF0 change
+    -- freely, which its Mac OS detectors reported as a crashed, hung guest.
+    assert(not debug.mac.os, "debug.mac.os under Xenix")
+    mac.report_row_foreign("Xenix 3.0", "builtin", "fd-boot cops-typing profile")
     mac.report_perf("suite-lisa/lisa-xenix-boot", scheduler.instr_count)
 end
 
@@ -309,6 +359,17 @@ function row_xl_macworks_boot() -- global: included file
     assert(machine.screen.height == 431, "screen.height != 431")
     -- The loader disk has ejected itself and the machine is waiting for a system disk.
     assert(machine.floppy.drive[0].present == false, "loader disk should have ejected")
+    -- The diskette MacWorks ejected itself can still be saved, from the
+    -- machine's image list.
+    local loader_saved = false
+    local li = 0
+    while li < 32 do
+        if gs.try(function() return files.images[li].source end, "") == "../../data/Lisa/MacWorksXL/MacWorksXL_3.0_May1985.dc42" then
+            loader_saved = files.images[li].export(F"${vars.WORK_DIR}/macworks-loader.dc42")
+        end
+        li = li + 1
+    end
+    assert(loader_saved, "the loader diskette MacWorks ejected could not be exported")
 
     -- Insert the MacWorks XL system disk, as a user would at the "?" prompt.
     machine.floppy.drive[0].insert("../../data/Lisa/MacWorksXL/MacWorksXL_Sys_Disk.dc42")
@@ -320,6 +381,19 @@ function row_xl_macworks_boot() -- global: included file
     -- Verify the Finder desktop: menu bar (File/Edit/View/Special), the open
     -- "MacWorks System Disk" window with its icons, the Trash, and the gray desktop.
     mac.check("goldens/xl-macworks3.0-608x431x1-finder.png")
+    -- Under MacWorks the Lisa hardware runs the Macintosh system, so the
+    -- debugger's Macintosh views apply (debug.mac.mode "auto").
+    assert(debug.mac.active, "debug.mac does not apply under MacWorks")
+    assert(debug.mac.atrap(0xA022) == "_NewHandle", "no Macintosh trap names under MacWorks")
+    assert(debug.mac.os, "MacWorks runs Mac OS, but debug.mac.os is false")
+    -- The absolute mouse move steers the Macintosh cursor (the Mouse global,
+    -- v then h) under MacWorks; it used to read the LOS cursor and do nothing.
+    machine.adb.mouse.move(300, 200, "global")
+    scheduler.run(10000000)
+    local mw_mouse = debug.mac.globals.read("Mouse")
+    local mw_h = mw_mouse & 0xFFFF
+    local mw_v = mw_mouse >> 16
+    assert(mw_h >= 297 and mw_h <= 303 and mw_v >= 197 and mw_v <= 203, "the global mouse move missed under MacWorks")
     mac.report_row("MacWorks 3.0", "builtin", "fd-boot loader-eject")
     mac.report_perf("suite-lisa/xl-macworks-boot", scheduler.instr_count)
 end

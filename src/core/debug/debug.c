@@ -23,6 +23,7 @@
 #include "expr.h"
 #include "fpu.h"
 #include "gs_assert.h"
+#include "lisa_mmu.h"
 #include "log.h"
 #include "log_categories.h"
 #include "memory.h"
@@ -47,6 +48,7 @@ static const class_desc_t bp_collection_class;
 static const class_desc_t lp_collection_class;
 static const class_desc_t wp_collection_class;
 static const class_desc_t debug_mac_class;
+static bool debug_mac_world(void);
 static const class_desc_t debug_mac_globals_class;
 
 #include <ctype.h>
@@ -780,7 +782,7 @@ void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, 
     // when streaming is on — the read is a debug-path memory access.
     const char *trap_name = "";
     char trap_buf[8];
-    if (vector == 0x028 && log_get_level(cat) >= 1)
+    if (vector == 0x028 && log_get_level(cat) >= 1 && debug_mac_naming_active())
         trap_name = debug_mac_atrap_name(memory_debug_read_uint16(faulting_pc), trap_buf, sizeof(trap_buf));
     LOG_WITH(cat, 1, "[EXC] vec=$%03X %s fmt=$%X rw=%s addr=$%08X pc=$%08X saved_pc=$%08X sr=$%04X vbr=$%08X%s", vector,
              trap_name, format_frame, rw ? "R" : "W", fault_addr, faulting_pc, saved_pc, sr, vbr,
@@ -863,6 +865,7 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
         return;
     uint32_t phys_addr = addr;
     bool phys_computed = false;
+    bool phys_valid = true; // false: the access has no physical address to compare (a Lisa I/O or ROM access)
     for (logpoint_t *lp = debug->mem_logpoints; lp; lp = lp->kind_next) {
         if (lp->disabled)
             continue;
@@ -876,7 +879,13 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
         if (lp->space == ADDR_SPACE_PHYSICAL) {
             if (!phys_computed) {
                 bool supervisor = current_access_is_supervisor();
-                if (g_mmu && g_mmu->enabled) {
+                if (g_lisa_mmu) {
+                    // The Lisa: main memory's physical address; its I/O and ROM
+                    // spaces have none (lisa_mmu.c, lisa_logpoint_notify).
+                    const char *space = NULL;
+                    phys_valid = lisa_mmu_translate(g_lisa_mmu, addr, supervisor, &phys_addr, &space) && space &&
+                                 strcmp(space, "ram") == 0;
+                } else if (g_mmu && g_mmu->enabled) {
                     phys_addr = mmu_translate_debug(g_mmu, addr, supervisor);
                 } else if (g_mem_logical_xlate && g_mem_logpoint_page_count &&
                            g_mem_logpoint_page_count[addr >> MEM_PAGE_SHIFT]) {
@@ -891,6 +900,8 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
                 }
                 phys_computed = true;
             }
+            if (!phys_valid)
+                continue;
             cmp_addr = phys_addr;
         } else {
             cmp_addr = addr;
@@ -1028,9 +1039,26 @@ void debugger_disasm_pc(char *buf, size_t buf_size) {
     debugger_disasm(buf, buf_size, dif->get_pc(dif->ctx));
 }
 
+// True when the instruction at `pc` cannot even be fetched: on the Lisa, its
+// segment is not present (or out of limit) in the context the CPU uses now,
+// so the fetch takes a bus error and the operating system loads the segment
+// and returns to `pc` -- where the instruction then really executes.  A
+// breakpoint there means the latter.  (The Lisa's MMU makes no
+// instruction/data distinction, so its debug translation is exact for a
+// fetch; the other MMU kinds keep their behaviour.)
+static bool pc_fetch_faults(uint32_t pc) {
+    if (!g_lisa_mmu)
+        return false;
+    return !lisa_mmu_translate(g_lisa_mmu, pc, debug_cpu_is_supervisor(), NULL, NULL);
+}
+
 // Check the breakpoints at current_pc, the instruction about to execute.
 // A hit prints, counts, and arms the resume skip; returns true on a hit.
 static bool check_breakpoints(debug_t *debug, uint32_t current_pc) {
+    // An instruction whose fetch faults is not about to execute: no
+    // breakpoint is hit there, nor its condition evaluated or counted.
+    if (pc_fetch_faults(current_pc))
+        return false;
     breakpoint_t *bp = debug->breakpoints;
     while (bp != NULL) {
         // A disabled breakpoint is kept but ignored.
@@ -1911,6 +1939,7 @@ debug_t *debug_init(void) {
             object_set_label(debug->find_object, "Find");
             object_attach(debug->object, debug->find_object);
         }
+        g_debug_mac_world_fn = debug_mac_world; // the disassembler's trap names follow debug.mac.mode
         debug->mac_object = object_new(&debug_mac_class, debug, "mac");
         if (debug->mac_object) {
             object_attach(debug->object, debug->mac_object);
@@ -2775,7 +2804,9 @@ static const arg_decl_t lp_add_args[] = {
     {.name = "message",
      .kind = VK_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_TEMPLATE,
-     .doc = "fire-time template; $value/$addr/$size bind per fire"},
+     .doc = "fire-time template; $value/$addr/$size bind per fire.  A whole \"...\" literal stays a template in "
+            "call form too (message=\"pc=${machine.cpu.pc}\"); a message built by an expression (\"a\" + \"b\") is "
+            "evaluated once, when added"},
     {.name = "level",
      .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
@@ -3055,12 +3086,19 @@ static DEF_METHOD(debug_method_disasm) {
     if (count > 256)
         count = 256;
 
+    // On a Lisa, `context` reads the instruction stream through that
+    // context's segments (debug_view_begin).
+    int prev_view;
+    value_t err;
+    if (!debug_view_begin(argc, argv, 2, false, &prev_view, &err))
+        return err;
     char buf[160];
     for (int i = 0; i < (int)count; i++) {
         int instr_len = debugger_disasm(buf, sizeof(buf), addr); // returns bytes
         out_printf("%s\n", buf);
         addr += (uint32_t)instr_len;
     }
+    debug_view_end(prev_view);
     return val_none();
 }
 
@@ -3072,7 +3110,12 @@ static const arg_decl_t debug_disasm_args[] = {
     {.name = "count",
      .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Number of instructions, when the first argument is an address"                                    },
+     .doc = "Number of instructions, when the first argument is an address"},
+    {.name = "context",
+     .kind = VK_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Lisa only: read the code through this MMU context's segments (0-3; 0 is the operating system's)",
+     .default_doc = "the CPU's current context"},
 };
 
 // Choose where a disassembly window starts so that `before` rows precede
@@ -3135,6 +3178,38 @@ bool debug_parse_space(int argc, const value_t *argv, int idx, bool *physical) {
         return true;
     }
     return false;
+}
+
+bool debug_view_begin(int argc, const value_t *argv, int idx, bool physical, int *prev, value_t *err) {
+    *prev = LISA_VIEW_CPU;
+    int ctx = LISA_CTX_CPU;
+    if (argc > idx && argv[idx].kind != VK_NONE) {
+        if (argv[idx].kind != VK_UINT && argv[idx].kind != VK_INT) {
+            *err = val_err("context must be a number, 0-3");
+            return false;
+        }
+        if (!g_lisa_mmu) {
+            *err = val_err("context: only the Lisa's segment MMU has contexts");
+            return false;
+        }
+        if (argv[idx].u > 3) {
+            *err = val_err("context must be 0-3 (0 is the operating system's)");
+            return false;
+        }
+        if (physical) {
+            *err = val_err("a physical read takes no context");
+            return false;
+        }
+        ctx = (int)argv[idx].u;
+    }
+    if (g_lisa_mmu)
+        *prev = lisa_mmu_debug_view_set(physical ? LISA_VIEW_PHYSICAL : ctx);
+    return true;
+}
+
+void debug_view_end(int prev) {
+    if (g_lisa_mmu)
+        lisa_mmu_debug_view_set(prev);
 }
 
 // Split one disassembled instruction (the cpu_debug_if_t `disasm` text) into
@@ -3313,9 +3388,10 @@ static const arg_decl_t debug_step_args[] = {
 static const member_t debug_members[] = {
     {.kind = MK_METHOD,
      .name = "disasm",
-     .examples = EXAMPLES("debug.disasm", "debug.disasm 8", "debug.disasm 0x40800000 20"),
+     .examples =
+         EXAMPLES("debug.disasm", "debug.disasm 8", "debug.disasm 0x40800000 20", "debug.disasm 0x20000 8 context=1"),
      .doc = "Disassemble forward from the PC, or from an address",
-     .method = {.args = debug_disasm_args, .nargs = 2, .result = VK_NONE, .fn = debug_method_disasm}},
+     .method = {.args = debug_disasm_args, .nargs = 3, .result = VK_NONE, .fn = debug_method_disasm}},
     {.kind = MK_METHOD,
      .name = "frame",
      .examples = EXAMPLES("debug.frame", "debug.frame count=8 before=3"),
@@ -3362,7 +3438,100 @@ static const class_desc_t debug_class = {
 // Lookup is a binary search over a name index (mac_global_find,
 // mac_globals_data.c).
 
+// debug.mac.mode: whether the Macintosh views (trap names, low-memory
+// globals) apply.  "auto" decides per machine (debug_mac_world).
+static const char *const mac_mode_names[] = {"auto", "on", "off", NULL};
+enum { MAC_MODE_AUTO, MAC_MODE_ON, MAC_MODE_OFF, MAC_MODE_COUNT };
+static int g_mac_mode = MAC_MODE_AUTO;
+
+// The emulator's g_debug_mac_world_fn (debug_mac.h).
+static bool debug_mac_world(void) {
+    if (g_mac_mode != MAC_MODE_AUTO)
+        return g_mac_mode == MAC_MODE_ON;
+    return !g_lisa_mmu || lisa_mmu_runs_macworks();
+}
+
+// Mac OS's low-memory globals and vector debug_mac_os_running reads
+#define MAC_ROMBASE    0x02AEu // ROMBase: the base of the ROM the system runs from
+#define MAC_SYSZONE    0x02A6u // SysZone: the system heap's zone
+#define MAC_APPLZONE   0x02AAu // ApplZone: the application heap's zone (above the system heap)
+#define MAC_LINEA_VECT 0x0028u // the line-A (A-trap) exception vector (VBR 0)
+
+// Whether the guest is running the Macintosh Operating System now (debug.h).
+// A Macintosh model is not enough: before Mac OS has started (the ROM's
+// tests) and under another system (A/UX, Xenix, the Lisa Office System) the
+// low-memory globals hold nothing of Mac OS's.  Two tests:
+//  - Mac OS sets ROMBase to the ROM it runs from, and a Macintosh ROM begins
+//    with its checksum, so the longword at ROMBase is the machine ROM's first
+//    (seen on the Plus, SE/30, Quadra 700 and Power Macintosh 6100).
+//  - On a 68K the line-A vector leads to Mac OS's trap dispatcher: in the ROM,
+//    or (System 7 on the SE/30) in the system heap, between SysZone and
+//    ApplZone.  A/UX keeps Mac OS's page 0 from the boot, ROMBase included,
+//    but takes the vector for its kernel, with both zones -1.  A PowerPC
+//    dispatches A-traps in its 68K emulator, so only the first test applies.
+// A Lisa runs Mac OS only under MacWorks, from a RAM copy of a Macintosh ROM
+// (lisa_mmu_runs_macworks).
+bool debug_mac_os_running(void) {
+    if (g_mac_mode != MAC_MODE_AUTO)
+        return g_mac_mode == MAC_MODE_ON;
+    if (g_lisa_mmu)
+        return lisa_mmu_runs_macworks();
+    memory_map_t *mem = system_memory();
+    const uint8_t *rom = mem ? memory_rom_bytes(mem) : NULL;
+    if (!rom || memory_rom_size(mem) < 4)
+        return false;
+    // The ROM's checksum, its first longword (big-endian)
+    uint32_t sum = (uint32_t)rom[0] << 24 | (uint32_t)rom[1] << 16 | (uint32_t)rom[2] << 8 | rom[3];
+    uint32_t base = memory_debug_read_uint32(debug_mac_xlate(MAC_ROMBASE));
+    // 0 is no ROMBase: at reset the ROM overlay answers at address 0
+    if (base == 0 || memory_debug_read_uint32(base) != sum)
+        return false;
+    config_t *m = system_running();
+    if (m && m->ppc)
+        return true;
+    // 24-bit pointers may carry flags in their high byte
+    uint32_t mask = base < 0x01000000u ? 0x00FFFFFFu : 0xFFFFFFFFu;
+    uint32_t line_a = memory_debug_read_uint32(debug_mac_xlate(MAC_LINEA_VECT)) & mask;
+    uint32_t sys_zone = memory_debug_read_uint32(debug_mac_xlate(MAC_SYSZONE)) & mask;
+    uint32_t appl_zone = memory_debug_read_uint32(debug_mac_xlate(MAC_APPLZONE)) & mask;
+    bool in_rom = line_a - (base & mask) < memory_rom_size(mem); // the ROM's dispatcher
+    bool in_sys_heap = sys_zone < appl_zone && line_a >= sys_zone && line_a < appl_zone; // a patched one
+    return in_rom || in_sys_heap;
+}
+
+// The refusal every debug.mac method gives where the Macintosh views do
+// not apply.
+static value_t mac_not_here(const char *who) {
+    return val_err("%s: this machine is not running the Macintosh system (a Lisa runs Macintosh software only under "
+                   "MacWorks), so Macintosh traps and globals do not apply; debug.mac.mode = \"on\" forces them",
+                   who);
+}
+
+static DEF_GETTER(mac_attr_mode_get) {
+    return val_enum(g_mac_mode, mac_mode_names, MAC_MODE_COUNT);
+}
+
+static DEF_SETTER(mac_attr_mode_set) {
+    if (in.kind != VK_ENUM || in.enm.idx < 0 || in.enm.idx >= MAC_MODE_COUNT) {
+        value_free(&in);
+        return val_err("debug.mac.mode: expected auto, on or off");
+    }
+    g_mac_mode = in.enm.idx;
+    value_free(&in);
+    return val_none();
+}
+
+static DEF_GETTER(mac_attr_active_get) {
+    return val_bool(debug_mac_world());
+}
+
+static DEF_GETTER(mac_attr_os_get) {
+    return val_bool(debug_mac_os_running());
+}
+
 static DEF_METHOD(method_mac_globals_read) {
+    if (!debug_mac_world())
+        return mac_not_here("debug.mac.globals.read");
     const mac_global_info_t *g = mac_global_find(argv[0].s);
     if (!g)
         return val_err("debug.mac.globals.read: unknown global '%s'", argv[0].s);
@@ -3405,6 +3574,8 @@ static DEF_METHOD(method_mac_globals_read) {
 }
 
 static DEF_METHOD(method_mac_globals_write) {
+    if (!debug_mac_world())
+        return mac_not_here("debug.mac.globals.write");
     const mac_global_info_t *g = mac_global_find(argv[0].s);
     if (!g)
         return val_err("debug.mac.globals.write: unknown global '%s'", argv[0].s);
@@ -3442,6 +3613,8 @@ static DEF_METHOD(method_mac_globals_write) {
 }
 
 static DEF_METHOD(method_mac_globals_address) {
+    if (!debug_mac_world())
+        return mac_not_here("debug.mac.globals.address");
     const mac_global_info_t *g = mac_global_find(argv[0].s);
     if (!g)
         return val_err("debug.mac.globals.address: unknown global '%s'", argv[0].s);
@@ -3524,6 +3697,8 @@ static const class_desc_t debug_mac_globals_class = {
 // in time; for now this covers the typed-bridge needs.
 
 static DEF_METHOD(method_mac_atrap) {
+    if (!debug_mac_world())
+        return mac_not_here("debug.mac.atrap");
     char buf[8];
     return val_str(debug_mac_atrap_name((uint16_t)argv[0].u, buf, sizeof(buf)));
 }
@@ -3533,6 +3708,19 @@ static const arg_decl_t mac_atrap_args[] = {
 };
 
 static const member_t debug_mac_members[] = {
+    {.kind = MK_ATTR,
+     .name = "mode",
+     .doc = "Whether the Macintosh views (trap names here and in the disassembly, low-memory globals) apply: auto "
+            "(every Macintosh, and a Lisa only while it runs MacWorks), on or off", .attr = {.type = VK_ENUM, .enum_values = mac_mode_names, .get = mac_attr_mode_get, .set = mac_attr_mode_set}},
+    {.kind = MK_ATTR,
+     .name = "active",
+     .doc = "True when the Macintosh views apply to this machine now (debug.mac.mode decides)",
+     .attr = {.type = VK_BOOL, .get = mac_attr_active_get, .set = NULL}},
+    {.kind = MK_ATTR,
+     .name = "os",
+     .doc = "True while the guest runs the Macintosh Operating System (ROMBase points at the machine's ROM and, on a "
+            "68K, the A-trap vector at Mac OS's dispatcher; on a Lisa, MacWorks): the machine watch's Mac OS detectors "
+            "apply only then", .attr = {.type = VK_BOOL, .get = mac_attr_os_get, .set = NULL}},
     {.kind = MK_METHOD,
      .name = "atrap",
      .examples = EXAMPLES("debug.mac.atrap 0xa9a0"),

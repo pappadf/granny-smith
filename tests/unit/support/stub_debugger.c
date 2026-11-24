@@ -84,6 +84,19 @@ bool debug_parse_space(int argc, const value_t *argv, int idx, bool *physical) {
     *physical = false;
     return true;
 }
+// The Lisa's memory views: no machine here has contexts.
+bool debug_view_begin(int argc, const value_t *argv, int idx, bool physical, int *prev, value_t *err) {
+    (void)argc;
+    (void)argv;
+    (void)idx;
+    (void)physical;
+    (void)err;
+    *prev = -1;
+    return true;
+}
+void debug_view_end(int prev) {
+    (void)prev;
+}
 // The frame builder the CPU classes' `frame` method calls, and its argument
 // table, which the member tables take the address of.
 #include "debug.h"

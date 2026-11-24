@@ -1,12 +1,15 @@
 import { render, waitFor } from '@testing-library/svelte';
 import { describe, it, expect, beforeEach } from 'vitest';
 import LogsView from '@/components/panel-views/logs/LogsView.svelte';
-import { logs, appendLog, clearLogs } from '@/state/logs.svelte';
+import { logs, appendLog, clearLogs, setLogsPaused } from '@/state/logs.svelte';
 
 beforeEach(() => {
   clearLogs();
+  setLogsPaused(false);
   logs.autoscroll = true;
   logs.catLevels = {};
+  logs.maxLevel = null;
+  logs.hidden = {};
 });
 
 describe('LogsView', () => {
@@ -83,5 +86,42 @@ describe('LogsView', () => {
       expect(status).toContain('2 categories');
       expect(status).toContain('autoscroll: on');
     });
+  });
+
+  // A logpoint's message leads; where it fired follows, muted.
+  it('shows a logpoint line as its message, the PC after it', async () => {
+    const { container } = render(LogsView);
+    appendLog({ ts: 1, cat: 'logpoint', level: 0, msg: 'logpoint $002E005C: launch Desktop' });
+    await waitFor(() => expect(container.querySelectorAll('.log-line').length).toBe(1));
+    const row = container.querySelector('.log-line') as HTMLElement;
+    expect(row.querySelector('.msg')?.textContent).toBe('launch Desktop');
+    expect(row.querySelector('.where')?.textContent).toBe('$002E005C');
+    expect(row.textContent).not.toContain('logpoint $002E005C:');
+  });
+
+  it('filters the view by level and by category, keeping the buffer', async () => {
+    const { container } = render(LogsView);
+    appendLog({ ts: 1, cat: 'cpu', level: 1, msg: 'one' });
+    appendLog({ ts: 2, cat: 'scsi', level: 5, msg: 'five' });
+    appendLog({ ts: 3, cat: 'via', level: 2, msg: 'two' });
+    await waitFor(() => expect(container.querySelectorAll('.log-line').length).toBe(3));
+    logs.maxLevel = 2;
+    await waitFor(() => expect(container.querySelectorAll('.log-line').length).toBe(2));
+    logs.hidden = { via: true };
+    await waitFor(() => expect(container.querySelectorAll('.log-line').length).toBe(1));
+    expect(container.textContent).toContain('1 of 3 lines');
+    expect(logs.entries.length).toBe(3);
+  });
+
+  it('pause holds the view while the buffer goes on collecting', async () => {
+    const { container } = render(LogsView);
+    appendLog({ ts: 1, cat: 'cpu', level: 1, msg: 'before' });
+    await waitFor(() => expect(container.querySelectorAll('.log-line').length).toBe(1));
+    setLogsPaused(true);
+    appendLog({ ts: 2, cat: 'cpu', level: 1, msg: 'after' });
+    await waitFor(() => expect(logs.entries.length).toBe(2));
+    expect(container.querySelectorAll('.log-line').length).toBe(1);
+    setLogsPaused(false);
+    await waitFor(() => expect(container.querySelectorAll('.log-line').length).toBe(2));
   });
 });

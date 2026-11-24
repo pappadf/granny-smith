@@ -833,8 +833,14 @@ static void disasm_fpu_sccdbcc(uint16_t opcode, uint16_t ext, char *buf, size_t 
 #define DISASM
 
 // An A-line opcode's text: its trap name, or "_XXXX" when the table lacks it
+// -- on a Macintosh.  Elsewhere (a Lisa running its own OS, whose line-A
+// words are not Macintosh traps) the raw word, as LINEA $Axxx.
 static void disasm_atrap(uint16_t opcode, char *buf, size_t cap) {
     char name_buf[8];
+    if (!debug_mac_naming_active()) {
+        snprintf(buf, cap, "LINEA\t$%04X", opcode);
+        return;
+    }
     snprintf(buf, cap, "%s", debug_mac_atrap_name(opcode, name_buf, sizeof(name_buf)));
 }
 

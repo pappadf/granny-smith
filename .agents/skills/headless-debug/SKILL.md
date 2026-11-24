@@ -261,7 +261,15 @@ debug.mac.globals.address "MBState"
 debug.mac.globals.write "MBState" 0x80  # 1/2/4-byte globals only
 debug.mac.globals.list
 debug.mac.atrap 0xa05d                 # -> _SwapMMUMode
+debug.mac.active                       # do these apply here?
+debug.mac.mode = "on"                  # auto (default) | on | off
 ```
+
+On a Lisa running its own system (LOS, Xenix) `debug.mac.mode` "auto"
+turns these off: `debug.mac.*` refuses, and the disassembler shows a line-A
+word as `LINEA $Axxx` rather than a Macintosh trap name. Under MacWorks
+(ROMBase and the line-A vector point at the Mac ROM image it loaded) they
+apply as on a Macintosh.
 
 Region markers (`ScrapEnd`, ...) have no size: use `address` and peek.
 
@@ -293,9 +301,9 @@ checkpoint.save "/tmp/a.gscp"
 checkpoint.load "/tmp/a.gscp"
 ```
 
-`checkpoint.load` drops all breakpoints and logpoints. Memory (read/write)
-logpoints added after a load do not fire, though pc logpoints and
-breakpoints do. For memory watches, boot fresh instead.
+`checkpoint.load` drops all breakpoints and logpoints. Logpoints of every
+kind, memory ones included, added after a load fire (checked on the Plus
+and the Lisa, RAM and the Lisa's MMU latches).
 
 ## Devices and input
 

@@ -9,6 +9,9 @@
 --   lisa-los31-lisaem     the same boot from a LisaEm ProFile image (a
 --                         DiskCopy 4.2 file with 20-byte tags), attached
 --                         as it is
+--   lisa-los31-idle       the same boot, then 20 s idle: the CPU is never
+--                         held at interrupt level 1 (the ProFile driver's
+--                         Timer-2 kill race; Lisa VIA cycles are E-synced)
 --   lisa-xenix-hdinit     lisa-xenix-hdinit: Xenix 3.0 hard-disk init
 --                         from the boot floppy (the fast-tier gate for
 --                         the full install, which stays in extended)
@@ -35,6 +38,7 @@ if mac.row_on("lisa-los31-lisaem") then
         echo("skip: lisa-los31-lisaem (no LisaEm ProFile image in the test data)")
     end
 end
+mac.row("lisa-los31-idle", row_lisa_los31_idle)
 mac.row("lisa-xenix-hdinit", row_lisa_xenix_hdinit)
 mac.row("lisa-xenix-boot", row_lisa_xenix_boot)
 mac.row("lisa-xenix-nofloppy", row_lisa_xenix_nofloppy)

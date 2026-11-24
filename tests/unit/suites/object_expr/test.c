@@ -79,6 +79,32 @@ TEST(test_subtraction_and_unary_minus) {
     value_free(&v);
 }
 
+// An unsigned difference below zero is negative, not a 2^64 wrap (it used to
+// print 16 - 245 as 18446744073709551387).
+TEST(test_negative_difference_is_signed) {
+    value_t v = eval("16 - 245");
+    ASSERT_EQ_INT(VK_INT, v.kind);
+    ASSERT_TRUE(v.i == -229);
+    value_free(&v);
+
+    // ... so it divides as a signed number too.
+    v = eval("(16 - 245) / 17");
+    ASSERT_EQ_INT(VK_INT, v.kind);
+    ASSERT_TRUE(v.i == -13);
+    value_free(&v);
+
+    // A glide leftwards: x0 + (x1 - x0) * i / n.
+    v = eval("300 + (100 - 300) * 3 / 4");
+    ASSERT_TRUE(val_as_i64(&v, NULL) == 150);
+    value_free(&v);
+
+    // A non-negative difference stays unsigned (address arithmetic).
+    v = eval("0x400 - 4");
+    ASSERT_EQ_INT(VK_UINT, v.kind);
+    ASSERT_TRUE(v.u == 0x3FC);
+    value_free(&v);
+}
+
 TEST(test_division_and_modulo) {
     value_t v = eval("10 / 3");
     ASSERT_EQ_INT(3, (int)v.u);
@@ -855,6 +881,7 @@ int main(void) {
     RUN(test_literal_addition);
     RUN(test_operator_precedence);
     RUN(test_subtraction_and_unary_minus);
+    RUN(test_negative_difference_is_signed);
     RUN(test_division_and_modulo);
     RUN(test_bitwise_ops);
     RUN(test_shift_ops);

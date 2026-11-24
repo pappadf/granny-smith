@@ -152,6 +152,17 @@ void cpu_set_ipl(cpu_t *restrict cpu, uint32_t value);
 bool cpu_is_stopped(cpu_t *restrict cpu);
 void cpu_poll_interrupt(cpu_t *restrict cpu);
 
+// Hold the CPU as a machine whose power has gone: stopped, with every
+// maskable interrupt masked, so it executes nothing more while the scheduler
+// keeps time.  Only a reset (a power cycle) brings it back.
+void cpu_power_off(cpu_t *restrict cpu);
+
+// Point the memory system's active view (the supervisor or user tables) at
+// the CPU's own privilege.  The CPU re-derives it when it runs; a debugger
+// read before that -- right after a checkpoint load, which selects the
+// supervisor view -- needs it now.
+void cpu_select_active_view(cpu_t *restrict cpu);
+
 // Get/set vector base register (68010+)
 uint32_t cpu_get_vbr(cpu_t *restrict cpu);
 

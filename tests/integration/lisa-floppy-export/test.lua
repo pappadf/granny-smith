@@ -39,4 +39,26 @@ machine.floppy.drive[0].eject()
 machine.floppy.drive[0].insert(F"${vars.WORK_DIR}/saved.img")
 assert(machine.floppy.drive[0].image.export(F"${vars.WORK_DIR}/fromraw.dc42"), "export of a raw source returned false")
 assert(files.path_size(F"${vars.WORK_DIR}/fromraw.dc42") == 419284, "raw-sourced DiskCopy export has the wrong size")
+-- An ejected diskette can still be saved: the Lisa ejects a diskette itself
+-- once the OS has put it away (Housekeeping > Eject), and that is when its
+-- contents are worth saving.  The drive's `image` is gone with the disk, but
+-- the image stays in the machine's list (files.images) with what was
+-- written to it, and exports from there.
+local function ejected_image(src)
+    local found = -1
+    local i = 0
+    while i < 32 do
+        if gs.try(function() return files.images[i].source end, "") == src then
+            found = i
+        end
+        i = i + 1
+    end
+    return found
+end
+machine.floppy.drive[0].eject()
+assert(machine.floppy.drive[0].present == false, "the drive is not empty")
+local ej = ejected_image(F"${vars.WORK_DIR}/saved.img")
+assert(ej >= 0, "the ejected diskette is not in files.images")
+assert(files.images[ej].export(F"${vars.WORK_DIR}/after-eject.dc42"), "export after eject failed")
+assert(files.path_compare(F"${vars.WORK_DIR}/fromraw.dc42", F"${vars.WORK_DIR}/after-eject.dc42") == -1, "export after eject is not the ejected diskette")
 quit()
