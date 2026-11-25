@@ -34,8 +34,6 @@
 -- and BoxFlag carries the model identity.
 
 local mac = dofile("../lib/mac.lua")
-local ppc = dofile("../lib/ppc_rows.lua")
-local boxflag, dispatch, check_about_81 = ppc.boxflag, ppc.dispatch, ppc.check_about_81
 
 local hd_81 = "../../data/apps/quake_8_1.img"
 local hd_76 = "../../data/systems/system_7_6_170mb_24ac.img"
@@ -49,87 +47,66 @@ local id_97 = "960e4be9-949c2c56d07516b7"
 local id_97v2 = "960fc647-013bb98cd4ad16c4"
 local id_95v2 = "9630c68b-4db4a42fea3b53b3"
 
--- Boot `model` on `rom` from the Mac OS 8.1 disk at MESH id 0 to a stable
--- Finder, then assert identity and open About This Computer.
-local function tnt97_81_row(label, model, rom, rom_id, card, want_boxflag, finder, about)
-    local t0 = scheduler.host_user_ns
-    machine.boot{model = model, ram = 65536, rom = rom, pci_card = card}
-    machine.rtc.time = "2026-04-26T21:30:36"
-    machine.scsi.attach_hd(hd_81, 0)
-    mac.wait_desktop(6000000000)
-    assert(machine.id == model, F"${model}: machine.id ${machine.id}")
-    assert(machine.rom.id == rom_id, F"${model}: rom.id ${machine.rom.id}, want ${rom_id}")
-    assert(debug.mac.globals.read("BootDrive") == 0x8023, F"${model}: BootDrive ${debug.mac.globals.read(\"BootDrive\"):04x}")
-    assert(debug.mac.globals.read("DSErrCode") == 0, F"${model}: system error ${debug.mac.globals.read(\"DSErrCode\"):04x} during startup")
-    assert(boxflag() == want_boxflag, F"${model}: BoxFlag ${boxflag()}, want ${want_boxflag}")
-    mac.check_ex(finder, 0, 440, 20, 640)
-    mac.about_box()
-    check_about_81(about)
-    mac.report_row("8.1", card == "" and "control" or card, "hd-boot mesh about")
-    mac.report_perf(F"suite-tnt-1997/${label}", scheduler.instr_count)
-    mac.mips_floor(label, t0, 20)
+-- Every row: the 1997 RTC date, a disk at MESH id 0, the startup disk and
+-- no system error, the menu-bar clock left out of the Finder match.
+local ROW = {suite = "suite-tnt-1997", rtc = "2026-04-26T21:30:36", boot_drive = 0x8023, dserr = true,
+    finder_ex = {0, 440, 20, 640}}
+
+-- Boot `model` on `rom` from the Mac OS 8.1 disk to a stable Finder
+-- (wait_desktop: the settle these rows' perf baselines were taken with), then
+-- assert identity and open About This Computer.  `card` is the PCI display
+-- card ("" for the onboard Control).
+local ROW_81 = mac.with(ROW, {ram = 65536, hd = hd_81, settle = {"desktop", ceiling = 6000000000},
+    system = "8.1", feature = "hd-boot mesh about", about_layout = "Mac OS 8.1", mips = 20})
+
+local function row_81(t)
+    t = mac.with(ROW_81, t)
+    t.boot = {pci_card = t.card}
+    if t.card == "" then t.card = "control" end
+    mac.media_row(t.label, function() mac.about_row(t) end, t.hd)
 end
 
 -- golden-collision-ok: pm7300-8.1-finder.png pm7600-8.1-finder.png pm8600-8.1-finder.png pm7300-8.1-about.png pm7600-8.1-about.png pm8600-8.1-about.png — the same Mac OS 8.1 desktop and About window on the same Control raster; the rows' BoxFlag and machine.id assertions carry the model identity, which this About window does not print.
-local function row_pm7300_81_hd()
-    tnt97_81_row("pm7300-81-hd", "pm7300", rom_97, id_97, "", 0x67, "goldens/pm7300-8.1-finder.png", "goldens/pm7300-8.1-about.png")
-end
-local function row_pm7600_81_hd()
-    tnt97_81_row("pm7600-81-hd", "pm7600", rom_97, id_97, "", 0x3E, "goldens/pm7600-8.1-finder.png", "goldens/pm7600-8.1-about.png")
-end
-local function row_pm8600_81_hd()
-    tnt97_81_row("pm8600-81-hd", "pm8600", rom_97v2, id_97v2, "", 0x3F, "goldens/pm8600-8.1-finder.png", "goldens/pm8600-8.1-about.png")
-end
+row_81{label = "pm7300-81-hd", model = "pm7300", rom = rom_97, rom_id = id_97, card = "", box = 0x67,
+    finder = "goldens/pm7300-8.1-finder.png", about = "goldens/pm7300-8.1-about.png"}
+row_81{label = "pm7600-81-hd", model = "pm7600", rom = rom_97, rom_id = id_97, card = "", box = 0x3E,
+    finder = "goldens/pm7600-8.1-finder.png", about = "goldens/pm7600-8.1-about.png"}
+row_81{label = "pm8600-81-hd", model = "pm8600", rom = rom_97v2, rom_id = id_97v2, card = "", box = 0x3F,
+    finder = "goldens/pm8600-8.1-finder.png", about = "goldens/pm8600-8.1-about.png"}
 -- The 9600 has no onboard video: the Mach64 GX in A1 draws everything, and
 -- the Control stand-in retires (pm9500.c).
-local function row_pm9600_81_mach64()
-    tnt97_81_row("pm9600-81-mach64", "pm9600", rom_97, id_97, "mach64_gx", 0x3D, "goldens/pm9600-8.1-finder.png", "goldens/pm9600-8.1-about.png")
-    assert(gs.try(function() return machine.pci.slot[7].card.name end, "(empty)") == "(empty)", "no onboard video when a display card is seated")
-end
-local function row_pm9600_81_mach64_v2()
-    tnt97_81_row("pm9600-81-mach64-v2", "pm9600", rom_97v2, id_97v2, "mach64_gx", 0x3D, "goldens/pm9600-8.1-finder.png", "goldens/pm9600-8.1-about.png")
-end
+row_81{label = "pm9600-81-mach64", model = "pm9600", rom = rom_97, rom_id = id_97, card = "mach64_gx", box = 0x3D,
+    finder = "goldens/pm9600-8.1-finder.png", about = "goldens/pm9600-8.1-about.png",
+    check = function()
+        assert(gs.try(function() return machine.pci.slot[7].card.name end, "(empty)") == "(empty)",
+            "no onboard video when a display card is seated")
+    end}
+row_81{label = "pm9600-81-mach64-v2", model = "pm9600", rom = rom_97v2, rom_id = id_97v2, card = "mach64_gx", box = 0x3D,
+    finder = "goldens/pm9600-8.1-finder.png", about = "goldens/pm9600-8.1-about.png"}
 
--- The 7600 on the 1995 ROM it first shipped with, System 7.6 from disk.
-local function row_pm7600_76_hd()
-    machine.boot{model = "pm7600", ram = 32768, rom = rom_95v2}
-    machine.rtc.time = "2026-04-26T21:30:36"
-    machine.scsi.attach_hd(hd_76, 0)
-    scheduler.run(4000000000)
-    assert(machine.rom.id == id_95v2, F"pm7600: rom.id ${machine.rom.id}")
-    assert(debug.mac.globals.read("BootDrive") == 0x8023, F"pm7600: BootDrive ${debug.mac.globals.read(\"BootDrive\"):04x}")
-    assert(debug.mac.globals.read("DSErrCode") == 0, F"pm7600: system error ${debug.mac.globals.read(\"DSErrCode\"):04x}")
-    assert(boxflag() == 0x3E, F"pm7600: BoxFlag ${boxflag()}, want $3E")
-    -- Close the Energy Saver first-boot message, then About This Computer.
-    machine.adb.keyboard.press("Return")
-    mac.run_ticks(60)
-    mac.check_ex("goldens/pm7600-7.6-finder.png", 0, 440, 20, 640)
-    mac.about_box()
-    mac.check_about_clock("goldens/pm7600-7.6-about.png")
-    mac.report_row("7.6", "control", "hd-boot mesh about 1995-rom")
-    mac.report_perf("suite-tnt-1997/pm7600-76-hd", scheduler.instr_count)
-end
+-- The 7600 on the 1995 ROM it first shipped with, System 7.6 from disk: a
+-- fixed 4 G boot (its baseline), then close the Energy Saver first-boot
+-- message and open About This Computer.
+local pm7600_76_hd = mac.with(ROW, {label = "pm7600-76-hd", model = "pm7600", ram = 32768, rom = rom_95v2,
+    rom_id = id_95v2, hd = hd_76, settle = {"run", head = 4000000000}, box = 0x3E, clock = true,
+    system = "7.6", card = "control", feature = "hd-boot mesh about 1995-rom",
+    finder = "goldens/pm7600-7.6-finder.png", about = "goldens/pm7600-7.6-about.png",
+    before_finder = function()
+        machine.adb.keyboard.press("Return")
+        mac.run_ticks(60)
+    end})
+mac.media_row("pm7600-76-hd", function() mac.about_row(pm7600_76_hd) end, hd_76)
 
 -- The 7600 booting the System 7.6 "Install 1" floppy through the SWIM3:
 -- boot blocks, System, extensions, then the Installer (the floppy shape of
 -- suite-pdm's pdm-floppy-boot; Disk Tools 2, which would open a Finder, is
 -- not in the fixture set).
-local function row_pm7600_76_fd()
-    ppc.boot_install1("pm7600", 32768, rom_95v2, "2026-04-26T21:30:36", fd_76, "goldens/pm7600-7.6-floppy-boot.png")
-    assert(boxflag() == 0x3E, F"pm7600: BoxFlag ${boxflag()}, want $3E")
+mac.media_row("pm7600-76-fd", function()
+    mac.boot_install1("pm7600", 32768, rom_95v2, "2026-04-26T21:30:36", fd_76, "goldens/pm7600-7.6-floppy-boot.png")
+    assert(mac.boxflag() == 0x3E, F"pm7600: BoxFlag ${mac.boxflag()}, want $3E")
     mac.report_row("7.6", "control", "fd-boot swim3")
     mac.report_perf("suite-tnt-1997/pm7600-76-fd", scheduler.instr_count)
-end
-
--- ---- row dispatch -----------------------------------------------------------
-
-dispatch("pm7300-81-hd", row_pm7300_81_hd, hd_81)
-dispatch("pm7600-81-hd", row_pm7600_81_hd, hd_81)
-dispatch("pm8600-81-hd", row_pm8600_81_hd, hd_81)
-dispatch("pm9600-81-mach64", row_pm9600_81_mach64, hd_81)
-dispatch("pm9600-81-mach64-v2", row_pm9600_81_mach64_v2, hd_81)
-dispatch("pm7600-76-hd", row_pm7600_76_hd, hd_76)
-dispatch("pm7600-76-fd", row_pm7600_76_fd, fd_76)
+end, fd_76)
 
 mac.suite_done()
 quit()
