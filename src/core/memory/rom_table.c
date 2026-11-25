@@ -70,6 +70,8 @@ static const char *const MACXL[] = {"macxl", NULL};
 static const char *const LCII[] = {"lcii", NULL};
 static const char *const CLASSICII[] = {"classicii", NULL};
 static const char *const COLORCLASSIC[] = {"colorclassic", NULL};
+// The Sonora-family 1 MB ROMs: both LC III ROMs run the 25 and 33 MHz boards.
+static const char *const LCIII[] = {"lciii", "lciiip", NULL};
 
 // === The table ============================================================
 //
@@ -110,8 +112,8 @@ const rom_info_t rom_table[] = {
     {"Quadra 700/900 ROM", Q700_Q900, "420dbff3", 1024 * 1024, 0, 0},
     {"MacIIvx & IIvi ROM", NONE, "4957eb49", 1024 * 1024, 0, 0},
     {"Powerbook 160 & 165c & 180 & 180c ROM", NONE, "e33b2724", 1024 * 1024, 0, 0},
-    {"LCIII (older) ROM", NONE, "ec904829", 1024 * 1024, 0, 0},
-    {"Mac LCIII ROM", NONE, "ecbbc41c", 1024 * 1024, 0, 0},
+    {"LCIII (older) ROM", LCIII, "ec904829", 1024 * 1024, 0, 0, "early"},
+    {"Mac LCIII ROM", LCIII, "ecbbc41c", 1024 * 1024, 0, 0, "later"},
     {"Color Classic ROM", COLORCLASSIC, "ecd99dc0", 1024 * 1024, 0, 0},
     {"Powerbook 210,230,250 ROM", NONE, "ecfa989b", 1024 * 1024, 0, 0},
     {"Color Classic II & LC 550 & Performa 275,550,560 & Macintosh TV ROM", NONE, "ede66cbd", 1024 * 1024, 0, 0},

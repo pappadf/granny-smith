@@ -16,9 +16,11 @@
 // port A, the frame-buffer source, the monitor -- are a v8_board_t named by
 // hw_profile_t.board.  See docs/internals/machines/v8/v8.md.
 //
-// The Sonora-based LC III / LC 520 / LC 550 keep the same I/O island and
-// the same RBV-style pseudo-VIA2 but decode RAM differently; a Sonora board
-// is meant to slot in here as another chip kind.
+// The Sonora-based boards (LC III, LC III+, LC 520, LC 550, Color Classic
+// II; sonora.c) are a second chip kind of the same substrate: the same I/O
+// island and RBV-style pseudo-VIA2, but a 32-bit-only decoder with ROM at
+// $40800000, VRAM at $60B00000, a bank-stitching RAM decoder, a CPU ID
+// register and its own video control registers.
 
 #ifndef GS_MACHINES_V8_V8_H
 #define GS_MACHINES_V8_V8_H
@@ -36,9 +38,16 @@ typedef enum v8_fb_source {
     V8_FB_DRAM = 1, // a fixed page of main RAM (Eagle's compact 1-bit screen)
 } v8_fb_source_t;
 
+// The decoder generation a board is built around.
+typedef enum v8_chip_kind {
+    V8_KIND_V8 = 0, // V8, Eagle, Spice: the 10 MB RAM space, the 24-bit windows
+    V8_KIND_SONORA = 1, // Sonora and its Ardbeg variant (sonora.c)
+} v8_chip_kind_t;
+
 // One model of the family: the hardware data the substrate is built from.
 typedef struct v8_board {
-    const char *chip; // "V8" / "Eagle" / "Spice" (tracing, machine.rbv.variant)
+    const char *chip; // "V8" / "Eagle" / "Spice" / "Sonora" / "Ardbeg" (tracing)
+    v8_chip_kind_t kind;
     m68k_board_desc_t desc; // ROM window, I/O table, bus-error window
 
     // VIA1 port A machine-ID strap: the levels of PA6, PA4, PA2 and PA1
@@ -64,6 +73,10 @@ typedef struct v8_board {
     // (LC II, Classic II) or Cuda (Color Classic -- its ROM opens with Cuda's
     // TIP/ByteAck/TReq handshake).
     bool cuda;
+
+    // Sonora only: the CPU ID register at $5FFFFFFC (signature $A55A in the
+    // high half, the board ID in the low half).
+    uint32_t cpu_id;
 } v8_board_t;
 
 // The one substrate every V8-family model binds.
@@ -81,6 +94,8 @@ extern const machine_substrate_t v8_substrate;
 // The V8 family's I/O island ($50F00000, 256 KB) as a window table, exposed
 // for the boards' descriptors.
 extern const board_io_range_t v8_io_ranges_tbl[];
+// The Sonora island: the same rows plus Sonora's own registers (sonora.c).
+extern const board_io_range_t sonora_io_ranges_tbl[];
 
 // Fixed addresses shared by every chip of the lineage.
 #define V8_ROM_START     0x40000000UL // ROM space (ROMBase $40A00000 is one mirror)
@@ -98,5 +113,13 @@ extern const board_io_range_t v8_io_ranges_tbl[];
 #define V8_LOW_IO_SIZE   0x00100000UL
 #define V8_RAM_SPACE     0x00A00000UL // 10 MB of RAM address space
 #define V8_RAM_IMAGE     0x00800000UL // $800000-$9FFFFF: the top 2 MB of soldered RAM, always
+
+// The Sonora decoder's fixed addresses (sonora.c).
+#define SONORA_ROM_BASE    0x40800000UL // ROMBase; the image repeats through the ROM space
+#define SONORA_VRAM_BASE   0x60B00000UL // the frame buffer (two 512 KB VRAM banks)
+#define SONORA_VRAM_WINDOW 0x00100000UL
+#define SONORA_CPUID_ADDR  0x5FFFFFFCUL // the CPU ID register
+#define SONORA_RAM_BANK    0x01000000UL // a bank's span while the ROM sizes RAM
+#define SONORA_RAM_SPACE   0x05000000UL // five banks (built-in + two SIMMs of two)
 
 #endif // GS_MACHINES_V8_V8_H

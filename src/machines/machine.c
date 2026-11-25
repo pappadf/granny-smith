@@ -78,6 +78,8 @@ extern const hw_profile_t machine_classic;
 extern const hw_profile_t machine_lcii;
 extern const hw_profile_t machine_clii; // Classic II
 extern const hw_profile_t machine_ccl; // Color Classic
+extern const hw_profile_t machine_lciii;
+extern const hw_profile_t machine_lciiip; // LC III+
 
 // Registry of built-in machine profiles.  A static const array iterated
 // directly: adding a machine is its extern above plus one entry here (this
@@ -88,7 +90,7 @@ static const hw_profile_t *const builtin_machines[] = {
     &machine_pm6100,  &machine_pm7100,  &machine_pm8100,   &machine_pm7500, &machine_pm8500, &machine_pm9500,
     &machine_ans500,  &machine_ans700,  &machine_pmg3dt,   &machine_pmg3mt, &machine_lisa,   &machine_macxl,
     &machine_mac128k, &machine_mac512k, &machine_mac512ke, &machine_se,     &machine_sefdhd, &machine_classic,
-    &machine_lcii,    &machine_clii,    &machine_ccl,
+    &machine_lcii,    &machine_clii,    &machine_ccl,      &machine_lciii,  &machine_lciiip,
 };
 static const size_t builtin_machine_count = sizeof(builtin_machines) / sizeof(builtin_machines[0]);
 
