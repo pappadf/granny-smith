@@ -15,6 +15,8 @@
 #                   on the real machine (it needs 7.1 with its enabler)
 #   ccl-753-hd      Color Classic, 7.5.3 HD, 512x384 colour
 #   ccl-76-hd       Color Classic, 7.6 HD
+#   lcii-12in-checkpoint  LC II on the 12" RGB (512x384) at 6 MB, then a
+#                   checkpoint round-trip through a Classic II boot
 #
 #   make integration-test-suite-v8
 #   make integration-test-suite-v8 TEST_VARS="ROW=lcii-71-hd"   one row only

@@ -1323,6 +1323,16 @@
       "depth": 8,
       "addr32": true,
       "suite": "suite-v8"
+    },
+    {
+      "machine": "lcii",
+      "system": "7.0.1",
+      "card": "builtin",
+      "width": 512,
+      "height": 384,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-v8"
     }
   ]
 }

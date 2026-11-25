@@ -126,25 +126,32 @@ static uint64_t v8_fb_base(void *owner) {
     return display_guest_addr(&st->video.display, st->video.vram, b->vram_size, V8_VRAM_BASE);
 }
 
-int v8_video_init(config_t *cfg, uint8_t sense) {
+// Latch the monitor strap: the raster the port's sense code selects.
+static void v8_video_set_sense(config_t *cfg, uint8_t sense) {
     const v8_board_t *b = v8_board(cfg);
     v8_video_t *v = &v8_st(cfg)->video;
-
     if (b->crt_width) {
         // A built-in CRT: one raster, one strap.
         v->sense = b->crt_sense;
         v->width = b->crt_width;
         v->height = b->crt_height;
-    } else {
-        v->sense = sense & 7u;
-        const display_timing_t *t = display_timing_for_sense(v->sense);
-        // The V8 decodes the 12" RGB (010) and the 13" RGB (110); nothing
-        // connected selects the 512 x 384 timing (LC Developer Note p. 14).
-        if (v->sense != 2 && v->sense != 6)
-            t = display_timing_for_sense(2);
-        v->width = t ? t->width : 512;
-        v->height = t ? t->height : 384;
+        return;
     }
+    v->sense = sense & 7u;
+    const display_timing_t *t = display_timing_for_sense(v->sense);
+    // The V8 decodes the 12" RGB (010) and the 13" RGB (110); nothing
+    // connected selects the 512 x 384 timing (LC Developer Note p. 14).
+    if (v->sense != 2 && v->sense != 6)
+        t = display_timing_for_sense(2);
+    v->width = t ? t->width : 512;
+    v->height = t ? t->height : 384;
+}
+
+int v8_video_init(config_t *cfg, uint8_t sense) {
+    const v8_board_t *b = v8_board(cfg);
+    v8_video_t *v = &v8_st(cfg)->video;
+
+    v8_video_set_sense(cfg, sense);
     if (b->fb_source == V8_FB_VRAM) {
         v->vram = calloc(1, b->vram_size);
         if (!v->vram)
@@ -259,6 +266,7 @@ void v8_video_checkpoint(config_t *cfg, checkpoint_t *cp) {
     const v8_board_t *b = v8_board(cfg);
     v8_video_t *v = &v8_st(cfg)->video;
     checkpoint_save_prefix(cp, v, v8_video_t);
+    system_write_checkpoint_data(cp, &v->sense, 1); // the strap the machine was built with
     if (v->vram)
         system_write_checkpoint_data(cp, v->vram, b->vram_size);
 }
@@ -267,6 +275,9 @@ void v8_video_restore(config_t *cfg, checkpoint_t *cp) {
     const v8_board_t *b = v8_board(cfg);
     v8_video_t *v = &v8_st(cfg)->video;
     checkpoint_load_prefix(cp, v, v8_video_t);
+    uint8_t sense = v->sense;
+    system_read_checkpoint_data(cp, &sense, 1);
+    v8_video_set_sense(cfg, sense);
     if (v->vram)
         system_read_checkpoint_data(cp, v->vram, b->vram_size);
     v8_video_update(cfg);

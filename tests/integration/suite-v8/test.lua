@@ -108,5 +108,30 @@ mac.row("ccl-701-fd", function()
     mac.report_perf("suite-v8/ccl-701-fd", scheduler.instr_count)
 end)
 
+-- The LC II on its other monitor, the 12" RGB (sense 010, 512x384), at 6 MB
+-- (2 MB of SIMMs below the soldered 4 MB), then a checkpoint round-trip:
+-- save, boot a different machine, load, re-match.  Covers the V8 RAM decode
+-- with SIMMs and the video's restored strap.
+mac.row("lcii-12in-checkpoint", function()
+    machine.boot{model = "lcii", ram = 6144, rom = ROMS.lcii.path,
+        config = "{\"displays\":{\"builtin\":{\"monitor\":\"12in_rgb\"}}}"}
+    machine.rtc.time = 3000000000
+    machine.floppy.drive[0].insert(sys_701)
+    scheduler.run(250000000)
+    mac.wait_stable(1500000000)
+    assert(machine.screen.width == 512 and machine.screen.height == 384, "lcii-12in-checkpoint: not 512x384")
+    assert(((machine.rbv.monp >> 3) & 7) == 2, "lcii-12in-checkpoint: MonP does not latch sense 2")
+    mac.check("goldens/lcii-12in-701-512x384x1-finder.png")
+    mac.report_row("7.0.1", "builtin", "fd-boot 12in-rgb")
+    assert(checkpoint.save(F"${vars.WORK_DIR}/suite-v8.gsc"), "lcii-12in-checkpoint: save failed")
+    machine.boot{model = "classicii", ram = 2048, rom = ROMS.classicii.path}
+    assert(checkpoint.load(F"${vars.WORK_DIR}/suite-v8.gsc"), "lcii-12in-checkpoint: load failed")
+    scheduler.run(5000000)
+    mac.wait_stable(400000000)
+    assert(machine.id == "lcii" and machine.ram == 6144, "lcii-12in-checkpoint: restored machine wrong")
+    mac.check("goldens/lcii-12in-701-512x384x1-finder.png")
+    mac.report_perf("suite-v8/lcii-12in-checkpoint", scheduler.instr_count)
+end)
+
 mac.suite_done()
 quit()
