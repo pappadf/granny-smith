@@ -1002,6 +1002,22 @@ static const storage_bus_decl_t plus_storage[] = {
     {0},
 };
 
+// --- Profile fields every compact model shares --------------------------------
+
+// The 7.8336 MHz MC68000 (the Plus's actual clock), no MMU, a 24-bit address
+// space, the SCC's AppleTalk port, the built-in 9" screen, the Plus's PRAM
+// defaults and this substrate.  Only fields no model overrides belong here
+// (an override would trip -Woverride-init).
+#define COMPACT_PROFILE_COMMON                                                                                         \
+    .cpu_model = 68000, .freq = 7833600, .mmu_kind = MMU_NONE, .address_bits = 24, .appletalk = true,                  \
+    .builtin_video = &compact_builtin_video, .pram = &pram_defaults_plus, .substrate = &compact_substrate
+
+// The SCSI models' default devices: a hard disk at ID 0 and an external
+// CD-ROM drive at ID 3 -- Apple's CD-ROM driver runs on the Plus.  The bus
+// declaration itself (.storage) differs between the Plus and the BBU boards.
+#define COMPACT_SCSI_COMMON                                                                                            \
+    .default_storage = mac_default_storage_hd0_cd3, .cdrom_drive = &scsi_cd_drive_applecd_sc_plus
+
 // --- Macintosh Plus ----------------------------------------------------------
 
 // The external drive was an option, not factory equipment; a stock Plus here
@@ -1015,33 +1031,15 @@ static const floppy_slot_t plus_floppy_slots[] = {
 const hw_profile_t machine_plus = {
     .name = "Macintosh Plus",
     .id = "plus",
-
-    // 68000 at 7.8336 MHz (actual Plus clock)
-    .cpu_model = 68000,
-    .freq = 7833600,
-    .mmu_kind = MMU_NONE,
-
-    // 24-bit address space
-    .address_bits = 24,
+    COMPACT_PROFILE_COMMON,
     .ram_default = 0x400000, // 4 MB
     .ram_max = 0x400000, // 4 MB max
     .rom_size = 0x020000, // 128 KB
-
-    // Configuration-dialog shape
     .ram_options = compact_ram_options_simm_kb,
     .floppy_slots = plus_floppy_slots,
     .storage = plus_storage,
-    // An external CD-ROM drive at ID 3: Apple's CD-ROM driver runs on the Plus.
-    .default_storage = mac_default_storage_hd0_cd3,
-    .cdrom_drive = &scsi_cd_drive_applecd_sc_plus,
-    .appletalk = true,
-    .builtin_video = &compact_builtin_video,
-
-    // Single VIA, no ADB, no NuBus
-
-    .pram = &pram_defaults_plus,
-    .substrate = &compact_substrate,
-    .board = &compact_board_plus,
+    COMPACT_SCSI_COMMON,
+    .board = &compact_board_plus, // single VIA, no ADB, no NuBus
 };
 
 // --- Macintosh 128K and 512K -------------------------------------------------
@@ -1057,42 +1055,28 @@ static const floppy_slot_t mac400k_floppy_slots[] = {
     {0},
 };
 
+// No SCSI on the 128K, 512K and 512K enhanced: no storage bus, no CD-ROM drive
 const hw_profile_t machine_mac128k = {
     .name = "Macintosh 128K",
     .id = "mac128k",
-    .cpu_model = 68000,
-    .freq = 7833600,
-    .mmu_kind = MMU_NONE,
-    .address_bits = 24,
+    COMPACT_PROFILE_COMMON,
     .ram_default = 0x020000, // 128 KB
     .ram_max = 0x020000,
     .rom_size = 0x010000, // 64 KB
     .ram_options = mac128k_ram_options_kb,
     .floppy_slots = mac400k_floppy_slots,
-    // No SCSI: no storage bus, no CD-ROM drive
-    .appletalk = true,
-    .builtin_video = &compact_builtin_video,
-    .pram = &pram_defaults_plus,
-    .substrate = &compact_substrate,
     .board = &compact_board_pal,
 };
 
 const hw_profile_t machine_mac512k = {
     .name = "Macintosh 512K",
     .id = "mac512k",
-    .cpu_model = 68000,
-    .freq = 7833600,
-    .mmu_kind = MMU_NONE,
-    .address_bits = 24,
+    COMPACT_PROFILE_COMMON,
     .ram_default = 0x080000, // 512 KB
     .ram_max = 0x080000,
     .rom_size = 0x010000, // 64 KB
     .ram_options = mac512k_ram_options_kb,
     .floppy_slots = mac400k_floppy_slots,
-    .appletalk = true,
-    .builtin_video = &compact_builtin_video,
-    .pram = &pram_defaults_plus,
-    .substrate = &compact_substrate,
     .board = &compact_board_pal,
 };
 
@@ -1109,19 +1093,12 @@ static const floppy_slot_t mac512ke_floppy_slots[] = {
 const hw_profile_t machine_mac512ke = {
     .name = "Macintosh 512K enhanced",
     .id = "mac512ke",
-    .cpu_model = 68000,
-    .freq = 7833600,
-    .mmu_kind = MMU_NONE,
-    .address_bits = 24,
+    COMPACT_PROFILE_COMMON,
     .ram_default = 0x080000, // 512 KB
     .ram_max = 0x080000,
     .rom_size = 0x020000, // 128 KB, the Plus ROM
     .ram_options = mac512k_ram_options_kb,
     .floppy_slots = mac512ke_floppy_slots,
-    .appletalk = true,
-    .builtin_video = &compact_builtin_video,
-    .pram = &pram_defaults_plus,
-    .substrate = &compact_substrate,
     .board = &compact_board_pal,
 };
 
@@ -1145,65 +1122,41 @@ static const floppy_slot_t sefdhd_floppy_slots[] = {
 const hw_profile_t machine_se = {
     .name = "Macintosh SE",
     .id = "se",
-    .cpu_model = 68000,
-    .freq = 7833600,
-    .mmu_kind = MMU_NONE,
-    .address_bits = 24,
+    COMPACT_PROFILE_COMMON,
     .ram_default = 0x400000, // 4 MB
     .ram_max = 0x400000,
     .rom_size = 0x040000, // 256 KB
     .ram_options = compact_ram_options_simm_kb,
     .floppy_slots = se_floppy_slots,
     .storage = mac_storage_scsi_hd_bay,
-    .default_storage = mac_default_storage_hd0_cd3,
-    .cdrom_drive = &scsi_cd_drive_applecd_sc_plus,
-    .appletalk = true,
-    .builtin_video = &compact_builtin_video,
-    .pram = &pram_defaults_plus,
-    .substrate = &compact_substrate,
+    COMPACT_SCSI_COMMON,
     .board = &compact_board_se,
 };
 
 const hw_profile_t machine_sefdhd = {
     .name = "Macintosh SE FDHD",
     .id = "sefdhd",
-    .cpu_model = 68000,
-    .freq = 7833600,
-    .mmu_kind = MMU_NONE,
-    .address_bits = 24,
+    COMPACT_PROFILE_COMMON,
     .ram_default = 0x400000, // 4 MB
     .ram_max = 0x400000,
     .rom_size = 0x040000, // 256 KB
     .ram_options = compact_ram_options_simm_kb,
     .floppy_slots = sefdhd_floppy_slots,
     .storage = mac_storage_scsi_hd_bay,
-    .default_storage = mac_default_storage_hd0_cd3,
-    .cdrom_drive = &scsi_cd_drive_applecd_sc_plus,
-    .appletalk = true,
-    .builtin_video = &compact_builtin_video,
-    .pram = &pram_defaults_plus,
-    .substrate = &compact_substrate,
+    COMPACT_SCSI_COMMON,
     .board = &compact_board_sefdhd,
 };
 
 const hw_profile_t machine_classic = {
     .name = "Macintosh Classic",
     .id = "classic",
-    .cpu_model = 68000,
-    .freq = 7833600,
-    .mmu_kind = MMU_NONE,
-    .address_bits = 24,
+    COMPACT_PROFILE_COMMON,
     .ram_default = 0x400000, // 4 MB
     .ram_max = 0x400000,
     .rom_size = 0x080000, // 512 KB, the ROM disk in its upper half
     .ram_options = compact_ram_options_simm_kb,
     .floppy_slots = mac_floppy_slots_ext,
     .storage = mac_storage_scsi_hd_bay,
-    .default_storage = mac_default_storage_hd0_cd3,
-    .cdrom_drive = &scsi_cd_drive_applecd_sc_plus,
-    .appletalk = true,
-    .builtin_video = &compact_builtin_video,
-    .pram = &pram_defaults_plus,
-    .substrate = &compact_substrate,
+    COMPACT_SCSI_COMMON,
     .board = &compact_board_classic,
 };
