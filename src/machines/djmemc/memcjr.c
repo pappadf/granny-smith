@@ -108,7 +108,7 @@ const hw_profile_t machine_lc475 = {
     .freq = 25000000,
     .fpu_absent = true, // 68LC040
     .storage = mac_storage_scsi_hd_bay,
-    .builtin_video = &djmemc_builtin_video,
+    .builtin_video = &memcjr_builtin_video,
     .board = &lc475_board,
 };
 
@@ -119,7 +119,7 @@ const hw_profile_t machine_q605 = {
     .freq = 25000000,
     .fpu_absent = true, // 68LC040
     .storage = mac_storage_scsi_hd_bay,
-    .builtin_video = &djmemc_builtin_video,
+    .builtin_video = &memcjr_builtin_video,
     .board = &q605_board,
 };
 

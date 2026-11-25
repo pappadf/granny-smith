@@ -221,6 +221,8 @@ extern const machine_substrate_t djmemc_substrate;
 // The built-in video as a display device (the monitors the WombatDAFB
 // drives).
 extern const builtin_video_desc_t djmemc_builtin_video;
+// ...and the same port on the MEMCjr boards with external monitors.
+extern const builtin_video_desc_t memcjr_builtin_video;
 
 // Decompose `ram` bytes into the board's banks: the soldered 4 MB banks,
 // then 72-pin SIMMs of 32/16/8/4 MB (a 32 or 8 MB SIMM is two banks, a 16 or

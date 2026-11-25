@@ -1029,6 +1029,15 @@ const builtin_video_desc_t djmemc_builtin_video = {
     .indexed_sense = true,
 };
 
+// The LC 475's and Quadra 605's: the same monitors on the MEMCjr's video.
+const builtin_video_desc_t memcjr_builtin_video = {
+    .detail = "MEMCjr (DAFB-compatible) + Antelope",
+    .monitor_at = djmemc_monitor_at,
+    .monitor_sense = djmemc_monitor_sense,
+    .default_monitor = "13in_rgb",
+    .indexed_sense = true,
+};
+
 const machine_substrate_t djmemc_substrate = {
     .init = djmemc_init,
     .bus_reset = djmemc_bus_reset,

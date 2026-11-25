@@ -728,6 +728,38 @@
       "instr": 120000000,
       "tolerance": 0.2
     },
+    "suite-memcjr/lc475-71-hd": {
+      "instr": 367100147,
+      "tolerance": 0.2
+    },
+    "suite-memcjr/lc475-75-hd": {
+      "instr": 491376497,
+      "tolerance": 0.2
+    },
+    "suite-memcjr/lc575-71-hd": {
+      "instr": 433427851,
+      "tolerance": 0.2
+    },
+    "suite-memcjr/lc575-76-fd": {
+      "instr": 596224782,
+      "tolerance": 0.2
+    },
+    "suite-memcjr/q605-71-hd": {
+      "instr": 386582643,
+      "tolerance": 0.2
+    },
+    "suite-memcjr/q605-753-hd": {
+      "instr": 406422548,
+      "tolerance": 0.2
+    },
+    "suite-memcjr/q605-76-fd": {
+      "instr": 495707790,
+      "tolerance": 0.2
+    },
+    "suite-memcjr/q605-checkpoint": {
+      "instr": 401571128,
+      "tolerance": 0.2
+    },
     "suite-pdm/pdm-floppy-800k": {
       "instr": 1379983600,
       "tolerance": 0.2
