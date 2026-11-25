@@ -71,7 +71,4 @@ void mdu_scsi_irq(void *context, bool irq, bool drq);
 // The RBV's RvPowerOff falling edge, and on the IIsi Egret's PwrDown too.
 void mdu_power_off(void *context);
 
-// The RBV's checkpoint part-save function (machine_parts.h).
-void part_save_rbv(void *obj, checkpoint_t *cp);
-
 #endif // GS_MACHINES_MDU_MDU_H

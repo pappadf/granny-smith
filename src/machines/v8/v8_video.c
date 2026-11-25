@@ -28,8 +28,8 @@
 
 LOG_USE_CATEGORY_NAME("video");
 
-// The largest raster any member scans: 640 x 480 at 16 bpp rounds up to the
-// 512 KB VRAM window, which is also what the blank stub must back.
+// The largest raster any member scans: 640 x 480 at 16 bpp (600 KB) fits
+// Sonora's 1 MB VRAM window, which is also what the blank stub must back.
 #define V8_VIDEO_MAX_BYTES SONORA_VRAM_WINDOW
 
 // Map a MonP depth code to a packed pixel format.

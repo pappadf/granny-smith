@@ -10,7 +10,6 @@
 #include "v8.h"
 
 #include "machine.h"
-#include "nubus.h"
 #include "pram_defaults.h"
 #include "slot_tables.h"
 

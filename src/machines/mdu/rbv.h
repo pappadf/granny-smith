@@ -58,6 +58,9 @@ void rbv_delete(rbv_t *rbv);
 // the monitor-sense strap and the live interrupt sources driven by other chips.
 void rbv_reset(rbv_t *rbv);
 void rbv_checkpoint(rbv_t *rbv, checkpoint_t *cp);
+// The RBV's checkpoint part-save function (machine_parts.h), defined in
+// mdu.c and shared by the V8 family.
+void part_save_rbv(void *obj, checkpoint_t *cp);
 
 // === Wiring =================================================================
 

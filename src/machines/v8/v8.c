@@ -4,7 +4,7 @@
 // v8.c
 // The V8 family substrate -- see v8.h.  One build for the LC II (V8), the
 // Classic II (Eagle) and the Color Classic (Spice): the II-family core, VIA1
-// with the Egret companion on its shift register, the Combo's SCC and 5380,
+// with the Egret or Cuda companion on its shift register, the Combo's SCC and 5380,
 // the sound block (an ASC subset), SWIM, the RBV-style pseudo-VIA2 at
 // $50F26000, the Ariel CLUT and the built-in video, and the V8's RAM decode.
 //
@@ -311,9 +311,6 @@ static void v8_power_off(void *context) {
     if (cfg->scheduler)
         scheduler_stop(cfg->scheduler);
 }
-
-// The RBV register file's part save is the MDU family's (mdu.c).
-void part_save_rbv(void *obj, checkpoint_t *cp);
 
 // The family's own checkpoint block: overlay state, the decoded size bits
 // and the video.
