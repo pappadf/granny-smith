@@ -154,6 +154,10 @@ static const machine_irq_route_t compact_irq_routes[] = {
 // ROM region end: the ROM decode stops where the SCSI window starts
 #define COMPACT_ROM_END 0x580000UL
 
+// The 2.5 MB SIMM configuration, and the 2 MB row it starts with
+#define COMPACT_RAM_2_5MB   0x280000UL
+#define COMPACT_RAM_ROW_2MB 0x200000UL
+
 // The RAM image the PALs' overlay map places at $600000 (Inside Macintosh III)
 #define COMPACT_OVLY_RAM_START 0x600000UL
 #define COMPACT_OVLY_RAM_END   0x800000UL
@@ -318,7 +322,20 @@ static void compact_memory_layout_init(config_t *cfg) {
     // a 1 MB Plus that address physically refers to RAM at $0FFC80.  Without
     // the mirror, the first interrupt/exception corrupts CPU state on any
     // sub-4-MB configuration.
-    if (cfg->ram_size < COMPACT_ROM_START)
+    if (cfg->ram_size == COMPACT_RAM_2_5MB) {
+        // Two unequal rows: the 1 MB-SIMM row's 2 MB at $000000 and the
+        // 256 KB-SIMM row's 512 KB at $200000, which repeats through the
+        // rest of its row's 2 MB window (A21 picks the row) -- not a wrap of
+        // the 2.5 MB total, which would alias $280000 onto $000000.  The SE
+        // ROM's memory sizing depends on it (Guide 2e, ch. 5, Figures 5-2
+        // to 5-4: the larger row is the 2 MB one in every configuration).
+        uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
+        for (uint32_t a = COMPACT_RAM_2_5MB; a < COMPACT_ROM_START; a += MEM_PAGE_SIZE) {
+            uint32_t off =
+                COMPACT_RAM_ROW_2MB + ((a - COMPACT_RAM_ROW_2MB) % (COMPACT_RAM_2_5MB - COMPACT_RAM_ROW_2MB));
+            page_fill_68k(a >> MEM_PAGE_SHIFT, ram + off, true);
+        }
+    } else if (cfg->ram_size < COMPACT_ROM_START)
         memory_populate_ram_mirror(cfg->memory_map, cfg->ram_size, COMPACT_ROM_START);
 
     // Register the Phase Read device (PAL boards: the BBU has none)
