@@ -35,6 +35,7 @@ typedef struct v8_video {
     uint8_t ctrl; // Ariel control register (low 3 bits: depth)
     uint8_t key; // Ariel key-colour register
     uint8_t depth_code; // V8 MonP depth field: 0..4 = 1/2/4/8/16 bpp
+    uint8_t mode_code; // Sonora monitor code (video mode register bits 0-3; 0 = from the sense)
 
     // --- not checkpointed below here ---
     display_t display;
@@ -72,6 +73,16 @@ typedef struct v8_state {
     uint8_t ram_exp; // the size bits last decoded (V8 Exp register)
 
     v8_video_t video;
+
+    // Sonora only (sonora.c): the RAM configuration register lives in
+    // ram_exp; the rest of its register file is here.  Field order is the
+    // checkpoint format.
+    struct {
+        uint8_t misc[12]; // $50F26004-$50F2600F: VRAM size, speed, the Ardbeg's extras
+        uint8_t vd_mode; // $50F28000: monitor code (bits 0-3), blanking (bit 7)
+        uint8_t vd_colr; // $50F28001: frame-buffer depth, 0..4
+        uint8_t vd_sense; // $50F28002: the sense lines' output drive (bits 0-2)
+    } sonora;
 } v8_state_t;
 
 static inline v8_state_t *v8_st(config_t *cfg) {
@@ -101,8 +112,22 @@ uint8_t v8_video_sense(config_t *cfg);
 uint8_t v8_ariel_read(config_t *cfg, uint32_t off);
 uint8_t v8_ariel_peek(config_t *cfg, uint32_t off);
 void v8_ariel_write(config_t *cfg, uint32_t off, uint8_t value);
+// Sonora: the monitor code in the video mode register (0 = keep the raster
+// the sense selected).
+void v8_video_set_mode(config_t *cfg, uint8_t mode_code);
 // Checkpoint the video's plain-data prefix.
 void v8_video_checkpoint(config_t *cfg, checkpoint_t *cp);
 void v8_video_restore(config_t *cfg, checkpoint_t *cp);
+
+// === sonora.c ===
+
+// The Sonora decoder's half of the substrate: its I/O rows, RAM layout and
+// decode, memory map, checkpoint block and reset.
+int sonora_ram_layout(config_t *cfg);
+void sonora_ram_cfg_written(void *ctx, uint8_t value);
+void sonora_memory_layout_init(config_t *cfg);
+void sonora_checkpoint(config_t *cfg, checkpoint_t *cp);
+void sonora_restore(config_t *cfg, checkpoint_t *cp);
+void sonora_bus_reset(config_t *cfg);
 
 #endif // GS_MACHINES_V8_V8_INTERNAL_H

@@ -30,7 +30,7 @@ LOG_USE_CATEGORY_NAME("video");
 
 // The largest raster any member scans: 640 x 480 at 16 bpp rounds up to the
 // 512 KB VRAM window, which is also what the blank stub must back.
-#define V8_VIDEO_MAX_BYTES V8_VRAM_WINDOW
+#define V8_VIDEO_MAX_BYTES SONORA_VRAM_WINDOW
 
 // Map a MonP depth code to a packed pixel format.
 static pixel_format_t v8_depth_format(uint8_t code) {
@@ -95,6 +95,13 @@ static void v8_video_update(config_t *cfg) {
             store_size = st->pcb_size;
             offset = st->pcb_size - (V8_RAM_SPACE - V8_RAM_IMAGE) + (b->dram_fb - V8_RAM_IMAGE);
         }
+    } else if (b->kind == V8_KIND_SONORA) {
+        // Sonora: rows packed at the mode's width (the video driver's
+        // row bytes are width x depth / 8 in every mode).
+        v->display.format = v8_depth_format(v->depth_code);
+        stride = (v->width * display_bpp(v->display.format) + 7u) / 8u;
+        store = v->vram;
+        store_size = b->vram_size;
     } else {
         v->display.format = v8_depth_format(v->depth_code);
         stride = b->vram_size > 0x40000u ? 1024u : 512u; // fixed by the VRAM fitted
@@ -123,7 +130,8 @@ static uint64_t v8_fb_base(void *owner) {
     const v8_board_t *b = v8_board(cfg);
     if (b->fb_source == V8_FB_DRAM)
         return b->dram_fb;
-    return display_guest_addr(&st->video.display, st->video.vram, b->vram_size, V8_VRAM_BASE);
+    return display_guest_addr(&st->video.display, st->video.vram, b->vram_size,
+                              b->kind == V8_KIND_SONORA ? SONORA_VRAM_BASE : V8_VRAM_BASE);
 }
 
 // Latch the monitor strap: the raster the port's sense code selects.
@@ -205,6 +213,37 @@ void v8_video_set_depth(config_t *cfg, int depth_code) {
     v8_video_update(cfg);
 }
 
+// Sonora's monitor codes and the rasters they time (the codes its video
+// driver programs; 0 = none written, the sense decides).
+static const struct {
+    uint8_t code;
+    uint16_t width, height;
+} sonora_modes[] = {
+    {1,  640, 870}, // portrait
+    {2,  512, 384}, // 12" RGB
+    {6,  640, 480}, // 13" RGB
+    {9,  832, 624}, // 16" RGB
+    {10, 560, 384}, // 12" RGB, 560-wide mode
+    {11, 640, 480}, // VGA
+    {13, 640, 400}, // 13" RGB, 640 x 400 mode
+};
+
+void v8_video_set_mode(config_t *cfg, uint8_t mode_code) {
+    v8_video_t *v = &v8_st(cfg)->video;
+    if (mode_code == v->mode_code)
+        return;
+    for (size_t i = 0; i < sizeof sonora_modes / sizeof sonora_modes[0]; i++) {
+        if (sonora_modes[i].code != mode_code)
+            continue;
+        v->mode_code = mode_code;
+        v->width = sonora_modes[i].width;
+        v->height = sonora_modes[i].height;
+        LOG(2, "Sonora video: monitor code %u, %ux%u", mode_code, v->width, v->height);
+        v8_video_update(cfg);
+        return;
+    }
+}
+
 uint8_t v8_video_sense(config_t *cfg) {
     return v8_st(cfg)->video.sense;
 }
@@ -278,6 +317,10 @@ void v8_video_restore(config_t *cfg, checkpoint_t *cp) {
     uint8_t sense = v->sense;
     system_read_checkpoint_data(cp, &sense, 1);
     v8_video_set_sense(cfg, sense);
+    uint8_t mode = v->mode_code; // Sonora: the raster the monitor code selected
+    v->mode_code = 0;
+    if (mode)
+        v8_video_set_mode(cfg, mode);
     if (v->vram)
         system_read_checkpoint_data(cp, v->vram, b->vram_size);
     v8_video_update(cfg);

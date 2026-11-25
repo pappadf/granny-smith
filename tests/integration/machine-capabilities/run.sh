@@ -481,6 +481,20 @@ assert_contains classicii '{"id":"fd1","label":"External floppy drive"' "classic
 assert_absent lcii '"id":"fd1"' "lcii has one floppy drive"
 assert_absent colorclassic '"id":"fd1"' "colorclassic has one floppy drive"
 
+# The Sonora boards of the V8 family (LC III, LC III+, LC 520, LC 550, Color
+# Classic II): a 68030 with its PMMU, no NuBus, built-in video, AppleTalk,
+# 4 MB soldered plus one 72-pin SIMM (36 MB at most), one floppy drive.
+for m in lciii lciiip lc520 lc550 colorclassicii; do
+    assert_contains "$m" '"cpu":{"model":68030,"address_bits":32,"fpu":true}' "$m has a 68030"
+    assert_contains "$m" '"kind":"68030_pmmu"' "$m has the 68030 PMMU"
+    assert_contains "$m" '"nubus":false,"pci":false' "$m has no NuBus or PCI"
+    assert_contains "$m" '{"id":"appletalk","label":"AppleTalk","kind":"choice","values":[{"id":"active","label":"Active"},{"id":"inactive","label":"Inactive"}],"default":"active"}' "$m has the AppleTalk option"
+    assert_contains "$m" '{"id":"36864","label":"36 MB"}],"default":"8192"' "$m tops out at 36 MB"
+    assert_absent "$m" '"id":"fd1"' "$m has one floppy drive"
+done
+for m in lciii lc520; do assert_contains "$m" '"freq":25000000' "$m runs at 25 MHz"; done
+for m in lciiip lc550 colorclassicii; do assert_contains "$m" '"freq":33000000' "$m runs at 33 MHz"; done
+
 # The floor: every registered model carries at least one assertion above.
 models=$(grep -o '^{"id":"[a-z0-9]*"' "$OUT" | sed 's/^{"id":"\(.*\)"/\1/')
 [ -n "$models" ] || { echo "FAIL: catalog.models dumped no profiles"; fail=1; }
