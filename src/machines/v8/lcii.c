@@ -85,6 +85,7 @@ const hw_profile_t machine_lcii = {
     .cpu_model = 68030,
     .freq = 15667200, // 15.6672 MHz
     .mmu_kind = MMU_68030_PMMU,
+    .fpu_absent = true, // no FPU on board; the /FPU select reaches only the expansion connector
 
     .address_bits = 32,
     .ram_default = 0xA00000, // 10 MB

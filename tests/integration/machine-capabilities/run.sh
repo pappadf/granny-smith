@@ -481,7 +481,7 @@ assert_contains classic '{"id":"fd1","label":"External floppy drive","types":[{"
 # no NuBus, built-in video, AppleTalk; the Classic II alone keeps an
 # external floppy port.
 for m in lcii classicii colorclassic; do
-    assert_contains "$m" '"cpu":{"model":68030,"address_bits":32,"fpu":true}' "$m has a 68030 (FPU fitted: the optional 68882 is always modelled)"
+    assert_contains "$m" '"cpu":{"model":68030,"address_bits":32,"fpu":false}' "$m has a 68030 and no FPU (the 68882 is an expansion option)"
     assert_contains "$m" '"kind":"68030_pmmu"' "$m has the 68030 PMMU"
     assert_contains "$m" '"nubus":false,"pci":false' "$m has no NuBus or PCI"
     assert_contains "$m" '"freq":15667200' "$m runs at 15.6672 MHz"
@@ -496,7 +496,7 @@ assert_absent colorclassic '"id":"fd1"' "colorclassic has one floppy drive"
 # Classic II): a 68030 with its PMMU, no NuBus, built-in video, AppleTalk,
 # 4 MB soldered plus one 72-pin SIMM (36 MB at most), one floppy drive.
 for m in lciii lciiip lc520 lc550 colorclassicii; do
-    assert_contains "$m" '"cpu":{"model":68030,"address_bits":32,"fpu":true}' "$m has a 68030"
+    assert_contains "$m" '"cpu":{"model":68030,"address_bits":32,"fpu":false}' "$m has a 68030 and no FPU (an empty 68882 socket)"
     assert_contains "$m" '"kind":"68030_pmmu"' "$m has the 68030 PMMU"
     assert_contains "$m" '"nubus":false,"pci":false' "$m has no NuBus or PCI"
     assert_contains "$m" '{"id":"appletalk","label":"AppleTalk","kind":"choice","values":[{"id":"active","label":"Active"},{"id":"inactive","label":"Inactive"}],"default":"active"}' "$m has the AppleTalk option"
@@ -559,7 +559,7 @@ for m in lc475 q605; do
     assert_contains "$m" '"freq":25000000' "$m runs at 25 MHz"
     assert_contains "$m" '"builtin":{"id":"builtin","label":"Built-in video","detail":"MEMCjr (DAFB-compatible) + Antelope"' "$m's MEMCjr drives its built-in video"
 done
-assert_contains lc575 '"cpu":{"model":68040,"address_bits":32,"fpu":true}' "lc575 has a 68040 with FPU"
+assert_contains lc575 '"cpu":{"model":68040,"address_bits":32,"fpu":false}' "lc575 has a 68LC040 (no FPU)"
 assert_contains lc575 '"freq":33333333' "lc575 runs at 33 MHz"
 assert_contains lc575 '"default_monitor":"builtin_14in_color"' "lc575's display is the built-in 14-inch"
 
