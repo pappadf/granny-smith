@@ -61,32 +61,44 @@ local function check_about(ref, system)
 end
 
 -- One Finder + About row.
-local function about_row(label, model, rom, media_kind, media, system, box, w, h, d)
+-- golden-collision-ok: lc520-753-hd-640x480x8-finder.png lciii-753-hd-640x480x8-finder.png lciiip-753-hd-640x480x8-finder.png — the same System 7.5.3 desktop at 640x480x8; machine.id, rom.id and BoxFlag (50/21/56) tell the rows apart
+-- golden-collision-ok: lciii-753-hd-640x480x8-about.png lciiip-753-hd-640x480x8-about.png — 7.5.3 names both "Macintosh" with the same RAM; machine.id and BoxFlag (21 vs 56) tell them apart
+-- golden-collision-ok: lc550-76-hd-640x480x8-finder.png lciii-early-76-hd-640x480x8-finder.png — the same System 7.6 desktop; machine.id, rom.id (ede66cbd vs ec904829) and BoxFlag (74 vs 21) tell them apart
+-- `finder` and `about` are the row's two goldens, named literally so that
+-- scripts/check-goldens.py can see them.
+local function about_row(label, model, rom, media_kind, media, system, box, w, h, d, finder, about)
     boot(model, rom, media_kind, media)
     assert(machine.screen.width == w and machine.screen.height == h,
         F"${label}: screen ${machine.screen.width}x${machine.screen.height}")
     if mac.REGEN_MODE == "1" then echo(F"${label}: depth ${machine.screen.depth}") end
     assert(mac.REGEN_MODE == "1" or machine.screen.depth == d, F"${label}: depth ${machine.screen.depth}")
-    local stem = F"goldens/${label}-${w}x${h}x${d}"
-    mac.check_ex(stem .. "-finder.png", 0, w - 150, 20, w - 60)
+    mac.check_ex(finder, 0, w - 150, 20, w - 60)
     mac.about_box()
-    check_about(stem .. "-about.png", system)
+    check_about(about, system)
     assert(box_flag() == box, F"${label}: BoxFlag ${box_flag()}, want ${box}")
     mac.report_row(system, "builtin", media_kind .. "-boot about")
     mac.report_perf("suite-sonora/" .. label, scheduler.instr_count)
 end
 
-mac.row("lciii-753-hd", function() about_row("lciii-753-hd", "lciii", ROMS.lciii, "hd", hd_753, "7.5.3", 21, 640, 480, 8) end)
-mac.row("lciii-76-fd", function() about_row("lciii-76-fd", "lciii", ROMS.lciii, "fd", fd_76, "7.6", 21, 640, 480, 8) end)
+mac.row("lciii-753-hd", function() about_row("lciii-753-hd", "lciii", ROMS.lciii, "hd", hd_753, "7.5.3", 21, 640, 480, 8,
+        "goldens/lciii-753-hd-640x480x8-finder.png", "goldens/lciii-753-hd-640x480x8-about.png") end)
+mac.row("lciii-76-fd", function() about_row("lciii-76-fd", "lciii", ROMS.lciii, "fd", fd_76, "7.6", 21, 640, 480, 8,
+        "goldens/lciii-76-fd-640x480x8-finder.png", "goldens/lciii-76-fd-640x480x8-about.png") end)
 mac.row("lciii-early-76-hd", function()
-    about_row("lciii-early-76-hd", "lciii", ROMS.lciii_early, "hd", hd_76, "7.6", 21, 640, 480, 8) end)
-mac.row("lciiip-753-hd", function() about_row("lciiip-753-hd", "lciiip", ROMS.lciii, "hd", hd_753, "7.5.3", 56, 640, 480, 8) end)
-mac.row("lc520-753-hd", function() about_row("lc520-753-hd", "lc520", ROMS.lc550, "hd", hd_753, "7.5.3", 50, 640, 480, 8) end)
-mac.row("lc550-76-hd", function() about_row("lc550-76-hd", "lc550", ROMS.lc550, "hd", hd_76, "7.6", 74, 640, 480, 8) end)
+    about_row("lciii-early-76-hd", "lciii", ROMS.lciii_early, "hd", hd_76, "7.6", 21, 640, 480, 8,
+        "goldens/lciii-early-76-hd-640x480x8-finder.png", "goldens/lciii-early-76-hd-640x480x8-about.png") end)
+mac.row("lciiip-753-hd", function() about_row("lciiip-753-hd", "lciiip", ROMS.lciii, "hd", hd_753, "7.5.3", 56, 640, 480, 8,
+        "goldens/lciiip-753-hd-640x480x8-finder.png", "goldens/lciiip-753-hd-640x480x8-about.png") end)
+mac.row("lc520-753-hd", function() about_row("lc520-753-hd", "lc520", ROMS.lc550, "hd", hd_753, "7.5.3", 50, 640, 480, 8,
+        "goldens/lc520-753-hd-640x480x8-finder.png", "goldens/lc520-753-hd-640x480x8-about.png") end)
+mac.row("lc550-76-hd", function() about_row("lc550-76-hd", "lc550", ROMS.lc550, "hd", hd_76, "7.6", 74, 640, 480, 8,
+        "goldens/lc550-76-hd-640x480x8-finder.png", "goldens/lc550-76-hd-640x480x8-about.png") end)
 mac.row("cc2-753-hd", function()
-    about_row("cc2-753-hd", "colorclassicii", ROMS.lc550, "hd", hd_753, "7.5.3", 77, 512, 384, 8) end)
+    about_row("cc2-753-hd", "colorclassicii", ROMS.lc550, "hd", hd_753, "7.5.3", 77, 512, 384, 8,
+        "goldens/cc2-753-hd-512x384x8-finder.png", "goldens/cc2-753-hd-512x384x8-about.png") end)
 mac.row("cc2-76-fd", function()
-    about_row("cc2-76-fd", "colorclassicii", ROMS.lc550, "fd", fd_76, "7.6", 77, 512, 384, 8) end)
+    about_row("cc2-76-fd", "colorclassicii", ROMS.lc550, "fd", fd_76, "7.6", 77, 512, 384, 8,
+        "goldens/cc2-76-fd-512x384x8-finder.png", "goldens/cc2-76-fd-512x384x8-about.png") end)
 
 -- System 7.1 refuses the LC III at startup without System Enabler 003, as on
 -- the real machine: the ROM identified the board before the System looked.

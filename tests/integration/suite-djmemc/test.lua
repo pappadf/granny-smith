@@ -70,36 +70,49 @@ end
 
 -- One boot-to-About row.  `clock`: the System shows a menu-bar clock, so
 -- the goldens leave its corner out.
-local function about_row(label, model, rom, ram, kind, media, boxflag, system, clock)
+-- golden-collision-ok: c610-7.1-hd-finder.png c650-7.1-hd-finder.png q610-7.1-hd-finder.png q650-7.1-hd-finder.png q800-7.1-hd-finder.png — the same System 7.1 desktop on five boards; machine.id, BoxFlag (24/29/30/46/47) and each row's About golden, which names the model, tell them apart
+-- golden-collision-ok: c610-7.6-fd-finder.png q800-7.6-fd-finder.png — the same Disk Tools desktop; machine.id and BoxFlag (46 vs 29) tell the rows apart
+-- `finder` and `about` are the row's two goldens, named literally so that
+-- scripts/check-goldens.py can see them.
+local function about_row(label, model, rom, ram, kind, media, boxflag, system, clock, finder, about)
     local t0 = scheduler.host_user_ns
     boot(label, model, rom, ram, kind, media, boxflag)
-    local stem = F"goldens/${model}-${system}-${kind}"
     if clock then
-        mac.check_ex(stem .. "-finder.png", 0, 440, 20, 640)
+        mac.check_ex(finder, 0, 440, 20, 640)
     else
-        mac.check(stem .. "-finder.png")
+        mac.check(finder)
     end
     mac.about_box()
     if clock then
-        mac.check_about_clock(stem .. "-about.png")
+        mac.check_about_clock(about)
     else
-        mac.check_about(stem .. "-about.png")
+        mac.check_about(about)
     end
     mac.mips_floor(label, t0, 3)
     mac.report_row(system, "djmemc", F"${kind}-boot about")
     mac.report_perf(F"suite-djmemc/${label}", scheduler.instr_count)
 end
 
-local function row_q800_75_hd() about_row("q800-75-hd", "q800", rom_quadra, 16384, "hd", hd_75, 29, "7.5", true) end
-local function row_q800_76_fd() about_row("q800-76-fd", "q800", rom_quadra, 16384, "fd", fd_76, 29, "7.6", true) end
-local function row_c650_71_hd() about_row("c650-71-hd", "c650", rom_centris, 8192, "hd", hd_71, 24, "7.1", false) end
-local function row_q800_71_hd() about_row("q800-71-hd", "q800", rom_centris, 8192, "hd", hd_71, 29, "7.1", false) end
-local function row_q650_71_hd() about_row("q650-71-hd", "q650", rom_quadra, 8192, "hd", hd_71, 30, "7.1", false) end
-local function row_q610_71_hd() about_row("q610-71-hd", "q610", rom_quadra, 8192, "hd", hd_71, 47, "7.1", false) end
-local function row_c610_71_hd() about_row("c610-71-hd", "c610", rom_centris, 8192, "hd", hd_71, 46, "7.1", false) end
-local function row_c610_76_fd() about_row("c610-76-fd", "c610", rom_quadra, 8192, "fd", fd_76, 46, "7.6", true) end
-local function row_q610_76_hd() about_row("q610-76-hd", "q610", rom_quadra, 12288, "hd", hd_76, 47, "7.6", true) end
-local function row_q650_753_hd() about_row("q650-753-hd", "q650", rom_quadra, 24576, "hd", hd_753, 30, "7.5.3", true) end
+local function row_q800_75_hd() about_row("q800-75-hd", "q800", rom_quadra, 16384, "hd", hd_75, 29, "7.5", true,
+    "goldens/q800-7.5-hd-finder.png", "goldens/q800-7.5-hd-about.png") end
+local function row_q800_76_fd() about_row("q800-76-fd", "q800", rom_quadra, 16384, "fd", fd_76, 29, "7.6", true,
+    "goldens/q800-7.6-fd-finder.png", "goldens/q800-7.6-fd-about.png") end
+local function row_c650_71_hd() about_row("c650-71-hd", "c650", rom_centris, 8192, "hd", hd_71, 24, "7.1", false,
+    "goldens/c650-7.1-hd-finder.png", "goldens/c650-7.1-hd-about.png") end
+local function row_q800_71_hd() about_row("q800-71-hd", "q800", rom_centris, 8192, "hd", hd_71, 29, "7.1", false,
+    "goldens/q800-7.1-hd-finder.png", "goldens/q800-7.1-hd-about.png") end
+local function row_q650_71_hd() about_row("q650-71-hd", "q650", rom_quadra, 8192, "hd", hd_71, 30, "7.1", false,
+    "goldens/q650-7.1-hd-finder.png", "goldens/q650-7.1-hd-about.png") end
+local function row_q610_71_hd() about_row("q610-71-hd", "q610", rom_quadra, 8192, "hd", hd_71, 47, "7.1", false,
+    "goldens/q610-7.1-hd-finder.png", "goldens/q610-7.1-hd-about.png") end
+local function row_c610_71_hd() about_row("c610-71-hd", "c610", rom_centris, 8192, "hd", hd_71, 46, "7.1", false,
+    "goldens/c610-7.1-hd-finder.png", "goldens/c610-7.1-hd-about.png") end
+local function row_c610_76_fd() about_row("c610-76-fd", "c610", rom_quadra, 8192, "fd", fd_76, 46, "7.6", true,
+    "goldens/c610-7.6-fd-finder.png", "goldens/c610-7.6-fd-about.png") end
+local function row_q610_76_hd() about_row("q610-76-hd", "q610", rom_quadra, 12288, "hd", hd_76, 47, "7.6", true,
+    "goldens/q610-7.6-hd-finder.png", "goldens/q610-7.6-hd-about.png") end
+local function row_q650_753_hd() about_row("q650-753-hd", "q650", rom_quadra, 24576, "hd", hd_753, 30, "7.5.3", true,
+    "goldens/q650-7.5.3-hd-finder.png", "goldens/q650-7.5.3-hd-about.png") end
 
 -- ---- q800-checkpoint ---------------------------------------------------------
 -- The family's own checkpoint part (djMEMC bank registers, IOSB, Kiwi, the
