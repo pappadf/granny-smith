@@ -82,15 +82,6 @@ typedef struct v8_board {
 // The one substrate every V8-family model binds.
 extern const machine_substrate_t v8_substrate;
 
-// IRQ source bits in cfg->rt.irq, routed by the GLUE table
-// (m68k_board_update_ipl): VIA1 at level 1, the V8's pseudo-VIA2 (the RBV
-// register file) at level 2, the SCC at level 4.  The same values as
-// M68K_BOARD_IRQ_*.
-#define V8_IRQ_VIA1 (1 << 0)
-#define V8_IRQ_RBV  (1 << 1)
-#define V8_IRQ_SCC  (1 << 2)
-#define V8_IRQ_NMI  (1 << 3)
-
 // The V8 family's I/O island ($50F00000, 256 KB) as a window table, exposed
 // for the boards' descriptors.
 extern const board_io_range_t v8_io_ranges_tbl[];
@@ -100,8 +91,6 @@ extern const board_io_range_t sonora_io_ranges_tbl[];
 // Fixed addresses shared by every chip of the lineage.
 #define V8_ROM_START     0x40000000UL // ROM space (ROMBase $40A00000 is one mirror)
 #define V8_ROM_END       0x50000000UL
-#define V8_IO_BASE       0x50000000UL // I/O space; the island repeats through it
-#define V8_IO_SIZE       0x10000000UL
 #define V8_IO_MIRROR     0x0003FFFFUL // 256 KB island
 #define V8_ISLAND_BASE   0x50F00000UL // the I/O island proper
 #define V8_ISLAND_SIZE   0x00040000UL
@@ -115,7 +104,6 @@ extern const board_io_range_t sonora_io_ranges_tbl[];
 #define V8_RAM_IMAGE     0x00800000UL // $800000-$9FFFFF: the top 2 MB of soldered RAM, always
 
 // The Sonora decoder's fixed addresses (sonora.c).
-#define SONORA_ROM_BASE    0x40800000UL // ROMBase; the image repeats through the ROM space
 #define SONORA_VRAM_BASE   0x60B00000UL // the frame buffer (two 512 KB VRAM banks)
 #define SONORA_VRAM_WINDOW 0x00100000UL
 #define SONORA_CPUID_ADDR  0x5FFFFFFCUL // the CPU ID register

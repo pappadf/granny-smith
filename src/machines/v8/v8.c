@@ -33,10 +33,8 @@
 #include "m68k_board.h"
 #include "mac_host_io.h"
 #include "machine_checkpoint.h"
-#include "machine_teardown.h"
 #include "slot_tables.h"
 
-#include "adb.h"
 #include "asc.h"
 #include "checkpoint.h"
 #include "cpu.h"
@@ -47,9 +45,9 @@
 #include "log.h"
 #include "mmu.h"
 #include "rbv.h"
+#include "rbv_board.h"
 #include "rtc.h"
 #include "scc.h"
-#include "scheduler.h"
 #include "scsi.h"
 #include "via.h"
 
@@ -276,11 +274,6 @@ static void v8_via1_shift_out(void *context, uint8_t byte) {
         egret_via1_shift_input(st->egret, byte);
 }
 
-// The pseudo-VIA2's combined interrupt -> IPL 2.
-static void v8_rbv_irq(void *context, bool active) {
-    m68k_board_update_ipl((config_t *)context, V8_IRQ_RBV, active);
-}
-
 // MonP depth field -> the built-in video.
 static void v8_rbv_mode(void *context, int depth_code) {
     v8_video_set_depth((config_t *)context, depth_code);
@@ -289,28 +282,6 @@ static void v8_rbv_mode(void *context, int depth_code) {
 // MonP RvVIDOff -> the built-in video switched off or on.
 static void v8_rbv_blank(void *context, bool video_off) {
     v8_video_set_blank((config_t *)context, video_off);
-}
-
-// The 5380's IRQ/DRQ through the pseudo-VIA2 flags.
-static void v8_scsi_irq(void *context, bool irq, bool drq) {
-    v8_state_t *st = v8_st((config_t *)context);
-    if (!st->rbv)
-        return;
-    rbv_set_scsi_irq(st->rbv, irq);
-    rbv_set_scsi_drq(st->rbv, drq);
-}
-
-// The sound block's interrupt -> the pseudo-VIA2 sound flag.
-static void v8_asc_irq(void *context, bool active) {
-    rbv_set_snd_irq((rbv_t *)context, active);
-}
-
-// Soft power-off (Egret's PwrDown): stop the scheduler.
-static void v8_power_off(void *context) {
-    config_t *cfg = (config_t *)context;
-    LOG(1, "%s soft power-off", cfg->machine->name);
-    if (cfg->scheduler)
-        scheduler_stop(cfg->scheduler);
 }
 
 // The family's own checkpoint block: overlay state, the decoded size bits
@@ -362,58 +333,24 @@ static int v8_init(config_t *cfg, checkpoint_t *cp) {
     if ((sonora ? sonora_ram_layout(cfg) : v8_ram_layout(cfg)) != 0)
         return -1;
 
-    machine_part_begin(cfg, cp, "adb");
-    cfg->adb = adb_init(NULL, cfg->scheduler, cp);
-    machine_part(cfg, cp, "adb", part_save_adb, cfg->adb);
-
-    machine_part_images(cfg, cp);
-
-    machine_part_begin(cfg, cp, "scsi");
-    cfg->scsi = machine_scsi_bus_init(cfg, cp, "scsi");
-    scsi_5380_attach(cfg->scsi, cp); // the Combo's 53C80
-    machine_part(cfg, cp, "scsi", part_save_scsi, cfg->scsi);
-    scsi_set_irq_callback(cfg->scsi, v8_scsi_irq, cfg);
-
-    machine_part_begin(cfg, cp, "asc");
-    st->asc = asc_init(NULL, cfg->scheduler, cp);
-    if (!st->asc)
+    // ADB, the images, the Combo's 5380, the sound block (an ASC subset),
+    // SWIM and the Egret or Cuda companion, as the IIsi builds them.
+    const rbv_board_spec_t spec = {
+        .companion = b->cuda ? RBV_BOARD_CUDA : RBV_BOARD_EGRET,
+        .asc_version = b->asc_version,
+        .asc_fifo_only = true,
+    };
+    const rbv_board_slots_t slots = {.rbv = &st->rbv, .asc = &st->asc, .egret = &st->egret, .cuda = &st->cuda};
+    if (rbv_board_build_devices(cfg, cp, &spec, &slots) != 0)
         return -1;
-    asc_set_version(st->asc, b->asc_version);
-    asc_set_fifo_only(st->asc); // no wavetable, always draining
-    machine_part(cfg, cp, "asc", part_save_asc, st->asc);
-    asc_set_mix(st->asc, ASC_MIX_CH_A); // mono: the left channel only
-
-    machine_part_begin(cfg, cp, "floppy");
-    cfg->floppy =
-        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
-    machine_part(cfg, cp, "floppy", part_save_floppy, cfg->floppy);
-
-    if (b->cuda) {
-        machine_part_begin(cfg, cp, "cuda");
-        st->cuda = cuda_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp, /*mode3_clock=*/false);
-        if (!st->cuda)
-            return -1;
-        machine_part(cfg, cp, "cuda", part_save_cuda, st->cuda);
-    } else {
-        machine_part_begin(cfg, cp, "egret");
-        st->egret = egret_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp);
-        if (!st->egret)
-            return -1;
-        machine_part(cfg, cp, "egret", part_save_egret, st->egret);
-        egret_set_power_off_callback(st->egret, v8_power_off, cfg);
-    }
 
     // The pseudo-VIA2, its MonP sense lines strapped with the monitor.
     if (v8_video_init(cfg, cfg->build_opts.builtin_sense) != 0) {
         LOG(0, "Error: out of memory constructing the %s video", b->chip);
         return -1;
     }
-    machine_part_begin(cfg, cp, "rbv");
-    st->rbv = rbv_init(RBV_VARIANT_V8, v8_video_sense(cfg), cp);
-    if (!st->rbv)
+    if (rbv_board_build_rbv(cfg, cp, RBV_VARIANT_V8, v8_video_sense(cfg), &slots) != 0)
         return -1;
-    machine_part(cfg, cp, "rbv", part_save_rbv, st->rbv);
-    rbv_set_irq_callback(st->rbv, v8_rbv_irq, cfg);
     // The V8's video follows MonP; Sonora's has its own depth and mode
     // registers at $50F28000 (sonora.c), so a MonP write must not reach it.
     // RvVIDOff switches off the VRAM video (the LC II's and the Color
@@ -425,7 +362,6 @@ static int v8_init(config_t *cfg, checkpoint_t *cp) {
             rbv_set_blank_callback(st->rbv, v8_rbv_blank, cfg);
     }
     rbv_set_exp_callback(st->rbv, sonora ? sonora_ram_cfg_written : v8_exp_written, cfg);
-    asc_set_irq_handler(st->asc, v8_asc_irq, st->rbv);
 
     st->mmu = m68k_board_build_mmu(cfg, b->desc.rom_base, b->desc.rom_end);
     if (!st->mmu)
@@ -494,26 +430,13 @@ static void v8_power_on(config_t *cfg) {
 static void v8_teardown(config_t *cfg) {
     v8_state_t *st = v8_st(cfg);
     if (st) {
-        if (st->egret)
-            egret_delete(st->egret);
-        if (st->cuda)
-            cuda_delete(st->cuda);
-        st->cuda = NULL;
-        if (st->rbv)
-            rbv_delete(st->rbv);
-        if (st->mmu)
-            mmu_delete(st->mmu);
-        if (st->asc)
-            asc_delete(st->asc);
-        st->egret = NULL;
-        st->rbv = NULL;
-        st->mmu = NULL;
-        st->asc = NULL;
         v8_video_teardown(cfg);
         free(st->pcb_hidden);
         st->pcb_hidden = NULL;
     }
-    machine_teardown_config_devices(cfg);
+    rbv_board_teardown(
+        cfg, st ? &(rbv_board_slots_t){.rbv = &st->rbv, .asc = &st->asc, .egret = &st->egret, .cuda = &st->cuda} : NULL,
+        st ? &st->mmu : NULL);
 }
 
 // VBL: the 60.15 Hz tick on VIA1 CA1 and the built-in video's frame

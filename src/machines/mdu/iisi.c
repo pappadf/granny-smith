@@ -42,6 +42,7 @@
 #include "nubus.h"
 #include "pram_defaults.h"
 #include "rbv.h"
+#include "rbv_board.h"
 #include "scheduler.h"
 #include "scsi.h"
 #include "via.h"
@@ -123,7 +124,7 @@ static void iisi_memory_layout_init(config_t *cfg) {
 }
 
 // ============================================================
-// VIA1 callbacks (the RBV / SCSI / sound wiring is shared: mdu_wire_rbv)
+// VIA1 callbacks (the RBV / SCSI / sound wiring is shared: rbv_board.c, mdu_wire_rbv)
 // ============================================================
 
 // VIA1 outputs.  Port A: floppy head-select (PA5) + ROM overlay (PA4 — an
@@ -210,49 +211,18 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     via_input_c(cfg->via1, 0, 0, 1);
     via_input_c(cfg->via1, 1, 0, 1);
 
-    // ADB is driven by Egret via adb_iop_transact() (like the IIfx IOP path),
-    // not by the VIA1 shift register — pass NULL for the VIA argument.
-    machine_part_begin(cfg, checkpoint, "adb");
-    cfg->adb = adb_init(NULL, cfg->scheduler, checkpoint);
-    machine_part(cfg, checkpoint, "adb", part_save_adb, cfg->adb);
-
-    machine_part_images(cfg, checkpoint);
-
-    machine_part_begin(cfg, checkpoint, "scsi");
-    cfg->scsi = machine_scsi_bus_init(cfg, checkpoint, "scsi");
-    scsi_5380_attach(cfg->scsi, checkpoint); // IIsi: NCR 5380
-    machine_part(cfg, checkpoint, "scsi", part_save_scsi, cfg->scsi);
-    scsi_set_irq_callback(cfg->scsi, mdu_scsi_irq, cfg); // through the RBV, as on the IIci
-
-    machine_part_begin(cfg, checkpoint, "asc");
-    st->asc = asc_init(NULL, cfg->scheduler, checkpoint);
-    machine_part(cfg, checkpoint, "asc", part_save_asc, st->asc);
-    machine_part_begin(cfg, checkpoint, "floppy");
-    asc_set_mix(st->asc, ASC_MIX_CH_A); // internal speaker takes the left channel
-    cfg->floppy =
-        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), checkpoint, config_images(cfg));
-    machine_part(cfg, checkpoint, "floppy", part_save_floppy, cfg->floppy);
-
-    // Egret companion: owns ADB / RTC / PRAM / 1-sec tick / soft power-off via
-    // the VIA1 shift register.  Created after via1/rtc/adb exist.
-    machine_part_begin(cfg, checkpoint, "egret");
-    st->egret = egret_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, checkpoint);
-    if (!st->egret) {
-        LOG(0, "Error: out of memory constructing the Egret");
+    // ADB, the images, the 5380 (through the RBV, as on the IIci), the ASC,
+    // SWIM, and the Egret companion: it owns ADB / RTC / PRAM / the 1-second
+    // tick / soft power-off over the VIA1 shift register.
+    static const rbv_board_spec_t spec = {.companion = RBV_BOARD_EGRET};
+    const rbv_board_slots_t slots = {.rbv = &st->rbv, .asc = &st->asc, .egret = &st->egret};
+    if (rbv_board_build_devices(cfg, checkpoint, &spec, &slots) != 0)
         return -1;
-    }
-    machine_part(cfg, checkpoint, "egret", part_save_egret, st->egret);
-    egret_set_power_off_callback(st->egret, mdu_power_off, cfg);
 
     // RBV chip in the V8/VISA variant, the built-in port's monitor strapped
     // on its sense lines (7, nothing connected, turns built-in video off).
-    machine_part_begin(cfg, checkpoint, "rbv");
-    st->rbv = rbv_init(RBV_VARIANT_V8_IISI, cfg->build_opts.builtin_sense, checkpoint);
-    if (!st->rbv) {
-        LOG(0, "Error: out of memory constructing the RBV");
+    if (rbv_board_build_rbv(cfg, checkpoint, RBV_VARIANT_V8_IISI, cfg->build_opts.builtin_sense, &slots) != 0)
         return -1;
-    }
-    machine_part(cfg, checkpoint, "rbv", part_save_rbv, st->rbv);
     mdu_wire_rbv(cfg);
 
     uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
