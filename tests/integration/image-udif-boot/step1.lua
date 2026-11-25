@@ -1,4 +1,3 @@
--- Converted from step1.script by scripts/script-to-lua.py
 -- image-udif-boot step 1: convert, boot from the UDIF, checkpoint, export.
 -- Variables from run.sh: TEST_DIR (goldens), WORK_DIR (work files),
 -- TEST_DATA, ROM.

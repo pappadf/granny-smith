@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: files.create and the drive models
 -- Exercises files.create(path, kind, size): a hard disk with model-aware size
 -- parsing, a floppy and a ProFile of their sizes, and the refusals.

@@ -20,7 +20,7 @@ TEST_DESC := Creates an HD230SC (QUANTUM LP240S) image, boots 7.0.1, and verifie
 TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 
-# Boot from floppy with 8 MB RAM; the HD is created and attached in test.script
+# Boot from floppy with 8 MB RAM; the HD is created and attached in test.lua
 TEST_ARGS := fd=$(TEST_DATA)/systems/System_7_0_1.image ram=8192
 
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended

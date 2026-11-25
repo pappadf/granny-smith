@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: disk images stored as UDIF (.dmg).
 -- The runner cd's into tests/integration/, so the source path is relative and
 -- WORK_DIR is absolute.

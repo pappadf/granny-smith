@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: Plus MacTest
 -- Boots Macintosh Plus from MacTest floppy, deselects unsupported tests,
 -- runs the hardware test suite, and verifies each stage via screenshot match.

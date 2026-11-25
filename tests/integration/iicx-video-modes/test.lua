@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: IIcx Video Modes
 --
 -- Cold-boot matrix covering 4 monitor types × 4 colour depths on the

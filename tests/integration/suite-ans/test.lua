@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Apple Network Server suite — what the machine puts on its monitor.
 --
 -- Row map:

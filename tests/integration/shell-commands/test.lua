@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: Shell Commands
 -- Exercises the typed object-model dispatch surface: bare-path reads,
 -- disasm, help, logpoint listing.

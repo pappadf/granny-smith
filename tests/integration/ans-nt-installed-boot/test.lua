@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Cold boot of an installed Windows NT 4.0 for PowerPC on an Apple Network
 -- Server 500.  See config.mk for what the media is and where it comes from.
 --

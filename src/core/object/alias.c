@@ -223,9 +223,8 @@ static void alias_clear_user_impl(void) {
     g_count = w;
 }
 
-// === The table lock (job/job.h): every public entry takes it for the one
-// operation; the interpreter on the job thread and the emulator thread
-// (breakpoint conditions, completion, shell.vars) both read here. =========
+// === Public entries (all on the emulator thread: scripts, breakpoint
+// conditions, completion and highlighting alike) ==================================
 
 void alias_register_builtin_or_log(const char *owner, const char *name, const char *path) {
     char err[160];

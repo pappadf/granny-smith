@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Configuration seeding and persistence (see config.mk).
 
 -- The machine the document built: cards, storage.

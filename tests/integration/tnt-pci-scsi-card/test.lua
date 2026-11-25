@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- A Power Macintosh 8500 with two PC cards in its PCI sockets: a Symbios
 -- 53C825A SCSI host adapter in A1 and a Cirrus Logic 54M30 in B1.
 --

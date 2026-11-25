@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Run to the ROM's boot-disk wait, where the keyboard driver keeps KeyMap.
 scheduler.run(60000000)
 assert(machine.memory.peek.l(0x174) == 0 and machine.memory.peek.l(0x178) == 0 and machine.memory.peek.l(0x17C) == 0 and machine.memory.peek.l(0x180) == 0, "KeyMap idle")

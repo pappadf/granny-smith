@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- SE/30 A/UX 3.0.1 Boot (retail SE floppy + CD).
 --
 -- Boots the SE/30 from the retail A/UX 3.0.1 Installation Boot Disk (SE) with

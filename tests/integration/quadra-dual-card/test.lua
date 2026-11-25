@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Quadra 700 with two NuBus display cards (see config.mk).
 --
 -- Merged from q700-24ac + q700-824gc: one boot, both cards, every

@@ -3,7 +3,7 @@
 # The disk ans-nt-install produces, from cold: the 2.26NT ROM, the
 # powermac-nt-hal boot floppy's bootdisk.of (nothing in NVRAM), NT's kernel on
 # that project's HAL, the logon screen, and a logon from the ADB keyboard.
-# See test.script for the rungs.
+# See test.lua for the rungs.
 #
 # THE MEDIA IS IN gs-test-data, not local/: the 2.26NT ROM
 # (roms/ans500-ans700-2.26nt-962f6c13-50348b3d0126096b.rom), the installed

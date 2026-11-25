@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- machine.sound.frames is in sample frames on every engine (see config.mk).
 -- Each check boots a model, records from power-on, runs past the startup
 -- sound and compares the engine's own count with the capture sink's.

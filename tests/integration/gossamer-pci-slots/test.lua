@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Beige G3 PCI slots (docs/internals/machines/gossamer/gossamer.md §1).
 --
 -- One Grackle bus: the three sockets A1/B1/C1 at IDSEL 13/14/15 with their

@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- IIfx A/UX 3.0.1 — log in with an X11 session type.
 --
 -- Boots the IIfx to the A/UX 3.0.1 graphical login window (identical to

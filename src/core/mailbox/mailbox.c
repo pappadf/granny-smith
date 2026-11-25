@@ -565,8 +565,8 @@ int mailbox_drain(mailbox_t *m, double budget_us, double (*now_us)(void)) {
         if (now_us && budget_us > 0.0 && now_us() - t0 >= budget_us)
             break;
     }
-    // The jobs: a call posted by the job thread, a job's result; and the
-    // I/O worker's completions.
+    // The jobs: a step of the active one, the results of finished ones; and
+    // the I/O worker's completions.
     written += job_layer_service(m);
     io_worker_service();
     if (written || mbx_unpublished(&m->evt)) {

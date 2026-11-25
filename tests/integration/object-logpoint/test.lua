@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration: logpoint messages use ${...} interpolation.
 --
 -- The VBL handler bumps Ticks ($00016A.l) once per VBL — set a write

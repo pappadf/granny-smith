@@ -1,6 +1,6 @@
 # Integration test: the reset levels, on every model in the registry.
 #
-# One conformance function (test.script) run over every machine the
+# One conformance function (test.lua) run over every machine the
 # emulator builds, so a family cannot land without a conforming reset:
 #   level 2  machine.reset    the CPU back at its reset vector, PRAM/NVRAM kept
 #   level 3  machine.restart  the same, with the RAM cold; nothing rebuilt

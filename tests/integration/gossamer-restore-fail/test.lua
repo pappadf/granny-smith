@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: a failed G3-over-G3 restore keeps the running machine.
 -- This test uses a custom runner (run.sh) - this file exists for auto-discovery
 -- See run.sh for the actual test implementation

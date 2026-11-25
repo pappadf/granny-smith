@@ -37,9 +37,7 @@ static const struct {
 };
 #define N_BUILTIN (sizeof(k_builtin) / sizeof(k_builtin[0]))
 
-// User commands, in declaration order.  Guarded by the job tables lock: the
-// interpreter (job thread) and completion / highlighting (emulator thread)
-// both read it.
+// User commands, in declaration order.
 typedef struct {
     char *name;
     char *target;

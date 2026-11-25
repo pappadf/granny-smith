@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: IIfx + Display Card 8•24 — format a blank HD160SC under
 -- Mac OS 7.6, run the 7.6 Installer to completion, and boot the result.
 --

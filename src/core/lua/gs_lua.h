@@ -19,11 +19,12 @@
 extern "C" {
 #endif
 
-// Run a Lua file to completion on the calling thread (the job thread when
-// there is one; the tree accesses go through the seam as every leaf call
-// does).  Relative `require` paths inside it resolve against the file's
-// directory.  Returns 0 when the chunk ends, 1 when it called quit(), -1
-// when it failed (the error has been reported).
+// Run a Lua file to completion on the calling stack -- not as a job: it
+// cannot suspend, so a mode it starts is waited for with the platform's
+// frame runner where there is one (job.h).  A job runs a file with dofile,
+// which can suspend.  Relative `require` paths inside it resolve against the
+// file's directory.  Returns 0 when the chunk ends, 1 when it called quit(),
+// -1 when it failed (the error has been reported).
 int gs_lua_run_file(const char *path);
 
 // Run Lua source text.  With `interactive` the text is first tried as an

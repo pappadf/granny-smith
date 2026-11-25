@@ -187,8 +187,8 @@ static const member_t emu_root_members[] = {
      .name = "quit",
      .doc = "Exit the emulator (headless; the browser page owns its own lifecycle and refuses)",
      .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = method_root_quit}                },
-    // `assert` is a statement keyword in shell v2 (script.c); the former
-    // root method is gone — its name is now a reserved word.
+    // `assert` is Lua's own (a script's assert(cond, message)); the former
+    // root method is gone.
     {.kind = MK_METHOD,
      .name = "echo",
      .doc = "Print arguments separated by spaces (final newline appended)",

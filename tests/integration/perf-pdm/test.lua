@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- perf-pdm (see config.mk): the 601 interpreter's throughput row.
 local mac = dofile("../lib/mac.lua")
 

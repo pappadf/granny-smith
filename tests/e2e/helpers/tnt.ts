@@ -114,71 +114,71 @@ export async function bootWithCard(page: Page, cardId: string): Promise<void> {
 // the takeover's drawing section.
 export function composeScript(): string {
   const helpers = `
-def swap32(v) {
-    return (($v & 0xFF) << 24) | (($v & 0xFF00) << 8) | (($v >> 8) & 0xFF00) | (($v >> 24) & 0xFF)
-}
-def swap16(v) {
-    return (($v & 0xFF) << 8) | (($v >> 8) & 0xFF)
-}
-def cfg_wr(reg, val) {
-    machine.memory.poke.l(0xF2800000, swap32(0x00002000 | $reg))
-    machine.memory.poke.l(0xF2C00000, swap32($val))
+function swap32(v)
+    return ((v & 0xFF) << 24) | ((v & 0xFF00) << 8) | ((v >> 8) & 0xFF00) | ((v >> 24) & 0xFF)
+end
+function swap16(v)
+    return ((v & 0xFF) << 8) | ((v >> 8) & 0xFF)
+end
+function cfg_wr(reg, val)
+    machine.memory.poke.l(0xF2800000, swap32(0x00002000 | reg))
+    machine.memory.poke.l(0xF2C00000, swap32(val))
     machine.memory.poke.l(0xF2800000, 0)
-}
-def cfg_rd(reg) {
-    machine.memory.poke.l(0xF2800000, swap32(0x00002000 | $reg))
-    let v = swap32(machine.memory.peek.l(0xF2C00000))
+end
+function cfg_rd(reg)
+    machine.memory.poke.l(0xF2800000, swap32(0x00002000 | reg))
+    local v = swap32(machine.memory.peek.l(0xF2C00000))
     machine.memory.poke.l(0xF2800000, 0)
-    return $v
-}
+    return v
+end
 cfg_wr(0x10, 0x81000000)
 cfg_wr(0x04, 0x0002)
-let BAR = machine.pci.slot[1].card.config.bar[0].base
-def vreg_wr(off, val) {
-    machine.memory.poke.l($BAR + $off, swap32($val))
-}
-def vreg_rd(off) {
-    return swap32(machine.memory.peek.l($BAR + $off))
-}
-def idle3() {
-    let ok = 0
-    let polls = 0
-    while $ok < 3 {
-        $polls = $polls + 1
-        assert $polls < 50 "idle contract: status[9] must clear within a bounded number of polls"
-        if (vreg_rd(0x000) & 0x380) == 0 {
-            $ok = $ok + 1
-        } else {
-            $ok = 0
-        }
-    }
-}
+BAR = machine.pci.slot[1].card.config.bar[0].base
+function vreg_wr(off, val)
+    machine.memory.poke.l(BAR + off, swap32(val))
+end
+function vreg_rd(off)
+    return swap32(machine.memory.peek.l(BAR + off))
+end
+function idle3()
+    local ok = 0
+    local polls = 0
+    while ok < 3 do
+        polls = polls + 1
+        assert(polls < 50, "idle contract: status[9] must clear within a bounded number of polls")
+        if (vreg_rd(0x000) & 0x380) == 0 then
+            ok = ok + 1
+        else
+            ok = 0
+        end
+    end
+end
 `;
   // The bring-up replay, minus its one clock-dependent step: the beam-
   // counter check runs the scheduler, which this spec keeps halted (the
   // guest's firmware would otherwise enumerate the bus underneath us).
   const glideInit = fs
-    .readFileSync(path.join(ROW, "glide-init.script"), "utf8")
+    .readFileSync(path.join(ROW, "glide-init.lua"), "utf8")
     .replace(
-      /# The beam advances:[\s\S]*?assert \$L0 != \$L1 "the beam counters must advance"\n/,
+      /-- The beam advances:[\s\S]*?assert\(L0 ~= L1, "the beam counters must advance"\)\n/,
       "",
     );
   if (glideInit.includes("the beam counters must advance"))
     throw new Error("beam step not stripped");
   const takeMonitor = `
-# --- Take the monitor: the edge that engages GPU mode. ---------------------
+-- --- Take the monitor: the edge that engages GPU mode. ---------------------
 vreg_wr(0x220, (704 << 16) | 96)
 vreg_wr(0x224, (523 << 16) | 2)
 vreg_wr(0x208, (25 << 16) | 38)
 vreg_wr(0x20C, (480 << 16) | 639)
 vreg_wr(0x214, (vreg_rd(0x214) & 0xFFFFEEFF) | 0x1E000)
 vreg_wr(0x210, vreg_rd(0x210) | 0x1)
-assert machine.pci.slot[1].card.video.drives_monitor "the card drives the monitor"
-# Reading the screen re-resolves the display chain, which is where the
-# card sees the edge (the scheduler is halted, so no frame would).
-let W = machine.screen.width
-assert $W == 640 "the screen is the card's"
+assert(machine.pci.slot[1].card.video.drives_monitor, "the card drives the monitor")
+-- Reading the screen re-resolves the display chain, which is where the
+-- card sees the edge (the scheduler is halted, so no frame would).
+local W = machine.screen.width
+assert(W == 640, "the screen is the card's")
 `;
-  const drawGpu = fs.readFileSync(path.join(ROW, "draw-webgpu.script"), "utf8");
+  const drawGpu = fs.readFileSync(path.join(ROW, "draw-webgpu.lua"), "utf8");
   return [helpers, glideInit, takeMonitor, drawGpu].join("\n");
 }

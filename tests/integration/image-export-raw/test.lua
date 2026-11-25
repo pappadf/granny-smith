@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: files.export_raw decodes a disk image to a flat, raw,
 -- single-fork image on the host.  Uses a raw bare-HFS floppy; the NDIF
 -- bcem/ADC decode path is covered by the `ndif` unit suite.  The runner cd's

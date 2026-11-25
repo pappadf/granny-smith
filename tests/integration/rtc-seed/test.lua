@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- RTC seeding and continuity -- see config.mk.
 
 local PIN = 0xE0000000

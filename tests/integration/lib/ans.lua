@@ -1,9 +1,8 @@
--- Converted from ans.script by scripts/script-to-lua.py
-local mac = dofile("mac.lua") -- NOTE: no direct mac.script include (this file is included by another); the library runs once per chunk
--- tests/integration/lib/ans.script — shared helpers for the Apple Network
+local mac = dofile("mac.lua") -- NOTE: no direct mac.lua include (this file is included by another); the library runs once per chunk
+-- tests/integration/lib/ans.lua — shared helpers for the Apple Network
 -- Server rows.
 --
--- Pull in with `include "../lib/ans.script"`.
+-- Pull in with `include "../lib/ans.lua"`.
 --
 -- WHY A LIBRARY AT ALL.  Two things about this machine are awkward exactly
 -- once and identical in every row that talks to its firmware:
@@ -36,14 +35,14 @@ local mac = dofile("mac.lua") -- NOTE: no direct mac.script include (this file i
 --     the rows used to feed seven characters at a time with 20 M between.
 
 -- Configured (ttya-console) NVRAM per model, filled by ans_boot_serial.
-ANS_NV_500 = nil -- global: included file
-ANS_NV_700 = nil -- global: included file
+ANS_NV_500 = nil
+ANS_NV_700 = nil
 
 -- --- Console plumbing --------------------------------------------------------
 
 -- Type command text on Open Firmware's console (ttya) and run until the
 -- firmware has read all of it.
-function ans_send(s) -- global: included file
+function ans_send(s)
     mac.serial_type("a", s, 200000000)
 end
 
@@ -53,7 +52,7 @@ end
 -- The 2 G ceiling is a hang detector, not a budget -- a reply comes back in a
 -- few M to a few hundred M -- and a reply that never ends in a prompt is
 -- returned as it stands for the caller's asserts to judge.
-function ans_go() -- global: included file
+function ans_go()
     machine.scc.a.receive("\r")
     return mac.run_until_sent("a", "0 > ", 250000, 2000000000)
 end
@@ -64,7 +63,7 @@ end
 -- for the same guest-visible progress, because POST's delay loops are timed
 -- against the timebase (bus/4) and a faster card spins more instructions per
 -- millisecond of the 1 ms settle it leaves between LCD characters.
-function ans_wait_prompt() -- global: included file
+function ans_wait_prompt()
     local out = ""
     local spins = 0
     while not gs.truthy(function() return gs.contains(out, "0 > ") end) and spins < 240 do
@@ -84,7 +83,7 @@ end
 -- terminal setup on the ADB keyboard, and the second — against the
 -- now-configured non-volatile store — comes up on ttya.  Later calls for the
 -- same model restore that configured store and boot once (below).
-function ans_boot_serial(model, ram_kb) -- global: included file
+function ans_boot_serial(model, ram_kb)
     -- A virgin non-volatile store — what "a Network Server that has never
     -- been booted before" means in Apple's own service documentation.
     -- machine.boot builds a new machine, and a new machine's store is its

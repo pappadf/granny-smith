@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- MacTest Pro (680x0) CD (2/96) on a Macintosh IIci: every test the
 -- configuration offers must pass.
 --

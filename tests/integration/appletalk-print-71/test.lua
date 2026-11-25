@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- LaserWriter print over AppleTalk from System 7.1, through the platen
 -- interpreter.  See config.mk for why this row exists beside appletalk-print.
 --

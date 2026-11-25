@@ -1,7 +1,7 @@
 # Integration suite: the AV family (Quadra 840AV / Centris 660AV)
 #
 # One daemon run; rows re-instantiate via machine.boot with every staging
-# argument named, and the shared library in ../lib/mac.script provides the
+# argument named, and the shared library in ../lib/mac.lua provides the
 # harness (row filter, keep-going, REGEN, media gating).
 #
 # Both models share the 2 MB $5BF10FD1 ROM, so every row passes rom=

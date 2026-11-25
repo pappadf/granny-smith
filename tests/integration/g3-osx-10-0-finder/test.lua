@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Mac OS X 10.0.3 -> Finder on a beige Power Macintosh G3, from ATA.
 --
 -- The disk is gs-test-data `systems/mac_os_x_10_0_3_2gb_g3_minimal.dmg`: a

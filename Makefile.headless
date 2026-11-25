@@ -12,7 +12,7 @@ endif
 # TARGET=node builds the same headless program with emcc into WebAssembly,
 # run by Node with the host filesystem (NODERAWFS): the CPU cores run on
 # the browser's engine, without the browser.  Single-threaded: use it with
-# --jobs=inline --io=sync, as the bench harness does.
+# --io=sync, as the bench harness does.
 TARGET ?= native
 ifeq ($(TARGET),node)
 CC := emcc

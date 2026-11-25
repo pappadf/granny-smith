@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 local scsi_identify_ok
 -- SCSI bare-volume wrapper
 --

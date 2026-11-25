@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- pm6100 + Mac OS 8.1: an AFP copy while the mouse moves (issue #124).
 --
 --   1. Boot 8.1 from the prepared image to the Finder; dismiss the image's

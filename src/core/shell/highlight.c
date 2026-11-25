@@ -383,8 +383,7 @@ static const char *binding(hl_t *h, const char *p) {
     size_t n = (size_t)(e - s) < sizeof(name) - 1 ? (size_t)(e - s) : sizeof(name) - 1;
     memcpy(name, s, n);
     name[n] = '\0';
-    // The emulator thread highlights while the job thread may redefine
-    // aliases: work on a copy.
+    // A copy: resolving the path below may not keep the table's storage.
     char target[PREFIX_MAX];
     bool is_alias = alias_lookup_copy(name, target, sizeof(target), NULL);
     emit(h, p, e, is_alias ? "alias" : "variable");

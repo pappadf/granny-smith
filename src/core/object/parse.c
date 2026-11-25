@@ -436,7 +436,7 @@ value_t parse_literal(const char **p, const char *const *enum_table, size_t n_en
         char ident[OBJ_IDENT_MAX + 1];
         size_t i = 0;
         while (*q && (isalnum((unsigned char)*q) || *q == '_')) {
-            // Fail rather than truncate (see lex_read_ident in expr.c)
+            // Fail rather than truncate: a truncated name is another name
             if (i + 1 >= sizeof(ident))
                 return val_err("identifier too long (max %zu)", sizeof(ident) - 1);
             ident[i++] = *q;

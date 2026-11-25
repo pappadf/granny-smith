@@ -121,7 +121,7 @@ typedef struct rgba8 {
 // Only one monitor in the tree has a non-NULL curve: the JMFB's Kong 21".  Its
 // goldens carry the JMFB driver's gamma pre-distortion, so their white reads
 // (255, 247, 214) rather than (255, 255, 255) -- the round trip through
-// kong_crt_response is exact.  tests/integration/iicx-video-modes/test.script
+// kong_crt_response is exact.  tests/integration/iicx-video-modes/test.lua
 // records the reasoning with the driver disassembly ($40FF7E06).
 //
 // Unifying them would make four goldens depend on a table transcribed from

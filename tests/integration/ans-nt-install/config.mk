@@ -9,7 +9,7 @@
 # MEDIA-GATED.  The 2.26NT ROM and the boot floppy are in the test data; the
 # NT CD, a blank install disk and the Product ID are not redistributable and
 # come from $GS_EXTRA_MEDIA_DIR.  The row SKIPS cleanly where any of them is
-# absent; test.script's header lists what goes where.
+# absent; test.lua's header lists what goes where.
 #
 # TEST_ROM is the production ROM only because the runner insists on one that
 # exists at every data revision: the row boots the 2.26NT ROM itself.  (Since

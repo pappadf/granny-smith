@@ -4,12 +4,12 @@
 # identification panel correctly probes the IIfx logic board (System type
 # "Macintosh IIfx", 68030 CPU, 68882 FPU, 512 KB ROM, 16 MB RAM) in 256-colour
 # mode.  Also a regression guard for the 24-bit master-pointer addressing fix
-# in src/core/memory/memory.c (dispatch_device_at_logical) — see test.script.
+# in src/core/memory/memory.c (dispatch_device_at_logical) — see test.lua.
 # Complements tests/integration/iifx-boot (which boots IIfx to the System 7.0.1
 # Finder) and mirrors tests/integration/iicx-mactest (the IIcx/IIci MacTest
 # suite); the 8 bpp setup follows tests/integration/iicx-video-modes.
 #
-# The video depth is selected inside test.script (nubus.video_mode before the
+# The video depth is selected inside test.lua (nubus.video_mode before the
 # inline machine.boot), so TEST_ARGS only needs to wire up the ROM, RAM, and
 # floppy for the harness.
 

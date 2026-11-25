@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- A checkpoint saved with the SCSI selection timeout pending (see config.mk).
 
 machine.boot{model = "q700", ram = 8192, rom = vars.ROM}

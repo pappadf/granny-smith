@@ -19,10 +19,10 @@ tests/
 │   └── support/                    #   Harnesses, stubs, header shims
 │
 ├── integration/                    # Native C integration tests (headless)
-│   ├── Makefile                    #   Auto-discovers test dirs with test.script
+│   ├── Makefile                    #   Auto-discovers test dirs with test.lua
 │   ├── lib/                        #   Shared row/wait/golden library (include'd)
 │   ├── suite-<family>/             #   Per-machine suites (rows + goldens/)
-│   └── <name>/                     #   One directory per test (config.mk, test.script)
+│   └── <name>/                     #   One directory per test (config.mk, test.lua)
 │
 └── e2e/                            # Browser Playwright tests (tests/e2e/README.md)
     ├── playwright.web2.config.ts  #   Main config (testDir → web2-specs/)
@@ -111,11 +111,11 @@ Adding New Tests
 
 ### New integration test
 
-1. Create `tests/integration/foo/` with `config.mk` and `test.script`.
+1. Create `tests/integration/foo/` with `config.mk` and `test.lua`.
 2. `config.mk` sets `TEST_ROM`, `TEST_ARGS` and `TEST_TIER` (`unit`, `matrix`
    or `extended`; a test without a tier runs in no CI step). A boot belongs as
    a row in its machine's `suite-<family>` instead of a directory of its own.
-3. `test.script` contains shell commands and expected-output checks.
+3. `test.lua` contains shell commands and expected-output checks.
 4. Run: `make -C tests/integration test-foo`.
 
 ### New e2e test

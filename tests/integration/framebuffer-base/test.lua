@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- See config.mk.  framebuffer.base is the guest physical address of the
 -- first displayed byte, on every display source.
 

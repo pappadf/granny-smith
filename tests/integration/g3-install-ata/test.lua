@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Mac OS 9.2.1 installed onto a blank ATA disk on a beige G3, booted from an
 -- ATAPI CD-ROM.
 --

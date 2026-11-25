@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- The floppy is attached but nothing has read it yet.
 assert(files.images[0].kind == "floppy", "fd0 is the System 6.0.8 disk")
 assert(files.images[0].encoding == "raw", "fd0 carries no wrapper layer")

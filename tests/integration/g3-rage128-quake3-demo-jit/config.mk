@@ -1,7 +1,7 @@
 # Integration test: Quake III Arena's demo four on a Rage 128, timed, with
 # the PowerPC translation tier
 #
-# g3-rage128-quake3-demo (its test.script, unchanged) under the headless
+# g3-rage128-quake3-demo (its test.lua, unchanged) under the headless
 # program built as WebAssembly and run by Node (Makefile.headless
 # TARGET=node), with the predecoded loop and the JIT on, supervisor code
 # included: the CPU side of the browser's "JIT + kernel".  The 3D is still

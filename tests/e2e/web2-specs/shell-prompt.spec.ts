@@ -85,7 +85,7 @@ test('shell history persists across reloads', async ({ page }) => {
   await page.locator('button.ptab[data-tab="terminal"]').click();
   await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
   await page.locator('.console').click();
-  await page.keyboard.type('echo history-survives-reload');
+  await page.keyboard.type('print("history-survives-reload")');
   await page.keyboard.press('Enter');
   await expect.poll(() => lastTermLine(page), { timeout: 10_000 }).toMatch(/^gs>$/);
 
@@ -97,7 +97,7 @@ test('shell history persists across reloads', async ({ page }) => {
   await page.keyboard.press('ArrowUp');
   await expect
     .poll(() => lastTermLine(page), { timeout: 10_000 })
-    .toMatch(/^gs> echo history-survives-reload$/);
+    .toMatch(/^gs> print\("history-survives-reload"\)$/);
 });
 
 test('shell prompt reflects machine and run state', async ({ page }) => {

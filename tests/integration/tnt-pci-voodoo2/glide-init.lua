@@ -1,4 +1,3 @@
--- Converted from glide-init.script by scripts/script-to-lua.py
 -- The Glide bring-up sequence, replayed register by register.
 --
 -- This is 3dfx's own initialisation order — sst1InitRegisters() and
@@ -8,7 +7,7 @@
 -- first step that fails is the finding.  It exercises the whole init
 -- path without needing a guest driver or a Mac OS image.
 --
--- Included by test.script AFTER it has enabled Memory Space and bound
+-- Included by test.lua AFTER it has enabled Memory Space and bound
 -- $BAR to the aperture base.  Uses swap32/swap16/vreg_wr/vreg_rd/
 -- cfg_wr/cfg_rd/idle3 defined there.
 --
@@ -19,7 +18,7 @@
 -- Writes to fbiInit* are silently dropped while initEnable[0] is clear
 -- (V2 §5.52) — the bit that bites: a model that always accepted these
 -- would LOOK correct all the way to a wrong pass-through polarity.
-INIT1_RESET = vreg_rd(0x214) -- global: included file
+INIT1_RESET = vreg_rd(0x214)
 assert(INIT1_RESET == 0x00201102, "fbiInit1 must hold its strapped power-on value")
 vreg_wr(0x214, 0xDEADBEEF)
 assert(vreg_rd(0x214) == INIT1_RESET, "a gated fbiInit write must be silently dropped")
@@ -91,21 +90,21 @@ vreg_wr(0x214, vreg_rd(0x214) | 0x100)
 vreg_wr(0x218, vreg_rd(0x218) & 0xFFBFFFFF)
 idle3()
 cfg_wr(0x40, 0x00000005)
-function dac_wr(addr, data) -- global: included file
+function dac_wr(addr, data)
     vreg_wr(0x22C, ((addr & 7) << 8) | ((addr & 0x18) << 9) | (data & 0xFF))
 end
-function dac_rd(addr) -- global: included file
+function dac_rd(addr)
     vreg_wr(0x22C, ((addr & 7) << 8) | ((addr & 0x18) << 9) | 0x800)
     return vreg_rd(0x218) & 0xFF
 end
 dac_wr(7, 0xB)
-GCLK1_M = dac_rd(5) -- global: included file
+GCLK1_M = dac_rd(5)
 dac_rd(5)
 dac_wr(7, 0x1)
-VCLK1_M = dac_rd(5) -- global: included file
+VCLK1_M = dac_rd(5)
 dac_rd(5)
 dac_wr(7, 0x7)
-VCLK7_M = dac_rd(5) -- global: included file
+VCLK7_M = dac_rd(5)
 dac_rd(5)
 assert(GCLK1_M == 0x79, "ICS5342: GCLK1 power-on M value")
 assert(VCLK1_M == 0x55, "ICS5342: VCLK1 power-on M value")
@@ -123,11 +122,11 @@ dac_wr(4, 0xA)
 dac_wr(5, 0x49)
 dac_wr(5, 0x24)
 dac_wr(7, 0xE)
-PLLCTRL = dac_rd(5) -- global: included file
+PLLCTRL = dac_rd(5)
 dac_wr(4, 0xE)
 dac_wr(5, PLLCTRL & 0xEF)
 cfg_wr(0x40, 0x00000003)
-GKHZ = machine.pci.slot[1].card.dac.graphics_khz -- global: included file
+GKHZ = machine.pci.slot[1].card.dac.graphics_khz
 assert(GKHZ > 85000 and GKHZ < 95000, "the graphics PLL lands in the Voodoo2's clock class")
 
 -- --- Step 10: LFB reads on, alternate mapping on, register swizzle on. ------
@@ -171,13 +170,13 @@ vreg_wr(0x214, (vreg_rd(0x214) & 0xFFFFEEFF) | 0x1E000)
 
 -- The beam advances: vRetrace and hvRetrace must move or a driver that
 -- spins on beam position hangs (the CRTC_VLINE lesson from the Mach64).
-L0 = (vreg_rd(0x240) >> 16) & 0x1FFF -- global: included file
+L0 = (vreg_rd(0x240) >> 16) & 0x1FFF
 scheduler.run(200000)
-L1 = (vreg_rd(0x240) >> 16) & 0x1FFF -- global: included file
+L1 = (vreg_rd(0x240) >> 16) & 0x1FFF
 assert(L0 ~= L1, "the beam counters must advance")
 
 -- --- Step 12: DRAM warm-up shape (fastfill through the FIFO'd path). --------
--- The draw itself is draw.script's job; what this step pins TODAY is
+-- The draw itself is draw.lua's job; what this step pins TODAY is
 -- that the whole command surface accepts writes and the card reports
 -- idle after each — the §12.3 idiom, nopCMD then status.
 vreg_wr(0x104, 0x00000000)
@@ -203,10 +202,10 @@ vreg_wr(0x248, vreg_rd(0x248) | 0x40000000)
 -- buffer back ($8F = fmt F | read-buffer 2).
 vreg_wr(0x114, 0x0000008F)
 idle3()
-function lfb_put(x, y, v16) -- global: included file
+function lfb_put(x, y, v16)
     machine.memory.poke.w(BAR + 0x400000 + (y << 11) + (x << 1), swap16(v16))
 end
-function lfb_get(x, y) -- global: included file
+function lfb_get(x, y)
     return swap16(machine.memory.peek.w(BAR + 0x400000 + (y << 11) + (x << 1)))
 end
 lfb_put(128, 100, 0xDEAD)

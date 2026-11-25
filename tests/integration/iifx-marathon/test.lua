@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- IIfx + Display Card 8•24 GC — System 6.0.8 "Marathon" image, 8 bpp.
 --
 -- The IIfx twin of tests/integration/iicx-marathon: same HD image, same

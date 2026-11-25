@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: IIfx MacTest Boot (8-bit colour)
 -- Boots the Macintosh IIfx from the MacTest 1.0 floppy with the JMFB display
 -- card configured for 13" RGB at 8 bpp, and verifies MacTest's launch-time

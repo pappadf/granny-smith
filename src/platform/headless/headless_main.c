@@ -283,11 +283,10 @@ int platform_quit(void) {
 //
 // Headless is a client of its own mailbox (mailbox.h, "an in-process
 // client").  Every statement -- from the script file, stdin, the REPL or a
-// daemon connection -- is posted as a REQ_SCRIPT and runs as a job on the
-// job thread (job/job.h), exactly as a terminal line does in the browser;
-// this thread meanwhile does what the browser's tick does: one frame-unit
-// when the machine runs, then a drain, which serves the job's calls into
-// the object tree and delivers its result.  `scheduler.run N` inside a
+// daemon connection -- is posted as a REQ_SCRIPT and runs as a job
+// (job/job.h), exactly as a terminal line does in the browser; this thread
+// does what the browser's tick does: one frame-unit when the machine runs,
+// then a drain, which steps the job's task and delivers its result.  `scheduler.run N` inside a
 // script waits for N because the job waits for its mode; `scheduler.run`
 // returns at once and the machine runs on between statements.
 

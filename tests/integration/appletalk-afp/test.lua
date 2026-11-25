@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- AppleTalk AFP mount — Chooser → AppleShare → mount a host-shared volume.
 --
 -- Boots System 6 from the SCSI HD, publishes a host directory as an
@@ -49,7 +48,7 @@ assert(appletalk.afp.stats.commands_served == 0, "AFP traffic before the client 
 assert(appletalk.afp.sessions.count == 0, "an ASP session exists before the Chooser ran")
 
 -- Apple menu → Chooser → AppleShare → the server → Guest: the volume list
--- (lib/afp.script), checking the screens on the way.
+-- (lib/afp.lua), checking the screens on the way.
 afp_chooser_to_volumes("chooser-server-listed.png", "volume-list.png")
 
 -- The session is up and speaking AFP 2.0 before a single volume is mounted.

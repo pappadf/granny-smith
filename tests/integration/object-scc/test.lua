@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration: `scc` object class.
 -- The new `scc.*` paths and the legacy `scc loopback` command must
 -- share the same backing state — flipping one and reading via the

@@ -114,7 +114,7 @@ void object_root_reset(void) {
     // This path used to detach, release the Meta node and free() -- skipping
     // object_fire_invalidators and the destructor hook, both of which
     // object_delete runs.  The invalidator contract is the mechanism that
-    // makes a held node safe: shell_var.c's binding_store registers one on
+    // makes a held node safe: a holder of a VK_OBJECT registers one on
     // whatever VK_OBJECT it holds, and without the fire it keeps a `watched`
     // pointer into freed memory and is never marked stale, so the next read
     // dereferences it.  This was the one path that bypassed it.

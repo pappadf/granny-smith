@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- LaserWriter 8 print over AppleTalk from System 7.5, timed.  See config.mk
 -- for the defect this row guards against.
 --

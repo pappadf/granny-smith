@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Power Macintosh 6100 with SIMM bank 2 empty (docs/reference/machines/pdm/
 -- hmc.md, "Bank placement").
 --

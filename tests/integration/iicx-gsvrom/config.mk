@@ -1,7 +1,7 @@
 # Integration suite: IIcx cards on their substitute GS declaration ROM
 #
 # One daemon run; rows re-instantiate via machine.boot and share the
-# harness in ../lib/mac.script. Absorbs iicx-gsvrom-video-modes,
+# harness in ../lib/mac.lua. Absorbs iicx-gsvrom-video-modes,
 # iicx-gsvrom-24ac, iicx-gsvrom-824gc and iicx-gsvrom-custom-mode.
 #
 # Every row here runs a card on its RUNTIME-GENERATED declaration ROM

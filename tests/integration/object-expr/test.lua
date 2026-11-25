@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: ${...} expression substitution + predicate assert.
 --
 -- Boots Plus, runs a few thousand instructions, then exercises:

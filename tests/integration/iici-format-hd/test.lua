@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: IIci + built-in RBV — format a blank HD under System 6.0.8
 --
 -- Creates a blank HD20SC SCSI disk, boots a IIci from the SSW 6.0.8 800K floppy

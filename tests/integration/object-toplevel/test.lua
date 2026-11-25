@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration: the appletalk + mouse top-level objects.
 --
 -- Exercises the AppleTalk/AFP object surface: stack enablement and node ID,

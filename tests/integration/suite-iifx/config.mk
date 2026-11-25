@@ -1,7 +1,7 @@
 # Integration suite: Macintosh IIfx
 #
 # One daemon run; rows re-instantiate via machine.boot and share the
-# harness in ../lib/mac.script. Absorbs iifx-boot, iifx-boot-chime,
+# harness in ../lib/mac.lua. Absorbs iifx-boot, iifx-boot-chime,
 # iifx-24ac, iifx-824gc (re-media'd to 7.1) and iifx-aux3-boot.
 #
 # The IIfx has no built-in video: every row names its NuBus card

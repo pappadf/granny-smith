@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Smoke-test every method and attribute on `shell` so a regression in
 -- the class registration or the dispatcher wrapper shows up at make
 -- integration-test time.
@@ -17,7 +16,7 @@ local _ = shell.prompt
 -- the alias add / remove assertions below have a known starting state.
 shell.alias.list()
 
--- `vars` lists every shell variable. shell_var_init seeds TMP_DIR.
+-- `vars` lists the vars table (--var NAME=VALUE); the state seeds TMP_DIR.
 local _ = shell.vars
 
 -- === Methods ==============================================================

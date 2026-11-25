@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- A Mac archive's member names are MacRoman; the VFS shows them as UTF-8 and
 -- finds them as the Finder would.  names.sit (built at setup) holds a folder
 -- "Dossier é" with a file "Café", and a floppy image "Système.dsk", each é

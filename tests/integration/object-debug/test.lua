@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- M6 integration: debug.breakpoints / .logpoints indexed-child
 -- surface. Verifies:
 --   - debug root resolves and lists its children

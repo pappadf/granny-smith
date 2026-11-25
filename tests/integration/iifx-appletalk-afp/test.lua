@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- AppleTalk AFP through the IIfx's SCC IOP -- appletalk-afp-sys7's session
 -- (Chooser -> AppleShare 3.5 -> mount -> copy), on a IIfx.
 --

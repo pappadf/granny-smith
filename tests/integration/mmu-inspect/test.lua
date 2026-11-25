@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- machine.cpu.mmu's inspection methods, the same on every MMU kind:
 --   translate(addr)  {phys, valid, via, access}
 --   walk(addr)       translate's map plus `steps`, one per register, table

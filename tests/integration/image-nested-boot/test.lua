@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: boot from outer.img/partition1/inner.img (see config.mk).
 
 local mac = dofile("../lib/mac.lua")

@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- A disk image inside an archive is offered (expandable) whether the member
 -- is stored or compressed: the listing decodes a compressed member of up to
 -- 64 MB to find out.  It used to probe only a stored one, so a disk in a

@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- The PRAM a machine is built with, read at instruction 0 (pram.md §4, §8).
 -- A real Mac's PRAM has almost always booted before; ours is created with the
 -- machine, so the RTC gives it the store such a Mac would have.  The values

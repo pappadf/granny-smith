@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Quadra 950: Mac OS 7.1 -> Penguin 19 -> Debian 12-era m68k (Linux 6.1.27).
 --
 -- Nothing is clicked.  Mac OS opens `Startup Items:Boot Linux`, Penguin loads

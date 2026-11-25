@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- The q700 started with fd=a fd=b: a in drive 0, b nowhere.
 assert(machine.floppy.drive[0].present, "fd= filled drive 0")
 assert(machine.floppy.drive[0].image.source == F"${vars.WORK_DIR}/a.dsk", "drive 0 holds the first fd=")

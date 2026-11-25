@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: Apple Lisa 2 — full LOS 3.1 INSTALL onto the ProFile hard disk.
 --
 -- Boots the Lisa 2 (rev-H ROM) from the LOS 3.1 install floppy with a blank ProFile

@@ -1,4 +1,3 @@
--- Converted from step2.script by scripts/script-to-lua.py
 -- A new process restores the quick checkpoint onto the same base.
 machine.register("fedcba9876543210", "20261001T000000Z")
 assert(checkpoint.probe(), "the quick checkpoint is there")

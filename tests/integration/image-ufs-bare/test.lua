@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: a bare UFS volume mounts through the image VFS.
 -- The runner cd's into tests/integration/; WORK_DIR is absolute.
 

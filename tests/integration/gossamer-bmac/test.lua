@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- The beige G3's BMAC Ethernet cell, driven by Open Firmware 2.4's own
 -- network package (/pci/mac-io/bmac, alias `enet`).
 --
@@ -25,7 +24,7 @@
 --
 -- The package's receive buffer `rxbfr` is mapped only while an instance is
 -- open; the row receives into a dictionary buffer of its own instead.
--- Commands go in a line at a time, paced by the serial line (lib/gossamer.script).
+-- Commands go in a line at a time, paced by the serial line (lib/gossamer.lua).
 
 local mac = dofile("../lib/mac.lua")
 dofile("../lib/gossamer.lua")

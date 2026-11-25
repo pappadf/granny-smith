@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- AppleTalk AFP from System 7.5 -- Chooser -> AppleShare 3.5 -> mount -> copy.
 --
 -- Every other AFP row mounts from System 6, whose client speaks AFP 2.0.  This

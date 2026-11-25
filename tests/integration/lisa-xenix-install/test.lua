@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Full SCO Xenix 3.0 OS install onto the ProFile (Apple Lisa 2).
 -- See config.mk for the procedure (XENIX Installation Guide May-1984 §1.5.1-1.5.4).
 --

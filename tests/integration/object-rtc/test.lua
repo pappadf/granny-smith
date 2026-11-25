@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- M7b integration: `rtc` object class.
 -- Both the legacy `set-time` command and the new `rtc.time` attribute
 -- read/write the same state — flipping one and reading via the other

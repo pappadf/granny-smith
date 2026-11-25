@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: configuration-document boot.  machine.boot inherits
 -- NOTHING — the document is the whole specification.
 --

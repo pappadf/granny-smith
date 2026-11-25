@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- The reorganised object model: see config.mk.
 
 -- === Root: children and methods, in model order ============================

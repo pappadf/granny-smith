@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: a UDIF (.dmg) image decodes transparently when opened.
 --
 -- The fixture is built by make-fixture.py at setup time from the raw source

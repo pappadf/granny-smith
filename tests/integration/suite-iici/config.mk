@@ -1,7 +1,7 @@
 # Integration suite: Macintosh IIci
 #
 # One daemon run; rows re-instantiate via machine.boot and share the
-# harness in ../lib/mac.script. Absorbs iici-boot and iici-boot-chime,
+# harness in ../lib/mac.lua. Absorbs iici-boot and iici-boot-chime,
 # and adds the IIci's first HD-boot coverage: 7.5, plus the **second 7.6
 # consumer**, moved here from the IIcx precisely because the IIci is a
 # clean-ROM 32-bit machine — 7.6 selects 32-bit addressing itself, so

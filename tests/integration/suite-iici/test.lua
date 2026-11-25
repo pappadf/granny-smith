@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Macintosh IIci suite (see config.mk).
 --
 -- Row map (former directory → row; **bold** = new matrix coverage):

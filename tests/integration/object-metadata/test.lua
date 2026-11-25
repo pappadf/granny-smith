@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- The object-model metadata: see config.mk.  run.sh runs this and compares
 -- the usage blocks it prints with the golden files in this directory.
 
