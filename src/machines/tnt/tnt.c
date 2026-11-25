@@ -288,6 +288,12 @@ static void tnt_memory_layout(config_t *cfg, checkpoint_t *cp) {
     // instead, and the RAM decode is Platinum's.
     if (platinum) {
         tnt_plat_init(cfg);
+        // The retrace clock starts on a fresh machine only: on a restore its
+        // pending event comes back with the scheduler's queue
+        // (scheduler_restore_events), and the reset arming it here too ran
+        // two chains.  Marked armed, the reset leaves it to the queue.
+        if (cp)
+            st->plat.vbl_armed = 1;
         tnt_plat_reset(cfg);
     } else {
         memory_map_add(cfg->memory_map, TNT_CHAOS_BASE + 0x01000000u, 0x01000000u, "Chaos window hi",
