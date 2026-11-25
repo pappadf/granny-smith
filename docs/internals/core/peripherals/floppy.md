@@ -50,3 +50,101 @@ image from the checkpoint's own image list. The Lisa's Sony drive is not a
 `floppy_t` and keeps an ejected diskette open for a faithful reinsert (its
 writes and page-label tags, both in that image's delta, then come back with
 it).
+
+## Write protection
+
+`/WRTPRT` reads the image's writability. A disk opened read-only takes no
+writes at all: `floppy_iwm_write` drops the byte (the head keeps turning,
+so the position still advances) instead of storing it into the track
+buffer, where it used to reach the cache and a checkpoint's residue of a
+disk the guest could not write. An insert with no explicit `writable=`
+opens a MOOF whose INFO chunk records write protection read-only, as the
+original disk's tab was ([image.md](../storage/image.md)); `writable=true`
+overrides it.
+
+## Tracks: what the GCR read path sees
+
+The IWM and the SWIM in IWM mode read a disk as a stream of disk bytes. Each
+drive caches one buffer per side and track (`floppy_track_t`), built on first
+touch by `iwm_track_data()` from `floppy_media_track()` (`floppy_gcr.c`) and
+read in a loop: one revolution, indexed by the drive's `offset`, which every
+data-register read advances (a read takes no emulated time, so the position
+is continuous from whoever read last — the ROM's address-field search to a
+guest routine reading on from there). The buffer is a cache: what it holds is
+a function of the image, rebuilt on the next touch after an eject, a format
+change or a restore; only bytes the guest wrote that never formed a sector
+(the residue) exist nowhere else.
+
+`floppy_media_track()` owns the rule for the bytes:
+
+1. **A plain sector image** (or a side a captured disk does not have, side 1
+   of a 400K disk): the track is laid down from the image's sectors and tags
+   as a Mac formats it — 2:1 interleave, self-sync before each field — and
+   padded with sync to the zone's length (9,320 down to 6,224 bytes).
+2. **A bit-level capture** (a MOOF; `src/core/storage/image_capture.h`)
+   **whose sectors the image still holds**: the captured revolution itself,
+   framed as the IWM frames it in steady state (`gcr_frame_revolution`), so
+   gaps, marks and fields that are not sectors reach the guest as they were
+   on the disk. "Still holds" is a comparison of contents: every sector the
+   capture decodes must have the same data and tag in the image; a sector it
+   could not decode must still hold what the importer gave it (zeros, or the
+   bytes as read for a failing checksum) and must not have been written
+   since (`image_block_in_delta`).
+3. **Some sectors changed**: the capture with each changed sector's data
+   field replaced — from the end of its captured address field through the
+   `DE AA` that closes the data field, the gap becoming sync of the same
+   length and the field a standard one encoded from the image. That is what a
+   drive does when the driver rewrites a sector; the address field, the
+   other fields and the gaps stay as captured. A replacement may grow the
+   track (a short non-standard field replaced by a 709-byte one), within 2%
+   of the capture's length.
+4. **Otherwise** (every sector changed — a reformat; a changed sector with no
+   data field in the capture; growth past 2%): laid down from the sectors as
+   in 1.
+
+The rule reads only the capture and the image's current contents, so a
+track is the same whatever path brought the image to its state: a guest
+write, the eject flush (which rewrites every decodable sector of a dirty
+track, with contents it already had), a quick or a consolidated checkpoint
+restore, a VFS write, a reinsert. The one input that is not content is the
+delta bit of a sector the capture could not read: a guest writing zeros there
+leaves the content as it was but would leave a readable sector on the real
+disk. A consolidated restore clears the delta bit of a block equal to its
+base, so after one such a sector reverts to the capture's unreadable field.
+That case — all-zero data and tags written to exactly the sectors a capture
+could not read — is accepted.
+
+A sector the capture could not read, laid down from sectors (rules 1 and
+4), gets a failing data checksum, as does one the image cannot read; and the
+sector-level paths — `floppy_media_read_sector()` (SWIM3, New Age) and the
+IIfx's IOP SWIM — fail a read of it (`floppy_media_block_unreadable`) rather
+than return the zeros the sector view holds. Writing it makes it readable.
+
+### Track lengths
+
+A track's length is its buffer's (`floppy_track_len`, keyed on the buffer
+being there: `size` is checkpointed plain data and is stale without one). A
+captured track is as long as its revolution — Applesauce captures run a
+little longer than the zone constants — so the data-register read and its
+latch-mode search, the write path, and the time-based RDDATA sense bit all
+wrap at the track's own length. `iwm_track_data()` brings the drive's
+`offset` (modulo the length) and `write_hdr_start` inside the buffer every
+time it hands one out: a head position carried over from a track of another
+length, or restored from a checkpoint, is never used to index past the end.
+A seek resets `offset` to 0, as it always has.
+
+An inspection (`iwm_track_data_peek`, behind the register peeks) caches
+nothing: it sees a built buffer as it is, and for a captured disk builds the
+track into a scratch buffer of its own (which reads the image, and so counts
+toward its activity light); a plain disk's unbuilt track reads as sync.
+
+### Checkpoints
+
+A checkpoint saves each drive's residues — the buffers the guest wrote that
+are `modified` — each with its length; clean buffers are rebuilt from the
+image. A restore bounds a residue's length, before allocating it, by the
+longest track the disk can have: the zone's length, or the capture's longest
+track, plus the 2% a splice may add. The image is reopened by name, so a
+checkpoint also records each drive's capture fingerprint (the MOOF header's
+CRC, or one computed when the file leaves it 0); a restore that reopens a
+different capture is refused. No captured bits go into a checkpoint.

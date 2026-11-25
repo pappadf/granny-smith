@@ -240,14 +240,19 @@ collection [4], 1 296 302 bytes:
 
 ## Appendix A. Granny Smith implementation notes
 
-`src/core/storage/image_moof.c` decodes every track of a 400K or 800K GCR MOOF (bitstream or flux) to its sectors
-and tags when the image is opened and serves the result as a DiskCopy 4.2 image in memory, so the format registry
-reports it as `moof+dc42` and the floppy controllers, the boot and the VFS see an ordinary disk; guest writes go to
-the image's delta. Missing sectors read as zeros and are logged with any data-checksum failures. MFM and Twiggy
-MOOFs are refused. Only what decodes to sectors survives: protection that relies on bit timing or non-standard
-nibbles between sectors is not reproduced. `image.export` to a `.moof` name writes a bitstream MOOF (creator
-`Granny Smith`, 2:1 interleave, gaps sized to each zone's revolution at 394-590 rpm). See
-`docs/internals/core/storage/image.md`.
+`src/core/storage/image_moof.c` frames every track of a 400K or 800K GCR MOOF (bitstream or flux) in the IWM's
+steady state — one revolution pre-rolled, the second kept, the shift register carried across the index — decodes
+its sectors and tags when the image is opened, and serves the result as a DiskCopy 4.2 image in memory, so the
+format registry reports it as `moof+dc42` and the VFS, block exports and the sector-level controllers see an
+ordinary disk; guest writes go to the image's delta. Missing sectors read as zeros and are logged with any
+data-checksum failures. MFM and Twiggy MOOFs are refused. The image also keeps the MOOF itself, and the IWM/SWIM
+GCR read path serves each captured track — gaps and non-sector fields included — while the image's sectors are
+unchanged, with a rewritten sector's data field spliced in; a sector the capture could not read fails a read on
+every controller. INFO's write-protect flag opens the disk read-only unless the insert says otherwise. Bit timing
+and weak bits are not reproduced. `image.export` to a `.moof` name writes a bitstream MOOF (creator `Granny
+Smith`, 2:1 interleave, gaps sized to each zone's revolution at 394-590 rpm), copying an opened MOOF's unchanged
+tracks through bit for bit. See `docs/internals/core/storage/image.md` and
+`docs/internals/core/peripherals/floppy.md`.
 
 ## References
 
