@@ -737,11 +737,11 @@
       "tolerance": 0.2
     },
     "suite-memcjr/lc575-71-hd": {
-      "instr": 433427851,
+      "instr": 433451008,
       "tolerance": 0.2
     },
     "suite-memcjr/lc575-76-fd": {
-      "instr": 596224782,
+      "instr": 596225798,
       "tolerance": 0.2
     },
     "suite-memcjr/q605-71-hd": {
@@ -945,7 +945,7 @@
       "tolerance": 0.2
     },
     "suite-tnt-1997/pm7300-81-hd": {
-      "instr": 3684000000,
+      "instr": 3685500000,
       "tolerance": 0.2
     },
     "suite-tnt-1997/pm7600-76-fd": {
@@ -1018,6 +1018,82 @@
     },
     "suite-pm7200/pm7200-81-hd": {
       "instr": 2089000000,
+      "tolerance": 0.2
+    },
+    "suite-sonora/cc2-753-hd": {
+      "instr": 360132582,
+      "tolerance": 0.2
+    },
+    "suite-sonora/cc2-76-fd": {
+      "instr": 357719178,
+      "tolerance": 0.2
+    },
+    "suite-sonora/lc520-753-hd": {
+      "instr": 353635264,
+      "tolerance": 0.2
+    },
+    "suite-sonora/lc550-76-hd": {
+      "instr": 352637091,
+      "tolerance": 0.2
+    },
+    "suite-sonora/lciii-12in-checkpoint": {
+      "instr": 442397035,
+      "tolerance": 0.2
+    },
+    "suite-sonora/lciii-71-refused": {
+      "instr": 170786750,
+      "tolerance": 0.2
+    },
+    "suite-sonora/lciii-753-hd": {
+      "instr": 348402186,
+      "tolerance": 0.2
+    },
+    "suite-sonora/lciii-76-fd": {
+      "instr": 346284285,
+      "tolerance": 0.2
+    },
+    "suite-sonora/lciii-early-76-hd": {
+      "instr": 337356029,
+      "tolerance": 0.2
+    },
+    "suite-sonora/lciiip-753-hd": {
+      "instr": 353419306,
+      "tolerance": 0.2
+    },
+    "suite-v8/ccl-701-fd": {
+      "instr": 177534270,
+      "tolerance": 0.2
+    },
+    "suite-v8/ccl-753-hd": {
+      "instr": 344545549,
+      "tolerance": 0.2
+    },
+    "suite-v8/ccl-76-hd": {
+      "instr": 340504268,
+      "tolerance": 0.2
+    },
+    "suite-v8/clii-701-fd": {
+      "instr": 342589744,
+      "tolerance": 0.2
+    },
+    "suite-v8/clii-71-hd": {
+      "instr": 343284080,
+      "tolerance": 0.2
+    },
+    "suite-v8/lcii-12in-checkpoint": {
+      "instr": 408228002,
+      "tolerance": 0.2
+    },
+    "suite-v8/lcii-701-fd": {
+      "instr": 342646794,
+      "tolerance": 0.2
+    },
+    "suite-v8/lcii-71-hd": {
+      "instr": 343347720,
+      "tolerance": 0.2
+    },
+    "suite-v8/lcii-753-hd": {
+      "instr": 342578360,
       "tolerance": 0.2
     }
   }
