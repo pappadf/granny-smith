@@ -275,6 +275,14 @@ void scheduler_set_turbo_slice(double secs);
 // `pacing` is the host's setting the frame runs under (scheduler_apply_pacing).
 void scheduler_run_frame(struct scheduler *restrict s, config_t *config, const host_pacing_t *pacing);
 
+// Called at the end of scheduler_run_frame when it completed a frame-unit
+// (its whole cycle budget ran: a frame cut short calls nothing, the call
+// that finishes it does).  One hook for the process, so the scheduler does
+// not depend on its user: the screen recorder (record.h) counts frame-units
+// with it.  NULL removes it.
+typedef void (*scheduler_frame_hook_t)(void);
+void scheduler_set_frame_hook(scheduler_frame_hook_t hook);
+
 // Run under the host's `pacing` from now on: re-derives the effective CPI and
 // resets the governor and pacing estimators when it differs from what the
 // scheduler last ran under.  Every run step calls it; so do the scheduler.*

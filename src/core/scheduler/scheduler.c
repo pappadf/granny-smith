@@ -77,6 +77,13 @@ LOG_USE_CATEGORY_NAME("scheduler");
 // scheduler_set_turbo_slice: 0 = the TURBO_HOST_HEADROOM rule above.
 static double g_turbo_slice_secs = 0.0;
 
+// The frame-unit hook (scheduler_set_frame_hook): NULL when nothing watches.
+static scheduler_frame_hook_t s_frame_hook = NULL;
+
+void scheduler_set_frame_hook(scheduler_frame_hook_t hook) {
+    s_frame_hook = hook;
+}
+
 void scheduler_set_turbo_slice(double secs) {
     g_turbo_slice_secs = (isnan(secs) || secs < 0.0) ? 0.0 : secs;
 }
@@ -1671,6 +1678,10 @@ void scheduler_run_frame(struct scheduler *restrict s, config_t *config, const h
     uint64_t advanced = scheduler_cpu_cycles(s) - before;
 
     s->saved.frame_cycles_left = (advanced < s->saved.frame_cycles_left) ? s->saved.frame_cycles_left - advanced : 0;
+    // The frame-unit's whole budget ran: the screen is the one just before
+    // the next retrace (a frame cut short calls nothing until it completes)
+    if (s->saved.frame_cycles_left == 0 && s_frame_hook)
+        s_frame_hook();
     close_mode_if_stopped(s);
 }
 

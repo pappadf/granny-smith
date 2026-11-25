@@ -322,6 +322,7 @@ callbacks is emitted at its source too; the page routes each in
 | `state:screen` | the renderer, where it consumes a shape change, and once when a machine is attached (boot or restore, before any frame) | `{width, height, par_w, par_h}` |
 | `state:machine_booted` | the swap step (`system_swap_in`): `machine.boot`, `checkpoint.load` (not `machine.restart`, which builds nothing) | `{model, restored}` |
 | `state:machine_shut_down` | `system_shut_down` (`machine.shutdown`): the machine is gone and none replaces it | `{}` |
+| `state:recorder` | the screen recorder (`record.c`): a recording `started`, at most once a host second while `recording`, a new file (`segment`), an `error` (then `stopped`), `stopped` | `{state, path, segment, frames, seconds, bytes, dropped}`, `message` with `error` |
 | `notify:floppy` | the floppy controller, on insert, eject (guest or host) and restore | `{drive, present}` |
 | `notify:media` | the SCSI bus, when a device's medium is inserted or ejected (guest or host) | `{bus, id, present}` |
 | `notify:drive_activity` | the tick, on a light's edge; a machine change turns lit lights off and re-bases | `{kind, state}` |

@@ -48,6 +48,7 @@
 #include "via.h"
 #include "vrom.h"
 #include "event/event.h"
+#include "record/record.h"
 
 #include <assert.h>
 #include <dirent.h>
@@ -1271,6 +1272,8 @@ void system_swap_in(config_t *cfg, bool restored, const struct host_pacing *paci
     event_emitf(GS_EVENT_STATE, "{\"event\":\"machine_booted\",\"model\":\"%s\",\"restored\":%s}",
                 cfg->machine->id ? cfg->machine->id : "", restored ? "true" : "false");
     platform_machine_attached();
+    // A recording carries on over the new machine: a cut, or its next segment
+    recorder_machine_attached(restored);
 }
 
 // Shut the active machine down (system.h): the destroy step of build, swap,
@@ -1324,6 +1327,11 @@ void system_destroy(config_t *config) {
     // system_destroy(old) runs *after* system_create(new) has already
     // pinned a fresh emulator that still references the rom object.
     root_uninstall_if(config);
+
+    // The active machine going with nothing in its place (quit, shut down)
+    // ends a recording: the file is finalised while the machine still exists
+    if (global_emulator == config)
+        recorder_machine_gone();
 
     // The keyboard object goes with the root teardown: it is per machine, and
     // any typing still paced out on the scheduler is aimed at a machine that

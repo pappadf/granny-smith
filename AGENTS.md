@@ -277,7 +277,10 @@ simulated network are its siblings at the root:
   `machine.hd` (ProFile, `machine.hd.image`) and `machine.power`; the G3
   desktop adds `machine.ata.device[U].image`.)
 - **emulator services** (siblings of `machine`, in this fixed root order):
-  `scheduler`, `checkpoint`, `files` (host files, disk images and mounts:
+  `scheduler`, `checkpoint`, `recorder` (the screen and sound to a
+  lossless `.mkv` on the guest's clock: `recorder.start(path)` /
+  `recorder.stop()`; `docs/internals/core/record/record.md`), `files`
+  (host files, disk images and mounts:
   `files.ls`/`cp`/`create`/…, `files.images[N]`, `files.mounts[N]`,
   `files.archive`), `debug` (+ `.find`, `.mac`, `breakpoints`/`logpoints`/
   `watchpoints`), `log` (`log.set`, `log.levels`, `log.category["scsi"]`),

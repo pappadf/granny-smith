@@ -9,7 +9,7 @@ for _, m in ipairs(meta.members()) do
 end
 echo(F"root children:${kids}")
 echo(F"root methods:${verbs}")
-assert(kids == " machine scheduler checkpoint pacing predecode jit files debug log shell catalog appletalk", "root children in the fixed order")
+assert(kids == " machine scheduler checkpoint pacing predecode jit recorder files debug log shell catalog appletalk", "root children in the fixed order")
 assert(verbs == " objects attributes methods help time quit echo", "root methods (no download)")
 
 -- === files: one node for host files, images, mounts, archives ==============

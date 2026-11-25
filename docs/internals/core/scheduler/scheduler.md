@@ -985,6 +985,13 @@ or from `scheduler_stop_reason` itself for one from outside (a `scheduler.stop` 
 served between ticks). A machine that is already stopped reports nothing. The mode
 fields live outside the checkpointed block: a restored machine starts with no mode open.
 
+The same end of `scheduler_run_frame` calls the process's frame hook
+(`scheduler_set_frame_hook`) when `frame_cycles_left` has just reached zero, i.e.
+when the call completed a frame-unit; a frame cut short calls nothing until the
+call that finishes it.  The screen recorder counts frame-units with it
+([record.md](../record/record.md) §1); the scheduler does not depend on its user,
+and with no hook set the cost is one NULL test.
+
 ### 10.6 The two speed figures
 
 The status bar shows two numbers about speed, and each is one quantity with one
