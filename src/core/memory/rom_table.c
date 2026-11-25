@@ -43,7 +43,7 @@ static const char *const Q700_Q900[] = {"q700", "q900", NULL};
 static const char *const Q950[] = {"q950", NULL};
 // The djMEMC ("Wombat"/"WLCD") ROMs: the February 1993 Centris ROM and
 // the revision the Quadra 800 and the Quadra 610/650 shipped with.
-static const char *const WOMBAT_1993_02[] = {"c650", "c610", NULL};
+static const char *const WOMBAT_1993_02[] = {"c650", "c610", "q800", "q610", "q650", NULL};
 static const char *const WOMBAT_1993_10[] = {"q800", "q650", "q610", "c650", "c610", NULL};
 // Quadra 840AV / Centris 660AV shared 2 MB "Cyclone/Tempest" ROM.
 static const char *const AV[] = {"q840av", "q660av", NULL};

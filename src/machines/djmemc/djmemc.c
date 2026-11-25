@@ -253,8 +253,6 @@ static const uint8_t djmemc_mac_prom[8] = {0x10, 0x00, 0xE0, 0x90, 0xE0, 0x40, 0
 uint8_t djmemc_prom_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
     (void)cfg;
     (void)addr;
-    if (!djmemc_board(cfg)->has_sonic)
-        return 0xFF; // no Ethernet fitted: nothing drives the bus
     return djmemc_mac_prom[win_off & 7u];
 }
 
@@ -270,8 +268,8 @@ uint8_t djmemc_sonic_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
     (void)addr;
     djmemc_state_t *st = djmemc_st(cfg);
     uint32_t off = win_off & 0xFFFu;
-    if (!st->sonic || (off & 3u) < 2)
-        return st->sonic ? 0 : 0xFF;
+    if ((off & 3u) < 2)
+        return 0;
     uint16_t v = sonic_reg_read(st->sonic, off >> 2);
     return (off & 3u) == 2 ? (uint8_t)(v >> 8) : (uint8_t)v;
 }
@@ -280,8 +278,6 @@ void djmemc_sonic_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t 
     (void)addr;
     djmemc_state_t *st = djmemc_st(cfg);
     uint32_t off = win_off & 0xFFFu;
-    if (!st->sonic)
-        return;
     if ((off & 3u) == 2)
         st->sonic_byte2 = value;
     else if ((off & 3u) == 3)
@@ -607,13 +603,12 @@ static int djmemc_build_devices(config_t *cfg, checkpoint_t *cp) {
     iosb_init(&st->iosb, cfg->machine->freq >= 30000000u);
     iosb_set_dreq(&st->iosb, djmemc_scsi_dreq, st->scsi96);
 
-    if (desc->has_sonic) {
-        machine_part_begin(cfg, cp, "sonic");
-        st->sonic = sonic_init(cp);
-        machine_part(cfg, cp, "sonic", part_save_sonic, st->sonic);
-        sonic_set_irq_callback(st->sonic, djmemc_sonic_irq, cfg);
-        sonic_set_memory_port(st->sonic, &dma_mem_port_physical);
-    }
+    // The SONIC (no wire), bus-mastering through the guest-physical port.
+    machine_part_begin(cfg, cp, "sonic");
+    st->sonic = sonic_init(cp);
+    machine_part(cfg, cp, "sonic", part_save_sonic, st->sonic);
+    sonic_set_irq_callback(st->sonic, djmemc_sonic_irq, cfg);
+    sonic_set_memory_port(st->sonic, &dma_mem_port_physical);
 
     machine_part_begin(cfg, cp, "asc");
     st->asc = asc_init(NULL, cfg->scheduler, cp);

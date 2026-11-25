@@ -93,7 +93,6 @@ typedef struct djmemc_board_desc {
     uint32_t ram_onboard; // soldered RAM: banks 0 (and 1) of 4 MB each
     uint8_t simm_slots; // 72-pin SIMM sockets; slot k = banks 2+2k, 3+2k
     uint32_t vram_size; // VRAM fitted (512 KB base, 1 MB maxed)
-    bool has_sonic; // built-in Ethernet populated
 } djmemc_board_desc_t;
 
 // The I/O island decode (djmemc.c): the IOSB's device windows plus the

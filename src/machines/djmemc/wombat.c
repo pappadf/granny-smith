@@ -6,7 +6,9 @@
 // boards -- Centris 650, Quadra 650, Quadra 800 -- and the PDS-only "WLCD"
 // boards -- Centris 610, Quadra 610.  One substrate (djmemc.c); the models
 // differ only in data: clock, VIA1 identity straps, soldered RAM, SIMM
-// sockets, NuBus sockets, the FPU and the Ethernet option.
+// sockets, NuBus sockets and the FPU.  Every board is modelled with its
+// Ethernet populated: the ROM resets the SONIC unconditionally on all of
+// them (a board without one would wait on it forever).
 //
 // The ROM tells them apart by the VIA1 port-A straps PA6/PA4/PA2/PA1
 // (package and clock) under the shared CPU-ID $A55A2BAD; the BoxFlag it
@@ -57,7 +59,6 @@ static const djmemc_board_desc_t c610_board = {
     .ram_onboard = 0x00400000u,
     .simm_slots = 2,
     .vram_size = 0x00100000u, // modelled maxed (512 KB base)
-    .has_sonic = false, // Ethernet was an option on the Centris 610
 };
 
 static const djmemc_board_desc_t q610_board = {
@@ -66,7 +67,6 @@ static const djmemc_board_desc_t q610_board = {
     .ram_onboard = 0x00400000u,
     .simm_slots = 2,
     .vram_size = 0x00100000u,
-    .has_sonic = true,
 };
 
 static const djmemc_board_desc_t c650_board = {
@@ -75,7 +75,6 @@ static const djmemc_board_desc_t c650_board = {
     .ram_onboard = 0x00800000u,
     .simm_slots = 4,
     .vram_size = 0x00100000u,
-    .has_sonic = true,
 };
 
 static const djmemc_board_desc_t q650_board = {
@@ -84,7 +83,6 @@ static const djmemc_board_desc_t q650_board = {
     .ram_onboard = 0x00800000u,
     .simm_slots = 4,
     .vram_size = 0x00100000u,
-    .has_sonic = true,
 };
 
 static const djmemc_board_desc_t q800_board = {
@@ -93,7 +91,6 @@ static const djmemc_board_desc_t q800_board = {
     .ram_onboard = 0x00800000u,
     .simm_slots = 4,
     .vram_size = 0x00100000u,
-    .has_sonic = true,
 };
 
 // --- Profiles --------------------------------------------------------------------
