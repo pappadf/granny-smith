@@ -82,10 +82,9 @@ typedef struct v8_board {
 // The one substrate every V8-family model binds.
 extern const machine_substrate_t v8_substrate;
 
-// The V8 family's I/O island ($50F00000, 256 KB) as a window table, exposed
-// for the boards' descriptors.
-extern const board_io_range_t v8_io_ranges_tbl[];
-// The Sonora island: the same rows plus Sonora's own registers (sonora.c).
+// The V8 family's I/O island ($50F00000, 256 KB) is the MDU's window table
+// (mdu_io_ranges_tbl); the Sonora island is the same rows plus Sonora's own
+// registers (sonora.c).
 extern const board_io_range_t sonora_io_ranges_tbl[];
 
 // Fixed addresses shared by every chip of the lineage.

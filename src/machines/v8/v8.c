@@ -33,6 +33,7 @@
 #include "m68k_board.h"
 #include "mac_host_io.h"
 #include "machine_checkpoint.h"
+#include "mdu_io.h" // mdu_io_ranges_tbl: the island
 #include "slot_tables.h"
 
 #include "asc.h"
@@ -62,30 +63,26 @@ LOG_USE_CATEGORY_NAME("board");
 // I/O island
 // ============================================================
 
-#define V8_VIA_IO_PENALTY 16
-#define V8_DEV_IO_PENALTY 2
-
-BOARD_IO_ROW_READ(v8_ariel_row_read, v8_ariel_read)
-BOARD_IO_ROW_READ(v8_ariel_row_peek, v8_ariel_peek)
-BOARD_IO_ROW_WRITE(v8_ariel_row_write, v8_ariel_write)
+// The Ariel as the island's colour-DAC device (the VDAC row), its context cfg.
+static uint8_t v8_ariel_dev_read(void *dev, uint32_t off) {
+    return v8_ariel_read((config_t *)dev, off);
+}
+static uint8_t v8_ariel_dev_peek(void *dev, uint32_t off) {
+    return v8_ariel_peek((config_t *)dev, off);
+}
+static void v8_ariel_dev_write(void *dev, uint32_t off, uint8_t value) {
+    v8_ariel_write((config_t *)dev, off, value);
+}
+static const memory_interface_t v8_ariel_iface = {
+    .read_uint8 = v8_ariel_dev_read,
+    .write_uint8 = v8_ariel_dev_write,
+    .peek_uint8 = v8_ariel_dev_peek,
+};
 
 // The $50F00000 island (LC Developer Note p. 11; Color Classic Developer Note
-// Figure 2-3): VIA1, the Combo's SCC and 5380 (handshake, registers and
-// pseudo-DMA windows), the sound block, SWIM, the Ariel and the V8 registers.
-//   base     end      device            penalty            xform               rd  wr     name
-const board_io_range_t v8_io_ranges_tbl[] = {
-    {0x00000, 0x02000, BOARD_DEV_VIA1, V8_VIA_IO_PENALTY, BOARD_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},
-    {0x04000, 0x06000, BOARD_DEV_SCC, V8_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
-    {0x06000, 0x08000, BOARD_DEV_SCSI, V8_DEV_IO_PENALTY, BOARD_IO_FIXED, 0, 0x201, NULL, NULL, "scsi_drq"},
-    {0x10000, 0x12000, BOARD_DEV_SCSI, V8_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scsi_reg"},
-    {0x12000, 0x14000, BOARD_DEV_SCSI, V8_DEV_IO_PENALTY, BOARD_IO_FIXED, 0, 0x201, NULL, NULL, "scsi_blind"},
-    {0x14000, 0x16000, BOARD_DEV_ASC, V8_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "asc"},
-    {0x16000, 0x18000, BOARD_DEV_FLOPPY, V8_DEV_IO_PENALTY, BOARD_IO_STRIDE_512, 0, 0, NULL, NULL, "swim"},
-    {0x24000, 0x26000, BOARD_DEV_VDAC, V8_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, v8_ariel_row_read, v8_ariel_row_write,
-     "ariel", .peek_fn = v8_ariel_row_peek},
-    {0x26000, 0x28000, BOARD_DEV_RBV, V8_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "v8"},
-    {0}, // sentinel
-};
+// Figure 2-3) is the MDU's, row for row (mdu_io.c): VIA1, the Combo's SCC
+// and 5380 (handshake, registers and pseudo-DMA windows), the sound block,
+// SWIM, the Ariel at the VDAC row and the V8 registers at the RBV row.
 
 // Bind the devices the island routes to.
 static void v8_io_bind(config_t *cfg) {
@@ -99,6 +96,7 @@ static void v8_io_bind(config_t *cfg) {
     board_io_bind_dev(io, BOARD_DEV_ASC, st->asc, asc_get_memory_interface(st->asc));
     board_io_bind_dev(io, BOARD_DEV_FLOPPY, cfg->floppy, floppy_get_memory_interface(cfg->floppy));
     board_io_bind_dev(io, BOARD_DEV_RBV, st->rbv, rbv_get_memory_interface(st->rbv));
+    board_io_bind_dev(io, BOARD_DEV_VDAC, cfg, &v8_ariel_iface);
 }
 
 // ============================================================

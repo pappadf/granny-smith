@@ -44,6 +44,7 @@
 #include "board_io.h"
 #include "cpu.h"
 #include "log.h"
+#include "mdu_io.h" // the island rows Sonora extends
 #include "memory.h"
 #include "rbv.h"
 
@@ -131,34 +132,27 @@ static void sonora_enet_write(config_t *cfg, uint32_t win_off, uint32_t addr, ui
     memory_signal_bus_error(v8_st(cfg)->io.window_base + addr, true); // `addr` is island-relative
 }
 
-BOARD_IO_ROW_READ(sonora_ariel_row_read, v8_ariel_read)
-BOARD_IO_ROW_READ(sonora_ariel_row_peek, v8_ariel_peek)
-BOARD_IO_ROW_WRITE(sonora_ariel_row_write, v8_ariel_write)
-
-#define SONORA_VIA_IO_PENALTY 16
-#define SONORA_DEV_IO_PENALTY 2
-
-// The $50F00000 island: the V8's rows, plus Sonora's extra registers ahead of
-// the RBV-style row they sit inside (first match wins) and the video control
-// block at $28000.  Handler rows name no device (0), as djmemc.c's do: the
-// SONIC window and Sonora's own registers are not the pseudo-VIA2's.
-//   base     end      device            penalty               xform               rd  wr     name
+// The $50F00000 island: the MDU's rows (mdu_io.h) -- the V8's island --
+// plus Sonora's extra registers ahead of the RBV-style row they sit inside
+// (first match wins) and the video control block at $28000.  Handler rows
+// name no device (0), as djmemc.c's do: the SONIC window and Sonora's own
+// registers are not the pseudo-VIA2's.
+//   base     end      device penalty             xform            rd  wr     name
 const board_io_range_t sonora_io_ranges_tbl[] = {
-    {0x00000, 0x02000, BOARD_DEV_VIA1, SONORA_VIA_IO_PENALTY, BOARD_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},
-    {0x04000, 0x06000, BOARD_DEV_SCC, SONORA_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
-    {0x06000, 0x08000, BOARD_DEV_SCSI, SONORA_DEV_IO_PENALTY, BOARD_IO_FIXED, 0, 0x201, NULL, NULL, "scsi_drq"},
-    {0x0A000, 0x0C000, 0, SONORA_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, sonora_enet_read, sonora_enet_write, "sonic"},
-    {0x10000, 0x12000, BOARD_DEV_SCSI, SONORA_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scsi_reg"},
-    {0x12000, 0x14000, BOARD_DEV_SCSI, SONORA_DEV_IO_PENALTY, BOARD_IO_FIXED, 0, 0x201, NULL, NULL, "scsi_blind"},
-    {0x14000, 0x16000, BOARD_DEV_ASC, SONORA_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "asc"},
-    {0x16000, 0x18000, BOARD_DEV_FLOPPY, SONORA_DEV_IO_PENALTY, BOARD_IO_STRIDE_512, 0, 0, NULL, NULL, "swim2"},
-    {0x24000, 0x26000, BOARD_DEV_VDAC, SONORA_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, sonora_ariel_row_read,
-     sonora_ariel_row_write, "ariel", .peek_fn = sonora_ariel_row_peek},
-    {0x26004, 0x26010, 0, SONORA_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, sonora_misc_read, sonora_misc_write,
-     "sonora_regs"},
-    {0x26000, 0x28000, BOARD_DEV_RBV, SONORA_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "sonora_via2"},
-    {0x28000, 0x28004, 0, SONORA_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, sonora_vctl_read, sonora_vctl_write,
-     "sonora_video"},
+    MDU_IO_ROW_VIA1,
+    MDU_IO_ROW_SCC,
+    MDU_IO_ROW_SCSI_DRQ,
+    {0x0A000, 0x0C000, 0, MDU_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, sonora_enet_read, sonora_enet_write, "sonic"},
+    MDU_IO_ROW_SCSI_REG,
+    MDU_IO_ROW_SCSI_BLIND,
+    MDU_IO_ROW_ASC,
+    MDU_IO_ROW_SWIM("swim2"),
+    MDU_IO_ROW_VDAC("ariel"),
+    {0x26004, 0x26010, 0, MDU_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, sonora_misc_read, sonora_misc_write,
+      "sonora_regs"},
+    MDU_IO_ROW_RBV("sonora_via2"),
+    {0x28000, 0x28004, 0, MDU_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, sonora_vctl_read, sonora_vctl_write,
+      "sonora_video"},
     {0}, // sentinel
 };
 

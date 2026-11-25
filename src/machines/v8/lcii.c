@@ -10,6 +10,7 @@
 #include "v8.h"
 
 #include "machine.h"
+#include "mdu_io.h"
 #include "pram_defaults.h"
 #include "slot_tables.h"
 
@@ -60,7 +61,7 @@ static const v8_board_t lcii_board = {
                .chipset = "V8",
                .rom_base = V8_ROM_START,
                .rom_end = V8_ROM_END,
-               .io_ranges = v8_io_ranges_tbl,
+               .io_ranges = mdu_io_ranges_tbl,
                .io_mirror_mask = V8_IO_MIRROR,
                .io_unmapped_read = 0xFF,
                .bus_err_lo = 0xFE000000u, // the PDS slot's space, empty
