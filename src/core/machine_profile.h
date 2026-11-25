@@ -415,8 +415,12 @@ typedef struct hw_profile {
     uint32_t freq; // CPU clock in Hz
     // Typed MMU kind — the single source of truth behind the exported
     // `mmu.kind` capability.  FPU presence is derived from
-    // cpu_model via cpu_has_fpu(); neither is a separate descriptor field.
+    // cpu_model via cpu_has_fpu(), less `fpu_absent` below.
     mmu_kind_t mmu_kind;
+    // The CPU is built without its FPU although its model has one: the
+    // 68LC040 (Centris 610).  FPU presence is cpu_has_fpu(cpu_model) &&
+    // !fpu_absent.
+    bool fpu_absent;
 
     // Address space
     int address_bits; // 24 or 32

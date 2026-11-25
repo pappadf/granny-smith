@@ -41,6 +41,10 @@ static const char *const IISI[] = {"iisi", NULL};
 static const char *const Q700_Q900[] = {"q700", "q900", NULL};
 // Dedicated Quadra 950 ("Zydeco") 1 MB ROM.
 static const char *const Q950[] = {"q950", NULL};
+// The djMEMC ("Wombat"/"WLCD") ROMs: the February 1993 Centris ROM and
+// the revision the Quadra 800 and the Quadra 610/650 shipped with.
+static const char *const WOMBAT_1993_02[] = {"c650", "c610", "q800", "q610", "q650", NULL};
+static const char *const WOMBAT_1993_10[] = {"q800", "q650", "q610", "c650", "c610", NULL};
 // Quadra 840AV / Centris 660AV shared 2 MB "Cyclone/Tempest" ROM.
 static const char *const AV[] = {"q840av", "q660av", NULL};
 // Power Macintosh 6100/7100/8100 shared 4 MB "Boot PDM 601 1.0" ROM.
@@ -126,8 +130,8 @@ const rom_info_t rom_table[] = {
     {"Color Classic ROM", COLORCLASSIC, "ecd99dc0", 1024 * 1024, 0, 0},
     {"Powerbook 210,230,250 ROM", NONE, "ecfa989b", 1024 * 1024, 0, 0},
     {"Color Classic II & LC 550 & Performa 275,550,560 & Macintosh TV ROM", LC550, "ede66cbd", 1024 * 1024, 0, 0},
-    {"Centris 610,650 ROM", NONE, "f1a6f343", 1024 * 1024, 0, 0},
-    {"Quadra 610,650,maybe 800 ROM", NONE, "f1acad13", 1024 * 1024, 0, 0},
+    {"Centris 610,650 ROM", WOMBAT_1993_02, "f1a6f343", 1024 * 1024, 0, 0},
+    {"Quadra 610,650,maybe 800 ROM", WOMBAT_1993_10, "f1acad13", 1024 * 1024, 0, 0},
     {"Powerbook 150 ROM", NONE, "fda22562", 1024 * 1024, 0, 0},
     {"Quadra 605 ROM", NONE, "ff7439ee", 1024 * 1024, 0, 0},
     {"Powerbook 190cs ROM", NONE, "4d27039c", 2048 * 1024, 0, 0},

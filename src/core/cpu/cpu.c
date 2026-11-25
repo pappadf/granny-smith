@@ -407,6 +407,10 @@ static void register_fpu_aliases(void) {
 
 // Create and initialize a CPU instance for the specified model.
 cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
+    return cpu_init_fpu(cpu_model, cpu_has_fpu(cpu_model), checkpoint);
+}
+
+cpu_t *cpu_init_fpu(int cpu_model, bool fpu, checkpoint_t *checkpoint) {
 
     cpu_t *cpu = (cpu_t *)malloc(sizeof(cpu_t));
     if (!cpu)
@@ -436,7 +440,7 @@ cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
 
     // Allocate FPU state for models that carry one (68030 paired 68882,
     // 68040 on-chip FPU — the same datapath serves both, see fpu.c).
-    if (cpu_has_fpu(cpu->cpu_model)) {
+    if (fpu && cpu_has_fpu(cpu->cpu_model)) {
         cpu->fpu = fpu_init();
     }
 

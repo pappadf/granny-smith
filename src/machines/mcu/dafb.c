@@ -65,6 +65,10 @@ LOG_USE_CATEGORY_NAME("video");
 #define AC842_PCBR0 0x220u
 // DP8531 (+$300): register = (offset >> 4) & 0xF; commit on reg 15
 
+// The mfg/rev nibble an Antelope reports in PCBR1 (any non-zero value is
+// what the driver tests).
+#define DAFB_ANTELOPE_REV 0x1u
+
 // Fallback frame period until the ROM programs real timing.
 // Until the Swatch timing registers are programmed there is no mode line to
 // derive a refresh from, so the fallback is the machine's own 60.15 Hz
@@ -103,6 +107,10 @@ struct dafb {
     // the $C0 bits are set and PCBR0 selects direct color.
     bool ac842a; // true = AC842a model (PCBR1 exists)
     uint8_t pcbr1;
+    // Antelope (the djMEMC boards' AT&T/Sierra CLUT/DAC): an AC842a whose
+    // PCBR1 mfg/rev nibble is non-zero, which tells the driver its 16 bpp
+    // CLUT is linear.  The nibble the part reports when set.
+    uint8_t pcbr1_rev;
     uint8_t version; // DAFB_Test bits 11:9 (0 Q700/Q900, 3 Q950)
 
     // DP8531 nibble registers + committed output
@@ -433,7 +441,7 @@ static void ac842_write(dafb_t *dafb, uint32_t reg, uint8_t value) {
         // what PrimaryInit's presence probe exploits ($06 into PCBR0,
         // 0 "into PCBR1", read PCBR0 back: $06 ⇒ AC842a, 0 ⇒ AC842).
         if (dafb->ac842a && ramdac_seq_addr(&dafb->dac) == 1) {
-            dafb->pcbr1 = (uint8_t)((value & 0xF0u) | (dafb->pcbr1 & 0x0Fu)); // low nibble = RO mfg/rev
+            dafb->pcbr1 = (uint8_t)((value & 0xF0u) | dafb->pcbr1_rev); // low nibble = RO mfg/rev
             LOG(2, "AC842a PCBR1 = $%02X%s", dafb->pcbr1, (dafb->pcbr1 & 0xC0u) == 0xC0u ? " (x555 16bpp)" : "");
         } else {
             dafb->pcbr0 = value;
@@ -462,7 +470,7 @@ static uint8_t ac842_read(dafb_t *dafb, uint32_t reg, bool peek) {
         // the non-Antelope answer, so the driver loads the sparse
         // Trans5to8 CLUT for x555).
         if (dafb->ac842a && ramdac_seq_addr(&dafb->dac) == 1)
-            return dafb->pcbr1;
+            return (uint8_t)((dafb->pcbr1 & 0xF0u) | dafb->pcbr1_rev);
         return dafb->pcbr0;
     default:
         return (uint8_t)dafb->regs[reg >> 2];
@@ -856,6 +864,11 @@ void dafb_set_version(dafb_t *dafb, uint8_t version) {
 void dafb_set_ac842a(dafb_t *dafb, bool ac842a) {
     if (dafb)
         dafb->ac842a = ac842a;
+}
+
+void dafb_set_antelope(dafb_t *dafb, bool antelope) {
+    if (dafb)
+        dafb->pcbr1_rev = antelope ? DAFB_ANTELOPE_REV : 0;
 }
 
 void dafb_set_scsi_drq_query(dafb_t *dafb, int chan, dafb_drq_query_fn fn, void *context) {

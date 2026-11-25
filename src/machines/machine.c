@@ -89,6 +89,11 @@ extern const hw_profile_t machine_lciiip; // LC III+
 extern const hw_profile_t machine_lc520;
 extern const hw_profile_t machine_lc550;
 extern const hw_profile_t machine_colorclassicii; // Color Classic II
+extern const hw_profile_t machine_c610;
+extern const hw_profile_t machine_c650;
+extern const hw_profile_t machine_q610;
+extern const hw_profile_t machine_q650;
+extern const hw_profile_t machine_q800;
 
 // Registry of built-in machine profiles.  A static const array iterated
 // directly: adding a machine is its extern above plus one entry here (this
@@ -101,7 +106,8 @@ static const hw_profile_t *const builtin_machines[] = {
     &machine_mac128k, &machine_mac512k,        &machine_mac512ke,    &machine_se,     &machine_sefdhd, &machine_classic,
     &machine_lcii,    &machine_clii,           &machine_ccl,         &machine_pm7300, &machine_pm7600, &machine_pm8600,
     &machine_pm9600,  &machine_wgs9150,        &machine_wgs9150_120, &machine_lciii,  &machine_lciiip, &machine_lc520,
-    &machine_lc550,   &machine_colorclassicii,
+    &machine_lc550,   &machine_colorclassicii, &machine_c610,        &machine_c650,   &machine_q610,   &machine_q650,
+    &machine_q800,
 };
 static const size_t builtin_machine_count = sizeof(builtin_machines) / sizeof(builtin_machines[0]);
 
@@ -469,7 +475,7 @@ static value_t build_capabilities(const hw_profile_t *p) {
     value_map_builder_t *cpu = val_map_new();
     val_map_put(cpu, "model", val_int((int64_t)p->cpu_model)); // 68000 / 68030 / 68040 / 601 / 604
     val_map_put(cpu, "address_bits", val_int((int64_t)p->address_bits));
-    val_map_put(cpu, "fpu", val_bool(cpu_has_fpu(p->cpu_model)));
+    val_map_put(cpu, "fpu", val_bool(cpu_has_fpu(p->cpu_model) && !p->fpu_absent));
 
     // Typed, not a bool: the debug panels must tell a 68030 PMMU (show
     // TC/CRP/SRP/TT0/TT1/MMUSR) from the Lisa segment MMU (don't) from none.
