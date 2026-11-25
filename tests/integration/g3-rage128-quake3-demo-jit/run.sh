@@ -11,10 +11,8 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 NODE_BIN="$ROOT/build/headless-node/gs-headless"
-# Node has no job thread or I/O worker for it: run both inline, by flag
-# (left to its own fallback, scheduler.run in an inline script retires
-# nothing)
-NODE_FLAGS="--jobs=inline --io=sync"
+# Node has no I/O worker for it: run the I/O inline, by flag
+NODE_FLAGS="--io=sync"
 
 if command -v emcc >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
     echo "building the wasm headless program (make -f Makefile.headless TARGET=node)"

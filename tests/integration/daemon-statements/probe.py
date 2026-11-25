@@ -58,31 +58,31 @@ def session(port, sends, gap=0.0, half_close=True, timeout=20.0):
 proc, port = start_daemon()
 try:
     # 60 statements in one 2.4 KB send: all run (the old read stopped at 2 KB).
-    stmts = "".join(f'echo "marker-{i:02d}-{"x" * 20}"\n' for i in range(60))
+    stmts = "".join(f'print("marker-{i:02d}-{"x" * 20}")\n' for i in range(60))
     check(len(stmts) > 2048, "the batch is over 2 KB")
     out = session(port, [stmts])
     check(all(f"marker-{i:02d}-" in out for i in range(60)), "60 statements in one send all run")
 
     # Two sends 50 ms apart: both run (the old read stopped at the first).
-    out = session(port, ['echo "first-send"\n', 'echo "second-send"\n'], gap=0.05)
+    out = session(port, ['print("first-send")\n', 'print("second-send")\n'], gap=0.05)
     check("first-send" in out and "second-send" in out, "two sends 50 ms apart both run")
 
     # A statement split mid-line across sends is not dispatched half-read.
-    out = session(port, ['echo "split-', 'statement"\n'], gap=0.05)
+    out = session(port, ['print("split-', 'statement")\n'], gap=0.05)
     check("split-statement" in out, "a statement split across sends runs whole")
 
     # Pipelined: the run, then a read, in one send -- the second after the first.
-    out = session(port, ['scheduler.run 5000000\nlet c = machine.cpu.instr_count\necho "after-run=${$c}"\n'])
+    out = session(port, ['scheduler.run 5000000\nc = machine.cpu.instr_count\nprint(F"after-run=${c}")\n'])
     got = [l for l in out.splitlines() if l.startswith("after-run=")]
     check(bool(got) and int(got[0].split("=")[1]) >= 5000000, "a pipelined read runs after the run finishes")
 
     # A half-closing client's run completes (EOF used to cancel it).
-    out = session(port, ['scheduler.run 20000000\nlet c = machine.cpu.instr_count\necho "half-closed=${$c}"\n'])
+    out = session(port, ['scheduler.run 20000000\nc = machine.cpu.instr_count\nprint(F"half-closed=${c}")\n'])
     check("half-closed=" in out, "a half-closing client's scheduler.run completes")
 
-    # An unterminated block at end of input is reported, not dropped.
-    out = session(port, ['if true {\necho "never"\n'])
-    check("incomplete block" in out and "never" not in out, "an unterminated block is reported")
+    # An unfinished Lua chunk at end of input is reported, not dropped.
+    out = session(port, ['if true then\nprint("never")\n'])
+    check("incomplete chunk" in out and "never" not in out, "an unfinished chunk is reported")
 
     # A client that disconnects mid-run cancels it.
     s = socket.create_connection(("127.0.0.1", port))
@@ -92,7 +92,7 @@ try:
     deadline = time.time() + 10
     stopped = False
     while time.time() < deadline:
-        out = session(port, ['let r = scheduler.running\necho "running=${$r}"\n'], timeout=5.0)
+        out = session(port, ['print(F"running=${scheduler.running}")\n'], timeout=5.0)
         if "running=false" in out:
             stopped = True
             break
@@ -102,7 +102,7 @@ try:
     # The cancellation must not leak: the run above was a top-level
     # statement, so nothing consumed the interrupt it raised, and the first
     # loop on the next connection aborted at once with "interrupted" (#171).
-    out = session(port, ['let n = 0\nwhile $n < 3 {\nscheduler.run 100000\n$n = $n + 1\n}\necho "n=${$n}"\n'])
+    out = session(port, ['n = 0\nwhile n < 3 do\nscheduler.run(100000)\nn = n + 1\nend\nprint(F"n=${n}")\n'])
     check("n=3" in out and "interrupted" not in out, "a cancelled run does not interrupt the next connection's loop")
 finally:
     proc.kill()
@@ -110,7 +110,7 @@ finally:
 
 # stdin: an 1100-character line is one statement (a 1024-byte fgets split it).
 long_text = "y" * 1100
-script = f'echo "{long_text}"\nquit\n'
+script = f'print("{long_text}")\nquit\n'
 res = subprocess.run([HEADLESS, f"rom={ROM}", "--script-stdin"], input=script, capture_output=True, text=True,
                      timeout=60)
 lines = res.stdout.splitlines()

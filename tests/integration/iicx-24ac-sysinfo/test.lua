@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: IIcx + Display Card 24AC — floppy insert + launch System Info
 --
 -- A variant of iicx-24ac.  Same boot: the genuine pre-installed disk image

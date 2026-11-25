@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- TNT NVRAM lifetime -- see config.mk.
 
 machine.boot{model = "pm7500", ram = 32768, rom = vars.ROM}

@@ -1,4 +1,3 @@
--- Converted from step1.script by scripts/script-to-lua.py
 -- Checkpoint step 1: boot the 6.0.8 floppy to a settled desktop and save.
 -- The floppy comes from fd= (run.sh); the library's settle wait means the
 -- save point is a screen state rather than an instruction count that rots.

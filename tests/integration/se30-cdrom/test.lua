@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: SE/30 CD-ROM
 -- Boots SE/30 from a 1.44MB floppy (System 7.0.1) with a SCSI CD-ROM
 -- device attached via cdrom= CLI argument.

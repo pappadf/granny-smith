@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- The beige Power Macintosh G3's Open Firmware device tree (rung G6).
 --
 -- The reference is a full `dump-device-tree` from a real Rev C beige G3
@@ -25,7 +24,7 @@
 -- The reference prints hex in lower case and our console in upper case;
 -- the assertions use what this firmware prints.  Everything runs over the
 -- SCC channel A console; the row stops the boot by holding
--- Command-Option-O-F from power-on (see lib/gossamer.script).
+-- Command-Option-O-F from power-on (see lib/gossamer.lua).
 
 local mac = dofile("../lib/mac.lua")
 dofile("../lib/gossamer.lua")

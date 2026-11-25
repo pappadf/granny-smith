@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- The Rage 128 GL's Concurrent Command Engine, exercised register by register.
 --
 -- As in rage128-2d, the card sits in socket A1 of a Power Macintosh 9500

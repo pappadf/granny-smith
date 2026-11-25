@@ -22,8 +22,7 @@ GS_STORAGE_CACHE="$STORAGE_CACHE" "$HEADLESS_BIN" \
     --no-prompt --script-stdin --speed=turbo <<EOF
 files.identify "$IMG"
 files.cp "$FINDER/rsrc/_raw" "$EXTRACT/rsrc"
-let n = files.mounts.find("$IMG")
-files.mounts[\$n].unmount
+files.mounts[files.mounts.find("$IMG")].unmount()
 quit
 EOF
 

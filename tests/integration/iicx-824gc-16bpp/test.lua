@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: IIcx + 8•24 GC — 16-bpp rasterizers via a VidComm switch.
 --
 -- 16 bpp is runtime-only on this card (the old ROM Slot Manager caps boot

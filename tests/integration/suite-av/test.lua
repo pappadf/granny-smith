@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- AV family suite — Quadra 840AV (Cyclone) and Centris/Quadra 660AV (Tempest).
 --
 -- Row map:

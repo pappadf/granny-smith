@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: image-VFS descent into A/UX UFS.
 -- Runner cd's into this directory; paths are relative.
 

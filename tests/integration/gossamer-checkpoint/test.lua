@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: beige G3 checkpoint save/restore
 -- This test uses a custom runner (run.sh) - this file exists for auto-discovery
 -- See run.sh for the actual test implementation

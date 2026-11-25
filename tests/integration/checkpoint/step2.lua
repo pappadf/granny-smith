@@ -1,4 +1,3 @@
--- Converted from step2.script by scripts/script-to-lua.py
 -- Checkpoint step 2: boot the SCSI HD, then restore step 1's
 -- floppy-booted checkpoint over that live machine — the restore has to
 -- replace a differently-shaped device set, not fill in a blank one.

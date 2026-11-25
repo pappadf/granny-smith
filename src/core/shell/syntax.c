@@ -2,8 +2,8 @@
 // Copyright (c) pappadf
 
 // syntax.c
-// Statement classification and the shared lexers.  See syntax.h and
-// docs/internals/core/shell/shell.md ("Statements").
+// Command-line classification and the shared lexers.  See syntax.h and
+// docs/internals/core/lua/lua.md ("The terminal").
 
 #include "syntax.h"
 

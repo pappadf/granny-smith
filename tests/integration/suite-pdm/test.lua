@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 local run_pdm_75
 -- PDM family suite — the family's acceptance rows.
 --

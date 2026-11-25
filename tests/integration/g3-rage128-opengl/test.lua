@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- OpenGL on an ATI Rage 128 GL under Mac OS 9.2.1.
 --
 -- The boot of g3-rage128-macos921, then the OpenGL SDK CD: the Finder
@@ -17,7 +16,7 @@
 -- frame from run to run, so it is not pinned.
 --
 -- The mouse is the ADB mouse in its default (delta) mode, stepped to its
--- target: under 9.2.1 the "global" warp of lib/mac.script's click() is
+-- target: under 9.2.1 the "global" warp of lib/mac.lua's click() is
 -- not reliable.
 
 local mac = dofile("../lib/mac.lua")

@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Plus + Beyond Dark Castle from MOOF floppies (see config.mk).
 --
 -- All coordinates are Plus-screen absolute (512x342).  Regenerate the

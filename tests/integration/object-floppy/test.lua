@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- M7e integration: `floppy` object class.
 -- fd0 is loaded with a System 6.0.8 disk, fd1 is empty. The script
 -- walks both drives, verifies present/disk reflect the load state,

@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 local nav, untick
 -- Integration test: install MkLinux DR3 onto the single Mac OS + MkLinux drive.
 --

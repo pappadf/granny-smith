@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- vrom.identify — NuBus declaration-ROM Format-Block CRC identity.
 --
 -- Every declaration ROM (genuine cards and the "fake" SE/30 onboard-video

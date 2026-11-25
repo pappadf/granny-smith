@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Plus + MusicWorks 0.42 — boot the MFS floppy to the Finder, open
 -- Samples/"Brandenburg #3" in MusicWorks, click PLAY, and golden-match a
 -- window of the four-voice PWM music (see config.mk).

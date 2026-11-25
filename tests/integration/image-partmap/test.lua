@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: image partmap + probe against an APM-formatted image.
 -- The runner cd's into this directory before executing, so paths are
 -- relative to tests/integration/image-partmap/.

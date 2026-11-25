@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- AppleTalk AFP long names.
 --
 -- A Mac name is at most 31 characters.  This row publishes a share holding a
@@ -35,7 +34,7 @@ assert(appletalk.afp.stats.commands_served == 0, "AFP traffic before the client 
 assert(appletalk.afp.sessions.count == 0, "an ASP session exists before the Chooser ran")
 
 -- Apple menu → Chooser → AppleShare → the server → Guest: the volume list
--- (lib/afp.script).
+-- (lib/afp.lua).
 afp_chooser_to_volumes("", "")
 
 -- The session is up and speaking AFP 2.0 before a single volume is mounted.

@@ -1,10 +1,9 @@
--- Converted from afp.script by scripts/script-to-lua.py
-local mac = dofile("mac.lua") -- NOTE: no direct mac.script include (this file is included by another); the library runs once per chunk
--- tests/integration/lib/afp.script — the Mac Plus / System 6 AppleShare
+local mac = dofile("mac.lua") -- NOTE: no direct mac.lua include (this file is included by another); the library runs once per chunk
+-- tests/integration/lib/afp.lua — the Mac Plus / System 6 AppleShare
 -- mount the appletalk-afp* tests share: Apple menu → Chooser → AppleShare →
 -- the emulated server → Guest → the volume → close the Chooser.
 --
--- Pull in after ../lib/mac.script.  The coordinates are the 512x342 Plus
+-- Pull in after ../lib/mac.lua.  The coordinates are the 512x342 Plus
 -- desktop with that System 6 volume's Apple menu (About / Access Privileges /
 -- Alarm Clock / Battery / Calculator / Chooser).  Every wait is in guest
 -- instructions and identical in every caller, so the screens each caller
@@ -15,7 +14,7 @@ local mac = dofile("mac.lua") -- NOTE: no direct mac.script include (this file i
 -- seen it); the settle stays a fixed budget, because what follows a click in
 -- the Chooser is an NBP lookup or an AFP exchange paced by guest timers
 -- behind a screen that does not move.
-function afp_click(x, y, settle) -- global: included file
+function afp_click(x, y, settle)
     machine.adb.mouse.move(x, y)
     scheduler.run(2000000)
     machine.adb.mouse.click(true)
@@ -29,7 +28,7 @@ end
 -- `volumes` are goldens of the two screens on the way (the server listed
 -- after the NBP lookup, the volume list), each "" to check nothing there.
 -- The caller names them, so scripts/check-goldens.py sees the references.
-function afp_chooser_to_volumes(listed, volumes) -- global: included file
+function afp_chooser_to_volumes(listed, volumes)
     -- Apple menu → Chooser (press at the menu title, drag down to the item,
     -- release): the Chooser sits at y=123.
     machine.adb.mouse.move(25, 10)
@@ -61,7 +60,7 @@ end
 
 -- Select the first volume in the list, OK (the mount itself), and close the
 -- Chooser: the AFP volume's icon is then on the desktop.
-function afp_mount_and_close() -- global: included file
+function afp_mount_and_close()
     machine.adb.mouse.move(150, 113)
     scheduler.run(4000000)
     machine.adb.mouse.click(true)

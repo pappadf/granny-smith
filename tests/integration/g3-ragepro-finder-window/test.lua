@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- A Finder window on the beige G3's built-in ATI Rage Pro, Mac OS 9.2.1.
 --
 -- The disk is installed and never booted, so the first boot runs the Setup
@@ -15,7 +14,7 @@
 --   * grown: the larger window redrawn from the scrolled position.
 --
 -- The mouse is the ADB mouse in its default (delta) mode, stepped to its
--- target: under 9.2.1 the "global" warp of lib/mac.script's click() is
+-- target: under 9.2.1 the "global" warp of lib/mac.lua's click() is
 -- not reliable.
 
 local mac = dofile("../lib/mac.lua")

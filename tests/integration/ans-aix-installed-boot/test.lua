@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Cold boot of an installed AIX 4.1.5.  See config.mk for what the media is
 -- and why it is gated.
 --

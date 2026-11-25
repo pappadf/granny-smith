@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- rom.identify and catalog.profile probe surface.
 --
 -- Headless boots Plus from plus-v3-4d1f8172.rom (config.mk's TEST_ROM); we then

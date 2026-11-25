@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- TNT PCI slot topology and the config-cycle contract
 -- (docs/internals/core/peripherals/pci.md).
 --

@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- M7f integration: `sound` object class.
 -- Walks the four members and exercises mute() — the boot enables
 -- sound around the chime, so `enabled` flips during the run; we

@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- The Plus ROM's VBL handler writes Ticks ($16A) sixty times a second, with or
 -- without a disk, so a write logpoint there fires steadily.
 scheduler.run(20000000)

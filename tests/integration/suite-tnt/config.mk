@@ -2,11 +2,11 @@
 # 7500/8500/9500)
 #
 # One daemon run; rows re-instantiate via machine.boot (the suite-pdm
-# shape) and ../lib/mac.script provides the harness (row filter,
+# shape) and ../lib/mac.lua provides the harness (row filter,
 # keep-going, REGEN, condition-based waits).  Absorbs the former
 # tnt-hd-boot, tnt-hd-boot-8500, tnt-hd-boot-9500 and
 # tnt-pci-voodoo2-display directories; their assertions live on as rows
-# (see test.script's row map).
+# (see test.lua's row map).
 #
 # Each row attaches the published 7.6 image directly: every writable
 # attach mints its own delta instance under the test's storage cache, so

@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: IIcx dual display — JMFB in $9 (default) + 8•24 GC in $A.
 --
 -- Every socket resolves its configuration independently, so a machine boots

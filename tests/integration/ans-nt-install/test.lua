@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Installing Windows NT 4.0 for PowerPC on an Apple Network Server 500.
 --
 -- Apple never shipped NT for this machine and Microsoft never shipped a HAL

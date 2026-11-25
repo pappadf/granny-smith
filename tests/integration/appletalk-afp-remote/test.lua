@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- AppleTalk AFP remote server — a second file server with a remote volume.
 --
 -- Boots System 6, adds a file server beside "Shared Folders"

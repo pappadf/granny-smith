@@ -862,7 +862,7 @@ Headless does not arm any VBL event. Its run loops
 
 - one loop (`hl_pump_once`: a frame-unit while the machine runs, then the mailbox
   drain) serves the script file, stdin, the REPL and the daemon alike — each statement
-  is a job on the job thread, and the loop pumps while it waits for the job's result,
+  is a job the drain steps on the emulator thread, and the loop pumps while it waits for the job's result,
   emitting the ~1 Hz heartbeat and polling the daemon socket for disconnect / `stop`;
 - so the REPL stays responsive to Ctrl-C and the `--max-cycles` cap, and a
   `scheduler.run` with no budget holds the statement until the machine stops.

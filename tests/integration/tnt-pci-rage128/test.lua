@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- The ATI Rage 128 GL (Xclaim VR 128 ROM, 113-57406-108) in socket A1 of a
 -- Power Macintosh 9500.
 --
@@ -178,7 +177,7 @@ assert(machine.pci.slot[1].card.regs.vram_size == 0x2000000, "32 MB")
 -- --- The same card in a beige Power Macintosh G3 ---------------------------
 -- Open Firmware 2.4 behind Grackle runs the same FCode and must build the
 -- same node.  Its console is the on-board Rage Pro's screen, so `ttya io`
--- goes in on the keyboard (lib/gossamer.script's recipe) — but only once
+-- goes in on the keyboard (lib/gossamer.lua's recipe) — but only once
 -- this card's probe is over: the FCode spends over a second of guest time
 -- in its DDC and sense waits, and keystrokes typed before it returns are
 -- lost.  The probe's end is visible in the card's own command register: the

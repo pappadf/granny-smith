@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Unused: run.sh builds the archive and drives the extraction.  The shared
 -- runner requires the file to exist.
 quit()

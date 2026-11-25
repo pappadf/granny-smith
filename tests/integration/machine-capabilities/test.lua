@@ -1,5 +1,4 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- The real test logic lives in run.sh (it greps the JSON returned by
 -- catalog.profile for each registered model).  The harness requires a
--- test.script to exist; this stub is unused by the TEST_RUNNER path.
+-- test.lua to exist; this stub is unused by the TEST_RUNNER path.
 quit()

@@ -1,4 +1,3 @@
--- Converted from pdm.script by scripts/script-to-lua.py
 -- Power Macintosh 6100 ROM boot (PowerPC 601): three checkpoints up to the
 -- SCSI-scan wall the ROM ladder parks at.
 predecode.enabled = $PD

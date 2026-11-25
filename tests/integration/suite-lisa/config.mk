@@ -1,7 +1,7 @@
 # Integration suite: Lisa 2 and Macintosh XL
 #
 # One daemon run; rows re-instantiate via machine.boot and share the
-# harness in ../lib/mac.script. Absorbs lisa-profile-boot,
+# harness in ../lib/mac.lua. Absorbs lisa-profile-boot,
 # lisa-xenix-hdinit, lisa-xenix-boot, lisa-xenix-nofloppy, xl-boot and
 # xl-no-media.
 #
@@ -12,7 +12,7 @@
 # six, and the row harness: ROW= to reproduce a single flow, REGEN= to
 # recapture, and per-row perf baselines.
 #
-# The row bodies live in rows.script and were transcribed by script, not
+# The row bodies live in rows.lua and were transcribed by script, not
 # by hand: the Xenix flows are long exact COPS scan-code sequences and
 # retyping them would be the most likely way to break this suite.
 #

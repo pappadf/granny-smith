@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- The second SCSI bus and /RESET -- see config.mk.
 
 -- 53C9x register offsets on $10 centres (the same chip on every board here).

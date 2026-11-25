@@ -230,7 +230,7 @@ Each rule lives in exactly one place in `voodoo2.c`:
 
 Gate: `tests/integration/tnt-pci-voodoo2` (tier unit) — the config
 probe before any instruction runs, the guest firmware's own assignment,
-and `glide-init.script`, a step-by-step replay of 3dfx's own bring-up
+and `glide-init.lua`, a step-by-step replay of 3dfx's own bring-up
 order with every step's postcondition asserted in place and every wait
 bounded. The empty slot's all-ones read is the positive control.
 
@@ -250,7 +250,7 @@ and sign, 12.4 vertices, the sub-pixel rule):
   no seam and no double-drawn pixel (asserted in the gate);
 - parameter iteration from vertex A's truncated position.
 
-Every pinned pixel value and count in `draw.script` records what *this*
+Every pinned pixel value and count in `draw.lua` records what *this*
 rasteriser draws — regression anchors, not hardware conformance.  The
 divergences, each deliberate and localised:
 

@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Built-in video startup mode (see config.mk).
 
 -- Boot `model` with the built-in video at `mode` on `monitor`, to the ROM's

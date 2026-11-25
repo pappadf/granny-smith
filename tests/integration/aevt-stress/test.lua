@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Apple event stress test — many complex operations against two live guest
 -- applications, over System 7.5's own PPC Toolbox and Apple Event Manager.
 --

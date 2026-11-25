@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- debug.frame's contract, per CPU family: the architecture tag, a register
 -- file whose pc is the CPU's, a window whose first row is the PC, and, with
 -- before=N, a window re-synchronised so its row N is exactly the PC (68K

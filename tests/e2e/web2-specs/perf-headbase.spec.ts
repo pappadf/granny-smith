@@ -384,7 +384,7 @@ for (const machine of MACHINES) {
     const median = (v: number[]) => [...v].sort((x, y) => x - y)[Math.floor(v.length / 2)];
     for (const side of ['head', 'base'] as const) {
       // try(): a base without the predecoded cores has no `predecode` object.
-      const pd = (attr: string) => terminalEval(pages[side], `try(predecode.${attr}, "none")`);
+      const pd = (attr: string) => terminalEval(pages[side], `gs.try(function() return predecode.${attr} end, "none")`);
       console.log(
         `PERFBENCH label=${LABEL} machine=${machine} binary=${side} predecode=${await pd('enabled')} ` +
           `lookups=${await pd('lookups')} generic=${await pd('generic_steps')} instr=${await instrCount(pages[side])}`,

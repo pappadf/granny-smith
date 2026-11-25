@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: boot MkLinux DR3 on every PowerPC machine we model.
 --
 -- One published image — `systems/mklinux_dr3_76_single_169mb.img`, 169 MB —
@@ -78,7 +77,7 @@ local function power_on_tnt(model, ram_kb)
     machine.scsi.attach_hd(disk, 0)
 end
 
--- Wait for a golden WITHOUT ever writing it.  mac.script's wait_match captures
+-- Wait for a golden WITHOUT ever writing it.  mac.lua's wait_match captures
 -- under REGEN=1, which is right for the row that owns a golden and wrong for
 -- every other row: a row that is failing would quietly record its own failure
 -- as the reference.  Only the pm7100 row owns the login golden; the rest wait

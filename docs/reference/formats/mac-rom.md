@@ -188,13 +188,13 @@ startup), which its header sum does not cover (§3).
 machine: its `kind`, its `id` (the stored checksum field(s): §3, §4, §5),
 whether its own checksum verifies (`intact`, with a `reason` naming the
 part that does not), and — when the ROM is known — its name and the models
-it boots. From the command line, with a two-line script file:
+it boots. From the command line, with a two-line Lua script file:
 
 ```
-$ cat identify.script
-echo "${machine.rom.identify("/path/to/dump.rom")}"
-quit
-$ build/headless/gs-headless rom=<any bootable ROM> --no-prompt script=identify.script
+$ cat identify.lua
+print(gs.str(machine.rom.identify("/path/to/dump.rom")))
+quit()
+$ build/headless/gs-headless rom=<any bootable ROM> --no-prompt script=identify.lua
 ```
 
 A verifying checksum does not prove the bytes are in the right order (§3),

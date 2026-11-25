@@ -35,8 +35,13 @@ BOOT_ROM="$(find "$ROMS_DIR" -maxdepth 1 -name '*.rom' | sort | head -1)"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-SCRIPT="$WORK/identify.script"
+SCRIPT="$WORK/identify.lua"
 : > "$SCRIPT"
+# A Lua string literal of $1 (backslashes and double quotes escaped).
+lua_str() {
+    local s=${1//\\/\\\\}
+    printf '"%s"' "${s//\"/\\\"}"
+}
 while IFS= read -r -d '' f; do
     base="$(basename "$f")"
     case "$base" in
@@ -45,15 +50,11 @@ while IFS= read -r -d '' f; do
         *.prom) obj="catalog.proms.identify" ;;
         *) continue ;;
     esac
-    printf 'echo GSFILE %s\n' "$base" >> "$SCRIPT"
-    # ${...} interpolation is only recognised inside a double-quoted string
-    # (docs/internals/core/shell/shell.md), so the call has to be quoted -- bare `echo ${...}`
-    # fails to parse with "expected binding name after '$'".  The path uses
-    # the raw single-quoted form because a nested double quote would close
-    # the interpolating string.
-    printf "echo \"\${%s('%s')}\"\n" "$obj" "$f" >> "$SCRIPT"
+    printf 'print(%s)\n' "$(lua_str "GSFILE $base")" >> "$SCRIPT"
+    # The answer is a map: gs.str prints it as its JSON.
+    printf 'print(gs.str(%s(%s)))\n' "$obj" "$(lua_str "$f")" >> "$SCRIPT"
 done < <(find "$ROMS_DIR" -maxdepth 1 -type f -print0 | sort -z)
-echo "quit" >> "$SCRIPT"
+echo "quit()" >> "$SCRIPT"
 
 OUT="$WORK/identify.out"
 GS_STORAGE_CACHE="$WORK/cache" "$HEADLESS_BIN" \

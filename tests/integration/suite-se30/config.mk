@@ -1,7 +1,7 @@
 # Integration suite: Macintosh SE/30
 #
 # One daemon run; rows re-instantiate via machine.boot and share the
-# harness in ../lib/mac.script. Absorbs se30-boot (no-media icon),
+# harness in ../lib/mac.lua. Absorbs se30-boot (no-media icon),
 # se30-boot-chime, se30-floppy-hd (re-media'd to real 7.1 Disk Tools),
 # se30-gsvrom, and boot-matrix's SE/30 6.0.8 row (which is the
 # direct-SWIM transport row); adds an SE/30 x 7.5 HD row that also

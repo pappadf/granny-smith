@@ -67,8 +67,8 @@ test("the console highlights paths, and the round trip fits the budget", async (
     ).__gsEvalForTests;
     const lines = [
       "machine.floppy.drive[0].insert /opfs/a.img writable=true",
-      "let x = $pc + 0x10 # step",
-      'if $x > 3 { echo "n=${$x:d}" }',
+      "local x = $pc + 0x10 -- step",
+      'if x > 3 then print(F"n=${x}") end',
       "debug.breakpoints.add 0x40800000 space=physical",
     ];
     const out: number[] = [];

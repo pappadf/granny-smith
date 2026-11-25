@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- A checkpoint in the middle of an ImageWriter job restores the job: see
 -- config.mk.
 

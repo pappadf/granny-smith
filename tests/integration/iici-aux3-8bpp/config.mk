@@ -5,7 +5,7 @@
 # than the IIsi because A/UX requires an FPU and the IIci has a 68882.  The
 # row seeds the RBV to 8 bpp through its slot-PRAM record, as suite-iici's
 # iici-701-depths does (PRAM $56, BoardID $001F, depth spID $83; see
-# test.script), and expects the graphical login window at 8 bpp.
+# test.lua), and expects the graphical login window at 8 bpp.
 #
 # It ran as a milestone while #183 kept it from the login window.  Three
 # IIci defects stood in the way, all fixed: an undecoded RBV slot-interrupt

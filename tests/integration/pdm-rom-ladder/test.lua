@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- PDM ROM boot ladder (docs/internals/machines/pdm/pdm.md, "Boot ladder").
 --
 -- Every assertion is a hardware truth read from the live machine after a

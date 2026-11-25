@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- The AV MACE register map (see config.mk): register n at $50F1C000 + n*$10.
 
 local mace = 0x50F1C000

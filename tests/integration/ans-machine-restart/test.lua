@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- machine.restart on a machine with two SCSI buses.
 --
 -- What the row is for: a Network Server's rear bays are on `machine.scsi2`,

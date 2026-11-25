@@ -1,5 +1,4 @@
--- Converted from rows.script by scripts/script-to-lua.py
-local mac = dofile("../lib/mac.lua") -- NOTE: no direct mac.script include (this file is included by another); the library runs once per chunk
+local mac = dofile("../lib/mac.lua") -- NOTE: no direct mac.lua include (this file is included by another); the library runs once per chunk
 -- Row bodies for iicx-gsvrom, transcribed BY SCRIPT from the four
 -- directories this suite absorbed (iicx-gsvrom-video-modes, -24ac,
 -- -824gc, -custom-mode). Mechanical edits only: the media insert that
@@ -9,7 +8,7 @@ local mac = dofile("../lib/mac.lua") -- NOTE: no direct mac.script include (this
 -- sense/PRAM seeding are byte-preserved — every row already names its
 -- card and mode, so none of them can inherit staging from a row above.
 
-function row_gsvrom_sweep() -- global: included file
+function row_gsvrom_sweep()
     -- Integration test: IIcx Video Modes — the 8•24's substitute ROM
     --
     -- Clone of ../iicx-video-modes running the 8•24 on the emulator's
@@ -138,7 +137,7 @@ function row_gsvrom_sweep() -- global: included file
     mac.report_perf("iicx-gsvrom/gsvrom-sweep", scheduler.instr_count)
 end
 
-function row_gsvrom_24ac() -- global: included file
+function row_gsvrom_24ac()
     -- The 24AC's substitute ROM: video modes ride the same PRAM-seeding path
     -- as the other cards; the extended-sense probe in the GS ROM picks the
     -- monitor.
@@ -168,7 +167,7 @@ function row_gsvrom_24ac() -- global: included file
     mac.report_perf("iicx-gsvrom/gsvrom-24ac", scheduler.instr_count)
 end
 
-function row_gsvrom_824gc() -- global: included file
+function row_gsvrom_824gc()
     -- GC bring-up on the substitute ROM: boot the 6.0.8 GC system; the 8•24 GC
     -- extension matches the GS ROM's identity records and starts GC-OS on the
     -- card.
@@ -183,7 +182,7 @@ function row_gsvrom_824gc() -- global: included file
     mac.report_perf("iicx-gsvrom/gsvrom-824gc", scheduler.instr_count)
 end
 
-function row_gsvrom_custom_mode() -- global: included file
+function row_gsvrom_custom_mode()
     -- The 8•24 at a custom resolution, which takes its substitute ROM: the
     -- declaration ROM is generated
     -- with an 800x600 video sResource (the default 13" monitor's slot), the

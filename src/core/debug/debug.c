@@ -20,9 +20,9 @@
 #include "debug_data.h"
 #include "debug_mac.h"
 #include "display.h"
-#include "expr.h"
 #include "fpu.h"
 #include "gs_assert.h"
+#include "gs_lua.h"
 #include "lisa_mmu.h"
 #include "log.h"
 #include "log_categories.h"
@@ -34,7 +34,6 @@
 #include "pci.h"
 #include "scheduler.h"
 #include "shell.h"
-#include "shell_var.h"
 #include "storage_util.h"
 #include "system.h"
 #include "system_internal.h"
@@ -391,92 +390,29 @@ static breakpoint_t *add_breakpoint(debug_t *debug, uint32_t addr, addr_space_t 
     return bp;
 }
 
-// `$name` resolver for debugger-side expression contexts: straight
-// through to the shell's scoped binding store (+ alias table).
-static value_t debug_shell_binding(void *ud, const char *name) {
-    (void)ud;
-    return shell_binding_get(name);
-}
-
-// Refuse a breakpoint condition that does not parse, before it is stored:
-// a syntax check only (expr_check), so adding or editing a breakpoint reads
-// and calls nothing.  VK_NONE when `expr` is well-formed, else VK_ERROR
-// naming the condition and what is wrong with it.
+// Refuse a breakpoint condition that does not compile, before it is stored:
+// compiling reads and calls nothing.  VK_NONE when `expr` is well-formed,
+// else VK_ERROR naming the condition and what is wrong with it.
 static value_t check_breakpoint_condition(const char *expr) {
-    value_t r = expr_check(expr, NULL);
-    if (!val_is_error(&r))
-        return r;
-    value_t e = val_err("invalid breakpoint condition '%s': %s", expr, r.err ? r.err : "syntax error");
-    value_free(&r);
-    return e;
+    return gs_lua_condition_check(expr);
 }
 
-// Evaluate a breakpoint condition expression using the full ${...}
-// expression grammar (see src/core/object/expr.c).  Supports anything
-// expr_eval supports — paths (cpu.pc, cpu.d0), method calls
-// (memory.peek.l(0x1201D420)), arithmetic/bitwise/comparison/logical
-// operators, ternary, etc.  Examples:
-//   cpu.pc == 0x40802A14
-//   cpu.d0 == 0
-//   memory.peek.l(0x1201D420) == 0xE000
-//   cpu.supervisor && cpu.pc >= 0x10000000
-//
-// A condition that does not parse is refused when it is set
-// (check_breakpoint_condition); one whose evaluation fails at the hit (a
-// path that does not resolve there, a type error) evaluates to true, so the
-// failure does not silently swallow hits.
+// Evaluate a breakpoint condition: a Lua expression in the shell spelling
+// (gs_lua.h) -- `machine.cpu.d0 == 0`, `$pc >= 0x10000000 && ...`,
+// `machine.memory.peek.l(0x1201D420) == 0xE000`.  Compiled once, run at each
+// hit; false, nil, 0 and none are false.  One whose evaluation fails at the
+// hit (a path that does not resolve there) is true, so the failure does not
+// silently swallow hits.  The text is copied first: the condition may remove
+// the breakpoint that owns it (debug.breakpoints.clear()).
 static bool eval_breakpoint_condition(const char *expr) {
     if (!expr || !*expr)
         return true;
-    while (*expr == ' ' || *expr == '\t')
-        expr++;
-    if (!*expr)
-        return true;
-
-    expr_ctx_t ctx = {
-        .root = object_root(),
-        .binding = debug_shell_binding, // $name → shell bindings/aliases
-        .binding_ud = NULL,
-    };
-
-    // Evaluate a private copy: the expression may remove the breakpoint
-    // that owns `expr` (e.g. debug.breakpoints.clear()).
     char *copy = strdup(expr);
     if (!copy)
         return true;
-    value_t v = expr_eval(copy, &ctx);
+    bool r = gs_lua_condition_eval(copy);
     free(copy);
-    bool result;
-    switch (v.kind) {
-    case VK_BOOL:
-        result = v.b;
-        break;
-    case VK_INT:
-        result = (v.i != 0);
-        break;
-    case VK_UINT:
-        result = (v.u != 0);
-        break;
-    case VK_FLOAT:
-        result = (v.f != 0.0);
-        break;
-    case VK_STRING:
-        result = (v.s && *v.s);
-        break;
-    case VK_NONE:
-        result = false;
-        break;
-    case VK_ERROR:
-        // Parse / resolution error — safer default is to fire so the
-        // user notices the typo rather than missing the breakpoint.
-        result = true;
-        break;
-    default:
-        result = true;
-        break;
-    }
-    value_free(&v);
-    return result;
+    return r;
 }
 
 // Set a logpoint at the specified address range (end_addr == addr for single address)
@@ -638,87 +574,35 @@ static logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t e
     return install_memory_logpoint(debug, addr, end_addr, space, kind, category, level, false);
 }
 
-// Expand a logpoint message template at fire time.
-// The message is a stored (raw) interpolating-string body: `${expr}`
-// splices any expression, `$name` splices a binding. The three
-// event-intrinsic values (`$value`, `$addr`, `$size`) live nowhere
-// else — there is no persistent object holding "the byte that just got
-// written to 0x4000" — so they are pushed as per-fire bindings, layered
-// in front of the shell's regular binding store.
-typedef struct {
-    uint32_t addr;
-    uint32_t value;
-    unsigned size;
-} lp_bindings_t;
-
-static value_t lp_binding(void *ud, const char *name) {
-    const lp_bindings_t *lp = (const lp_bindings_t *)ud;
-    if (strcmp(name, "value") == 0) {
-        // Mask the value to its declared width so 1/2-byte writes don't
-        // print as full 32-bit words.
-        int w = (lp->size == 1) ? 1 : (lp->size == 2) ? 2 : 4;
-        value_t v = val_uint((uint8_t)w, lp->value & access_width_mask(lp->size));
-        v.flags |= VFLAG_HEX;
-        return v;
-    }
-    if (strcmp(name, "addr") == 0) {
-        value_t v = val_uint(4, lp->addr);
-        v.flags |= VFLAG_HEX;
-        return v;
-    }
-    if (strcmp(name, "size") == 0)
-        return val_uint(1, lp->size);
-    // Everything else falls through to the shell's binding store
-    // (scoped `let` bindings, then the alias table as VK_REF).
-    return shell_binding_get(name);
-}
-
-// Render a logpoint's `message=` template.
-//
-// The template is stored raw and re-interpolated on every fire, so each hit
-// runs interp_walk -> expr_eval -> object_resolve with a malloc per `${...}`
-// body.  That looks like a performance defect, bad enough to make a write
-// logpoint on a hot page "effectively unusable".
-//
-// MEASURED before restructuring.
-// A Plus, a write logpoint over 0x0000-0xFFFF, 20M cycles, 71,650 fires in
-// every run, output discarded, best of three:
-//
-//     no message=            455 ms
-//     plain message=         468 ms   (+13 ms; no ${} so it short-circuits)
-//     two-expression ${}=    529 ms   (+61 ms over plain)
-//
-// So the re-parse costs about 0.85 us per fire, roughly 13% -- on top of a
-// path that already costs 6.4 us per fire for the slow-path routing the
-// logpoint itself forces.  The defect is real; the severity is not.  The
-// template is not what makes a hot-page logpoint expensive, and pre-splitting
-// it into a {literal, expr-body} chunk list would add cached state and its
-// invalidation to recover a small fraction of an already-slow debugging path.
-//
-// Deliberately not restructured.  If that changes, the number to beat is
-// above.
+// Render a logpoint's `message=` template: the shell spelling (`$value`,
+// `${machine.cpu.pc}`, `${value:08x}`) compiled to a Lua template the first
+// time it fires and cached by its text (gs.shell_template), so a hot
+// logpoint pays one call per fire, not a parse.
 static void format_logpoint_message(char *buf, size_t buf_size, const char *msg, uint32_t addr, uint32_t value,
                                     unsigned size) {
     if (!msg) {
         buf[0] = '\0';
         return;
     }
-    lp_bindings_t lp = {.addr = addr, .value = value, .size = size};
-    expr_ctx_t ctx = {
-        .root = object_root(),
-        .binding = lp_binding,
-        .binding_ud = &lp,
+    // The three event-intrinsic values live nowhere else -- there is no
+    // object holding "the byte that just got written to 0x4000" -- so they
+    // are per-fire bindings ahead of the globals.  The value is masked to
+    // its width so 1/2-byte writes don't read as full 32-bit words.
+    static const char *const names[] = {"value", "addr", "size"};
+    value_t vals[3] = {
+        val_uint(4, value & access_width_mask(size)),
+        val_uint(4, addr),
+        val_uint(1, size),
     };
-    // Interpolate a private copy: the template may remove the logpoint that
-    // owns `msg` (e.g. ${debug.logpoints.clear()}).
+    // A private copy: the template may remove the logpoint that owns `msg`
+    // (${debug.logpoints.clear()}).
     char *copy = strdup(msg);
     if (!copy) {
         buf[0] = '\0';
         return;
     }
-    value_t v = expr_interpolate_body(copy, &ctx);
+    value_t v = gs_lua_expand(copy, 3, names, vals);
     free(copy);
-
     const char *s = (v.kind == VK_STRING && v.s) ? v.s : (v.kind == VK_ERROR && v.err) ? v.err : "";
     size_t n = strlen(s);
     if (n >= buf_size)

@@ -1,0 +1,54 @@
+-- g3-boot-desktop — a whole Mac OS 9.2.1 boot on the beige G3 (256 MB), from
+-- power-on to the desktop: the ROM's start-up, the extension loading and the
+-- desktop coming up, with the device polling, code loading and 68K emulator
+-- work that the CPU-bound rows' windows leave out.  Run by
+-- scripts/bench/scenario.py (docs/guide/BENCHMARKS.md, "Interactive
+-- scenarios"); not a metric-A/B row.
+--
+-- The disk is gs-test-data `systems/mac_os_9_2_1_516mb_g3.img`.
+--
+--   MODE=boot  attach the disk and save CKPT at power-on
+--   MODE=run   load CKPT and run the boot in three fixed stretches of
+--              scheduler slots (start-up, extensions, desktop), each printing
+--              one @@SCEN line with its host wall time and the guest
+--              instructions it retired
+--
+-- Guard: the desktop is drawn (the whole screen's checksum) at the end, so a
+-- boot that stopped short fails the run rather than timing something else.
+
+-- Run `slots` scheduler slots and report the host time and the guest
+-- instructions they took
+function scen_phase(name, slots)
+    local w0 = scheduler.host_wall_ns
+    local i0 = machine.cpu.instr_count
+    scheduler.run(slots)
+    local di = machine.cpu.instr_count - i0
+    local ns = scheduler.host_wall_ns - w0
+    echo(F"@@SCEN {\"phase\":\"${name}\",\"ns\":${ns},\"instr\":${di}}")
+end
+
+if vars.MODE == "boot" then
+    -- CPI pinned at 2, the value the stretches and guards were placed with,
+    -- so a change of the machine's default CPI does not move them (the
+    -- checkpoint carries it into MODE=run)
+    scheduler.cpi = 2
+    machine.rtc.time = "2026-10-01T12:00:00"
+    -- Open Firmware's factory boot, as the stretches were placed with: a new
+    -- G3 is seeded with Apple's Mac OS X patch (nvramrc, `0 bootr`)
+    machine.nvram.setenv("use-nvramrc?", "false")
+    machine.nvram.setenv("load-base", "4000")
+    machine.nvram.setenv("nvramrc", "")
+    machine.nvram.setenv("boot-command", "boot")
+    machine.scsi.attach_hd(F"${vars.TEST_DATA}/systems/mac_os_9_2_1_516mb_g3.img", 0)
+    checkpoint.save(vars.CKPT)
+    echo(F"@@SCEN {\"phase\":\"boot\",\"instr\":${machine.cpu.instr_count}}")
+else
+    checkpoint.load(vars.CKPT)
+    -- The configuration under test (scenario.py's driver defines it)
+    gs.try(function() return scen_setup() end, nil)
+    scen_phase("startup", 2000000000)
+    scen_phase("extensions", 3000000000)
+    scen_phase("desktop", 3200000000)
+    assert(machine.screen.checksum(0, 0, 480, 640) == 2648497283, F"g3-boot-desktop: the desktop is not drawn (${machine.screen.checksum(0, 0, 480, 640)})")
+end
+quit()

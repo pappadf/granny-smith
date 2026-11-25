@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- The script is the host: see config.mk.  On the Plus, SCC channel B's
 -- control register is written at 0xBFFFF9 and read at 0x9FFFF8, its data
 -- register written at 0xBFFFFD.  RR0 bit 2 is "transmit buffer empty", bit 5

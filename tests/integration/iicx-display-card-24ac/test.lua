@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: IIcx + Macintosh Display Card 24AC NuBus display card
 --
 -- The card is a framebuffer + CLUT + VBL display card plus a hardware

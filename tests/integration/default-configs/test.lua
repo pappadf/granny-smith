@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Default configurations boot (see config.mk).
 
 local mac = dofile("../lib/mac.lua")

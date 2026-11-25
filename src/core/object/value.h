@@ -232,8 +232,8 @@ const char *val_as_str(const value_t *v);
 // narrower set, so `log.set cpu stdout=ON` worked while
 // `machine.floppy.drive[0].insert path ON` did not, for no reason a user
 // could infer.  Note this does NOT subsume the
-// true/false/none LITERAL grammars in parse.c and script.c: those are
-// language keywords, not coercions, and must not start accepting "yes".
+// true/false/none LITERAL grammar in parse.c: those are literal words, not
+// coercions, and must not start accepting "yes".
 bool val_parse_bool(const char *s, bool *out);
 
 // True if *v carries an error.

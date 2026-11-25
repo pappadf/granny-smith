@@ -145,8 +145,8 @@ test('a paused machine repaints after a framebuffer poke', async ({ page }) => {
   const ramKb = (await gsEvalInPage(page, 'machine.ram')) as number;
   const band = ramKb * 1024 - 0x5900 + 64 * 100;
   const script =
-    `for i in 0..640 { machine.memory.poke.l(${band} + $i * 4, ` +
-    `machine.memory.peek.l(${band} + $i * 4) ^ 0xFFFFFFFF) }`;
+    `for i = 0, 639 do machine.memory.poke.l(${band} + i * 4, ` +
+    `machine.memory.peek.l(${band} + i * 4) ~ 0xFFFFFFFF) end`;
   await gsEvalInPage(page, 'shell.run', [script]);
 
   await expect

@@ -2,7 +2,7 @@
 #
 # Auto-discovers and runs all integration tests under tests/integration/
 # Each test subdirectory must contain:
-#   - test.lua: the Lua script that runs the test (test.script: not yet ported)
+#   - test.lua: the Lua script that runs the test
 #   - config.mk: Test configuration (ROM, disk images, arguments, tier)
 #
 # The per-test runner logic lives in scripts/run-integration-test.sh
@@ -72,10 +72,9 @@ VALGRIND_FLAGS := --error-exitcode=1 \
                   --fair-sched=yes \
                   --quiet
 
-# Auto-discover test directories (those containing test.lua, or test.script
-# for a test not yet ported to Lua); TIER= narrows to directories whose
-# config.mk declares that TEST_TIER.
-ALL_TEST_DIRS := $(sort $(patsubst %/test.lua,%,$(wildcard */test.lua)) $(patsubst %/test.script,%,$(wildcard */test.script)))
+# Auto-discover test directories (those containing test.lua); TIER= narrows
+# to directories whose config.mk declares that TEST_TIER.
+ALL_TEST_DIRS := $(sort $(patsubst %/test.lua,%,$(wildcard */test.lua)))
 
 # CI runs by tier and never the unfiltered set, so a test whose config.mk
 # has no recognised `TEST_TIER := unit|matrix|extended` line (a typo, `?=`,
@@ -256,9 +255,8 @@ check-tiers:
 
 # Pattern rule for running individual tests: delegate to the shared
 # runner with per-test result/work dirs.
-# WRAPPER is a command prefix for the headless binary (valgrind below; a
-# script that appends a flag, scripts/compare-jobs-inline.sh); empty by
-# default.
+# WRAPPER is a command prefix for the headless binary (valgrind below);
+# empty by default.
 WRAPPER ?=
 define run_one_test
 	$(if $(FIXTURE_RUN),-)@HEADLESS_BIN="$(HEADLESS_BIN_ABS)" \

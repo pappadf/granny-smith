@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- IIx A/UX 3.0.1 HD Boot.
 --
 -- Boots the IIx from a pre-installed A/UX 3.0.1 HD image, logs in as root,

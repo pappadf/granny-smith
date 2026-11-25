@@ -190,9 +190,8 @@ def main() -> int:
     undecodable = []
     named = set()  # every golden path a script names, resolved
     dynamic_patterns = []  # regexes for names built from a variable
-    # Tests are Lua (test.lua and its step files); a .script is a test of the
-    # shell language itself, or a scenario the e2e specs feed the terminal.
-    for script in sorted(list(root.glob("*/*.lua")) + list(root.glob("*/*.script"))):
+    # Tests are Lua (test.lua and its step files).
+    for script in sorted(root.glob("*/*.lua")):
         if script.parent.name == "lib":
             continue
         refs, waivers, dynamic = scan(script)

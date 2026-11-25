@@ -4,11 +4,10 @@
 // work_queue.h
 // One pthread FIFO worker: a thread that takes items off a queue in order,
 // runs each with the lock released, and files it on a done list in the
-// order it finished, then wakes whoever reports completions.  The shell's
-// job thread (job/job.c) and the I/O worker (io/io_worker.c) are two of
-// these; each keeps its own item type -- with a wq_item_t as its first
-// member -- and its own semantics (cancel, progress, the job seam), and may
-// keep more of its state under the queue's mutex.
+// order it finished, then wakes whoever reports completions.  The I/O
+// worker (io/io_worker.c) is one; it keeps its own item type -- with a
+// wq_item_t as its first member -- and its own semantics (cancel, progress),
+// and may keep more of its state under the queue's mutex.
 
 #ifndef WORK_QUEUE_H
 #define WORK_QUEUE_H

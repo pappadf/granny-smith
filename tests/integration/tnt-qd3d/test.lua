@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- QuickDraw 3D Accelerator Card (pci_card "qd3d") on a Power Macintosh 8500.
 --
 -- The rig: a pm8500 (604, 64 MB) booting Mac OS 7.6 from

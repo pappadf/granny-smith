@@ -1,5 +1,4 @@
--- Converted from rows.script by scripts/script-to-lua.py
-local mac = dofile("../lib/mac.lua") -- NOTE: no direct mac.script include (this file is included by another); the library runs once per chunk
+local mac = dofile("../lib/mac.lua") -- NOTE: no direct mac.lua include (this file is included by another); the library runs once per chunk
 -- Row bodies for suite-lisa, transcribed VERBATIM from the six test
 -- scripts this suite absorbed (lisa-profile-boot, lisa-xenix-hdinit,
 -- lisa-xenix-boot, lisa-xenix-nofloppy, xl-boot, xl-no-media). The only
@@ -12,7 +11,7 @@ local mac = dofile("../lib/mac.lua") -- NOTE: no direct mac.script include (this
 -- configuration with no startup device ("startup": null): the default one
 -- names the ProFile, which would send the boot ROM to an empty disk.
 
-function row_lisa_los31_profile() -- global: included file
+function row_lisa_los31_profile()
     machine.boot{model = "lisa", ram = 2048, rom = "../../data/roms/lisa2-revh-098917b2.rom"}
     -- Cold-boot LOS from the installed ProFile hard disk (no floppy), relying on the
     -- image's OWN on-disk PRAM snapshot.  See config.mk + docs/reference/machines/lisa/pram.md.
@@ -79,7 +78,7 @@ end
 -- 3-4 s.  The oracle is the symptom: over 20 s of idle after boot (its
 -- disk traffic ends just before the desktop appears) the CPU is never held
 -- at interrupt level 1 for half a second.
-function row_lisa_los31_idle() -- global: included file
+function row_lisa_los31_idle()
     machine.boot{model = "lisa", ram = 2048, rom = "../../data/roms/lisa2-revh-098917b2.rom"}
     machine.hd.insert(F"${vars.WORK_DIR}/profile-idle.image")
     assert(machine.hd.pram_init(2, false), "pram_init failed")
@@ -107,7 +106,7 @@ function row_lisa_los31_idle() -- global: included file
     mac.report_perf("suite-lisa/lisa-los31-idle", scheduler.instr_count)
 end
 
-function row_lisa_xenix_hdinit() -- global: included file
+function row_lisa_xenix_hdinit()
     machine.boot{model = "lisa", ram = 2048, rom = "../../data/roms/lisa2-revh-098917b2.rom", config = "{\"startup\":null}"}
     machine.floppy.drive[0].insert("../../data/Lisa/Xenix-3.0/Xenix-3.0-Boot-XProFile.dc42")
     -- SCO Xenix 3.0 — hard-disk initialization (hdinit) on the Apple Lisa 2.
@@ -192,7 +191,7 @@ function row_lisa_xenix_hdinit() -- global: included file
     mac.report_perf("suite-lisa/lisa-xenix-hdinit", scheduler.instr_count)
 end
 
-function row_lisa_xenix_boot() -- global: included file
+function row_lisa_xenix_boot()
     machine.boot{model = "lisa", ram = 2048, rom = "../../data/roms/lisa2-revh-098917b2.rom", config = "{\"startup\":null}"}
     machine.floppy.drive[0].insert("../../data/Lisa/Xenix-3.0/Xenix-3.0-Boot-XProFile.dc42")
     -- Boot SCO Xenix 3.0 from the installed ProFile (Apple Lisa 2).
@@ -274,7 +273,7 @@ function row_lisa_xenix_boot() -- global: included file
     mac.report_perf("suite-lisa/lisa-xenix-boot", scheduler.instr_count)
 end
 
-function row_lisa_xenix_nofloppy() -- global: included file
+function row_lisa_xenix_nofloppy()
     machine.boot{model = "lisa", ram = 2048, rom = "../../data/roms/lisa2-revh-098917b2.rom", config = "{\"startup\":null}"}
     -- Apple Lisa 2 — boot SCO Xenix 3.0 from the ProFile with NO floppy (see config.mk).
     --
@@ -335,7 +334,7 @@ function row_lisa_xenix_nofloppy() -- global: included file
     mac.report_perf("suite-lisa/lisa-xenix-nofloppy", scheduler.instr_count)
 end
 
-function row_xl_macworks_boot() -- global: included file
+function row_xl_macworks_boot()
     machine.boot{model = "macxl", ram = 1024, rom = "../../data/roms/macxl-3a-094c82f0.rom", config = "{\"startup\":null}"}
     machine.floppy.drive[0].insert("../../data/Lisa/MacWorksXL/MacWorksXL_3.0_May1985.dc42")
     -- Integration test: Macintosh XL — MacWorks XL boot to the Finder desktop.
@@ -398,7 +397,7 @@ function row_xl_macworks_boot() -- global: included file
     mac.report_perf("suite-lisa/xl-macworks-boot", scheduler.instr_count)
 end
 
-function row_xl_no_media() -- global: included file
+function row_xl_no_media()
     machine.boot{model = "macxl", ram = 1024, rom = "../../data/roms/macxl-3a-094c82f0.rom", config = "{\"startup\":null}"}
     -- Integration test: Macintosh XL — no startup device ("insert a diskette" prompt).
     --
@@ -451,7 +450,7 @@ end
 -- mean duplicating the ProFile + PRAM setup lisa-los31-profile carries, for a
 -- stronger raster oracle than this row's purpose needs.  If the Lisa ever grows
 -- a state bug that only a running OS reveals, that is the row to extend.
-function row_lisa_checkpoint() -- global: included file
+function row_lisa_checkpoint()
     machine.boot{model = "lisa", ram = 2048, rom = "../../data/roms/lisa2-revh-098917b2.rom"}
     -- Run far enough that the ROM has PROGRAMMED the segment MMU and is running
     -- mapped code before the save.  At 5M instructions it has not: the MMU is
@@ -495,7 +494,7 @@ function row_lisa_checkpoint() -- global: included file
     mac.report_perf("suite-lisa/lisa-checkpoint", scheduler.instr_count)
 end
 
-function row_lisa_los31_lisaem() -- global: included file
+function row_lisa_los31_lisaem()
     machine.boot{model = "lisa", ram = 2048, rom = "../../data/roms/lisa2-revh-098917b2.rom"}
     -- The same cold boot as lisa-los31-profile, from a LisaEm ProFile image
     -- -- a DiskCopy 4.2 file, 20 tag bytes per block, the blocks in the OS's

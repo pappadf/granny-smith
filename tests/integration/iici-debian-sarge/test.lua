@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- IIci: Mac OS 7.1 -> Penguin 19 -> Debian 3.1 "sarge" (Linux 2.2.25).
 --
 -- Nothing is clicked.  Mac OS opens `Startup Items:Boot Linux` (Penguin's saved

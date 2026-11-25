@@ -1,8 +1,7 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Every Open Firmware Apple Network Server ROM boots to its prompt.
 --
 -- Each row cold-boots one ROM with the serial port as the firmware console
--- (lib/ans.script, which boots whatever $ROM names) and asserts three things:
+-- (lib/ans.lua, which boots whatever $ROM names) and asserts three things:
 -- the core identified the file as that ROM (its content id), the ROM's own
 -- checksum verifies, and Open Firmware reached `0 > ` announcing its version.
 -- Before content ids, three of these ROMs identified as 1.1.22 and 2.26B6 as

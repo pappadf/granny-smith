@@ -1,10 +1,10 @@
 # Integration suite: the Apple Network Server's screen rows (ANS 500)
 #
 # One daemon run; rows re-instantiate via machine.boot (the suite-pdm
-# shape) and ../lib/mac.script provides the harness (row filter,
+# shape) and ../lib/mac.lua provides the harness (row filter,
 # keep-going, REGEN, condition-based waits).  Absorbs the former
 # ans-console, ans-macos-2rom and ans-diag-floppy directories; their
-# assertions live on as rows (see test.script's row map).
+# assertions live on as rows (see test.lua's row map).
 #
 # TWO ROMS.  The Open Firmware rows use TEST_ROM below; the Mac OS row
 # loads the 2.0 prototype ROM by path.

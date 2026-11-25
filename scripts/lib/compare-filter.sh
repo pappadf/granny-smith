@@ -2,7 +2,7 @@
 # Copyright (c) pappadf
 #
 # compare-filter.sh -- sourced by scripts/compare-integration-output.sh (the
-# driver of compare-jobs-inline.sh and compare-output.sh): the one filter
+# driver of compare-output.sh): the one filter
 # for integration output two runs may legitimately print differently.
 
 # stdin -> stdout without the lines that differ between two runs of the

@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: Power Macintosh 7100 — boot Copland D11E4 (Caps Lock).
 --
 -- Also settles which input Copland's boot blocks read the Caps Lock latch from.

@@ -175,25 +175,35 @@ it maps.
 
 ## 4. Object-model / shell surface
 
-```
-machine.cpu.mmu.walk 0x40800000                 # the CPU's current privilege
-machine.cpu.mmu.walk(0x2000, false).steps       # user root
-machine.cpu.mmu.map supervisor=false limit=32
-machine.cpu.mmu.descriptor 0x40800050 4         # 68030 short descriptors
-machine.cpu.mmu.descriptor 0x004e0000 8         # one PowerPC PTE group
+At the terminal, as command lines: a walk at the CPU's current privilege
+and one at user privilege, a supervisor map, 68030 short descriptors, one
+PowerPC PTE group, then the Lisa's context 2 map, a context 1 peek and a
+physical peek of main memory:
 
-# The Lisa: one logical address in each of the four contexts
-for c in [0, 1, 2, 3] {
-    echo "ctx ${$c}: ${machine.cpu.mmu.translate(0x20000, context=$c)}"
-}
+```
+machine.cpu.mmu.walk 0x40800000
+machine.cpu.mmu.walk(0x2000, false).steps
+machine.cpu.mmu.map supervisor=false limit=32
+machine.cpu.mmu.descriptor 0x40800050 4
+machine.cpu.mmu.descriptor 0x004e0000 8
 machine.cpu.mmu.map context=2
 machine.cpu.mmu.peek 0x20000 4 context=1
-machine.cpu.mmu.peek 0x3f400 4 physical         # main memory, physically
+machine.cpu.mmu.peek 0x3f400 4 physical
+```
 
-# Which level stopped the walk?
-let w = machine.cpu.mmu.walk(0x11004000)
-let s = $w.steps[len($w.steps) - 1]
-echo "${$s.step} ${$s.outcome} ${$s.reason}"
+And from Lua (a script, or the same lines typed at the terminal):
+
+```lua
+-- The Lisa: one logical address in each of the four contexts
+for c = 0, 3 do
+    local t = machine.cpu.mmu.translate(0x20000, {context = c})
+    print(F"ctx ${c}: ${t}")
+end
+
+-- Which level stopped the walk?
+local w = machine.cpu.mmu.walk(0x11004000)
+local s = w.steps[#w.steps]
+print(s.step, s.outcome, s.reason)
 ```
 
 The web Debug view's MMU section has four tabs, each reading these

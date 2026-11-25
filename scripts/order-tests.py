@@ -23,7 +23,7 @@ without talking to the others, and a local `SHARD=K/N` reproduces CI's.
 
 Checkpoint fixtures: a test whose config.mk says `TEST_PROVIDES := name`
 saves that fixture, and one that says `TEST_NEEDS := name` loads it (both
-take a space-separated list; lib/mac.script's fixture_load / fixture_save).
+take a space-separated list; lib/mac.lua's fixture_load / fixture_save).
 A producer and its consumers are bin-packed as ONE item of their summed
 weight, so they always land on the same shard.  --deps prints the make
 edges for the given tests, one `consumer:producer` per line (the Makefile

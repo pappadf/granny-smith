@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Mac OS 9.2.1 installed onto a blank SCSI disk on a beige G3, then booted.
 --
 -- I1  the CD (SCSI id 3) boots to the Finder with a blank 540 MB disk at
