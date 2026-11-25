@@ -753,10 +753,6 @@ static void compact_scc_irq(void *context, bool active) {
 // Disk-speed PWM (the 128K and 512K)
 // ============================================================
 
-// The sound buffer: 370 words ending $300 below the top of RAM (Guide 2e,
-// ch. 2); the low byte of each word is the disk-speed sample.
-#define COMPACT_SOUND_FROM_TOP 0x300u
-#define COMPACT_SOUND_WORDS    370
 // The pulse-width generator counts its 6-bit sample through a 63-state
 // shift-register sequence, so a sample's duty is its distance along that
 // sequence, not its binary value.  The sequence (next = x >> 1, with bit 5
@@ -790,14 +786,16 @@ static int compact_pwm_position(uint8_t sample) {
 }
 
 // The spindle speed the disk-speed samples in the sound buffer command: the
-// mean duty position over the buffer, through the drive's speed law.
+// mean duty position over the buffer, through the drive's speed law.  The
+// low byte of each sound-buffer word is the disk-speed sample (Guide 2e,
+// ch. 2); this reads the main buffer whichever one vSndPg2 selects.
 static double compact_pwm_rpm(config_t *cfg) {
-    uint32_t base = cfg->ram_size - COMPACT_SOUND_FROM_TOP;
-    const uint8_t *buf = ram_native_pointer(cfg->memory_map, base);
+    unsigned words;
+    const uint8_t *buf = sound_main_buffer(compact_st(cfg)->sound, &words);
     if (!buf)
         return 0;
     int sum = 0, n = 0;
-    for (int i = 0; i < COMPACT_SOUND_WORDS; i++) {
+    for (unsigned i = 0; i < words; i++) {
         int pos = compact_pwm_position(buf[2 * i + 1]); // the word's low byte
         if (pos >= 0) {
             sum += pos;

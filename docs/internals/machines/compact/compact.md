@@ -111,7 +111,8 @@ spindle, and the 64 KB ROM calibrates that by timing /TACH at two speed
 settings and dividing by the difference — a self-regulating drive gives a
 zero difference and a divide-by-zero Sad Mac (0F0004). Once a frame
 `compact_trigger_vbl` averages the disk-speed bytes (the low byte of each
-of the 370 sound-buffer words) as positions along the PWM's 63-state
+of the 370 sound-buffer words, read through `sound_main_buffer`: always the
+main buffer, whichever one vSndPg2 selects for playback) as positions along the PWM's 63-state
 shift-register sequence and hands the resulting speed to
 `floppy_set_pwm_rpm`, which `/TACH` then follows. The speed law (700 rpm
 at position 0, 10 rpm less per step) is an assumption that spans the
