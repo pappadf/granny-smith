@@ -231,7 +231,7 @@ void m68k_board_overlay_init_line_reads(m68k_board_overlay_t *ov, struct config 
     ov->on_change = on_change;
 }
 
-void m68k_board_overlay_set_aperture2(m68k_board_overlay_t *ov, uint32_t base2, uint32_t end2) {
+void m68k_board_overlay_set_alias(m68k_board_overlay_t *ov, uint32_t base2, uint32_t end2) {
     ov->rom_base2 = base2;
     ov->rom_end2 = end2;
 }

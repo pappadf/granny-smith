@@ -54,9 +54,9 @@ typedef struct m68k_board_overlay {
     struct config *cfg;
     uint32_t rom_base; // aperture start, from the board descriptor
     uint32_t rom_end; // aperture end (exclusive)
-    // An optional second ROM aperture (0/0: none), filled and routed exactly
-    // like the first: a board whose ROM answers in two windows (a 24-bit one
-    // and the 32-bit ROM space).  m68k_board_overlay_set_aperture2.
+    // An optional alias of the aperture (0/0: none), filled and routed
+    // exactly like it: a board whose ROM answers in two windows (a 24-bit one
+    // and the 32-bit ROM space).  m68k_board_overlay_set_alias.
     uint32_t rom_base2;
     uint32_t rom_end2;
     void (*map_ram)(struct config *cfg); // the family's RAM-at-zero mapping
@@ -85,11 +85,13 @@ void m68k_board_overlay_init_line(m68k_board_overlay_t *ov, struct config *cfg, 
 void m68k_board_overlay_init_line_reads(m68k_board_overlay_t *ov, struct config *cfg, const char *name,
                                         void (*on_change)(struct config *cfg, bool armed));
 
-// Add the second ROM aperture [base2, end2) (DROP_ON_ACCESS): every arm
-// routes it to the trigger device too, every drop (and
-// m68k_board_overlay_fill_aperture) fills it with direct ROM pages,
-// mirroring the image from base2.  Call after _init, before the first arm.
-void m68k_board_overlay_set_aperture2(m68k_board_overlay_t *ov, uint32_t base2, uint32_t end2);
+// Add an alias of the ROM aperture, [base2, end2) (DROP_ON_ACCESS): every
+// arm routes its pages to the trigger device too (offsets relative to
+// base2), every drop (and m68k_board_overlay_fill_aperture) fills it with
+// direct ROM pages, mirroring the image across it from base2.  Call after
+// m68k_board_overlay_init, before the first arm.  For the V8's 32-bit ROM
+// space beside its 24-bit window; no board sets one yet.
+void m68k_board_overlay_set_alias(m68k_board_overlay_t *ov, uint32_t base2, uint32_t end2);
 
 // RAM back at zero: the pages the overlay covered (the ROM's size from zero),
 // each at its own offset wrapped into the installed RAM.  The FOLLOW_LINE
