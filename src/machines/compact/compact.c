@@ -70,14 +70,17 @@ typedef struct compact_board {
     bool bbu;
     bool has_scsi; // an NCR 5380 at $580000 (Plus, SE, SE FDHD, Classic)
     floppy_type_t floppy_chip; // FLOPPY_TYPE_IWM, or FLOPPY_TYPE_SWIM (SE FDHD, Classic)
-    // BBU boards: the second drive position is the upper internal drive
-    // (vDriveSel steers /ENBL1 to it) and the external port is not modelled;
-    // false: it is the external drive on /ENBL2, and no upper drive is fitted.
-    bool second_internal;
-    // BBU boards: VIA PA4 is vDriveSel, steering /ENBL1 between the lower and
-    // the upper internal drive (SE, SE FDHD).  The Classic has one internal
-    // drive and gives PA4 no such job.
+    // BBU boards with two internal drives (SE, SE FDHD): VIA PA4 is vDriveSel,
+    // steering /ENBL1 between the lower and the upper internal drive, so the
+    // second drive position is the upper internal drive and the external port
+    // (/ENBL2) is not modelled.  False: the second position is the external
+    // drive on /ENBL2 and no upper drive is fitted; the Classic has one
+    // internal drive and gives PA4 no such job.
     bool drive_select;
+    // The 128K and 512K: the single-sided 400K drive has no speed control of
+    // its own, so the board's disk-speed PWM (the sound buffer's low bytes)
+    // sets its spindle (compact_pwm_rpm).
+    bool pwm_disk_speed;
 } compact_board_t;
 
 // The model's board descriptor (hw_profile_t.board).
@@ -274,9 +277,7 @@ static void compact_bbu_map_ram(config_t *cfg) {
 // BBU drive-select boards: steer /ENBL1 to the upper internal drive or, the
 // default, the lower one (/ENBL2, the external port, reaches no drive here).
 static void compact_route_enbl(config_t *cfg, bool upper) {
-    const compact_board_t *board = compact_board(cfg);
-    int enbl1 = upper ? (board->second_internal ? 1 : -1) : 0;
-    floppy_set_enbl_route(cfg->floppy, enbl1, board->second_internal ? -1 : 1);
+    floppy_set_enbl_route(cfg->floppy, upper ? 1 : 0, -1);
 }
 
 // The PAL boards' Phase Read area -- a STUB.  On hardware the value read tells
@@ -924,7 +925,7 @@ static void compact_trigger_vbl(config_t *cfg) {
 
     // A 400K single-sided drive has no speed control of its own: the board's
     // disk-speed PWM sets its spindle, re-read once a frame
-    if (cfg->machine->floppy_slots && cfg->machine->floppy_slots[0].kind == FLOPPY_400K)
+    if (compact_board(cfg)->pwm_disk_speed)
         floppy_set_pwm_rpm(cfg->floppy, compact_pwm_rpm(cfg));
 
     image_tick_all(cfg);
@@ -963,19 +964,22 @@ static const builtin_video_desc_t compact_builtin_video = {
 
 // --- Board descriptors -----------------------------------------------------
 
-// 128K, 512K: PALs, IWM, no SCSI
-static const compact_board_t compact_board_pal = {.bbu = false, .has_scsi = false, .floppy_chip = FLOPPY_TYPE_IWM};
+// 128K, 512K: PALs, IWM, no SCSI, the 400K drive on the disk-speed PWM
+static const compact_board_t compact_board_pal = {
+    .bbu = false, .has_scsi = false, .floppy_chip = FLOPPY_TYPE_IWM, .pwm_disk_speed = true};
+// 512K enhanced: the same board with the Plus's 800K drive, which regulates
+// its own speed
+static const compact_board_t compact_board_512ke = {.bbu = false, .has_scsi = false, .floppy_chip = FLOPPY_TYPE_IWM};
 // Plus: PALs, IWM, the 5380
 static const compact_board_t compact_board_plus = {.bbu = false, .has_scsi = true, .floppy_chip = FLOPPY_TYPE_IWM};
 // SE: BBU, IWM, the 5380, two internal drives
 static const compact_board_t compact_board_se = {
-    .bbu = true, .has_scsi = true, .floppy_chip = FLOPPY_TYPE_IWM, .second_internal = true, .drive_select = true};
+    .bbu = true, .has_scsi = true, .floppy_chip = FLOPPY_TYPE_IWM, .drive_select = true};
 // SE FDHD: BBU, SWIM, the 5380, two internal drives
 static const compact_board_t compact_board_sefdhd = {
-    .bbu = true, .has_scsi = true, .floppy_chip = FLOPPY_TYPE_SWIM, .second_internal = true, .drive_select = true};
+    .bbu = true, .has_scsi = true, .floppy_chip = FLOPPY_TYPE_SWIM, .drive_select = true};
 // Classic: BBU, SWIM, the 5380, one internal drive and the external port
-static const compact_board_t compact_board_classic = {
-    .bbu = true, .has_scsi = true, .floppy_chip = FLOPPY_TYPE_SWIM, .second_internal = false, .drive_select = false};
+static const compact_board_t compact_board_classic = {.bbu = true, .has_scsi = true, .floppy_chip = FLOPPY_TYPE_SWIM};
 
 // --- Shared configuration tables ---------------------------------------------
 
@@ -1099,7 +1103,7 @@ const hw_profile_t machine_mac512ke = {
     .rom_size = 0x020000, // 128 KB, the Plus ROM
     .ram_options = mac512k_ram_options_kb,
     .floppy_slots = mac512ke_floppy_slots,
-    .board = &compact_board_pal,
+    .board = &compact_board_512ke,
 };
 
 // --- Macintosh SE, SE FDHD and Classic --------------------------------------

@@ -31,8 +31,11 @@ $9FFFF8/$BFFFF9, the floppy chip at $DFE1FF, one VIA at $EFE1FE, and a
 | Macintosh Classic | `classic` | BBU | 512 KB | 5380 | SWIM | SuperDrive internal / external |
 
 `compact_board_t` carries `bbu` (the generation of general logic),
-`has_scsi`, `floppy_chip`, and on the BBU boards `drive_select` and
-`second_internal`. Every behavioural difference is a branch on one of them.
+`has_scsi`, `floppy_chip`, `drive_select` (the SE and SE FDHD: PA4 steers
+/ENBL1 between two internal drives) and `pwm_disk_speed` (the 128K and
+512K: the disk-speed PWM sets the 400K drive's spindle; the 512K enhanced
+has its own board for want of it). Every behavioural difference is a
+branch on one of them.
 
 **PAL boards** (128K, 512K, 512K enhanced, Plus) keep the Plus behaviour
 that this file grew from: the overlay follows VIA PA4 (read-side steer,
