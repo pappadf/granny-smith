@@ -44,6 +44,7 @@
 #include "board_io.h"
 #include "cpu.h"
 #include "log.h"
+#include "mdu_io.h" // the island rows Sonora extends
 #include "memory.h"
 #include "rbv.h"
 
@@ -131,34 +132,27 @@ static void sonora_enet_write(config_t *cfg, uint32_t win_off, uint32_t addr, ui
     memory_signal_bus_error(v8_st(cfg)->io.window_base + addr, true); // `addr` is island-relative
 }
 
-BOARD_IO_ROW_READ(sonora_ariel_row_read, v8_ariel_read)
-BOARD_IO_ROW_READ(sonora_ariel_row_peek, v8_ariel_peek)
-BOARD_IO_ROW_WRITE(sonora_ariel_row_write, v8_ariel_write)
-
-#define SONORA_VIA_IO_PENALTY 16
-#define SONORA_DEV_IO_PENALTY 2
-
-// The $50F00000 island: the V8's rows, plus Sonora's extra registers ahead of
-// the RBV-style row they sit inside (first match wins) and the video control
-// block at $28000.  Handler rows name no device (0), as djmemc.c's do: the
-// SONIC window and Sonora's own registers are not the pseudo-VIA2's.
-//   base     end      device            penalty               xform               rd  wr     name
+// The $50F00000 island: the MDU's rows (mdu_io.h) -- the V8's island --
+// plus Sonora's extra registers ahead of the RBV-style row they sit inside
+// (first match wins) and the video control block at $28000.  Handler rows
+// name no device (0), as djmemc.c's do: the SONIC window and Sonora's own
+// registers are not the pseudo-VIA2's.
+//   base     end      device penalty             xform            rd  wr     name
 const board_io_range_t sonora_io_ranges_tbl[] = {
-    {0x00000, 0x02000, BOARD_DEV_VIA1, SONORA_VIA_IO_PENALTY, BOARD_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},
-    {0x04000, 0x06000, BOARD_DEV_SCC, SONORA_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
-    {0x06000, 0x08000, BOARD_DEV_SCSI, SONORA_DEV_IO_PENALTY, BOARD_IO_FIXED, 0, 0x201, NULL, NULL, "scsi_drq"},
-    {0x0A000, 0x0C000, 0, SONORA_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, sonora_enet_read, sonora_enet_write, "sonic"},
-    {0x10000, 0x12000, BOARD_DEV_SCSI, SONORA_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scsi_reg"},
-    {0x12000, 0x14000, BOARD_DEV_SCSI, SONORA_DEV_IO_PENALTY, BOARD_IO_FIXED, 0, 0x201, NULL, NULL, "scsi_blind"},
-    {0x14000, 0x16000, BOARD_DEV_ASC, SONORA_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "asc"},
-    {0x16000, 0x18000, BOARD_DEV_FLOPPY, SONORA_DEV_IO_PENALTY, BOARD_IO_STRIDE_512, 0, 0, NULL, NULL, "swim2"},
-    {0x24000, 0x26000, BOARD_DEV_VDAC, SONORA_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, sonora_ariel_row_read,
-     sonora_ariel_row_write, "ariel", .peek_fn = sonora_ariel_row_peek},
-    {0x26004, 0x26010, 0, SONORA_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, sonora_misc_read, sonora_misc_write,
-     "sonora_regs"},
-    {0x26000, 0x28000, BOARD_DEV_RBV, SONORA_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "sonora_via2"},
-    {0x28000, 0x28004, 0, SONORA_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, sonora_vctl_read, sonora_vctl_write,
-     "sonora_video"},
+    MDU_IO_ROW_VIA1,
+    MDU_IO_ROW_SCC,
+    MDU_IO_ROW_SCSI_DRQ,
+    {0x0A000, 0x0C000, 0, MDU_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, sonora_enet_read, sonora_enet_write, "sonic"},
+    MDU_IO_ROW_SCSI_REG,
+    MDU_IO_ROW_SCSI_BLIND,
+    MDU_IO_ROW_ASC,
+    MDU_IO_ROW_SWIM("swim2"),
+    MDU_IO_ROW_VDAC("ariel"),
+    {0x26004, 0x26010, 0, MDU_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, sonora_misc_read, sonora_misc_write,
+      "sonora_regs"},
+    MDU_IO_ROW_RBV("sonora_via2"),
+    {0x28000, 0x28004, 0, MDU_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, sonora_vctl_read, sonora_vctl_write,
+      "sonora_video"},
     {0}, // sentinel
 };
 
@@ -245,16 +239,7 @@ static void sonora_map_ram(config_t *cfg) {
     sonora_map_ram_decode(cfg, v8_st(cfg)->ram_exp);
 }
 
-void sonora_ram_cfg_written(void *ctx, uint8_t value) {
-    config_t *cfg = (config_t *)ctx;
-    v8_state_t *st = v8_st(cfg);
-    LOG(2, "Sonora RAM configuration = $%02X (pc=%08X)", value, cpu_get_pc(cfg->cpu));
-    st->ram_exp = value;
-    if (!st->overlay.armed)
-        sonora_map_ram_decode(cfg, value);
-}
-
-int sonora_ram_layout(config_t *cfg) {
+static int sonora_ram_layout(config_t *cfg) {
     const v8_board_t *b = v8_board(cfg);
     v8_state_t *st = v8_st(cfg);
     uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
@@ -263,7 +248,7 @@ int sonora_ram_layout(config_t *cfg) {
     st->pcb_host = ram;
     st->simm_host = ram + st->pcb_size;
     st->sonora.vd_sense = 7; // the sense lines come up tri-stated
-    LOG(1, "%s RAM: %u KB soldered + %u KB SIMM", b->chip, st->pcb_size / 1024, st->simm_size / 1024);
+    LOG(1, "%s RAM: %u KB soldered + %u KB SIMM", v8_ops(cfg)->desc.chipset, st->pcb_size / 1024, st->simm_size / 1024);
     return 0;
 }
 
@@ -271,7 +256,7 @@ int sonora_ram_layout(config_t *cfg) {
 // Memory layout
 // ============================================================
 
-void sonora_memory_layout_init(config_t *cfg) {
+static void sonora_memory_layout_init(config_t *cfg) {
     const v8_board_t *b = v8_board(cfg);
     v8_state_t *st = v8_st(cfg);
 
@@ -286,9 +271,10 @@ void sonora_memory_layout_init(config_t *cfg) {
     }
 
     // The overlay: ROM at zero until the first access to the ROM space.
-    m68k_board_overlay_init(&st->overlay, cfg, b->desc.rom_base, b->desc.rom_end, sonora_map_ram, b->chip);
-    memory_map_add(cfg->memory_map, b->desc.rom_base, b->desc.rom_end - b->desc.rom_base, "ROM aperture",
-                   &st->overlay.iface, &st->overlay);
+    const m68k_board_desc_t *d = &sonora_chip_ops.desc;
+    m68k_board_overlay_init(&st->overlay, cfg, d->rom_base, d->rom_end, sonora_map_ram, v8_ops(cfg)->desc.chipset);
+    memory_map_add(cfg->memory_map, d->rom_base, d->rom_end - d->rom_base, "ROM aperture", &st->overlay.iface,
+                   &st->overlay);
     m68k_board_overlay_arm(&st->overlay);
 }
 
@@ -296,12 +282,12 @@ void sonora_memory_layout_init(config_t *cfg) {
 // Checkpoint and reset
 // ============================================================
 
-void sonora_checkpoint(config_t *cfg, checkpoint_t *cp) {
+static void sonora_checkpoint(config_t *cfg, checkpoint_t *cp) {
     v8_state_t *st = v8_st(cfg);
     system_write_checkpoint_data(cp, &st->sonora, sizeof st->sonora);
 }
 
-void sonora_restore(config_t *cfg, checkpoint_t *cp) {
+static void sonora_restore(config_t *cfg, checkpoint_t *cp) {
     v8_state_t *st = v8_st(cfg);
     system_read_checkpoint_data(cp, &st->sonora, sizeof st->sonora);
     if (!st->overlay.armed)
@@ -309,11 +295,36 @@ void sonora_restore(config_t *cfg, checkpoint_t *cp) {
 }
 
 // /RESET: the decoder's registers back to power-on (sense lines tri-stated),
-// and the video they drive with them.
-void sonora_bus_reset(config_t *cfg) {
+// and the video they drive with them; the RBV half and the RAM decode
+// register follow (v8.c).
+static void sonora_bus_reset(config_t *cfg) {
     v8_state_t *st = v8_st(cfg);
     memset(&st->sonora, 0, sizeof st->sonora);
     st->sonora.vd_sense = 7;
-    st->ram_exp = 0;
     v8_video_reset(cfg);
 }
+
+// The Sonora and Ardbeg decoders: 32-bit only, ROM through the whole ROM
+// space (the overlay's trigger), the island with Sonora's registers.
+const v8_chip_ops_t sonora_chip_ops = {
+    .desc =
+        {
+               .chipset = "Sonora",
+               .rom_base = V8_ROM_START,
+               .rom_end = V8_ROM_END,
+               .io_ranges = sonora_io_ranges_tbl,
+               .io_mirror_mask = V8_IO_MIRROR,
+               .io_unmapped_read = 0xFF,
+               .bus_err_lo = 0xFE000000u,
+               .bus_err_hi = 0xFEFFFFFFu,
+               },
+    .ram_layout = sonora_ram_layout,
+    .map_ram_decode = sonora_map_ram_decode,
+    .memory_layout_init = sonora_memory_layout_init,
+    .bus_reset = sonora_bus_reset,
+    .checkpoint = sonora_checkpoint,
+    .restore = sonora_restore,
+    .vram_base = SONORA_VRAM_BASE,
+    .video_ctl = true,
+    // No 24-bit windows: its MMU tables do the remapping.
+};

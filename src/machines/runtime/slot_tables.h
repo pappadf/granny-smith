@@ -53,6 +53,11 @@ extern const storage_device_decl_t mac_default_storage_hd0_cd3[];
 extern const storage_bay_decl_t mac_bays_hd0[];
 extern const storage_bay_decl_t mac_bays_hd0_cd3[];
 
+// RAM options of a board with 4 MB soldered and one 72-pin SIMM socket taking
+// 1, 2, 4, 8, 16 or 32 MB: 4 to 36 MB.  The Sonora boards (LC III, LC 520
+// family, Color Classic II) and the MEMCjr's LC 475 family.
+extern const uint32_t mac_ram_options_4mb_72pin_kb[];
+
 // A profile's CD-ROM drive (hw_profile_t.cdrom_drive) is one of Apple's drive
 // models, scsi_cd_drive_applecd_* in scsi.h: the drive the machine shipped
 // with, or the AppleCD SC Plus for a machine that shipped with none.

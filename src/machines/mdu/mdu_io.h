@@ -48,6 +48,32 @@ void mdu_io_bind(mdu_io_t *io, config_t *cfg, const struct m68k_board_desc *desc
 extern const board_io_range_t mdu_io_ranges_tbl[];
 const board_io_range_t *mdu_io_ranges(void);
 
+// The table's rows, for the islands that extend it (the V8 family's Sonora,
+// sonora.c, which inserts its own registers between them).  Every window but
+// VIA1's charges the same bus turnaround.
+#define MDU_VIA_IO_PENALTY 16
+#define MDU_DEV_IO_PENALTY 2
+//   base     end      device            penalty             xform               rd  wr     name
+// VIA1, the SCC, the 5380's pseudo-DMA handshake, registers and blind-transfer
+// windows, and the sound block.
+#define MDU_IO_ROW_VIA1                                                                                                \
+    {0x00000, 0x02000, BOARD_DEV_VIA1, MDU_VIA_IO_PENALTY, BOARD_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1}
+#define MDU_IO_ROW_SCC {0x04000, 0x06000, BOARD_DEV_SCC, MDU_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scc"}
+#define MDU_IO_ROW_SCSI_DRQ                                                                                            \
+    {0x06000, 0x08000, BOARD_DEV_SCSI, MDU_DEV_IO_PENALTY, BOARD_IO_FIXED, 0, 0x201, NULL, NULL, "scsi_drq"}
+#define MDU_IO_ROW_SCSI_REG                                                                                            \
+    {0x10000, 0x12000, BOARD_DEV_SCSI, MDU_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scsi_reg"}
+#define MDU_IO_ROW_SCSI_BLIND                                                                                          \
+    {0x12000, 0x14000, BOARD_DEV_SCSI, MDU_DEV_IO_PENALTY, BOARD_IO_FIXED, 0, 0x201, NULL, NULL, "scsi_blind"}
+#define MDU_IO_ROW_ASC {0x14000, 0x16000, BOARD_DEV_ASC, MDU_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "asc"}
+// SWIM (SWIM2 on Sonora), the colour DAC (Bt450 / Ariel) and the RBV register file.
+#define MDU_IO_ROW_SWIM(name)                                                                                          \
+    {0x16000, 0x18000, BOARD_DEV_FLOPPY, MDU_DEV_IO_PENALTY, BOARD_IO_STRIDE_512, 0, 0, NULL, NULL, (name)}
+#define MDU_IO_ROW_VDAC(name)                                                                                          \
+    {0x24000, 0x26000, BOARD_DEV_VDAC, MDU_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, (name)}
+#define MDU_IO_ROW_RBV(name)                                                                                           \
+    {0x26000, 0x28000, BOARD_DEV_RBV, MDU_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, (name)}
+
 // Unified MDU+RBV machine state — the single struct shared by the IIci and
 // IIsi (mirrors the GLUE-family unification).  Superset: the IIsi uses egret;
 // the IIci leaves egret NULL.

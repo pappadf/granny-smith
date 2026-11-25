@@ -11,12 +11,12 @@
 // "Video" and "VRAM" (pp. 13-15): 256 KB of VRAM runs the 512 x 384 monitor at
 // up to 8 bpp and the 640 x 480 one at up to 4 bpp, 512 KB adds 16 bpp and
 // 8 bpp; the frame buffer's row stride is fixed by the VRAM fitted (512 bytes
-// on 256 KB, 1024 on 512 KB).  The Ariel feeds eight index lines; at a reduced
-// depth the pixel drives the HIGH lines and the unused low ones are pulled
-// high, so pixel v of a d-bit screen reads CLUT entry (v << (8-d)) | (2^(8-d)-1)
-// -- 1 bpp white/black at $7F/$FF.
+// on 256 KB, 1024 on 512 KB).  The Ariel and its reduced-depth palette window
+// are the shared model in runtime/ariel.h.
 
 #include "v8_internal.h"
+
+#include "ariel.h"
 
 #include "display_class.h"
 #include "display_timing.h"
@@ -32,42 +32,17 @@ LOG_USE_CATEGORY_NAME("video");
 // Sonora's 1 MB VRAM window, which is also what the blank stub must back.
 #define V8_VIDEO_MAX_BYTES SONORA_VRAM_WINDOW
 
-// Map a MonP depth code to a packed pixel format.
+// Map a MonP depth code to a packed pixel format (5-7 read as 16 bpp).
 static pixel_format_t v8_depth_format(uint8_t code) {
-    switch (code & 0x07u) {
-    case 0:
-        return PIXEL_1BPP_MSB;
-    case 1:
-        return PIXEL_2BPP_MSB;
-    case 2:
-        return PIXEL_4BPP_MSB;
-    case 3:
-        return PIXEL_8BPP;
-    default:
-        return PIXEL_16BPP_555;
-    }
+    return ariel_depth_format(code, PIXEL_16BPP_555);
 }
 
-// Rebuild the palette the current depth addresses (see the file header).
+// Rebuild the palette the current depth addresses.  A one-gun CRT shows
+// luminance; the drivers load equal R/G/B for it, and the green gun is the
+// one presented.
 static void v8_video_refresh_clut(config_t *cfg) {
     v8_video_t *v = &v8_st(cfg)->video;
-    bool mono = v8_board(cfg)->crt_mono;
-    uint32_t bpp = display_bpp(v->display.format);
-    if (bpp > 8) {
-        v->display.clut = NULL;
-        v->display.clut_len = 0;
-        return;
-    }
-    uint32_t len = 1u << bpp;
-    uint32_t skip = 256u >> bpp;
-    for (uint32_t i = 0; i < len; i++) {
-        const uint8_t *e = v->clut[(skip - 1) + i * skip];
-        // A one-gun CRT shows luminance; the drivers load equal R/G/B for it.
-        v->clut_view[i] = (rgba8_t){mono ? e[1] : e[0], e[1], mono ? e[1] : e[2], 255};
-    }
-    v->display.clut = v->clut_view;
-    v->display.clut_len = len;
-    v->display.clut_dirty = true;
+    ariel_refresh_view(&v->ariel, &v->display, v->clut_view, v8_board(cfg)->crt_mono ? 1 : ARIEL_COLOUR);
 }
 
 // Re-derive the descriptor from the depth and the frame-buffer source.
@@ -95,7 +70,7 @@ static void v8_video_update(config_t *cfg) {
             store_size = st->pcb_size;
             offset = st->pcb_size - (V8_RAM_SPACE - V8_RAM_IMAGE) + (b->dram_fb - V8_RAM_IMAGE);
         }
-    } else if (b->kind == V8_KIND_SONORA) {
+    } else if (v8_ops(cfg)->video_ctl) {
         // Sonora: rows packed at the mode's width (the video driver's
         // row bytes are width x depth / 8 in every mode).
         v->display.format = v8_depth_format(v->depth_code);
@@ -130,8 +105,7 @@ static uint64_t v8_fb_base(void *owner) {
     const v8_board_t *b = v8_board(cfg);
     if (b->fb_source == V8_FB_DRAM)
         return b->dram_fb;
-    return display_guest_addr(&st->video.display, st->video.vram, b->vram_size,
-                              b->kind == V8_KIND_SONORA ? SONORA_VRAM_BASE : V8_VRAM_BASE);
+    return display_guest_addr(&st->video.display, st->video.vram, b->vram_size, v8_ops(cfg)->vram_base);
 }
 
 // Latch the monitor strap: the raster the port's sense code selects.
@@ -169,14 +143,14 @@ int v8_video_init(config_t *cfg, uint8_t sense) {
     v->blank = calloc(1, v->blank_size);
     if (!v->blank)
         return -1;
-    ramdac_seq_init(&v->seq, 0);
+    ramdac_seq_init(&v->ariel.seq, 0);
     display_seed_gray_ramp((rgba8_t *)v->clut_view); // replaced on the first update
     for (int i = 0; i < 256; i++)
-        v->clut[i][0] = v->clut[i][1] = v->clut[i][2] = (uint8_t)(255 - i);
+        v->ariel.clut[i][0] = v->ariel.clut[i][1] = v->ariel.clut[i][2] = (uint8_t)(255 - i);
     v8_video_update(cfg);
     display_blank_raster(&v->display);
     v->display.response_dirty = true;
-    LOG(1, "%s video: %ux%u, sense %u, %s", b->chip, v->width, v->height, v->sense,
+    LOG(1, "%s video: %ux%u, sense %u, %s", v8_ops(cfg)->desc.chipset, v->width, v->height, v->sense,
         b->fb_source == V8_FB_VRAM ? "VRAM" : "DRAM");
     v->fb_node = (display_fb_node_t){.owner = cfg, .resolve = v8_fb_resolve, .base = v8_fb_base};
     v->video_node = display_attach_video_node(&v->fb_node, "Video (built-in)");
@@ -231,98 +205,57 @@ void v8_video_reset(config_t *cfg) {
     v8_video_update(cfg);
 }
 
-// Sonora's monitor codes and the rasters they time (the codes its video
-// driver programs; 0 = none written, the sense decides).
-static const struct {
-    uint8_t code;
-    uint16_t width, height;
-} sonora_modes[] = {
-    {1,  640, 870}, // portrait
-    {2,  512, 384}, // 12" RGB
-    {6,  640, 480}, // 13" RGB
-    {9,  832, 624}, // 16" RGB
-    {10, 560, 384}, // 12" RGB, 560-wide mode
-    {11, 640, 480}, // VGA
-    {13, 640, 400}, // 13" RGB, 640 x 400 mode
-};
-
 void v8_video_set_mode(config_t *cfg, uint8_t mode_code) {
     v8_video_t *v = &v8_st(cfg)->video;
-    if (mode_code == v->mode_code)
+    // 0 = none written (the sense decides); a code with no timing set is ignored
+    if (mode_code == v->mode_code || !ariel_mode_geometry(mode_code, &v->width, &v->height))
         return;
-    for (size_t i = 0; i < sizeof sonora_modes / sizeof sonora_modes[0]; i++) {
-        if (sonora_modes[i].code != mode_code)
-            continue;
-        v->mode_code = mode_code;
-        v->width = sonora_modes[i].width;
-        v->height = sonora_modes[i].height;
-        LOG(2, "Sonora video: monitor code %u, %ux%u", mode_code, v->width, v->height);
-        v8_video_update(cfg);
-        return;
-    }
+    v->mode_code = mode_code;
+    LOG(2, "Sonora video: monitor code %u, %ux%u", mode_code, v->width, v->height);
+    v8_video_update(cfg);
 }
 
 uint8_t v8_video_sense(config_t *cfg) {
     return v8_st(cfg)->video.sense;
 }
 
-// A register read; a data read steps the R/G/B phase unless `peek`.
-static uint8_t ariel_read(config_t *cfg, uint32_t off, bool peek) {
-    v8_video_t *v = &v8_st(cfg)->video;
-    switch (off & 3) {
-    case 0:
-        return ramdac_seq_addr(&v->seq);
-    case 1: {
-        uint8_t comp;
-        uint8_t idx = ramdac_seq_read(&v->seq, peek, &comp);
-        return v->clut[idx][comp];
-    }
-    case 2:
-        return v->ctrl;
-    default:
-        return v->key;
-    }
-}
-
 uint8_t v8_ariel_read(config_t *cfg, uint32_t off) {
-    return ariel_read(cfg, off, false);
+    return ariel_read(&v8_st(cfg)->video.ariel, off, false, 0xFF);
 }
 
 uint8_t v8_ariel_peek(config_t *cfg, uint32_t off) {
-    return ariel_read(cfg, off, true);
+    return ariel_read(&v8_st(cfg)->video.ariel, off, true, 0xFF);
 }
 
 void v8_ariel_write(config_t *cfg, uint32_t off, uint8_t value) {
-    v8_video_t *v = &v8_st(cfg)->video;
-    switch (off & 3) {
-    case 0:
-        ramdac_seq_set_waddr(&v->seq, value); // also the read address: one register
-        ramdac_seq_set_raddr(&v->seq, value);
-        break;
-    case 1: {
-        uint8_t idx;
-        if (ramdac_seq_write(&v->seq, value, &idx)) {
-            memcpy(v->clut[idx], v->seq.pending, 3);
-            v8_video_refresh_clut(cfg);
-        }
-        break;
-    }
-    case 2:
-        v->ctrl = value; // low 3 bits mirror the depth; the V8 MonP drives the scanout
-        break;
-    default:
-        v->key = value;
-        break;
-    }
+    if (ariel_write(&v8_st(cfg)->video.ariel, off, value))
+        v8_video_refresh_clut(cfg);
 }
 
-// The checkpointed plain-data prefix, up to the first host pointer
+// The checkpointed plain-data prefix, up to the first host pointer.  It is
+// one block in the layout it had before the Ariel became a shared struct:
+// the colour table, the sequencer, control and key, then the V8's own
+// fields, zero-padded to the prefix's size.
 CHECKPOINT_PREFIX(v8_video_t, display);
+#define V8_VIDEO_CP_FIELDS(OP, buf, v)                                                                                 \
+    OP(buf, (v)->ariel.clut, sizeof(v)->ariel.clut);                                                                   \
+    OP(buf, &(v)->ariel.seq, sizeof(v)->ariel.seq);                                                                    \
+    OP(buf, &(v)->ariel.ctrl, 1);                                                                                      \
+    OP(buf, &(v)->ariel.key, 1);                                                                                       \
+    OP(buf, &(v)->depth_code, 1);                                                                                      \
+    OP(buf, &(v)->mode_code, 1);                                                                                       \
+    OP(buf, &(v)->blanked, 1)
+_Static_assert(sizeof(ariel_t) + 3 <= v8_video_t_cp_prefix, "the V8 video prefix holds the packed fields");
+#define V8_CP_PACK(buf, src, n)   (memcpy((buf), (src), (n)), (buf) += (n))
+#define V8_CP_UNPACK(buf, dst, n) (memcpy((dst), (buf), (n)), (buf) += (n))
 
 void v8_video_checkpoint(config_t *cfg, checkpoint_t *cp) {
     const v8_board_t *b = v8_board(cfg);
     v8_video_t *v = &v8_st(cfg)->video;
-    checkpoint_save_prefix(cp, v, v8_video_t);
+    uint8_t block[v8_video_t_cp_prefix] = {0};
+    uint8_t *p = block;
+    V8_VIDEO_CP_FIELDS(V8_CP_PACK, p, v);
+    system_write_checkpoint_data(cp, block, sizeof block, "v8_video_t");
     system_write_checkpoint_data(cp, &v->sense, 1); // the strap the machine was built with
     if (v->vram)
         system_write_checkpoint_data(cp, v->vram, b->vram_size);
@@ -331,7 +264,10 @@ void v8_video_checkpoint(config_t *cfg, checkpoint_t *cp) {
 void v8_video_restore(config_t *cfg, checkpoint_t *cp) {
     const v8_board_t *b = v8_board(cfg);
     v8_video_t *v = &v8_st(cfg)->video;
-    checkpoint_load_prefix(cp, v, v8_video_t);
+    uint8_t block[v8_video_t_cp_prefix];
+    system_read_checkpoint_data(cp, block, sizeof block, "v8_video_t");
+    const uint8_t *p = block;
+    V8_VIDEO_CP_FIELDS(V8_CP_UNPACK, p, v);
     uint8_t sense = v->sense;
     system_read_checkpoint_data(cp, &sense, 1);
     v8_video_set_sense(cfg, sense);

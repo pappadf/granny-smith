@@ -33,10 +33,9 @@
 #include "m68k_board.h"
 #include "mac_host_io.h"
 #include "machine_checkpoint.h"
-#include "machine_teardown.h"
+#include "mdu_io.h" // mdu_io_ranges_tbl: the island
 #include "slot_tables.h"
 
-#include "adb.h"
 #include "asc.h"
 #include "checkpoint.h"
 #include "cpu.h"
@@ -47,9 +46,9 @@
 #include "log.h"
 #include "mmu.h"
 #include "rbv.h"
+#include "rbv_board.h"
 #include "rtc.h"
 #include "scc.h"
-#include "scheduler.h"
 #include "scsi.h"
 #include "via.h"
 
@@ -64,36 +63,32 @@ LOG_USE_CATEGORY_NAME("board");
 // I/O island
 // ============================================================
 
-#define V8_VIA_IO_PENALTY 16
-#define V8_DEV_IO_PENALTY 2
-
-BOARD_IO_ROW_READ(v8_ariel_row_read, v8_ariel_read)
-BOARD_IO_ROW_READ(v8_ariel_row_peek, v8_ariel_peek)
-BOARD_IO_ROW_WRITE(v8_ariel_row_write, v8_ariel_write)
+// The Ariel as the island's colour-DAC device (the VDAC row), its context cfg.
+static uint8_t v8_ariel_dev_read(void *dev, uint32_t off) {
+    return v8_ariel_read((config_t *)dev, off);
+}
+static uint8_t v8_ariel_dev_peek(void *dev, uint32_t off) {
+    return v8_ariel_peek((config_t *)dev, off);
+}
+static void v8_ariel_dev_write(void *dev, uint32_t off, uint8_t value) {
+    v8_ariel_write((config_t *)dev, off, value);
+}
+static const memory_interface_t v8_ariel_iface = {
+    .read_uint8 = v8_ariel_dev_read,
+    .write_uint8 = v8_ariel_dev_write,
+    .peek_uint8 = v8_ariel_dev_peek,
+};
 
 // The $50F00000 island (LC Developer Note p. 11; Color Classic Developer Note
-// Figure 2-3): VIA1, the Combo's SCC and 5380 (handshake, registers and
-// pseudo-DMA windows), the sound block, SWIM, the Ariel and the V8 registers.
-//   base     end      device            penalty            xform               rd  wr     name
-const board_io_range_t v8_io_ranges_tbl[] = {
-    {0x00000, 0x02000, BOARD_DEV_VIA1, V8_VIA_IO_PENALTY, BOARD_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},
-    {0x04000, 0x06000, BOARD_DEV_SCC, V8_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
-    {0x06000, 0x08000, BOARD_DEV_SCSI, V8_DEV_IO_PENALTY, BOARD_IO_FIXED, 0, 0x201, NULL, NULL, "scsi_drq"},
-    {0x10000, 0x12000, BOARD_DEV_SCSI, V8_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scsi_reg"},
-    {0x12000, 0x14000, BOARD_DEV_SCSI, V8_DEV_IO_PENALTY, BOARD_IO_FIXED, 0, 0x201, NULL, NULL, "scsi_blind"},
-    {0x14000, 0x16000, BOARD_DEV_ASC, V8_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "asc"},
-    {0x16000, 0x18000, BOARD_DEV_FLOPPY, V8_DEV_IO_PENALTY, BOARD_IO_STRIDE_512, 0, 0, NULL, NULL, "swim"},
-    {0x24000, 0x26000, BOARD_DEV_VDAC, V8_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, v8_ariel_row_read, v8_ariel_row_write,
-     "ariel", .peek_fn = v8_ariel_row_peek},
-    {0x26000, 0x28000, BOARD_DEV_RBV, V8_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "v8"},
-    {0}, // sentinel
-};
+// Figure 2-3) is the MDU's, row for row (mdu_io.c): VIA1, the Combo's SCC
+// and 5380 (handshake, registers and pseudo-DMA windows), the sound block,
+// SWIM, the Ariel at the VDAC row and the V8 registers at the RBV row.
 
 // Bind the devices the island routes to.
 static void v8_io_bind(config_t *cfg) {
     v8_state_t *st = v8_st(cfg);
     board_io_t *io = &st->io;
-    m68k_board_io_install(io, cfg, &v8_board(cfg)->desc);
+    m68k_board_io_install(io, cfg, &v8_ops(cfg)->desc);
     io->window_base = V8_ISLAND_BASE; // the island is mapped here, not at the ROM space's end
     board_io_bind_dev(io, BOARD_DEV_VIA1, cfg->via1, via_get_memory_interface(cfg->via1));
     board_io_bind_dev(io, BOARD_DEV_SCC, cfg->scc, scc_get_memory_interface(cfg->scc));
@@ -101,6 +96,7 @@ static void v8_io_bind(config_t *cfg) {
     board_io_bind_dev(io, BOARD_DEV_ASC, st->asc, asc_get_memory_interface(st->asc));
     board_io_bind_dev(io, BOARD_DEV_FLOPPY, cfg->floppy, floppy_get_memory_interface(cfg->floppy));
     board_io_bind_dev(io, BOARD_DEV_RBV, st->rbv, rbv_get_memory_interface(st->rbv));
+    board_io_bind_dev(io, BOARD_DEV_VDAC, cfg, &v8_ariel_iface);
 }
 
 // ============================================================
@@ -149,15 +145,16 @@ static void v8_map_ram(config_t *cfg) {
         page_fill_68k(p, rom + (((p - (V8_ROM_START >> MEM_PAGE_SHIFT)) % rom_pages) << MEM_PAGE_SHIFT), false);
 }
 
-// V8 expansion-register write: re-decode the RAM space (unless the ROM
-// overlay still owns the bottom of it; the drop decodes then).
-static void v8_exp_written(void *ctx, uint8_t value) {
+// The RAM-decode register written (the V8's expansion register, Sonora's RAM
+// configuration register; both the RBV's register 1): re-decode the RAM space
+// (unless the ROM overlay still owns the bottom of it; the drop decodes then).
+static void v8_ram_reg_written(void *ctx, uint8_t value) {
     config_t *cfg = (config_t *)ctx;
     v8_state_t *st = v8_st(cfg);
-    LOG(2, "V8 expansion register = $%02X (pc=%08X)", value, cpu_get_pc(cfg->cpu));
+    LOG(2, "%s RAM decode register = $%02X (pc=%08X)", v8_ops(cfg)->desc.chipset, value, cpu_get_pc(cfg->cpu));
     st->ram_exp = value;
     if (!st->overlay.armed)
-        v8_map_ram_decode(cfg, value);
+        v8_ops(cfg)->map_ram_decode(cfg, value);
 }
 
 // Split the configured total into the SIMM bank and the soldered RAM and lay
@@ -179,7 +176,8 @@ static int v8_ram_layout(config_t *cfg) {
     }
     st->simm_host = ram;
     st->pcb_host = ram + st->simm_size;
-    LOG(1, "%s RAM: %u KB SIMMs + %u KB soldered", b->chip, st->simm_size / 1024, st->pcb_size / 1024);
+    LOG(1, "%s RAM: %u KB SIMMs + %u KB soldered", v8_ops(cfg)->desc.chipset, st->simm_size / 1024,
+        st->pcb_size / 1024);
     return 0;
 }
 
@@ -239,13 +237,40 @@ static void v8_memory_layout_init(config_t *cfg) {
     // The overlay: ROM at zero until the first access to the ROM space, in
     // either map.  Its trigger aperture is the 24-bit ROM window; the 32-bit
     // ROM space routes through the same trigger until the drop.
-    m68k_board_overlay_init(&st->overlay, cfg, V8_LOW_ROM_START, V8_LOW_ROM_END, v8_map_ram, b->chip);
+    m68k_board_overlay_init(&st->overlay, cfg, V8_LOW_ROM_START, V8_LOW_ROM_END, v8_map_ram, v8_ops(cfg)->desc.chipset);
     memory_map_add(cfg->memory_map, V8_LOW_ROM_START, V8_LOW_ROM_END - V8_LOW_ROM_START, "ROM aperture (24-bit)",
                    &st->overlay.iface, &st->overlay);
-    memory_map_add(cfg->memory_map, b->desc.rom_base, b->desc.rom_end - b->desc.rom_base, "ROM aperture",
-                   &st->overlay.iface, &st->overlay);
+    memory_map_add(cfg->memory_map, V8_ROM_START, V8_ROM_END - V8_ROM_START, "ROM aperture", &st->overlay.iface,
+                   &st->overlay);
     m68k_board_overlay_arm(&st->overlay);
 }
+
+static void v8_chip_bus_reset(config_t *cfg);
+
+// The V8, Eagle and Spice decoders: the ROM space at $40000000 with the
+// 24-bit windows below, the I/O island the MDU's, the PDS slot's space empty.
+const v8_chip_ops_t v8_chip_ops = {
+    .desc =
+        {
+               .chipset = "V8",
+               .rom_base = V8_ROM_START,
+               .rom_end = V8_ROM_END,
+               .io_ranges = mdu_io_ranges_tbl,
+               .io_mirror_mask = V8_IO_MIRROR,
+               .io_unmapped_read = 0xFF,
+               .bus_err_lo = 0xFE000000u,
+               .bus_err_hi = 0xFEFFFFFFu,
+               },
+    .ram_layout = v8_ram_layout,
+    .map_ram_decode = v8_map_ram_decode,
+    .memory_layout_init = v8_memory_layout_init,
+    .bus_reset = v8_chip_bus_reset,
+    .vram_base = V8_VRAM_BASE,
+    // The decoder answers the whole low 16 MB (RAM, the 24-bit ROM and I/O
+    // windows): nothing there times out.  A write the ROM's tables send to
+    // the ROM through $A00000 completes and is dropped, as on the hardware.
+    .ram_size_max = V8_LOW_IO_BASE + V8_LOW_IO_SIZE,
+};
 
 // ============================================================
 // VIA1 / RBV / Egret wiring
@@ -276,11 +301,6 @@ static void v8_via1_shift_out(void *context, uint8_t byte) {
         egret_via1_shift_input(st->egret, byte);
 }
 
-// The pseudo-VIA2's combined interrupt -> IPL 2.
-static void v8_rbv_irq(void *context, bool active) {
-    m68k_board_update_ipl((config_t *)context, V8_IRQ_RBV, active);
-}
-
 // MonP depth field -> the built-in video.
 static void v8_rbv_mode(void *context, int depth_code) {
     v8_video_set_depth((config_t *)context, depth_code);
@@ -289,28 +309,6 @@ static void v8_rbv_mode(void *context, int depth_code) {
 // MonP RvVIDOff -> the built-in video switched off or on.
 static void v8_rbv_blank(void *context, bool video_off) {
     v8_video_set_blank((config_t *)context, video_off);
-}
-
-// The 5380's IRQ/DRQ through the pseudo-VIA2 flags.
-static void v8_scsi_irq(void *context, bool irq, bool drq) {
-    v8_state_t *st = v8_st((config_t *)context);
-    if (!st->rbv)
-        return;
-    rbv_set_scsi_irq(st->rbv, irq);
-    rbv_set_scsi_drq(st->rbv, drq);
-}
-
-// The sound block's interrupt -> the pseudo-VIA2 sound flag.
-static void v8_asc_irq(void *context, bool active) {
-    rbv_set_snd_irq((rbv_t *)context, active);
-}
-
-// Soft power-off (Egret's PwrDown): stop the scheduler.
-static void v8_power_off(void *context) {
-    config_t *cfg = (config_t *)context;
-    LOG(1, "%s soft power-off", cfg->machine->name);
-    if (cfg->scheduler)
-        scheduler_stop(cfg->scheduler);
 }
 
 // The family's own checkpoint block: overlay state, the decoded size bits
@@ -323,8 +321,8 @@ static void part_save_v8(void *obj, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &st->ram_exp, 1);
     if (st->pcb_hidden)
         system_write_checkpoint_data(cp, st->pcb_hidden, st->pcb_size - (V8_RAM_SPACE - 8 * MB));
-    if (v8_board(cfg)->kind == V8_KIND_SONORA)
-        sonora_checkpoint(cfg, cp);
+    if (v8_ops(cfg)->checkpoint)
+        v8_ops(cfg)->checkpoint(cfg, cp);
     v8_video_checkpoint(cfg, cp);
 }
 
@@ -334,6 +332,7 @@ static void part_save_v8(void *obj, checkpoint_t *cp) {
 
 static int v8_init(config_t *cfg, checkpoint_t *cp) {
     const v8_board_t *b = v8_board(cfg);
+    const v8_chip_ops_t *ops = v8_ops(cfg);
     v8_state_t *st = calloc(1, sizeof(*st));
     if (!st) {
         LOG(0, "Error: out of memory allocating the machine state for %s", cfg->machine->name);
@@ -341,7 +340,7 @@ static int v8_init(config_t *cfg, checkpoint_t *cp) {
     }
     cfg->machine_context = st;
 
-    m68k_board_build_core(cfg, &b->desc, cp);
+    m68k_board_build_core(cfg, &ops->desc, cp);
     machine_part_irq(cfg, cp);
     m68k_board_build_lowspeed(cfg, cp, NULL);
 
@@ -358,93 +357,51 @@ static int v8_init(config_t *cfg, checkpoint_t *cp) {
     via_input_c(cfg->via1, 0, 0, 1);
     via_input_c(cfg->via1, 1, 0, 1);
 
-    bool sonora = b->kind == V8_KIND_SONORA;
-    if ((sonora ? sonora_ram_layout(cfg) : v8_ram_layout(cfg)) != 0)
+    if (ops->ram_layout(cfg) != 0)
         return -1;
 
-    machine_part_begin(cfg, cp, "adb");
-    cfg->adb = adb_init(NULL, cfg->scheduler, cp);
-    machine_part(cfg, cp, "adb", part_save_adb, cfg->adb);
-
-    machine_part_images(cfg, cp);
-
-    machine_part_begin(cfg, cp, "scsi");
-    cfg->scsi = machine_scsi_bus_init(cfg, cp, "scsi");
-    scsi_5380_attach(cfg->scsi, cp); // the Combo's 53C80
-    machine_part(cfg, cp, "scsi", part_save_scsi, cfg->scsi);
-    scsi_set_irq_callback(cfg->scsi, v8_scsi_irq, cfg);
-
-    machine_part_begin(cfg, cp, "asc");
-    st->asc = asc_init(NULL, cfg->scheduler, cp);
-    if (!st->asc)
+    // ADB, the images, the Combo's 5380, the sound block (an ASC subset),
+    // SWIM and the Egret or Cuda companion, as the IIsi builds them.
+    const rbv_board_spec_t spec = {
+        .companion = b->cuda ? RBV_BOARD_CUDA : RBV_BOARD_EGRET,
+        .asc_version = b->asc_version,
+        .asc_fifo_only = true,
+    };
+    const rbv_board_slots_t slots = {.rbv = &st->rbv, .asc = &st->asc, .egret = &st->egret, .cuda = &st->cuda};
+    if (rbv_board_build_devices(cfg, cp, &spec, &slots) != 0)
         return -1;
-    asc_set_version(st->asc, b->asc_version);
-    asc_set_fifo_only(st->asc); // no wavetable, always draining
-    machine_part(cfg, cp, "asc", part_save_asc, st->asc);
-    asc_set_mix(st->asc, ASC_MIX_CH_A); // mono: the left channel only
-
-    machine_part_begin(cfg, cp, "floppy");
-    cfg->floppy =
-        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
-    machine_part(cfg, cp, "floppy", part_save_floppy, cfg->floppy);
-
-    if (b->cuda) {
-        machine_part_begin(cfg, cp, "cuda");
-        st->cuda = cuda_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp, /*mode3_clock=*/false);
-        if (!st->cuda)
-            return -1;
-        machine_part(cfg, cp, "cuda", part_save_cuda, st->cuda);
-    } else {
-        machine_part_begin(cfg, cp, "egret");
-        st->egret = egret_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp);
-        if (!st->egret)
-            return -1;
-        machine_part(cfg, cp, "egret", part_save_egret, st->egret);
-        egret_set_power_off_callback(st->egret, v8_power_off, cfg);
-    }
 
     // The pseudo-VIA2, its MonP sense lines strapped with the monitor.
     if (v8_video_init(cfg, cfg->build_opts.builtin_sense) != 0) {
-        LOG(0, "Error: out of memory constructing the %s video", b->chip);
+        LOG(0, "Error: out of memory constructing the %s video", v8_ops(cfg)->desc.chipset);
         return -1;
     }
-    machine_part_begin(cfg, cp, "rbv");
-    st->rbv = rbv_init(RBV_VARIANT_V8, v8_video_sense(cfg), cp);
-    if (!st->rbv)
+    if (rbv_board_build_rbv(cfg, cp, RBV_VARIANT_V8, v8_video_sense(cfg), &slots) != 0)
         return -1;
-    machine_part(cfg, cp, "rbv", part_save_rbv, st->rbv);
-    rbv_set_irq_callback(st->rbv, v8_rbv_irq, cfg);
     // The V8's video follows MonP; Sonora's has its own depth and mode
     // registers at $50F28000 (sonora.c), so a MonP write must not reach it.
     // RvVIDOff switches off the VRAM video (the LC II's and the Color
     // Classic's); the Classic II's screen is scanned from DRAM by other logic,
     // and its ROM leaves the bit set.
-    if (!sonora) {
+    if (!ops->video_ctl) {
         rbv_set_mode_callback(st->rbv, v8_rbv_mode, cfg);
         if (b->fb_source == V8_FB_VRAM)
             rbv_set_blank_callback(st->rbv, v8_rbv_blank, cfg);
     }
-    rbv_set_exp_callback(st->rbv, sonora ? sonora_ram_cfg_written : v8_exp_written, cfg);
-    asc_set_irq_handler(st->asc, v8_asc_irq, st->rbv);
+    rbv_set_exp_callback(st->rbv, v8_ram_reg_written, cfg);
 
-    st->mmu = m68k_board_build_mmu(cfg, b->desc.rom_base, b->desc.rom_end);
+    st->mmu = m68k_board_build_mmu(cfg, ops->desc.rom_base, ops->desc.rom_end);
     if (!st->mmu)
         return -1;
     // The ROMs' MMU-enable sequence runs on from the instruction cache
     // across PMOVE to TC (mmu.h, icache_hold_*)
     st->mmu->icache_hold_enabled = true;
-    // The decoder answers the whole low 16 MB (RAM, the 24-bit ROM and I/O
-    // windows): nothing there times out.  A write the ROM's tables send to the
-    // ROM through $A00000 completes and is dropped, as on the hardware.
-    // (Sonora has no 24-bit windows: its MMU tables do the remapping.)
-    if (!sonora)
-        st->mmu->ram_size_max = V8_LOW_IO_BASE + V8_LOW_IO_SIZE;
+    // How far the decoder answers the PMMU's physical space (v8_chip_ops_t).
+    if (ops->ram_size_max)
+        st->mmu->ram_size_max = ops->ram_size_max;
 
     v8_io_bind(cfg);
-    if (sonora)
-        sonora_memory_layout_init(cfg);
-    else
-        v8_memory_layout_init(cfg);
+    ops->memory_layout_init(cfg);
 
     machine_part_begin(cfg, cp, "v8");
     if (cp) {
@@ -453,8 +410,8 @@ static int v8_init(config_t *cfg, checkpoint_t *cp) {
         system_read_checkpoint_data(cp, &st->ram_exp, 1);
         if (st->pcb_hidden)
             system_read_checkpoint_data(cp, st->pcb_hidden, st->pcb_size - (V8_RAM_SPACE - 8 * MB));
-        if (sonora)
-            sonora_restore(cfg, cp);
+        if (ops->restore)
+            ops->restore(cfg, cp);
         v8_video_restore(cfg, cp);
         if (!armed)
             m68k_board_overlay_drop(&st->overlay);
@@ -466,22 +423,22 @@ static int v8_init(config_t *cfg, checkpoint_t *cp) {
     return 0;
 }
 
+// The V8's half of /RESET: the re-armed overlay drops on the next ROM access
+// in EITHER map -- the ROM's restart path runs on in the 32-bit ROM space
+// after its RESET.
+static void v8_chip_bus_reset(config_t *cfg) {
+    v8_state_t *st = v8_st(cfg);
+    for (uint32_t p = V8_ROM_START >> MEM_PAGE_SHIFT; p < (V8_ROM_END >> MEM_PAGE_SHIFT) && p < g_page_count; p++)
+        page_route_device(p, &st->overlay.iface, &st->overlay, V8_ROM_START);
+}
+
 // The board's /RESET net: the overlay re-arms, the shared devices, the
-// pseudo-VIA2 (whose expansion register clears, so the RAM decode follows).
+// decoder's own half, the pseudo-VIA2 (whose RAM-decode register clears, so
+// the RAM decode follows).
 static void v8_bus_reset(config_t *cfg) {
     v8_state_t *st = v8_st(cfg);
     m68k_board_bus_reset(cfg, &st->overlay);
-    if (v8_board(cfg)->kind == V8_KIND_SONORA) {
-        // The overlay's aperture is the ROM space itself; the decoder's own
-        // registers clear.
-        rbv_reset(st->rbv);
-        sonora_bus_reset(cfg);
-        return;
-    }
-    // The re-armed overlay drops on the next ROM access in EITHER map: the
-    // ROM's restart path runs on in the 32-bit ROM space after its RESET.
-    for (uint32_t p = V8_ROM_START >> MEM_PAGE_SHIFT; p < (V8_ROM_END >> MEM_PAGE_SHIFT) && p < g_page_count; p++)
-        page_route_device(p, &st->overlay.iface, &st->overlay, V8_ROM_START);
+    v8_ops(cfg)->bus_reset(cfg);
     rbv_reset(st->rbv);
     st->ram_exp = 0;
 }
@@ -494,26 +451,13 @@ static void v8_power_on(config_t *cfg) {
 static void v8_teardown(config_t *cfg) {
     v8_state_t *st = v8_st(cfg);
     if (st) {
-        if (st->egret)
-            egret_delete(st->egret);
-        if (st->cuda)
-            cuda_delete(st->cuda);
-        st->cuda = NULL;
-        if (st->rbv)
-            rbv_delete(st->rbv);
-        if (st->mmu)
-            mmu_delete(st->mmu);
-        if (st->asc)
-            asc_delete(st->asc);
-        st->egret = NULL;
-        st->rbv = NULL;
-        st->mmu = NULL;
-        st->asc = NULL;
         v8_video_teardown(cfg);
         free(st->pcb_hidden);
         st->pcb_hidden = NULL;
     }
-    machine_teardown_config_devices(cfg);
+    rbv_board_teardown(
+        cfg, st ? &(rbv_board_slots_t){.rbv = &st->rbv, .asc = &st->asc, .egret = &st->egret, .cuda = &st->cuda} : NULL,
+        st ? &st->mmu : NULL);
 }
 
 // VBL: the 60.15 Hz tick on VIA1 CA1 and the built-in video's frame

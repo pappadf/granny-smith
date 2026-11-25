@@ -8,10 +8,12 @@
 #ifndef GS_MACHINES_V8_V8_INTERNAL_H
 #define GS_MACHINES_V8_V8_INTERNAL_H
 
+#include "ariel.h"
 #include "board_io.h"
 #include "display.h"
 #include "display_class.h"
 #include "display_ramdac.h"
+#include "m68k_board.h"
 #include "m68k_board_overlay.h"
 #include "memory.h"
 #include "system_internal.h"
@@ -28,12 +30,10 @@ struct mmu_state;
 struct object;
 
 // The built-in video: the Ariel CLUT/DAC at $50F24000 and the scanout over
-// VRAM or a DRAM page.  Field order up to `display` is the checkpoint format.
+// VRAM or a DRAM page.  The fields up to `display` are checkpointed, in the
+// order v8_video_checkpoint writes them (the Ariel's table first).
 typedef struct v8_video {
-    uint8_t clut[256][3]; // Ariel colour table, R/G/B
-    ramdac_seq_t seq; // Ariel address/data sequencer
-    uint8_t ctrl; // Ariel control register (low 3 bits: depth)
-    uint8_t key; // Ariel key-colour register
+    ariel_t ariel; // the Ariel register file (runtime/ariel.h)
     uint8_t depth_code; // V8 MonP depth field: 0..4 = 1/2/4/8/16 bpp
     uint8_t mode_code; // Sonora monitor code (video mode register bits 0-3; 0 = from the sense)
     bool blanked; // video switched off: V8 MonP RvVIDOff, Sonora video mode bit 7
@@ -86,12 +86,40 @@ typedef struct v8_state {
     } sonora;
 } v8_state_t;
 
+// What one decoder generation of the lineage (v8_chip_kind_t) does its own
+// way: the descriptor, the RAM decode and memory map, its extra checkpoint
+// block and reset, and how its built-in video is reached.  v8.c holds the
+// V8's, sonora.c Sonora's; v8_ops() picks by the board's kind.
+typedef struct v8_chip_ops {
+    m68k_board_desc_t desc; // ROM window, I/O table, bus-error window
+    int (*ram_layout)(config_t *cfg); // split the RAM and lay out the host buffer
+    void (*map_ram_decode)(config_t *cfg, uint8_t reg); // the RAM space as the decode register sets it
+    void (*memory_layout_init)(config_t *cfg); // the memory map, the overlay armed
+    void (*bus_reset)(config_t *cfg); // the decoder's own /RESET half (before the RBV's)
+    void (*checkpoint)(config_t *cfg, checkpoint_t *cp); // the decoder's own block, or NULL
+    void (*restore)(config_t *cfg, checkpoint_t *cp);
+    uint32_t vram_base; // the frame buffer's bus address
+    // Sonora: the video has its own depth and mode registers and scans rows
+    // packed at the mode's width; the V8's follows MonP, its row stride fixed
+    // by the VRAM fitted.
+    bool video_ctl;
+    // The decoder answers the PMMU's physical space up to here (0: RAM only).
+    uint32_t ram_size_max;
+} v8_chip_ops_t;
+
+extern const v8_chip_ops_t v8_chip_ops;
+extern const v8_chip_ops_t sonora_chip_ops; // sonora.c
+
 static inline v8_state_t *v8_st(config_t *cfg) {
     return (v8_state_t *)cfg->machine_context;
 }
 
 static inline const v8_board_t *v8_board(config_t *cfg) {
     return (const v8_board_t *)cfg->machine->board;
+}
+
+static inline const v8_chip_ops_t *v8_ops(config_t *cfg) {
+    return v8_board(cfg)->kind == V8_KIND_SONORA ? &sonora_chip_ops : &v8_chip_ops;
 }
 
 // === v8_video.c ===
@@ -125,16 +153,5 @@ void v8_video_set_mode(config_t *cfg, uint8_t mode_code);
 // Checkpoint the video's plain-data prefix.
 void v8_video_checkpoint(config_t *cfg, checkpoint_t *cp);
 void v8_video_restore(config_t *cfg, checkpoint_t *cp);
-
-// === sonora.c ===
-
-// The Sonora decoder's half of the substrate: its I/O rows, RAM layout and
-// decode, memory map, checkpoint block and reset.
-int sonora_ram_layout(config_t *cfg);
-void sonora_ram_cfg_written(void *ctx, uint8_t value);
-void sonora_memory_layout_init(config_t *cfg);
-void sonora_checkpoint(config_t *cfg, checkpoint_t *cp);
-void sonora_restore(config_t *cfg, checkpoint_t *cp);
-void sonora_bus_reset(config_t *cfg);
 
 #endif // GS_MACHINES_V8_V8_INTERNAL_H
