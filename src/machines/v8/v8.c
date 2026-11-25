@@ -94,6 +94,7 @@ static void v8_io_bind(config_t *cfg) {
     v8_state_t *st = v8_st(cfg);
     board_io_t *io = &st->io;
     m68k_board_io_install(io, cfg, &v8_board(cfg)->desc);
+    io->window_base = V8_ISLAND_BASE; // the island is mapped here, not at the ROM space's end
     board_io_bind_dev(io, BOARD_DEV_VIA1, cfg->via1, via_get_memory_interface(cfg->via1));
     board_io_bind_dev(io, BOARD_DEV_SCC, cfg->scc, scc_get_memory_interface(cfg->scc));
     board_io_bind_dev(io, BOARD_DEV_SCSI, cfg->scsi, scsi_get_memory_interface(cfg->scsi));
