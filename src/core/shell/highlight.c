@@ -107,8 +107,8 @@ static bool curly_close(const char *p) {
 // === Literals =================================================================
 
 // A number at p (0x…, 0b…, decimal, float with fraction / exponent); the
-// end, or p when there is none.  `1..5` is a range: the number stops
-// before the `..`.
+// end, or p when there is none.  `1..5` stops before the `..` (Lua's
+// concatenation).
 static const char *number_end(const char *p) {
     const char *q = p;
     if (q[0] == '0' && (q[1] == 'x' || q[1] == 'X')) {
@@ -426,7 +426,7 @@ static const char *expr_until(hl_t *h, const char *p, char close) {
             p = binding(h, p);
         } else if (script_ident_start(c)) {
             const char *e = ident_end(p);
-            if (word_is(p, e, "true") || word_is(p, e, "false") || word_is(p, e, "none") || word_is(p, e, "in")) {
+            if (word_is(p, e, "true") || word_is(p, e, "false") || word_is(p, e, "none")) {
                 emit(h, p, e, "keyword");
                 p = e;
             } else {
@@ -547,42 +547,6 @@ static void rhs(hl_t *h, const char *p, node_t target) {
     expr_until(h, p, '\0');
 }
 
-// A path where a declaration wants one (`alias`, `command`), else an
-// expression.
-static void path_or_expr(hl_t *h, const char *p) {
-    if (!at_end(h, p) && script_ident_start(*p))
-        path(h, p, NULL);
-    else
-        expr_until(h, p, '\0');
-}
-
-// `def NAME(P, …)`: the parameter list after the name.
-static void def_params(hl_t *h, const char *q) {
-    q = skip_ws(h, q);
-    if (at_end(h, q) || *q != '(')
-        return;
-    emit(h, q, q + 1, "operator");
-    q++;
-    for (;;) {
-        q = skip_ws(h, q);
-        if (at_end(h, q))
-            return;
-        if (script_ident_start(*q)) {
-            const char *pe = ident_end(q);
-            emit(h, q, pe, "variable");
-            q = pe;
-        } else if (*q == ',') {
-            emit(h, q, q + 1, "operator");
-            q++;
-        } else if (*q == ')') {
-            emit(h, q, q + 1, "operator");
-            return;
-        } else {
-            return;
-        }
-    }
-}
-
 // The head of a command statement, then its arguments.  A bare word may be
 // a command, which stands for the method it runs.
 static void command(hl_t *h, const script_stmt_t *c) {
@@ -605,16 +569,6 @@ static void command(hl_t *h, const script_stmt_t *c) {
     arguments(h, c->rest, n);
 }
 
-// True when the statement's head is a reserved word (not a path).
-static bool keyword_head(const script_stmt_t *c) {
-    if (!c->head || ident_end(c->head) != c->head_end || c->head_end - c->head >= 16)
-        return false;
-    char w[16];
-    memcpy(w, c->head, (size_t)(c->head_end - c->head));
-    w[c->head_end - c->head] = '\0';
-    return object_is_reserved_word(w);
-}
-
 // Colour one classified statement.
 static void statement(hl_t *h, const script_stmt_t *c) {
     if (c->kind == SCRIPT_STMT_EMPTY)
@@ -622,20 +576,6 @@ static void statement(hl_t *h, const script_stmt_t *c) {
     const char *saved = h->limit;
     h->limit = c->end;
     switch (c->kind) {
-    case SCRIPT_STMT_LET:
-    case SCRIPT_STMT_ALIAS:
-    case SCRIPT_STMT_COMMAND_DEF:
-        emit(h, c->head, c->head_end, "decl");
-        emit(h, c->name, c->name_end,
-             c->kind == SCRIPT_STMT_LET     ? "variable"
-             : c->kind == SCRIPT_STMT_ALIAS ? "alias"
-                                            : "method");
-        emit(h, c->eq, c->eq + 1, "operator");
-        if (c->kind == SCRIPT_STMT_LET)
-            expr_until(h, c->rest, '\0');
-        else
-            path_or_expr(h, c->rest);
-        break;
     case SCRIPT_STMT_ASSIGN:
         if (*c->head == '$') {
             binding(h, c->head);
@@ -651,67 +591,22 @@ static void statement(hl_t *h, const script_stmt_t *c) {
     case SCRIPT_STMT_COMMAND:
         command(h, c);
         break;
-    case SCRIPT_STMT_DEF:
-        emit(h, c->head, c->head_end, "decl");
-        emit(h, c->name, c->name_end, "method");
-        def_params(h, c->name ? c->name_end : c->rest);
-        break;
-    case SCRIPT_STMT_FOR: {
-        emit(h, c->head, c->head_end, "keyword");
-        const char *q = c->rest;
-        if (c->name) {
-            emit(h, c->name, c->name_end, "variable");
-            q = skip_ws(h, c->name_end);
-        }
-        expr_until(h, q, '\0'); // colours `in` as a keyword
-        break;
-    }
-    case SCRIPT_STMT_INVALID:
-        if (!keyword_head(c)) {
-            // A path head the parser rejects (an unclosed `[`): an expression.
-            expr_until(h, c->start, '\0');
-            break;
-        }
-        // A keyword in a shape the parser rejects: its keyword, then what
-        // lexes after it.
-        {
-            bool is_alias = word_is(c->head, c->head_end, "alias");
-            bool decl = is_alias || word_is(c->head, c->head_end, "let");
-            emit(h, c->head, c->head_end, decl ? "decl" : "keyword");
-            emit(h, c->name, c->name_end, is_alias ? "alias" : "variable");
-            if (c->eq)
-                emit(h, c->eq, c->eq + 1, "operator");
-            expr_until(h, c->eq ? c->eq + 1 : c->name ? c->name_end : c->rest, '\0');
-        }
-        break;
+    case SCRIPT_STMT_INVALID: // an unclosed `[`: what lexes
     case SCRIPT_STMT_EXPR:
         expr_until(h, c->start, '\0');
         break;
-    default:
-        // if, elif, else, while, break, continue, return, assert, include.
-        emit(h, c->head, c->head_end, "keyword");
-        expr_until(h, c->rest, '\0');
+    case SCRIPT_STMT_EMPTY:
         break;
     }
     h->limit = saved;
 }
 
-// One line: a leading `}`, the statement (or a block form's header), its
-// `{`, an inline block's statement and `}`, and a comment -- the parts the
-// parser reads (script_line_split).
+// One command line: its statement and its comment (script_line_split).
 static void line(hl_t *h, const char *s, const char *e) {
     script_line_t ln;
     script_line_split(s, e, &ln);
     h->limit = e;
-    if (ln.closer)
-        emit(h, ln.closer, ln.closer + 1, "operator");
     statement(h, &ln.stmt);
-    if (ln.open) {
-        emit(h, ln.open, ln.open + 1, "operator");
-        statement(h, &ln.body);
-        if (ln.close)
-            emit(h, ln.close, ln.close + 1, "operator");
-    }
     if (ln.comment)
         emit(h, ln.comment, e, "comment");
 }

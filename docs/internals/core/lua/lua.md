@@ -99,7 +99,7 @@ condition does not see an error as false: `if machine.nosuch then` raises.
 | map → a table whose `pairs` keeps the tree's insertion order | a table with string keys → map (the order kept when the table came from the tree) |
 | object → a proxy | a proxy → the object it names |
 | error → raised | a function → refused |
-| ref (an alias) → a proxy of its path | `gs.bytes(int, width)` or `gs.bytes(string)` → bytes |
+| — | `gs.bytes(int, width)` or `gs.bytes(string)` → bytes |
 
 Widths and the hex display flag do not survive into a Lua integer; a script
 formats explicitly (`("%08x"):format(pc)`, `gs.hex(pc, 8)`, `F"${pc:08x}"`)

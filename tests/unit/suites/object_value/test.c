@@ -338,40 +338,6 @@ TEST(test_bytes_invariant_holds) {
     value_free(&src);
 }
 
-// === Lazy ranges ===========================================================
-//
-// range() used to materialise a VK_LIST capped at 2^20 entries, which at
-// sizeof(value_t) == 32 permitted a 32 MB single calloc on the 32-bit wasm
-// heap -- to run a loop.  A range now carries three integers and never
-// allocates, so range(a,b) and a..b are the SAME value and the two spellings
-// stop having opposite safety properties.
-TEST(test_range_is_lazy_and_counts_correctly) {
-    value_t r = val_range(0, 10);
-    ASSERT_EQ_INT(VK_RANGE, r.kind);
-    ASSERT_EQ_INT((int)val_range_count(&r), 10);
-    ASSERT_EQ_INT((int)r.range.step, 1);
-
-    value_t s = val_range_step(0, 10, 3); // 0, 3, 6, 9
-    ASSERT_EQ_INT((int)val_range_count(&s), 4);
-
-    value_t d = val_range_step(10, 0, -3); // 10, 7, 4, 1
-    ASSERT_EQ_INT((int)val_range_count(&d), 4);
-
-    value_t empty = val_range(5, 5);
-    ASSERT_EQ_INT((int)val_range_count(&empty), 0);
-    value_t backwards = val_range(5, 1); // positive step, stop < start
-    ASSERT_EQ_INT((int)val_range_count(&backwards), 0);
-}
-
-// The count is computed in uint64 so the full int64 span cannot overflow the
-// subtraction, which is undefined in int64 and was the narrower of the two
-// overflows the old range() had.
-TEST(test_range_count_does_not_overflow) {
-    value_t huge = val_range(INT64_MIN, INT64_MAX);
-    uint64_t n = val_range_count(&huge);
-    ASSERT_TRUE(n == (uint64_t)INT64_MAX + (uint64_t)INT64_MAX + 1u);
-}
-
 // A float converts to an integer only inside the target's range: NaN, inf
 // and out-of-range values are refused (the C conversion is undefined, a
 // trap under wasm) rather than producing whatever the host does.
@@ -439,8 +405,6 @@ int main(void) {
     RUN(test_parse_bool_vocabulary);
     RUN(test_parse_bool_is_case_sensitive_and_rejects_junk);
     RUN(test_bytes_invariant_holds);
-    RUN(test_range_is_lazy_and_counts_correctly);
-    RUN(test_range_count_does_not_overflow);
     RUN(test_float_to_int_refuses_out_of_range);
     RUN(test_uint_width_zero_is_kept);
     RUN(test_bytes_null_source_rejected);

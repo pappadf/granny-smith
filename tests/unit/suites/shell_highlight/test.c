@@ -217,6 +217,10 @@ TEST(test_command_lines) {
     check("$pc = 0x400", "$pc:alias =:operator 0x400:number");
     check("$pc", "$pc:alias");
     // Strings: an interpolation's expression; raw strings; a comment.
+    // A comment: `#` or `--` after a blank, as the terminal strips it; a `#`
+    // inside a word is the word's.
+    check("util.echo hi -- note", "util:object echo:method -- note:comment");
+    check("util.echo a#b # note", "util:object echo:method # note:comment");
     check("util.echo \"pc=${$pc:08x}\" 'raw $x'",
           "util:object echo:method \"pc=:string ${:interp $pc:alias :08x}:interp \":string 'raw $x':string");
     ASSERT_EQ_INT(0, g_failures);
