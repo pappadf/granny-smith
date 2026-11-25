@@ -21,102 +21,102 @@ const SYSTEM_HD = path.join(DATA, 'systems', 'system_6_0_8_20mb_8_24gc.img');
 
 // AppleTalk starts inactive, so the Chooser's "LaserWriter requires
 // AppleTalk" step this walks through appears.
-const PRINT_SCRIPT = `machine.boot model="plus" rom="/opfs/images/rom/4D1F8172" config="{\\"options\\":{\\"appletalk\\":\\"inactive\\"}}"
-scheduler.stop
+const PRINT_SCRIPT = `machine.boot{model = "plus", rom = "/opfs/images/rom/4D1F8172", config = "{\\"options\\":{\\"appletalk\\":\\"inactive\\"}}"}
+scheduler.stop()
 scheduler.mode = "turbo"
-machine.scsi.attach_hd "/opfs/images/hd/print-hd.img" 0
+machine.scsi.attach_hd("/opfs/images/hd/print-hd.img", 0)
 machine.rtc.pram.boot_device = 0
 machine.rtc.time = "2026-04-26T21:30:36"
-scheduler.run 30000000
+scheduler.run(30000000)
 appletalk.printer.enabled = true
-assert appletalk.printer.status == "status: idle" "printer is not idle before printing"
-assert appletalk.printer.documents == 0 "a document exists before any print"
-machine.adb.mouse.move 25 10
-scheduler.run 2000000
-machine.adb.mouse.click true
-scheduler.run 4000000
-machine.adb.mouse.move 25 123
-scheduler.run 4000000
-machine.adb.mouse.click false
-scheduler.run 60000000
-machine.adb.mouse.move 165 135
-scheduler.run 2000000
-machine.adb.mouse.click true
-scheduler.run 2000000
-machine.adb.mouse.click false
-scheduler.run 20000000
-machine.adb.mouse.move 187 206
-scheduler.run 2000000
-machine.adb.mouse.click true
-scheduler.run 2000000
-machine.adb.mouse.click false
-scheduler.run 60000000
-machine.adb.mouse.move 300 88
-scheduler.run 2000000
-machine.adb.mouse.click true
-scheduler.run 2000000
-machine.adb.mouse.click false
-scheduler.run 20000000
-machine.adb.mouse.move 72 47
-scheduler.run 2000000
-machine.adb.mouse.click true
-scheduler.run 2000000
-machine.adb.mouse.click false
-scheduler.run 40000000
-machine.adb.mouse.move 470 52
-scheduler.run 2000000
-machine.adb.mouse.click true
-scheduler.run 80000
-machine.adb.mouse.click false
-scheduler.run 80000
-machine.adb.mouse.click true
-scheduler.run 80000
-machine.adb.mouse.click false
-scheduler.run 40000000
-machine.adb.mouse.move 53 10
-scheduler.run 2000000
-machine.adb.mouse.click true
-scheduler.run 4000000
-machine.adb.mouse.move 100 203
-scheduler.run 4000000
-machine.adb.mouse.click false
-scheduler.run 60000000
-machine.adb.mouse.move 452 45
-scheduler.run 2000000
-machine.adb.mouse.click true
-scheduler.run 2000000
-machine.adb.mouse.click false
-scheduler.run 100000000
-scheduler.run 200000000
-scheduler.run 300000000
-assert appletalk.printer.documents == 1 "the first print produced no document"
-assert appletalk.printer.interpreter_permanent_jobs == 1 "the first print did not download PatchPrep"
-machine.adb.mouse.move 53 10
-scheduler.run 2000000
-machine.adb.mouse.click true
-scheduler.run 4000000
-machine.adb.mouse.move 100 203
-scheduler.run 4000000
-machine.adb.mouse.click false
-scheduler.run 60000000
-machine.adb.mouse.move 452 45
-scheduler.run 2000000
-machine.adb.mouse.click true
-scheduler.run 2000000
-machine.adb.mouse.click false
-scheduler.run 100000000
-scheduler.run 200000000
-scheduler.run 300000000
-echo "printer: documents=\${appletalk.printer.documents} pages=\${appletalk.printer.last_pages} outcome='\${appletalk.printer.last_outcome}' status='\${appletalk.printer.status}' jobs=\${appletalk.printer.stats.jobs} bytes=\${appletalk.printer.stats.bytes} aborts=\${appletalk.printer.stats.aborts} permanent=\${appletalk.printer.interpreter_permanent_jobs} interpreter_jobs=\${appletalk.printer.interpreter_jobs}"
-assert appletalk.printer.documents == 2 "the second print produced no document"
-assert appletalk.printer.interpreter_permanent_jobs == 1 "the second print downloaded PatchPrep again: the worker's printer forgot it"
-assert appletalk.printer.last_pages == 1 "the printed document is not one page"
-assert appletalk.printer.last_outcome == "ok" "the job did not finish cleanly"
-assert appletalk.printer.status == "status: idle" "the printer is not idle after the job"
-assert appletalk.printer.stats.jobs >= 1 "the finished job was not counted"
-assert appletalk.printer.stats.aborts == 0 "a job was counted as cut off"
-assert appletalk.printer.stats.bytes > 1000 "the job's PostScript was not counted"
-echo done
+assert(appletalk.printer.status == "status: idle", "printer is not idle before printing")
+assert(appletalk.printer.documents == 0, "a document exists before any print")
+machine.adb.mouse.move(25, 10)
+scheduler.run(2000000)
+machine.adb.mouse.click(true)
+scheduler.run(4000000)
+machine.adb.mouse.move(25, 123)
+scheduler.run(4000000)
+machine.adb.mouse.click(false)
+scheduler.run(60000000)
+machine.adb.mouse.move(165, 135)
+scheduler.run(2000000)
+machine.adb.mouse.click(true)
+scheduler.run(2000000)
+machine.adb.mouse.click(false)
+scheduler.run(20000000)
+machine.adb.mouse.move(187, 206)
+scheduler.run(2000000)
+machine.adb.mouse.click(true)
+scheduler.run(2000000)
+machine.adb.mouse.click(false)
+scheduler.run(60000000)
+machine.adb.mouse.move(300, 88)
+scheduler.run(2000000)
+machine.adb.mouse.click(true)
+scheduler.run(2000000)
+machine.adb.mouse.click(false)
+scheduler.run(20000000)
+machine.adb.mouse.move(72, 47)
+scheduler.run(2000000)
+machine.adb.mouse.click(true)
+scheduler.run(2000000)
+machine.adb.mouse.click(false)
+scheduler.run(40000000)
+machine.adb.mouse.move(470, 52)
+scheduler.run(2000000)
+machine.adb.mouse.click(true)
+scheduler.run(80000)
+machine.adb.mouse.click(false)
+scheduler.run(80000)
+machine.adb.mouse.click(true)
+scheduler.run(80000)
+machine.adb.mouse.click(false)
+scheduler.run(40000000)
+machine.adb.mouse.move(53, 10)
+scheduler.run(2000000)
+machine.adb.mouse.click(true)
+scheduler.run(4000000)
+machine.adb.mouse.move(100, 203)
+scheduler.run(4000000)
+machine.adb.mouse.click(false)
+scheduler.run(60000000)
+machine.adb.mouse.move(452, 45)
+scheduler.run(2000000)
+machine.adb.mouse.click(true)
+scheduler.run(2000000)
+machine.adb.mouse.click(false)
+scheduler.run(100000000)
+scheduler.run(200000000)
+scheduler.run(300000000)
+assert(appletalk.printer.documents == 1, "the first print produced no document")
+assert(appletalk.printer.interpreter_permanent_jobs == 1, "the first print did not download PatchPrep")
+machine.adb.mouse.move(53, 10)
+scheduler.run(2000000)
+machine.adb.mouse.click(true)
+scheduler.run(4000000)
+machine.adb.mouse.move(100, 203)
+scheduler.run(4000000)
+machine.adb.mouse.click(false)
+scheduler.run(60000000)
+machine.adb.mouse.move(452, 45)
+scheduler.run(2000000)
+machine.adb.mouse.click(true)
+scheduler.run(2000000)
+machine.adb.mouse.click(false)
+scheduler.run(100000000)
+scheduler.run(200000000)
+scheduler.run(300000000)
+echo(F"printer: documents=\${appletalk.printer.documents} pages=\${appletalk.printer.last_pages} outcome='\${appletalk.printer.last_outcome}' status='\${appletalk.printer.status}' jobs=\${appletalk.printer.stats.jobs} bytes=\${appletalk.printer.stats.bytes} aborts=\${appletalk.printer.stats.aborts} permanent=\${appletalk.printer.interpreter_permanent_jobs} interpreter_jobs=\${appletalk.printer.interpreter_jobs}")
+assert(appletalk.printer.documents == 2, "the second print produced no document")
+assert(appletalk.printer.interpreter_permanent_jobs == 1, "the second print downloaded PatchPrep again: the worker's printer forgot it")
+assert(appletalk.printer.last_pages == 1, "the printed document is not one page")
+assert(appletalk.printer.last_outcome == "ok", "the job did not finish cleanly")
+assert(appletalk.printer.status == "status: idle", "the printer is not idle after the job")
+assert(appletalk.printer.stats.jobs >= 1, "the finished job was not counted")
+assert(appletalk.printer.stats.aborts == 0, "a job was counted as cut off")
+assert(appletalk.printer.stats.bytes > 1000, "the job's PostScript was not counted")
+echo("done")
 `;
 
 // The driver closes the connection the instant its EOF write is acknowledged,
@@ -132,7 +132,7 @@ test('a print job from the guest ends as a PDF in the viewer', async ({ page }) 
   });
   await gotoWeb2(page);
   await stageOpfsFile(page, '/opfs/images/hd/print-hd.img', SYSTEM_HD);
-  await stageOpfsText(page, '/opfs/upload/print.script', PRINT_SCRIPT);
+  await stageOpfsText(page, '/opfs/upload/print.lua', PRINT_SCRIPT);
 
   await stageOpfsFile(page, '/opfs/images/rom/4D1F8172', PLUS_ROM);
 
@@ -145,7 +145,7 @@ test('a print job from the guest ends as a PDF in the viewer', async ({ page }) 
 
   // The viewer is the page's side of the finished job; the script's own
   // assertions cover the bridge's side.
-  await terminalRun(page, 'include "/opfs/upload/print.script"');
+  await terminalRun(page, 'dofile("/opfs/upload/print.lua")');
   await expect(page.locator('.console-output')).toContainText(/printer: documents=|failed/, {
     timeout: 10 * 60 * 1000,
   });

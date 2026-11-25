@@ -33,9 +33,9 @@ test('the console renders values and errors, and Copy as commands round-trips', 
   await idle(page);
 
   // --- A list value: one entry, expandable.
-  await terminalRun(page, 'let xs = [10, 20, 30]');
+  await terminalRun(page, 'xs = {10, 20, 30}');
   await idle(page);
-  await terminalRun(page, '$xs');
+  await terminalRun(page, 'xs');
   const value = output(page).locator('.entry.value').last();
   await expect(value).toContainText('10', { timeout: 10_000 });
   await value.locator('summary').click();
@@ -60,7 +60,7 @@ test('the console renders values and errors, and Copy as commands round-trips', 
   await menu(page, output(page), 'Clear');
   await expect(output(page).locator('.entry')).toHaveCount(0);
   for (const w of ['one', 'two', 'three']) {
-    await terminalRun(page, `echo "copy-${w}"`);
+    await terminalRun(page, `print("copy-${w}")`);
     await idle(page);
   }
   await expect(output(page).locator('.entry.text')).toHaveText([
@@ -73,7 +73,7 @@ test('the console renders values and errors, and Copy as commands round-trips', 
   await menu(page, output(page).locator('.entry').first(), 'Select all');
   await menu(page, output(page).locator('.entry').first(), 'Copy as commands');
   const copied = await page.evaluate(() => navigator.clipboard.readText());
-  expect(copied).toBe('echo "copy-one"\necho "copy-two"\necho "copy-three"');
+  expect(copied).toBe('print("copy-one")\nprint("copy-two")\nprint("copy-three")');
 
   // Paste it back and run it: one command entry, the same output entries.
   await menu(page, output(page), 'Clear');

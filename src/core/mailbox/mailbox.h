@@ -350,8 +350,8 @@ uint32_t mailbox_client_take(mailbox_client_t *c, uint8_t *buf, size_t cap, uint
 // value (dropped), and the completion calls mailbox_result_complete*.  The
 // token is 0 when nothing is being served that can wait (the leaf then
 // does its work now).  Works for a page request (the EVT_RESULT is written
-// at completion) and for a job's call through the seam (the job is held,
-// and a failure becomes the call's error).  Emulator thread only.
+// at completion) and for a tree call of a job's task (the task suspends
+// until the completion, and a failure becomes the call's error).  Emulator thread only.
 uint32_t mailbox_result_defer(void);
 void mailbox_result_complete(uint32_t token, bool ok, const char *json);
 void mailbox_result_complete_ok(uint32_t token);

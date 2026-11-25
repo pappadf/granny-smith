@@ -1,0 +1,49 @@
+-- Integration test: ${...} expression substitution + predicate assert.
+--
+-- Boots Plus, runs a few thousand instructions, then exercises:
+--   - ${literal arithmetic} expanded into shell args
+--   - ${...} with paths and aliases
+--   - break set with a computed address
+--   - predicate assert (truthy and falsy with message)
+
+scheduler.run(50000)
+
+-- Pure arithmetic substitution.
+echo(F"${1 + 2}")
+echo(F"${0xFF & 0x0F}")
+
+-- Path arithmetic and alias resolution inside ${...}.
+echo(F"${machine.memory.rom_size + 1}")
+echo(F"${machine.cpu.pc + 4}")
+
+-- Computed breakpoint address.
+debug.breakpoints.add((machine.cpu.pc + 0x10))
+echo(F"${#debug.breakpoints.entries} breakpoints")
+
+-- Predicate assert — truthy.
+assert(1 == 1)
+assert(machine.memory.rom_size == 131072, "Plus ROM is 128 KiB")
+
+-- Predicate assert — boolean expressions chain through.
+assert(machine.memory.rom_size > 0 and machine.memory.ram_size > 0, "memory present")
+
+-- VK_LIST == VK_STRING compares the list's canonical "[a, b]" formatting
+-- (mirrors the VK_ENUM == VK_STRING label rule), so scripts can assert on
+-- list-returning methods without list literals in the grammar.
+assert(gs.str(shell.meta.attributes) == "[prompt, running, vars, keywords]", "list == formatted string")
+assert(gs.str(shell.meta.attributes) ~= "[prompt]", "list != wrong string")
+assert((shell.meta.attributes == "prompt, running, aliases, vars") == false, "brackets are part of the formatting")
+
+-- --- Named arguments ---
+-- Shell form: unquoted name=value tokens bind to declared slots, any
+-- order, mixing with positionals.
+machine.boot{model = "plus", ram = 1024, rom = vars.ROM}
+assert(machine.id == "plus", "named-arg shell-form boot")
+assert(machine.ram == 1024, "named-arg shell-form ram")
+
+-- Call form: name=expr inside call parentheses; value is a full expression.
+local t0 = machine.boot{ram = 1024 * 2, model = "plus", rom = vars.ROM}
+assert(machine.ram == 2048, "named-arg call-form ram")
+scheduler.run(1000)
+
+quit()

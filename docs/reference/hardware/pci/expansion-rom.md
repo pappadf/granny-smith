@@ -163,7 +163,7 @@ boots.
 
 * **headless** — `offer_sibling_card_roms()` enumerates the directory of
   the ROM file it was given and offers every `*.vrom` and `*.prom`. A test script's
-  `rom="${$ROM}"` therefore makes the card ROMs discoverable with no path
+  `rom = vars.ROM` therefore makes the card ROMs discoverable with no path
   knowledge anywhere in core.
 * **web2** — `/opfs/images/prom/` is created at startup beside the other
   media stores, and every file already in it is offered then, exactly as

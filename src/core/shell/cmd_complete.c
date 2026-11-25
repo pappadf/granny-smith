@@ -11,7 +11,6 @@
 
 #include "cmd_complete.h"
 #include "commands.h"
-#include "shell_var.h"
 #include "syntax.h"
 #include "job/job.h" // EMU_THREAD_CHECK
 
@@ -494,7 +493,7 @@ static bool command_cb(const char *name, const char *target, bool builtin, void 
     (void)builtin;
     struct command_acc *acc = (struct command_acc *)ud;
     node_t n;
-    if (shell_head_resolve(name, strlen(name), &n, NULL, NULL, 0) != SHELL_HEAD_COMMAND)
+    if (shell_head_resolve(name, strlen(name), &n, NULL, 0) != SHELL_HEAD_COMMAND)
         return true;
     // The name is the iteration's copy: keep a copy owned by the completion.
     const char *copy = comp_strdup(acc->out, name);
@@ -589,17 +588,6 @@ typedef struct {
     const char *prefix; // without the leading '$'
 } binding_complete_ctx_t;
 
-static bool binding_complete_var_cb(const char *name, const value_t *v, void *ud) {
-    (void)v;
-    binding_complete_ctx_t *cc = (binding_complete_ctx_t *)ud;
-    if (!name || (cc->prefix[0] && strncmp(name, cc->prefix, strlen(cc->prefix)) != 0))
-        return true;
-    char buf[128];
-    snprintf(buf, sizeof(buf), "$%s", name);
-    push_match(cc->out, comp_strdup(cc->out, buf), NULL);
-    return true;
-}
-
 static bool binding_complete_alias_cb(const char *name, const char *path, alias_kind_t kind, void *ud) {
     (void)path;
     (void)kind;
@@ -615,10 +603,8 @@ static bool binding_complete_alias_cb(const char *name, const char *path, alias_
 static void complete_bindings(const char *prefix, struct completion *out) {
     binding_complete_ctx_t cc = {.out = out, .prefix = prefix};
     set_detail(out, COMP_KIND_ALIAS, NULL);
-    // Scope bindings first (let / --var), then the alias table. The
-    // alias walk is prefix-filtered in its callback so the ~500-entry
+    // The alias table, prefix-filtered in its callback so the ~500-entry
     // mac-global table doesn't flood a bare `$`.
-    shell_var_each(binding_complete_var_cb, &cc);
     alias_each(binding_complete_alias_cb, &cc);
 }
 
@@ -722,7 +708,7 @@ static void complete_arguments(const char *line, const script_stmt_t *st, const 
         return;
     node_t cmd = object_resolve(object_root(), head);
     if (!node_valid(cmd) && !strpbrk(head, ".[") &&
-        shell_word_resolve(head, strlen(head), &cmd, NULL, NULL, 0) != SHELL_HEAD_COMMAND)
+        shell_word_resolve(head, strlen(head), &cmd, NULL, 0) != SHELL_HEAD_COMMAND)
         cmd = (node_t){0};
     if (!node_valid(cmd) || !cmd.member || cmd.member->kind != MK_METHOD)
         return;

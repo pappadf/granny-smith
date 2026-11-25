@@ -5,7 +5,7 @@
 # Server shipped with: the powermac-nt-hal boot floppy's bootdisk.of
 # (nothing in NVRAM), NT's kernel on that project's HAL, the logon screen, and a
 # logon from the ADB keyboard.  ans-nt-installed-boot is the same on the
-# 2.26NT ROM; see test.script for why both exist.
+# 2.26NT ROM; see test.lua for why both exist.
 #
 # THE MEDIA IS IN gs-test-data: the installed disk
 # (systems/winnt_4_0_ppc_ans_512mb_hal5663262.img.7z, with powermac-nt-hal

@@ -366,6 +366,12 @@ void scheduler_announce_speed(struct scheduler *s);
 // Set the CPU clock frequency in Hz (e.g. 7833600 for Plus, 15667200 for SE/30)
 void scheduler_set_frequency(struct scheduler *restrict s, uint32_t frequency_hz);
 
+// Set the E-clock period the E-synchronized I/O penalty aligns to, in CPU
+// cycles.  scheduler_set_frequency derives it from the Macintosh's 783.36 kHz
+// E; a machine whose E is a fixed divider of its CPU clock (the Lisa: the
+// 68000's own E, CPU/10) sets it here, after scheduler_set_frequency.
+void scheduler_set_esync_divider(struct scheduler *restrict s, uint32_t cpu_cycles_per_e);
+
 // Set the per-machine cycles-per-instruction constant. Guest-visible (it sets
 // how many instructions the guest retires per emulated frame) and identical
 // in every pacing mode — one guest timeline.

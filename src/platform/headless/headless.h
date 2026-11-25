@@ -38,7 +38,7 @@ int hl_run_statement(uint32_t client, const char *src);
 
 // === Statement assembler ===
 // A statement is complete when it ends at a newline and is balanced
-// (script_needs_continuation).  The daemon, stdin and the REPL all feed lines
+// (gs_lua_needs_continuation).  The daemon, stdin and the REPL all feed lines
 // to one assembler and run each statement the moment it is complete.
 
 #define STMT_MAX (1u << 20) // 1 MB

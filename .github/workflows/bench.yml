@@ -26,7 +26,7 @@ on:
       - 'Makefile'
       - 'Makefile.headless'
       - 'tests/bench/**'
-      - 'tests/integration/lib/mac.script'
+      - 'tests/integration/lib/mac.lua'
       - 'scripts/bench/**'
       - '.github/workflows/bench.yml'
   schedule:

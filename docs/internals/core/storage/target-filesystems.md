@@ -612,4 +612,4 @@ The web frontend runs these through the **Terminal console**
 | `src/core/storage/image.{c,h}` | Underlying disk image + `disk_read_data` |
 
 See also: `docs/internals/core/storage/image.md` (image container & delta storage), `docs/internals/core/peripherals/scsi.md`
-(attaching images to the guest), and `docs/internals/core/shell/shell.md` (the object-model shell).
+(attaching images to the guest), and `docs/internals/core/lua/lua.md` (the terminal and the script language over the object model).

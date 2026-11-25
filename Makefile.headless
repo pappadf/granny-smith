@@ -12,7 +12,7 @@ endif
 # TARGET=node builds the same headless program with emcc into WebAssembly,
 # run by Node with the host filesystem (NODERAWFS): the CPU cores run on
 # the browser's engine, without the browser.  Single-threaded: use it with
-# --jobs=inline --io=sync, as the bench harness does.
+# --io=sync, as the bench harness does.
 TARGET ?= native
 ifeq ($(TARGET),node)
 CC := emcc
@@ -80,6 +80,7 @@ include src/core/storage/gsdisk/gsdisk.mk
 # LASERWRITER_OUT and the rule for LASERWRITER_PRELUDE_HEADER.
 
 include src/core/network/laserwriter.mk
+include src/core/lua/gs_lua.mk
 
 # -- Sources and the shared include roster (CORE_INCLUDES) --
 
@@ -96,7 +97,9 @@ INCLUDES := -Isrc/platform \
             -I$(VROM68K_OUT) \
             -I$(PDGEN_OUT) \
             -I$(GSDISK_OUT) \
-            -I$(LASERWRITER_OUT)
+            -I$(LASERWRITER_OUT) \
+            -I$(GS_LUA_OUT) \
+            $(LUA_INCLUDES)
 
 # -- Sources --
 # CORE_SRC, PEELER_SRC and CODEC_SRC come from src/sources.mk (included above).
@@ -110,7 +113,7 @@ PLATFORM_SRC := $(wildcard $(PLATFORM_DIR)/*.c)
 CORE_SRC := $(filter-out $(CORE_DIR)/network/laserwriter_transport_ring.c,$(CORE_SRC))
 
 # All sources
-SRC := $(CORE_SRC) $(PLATFORM_SRC) $(PEELER_SRC) $(CODEC_SRC)
+SRC := $(CORE_SRC) $(PLATFORM_SRC) $(PEELER_SRC) $(CODEC_SRC) $(LUA_SRC)
 
 # Object and dependency files (mirror source tree under BUILD_DIR)
 OBJ := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SRC))
@@ -122,7 +125,7 @@ OUTPUT := $(BUILD_DIR)/gs-headless
 
 # -- Combined flags --
 
-CFLAGS  := $(CFLAGS_BASE) $(CFLAGS_MODE) $(INCLUDES) $(PLATEN_CFLAGS) $(EXTRA_CFLAGS)
+CFLAGS  := $(CFLAGS_BASE) $(CFLAGS_MODE) $(INCLUDES) $(PLATEN_CFLAGS) $(LUA_CFLAGS) $(EXTRA_CFLAGS)
 LDFLAGS := $(LDFLAGS_MODE) -lpthread -lm
 ifeq ($(TARGET),node)
 # ALLOW_TABLE_GROWTH: the PowerPC translation tier installs its functions

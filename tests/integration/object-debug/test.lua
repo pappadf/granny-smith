@@ -1,0 +1,102 @@
+-- M6 integration: debug.breakpoints / .logpoints indexed-child
+-- surface. Verifies:
+--   - debug root resolves and lists its children
+--   - debug.breakpoints.add(addr) adds a breakpoint AND the
+--     entry is reachable via debug.breakpoints.<id>
+--   - sparse stable indices: removing #0 does not renumber #1
+--   - legacy `break set` and the new method share the same store
+--   - per-entry attributes (addr, hit_count, condition, id) work
+--   - .remove() detaches the entry (subsequent reads error cleanly)
+
+scheduler.run(50000)
+
+-- The debug object resolves to a class instance.
+local _ = debug
+local _ = debug.breakpoints
+local _ = debug.logpoints
+
+-- Add via the new method, capturing into the breakpoint store.
+echo(F"${debug.breakpoints.add(0x400100)}")
+echo(F"${debug.breakpoints.add(0x400200)}")
+
+-- Index 0 and 1 should now be live with the addresses we set. Use the
+-- bracket form inside ${...} since the expression parser keeps
+-- `.<ident>` only (the dotted-index form is path-form syntax).
+assert(debug.breakpoints[0].addr == 0x400100)
+assert(debug.breakpoints[0].id == 0)
+assert(debug.breakpoints[1].addr == 0x400200)
+
+-- Legacy `break list` must see the same entries (single store).
+echo(F"${#debug.breakpoints.entries} breakpoints")
+
+-- Remove #0 via the method. #1 stays at id 1 — sparse indices.
+echo(F"${debug.breakpoints[0].remove()}")
+assert(debug.breakpoints[1].addr == 0x400200)
+
+-- The next add gets id=2 (max-id-ever + 1; never recycled).
+echo(F"${debug.breakpoints.add(0x400300)}")
+assert(debug.breakpoints[2].addr == 0x400300)
+assert(debug.breakpoints[2].id == 2)
+
+-- Conditional breakpoint via the method form (M6's predicate field).
+echo(F"${debug.breakpoints.add(0x400400, \"machine.cpu.d0 == 0\")}")
+assert(debug.breakpoints[3].addr == 0x400400)
+assert(debug.breakpoints[3].condition == "machine.cpu.d0 == 0")
+
+-- A condition that does not parse is refused, with the parser's reason, and
+-- nothing is added (it used to be stored and read as true at every hit).
+assert(not gs.ok(function() return debug.breakpoints.add(0x400500, "((( nonsense") end), "an invalid condition must be refused")
+assert(#debug.breakpoints.entries == 3, "a refused add added a breakpoint")
+-- Checking a condition evaluates nothing: this one would clear the list.
+echo(F"${debug.breakpoints.add(0x400400, \"debug.breakpoints.clear() == none\")}")
+assert(#debug.breakpoints.entries == 3, "adding the condition evaluated it")
+
+-- Clear via the new collection method, verify legacy list is empty too.
+echo(F"${debug.breakpoints.clear()}")
+echo(F"${#debug.breakpoints.entries} breakpoints")
+
+-- --- Run-past-breakpoint (regression: "not stuck after hitting one") --------
+-- The legacy web UI's debug.spec.ts pinned that after a breakpoint is hit,
+-- a subsequent run advances PAST it instead of re-triggering on the same PC
+-- and stalling. That command layer is gone; this reproduces the guard on the
+-- object model. Two early-ROM addresses the Plus reaches deterministically.
+echo(F"${debug.breakpoints.add(0x4007ba)}")
+scheduler.run()
+assert(machine.cpu.pc == 0x4007ba, "run did not stop at the first breakpoint")
+echo(F"${debug.breakpoints.add(0x4007bc)}")
+scheduler.run()
+assert(machine.cpu.pc == 0x4007bc, "run got stuck — did not advance past the first breakpoint")
+echo(F"${debug.breakpoints.clear()}")
+
+-- --- Every arrival at a breakpoint counts --------------------------------
+-- A breakpoint set at the PC the machine is stopped on is stepped over, as a
+-- debugger resumes past one: the run stops at its next arrival.  Each later
+-- run resumes past it and stops at the very next arrival -- a PC logpoint at
+-- the same address counts the arrivals, one per run.  The resume skip used
+-- to linger until the next arrival, so the breakpoint fired only every other
+-- time round a loop (two arrivals per run).
+scheduler.run(3000000)
+local here = machine.cpu.pc
+local bp = debug.breakpoints.add(here)
+local lp = debug.logpoints.add{addr = here}
+scheduler.run()
+assert(machine.cpu.pc == here, "run did not stop at the breakpoint's next arrival")
+assert(lp.hit_count == 1, "the run did not step over the breakpoint on the current PC")
+scheduler.run()
+assert(machine.cpu.pc == here)
+assert(lp.hit_count == 2, "the breakpoint skipped an arrival")
+scheduler.run()
+assert(lp.hit_count == 3, "the breakpoint skipped an arrival")
+assert(bp.hit_count == 3)
+echo(F"${debug.breakpoints.clear()}")
+echo(F"${debug.logpoints.clear()}")
+
+-- A condition or message may edit the very list being walked when it fires:
+-- both remove themselves here, and the walk must not touch the freed entry.
+echo(F"${debug.breakpoints.add(here, \"debug.breakpoints.clear()\")}")
+debug.logpoints.add{addr = here, message = "${debug.logpoints.clear()}"}
+scheduler.run(500000)
+assert(#debug.breakpoints.entries == 0, "the self-clearing condition did not run")
+assert(#debug.logpoints.entries == 0, "the self-clearing message did not run")
+
+quit()

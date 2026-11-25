@@ -22,7 +22,7 @@ stored number. They measure three things, from strongest to weakest:
 
 Each row is a CPU-bound guest state, reached by a deterministic boot, with a
 guard that it is still the workload it claims to be. They live in
-`tests/bench/` (`<row>.script`, configured in `rows.json`):
+`tests/bench/` (`<row>.lua`, with `lib/bench.lua`, configured in `rows.json`):
 
 | Row | CPU | State |
 |---|---|---|
@@ -209,9 +209,12 @@ python3 scripts/bench/compare.py tmp/bench/raw.jsonl --json tmp/bench/bench.json
   (`callgrind_annotate tmp/bench/head/<row>/A-switch-30000000/callgrind.out`
   shows where the instructions went).
 - Valgrind and the test data are needed; `taskset` is used when present.
-- All emulator runs use `--speed=turbo --jobs=inline --io=sync`: under Valgrind
-  a job thread polling the emulator thread costs ~15× the run itself, and
-  natively it removes a source of jitter.
+- All emulator runs use `--speed=turbo --jobs=inline --io=sync`: `--io=sync`
+  runs host file writes inline instead of on the I/O worker, which natively
+  removes a source of jitter. `--jobs=inline` is for a base binary that
+  still had a job thread (under Valgrind its polling cost ~15× the run
+  itself); a current binary accepts and ignores it, its scripts always
+  running on the emulator thread.
 
 ## In CI (`.github/workflows/bench.yml`)
 
@@ -261,7 +264,7 @@ cd tests/e2e && PERF_BASE_DIST=$PWD/../../tmp/bench-base-dist \
 with emcc into `build/headless[-fast]-node/`: a `gs-headless.js` run by
 Node with the host filesystem, and a `gs-headless` launcher beside it, so
 `run.py` takes it as `--head` or `--base` unchanged.  It is
-single-threaded (the harness's `--jobs=inline --io=sync`), and it is the
+single-threaded (the harness's `--io=sync`), and it is the
 browser's CPU cores on the browser's engine: its turbo MIPS on the
 PowerPC rows match the browser's.  Paired against the native build,
 metric B's ratio is the cost of WebAssembly:
@@ -279,7 +282,7 @@ python3 scripts/bench/run.py --head build/headless-fast-node/gs-headless \
 The rows above are CPU-bound windows.  Interactive use is not: a menu
 opening or a window's genie into the Dock is a burst of work between idle
 stretches, and what matters is how long the user waits for the burst.
-`scripts/bench/scenario.py` times such bursts.  A scenario is a script in
+`scripts/bench/scenario.py` times such bursts.  A scenario is a Lua script in
 `tests/bench/` that boots to a state and saves a checkpoint (`MODE=boot`),
 then loads it and plays scripted input, each interaction a fixed stretch of
 scheduler slots, printing one `@@SCEN` line with the stretch's host wall
@@ -351,7 +354,7 @@ python3 scripts/bench/page_heat.py --bin build/headless-prof/gs-headless
 
 ## Adding a row
 
-1. Write `tests/bench/<row>.script` with `bench_boot()` and `bench_guard()`;
+1. Write `tests/bench/<row>.lua` with `bench_boot()` and `bench_guard()`;
    pin the RTC after `machine.boot`, use only scripted input.
 2. Add it to `tests/bench/rows.json`: the start-up ROM, model and RAM, the
    CPU's `run_fn`, and window sizes if the defaults leave the state.

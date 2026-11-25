@@ -82,7 +82,7 @@ PATTERNS = [
 # silently start covering a third golden that collides later — and forces the
 # author to write down the separate proof. A waiver with no such proof behind it
 # is the mactest failure mode wearing a comment.
-WAIVER = re.compile(r"#\s*golden-collision-ok:\s*(.+)$")
+WAIVER = re.compile(r"(?:#|--)\s*golden-collision-ok:\s*(.+)$")
 
 CHANNELS = {0: 1, 2: 3, 6: 4}  # colour type -> bytes per pixel, at bit depth 8
 
@@ -141,7 +141,7 @@ def scan(script: Path):
     text = script.read_text(encoding="utf-8", errors="replace")
     # The runner defines $TEST_DIR (the script's own directory), so a path
     # built on it resolves; $WORK_DIR is per-run scratch, never a golden.
-    text = text.replace("${$TEST_DIR}/", "")
+    text = text.replace("${$TEST_DIR}/", "").replace("${vars.TEST_DIR}/", "")
     out, waivers, dynamic = [], [], []
     for line in text.splitlines():
         waiver = WAIVER.search(line)
@@ -152,7 +152,7 @@ def scan(script: Path):
             if len(waived) > 1:
                 waivers.append(waived)
             continue
-        if line.lstrip().startswith("#"):
+        if line.lstrip().startswith(("#", "--")):
             continue
         # machine.screen.save writes a diagnostic artifact; it asserts nothing,
         # so its path is not a golden and must not be reported either way.
@@ -162,7 +162,7 @@ def scan(script: Path):
             for ref in pat.findall(line):
                 if not ref.endswith(".png") and "${" not in ref:
                     continue  # a check() arg that is not a golden reference
-                if "${$WORK_DIR}" in ref:
+                if "${$WORK_DIR}" in ref or "${vars.WORK_DIR}" in ref or "vars.WORK_DIR" in line:
                     continue  # a runtime artifact the row wrote itself
                 # A reference built from a variable — check("goldens/${$g}") in
                 # a parameterised sweep helper — cannot be resolved by reading
@@ -190,7 +190,8 @@ def main() -> int:
     undecodable = []
     named = set()  # every golden path a script names, resolved
     dynamic_patterns = []  # regexes for names built from a variable
-    for script in sorted(root.glob("*/*.script")):
+    # Tests are Lua (test.lua and its step files).
+    for script in sorted(root.glob("*/*.lua")):
         if script.parent.name == "lib":
             continue
         refs, waivers, dynamic = scan(script)

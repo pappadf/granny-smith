@@ -3,7 +3,7 @@
   import Button from '@/components/ui/Button.svelte';
   import TextInput from '@/components/ui/TextInput.svelte';
   import { mapRange, MAP_LIMIT, type MapRun } from '@/bus/mmu';
-  import { debug, inspectMmuWalk } from '@/state/debug.svelte';
+  import { inspectMmuWalk, mmuView } from '@/state/debug.svelte';
   import { debugFrame } from '@/state/debugFrame.svelte';
   import { fmtHex32, parseHex } from '@/lib/hex';
   import { showNotification } from '@/state/toasts.svelte';
@@ -21,8 +21,8 @@
   $effect(() => {
     void debugFrame.current;
     const { start, end } = range;
-    const sup = debug.mmuSupervisor;
-    void mapRange(start, end, sup).then((r) => (rows = r));
+    const { supervisor, context } = mmuView();
+    void mapRange(start, end, supervisor, context).then((r) => (rows = r));
   });
 
   function scan() {

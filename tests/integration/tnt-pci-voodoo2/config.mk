@@ -9,7 +9,7 @@
 # for the disk-loaded driver to set — which is exactly what this row
 # observes the guest's real firmware doing.
 #
-# The bring-up replay (glide-init.script) is 3dfx's own initialisation
+# The bring-up replay (glide-init.lua) is 3dfx's own initialisation
 # order, transcribed from the vendor's released Glide source
 # (glide2x/cvg/init/sst1init.c — sequence and constants, no code copied),
 # with the postcondition of each step asserted in place: the first step

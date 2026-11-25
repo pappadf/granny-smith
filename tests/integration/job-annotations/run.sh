@@ -10,17 +10,17 @@ ctl="$WORK_DIR/ctl.bin"
 python3 -c "import sys; sys.stdout.buffer.write(bytes([1]) * 65536)" > "$ctl"
 in="$WORK_DIR/in.txt"
 cat > "$in" <<IN_EOF
-if true {
-    echo "before"
-    machine.cpu.pc
-    echo "after"
-}
-assert 1 == 2 "boom"
-let s = "x"
-while len(\$s) < 200000 { \$s = "\$s\$s" }
-\$s
+do
+    print("before")
+    shell.run("machine.cpu.pc")
+    print("after")
+end
+assert(1 == 2, "boom")
+s = "x"
+while #s < 200000 do s = s .. s end
+s
 files.cat "$ctl"
-echo "done"
+print("done")
 quit
 IN_EOF
 out="$WORK_DIR/out.txt"

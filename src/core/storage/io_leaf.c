@@ -134,7 +134,7 @@ value_t io_leaf_dispatch(io_leaf_t *j) {
     }
     // Nothing that can wait: the work runs now, and its failure reads as a
     // deferred one's does (the worker's reason, as is), so a script says the
-    // same with or without a job thread or a worker.
+    // same whether its call could suspend or not, with or without a worker.
     int rc = io_run_inline(&d, NULL, 0);
     value_t v = rc == 0 ? (j->answer ? j->answer(j) : val_bool(true)) : val_err("%s", j->err);
     io_leaf_free(j);

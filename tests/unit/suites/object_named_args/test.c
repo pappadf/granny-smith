@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
-// Unit tests for the named-argument binder (node_bind_args) and the
-// `name=expr` call-form grammar.
+// Unit tests for the named-argument binder (node_bind_args), which the
+// script bridge and the terminal's command form both bind through.
 //
 // Strategy: register a toy `nt` class whose methods exercise the
 // binding rules — required/optional-with-default fixed slots, a rest
 // slot, and a legacy method with no args table — then drive them via
-// node_bind_args directly and via expr_eval over `nt.method(...)`.
+// node_bind_args directly.
 
-#include "expr.h"
 #include "object.h"
 #include "test_assert.h"
 #include "value.h"
@@ -83,11 +82,6 @@ static void install_nt(void) {
     object_root_reset();
     struct object *o = object_new(&nt_class, NULL, "nt");
     object_attach(object_root(), o);
-}
-
-static value_t eval_with_root(const char *src) {
-    expr_ctx_t ctx = {.root = object_root()};
-    return expr_eval(src, &ctx);
 }
 
 // Bind + call helper for direct binder tests.
@@ -240,68 +234,6 @@ TEST(test_no_arg_table_positional_passthrough) {
 
 // === Call-form grammar tests =============================================
 
-TEST(test_call_form_named) {
-    install_nt();
-    value_t v = eval_with_root("nt.trip(a=1, c=2)");
-    ASSERT_EQ_INT(VK_INT, v.kind);
-    ASSERT_EQ_INT(172, (int)v.i);
-    value_free(&v);
-    object_root_reset();
-}
-
-TEST(test_call_form_named_reordered) {
-    install_nt();
-    value_t v = eval_with_root("nt.trip(b=1, a=2)");
-    ASSERT_EQ_INT(VK_INT, v.kind);
-    ASSERT_EQ_INT(219, (int)v.i); // a=2, b=1, c default 9
-    value_free(&v);
-    object_root_reset();
-}
-
-TEST(test_call_form_mixed) {
-    install_nt();
-    value_t v = eval_with_root("nt.trip(4, c=3)");
-    ASSERT_EQ_INT(VK_INT, v.kind);
-    ASSERT_EQ_INT(473, (int)v.i);
-    value_free(&v);
-    object_root_reset();
-}
-
-TEST(test_call_form_value_is_expression) {
-    install_nt();
-    value_t v = eval_with_root("nt.trip(1, c=1+1)");
-    ASSERT_EQ_INT(VK_INT, v.kind);
-    ASSERT_EQ_INT(172, (int)v.i);
-    value_free(&v);
-    object_root_reset();
-}
-
-TEST(test_call_form_positional_after_named_errors) {
-    install_nt();
-    value_t v = eval_with_root("nt.trip(a=1, 2)");
-    ASSERT_TRUE(val_is_error(&v));
-    value_free(&v);
-    object_root_reset();
-}
-
-TEST(test_call_form_equality_still_parses) {
-    install_nt();
-    // `==` inside call args must not be taken for a named argument.
-    value_t v = eval_with_root("nt.trip(1, 2, 3) == 123");
-    ASSERT_EQ_INT(VK_BOOL, v.kind);
-    ASSERT_TRUE(v.b);
-    value_free(&v);
-    object_root_reset();
-}
-
-TEST(test_call_form_unknown_name_errors) {
-    install_nt();
-    value_t v = eval_with_root("nt.trip(z=1)");
-    ASSERT_TRUE(val_is_error(&v));
-    value_free(&v);
-    object_root_reset();
-}
-
 // A rest tail longer than the validator's scratch capacity is refused,
 // not written past node_call's stack array.
 TEST(test_rest_tail_over_cap_errors) {
@@ -336,12 +268,5 @@ int main(void) {
     RUN(test_rest_tail_over_cap_errors);
     RUN(test_no_arg_table_rejects_named);
     RUN(test_no_arg_table_positional_passthrough);
-    RUN(test_call_form_named);
-    RUN(test_call_form_named_reordered);
-    RUN(test_call_form_mixed);
-    RUN(test_call_form_value_is_expression);
-    RUN(test_call_form_positional_after_named_errors);
-    RUN(test_call_form_equality_still_parses);
-    RUN(test_call_form_unknown_name_errors);
     return 0;
 }

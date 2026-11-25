@@ -11,7 +11,7 @@
 // card in GPU mode on Chromium's software WebGPU adapter (swiftshader),
 // replays 3dfx's bring-up through the aperture, takes the monitor (the
 // edge that ENGAGES GPU mode), and runs the takeover's drawing section
-// (tests/integration/tnt-pci-voodoo2/draw-webgpu.script): the 136-pixel
+// (tests/integration/tnt-pci-voodoo2/draw-webgpu.lua): the 136-pixel
 // triangle must cover exactly 136 pixels on the GPU — the half-pixel
 // alignment that makes the GPU's centre test the walker's integer test
 // — its complement exactly 120 more with no seam, and every pixel value
@@ -20,7 +20,7 @@
 // same boot in a browser WITHOUT WebGPU.
 //
 // Everything goes through the shipped Terminal panel; the drawing section
-// is staged into OPFS and `include`d, so it runs inside the worker at
+// is staged into OPFS and run with `dofile`, so it runs inside the worker at
 // full speed instead of one register per terminal line.
 //
 // The scheduler stays HALTED throughout, deliberately: headless Chromium
@@ -109,10 +109,10 @@ test("the takeover engages when the card takes the monitor, and the GPU covers e
 
   // Stage the composed script and run it inside the worker.
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "v2gpu-"));
-  const scriptPath = path.join(tmp, "takeover.script");
+  const scriptPath = path.join(tmp, "takeover.lua");
   fs.writeFileSync(scriptPath, composeScript());
-  await stageOpfsFile(page, "/opfs/upload/voodoo2-takeover.script", scriptPath);
-  await terminalRun(page, 'include "/opfs/upload/voodoo2-takeover.script"');
+  await stageOpfsFile(page, "/opfs/upload/voodoo2-takeover.lua", scriptPath);
+  await terminalRun(page, 'dofile("/opfs/upload/voodoo2-takeover.lua")');
 
   // The script's last line, or its first failed assertion.
   let text = "";
@@ -120,12 +120,12 @@ test("the takeover engages when the card takes the monitor, and the GPU covers e
     await page.waitForTimeout(1000);
     text = await page.locator(".console-output").innerText();
     if (text.includes("draw-webgpu: takeover drawing section complete")) break;
-    if (/assert(ion)? failed|error:|Error/.test(text)) break;
+    if (/takeover\.lua:\d+:|assert(ion)? failed|error:|Error/.test(text)) break;
   }
   expect(text, text).toContain(
     "draw-webgpu: takeover drawing section complete",
   );
-  expect(text, text).not.toMatch(/assert(ion)? failed/);
+  expect(text, text).not.toMatch(/takeover\.lua:\d+:|assert(ion)? failed/);
 
   // Engaged — but the overlay is shown only after the first PRESENT, and
   // this spec never presents (headless Chromium would destroy the device),
@@ -136,9 +136,9 @@ test("the takeover engages when the card takes the monitor, and the GPU covers e
   await expect(page.locator("#screen3d")).toBeHidden();
 
   // Release the monitor: GPU mode disengages, reading the frame back,
-  // and the overlay hides.  (The script's shell functions persist.)
+  // and the overlay hides.  (The script's global functions persist.)
   await terminalRun(page, "vreg_wr(0x210, vreg_rd(0x210) & 0xFFFFFFFE)");
-  await terminalRun(page, 'echo "w=${machine.screen.width}"');
+  await terminalRun(page, 'print(F"w=${machine.screen.width}")');
   expect(
     await terminalEval(page, "machine.pci.slot[1].card.video.drives_monitor"),
   ).toBe("false");

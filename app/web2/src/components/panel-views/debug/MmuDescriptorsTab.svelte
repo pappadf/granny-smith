@@ -3,12 +3,12 @@
   import Select from '@/components/ui/Select.svelte';
   import TextInput from '@/components/ui/TextInput.svelte';
   import { descriptorFormats, readDescriptors, walkAddr, type Descriptor } from '@/bus/mmu';
-  import { debug } from '@/state/debug.svelte';
+  import { mmuView } from '@/state/debug.svelte';
   import { debugFrame } from '@/state/debugFrame.svelte';
   import { machine } from '@/state/machine.svelte';
   import { fmtHex32, parseHex } from '@/lib/hex';
   import { showNotification } from '@/state/toasts.svelte';
-  import { formatEntry } from '@/lib/mmu';
+  import { formatEntry, formatLisaSegment } from '@/lib/mmu';
 
   // Raw descriptors decoded by the core's machine.cpu.mmu.descriptor: PMMU
   // or 68040 table entries and PowerPC page-table entries at a physical
@@ -32,7 +32,8 @@
   async function fromPc() {
     const pc = debugFrame.current?.pc;
     if (pc === undefined) return;
-    const w = await walkAddr(pc, debug.mmuSupervisor);
+    const { supervisor, context } = mmuView();
+    const w = await walkAddr(pc, supervisor, false, context);
     const leaf = isLisa
       ? w?.steps.find((s) => s.step === 'segment')
       : w?.steps.findLast((s) => s.fields.addr !== undefined);
@@ -61,10 +62,14 @@
     void debugFrame.current;
     const a = at;
     const f = format;
+    const { context } = mmuView();
     if (a === null) return;
-    void readDescriptors(a, COUNT, formats.length ? f || formats[0] : undefined).then(
-      (r) => (rows = r),
-    );
+    void readDescriptors(
+      a,
+      COUNT,
+      formats.length ? f || formats[0] : undefined,
+      isLisa ? context : undefined,
+    ).then((r) => (rows = r));
   });
 
   function read() {
@@ -105,6 +110,32 @@
   </div>
   {#if rows === null}
     <p class="hint">Reading the MMU…</p>
+  {:else if isLisa}
+    {#if rows.length}
+      <p class="hint">
+        Context {rows[0].context}{rows[0].context === 0 ? ' (the operating system)' : ''}
+      </p>
+    {/if}
+    <table class="seg-table" aria-label="Segment descriptors">
+      <thead>
+        <tr>
+          <th>Seg</th><th>Logical</th><th>Type</th><th>Length</th><th>Physical</th><th>Raw</th>
+        </tr>
+      </thead>
+      <tbody>
+        {#each rows as d, i (i)}
+          {@const r = formatLisaSegment(d)}
+          <tr class="seg-row" data-type={d.type} data-present={r.present ? 'yes' : 'no'}>
+            <td>{r.segment}</td>
+            <td>{r.logical}</td>
+            <td>{r.type}</td>
+            <td>{r.length}</td>
+            <td>{r.physical}</td>
+            <td class="raw">{r.raw}</td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
   {:else}
     {#each rows as d, i (i)}
       {@const e = formatEntry(String(d.type ?? ''), d)}
@@ -145,6 +176,26 @@
     font-size: var(--gs-font-size-xs);
     line-height: 1.5;
     color: var(--gs-text);
+  }
+  .seg-table {
+    border-collapse: collapse;
+    font-family: var(--gs-font-mono);
+    font-size: var(--gs-font-size-xs);
+  }
+  .seg-table th {
+    color: var(--gs-text-muted);
+    font-weight: normal;
+    text-align: left;
+    padding-right: var(--gs-space-3);
+  }
+  .seg-table td {
+    color: var(--gs-text);
+    padding-right: var(--gs-space-3);
+    white-space: nowrap;
+  }
+  .seg-row[data-present='no'] td,
+  .seg-table td.raw {
+    color: var(--gs-text-muted);
   }
   .desc-row[data-type='invalid'] {
     color: var(--gs-text-muted);

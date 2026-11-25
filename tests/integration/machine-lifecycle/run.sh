@@ -25,18 +25,18 @@ echo "Checkpoint: $CHECKPOINT_FILE"
 echo ""
 echo "Step 1: Cold boot → run 5M cycles → save checkpoint"
 
-cat > "$TEST_TMPDIR/step1.script" << 'INNER'
-# Boot from ROM, run 5M cycles, save state, quit
-scheduler.run 5000000
-assert checkpoint.save("CHECKPOINT_PLACEHOLDER") "step1 checkpoint save failed"
-quit
+cat > "$TEST_TMPDIR/step1.lua" << 'INNER'
+-- Boot from ROM, run 5M cycles, save state, quit
+scheduler.run(5000000)
+assert(checkpoint.save("CHECKPOINT_PLACEHOLDER"), "step1 checkpoint save failed")
+quit()
 INNER
 # Substitute the actual checkpoint path (avoid quoting issues in heredoc)
-sed -i "s|CHECKPOINT_PLACEHOLDER|$CHECKPOINT_FILE|g" "$TEST_TMPDIR/step1.script"
+sed -i "s|CHECKPOINT_PLACEHOLDER|$CHECKPOINT_FILE|g" "$TEST_TMPDIR/step1.lua"
 
 GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN \
     rom="$ROM_PATH" \
-    script="$TEST_TMPDIR/step1.script" \
+    script="$TEST_TMPDIR/step1.lua" \
     --speed=turbo
 
 if [ ! -f "$CHECKPOINT_FILE" ]; then
@@ -51,18 +51,18 @@ echo "Checkpoint saved: $CHECKPOINT_FILE ($(wc -c < "$CHECKPOINT_FILE") bytes)"
 echo ""
 echo "Step 2: Restore checkpoint → run 1M cycles → quit"
 
-cat > "$TEST_TMPDIR/step2.script" << 'INNER'
-# Load saved checkpoint (exercises system_destroy + system_create restore path)
-assert checkpoint.load("CHECKPOINT_PLACEHOLDER") "step2 checkpoint load failed"
-# Run 1M more cycles from restored state
-scheduler.run 1000000
-quit
+cat > "$TEST_TMPDIR/step2.lua" << 'INNER'
+-- Load saved checkpoint (exercises system_destroy + system_create restore path)
+assert(checkpoint.load("CHECKPOINT_PLACEHOLDER"), "step2 checkpoint load failed")
+-- Run 1M more cycles from restored state
+scheduler.run(1000000)
+quit()
 INNER
-sed -i "s|CHECKPOINT_PLACEHOLDER|$CHECKPOINT_FILE|g" "$TEST_TMPDIR/step2.script"
+sed -i "s|CHECKPOINT_PLACEHOLDER|$CHECKPOINT_FILE|g" "$TEST_TMPDIR/step2.lua"
 
 GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN \
     rom="$ROM_PATH" \
-    script="$TEST_TMPDIR/step2.script" \
+    script="$TEST_TMPDIR/step2.lua" \
     --speed=turbo
 
 echo ""

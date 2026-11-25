@@ -1,7 +1,7 @@
 # Integration suite: the PDM family (Power Macintosh 6100/7100/8100)
 #
 # One daemon run; rows re-instantiate via machine.boot (the boot-matrix
-# pattern, suite-quadra shape) and ../lib/mac.script provides the harness
+# pattern, suite-quadra shape) and ../lib/mac.lua provides the harness
 # (row filter, keep-going, REGEN, condition-based waits).
 #
 # Each row cold-boots System 7.5 from the prepared SCSI image to the

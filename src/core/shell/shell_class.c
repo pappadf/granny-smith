@@ -9,9 +9,9 @@
 // methods (`shell.run`, `shell.complete`, `shell.expand`, …).
 //
 // The Shell class is a thin wrapper. Its method bodies forward to the
-// existing shell internals (the script interpreter, `shell_complete`,
-// the expression interpolator, the alias-table API). No business logic
-// moves here.
+// script engine (gs_lua.h: a terminal line, a Lua chunk or file, a
+// template), `shell_complete`, `shell_highlight` and the alias table. No
+// business logic moves here.
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -20,13 +20,12 @@
 
 #include "alias.h" // shell_alias_class
 #include "cmd_complete.h"
-#include "expr.h"
+#include "gs_lua.h"
 #include "highlight.h"
 #include "lint.h"
 #include "object.h"
 #include "object_order.h"
 #include "scheduler.h"
-#include "script.h"
 #include "shell.h"
 #include "usage.h"
 #include "value_format.h"
@@ -36,8 +35,6 @@
 
 #include "commands.h"
 #include "root.h"
-#include "shell_funcs.h"
-#include "shell_var.h"
 #include "system.h"
 #include "value.h"
 #include "value_format.h"
@@ -60,65 +57,24 @@ static DEF_GETTER(shell_get_running) {
     return val_bool(s ? scheduler_is_running(s) : false);
 }
 
-// Growable list of VK_STRING items, for `shell.vars`.
-typedef struct {
-    value_t *items;
-    size_t len;
-    size_t cap;
-} str_list_t;
-
-// The shared accumulator; this was the fourth of five copies.
-static bool str_list_push(str_list_t *acc, const char *s) {
-    if (!s)
-        return true;
-    if (!val_list_push(&acc->items, &acc->len, &acc->cap, val_str(s)))
-        return false;
-    return true;
-}
-
-// `shell.vars` — list of "name=value" strings. Iteration walks the
-// internal table; for VK_STRING entries the value is rendered verbatim,
-// other kinds emit their JSON-ish formatter shape.
-// `shell.vars` renders each entry as `name=value`.  This was an EIGHTH
-// per-kind formatter, with its own cruder default (`<%d>` for every kind it
-// did not name, including objects and errors) and its own habit of ignoring
-// VFLAG_HEX.  It is a table
-// cell by any other name, so it is one now.
-static void format_value_compact(const value_t *v, char *buf, size_t buf_size) {
-    value_format_into(v, VFMT_CELL, buf, buf_size);
-}
-
-// The variable table is private to shell_var.c; iterate via the
-// shell_var_each() callback the module exposes.
-static bool var_collect_cb(const char *name, const value_t *v, void *ud) {
-    str_list_t *acc = (str_list_t *)ud;
-    char val_buf[160];
-    format_value_compact(v, val_buf, sizeof(val_buf));
-    char line[256];
-    snprintf(line, sizeof(line), "%s=%s", name, val_buf);
-    return str_list_push(acc, line);
-}
-
+// `shell.vars`: the `vars` table a script reads (--var), as 'name=value'.
 static DEF_GETTER(shell_get_vars) {
-    str_list_t acc = {0};
-    shell_var_each(var_collect_cb, &acc);
-    return val_list(acc.items, acc.len);
+    return gs_lua_vars();
 }
 
 // === Method bodies ========================================================
 
-// `shell.run(line)` — run a free-form shell line. Stdout/stderr stream
-// through `Module.print` (or stdout on the headless platform) exactly
-// as before; the return value is the new prompt text, or a VK_ERROR on
-// dispatch failure. Programmatic callers should prefer typed
+// `shell.run(line)` — run one terminal line (a command line or a Lua
+// chunk) here, not as a job. Output streams to the caller's sink; the
+// return value is the new prompt text, or a VK_ERROR when the line failed
+// (the failure has been reported). Programmatic callers should prefer typed
 // `object_eval(path, args)` — this method is for the line-input front-end.
 static DEF_METHOD(shell_method_run) {
     if (argc < 1 || argv[0].kind != VK_STRING || !argv[0].s)
         return val_err("shell.run: expected (line)");
 
-    // The interpreter mutates its line buffer, so hand it a writable
-    // copy. Strip trailing CR/LF the way em_main.c used to before this
-    // method existed.
+    // Strip trailing CR/LF the way em_main.c used to before this method
+    // existed.
     char *line = strdup(argv[0].s);
     if (!line)
         return val_err("shell.run: out of memory");
@@ -126,16 +82,9 @@ static DEF_METHOD(shell_method_run) {
     while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
         line[--len] = '\0';
 
-    // REPL semantics: the interpreter prints results and errors.  This
-    // node is attached by core_init after shell_init has run, so the
-    // interpreter is always ready by the time it can be called.
-    int rc = script_run_line(line);
+    // The terminal's semantics (gs.shell_line): results and errors print.
+    int rc = gs_lua_run_line(line);
     free(line);
-
-    // The interpreter already printed any error to stderr; on failure
-    // return a VK_ERROR carrying a brief reason so JS callers can branch
-    // on success without parsing the streamed text. On success return
-    // the new prompt text.
     if (rc != 0)
         return val_err("command failed");
 
@@ -233,39 +182,43 @@ static DEF_METHOD(shell_method_complete) {
     return val_map_finish(b);
 }
 
-// `shell.expand(text)` — interpolate a string body (`${…}` / `$name`)
-// against the current bindings. Retained for test harnesses; line-level
-// preprocessing no longer exists in v2, so this is exactly the
-// dq-string interpolator.
+// `shell.expand(text)` — expand a template (`${expr}`, `${expr:08x}`,
+// `$name`) against the globals, as a command line's "..." argument is.
 static DEF_METHOD(shell_method_expand) {
     if (argc < 1 || argv[0].kind != VK_STRING || !argv[0].s)
         return val_err("shell.expand: expected (text)");
-    expr_ctx_t ectx;
-    script_expr_ctx(&ectx);
-    return expr_interpolate_body(argv[0].s, &ectx);
+    return gs_lua_expand(argv[0].s, 0, NULL, NULL);
 }
 
-// `shell.script_run(path)` — parse and execute the file with the v2
-// script interpreter via script_run_file, so `include` paths inside it
-// resolve relative to the file. Returns VK_NONE on success, VK_ERROR if
-// the script aborted.
+// `shell.script_run(path)` — run a Lua file, so `require` and `dofile`
+// paths inside it resolve relative to it. VK_NONE on success, VK_ERROR if
+// it failed (the failure has been reported).
 static DEF_METHOD(shell_method_script_run) {
     if (argc < 1 || argv[0].kind != VK_STRING || !argv[0].s)
         return val_err("shell.script_run: expected (path)");
     const char *path = argv[0].s;
-    if (script_run_file(path) != 0)
+    if (gs_lua_run_file(path) < 0)
         return val_err("shell.script_run: '%s' failed", path);
     return val_none();
 }
 
-// `shell.eval(text)` — run a (possibly multi-line) script source string
-// through the interpreter. The JS terminal and tests use this to submit
-// brace-balanced buffers without touching disk.
+// `shell.eval(text)` — run a (possibly multi-line) Lua chunk.
 static DEF_METHOD(shell_method_eval) {
     if (argv[0].kind != VK_STRING || !argv[0].s)
         return val_err("shell.eval: expected (text)");
-    if (script_run_source(argv[0].s) != 0)
+    if (gs_lua_run_source(argv[0].s, false) < 0)
         return val_err("shell.eval: script failed");
+    return val_none();
+}
+
+// `shell.lua(text)` — run Lua source on the script state (gs_lua.h) with
+// the REPL's printing: an expression's results are printed.  VK_NONE on
+// success, VK_ERROR when the chunk failed (the failure has been reported).
+static DEF_METHOD(shell_method_lua) {
+    if (argv[0].kind != VK_STRING || !argv[0].s)
+        return val_err("shell.lua: expected (text)");
+    if (gs_lua_run_source(argv[0].s, true) < 0)
+        return val_err("shell.lua: chunk failed");
     return val_none();
 }
 
@@ -288,7 +241,7 @@ static DEF_METHOD(shell_method_interrupt) {
         scheduler_t *s = system_scheduler();
         if (s)
             scheduler_stop(s);
-        script_interrupt();
+        gs_lua_interrupt();
         return val_none();
     }
     // From inside a script it is the script asking: stop my run, not me.
@@ -310,11 +263,11 @@ static DEF_METHOD(shell_method_highlight) {
     return shell_highlight(argv[0].s ? argv[0].s : "");
 }
 
-// `shell.needs_continuation(text)` — true while `text` is an incomplete
-// statement or block, so a console knows whether Enter submits or breaks
-// the line.
+// `shell.needs_continuation(text)` — true while `text` is an unfinished Lua
+// chunk (a command line never is), so a console knows whether Enter
+// submits or breaks the line.
 static DEF_METHOD(shell_method_needs_continuation) {
-    return val_bool(script_needs_continuation(argv[0].s ? argv[0].s : ""));
+    return val_bool(gs_lua_needs_continuation(argv[0].s ? argv[0].s : ""));
 }
 
 // A method example passes when shell.highlight finds nothing unresolved in it.
@@ -356,11 +309,11 @@ static const arg_decl_t shell_usage_args[] = {
 };
 
 static const arg_decl_t shell_text_args[] = {
-    {.name = "text", .kind = VK_STRING, .doc = "Statement or block text"},
+    {.name = "text", .kind = VK_STRING, .doc = "A terminal line or a Lua chunk"},
 };
 
 static const arg_decl_t shell_run_args[] = {
-    {.name = "line", .kind = VK_STRING, .doc = "Free-form shell line"},
+    {.name = "line", .kind = VK_STRING, .doc = "A terminal line: a command line or a Lua chunk"},
 };
 
 static const value_t shell_false = {.kind = VK_BOOL, .b = false};
@@ -380,7 +333,7 @@ static const arg_decl_t shell_complete_args[] = {
 };
 
 static const arg_decl_t shell_expand_args[] = {
-    {.name = "text", .kind = VK_STRING, .doc = "Text with ${...} / $(...) references to expand"},
+    {.name = "text", .kind = VK_STRING, .doc = "A template: ${expr}, ${expr:08x}, $name"},
 };
 
 static const arg_decl_t shell_script_run_args[] = {
@@ -388,7 +341,7 @@ static const arg_decl_t shell_script_run_args[] = {
 };
 
 static const arg_decl_t shell_eval_args[] = {
-    {.name = "text", .kind = VK_STRING, .doc = "Script source (may span multiple lines)"},
+    {.name = "text", .kind = VK_STRING, .doc = "Lua source (may span multiple lines)"},
 };
 
 static const member_t shell_members[] = {
@@ -402,7 +355,7 @@ static const member_t shell_members[] = {
      .attr = {.type = VK_BOOL, .get = shell_get_running, .set = NULL}},
     {.kind = MK_ATTR,
      .name = "vars",
-     .doc = "List of 'name=value' shell-variable entries",
+     .doc = "The vars table (--var NAME=VALUE) as 'name=value' entries",
      .attr = {.type = VK_LIST, .get = shell_get_vars, .set = NULL}},
     {.kind = MK_ATTR,
      .name = "keywords",
@@ -419,7 +372,7 @@ static const member_t shell_members[] = {
      .method = {.args = shell_usage_args, .nargs = 1, .result = VK_MAP, .fn = shell_method_usage}},
     {.kind = MK_METHOD,
      .name = "needs_continuation",
-     .doc = "True while text is an incomplete statement or block",
+     .doc = "True while text is an unfinished Lua chunk",
      .method = {.ui_flags = MM_HIDDEN,
                 .args = shell_text_args,
                 .nargs = 1,
@@ -427,12 +380,12 @@ static const member_t shell_members[] = {
                 .fn = shell_method_needs_continuation}},
     {.kind = MK_METHOD,
      .name = "highlight",
-     .doc = "Syntax classes of a line or block: a list of {start, end, class} spans (UTF-8 byte offsets)",
+     .doc = "Syntax classes of a terminal line or Lua chunk: a list of {start, end, class} spans (UTF-8 byte offsets)",
      .method =
          {.ui_flags = MM_HIDDEN, .args = shell_text_args, .nargs = 1, .result = VK_LIST, .fn = shell_method_highlight}},
     {.kind = MK_METHOD,
      .name = "run",
-     .doc = "Run a free-form shell line; returns the new prompt or VK_ERROR",
+     .doc = "Run one terminal line (a command line or Lua); returns the new prompt or VK_ERROR",
      .method =
          {.ui_flags = MM_HIDDEN, .args = shell_run_args, .nargs = 1, .result = VK_STRING, .fn = shell_method_run}},
     {.kind = MK_METHOD,
@@ -445,16 +398,20 @@ static const member_t shell_members[] = {
                 .fn = shell_method_complete}},
     {.kind = MK_METHOD,
      .name = "expand",
-     .doc = "Expand ${...} / $(...) references in text",
+     .doc = "Expand a template's ${expr} and $name references",
      .method = {.args = shell_expand_args, .nargs = 1, .result = VK_STRING, .fn = shell_method_expand}},
     {.kind = MK_METHOD,
      .name = "script_run",
-     .doc = "Parse and run a script file (block-aware); errors abort the script",
+     .doc = "Run a Lua script file; an error aborts it",
      .method = {.args = shell_script_run_args, .nargs = 1, .result = VK_NONE, .fn = shell_method_script_run}},
     {.kind = MK_METHOD,
      .name = "eval",
-     .doc = "Run a (possibly multi-line) script source string",
+     .doc = "Run a (possibly multi-line) Lua chunk",
      .method = {.args = shell_eval_args, .nargs = 1, .result = VK_NONE, .fn = shell_method_eval}},
+    {.kind = MK_METHOD,
+     .name = "lua",
+     .doc = "Run Lua source on the script state; an expression's results are printed",
+     .method = {.args = shell_eval_args, .nargs = 1, .result = VK_NONE, .fn = shell_method_lua}},
     {.kind = MK_METHOD,
      .name = "interrupt",
      .doc = "Stop the running scheduler and cancel the caller's running script (Ctrl-C path)",
@@ -468,7 +425,7 @@ const class_desc_t shell_class = {
     .name = "Shell",
     .members = shell_members,
     .n_members = sizeof(shell_members) / sizeof(shell_members[0]),
-    .doc = "The shell: bindings, functions, aliases and scripts",
+    .doc = "The shell: the terminal's lines, scripts, aliases and commands",
 };
 
 void shell_class_register(struct config *cfg) {
@@ -476,7 +433,6 @@ void shell_class_register(struct config *cfg) {
     if (!shell_obj)
         return;
     object_set_order(shell_obj, OBJ_ORDER_SHELL);
-    shell_funcs_install(shell_obj); // `shell.functions` container
     root_attach_stub(shell_obj, object_new(&shell_alias_class, cfg, "alias"));
     root_attach_stub(shell_obj, object_new(&shell_command_class, cfg, "command"));
 }

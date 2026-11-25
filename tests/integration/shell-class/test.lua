@@ -1,0 +1,112 @@
+-- Smoke-test every method and attribute on `shell` so a regression in
+-- the class registration or the dispatcher wrapper shows up at make
+-- integration-test time.
+
+-- === Attributes ===========================================================
+
+-- `running` is false before scheduler.run; flips true while a long
+-- command is in flight, but we don't exercise that here.
+assert(shell.running == false, "shell.running should be false at boot")
+
+-- `prompt` contains the disassembled-PC variant once a machine is up.
+-- Don't assert exact text (depends on PC); just confirm it's non-empty.
+local _ = shell.prompt
+
+-- `alias.list` lists built-in `pc`/`d0`/... bindings. Pre-checked here so
+-- the alias add / remove assertions below have a known starting state.
+shell.alias.list()
+
+-- `vars` lists the vars table (--var NAME=VALUE); the state seeds TMP_DIR.
+local _ = shell.vars
+
+-- === Methods ==============================================================
+
+-- expand: no-op when nothing to expand; passes through verbatim.
+assert(shell.expand("hello") == "hello", "expand pass-through")
+
+-- complete: the tree-walking completer's decision tree. Returns
+-- {candidates, span:{start,end}}; candidates is asserted via the
+-- expression layer's VK_LIST == VK_STRING comparison (a list compares equal
+-- to its canonical "[a, b]" formatting), span via its int fields. One
+-- case per branch — previously these lived in the legacy web UI's
+-- tab-complete e2e (window.tabComplete was a thin wrapper over this same
+-- shell.complete engine).
+--
+-- Line-start: a prefix narrows root children / root methods. Objects
+-- complete to "name." (bash's directory-slash idiom) so the terminal
+-- omits the trailing space and the next Tab lists their members; leaf
+-- methods/attributes stay bare.
+assert(gs.str(shell.complete("mach", 4).candidates) == "[machine.]", "line-start child prefix")
+assert(gs.str(shell.complete("qu", 2).candidates) == "[quit]", "line-start method prefix")
+-- Mid-path: members of the resolved object, composed with the head so the
+-- terminal performs one full-token replace — span covers the whole word.
+assert(gs.str(shell.complete("machine.cp", 10).candidates) == "[machine.cpu.]", "mid-path object gets a dot")
+-- ("machine.cpu.p" alone is no longer single: machine.cpu.predecode joined pc.)
+assert(gs.str(shell.complete("machine.cpu.pc", 14).candidates) == "[machine.cpu.pc]", "mid-path single match")
+assert(shell.complete("machine.cpu.pc", 14).span.start == 0, "mid-path span start")
+assert(shell.complete("machine.cpu.pc", 14).span["end"] == 14, "mid-path span end")
+assert(gs.str(shell.complete("machine.cpu.s", 13).candidates) == "[machine.cpu.sr, machine.cpu.ssp, machine.cpu.sp]", "mid-path multi match")
+-- Method-arg position dispatches by arg_decl kind: VK_BOOL offers every
+-- spelling the bool parser accepts, followed by the `name=` named-argument
+-- forms.  The span is the arg word alone.
+assert(gs.str(shell.complete("machine.sound.mute ", 19).candidates) == "[on, off, true, false, yes, no, 1, 0, muted=]", "VK_BOOL arg candidates")
+-- A typed name prefix narrows to the named-argument form; `name=` prefix
+-- completes the value with the name kept.
+assert(gs.str(shell.complete("machine.sound.mute mut", 22).candidates) == "[muted=]", "name= prefix narrows")
+assert(shell.complete("machine.sound.mute mut", 22).span.start == 19, "arg span start")
+assert(gs.str(shell.complete("machine.sound.mute muted=t", 26).candidates) == "[muted=true]", "named value completes")
+-- Filesystem-path candidates are bare entry names: the span narrows to
+-- the basename after the word's last '/'. Directories complete to
+-- "name/" so the next Tab descends.
+assert(shell.complete("files.ls /", 10).span.start == 10, "path span after slash")
+-- Self-contained fixture: a directory in the test's cwd, unique enough
+-- that it is the only completion for its prefix.
+files.mkdir("cmpl_probe_dir")
+-- A directory already there is success (an error would end the script)
+files.mkdir("cmpl_probe_dir")
+assert(gs.str(shell.complete("files.ls cmpl_probe_d", 21).candidates) == "[cmpl_probe_dir/]", "directory gets a slash")
+-- Completion is deliberately suppressed inside $(...), "..." and ${...}.
+-- The $ is split off via string concat so the script parser doesn't try to
+-- expand a $( / ${ inside this very ${...} expression.
+assert(gs.str(shell.complete("echo $" .. "(cpu.", 11).candidates) == "[]", "no candidates inside $()")
+assert(gs.str(shell.complete("echo \"machine.cpu.", 18).candidates) == "[]", "no candidates inside quotes")
+assert(gs.str(shell.complete("echo $" .. "{cpu.", 11).candidates) == "[]", "no candidates inside dollar-brace")
+
+-- A result too big for the mailbox (GS_MBX_RESULT_MAX, 256 KiB) is cut at
+-- a candidate boundary and says `truncated`, in both shapes, instead of
+-- coming back as an error document.  1500 directories with ~200-character
+-- names render to well over that.
+files.mkdir(F"${vars.WORK_DIR}/cmpl_big")
+local pad = "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp"
+pad = pad .. pad
+for i = 0, 1499 do files.mkdir(F"${vars.WORK_DIR}/cmpl_big/${pad}${i}") end
+local big_line = F"files.ls ${vars.WORK_DIR}/cmpl_big/"
+local big = shell.complete(big_line, #big_line, true)
+assert(big.truncated, "an oversized detail result is truncated")
+assert(#big.candidates > 500, "the leading candidates are kept")
+assert(#big.candidates < 1500, "the detail list was cut")
+local big = shell.complete(big_line, #big_line)
+assert(big.truncated, "an oversized bare result is truncated")
+assert(#big.candidates < 1500, "the bare list was cut")
+
+-- alias add / remove round-trip. Adding "foo" -> "machine.cpu.pc" should
+-- make it show up in shell.alias.list, and remove should drop it.
+shell.alias.add("foo", "machine.cpu.pc")
+assert(shell.expand("$foo") == shell.expand("${machine.cpu.pc}"), "added alias resolves")
+shell.alias.remove("foo")
+assert(shell.expand("$foo") == "", "removed alias no longer resolves")
+
+-- run: dispatches a free-form line. Returns the new prompt text.
+shell.run("machine.cpu.pc")
+
+-- interrupt is a no-op while the scheduler is stopped, but it must
+-- resolve and dispatch cleanly.
+shell.interrupt()
+
+-- === Meta self-introspection ============================================
+-- Every method and attribute must appear on shell.meta — the new UI's
+-- terminal-command browser uses this to build itself.
+local _ = shell.meta.attributes
+local _ = shell.meta.methods
+
+quit()

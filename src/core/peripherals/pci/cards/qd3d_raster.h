@@ -169,6 +169,11 @@ typedef void (*q3_state_build_fn)(void *ctx, q3_draw_state_t *st);
 q3_raster_t *q3_raster_create(const char *kind, q3_target_t *tgt, q3_state_build_fn build, void *ctx);
 // Fence, stop the worker if any, free.
 void q3_raster_destroy(q3_raster_t *r);
+
+// The `qd3d` log category's level at which q3_raster_destroy reports the
+// thread backend's decomposition (commands, fences and their waits, the
+// worker's CPU time): `log.set qd3d 1`.
+#define Q3_LOG_STATS 1
 const char *q3_raster_name(const q3_raster_t *r);
 // The producer changed a register the snapshot holds.
 void q3_raster_state_dirty(q3_raster_t *r);

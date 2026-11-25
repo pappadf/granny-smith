@@ -5,13 +5,20 @@ import { debug } from '@/state/debug.svelte';
 import { machine } from '@/state/machine.svelte';
 import { toasts, _resetForTests } from '@/state/toasts.svelte';
 
-const peekCalls: Array<{ mode: 'logical' | 'physical'; addr: number; count: number }> = [];
+const peekCalls: Array<{
+  mode: 'logical' | 'physical';
+  addr: number;
+  count: number;
+  context?: number;
+}> = [];
 
 vi.mock('@/bus/debug', () => ({
-  peekBytes: vi.fn(async (addr: number, count: number, space: 'logical' | 'physical') => {
-    peekCalls.push({ mode: space, addr, count });
-    return new Uint8Array(count).fill(space === 'physical' ? 0xcd : 0xab);
-  }),
+  peekBytes: vi.fn(
+    async (addr: number, count: number, space: 'logical' | 'physical', context?: number) => {
+      peekCalls.push({ mode: space, addr, count, context });
+      return new Uint8Array(count).fill(space === 'physical' ? 0xcd : 0xab);
+    },
+  ),
 }));
 // The row labels ask the core for translations; answer "unknown".
 vi.mock('@/bus/mmu', () => ({
@@ -24,6 +31,7 @@ beforeEach(() => {
   debug.sections.memory = true;
   debug.memoryAddress = 0x00000000;
   debug.memoryMode = 'logical';
+  debug.mmuContext = 'current';
   machine.mmuEnabled = true;
   machine.mmuKind = '68030_pmmu';
 });
@@ -67,10 +75,27 @@ describe('MemorySection', () => {
     expect(container.querySelector('.mem-mode')).toBeNull();
   });
 
-  // The Lisa's physical spaces cannot be named by a bare address.
-  it('offers no Physical mode on the Lisa', () => {
+  // The Lisa: Physical is main memory by physical address, and a logical
+  // read names one of the four MMU contexts (none: the CPU's own).
+  it('offers Physical mode and a context choice on the Lisa', async () => {
     machine.mmuKind = 'lisa_segment';
     const { container } = render(MemorySection);
-    expect(container.querySelector('.mem-mode')).toBeNull();
+    expect(container.querySelector('.mem-mode')).not.toBeNull();
+    await waitFor(() => expect(peekCalls.length).toBeGreaterThan(0));
+    expect(peekCalls.every((c) => c.context === undefined)).toBe(true);
+    peekCalls.length = 0;
+    const ctx2 = Array.from(container.querySelectorAll('.mem-ctx-btn')).find(
+      (e) => e.textContent?.trim() === '2',
+    ) as HTMLElement;
+    await fireEvent.click(ctx2);
+    expect(debug.mmuContext).toBe('2');
+    await waitFor(() => {
+      expect(peekCalls.some((c) => c.mode === 'logical' && c.context === 2)).toBe(true);
+    });
+  });
+
+  it('offers no context choice on other machines', () => {
+    const { container } = render(MemorySection);
+    expect(container.querySelector('.mem-ctx')).toBeNull();
   });
 });

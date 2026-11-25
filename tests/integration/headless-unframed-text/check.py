@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-# Checks the bytes unframed headless wrote for run.sh's statements, in one
-# job mode (argv[1]: threaded | inline).  Both modes are held to the same
-# expectations, byte for byte.
+# Checks the bytes unframed headless wrote for run.sh's lines (argv[1]
+# names the run in the report).
 import sys
 
 mode = sys.argv[1]
@@ -15,13 +14,13 @@ if b"o" + body + b"\n" not in out:
 # never the provisional value the leaf returned before the work ran.
 if b"read=1\n" not in out:
     fail.append("stdout lacks the deferred answer: %r" % out[-300:])
-if b"ASSERT FAILED: e" + body + b"\n" not in err:
+if b"stdin:1: e" + body + b"\n" not in err:
     fail.append("stderr lacks the error line: %r" % err[-300:])
 # A deferred answer's error is decoded from its {"error": ...} document, not
 # cut out of it with its escapes left in -- and is the I/O work's own reason
 # whether the leaf ran on the worker or there and then (inline mode once
 # printed "files.cp: failed").
-cp_line = b"line 1: cp: cannot create '/nonexistent-gs-dir/q\"d\\e/out': No such file or directory\n"
+cp_line = b"cp: cannot create '/nonexistent-gs-dir/q\"d\\e/out': No such file or directory\n"
 if cp_line not in err:
     fail.append("stderr lacks the decoded deferred error line: %r" % err[-300:])
 if fail:

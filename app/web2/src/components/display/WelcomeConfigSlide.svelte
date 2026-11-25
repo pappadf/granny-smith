@@ -575,12 +575,11 @@
     }
     const selected = romsForCurrentModel.find((r) => r.path === romPath) ?? romsForCurrentModel[0];
     // A hard disk with no image is dropped, never a reason not to start.
+    // Leaving a slot empty is a choice (a Lisa started from a diskette), so
+    // this is a note, not a warning.
     const { doc: booted, dropped } = mc.dropImagelessDisks(profile, doc, mediaImages);
     for (const d of dropped)
-      showNotification(
-        `Hard disk at ${mc.storageLabel(profile, d)} has no image and was not attached`,
-        'warning',
-      );
+      showNotification(`Started with no hard disk at ${mc.storageLabel(profile, d)}`, 'info');
     const floppies: Record<string, string> = {};
     for (const [id, name] of Object.entries(floppyImages)) {
       if (name && (booted.floppies[id] ?? 'none') !== 'none')

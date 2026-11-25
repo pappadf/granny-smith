@@ -1,0 +1,15 @@
+-- Integration test: boot from outer.img/partition1/inner.img (see config.mk).
+
+local mac = dofile("../lib/mac.lua")
+
+-- The drive holds the inner image, addressed through the outer one.
+assert(files.images[0].kind == "floppy", "fd0 is the 800K floppy inside the HFS image")
+assert(files.path_size(F"${vars.WORK_DIR}/outer.img/partition1/inner.img") == 819200, "the inner image's size")
+assert(files.path_compare(F"${vars.WORK_DIR}/outer.img/partition1/inner.img", F"${vars.TEST_DATA}/systems/System_6_0_8.dsk") == -1, "the inner image reads back unchanged")
+
+-- It boots to the Finder desktop, every sector read through the outer volume.
+mac.wait_stable(400000000)
+mac.check("desktop.png")
+assert(files.images[0].reads > 0, "the boot read the nested floppy")
+
+quit()

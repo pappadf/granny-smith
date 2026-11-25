@@ -12,17 +12,18 @@
 
 #include "alias.h"
 #include "cmd_complete.h"
+#include "commands.h"
 #include "cpu.h"
 #include "debug.h"
-#include "expr.h"
+#include "gs_lua.h"
 #include "log.h"
 #include "log_context.h"
 #include "meta.h"
 #include "object.h"
 #include "parse.h"
-#include "script.h"
-#include "shell_var.h"
+#include "report.h"
 #include "system.h"
+#include "usage.h"
 #include "value.h"
 #include "vfs.h"
 #include "job/job.h"
@@ -295,10 +296,9 @@ static void format_value_print(const value_t *v) {
     }
 }
 
-// Public print surface for the script interpreter (REPL result
-// printing).
-// Printing reads attributes (an object renders as its attribute table),
-// so it runs on the emulator thread: a job hands it over (job/job.h).
+// Public print surface for the terminal's results (gs_lua.c's command
+// form).  Printing reads attributes (an object renders as its attribute
+// table); everything that prints runs on the emulator thread.
 //
 // Inside a job the printed text is bracketed by annotation records: a
 // `value_begin` before it and a `value` after it carrying the value as
@@ -325,7 +325,7 @@ static void print_value_here(void *p) {
 }
 
 void shell_print_value(const value_t *v) {
-    job_on_emulator(print_value_here, (void *)v);
+    print_value_here((void *)v);
 }
 
 // Compose the current shell prompt.  Short and state-aware:
@@ -377,19 +377,27 @@ static value_t shell_meta_complete_provider(const char *line, int cursor) {
     return val_list(items, (size_t)n);
 }
 
+// The usage layer's reading of a word that is no path: a command.
+static usage_word_t usage_word(const char *word, char *target, size_t target_size) {
+    return shell_command_lookup(word, NULL, target, target_size) ? USAGE_WORD_COMMAND : USAGE_WORD_NONE;
+}
+
 /* --- shell init ---------------------------------------------------------- */
-// The shell's own setup: its binding store and the completion provider.
+// The shell's own setup: the script engine's reporter and the completion
+// provider.
 // Process bootstrap (logging, the job layer, the object root and its
 // singletons) is core_init's (core_init.c), which calls this.
 int shell_init(void) {
     if (shell_initialized)
         return 0;
 
-    shell_var_init();
+    // A failed script reports to its job's stream (report.h).
+    gs_lua_set_reporter(script_report_error);
 
     // Wire the Meta class's `complete(line, cursor)` method to the
     // shell's tab-completion engine.
     meta_complete_register(shell_meta_complete_provider);
+    object_usage_set_word_resolver(usage_word);
 
     shell_initialized = true;
     return 0;

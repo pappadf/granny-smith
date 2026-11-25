@@ -364,21 +364,12 @@ static value_t usage_map(const char *sig, value_t spans, const char *text) {
 
 value_t object_usage(const char *path) {
     node_t n = object_resolve(object_root(), path ? path : "");
-    // A word that is no path: a function (a note), or a command (the usage
-    // of the method it runs, with a closing note).
+    // A word that is no path: a command (the usage of the method it runs,
+    // with a closing note).
     char target[256] = "";
     const char *word = path ? path : "";
     if (!node_valid(n) && g_word_resolver) {
         usage_word_t w = g_word_resolver(word, target, sizeof(target));
-        if (w == USAGE_WORD_FUNCTION) {
-            vbuf_t t = {0};
-            put(&t, "`");
-            put(&t, word);
-            put(&t, "` is a function, defined with def.");
-            value_t r = usage_map("", val_list(NULL, 0), t.p);
-            vbuf_free(&t);
-            return r;
-        }
         if (w == USAGE_WORD_COMMAND)
             n = object_resolve(object_root(), target);
         else

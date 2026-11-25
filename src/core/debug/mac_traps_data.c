@@ -2874,3 +2874,10 @@ const char *debug_mac_atrap_name(uint16_t trap, char *buf, size_t buf_size) {
     snprintf(buf, buf_size, "_%04X", trap);
     return buf;
 }
+
+// The emulator's answer to "is this a Macintosh world?" (debug_mac.h).
+bool (*g_debug_mac_world_fn)(void) = NULL;
+
+bool debug_mac_naming_active(void) {
+    return !g_debug_mac_world_fn || g_debug_mac_world_fn();
+}

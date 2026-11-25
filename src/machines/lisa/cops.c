@@ -170,6 +170,7 @@ struct cops {
     int mouse_carry_x; // motion that did not fit the last clamp, re-added below
     int mouse_carry_y;
     bool mouse_button; // last host-injected button state (for edge detection)
+    bool supply_off; // the ON line is dropped: the host asked for power off (cops_powered_off)
 
     // Absolute-positioning "warp" (mouse.move x y "global").  The Lisa mouse is
     // relative and the OS scales deltas to pixels, so we can't place the cursor
@@ -199,6 +200,10 @@ struct cops {
 
     // Pointers last (not checkpointed)
     via_t *via1;
+    // The machine's power-off handler (cops_set_power_off_handler): wiring,
+    // set again at every build, so after via1 and outside the checkpoint.
+    void (*power_off_fn)(void *ctx);
+    void *power_off_ctx;
     struct scheduler *sched;
 };
 
@@ -510,6 +515,22 @@ void cops_inject_key(cops_t *c, uint8_t code) {
     LOG(2, "cops inject key 0x%02x", code);
 }
 
+void cops_set_power_off_handler(cops_t *c, void (*fn)(void *ctx), void *ctx) {
+    if (!c)
+        return;
+    c->power_off_fn = fn;
+    c->power_off_ctx = ctx;
+}
+
+bool cops_powered_off(const cops_t *c) {
+    return c && c->supply_off;
+}
+
+void cops_power_restored(cops_t *c) {
+    if (c)
+        c->supply_off = false;
+}
+
 void cops_soft_power_off(cops_t *c) {
     if (!c)
         return;
@@ -598,6 +619,16 @@ static void cops_command(cops_t *c, uint8_t cmd) {
     } else if (cmd == 0x25) {
         // Clock enable, which is also the end of a set sequence.
         cops_clock_commit(c);
+    } else if ((cmd & 0xF0) == 0x20 && !(cmd & 0x04)) {
+        // `0010 spmm` with p = 0: power off ($21 from the boot ROM's PowerOff
+        // and the OS's PowerDown, $20 when the clock was never set, $23 with
+        // the wake-up alarm armed -- not modelled: the machine stays off).
+        // The COPS drops the ON line and the supply goes; it keeps running
+        // on the standby rail (reference cops.md §3.6).
+        LOG(1, "cops power off ($%02x)", cmd);
+        c->supply_off = true;
+        if (c->power_off_fn)
+            c->power_off_fn(c->power_off_ctx);
     } else if ((cmd & 0xF0) == 0x10) {
         // One clock digit, MSB-first (TODSET).  Outside a set sequence these
         // still arrive -- the ROM writes nibbles in other contexts -- so they
