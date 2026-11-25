@@ -136,7 +136,7 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
   for (const [id, path] of Object.entries(config.floppies ?? {})) {
     const drive = Number(id.replace(/^fd/, ''));
     if (!path || !Number.isInteger(drive)) continue;
-    reportMount(path, await insertFloppy(path, true, drive), `Floppy ${drive + 1}`);
+    reportMount(path, await insertFloppy(path, null, drive), `Floppy ${drive + 1}`);
   }
   for (const m of config.media ?? []) {
     const what = m.type === 'cd' ? 'CD-ROM' : 'Hard disk';

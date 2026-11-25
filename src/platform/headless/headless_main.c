@@ -1450,7 +1450,7 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < FLOPPY_NUM_DRIVES; i++) {
         if (!fd_explicit[i])
             continue;
-        int rc = system_fd_insert(fd_explicit[i], i, true);
+        int rc = system_fd_insert(fd_explicit[i], i, FD_WRITABLE_DEFAULT);
         if (rc == 0) {
             if (!quiet)
                 printf("Inserted FD[%d]: %s\n", i, fd_explicit[i]);
@@ -1460,9 +1460,10 @@ int main(int argc, char *argv[]) {
     }
 
     // Insert sequential fd= floppy images into first available drives
-    // (writable by default, matching the legacy `fd insert` default).
+    // (writable by default, matching the legacy `fd insert` default, unless
+    // the medium records its own write protection).
     for (int i = 0; i < fd_count; i++) {
-        int rc = system_fd_insert(fd_files[i], -1, true);
+        int rc = system_fd_insert(fd_files[i], -1, FD_WRITABLE_DEFAULT);
         if (rc == 0) {
             if (!quiet)
                 printf("Inserted FD[%d]: %s\n", i, fd_files[i]);

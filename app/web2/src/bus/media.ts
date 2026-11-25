@@ -132,15 +132,18 @@ export async function attachCdrom(path: string): Promise<MediaResult> {
 
 // Insert a floppy into `drive`, or, with no drive, into the first empty one
 // of the machine's drives — the physical
-// metaphor of dropping a disk into a Mac.  Every UI path inserts writable,
-// as a drop does; `writable` false inserts the disk locked.
+// metaphor of dropping a disk into a Mac.  Every UI path inserts the disk as
+// it is, as a drop does (`writable` null): writable, unless the disk records
+// its own write protection (a MOOF capture of a locked original); `writable`
+// true or false overrides that.
 export async function insertFloppy(
   path: string,
-  writable: boolean,
+  writable: boolean | null,
   drive?: number,
 ): Promise<MediaResult> {
   const insert = async (d: number): Promise<MediaResult> => {
-    const r = await gsEval(`machine.floppy.drive[${d}].insert`, [path, writable]);
+    const args = writable === null ? [path] : [path, writable];
+    const r = await gsEval(`machine.floppy.drive[${d}].insert`, args);
     return gsOk(r)
       ? { ok: true, mount: { kind: 'fd', bus: 'floppy', drive: d } }
       : { ok: false, reason: gsErrorText(r) };

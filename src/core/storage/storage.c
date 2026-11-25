@@ -692,6 +692,12 @@ status_t storage_delete(storage_t *storage) {
 // Public API: Block I/O
 // ============================================================================
 
+bool storage_block_in_delta(const storage_t *storage, uint64_t lba) {
+    if (!storage || lba >= storage->block_count)
+        return false;
+    return bitmap_test(storage->bitmap, (uint32_t)lba);
+}
+
 status_t storage_read_block(storage_t *storage, uint64_t offset, void *buffer) {
     if (!storage || !buffer)
         return STATUS_E_INVAL;

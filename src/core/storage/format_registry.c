@@ -445,6 +445,10 @@ int format_unwrap(source_t *data, source_t *rsrc, format_unwrapped_t *out) {
             source_release(out->dc42);
             out->dc42 = source_retain(out->data);
         }
+        if (strcmp(f->name, "moof") == 0) {
+            source_release(out->capture);
+            out->capture = source_retain(out->data);
+        }
         if (is_peeler_wrapper(f)) {
             source_release(out->peeler_outer);
             out->peeler_outer = source_retain(out->data);
@@ -464,6 +468,7 @@ void format_unwrapped_free(format_unwrapped_t *u) {
     source_release(u->data);
     source_release(u->rsrc);
     source_release(u->dc42);
+    source_release(u->capture);
     source_release(u->peeler_outer);
     memset(u, 0, sizeof(*u));
 }

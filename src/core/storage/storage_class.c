@@ -807,6 +807,7 @@ typedef struct {
     uint64_t len;
     udif_writer_stats_t st;
     bool raw; // convert: to a flat raw image instead
+    bool moof; // convert: to a MOOF (a floppy's tracks; a capture's unchanged ones copied through)
 } udif_job_t;
 
 static void udif_job_cleanup(io_leaf_t *j) {
@@ -967,6 +968,30 @@ static source_t *open_decoded(const char *path, image_t **img, char *err, size_t
 
 #define CONVERT_STEP (1u << 20)
 
+// files.convert to a MOOF: the image opened as a floppy (so its GCR tags
+// come with it) and exported as one -- a MOOF source's tracks copied through
+// bit for bit (image_export_run_moof), anything else laid down from its
+// sectors.  This job's image is its own, so the export runs here whole.
+static int work_convert_moof(io_leaf_t *j, udif_job_t *u) {
+    image_t *img = image_open_readonly_with_geometry(j->a, (image_geometry_t){.gcr_tags = true});
+    if (!img) {
+        const char *why = image_open_error();
+        if (*why)
+            snprintf(j->err, sizeof j->err, "'%s' is %s", j->a, why);
+        else
+            snprintf(j->err, sizeof j->err, "cannot open '%s' as a disk image", j->a);
+        return -EINVAL;
+    }
+    mkdir_parents(j->b);
+    image_export_t *e = image_export_begin(img, j->b, j->err, sizeof j->err);
+    int rc = e ? image_export_run(e, j->err, sizeof j->err) : -EINVAL;
+    image_export_end(e);
+    u->st.bytes_in = disk_size(img);
+    u->st.sectors = u->st.bytes_in / UDIF_SECTOR_SIZE;
+    image_close(img);
+    return rc;
+}
+
 static int work_convert(io_leaf_t *j) {
     udif_job_t *u = (udif_job_t *)j->ud;
     vfs_stat_t vst;
@@ -974,6 +999,8 @@ static int work_convert(io_leaf_t *j) {
         snprintf(j->err, sizeof j->err, "'%s' exists (refuses to overwrite)", j->b);
         return -EEXIST;
     }
+    if (u->moof)
+        return work_convert_moof(j, u);
     image_t *img = NULL;
     source_t *src = open_decoded(j->a, &img, j->err, sizeof j->err);
     if (!src) {
@@ -1260,20 +1287,26 @@ static DEF_METHOD(files_method_udif_abort) {
 // `files.convert(src, dst, [chunk_kb], [level], [format], [source_name],
 // [origin], [codec])` -- write the decoded disk of any image the core reads
 // as a UDIF (format "udif", the default) or a flat raw image ("raw"),
-// checking the result decodes to the same bytes.  A UDIF records
+// checking the result decodes to the same bytes -- or a 400K/800K GCR
+// floppy as a MOOF ("moof", the default for a .moof dst), whose tracks a
+// MOOF source's capture gives where their sectors are unchanged.  A UDIF records
 // `source_name` (default: src's own name) and `origin` (as files.udif_open
 // does), and compresses with `codec`: zlib (UDZO, the default) or xz (ULMO).
 static DEF_METHOD(files_method_convert) {
     int64_t kb = argc > 2 ? opt_int(&argv[2], 64) : 64;
     int level;
     udif_codec_t codec;
-    const char *fmt = argc > 4 && argv[4].kind == VK_STRING && argv[4].s && *argv[4].s ? argv[4].s : "udif";
+    bool fmt_given = argc > 4 && argv[4].kind == VK_STRING && argv[4].s && *argv[4].s;
+    // A destination named .moof is a MOOF unless a format says otherwise.
+    const char *fmt = fmt_given ? argv[4].s : path_has_ext(argv[1].s, ".moof") ? "moof" : "udif";
     if (!chunk_kb_ok(kb))
         return val_err("files.convert: chunk_kb %lld must be a power of two in 4..1024", (long long)kb);
     if (!opt_level(argc, argv, 3, &level))
         return val_err("files.convert: level out of range (0..9)");
-    if (strcmp(fmt, "udif") != 0 && strcmp(fmt, "raw") != 0)
-        return val_err("files.convert: format '%s' is neither udif nor raw", fmt);
+    if (strcmp(fmt, "udif") != 0 && strcmp(fmt, "raw") != 0 && strcmp(fmt, "moof") != 0)
+        return val_err("files.convert: format '%s' is not udif, raw or moof", fmt);
+    if (strcmp(fmt, "moof") == 0 && !path_has_ext(argv[1].s, ".moof"))
+        return val_err("files.convert: a MOOF destination is named .moof ('%s')", argv[1].s);
     if (!opt_codec(argc, argv, 7, &codec))
         return val_err("files.convert: codec '%s' is neither zlib nor xz", argv[7].s);
     if (destination_attached(argv[1].s))
@@ -1284,6 +1317,7 @@ static DEF_METHOD(files_method_convert) {
         u->level = level;
         u->codec = codec;
         u->raw = strcmp(fmt, "raw") == 0;
+        u->moof = strcmp(fmt, "moof") == 0;
         if (argc > 5 && argv[5].kind == VK_STRING && argv[5].s && *argv[5].s)
             u->source_name = gs_strdup(argv[5].s);
         if (argc > 6 && argv[6].kind == VK_STRING && argv[6].s && *argv[6].s)
@@ -1382,32 +1416,32 @@ static const arg_decl_t files_convert_args[] = {
                                                     .kind = VK_NONE,
                                                     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_POLY,
                                                     .doc = "Chunk size in KB, a power of two in 4..1024",
-                                                    .default_doc = "64"              },
+                                                    .default_doc = "64"                                                                                                                    },
     {.name = "level",
                                                     .kind = VK_NONE,
                                                     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_POLY,
                                                     .doc = "Compression effort 1..9; 0 stores zero runs and raw chunks only",
-                                                    .default_doc = "1 (zlib), 6 (xz)"},
+                                                    .default_doc = "1 (zlib), 6 (xz)"                                                                                                      },
     {.name = "format",
                                                     .kind = VK_STRING,
                                                     .validation_flags = OBJ_ARG_OPTIONAL,
-                                                    .doc = "udif, or raw for a flat image",
-                                                    .default_doc = "udif"            },
+                                                    .doc = "udif, raw for a flat image, or moof for a 400K/800K GCR floppy as a MOOF (a MOOF source's unchanged "
+            "tracks copied bit for bit)",                                                                                                  .default_doc = "moof for a .moof dst, else udif"},
     {.name = "source_name",
                                                     .kind = VK_STRING,
                                                     .validation_flags = OBJ_ARG_OPTIONAL,
                                                     .doc = "The original file name, recorded in a UDIF",
-                                                    .default_doc = "src's own name"  },
+                                                    .default_doc = "src's own name"                                                                                                        },
     {.name = "origin",
                                                     .kind = VK_STRING,
                                                     .validation_flags = OBJ_ARG_OPTIONAL,
                                                     .doc = "Where the image came from (e.g. a URL), recorded in a UDIF as is",
-                                                    .default_doc = "none"            },
+                                                    .default_doc = "none"                                                                                                                  },
     {.name = "codec",
                                                     .kind = VK_STRING,
                                                     .validation_flags = OBJ_ARG_OPTIONAL,
                                                     .doc = "zlib (UDZO) or xz (ULMO: 14-16% smaller on system disks, decodes ~4x slower)",
-                                                    .default_doc = "zlib"            },
+                                                    .default_doc = "zlib"                                                                                                                  },
 };
 
 static const arg_decl_t files_export_raw_args[] = {

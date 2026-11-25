@@ -14,6 +14,7 @@
 #include "checkpoint.h"
 #include "format_registry.h"
 #include "gs_assert.h"
+#include "image_capture.h"
 #include "image_internal.h"
 #include "image_moof.h"
 #include "image_scratch.h"
@@ -135,6 +136,8 @@ void image_close(image_t *image) {
     if (image->storage)
         storage_delete(image->storage);
     free(image->wrap_prefix);
+    source_release(image->capture_src);
+    image_capture_release(image->capture);
     // Ghost (read-only) instances were placed in a scratch dir; remove their
     // delta+journal so we don't leave clutter behind.
     if (image->ghost_instance) {
@@ -542,9 +545,18 @@ static image_t *image_open_source(const char *name, source_t *data, source_t *rs
         }
     }
 
+    // A capture that records its own write protection (the original disk's
+    // tab) opens read-only unless the caller asked for writable explicitly.
+    if (mode == OPEN_CREATE && geom.honour_media_lock && u.capture && moof_source_write_protected(u.capture)) {
+        LOG(1, "'%s': the capture records the disk as write-protected; opening it read-only", name);
+        mode = OPEN_READONLY;
+    }
+
     image->filename = gs_strdup(name);
     image->checkpoint_index = IMAGE_REF_NONE;
     image->source_key = gs_strdup(source_key(data));
+    // The capture behind the sector view, kept for the GCR read path.
+    image->capture_src = source_retain(u.capture);
     image->format = gs_strdup(u.chain[0] ? u.chain : "raw");
     image->raw_size = raw / file_block * STORAGE_BLOCK_SIZE; // the data bytes
     image->block_size = block_size;
@@ -751,6 +763,10 @@ image_t *image_create_blank(uint64_t block_count, image_geometry_t geom, const c
         return NULL;
     }
     return image;
+}
+
+bool image_block_in_delta(image_t *image, uint64_t block) {
+    return image && image->storage && !image->wrap_prefix && storage_block_in_delta(image->storage, block);
 }
 
 const char *image_path(const image_t *image) {
@@ -961,6 +977,12 @@ struct image_export {
     uint8_t disk_format;
     uint8_t format_byte;
     bool unreadable; // the view could not read the disk (export_view_write)
+    // A .moof export of an image with a capture: the store (a reference,
+    // read on the I/O worker), and which sectors were in the delta when the
+    // view was taken (a bit per sector) -- with the snapshot's sectors, what
+    // decides which tracks are copied through unchanged.
+    image_capture_t *capture;
+    uint8_t *in_delta;
 };
 
 // A split stream: one block per call (the view's record shape), its tag kept
@@ -1105,6 +1127,35 @@ image_export_t *image_export_begin(image_t *image, const char *dest_path, char *
         return NULL;
     }
     e->view = storage_export_view_begin(image->storage);
+    // The capture, read here on the emulator thread: a .moof export copies
+    // its unchanged tracks through; any other notes what it writes as zeros.
+    image_capture_t *cap = e->view ? image_capture(image) : NULL;
+    if (cap) {
+        uint64_t sectors = image->raw_size / STORAGE_BLOCK_SIZE;
+        if (e->format == EXPORT_MOOF) {
+            e->capture = image_capture_retain(cap);
+            e->in_delta = calloc((size_t)(sectors + 7) / 8, 1);
+            if (!e->in_delta) {
+                if (err)
+                    snprintf(err, err_cap, "out of memory");
+                image_export_end(e);
+                return NULL;
+            }
+            // The export view write-locks the storage, so the bitmap holds still.
+            for (uint64_t b = 0; b < sectors; b++)
+                if (storage_block_in_delta(image->storage, b))
+                    e->in_delta[b >> 3] |= (uint8_t)(1u << (b & 7));
+        } else {
+            uint64_t zeros = 0;
+            for (uint64_t b = 0; b < sectors; b++)
+                if (image_capture_sector_status(cap, b) != IMAGE_SECTOR_OK &&
+                    !storage_block_in_delta(image->storage, b))
+                    zeros++;
+            if (zeros)
+                LOG(1, "export of '%s': %llu sector(s) its capture could not read are written as zeros",
+                    e->name ? e->name : "", (unsigned long long)zeros);
+        }
+    }
     if (!e->dest || !e->view) {
         if (err)
             snprintf(err, err_cap, "cannot snapshot the disk for export");
@@ -1201,8 +1252,42 @@ static int mem_write_cb(void *ctx, const void *data, size_t size) {
     return 0;
 }
 
+// Which tracks of a captured disk a .moof export copies through: those
+// whose sectors the snapshot still holds as the capture does -- the same
+// rule the drive serves a captured track by (image_capture_track_diff).
+static void export_moof_keep(const image_export_t *e, const uint8_t *data, const uint8_t *tags, uint32_t sectors,
+                             uint8_t keep[MOOF_TRACK_SLOTS / 8]) {
+    memset(keep, 0, MOOF_TRACK_SLOTS / 8);
+    int sides = image_capture_sides(e->capture);
+    static const uint8_t no_tags[MOOF_MAX_SECTORS * MOOF_TAG_BYTES];
+    moof_sector_t *sec = malloc(sizeof(moof_sector_t) * MOOF_MAX_SECTORS);
+    if (!sec)
+        return; // every track re-encoded: still a faithful sector image
+    uint32_t block = 0;
+    for (int t = 0; t < 80; t++) {
+        int nsec = 12 - t / 16;
+        for (int s = 0; s < sides && block + (uint32_t)nsec <= sectors; s++, block += (uint32_t)nsec) {
+            uint8_t *nib = NULL;
+            image_capture_track(e->capture, t, s, &nib, sec);
+            free(nib);
+            uint32_t in_delta = 0;
+            for (int k = 0; k < nsec; k++)
+                if ((e->in_delta[(block + (uint32_t)k) >> 3] >> ((block + (uint32_t)k) & 7)) & 1)
+                    in_delta |= 1u << k;
+            const uint8_t *tg = tags ? tags + (size_t)block * MOOF_TAG_BYTES : no_tags;
+            if (image_capture_track_diff(sec, nsec, data + (size_t)block * STORAGE_BLOCK_SIZE, tg, in_delta) == 0) {
+                int slot = t * 2 + s;
+                keep[slot >> 3] |= (uint8_t)(1u << (slot & 7));
+            }
+        }
+    }
+    free(sec);
+}
+
 // A MOOF file (image_moof.h): the disk's sectors and tags laid down as GCR
-// bitstreams.  The view's status passes through as in the DiskCopy export.
+// bitstreams -- except, for an image with a capture, every track whose
+// sectors are unchanged, which keeps its captured bits.  The view's status
+// passes through as in the DiskCopy export.
 static int image_export_run_moof(image_export_t *e, FILE *f) {
     mem_stream_t m = {.cap = 1600u * STORAGE_BLOCK_SIZE};
     m.buf = (uint8_t *)malloc(m.cap);
@@ -1214,7 +1299,11 @@ static int image_export_run_moof(image_export_t *e, FILE *f) {
     const uint8_t *tags = e->tags && e->tag_bytes == MOOF_TAG_BYTES && e->tag_count >= sectors ? e->tags : NULL;
     uint8_t *file = NULL;
     size_t len = 0;
-    if (rc == STATUS_OK)
+    if (rc == STATUS_OK && e->capture && image_capture_sides(e->capture) == (sectors == 1600 ? 2 : 1)) {
+        uint8_t keep[MOOF_TRACK_SLOTS / 8];
+        export_moof_keep(e, m.buf, tags, sectors, keep);
+        rc = moof_encode_with(m.buf, sectors, tags, e->format_byte, image_capture_index(e->capture), keep, &file, &len);
+    } else if (rc == STATUS_OK)
         rc = moof_encode(m.buf, sectors, tags, e->format_byte, &file, &len);
     free(m.buf);
     if (rc == 0 && fwrite(file, 1, len, f) != len)
@@ -1255,6 +1344,8 @@ void image_export_end(image_export_t *e) {
     if (!e)
         return;
     storage_export_view_end(e->view);
+    image_capture_release(e->capture);
+    free(e->in_delta);
     free(e->dest);
     free(e->name);
     free(e->tags);

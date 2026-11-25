@@ -7,6 +7,7 @@
 #include "image_class.h"
 
 #include "image.h"
+#include "image_capture.h"
 #include "image_kind.h"
 #include "value.h"
 
@@ -64,6 +65,10 @@ static DEF_GETTER(image_attr_tag_bytes) {
 
 static DEF_GETTER(image_attr_writable) {
     return val_bool(image_is_writable(image_node_image(self)));
+}
+
+static DEF_GETTER(image_attr_capture) {
+    return val_bool(image_has_capture(image_node_image(self)));
 }
 
 static DEF_GETTER(image_attr_delta) {
@@ -159,6 +164,10 @@ static const member_t image_members[] = {
      .name = "writable",
      .doc = "True when the guest may write it (false: write-protected)",
      .attr = {.type = VK_BOOL, .get = image_attr_writable, .set = NULL}                                         },
+    {.kind = MK_ATTR,
+     .name = "capture",
+     .doc = "True for a bit-level capture (a MOOF): a GCR drive reads its captured tracks, not only its sectors",
+     .attr = {.type = VK_BOOL, .get = image_attr_capture, .set = NULL}                                          },
     {.kind = MK_ATTR,
      .name = "delta",
      .doc = "The delta+journal stem of a writable image (\"\" when read-only)",

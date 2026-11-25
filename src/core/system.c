@@ -612,7 +612,10 @@ static int sys_fd_pick(config_t *cfg, int preferred, const char *who) {
 }
 
 static int do_insert_fd(const char *path, int preferred, int writable_flag) {
-    bool writable = (writable_flag != 0); // default to writable unless explicitly 0
+    // Writable unless explicitly 0; by default a medium's own write
+    // protection (a MOOF capture's INFO flag) still holds.
+    bool writable = (writable_flag != 0);
+    bool honour_lock = writable_flag == FD_WRITABLE_DEFAULT;
 
     config_t *config = global_emulator;
     if (!config) {
@@ -624,8 +627,9 @@ static int do_insert_fd(const char *path, int preferred, int writable_flag) {
         return -1;
 
     char err[256];
-    image_t *disk =
-        image_open_kind(path, &(image_open_opts_t){.kind = IMAGE_KIND_FLOPPY, .writable = writable}, err, sizeof err);
+    image_t *disk = image_open_kind(
+        path, &(image_open_opts_t){.kind = IMAGE_KIND_FLOPPY, .writable = writable, .honour_media_lock = honour_lock},
+        err, sizeof err);
     if (!disk) {
         out_printf("fd insert: %s\n", err);
         return -1;
@@ -1864,8 +1868,8 @@ bool system_checkpoint_probe(void) {
 
 // Insert a floppy image into a drive (or the first free drive when
 // drive < 0). Returns 0 on success, negative on error.
-int system_fd_insert(const char *path, int drive, bool writable) {
-    return do_insert_fd(path, drive, writable ? 1 : 0);
+int system_fd_insert(const char *path, int drive, int writable) {
+    return do_insert_fd(path, drive, writable);
 }
 
 // Attach a SCSI hard-disk image at `scsi_id`. Returns 0 / negative.

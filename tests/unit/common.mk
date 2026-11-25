@@ -75,7 +75,7 @@ include $(WORKSPACE_ROOT)/src/sources.mk
 # it is built on.  A suite linking storage.c or image.c sets
 # USE_SOURCE_LAYER := 1 before including this file.
 SOURCE_LAYER_SRCS := $(addprefix $(CORE_DIR)/storage/,source.c source_cache.c chunk_cache.c format_registry.c \
-                       image_chunkmap.c image_ndif.c image_qcow2.c image_udif.c image_moof.c image_scratch.c \
+                       image_chunkmap.c image_ndif.c image_qcow2.c image_udif.c image_moof.c image_capture.c image_scratch.c \
                        udif_writer.c image_volume.c gcr.c resource_fork.c \
                        macroman.c storage_util.c) \
                      $(PEELER_SRC) $(CODEC_SRC)

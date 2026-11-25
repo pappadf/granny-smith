@@ -469,7 +469,7 @@ async function autoMountIfEmpty(
   if (!justBooted && machine.status !== 'running' && machine.status !== 'paused') return;
   if (category === 'fd') {
     // The first empty drive of the ones the machine has (bus/media.ts).
-    const r = await insertFloppy(persistedPath, true);
+    const r = await insertFloppy(persistedPath, null);
     if (r.ok) {
       setMounted(persistedPath, r.mount);
       showNotification(`Inserted into floppy drive ${r.mount.drive + 1}`, 'info');

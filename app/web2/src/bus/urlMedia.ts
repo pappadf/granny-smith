@@ -549,7 +549,7 @@ async function insertUrlFloppies(
       notAttached(fd.slot, `this machine has no floppy drive ${n + 1}`);
       continue;
     }
-    report(fd.slot, p, await insertFloppy(p, true, n));
+    report(fd.slot, p, await insertFloppy(p, null, n));
   }
 }
 
