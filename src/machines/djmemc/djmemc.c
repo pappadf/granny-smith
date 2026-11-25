@@ -216,9 +216,14 @@ static void djmemc_bank_layout(config_t *cfg) {
 // (m68k_board_map_banks): each populated bank mirrors through its span up to
 // the next bank or 64 MB.  The pages the previous placement reached are
 // cleared first: a bank that moves (the ROM parks the banks, sizes them,
-// then stitches them contiguous) must not leave its old image behind.
+// then stitches them contiguous) must not leave its old image behind.  Not
+// while the ROM overlay holds low memory: dropping it maps RAM (the AV
+// boards' rule, av_ymca_remap), so a bank write under the overlay takes
+// effect then.
 static void djmemc_map_ram(config_t *cfg) {
     djmemc_state_t *st = djmemc_st(cfg);
+    if (st->q.overlay.armed)
+        return;
     const djmemc_chip_ops_t *ops = djmemc_ops(cfg);
     m68k_board_bank_t banks[DJMEMC_MAX_BANKS];
     for (int b = 0; b < DJMEMC_MAX_BANKS; b++) {
@@ -656,6 +661,12 @@ static void djmemc_bus_reset(config_t *cfg) {
     // board), so its registers survive; the ROM reprograms them.
     quadra040_bus_reset(cfg, /*reset_video*/ false);
     st->ram_extent = DJMEMC_RAM_SPAN; // the ROM at zero: the next remap clears the whole reach
+    // The Kiwi is on the NuBus /RESET: its register file clears, and an
+    // error request pending at reset no longer holds level 7.  The memory
+    // controller's bank registers are kept -- the RAM decode must survive a
+    // RESET instruction, and the ROM reprograms them as it sizes -- and so
+    // are the IOSB's timing registers, which the ROM sets once at start-up.
+    yancc_reset(&st->q.yancc);
     system_reset_common_devices(cfg);
 }
 

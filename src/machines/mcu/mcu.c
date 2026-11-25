@@ -397,6 +397,11 @@ static void mcu_bus_reset(config_t *cfg) {
     quadra040_bus_reset(cfg, /*reset_video*/ true);
     st->ram_extent = MCU_RAM_REACH; // the ROM at zero: the next remap clears the whole reach
     scsi_53c96_reset(st->scsi96_ext);
+    // The YANCC is on the NuBus /RESET: its register file clears, and an
+    // error request pending at reset no longer holds level 7.  The Orwell
+    // keeps its bank configuration (the RAM decode survives a RESET
+    // instruction; the ROM reprograms it as it sizes).
+    yancc_reset(&st->q.yancc);
     system_reset_common_devices(cfg);
 }
 
