@@ -10,7 +10,8 @@
 -- Row map:
 --
 --   pm7200-753-hd   v1 ROM, System 7.5.3 (the 7200 shipped with 7.5.2) from
---                   the 53C94 disk: Finder, About This Macintosh.
+--                   the 53C94 disk: Finder, a checkpoint round trip, About
+--                   This Macintosh on the restored machine.
 --   pm7200-76-hd    v2 ROM, System 7.6 from the 53C94 disk: Finder, About
 --                   This Computer.
 --   pm7200-81-hd    v1 ROM, Mac OS 8.1 from the 53C94 disk, 64 MB in two
@@ -70,6 +71,12 @@ local function row_pm7200_753_hd()
     local t0 = scheduler.host_user_ns
     boot_hd(vars.ROM, hd_753, 16384)
     check_board(id_v1)
+    mac.check_ex("goldens/pm7200-7.5.3-finder.png", 0, 440, 20, 640)
+    -- A checkpoint round trip on the desktop: Platinum's registers, the
+    -- DRAM bank decode, the half-bank VRAM view and the VRAM come back,
+    -- and the About box opens on the restored machine.
+    assert(checkpoint.save(F"${vars.WORK_DIR}/pm7200.checkpoint"), "checkpoint save")
+    assert(checkpoint.load(F"${vars.WORK_DIR}/pm7200.checkpoint"), "checkpoint load")
     mac.check_ex("goldens/pm7200-7.5.3-finder.png", 0, 440, 20, 640)
     mac.about_box()
     mac.check_about_clock("goldens/pm7200-7.5.3-about.png")

@@ -31,11 +31,13 @@
 //     which is how drivers size it).
 //   * DACula: addr (+$00), d1 (+$10), the indexed register port d2 (+$20,
 //     index = addr) and the CLUT data port (+$30, R/G/B auto-advance).
-//     Index $20 is the control register (bits 3:2 = 8/16/32 bpp, bit 0 the
-//     hardware cursor), $23 selects which pixel-clock pair ($24/$25 or
-//     $27/$28) drives the dot clock, $40 reads back the DACula type.
+//     Index $20 is the control register (bits 3:2 = 8/16/32 bpp, bit 1 the
+//     hardware cursor, bit 4 the 64-bit VRAM organisation), $23 selects
+//     which pixel-clock pair ($24/$25 or $27/$28) drives the dot clock,
+//     $10/$11 the cursor X, $40 reads back the DACula type; d1 streams the
+//     eight-entry cursor palette.
 //   * The retrace interrupt is Grand Central line 30 (the node's
-//     AAPL,interrupts).
+//     AAPL,interrupts), a level the driver acknowledges by reading reg 35.
 //
 // Register truth: the 7200 developer note; the OS driver corpus for this
 // exact machine (Linux platinumfb, NetBSD platinumfb, OSF/Apple MkLinux
