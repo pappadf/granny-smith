@@ -1,0 +1,54 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- Integration test: Shell Commands
+-- Exercises the typed object-model dispatch surface: bare-path reads,
+-- disasm, help, logpoint listing.
+
+-- Run a few instructions to initialize state
+scheduler.run(100)
+
+-- Bare-read of cpu prints all integer registers as a name=value table.
+local _ = machine.cpu
+
+-- Bare-read of cpu.fpu prints the floating-point register file (Plus
+-- has no FPU so this is an "fpu not present" VK_ERROR; SE/30 would
+-- print fp0..fp7 / fpcr / fpsr / fpiar).
+
+-- disasm defaults to PC when no count is given.
+debug.disasm()
+
+-- disasm with explicit count.
+debug.disasm(5)
+
+-- Help on a typed root method still works.
+help("debug.disasm")
+
+-- Logpoint entries (should be empty; `list` is retired — entries is
+-- the data, the REPL table formatter is the presentation).
+assert(#debug.logpoints.entries == 0, "logpoints should start empty")
+
+-- Scheduler pacing-mode attribute: two canonical names plus the legacy
+-- three-mode aliases (real/hw -> paced, max -> turbo). Pacing is a no-op on
+-- the headless target, so switching is safe here; this pins the mapping.
+-- (No default-mode assert: the integration runner sets --speed=turbo itself.)
+scheduler.mode = "paced"
+assert(scheduler.mode == "paced", "paced not accepted")
+scheduler.mode = "turbo"
+assert(scheduler.mode == "turbo", "turbo not accepted")
+scheduler.mode = "paced"
+assert(scheduler.mode == "paced", "legacy alias real did not map to paced")
+scheduler.mode = "turbo"
+assert(scheduler.mode == "turbo", "legacy alias max did not map to turbo")
+scheduler.mode = "paced"
+assert(scheduler.mode == "paced", "legacy alias hw did not map to paced")
+
+-- CPI is a per-machine constant (SE/30: 4), mode-independent, and writable
+-- as a debug override.
+assert(scheduler.cpi == 4, "SE/30 CPI not 4")
+scheduler.mode = "turbo"
+assert(scheduler.cpi == 4, "CPI changed with mode")
+scheduler.mode = "paced"
+scheduler.cpi = 12
+assert(scheduler.cpi == 12, "cpi override not applied")
+scheduler.cpi = 4
+
+quit()

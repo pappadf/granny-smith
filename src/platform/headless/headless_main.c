@@ -705,7 +705,7 @@ static int run_script_stdin(void) {
             exit_code = 1;
     }
     if (stmt.len) {
-        printf("error: incomplete block at end of input; not run\n");
+        printf("error: incomplete chunk at end of input; not run\n");
         exit_code = 1;
     }
     stmt_free(&stmt);

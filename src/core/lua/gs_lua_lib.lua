@@ -256,10 +256,42 @@ local function outside_strings(s, fn)
   return table.concat(out)
 end
 
+-- `$name` read when the code runs (an alias may come and go after a
+-- condition or a template was compiled): the aliased path's value, else the
+-- environment's `name`.
+local alias_readers = {}
+function gs._dref(env, name)
+  local p = gs._alias(name)
+  if not p then return env[name] end
+  local f = alias_readers[p]
+  if not f then
+    f = assert(load("return " .. p, "=alias", "t"))
+    alias_readers[p] = f
+  end
+  return f()
+end
+
+-- The text `$name` splices into a template: an alias to an attribute keeps
+-- the tree's presentation (hex for an address); a logpoint's `value` and
+-- `addr` read as hex.
+function gs._dtext(env, name)
+  local p = gs._alias(name)
+  if p then
+    local ok, text = pcall(gs.fmt, p)
+    if ok then return text end
+    return gs.str(gs._dref(env, name))
+  end
+  local v = env[name]
+  if (name == "value" or name == "addr") and math.type(v) == "integer" then
+    return string.format("0x%x", v)
+  end
+  return gs.str(v)
+end
+
 -- The shell's spelling of an expression, as Lua.
 local function shell_expr(code)
   return outside_strings(code, function(t)
-    t = t:gsub("%$([%a_][%w_]*)", dollar)
+    t = t:gsub("%$([%a_][%w_]*)", function(name) return 'gs._dref(_ENV, "' .. name .. '")' end)
     t = t:gsub("&&", " and "):gsub("||", " or "):gsub("!=", "~=")
     t = t:gsub("!", " not ")
     return t
@@ -321,21 +353,23 @@ function gs.shell_template(text)
       local body = t:sub(a + 2, j - 2)
       local expr, spec = body:match("^(.-):(%%?[-+ 0#]*%d*%.?%d*[dixXsfeEgGoc])$")
       expr = expr or body
-      expr = shell_expr(expr):gsub("^%s+", ""):gsub("%s+$", "")
-      if not spec and (expr == "value" or expr == "addr") then
-        expr = '"0x" .. string.format("%x", ' .. expr .. ')'
+      expr = expr:gsub("^%s+", ""):gsub("%s+$", "")
+      local name = expr:match("^%$([%a_][%w_]*)$")
+      if not spec and name then
+        expr = 'gs._dtext(_ENV, "' .. name .. '")'
+      elseif not spec and (expr == "value" or expr == "addr") then
+        expr = 'gs._dtext(_ENV, "' .. expr .. '")'
       elseif not spec and tree_path(expr) then
         expr = string.format("gs.fmt(%q)", expr)
+      else
+        expr = shell_expr(expr)
       end
       out[#out + 1] = "${" .. expr .. (spec and (":" .. spec) or "") .. "}"
       pos = j
     else
       local name = t:match("^[%a_][%w_]*", a + 1)
       if name then
-        local e = dollar(name)
-        if e ~= name and tree_path(e) then e = string.format("gs.fmt(%q)", e) end
-        if e == "value" or e == "addr" then e = '"0x" .. string.format("%x", ' .. e .. ')' end
-        out[#out + 1] = "${" .. e .. "}"
+        out[#out + 1] = '${gs._dtext(_ENV, "' .. name .. '")}'
         pos = a + 1 + #name
       else
         out[#out + 1] = "$"
@@ -654,9 +688,12 @@ function gs.shell_line(text)
     if rest:sub(1, 1) == "=" then return run_assign(path, rest:sub(2)) end
     return run_command(path, rest)
   end
-  -- A bare word naming a global function (`quit`) is a call.
-  if line:match("^[%a_][%w_]*$") and type(rawget(_G, line)) == "function" then
-    return rawget(_G, line)()
+  -- A bare word naming a global function (`quit`) is a call; one that names
+  -- nothing is a mistyped command, not a nil to print.
+  if line:match("^[%a_][%w_]*$") then
+    local g = rawget(_G, line)
+    if type(g) == "function" then return g() end
+    if g == nil then error("unknown command or name '" .. line .. "'", 0) end
   end
   return run_lua(line)
 end

@@ -482,7 +482,7 @@ static void daemon_handle_client(int client_fd) {
 
     // An open block at the end of input is reported, never dropped.
     if (!g_client_lost && (stmt.len || (pending_len && !skipping)))
-        printf("error: incomplete block at end of input; not run\n");
+        printf("error: incomplete chunk at end of input; not run\n");
     stmt_free(&stmt);
     free(pending);
 

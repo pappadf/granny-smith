@@ -12,6 +12,7 @@
 
 #include "alias.h"
 #include "cmd_complete.h"
+#include "commands.h"
 #include "cpu.h"
 #include "debug.h"
 #include "gs_lua.h"
@@ -22,6 +23,7 @@
 #include "parse.h"
 #include "report.h"
 #include "system.h"
+#include "usage.h"
 #include "value.h"
 #include "vfs.h"
 #include "job/job.h"
@@ -376,6 +378,11 @@ static value_t shell_meta_complete_provider(const char *line, int cursor) {
     return val_list(items, (size_t)n);
 }
 
+// The usage layer's reading of a word that is no path: a command.
+static usage_word_t usage_word(const char *word, char *target, size_t target_size) {
+    return shell_command_lookup(word, NULL, target, target_size) ? USAGE_WORD_COMMAND : USAGE_WORD_NONE;
+}
+
 /* --- shell init ---------------------------------------------------------- */
 // The shell's own setup: the script engine's reporter and the completion
 // provider.
@@ -391,6 +398,7 @@ int shell_init(void) {
     // Wire the Meta class's `complete(line, cursor)` method to the
     // shell's tab-completion engine.
     meta_complete_register(shell_meta_complete_provider);
+    object_usage_set_word_resolver(usage_word);
 
     shell_initialized = true;
     return 0;
