@@ -22,6 +22,7 @@ containers.
 | the UDIF writer (`udif_writer.c`) | the zlib encoder (or, opted into, the xz encoder), CRC-32 (and its zero-run form) |
 | the PNG reader and writer (`src/core/debug/debug.c`), the ImageWriter's page store (`iw_page.c`) and the PDF writer (`pdf_writer.c`) | zlib, both ways |
 | MOOF, AFP's append logs, BMAC, the Rage 128 CCE, the PCI option-ROM identity | CRC-32 |
+| the screen recorder (`src/core/record/`) | ZMBV and FLAC, both ways (with streaming zlib inside ZMBV) |
 
 The library is a sibling of peeler rather than part of it: peeler is an
 archive reader, while the codecs are services its archives, the image layer
@@ -193,8 +194,12 @@ their own beside `codec.h`:
   (`codec_flac_enc_*`: samples pushed as they come, one frame out per
   4096) and a decoder for the subset it writes (`codec_flac_dec_*`).
 
-Both are for the screen recorder's lossless Matroska files and the tools
-that read them back.
+Both are for the screen recorder's lossless Matroska files
+([../core/record/record.md](../core/record/record.md)) and the tools that
+read them back. ZMBV is named after DOSBox, the program that defined it,
+only because the format is that program's: the files are written so that
+existing players (FFmpeg and what is built on it) read them as they are,
+and nothing else is taken from it.
 
 ## 2. Key types & files
 
