@@ -50,3 +50,5 @@ const storage_device_decl_t mac_default_storage_hd0_cd3[] = {
     {.bus = "scsi", .unit = 3, .type = STORAGE_DEV_CD},
     {0},
 };
+
+const uint32_t mac_ram_options_4mb_72pin_kb[] = {4096, 5120, 6144, 8192, 12288, 20480, 36864, 0};

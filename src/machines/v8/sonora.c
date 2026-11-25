@@ -248,7 +248,7 @@ static int sonora_ram_layout(config_t *cfg) {
     st->pcb_host = ram;
     st->simm_host = ram + st->pcb_size;
     st->sonora.vd_sense = 7; // the sense lines come up tri-stated
-    LOG(1, "%s RAM: %u KB soldered + %u KB SIMM", b->chip, st->pcb_size / 1024, st->simm_size / 1024);
+    LOG(1, "%s RAM: %u KB soldered + %u KB SIMM", v8_ops(cfg)->desc.chipset, st->pcb_size / 1024, st->simm_size / 1024);
     return 0;
 }
 
@@ -272,7 +272,7 @@ static void sonora_memory_layout_init(config_t *cfg) {
 
     // The overlay: ROM at zero until the first access to the ROM space.
     const m68k_board_desc_t *d = &sonora_chip_ops.desc;
-    m68k_board_overlay_init(&st->overlay, cfg, d->rom_base, d->rom_end, sonora_map_ram, b->chip);
+    m68k_board_overlay_init(&st->overlay, cfg, d->rom_base, d->rom_end, sonora_map_ram, v8_ops(cfg)->desc.chipset);
     memory_map_add(cfg->memory_map, d->rom_base, d->rom_end - d->rom_base, "ROM aperture", &st->overlay.iface,
                    &st->overlay);
     m68k_board_overlay_arm(&st->overlay);

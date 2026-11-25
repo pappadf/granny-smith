@@ -14,7 +14,8 @@
 // The register file at $50F26000 is the RBV's (the V8 variant of rbv.c);
 // the per-model deltas -- the soldered RAM, the machine-ID strap on VIA1
 // port A, the frame-buffer source, the monitor -- are a v8_board_t named by
-// hw_profile_t.board.  See docs/internals/machines/v8/v8.md.
+// hw_profile_t.board; the profiles are v8_models.c.  See
+// docs/internals/machines/v8/v8.md.
 //
 // The Sonora-based boards (LC III, LC III+, LC 520, LC 550, Color Classic
 // II; sonora.c) are a second chip kind of the same substrate: the same I/O
@@ -45,10 +46,9 @@ typedef enum v8_chip_kind {
 } v8_chip_kind_t;
 
 // One model of the family: the hardware data the substrate is built from.
+// (Its decoder kind picks the board descriptor: v8_chip_ops_t, v8_internal.h.)
 typedef struct v8_board {
-    const char *chip; // "V8" / "Eagle" / "Spice" / "Sonora" / "Ardbeg" (tracing)
     v8_chip_kind_t kind;
-    m68k_board_desc_t desc; // ROM window, I/O table, bus-error window
 
     // VIA1 port A machine-ID strap: the levels of PA6, PA4, PA2 and PA1
     // (bit n of this byte is PAn), as the ROM's machine-identification tables test them.

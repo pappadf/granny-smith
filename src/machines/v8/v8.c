@@ -151,7 +151,7 @@ static void v8_map_ram(config_t *cfg) {
 static void v8_ram_reg_written(void *ctx, uint8_t value) {
     config_t *cfg = (config_t *)ctx;
     v8_state_t *st = v8_st(cfg);
-    LOG(2, "%s RAM decode register = $%02X (pc=%08X)", v8_board(cfg)->chip, value, cpu_get_pc(cfg->cpu));
+    LOG(2, "%s RAM decode register = $%02X (pc=%08X)", v8_ops(cfg)->desc.chipset, value, cpu_get_pc(cfg->cpu));
     st->ram_exp = value;
     if (!st->overlay.armed)
         v8_ops(cfg)->map_ram_decode(cfg, value);
@@ -176,7 +176,8 @@ static int v8_ram_layout(config_t *cfg) {
     }
     st->simm_host = ram;
     st->pcb_host = ram + st->simm_size;
-    LOG(1, "%s RAM: %u KB SIMMs + %u KB soldered", b->chip, st->simm_size / 1024, st->pcb_size / 1024);
+    LOG(1, "%s RAM: %u KB SIMMs + %u KB soldered", v8_ops(cfg)->desc.chipset, st->simm_size / 1024,
+        st->pcb_size / 1024);
     return 0;
 }
 
@@ -236,7 +237,7 @@ static void v8_memory_layout_init(config_t *cfg) {
     // The overlay: ROM at zero until the first access to the ROM space, in
     // either map.  Its trigger aperture is the 24-bit ROM window; the 32-bit
     // ROM space routes through the same trigger until the drop.
-    m68k_board_overlay_init(&st->overlay, cfg, V8_LOW_ROM_START, V8_LOW_ROM_END, v8_map_ram, b->chip);
+    m68k_board_overlay_init(&st->overlay, cfg, V8_LOW_ROM_START, V8_LOW_ROM_END, v8_map_ram, v8_ops(cfg)->desc.chipset);
     memory_map_add(cfg->memory_map, V8_LOW_ROM_START, V8_LOW_ROM_END - V8_LOW_ROM_START, "ROM aperture (24-bit)",
                    &st->overlay.iface, &st->overlay);
     memory_map_add(cfg->memory_map, V8_ROM_START, V8_ROM_END - V8_ROM_START, "ROM aperture", &st->overlay.iface,
@@ -372,7 +373,7 @@ static int v8_init(config_t *cfg, checkpoint_t *cp) {
 
     // The pseudo-VIA2, its MonP sense lines strapped with the monitor.
     if (v8_video_init(cfg, cfg->build_opts.builtin_sense) != 0) {
-        LOG(0, "Error: out of memory constructing the %s video", b->chip);
+        LOG(0, "Error: out of memory constructing the %s video", v8_ops(cfg)->desc.chipset);
         return -1;
     }
     if (rbv_board_build_rbv(cfg, cp, RBV_VARIANT_V8, v8_video_sense(cfg), &slots) != 0)

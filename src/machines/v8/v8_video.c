@@ -150,7 +150,7 @@ int v8_video_init(config_t *cfg, uint8_t sense) {
     v8_video_update(cfg);
     display_blank_raster(&v->display);
     v->display.response_dirty = true;
-    LOG(1, "%s video: %ux%u, sense %u, %s", b->chip, v->width, v->height, v->sense,
+    LOG(1, "%s video: %ux%u, sense %u, %s", v8_ops(cfg)->desc.chipset, v->width, v->height, v->sense,
         b->fb_source == V8_FB_VRAM ? "VRAM" : "DRAM");
     v->fb_node = (display_fb_node_t){.owner = cfg, .resolve = v8_fb_resolve, .base = v8_fb_base};
     v->video_node = display_attach_video_node(&v->fb_node, "Video (built-in)");
