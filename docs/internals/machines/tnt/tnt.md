@@ -502,7 +502,7 @@ Known open items:
 
 ---
 
-# The 1997 machines — 7300, 7600, 8600, 9600
+## The 1997 machines — 7300, 7600, 8600, 9600
 
 `pm7300.c`, `pm7600.c`, `pm8600.c` and `pm9600.c` are the 7500/8500/9500
 boards with the 1997 processor cards: a 200 MHz part on a 50 MHz bus and
@@ -543,21 +543,23 @@ Deliberate simplifications:
 - **No AV hardware** (Plan B video-in, Sixty6), as on the 7500/8500.
 
 Verification: `suite-tnt-1997` (Mac OS 8.1 to the Finder and About This
-Computer on all four models under both 1997 ROMs; System 7.6 from disk and
-floppy on the 7600 under the 1995 ROM).  Hardware reference:
+Computer on all four models: the 7300 and 7600 under the 1997 v1 ROM, the
+8600 under the later `$960FC647` ROM, the 9600 under both; System 7.6 from
+disk and floppy on the 7600 under the 1995 ROM).  Hardware reference:
 [pm7600.md](../../../reference/machines/tnt/pm7600.md),
 [pm8600.md](../../../reference/machines/tnt/pm8600.md),
 [pm9600.md](../../../reference/machines/tnt/pm9600.md) and the partial
 [pm7300.md](../../../reference/machines/tnt/pm7300.md).
 
-# The Catalyst board — the Power Macintosh 7200
+## The Catalyst board — the Power Macintosh 7200
 
 `pm7200.c` is the family's one non-Hammerhead board: the 7500's Bandit and
 Grand Central, but **Platinum** (`platinum.c`) at `$F8000000` as memory
 controller *and* video, the DACula RAMDAC in Grand Central's `+$1B000`
 cell, and the 53C94 as the only SCSI bus.  A board flag, not a family:
-`tnt_board_desc_t.has_platinum` (with `vram_kb`) switches five places, and
-everything else — the island decode, DBDMA, Cuda, the interrupt fabric,
+`tnt_board_desc_t.has_platinum` (with `vram_kb`) switches the six areas
+below (some twenty tests of the flag across `tnt.c`, `bandit.c`,
+`grand_central.c` and `platinum.c`), and everything else — the island decode, DBDMA, Cuda, the interrupt fabric,
 NVRAM — is shared unchanged.
 
 | Where | Hammerhead boards | `has_platinum` |
@@ -608,7 +610,7 @@ and the System 7.6 "Install 1" floppy to the Installer, asserting BoxFlag
 Hardware reference: [pm7200.md](../../../reference/machines/tnt/pm7200.md),
 [platinum.md](../../../reference/machines/tnt/platinum.md).
 
-# The Apple Network Servers — a fourth board on this family
+## The Apple Network Servers — a fourth board on this family
 
 `src/machines/tnt/ans500.c` / `ans700.c` add two machines to `tnt` that are
 **not Macintoshes**: the Apple Network Server 500/132 and 700/150
@@ -641,7 +643,7 @@ Sources: Apple, *Network Server Hardware Developer Notes* (1996); Apple,
 this machine is an unusually good oracle, because Open Firmware 1.1.22 has
 **named Forth words** and `see <word>` decompiles them at the prompt.
 
-## What differs from a 9500
+### What differs from a 9500
 
 Apple enumerates it, so this table is scope rather than survey. Four items
 are boot-critical.
@@ -663,7 +665,7 @@ line a 9500 gives Bandit 1's third slot — so a model that derives the line
 from the bus is wrong for exactly one slot and right for the other five,
 which is the worst failure shape available. The map is data in the profile.
 
-## The GBUS island
+### The GBUS island
 
 Grand Central's Generic Bus provides *"six chip selects and write enable
 which the Network Server uses for devices such as NVRAM, Ethernet PROM,
@@ -686,7 +688,7 @@ Three properties, all of them silent when wrong:
   three-position one is what software reads, in Board Register 1 bits 13/14.
   Both default to LOCKED (`machine.board.keyswitch`, `.rear_key_locked`).
 
-## The front-panel LCD, and why it is built first
+### The front-panel LCD, and why it is built first
 
 `lcd.c` models a write-only HD44780-class panel behind two registers on
 GBUS device 3. It is built before anything else because the *Theory of
@@ -725,7 +727,7 @@ That is a readout of a deliberate modelling choice (see `tnt_init`), not a
 defect, and the ladder asserts what the ROM actually prints so that changing
 it would show up as a deliberate change.
 
-## The L2 cache — and the size encoding, decoded
+### The L2 cache — and the size encoding, decoded
 
 These are the first machines in the repository to report an L2 cache, so
 they are the first to run the ROM's L2 test at all: every Macintosh TNT
@@ -743,7 +745,7 @@ config/status and the ROM drops `$70` into it mid-test and reads it
 straight back, so plain store-and-readback would erase the cache the machine
 has and the report would come out `0000KB`.
 
-## SCSI — three buses, and a new device class
+### SCSI — three buses, and a new device class
 
 The machine has **three** SCSI buses: two fast/wide 53C825A channels and the
 narrow 53C94 external chain the Macintosh boards already had. The 53C8xx is
@@ -769,7 +771,7 @@ with no bay of its own on that channel is a free address, as ID 0 on
 channel 1 already was for the Windows NT boot disk, and OS/2 PPC's disk at
 ID 6 on channel 0 is another.
 
-## Where Open Firmware puts a built-in device's BARs
+### Where Open Firmware puts a built-in device's BARs
 
 Each Bandit forwards 16 MB of PCI memory one-to-one at its base + 16 MB —
 its own `ranges` property says so — and Grand Central decodes the 128 KB at
@@ -786,7 +788,7 @@ previously-quiet address space into recoverable transfer errors on a
 boot-critical bridge is not a change to make without a Macintosh ROM ladder
 run to prove it.
 
-## The console is the screen
+### The console is the screen
 
 Open Firmware's own `(install-console)` opens whatever `input-device` and
 `output-device` name and falls back to `ttya` only when one of them fails:
@@ -881,7 +883,7 @@ Without the fixed decode the firmware's write to `$3C4` takes a recoverable
 transfer error and the machine check takes down the rest of device
 installation with it.
 
-## The framebuffer — a mode that is derived, not configured
+### The framebuffer — a mode that is derived, not configured
 
 Nothing tells the emulator what resolution to present. The part is a VGA, so
 the mode lives in the CRTC, the sequencer and the Cirrus extension registers;
@@ -910,7 +912,7 @@ order does not matter, so the existing `PIXEL_8BPP` path is *correct* rather
 than merely convenient. Deeper colour needs a little-endian framebuffer
 window in `display_t`, which this repository does not have.
 
-### The registers that are not memory
+#### The registers that are not memory
 
 Open Firmware and AIX both arrive knowing what the part is, so for a long
 time a flat byte array per register block was enough. A driver that has to
@@ -941,7 +943,7 @@ The card's register decode, what it does with a mode it cannot present, and
 its unit tests are on the card's own page,
 [`cirrus54m30.md`](../../core/peripherals/pci/cards/cirrus54m30.md).
 
-## The floppy
+### The floppy
 
 The SWIM3 at Grand Central `+$15000` is the same chip the 6100/7100/8100
 carry, so it is the same model: `src/core/peripherals/swim3.c` /
@@ -987,7 +989,7 @@ the `.Sony` driver owns drive numbers 1–2 and the SCSI startup volume
 lands at `$23` rather than `$03` — `suite-tnt`'s disk-boot rows assert
 the new number.
 
-## The diagnostic utility -- what it accepted, and what it found
+### The diagnostic utility -- what it accepted, and what it found
 
 Apple's *Network Server Diagnostic Utility 1.1* (the floppy
 `suite-ans`'s `ans500-diag-floppy` row boots) is a hardware test suite
@@ -1020,7 +1022,7 @@ Open Firmware wipes the DIMM table when it initialises a virgin store,
 and the utility reads 0 MB until the next boot -- which is why the row
 boots twice.
 
-## Verification
+### Verification
 
 | Row | Tier | What it holds |
 |---|---|---|
@@ -1042,7 +1044,7 @@ Note the probe words: this machine has `probe-scsi0`, `probe-scsi1` and
 `probe-scsi2`, one per controller. `probe-scsi` and `probe-scsi-all` do not
 exist on it, so a row that typed those would prove nothing.
 
-## Booting AIX — where this stands
+### Booting AIX — where this stands
 
 The Install CD boots, and the boot path is Apple's own rather than an
 invention. With a blank store, the front keyswitch in Service and the disc
@@ -1072,7 +1074,7 @@ supplies, the root `compatible` the 53C825A probe set, and the boot path
 chosen off the disc. `bootapple` then reads about 2.7 MB off the disc —
 1 360 blocks, two at a time — and jumps into the AIX kernel.
 
-### The LCD is the narrator, and it counts
+#### The LCD is the narrator, and it counts
 
 From here the machine stops printing and starts *displaying*. The
 front-panel LCD — built early because POST needs it — is the only
@@ -1161,7 +1163,7 @@ convention). That is what the `ans-aix-installed-boot` row asserts: the
 login screen and the logged-in screen as pixel goldens, with `root` typed
 in between.
 
-### What getting here cost, and what it says
+#### What getting here cost, and what it says
 
 Twenty-six defects, and every single one was in shared machinery that no
 existing guest had pushed on.

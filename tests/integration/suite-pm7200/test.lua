@@ -57,6 +57,15 @@ local function check_board(rom_id)
     assert(machine.video.framebuffer.depth == 16, F"depth ${machine.video.framebuffer.depth}, want 16 (1 MB VRAM)")
 end
 
+-- Pending scheduler events of one source.event (scheduler.events).
+local function pending(source, event)
+    local n = 0
+    for _, e in ipairs(scheduler.events) do
+        if e.source == source and e.event == event then n = n + 1 end
+    end
+    return n
+end
+
 -- Boot from the 53C94 disk at ID 0 to a stable Finder.
 local function boot_hd(rom, hd, ram)
     machine.boot{model = "pm7200", ram = ram, rom = rom}
@@ -74,9 +83,17 @@ local function row_pm7200_753_hd()
     mac.check_ex("goldens/pm7200-7.5.3-finder.png", 0, 440, 20, 640)
     -- A checkpoint round trip on the desktop: Platinum's registers, the
     -- DRAM bank decode, the half-bank VRAM view and the VRAM come back,
-    -- and the About box opens on the restored machine.
-    assert(checkpoint.save(F"${vars.WORK_DIR}/pm7200.checkpoint"), "checkpoint save")
-    assert(checkpoint.load(F"${vars.WORK_DIR}/pm7200.checkpoint"), "checkpoint load")
+    -- and the About box opens on the restored machine.  The retrace clock
+    -- is one self-re-arming event chain, before the round trip and after
+    -- it: the restored queue brings the saved event back, and the rebuild
+    -- must not arm a second (two save/load cycles would make it four).
+    assert(pending("platinum", "vbl") == 1, F"${pending(\"platinum\", \"vbl\")} platinum.vbl events pending, want 1")
+    for _ = 1, 2 do
+        assert(checkpoint.save(F"${vars.WORK_DIR}/pm7200.checkpoint"), "checkpoint save")
+        assert(checkpoint.load(F"${vars.WORK_DIR}/pm7200.checkpoint"), "checkpoint load")
+        local n = pending("platinum", "vbl")
+        assert(n == 1, F"${n} platinum.vbl events pending after the checkpoint round trip, want 1")
+    end
     mac.check_ex("goldens/pm7200-7.5.3-finder.png", 0, 440, 20, 640)
     mac.about_box()
     mac.check_about_clock("goldens/pm7200-7.5.3-about.png")

@@ -227,7 +227,7 @@ static void chaos_probe_write32(void *ctx, uint32_t offset, uint32_t value) {
 // Memory layout
 // ============================================================
 
-static void tnt_memory_layout(config_t *cfg, checkpoint_t *cp) {
+static int tnt_memory_layout(config_t *cfg, checkpoint_t *cp) {
     tnt_state_t *st = tnt_st(cfg);
 
     // RAM: wherever the Hammerhead's (Platinum's) bank base registers put
@@ -287,12 +287,20 @@ static void tnt_memory_layout(config_t *cfg, checkpoint_t *cp) {
     // On the Catalyst board $F1000000 is Platinum's frame-buffer aperture
     // instead, and the RAM decode is Platinum's.
     if (platinum) {
-        tnt_plat_init(cfg);
+        if (tnt_plat_init(cfg) != 0)
+            return -1;
+        // The retrace clock starts on a fresh machine only: on a restore its
+        // pending event comes back with the scheduler's queue
+        // (scheduler_restore_events), and the reset arming it here too ran
+        // two chains.  Marked armed, the reset leaves it to the queue.
+        if (cp)
+            st->plat.vbl_armed = 1;
         tnt_plat_reset(cfg);
     } else {
         memory_map_add(cfg->memory_map, TNT_CHAOS_BASE + 0x01000000u, 0x01000000u, "Chaos window hi",
                        &st->chaos_probe_interface, cfg);
     }
+    return 0;
 }
 
 // ============================================================
@@ -761,7 +769,8 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
         tnt_gbus_init(cfg);
         tnt_lcd_init(cfg);
     }
-    tnt_memory_layout(cfg, cp);
+    if (tnt_memory_layout(cfg, cp) != 0)
+        return -1;
 
     // The PCI slot walk: seats every device the machine's slot table names
     // — Control (the BUILTIN video entry, whose factory allocates its VRAM
@@ -777,7 +786,14 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // line is recomputed below.
     machine_part_begin(cfg, cp, "tnt");
     if (cp) {
+        // The DIMM inventory (bank sizes and host-RAM offsets) is
+        // construction data, carved from the profile's RAM size by
+        // tnt_hh_init: the file's copy is read past, never trusted, since
+        // the remap points page entries at ram + bank_host_off.
+        tnt_hammerhead_t hh_built = st->hh;
         TNT_BOARD_CP_FIELDS(system_read_checkpoint_data, cp, st);
+        memcpy(st->hh.bank_size, hh_built.bank_size, sizeof st->hh.bank_size);
+        memcpy(st->hh.bank_host_off, hh_built.bank_host_off, sizeof st->hh.bank_host_off);
         if (!st->has_platinum)
             tnt_hh_remap(cfg); // reads only the Hammerhead's fields
         tnt_bandit_modes_restored(cfg); // the buses are rebuilt, not restored
@@ -793,8 +809,14 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
         // set at construction from the slot entry (tnt_control_init), and
         // the saved copy does not replace it.
         uint8_t mon_grounded = st->control.mon_grounded;
+        // Platinum's DIMM inventory is construction data like Hammerhead's
+        // (tnt_plat_init): kept from the build, not taken from the file.
+        tnt_platinum_t plat_built = st->plat;
         TNT_AV_CP_FIELDS(system_read_checkpoint_data, cp, st);
         st->control.mon_grounded = mon_grounded;
+        memcpy(st->plat.bank_size, plat_built.bank_size, sizeof st->plat.bank_size);
+        memcpy(st->plat.bank_host_off, plat_built.bank_host_off, sizeof st->plat.bank_host_off);
+        st->plat.mon_grounded = plat_built.mon_grounded; // the strap, as Control's above
     }
     machine_part(cfg, cp, "tnt.av", part_save_tnt_av, st);
     if (cp) {

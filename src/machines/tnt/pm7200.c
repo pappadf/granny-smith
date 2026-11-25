@@ -85,7 +85,6 @@ static const tnt_board_desc_t pm7200_board = {
     // (pm7500.c), bit 14 CLEAR — no MESH.  Open Firmware's Catalyst arm
     // publishes BoxID >> 11 as AAPL,cpu-id and reads no model bits.
     .boxid = 0x8000u | 0x0100u,
-    .hh_id = 0x30010000u, // not read: Platinum answers $F8000000
     .bus_hz = 45000000u, // half the 90 MHz processor clock
     .bandit_count = 1,          .kind = TNT_BOARD_MAC, .has_mesh = false, .has_platinum = true,
     .vram_kb = 1024u, // the soldered 1 MB
