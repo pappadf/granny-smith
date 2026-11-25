@@ -44,84 +44,63 @@ local fd_76 = "../../data/systems/SSW-7.6-1.4M/Disk Tools 1.img"
 
 local rom_ids = {[rom_centris] = "f1a6f343", [rom_quadra] = "f1acad13"}
 
--- Boot `model` from `media` (an "hd" or "fd" image) to the Finder and assert
--- the identity: machine id, RAM, ROM id and the BoxFlag.
-local function boot(label, model, rom, ram, kind, media, boxflag)
-    machine.boot{model = model, ram = ram, rom = rom}
-    machine.rtc.time = 3000000000 -- the 7.5+ menu-bar clock, pinned
-    if kind == "hd" then
-        machine.scsi.attach_hd(media, 0)
-    else
-        machine.floppy.drive[0].insert(media)
-    end
-    mac.wait_desktop(2000000000)
-    mac.wait_stable(600000000)
-    assert(machine.id == model, F"${label}: machine.id ${machine.id}, want ${model}")
-    assert(machine.ram == ram, F"${label}: machine.ram ${machine.ram}, want ${ram}")
-    assert(machine.rom.id == rom_ids[rom], F"${label}: rom id ${machine.rom.id}, want ${rom_ids[rom]}")
-    assert(debug.mac.globals.read("MMUFluff") == boxflag,
-           F"${label}: BoxFlag ${debug.mac.globals.read(\"MMUFluff\")}, want ${boxflag}")
-    assert(machine.screen.width == 640 and machine.screen.height == 480, F"${label}: not 640x480")
+-- Every row: the clock pinned (the 7.5+ menu-bar clock), the Finder as the
+-- current application and then a stability wait (the settle these rows'
+-- perf baselines were taken with), a 640x480 desktop.  `clock`: the System
+-- shows a menu-bar clock, so the goldens leave its corner out.
+local ROW = {suite = "suite-djmemc", card = "djmemc", rtc = 3000000000, w = 640, h = 480, mips = 3,
+    settle = {"desktop", ceiling = 2000000000, stable = 600000000}}
+
+local function fill(t)
+    t = mac.with(ROW, t)
+    t.rom_id = rom_ids[t.rom]
+    if t.clock then t.finder_ex = {0, 440, 20, 640} end
+    return t
 end
 
--- One boot-to-About row.  `clock`: the System shows a menu-bar clock, so
--- the goldens leave its corner out.
+-- One boot-to-About row, run when its disk and the further media `...` (a
+-- ROM) were fetched.
+local function row(t, ...)
+    t = fill(t)
+    mac.media_row(t.label, function() mac.about_row(t) end, t.hd or t.fd, ...)
+end
+
 -- golden-collision-ok: c610-7.1-hd-finder.png c650-7.1-hd-finder.png q610-7.1-hd-finder.png q650-7.1-hd-finder.png q800-7.1-hd-finder.png — the same System 7.1 desktop on five boards; machine.id, BoxFlag (24/29/30/46/47) and each row's About golden, which names the model, tell them apart
 -- golden-collision-ok: c610-7.6-fd-finder.png q800-7.6-fd-finder.png — the same Disk Tools desktop; machine.id and BoxFlag (46 vs 29) tell the rows apart
--- `finder` and `about` are the row's two goldens, named literally so that
--- scripts/check-goldens.py can see them.
-local function about_row(label, model, rom, ram, kind, media, boxflag, system, clock, finder, about)
-    local t0 = scheduler.host_user_ns
-    boot(label, model, rom, ram, kind, media, boxflag)
-    if clock then
-        mac.check_ex(finder, 0, 440, 20, 640)
-    else
-        mac.check(finder)
-    end
-    mac.about_box()
-    if clock then
-        mac.check_about_clock(about)
-    else
-        mac.check_about(about)
-    end
-    mac.mips_floor(label, t0, 3)
-    mac.report_row(system, "djmemc", F"${kind}-boot about")
-    mac.report_perf(F"suite-djmemc/${label}", scheduler.instr_count)
-end
-
-local function row_q800_75_hd() about_row("q800-75-hd", "q800", rom_quadra, 16384, "hd", hd_75, 29, "7.5", true,
-    "goldens/q800-7.5-hd-finder.png", "goldens/q800-7.5-hd-about.png") end
-local function row_q800_76_fd() about_row("q800-76-fd", "q800", rom_quadra, 16384, "fd", fd_76, 29, "7.6", true,
-    "goldens/q800-7.6-fd-finder.png", "goldens/q800-7.6-fd-about.png") end
-local function row_c650_71_hd() about_row("c650-71-hd", "c650", rom_centris, 8192, "hd", hd_71, 24, "7.1", false,
-    "goldens/c650-7.1-hd-finder.png", "goldens/c650-7.1-hd-about.png") end
-local function row_q800_71_hd() about_row("q800-71-hd", "q800", rom_centris, 8192, "hd", hd_71, 29, "7.1", false,
-    "goldens/q800-7.1-hd-finder.png", "goldens/q800-7.1-hd-about.png") end
-local function row_q650_71_hd() about_row("q650-71-hd", "q650", rom_quadra, 8192, "hd", hd_71, 30, "7.1", false,
-    "goldens/q650-7.1-hd-finder.png", "goldens/q650-7.1-hd-about.png") end
-local function row_q610_71_hd() about_row("q610-71-hd", "q610", rom_quadra, 8192, "hd", hd_71, 47, "7.1", false,
-    "goldens/q610-7.1-hd-finder.png", "goldens/q610-7.1-hd-about.png") end
-local function row_c610_71_hd() about_row("c610-71-hd", "c610", rom_centris, 8192, "hd", hd_71, 46, "7.1", false,
-    "goldens/c610-7.1-hd-finder.png", "goldens/c610-7.1-hd-about.png") end
-local function row_c610_76_fd() about_row("c610-76-fd", "c610", rom_quadra, 8192, "fd", fd_76, 46, "7.6", true,
-    "goldens/c610-7.6-fd-finder.png", "goldens/c610-7.6-fd-about.png") end
-local function row_q610_76_hd() about_row("q610-76-hd", "q610", rom_quadra, 12288, "hd", hd_76, 47, "7.6", true,
-    "goldens/q610-7.6-hd-finder.png", "goldens/q610-7.6-hd-about.png") end
-local function row_q650_753_hd() about_row("q650-753-hd", "q650", rom_quadra, 24576, "hd", hd_753, 30, "7.5.3", true,
-    "goldens/q650-7.5.3-hd-finder.png", "goldens/q650-7.5.3-hd-about.png") end
+local q800_75_hd = {label = "q800-75-hd", model = "q800", rom = rom_quadra, ram = 16384, hd = hd_75, box = 29,
+    system = "7.5", clock = true, finder = "goldens/q800-7.5-hd-finder.png", about = "goldens/q800-7.5-hd-about.png"}
+row(q800_75_hd)
+row{label = "q800-76-fd", model = "q800", rom = rom_quadra, ram = 16384, fd = fd_76, box = 29, system = "7.6", clock = true,
+    finder = "goldens/q800-7.6-fd-finder.png", about = "goldens/q800-7.6-fd-about.png"}
+row({label = "c650-71-hd", model = "c650", rom = rom_centris, ram = 8192, hd = hd_71, box = 24, system = "7.1",
+    finder = "goldens/c650-7.1-hd-finder.png", about = "goldens/c650-7.1-hd-about.png"}, rom_centris)
+row({label = "c610-71-hd", model = "c610", rom = rom_centris, ram = 8192, hd = hd_71, box = 46, system = "7.1",
+    finder = "goldens/c610-7.1-hd-finder.png", about = "goldens/c610-7.1-hd-about.png"}, rom_centris)
+row({label = "q800-71-hd", model = "q800", rom = rom_centris, ram = 8192, hd = hd_71, box = 29, system = "7.1",
+    finder = "goldens/q800-7.1-hd-finder.png", about = "goldens/q800-7.1-hd-about.png"}, rom_centris)
+row{label = "q650-71-hd", model = "q650", rom = rom_quadra, ram = 8192, hd = hd_71, box = 30, system = "7.1",
+    finder = "goldens/q650-7.1-hd-finder.png", about = "goldens/q650-7.1-hd-about.png"}
+row{label = "q610-71-hd", model = "q610", rom = rom_quadra, ram = 8192, hd = hd_71, box = 47, system = "7.1",
+    finder = "goldens/q610-7.1-hd-finder.png", about = "goldens/q610-7.1-hd-about.png"}
+row{label = "c610-76-fd", model = "c610", rom = rom_quadra, ram = 8192, fd = fd_76, box = 46, system = "7.6", clock = true,
+    finder = "goldens/c610-7.6-fd-finder.png", about = "goldens/c610-7.6-fd-about.png"}
+row{label = "q610-76-hd", model = "q610", rom = rom_quadra, ram = 12288, hd = hd_76, box = 47, system = "7.6", clock = true,
+    finder = "goldens/q610-7.6-hd-finder.png", about = "goldens/q610-7.6-hd-about.png"}
+row{label = "q650-753-hd", model = "q650", rom = rom_quadra, ram = 24576, hd = hd_753, box = 30, system = "7.5.3",
+    clock = true, finder = "goldens/q650-7.5.3-hd-finder.png", about = "goldens/q650-7.5.3-hd-about.png"}
 
 -- ---- q800-checkpoint ---------------------------------------------------------
 -- The family's own checkpoint part (djMEMC bank registers, IOSB, Kiwi, the
 -- overlay) round-trips: save the booted Finder, wipe it with a fresh boot,
 -- load it back and re-match the same golden.
-local function row_q800_checkpoint()
-    boot("q800-checkpoint", "q800", rom_quadra, 16384, "hd", hd_75, 29)
+mac.media_row("q800-checkpoint", function()
+    mac.boot_finder(fill(mac.with(q800_75_hd, {label = "q800-checkpoint"})))
     mac.check_ex("goldens/q800-7.5-hd-finder.png", 0, 440, 20, 640)
     assert(checkpoint.save(F"${vars.WORK_DIR}/suite-djmemc.gsc"), "q800-checkpoint: save failed")
     machine.boot{model = "q800", ram = 16384, rom = rom_quadra}
     assert(checkpoint.load(F"${vars.WORK_DIR}/suite-djmemc.gsc"), "q800-checkpoint: load failed")
     scheduler.run(2000000)
-    assert(debug.mac.globals.read("MMUFluff") == 29, "q800-checkpoint: BoxFlag lost across the restore")
+    assert(mac.boxflag() == 29, "q800-checkpoint: BoxFlag lost across the restore")
     mac.check_ex("goldens/q800-7.5-hd-finder.png", 0, 440, 20, 640)
     -- Still running: the clock ticks and the Finder answers the Apple menu.
     local t0 = debug.mac.globals.read("Ticks")
@@ -130,32 +109,7 @@ local function row_q800_checkpoint()
     mac.about_box()
     mac.check_about_clock("goldens/q800-7.5-hd-about.png")
     mac.report_perf("suite-djmemc/q800-checkpoint", scheduler.instr_count)
-end
-
--- ---- row dispatch -----------------------------------------------------------
-
-local function media_row(label, fn, ...)
-    if not mac.row_on(label) then return end
-    for _, m in ipairs({...}) do
-        if not mac.have_media(m) then
-            echo(F"skip: ${label} (${m} not fetched)")
-            return
-        end
-    end
-    mac.row(label, fn)
-end
-
-media_row("q800-75-hd", row_q800_75_hd, hd_75)
-media_row("q800-76-fd", row_q800_76_fd, fd_76)
-media_row("c650-71-hd", row_c650_71_hd, hd_71, rom_centris)
-media_row("c610-71-hd", row_c610_71_hd, hd_71, rom_centris)
-media_row("q800-71-hd", row_q800_71_hd, hd_71, rom_centris)
-media_row("q650-71-hd", row_q650_71_hd, hd_71)
-media_row("q610-71-hd", row_q610_71_hd, hd_71)
-media_row("c610-76-fd", row_c610_76_fd, fd_76)
-media_row("q610-76-hd", row_q610_76_hd, hd_76)
-media_row("q650-753-hd", row_q650_753_hd, hd_753)
-media_row("q800-checkpoint", row_q800_checkpoint, hd_75)
+end, hd_75)
 
 mac.suite_done()
 quit()
