@@ -2,8 +2,9 @@
 // Copyright (c) pappadf
 
 // djmemc.h
-// The djMEMC family (Centris 610/650, Quadra 610/650/800): the 68040 +
-// djMEMC + IOSB + Kiwi generation.  Chip-named like mcu/, mdu/, oss/ --
+// The djMEMC family (Centris 610/650, Quadra 610/650/800, and the MEMCjr
+// boards: LC 475, LC 575, Quadra 605): the 68040 + djMEMC/MEMCjr + IOSB
+// generation.  Chip-named like mcu/, mdu/, oss/ --
 // djMEMC is the memory controller that defines the generation (Apple's
 // codenames are "Wombat" for the three-slot boards and "WLCD" for the
 // PDS-only ones).
@@ -30,6 +31,16 @@
 //
 // Interrupts are routed as on the Quadra 700: VIA1 -> 1, VIA2 -> 2,
 // SCC -> 4, NMI -> 7 (m68k_board_update_ipl).
+//
+// The MEMCjr boards ("Primus" LC 475, "Optimus" LC 575, "Aladdin" Quadra
+// 605) are the same generation cut down: the MEMCjr memory controller (five
+// banks in 1 MB units, one SIMM socket, the same DAFB-compatible video
+// half), the PrimeTime I/O chip (the IOSB's register-compatible sibling),
+// a Cuda for ADB, PRAM and the clock, no Ethernet and no NuBus controller.
+// The ROM tells them apart by the CPU-ID register alone ($A55A22xx, the low
+// bits naming board and clock); the VIA1 straps carry nothing there.
+// (Apple, Macintosh LC 475 and Macintosh Quadra 605 Developer Note (1993),
+// "Custom ICs", pp. 23-25.)
 
 #ifndef GS_MACHINES_DJMEMC_H
 #define GS_MACHINES_DJMEMC_H
@@ -46,6 +57,7 @@
 #include <stdint.h>
 
 struct asc;
+struct cuda;
 struct dafb;
 struct mmu_state;
 struct scsi_53c96;
@@ -67,11 +79,25 @@ struct sonic;
 #define DJMEMC_REG_MEMTOP     0x2Cu
 #define DJMEMC_REG_CONFIG     0x30u
 #define DJMEMC_REG_REFRESH    0x34u
-#define DJMEMC_REG_COUNT      16 // longwords decoded ($00-$3F)
+#define DJMEMC_REG_COUNT      16 // longwords the djMEMC decodes ($00-$3F)
 #define DJMEMC_MAX_BANKS      10
 #define DJMEMC_BANK_UNIT      0x00400000u // a start field counts 4 MB
 #define DJMEMC_BANK_WINDOW    0x04000000u // 64 MB: where sizing parks each bank
 #define DJMEMC_BANK_START_MSK 0xFFu
+
+// MEMCjr: the same window, decoded to $7F.  Banks 0-4 at $04-$14 count
+// 1 MB; a bank start is ten bits wide but its register keeps the low six,
+// the high four coming from the upper-address latch at $7C, which software
+// writes just before each bank (and MemTop) register.  Latch bit 4 is a
+// separate control bit software preserves.  MemTop ($2C) is the top of
+// stitched RAM minus one, in 1 MB units.
+#define MEMCJR_REG_COUNT      32 // longwords decoded ($00-$7F)
+#define MEMCJR_REG_LATCH      0x7Cu
+#define MEMCJR_MAX_BANKS      5
+#define MEMCJR_BANK_UNIT      0x00100000u // 1 MB
+#define MEMCJR_BANK_LO_MSK    0x3Fu // the bank register's six bits
+#define MEMCJR_LATCH_HI_MSK   0x0Fu // the latch's four high start bits
+#define MEMCJR_LATCH_HI_SHIFT 6
 
 // Kiwi (YANCC-compatible) register file ($28000): one bit per longword.
 #define DJMEMC_KIWI_REG_COUNT 64
@@ -86,18 +112,34 @@ struct sonic;
 //   PA4 PA2: CPU clock -- %00 20, %01 25, %10 33, %11 40 MHz
 #define DJMEMC_VIA1_ID_MASK 0x56u
 
+// The memory controller a board carries.
+typedef enum djmemc_chip {
+    DJMEMC_CHIP_DJMEMC = 0, // Wombat/WLCD: ten 4 MB-unit banks, SONIC, Kiwi, VIA ADB
+    DJMEMC_CHIP_MEMCJR, // Primus/Optimus/Aladdin: five 1 MB-unit banks, Cuda, no SONIC/Kiwi
+} djmemc_chip_t;
+
 // The djMEMC board descriptor: per-model data the shared substrate reads.
 typedef struct djmemc_board_desc {
     m68k_board_desc_t common; // the fields the shared 68k code reads
+    djmemc_chip_t chip; // djMEMC or MEMCjr
+    uint32_t cpuid; // the CPU-ID register's value (0: DJMEMC_CPUID_VALUE)
     uint8_t via1_id; // VIA1 PA6/PA4/PA2/PA1 straps (& DJMEMC_VIA1_ID_MASK)
-    uint32_t ram_onboard; // soldered RAM: banks 0 (and 1) of 4 MB each
-    uint8_t simm_slots; // 72-pin SIMM sockets; slot k = banks 2+2k, 3+2k
+    uint32_t ram_onboard; // soldered RAM: djMEMC banks 0 (and 1) of 4 MB; MEMCjr bank 0
+    uint8_t simm_slots; // 72-pin SIMM sockets; djMEMC slot k = banks 2+2k, 3+2k; MEMCjr banks 1, 2
     uint32_t vram_size; // VRAM fitted (512 KB base, 1 MB maxed)
 } djmemc_board_desc_t;
+
+// The MEMCjr boards' CPU-ID registers: $A55A22xx, high-performance CISC
+// design centre, the whole id in the register (no VIA supplement).
+#define MEMCJR_CPUID_LC475 0xA55A2221u // Primus, 25 MHz
+#define MEMCJR_CPUID_Q605  0xA55A2225u // Aladdin, 25 MHz
+#define MEMCJR_CPUID_LC575 0xA55A222Eu // Optimus, 33 MHz
 
 // The I/O island decode (djmemc.c): the IOSB's device windows plus the
 // djMEMC, SONIC and Kiwi register blocks that sit in the same island.
 extern const board_io_range_t djmemc_io_ranges[];
+// ...and the MEMCjr boards' (no SONIC, no PROM, no Kiwi).
+extern const board_io_range_t memcjr_io_ranges[];
 
 // The .common block every djMEMC board shares: the 256 MB ROM window at
 // $40000000 (the 1 MB ROM mirrors through it; it is linked at $40800000),
@@ -115,12 +157,26 @@ extern const board_io_range_t djmemc_io_ranges[];
         .bus_err_hi = NUBUS_BERR_HI,                                                                                   \
     }
 
+// The MEMCjr boards' .common block: the same windows, the cut-down decode.
+#define MEMCJR_BOARD_COMMON                                                                                            \
+    {                                                                                                                  \
+        .chipset = "MEMCjr+PrimeTime",                                                                                 \
+        .rom_base = 0x40000000u,                                                                                       \
+        .rom_end = 0x50000000u,                                                                                        \
+        .io_ranges = memcjr_io_ranges,                                                                                 \
+        .io_mirror_mask = 0x0003FFFFu,                                                                                 \
+        .io_unmapped_read = 0xFF,                                                                                      \
+        .bus_err_lo = 0xF1000000u,                                                                                     \
+        .bus_err_hi = NUBUS_BERR_HI,                                                                                   \
+    }
+
 // Unified djMEMC-family machine state (cfg->machine_context).
 typedef struct djmemc_state {
     struct asc *asc; // the IOSB sound block (EASC-compatible)
     struct dafb *dafb; // the djMEMC frame-buffer controller + Antelope
     struct scsi_53c96 *scsi96; // NCR 53C96
-    struct sonic *sonic; // DP83932 SONIC Ethernet (no wire)
+    struct sonic *sonic; // DP83932 SONIC Ethernet (no wire); NULL on MEMCjr
+    struct cuda *cuda; // MEMCjr: the Cuda (ADB, PRAM, clock); NULL on djMEMC
     uint8_t sonic_byte2; // high byte latched from an in-flight register write
 
     m68k_board_overlay_t overlay; // ROM-at-zero until the aperture is touched
@@ -132,8 +188,9 @@ typedef struct djmemc_state {
 
     iosb_t iosb; // IOSB configuration registers ($18000)
 
-    // djMEMC register file and the bank map it drives.
-    uint32_t memc_regs[DJMEMC_REG_COUNT];
+    // djMEMC/MEMCjr register file and the bank map it drives.
+    uint32_t memc_regs[MEMCJR_REG_COUNT];
+    uint8_t jr_bank_hi[MEMCJR_MAX_BANKS]; // MEMCjr: the latch's high start bits each bank took
     uint32_t bank_size[DJMEMC_MAX_BANKS]; // installed bytes per bank (0 = empty)
     uint32_t bank_image_off[DJMEMC_MAX_BANKS]; // where the bank lives in the flat RAM image
 
@@ -151,7 +208,8 @@ static inline djmemc_state_t *djmemc_st(config_t *cfg) {
     return (djmemc_state_t *)cfg->machine_context;
 }
 
-// The one djMEMC substrate; c610/c650/q610/q650/q800 bind it.
+// The one djMEMC substrate; c610/c650/q610/q650/q800 and lc475/lc575/q605
+// bind it.
 extern const machine_substrate_t djmemc_substrate;
 
 // The built-in video as a display device (the monitors the WombatDAFB
@@ -162,6 +220,8 @@ extern const builtin_video_desc_t djmemc_builtin_video;
 // then 72-pin SIMMs of 32/16/8/4 MB (a 32 or 8 MB SIMM is two banks, a 16 or
 // 4 MB one), largest first.  False when the total is no population of this
 // board.  `size` receives one entry per bank.
+// On a MEMCjr board bank 0 is the soldered RAM and banks 1-2 the SIMM's
+// sides (1/4/16 MB single-sided, 2/8/32 MB double-sided).
 bool djmemc_ram_banks(const djmemc_board_desc_t *desc, uint32_t ram, uint32_t size[DJMEMC_MAX_BANKS]);
 
 // Drive one /SLOTIRQ source (VIA2 PA bit 0-6, `active` in source polarity).

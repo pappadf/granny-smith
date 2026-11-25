@@ -94,6 +94,9 @@ extern const hw_profile_t machine_c650;
 extern const hw_profile_t machine_q610;
 extern const hw_profile_t machine_q650;
 extern const hw_profile_t machine_q800;
+extern const hw_profile_t machine_lc475;
+extern const hw_profile_t machine_lc575;
+extern const hw_profile_t machine_q605;
 
 // Registry of built-in machine profiles.  A static const array iterated
 // directly: adding a machine is its extern above plus one entry here (this
@@ -107,7 +110,7 @@ static const hw_profile_t *const builtin_machines[] = {
     &machine_lcii,    &machine_clii,           &machine_ccl,         &machine_pm7300, &machine_pm7600, &machine_pm8600,
     &machine_pm9600,  &machine_wgs9150,        &machine_wgs9150_120, &machine_lciii,  &machine_lciiip, &machine_lc520,
     &machine_lc550,   &machine_colorclassicii, &machine_c610,        &machine_c650,   &machine_q610,   &machine_q650,
-    &machine_q800,
+    &machine_q800,    &machine_lc475,          &machine_lc575,       &machine_q605,
 };
 static const size_t builtin_machine_count = sizeof(builtin_machines) / sizeof(builtin_machines[0]);
 

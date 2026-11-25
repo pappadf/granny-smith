@@ -45,6 +45,8 @@ static const char *const Q950[] = {"q950", NULL};
 // the revision the Quadra 800 and the Quadra 610/650 shipped with.
 static const char *const WOMBAT_1993_02[] = {"c650", "c610", "q800", "q610", "q650", NULL};
 static const char *const WOMBAT_1993_10[] = {"q800", "q650", "q610", "c650", "c610", NULL};
+// The MEMCjr ("Primus"/"Optimus"/"Aladdin") ROM.
+static const char *const MEMCJR_1993_10[] = {"q605", "lc475", "lc575", NULL};
 // Quadra 840AV / Centris 660AV shared 2 MB "Cyclone/Tempest" ROM.
 static const char *const AV[] = {"q840av", "q660av", NULL};
 // Power Macintosh 6100/7100/8100 shared 4 MB "Boot PDM 601 1.0" ROM.
@@ -133,7 +135,7 @@ const rom_info_t rom_table[] = {
     {"Centris 610,650 ROM", WOMBAT_1993_02, "f1a6f343", 1024 * 1024, 0, 0},
     {"Quadra 610,650,maybe 800 ROM", WOMBAT_1993_10, "f1acad13", 1024 * 1024, 0, 0},
     {"Powerbook 150 ROM", NONE, "fda22562", 1024 * 1024, 0, 0},
-    {"Quadra 605 ROM", NONE, "ff7439ee", 1024 * 1024, 0, 0},
+    {"Quadra 605 ROM", MEMCJR_1993_10, "ff7439ee", 1024 * 1024, 0, 0},
     {"Powerbook 190cs ROM", NONE, "4d27039c", 2048 * 1024, 0, 0},
     {"Quadra 840AV/660AV ROM", AV, "5bf10fd1", 2048 * 1024, 0, 0},
     {"PowerBook 520&520c&540&540c ROM", NONE, "b6909089", 2048 * 1024, 0, 0},
