@@ -400,7 +400,7 @@ end
 -- read (a method is called), `head = value` assigns, and anything else is
 -- the method's arguments in argument mode -- positional words and
 -- `name=value`, "..." interpolating `${expr}`, 'raw', (lua expr), $name, and
--- bare words (true, false, none, numbers like 0x10 or 20M, else strings).
+-- bare words (true, false, none, numbers like 0x10 or -3, else strings).
 -- Results print as the tree formats them.  Any other line is Lua: tried as
 -- `return <line>` first so an expression prints its value, `$name` reading
 -- the alias or global of that name.  A method followed by `(` is a Lua call
@@ -668,7 +668,7 @@ function gs.classify(text)
   local rest = trim(line:sub(i))
   if rest == "" or rest:match("^=[^=]") or rest == "=" then return "command" end
   -- A method followed by anything but a Lua call's `(` or `:` takes
-  -- arguments (`files.ls /tmp`, `scheduler.run 20M`); after an attribute
+  -- arguments (`files.ls /tmp`, `scheduler.run 20000000`); after an attribute
   -- the rest is an expression (`machine.cpu.pc + 4`).
   if gs._kind(path) == "method" and not rest:match("^[(:]") then return "command" end
   return "lua"

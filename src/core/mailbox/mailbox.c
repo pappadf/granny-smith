@@ -334,7 +334,7 @@ uint32_t mailbox_result_defer(void) {
         m->deferred = true;
         return token;
     }
-    // Not a request: perhaps a job's call through the seam.
+    // Not a request: perhaps a tree call of a job's task (job.h).
     return job_call_defer();
 }
 

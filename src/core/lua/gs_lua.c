@@ -1337,7 +1337,7 @@ static int gs_call_show(lua_State *L) {
     return call_node(L, lua_tostring(L, 1), 2, true);
 }
 
-// gs._literal(word): the number a bare word spells (`0x10`, `20M`, `-3`),
+// gs._literal(word): the number a bare word spells (`0x10`, `-3`, `1.5`),
 // or nil when it is not a clean numeric literal.
 static int gs_literal(lua_State *L) {
     value_t v = parse_literal_whole_string(luaL_checkstring(L, 1), NULL, 0);

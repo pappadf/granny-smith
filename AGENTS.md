@@ -217,7 +217,8 @@ to not break this rule in the first place.
 - Memory logpoints fire on **read** or **write** accesses without halting:
   - `debug.logpoints.add addr=<addr> mode=write width=l message="…"` — log every write (`mode=read` / `mode=rw` likewise; `width` is `b`/`w`/`l`)
   - Default category is `memory` (enable with `log.set memory 1`)
-  - `message=` is a fire-time template (see `docs/internals/core/shell/shell.md`): `${machine.cpu.pc}` splices any expression; `$value`, `$addr`, `$size` are per-fire bindings
+  - `message=` is a fire-time template (see `docs/internals/core/lua/lua.md`, "Conditions and templates"): `${machine.cpu.pc}` splices any expression, `${value:08x}` formats; `$value`, `$addr`, `$size` are per-fire bindings
+  - A breakpoint condition (`debug.breakpoints.add addr condition='…'`) is a Lua expression; `$pc`, `&&`, `||`, `!=` are accepted too
   - Implemented without slowing the fast path: covered pages are zeroed in the
     SoA arrays so only logged pages take the slow-path penalty (see `docs/internals/core/memory/memory.md`)
 - Bus-error / exception trace ring is always on; dump with `debug.exceptions [filter]`,
@@ -320,13 +321,14 @@ children are globals, and
 
 A tree error is a Lua error (`pcall`, `gs.try`); the first uncaught one
 aborts the script. Integration tests are `test.lua` with
-`tests/integration/lib/mac.lua`; a `test.script` still runs on the shell's
-own script language (`docs/internals/core/shell/shell.md`) until ported
-(`scripts/script-to-lua.py`). The terminal's line form (`machine.cpu.step
-1000`, argument mode) is that language too.
+`tests/integration/lib/mac.lua`. A terminal or daemon line is either a
+command line -- a tree path, a command word or `$alias` with argument-mode
+words (`machine.cpu.step 1000`, `files.ls /tmp`, `machine.cpu.d0 = 0x10`) --
+or a Lua chunk (`docs/internals/core/lua/lua.md`, "The terminal").
 
-A terminal line is a script job (`REQ_SCRIPT` on the mailbox, run on the
-job thread; `gsEvalLine` in `bus/emulator.ts` is its only caller);
+A terminal line is a script job (`REQ_SCRIPT` on the mailbox, run as a
+coroutine task the drain steps -- `docs/internals/core/job/job.md`;
+`gsEvalLine` in `bus/emulator.ts` is its only caller);
 everything else on the page goes through `gsEval`. There is no other
 JS→C path: no `ccall`, no `Module.on*` callback carrying machine state
 (the core's events come back on the mailbox's event ring — see

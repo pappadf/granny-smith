@@ -296,10 +296,9 @@ static void format_value_print(const value_t *v) {
     }
 }
 
-// Public print surface for the script interpreter (REPL result
-// printing).
-// Printing reads attributes (an object renders as its attribute table),
-// so it runs on the emulator thread: a job hands it over (job/job.h).
+// Public print surface for the terminal's results (gs_lua.c's command
+// form).  Printing reads attributes (an object renders as its attribute
+// table); everything that prints runs on the emulator thread.
 //
 // Inside a job the printed text is bracketed by annotation records: a
 // `value_begin` before it and a `value` after it carrying the value as

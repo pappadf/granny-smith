@@ -84,39 +84,48 @@ printf 'debug.step\nmachine.cpu.pc\n' | nc -w 3 localhost 6800
 - While a run is in flight, another connection accepts only `stop`,
   `scheduler.stop`, `shell.interrupt` or `quit`; anything else gets
   `# busy: ...`. A `stop` also cancels a script loop around the run.
-- Bindings, aliases and `def`s are daemon-global: they persist across connections.
-- Interactive replies echo the return value, so `echo`, `scheduler.run`,
-  `debug.step` and `disasm` print a trailing `true`.
+- Lua globals (`x = 5`, `function f() … end`) and aliases are daemon-global:
+  they persist across connections.
+- A command line prints its result as the tree formats it (hex for an
+  address); a method that returns nothing prints nothing.
 
-## Shell grammar (full spec: `docs/internals/core/shell/shell.md`)
+## Line grammar (full spec: `docs/internals/core/lua/lua.md`, "The terminal")
+
+A line is either a **command line** (a tree path, a command word or `$alias`,
+then argument-mode words or `= value`) or **Lua** (anything else).
 
 ```
-machine.cpu.pc                          # bare path: read and print
-machine.cpu.d0 = machine.cpu.pc + 4     # typed write; RHS is an expression
-debug.disasm 0x408986 3                 # argument mode: bare words are strings
-debug.disasm(0x408986, 3)               # call form, usable inside expressions
-let t0 = machine.cpu.instr_count        # binding; read it as $t0
-$t0 = $t0 + 1                           # mutate (error if never declared)
-alias d = machine.floppy.drive[0]       # reference binding, re-resolved per use
-echo "pc=${machine.cpu.pc:08x}"         # ${expr[:fmt]} only inside "..."
-assert machine.cpu.pc != 0 "msg"
-if machine.cpu.d0 == 0 { echo "zero" }
-for a in debug.find.str("Apple", 0x400000, 0x410000) { echo "${$a:08x}" }
-def where() { return "pc=${machine.cpu.pc:08x}" }
-include "tests/integration/lib/mac.script"
+machine.cpu.pc                          -- command line: bare path, read and print (hex)
+machine.cpu.d0 = machine.cpu.pc + 4     -- typed write; RHS is a Lua expression
+scheduler.mode = turbo                  -- a bare word naming nothing is an enum label
+debug.disasm 0x408986 3                 -- argument mode: bare words are strings/numbers
+debug.breakpoints.add ($pc + 0x10) space=physical   -- (expr) is Lua; name=value
+machine.boot model="plus" rom="${vars.ROM}"         -- "..." fills ${expr}
+debug.disasm(0x408986, 3)               -- Lua call (a method followed by `(`)
+t0 = machine.cpu.instr_count            -- Lua: a global, kept across lines
+print(F"pc=${machine.cpu.pc:08x} spent=${machine.cpu.instr_count - t0}")
+assert(machine.cpu.pc ~= 0, "msg")
+if machine.cpu.d0 == 0 then print("zero") end
+for _, a in ipairs(debug.find.str("Apple", 0x400000, 0x410000)) do print(("%08x"):format(a)) end
+function where() return F"pc=${machine.cpu.pc:08x}" end
+mac = dofile("tests/integration/lib/mac.lua")
 ```
 
-- Blocks: `{` at end of line, `}` on its own line; an inline block holds one statement.
-- Formats: `:d`, `:x`/`:X`, `:08x`, `:5d`, `:s`, `:%<printf>`.
-- Extras: `try(EXPR, FALLBACK)`, `error(msg)`, `range()`, `a..b`, `len()`, `none`.
-  An error reaching `if`/`while`/`for`, or any failed statement in a script, aborts.
-- A bare statement starting with `$` must be a binding name: `$hits[0]` fails,
-  `($hits[0])` works.
+- A Lua chunk that is not finished (`for i = 1, 3 do`) waits for more lines;
+  a command line is always one line.
+- Formats in `F"..."` and `"..."` arguments: `${x:d}`, `${x:08x}`, `${x:5d}`,
+  `${x:s}` (a `string.format` spec, `%` optional).
+- Library: `gs.try(fn, fallback)`, `gs.ok(fn)`, `gs.str(v)`, `#list`,
+  `gs.contains`, `gs.hex(v, w)`, `gs.fmt(path)` (an attribute's text, hex
+  kept). Lists read from the tree are 1-based; path indices (`drive[0]`)
+  are the tree's. A tree error is a Lua error; an uncaught one aborts.
 - Map results: `catalog.profile("se30").capabilities.mmu.kind`. Methods need
-  the call form before a key: `debug.frame().regs.pc`, not `debug.frame.regs`.
+  a call before a key: `debug.frame().regs.pc`, not `debug.frame.regs`.
 - Built-in aliases: `$pc $sr $ccr $sp $ssp $usp $msp $vbr $d0..$d7 $a0..$a7`, plus
-  `$fp0..$fp7 $fpcr $fpsr $fpiar` when the CPU has an FPU. `shell.alias.list` shows all.
-- `let x = <object>` goes stale on `machine.boot`; an `alias` survives.
+  `$fp0..$fp7 $fpcr $fpsr $fpiar` when the CPU has an FPU. `shell.alias.list` shows
+  all. In Lua lines `$pc` reads the alias's value.
+- A Lua proxy (`d = machine.floppy.drive[0]`) holds the path, so it survives
+  `machine.boot`.
 
 ## Introspection
 
@@ -174,7 +183,7 @@ debug.breakpoints.clear
 
 ```
 debug.logpoints.add addr=0x408988 message="pc=${machine.cpu.pc}"
-debug.logpoints.add addr=0x16A width=l mode=write message="Ticks=${$value:08x}"
+debug.logpoints.add addr=0x16A width=l mode=write message="Ticks=${value:08x}"
 debug.logpoints.add addr=0x160 end=0x170 mode=rw
 debug.logpoints.add addr=0x16A mode=write value=0x2800 message="hit"
 debug.logpoints.entries
@@ -221,9 +230,9 @@ debug.find.bytes "4e 75" 0x408980 0x408990   # space-separated 2-digit hex
 ```
 debug.exceptions                       # last 256 exceptions (vector, pc, sr, fault addr)
 debug.exceptions filter=1              # hide routine traps/IRQs
-let f = debug.frame()                  # regs + 32 disasm rows + MMU translation (= machine.cpu.frame)
-machine.dsp.frame(count=8)             # the same map for the AV DSP3210 (any aux core)
-($f.regs.pc)
+f = debug.frame()                      # regs + 32 disasm rows + MMU translation (= machine.cpu.frame)
+machine.dsp.frame{count = 8}           # the same map for the AV DSP3210 (any aux core)
+f.regs.pc
 machine.cpu.mmu                        # tc crp srp tt0 tt1 mmusr enabled (68030)
 machine.irq
 machine.ipl
@@ -248,7 +257,7 @@ machine.cpu.mmu.peek 0x2000 4 physical
 
 - Each step is `{step, outcome, ...}`; `outcome` is miss / next / hit / fault
   and a fault carries `reason`. The last step is where the walk ended:
-  `let w = machine.cpu.mmu.walk($a)` then `($w.steps[len($w.steps) - 1])`.
+  `w = machine.cpu.mmu.walk(a)` then `w.steps[#w.steps]`.
 - The walk never sets U/M (68K) or R/C (PowerPC) bits; it is safe mid-boot.
 - Field reference: `docs/internals/core/debug/debug_mmu.md`.
 
@@ -256,7 +265,7 @@ machine.cpu.mmu.peek 0x2000 4 physical
 
 ```
 debug.mac.globals.read "Ticks"         # 1/2/4-byte globals come back as ints
-debug.mac.globals.read "KeyMap"        # bigger ones as bytes: len() = 16
+debug.mac.globals.read "KeyMap"        # bigger ones as bytes: # = 16
 debug.mac.globals.address "MBState"
 debug.mac.globals.write "MBState" 0x80  # 1/2/4-byte globals only
 debug.mac.globals.list
@@ -332,9 +341,10 @@ machine.adb.keyboard.up "Command"
 machine.adb.keyboard.type "hello\n"         # short line, US layout
 ```
 
-For guest-paced input, `include "tests/integration/lib/mac.script"` and use
-`click(x, y)`, `double_click`, `run_ticks(n)`, `wait_match(png, ceiling, step)`,
-`wait_stable(ceiling)` and `wait_global(name, want, ceiling)`.
+For guest-paced input, `mac = dofile("tests/integration/lib/mac.lua")` and use
+`mac.click(x, y)`, `mac.double_click`, `mac.run_ticks(n)`,
+`mac.wait_match(png, ceiling, step)`, `mac.wait_stable(ceiling)` and
+`mac.wait_global(name, want, ceiling)`.
 
 ## Disk images and files (VFS)
 
@@ -354,13 +364,12 @@ rather than `files.cat` for binary data.
 
 - A C-level `assert()` kills the daemon without a word to the client. If
   replies stop, check `kill -0 $(cat /tmp/gs-headless-6800.pid)`.
-- A bare path is silent inside a `script=` file; use `echo "${...}"` to print.
+- A bare path is not a statement inside a `script=` file (it is Lua); use
+  `print(F"${...}")` to print.
 - A breakpoint or pc logpoint on the **first instruction of an exception or
   interrupt handler** mostly does not fire. On a Plus, `0x8d96`, the level-1
   vector target, fired 2 times where the next instruction fired 65. Put it on
   the handler's second instruction.
-- After a client disconnects mid-run, the next connection's first `while`
-  loop can abort at once with `interrupted`. Re-send it.
 - `machine.scc.a.sent()` keeps **64 KB** of what the guest transmitted since
   the last drain and drops the rest (`sent_dropped` counts). A probe that
   drains every few billion instructions sees the console "stop" mid-line
@@ -369,6 +378,6 @@ rather than `files.cat` for binary data.
 ## See also
 
 - `disasm-tool` skill: static disassembly of ROMs and binaries.
-- `docs/internals/core/shell/shell.md`, `docs/internals/core/object/object-model.md`, `docs/internals/core/debug/log.md`.
+- `docs/internals/core/lua/lua.md`, `docs/internals/core/object/object-model.md`, `docs/internals/core/debug/log.md`.
 - Working examples: `tests/integration/object-debug`, `object-logpoint`,
-  `object-expr`, `shell-v2`, `boot-config`, and `lib/mac.script`.
+  `object-expr`, `shell-terminal`, `boot-config`, and `lib/mac.lua`.

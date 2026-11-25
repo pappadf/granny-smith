@@ -175,7 +175,7 @@ once (`gs.classify`, nothing evaluated):
    `"..."` with `${expr}` filled from the globals (a template slot, like a
    logpoint's `message`, keeps its text raw), `'raw'`, `(lua expr)`,
    `$alias` (with a path continuation), and bare words -- `true`, `false`,
-   `none`, numbers (`0x10`, `20M`), else strings.
+   `none`, numbers (`0x10`, `-3`, `1.5`), else strings.
 2. Anything else is **Lua**: tried as `return <line>` first, so an
    expression prints its results (`machine.cpu.pc + 4`), then as a
    statement.  `$name` in a Lua line reads the alias of that name (`$pc`),

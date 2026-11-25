@@ -373,8 +373,8 @@ static bool cycle_budget_spent(void) {
 
 // One turn of the loop: a frame-unit if the machine runs, then the drain.
 // Returns whether anything happened (a frame ran or a request was served).
-// One frame, when the machine runs.  Also what inline mode (job.h) calls
-// while a script waits for the mode it started.
+// One frame, when the machine runs.  Also the frame runner (job.h) a tree
+// call that cannot suspend runs while it waits for the mode it started.
 static bool hl_run_frame(void) {
     scheduler_t *sched = system_scheduler();
     config_t *cfg = system_config();
