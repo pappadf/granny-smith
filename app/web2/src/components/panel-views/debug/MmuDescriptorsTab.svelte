@@ -109,8 +109,9 @@
     {#each rows as d, i (i)}
       {@const e = formatEntry(String(d.type ?? ''), d)}
       <div class="desc-row" data-type={d.type}>
-        <span class="desc-main">{isLisa ? `seg ${d.segment}` : ''}{e.main ? ` ${e.main}` : ''}</span
-        >
+        <span class="desc-main">
+          {isLisa ? `seg ${d.segment}` : ''}{e.main ? ` ${e.main}` : ''}
+        </span>
         {#if e.extra.length}<span class="desc-extra">{e.extra.join(' · ')}</span>{/if}
       </div>
     {/each}

@@ -91,9 +91,9 @@
     <div class="listing" role="listbox" aria-label="Files in {dir}">
       <div class="dir">{dir}</div>
       {#if dir !== '/'}
-        <button type="button" class="entry directory" onclick={() => void list(parentOf(dir))}
-          >..</button
-        >
+        <button type="button" class="entry directory" onclick={() => void list(parentOf(dir))}>
+          ..
+        </button>
       {/if}
       {#each entries as e (e.name)}
         <button
@@ -101,16 +101,20 @@
           class="entry {e.kind}"
           role="option"
           aria-selected="false"
-          onclick={() => pick(e)}>{e.name}{e.kind === 'directory' ? '/' : ''}</button
+          onclick={() => pick(e)}
         >
+          {e.name}{e.kind === 'directory' ? '/' : ''}
+        </button>
       {/each}
       <Button
         class="use-dir"
         onclick={() => {
           set(dir);
           open = false;
-        }}>Use this folder</Button
+        }}
       >
+        Use this folder
+      </Button>
       {#if error}<div class="error">{error}</div>{/if}
     </div>
   {/if}

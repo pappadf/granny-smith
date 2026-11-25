@@ -44,9 +44,9 @@
   {#each regs as r (r.name)}
     <div class="reg-block">
       <div class="reg-line">
-        <span class="reg-name">{r.name.toUpperCase()}</span>= $<span class="reg-hex"
-          >{fmtHex32(r.value)}</span
-        >
+        <span class="reg-name">{r.name.toUpperCase()}</span>= $<span class="reg-hex">
+          {fmtHex32(r.value)}
+        </span>
       </div>
       {#if tc && r.name === 'tc'}
         <div class="reg-decoded">

@@ -48,8 +48,10 @@
       aria-pressed={o.value === value}
       title={o.title}
       {disabled}
-      onclick={() => onChange(o.value)}>{o.label}</button
+      onclick={() => onChange(o.value)}
     >
+      {o.label}
+    </button>
   {/each}
 </div>
 

@@ -15,9 +15,9 @@
   let { intent = 'neutral', variant = 'pill', class: cls = '', title, children }: Props = $props();
 </script>
 
-<span class="gs-badge {cls}" data-variant={variant} data-intent={intent} {title}
-  >{@render children()}</span
->
+<span class="gs-badge {cls}" data-variant={variant} data-intent={intent} {title}>
+  {@render children()}
+</span>
 
 <style>
   .gs-badge[data-variant='pill'] {

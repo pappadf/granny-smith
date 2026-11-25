@@ -20,9 +20,9 @@
   <Callout intent="danger" role="alert" class="emulator-health" data-testid="emulator-crashed">
     <strong>The emulator stopped.</strong>
     <span class="detail">{emulatorHealth.crashReason}</span>
-    <span class="advice"
-      >The console keeps what it printed, and the diagnostics the page dumped.</span
-    >
+    <span class="advice">
+      The console keeps what it printed, and the diagnostics the page dumped.
+    </span>
     <span class="actions">
       <Button size="sm" onclick={() => dumpDiagnostics('requested')}>Dump diagnostics</Button>
       <Button size="sm" variant="primary" onclick={() => location.reload()}>Reload</Button>
