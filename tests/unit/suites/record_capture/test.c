@@ -756,6 +756,30 @@ TEST(worker_full_ring_refuses) {
     rec_worker_free(w, NULL, NULL, 0);
 }
 
+TEST(worker_fit_then_fits) {
+    // A record rec_worker_fit says the ring can hold must then fit an empty
+    // ring, with the room a frame leaves for audio besides: one that did
+    // not was refused for ever (every frame dropped) or, blocking, waited
+    // for ever
+    rec_worker_t *w = rec_worker_new(rec_coder_new(), 1u << 16, true, false);
+    ASSERT_TRUE(w != NULL);
+    size_t sizes[] = {(1u << 15) - 8, (1u << 15) - 4096, 40000, 100000};
+    for (size_t i = 0; i < sizeof sizes / sizeof sizes[0]; i++) {
+        size_t len = sizes[i];
+        ASSERT_EQ_INT(0, rec_worker_fit(w, len));
+        uint8_t *p = rec_worker_reserve(w, REC_K_AUDIO, len, REC_RESERVE_ROOM_MAX, false);
+        ASSERT_TRUE(p != NULL);
+        rec_audio_hdr_t h = {.rate = RATE, .channels = 1, .vol = 7, .frames = 0};
+        memcpy(p, &h, sizeof h);
+        rec_worker_commit(w);
+        rec_worker_sync(w);
+    }
+    uint8_t *s = rec_worker_reserve(w, REC_K_STOP, 0, 0, true);
+    ASSERT_TRUE(s != NULL);
+    rec_worker_commit(w);
+    rec_worker_free(w, NULL, NULL, 0);
+}
+
 TEST(coder_write_failure) {
     // The disk fills mid-recording (a file-size limit stands in): the coder
     // fails once with the write's errno, skips every later record without
@@ -826,6 +850,7 @@ int main(void) {
     RUN(coder_close_then_sync);
     RUN(coder_direct_colour_tables);
     RUN(worker_full_ring_refuses);
+    RUN(worker_fit_then_fits);
     RUN(coder_write_failure);
     fprintf(stderr, "record_capture: all tests passed\n");
     return 0;

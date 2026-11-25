@@ -43,7 +43,8 @@ decoders, built into a module of their own
   that changed (XOR against its shadow copy of the framebuffer), the CLUT
   and the two response tables when they changed, and each audio push, into
   a single-producer, single-consumer byte ring (the mailbox record ring,
-  `mailbox_ring.h`, 8 MB, or twice the largest record when that is more;
+  `mailbox_ring.h`, 8 MB, or twice the largest record and 64 KB when that
+  is more;
   allocated at start, freed at stop).
 - **The recorder thread does the rest**: it rebuilds the frames, applies the
   response tables, codes ZMBV and FLAC, and muxes. Inline
@@ -127,8 +128,10 @@ left; an audio push that finds none is lost and the timeline holds across
 the gap. With `block = true` (headless's default: `recorder_set_platform_defaults`
 from `headless_main.c`) the emulator thread waits for room instead, and the
 output is a pure function of the guest's execution. SEGMENT and STOP
-records always wait. A record over half the ring grows it first, once the
-recorder thread has emptied it (a mode change to a very large screen).
+records always wait. A record that would not fit the empty ring twice over
+with the 64 KB besides grows the ring first, once the recorder thread has
+emptied it (a mode change to a very large screen); a reserve never waits
+for room the ring cannot have.
 
 The recorder thread lowers its DEFLATE effort as the ring fills — level 3,
 level 1 past half, stored blocks past three quarters — except with

@@ -716,10 +716,17 @@ static bool room_for(rec_worker_t *w, uint32_t total, size_t extra) {
     return (uint64_t)room >= (uint64_t)total * 2 + extra;
 }
 
+// True when a record of `len` payload bytes, with `extra` bytes kept free
+// besides, can fit the ring at all: room_for's test on an empty ring.
+static bool can_ever_fit(uint32_t size, size_t len, size_t extra) {
+    return (uint64_t)MBX_PAD8(MBX_HDR_BYTES + len) * 2 + extra <= size;
+}
+
 uint8_t *rec_worker_reserve(rec_worker_t *w, uint32_t kind, size_t len, size_t reserve_room, bool must) {
-    uint32_t total = MBX_PAD8(MBX_HDR_BYTES + len);
-    if ((uint64_t)MBX_HDR_BYTES + len > w->ring.size / 2)
+    // A record not even an empty ring takes is refused, never waited for
+    if (len > UINT32_MAX / 4 || !can_ever_fit(w->ring.size, len, reserve_room))
         return NULL; // rec_worker_fit first
+    uint32_t total = MBX_PAD8(MBX_HDR_BYTES + len);
     for (;;) {
         if (room_for(w, total, reserve_room)) {
             uint32_t at = mbx_reserve(&w->ring, kind, (uint32_t)(MBX_HDR_BYTES + len));
@@ -764,10 +771,14 @@ void rec_worker_commit(rec_worker_t *w) {
 }
 
 int rec_worker_fit(rec_worker_t *w, size_t len) {
-    if ((uint64_t)MBX_HDR_BYTES + len <= w->ring.size / 2)
+    // Room for the record twice over (room_for's allowance for a PAD) and
+    // the most any reserve keeps free besides
+    if (len > UINT32_MAX / 4)
+        return -1;
+    if (can_ever_fit(w->ring.size, len, REC_RESERVE_ROOM_MAX))
         return 0;
     uint32_t size = w->ring.size;
-    while ((uint64_t)MBX_HDR_BYTES + len > size / 2) {
+    while (!can_ever_fit(size, len, REC_RESERVE_ROOM_MAX)) {
         if (size >= (1u << 30))
             return -1;
         size *= 2;

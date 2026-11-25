@@ -22,6 +22,7 @@
 #include "storage_util.h"
 #include "system.h"
 #include "event/event.h"
+#include "mailbox/mailbox_ring.h"
 
 #include <errno.h>
 #include <stdarg.h>
@@ -41,8 +42,8 @@ _Static_assert(PIXEL_1BPP_MSB == REC_PIX_1BPP && PIXEL_8BPP == REC_PIX_8BPP && P
 // Constants and state
 // ============================================================================
 
-#define RING_DEFAULT (8u << 20) // the ring: 8 MB, or twice the largest record when that is more
-#define AUDIO_ROOM   (64u << 10) // a frame leaves this much of the ring for audio
+#define RING_DEFAULT (8u << 20) // the ring: 8 MB, or twice the largest record and the audio room when that is more
+#define AUDIO_ROOM   REC_RESERVE_ROOM_MAX // a frame leaves this much of the ring for audio
 #define EVENT_MS     1000.0 // a progress event once a second while recording
 #define MAX_PATH_LEN 1024
 #define MAX_SEGMENTS 4096
@@ -184,8 +185,9 @@ static bool flush_repeats(bool must) {
 
 // The ring size for records of up to `largest` payload bytes.
 static uint32_t ring_size_for(size_t largest) {
+    // As rec_worker_fit asks: the record twice over and the room a frame leaves
     uint32_t size = RING_DEFAULT;
-    while ((uint64_t)largest + 4096 > size / 2 && size < (1u << 30))
+    while ((uint64_t)MBX_PAD8(MBX_HDR_BYTES + largest) * 2 + REC_RESERVE_ROOM_MAX > size && size < (1u << 30))
         size *= 2;
     return size;
 }

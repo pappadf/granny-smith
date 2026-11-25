@@ -56,7 +56,8 @@
 
 #define REC_TABLE_BYTES 768 // 3 x 256
 
-#define REC_KEY_INTERVAL 600 // changed frames between keyframes
+#define REC_KEY_INTERVAL     600 // changed frames between keyframes
+#define REC_RESERVE_ROOM_MAX (64u << 10) // the most a reserve keeps free besides its record (a frame's room for audio)
 
 #define REC_LEVEL_NORMAL 3 // DEFLATE effort with no backlog
 #define REC_LEVEL_FAST   1 // past half the ring
@@ -144,7 +145,8 @@ rec_worker_t *rec_worker_new(rec_coder_t *coder, uint32_t ring_bytes, bool threa
 
 // Reserve a record of `kind` with a payload of `len` bytes: a pointer to
 // the payload, or NULL when it does not fit now (never with block, or with
-// `must`, which waits whatever the policy: the records that end things).
+// `must`, which waits whatever the policy: the records that end things),
+// or when it would not fit even the empty ring (rec_worker_fit first).
 // `reserve_room` keeps that many bytes free besides (frames leave room for
 // the small audio records).  Publish with rec_worker_commit.
 uint8_t *rec_worker_reserve(rec_worker_t *w, uint32_t kind, size_t len, size_t reserve_room, bool must);
@@ -152,7 +154,8 @@ uint8_t *rec_worker_reserve(rec_worker_t *w, uint32_t kind, size_t len, size_t r
 // Publish the reserved record; inline, code it now.
 void rec_worker_commit(rec_worker_t *w);
 
-// Make sure a record of `len` bytes can ever fit (the ring grows, once the
+// Make sure a record of `len` bytes can ever fit, with up to
+// REC_RESERVE_ROOM_MAX kept free besides (the ring grows, once the
 // recorder thread has caught up).  0, or -1 when out of memory.
 int rec_worker_fit(rec_worker_t *w, size_t len);
 
