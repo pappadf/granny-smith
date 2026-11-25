@@ -444,7 +444,8 @@ file's blocks, but keeps nothing of its own in one.)
   stored to 9, from whole frames, XOR bands and whole-frame bands, with
   palette changes, keyframes forced both ways and unchanged frames, every
   decoded picture and palette compared; the decoder against every prefix
-  and a corruption at every byte of a short stream — and FLAC: silence
+  and a corruption at every byte of a short stream, and (on wasm32) a
+  picture whose buffers would wrap a 32-bit `size_t` refused — and FLAC: silence
   (a constant non-zero level), 8-bit audio in the top byte (which must
   cost exactly what the bare 8-bit values do), full-scale noise and a sine
   in mono, at lengths of whole blocks, 1, 100, 4095 and whole blocks plus
@@ -488,6 +489,9 @@ file's blocks, but keeps nothing of its own in one.)
 
 - [`../../reference/formats/udif.md`](../../reference/formats/udif.md) — the
   UDIF chunk types.
+- [`../../reference/formats/zmbv.md`](../../reference/formats/zmbv.md),
+  [`flac.md`](../../reference/formats/flac.md) — the ZMBV bitstream and the
+  FLAC subset the media codecs write and read.
 - [`../core/storage/image.md`](../core/storage/image.md) — the image layer
   and the UDIF writer.
 - [`../../guide/peeler.md`](../../guide/peeler.md) — peeler, the archive

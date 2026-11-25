@@ -34,8 +34,8 @@ Right-click the output for **Copy**, **Copy output**, **Copy as commands**,
 ## 2. Finding your way
 
 Everything is a path of names separated by dots, rooted at a few objects:
-`machine` (the emulated computer), `files`, `checkpoint`, `pacing`,
-`scheduler`, `debug`, `log`, `appletalk`, `catalog`, `shell`.
+`machine` (the emulated computer), `files`, `checkpoint`, `recorder`,
+`pacing`, `scheduler`, `debug`, `log`, `appletalk`, `catalog`, `shell`.
 
 ```
 help                         what is at the top level
@@ -106,6 +106,7 @@ The browser storage is `/opfs`; your images are in `/opfs/images/<kind>/`.
 | `checkpoint.save "<file>"` | Save the whole machine to a file in storage |
 | `checkpoint.load "<file>"` | Restore it |
 | `checkpoint.auto = false` | Stop the automatic background checkpoints (`true` to resume) |
+| `recorder.start "/opfs/recordings/demo.mkv"`, `recorder.stop` | Record the screen and sound, as the toolbar's **Record** button ([Sound and video](sound-and-video.md) §5) |
 
 ### 3.4 Input, printing, network, logs
 

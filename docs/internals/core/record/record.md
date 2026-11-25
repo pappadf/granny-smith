@@ -408,14 +408,18 @@ load during a recording is a cut (§3.5).
   (palette, border, the curve arriving, held silence); segments; a 32 bpp
   table change is a keyframe; a full ring refuses a record under the drop
   policy; a CLOSE leaves a whole file once `rec_worker_sync` returns, and
-  the next SEGMENT continues on a keyframe.
+  the next SEGMENT continues on a keyframe; a file-size limit hit
+  mid-recording fails the coder once with `EFBIG` without stalling a
+  blocking producer, and what reached the disk still reads; a segment on
+  `/dev/full` fails at open with `ENOSPC`.
 - `tests/unit/suites/record_mkv`: known packets on a video and an audio
   track round-trip exactly, in time order, at round(*kP* / 10⁶) ms, in
   clusters that open on keyframes and span under a second (one carrying a
   1.5 MB frame), with a cue per keyframe cluster, the segment size and the
   duration; a video-only file; a file cut halfway into a cluster returns
   exactly the earlier clusters' packets; a file whose muxer was never
-  closed reads back up to its last complete cluster.
+  closed reads back up to its last complete cluster; a hand-made cluster
+  timestamp of INT64_MAX wraps rather than overflowing.
 - `tests/integration/recorder-plus-boot` (unit tier): `--record` a Plus
   boot; the file's CRC-32 is a golden, its sound covers its frames, its
   last decoded frame matches the screen, the same boot coded inline is the
@@ -439,9 +443,13 @@ load during a recording is a cut (§3.5).
 - `app/web2/tests/unit/recdec.test.ts` (vitest, Node): a Plus boot
   recorded by `gs-headless --record` at test time, read by the export
   module: its facts, every frame equal byte for byte to `recorder.extract`'s
-  PNGs, its sound to the extracted WAV, a cut file to its last cluster.
+  PNGs, its sound to the extracted WAV, a cut file to its last cluster; a
+  track whose Channels the frames contradict fails (2 over mono) or loses
+  its audio (5), never reading past a block.
 - `app/web2/tests/unit/mp4Writer.test.ts`, `exportFrame.test.ts`: the MP4
-  writer's boxes and sample tables from canned chunks, read back; the
+  writer's boxes and sample tables from canned chunks, read back; an
+  hour of 60 fps samples; `co64` chosen when the head in front of the
+  samples pushes the last chunk past 4 GB; the
   export sizes, padding and scaling; the resampler's length, a sine's level
   and frequency, streaming in pieces.
 - `app/web2/tests/unit/mp4Export.ffmpeg.test.ts` (vitest, Node, with
@@ -495,6 +503,10 @@ load during a recording is a cut (§3.5).
 - [../../codec/codec.md](../../codec/codec.md) — the codec library, with
   ZMBV, FLAC and the streaming zlib under ZMBV.
 - [../scheduler/scheduler.md](../scheduler/scheduler.md) — the frame-unit.
+- [../../../reference/formats/matroska.md](../../../reference/formats/matroska.md),
+  [zmbv.md](../../../reference/formats/zmbv.md),
+  [flac.md](../../../reference/formats/flac.md) — the container and the two
+  codecs as files, each with a worked decode of a recording.
 
 ## References
 

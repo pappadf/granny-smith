@@ -164,7 +164,7 @@ Every emulator subsystem is exposed through a single typed tree rooted
 at `emu`. Emulated hardware nests under `machine` (`machine.cpu`,
 `machine.memory`, `machine.scsi`, `machine.floppy`, `machine.screen`, …);
 the root's other children are, in a fixed order, `scheduler`,
-`checkpoint`, `files`, `debug`, `log`, `shell`, `catalog` and
+`checkpoint`, `recorder`, `files`, `debug`, `log`, `shell`, `catalog` and
 `appletalk` (docs/internals/core/object/object-model.md, "The root"). Each
 subsystem's class lives next to its other code and self-registers via
 `<module>_init`.
