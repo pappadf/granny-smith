@@ -95,7 +95,7 @@ typedef struct v8_chip_ops {
     int (*ram_layout)(config_t *cfg); // split the RAM and lay out the host buffer
     void (*map_ram_decode)(config_t *cfg, uint8_t reg); // the RAM space as the decode register sets it
     void (*memory_layout_init)(config_t *cfg); // the memory map, the overlay armed
-    void (*bus_reset)(config_t *cfg); // the decoder's own /RESET half (before the RBV's)
+    void (*bus_reset)(config_t *cfg); // the decoder's own /RESET half (before the RBV's); optional
     void (*checkpoint)(config_t *cfg, checkpoint_t *cp); // the decoder's own block, or NULL
     void (*restore)(config_t *cfg, checkpoint_t *cp);
     uint32_t vram_base; // the frame buffer's bus address

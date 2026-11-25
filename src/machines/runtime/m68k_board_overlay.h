@@ -89,8 +89,8 @@ void m68k_board_overlay_init_line_reads(m68k_board_overlay_t *ov, struct config 
 // arm routes its pages to the trigger device too (offsets relative to
 // base2), every drop (and m68k_board_overlay_fill_aperture) fills it with
 // direct ROM pages, mirroring the image across it from base2.  Call after
-// m68k_board_overlay_init, before the first arm.  For the V8's 32-bit ROM
-// space beside its 24-bit window; no board sets one yet.
+// m68k_board_overlay_init, before the first arm.  The V8's 32-bit ROM space
+// beside its 24-bit window.
 void m68k_board_overlay_set_alias(m68k_board_overlay_t *ov, uint32_t base2, uint32_t end2);
 
 // RAM back at zero: the pages the overlay covered (the ROM's size from zero),

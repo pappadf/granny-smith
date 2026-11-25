@@ -135,14 +135,10 @@ static void v8_map_ram_decode(config_t *cfg, uint8_t exp) {
     st->ram_exp = exp;
 }
 
-// Overlay drop: RAM at zero, as the size bits currently decode, and the
-// 32-bit ROM space direct (the trigger aperture is the 24-bit window).
+// Overlay drop: RAM at zero, as the size bits currently decode (the overlay
+// turns both ROM windows direct itself; its alias is the 32-bit ROM space).
 static void v8_map_ram(config_t *cfg) {
     v8_map_ram_decode(cfg, rbv_exp(v8_st(cfg)->rbv));
-    uint8_t *rom = ram_native_pointer(cfg->memory_map, cfg->ram_size);
-    uint32_t rom_pages = cfg->machine->rom_size >> MEM_PAGE_SHIFT;
-    for (uint32_t p = V8_ROM_START >> MEM_PAGE_SHIFT; p < (V8_ROM_END >> MEM_PAGE_SHIFT) && p < g_page_count; p++)
-        page_fill_68k(p, rom + (((p - (V8_ROM_START >> MEM_PAGE_SHIFT)) % rom_pages) << MEM_PAGE_SHIFT), false);
 }
 
 // The RAM-decode register written (the V8's expansion register, Sonora's RAM
@@ -236,16 +232,16 @@ static void v8_memory_layout_init(config_t *cfg) {
 
     // The overlay: ROM at zero until the first access to the ROM space, in
     // either map.  Its trigger aperture is the 24-bit ROM window; the 32-bit
-    // ROM space routes through the same trigger until the drop.
+    // ROM space is its alias, routed through the same trigger on every arm
+    // (the ROM's restart path runs on there after its RESET) until the drop.
     m68k_board_overlay_init(&st->overlay, cfg, V8_LOW_ROM_START, V8_LOW_ROM_END, v8_map_ram, v8_ops(cfg)->desc.chipset);
+    m68k_board_overlay_set_alias(&st->overlay, V8_ROM_START, V8_ROM_END);
     memory_map_add(cfg->memory_map, V8_LOW_ROM_START, V8_LOW_ROM_END - V8_LOW_ROM_START, "ROM aperture (24-bit)",
                    &st->overlay.iface, &st->overlay);
     memory_map_add(cfg->memory_map, V8_ROM_START, V8_ROM_END - V8_ROM_START, "ROM aperture", &st->overlay.iface,
                    &st->overlay);
     m68k_board_overlay_arm(&st->overlay);
 }
-
-static void v8_chip_bus_reset(config_t *cfg);
 
 // The V8, Eagle and Spice decoders: the ROM space at $40000000 with the
 // 24-bit windows below, the I/O island the MDU's, the PDS slot's space empty.
@@ -264,7 +260,6 @@ const v8_chip_ops_t v8_chip_ops = {
     .ram_layout = v8_ram_layout,
     .map_ram_decode = v8_map_ram_decode,
     .memory_layout_init = v8_memory_layout_init,
-    .bus_reset = v8_chip_bus_reset,
     .vram_base = V8_VRAM_BASE,
     // The decoder answers the whole low 16 MB (RAM, the 24-bit ROM and I/O
     // windows): nothing there times out.  A write the ROM's tables send to
@@ -423,22 +418,14 @@ static int v8_init(config_t *cfg, checkpoint_t *cp) {
     return 0;
 }
 
-// The V8's half of /RESET: the re-armed overlay drops on the next ROM access
-// in EITHER map -- the ROM's restart path runs on in the 32-bit ROM space
-// after its RESET.
-static void v8_chip_bus_reset(config_t *cfg) {
-    v8_state_t *st = v8_st(cfg);
-    for (uint32_t p = V8_ROM_START >> MEM_PAGE_SHIFT; p < (V8_ROM_END >> MEM_PAGE_SHIFT) && p < g_page_count; p++)
-        page_route_device(p, &st->overlay.iface, &st->overlay, V8_ROM_START);
-}
-
 // The board's /RESET net: the overlay re-arms, the shared devices, the
 // decoder's own half, the pseudo-VIA2 (whose RAM-decode register clears, so
 // the RAM decode follows).
 static void v8_bus_reset(config_t *cfg) {
     v8_state_t *st = v8_st(cfg);
     m68k_board_bus_reset(cfg, &st->overlay);
-    v8_ops(cfg)->bus_reset(cfg);
+    if (v8_ops(cfg)->bus_reset)
+        v8_ops(cfg)->bus_reset(cfg);
     rbv_reset(st->rbv);
     st->ram_exp = 0;
 }
