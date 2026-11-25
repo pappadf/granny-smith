@@ -80,17 +80,21 @@ extern const hw_profile_t machine_clii; // Classic II
 extern const hw_profile_t machine_ccl; // Color Classic
 extern const hw_profile_t machine_lciii;
 extern const hw_profile_t machine_lciiip; // LC III+
+extern const hw_profile_t machine_lc520;
+extern const hw_profile_t machine_lc550;
+extern const hw_profile_t machine_colorclassicii; // Color Classic II
 
 // Registry of built-in machine profiles.  A static const array iterated
 // directly: adding a machine is its extern above plus one entry here (this
 // file only), no runtime machine_register(), no MAX_MACHINES cap.
 static const hw_profile_t *const builtin_machines[] = {
-    &machine_plus,    &machine_se30,    &machine_iicx,     &machine_iix,    &machine_iifx,   &machine_iici,
-    &machine_iisi,    &machine_q700,    &machine_q900,     &machine_q950,   &machine_q840av, &machine_q660av,
-    &machine_pm6100,  &machine_pm7100,  &machine_pm8100,   &machine_pm7500, &machine_pm8500, &machine_pm9500,
-    &machine_ans500,  &machine_ans700,  &machine_pmg3dt,   &machine_pmg3mt, &machine_lisa,   &machine_macxl,
-    &machine_mac128k, &machine_mac512k, &machine_mac512ke, &machine_se,     &machine_sefdhd, &machine_classic,
-    &machine_lcii,    &machine_clii,    &machine_ccl,      &machine_lciii,  &machine_lciiip,
+    &machine_plus,    &machine_se30,           &machine_iicx,     &machine_iix,    &machine_iifx,   &machine_iici,
+    &machine_iisi,    &machine_q700,           &machine_q900,     &machine_q950,   &machine_q840av, &machine_q660av,
+    &machine_pm6100,  &machine_pm7100,         &machine_pm8100,   &machine_pm7500, &machine_pm8500, &machine_pm9500,
+    &machine_ans500,  &machine_ans700,         &machine_pmg3dt,   &machine_pmg3mt, &machine_lisa,   &machine_macxl,
+    &machine_mac128k, &machine_mac512k,        &machine_mac512ke, &machine_se,     &machine_sefdhd, &machine_classic,
+    &machine_lcii,    &machine_clii,           &machine_ccl,      &machine_lciii,  &machine_lciiip, &machine_lc520,
+    &machine_lc550,   &machine_colorclassicii,
 };
 static const size_t builtin_machine_count = sizeof(builtin_machines) / sizeof(builtin_machines[0]);
 

@@ -72,6 +72,8 @@ static const char *const CLASSICII[] = {"classicii", NULL};
 static const char *const COLORCLASSIC[] = {"colorclassic", NULL};
 // The Sonora-family 1 MB ROMs: both LC III ROMs run the 25 and 33 MHz boards.
 static const char *const LCIII[] = {"lciii", "lciiip", NULL};
+// The $EDE66CBD ROM: the LC 520 family and the Color Classic II.
+static const char *const LC550[] = {"lc550", "colorclassicii", "lc520", NULL};
 
 // === The table ============================================================
 //
@@ -116,7 +118,7 @@ const rom_info_t rom_table[] = {
     {"Mac LCIII ROM", LCIII, "ecbbc41c", 1024 * 1024, 0, 0, "later"},
     {"Color Classic ROM", COLORCLASSIC, "ecd99dc0", 1024 * 1024, 0, 0},
     {"Powerbook 210,230,250 ROM", NONE, "ecfa989b", 1024 * 1024, 0, 0},
-    {"Color Classic II & LC 550 & Performa 275,550,560 & Macintosh TV ROM", NONE, "ede66cbd", 1024 * 1024, 0, 0},
+    {"Color Classic II & LC 550 & Performa 275,550,560 & Macintosh TV ROM", LC550, "ede66cbd", 1024 * 1024, 0, 0},
     {"Centris 610,650 ROM", NONE, "f1a6f343", 1024 * 1024, 0, 0},
     {"Quadra 610,650,maybe 800 ROM", NONE, "f1acad13", 1024 * 1024, 0, 0},
     {"Powerbook 150 ROM", NONE, "fda22562", 1024 * 1024, 0, 0},
