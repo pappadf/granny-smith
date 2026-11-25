@@ -59,6 +59,11 @@ typedef struct v8_board {
     bool crt_mono; // the CRT shows one gun (the compact 1-bit screen)
 
     uint8_t asc_version; // the sound block's ASC version byte
+
+    // The ADB/clock/power microcontroller on VIA1's shift register: Egret
+    // (LC II, Classic II) or Cuda (Color Classic -- its ROM opens with Cuda's
+    // TIP/ByteAck/TReq handshake).
+    bool cuda;
 } v8_board_t;
 
 // The one substrate every V8-family model binds.
@@ -83,6 +88,8 @@ extern const board_io_range_t v8_io_ranges_tbl[];
 #define V8_IO_BASE       0x50000000UL // I/O space; the island repeats through it
 #define V8_IO_SIZE       0x10000000UL
 #define V8_IO_MIRROR     0x0003FFFFUL // 256 KB island
+#define V8_ISLAND_BASE   0x50F00000UL // the I/O island proper
+#define V8_ISLAND_SIZE   0x00040000UL
 #define V8_VRAM_BASE     0x50F40000UL // VRAM window ($50F40000-$50FBFFFF)
 #define V8_VRAM_WINDOW   0x00080000UL // 512 KB decoded
 #define V8_LOW_ROM_START 0x00A00000UL // the 24-bit ROM window, decoded in both modes

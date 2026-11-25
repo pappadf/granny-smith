@@ -73,6 +73,13 @@ void asc_set_mix(asc_t *asc, asc_mix_t mix);
 // right after asc_init; a power-on clear keeps it.
 void asc_set_version(asc_t *asc, uint8_t version);
 
+// Makes this a FIFO-only sound block: no wavetable synthesis and no "off"
+// mode, the FIFOs draining at the sample rate from power-on (the V8 family's
+// "subset of the Apple Sound Chip", which "does not support wavetable mode";
+// the Color Classic's ROM plays its boot sound without ever writing the mode
+// register).  Call right after asc_init.
+void asc_set_fifo_only(asc_t *asc);
+
 // === Operations ===
 
 // Get the memory-mapped I/O interface for machine-level address decode

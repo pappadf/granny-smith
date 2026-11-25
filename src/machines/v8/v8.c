@@ -40,6 +40,7 @@
 #include "asc.h"
 #include "checkpoint.h"
 #include "cpu.h"
+#include "cuda.h"
 #include "egret.h"
 #include "floppy.h"
 #include "image.h"
@@ -189,9 +190,11 @@ static void v8_memory_layout_init(config_t *cfg) {
     const v8_board_t *b = v8_board(cfg);
     v8_state_t *st = v8_st(cfg);
 
-    // The I/O space, the island repeating through it.
+    // The I/O island, once.  It does NOT repeat at $50F40000: the VRAM window
+    // is there (empty on the Eagle), and the ROM tells a VISA-lineage decoder
+    // from the MDU by exactly that -- VIA1's IER must not reappear $40000 up.
     board_io_fill_interface(&st->io_interface);
-    memory_map_add(cfg->memory_map, V8_IO_BASE, V8_IO_SIZE, "I/O", &st->io_interface, &st->io);
+    memory_map_add(cfg->memory_map, V8_ISLAND_BASE, V8_ISLAND_SIZE, "I/O", &st->io_interface, &st->io);
 
     // VRAM pages direct over the island's window, repeating through the
     // 512 KB decode (the ROM sizes the VRAM by that wrap).
@@ -212,7 +215,7 @@ static void v8_memory_layout_init(config_t *cfg) {
     // The low 16 MB repeats the 24-bit map in either addressing mode (Classic
     // II Developer Note p. 7: "the same address can be used in either 24-bit
     // or 32-bit modes"): ROM at $A00000-$DFFFFF, the I/O space at $F00000.
-    memory_map_add(cfg->memory_map, V8_LOW_IO_BASE, V8_LOW_IO_SIZE, "I/O (24-bit)", &st->io_interface, &st->io);
+    memory_map_add(cfg->memory_map, V8_LOW_IO_BASE, V8_ISLAND_SIZE, "I/O (24-bit)", &st->io_interface, &st->io);
     if (b->fb_source == V8_FB_VRAM && st->video.vram)
         for (uint32_t off = 0; off < V8_VRAM_WINDOW; off += MEM_PAGE_SIZE)
             page_fill_68k((V8_LOW_IO_BASE + (V8_VRAM_BASE & 0xFFFFFu) + off) >> MEM_PAGE_SHIFT,
@@ -256,12 +259,20 @@ static void v8_via1_output(void *context, uint8_t port, uint8_t output) {
             floppy_set_sel_signal(cfg->floppy, (output & 0x20) != 0);
         return;
     }
-    egret_via1_port_output(v8_st(cfg)->egret, port, output);
+    v8_state_t *st = v8_st(cfg);
+    if (st->cuda)
+        cuda_via1_port_output(st->cuda, port, output);
+    else
+        egret_via1_port_output(st->egret, port, output);
 }
 
 // VIA1 shift-out: a byte for Egret.
 static void v8_via1_shift_out(void *context, uint8_t byte) {
-    egret_via1_shift_input(v8_st((config_t *)context)->egret, byte);
+    v8_state_t *st = v8_st((config_t *)context);
+    if (st->cuda)
+        cuda_via1_shift_input(st->cuda, byte);
+    else
+        egret_via1_shift_input(st->egret, byte);
 }
 
 // The pseudo-VIA2's combined interrupt -> IPL 2.
@@ -362,6 +373,7 @@ static int v8_init(config_t *cfg, checkpoint_t *cp) {
     if (!st->asc)
         return -1;
     asc_set_version(st->asc, b->asc_version);
+    asc_set_fifo_only(st->asc); // no wavetable, always draining
     machine_part(cfg, cp, "asc", part_save_asc, st->asc);
     asc_set_mix(st->asc, ASC_MIX_CH_A); // mono: the left channel only
 
@@ -370,12 +382,20 @@ static int v8_init(config_t *cfg, checkpoint_t *cp) {
         floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
     machine_part(cfg, cp, "floppy", part_save_floppy, cfg->floppy);
 
-    machine_part_begin(cfg, cp, "egret");
-    st->egret = egret_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp);
-    if (!st->egret)
-        return -1;
-    machine_part(cfg, cp, "egret", part_save_egret, st->egret);
-    egret_set_power_off_callback(st->egret, v8_power_off, cfg);
+    if (b->cuda) {
+        machine_part_begin(cfg, cp, "cuda");
+        st->cuda = cuda_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp, /*mode3_clock=*/false);
+        if (!st->cuda)
+            return -1;
+        machine_part(cfg, cp, "cuda", part_save_cuda, st->cuda);
+    } else {
+        machine_part_begin(cfg, cp, "egret");
+        st->egret = egret_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp);
+        if (!st->egret)
+            return -1;
+        machine_part(cfg, cp, "egret", part_save_egret, st->egret);
+        egret_set_power_off_callback(st->egret, v8_power_off, cfg);
+    }
 
     // The pseudo-VIA2, its MonP sense lines strapped with the monitor.
     if (v8_video_init(cfg, cfg->build_opts.builtin_sense) != 0) {
@@ -440,6 +460,9 @@ static void v8_teardown(config_t *cfg) {
     if (st) {
         if (st->egret)
             egret_delete(st->egret);
+        if (st->cuda)
+            cuda_delete(st->cuda);
+        st->cuda = NULL;
         if (st->rbv)
             rbv_delete(st->rbv);
         if (st->mmu)

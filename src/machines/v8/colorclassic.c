@@ -54,6 +54,7 @@ static const v8_board_t colorclassic_board = {
     .crt_height = 384,
     .crt_sense = 2,
     .asc_version = 0xE8,
+    .cuda = true,
 };
 
 // 4 MB soldered plus a pair of 1, 2 or 4 MB SIMMs (Developer Note Figure 1-3).

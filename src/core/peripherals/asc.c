@@ -182,6 +182,10 @@ struct asc {
     // Board speaker mix (re-set by the machine after every asc_init)
     asc_mix_t mix;
 
+    // A FIFO-only sound block (asc_set_fifo_only): no wavetable, no "off"
+    // state -- the FIFOs always drain at the sample rate.  A board fact.
+    bool fifo_only;
+
     // Producer push batch: mono int16 frames accumulated by the drain event
     // and flushed to audio_out in blocks (transient — not checkpointed; a
     // restore drops at most ASC_PUSH_BATCH-1 pending frames)
@@ -456,6 +460,21 @@ static uint8_t asc_reg_read(asc_t *asc, uint32_t addr, bool peek) {
     case REG_FIFO_IRQ: {
         // Read-clears: capture current flags then reset them
         uint8_t flags = asc->fifo_irq_status;
+        // A FIFO-only block reports its FIFO levels as levels: half-empty in
+        // bits 0/2 and EMPTY in bits 1/3 -- the boot-sound code of the V8
+        // ROMs waits for half-empty before its first byte (into a FIFO never
+        // filled past half, so never crossing the line) and for both bits
+        // when it lets the sound run out.
+        if (asc->fifo_only) {
+            if (asc->fifo_count[0] < FIFO_HALF_THRESHOLD)
+                flags |= FIFO_IRQ_A_HALF;
+            if (asc->fifo_count[0] == 0)
+                flags |= FIFO_IRQ_A_FULL;
+            if (asc->fifo_count[1] < FIFO_HALF_THRESHOLD)
+                flags |= FIFO_IRQ_B_HALF;
+            if (asc->fifo_count[1] == 0)
+                flags |= FIFO_IRQ_B_FULL;
+        }
         if (peek)
             return flags;
         asc->fifo_irq_status = 0;
@@ -542,6 +561,8 @@ static void asc_write_byte(void *device, uint32_t addr, uint8_t data) {
     case REG_MODE: {
         uint8_t old_mode = asc->mode;
         LOG(2, "mode = %d", data);
+        if (asc->fifo_only)
+            data = MODE_FIFO; // the block knows no other mode
         asc->mode = data;
         // Start or stop the sample-rate producer when the chip starts/stops
         // running (FIFO or wavetable mode; mode 0 = off)
@@ -726,6 +747,10 @@ void asc_power_on(asc_t *asc) {
     asc->version = version;
     asc->fifo_last[0] = 0x80; // DAC hold-last-byte: offset-binary silence
     asc->fifo_last[1] = 0x80;
+    if (asc->fifo_only) {
+        asc->mode = MODE_FIFO; // FIFO-only: running from power-on
+        asc_schedule_fifo_drain(asc);
+    }
     // The interrupt output follows the cleared status.  irq_active was cleared
     // with the rest, so drive the sink inactive explicitly.
     if (asc->irq_fn)
@@ -887,6 +912,14 @@ void asc_set_mix(asc_t *asc, asc_mix_t mix) {
 
 void asc_set_version(asc_t *asc, uint8_t version) {
     asc->version = version;
+}
+
+void asc_set_fifo_only(asc_t *asc) {
+    asc->fifo_only = true;
+    if (asc->mode != MODE_FIFO) {
+        asc->mode = MODE_FIFO;
+        asc_schedule_fifo_drain(asc);
+    }
 }
 
 // ============================================================================

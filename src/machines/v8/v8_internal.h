@@ -22,6 +22,7 @@
 
 struct asc;
 struct egret;
+struct cuda;
 struct rbv;
 struct mmu_state;
 struct object;
@@ -50,7 +51,8 @@ typedef struct v8_video {
 // The machine state.
 typedef struct v8_state {
     struct asc *asc;
-    struct egret *egret;
+    struct egret *egret; // the companion, when Egret
+    struct cuda *cuda; // the companion, when Cuda
     struct rbv *rbv; // the V8's pseudo-VIA2 register file
     struct mmu_state *mmu;
 
