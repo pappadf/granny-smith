@@ -1597,6 +1597,39 @@ static DEF_METHOD(floppy_drive_method_insert) {
     return val_bool(system_fd_insert(argv[0].s, (int)slot, writable) == 0);
 }
 
+// `track_data(track, side)` -- the disk bytes of a GCR track as the head
+// sees them, one revolution: the drive's buffer when it holds one (what the
+// guest wrote into it included), else what the drive would build from the
+// disk now (floppy_media_track), which is not kept.  For tests and
+// inspection; reads the image when it builds.
+static DEF_METHOD(floppy_drive_method_track_data) {
+    unsigned slot = 0;
+    floppy_t *floppy = floppy_drive_floppy(self, &slot);
+    image_t *img = floppy ? floppy_drive_image(floppy, slot) : NULL;
+    if (!img)
+        return val_err("track_data: drive %u is empty", slot);
+    int64_t track = argv[0].i, side = argc > 1 && argv[1].kind != VK_NONE ? argv[1].i : 0;
+    if (track < 0 || track >= NUM_TRACKS || side < 0 || side >= NUM_SIDES)
+        return val_err("track_data: no track %lld side %lld (tracks 0-79, sides 0-1)", (long long)track,
+                       (long long)side);
+    const floppy_track_t *t = &floppy->drives[slot].tracks[side][track];
+    if (t->data)
+        return val_bytes(t->data, t->size);
+    floppy_media_t media;
+    uint8_t *buf = NULL;
+    size_t len = 0;
+    if (!floppy_media_from_image(img, &media) || floppy_media_track(&media, (int)track, (int)side, &buf, &len) != 0)
+        return val_err("track_data: no GCR track on this disk (an MFM disk is read sector by sector)");
+    value_t v = val_bytes(buf, len);
+    free(buf);
+    return v;
+}
+
+static const arg_decl_t floppy_drive_track_data_args[] = {
+    {.name = "track", .kind = VK_INT, .doc = "Track, 0-79"},
+    {.name = "side", .kind = VK_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Side, 0 or 1", .default_doc = "0"},
+};
+
 static const arg_decl_t floppy_drive_insert_args[] = {
     {.name = "path",
      .kind = VK_STRING,
@@ -1643,6 +1676,11 @@ static const member_t floppy_drive_members[] = {
      .doc = "The disk image in this drive (present only when inserted)",
      .label = "Image",
      .child = {.cls = &image_class, .lookup = floppy_drive_image_lookup}},
+    {.kind = MK_METHOD,
+     .name = "track_data",
+     .doc = "The disk bytes of a GCR track as the head sees them, one revolution (the drive's buffer, or what it "
+            "would build from the disk now)", .method =
+         {.args = floppy_drive_track_data_args, .nargs = 2, .result = VK_BYTES, .fn = floppy_drive_method_track_data}},
     {.kind = MK_METHOD,
      .name = "insert",
      .doc = "Mount a disk image into this drive",
