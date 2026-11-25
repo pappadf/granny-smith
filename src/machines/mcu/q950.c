@@ -35,7 +35,7 @@ static const mcu_board_t q950_board = {
     .desc = &q950_board_desc,
     .via1_output = q900_via1_output,
     .via1_shift_out = q900_via1_shift_out,
-    .via2_output = q900_via2_output,
+    .via2_output = quadra040_via2_output,
     .build_devices = q900_build_devices,
     .scc_irq = q900_scc_irq,
 };

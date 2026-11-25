@@ -45,86 +45,28 @@
 #include <stdint.h>
 #include <string.h>
 
-// ============================================================
-// VIA callbacks (direct IIci-like wiring)
-// ============================================================
+// The VIA wiring is the direct IIci-like one quadra040 provides: VIA1 PA5
+// floppy head select, PB the classic RTC serial (bits 0-2) and the ADB ST
+// lines (bits 4-5); VIA2 PB4/PB3/PB0 drive the DFAC serial control (not
+// modelled).  EASC -> VIA2 CB1, 53C96 -> VIA2 CB2, SONIC -> VIA2 PA0
+// through the /SLOTIRQ aggregate (A/UX level-3 remap not modeled).
 
-// VIA1 outputs: PA5 = floppy head select; PB = classic RTC serial
-// (bits 0-2) + ADB ST lines (bits 4-5) — the IIci pattern verbatim.
-static void q700_via1_output(void *context, uint8_t port, uint8_t output) {
-    config_t *cfg = (config_t *)context;
-
-    if (port == 0) {
-        if (cfg->floppy)
-            floppy_set_sel_signal(cfg->floppy, (output & 0x20) != 0);
-        // No overlay bit here: the MCU's overlay is access-triggered (mcu.c).
-    } else {
-        // Bits 4-5: ADB state lines (ST0/ST1) -> ADB controller.  The
-        // ST-transition filter and its port-B shadow live in adb.c now.
-        if (cfg->adb)
-            adb_port_b_output(cfg->adb, output);
-        rtc_via1_pb_output(cfg->rtc, output);
-    }
-}
-
-// VIA2 outputs: PB4/PB3/PB0 drive the DFAC serial control on the Q700 —
-// logged only.
-static void q700_via2_output(void *context, uint8_t port, uint8_t output) {
-    (void)context;
-    (void)port;
-    (void)output;
-}
-
-// EASC interrupt → VIA2 CB1.
-static void q700_asc_irq(void *context, bool active) {
-    config_t *cfg = (config_t *)context;
-    // CB1 is active-low on the board; the 6522 PCR polarity handles edges.
-    via_input_c(cfg->via2, 1, 0, active ? 0 : 1);
-}
-
-// 53C96 INT output → VIA2 CB2 (combined SCSI interrupt request).
-static void q700_scsi96_irq(void *context, bool active) {
-    config_t *cfg = (config_t *)context;
-    via_input_c(cfg->via2, 1, 1, active ? 0 : 1);
-}
-
-// SONIC INT → VIA2 PA0 (active-low) through the /SLOTIRQ aggregate
-// (A/UX level-3 remap not modeled).
-static void q700_sonic_irq(void *context, bool active) {
-    config_t *cfg = (config_t *)context;
-    mcu_slot_irq_source(cfg, 0, active);
-}
-
-// SONIC bus-master DMA: guest-physical accesses through the bus resolver
-// (no IOMMU on this family — CPU MMU is not in the path).
 // ============================================================
 // Device construction (mcu_board_t.build_devices)
 // ============================================================
 
 static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
-    mcu_state_t *st = mcu_st(cfg);
     const mcu_board_t *board = (const mcu_board_t *)cfg->machine->board;
     const mcu_board_desc_t *desc = board->desc;
 
     // The Q700 bit-bangs the classic RTC on VIA1.
     rtc_set_via(cfg->rtc, cfg->via1);
 
-    // Model sense on VIA1 PA from the board descriptor ($C0: the ROM's identify
-    // table matches PA & $56 == $40 for the Q700), plus the PA0 diagnostic
-    // strap.  These were eight hardcoded via_input calls that ignored
-    // desc->via1_pa_model entirely, leaving the field dead on this board while
-    // q900/q950 read it.
-    mcu_apply_via1_model_sense(cfg, desc);
-    // CA1/CB1 idle high (tick + ADB clock reference edges).
-    via_input_c(cfg->via1, 0, 0, 1);
-    via_input_c(cfg->via1, 1, 0, 1);
-
-    // VIA2 PA: slot/video/Ethernet requests, all active-low → idle high
-    // (Q700 exposes D, E/PDS, video, Ethernet).
-    for (int bit = 0; bit < 8; bit++)
-        via_input(cfg->via2, 0, bit, 1);
-    via_input_c(cfg->via2, 0, 0, 1); // CA1 /SLOTIRQ idle
-    via_input_c(cfg->via2, 1, 0, 1); // CB1 sound idle
+    // Model sense on VIA1 PA from the board descriptor ($C0: the ROM's
+    // identify table matches PA & $56 == $40 for the Q700) plus the PA0
+    // diagnostic strap; the VIA1/VIA2 lines idle (Q700 VIA2 PA exposes D,
+    // E/PDS, video, Ethernet).
+    quadra040_idle_lines(cfg, desc->via1_pa_model | 1u);
 
     machine_part_begin(cfg, cp, "adb");
     cfg->adb = adb_init(cfg->via1, cfg->scheduler, cp);
@@ -132,22 +74,20 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     machine_part_images(cfg, cp);
 
-    mcu_build_scsi0(cfg, cp, q700_scsi96_irq);
+    quadra040_build_scsi0(cfg, cp, quadra040_scsi96_irq);
 
     // SONIC Ethernet (~20 MHz part on the Q700), the EASC and the SWIM.
-    mcu_build_sonic_asc_floppy(cfg, cp, q700_sonic_irq, q700_asc_irq);
+    quadra040_build_sonic_asc_floppy(cfg, cp, quadra040_sonic_irq, quadra040_asc_irq);
 
     if (mcu_build_dafb(cfg, cp) != 0)
         return -1;
 
-    // Bus-side physical resolver for the 040 walker: RAM at 0 through the
-    // full 1 GiB aperture, the 1 MiB ROM mirroring through its window.
-    st->bus_mmu = m68k_board_build_bus_mmu040(cfg, 0x40000000u, desc->common.rom_base, desc->common.rom_end);
-    if (!st->bus_mmu)
+    // Bus-side physical resolver for the 040 walker.
+    if (quadra040_build_bus_mmu(cfg) != 0)
         return -1;
 
     // Bind the I/O island + DAFB apertures + overlay, then arm the overlay.
-    mcu_io_bind(&st->io, cfg, desc, st->asc, cfg->floppy);
+    mcu_io_bind(cfg);
     mcu_memory_layout(cfg);
 
     mcu_private_part(cfg, cp);
@@ -185,9 +125,9 @@ static const mcu_board_desc_t q700_board_desc = {
 
 static const mcu_board_t q700_board = {
     .desc = &q700_board_desc,
-    .via1_output = q700_via1_output,
+    .via1_output = quadra040_via1_output,
     .via1_shift_out = NULL, // ADB reads SR itself (BUG-004, glue.h)
-    .via2_output = q700_via2_output,
+    .via2_output = quadra040_via2_output,
     .build_devices = q700_build_devices,
 };
 

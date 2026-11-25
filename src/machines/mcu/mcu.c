@@ -150,7 +150,7 @@ static void mcu_map_ram(config_t *cfg) {
     for (int b = 0; b < ORWELL_MAX_BANKS; b++)
         banks[b] =
             (m68k_board_bank_t){st->bank_start[b], b < st->bank_count ? st->bank_size[b] : 0, st->bank_image_off[b]};
-    m68k_board_map_banks(cfg, banks, ORWELL_MAX_BANKS, ORWELL_BANK_WINDOW, 0, &st->ram_extent, st->bus_mmu);
+    m68k_board_map_banks(cfg, banks, ORWELL_MAX_BANKS, ORWELL_BANK_WINDOW, 0, &st->ram_extent, st->q.bus_mmu);
 }
 
 // Recompute bank starts from the staged config register and re-map.  Called
@@ -210,61 +210,17 @@ static void mcu_reg_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_
     st->orwell_cfg = (st->orwell_cfg & ~(1ull << bit)) | ((uint64_t)(value & 1) << bit);
 }
 
-// --- Ethernet MAC-address PROM ($50008000) ---
-// The Apple presentation the SONIC driver consumes (SonicEnet.a @GetAddr):
-// bytes 0-5 hold the station address with each byte BIT-REVERSED (the
-// driver's NormAddr undoes it), and the XOR of all eight bytes must equal
-// $FF (checksum probed before the address is trusted).  The address is
-// 08:00:07:09:07:01, in Apple's own OUI: MacTest Pro's "Ethernet ROM" test
-// insists on 08:00:07 (bit-reversed 10 00 E0) and fails anything else, the
-// locally administered 02:00:00 included.  Bit-reversed: 10 00 E0 90 E0 80;
-// byte 6 is zero and byte 7 makes the XOR come out to $FF.
-//
-// The eight bytes repeat across the PROM's $2000 window (mcu.md §5): the same
-// test reads sixteen bytes and checks each half's XOR, which an 8-byte window
-// floating $FF above it failed.
+// --- Ethernet MAC-address PROM ($50008000; quadra040_prom_read) ---
+// The address is 08:00:07:09:07:01, in Apple's own OUI: MacTest Pro's
+// "Ethernet ROM" test insists on 08:00:07 (bit-reversed 10 00 E0) and fails
+// anything else, the locally administered 02:00:00 included.  Bit-reversed:
+// 10 00 E0 90 E0 80; byte 6 is zero and byte 7 makes the XOR come out to
+// $FF.  The eight bytes repeat across the PROM's $2000 window (mcu.md §5):
+// the same test reads sixteen bytes and checks each half's XOR, which an
+// 8-byte window floating $FF above it failed.
 static const uint8_t mcu_mac_prom[8] = {0x10, 0x00, 0xE0, 0x90, 0xE0, 0x80, 0x00, 0xFF};
 
-static uint8_t mcu_prom_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
-    (void)win_off; // this window's handler decodes from addr itself
-    (void)cfg;
-    return mcu_mac_prom[addr & 7u];
-}
-
-static void mcu_prom_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
-    (void)win_off; // this window's handler decodes from addr itself
-    (void)cfg;
-    LOG(2, "MAC PROM write $%X = $%02X ignored (read-only)", addr & 7u, value);
-}
-
-// --- SONIC ($5000A000; 16-bit registers on 4-byte spacing) ---
-// The register value rides the LOW half of the 32-bit slot (current
-// MAME maps it the same way); the engine byte-decomposes wider accesses, so
-// reads serve bytes 2-3 of each slot and a write COMMITS when byte 3
-// lands (the Quadra driver/tests use 32-bit accesses throughout — SonicEqu.a
-// SONIC32).  Bytes 0-1 read as zero and their writes are ignored.
-
-static uint8_t mcu_sonic_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
-    (void)win_off; // this window's handler decodes from addr itself
-    mcu_state_t *st = mcu_st(cfg);
-    uint32_t off = addr & 0xFFFu;
-    uint32_t byte = off & 3u;
-    if (byte < 2)
-        return 0;
-    uint16_t v = sonic_reg_read(st->sonic, off >> 2);
-    return (byte == 2) ? (uint8_t)(v >> 8) : (uint8_t)v;
-}
-
-static void mcu_sonic_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
-    (void)win_off; // this window's handler decodes from addr itself
-    mcu_state_t *st = mcu_st(cfg);
-    uint32_t off = addr & 0xFFFu;
-    uint32_t byte = off & 3u;
-    if (byte == 2)
-        st->sonic_byte2 = value;
-    else if (byte == 3)
-        sonic_reg_write(st->sonic, off >> 2, (uint16_t)((st->sonic_byte2 << 8) | value));
-}
+// --- SONIC ($5000A000) is quadra040_sonic_read/write. ---
 
 // --- NCR 53C96 ($5000F000; registers on a 16-byte spacing) and its
 // pseudo-DMA aperture ($5000F100, the TurboSCSI payload port) are device rows
@@ -278,66 +234,9 @@ static void mcu_sonic_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint
 // BOARD_DEV_SCSI96_EXT.  The same 16-byte register stride serves the +2
 // byte lane.
 
-// --- YANCC ($50028000) — the system-bus/NuBus bridge register file.
-// The register address is Apple-documented, its width and bits are not:
-// same latch-and-log policy as the MCU file, so the ROM's/driver's access
-// sequence is recoverable as an RE artifact.  Actual
-// NuBus transactions run through the memory map + nubus core directly; the
-// write-buffer/error machinery this register controls is not modeled yet.
-
-// YANCC presents its control/status bits one per longword: bit n is bit 0 of
-// the long at offset n*4 (MacTest Pro's NuBus Controller test packs and
-// unpacks the file that way).  Two of them form the write-buffer error
-// interrupt: bit 7 is the error flag and bit 10 its enable.  With both set,
-// YANCC requests level 7, the NMI line it shares ("NMI/YANCC err", Quadra
-// 700 Developer Note Table 2-7); clearing either drops the request.  The test
-// arms bit 10, sets bit 7 25 times and expects 25 level-7 interrupts, its
-// handler clearing bit 7 each time.  Nothing on the modelled NuBus sets the
-// flag on its own: the write buffer never reports an error.
-#define MCU_YANCC_BIT_ERR    7
-#define MCU_YANCC_BIT_ERR_EN 10
-
-static bool mcu_yancc_err_irq(const mcu_state_t *st) {
-    return (st->yancc_regs[MCU_YANCC_BIT_ERR] & 1u) && (st->yancc_regs[MCU_YANCC_BIT_ERR_EN] & 1u);
-}
-
-static uint8_t mcu_yancc_access(config_t *cfg, uint32_t addr, bool peek) {
-    mcu_state_t *st = mcu_st(cfg);
-    uint32_t off = addr & 0x1FFFu;
-    uint32_t idx = (off >> 2) % MCU_YANCC_REG_COUNT;
-    uint32_t v = st->yancc_regs[idx];
-    // Log-once per register, the dafb.c pattern.  The read path used to TEST
-    // yancc_touched without ever SETTING it -- only the write path did -- so a
-    // register the ROM only reads logged on every single read, forever,
-    // defeating the design.
-    if (!peek && !(st->yancc_touched & (1ull << (idx & 63)))) {
-        st->yancc_touched |= 1ull << (idx & 63);
-        LOG(2, "YANCC read  $%04X -> $%08X (pc=%08X)", off, v, cpu_get_pc(cfg->cpu));
-    }
-    return be_lane8(v, off & 3);
-}
-static uint8_t mcu_yancc_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
-    (void)win_off; // this window's handler decodes from addr itself
-    return mcu_yancc_access(cfg, addr, false);
-}
-static uint8_t mcu_yancc_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
-    (void)win_off;
-    return mcu_yancc_access(cfg, addr, true); // no first-touch log
-}
-
-static void mcu_yancc_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
-    (void)win_off; // this window's handler decodes from addr itself
-    mcu_state_t *st = mcu_st(cfg);
-    uint32_t off = addr & 0x1FFFu;
-    uint32_t idx = (off >> 2) % MCU_YANCC_REG_COUNT;
-    bool was = mcu_yancc_err_irq(st);
-    be_lane8_set(&st->yancc_regs[idx], off & 3, value);
-    LOG(2, "YANCC write $%04X = $%08X (pc=%08X)", off, st->yancc_regs[idx], cpu_get_pc(cfg->cpu));
-    st->yancc_touched |= 1ull << (idx & 63);
-    bool now = mcu_yancc_err_irq(st);
-    if (now != was)
-        m68k_board_update_ipl(cfg, M68K_BOARD_IRQ_NMI, now);
-}
+// --- YANCC ($50028000) — the system-bus/NuBus bridge register file
+// (yancc.h, through quadra040_yancc_*).  Latch-and-readback under a log; its
+// write-buffer error interrupt requests level 7.
 
 // ============================================================
 // Q700 I/O island decode ($50000000, 256 KiB, mirror $3FFFF)
@@ -359,8 +258,8 @@ static void mcu_yancc_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint
 const board_io_range_t mcu_q700_io_ranges[] = {
     {0x00000, 0x02000, BOARD_DEV_VIA1, MCU_VIA_IO_PENALTY, BOARD_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},
     {0x02000, 0x04000, BOARD_DEV_VIA2, MCU_VIA_IO_PENALTY, BOARD_IO_MASK_A0, 0, 0, NULL, NULL, "via2", .esync = 1},
-    {0x08000, 0x0A000, 0, MCU_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, mcu_prom_read, mcu_prom_write, "mac_prom"},
-    {0x0A000, 0x0B100, 0, MCU_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, mcu_sonic_read, mcu_sonic_write, "sonic"},
+    {0x08000, 0x0A000, 0, MCU_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, quadra040_prom_read, quadra040_prom_write, "mac_prom"},
+    {0x0A000, 0x0B100, 0, MCU_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, quadra040_sonic_read, quadra040_sonic_write, "sonic"},
     {0x0C000, 0x0E000, BOARD_DEV_SCC, MCU_SCC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
     {0x0E000, 0x0F000, 0, MCU_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, mcu_reg_read, mcu_reg_write, "mcu"},
     {0x0F000, 0x0F100, BOARD_DEV_SCSI96, MCU_IO_PENALTY, BOARD_IO_STRIDE_16, 0, 0, NULL, NULL, "scsi_53c96"},
@@ -368,8 +267,8 @@ const board_io_range_t mcu_q700_io_ranges[] = {
      NULL, "scsi_pdma"},
     {0x14000, 0x16000, BOARD_DEV_ASC, MCU_ASC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "easc"},
     {0x1E000, 0x20000, BOARD_DEV_FLOPPY, MCU_SWIM_IO_PENALTY, BOARD_IO_STRIDE_512, 0, 0, NULL, NULL, "swim"},
-    {0x28000, 0x2A000, 0, MCU_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, mcu_yancc_read, mcu_yancc_write, "yancc",
-     .peek_fn = mcu_yancc_peek},
+    {0x28000, 0x2A000, 0, MCU_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, quadra040_yancc_read, quadra040_yancc_write, "yancc",
+     .peek_fn = quadra040_yancc_peek},
     {0}, // sentinel: end == 0
 };
 
@@ -388,8 +287,8 @@ const board_io_range_t mcu_q700_io_ranges[] = {
 const board_io_range_t mcu_q900_io_ranges[] = {
     {0x00000, 0x02000, BOARD_DEV_VIA1, MCU_VIA_IO_PENALTY, BOARD_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},
     {0x02000, 0x04000, BOARD_DEV_VIA2, MCU_VIA_IO_PENALTY, BOARD_IO_MASK_A0, 0, 0, NULL, NULL, "via2", .esync = 1},
-    {0x08000, 0x0A000, 0, MCU_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, mcu_prom_read, mcu_prom_write, "mac_prom"},
-    {0x0A000, 0x0B100, 0, MCU_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, mcu_sonic_read, mcu_sonic_write, "sonic"},
+    {0x08000, 0x0A000, 0, MCU_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, quadra040_prom_read, quadra040_prom_write, "mac_prom"},
+    {0x0A000, 0x0B100, 0, MCU_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, quadra040_sonic_read, quadra040_sonic_write, "sonic"},
     {0x0C000, 0x0E000, BOARD_DEV_SCC_IOP, MCU_IOP_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scc_iop"},
     {0x0E000, 0x0F000, 0, MCU_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, mcu_reg_read, mcu_reg_write, "mcu"},
     {0x0F000, 0x0F100, BOARD_DEV_SCSI96, MCU_IO_PENALTY, BOARD_IO_STRIDE_16, 0, 0, NULL, NULL, "scsi_53c96"},
@@ -400,99 +299,36 @@ const board_io_range_t mcu_q900_io_ranges[] = {
      NULL, NULL, "scsi1_pdma"},
     {0x14000, 0x16000, BOARD_DEV_ASC, MCU_ASC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "easc"},
     {0x1E000, 0x20000, BOARD_DEV_SWIM_IOP, MCU_IOP_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "swim_iop"},
-    {0x28000, 0x2A000, 0, MCU_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, mcu_yancc_read, mcu_yancc_write, "yancc",
-     .peek_fn = mcu_yancc_peek},
+    {0x28000, 0x2A000, 0, MCU_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, quadra040_yancc_read, quadra040_yancc_write, "yancc",
+     .peek_fn = quadra040_yancc_peek},
     {0}, // sentinel: end == 0
 };
 
-void mcu_io_bind(board_io_t *io, config_t *cfg, const mcu_board_desc_t *desc, void *asc, void *floppy) {
-    m68k_board_io_install(io, cfg, &desc->common);
-    board_io_bind_dev(io, BOARD_DEV_VIA1, cfg->via1, via_get_memory_interface(cfg->via1));
-    board_io_bind_dev(io, BOARD_DEV_VIA2, cfg->via2, via_get_memory_interface(cfg->via2));
-    board_io_bind_dev(io, BOARD_DEV_SCC, cfg->scc, scc_get_memory_interface(cfg->scc));
-    board_io_bind_dev(io, BOARD_DEV_ASC, asc, asc_get_memory_interface((asc_t *)asc));
-    board_io_bind_dev(io, BOARD_DEV_FLOPPY, floppy, floppy_get_memory_interface((floppy_t *)floppy));
+void mcu_io_bind(config_t *cfg) {
     mcu_state_t *st = mcu_st(cfg);
-    board_io_bind_dev(io, BOARD_DEV_SCSI96, st->scsi96, scsi_53c96_get_memory_interface());
+    quadra040_io_bind(cfg);
     if (st->scsi96_ext) // towers only
-        board_io_bind_dev(io, BOARD_DEV_SCSI96_EXT, st->scsi96_ext, scsi_53c96_get_memory_interface());
-}
-
-// ============================================================
-// /SLOTIRQ aggregation
-// ============================================================
-// The slot/video/Ethernet request lines land on VIA2 PA0-PA6 (active-low)
-// and OR into the active-low /SLOTIRQ on VIA2 CA1.  Every source funnels
-// through here so the aggregate stays consistent regardless of origin
-// (DAFB video = PA6, SONIC = PA0, NuBus slots A-E = PA1-PA5).
-
-void mcu_slot_irq_source(config_t *cfg, int pa_bit, bool active) {
-    slot_irq_source(cfg->via2, &mcu_st(cfg)->slot_pa_mask, pa_bit, active);
+        board_io_bind_dev(&st->q.io, BOARD_DEV_SCSI96_EXT, st->scsi96_ext, scsi_53c96_get_memory_interface());
 }
 
 // ============================================================
 // DAFB construction (shared by every MCU board)
 // ============================================================
 
-// DAFB video interrupt -> VIA2 PA6 (active-low) through the family /SLOTIRQ
-// aggregate on CA1, alongside the NuBus slot sources.
-static void mcu_dafb_irq(void *context, bool active) {
-    config_t *cfg = (config_t *)context;
-    mcu_slot_irq_source(cfg, 6, active);
-}
-
-// The DAFB's identity part: the monitor strapped to it.
-static void part_save_dafb_monitor(void *obj, checkpoint_t *cp) {
-    uint8_t monitor = dafb_monitor(((mcu_state_t *)obj)->dafb);
-    system_write_checkpoint_data(cp, &monitor, sizeof monitor, "dafb.monitor");
-}
-
-MACHINE_PART_SAVE(dafb_checkpoint, dafb_t)
-
 int mcu_build_dafb(config_t *cfg, checkpoint_t *cp) {
     mcu_state_t *st = mcu_st(cfg);
     const mcu_board_desc_t *desc = mcu_board(cfg)->desc;
-
-    // The monitor on the built-in port: the document's on a boot, the one
-    // the board was built with on a restore.
-    uint8_t monitor = cfg->build_opts.builtin_sense;
-    machine_part_begin(cfg, cp, "dafb.monitor");
-    if (cp)
-        system_read_checkpoint_data(cp, &monitor, sizeof monitor, "dafb.monitor");
-    machine_part(cfg, cp, "dafb.monitor", part_save_dafb_monitor, st);
-
-    machine_part_begin(cfg, cp, "dafb");
-    st->dafb = dafb_init(desc->dafb_vram_size, monitor, cp);
-    if (!st->dafb) {
-        LOG(0, "Error: out of memory constructing the DAFB");
-        return -1;
-    }
-    machine_part(cfg, cp, "dafb", dafb_checkpoint_part, st->dafb);
-    dafb_attach_scheduler(st->dafb, cfg->scheduler, cp);
-    dafb_set_irq_callback(st->dafb, mcu_dafb_irq, cfg);
-    dafb_attach_objects(st->dafb); // machine.video{,.framebuffer}
-
-    dafb_set_version(st->dafb, desc->dafb_version); // 3 on the Q950 (DAFB 3)
-    dafb_set_ac842a(st->dafb, desc->has_ac842a); // AC842a x555 on the Q950
-
-    // TurboSCSI DRQ observation: channel 0 = internal.  The towers add a
-    // second 53C96 for the external bus on channel 1 -- the ONE genuine
-    // per-machine difference in this function (the Q700 has "one NCR 53C96
-    // shared by internal and external connectors").
-    dafb_set_scsi_drq_query(st->dafb, 0, (dafb_drq_query_fn)scsi_53c96_dreq, st->scsi96);
-    if (st->scsi96_ext)
-        dafb_set_scsi_drq_query(st->dafb, 1, (dafb_drq_query_fn)scsi_53c96_dreq, st->scsi96_ext);
-    return 0;
-}
-
-// substrate.nubus_slot_irq: a NuBus card's /NMRQ maps to VIA2 PA(slot-9)
-// (slot $A→PA1 .. $E→PA5).  Slot 9 is the built-in video and
-// never arrives here — DAFB drives PA6 directly through the aggregate.
-static void mcu_nubus_slot_irq(config_t *cfg, int slot, bool active) {
-    int pa_bit = slot - 0x9;
-    if (pa_bit < 1 || pa_bit > 5)
-        return;
-    mcu_slot_irq_source(cfg, pa_bit, active);
+    // The version / AC842a facts come from the descriptor on every board
+    // (DAFB 343S0128-01 is "Q700 and Q900; version values 0, 1, or 2"; only
+    // the Q950 is DAFB II, version 3).  TurboSCSI DRQ observation is wired:
+    // channel 0 the internal 53C96, channel 1 the towers' external one.
+    const quadra040_video_t video = {
+        .vram_size = desc->dafb_vram_size,
+        .version = desc->dafb_version,
+        .ac842a = desc->has_ac842a,
+        .turbo_scsi = true,
+    };
+    return quadra040_build_dafb(cfg, cp, &video, st->scsi96_ext);
 }
 
 // ============================================================
@@ -510,39 +346,17 @@ static void mcu_nubus_slot_irq(config_t *cfg, int slot, bool active) {
 
 static void mcu_memory_layout_init(config_t *cfg) {
     mcu_state_t *st = mcu_st(cfg);
-    const mcu_board_desc_t *desc = mcu_board(cfg)->desc;
 
     // Work out the physical bank arrangement before anything maps RAM.
     mcu_bank_layout(cfg);
     // Nothing tracked yet: the first remap clears the banks' whole reach.
     st->ram_extent = MCU_RAM_REACH;
 
-    // I/O island at $50000000 (256 KiB block; the published map mirrors it
-    // through $53FFFFFF, current RE through $50FFFFFF — we register the
-    // Apple-documented extent and let the mirror mask fold accesses).
-    board_io_fill_interface(&st->io_interface);
-    memory_map_add(cfg->memory_map, 0x50000000u, 0x04000000u, "I/O", &st->io_interface, &st->io);
-
-    // DAFB registers at $F9800000; VRAM pages direct at $F9000000.
-    memory_map_add(cfg->memory_map, DAFB_REG_BASE, DAFB_REG_APERTURE, "DAFB regs",
-                   (memory_interface_t *)dafb_reg_interface(st->dafb), st->dafb);
-    uint8_t *vram = dafb_vram(st->dafb);
-    uint32_t vram_pages = dafb_vram_size(st->dafb) >> MEM_PAGE_SHIFT;
-    uint32_t vram_start = DAFB_VRAM_BASE >> MEM_PAGE_SHIFT;
-    for (uint32_t i = 0; i < vram_pages && vram_start + i < g_page_count; i++)
-        page_fill_68k(vram_start + i, vram + (i << MEM_PAGE_SHIFT), true);
-    // Register VRAM with the bus resolver so 040 table walks / TT matches
-    // reaching physical $F9xxxxxx resolve to the buffer.
-    memory_map_host_region(cfg->memory_map, "dafb_vram", vram, DAFB_VRAM_BASE, dafb_vram_size(st->dafb),
-                           /*writable*/ true);
-
-    // The overlay-trigger device for the ROM aperture is registered once;
-    // arming/dropping only re-points page entries.
-    m68k_board_overlay_init(&st->overlay, cfg, desc->common.rom_base, desc->common.rom_end, mcu_map_ram, "MCU");
-    memory_map_add(cfg->memory_map, desc->common.rom_base, desc->common.rom_end - desc->common.rom_base, "ROM aperture",
-                   &st->overlay.iface, &st->overlay);
-
-    m68k_board_overlay_arm(&mcu_st(cfg)->overlay);
+    // I/O island at $50000000, DAFB registers at $F9800000 and VRAM at
+    // $F9000000, then the armed ROM-aperture trip-wire.
+    quadra040_map_island(cfg);
+    quadra040_map_video(cfg, "DAFB regs", NULL, NULL);
+    quadra040_map_overlay(cfg, mcu_map_ram, "MCU");
 }
 
 // ============================================================
@@ -557,73 +371,31 @@ static int mcu_init(config_t *cfg, checkpoint_t *cp) {
         return -1;
     }
     cfg->machine_context = st;
+    st->q.mac_prom = mcu_mac_prom;
+    yancc_init(&st->q.yancc, "YANCC", quadra040_yancc_irq, cfg);
 
-    // Shared core (memory_map, 68040 CPU from the profile, scheduler) + RTC +
-    // SCC + the two VIAs.
-    m68k_board_build_core(cfg, &board->desc->common, cp);
-    machine_part_irq(cfg, cp);
-
-    // Towers intercept the SCC chip INT (OR with the SCC IOP host INT);
-    // the Q700 routes it straight to the level-4 source, which is the
-    // family default the NULL branch selects.
-    m68k_board_build_lowspeed(cfg, cp, board->scc_irq);
-
-    // Derived from the CPU clock (see the same note in mdu.c): the towers run
-    // 25 MHz (Q700/Q900) and 33 MHz (Q950), so the previous hardcoded 20/21 —
-    // inherited from the 16 MHz IIcx — ran both machines' VIA timers fast.
-    uint8_t via_ff = via_freq_factor_for_clock(cfg->machine->freq);
-    machine_part_begin(cfg, cp, "via1");
-    cfg->via1 = via_init(NULL, cfg->scheduler, via_ff, "via1", board->via1_output, board->via1_shift_out,
-                         m68k_board_via1_irq, cfg, cp);
-    machine_part(cfg, cp, "via1", part_save_via, cfg->via1);
-    machine_part_begin(cfg, cp, "via2");
-    cfg->via2 = via_init(NULL, cfg->scheduler, via_ff, "via2", board->via2_output, NULL, m68k_board_via2_irq, cfg, cp);
-    machine_part(cfg, cp, "via2", part_save_via, cfg->via2);
-    // Exact-rational phi2: the integer divisor above rounds, and on this
-    // substrate that rounding is not negligible -- the Q950 lands 1.04% slow, the Q700/Q900 0.27%.  via_set_exact_clock
-    // installs ticks = cycles x 783360/cpu_hz reduced, which is what the
-    // PowerPC families already do.
-    via_set_exact_clock(cfg->via1, cfg->machine->freq);
-    via_set_exact_clock(cfg->via2, cfg->machine->freq);
+    // Shared core + RTC + SCC + the two VIAs.  Towers intercept the SCC chip
+    // INT (OR with the SCC IOP host INT); the Q700 routes it straight to the
+    // level-4 source, which is the family default the NULL selects.
+    quadra040_build_core(cfg, cp, &board->desc->common, board->scc_irq, board->via1_output, board->via1_shift_out,
+                         board->via2_output);
 
     // Machine-specific tail: straps, ADB, EASC, SWIM, DAFB, bus resolver,
     // memory layout, checkpoint restore.
     if (board->build_devices(cfg, cp) != 0)
         return -1;
 
-    // NuBus: seat the declared slot cards; their windows layer
-    // over the bus-error range, and slot IRQs route through the substrate's
-    // nubus_slot_irq into the VIA2 PA aggregate.
-    cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, cp);
-    // Project the cards' host regions (VRAM, declaration ROMs) into the
-    // page table so CPU accesses resolve with the MMU off; the bus
-    // resolver serves the 040 walker when it's on.  No Mode-24 aliases —
-    // this family's ROM and System are 32-bit clean, and a low alias would
-    // shadow RAM at $00s00000 on large-memory configurations.
-    mmu_host_regions_fill_pages(st->bus_mmu, page_fill_68k, /*mode24_alias*/ false);
-
-    m68k_board_finish(cfg, cp, &st->io);
+    quadra040_build_finish(cfg, cp);
     return 0;
 }
 
 static void mcu_bus_reset(config_t *cfg) {
     mcu_state_t *st = mcu_st(cfg);
-    // Overlay re-arms (VIA1 pulls it high), DAFB registers clear, and the
-    // NuBus/SCSI fan-out with them.  The 040's own MMU is reset by
-    // cpu_hardware_reset_040 -- it is inside the CPU, not on the net.
-    m68k_board_overlay_arm(&st->overlay);
+    // Overlay re-arms (VIA1 pulls it high), DAFB registers clear, the bus
+    // MMU goes off and the 53C96 chips reset (scsi96_ext is NULL on the
+    // Q700).
+    quadra040_bus_reset(cfg, /*reset_video*/ true);
     st->ram_extent = MCU_RAM_REACH; // the ROM at zero: the next remap clears the whole reach
-    if (st->dafb)
-        dafb_reset(st->dafb);
-    // The MCU's BUS mmu is a board part, not the CPU's, so it stays here.
-    if (st->bus_mmu) {
-        st->bus_mmu->enabled = false;
-        mmu_invalidate_tlb(st->bus_mmu);
-    }
-    // The 53C96 chips are on /RESET as on PDM and TNT: their configuration
-    // and FIFO clear (the buses themselves are reset by the shared chain).
-    // scsi96_ext is NULL on the Q700.
-    scsi_53c96_reset(st->scsi96);
     scsi_53c96_reset(st->scsi96_ext);
     system_reset_common_devices(cfg);
 }
@@ -652,73 +424,11 @@ static void mcu_teardown(config_t *cfg) {
             scsi_delete(cfg->scsi2);
             cfg->scsi2 = NULL;
         }
-        if (st->sonic) {
-            sonic_delete(st->sonic);
-            st->sonic = NULL;
-        }
-        if (st->scsi96) {
-            scsi_53c96_delete(st->scsi96);
-            st->scsi96 = NULL;
-        }
-        if (st->dafb) {
-            dafb_delete(st->dafb);
-            st->dafb = NULL;
-        }
-        if (st->bus_mmu) {
-            mmu_delete(st->bus_mmu);
-            st->bus_mmu = NULL;
-        }
-        if (st->asc) {
-            asc_delete(st->asc);
-            st->asc = NULL;
-        }
+        quadra040_teardown(&st->q);
     }
     // The config_t-owned devices, in the family-shared canonical order
     // (machine_teardown.h).  Was a byte-identical copy in five families.
     machine_teardown_config_devices(cfg);
-}
-
-void mcu_build_scsi0(config_t *cfg, checkpoint_t *cp, void (*irq)(void *ctx, bool active)) {
-    mcu_state_t *st = mcu_st(cfg);
-    // The bus/target model carries the disks and CD; the 53C96 chip model
-    // is the protocol front-end driving it through the external-initiator
-    // API (there is no NCR 5380 register file on this family).
-    machine_part_begin(cfg, cp, "scsi");
-    cfg->scsi = machine_scsi_bus_init(cfg, cp, "scsi");
-    machine_part(cfg, cp, "scsi", part_save_scsi, cfg->scsi);
-    machine_part_begin(cfg, cp, "scsi96");
-    st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp);
-    machine_part(cfg, cp, "scsi96", part_save_scsi96, st->scsi96);
-    scsi_53c96_set_irq_callback(st->scsi96, irq, cfg);
-    scsi_53c96_attach_bus(st->scsi96, cfg->scsi);
-}
-
-void mcu_build_sonic_asc_floppy(config_t *cfg, checkpoint_t *cp, void (*sonic_irq)(void *ctx, bool active),
-                                void (*asc_irq)(void *ctx, bool active)) {
-    mcu_state_t *st = mcu_st(cfg);
-    // SONIC Ethernet (a 20 MHz-class part; no wire in v1).
-    machine_part_begin(cfg, cp, "sonic");
-    st->sonic = sonic_init(cp);
-    machine_part(cfg, cp, "sonic", part_save_sonic, st->sonic);
-    sonic_set_irq_callback(st->sonic, sonic_irq, cfg);
-    // SONIC bus-master DMA: the shared guest-physical port.
-    sonic_set_memory_port(st->sonic, &dma_mem_port_physical);
-
-    machine_part_begin(cfg, cp, "asc");
-    st->asc = asc_init(NULL, cfg->scheduler, cp); // EASC: ASC-compatible core
-    machine_part(cfg, cp, "asc", part_save_asc, st->asc);
-    asc_set_mix(st->asc, ASC_MIX_CH_A);
-    asc_set_irq_handler(st->asc, asc_irq, cfg);
-    machine_part_begin(cfg, cp, "floppy");
-    cfg->floppy =
-        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
-    machine_part(cfg, cp, "floppy", part_save_floppy, cfg->floppy);
-}
-
-void mcu_apply_via1_model_sense(config_t *cfg, const mcu_board_desc_t *desc) {
-    for (int bit = 0; bit < 8; bit++)
-        via_input(cfg->via1, 0, bit, (desc->via1_pa_model >> bit) & 1);
-    via_input(cfg->via1, 0, 0, 1); // PA0 diagnostic strap high (see mcu.h)
 }
 
 // The substrate-private part: overlay flag + Orwell config/bank starts + the
@@ -732,17 +442,17 @@ void mcu_apply_via1_model_sense(config_t *cfg, const mcu_board_desc_t *desc) {
 #define MCU_PRIVATE_CP_FIELDS(OP, cp, st)                                                                              \
     CP_FIELD(OP, cp, (st)->orwell_cfg);                                                                                \
     CP_ARRAY(OP, cp, (st)->bank_start);                                                                                \
-    CP_ARRAY(OP, cp, (st)->yancc_regs);                                                                                \
-    CP_FIELD(OP, cp, (st)->yancc_touched);                                                                             \
-    CP_FIELD(OP, cp, (st)->slot_pa_mask);                                                                              \
-    CP_FIELD(OP, cp, (st)->sonic_byte2);                                                                               \
+    CP_ARRAY(OP, cp, (st)->q.yancc.regs);                                                                              \
+    CP_FIELD(OP, cp, (st)->q.yancc.touched);                                                                           \
+    CP_FIELD(OP, cp, (st)->q.slot_pa_mask);                                                                            \
+    CP_FIELD(OP, cp, (st)->q.sonic_byte2);                                                                             \
     CP_FIELD(OP, cp, (st)->scc_irq_or);                                                                                \
     CP_FIELD(OP, cp, (st)->scsi_irq_or)
 
 // Saves the substrate-private part.
 static void part_save_mcu_private(void *obj, checkpoint_t *cp) {
     mcu_state_t *st = obj;
-    CP_FIELD(system_write_checkpoint_data, cp, st->overlay.armed);
+    CP_FIELD(system_write_checkpoint_data, cp, st->q.overlay.armed);
     MCU_PRIVATE_CP_FIELDS(system_write_checkpoint_data, cp, st);
 }
 
@@ -768,101 +478,27 @@ static void mcu_restore_private(config_t *cfg, checkpoint_t *cp) {
     // The layout armed the overlay; a post-overlay snapshot drops it.
     if (!overlay)
         mcu_set_overlay(cfg, false);
-    // Re-drive the /SLOTIRQ PA lines + the CA1 aggregate from the restored
-    // mask (build parked them at the inactive level).
-    slot_irq_redrive(cfg->via2, st->slot_pa_mask);
     // Tower wire-ORs: VIA2 CB2 (dual 53C96) and the level-4 SCC source
     // (chip INT | SCC IOP host INT) resume at their save-time levels.
     if (st->scsi96_ext)
         via_input_c(cfg->via2, 1, 1, st->scsi_irq_or ? 0 : 1);
     if (st->scc_iop)
         m68k_board_update_ipl(cfg, M68K_BOARD_IRQ_SCC, st->scc_irq_or != 0);
-    // A YANCC error interrupt pending at save time keeps requesting level 7.
-    if (mcu_yancc_err_irq(st))
-        m68k_board_update_ipl(cfg, M68K_BOARD_IRQ_NMI, true);
-    mmu_invalidate_tlb(st->bus_mmu);
-    via_redrive_outputs(cfg->via1);
-}
-
-// VBL tick: VIA1 CA1 pulse (the 60.15 Hz VIA2-PB7 chain, functionally;
-// video interrupts come from the Swatch's programmed timing in dafb.c —
-// Traps 9/10 apply to the Swatch IRQs, not this line).
-static void mcu_trigger_vbl(config_t *cfg) {
-    via_pulse_c(cfg->via1, 0, 0); // VBL: CA1 low then high
-    nubus_tick_vbl(cfg->nubus);
-    image_tick_all(cfg);
-}
-
-// Primary display: the DAFB scanout (substrate .display hook).
-static struct display *mcu_display(config_t *cfg) {
-    mcu_state_t *st = mcu_st(cfg);
-    return (st && st->dafb) ? dafb_display(st->dafb) : NULL;
+    // The /SLOTIRQ lines, a pending YANCC error, the bus TLB, VIA1's outputs.
+    quadra040_restore_lines(cfg);
 }
 
 // Power cycle: the DAFB's VRAM goes with main RAM (system_machine_power_cycle).
 static void mcu_power_on(config_t *cfg) {
     mcu_state_t *st = mcu_st(cfg);
     if (st)
-        dafb_power_on(st->dafb);
+        dafb_power_on(st->q.dafb);
 }
 
 // === Built-in video as a display device ======================================
-//
-// The DAFB's monitor straps, in Apple's indexed numbering (dafb.h): the
-// passive 3-bit codes plus the GoldFish 16" on the extended probe, each
-// measured through a Q700/Q900 ROM boot ("dafb.c": only GoldFish produced a
-// new raster among the extended codes).  The Q950's ROM is not measured
-// beyond the passive codes, so it offers those.  Code 7 with no extended
-// answer is an unplugged port.
-typedef struct dafb_monitor {
-    const char *monitor; // catalogue id (doubles as the strap's token)
-    uint8_t sense;
-} dafb_monitor_t;
-
-static const dafb_monitor_t k_dafb_monitors[] = {
-    {"13in_rgb",            0x6u                 },
-    {"12in_rgb",            0x2u                 },
-    {"15in_portrait",       0x1u                 },
-    {"15in_portrait_color", 0x5u                 },
-    {"16in_rgb",            DAFB_SENSE_INDEXED_GF},
-    {"21in_rgb",            0x0u                 },
-    {"21in_mono",           0x3u                 },
-    {"none",                0x7u                 },
-    {NULL,                  0                    },
-};
-
-// The tables' rows a ROM can show: all of them, or the passive codes only.
-static bool dafb_monitor_at(const dafb_monitor_t *t, bool passive_only, size_t i, const char **id,
-                            const char **monitor) {
-    size_t n = 0;
-    for (const dafb_monitor_t *m = t; m->monitor; m++) {
-        if (passive_only && m->sense > 7)
-            continue;
-        if (n++ == i) {
-            *id = *monitor = m->monitor;
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool dafb_monitor_sense(const char *id, uint8_t *out) {
-    for (const dafb_monitor_t *m = k_dafb_monitors; m->monitor; m++) {
-        if (strcmp(m->monitor, id) == 0) {
-            *out = m->sense;
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool dafb_all_at(size_t i, const char **id, const char **monitor) {
-    return dafb_monitor_at(k_dafb_monitors, false, i, id, monitor);
-}
-
-static bool dafb_passive_at(size_t i, const char **id, const char **monitor) {
-    return dafb_monitor_at(k_dafb_monitors, true, i, id, monitor);
-}
+// The DAFB's monitors are quadra040's table (quadra040_monitor_*): every one
+// the Q700/Q900 ROM was measured with, or (the Q950, measured on the passive
+// codes only) the passive ones.
 
 // The DAFB's startup modes: slot $9's PRAM record, as each ROM writes it for
 // the monitor -- BoardID ($0033 Quadra 700, $002B Quadra 900, $0036 Quadra
@@ -904,37 +540,24 @@ static const builtin_startup_t q950_startup[] = {
     {0},
 };
 
-const builtin_video_desc_t mcu_builtin_video_q700 = {
-    .detail = "DAFB",
-    .monitor_at = dafb_all_at,
-    .monitor_sense = dafb_monitor_sense,
-    .default_monitor = "13in_rgb",
-    .indexed_sense = true,
-    .startup_slot = 0x9,
-    .startup = q700_startup,
-};
+// The DAFB as a display device: the monitor table, the strap convention and
+// slot $9's startup records.
+#define MCU_BUILTIN_VIDEO(monitor_at_, startup_)                                                                       \
+    {                                                                                                                  \
+        .detail = "DAFB",                                                                                              \
+        .monitor_at = (monitor_at_),                                                                                   \
+        .monitor_sense = quadra040_monitor_sense,                                                                      \
+        .default_monitor = "13in_rgb",                                                                                 \
+        .indexed_sense = true,                                                                                         \
+        .startup_slot = 0x9,                                                                                           \
+        .startup = (startup_),                                                                                         \
+    }
 
-const builtin_video_desc_t mcu_builtin_video_q900 = {
-    .detail = "DAFB",
-    .monitor_at = dafb_all_at,
-    .monitor_sense = dafb_monitor_sense,
-    .default_monitor = "13in_rgb",
-    .indexed_sense = true,
-    .startup_slot = 0x9,
-    .startup = q900_startup,
-};
-
+const builtin_video_desc_t mcu_builtin_video_q700 = MCU_BUILTIN_VIDEO(quadra040_monitor_at, q700_startup);
+const builtin_video_desc_t mcu_builtin_video_q900 = MCU_BUILTIN_VIDEO(quadra040_monitor_at, q900_startup);
 // The Quadra 950's ROM is not measured beyond the passive codes, so it offers
 // those monitors.
-const builtin_video_desc_t mcu_builtin_video_q950 = {
-    .detail = "DAFB",
-    .monitor_at = dafb_passive_at,
-    .monitor_sense = dafb_monitor_sense,
-    .default_monitor = "13in_rgb",
-    .indexed_sense = true,
-    .startup_slot = 0x9,
-    .startup = q950_startup,
-};
+const builtin_video_desc_t mcu_builtin_video_q950 = MCU_BUILTIN_VIDEO(quadra040_monitor_passive_at, q950_startup);
 
 const machine_substrate_t mcu_substrate = {
     .init = mcu_init,
@@ -942,11 +565,11 @@ const machine_substrate_t mcu_substrate = {
     .power_on = mcu_power_on,
     .teardown = mcu_teardown,
     .seed = mac_seed_rtc_pram,
-    .trigger_vbl = mcu_trigger_vbl,
-    .nubus_slot_irq = mcu_nubus_slot_irq, // slots → VIA2 PA1-PA5 + /SLOTIRQ aggregate
+    .trigger_vbl = quadra040_trigger_vbl,
+    .nubus_slot_irq = quadra040_nubus_slot_irq, // slots → VIA2 PA1-PA5 + /SLOTIRQ aggregate
     MAC_SUBSTRATE_HOST_IO,
     MAC_SUBSTRATE_MEDIA_STD,
-    .display = mcu_display,
+    .display = quadra040_display,
 };
 
 // Shared layout entry for the machine files (called from build_devices once
@@ -959,7 +582,7 @@ void mcu_memory_layout(config_t *cfg) {
 // armed; a restore of a post-overlay state drops it again.
 void mcu_set_overlay(config_t *cfg, bool on) {
     if (on)
-        m68k_board_overlay_arm(&mcu_st(cfg)->overlay);
+        m68k_board_overlay_arm(&mcu_st(cfg)->q.overlay);
     else
-        m68k_board_overlay_drop(&mcu_st(cfg)->overlay);
+        m68k_board_overlay_drop(&mcu_st(cfg)->q.overlay);
 }
