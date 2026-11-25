@@ -73,9 +73,9 @@ static void floppy_speed_settle_callback(void *source, uint64_t data) {
     LOG(5, "Drive %d: Speed settle complete", drive_index);
 }
 
-// Returns pointer to the currently selected drive based on IWM SELECT line
-static floppy_drive_t *current_drive(floppy_t *floppy) {
-    return &floppy->drives[DRIVE_INDEX(floppy)];
+// The drive the IWM SELECT line selects, or NULL when it reaches no drive
+static floppy_drive_t *selected_drive(floppy_t *floppy) {
+    return floppy_cabled_drive(floppy, DRIVE_INDEX(floppy));
 }
 
 // One read-head bit, for either side.
@@ -226,9 +226,9 @@ int floppy_disk_status_at(floppy_t *floppy, int drv, uint8_t lines, bool peek) {
     // sense line floats high, /DRVIN included ("no drive").  Answering for
     // it made a one-drive Quadra 700 or IIci report a second drive, and
     // MacTest Pro listed and tested "Floppy Drive 2".
-    if (drv >= floppy->n_drives)
+    floppy_drive_t *drive = floppy_cabled_drive(floppy, drv);
+    if (!drive)
         return 1;
-    floppy_drive_t *drive = &floppy->drives[drv];
     bool ca0 = (lines & IWM_LINE_CA0) != 0, ca1 = (lines & IWM_LINE_CA1) != 0, ca2 = (lines & IWM_LINE_CA2) != 0;
 
     // Build status key from CA lines and VIA SEL signal
@@ -385,9 +385,9 @@ void floppy_disk_control(floppy_t *floppy) {
     int drv = (floppy->type == FLOPPY_TYPE_SWIM && (floppy->ism_mode & ISM_MODE_ISM_IWM)) ? ISM_DRIVE_INDEX(floppy)
                                                                                           : DRIVE_INDEX(floppy);
     // A select that reaches no drive commands nothing
-    if (drv >= floppy->n_drives)
+    floppy_drive_t *drive = floppy_cabled_drive(floppy, drv);
+    if (!drive)
         return;
-    floppy_drive_t *drive = &floppy->drives[drv];
 
     // Determine the correct motor callback based on controller type
     // Commands only when SEL is low
@@ -528,14 +528,15 @@ static uint8_t iwm_reg_read(floppy_t *floppy, uint32_t offset, bool peek) {
             return 0xFF;
         }
 
-        if (drv >= floppy->n_drives || floppy->disk[drv] == NULL) {
+        image_t *disk = floppy_cabled_disk(floppy, drv);
+        if (!disk) {
             LOG(6, "Drive %d: Reading data (no disk) = 0x00", drv);
             return 0x00;
         }
 
         floppy_drive_t *drive = &floppy->drives[drv];
-        const uint8_t *data = peek ? iwm_track_data_peek(drive, floppy->disk[drv], floppy->sel)
-                                   : iwm_track_data(drive, floppy->disk[drv], floppy->sel, floppy->scheduler);
+        const uint8_t *data = peek ? iwm_track_data_peek(drive, disk, floppy->sel)
+                                   : iwm_track_data(drive, disk, floppy->sel, floppy->scheduler);
         if (!data) {
             // MFM media in the drive, or an allocation failure.  The SWIM
             // returns 0x00 so the ROM's GCR sync detection fails and it falls
@@ -620,10 +621,10 @@ void floppy_iwm_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
     int drv = DRIVE_INDEX(floppy);
 
     if (IWM_ENABLE(floppy)) {
-        if (drv >= floppy->n_drives)
+        floppy_drive_t *drive = selected_drive(floppy);
+        if (!drive)
             return; // the selected line reaches no drive
         // Write data to disk
-        floppy_drive_t *drive = current_drive(floppy);
 
         uint8_t *data = iwm_track_data(drive, floppy->disk[drv], floppy->sel, floppy->scheduler);
         if (!data) {
@@ -703,7 +704,7 @@ void floppy_set_sel_signal(floppy_t *floppy, bool sel) {
             LOG(6, "SEL signal: %s (no change)", sel ? "high" : "low");
         floppy->sel = sel;
         // Only update the current drive's data side when not actively reading/writing
-        if (!IWM_ENABLE(floppy) && DRIVE_INDEX(floppy) < floppy->n_drives)
+        if (!IWM_ENABLE(floppy) && selected_drive(floppy))
             floppy_drive_latch_side(floppy, (unsigned)DRIVE_INDEX(floppy), sel);
     } else {
         LOG(6, "SEL signal: %s -> %s", floppy->sel ? "high" : "low", sel ? "high" : "low");

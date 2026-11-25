@@ -21,6 +21,17 @@ the chip at the decoded register index. Every other SWIM machine decodes its
 own window over `floppy_get_memory_interface` (the SWIM's index-addressed
 register file).
 
+## A select that reaches no drive
+
+A drive select (the IWM SELECT line, or the ISM's DRIVE1/DRIVE2 enables,
+through the board's `floppy_set_enbl_route` steering) can reach no drive:
+`FLOPPY_NO_DRIVE`, or a position past the drives the machine cables
+(`n_drives`). Every path that acts on the selected drive resolves it through
+one chokepoint, `floppy_cabled_drive` / `floppy_cabled_disk`
+(`floppy_internal.h`), which return NULL then: the sense lines float high
+(/DRVIN "no drive"), commands and data writes go nowhere, a data read finds
+no disk.
+
 ## Step settle time
 
 After each step command the drive's `/STEP` sense line reads 0 (step in

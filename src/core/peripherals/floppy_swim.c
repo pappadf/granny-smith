@@ -140,7 +140,7 @@ static void mfm_buf_emit(void *ctx, uint8_t byte, bool is_mark) {
 
 static void mfm_build_sector(floppy_t *floppy) {
     int drv = ISM_DRIVE_INDEX(floppy);
-    image_t *img = drv < floppy->n_drives ? floppy->disk[drv] : NULL;
+    image_t *img = floppy_cabled_disk(floppy, drv);
     if (!img) {
         floppy->mfm_buf_len = 0;
         return;
@@ -399,7 +399,7 @@ static void ism_write_capture_flush(floppy_t *floppy) {
     }
 
     int drv = ISM_DRIVE_INDEX(floppy);
-    image_t *img = drv < floppy->n_drives ? floppy->disk[drv] : NULL;
+    image_t *img = floppy_cabled_disk(floppy, drv);
     if (!img) {
         LOG(2, "ISM write: no disk in drive %d", drv);
         return;
@@ -806,8 +806,8 @@ static void swim_handle_action_set(floppy_t *floppy, uint8_t old_mode) {
         uint8_t buf_side = floppy->mfm_cur_side;
         uint8_t buf_track = floppy->mfm_cur_track;
         ism_latch_head(floppy);
-        int drv_idx = ISM_DRIVE_INDEX(floppy);
-        floppy->mfm_cur_track = drv_idx < floppy->n_drives ? (uint8_t)floppy->drives[drv_idx].track : 0;
+        const floppy_drive_t *d = floppy_cabled_drive(floppy, ISM_DRIVE_INDEX(floppy));
+        floppy->mfm_cur_track = d ? (uint8_t)d->track : 0;
         // The read buffer describes the old position; drop it if that moved.
         if (floppy->mfm_cur_side != buf_side || floppy->mfm_cur_track != buf_track)
             floppy->mfm_buf_len = 0;
@@ -822,8 +822,8 @@ static void swim_handle_action_set(floppy_t *floppy, uint8_t old_mode) {
             ism_latch_head(floppy);
             LOG(3, "ISM: ACTION set, side=%d (sel=%d setup=0x%02X)", floppy->mfm_cur_side, floppy->sel,
                 floppy->ism_setup);
-            int drv_idx = ISM_DRIVE_INDEX(floppy);
-            int cur_trk = drv_idx < floppy->n_drives ? floppy->drives[drv_idx].track : 0;
+            const floppy_drive_t *d = floppy_cabled_drive(floppy, ISM_DRIVE_INDEX(floppy));
+            int cur_trk = d ? d->track : 0;
             // Invalidate buffer only when side or track changed
             if (floppy->mfm_buf_len > 0 && (floppy->mfm_cur_side != buf_side || cur_trk != buf_track)) {
                 floppy->mfm_buf_len = 0;
