@@ -732,9 +732,9 @@
           <div class="section-head">
             <SectionHeading class="config-section" rule>Expansion cards</SectionHeading>
             {#if !addingCard && cardChoices.some(offered)}
-              <Button size="sm" icon="plus" onclick={openAddCard} data-testid="cfg-add-card"
-                >Add card</Button
-              >
+              <Button size="sm" icon="plus" onclick={openAddCard} data-testid="cfg-add-card">
+                Add card
+              </Button>
             {/if}
           </div>
           {#each doc.cards as entry (entry.slot)}
@@ -766,9 +766,9 @@
             {#if c?.status === 'substitute'}
               <p class="item-note">
                 Using the emulator’s substitute ROM — upload the card’s ROM to use Apple’s.
-                <Link href="#upload" onclick={(e: Event) => (e.preventDefault(), uploadCardRom(c))}
-                  >Load ROM…</Link
-                >
+                <Link href="#upload" onclick={(e: Event) => (e.preventDefault(), uploadCardRom(c))}>
+                  Load ROM…
+                </Link>
               </p>
             {/if}
           {/each}
@@ -789,10 +789,11 @@
                     disabled={!offered(ch)}
                     data-badge={badge}
                     data-badge-intent={ch.card.status === 'unavailable' ? 'warning' : 'info'}
-                    >{ch.card.label}{ch.reason && ch.card.status !== 'unavailable'
-                      ? ` — ${ch.reason}`
-                      : ''}</option
                   >
+                    {ch.card.label}{ch.reason && ch.card.status !== 'unavailable'
+                      ? ` — ${ch.reason}`
+                      : ''}
+                  </option>
                 {/each}
               </Select>
               <Select id="cfg-add-card-slot" bind:value={addSlot} aria-label="Slot">
@@ -804,8 +805,10 @@
                 size="sm"
                 variant="primary"
                 onclick={confirmAddCard}
-                disabled={!addSlot || !!addChoice?.reason}>Add</Button
+                disabled={!addSlot || !!addChoice?.reason}
               >
+                Add
+              </Button>
               <Button size="sm" variant="ghost" onclick={() => (addingCard = false)}>Cancel</Button>
             </div>
             {#if addChoice?.card.status === 'unavailable'}
@@ -814,8 +817,10 @@
                 {addChoice.reason}.
                 <Link
                   href="#upload"
-                  onclick={(e: Event) => (e.preventDefault(), uploadCardRom(needs))}>Load ROM…</Link
+                  onclick={(e: Event) => (e.preventDefault(), uploadCardRom(needs))}
                 >
+                  Load ROM…
+                </Link>
               </p>
             {/if}
           {/if}
@@ -878,8 +883,10 @@
                   size="sm"
                   icon="plus"
                   onclick={() => openAddDevice(bus.id)}
-                  data-testid={`cfg-add-device-${bus.id}`}>Add device</Button
+                  data-testid={`cfg-add-device-${bus.id}`}
                 >
+                  Add device
+                </Button>
               {/if}
             </div>
             {#each onBus as { d, index } (mc.positionKey(d))}
@@ -942,11 +949,13 @@
                   size="sm"
                   variant="primary"
                   onclick={confirmAddDevice}
-                  disabled={addUnit < 0}>Add</Button
+                  disabled={addUnit < 0}
                 >
-                <Button size="sm" variant="ghost" onclick={() => (addingDeviceOn = null)}
-                  >Cancel</Button
-                >
+                  Add
+                </Button>
+                <Button size="sm" variant="ghost" onclick={() => (addingDeviceOn = null)}>
+                  Cancel
+                </Button>
               </div>
             {/if}
           {/each}
@@ -970,13 +979,13 @@
     <Separator orientation="horizontal" class="form-divider" />
     <div class="form-actions">
       {#if profile && doc}
-        <Button size="lg" variant="ghost" onclick={resetToDefaults} data-testid="cfg-reset"
-          >Reset to defaults</Button
-        >
+        <Button size="lg" variant="ghost" onclick={resetToDefaults} data-testid="cfg-reset">
+          Reset to defaults
+        </Button>
       {/if}
-      <Button type="submit" size="lg" variant="primary" class="primary-button" disabled={!canStart}
-        >Start</Button
-      >
+      <Button type="submit" size="lg" variant="primary" class="primary-button" disabled={!canStart}>
+        Start
+      </Button>
     </div>
   </FormGrid>
 </div>

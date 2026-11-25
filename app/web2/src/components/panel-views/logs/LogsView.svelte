@@ -94,9 +94,9 @@
   >
     {#if shown.length === 0}
       <Hint class="logs-empty" inset="view">
-        No log lines yet. Boot a machine and bring a category up with <code
-          >log.set &lt;category&gt; &lt;level&gt;</code
-        >
+        No log lines yet. Boot a machine and bring a category up with <code>
+          log.set &lt;category&gt; &lt;level&gt;
+        </code>
         in the terminal, or use the <strong>Levels</strong> button above.
       </Hint>
     {:else}

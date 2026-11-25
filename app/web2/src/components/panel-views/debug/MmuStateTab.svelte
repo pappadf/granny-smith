@@ -57,9 +57,9 @@
     <div class="reg-block" data-reg={r.name}>
       <div class="reg-line">
         <span class="reg-name">{r.name.toUpperCase()}</span>{#if isLisa}=
-          <span class="reg-hex">{r.value}</span>{:else}= $<span class="reg-hex"
-            >{fmtHex32(r.value)}</span
-          >{/if}
+          <span class="reg-hex">{r.value}</span>{:else}= $<span class="reg-hex">
+            {fmtHex32(r.value)}
+          </span>{/if}
       </div>
       {#if tc && r.name === 'tc'}
         <div class="reg-decoded">

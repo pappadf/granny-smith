@@ -60,8 +60,10 @@
     {target}
     {rel}
     aria-busy={busy || undefined}
-    {...rest as Record<string, unknown>}>{@render content()}</a
+    {...rest as Record<string, unknown>}
   >
+    {@render content()}
+  </a>
 {:else}
   <button
     bind:this={ref}
@@ -70,8 +72,10 @@
     data-size={size}
     {type}
     aria-busy={busy || undefined}
-    {...rest}>{@render content()}</button
+    {...rest}
   >
+    {@render content()}
+  </button>
 {/if}
 
 <style>
