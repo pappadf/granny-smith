@@ -2,9 +2,9 @@
 // Copyright (c) pappadf
 
 // shell_internal.h
-// Private surface of shell.c for the rest of src/core/shell (the script
-// interpreter prints its REPL results through it). Not part of the
-// public shell API — see shell.h for that.
+// Private surface of shell.c for the rest of the core (the script engine
+// prints the terminal's results through it). Not part of the public shell
+// API — see shell.h for that.
 
 #ifndef GS_SHELL_INTERNAL_H
 #define GS_SHELL_INTERNAL_H
@@ -19,8 +19,7 @@ extern "C" {
 #endif
 
 // The REPL value formatter: scalars, object attribute tables, and
-// object-list tables. Used by the script interpreter for interactive
-// statement results.
+// object-list tables. Used by the terminal's command form for results.
 void shell_print_value(const value_t *v);
 
 #ifdef __cplusplus

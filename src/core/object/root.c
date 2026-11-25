@@ -23,7 +23,6 @@
 #include "ppc_jit.h"
 #include "predecode.h"
 #include "shell.h"
-#include "shell_funcs.h"
 #include "status.h"
 #include "system.h"
 #include "usage.h"
@@ -324,7 +323,6 @@ void root_install(struct config *cfg) {
 
 void root_uninstall(void) {
     // Detach function entry objects before their parent stub goes away.
-    shell_funcs_uninstall();
     for (int i = g_stub_count - 1; i >= 0; i--) {
         struct object *o = g_stubs[i];
         object_destroy(&o);

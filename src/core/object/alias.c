@@ -234,64 +234,46 @@ void alias_register_builtin_or_log(const char *owner, const char *name, const ch
 }
 
 status_t alias_register_builtin(const char *name, const char *path, char *err_buf, size_t err_size) {
-    job_tables_lock();
     status_t r = alias_register_builtin_impl(name, path, err_buf, err_size);
-    job_tables_unlock();
     return r;
 }
 
 status_t alias_add_user(const char *name, const char *path, char *err_buf, size_t err_size) {
-    job_tables_lock();
     status_t r = alias_add_user_impl(name, path, err_buf, err_size);
-    job_tables_unlock();
     return r;
 }
 
 status_t alias_remove_user(const char *name, char *err_buf, size_t err_size) {
-    job_tables_lock();
     status_t r = alias_remove_user_impl(name, err_buf, err_size);
-    job_tables_unlock();
     return r;
 }
 
 const char *alias_lookup(const char *name, alias_kind_t *kind_out) {
-    job_tables_lock();
     const char *r = alias_lookup_impl(name, kind_out);
-    job_tables_unlock();
     return r;
 }
 
 bool alias_lookup_copy(const char *name, char *buf, size_t size, alias_kind_t *kind_out) {
-    job_tables_lock();
     const char *r = alias_lookup_impl(name, kind_out);
     bool ok = r && buf && strlen(r) < size;
     if (ok)
         memcpy(buf, r, strlen(r) + 1);
-    job_tables_unlock();
     return ok;
 }
 
 void alias_each(alias_iter_fn fn, void *ud) {
-    job_tables_lock();
     alias_each_impl(fn, ud);
-    job_tables_unlock();
 }
 
 size_t alias_count(void) {
-    job_tables_lock();
     size_t r = alias_count_impl();
-    job_tables_unlock();
     return r;
 }
 
 void alias_reset(void) {
-    job_tables_lock();
     alias_reset_impl();
-    job_tables_unlock();
 }
 
 void alias_clear_user(void) {
-    job_tables_lock();
     alias_clear_user_impl();
-    job_tables_unlock();
 }

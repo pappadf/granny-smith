@@ -44,6 +44,31 @@ void gs_lua_interrupt(void);
 typedef void (*gs_lua_reporter_fn)(const char *file, int line, const char *msg, const char *text);
 void gs_lua_set_reporter(gs_lua_reporter_fn fn);
 
+// The debugger's text in the shell spelling (`$name`, `&&`, `${expr:08x}`),
+// compiled to Lua once and run non-yieldably.  A breakpoint condition is
+// checked when it is set (VK_NONE, or VK_ERROR "invalid breakpoint condition
+// '...': why") and evaluated at each hit (an error counts as true).  A
+// template (a logpoint's message) is expanded with `n` named bindings ahead
+// of the globals; a failing `${}` reads as its message.
+struct value;
+struct value gs_lua_condition_check(const char *text);
+bool gs_lua_condition_eval(const char *text);
+struct value gs_lua_expand(const char *text, int n, const char *const *names, const struct value *vals);
+
+// The terminal's two forms (gs_lua_lib.lua, gs.shell_line): whether `text`
+// is one command line (`files.ls /tmp`, `machine.cpu.d0 = 0x10`) rather than
+// a Lua chunk -- nothing is evaluated to decide -- and whether it is a Lua
+// chunk that is not finished yet (Enter breaks the line).
+bool gs_lua_is_command_line(const char *text);
+bool gs_lua_needs_continuation(const char *text);
+
+// Run one terminal line on the calling stack -- not as a job -- with the
+// terminal's printing (shell.run).  0 ok, -1 failed (reported).
+int gs_lua_run_line(const char *text);
+
+// The `vars` table as a list of 'name=value' strings (shell.vars).
+struct value gs_lua_vars(void);
+
 // Release the state (tests; the platforms never need to).
 void gs_lua_shutdown(void);
 

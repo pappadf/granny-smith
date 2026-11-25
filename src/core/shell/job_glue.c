@@ -7,12 +7,7 @@
 #include "job/job.h"
 
 #include "scheduler.h"
-#include "script.h"
 #include "system.h"
-
-int job_glue_run_source(const char *src, bool interactive) {
-    return script_run_text(src, interactive);
-}
 
 // Whether a script's bare `scheduler.run` (no budget) holds the script
 // until the machine stops.  It does: a script file, stdin and a daemon

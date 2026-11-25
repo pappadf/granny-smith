@@ -57,7 +57,6 @@ void shell_complete(const char *line, int cursor_pos, struct completion *out) {
 void completion_free(struct completion *c) {
     (void)c;
 }
-void shell_var_init(void) {}
 uint32_t cpu_get_pc(struct cpu *cpu) {
     (void)cpu;
     return 0;
@@ -65,7 +64,7 @@ uint32_t cpu_get_pc(struct cpu *cpu) {
 const char *system_machine_model_id(void) {
     return "";
 }
-// shell_init hands the Lua runner its error reporter (gs_lua.h, script.h).
+// shell_init hands the Lua runner its error reporter (gs_lua.h, report.h).
 void script_report_error(const char *file, int line, const char *msg, const char *text) {
     (void)file, (void)line, (void)msg, (void)text;
 }
