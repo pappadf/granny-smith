@@ -46,6 +46,7 @@ with this checksum in lower case and continues with a second, longer one
 | `D905` | Macintosh XL Boot ROM 3A | Macintosh XL |
 | `F1A6F343` | Centris 610/650 and Quadra 800 (February 1993) | Centris 610, Centris 650, Quadra 610, Quadra 650, Quadra 800 |
 | `F1ACAD13` | Quadra 610/650/800 and later Centris 610/650 | Centris 610, Centris 650, Quadra 610, Quadra 650, Quadra 800 |
+| `FF7439EE` | LC 475/575 and Quadra 605 | LC 475, LC 575, Quadra 605 |
 
 Where one ROM file serves several models, the New Machine dialog lists each
 model separately, and a ROM revision appears in the model's name
@@ -137,6 +138,9 @@ on them also needs MODE32 installed on the startup disk.
 | Quadra 610 | `q610` | 8 MB; 4–68 MB | built-in; 12″–21″ monitors | one NuBus card (adapter, slot E) |
 | Quadra 650 | `q650` | 16 MB; 8–136 MB | built-in; 12″–21″ monitors | NuBus C, D, E |
 | Quadra 800 | `q800` | 16 MB; 8–136 MB | built-in; 12″–21″ monitors | NuBus C, D, E |
+| Macintosh LC 475 (Performa 475, 476) | `lc475` | 8 MB; 4, 5, 6, 8, 12, 20, 36 MB | built-in; 12″–21″ monitors | — (PDS empty) |
+| Quadra 605 | `q605` | 8 MB; 4, 5, 6, 8, 12, 20, 36 MB | built-in; 12″–21″ monitors | — (PDS empty) |
+| Macintosh LC 575 (Performa 575–578) | `lc575` | 8 MB; 4, 5, 6, 8, 12, 20, 36 MB | built-in 14″, 640×480 colour | — (PDS and communication slot empty) |
 
 All have a 1.4 MB SuperDrive and SCSI (the 900 and 950 also an external
 SCSI bus). The Quadra 700/900/950 start in 24-bit mode, the AV models in
@@ -149,6 +153,12 @@ The Centris 610 has a 68LC040, which has no floating-point unit. These
 machines shipped with System 7.1 and **System Enabler 040**: a System 7.1
 disk without that enabler stops with "This startup disk will not work on
 this Macintosh model". System 7.5 and later start them without an enabler.
+
+The LC 475, Quadra 605 and LC 575 share one ROM. The LC 475 and Quadra 605
+have a 68LC040 (no floating-point unit); the LC 575 has a full 68040 and a
+built-in 14″ colour screen. They shipped with System 7.1 and **System
+Enabler 065**; as with the Centris, System 7.1 without it refuses to start,
+and System 7.5 and later need no enabler.
 
 ## 5. Power Macintosh
 

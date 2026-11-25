@@ -1,16 +1,21 @@
-# djMEMC family — Centris 610/650, Quadra 610/650/800
+# djMEMC family — Centris 610/650, Quadra 610/650/800, LC 475/575, Quadra 605
 
-`src/machines/djmemc/djmemc.c` implements the five djMEMC machines as one
-substrate (`djmemc_substrate`) with a per-model board descriptor
-(`djmemc_board_desc_t`, reached through `hw_profile_t.board`);
-`src/machines/djmemc/wombat.c` holds the descriptors and profiles, and
-`src/machines/djmemc/iosb.c` the IOSB's register file. Hardware reference:
+`src/machines/djmemc/djmemc.c` implements the five djMEMC machines and the
+three MEMCjr machines as one substrate (`djmemc_substrate`) with a per-model
+board descriptor (`djmemc_board_desc_t`, reached through
+`hw_profile_t.board`); `src/machines/djmemc/wombat.c` holds the djMEMC
+descriptors and profiles, `src/machines/djmemc/memcjr.c` the MEMCjr ones,
+and `src/machines/djmemc/iosb.c` the IOSB's register file (which the MEMCjr
+boards' PrimeTime shares). Hardware reference:
 [djmemc.md](../../../reference/machines/djmemc/djmemc.md) (family) and its
 machine pages ([c610.md](../../../reference/machines/djmemc/c610.md),
 [c650.md](../../../reference/machines/djmemc/c650.md),
 [q610.md](../../../reference/machines/djmemc/q610.md),
 [q650.md](../../../reference/machines/djmemc/q650.md),
-[q800.md](../../../reference/machines/djmemc/q800.md)).
+[q800.md](../../../reference/machines/djmemc/q800.md),
+[lc475.md](../../../reference/machines/djmemc/lc475.md),
+[lc575.md](../../../reference/machines/djmemc/lc575.md),
+[q605.md](../../../reference/machines/djmemc/q605.md)).
 
 ## 1. Responsibilities & design
 
@@ -41,6 +46,46 @@ The Centris 610's FPU is absent through `hw_profile_t.fpu_absent`, which
 `m68k_board_build_core` passes to `cpu_init_fpu`: every FPU instruction then
 takes the F-line trap and the System's software floating point runs.
 
+**The MEMCjr boards.** `djmemc_board_desc_t.chip` selects the memory
+controller (`DJMEMC_CHIP_DJMEMC`, the default, or `DJMEMC_CHIP_MEMCJR`) and
+`.cpuid` the CPU-ID register's value (0 is the djMEMC's $A55A2BAD):
+
+| Model | id | board | clock | CPU | CPU-ID | BoxFlag |
+|---|---|---|---|---|---|---|
+| LC 475 | `lc475` | Primus | 25 MHz | 68LC040 | $A55A2221 | 83 |
+| Quadra 605 | `q605` | Aladdin | 25 MHz | 68LC040 | $A55A2225 | 88 |
+| LC 575 | `lc575` | Optimus | 33 MHz | 68040 | $A55A222E | 86 |
+
+The ROM (`FF7439EE`) finds them by the CPU-ID alone (bit 11 clear: no VIA
+supplement); its low two bits name the clock, from which the ROM picks the
+MEMCjr and PrimeTime timing. A MEMCjr board differs from a djMEMC one in:
+
+- RAM: 4 MB soldered (bank 0) and one SIMM socket whose sides are banks 1
+  and 2 (`memcjr_ram_banks`; 1/4/16 MB single-sided, 2/8/32 MB
+  double-sided), 4-36 MB.
+- The register interface: the MEMCjr's registers are six bits wide on the
+  data bus, the bits above going through the latch at $7C. Software writes
+  the latch (bits 6-11) just before a register, and after reading one reads
+  its bits 6-11 back from the latch; a read here loads the latch
+  (`memcjr_latch_load`). The frame-buffer controller's registers at
+  $F9800000 are read the same way (`memcjr_video_*` front the DAFB model);
+  without it the video driver's save-and-restore of the horizontal timing
+  around its line-compare probe writes back garbage. The register window
+  decodes 32 longwords instead of the djMEMC's 16.
+- The bank decode (`djmemc_bank_start`): five bank registers in 1 MB units
+  with a 10-bit start: the low six bits in the register, the high four from
+  the latch as the register lands (recorded per bank, `jr_bank_hi`).
+- ADB, PRAM and the clock on a Cuda (VIA1 SR and PB3-PB5, as on the AV
+  models) instead of the VIA transceiver and the RTC chip.
+- No SONIC, MAC PROM or Kiwi (`memcjr_io_ranges`); the LC PDS and the
+  LC 575's communication slot are not modelled (`nubus_slots` NULL). The
+  communication slot's window ($0A000) bus-errors, which is how the ROM's
+  probe for the slot's Ethernet card finds it empty: with a floating bus it
+  would wait forever on the card's command register.
+- The LC 575's display is built in (`lc575_builtin_video`, the 14" colour
+  CRT with the 640x480 RGB sense code); the LC 475 and Quadra 605 take the
+  same external monitors as the djMEMC boards.
+
 ## 2. Key types & files
 
 | Type / function | File | Purpose |
@@ -51,6 +96,8 @@ takes the F-line trap and the System's software floating point runs.
 | `djmemc_map_ram` | `djmemc.c` | applies the bank registers to the page table |
 | `djmemc_io_ranges` | `djmemc.c` | the I/O island decode table |
 | `iosb_t` | `iosb.h` | the IOSB configuration registers and VIA2's DREQ flag |
+| `memcjr_io_ranges` | `djmemc.c` | the MEMCjr boards' I/O island decode |
+| `djmemc_bank_start` | `djmemc.c` | a bank's start: the djMEMC field, or the MEMCjr register + latch bits |
 
 ## 3. Behaviour/algorithms
 
@@ -90,18 +137,22 @@ Nothing family-specific: the machine's devices appear under the usual
 ## 5. Checkpointing
 
 The `djmemc` part saves the overlay state, the djMEMC and Kiwi register
-files, the slot-IRQ mask, the SONIC byte latch and the IOSB; a restore
+files, the MEMCjr per-bank latch bits, the slot-IRQ mask, the SONIC byte
+latch and the IOSB; the MEMCjr boards' Cuda is its own `cuda` part; a restore
 re-applies the bank map through the overlay drop. The DAFB's monitor strap
 is its own identity part (`dafb.monitor`). `suite-djmemc`'s
-`q800-checkpoint` row round-trips a booted Finder.
+`q800-checkpoint` row round-trips a booted Finder, `suite-memcjr`'s
+`q605-checkpoint` the MEMCjr side.
 
 ## 6. Testing
 
 `tests/integration/suite-djmemc`: eleven rows booting all five models from
 SCSI and floppy (System 7.1 with System Enabler 040, 7.5, 7.5.3, 7.6) to
 About This Macintosh, asserting machine id, ROM id and BoxFlag, plus the
-checkpoint row. `machine-capabilities` and `machine-profile-schema` pin the
-profiles.
+checkpoint row. `tests/integration/suite-memcjr`: seven rows booting the
+LC 475, LC 575 and Quadra 605 from SCSI and floppy (System 7.1 with System
+Enabler 065, 7.5, 7.5.3, 7.6) to About This Macintosh, plus a checkpoint
+row. `machine-capabilities` and `machine-profile-schema` pin the profiles.
 
 ## 7. Known debts
 
@@ -109,6 +160,10 @@ profiles.
   measured on this board.
 - Interleaving (chip version > 0) is not modelled.
 - Nothing on the modelled NuBus raises the Kiwi write-buffer error.
+- MEMCjr: bank register bit 10 (a mode bit the ROM preserves) and the
+  timing registers ($30, $34) latch and read back without effect; the
+  PrimeTime's sound input and DFAC II are not modelled beyond the IOSB's
+  sound block; no card is offered for the LC PDS or the communication slot.
 
 ## 8. See also
 

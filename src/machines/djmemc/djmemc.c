@@ -208,6 +208,11 @@ static void djmemc_reset_regs(const djmemc_board_desc_t *desc, djmemc_state_t *s
     st->memc_regs[DJMEMC_REG_MEMTOP >> 2] = 0xFFu;
 }
 
+// MEMCjr: a register read loads the latch with the register's bits 6-11.
+static void memcjr_latch_load(djmemc_state_t *st, uint32_t value) {
+    st->memc_regs[MEMCJR_REG_LATCH >> 2] = (value >> MEMCJR_LATCH_HI_SHIFT) & MEMCJR_LATCH_MSK;
+}
+
 // The register a window offset decodes to: the djMEMC repeats its sixteen
 // longwords through $7F, the MEMCjr decodes thirty-two.
 static uint32_t djmemc_reg_index(config_t *cfg, uint32_t win_off) {
@@ -224,6 +229,10 @@ uint8_t djmemc_reg_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
     djmemc_state_t *st = djmemc_st(cfg);
     uint32_t idx = djmemc_reg_index(cfg, win_off);
     uint32_t v = st->memc_regs[idx];
+    // A MEMCjr register read hands its bits 6-11 to the latch (the read
+    // completes on the low lane).
+    if (djmemc_is_jr(cfg) && idx != (MEMCJR_REG_LATCH >> 2) && (win_off & 3u) == 3u)
+        memcjr_latch_load(st, v);
     // Interleave register bits 9-11 are the chip's version.  Version 0 is
     // the part the ROM does not enable interleaving on, which keeps the bank
     // map linear (interleaving scrambles it, and is a timing feature only).
@@ -417,6 +426,25 @@ const board_io_range_t djmemc_io_ranges[] = {
     {0}, // sentinel
 };
 
+// The communication slot's window (the LC 575's; the slot Apple's
+// Ethernet card puts its SONIC at): with no card fitted nothing answers and
+// the cycle bus-errors, which is how the ROM's probe finds the slot empty.
+static uint8_t memcjr_commslot_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off;
+    memory_signal_bus_error(djmemc_st(cfg)->io.window_base + addr, false);
+    return 0xFF;
+}
+
+static uint8_t memcjr_commslot_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)cfg, (void)win_off, (void)addr;
+    return 0xFF; // what the faulting read returns, without the fault
+}
+
+static void memcjr_commslot_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off, (void)value;
+    memory_signal_bus_error(djmemc_st(cfg)->io.window_base + addr, true);
+}
+
 // The MEMCjr boards' island: the same decode less the SONIC, its PROM and
 // the Kiwi, which these boards do not carry (Apple, Macintosh LC 475 and
 // Macintosh Quadra 605 Developer Note (1993), Figure 2-2, p. 27).
@@ -425,6 +453,9 @@ const board_io_range_t memcjr_io_ranges[] = {
     {0x03A00, 0x03C00, 0, DJMEMC_VIA_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, djmemc_via2_ifr_read, djmemc_via2_ifr_write,
      "via2_ifr", .esync = 1, .peek_fn = djmemc_via2_ifr_peek},
     {0x02000, 0x04000, BOARD_DEV_VIA2, DJMEMC_VIA_IO_PENALTY, BOARD_IO_MASK_A0, 0, 0, NULL, NULL, "via2", .esync = 1},
+    // An empty communication slot: no turnaround to charge, the cycle aborts.
+    {0x0A000, 0x0C000, BOARD_DEV_VIA1, 0, BOARD_IO_NORMAL, 0, 0, memcjr_commslot_read, memcjr_commslot_write,
+     "comm_slot", .berr = 1, .peek_fn = memcjr_commslot_peek},
     {0x0C000, 0x0E000, BOARD_DEV_SCC, DJMEMC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
     {0x0E000, 0x10000, 0, DJMEMC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, djmemc_reg_read, djmemc_reg_write, "memcjr"},
     {0x10000, 0x10100, BOARD_DEV_SCSI96, DJMEMC_IO_PENALTY, BOARD_IO_STRIDE_16, 0, 0, NULL, NULL, "scsi_53c96"},
@@ -561,6 +592,63 @@ static bool djmemc_scsi_dreq(void *context) {
 }
 
 // ============================================================
+// MEMCjr video registers through the latch
+// ============================================================
+// The frame-buffer controller is the same DAFB-compatible block, but on the
+// MEMCjr its registers are read six bits at a time: a read of the low half
+// of a register loads the latch with bits 6-11, which the driver then reads
+// from $50F0E07C.  Writes carry the full value (the driver writes the latch
+// first and the whole value after), so they go straight through.
+
+static uint32_t memcjr_video_read32(void *ctx, uint32_t addr) {
+    djmemc_state_t *st = djmemc_st((config_t *)ctx);
+    uint32_t v = st->dafb_iface->read_uint32(st->dafb, addr);
+    memcjr_latch_load(st, v);
+    return v;
+}
+
+static uint16_t memcjr_video_read16(void *ctx, uint32_t addr) {
+    djmemc_state_t *st = djmemc_st((config_t *)ctx);
+    uint16_t v = st->dafb_iface->read_uint16(st->dafb, addr);
+    if (addr & 2u)
+        memcjr_latch_load(st, v);
+    return v;
+}
+
+static uint8_t memcjr_video_read8(void *ctx, uint32_t addr) {
+    djmemc_state_t *st = djmemc_st((config_t *)ctx);
+    return st->dafb_iface->read_uint8(st->dafb, addr);
+}
+
+static void memcjr_video_write8(void *ctx, uint32_t addr, uint8_t v) {
+    djmemc_state_t *st = djmemc_st((config_t *)ctx);
+    st->dafb_iface->write_uint8(st->dafb, addr, v);
+}
+
+static void memcjr_video_write16(void *ctx, uint32_t addr, uint16_t v) {
+    djmemc_state_t *st = djmemc_st((config_t *)ctx);
+    st->dafb_iface->write_uint16(st->dafb, addr, v);
+}
+
+static void memcjr_video_write32(void *ctx, uint32_t addr, uint32_t v) {
+    djmemc_state_t *st = djmemc_st((config_t *)ctx);
+    st->dafb_iface->write_uint32(st->dafb, addr, v);
+}
+
+static uint8_t memcjr_video_peek8(void *ctx, uint32_t addr) {
+    djmemc_state_t *st = djmemc_st((config_t *)ctx);
+    return memory_iface_read8(st->dafb_iface, st->dafb, addr, true);
+}
+
+static uint16_t memcjr_video_peek16(void *ctx, uint32_t addr) {
+    return (uint16_t)((memcjr_video_peek8(ctx, addr) << 8) | memcjr_video_peek8(ctx, addr + 1));
+}
+
+static uint32_t memcjr_video_peek32(void *ctx, uint32_t addr) {
+    return ((uint32_t)memcjr_video_peek16(ctx, addr) << 16) | memcjr_video_peek16(ctx, addr + 2);
+}
+
+// ============================================================
 // Memory layout
 // ============================================================
 
@@ -586,8 +674,25 @@ static void djmemc_memory_layout(config_t *cfg) {
 
     // Video: the frame-buffer controller's registers at $F9800000, VRAM
     // pages direct at $F9000000.
-    memory_map_add(cfg->memory_map, DAFB_REG_BASE, DAFB_REG_APERTURE, "djMEMC video regs",
-                   (memory_interface_t *)dafb_reg_interface(st->dafb), st->dafb);
+    if (desc->chip == DJMEMC_CHIP_MEMCJR) {
+        st->dafb_iface = dafb_reg_interface(st->dafb);
+        st->video_interface = (memory_interface_t){
+            .read_uint8 = memcjr_video_read8,
+            .read_uint16 = memcjr_video_read16,
+            .read_uint32 = memcjr_video_read32,
+            .write_uint8 = memcjr_video_write8,
+            .write_uint16 = memcjr_video_write16,
+            .write_uint32 = memcjr_video_write32,
+            .peek_uint8 = memcjr_video_peek8,
+            .peek_uint16 = memcjr_video_peek16,
+            .peek_uint32 = memcjr_video_peek32,
+        };
+        memory_map_add(cfg->memory_map, DAFB_REG_BASE, DAFB_REG_APERTURE, "MEMCjr video regs", &st->video_interface,
+                       cfg);
+    } else {
+        memory_map_add(cfg->memory_map, DAFB_REG_BASE, DAFB_REG_APERTURE, "djMEMC video regs",
+                       (memory_interface_t *)dafb_reg_interface(st->dafb), st->dafb);
+    }
     // The VRAM decode spans the whole 2 MB aperture whatever is fitted, the
     // installed VRAM repeating through it: PrimaryInit reads the top of
     // every possible VRAM size before it sizes (it must not bus-error), and

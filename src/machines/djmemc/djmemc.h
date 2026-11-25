@@ -85,12 +85,15 @@ struct sonic;
 #define DJMEMC_BANK_WINDOW    0x04000000u // 64 MB: where sizing parks each bank
 #define DJMEMC_BANK_START_MSK 0xFFu
 
-// MEMCjr: the same window, decoded to $7F.  Banks 0-4 at $04-$14 count
-// 1 MB; a bank start is ten bits wide but its register keeps the low six,
-// the high four coming from the upper-address latch at $7C, which software
-// writes just before each bank (and MemTop) register.  Latch bit 4 is a
-// separate control bit software preserves.  MemTop ($2C) is the top of
-// stitched RAM minus one, in 1 MB units.
+// MEMCjr: the same window, decoded to $7F.  The chip's registers are six
+// bits wide on the data bus; the bits above come through the upper-bits
+// latch at $7C.  Software writes the latch (the value's bits 6-11) just
+// before a register, and after reading a register reads its bits 6-11 back
+// from the latch -- the bank registers here and the frame-buffer
+// controller's registers at $F9800000 alike.  Banks 0-4 at $04-$14 count
+// 1 MB: a 10-bit start, its low six bits in the register, the high four
+// from the latch.  MemTop ($2C) is the top of stitched RAM minus one, in
+// 1 MB units.
 #define MEMCJR_REG_COUNT      32 // longwords decoded ($00-$7F)
 #define MEMCJR_REG_LATCH      0x7Cu
 #define MEMCJR_MAX_BANKS      5
@@ -98,6 +101,7 @@ struct sonic;
 #define MEMCJR_BANK_LO_MSK    0x3Fu // the bank register's six bits
 #define MEMCJR_LATCH_HI_MSK   0x0Fu // the latch's four high start bits
 #define MEMCJR_LATCH_HI_SHIFT 6
+#define MEMCJR_LATCH_MSK      0x3Fu // the latch's six data bits
 
 // Kiwi (YANCC-compatible) register file ($28000): one bit per longword.
 #define DJMEMC_KIWI_REG_COUNT 64
@@ -185,6 +189,8 @@ typedef struct djmemc_state {
     board_io_t io; // device handles for the shared I/O engine
     memory_interface_t io_interface; // registered at the $50000000 island
     memory_interface_t cpuid_interface; // the CPU-ID page at $5FFFF000
+    memory_interface_t video_interface; // MEMCjr: the video registers seen through the latch
+    const memory_interface_t *dafb_iface; // MEMCjr: the frame-buffer controller's own face
 
     iosb_t iosb; // IOSB configuration registers ($18000)
 
