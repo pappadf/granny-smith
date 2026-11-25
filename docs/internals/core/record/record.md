@@ -21,7 +21,10 @@ container is the Matroska muxer behind a small muxer interface
 [`mkv_mux.h`](../../../../src/core/record/mkv_mux.h)) and a reader for the
 subset it writes ([`mkv_read.c`](../../../../src/core/record/mkv_read.c),
 [`mkv_read.h`](../../../../src/core/record/mkv_read.h)). The codecs are in
-the codec library ([../../codec/codec.md](../../codec/codec.md) §1.4).
+the codec library ([../../codec/codec.md](../../codec/codec.md) §1.4). The
+browser's MP4 export (§3.8) reads recordings back with the same reader and
+decoders, built into a module of their own
+([`recdec_main.c`](../../../../src/platform/wasm/recdec_main.c)).
 
 ## 1. Responsibilities & design
 
@@ -76,6 +79,8 @@ the codec library ([../../codec/codec.md](../../codec/codec.md) §1.4).
 | `muxer_t`, `muxer_ops_t` | a container writer: queue a packet of a track, close (finalise and free), bytes so far |
 | `mux_video_t`, `mux_audio_t` | the tracks: ZMBV frame size, display size, frame period and bit count; FLAC rate, channels, depth and STREAMINFO |
 | `mkv_reader_t`, `mkv_track_t`, `mkv_packet_t` | the reader: tracks, then packets (track, timestamp, keyframe, bytes) in file order |
+| `mkv_read_open`, `mkv_read_open_file` | open a path, or a stream the caller opened (the export module's, whose reads call back into the page) |
+| `recdec_open`, `recdec_next`, `recdec_rgba`, `recdec_pcm` | the export module's C API (`recdec_main.c`): a recording's facts and frame count, then one decoded frame (RGBA) or FLAC block at a time |
 
 ## 3. Behaviour/algorithms
 
@@ -266,6 +271,80 @@ itself.
   walk, and the file counts as cut. It handles the writer's subset, plus
   BlockGroups; not lacing or unknown-size clusters.
 
+### 3.8 The MP4 export (browser)
+
+A recording is lossless and plays in VLC, mpv, ffplay and on YouTube, but
+not in a browser, QuickTime Player or a phone. The web app turns a finished
+`.mkv` into an `.mp4` with H.264 video and AAC audio, encoded by the
+browser through WebCodecs, in a worker apart from the emulator
+(`app/web2/src/recorder/`; the page and the dialog are in
+[docs/guide/web.md](../../../guide/web.md), "Screen recording").
+
+- **Reading.** The worker opens the `.mkv` from OPFS itself and reads it
+  through a small, non-threaded Emscripten module, `build/recdec.js` +
+  `recdec.wasm` (`make recdec-module`, part of `make`), built from this
+  reader, the codec library's ZMBV and FLAC decoders and
+  `src/platform/wasm/recdec_main.c` — the pattern of the LaserWriter
+  interpreter's module. Its objects are compiled without `-pthread`. The
+  module has no filesystem: `mkv_read_open_file` reads a `fopencookie`
+  stream whose reads call `Module.recdecRead(source, at, len)`, which the
+  worker answers with synchronous slices of the OPFS `File`
+  (`FileReaderSync`), so a recording of any size is read a cluster at a
+  time and the emulator's own handle on the file is never contended.
+  `recdec_open` scans the packets once to count the frames (the dialog's
+  progress), then rewinds. A frame is handed over as RGBA, the palette
+  applied (`codec_zmbv_dec_rgb24`), so it equals what
+  `recorder.extract` writes.
+- **Picture.** The recording's own size by default; 2×, 3× or 4×
+  nearest-neighbour. Non-square pixels (`DisplayWidth`/`DisplayHeight`
+  of another shape) are widened or heightened to square, to the nearest
+  whole pixel. H.264 here is 4:2:0, so an odd width or height gets one
+  black column or row (right, bottom). Each frame becomes an RGBX
+  `VideoFrame` at *k* × the frame period. The encoder: H.264 High (then
+  Main, then Constrained Baseline, if the browser lacks High) at the level
+  the frame size and rate need, variable bitrate at 0.2 bits per pixel per
+  frame, `latencyMode: "quality"`, a keyframe every two seconds; if the
+  default (often a hardware encoder) refuses the configuration, the probe
+  is repeated with `hardwareAcceleration: "prefer-software"`.
+- **Sound.** The FLAC blocks are resampled to 48 kHz by a windowed-sinc
+  resampler (16 zero crossings each side, Blackman window, 256
+  interpolated phases, each normalised to unit gain; the output position
+  computed in integers, so nothing drifts; the output is round(*n* × 48,000
+  / rate) frames) and given to an `AudioEncoder` as planar float: AAC-LC
+  (`mp4a.40.2`) at 128 kb/s mono or 192 kb/s stereo. Without an AAC
+  encoder (Chrome and Edge on Linux, Playwright's Chromium) the sound is
+  Opus at the same rate and bitrate; without either the export is video
+  only, and the dialog says so.
+- **Pacing.** The decode loop waits while more than eight frames (or
+  audio blocks) are queued in an encoder.
+- **Container.** The app's own MP4 writer (`mp4Writer.ts`, no
+  dependency): `ftyp`, `moov`, `mdat`; `avc1` with the encoder's `avcC`
+  and a 1:1 `pasp`; `mp4a` with an `esds` carrying the encoder's
+  AudioSpecificConfig, or `Opus` with a `dOps`. The video's time scale is
+  1203 Hz with samples of 20, 40 or 80 — the recording's rate exactly — so
+  each track's `stts` is one entry and the file is constant-rate by
+  construction. Consecutive samples of a track form a chunk (`stsc`,
+  `stco`, `co64` past 4 GB); `stss` lists the keyframes. An encoder that
+  reorders frames (B-frames) gets a `ctts` and an edit list starting at the
+  first frame. The audio's edit list skips Opus' pre-skip (from the
+  OpusHead) or an AAC encoder's priming when it announces it with a
+  negative first timestamp, and ends at the sound's own length, so picture
+  and sound end together. Samples go to a scratch file in OPFS
+  (`/opfs/upload/.scratch/…`) as they are encoded; at the end the final
+  file is written index first (`<name>.mp4` beside the recording), so it
+  streams, and the scratch file is removed.
+- **Segments.** A recording that spans several files exports each to its
+  own `.mp4`, one after the other. Cancel closes the encoders and removes
+  every file the export wrote.
+- **Support** is probed at run time, never inferred from a version:
+  `VideoEncoder.isConfigSupported` and `AudioEncoder.isConfigSupported`
+  with the exact configurations. Without an H.264 encoder the export is not
+  offered: "Export MP4…" is disabled, its tooltip naming the ffmpeg
+  command of the user guide.
+
+Headless has no export: ffmpeg does the same job
+([docs/user/sound-and-video.md](../../../user/sound-and-video.md) §5).
+
 ## 4. Object-model / shell surface
 
 `recorder` is a root object beside `checkpoint` (`OBJ_ORDER_RECORDER`),
@@ -357,6 +436,25 @@ load during a recording is a cut (§3.5).
   decoded by `recorder.inspect` without errors) and its download; a page
   made hidden finalises the file and, shown again, continues in
   `name-2.mkv`.
+- `app/web2/tests/unit/recdec.test.ts` (vitest, Node): a Plus boot
+  recorded by `gs-headless --record` at test time, read by the export
+  module: its facts, every frame equal byte for byte to `recorder.extract`'s
+  PNGs, its sound to the extracted WAV, a cut file to its last cluster.
+- `app/web2/tests/unit/mp4Writer.test.ts`, `exportFrame.test.ts`: the MP4
+  writer's boxes and sample tables from canned chunks, read back; the
+  export sizes, padding and scaling; the resampler's length, a sine's level
+  and frequency, streaming in pieces.
+- `app/web2/tests/unit/mp4Export.ffmpeg.test.ts` (vitest, Node, with
+  ffmpeg): the whole export with stand-in encoders that run ffmpeg
+  (libx264 with B-frames, AAC, libopus) — ffmpeg decodes the result without
+  a warning, at 1203/20 fps with every frame, the sound as long as the
+  picture and the boot beep at its time; and the writer given an
+  ffmpeg-made H.264 + AAC stream decodes to the same frames and samples as
+  ffmpeg's own file.
+- `tests/e2e/web2-specs/recorder-export.spec.ts`: "Export MP4…" disabled
+  with its reason where WebCodecs has no H.264 encoder, in the toast and the
+  context menu; where it has one, a real export through the dialog,
+  downloaded, checked with ffprobe and played in the page's `<video>`.
 - `tests/integration/recorder-mode-change` (matrix): a IIcx's 1 → 8 bpp
   boot stays one file; a Quadra 700's 640x480 → 1152x870 two-page mode
   makes `name-2.mkv`.
@@ -369,9 +467,14 @@ load during a recording is a cut (§3.5).
 
 ## 7. Known debts
 
-- No MP4 export: a finished recording offers Download and Show in Files
-  (`recordingActions` in `app/web2/src/bus/recorder.ts`), not yet the
-  WebCodecs export.
+- The MP4 export's AAC path has been exercised with ffmpeg's encoder only
+  (Playwright's Chromium has no AAC encoder): whether a browser's AAC
+  encoder reports its priming (a negative first timestamp) is untested, and
+  one that does not leaves the sound up to its priming (about 20–45 ms)
+  late. Safari's AAC encoder has been reported to silence the first 1,024
+  samples. Both are for a check in Chrome, Edge and Safari.
+- The MP4's edit lists are in milliseconds (the movie time scale is
+  1,000), so the sound's end is cut to within a millisecond.
 - The GPU takeovers' readback cost while recording (§3.1, half rate at
   most) is not measured: headless Chromium's software WebGPU loses its
   device at the first canvas present, so no takeover runs with the machine

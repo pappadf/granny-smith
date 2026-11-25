@@ -604,6 +604,43 @@ the GPU presents (`display_t.presented_externally`, the WebGPU takeovers)
 is read back for each frame taken, so it is taken at half rate at most;
 the event's `external` says so and the indicator's tooltip repeats it.
 
+**Export MP4.** A finished recording's toast offers **Export MP4…**
+between Download and Show in Files, and the Filesystem panel's context
+menu offers it on `.mkv` files (one or several selected). Both open
+[`ExportMp4Dialog.svelte`](../../app/web2/src/components/dialogs/ExportMp4Dialog.svelte),
+driven by [`recorder/mp4Export.ts`](../../app/web2/src/recorder/mp4Export.ts)
+with its state in
+[`state/mp4Export.svelte.ts`](../../app/web2/src/state/mp4Export.svelte.ts).
+The pipeline itself is in
+[record.md](../internals/core/record/record.md) §3.8.
+
+- **Offered or not.** `recorder/probe.ts` asks WebCodecs
+  (`isConfigSupported` with the export's own configurations) once per page,
+  when `bus/recorder.ts` loads; the answer is in `mp4Export.support`.
+  Without an H.264 encoder the toast's button and the menu entry are
+  disabled, their tooltip (`title`) saying why and giving the ffmpeg
+  command (`ToastAction` and `ContextMenuItem` take `disabled` and `title`).
+- **The worker.** `recorder/export.worker.ts`, started on first use; it
+  imports the decoder module `recdec.js` / `recdec.wasm` beside
+  `main.mjs` (served from `build/` by the Vite middleware, copied into the
+  dist by `make ui2`, cache-busted like `main.mjs`). It reads and writes
+  OPFS itself (`lib/opfsDir.ts`, shared with `bus/opfs.ts`), never through
+  the emulator, so the machine runs on and can record again meanwhile.
+  Messages are in `recorder/exportProtocol.ts`: `info` (each recording's
+  size, rate, sound, and which of 1×–4× this browser can encode), `export`
+  (jobs `{src, dst, tmp}`: the `.mkv`, `<name>.mp4` beside it, and a
+  `scratchPath` for the samples), `progress` (at most ten a second),
+  `done`, `failed`, `cancel` / `cancelled`.
+- **The dialog.** Reading → the size (the recording's own by default; a
+  size the browser cannot encode is disabled), with the notes on 4:2:0
+  colour, YouTube's small-video tier and what the sound will be (AAC, Opus,
+  or none) → progress with **Cancel export** and **Hide** (the export
+  carries on; reopening Export MP4 shows it) → a toast with **Download**
+  (`bus/fsOps.ts downloadFiles`: the core reads the worker's new file
+  through its OPFS mount) and **Show in Files**. A failure stays in the
+  dialog with its reason. The file a recording is writing now (not a
+  suspended one) is refused with a notice: it is not finished.
+
 ## SYSTEM tab
 
 [`SystemView.svelte`](../../app/web2/src/components/panel-views/machine/SystemView.svelte)

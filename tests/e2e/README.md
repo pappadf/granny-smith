@@ -68,6 +68,7 @@ tests/e2e/
 │   ├── qd3d-thread.spec.ts              # QuickDraw 3D card's renderer on a Web Worker; frame lands on completion
 │   ├── rage128-webgpu.spec.ts           # Rage 128 WebGPU takeover: rage128-3d's equalities read back from the GPU, GPU 2D fills
 │   ├── recorder.spec.ts                 # Screen recorder: toolbar record → status bar → stop → the .mkv in OPFS decodes; a hidden page finalises the file, shown again continues in name-2.mkv
+│   ├── recorder-export.spec.ts          # Export MP4: disabled with its reason without WebCodecs encoders (toast, context menu); a real export in Chromium (H.264 + Opus) downloaded, probed with ffprobe, played in <video>
 │   ├── rom-upload-identity.spec.ts      # A ROM is stored by content id; a damaged dump of it is refused, not stored
 │   ├── rom-upload-lisa-chips.spec.ts    # Two Lisa ROM chips upload as one ROM; a lone chip is refused
 │   ├── rom-upload-listing.spec.ts       # A Welcome-page ROM upload shows up in an already-open Filesystem tab
@@ -93,6 +94,7 @@ tests/e2e/
 │   └── prod-smoke.spec.ts           # dist/ on a subpath w/o COI headers reaches __gsReady
 │
 ├── helpers/
+│   ├── recorder.ts                  # boot a Plus, record from the toolbar, wait for frames
 │   ├── test.ts                      # the specs' `test`: every page.goto() at max speed
 │   └── web2-fs.ts                   # gotoWeb2, OPFS staging, tree/file drag helpers
 │
