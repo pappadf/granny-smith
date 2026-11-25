@@ -322,7 +322,7 @@ callbacks is emitted at its source too; the page routes each in
 | `state:screen` | the renderer, where it consumes a shape change, and once when a machine is attached (boot or restore, before any frame) | `{width, height, par_w, par_h}` |
 | `state:machine_booted` | the swap step (`system_swap_in`): `machine.boot`, `checkpoint.load` (not `machine.restart`, which builds nothing) | `{model, restored}` |
 | `state:machine_shut_down` | `system_shut_down` (`machine.shutdown`): the machine is gone and none replaces it | `{}` |
-| `state:recorder` | the screen recorder (`record.c`): a recording `started`, at most once a host second while `recording`, a new file (`segment`), an `error` (then `stopped`), `stopped` | `{state, path, segment, frames, seconds, bytes, dropped}`, `message` with `error` |
+| `state:recorder` | the screen recorder (`record.c`): a recording `started`, at most once a host second while `recording`, a new file (`segment`), the file closed while the page is hidden (`suspended`), an `error` (then `stopped`), `stopped`; `state/recorder.svelte.ts` keeps the page's copy (see "Screen recording" below) | `{state, path, segment, frames, seconds, bytes, dropped, external}`, `message` with `error` |
 | `notify:floppy` | the floppy controller, on insert, eject (guest or host) and restore | `{drive, present}` |
 | `notify:media` | the SCSI bus, when a device's medium is inserted or ejected (guest or host) | `{bus, id, present}` |
 | `notify:drive_activity` | the tick, on a light's edge; a machine change turns lit lights off and re-bases | `{kind, state}` |
@@ -518,8 +518,8 @@ The Svelte app is organised under
 [`app/web2/src/components/`](../../app/web2/src/components/):
 
 - **Display** ([`display/`](../../app/web2/src/components/display/)) —
-  ScreenView (the canvas), DisplayToolbar (zoom, pause/run, save,
-  theme), DropOverlay (drag state machine §8.5), WelcomeView with
+  ScreenView (the canvas), DisplayToolbar (zoom, pause/run, save, the
+  record button, theme), DropOverlay (drag state machine §8.5), WelcomeView with
   Home / Configuration slides for new-machine setup (Home also lists
   the Recent machines, below).  Shut down (the toolbar's power button,
   the Debug tab's Stop) and Restart ask first while a machine is
@@ -533,7 +533,8 @@ The Svelte app is organised under
   Filesystem tree, Images, Checkpoints, Debug (Disassembly + Registers +
   FPU + Memory + MMU + Breakpoints + Watchpoints + Call Stack).
 - **Status bar** ([`status-bar/`](../../app/web2/src/components/status-bar/))
-  — machine state, drive activity, in-flight upload progress. The HD /
+  — machine state, the recording indicator, drive activity, in-flight
+  upload progress. The HD /
   FD / CD lights are real: the core counts every drive read and write on
   the image (`files.images[i].reads` / `.writes`), the worker tick sums
   them per kind and emits a `drive_activity` event only when
@@ -566,6 +567,42 @@ layer at [`app/web2/src/bus/`](../../app/web2/src/bus/) wraps every
 …), and an ESLint rule (`no-restricted-imports` in
 `app/web2/eslint.config.js`) refuses a `gsEval` or `gsEvalWithProgress`
 import under `components/`.
+
+### Screen recording
+
+The display toolbar's record button drives the core's `recorder` object
+([docs/internals/core/record/record.md](../internals/core/record/record.md)):
+its menu starts a recording with the options it offers (frame rate full,
+half or quarter; sound on or off; kept in localStorage as
+`gs-recorder-options` and written to `recorder.rate` / `recorder.audio`
+before `recorder.start`), and while one runs it is a red stop button
+(`recorder.stop`, which returns once every file is closed).
+[`bus/recorder.ts`](../../app/web2/src/bus/recorder.ts) makes those calls;
+before starting on storage that is not persistent (`files.persistent`
+false, `bus/storageHealth.ts`) it warns that the recording is lost with
+the page.
+
+What the page shows comes only from the `state:recorder` events, kept by
+[`state/recorder.svelte.ts`](../../app/web2/src/state/recorder.svelte.ts),
+so a recording started or stopped in the terminal looks the same: the
+status bar's indicator (a red dot, the recorded time — emulated, so it
+stands still and says "paused" while the machine is — the file size, and
+the dropped frames when there are any), and, on `stopped`, a toast naming
+the files with **Download** (the Filesystem panel's download path,
+`bus/fsOps.ts downloadFiles`) and **Show in Files** (the Filesystem tab,
+the file selected). `recordingActions` in `bus/recorder.ts` is the one
+list of what a finished recording offers. A failure (`error`, then
+`stopped`) is an error toast, and what was written is still offered.
+
+Hiding the page finalises the recording: the core's visibility callback
+(`em_main.c`, the same signal as the background checkpoint) calls
+`recorder_suspend`, which closes the file whole — Cues, sizes, duration —
+before returning, so a tab that is then killed leaves a complete file.
+Showing the page again calls `recorder_resume`: the recording continues in
+the next file, `name-2.mkv`, and the toast offers every file. A screen
+the GPU presents (`display_t.presented_externally`, the WebGPU takeovers)
+is read back for each frame taken, so it is taken at half rate at most;
+the event's `external` says so and the indicator's tooltip repeats it.
 
 ## SYSTEM tab
 
@@ -894,6 +931,7 @@ typed-dispatch and introspection surface.
 │   │   ├── fd/                 Floppy images (400K / 800K / 1.44 MB)
 │   │   ├── hd/                 SCSI hard-disk images (imported as UDIF .dmg)
 │   │   └── cd/                 CD-ROM images (imported as UDIF .dmg)
+│   ├── recordings/             Screen recordings (recorder.start with no path)
 │   ├── checkpoints/
 │   │   └── <machine-id>-<ts>/  Per-machine checkpoint dirs
 │   │       ├── state.checkpoint

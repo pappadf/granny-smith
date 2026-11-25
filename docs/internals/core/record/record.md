@@ -56,6 +56,10 @@ the codec library ([../../codec/codec.md](../../codec/codec.md) §1.4).
 - **A recording is process state.** It spans machine swaps, never enters a
   checkpoint, and is finalised when the active machine goes with nothing in
   its place (`quit`, `machine.shutdown`).
+- **A file can be finished without ending the recording.** Suspending
+  closes the file being written, whole, and records nothing until resumed;
+  resuming continues in the next segment. The browser does this when the
+  page is hidden, so a tab killed while hidden leaves a complete file.
 
 ## 2. Key types & files
 
@@ -63,10 +67,11 @@ the codec library ([../../codec/codec.md](../../codec/codec.md) §1.4).
 |---|---|
 | `recorder_settings_t`, `recorder_state_t` | the settings a recording starts with; its state for the attributes |
 | `recorder_start`, `recorder_stop`, `recorder_machine_attached`, `recorder_machine_gone` | the lifecycle (`record.c`); the last two from `system.c` |
+| `recorder_suspend`, `recorder_resume`, `recorder_suspended` | close the file and hold; continue in the next segment (§3.6); from `em_main.c` on page hide and show |
 | `recorder_set_platform_defaults` | a platform's defaults: whether a full ring blocks, the directory for a recording with no path |
-| `rec_seg_hdr_t`, `rec_frame_hdr_t`, `rec_repeat_hdr_t`, `rec_audio_hdr_t` | the records: SEGMENT, FRAME, REPEAT, AUDIO (and STOP, no payload) |
+| `rec_seg_hdr_t`, `rec_frame_hdr_t`, `rec_repeat_hdr_t`, `rec_audio_hdr_t` | the records: SEGMENT, FRAME, REPEAT, AUDIO (and CLOSE and STOP, no payload) |
 | `rec_coder_t` | the coder: the open segment's muxer, ZMBV and FLAC encoders, the raw and stored pictures, the audio timeline |
-| `rec_worker_t` | the ring, the recorder thread (or none, inline), the full-ring policy |
+| `rec_worker_t` | the ring, the recorder thread (or none, inline), the full-ring policy; `rec_worker_sync` waits until every record published has been coded |
 | `rec_timeline_t` | the audio timeline (§3.4) |
 | `muxer_t`, `muxer_ops_t` | a container writer: queue a packet of a track, close (finalise and free), bytes so far |
 | `mux_video_t`, `mux_audio_t` | the tracks: ZMBV frame size, display size, frame period and bit count; FLAC rate, channels, depth and STREAMINFO |
@@ -80,7 +85,13 @@ At a frame (`capture`):
 
 1. The active display (`system_display`), its pixels made current
    (`display_sync_pixels`) for a card that builds them on demand. No display
-   is a repeat.
+   is a repeat. A display presented by the GPU (`presented_externally`: the
+   Voodoo2 and Rage 128 under their WebGPU takeovers) makes that a readback
+   from the GPU worker, so at full rate it is taken on every other
+   frame-unit only, the frames between recorded as repeats: at most half
+   rate, in a file whose frame period is still the full rate's. The state's
+   `external` (and the events') says so. Headless never presents
+   externally.
 2. Whether the mode fits the open segment (§3.5); if not, the next segment
    starts here. A new mode (size, format, row bytes) reallocates the shadow
    and sets the resync flag.
@@ -198,7 +209,22 @@ in the next, `name-2.mkv`, `name-3.mkv`, with a `segment` event.
 `system_destroy` of the active machine with nothing replacing it calls
 `recorder_machine_gone`, which finalises.
 
-### 3.6 Stopping and failures
+### 3.6 Suspending, stopping and failures
+
+`recorder_suspend` writes the repeats owed and a CLOSE record, then waits
+(`rec_worker_sync`) until the coder has taken it: CLOSE is the end of a
+segment without the end of the recording — the audio brought to the last
+frame's end, the last FLAC block, Cues, sizes and Duration, the file
+closed — and the timeline's surplus is kept for the next. While suspended
+the frame-unit hook and the audio sink return at once, so `units`,
+`frames` and `seconds` stand still, and a machine attach opens nothing.
+`recorder_resume` starts the next segment for the display there is then
+(`name-N.mkv`, a `segment` event), whatever machine it belongs to; a stop
+while suspended returns the files written. In the browser,
+`em_main.c`'s visibility callback suspends on hidden (before the
+background checkpoint, on the same signal) and resumes on visible — only
+a recording it suspended itself, so one suspended from the terminal stays
+so.
 
 STOP brings the audio to the last frame's end, flushes the last FLAC
 block, and closes the muxer (Cues, sizes, Duration); `recorder.stop`
@@ -259,7 +285,11 @@ registered by `core_init`.
 | `frames`, `seconds` | attr, ro | Output frames, every segment, and the emulated seconds they cover |
 | `bytes` | attr, ro | File bytes so far, every segment |
 | `dropped` | attr, ro | Frames recorded as a repeat because the recorder was behind |
-| `units`, `segments` | attr, ro, advanced | Frame-units completed since start; files so far |
+| `units`, `segments` | attr, ro, advanced | Frame-units completed since start (not counting suspended ones); files so far |
+| `suspend()` | method, advanced | Finalise the file being written and record nothing until `resume`; returns once the file is closed. No-op when already suspended |
+| `resume()` | method, advanced | Continue a suspended recording in the next segment; returns its path. No-op when not suspended |
+| `suspended` | attr, ro, advanced | True while suspended |
+| `external` | attr, ro, advanced | True while the screen is presented by the GPU: taken at half rate at most (§3.1) |
 | `inspect(path)` | method, advanced | A recording read end to end: frames, keyframes, size, bits, frame period, video and audio bytes, audio rate, channels and sample frames, decode errors, truncation, the file's size and CRC-32 |
 | `extract(path, out, [index], [count])` | method, advanced | A frame (`.png`; `index` counts from the end when negative, default the last) or the sound (`.wav`, from sample `index`, `count` of them) decoded in tree |
 | `find(path, wav, [volume])` | method, advanced | The sample frame at which a WAV's samples appear exactly in a recording's sound (a capture taken before the guest's volume is scaled by `volume` first), or -1 |
@@ -268,10 +298,12 @@ registered by `core_init`.
 `machine.screen.save` and `machine.sound.capture` are unchanged.
 
 **Events.** `{"event":"recorder", "state", "path", "segment", "frames",
-"seconds", "bytes", "dropped"[, "message"]}` (`GS_EVENT_STATE`), with
-`state` one of `started`, `recording` (at most once a second of host time
-while frames are recorded), `segment` (a new file: `path` and `segment`
-name it), `error` (with `message`) and `stopped`.
+"seconds", "bytes", "dropped", "external"[, "message"]}` (`GS_EVENT_STATE`),
+with `state` one of `started`, `recording` (at most once a second of host
+time while frames are recorded), `segment` (a new file: `path` and
+`segment` name it), `suspended` (the file `path` is closed), `error` (with
+`message`) and `stopped`. The web app's use of them is in
+[docs/guide/web.md](../../../guide/web.md), "Screen recording".
 
 **Headless.** `--record=<path>` starts a recording before the first frame
 (after the machine and media are set up, before any script);
@@ -296,7 +328,8 @@ load during a recording is a cut (§3.5).
   with blocking, give byte-identical files that decode to what went in
   (palette, border, the curve arriving, held silence); segments; a 32 bpp
   table change is a keyframe; a full ring refuses a record under the drop
-  policy.
+  policy; a CLOSE leaves a whole file once `rec_worker_sync` returns, and
+  the next SEGMENT continues on a keyframe.
 - `tests/unit/suites/record_mkv`: known packets on a video and an audio
   track round-trip exactly, in time order, at round(*kP* / 10⁶) ms, in
   clusters that open on keyframes and span under a second (one carrying a
@@ -314,6 +347,16 @@ load during a recording is a cut (§3.5).
 - `tests/integration/recorder-machine-swap` (unit tier): a fitting
   checkpoint load is a keyframe cut in the same file, a boot the next
   segment, a shut-down finalises.
+- `tests/integration/recorder-suspend` (unit tier): a suspend closes a
+  whole file (not cut, with a duration, its sound covering its frames)
+  before returning; nothing is recorded while suspended, across a run and a
+  boot; resume continues in `name-2.mkv`; a stop while suspended returns the
+  one file; threaded and inline are the same bytes.
+- `tests/e2e/web2-specs/recorder.spec.ts`: the toolbar's record button on
+  a Plus, the status bar's indicator, stop, the file in OPFS (EBML magic,
+  decoded by `recorder.inspect` without errors) and its download; a page
+  made hidden finalises the file and, shown again, continues in
+  `name-2.mkv`.
 - `tests/integration/recorder-mode-change` (matrix): a IIcx's 1 → 8 bpp
   boot stays one file; a Quadra 700's 640x480 → 1152x870 two-page mode
   makes `name-2.mkv`.
@@ -326,15 +369,17 @@ load during a recording is a cut (§3.5).
 
 ## 7. Known debts
 
-- The browser half is not written: no toolbar button or status bar, no
-  finalise on page hide (the page's `visibilitychange`
-  checkpoint signal should call `recorder.stop` and restart in a new
-  segment), no MP4 export. `recorder.start` already works from the
-  terminal, writing to `/opfs/recordings/` by default, and the events of §4
-  reach the page; nothing in the page consumes them yet.
-- The GPU takeovers (Voodoo2, Rage 128 under WebGPU) are recorded through
-  `display_sync_pixels`, a readback per output frame; its cost in the
-  browser is not measured and nothing limits those cards to half rate yet.
+- No MP4 export: a finished recording offers Download and Show in Files
+  (`recordingActions` in `app/web2/src/bus/recorder.ts`), not yet the
+  WebCodecs export.
+- The GPU takeovers' readback cost while recording (§3.1, half rate at
+  most) is not measured: headless Chromium's software WebGPU loses its
+  device at the first canvas present, so no takeover runs with the machine
+  running there. Whether recording those cards should instead be refused
+  in the browser is open.
+- Hiding the page suspends only through `visibilitychange`; there is no
+  `pagehide` hook (Emscripten offers none on the emulator thread, and a
+  closing tab fires `visibilitychange` hidden first).
 - The 64x64 block size is untuned; on the Plus session an unchanged frame
   is 10 bytes and a frame with one changed block about 36, so a mostly
   static 256 s session is about 0.31 MB of video payload.
