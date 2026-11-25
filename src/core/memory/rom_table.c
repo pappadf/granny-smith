@@ -133,7 +133,7 @@ const rom_info_t rom_table[] = {
     {"Powerbook 210,230,250 ROM", NONE, "ecfa989b", 1024 * 1024, 0, 0},
     {"Color Classic II & LC 550 & Performa 275,550,560 & Macintosh TV ROM", LC550, "ede66cbd", 1024 * 1024, 0, 0},
     {"Centris 610,650 ROM", WOMBAT_1993_02, "f1a6f343", 1024 * 1024, 0, 0},
-    {"Quadra 610,650,maybe 800 ROM", WOMBAT_1993_10, "f1acad13", 1024 * 1024, 0, 0},
+    {"Quadra 610,650,800 ROM", WOMBAT_1993_10, "f1acad13", 1024 * 1024, 0, 0},
     {"Powerbook 150 ROM", NONE, "fda22562", 1024 * 1024, 0, 0},
     {"Quadra 605 ROM", MEMCJR_1993_10, "ff7439ee", 1024 * 1024, 0, 0},
     {"Powerbook 190cs ROM", NONE, "4d27039c", 2048 * 1024, 0, 0},
