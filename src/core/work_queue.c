@@ -17,6 +17,16 @@ static wq_item_t *take_waiting(work_queue_t *q) {
 }
 
 // The worker: one item at a time, in the order they were pushed.
+// With the lock held: file `item` on the done list, after those already there.
+static void wq_done_append_locked(work_queue_t *q, wq_item_t *item) {
+    item->next = NULL;
+    if (q->done_tail)
+        q->done_tail->next = item;
+    else
+        __atomic_store_n(&q->done, item, __ATOMIC_RELEASE); // read lock-free by the owners' pending checks
+    q->done_tail = item;
+}
+
 static void *wq_main(void *arg) {
     work_queue_t *q = arg;
     for (;;) {
@@ -74,43 +84,6 @@ void wq_lock(work_queue_t *q) {
 
 void wq_unlock(work_queue_t *q) {
     pthread_mutex_unlock(&q->mu);
-}
-
-void wq_done_append_locked(work_queue_t *q, wq_item_t *item) {
-    item->next = NULL;
-    if (q->done_tail)
-        q->done_tail->next = item;
-    else
-        __atomic_store_n(&q->done, item, __ATOMIC_RELEASE); // read lock-free by the owners' pending checks
-    q->done_tail = item;
-}
-
-int wq_cancel_waiting_locked(work_queue_t *q, bool (*match)(const wq_item_t *item, void *ctx),
-                             void (*on_move)(wq_item_t *item, void *ctx), void *ctx) {
-    int n = 0;
-    wq_item_t **pp = &q->head;
-    q->tail = NULL;
-    while (*pp) {
-        wq_item_t *it = *pp;
-        if (match(it, ctx)) {
-            *pp = it->next;
-            if (on_move)
-                on_move(it, ctx);
-            wq_done_append_locked(q, it);
-            n++;
-            continue;
-        }
-        q->tail = it; // the last one kept
-        pp = &it->next;
-    }
-    return n;
-}
-
-wq_item_t *wq_done_peek(work_queue_t *q) {
-    pthread_mutex_lock(&q->mu);
-    wq_item_t *it = q->done;
-    pthread_mutex_unlock(&q->mu);
-    return it;
 }
 
 wq_item_t *wq_done_pop(work_queue_t *q) {

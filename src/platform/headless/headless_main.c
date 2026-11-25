@@ -385,7 +385,7 @@ static bool hl_run_frame(void) {
     return false;
 }
 
-static void hl_inline_frame(void) {
+static void hl_frame_runner(void) {
     if (!hl_run_frame())
         usleep(1000);
 }
@@ -1192,7 +1192,7 @@ int main(int argc, char *argv[]) {
     // the drain steps (job/job.h); a tree call that cannot suspend waits
     // for its mode by running frames here.
     hl_mailbox_init();
-    job_set_frame_runner(hl_inline_frame);
+    job_set_frame_runner(hl_frame_runner);
     if (!g_io_sync && !io_worker_start(256u << 10))
         fprintf(stderr, "headless: I/O worker could not be started; writes run inline\n");
 

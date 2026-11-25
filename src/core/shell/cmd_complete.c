@@ -586,12 +586,12 @@ static void complete_method_arg(const member_t *m, int slot, const char *partial
 typedef struct {
     struct completion *out;
     const char *prefix; // without the leading '$'
-} binding_complete_ctx_t;
+} alias_complete_ctx_t;
 
-static bool binding_complete_alias_cb(const char *name, const char *path, alias_kind_t kind, void *ud) {
+static bool alias_complete_cb(const char *name, const char *path, alias_kind_t kind, void *ud) {
     (void)path;
     (void)kind;
-    binding_complete_ctx_t *cc = (binding_complete_ctx_t *)ud;
+    alias_complete_ctx_t *cc = (alias_complete_ctx_t *)ud;
     if (cc->prefix[0] && strncmp(name, cc->prefix, strlen(cc->prefix)) != 0)
         return true;
     char buf[128];
@@ -600,12 +600,12 @@ static bool binding_complete_alias_cb(const char *name, const char *path, alias_
     return true;
 }
 
-static void complete_bindings(const char *prefix, struct completion *out) {
-    binding_complete_ctx_t cc = {.out = out, .prefix = prefix};
+static void complete_aliases(const char *prefix, struct completion *out) {
+    alias_complete_ctx_t cc = {.out = out, .prefix = prefix};
     set_detail(out, COMP_KIND_ALIAS, NULL);
     // The alias table, prefix-filtered in its callback so the ~500-entry
     // mac-global table doesn't flood a bare `$`.
-    alias_each(binding_complete_alias_cb, &cc);
+    alias_each(alias_complete_cb, &cc);
 }
 
 // === Statement position =====================================================
@@ -636,11 +636,11 @@ static bool copy_word(char *buf, size_t size, const char *s, const char *e) {
     return true;
 }
 
-// The head of a statement: `$` bindings, a mid-path partial's members, or
+// The head of a statement: `$` aliases, a mid-path partial's members, or
 // the statement keywords, root members and command words.
 static void complete_head(const char *partial, struct completion *out) {
     if (partial[0] == '$') {
-        complete_bindings(partial + 1, out);
+        complete_aliases(partial + 1, out);
         return;
     }
     if (strpbrk(partial, ".[")) {
@@ -694,7 +694,7 @@ static void complete_arguments(const char *line, const script_stmt_t *st, const 
         return;
     }
     if (partial[0] == '$') {
-        complete_bindings(partial + 1, out);
+        complete_aliases(partial + 1, out);
         return;
     }
 
@@ -773,7 +773,7 @@ static void complete_lua_word(const char *line, const char *ls, const char *cur,
         return;
     }
     if (partial[0] == '$') {
-        complete_bindings(partial + 1, out);
+        complete_aliases(partial + 1, out);
         return;
     }
     complete_head(partial, out);

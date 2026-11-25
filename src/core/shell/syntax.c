@@ -146,7 +146,7 @@ const char *script_arg_end(const char *p, const char *end, bool *open) {
         return end;
     }
     if (c == '$') {
-        // A binding path; its brackets may hold blanks.
+        // An alias path; its brackets may hold blanks.
         const char *e = script_path_end(p, end);
         if (!e) {
             if (open)

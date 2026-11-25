@@ -171,9 +171,8 @@ bool val_list_push(value_t **items, size_t *len, size_t *cap, value_t v);
 void value_free(value_t *v);
 
 // Deep-copy a value.  The returned value owns its own heap storage so the
-// caller can free it independently of `v`.  Used by the shell-variable
-// binding to hand out owned copies to expression callers without sharing
-// pointer-typed payloads (VK_STRING, VK_BYTES, VK_LIST, VK_ERROR).
+// caller can free it independently of `v`, without sharing pointer-typed
+// payloads (VK_STRING, VK_BYTES, VK_LIST, VK_MAP, VK_ERROR).
 value_t value_dup(const value_t *v);
 
 // GCC/Clang cleanup attribute helper, used as:

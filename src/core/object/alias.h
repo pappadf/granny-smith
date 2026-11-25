@@ -63,9 +63,8 @@ status_t alias_remove_user(const char *name, char *err_buf, size_t err_size);
 // a script before using it takes a copy (alias_lookup_copy).
 const char *alias_lookup(const char *name, alias_kind_t *kind_out);
 
-// The same, copying the path into `buf` (`size` bytes) under the table
-// lock: safe from any thread.  False when no such alias exists or the path
-// does not fit.
+// The same, copying the path into `buf` (`size` bytes).  False when no
+// such alias exists or the path does not fit.
 bool alias_lookup_copy(const char *name, char *buf, size_t size, alias_kind_t *kind_out);
 
 // Iterate every alias in registration order. The callback returns
@@ -79,8 +78,7 @@ size_t alias_count(void);
 // Drop every alias (both tiers). Tests use this to start clean.
 void alias_reset(void);
 
-// Drop only user aliases — used by checkpoint restore (checkpoints don't
-// preserve user aliases).
+// Drop only user aliases, keeping the built-ins.  Tests use this.
 void alias_clear_user(void);
 
 // The `shell.alias` class (alias_class.c), attached by root_install.

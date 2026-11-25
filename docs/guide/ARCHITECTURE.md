@@ -107,7 +107,7 @@ Key subsystems (modules) include:
 - **SCSI subsystem** (`scsi`) — SCSI bus and device emulation
 - **Disk image handling** (`image`) — Disk image management and storage backends
 - **AppleTalk integration** (`appletalk`) — Networking and AppleShare support
-- **Object model** (`object`) — Typed substrate (classes, members, nodes, value type, path resolver, expression interpolator, alias table) used by the shell, JS bridge, scripts, and the inspector UI
+- **Object model** (`object`) — Typed substrate (classes, members, nodes, value type, path resolver, literal parser, alias table) used by the shell, JS bridge, scripts, and the inspector UI
 - **Shell and CLI** (`shell`) — Line tokeniser, path-form dispatcher, tab completion, scripting; sits on top of the object model
 - **Debugger** (`debug`, `debug_mac`) — Debugging and diagnostics tools
 

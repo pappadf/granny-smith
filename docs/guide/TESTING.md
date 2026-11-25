@@ -173,13 +173,14 @@ Two rules suite rows must follow, both learned from real failures:
   capturing and when verifying, so menu/click choreography lands the
   same way in both. Screens that animate (a blinking "?" icon, a text
   caret) never settle at all — those rows use a fixed `run_ticks`
-  window and their goldens are animation-phase-sensitive by design. Tests are Lua files (`test.lua`; `docs/internals/core/lua/lua.md` is the
+  window and their goldens are animation-phase-sensitive by design.
+
+Tests are Lua files (`test.lua`; `docs/internals/core/lua/lua.md` is the
 language's contract with the tree; `scripts/script-to-lua.py` converts a
 test written in the old `.script` language, should one turn up). Shared
 harness functions live in `tests/integration/lib/mac.lua`, pulled in with
 `local mac = dofile("../lib/mac.lua")` and called as `mac.wait_match(...)`.
-The library provides
-condition-based waits (`wait_match`, `wait_stable`, `wait_change`,
+The library provides condition-based waits (`wait_match`, `wait_stable`, `wait_change`,
 `wait_global`, `wait_desktop` — a wait states its condition; ceilings are
 hang detectors), budgets that end early on their golden
 (`run_until_match`, `run_until_match_ex`: for the screens a stability

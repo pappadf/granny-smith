@@ -3,7 +3,7 @@
 
 // commands.h
 // Commands: bare words that run a method (`ls /opfs` runs `files.ls /opfs`),
-// declared with `command NAME = PATH` or registered as built-ins.  A table
+// declared with `shell.command.add NAME PATH` or registered as built-ins.  A table
 // of their own, apart from `$name` aliases (alias.h): an alias is a value or
 // a place, used anywhere with `$`; a command is a verb, used as the first
 // word of a command line.  A tree path or a Lua global of the same name

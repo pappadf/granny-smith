@@ -292,10 +292,6 @@ job_t *job_current(void) {
     return g_stepping ? g_active : NULL;
 }
 
-uint32_t job_current_client(void) {
-    return g_stepping && g_active ? g_active->client : 0;
-}
-
 bool job_current_cancelled(void) {
     return g_stepping && g_active && g_active->cancel;
 }

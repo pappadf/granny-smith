@@ -74,7 +74,6 @@ Defined by every skin (`skins/<id>/tokens.css`). A token with a default (derived
 | `--gs-syntax-alias` | color | (the skin) | syntax: aliases |
 | `--gs-syntax-object` | color | (the skin) | syntax: object path segments |
 | `--gs-syntax-operator` | color | (the skin) | syntax: operators |
-| `--gs-syntax-decl` | color | (the skin) | syntax: declarations (let, def) |
 | `--gs-syntax-interp` | color | (the skin) | syntax: interpolation (${…}) |
 | `--gs-syntax-keyword` | color | (the skin) | syntax: statement keywords |
 | `--gs-syntax-string` | color | (the skin) | syntax: string literals |

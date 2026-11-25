@@ -21,7 +21,6 @@
 #include "gs_assert.h"
 #include "meta.h"
 #include "status.h"
-#include "job/job.h"
 
 // === Object representation ==================================================
 //

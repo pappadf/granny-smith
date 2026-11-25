@@ -2,13 +2,13 @@
 --
 -- This is 3dfx's own initialisation order — sst1InitRegisters() and
 -- sst1InitDacDetect() from the vendor's released Glide 2.x source
--- (glide2x/cvg/init/), expressed as shell-v2 accesses through the
+-- (glide2x/cvg/init/), expressed as register accesses through the
 -- aperture, with each step's POSTCONDITION asserted in place so the
 -- first step that fails is the finding.  It exercises the whole init
 -- path without needing a guest driver or a Mac OS image.
 --
 -- Included by test.lua AFTER it has enabled Memory Space and bound
--- $BAR to the aperture base.  Uses swap32/swap16/vreg_wr/vreg_rd/
+-- BAR to the aperture base.  Uses swap32/swap16/vreg_wr/vreg_rd/
 -- cfg_wr/cfg_rd/idle3 defined there.
 --
 -- Register offsets are the V2 spec's (pp.22-26), cross-validated by

@@ -1,8 +1,8 @@
--- Integration test: ${...} expression substitution + predicate assert.
+-- Integration test: F"${...}" interpolation + predicate assert.
 --
 -- Boots Plus, runs a few thousand instructions, then exercises:
---   - ${literal arithmetic} expanded into shell args
---   - ${...} with paths and aliases
+--   - F"${literal arithmetic}" interpolated into a string
+--   - ${...} with tree paths
 --   - break set with a computed address
 --   - predicate assert (truthy and falsy with message)
 

@@ -280,7 +280,7 @@ TEST(test_value_auto_cleanup) {
 // `log.set cpu stdout=ON` worked while the same spelling failed on every
 // typed bool argument.  Case-sensitive wins, matching the identifier rules.
 //
-// This deliberately does NOT cover parse.c's and script.c's true/false/none:
+// This deliberately does NOT cover parse.c's true/false/none literals:
 // those are language keyword literals, not coercions, and must not start
 // accepting "yes".
 TEST(test_parse_bool_vocabulary) {
