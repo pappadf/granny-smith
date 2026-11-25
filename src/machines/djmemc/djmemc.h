@@ -199,6 +199,7 @@ typedef struct djmemc_state {
     uint8_t jr_bank_hi[MEMCJR_MAX_BANKS]; // MEMCjr: the latch's high start bits each bank took
     uint32_t bank_size[DJMEMC_MAX_BANKS]; // installed bytes per bank (0 = empty)
     uint32_t bank_image_off[DJMEMC_MAX_BANKS]; // where the bank lives in the flat RAM image
+    uint32_t ram_extent; // how far up the last bank mapping reached (the next remap clears below it)
 
     // Kiwi NuBus controller register file.
     uint32_t kiwi_regs[DJMEMC_KIWI_REG_COUNT];

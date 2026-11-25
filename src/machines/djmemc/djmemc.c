@@ -152,42 +152,19 @@ static uint32_t djmemc_bank_start(const djmemc_board_desc_t *desc, const djmemc_
 // The physical span the bank registers can place RAM in: ten 64 MB windows.
 #define DJMEMC_RAM_SPAN (DJMEMC_MAX_BANKS * DJMEMC_BANK_WINDOW)
 
-// Apply the bank configuration registers to the page table.
-//
-// A populated bank decodes from its start address up to whichever populated
-// bank starts next above it, or 64 MB if none does, and mirrors its size
-// through that span -- the boot ROM sizes a bank by parking it at a 64 MB
-// boundary and finding where its image repeats.  Every page of the span is
+// Apply the bank configuration registers to the page table
+// (m68k_board_map_banks): each populated bank mirrors through its span up to
+// the next bank or 64 MB.  The pages the previous placement reached are
 // cleared first: a bank that moves (the ROM parks the banks, sizes them,
 // then stitches them contiguous) must not leave its old image behind.
 static void djmemc_map_ram(config_t *cfg) {
     djmemc_state_t *st = djmemc_st(cfg);
     const djmemc_board_desc_t *desc = djmemc_board(cfg);
-    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
-    uint32_t span_pages = DJMEMC_RAM_SPAN >> MEM_PAGE_SHIFT;
-    for (uint32_t p = 0; p < span_pages && p < g_page_count; p++)
-        page_clear(p);
-
-    for (int b = 0; b < DJMEMC_MAX_BANKS; b++) {
-        uint32_t size = st->bank_size[b];
-        if (!size)
-            continue;
-        uint32_t start = djmemc_bank_start(desc, st, b);
-        uint32_t end = start + DJMEMC_BANK_WINDOW;
-        for (int o = 0; o < DJMEMC_MAX_BANKS; o++) {
-            uint32_t os = djmemc_bank_start(desc, st, o);
-            if (o != b && st->bank_size[o] && os > start && os < end)
-                end = os;
-        }
-        if (end > DJMEMC_RAM_SPAN)
-            end = DJMEMC_RAM_SPAN;
-        if (start >= end)
-            continue;
-        m68k_board_map_mirrored(start >> MEM_PAGE_SHIFT, (end - start) >> MEM_PAGE_SHIFT,
-                                ram_base + st->bank_image_off[b], size >> MEM_PAGE_SHIFT, page_fill_68k, true);
-    }
-    if (st->bus_mmu)
-        mmu_invalidate_tlb(st->bus_mmu);
+    m68k_board_bank_t banks[DJMEMC_MAX_BANKS];
+    for (int b = 0; b < DJMEMC_MAX_BANKS; b++)
+        banks[b] = (m68k_board_bank_t){djmemc_bank_start(desc, st, b), st->bank_size[b], st->bank_image_off[b]};
+    m68k_board_map_banks(cfg, banks, DJMEMC_MAX_BANKS, DJMEMC_BANK_WINDOW, DJMEMC_RAM_SPAN, &st->ram_extent,
+                         st->bus_mmu);
 }
 
 // The power-up bank placement: bank n on the n-th 64 MB boundary, the same
@@ -657,6 +634,8 @@ static void djmemc_memory_layout(config_t *cfg) {
     const djmemc_board_desc_t *desc = djmemc_board(cfg);
 
     djmemc_bank_layout(cfg);
+    // Nothing tracked yet: the first remap clears the controller's whole reach.
+    st->ram_extent = DJMEMC_RAM_SPAN;
 
     // I/O island at $50000000; the published map repeats it through
     // $53FFFFFF.
@@ -917,6 +896,7 @@ static void djmemc_bus_reset(config_t *cfg) {
     // on the 040's reset (Apple's PrimaryInit resets it by hand on this
     // board), so its registers survive; the ROM reprograms them.
     m68k_board_overlay_arm(&st->overlay);
+    st->ram_extent = DJMEMC_RAM_SPAN; // the ROM at zero: the next remap clears the whole reach
     if (st->bus_mmu) {
         st->bus_mmu->enabled = false;
         mmu_invalidate_tlb(st->bus_mmu);

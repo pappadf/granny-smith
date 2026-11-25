@@ -142,23 +142,11 @@ static void mcu_bank_layout(config_t *cfg) {
 // it walks down from the top of the window and finds where the image repeats.
 static void mcu_map_ram(config_t *cfg) {
     mcu_state_t *st = mcu_st(cfg);
-    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
-
-    for (int b = 0; b < st->bank_count; b++) {
-        uint32_t size = st->bank_size[b];
-        if (size == 0)
-            continue;
-        uint32_t start = st->bank_start[b];
-
-        // The span this bank owns ends at the next populated bank above it.
-        uint32_t end = start + ORWELL_BANK_WINDOW;
-        for (int o = 0; o < st->bank_count; o++)
-            if (o != b && st->bank_size[o] && st->bank_start[o] > start && st->bank_start[o] < end)
-                end = st->bank_start[o];
-
-        m68k_board_map_mirrored(start >> MEM_PAGE_SHIFT, (end - start) >> MEM_PAGE_SHIFT,
-                                ram_base + st->bank_image_off[b], size >> MEM_PAGE_SHIFT, page_fill_68k, true);
-    }
+    m68k_board_bank_t banks[ORWELL_MAX_BANKS];
+    for (int b = 0; b < ORWELL_MAX_BANKS; b++)
+        banks[b] =
+            (m68k_board_bank_t){st->bank_start[b], b < st->bank_count ? st->bank_size[b] : 0, st->bank_image_off[b]};
+    m68k_board_map_banks(cfg, banks, ORWELL_MAX_BANKS, ORWELL_BANK_WINDOW, 0, NULL, NULL);
 }
 
 // Recompute bank starts from the staged config register and re-map.  Called
