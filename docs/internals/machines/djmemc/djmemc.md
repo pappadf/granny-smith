@@ -36,19 +36,36 @@ on every member) and the VIA1 port-A straps PA6/PA4/PA2/PA1
 five models; the BoxFlag column is what each derives.
 
 The substrate reuses the Quadra 700's pieces where the hardware is
-software-compatible: the DAFB model (`mcu/dafb.c`) for the built-in video,
-with `dafb_set_ac842a` and `dafb_set_antelope` making it the Wombat DAFB plus
-the Antelope CLUT/DAC (PCBR1's mfg/rev nibble reads non-zero); the 53C96,
-SONIC, SWIM II, ASC and the two VIAs as on the Quadra 700; the shared
-`board_io` engine for the I/O island at $50000000 (`djmemc_io_ranges`).
+software-compatible, through the MCU family's shared 040 Quadra block
+(`mcu/quadra040.c`, [../mcu/mcu.md](../mcu/mcu.md) "Shared 040 Quadra
+block"): `djmemc_state_t` opens with a `quadra040_t`, and the init prefix
+and suffix, the device builders, island bind and mappings, `/RESET`,
+teardown, IRQ wiring, the SONIC / MAC PROM / Kiwi handler rows and the
+monitor table are that file's. The DAFB model (`mcu/dafb.c`) serves the
+built-in video, with `quadra040_video_t.ac842a` and `.antelope` making it
+the Wombat DAFB plus the Antelope CLUT/DAC (PCBR1's mfg/rev nibble reads
+non-zero); the Kiwi is a `yancc_t` (`mcu/yancc.c`) logging as "Kiwi". The
+shared `board_io` engine runs the I/O island at $50000000
+(`djmemc_io_ranges`); the rows both islands decode are one
+`DJMEMC_ISLAND_ROWS` list. The CPU-ID page is the shared
+`runtime/cpuid_page.c`. The DAFB startup-mode table the MCU boards carry
+is not adopted: no djMEMC startup records are measured.
 
 The Centris 610's FPU is absent through `hw_profile_t.fpu_absent`, which
 `m68k_board_build_core` passes to `cpu_init_fpu`: every FPU instruction then
 takes the F-line trap and the System's software floating point runs.
 
 **The MEMCjr boards.** `djmemc_board_desc_t.chip` selects the memory
-controller (`DJMEMC_CHIP_DJMEMC`, the default, or `DJMEMC_CHIP_MEMCJR`) and
-`.cpuid` the CPU-ID register's value (0 is the djMEMC's $A55A2BAD):
+controller (`DJMEMC_CHIP_DJMEMC`, the default, or `DJMEMC_CHIP_MEMCJR`),
+whose differences are one `djmemc_chip_ops_t` per chip in `djmemc.c`
+(register count, bank count, RAM-bank decomposition, bank start, power-up
+registers, read side effects, the bank-landed latch hook). The board
+features that came with it are descriptor fields of their own: `has_sonic`,
+`adb` (`DJMEMC_ADB_VIA` or `DJMEMC_ADB_CUDA`) and `video_latch`.
+`DJMEMC_DESC_COMMON` / `MEMCJR_DESC_COMMON` set them, with the chip and the
+VRAM size, for every board of each kind (`WLCD_BOARD`, `WOMBAT_BOARD`,
+`MEMCJR_BOARD`). `.cpuid` is the CPU-ID register's value (0 is the
+djMEMC's $A55A2BAD):
 
 | Model | id | board | clock | CPU | CPU-ID | BoxFlag |
 |---|---|---|---|---|---|---|
@@ -61,18 +78,19 @@ supplement); its low two bits name the clock, from which the ROM picks the
 MEMCjr and PrimeTime timing. A MEMCjr board differs from a djMEMC one in:
 
 - RAM: 4 MB soldered (bank 0) and one SIMM socket whose sides are banks 1
-  and 2 (`memcjr_ram_banks`; 1/4/16 MB single-sided, 2/8/32 MB
+  and 2 (`memcjr_chip_ram_banks`; 1/4/16 MB single-sided, 2/8/32 MB
   double-sided), 4-36 MB.
 - The register interface: the MEMCjr's registers are six bits wide on the
   data bus, the bits above going through the latch at $7C. Software writes
   the latch (bits 6-11) just before a register, and after reading one reads
   its bits 6-11 back from the latch; a read here loads the latch
   (`memcjr_latch_load`). The frame-buffer controller's registers at
-  $F9800000 are read the same way (`memcjr_video_*` front the DAFB model);
+  $F9800000 are read the same way on a `video_latch` board (`memcjr_video_*`
+  front the DAFB model);
   without it the video driver's save-and-restore of the horizontal timing
   around its line-compare probe writes back garbage. The register window
   decodes 32 longwords instead of the djMEMC's 16.
-- The bank decode (`djmemc_bank_start`): five bank registers in 1 MB units
+- The bank decode (`memcjr_chip_bank_start`): five bank registers in 1 MB units
   with a 10-bit start: the low six bits in the register, the high four from
   the latch as the register lands (recorded per bank, `jr_bank_hi`).
 - ADB, PRAM and the clock on a Cuda (VIA1 SR and PB3-PB5, as on the AV
@@ -81,7 +99,9 @@ MEMCjr and PrimeTime timing. A MEMCjr board differs from a djMEMC one in:
   LC 575's communication slot are not modelled (`nubus_slots` NULL). The
   communication slot's window ($0A000) bus-errors, which is how the ROM's
   probe for the slot's Ethernet card finds it empty: with a floating bus it
-  would wait forever on the card's command register.
+  would wait forever on the card's command register. The row is a plain
+  `.berr` row: the `board_io` engine raises the fault at the full bus
+  address itself.
 - The LC 575's display is built in (`lc575_builtin_video`, the 14" colour
   CRT with the 640x480 RGB sense code); the LC 475 and Quadra 605 take the
   same external monitors as the djMEMC boards.
@@ -90,14 +110,15 @@ MEMCjr and PrimeTime timing. A MEMCjr board differs from a djMEMC one in:
 
 | Type / function | File | Purpose |
 |---|---|---|
-| `djmemc_board_desc_t` | `djmemc.h` | per-model data: identity straps, soldered RAM, sockets, VRAM |
-| `djmemc_state_t` | `djmemc.h` | register files, devices, overlay, bus MMU |
-| `djmemc_ram_banks` | `djmemc.c` | decomposes a RAM total into the ten 4/16 MB banks |
-| `djmemc_map_ram` | `djmemc.c` | applies the bank registers to the page table |
+| `djmemc_board_desc_t` | `djmemc.h` | per-model data: chip, board features, identity straps, soldered RAM, sockets, VRAM |
+| `djmemc_state_t` | `djmemc.h` | the shared `quadra040_t` first, then the register files, IOSB, Cuda, CPU-ID page |
+| `djmemc_chip_ops_t` | `djmemc.c` | what the djMEMC and the MEMCjr do differently |
+| `djmemc_ram_banks` | `djmemc.c` | decomposes a RAM total into the chip's banks |
+| `djmemc_map_ram` | `djmemc.c` | applies the bank registers to the page table (`m68k_board_map_banks`) |
 | `djmemc_io_ranges` | `djmemc.c` | the I/O island decode table |
-| `iosb_t` | `iosb.h` | the IOSB configuration registers and VIA2's DREQ flag |
 | `memcjr_io_ranges` | `djmemc.c` | the MEMCjr boards' I/O island decode |
-| `djmemc_bank_start` | `djmemc.c` | a bank's start: the djMEMC field, or the MEMCjr register + latch bits |
+| `iosb_t` | `iosb.h` | the IOSB configuration registers and VIA2's DREQ flag |
+| `quadra040_t` | `../mcu/quadra040.h` | the devices and plumbing shared with the MCU family |
 
 ## 3. Behaviour/algorithms
 
@@ -105,8 +126,11 @@ MEMCjr and PrimeTime timing. A MEMCjr board differs from a djMEMC one in:
 field counts 4 MB. A populated bank decodes from its start up to the next
 populated bank above it, or 64 MB, and mirrors its size through that span:
 the boot ROM sizes a bank by parking it on a 64 MB boundary and looking for
-the repeat, then stitches the banks contiguous. Every page of the 640 MB span
-is cleared before a remap, so a moved bank leaves no stale image. A RAM total
+the repeat, then stitches the banks contiguous. Before a remap the pages the
+last mapping reached (`ram_extent`, seeded to the whole 640 MB span at the
+layout and the `/RESET` re-arm) are cleared, so a moved bank leaves no stale
+image. A bank register landing while the ROM overlay is armed remaps
+nothing; the overlay drop maps the banks as they then stand. A RAM total
 that is no SIMM population of the board is presented as one bank. Register
 $00 bits 9-11 (the chip version) read 0, the part the ROM does not enable
 interleaving on, which keeps the bank map linear.
@@ -119,8 +143,11 @@ possible size before it sizes, and must not bus-error.
 unconditionally on all of them.
 
 **Kiwi.** The NuBus controller's register file is the YANCC's layout (one
-bit per longword); with the write-buffer-error flag and its enable both set
-it requests level 7.
+bit per longword, `mcu/yancc.c`); with the write-buffer-error flag and its
+enable both set it requests level 7. `/RESET` clears it and drops the
+request; the memory controller's bank registers and the IOSB's timing
+registers survive `/RESET` (the RAM decode must outlive a RESET
+instruction, and the ROM reprograms them).
 
 **SCSI.** The SCSI Manager on these ROMs moves data through the 53C96
 pseudo-DMA port as longwords (the BIOS path), leaving an odd byte for the

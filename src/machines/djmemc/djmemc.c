@@ -286,6 +286,7 @@ static uint8_t djmemc_iosb_read(config_t *cfg, uint32_t win_off, uint32_t addr) 
     return iosb_reg_read(&djmemc_st(cfg)->iosb, win_off);
 }
 
+// ...and written.
 static void djmemc_iosb_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
     (void)addr;
     iosb_reg_write(&djmemc_st(cfg)->iosb, win_off, value);
@@ -301,12 +302,14 @@ static uint8_t djmemc_via2_ifr_read(config_t *cfg, uint32_t win_off, uint32_t ad
     return iosb_via2_ifr(&djmemc_st(cfg)->iosb, ifr);
 }
 
+// The same, as an inspection: the 6522's flags without its read side effects.
 static uint8_t djmemc_via2_ifr_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
     (void)win_off;
     (void)addr;
     return iosb_via2_ifr(&djmemc_st(cfg)->iosb, via_get_ifr(cfg->via2));
 }
 
+// A write to the IFR slot: the 6522's own.
 static void djmemc_via2_ifr_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
     (void)win_off;
     (void)addr;
@@ -437,6 +440,7 @@ static uint32_t memcjr_video_read32(void *ctx, uint32_t addr) {
     return v;
 }
 
+// A word read: the low half of a register loads the latch.
 static uint16_t memcjr_video_read16(void *ctx, uint32_t addr) {
     djmemc_state_t *st = djmemc_st((config_t *)ctx);
     uint16_t v = st->dafb_iface->read_uint16(st->q.dafb, addr);
@@ -445,35 +449,42 @@ static uint16_t memcjr_video_read16(void *ctx, uint32_t addr) {
     return v;
 }
 
+// A byte read goes straight through.
 static uint8_t memcjr_video_read8(void *ctx, uint32_t addr) {
     djmemc_state_t *st = djmemc_st((config_t *)ctx);
     return st->dafb_iface->read_uint8(st->q.dafb, addr);
 }
 
+// Writes carry the full value: straight through.
 static void memcjr_video_write8(void *ctx, uint32_t addr, uint8_t v) {
     djmemc_state_t *st = djmemc_st((config_t *)ctx);
     st->dafb_iface->write_uint8(st->q.dafb, addr, v);
 }
 
+// A word write, straight through.
 static void memcjr_video_write16(void *ctx, uint32_t addr, uint16_t v) {
     djmemc_state_t *st = djmemc_st((config_t *)ctx);
     st->dafb_iface->write_uint16(st->q.dafb, addr, v);
 }
 
+// A long write, straight through.
 static void memcjr_video_write32(void *ctx, uint32_t addr, uint32_t v) {
     djmemc_state_t *st = djmemc_st((config_t *)ctx);
     st->dafb_iface->write_uint32(st->q.dafb, addr, v);
 }
 
+// An inspection: the controller's value, the latch untouched.
 static uint8_t memcjr_video_peek8(void *ctx, uint32_t addr) {
     djmemc_state_t *st = djmemc_st((config_t *)ctx);
     return memory_iface_read8(st->dafb_iface, st->q.dafb, addr, true);
 }
 
+// A word inspection: two byte peeks.
 static uint16_t memcjr_video_peek16(void *ctx, uint32_t addr) {
     return (uint16_t)((memcjr_video_peek8(ctx, addr) << 8) | memcjr_video_peek8(ctx, addr + 1));
 }
 
+// A long inspection: two word peeks.
 static uint32_t memcjr_video_peek32(void *ctx, uint32_t addr) {
     return ((uint32_t)memcjr_video_peek16(ctx, addr) << 16) | memcjr_video_peek16(ctx, addr + 2);
 }
@@ -631,6 +642,7 @@ static int djmemc_build_devices(config_t *cfg, checkpoint_t *cp) {
 // emulated Quadras on one network differ.
 static const uint8_t djmemc_mac_prom[8] = {0x10, 0x00, 0xE0, 0x90, 0xE0, 0x40, 0x00, 0x3F};
 
+// substrate.init: the shared core, the board's devices, the shared suffix.
 static int djmemc_init(config_t *cfg, checkpoint_t *cp) {
     const djmemc_board_desc_t *desc = djmemc_board(cfg);
     djmemc_state_t *st = calloc(1, sizeof(*st));
@@ -654,6 +666,7 @@ static int djmemc_init(config_t *cfg, checkpoint_t *cp) {
     return 0;
 }
 
+// substrate.bus_reset: the board's /RESET net.
 static void djmemc_bus_reset(config_t *cfg) {
     djmemc_state_t *st = djmemc_st(cfg);
     // The overlay re-arms with /RESET.  The frame-buffer controller is NOT
@@ -670,6 +683,7 @@ static void djmemc_bus_reset(config_t *cfg) {
     system_reset_common_devices(cfg);
 }
 
+// substrate.teardown: the Cuda, the shared devices, the config_t-owned ones.
 static void djmemc_teardown(config_t *cfg) {
     djmemc_state_t *st = djmemc_st(cfg);
     if (st) {

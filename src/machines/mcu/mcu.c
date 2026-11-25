@@ -304,6 +304,7 @@ const board_io_range_t mcu_q900_io_ranges[] = {
     {0}, // sentinel: end == 0
 };
 
+// Bind the island: the shared device set plus the towers' second 53C96.
 void mcu_io_bind(config_t *cfg) {
     mcu_state_t *st = mcu_st(cfg);
     quadra040_io_bind(cfg);
@@ -389,6 +390,7 @@ static int mcu_init(config_t *cfg, checkpoint_t *cp) {
     return 0;
 }
 
+// substrate.bus_reset: the board's /RESET net.
 static void mcu_bus_reset(config_t *cfg) {
     mcu_state_t *st = mcu_st(cfg);
     // Overlay re-arms (VIA1 pulls it high), DAFB registers clear, the bus
@@ -405,6 +407,7 @@ static void mcu_bus_reset(config_t *cfg) {
     system_reset_common_devices(cfg);
 }
 
+// substrate.teardown: the tower devices, the shared ones, the config_t-owned ones.
 static void mcu_teardown(config_t *cfg) {
     mcu_state_t *st = mcu_st(cfg);
     if (st) {
@@ -475,6 +478,7 @@ void mcu_private_part(config_t *cfg, checkpoint_t *cp) {
     machine_part(cfg, cp, "mcu", part_save_mcu_private, st);
 }
 
+// Reads the private part on a restore and re-drives the lines it derives.
 static void mcu_restore_private(config_t *cfg, checkpoint_t *cp) {
     mcu_state_t *st = mcu_st(cfg);
     bool overlay = false;
