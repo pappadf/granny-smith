@@ -53,6 +53,7 @@ function onGpuOverlay(visible: number): void {
 }
 import { onPrinterAttach } from '@/printer/platen';
 import { setPrinterStatus } from '@/state/printer.svelte';
+import { applyRecorderEvent } from '@/state/recorder.svelte';
 import { onDownloadChunk } from './download';
 // The audio-out worklet, bundled on its own (em_audio.c loads it).
 import gsAudioWorkletUrl from '@/audio/gsAudio.worklet.ts?worker&url';
@@ -886,6 +887,11 @@ function routeCoreEvent(ev: CoreEvent): void {
           ppc: d.ppc === true,
         },
       );
+      break;
+    case 'state:recorder':
+      // The screen recorder's state: the toolbar button and the status bar
+      // follow it, and a finished recording's files are offered.
+      applyRecorderEvent(d);
       break;
     case 'notify:floppy':
       onFloppyDriveChange(num(d.drive), d.present === true);

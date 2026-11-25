@@ -51,6 +51,7 @@
     toggleSelected,
     setFsSelection,
     clearFsSelection,
+    opfsTreePath,
   } from '@/state/filesystem.svelte';
   import { iconForFsEntry } from '@/lib/iconForFsEntry';
   import { formatMtime } from '@/lib/fileInfo';
@@ -211,6 +212,20 @@
 
   onMount(() => {
     void loadChildren(['/opfs']);
+  });
+
+  // A file revealed from elsewhere (a finished recording's "Show in Files"):
+  // its folders may be cached from before it existed, so drop those listings
+  // and remount.  The store has already opened the folders and selected it.
+  $effect(() => {
+    const path = filesystem.reveal;
+    if (!path) return;
+    untrack(() => {
+      const tp = opfsTreePath(path);
+      for (let i = 1; i < tp.length; i++) delete childrenCache[pathKey(tp.slice(0, i))];
+      filesystem.reveal = null;
+      treeKey++;
+    });
   });
 
   // An upload elsewhere (the Welcome page, the New Machine dialog, the Images

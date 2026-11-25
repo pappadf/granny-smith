@@ -12,6 +12,7 @@
   import ActivityDot from '../ui/ActivityDot.svelte';
   import { openContextMenu } from '../common/ContextMenu.svelte';
   import { revealInSystem } from '@/state/system.svelte';
+  import { recorder, formatRecordedTime } from '@/state/recorder.svelte';
 
   // Hidden before first machine start. Also surfaces during
   // pre-boot uploads so the user can see large-file progress in the
@@ -166,6 +167,21 @@
     );
   }
 
+  // The recording indicator: a red dot, the recorded time -- emulated, so it
+  // stands still while the machine is paused, and says so -- the file size,
+  // and the frames dropped because the recorder fell behind, when any.
+  const recPaused = $derived(recorder.active && machine.status !== 'running');
+  const recTitle = $derived(
+    `Recording to ${recorder.path}: ${recorder.frames} frames, ${formatRecordedTime(recorder.seconds)} of emulated time, ${formatSize(recorder.bytes)}` +
+      (recorder.dropped
+        ? `; ${recorder.dropped} frames repeated because the recorder fell behind`
+        : '') +
+      (recorder.external
+        ? '; this card is presented by the GPU, so it is recorded at half rate at most'
+        : '') +
+      (recPaused ? '. The machine is paused: nothing is recorded until it runs' : ''),
+  );
+
   // The bar's state: no machine reads as idle.
   const barState = $derived(machine.status === 'no-machine' ? 'idle' : machine.status);
 
@@ -194,6 +210,16 @@
             >{/each}</span
         >
       </div>
+      {#if recorder.active}
+        <div class="gs-statusbar__item sb-item sb-rec" title={recTitle} data-testid="recording">
+          <span class="rec-dot" aria-hidden="true"><Icon name="circle-filled" size="sm" /></span
+          ><span class="label rec-time">{formatRecordedTime(recorder.seconds)}</span><span
+            class="rec-size">{formatSize(recorder.bytes)}</span
+          >
+          {#if recPaused}<span class="rec-paused">paused</span>{/if}
+          {#if recorder.dropped > 0}<span class="rec-dropped">{recorder.dropped} dropped</span>{/if}
+        </div>
+      {/if}
       {#if machine.drives.hd}
         <DriveLight label="HD" title="Hard disk" activity={machine.driveActivity.hd} />
       {/if}
@@ -382,6 +408,20 @@
   }
   .sb-speed :global(.icon) {
     opacity: var(--gs-statusbar-icon-opacity);
+  }
+  .sb-rec {
+    font-variant-numeric: var(--gs-numeric);
+  }
+  .rec-dot {
+    display: inline-flex;
+    color: var(--gs-danger-solid);
+  }
+  .rec-size,
+  .rec-paused {
+    opacity: var(--gs-statusbar-meta-opacity);
+  }
+  .rec-dropped {
+    color: var(--gs-statusbar-printer-error);
   }
   .sb-mips {
     font-variant-numeric: var(--gs-numeric);

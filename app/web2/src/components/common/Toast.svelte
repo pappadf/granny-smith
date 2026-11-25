@@ -2,6 +2,7 @@
   import { dismissToast, pauseTimer, resumeTimer, type Toast } from '@/state/toasts.svelte';
   import Icon from './Icon.svelte';
   import IconButton from '@/components/ui/IconButton.svelte';
+  import Button from '@/components/ui/Button.svelte';
   import type { IconName } from '@/lib/icons';
 
   interface Props {
@@ -37,6 +38,16 @@
   >
   <!-- One line, cut at the edge: the whole message on hover. -->
   <span class="gs-toast__msg msg" title={toast.msg}>{toast.msg}</span>
+  {#each toast.actions ?? [] as a (a.label)}
+    <Button
+      class="gs-toast__action toast-action"
+      variant="ghost"
+      onclick={() => {
+        a.action();
+        if (!a.keep) dismissToast(toast.id);
+      }}>{a.label}</Button
+    >
+  {/each}
   <IconButton
     class="gs-toast__close close-btn"
     icon="close"
@@ -76,6 +87,9 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .gs-toast :global(.gs-toast__action) {
+    flex-shrink: 0;
   }
   .gs-toast__icon {
     display: inline-flex;

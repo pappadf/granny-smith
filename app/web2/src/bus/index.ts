@@ -56,4 +56,12 @@ export {
   saveCheckpoint,
   type SaveCheckpointResult,
 } from './checkpoint';
+export {
+  startRecording,
+  stopRecording,
+  setRecorderRate,
+  setRecorderAudio,
+  downloadRecording,
+  recordingActions,
+} from './recorder';
 export type { MachineConfig, RomInfo, OpfsEntry, ImageCategory, CheckpointEntry } from './types';

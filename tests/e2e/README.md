@@ -67,6 +67,7 @@ tests/e2e/
 │   ├── qcow2-import.spec.ts             # HD= of a QCOW2 image (out-of-order clusters, a deflated one) is staged, converted to a UDIF of its guest disk, staging cleared
 │   ├── qd3d-thread.spec.ts              # QuickDraw 3D card's renderer on a Web Worker; frame lands on completion
 │   ├── rage128-webgpu.spec.ts           # Rage 128 WebGPU takeover: rage128-3d's equalities read back from the GPU, GPU 2D fills
+│   ├── recorder.spec.ts                 # Screen recorder: toolbar record → status bar → stop → the .mkv in OPFS decodes; a hidden page finalises the file, shown again continues in name-2.mkv
 │   ├── rom-upload-identity.spec.ts      # A ROM is stored by content id; a damaged dump of it is refused, not stored
 │   ├── rom-upload-lisa-chips.spec.ts    # Two Lisa ROM chips upload as one ROM; a lone chip is refused
 │   ├── rom-upload-listing.spec.ts       # A Welcome-page ROM upload shows up in an already-open Filesystem tab
