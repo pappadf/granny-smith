@@ -108,8 +108,28 @@ size_t floppy_media_sector_offset(const floppy_media_t *m, int track, int side, 
 // medium has no surface under, a sector past the image's end, or a write
 // to a read-only image.  Tags are not touched: a controller that carries
 // them adds disk_read_tag / disk_write_tag itself.
+//
+// A sector the medium's bit-level capture could not read (image_capture.h)
+// fails to read, as it does on the original disk, until something writes
+// it: floppy_media_block_unreadable.
 bool floppy_media_read_sector(const floppy_media_t *m, int track, int side, int sector, uint8_t *data);
 bool floppy_media_write_sector(const floppy_media_t *m, int track, int side, int sector, uint8_t *data);
+
+// True when sector `block` (image order) of `img` is one its capture could
+// not read -- no data field that decodes, or a failing data checksum -- and
+// nothing has written it since: a real drive fails a read of it.  False for
+// an image with no capture.  For the controllers that read the image a
+// sector at a time (SWIM3, New Age, the IIfx's IOP SWIM).
+bool floppy_media_block_unreadable(image_t *img, uint64_t block);
+
+// The disk bytes of GCR (track, side) as the head sees them, one revolution
+// that loops, malloc'd into *out (*len bytes): the captured track while the
+// image's sectors still hold what the capture decodes them to, with any
+// changed sector's data field re-encoded into it; otherwise laid down from
+// the sectors as a Mac formats them, a sector the capture could not read
+// laid down unreadable.  See "Tracks" in floppy_gcr.c for the whole rule.
+// 0, or a negative errno (-EINVAL for an MFM or invalid medium).
+int floppy_media_track(const floppy_media_t *m, int track, int side, uint8_t **out, size_t *len);
 
 // === Rotation ===============================================================
 //

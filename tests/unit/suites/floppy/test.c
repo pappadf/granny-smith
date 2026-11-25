@@ -167,7 +167,7 @@ TEST(test_track_round_trip) {
         for (int i = 0; i < spt * 512; i++)
             sectors[i] = (uint8_t)(i ^ track);
 
-        encode_track(buf, len, track, 0, sectors, 2, NULL, 0, 0);
+        encode_track(buf, len, track, 0, sectors, NULL, 2, 0);
 
         // Every sector number must appear exactly once in the encoded track.
         int seen[16] = {0};
@@ -205,7 +205,7 @@ TEST(test_track_unreadable_sector_fails_its_checksum) {
     uint8_t *buf = malloc(len);
     uint8_t *sectors = calloc((size_t)spt, 512);
     ASSERT_TRUE(buf != NULL && sectors != NULL);
-    encode_track(buf, len, track, 0, sectors, 2, NULL, 0, 1u << bad_sector);
+    encode_track(buf, len, track, 0, sectors, NULL, 2, 1u << bad_sector);
     int good[16] = {0}, rejected = 0;
     uint8_t *end = buf + len;
     for (uint8_t *p = buf; p + 730 < end; p++) {

@@ -87,6 +87,60 @@ uint64_t disk_size(image_t *disk) {
 // touching it comes back short, as image.c returns it.
 static long s_bad_sector = -1;
 
+// The capture store (image_capture.c) is the storage layer's: these suites'
+// media have none.
+#include "image_capture.h"
+
+bool image_has_capture(const image_t *img) {
+    (void)img;
+    return false;
+}
+image_capture_t *image_capture(image_t *img) {
+    (void)img;
+    return NULL;
+}
+image_sector_status_t image_sector_status(image_t *img, uint64_t block) {
+    (void)img;
+    (void)block;
+    return IMAGE_SECTOR_OK;
+}
+image_sector_status_t image_capture_sector_status(const image_capture_t *cap, uint64_t block) {
+    (void)cap;
+    (void)block;
+    return IMAGE_SECTOR_OK;
+}
+int image_capture_sides(const image_capture_t *cap) {
+    (void)cap;
+    return 0;
+}
+uint32_t image_capture_crc(const image_capture_t *cap) {
+    (void)cap;
+    return 0;
+}
+size_t image_capture_track(const image_capture_t *cap, int track, int side, uint8_t **nib,
+                           moof_sector_t sec[MOOF_MAX_SECTORS]) {
+    (void)cap;
+    (void)track;
+    (void)side;
+    (void)sec;
+    *nib = NULL;
+    return 0;
+}
+uint32_t image_capture_track_diff(const moof_sector_t sec[MOOF_MAX_SECTORS], int nsec, const uint8_t *data,
+                                  const uint8_t *tags, uint32_t in_delta) {
+    (void)sec;
+    (void)nsec;
+    (void)data;
+    (void)tags;
+    (void)in_delta;
+    return 0;
+}
+bool image_block_in_delta(image_t *img, uint64_t block) {
+    (void)img;
+    (void)block;
+    return false;
+}
+
 size_t disk_read_data(image_t *disk, uint64_t off, uint8_t *buf, size_t size) {
     (void)disk;
     if (s_bad_sector >= 0 && off <= (size_t)s_bad_sector * 512 && off + size > (size_t)s_bad_sector * 512)

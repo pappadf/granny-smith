@@ -32,6 +32,12 @@
 #define NUM_TRACKS FLOPPY_NUM_TRACKS // see floppy_geometry.h
 #define NUM_SIDES  FLOPPY_NUM_SIDES // see floppy_geometry.h
 
+// No track buffer is longer than this: a drive's are ~6,200-9,400 bytes,
+// and a capture's revolution frames to at most one byte per eight of its
+// cells (the MOOF reader converts no flux track past 8 Mi cells).  The bound
+// a restored head position is checked against before its track is built.
+#define FLOPPY_TRACK_BYTES_MAX (2 * 1024 * 1024)
+
 // Time in nanoseconds for motor spin-up (400 ms)
 #define MOTOR_SPINUP_TIME_NS (400ULL * 1000000ULL)
 
@@ -316,9 +322,16 @@ int iwm_tach_signal(struct scheduler *scheduler, floppy_drive_t *drive, const ch
 
 // Returns a pointer to GCR data for the given drive/image/side, encoding on demand
 uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct scheduler *scheduler);
-// The same track as an inspection sees it, encoding and caching nothing: the
-// cached encoding, or an all-sync ($FF) track where none is built yet.
-const uint8_t *iwm_track_data_peek(const floppy_drive_t *drive, image_t *img, int sel);
+// The same track as an inspection sees it, caching nothing: the cached
+// track, the track a captured disk would build (in a scratch buffer), or an
+// all-sync ($FF) track where none is built yet.  Its length in *len.
+const uint8_t *iwm_track_data_peek(const floppy_drive_t *drive, image_t *img, int sel, size_t *len);
+
+// The length of a drive's (side, track) buffer: the track's own once built
+// (a captured track is as long as the capture's revolution), else the
+// zone's.  Keyed on the buffer being there: `size` is checkpointed plain
+// data and may be stale without it.
+size_t floppy_track_len(const floppy_drive_t *drive, int side, int track);
 
 // Writes any modified GCR tracks back to the underlying disk image
 void iwm_flush_modified_tracks(floppy_drive_t *drive, image_t *img, int drive_index);

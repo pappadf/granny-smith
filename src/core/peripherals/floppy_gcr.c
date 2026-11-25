@@ -9,10 +9,12 @@
 
 #include "codec.h"
 #include "gs_assert.h"
+#include "image_capture.h"
 #include "log.h"
 #include "memory.h"
 
 #include <assert.h>
+#include <errno.h>
 #include <math.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -171,11 +173,22 @@ size_t floppy_media_sector_offset(const floppy_media_t *m, int track, int side, 
     return floppy_zone_image_offset(track, side, m->sides) + (size_t)sector * FLOPPY_SECTOR_BYTES;
 }
 
+bool floppy_media_block_unreadable(image_t *img, uint64_t block) {
+    // A guest write makes the sector readable on the real disk, whatever it
+    // wrote: the block is then in the delta.
+    return image_has_capture(img) && image_sector_status(img, block) != IMAGE_SECTOR_OK &&
+           !image_block_in_delta(img, block);
+}
+
 bool floppy_media_read_sector(const floppy_media_t *m, int track, int side, int sector, uint8_t *data) {
     if (!m || !m->valid || sector < 0 || sector >= floppy_media_spt(m, track) || side < 0 || side >= m->sides)
         return false;
     size_t off = floppy_media_sector_offset(m, track, side, sector);
     if (off + FLOPPY_SECTOR_BYTES > disk_size(m->img))
+        return false;
+    // A sector the capture could not read fails as it does on the real
+    // drive, rather than reading as the zeros the sector view holds.
+    if (!m->mfm && floppy_media_block_unreadable(m->img, off / FLOPPY_SECTOR_BYTES))
         return false;
     return disk_read_data(m->img, off, data, FLOPPY_SECTOR_BYTES) == FLOPPY_SECTOR_BYTES;
 }
@@ -285,11 +298,13 @@ static uint8_t *encode_sector(uint8_t *dst, const uint8_t *tag, const uint8_t *d
     return dst;
 }
 
-// Encodes an entire track with interleaved sectors to GCR format
-// `bad` has bit n set for each sector n the image could not read; those are
-// laid down with a bad data checksum (encode_sector).
-static void encode_track(uint8_t *dst, size_t trk_length, int track, int side, const uint8_t *data, int num_sides,
-                         image_t *img, size_t first_block, uint32_t bad) {
+// Encodes an entire track with interleaved sectors to GCR format.  `data`
+// and `tags` (NULL: zeros) are the track's sectors, 512 and 12 bytes each.
+// `bad` has bit n set for each sector n that reads unreadable -- one the
+// image could not read, or one the capture could not -- and those are laid
+// down with a bad data checksum (encode_sector).
+static void encode_track(uint8_t *dst, size_t trk_length, int track, int side, const uint8_t *data, const uint8_t *tags,
+                         int num_sides, uint32_t bad) {
     GS_ASSERT(data != NULL);
 
     int i;
@@ -327,8 +342,8 @@ static void encode_track(uint8_t *dst, size_t trk_length, int track, int side, c
         // a 7100, which does round-trip them.
         uint8_t tag[12];
         memset(tag, 0, sizeof tag);
-        if (img)
-            disk_read_tag(img, first_block + (size_t)sector, tag, sizeof tag);
+        if (tags)
+            memcpy(tag, tags + (size_t)sector * sizeof tag, sizeof tag);
 
         dst = encode_sector(dst, tag, data + sector * 512, track, sector, side, num_sides, (bad >> sector) & 1u);
     }
@@ -338,6 +353,247 @@ static void encode_track(uint8_t *dst, size_t trk_length, int track, int side, c
     // fill out the rest of the track
     while (dst < end_of_track)
         *dst++ = 0xFF; // sync bytes
+}
+
+// ============================================================================
+// Tracks: floppy_media_track and the IWM's cache over it
+// ============================================================================
+//
+// A drive's track buffer holds the disk bytes the head passes over, one
+// revolution, looping.  floppy_media_track() makes them, and owns the rule
+// for what they are:
+//
+//   1. An image with no capture (or a track the capture's disk does not
+//      have, side 1 of a 400K disk): the track is laid down from the image's
+//      sectors as a Mac formats it (encode_track).
+//   2. A captured track whose sectors the image still holds as the capture
+//      decodes them (image_capture_track_diff): the captured revolution
+//      itself, framed in steady state -- gaps, marks and fields that are no
+//      sectors included.
+//   3. Some sectors differ: the captured revolution with each of those
+//      sectors' data fields replaced by a fresh one (track_splice), as a
+//      drive rewrites a sector after finding its address field.
+//   4. That is impossible (a sector with no data field in the capture, a
+//      reformat, a track that would outgrow the capture by more than 2%):
+//      laid down from the sectors, as 1.
+//
+// The rule reads only the capture and the image's current contents, so the
+// same disk contents give the same track whichever way the image got there
+// -- a guest write, an eject's flush, either kind of checkpoint restore, a
+// reinsert.  The one exception: whether a sector the capture could not read
+// has been written at all, which the image's delta bitmap answers (a guest
+// writing zeros there leaves the content unchanged but the medium readable).
+
+// Disk bytes from an address field's D5 to the end of it: D5 AA 96, five
+// values, DE AA.
+#define ADDR_FIELD_NIBS 10
+// A data field: D5 AA AD, the sector number, 703 values, DE AA.
+#define DATA_FIELD_NIBS (3 + 1 + GCR_SECTOR_VALUES + 2)
+
+size_t floppy_track_len(const floppy_drive_t *drive, int side, int track) {
+    if (!drive || track < 0 || track >= NUM_TRACKS || side < 0 || side >= NUM_SIDES)
+        return iwm_track_length(0);
+    const floppy_track_t *t = &drive->tracks[side][track];
+    // `size` is checkpointed plain data: without a buffer it may be stale.
+    return (t->data && t->size) ? t->size : iwm_track_length(track);
+}
+
+// A track's sectors as the image holds them now, and what is known of each.
+typedef struct {
+    int nsec;
+    int num_sides;
+    uint64_t first_block; // the track's first sector, in image order
+    uint32_t unreadable; // bit k: the image could not read sector k
+    uint32_t capture_bad; // bit k: the capture could not read sector k
+    uint32_t in_delta; // bit k: sector k is in the image's delta
+    uint8_t data[12 * 512];
+    uint8_t tags[12 * GCR_TAG_BYTES];
+} track_sectors_t;
+
+// Read (track, side)'s sectors and tags from the image.
+static void track_sectors_read(image_t *img, const image_capture_t *cap, int num_sides, int track, int side,
+                               track_sectors_t *ts) {
+    memset(ts, 0, sizeof *ts);
+    ts->nsec = iwm_sectors_per_track(track);
+    ts->num_sides = num_sides;
+    size_t track_bytes = (size_t)ts->nsec * 512u;
+    size_t track_offset = iwm_disk_image_offset(track, side, num_sides);
+    size_t disk_sz = (size_t)disk_size(img); // a floppy: far under 4 GB
+    // Clamp to disk size for single-sided images
+    if (track_offset + track_bytes > disk_sz) {
+        LOG(3, "floppy: track=%d side=%d offset=%zu exceeds disk_size=%zu, using side 0", track, side, track_offset,
+            disk_sz);
+        track_offset = iwm_disk_image_offset(track, 0, num_sides);
+    }
+    LOG(6, "floppy: track_data track=%d side=%d offset=%zu bytes=%zu disk_size=%zu", track, side, track_offset,
+        track_bytes, disk_sz);
+    ts->first_block = track_offset / 512u;
+    // A track the image cannot read whole is read a sector at a time: the
+    // sectors that still fail are laid down unreadable (a bad data
+    // checksum), as a damaged disk presents them, and the rest read.
+    if (disk_read_data(img, track_offset, ts->data, track_bytes) != track_bytes) {
+        for (int s = 0; s < ts->nsec; s++) {
+            uint8_t *at = ts->data + (size_t)s * 512u;
+            if (disk_read_data(img, track_offset + (size_t)s * 512u, at, 512) != 512) {
+                memset(at, 0, 512);
+                ts->unreadable |= 1u << s;
+            }
+        }
+        LOG(1, "floppy: track=%d side=%d: unreadable sectors mask $%03X", track, side, ts->unreadable);
+    }
+    // The 12 GCR tag bytes carry the HFS/MFS scavenger metadata.  This path
+    // once synthesised zeros, so a DiskCopy 4.2 image with tags lost them on
+    // any read through the IWM/SWIM path.
+    for (int s = 0; s < ts->nsec; s++) {
+        disk_read_tag(img, ts->first_block + (uint64_t)s, ts->tags + (size_t)s * GCR_TAG_BYTES, GCR_TAG_BYTES);
+        if (!cap)
+            continue;
+        if (image_capture_sector_status(cap, ts->first_block + (uint64_t)s) != IMAGE_SECTOR_OK)
+            ts->capture_bad |= 1u << s;
+        if (image_block_in_delta(img, ts->first_block + (uint64_t)s))
+            ts->in_delta |= 1u << s;
+    }
+}
+
+// Lay the track down from its sectors (rules 1 and 4), at the zone's length.
+// A sector the capture could not read, and nothing has written since, is
+// laid down unreadable, as the original disk has it.
+static int track_synthesise(int track, int side, const track_sectors_t *ts, uint8_t **out, size_t *len) {
+    size_t n = iwm_track_length(track);
+    uint8_t *buf = malloc(n);
+    if (!buf)
+        return -ENOMEM;
+    uint32_t bad = ts->unreadable | (ts->capture_bad & ~ts->in_delta);
+    encode_track(buf, n, track, side, ts->data, ts->tags, ts->num_sides, bad);
+    *out = buf;
+    *len = n;
+    return 0;
+}
+
+// Rule 3: the captured revolution `nib` (n bytes) with the data field of
+// every sector in `diff` re-encoded from the image.  Each replaced region
+// runs from the end of the sector's address field through the DE AA that
+// closes its data field: the gap after the address field becomes sync of
+// the same length (what the drive writes ahead of the mark, so a signature
+// left there by the duplicator goes as on a real rewrite), then a standard
+// data field.  Everything else -- other sectors, gaps, the address field
+// itself -- stays as captured.  False when a sector has no data field to
+// replace, when two regions overlap, or when the result would outgrow the
+// capture by more than 2%: a track no drive could hold.
+static bool track_splice(const uint8_t *nib, size_t n, const moof_sector_t *sec, uint32_t diff, int track, int side,
+                         const track_sectors_t *ts, uint8_t **out, size_t *len) {
+    struct {
+        size_t start, end, gap;
+        int sector;
+    } r[12];
+    int nr = 0;
+    size_t out_len = n;
+    for (int k = 0; k < ts->nsec; k++) {
+        if (!((diff >> k) & 1))
+            continue;
+        const moof_sector_t *f = &sec[k];
+        if (!f->addr || f->data_at == MOOF_NO_FIELD || f->data_end == MOOF_NO_FIELD)
+            return false; // nothing a drive would find to rewrite
+        size_t start = (size_t)f->addr_at + ADDR_FIELD_NIBS, data_at = f->data_at, end = f->data_end;
+        if (data_at < start || end <= data_at || end - start > n)
+            return false;
+        if (start >= n) { // the address field itself straddles the index
+            start -= n;
+            data_at -= n;
+            end -= n;
+        }
+        // Keep the regions sorted by where they start.
+        int at = nr++;
+        while (at > 0 && r[at - 1].start > start) {
+            r[at] = r[at - 1];
+            at--;
+        }
+        r[at].start = start;
+        r[at].end = end;
+        r[at].gap = data_at - start;
+        r[at].sector = k;
+        out_len += r[at].gap + DATA_FIELD_NIBS; // the new field and its sync...
+        out_len -= end - start; // ...in place of the old
+    }
+    if (!nr || out_len * 50 > n * 51)
+        return false; // nothing to splice, or the track outgrows the capture by more than 2%
+    // Regions must not overlap, the last one included across the index.
+    for (int i = 0; i < nr; i++) {
+        size_t next = i + 1 < nr ? r[i + 1].start : r[0].start + n;
+        if (r[i].end > next)
+            return false;
+    }
+    // A region that runs across the index moves the seam to its end.
+    size_t origin = r[nr - 1].end > n ? r[nr - 1].end - n : 0;
+    uint8_t *buf = malloc(out_len);
+    if (!buf)
+        return false;
+    size_t o = 0, pos = origin;
+    uint8_t values[GCR_SECTOR_VALUES];
+    for (int i = 0; i < nr; i++) {
+        while (pos < r[i].start)
+            buf[o++] = nib[pos++ % n];
+        // Sync over the gap, then a data field laid down as encode_sector does.
+        memset(buf + o, 0xFF, r[i].gap);
+        o += r[i].gap;
+        int k = r[i].sector;
+        buf[o++] = 0xD5, buf[o++] = 0xAA, buf[o++] = 0xAD;
+        buf[o++] = gcr_encode6[k & 0x3F];
+        gcr_sector_nibblize(ts->tags + (size_t)k * GCR_TAG_BYTES, ts->data + (size_t)k * 512u,
+                            (ts->unreadable >> k) & 1, values);
+        for (int v = 0; v < GCR_SECTOR_VALUES; v++)
+            buf[o++] = gcr_encode6[values[v] & 0x3F];
+        buf[o++] = 0xDE, buf[o++] = 0xAA;
+        pos = r[i].end;
+    }
+    while (pos < origin + n)
+        buf[o++] = nib[pos++ % n];
+    GS_ASSERT(o == out_len);
+    LOG(3, "floppy: track=%d side=%d: %d changed sector(s) spliced into the capture (%zu -> %zu bytes)", track, side,
+        nr, n, out_len);
+    *out = buf;
+    *len = out_len;
+    return true;
+}
+
+int floppy_media_track(const floppy_media_t *m, int track, int side, uint8_t **out, size_t *len) {
+    *out = NULL;
+    *len = 0;
+    if (!m || !m->valid || m->mfm || !m->img || track < 0 || track >= NUM_TRACKS || side < 0 || side >= NUM_SIDES)
+        return -EINVAL;
+    image_capture_t *cap = image_capture(m->img);
+    track_sectors_t ts;
+    track_sectors_read(m->img, cap, m->sides, track, side, &ts);
+    if (cap && side < image_capture_sides(cap)) {
+        moof_sector_t sec[MOOF_MAX_SECTORS];
+        uint8_t *nib = NULL;
+        size_t n = image_capture_track(cap, track, side, &nib, sec);
+        uint32_t diff = image_capture_track_diff(sec, ts.nsec, ts.data, ts.tags, ts.in_delta);
+        uint32_t all = (1u << ts.nsec) - 1;
+        if (diff == 0) {
+            // Rule 2.  A track the capture holds no bits for is a gap all
+            // round: sync, at the zone's length.
+            if (!n) {
+                n = iwm_track_length(track);
+                nib = malloc(n);
+                if (!nib)
+                    return -ENOMEM;
+                memset(nib, 0xFF, n);
+            }
+            LOG(4, "floppy: track=%d side=%d: served from the capture (%zu bytes)", track, side, n);
+            *out = nib;
+            *len = n;
+            return 0;
+        }
+        // Rule 3, unless every sector changed (a reformat).
+        bool spliced = diff != all && n && track_splice(nib, n, sec, diff, track, side, &ts, out, len);
+        free(nib);
+        if (spliced)
+            return 0;
+        LOG(3, "floppy: track=%d side=%d: sectors $%03X differ from the capture; laid down from the image", track, side,
+            diff);
+    }
+    return track_synthesise(track, side, &ts, out, len);
 }
 
 // Returns a pointer to the GCR data for the specified drive/image/side, encoding on demand.
@@ -360,76 +616,88 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
     floppy_track_t *track = &drive->tracks[sel][drive->track];
 
     if (track->data == NULL) {
-        track->size = iwm_track_length(drive->track);
-        track->data = malloc(track->size);
-        if (!track->data) {
-            LOG(1, "Allocation failed track=%d side=%d", drive->track, sel);
+        floppy_media_t m;
+        uint8_t *buf = NULL;
+        size_t len = 0;
+        if (!floppy_media_from_image(img, &m) || floppy_media_track(&m, drive->track, sel, &buf, &len) != 0) {
+            LOG(1, "Track build failed track=%d side=%d", drive->track, sel);
             return NULL;
         }
-
-        GS_ASSERT(img != NULL);
-        int num_sides = iwm_image_num_sides(img);
-        size_t sector_count = (size_t)iwm_sectors_per_track(drive->track);
-        size_t track_bytes = sector_count * 512u;
-        size_t track_offset = iwm_disk_image_offset(drive->track, sel, num_sides);
-        size_t disk_sz = (size_t)disk_size(img); // a floppy: far under 4 GB
-
-        // Clamp to disk size for single-sided images
-        if (track_offset + track_bytes > disk_sz) {
-            LOG(3, "floppy: track=%d side=%d offset=%zu exceeds disk_size=%zu, using side 0", drive->track, sel,
-                track_offset, disk_sz);
-            track_offset = iwm_disk_image_offset(drive->track, 0, num_sides);
-        }
-        LOG(6, "floppy: track_data track=%d side=%d offset=%zu bytes=%zu disk_size=%zu", drive->track, sel,
-            track_offset, track_bytes, disk_sz);
-
-        uint8_t *sector_data = malloc(track_bytes);
-        if (!sector_data) {
-            LOG(1, "Failed to allocate sector buffer for track=%d", drive->track);
-            free(track->data);
-            track->data = NULL;
-            return NULL;
-        }
-        // A track the image cannot read whole is read a sector at a time:
-        // the sectors that still fail are laid down unreadable (a bad data
-        // checksum), as a damaged disk presents them, and the rest read.
-        uint32_t bad = 0;
-        size_t read = disk_read_data(img, track_offset, sector_data, track_bytes);
-        if (read != track_bytes) {
-            for (size_t s = 0; s < sector_count; s++) {
-                uint8_t *at = sector_data + s * 512u;
-                if (disk_read_data(img, track_offset + s * 512u, at, 512) != 512) {
-                    memset(at, 0, 512);
-                    bad |= 1u << s;
-                }
-            }
-            LOG(1, "floppy: track=%d side=%d: unreadable sectors mask $%03X", drive->track, sel, bad);
-        }
-        encode_track(track->data, track->size, drive->track, sel, sector_data, num_sides, img, track_offset / 512u,
-                     bad);
-        free(sector_data);
+        track->data = buf;
+        track->size = len;
+        track->modified = false;
     }
+
+    // The head's position is the drive's and the length the track's: tracks
+    // differ in length (a capture's are its own), so a position carried from
+    // another track or side, or restored from a checkpoint, is brought inside
+    // this one before anything indexes with it.
+    if (drive->offset < 0)
+        drive->offset = 0;
+    if ((size_t)drive->offset >= track->size)
+        drive->offset = (int)((size_t)drive->offset % track->size);
+    if (drive->write_hdr_start >= (int)track->size)
+        drive->write_hdr_start = -1;
 
     return track->data;
 }
 
 // The GCR track an inspection sees.  A guest read builds the track's encoding
-// on first touch and caches it; doing that for a peek would read the image
-// (counting toward its activity light) and store the cache, both side effects
-// a peek must not have.  So a peek sees the cached encoding where the guest
-// has already built one, and otherwise an all-sync ($FF) track: what the
-// head passes over in a gap, and a value no sector decode will mistake for
-// data.  NULL exactly where iwm_track_data returns NULL for the media (none,
-// or MFM).
-const uint8_t *iwm_track_data_peek(const floppy_drive_t *drive, image_t *img, int sel) {
+// on first touch and caches it; doing that for a peek would store the cache,
+// a side effect a peek must not have.  So a peek sees the cached encoding
+// where the guest has already built one.  Otherwise, on a disk with a
+// capture, it sees the track floppy_media_track() would build, made into a
+// scratch buffer of its own (the capture's tracks are not the sync a gap
+// reads as); this reads the image, which counts toward its activity light.
+// On any other disk it sees an all-sync ($FF) track: what the head passes
+// over in a gap, and a value no sector decode will mistake for data.  NULL
+// exactly where iwm_track_data returns NULL for the media (none, or MFM).
+const uint8_t *iwm_track_data_peek(const floppy_drive_t *drive, image_t *img, int sel, size_t *len) {
     static uint8_t sync_track[9320]; // iwm_track_length's longest zone
+    // The last track a peek built, and what it was built from.
+    static struct {
+        const image_t *img;
+        uint32_t crc;
+        int track, side;
+        uint64_t writes;
+        uint8_t *buf;
+        size_t len;
+    } scratch;
     if (!img || image_layout_is_mfm(image_layout(img)) || drive->track < 0 || drive->track >= NUM_TRACKS)
         return NULL;
     const floppy_track_t *track = &drive->tracks[sel][drive->track];
-    if (track->data)
+    if (track->data) {
+        *len = track->size;
         return track->data;
+    }
+    image_capture_t *cap = image_has_capture(img) ? image_capture(img) : NULL;
+    if (cap) {
+        uint32_t crc = image_capture_crc(cap);
+        uint64_t writes = image_get_writes(img);
+        if (scratch.buf && scratch.img == img && scratch.crc == crc && scratch.track == drive->track &&
+            scratch.side == sel && scratch.writes == writes) {
+            *len = scratch.len;
+            return scratch.buf;
+        }
+        floppy_media_t m;
+        uint8_t *buf = NULL;
+        size_t n = 0;
+        if (floppy_media_from_image(img, &m) && floppy_media_track(&m, drive->track, sel, &buf, &n) == 0) {
+            free(scratch.buf);
+            scratch.img = img;
+            scratch.crc = crc;
+            scratch.track = drive->track;
+            scratch.side = sel;
+            scratch.writes = writes;
+            scratch.buf = buf;
+            scratch.len = n;
+            *len = n;
+            return buf;
+        }
+    }
     if (sync_track[0] != 0xFF)
         memset(sync_track, 0xFF, sizeof sync_track);
+    *len = iwm_track_length(drive->track);
     return sync_track;
 }
 

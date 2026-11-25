@@ -39,6 +39,7 @@ static const class_desc_t floppy_controller_class;
 #include <string.h>
 
 #include "image.h"
+#include "image_capture.h"
 
 LOG_USE_CATEGORY_NAME("floppy");
 
@@ -98,13 +99,15 @@ static int floppy_rddata_bit(floppy_t *floppy, floppy_drive_t *drive, int drv, i
     uint64_t now_ns = (uint64_t)scheduler_time_ns(floppy->scheduler);
     unsigned bit_idx = (unsigned)((now_ns / GCR_NS_PER_BIT) & 7);
 
-    const uint8_t *data = peek ? iwm_track_data_peek(drive, floppy->disk[drv], side)
+    size_t trk_len = 0;
+    const uint8_t *data = peek ? iwm_track_data_peek(drive, floppy->disk[drv], side, &trk_len)
                                : iwm_track_data(drive, floppy->disk[drv], side, floppy->scheduler);
     if (!data) {
         // MFM media: no GCR track data, so simulate time-varying flux.
         return (bit_idx < 4) ? 1 : 0;
     }
-    size_t trk_len = iwm_track_length(drive->track);
+    if (!peek)
+        trk_len = floppy_track_len(drive, side, drive->track); // the track's own length
     size_t byte_pos = (size_t)((now_ns / GCR_NS_PER_BYTE) % trk_len);
     return (data[byte_pos] >> bit_idx) & 1;
 }
@@ -532,7 +535,8 @@ static uint8_t iwm_reg_read(floppy_t *floppy, uint32_t offset, bool peek) {
         }
 
         floppy_drive_t *drive = &floppy->drives[drv];
-        const uint8_t *data = peek ? iwm_track_data_peek(drive, floppy->disk[drv], floppy->sel)
+        size_t trk_len = 0;
+        const uint8_t *data = peek ? iwm_track_data_peek(drive, floppy->disk[drv], floppy->sel, &trk_len)
                                    : iwm_track_data(drive, floppy->disk[drv], floppy->sel, floppy->scheduler);
         if (!data) {
             // MFM media in the drive, or an allocation failure.  The SWIM
@@ -545,11 +549,13 @@ static uint8_t iwm_reg_read(floppy_t *floppy, uint32_t offset, bool peek) {
             return no_data;
         }
 
-        size_t trk_len = iwm_track_length(drive->track);
+        // The track's own length: a captured track's is its revolution's.
+        if (!peek)
+            trk_len = floppy_track_len(drive, floppy->sel, drive->track);
 
         // A peek reads from where the head is without moving it.
         if (peek) {
-            int pos = drive->offset;
+            int pos = (drive->offset >= 0 && (size_t)drive->offset < trk_len) ? drive->offset : 0;
             for (size_t i = 0; i < trk_len; i++) {
                 uint8_t byte = data[pos++];
                 if (pos >= (int)trk_len)
@@ -634,9 +640,20 @@ void floppy_iwm_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
         // again.  offset is checkpointed plain data, so a corrupt checkpoint
         // could supply one directly too; the restore path now resets an
         // out-of-range offset.
-        size_t trk_len_w = iwm_track_length(drive->track);
+        size_t trk_len_w = floppy_track_len(drive, floppy->sel, drive->track);
         if (drive->offset < 0 || (size_t)drive->offset >= trk_len_w)
             drive->offset = 0;
+        // A write-protected disk takes nothing: the drive does not write,
+        // though the IWM shifts the byte out and the disk turns under the
+        // head.  Storing it here put raw nibbles into the cache (and the
+        // checkpoint's residue) of a disk the guest cannot write.
+        if (!image_is_writable(floppy->disk[drv])) {
+            LOG(5, "Drive %d: write to a write-protected disk dropped (track=%d offset=%d)", drv, drive->track,
+                drive->offset);
+            if ((size_t)++drive->offset >= trk_len_w)
+                drive->offset = 0;
+            return;
+        }
         data[drive->offset++] = byte;
         LOG(8, "Drive %d: Writing data track=%d side=%d offset=%d = 0x%02X", drv, drive->track, floppy->sel,
             drive->offset - 1, byte);
@@ -891,6 +908,23 @@ void floppy_swim3_set_side(floppy_t *floppy, unsigned drive, int side) {
 // Lifecycle (Init / Delete / Checkpoint)
 // ============================================================================
 
+// The fingerprint of a disk's bit-level capture (image_capture_crc), 0 for
+// an empty drive or a disk without one.
+static uint32_t floppy_capture_fingerprint(image_t *img) {
+    return image_capture_crc(image_capture(img));
+}
+
+// The longest track buffer `img` can give track `t`, which bounds a
+// restored residue: the zone's length, or the capture's longest track,
+// grown by the 2% a spliced sector may add (floppy_media_track).
+static size_t floppy_residue_max(image_t *img, int t) {
+    size_t max = iwm_track_length(t);
+    size_t cap = image_capture_max_track_bytes(image_capture(img));
+    if (cap > max)
+        max = cap;
+    return max + max / 50 + 16;
+}
+
 // Clamps checkpoint-supplied state that later code indexes with.  A checkpoint
 // is an untrusted file: the container validates per-block SIZES, not contents,
 // so a correctly-sized block with edited fields passes every existing check.
@@ -913,15 +947,17 @@ static void floppy_validate_restored_state(floppy_t *floppy) {
             LOG(1, "Drive %d: restored track %d out of range, clamping", d, drv->track);
             drv->track = (drv->track < 0) ? 0 : NUM_TRACKS - 1;
         }
-        // Both read paths index before they wrap.
-        int trk_len = (int)iwm_track_length(drv->track);
-        if (drv->offset < 0 || drv->offset >= trk_len) {
-            LOG(1, "Drive %d: restored offset %d outside track (len %d), resetting", d, drv->offset, trk_len);
+        // Both read paths index before they wrap.  The upper bound is the
+        // track's own length, known only once its buffer is there (a
+        // captured track's differs from the zone's), so iwm_track_data
+        // brings both positions inside the buffer whenever it hands one out.
+        if (drv->offset < 0 || drv->offset > FLOPPY_TRACK_BYTES_MAX) {
+            LOG(1, "Drive %d: restored offset %d outside any track, resetting", d, drv->offset);
             drv->offset = 0;
         }
         if (drv->data_side != 0 && drv->data_side != 1)
             drv->data_side = 0;
-        if (drv->write_hdr_start < -1 || drv->write_hdr_start >= (int)iwm_track_length(drv->track))
+        if (drv->write_hdr_start < -1 || drv->write_hdr_start > FLOPPY_TRACK_BYTES_MAX)
             drv->write_hdr_start = -1;
     }
 
@@ -1072,11 +1108,28 @@ floppy_t *floppy_init(floppy_type_t type, memory_map_t *map, struct scheduler *s
                 floppy_notify_present(i, floppy->disk[i] != NULL);
         }
 
-        // Restore GCR track buffers.  trk->size comes from the file, but
-        // every access to a track buffer is bounded by iwm_track_length(), so
-        // a buffer of any other size is an OOB read/write waiting to happen:
-        // fail the restore rather than allocate it.  Once the stream is
-        // known bad there is nothing to stay aligned with, so stop reading.
+        // The image is reopened by name, so a capture behind it must be the
+        // one the checkpoint was taken with: its tracks are what the drive
+        // served, and the residues below were written over them.
+        for (int i = 0; i < NUM_DRIVES; i++) {
+            uint32_t saved = 0;
+            system_read_checkpoint_data(checkpoint, &saved, sizeof saved, "floppy_capture");
+            uint32_t now = floppy_capture_fingerprint(floppy->disk[i]);
+            if (saved != now) {
+                LOG(0,
+                    "Drive %d: the disk's bit-level capture is not the one the checkpoint was saved with "
+                    "(CRC %08X, now %08X); refusing the restore",
+                    i, saved, now);
+                checkpoint_set_error(checkpoint);
+            }
+        }
+
+        // Restore GCR track buffers: the residues, each saved with its own
+        // length.  A length is bounded before anything is allocated -- by
+        // the longest track this disk can have (floppy_residue_max) -- and
+        // every access is then bounded by it (floppy_track_len).  Once the
+        // stream is known bad there is nothing to stay aligned with, so stop
+        // reading.
         bool tracks_ok = true;
         for (int d = 0; d < NUM_DRIVES; d++) {
             for (int s = 0; s < NUM_SIDES; s++) {
@@ -1090,15 +1143,22 @@ floppy_t *floppy_init(floppy_type_t type, memory_map_t *map, struct scheduler *s
                     }
                     uint8_t has_data = 0;
                     system_read_checkpoint_data(checkpoint, &has_data, 1);
-                    if (has_data && trk->size != iwm_track_length(t)) {
-                        LOG(1, "Drive %d: restored track %d side %d size %zu, expected %zu", d, t, s, trk->size,
-                            iwm_track_length(t));
-                        checkpoint_set_error(checkpoint);
-                        tracks_ok = false;
-                        trk->size = 0;
+                    trk->size = 0; // the prefix's value is stale; a residue carries its own
+                    if (!has_data) {
                         trk->modified = false;
                         continue;
                     }
+                    uint32_t size = 0;
+                    system_read_checkpoint_data(checkpoint, &size, sizeof size, "floppy_residue");
+                    size_t max = floppy_residue_max(floppy->disk[d], t);
+                    if (size == 0 || size > max) {
+                        LOG(1, "Drive %d: restored track %d side %d size %u, at most %zu", d, t, s, size, max);
+                        checkpoint_set_error(checkpoint);
+                        tracks_ok = false;
+                        trk->modified = false;
+                        continue;
+                    }
+                    trk->size = size;
                     if (has_data && trk->size > 0) {
                         trk->data = malloc(trk->size);
                         if (trk->data)
@@ -1270,6 +1330,12 @@ void floppy_checkpoint(floppy_t *restrict floppy, checkpoint_t *checkpoint) {
     for (int i = 0; i < NUM_DRIVES; i++)
         checkpoint_write_image_ref(checkpoint, floppy->disk[i]);
 
+    // ...and which capture each was, so a restore knows it reopened it.
+    for (int i = 0; i < NUM_DRIVES; i++) {
+        uint32_t crc = floppy_capture_fingerprint(floppy->disk[i]);
+        system_write_checkpoint_data(checkpoint, &crc, sizeof crc, "floppy_capture");
+    }
+
     // Save GCR track buffers (preserves in-flight write data)
     for (int d = 0; d < NUM_DRIVES; d++) {
         for (int s = 0; s < NUM_SIDES; s++) {
@@ -1284,8 +1350,12 @@ void floppy_checkpoint(floppy_t *restrict floppy, checkpoint_t *checkpoint) {
                 // GCR path now writes them through (iwm_write_through).
                 uint8_t has_data = (trk->data != NULL && trk->modified);
                 system_write_checkpoint_data(checkpoint, &has_data, 1);
-                if (has_data)
+                if (has_data) {
+                    // Its length explicitly: a track's length is its own.
+                    uint32_t size = (uint32_t)trk->size;
+                    system_write_checkpoint_data(checkpoint, &size, sizeof size, "floppy_residue");
                     system_write_checkpoint_data(checkpoint, trk->data, trk->size);
+                }
             }
         }
     }
@@ -1516,16 +1586,17 @@ static DEF_METHOD(floppy_drive_method_eject) {
 
 // `floppy.drives[N].insert(path, [writable])` — mount an image into this
 // specific drive. Calls system_fd_insert directly so persistence / VFS
-// resolution / drive-occupancy bookkeeping all stay in one place.
+// resolution / drive-occupancy bookkeeping all stay in one place.  With no
+// `writable` the disk mounts writable unless it records its own write
+// protection (a MOOF capture's INFO flag); an explicit value overrides that.
 static DEF_METHOD(floppy_drive_method_insert) {
     unsigned slot = 0;
     if (!floppy_drive_floppy(self, &slot))
         return val_err("floppy.drives.N.insert: floppy controller not available");
-    bool writable = (argc >= 2) ? argv[1].b : true;
+    int writable = (argc >= 2 && argv[1].kind == VK_BOOL) ? (argv[1].b ? 1 : 0) : FD_WRITABLE_DEFAULT;
     return val_bool(system_fd_insert(argv[0].s, (int)slot, writable) == 0);
 }
 
-static const value_t floppy_true = {.kind = VK_BOOL, .b = true};
 static const arg_decl_t floppy_drive_insert_args[] = {
     {.name = "path",
      .kind = VK_STRING,
@@ -1534,8 +1605,8 @@ static const arg_decl_t floppy_drive_insert_args[] = {
     {.name = "writable",
      .kind = VK_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &floppy_true,
-     .doc = "Mount writable; false = write-protected"},
+     .doc = "Mount writable; false = write-protected",
+     .default_doc = "writable, unless the disk records its own write protection (a MOOF capture's)"},
 };
 
 static const member_t floppy_drive_members[] = {
