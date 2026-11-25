@@ -247,6 +247,18 @@ static void compact_set_rom_overlay(config_t *cfg, bool on) {
         uint32_t ram_off = (p << MEM_PAGE_SHIFT) % cfg->ram_size;
         compact_map_read_page(p, on ? ram + cfg->ram_size + (p << MEM_PAGE_SHIFT) : ram + ram_off);
     }
+    // The overlay map also places RAM at $600000 ("RAM is placed starting at
+    // $600000", Inside Macintosh, vol. III, ch. 2; its ovlyRAM/ovlyScreen
+    // equates): the 64 KB ROM runs its memory test and draws its error screen
+    // there before it clears vOverlay.  The image is RAM from offset 0 (the
+    // 2 MB window never reaches a 2.5 MB board's second row), wrapping on a
+    // smaller board; it goes away with the overlay, leaving the range empty.
+    for (uint32_t a = COMPACT_OVLY_RAM_START; a < COMPACT_OVLY_RAM_END; a += MEM_PAGE_SIZE) {
+        if (on)
+            page_fill_68k(a >> MEM_PAGE_SHIFT, ram + (a - COMPACT_OVLY_RAM_START) % cfg->ram_size, true);
+        else
+            page_clear(a >> MEM_PAGE_SHIFT);
+    }
     LOG(1, "ROM overlay %s", on ? "on: ROM at $000000" : "off: RAM at $000000");
 }
 
@@ -340,15 +352,8 @@ static void compact_memory_layout_init(config_t *cfg) {
 
     // Register the Phase Read device (PAL boards: the BBU has none)
     if (!board->bbu) {
-        // The PALs' overlay map moves RAM to $600000 while ROM sits at zero:
-        // "a duplicate image of the same ROM starting at address 0 (where RAM
-        // normally is), while RAM is placed starting at $600000" (Inside
-        // Macintosh, vol. III, ch. 2; its ovlyRAM/ovlyScreen equates).  The
-        // 64 KB ROM runs its memory test and draws its error screen there
-        // before it clears vOverlay.  The image is left in place afterwards:
-        // nothing else is decoded in $600000-$7FFFFF on these boards.
-        memory_populate_ram_mirror(cfg->memory_map, COMPACT_OVLY_RAM_START, COMPACT_OVLY_RAM_END);
-
+        // (The overlay map's RAM image at $600000 comes and goes with the
+        // overlay: compact_set_rom_overlay.)
         memory_interface_t phase_read;
         memset(&phase_read, 0, sizeof(phase_read));
         phase_read.read_uint8 = &compact_phase_read_uint8;

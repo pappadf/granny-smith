@@ -42,7 +42,9 @@ and VIA PB4/PB5 (`mouse.c`), PA3 selects the alternate sound buffer, and
 the phase-read window at $F00000 answers 0. The overlay map also places
 RAM at $600000 (Inside Macintosh, vol. III, ch. 2, `ovlyRAM`): the 64 KB
 ROM runs its memory test and draws its error screen there before it
-clears vOverlay. The image is left mapped afterwards.
+clears vOverlay. The image exists only while the overlay is on — it is
+RAM from offset 0, wrapping on a board smaller than the 2 MB window — and
+the range is empty again once the ROM drops the overlay.
 
 **BBU boards** (SE, SE FDHD, Classic) differ in four wired facts:
 
