@@ -808,6 +808,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp); // 25 MHz (OF clock-frequency)
     machine_part(cfg, cp, "scsi96", part_save_scsi96, st->scsi96);
     scsi_53c96_set_irq_callback(st->scsi96, tnt_scsi96_irq, cfg);
+    scsi_53c96_set_bus_master(st->scsi96, true); // Grand Central DBDMA channel 0
     // The Macintosh boards' slow bus: the CD-ROM bay and the external
     // connector ("a SCSI bus for external SCSI devices and for the internal
     // CD-ROM drive", Power Macintosh 7500/8500 Developer Note, S3)

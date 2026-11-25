@@ -350,6 +350,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     machine_part(cfg, cp, "scsi96", part_save_scsi96, st->scsi96[0]);
     scsi_53c96_set_irq_callback(st->scsi96[0], pdm_scsi96a_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96[0], cfg->scsi);
+    scsi_53c96_set_bus_master(st->scsi96[0], true); // the AMIC pump
     if (pdm_board(cfg)->has_fast_scsi) {
         machine_part_begin(cfg, cp, "scsi96_fast");
         st->scsi96[1] = scsi_53c96_init(cfg->scheduler, 40000000, cp);

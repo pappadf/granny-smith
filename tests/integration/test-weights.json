@@ -184,6 +184,7 @@
     "suite-av-floppy-boot": 31,
     "suite-av-sound": 217,
     "suite-compact": 60,
+    "suite-djmemc": 60,
     "suite-gossamer": 166,
     "suite-iici": 159,
     "suite-iicx": 32,

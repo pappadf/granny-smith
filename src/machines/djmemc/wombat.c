@@ -45,8 +45,8 @@ static const nubus_slot_decl_t wlcd_nubus_slots[] = {
 // RAM: 8 MB soldered + four SIMM sockets (to 136 MB) on the Wombat boards,
 // 4 MB soldered + two sockets (to 68 MB) on the WLCD.  Each total is a
 // population djmemc_ram_banks decomposes.
-static const uint32_t wombat_ram_options_kb[] = {8192, 16384, 24576, 40960, 73728, 139264, 0};
-static const uint32_t wlcd_ram_options_kb[] = {4096, 8192, 12288, 20480, 36864, 69632, 0};
+static const uint32_t wombat_ram_options_kb[] = {8192, 12288, 16384, 24576, 32768, 40960, 73728, 139264, 0};
+static const uint32_t wlcd_ram_options_kb[] = {4096, 8192, 12288, 16384, 20480, 36864, 69632, 0};
 
 #define WOMBAT_RAM_MAX 0x08800000u // 136 MB
 #define WLCD_RAM_MAX   0x04400000u // 68 MB

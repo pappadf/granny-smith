@@ -111,6 +111,7 @@ struct scsi_53c96 {
     uint32_t xfer_residual; // bytes held back in the FIFO at INT time (odd = 1)
     uint8_t xfer_int_done; // completion INT already posted for this transfer
     uint8_t msg_skip; // ATN message bytes of a DMA select still to come through the aperture
+    bool bus_master; // a DMA engine, not the CPU, drains the aperture (no FIFO residual)
 
     struct scheduler *sched;
     struct scsi *bus; // bus/target model (NULL until attached)
@@ -431,7 +432,9 @@ static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
                     // Duff's-device blind drain reads (count-1) words then waits
                     // for this interrupt before pulling the odd byte.
                     c->xfer_mode = XFER_DATA_IN;
-                    c->xfer_residual = c->counter_live & 1u;
+                    // A DMA engine moves every byte through DREQ/DACK; only a
+                    // CPU draining words leaves an odd byte for the FIFO.
+                    c->xfer_residual = c->bus_master ? 0 : (c->counter_live & 1u);
                     c->xfer_int_done = 0;
                     c->status |= ST_TC;
                 } else {
@@ -904,6 +907,11 @@ uint8_t scsi_53c96_pdma_peek8(scsi_53c96_t *c) {
 void scsi_53c96_pdma_write8(scsi_53c96_t *c, uint8_t value) {
     if (c)
         pdma_out_byte(c, value);
+}
+
+void scsi_53c96_set_bus_master(scsi_53c96_t *c, bool bus_master) {
+    if (c)
+        c->bus_master = bus_master;
 }
 
 bool scsi_53c96_dreq(scsi_53c96_t *c) {

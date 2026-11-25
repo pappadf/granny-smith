@@ -35,6 +35,8 @@ with this checksum in lower case and continues with a second, longer one
 | `B306E171` | Macintosh SE FDHD | SE FDHD |
 | `A49F9914` | Macintosh Classic | Classic |
 | `D905` | Macintosh XL Boot ROM 3A | Macintosh XL |
+| `F1A6F343` | Centris 610/650 and Quadra 800 (February 1993) | Centris 610, Centris 650, Quadra 610, Quadra 650, Quadra 800 |
+| `F1ACAD13` | Quadra 610/650/800 and later Centris 610/650 | Centris 610, Centris 650, Quadra 610, Quadra 650, Quadra 800 |
 
 Where one ROM file serves several models, the New Machine dialog lists each
 model separately, and a ROM revision appears in the model's name
@@ -113,12 +115,23 @@ on them also needs MODE32 installed on the startup disk.
 | Quadra 950 | `q950` | 16 MB; 4–256 MB | built-in; 12″–21″ monitors | NuBus A–E |
 | Quadra 840AV | `q840av` | 16 MB; 8–128 MB | built-in 13″ RGB | — |
 | Centris 660AV / Quadra 660AV | `q660av` | 16 MB; 4–68 MB | built-in 13″ RGB | — |
+| Centris 610 | `c610` | 8 MB; 4–68 MB | built-in; 12″–21″ monitors | one NuBus card (adapter, slot E) |
+| Centris 650 | `c650` | 16 MB; 8–136 MB | built-in; 12″–21″ monitors | NuBus C, D, E |
+| Quadra 610 | `q610` | 8 MB; 4–68 MB | built-in; 12″–21″ monitors | one NuBus card (adapter, slot E) |
+| Quadra 650 | `q650` | 16 MB; 8–136 MB | built-in; 12″–21″ monitors | NuBus C, D, E |
+| Quadra 800 | `q800` | 16 MB; 8–136 MB | built-in; 12″–21″ monitors | NuBus C, D, E |
 
 All have a 1.4 MB SuperDrive and SCSI (the 900 and 950 also an external
 SCSI bus). The Quadra 700/900/950 start in 24-bit mode, the AV models in
 32-bit mode. The AV models also have a video input and a sound input that
 you can connect to your camera and microphone — see
 [Sound, camera and 3D](sound-and-video.md).
+
+The Centris 610/650 and Quadra 610/650/800 run either of their two ROMs.
+The Centris 610 has a 68LC040, which has no floating-point unit. These
+machines shipped with System 7.1 and **System Enabler 040**: a System 7.1
+disk without that enabler stops with "This startup disk will not work on
+this Macintosh model". System 7.5 and later start them without an enabler.
 
 ## 5. Power Macintosh
 

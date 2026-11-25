@@ -1403,6 +1403,116 @@
       "depth": 1,
       "addr32": false,
       "suite": "suite-compact"
+    },
+    {
+      "machine": "q800",
+      "system": "7.5",
+      "card": "djmemc",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-djmemc",
+      "media_gated": true
+    },
+    {
+      "machine": "q800",
+      "system": "7.6",
+      "card": "djmemc",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-djmemc",
+      "media_gated": true
+    },
+    {
+      "machine": "c650",
+      "system": "7.1",
+      "card": "djmemc",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-djmemc",
+      "media_gated": true
+    },
+    {
+      "machine": "c610",
+      "system": "7.1",
+      "card": "djmemc",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-djmemc",
+      "media_gated": true
+    },
+    {
+      "machine": "q800",
+      "system": "7.1",
+      "card": "djmemc",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-djmemc",
+      "media_gated": true
+    },
+    {
+      "machine": "q650",
+      "system": "7.1",
+      "card": "djmemc",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-djmemc",
+      "media_gated": true
+    },
+    {
+      "machine": "q610",
+      "system": "7.1",
+      "card": "djmemc",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-djmemc",
+      "media_gated": true
+    },
+    {
+      "machine": "c610",
+      "system": "7.6",
+      "card": "djmemc",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-djmemc",
+      "media_gated": true
+    },
+    {
+      "machine": "q610",
+      "system": "7.6",
+      "card": "djmemc",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-djmemc",
+      "media_gated": true
+    },
+    {
+      "machine": "q650",
+      "system": "7.5.3",
+      "card": "djmemc",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-djmemc",
+      "media_gated": true
     }
   ]
 }

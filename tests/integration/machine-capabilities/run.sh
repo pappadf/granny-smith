@@ -442,6 +442,41 @@ assert_contains se '{"id":"fd1","label":"Second internal floppy drive","types":[
 assert_contains sefdhd '{"id":"fd1","label":"Second internal floppy drive","types":[{"id":"none","label":"None"},{"id":"hd","label":"SuperDrive (1.4 MB)"}],"default":"hd"}' "sefdhd has two internal SuperDrives"
 assert_contains classic '{"id":"fd1","label":"External floppy drive","types":[{"id":"none","label":"None"},{"id":"hd","label":"SuperDrive (1.4 MB)"}],"default":"none"}' "classic's external floppy port ships empty"
 
+# The djMEMC machines (src/machines/djmemc): a 68040 on every board, its FPU
+# absent on the Centris 610 (68LC040); three NuBus sockets C-E on the Wombat
+# boards, one adapter slot E on the WLCD ones; soldered RAM 8 MB (Wombat) or
+# 4 MB (WLCD) up to 136 / 68 MB; the clocks; the DAFB-compatible built-in
+# video.
+for m in c610 c650 q610 q650 q800; do
+    assert_contains "$m" '"mmu":{"present":true,"kind":"68040"}' "$m has the 68040 MMU"
+    assert_contains "$m" '"nubus":true,"pci":false' "$m is a NuBus machine"
+    assert_contains "$m" '"floppies":[{"id":"fd0","label":"Internal floppy drive","types":[{"id":"hd","label":"SuperDrive (1.4 MB)"}],"default":"hd"}]' "$m has one SuperDrive"
+    assert_contains "$m" '"storage":[{"id":"scsi","label":"SCSI","kind":"scsi"' "$m offers one SCSI bus"
+    assert_contains "$m" '{"id":"appletalk","label":"AppleTalk","kind":"choice","values":[{"id":"active","label":"Active"},{"id":"inactive","label":"Inactive"}],"default":"active"}' "$m has the AppleTalk option"
+    assert_contains "$m" '"builtin":{"id":"builtin","label":"Built-in video","detail":"djMEMC (DAFB-compatible) + Antelope"' "$m's djMEMC drives its built-in video"
+done
+assert_contains c610 '"cpu":{"model":68040,"address_bits":32,"fpu":false}' "c610 has a 68LC040 (no FPU)"
+for m in c650 q610 q650 q800; do
+    assert_contains "$m" '"cpu":{"model":68040,"address_bits":32,"fpu":true}' "$m has a 68040 with FPU"
+done
+for m in c650 q650 q800; do
+    assert_contains "$m" '"slots":[{"id":"nubus_c","label":"NuBus slot C"' "$m's first socket is C"
+    assert_contains "$m" '{"id":"nubus_e","label":"NuBus slot E"' "$m has socket E"
+    assert_contains "$m" '{"id":"8192","label":"8 MB"},' "$m's RAM opens at the soldered 8 MB"
+    assert_contains "$m" '{"id":"139264","label":"136 MB"}],"default":"16384"' "$m caps RAM at 136 MB"
+done
+for m in c610 q610; do
+    assert_contains "$m" '"slots":[{"id":"nubus_e","label":"Expansion slot E (NuBus adapter)"' "$m has the one adapter slot E"
+    assert_absent "$m" '"id":"nubus_c"' "$m has no NuBus socket C"
+    assert_contains "$m" '{"id":"4096","label":"4 MB"},' "$m's RAM opens at the soldered 4 MB"
+    assert_contains "$m" '{"id":"69632","label":"68 MB"}],"default":"8192"' "$m caps RAM at 68 MB"
+done
+assert_contains c610 '"freq":20000000' "c610 runs at 20 MHz"
+assert_contains c650 '"freq":25000000' "c650 runs at 25 MHz"
+assert_contains q610 '"freq":25000000' "q610 runs at 25 MHz"
+assert_contains q650 '"freq":33333333' "q650 runs at 33 MHz"
+assert_contains q800 '"freq":33333333' "q800 runs at 33 MHz"
+
 # The floor: every registered model carries at least one assertion above.
 models=$(grep -o '^{"id":"[a-z0-9]*"' "$OUT" | sed 's/^{"id":"\(.*\)"/\1/')
 [ -n "$models" ] || { echo "FAIL: catalog.models dumped no profiles"; fail=1; }
