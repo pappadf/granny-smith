@@ -1170,15 +1170,23 @@ const builtin_video_desc_t ans_builtin_video = {
     .slot_monitors = true,
 };
 
-// The Power Macintosh boards' DIMM totals (8500, 9500; the 7500 adds 8 MB):
-// 168-pin DIMMs in 8 slots, interleaved in pairs; 1 GB architectural max.
-// Offered: the totals Hammerhead's four-pair carve maps today (DIMMs of at
-// most 64 MB); larger and odd totals wait on the carve.
-const uint32_t tnt_ram_options_kb[] = {16384,  24576,  32768,  40960,  49152,  57344,  65536,  73728,  81920,  90112,
-                                       98304,  106496, 114688, 122880, 131072, 139264, 147456, 155648, 163840, 172032,
-                                       180224, 188416, 196608, 204800, 212992, 221184, 229376, 237568, 245760, 262144,
-                                       270336, 278528, 286720, 294912, 303104, 311296, 327680, 335872, 344064, 360448,
-                                       393216, 401408, 409600, 425984, 458752, 524288, 0};
+// The Power Macintosh boards' DIMM totals (8500, 9500 and the 1997 boards;
+// the 7500 adds 8 MB): 168-pin DIMMs in 8 slots, interleaved in pairs; 1 GB
+// architectural max.  The totals are TNT_RAM_TOTALS_KB (tnt.h).
+const uint32_t tnt_ram_options_kb[] = {TNT_RAM_TOTALS_KB, 0};
+
+// Control on the Chaos display bus (device 11, VBL on Grand Central line
+// 26): the soldered-down video entry slot `n_` names, as `kind_` (BUILTIN,
+// or the 9500's BUILTIN_FALLBACK stand-in).
+#define TNT_VCI_CONTROL(n_, kind_)                                                                                     \
+    {.slot = (n_),                                                                                                     \
+     .kind = (kind_),                                                                                                  \
+     .label = "Built-in video",                                                                                        \
+     .detail = "VCI",                                                                                                  \
+     .bus = TNT_PCI_BUS_VCI,                                                                                           \
+     .device = 11,                                                                                                     \
+     .int_line = TNT_INT_VBL,                                                                                          \
+     .builtin_card_id = "tnt_control"}
 
 // The one-Bandit boards' PCI topology (7500, 8500).  Three sockets on Bandit
 // 1 at IDSEL 13/14/15 — the ROM's own `slot-names` bitmask ($0000E000) on
@@ -1188,38 +1196,35 @@ const uint32_t tnt_ram_options_kb[] = {16384,  24576,  32768,  40960,  49152,  5
 // Control is the soldered-down video device the machine names, on the
 // Chaos display bus.
 const pci_slot_decl_t tnt_pci_slots_1bandit[] = {
-    {.slot = 1,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "PCI slot A1",
-     .detail = "A1",
-     .fill_order = 1,
-     .bus = TNT_PCI_BUS_1,
-     .device = 13,
-     .int_line = 23},
-    {.slot = 2,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "PCI slot B1",
-     .detail = "B1",
-     .fill_order = 2,
-     .bus = TNT_PCI_BUS_1,
-     .device = 14,
-     .int_line = 24},
-    {.slot = 3,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "PCI slot C1",
-     .detail = "C1",
-     .fill_order = 3,
-     .bus = TNT_PCI_BUS_1,
-     .device = 15,
-     .int_line = 25},
-    {.slot = 4,
-     .kind = PCI_SLOT_BUILTIN,
-     .label = "Built-in video",
-     .detail = "VCI",
-     .bus = TNT_PCI_BUS_VCI,
-     .device = 11,
-     .int_line = TNT_INT_VBL,
-     .builtin_card_id = "tnt_control"},
+    TNT_BANDIT1_SOCKETS(NULL),
+    TNT_VCI_CONTROL(4, PCI_SLOT_BUILTIN),
+    {0},
+};
+
+// The 9500's PCI topology.  Six sockets — three on
+// each Bandit, all at IDSEL 13/14/15 on their own bus (the bandit node's
+// FCode instantiates twice) — with their strapped INTA-D lines on Grand
+// Central externals 23/24/25 (Bandit 1) and 27/28/29 (Bandit 2), which is
+// Apple's own 9500 external-interrupt table verbatim.  Slot 7 carries the
+// Control/Chaos video deviation pm9500.c documents (a BUILTIN_FALLBACK:
+// the real 9500 has no on-board video).
+//
+// The slot LABELS come from each bridge's own `slot-names` property, dumped
+// live from a real 9500 under Open Firmware (Apple Technote 1062):
+// Bandit 1 publishes `0000E000 "A1" "B1" "C1"` and Bandit 2 publishes
+// `0000E000 "D2" "E2" "F2"`.  An earlier model declared the second bank
+// D1/E1/F1, having judged the strings "not decidable from the token
+// stream"; the ROM's own property decides them.
+// Shared with the 9600, the same six-slot board.
+const pci_slot_decl_t tnt_pci_slots_9500[] = {
+    // The factory card: the Apple Accelerated PCI Graphics Card (the Mach64
+    // GX) -- when its expansion ROM is offered; without it the default
+    // configuration has no card and Control stands in (slot 7).
+    TNT_BANDIT1_SOCKETS("mach64_gx"),
+    TNT_MAC_SOCKET(4, "D2", TNT_PCI_BUS_2, 13, 27, NULL),
+    TNT_MAC_SOCKET(5, "E2", TNT_PCI_BUS_2, 14, 28, NULL),
+    TNT_MAC_SOCKET(6, "F2", TNT_PCI_BUS_2, 15, 29, NULL),
+    TNT_VCI_CONTROL(7, PCI_SLOT_BUILTIN_FALLBACK),
     {0},
 };
 
@@ -1240,7 +1245,7 @@ const uint32_t ans_ram_options_kb[] = {16384,  32768,  49152,  65536,  81920,  9
 //
 // It is NOT the 9500's, despite the ANS being a 9500 derivative everywhere
 // else (same Hammerhead, same two Bandits, same Grand Central).  Before
-// merging this with pm9500_pci_slots, note that all five of these differ:
+// merging this with tnt_pci_slots_9500, note that all five of these differ:
 //
 //   * the split is 2/4 across the Bandits, not 3/3
 //   * bus 2 carries a FOURTH IDSEL (16) that no Power Macintosh uses

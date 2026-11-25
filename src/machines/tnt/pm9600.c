@@ -45,7 +45,7 @@ const hw_profile_t machine_pm9600 = {
     .default_storage = tnt_default_storage, // the CD-ROM drive on the 53C94: see pm7500.c
     .cdrom_drive = &scsi_cd_drive_applecd_1600i, // "a built-in 12X-speed CD-ROM drive, an AppleCD 1600i"
 
-    .pci_slots = pm9500_pci_slots,
+    .pci_slots = tnt_pci_slots_9500,
 
     .board = &pm9600_board,
 };

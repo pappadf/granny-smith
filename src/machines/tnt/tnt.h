@@ -577,14 +577,50 @@ extern const storage_device_decl_t tnt_default_storage[];
 extern const pci_slot_decl_t ans_pci_slots[];
 
 // Tables more than one model shares byte for byte (tnt.c): the one-Bandit
-// PCI topology (7500, 8500), the 8500/9500 DIMM totals and the Network
-// Servers' DIMM totals.
+// PCI topology (7500, 8500 and their 1997 successors), the six-slot
+// two-Bandit topology of the 9500 (and 9600), the Power Macintosh DIMM
+// totals and the Network Servers' DIMM totals.
 extern const pci_slot_decl_t tnt_pci_slots_1bandit[];
+extern const pci_slot_decl_t tnt_pci_slots_9500[];
 extern const uint32_t tnt_ram_options_kb[];
 extern const uint32_t ans_ram_options_kb[];
-// The six-slot two-Bandit topology of the 9500, which the 9600 shares
-// (pm9500.c).
-extern const pci_slot_decl_t pm9500_pci_slots[];
+
+// A Power Macintosh PCI socket: slot n, lettered `name_` (label and the
+// ROM's `slot-names` detail), filled n-th, at IDSEL `dev_` on `bus_` with its
+// strapped INTA-D lines on Grand Central external `irq_`; `card_` is the
+// factory card, NULL for none.
+#define TNT_MAC_SOCKET(n_, name_, bus_, dev_, irq_, card_)                                                             \
+    {.slot = (n_),                                                                                                     \
+     .kind = PCI_SLOT_SOCKET,                                                                                          \
+     .label = "PCI slot " name_,                                                                                       \
+     .detail = name_,                                                                                                  \
+     .default_card = (card_),                                                                                          \
+     .fill_order = (n_),                                                                                               \
+     .bus = (bus_),                                                                                                    \
+     .device = (dev_),                                                                                                 \
+     .int_line = (irq_)}
+
+// Bandit 1's three Macintosh sockets, A1/B1/C1: IDSEL 13/14/15 (the ROM's
+// own `slot-names` bitmask, $0000E000, on the bandit node) with their
+// strapped INTA-D lines on Grand Central externals 23/24/25 (Apple's 9500
+// external-interrupt table).  Every Power Macintosh board's table opens
+// with them; `a1_card_` is the factory card in A1, NULL for none.
+// clang-format off
+#define TNT_BANDIT1_SOCKETS(a1_card_)                                                                                  \
+    TNT_MAC_SOCKET(1, "A1", TNT_PCI_BUS_1, 13, 23, a1_card_),                                                          \
+    TNT_MAC_SOCKET(2, "B1", TNT_PCI_BUS_1, 14, 24, NULL),                                                              \
+    TNT_MAC_SOCKET(3, "C1", TNT_PCI_BUS_1, 15, 25, NULL)
+// clang-format on
+
+// The Power Macintosh boards' DIMM totals from 16 MB: the totals
+// Hammerhead's four-pair carve maps today (DIMMs of at most 64 MB); larger
+// and odd totals wait on the carve.  A list for initialisers, without its
+// terminating 0.
+#define TNT_RAM_TOTALS_KB                                                                                              \
+    16384, 24576, 32768, 40960, 49152, 57344, 65536, 73728, 81920, 90112, 98304, 106496, 114688, 122880, 131072,       \
+        139264, 147456, 155648, 163840, 172032, 180224, 188416, 196608, 204800, 212992, 221184, 229376, 237568,        \
+        245760, 262144, 270336, 278528, 286720, 294912, 303104, 311296, 327680, 335872, 344064, 360448, 393216,        \
+        401408, 409600, 425984, 458752, 524288
 
 // === The Macintosh profiles' shared fields ==================================
 // What every Power Macintosh TNT profile (pm7200 ... pm9600) carries

@@ -369,9 +369,12 @@ lists in
 [pm8500.md](../../../reference/machines/tnt/pm8500.md) §4 and
 [pm9500.md](../../../reference/machines/tnt/pm9500.md) §4.)
 
-Each model declares a `pci_slot_decl_t` table (`pm7500.c` and friends)
-that the profile encoder and `pci_init` share, so `catalog.profile`'s
-`pci_slots` block and the runtime cannot drift.  Sockets are PCI devices
+Each model names a `pci_slot_decl_t` table that the profile encoder and
+`pci_init` share, so `catalog.profile`'s `pci_slots` block and the runtime
+cannot drift.  The tables more than one model uses live in `tnt.c`
+(`tnt_pci_slots_1bandit`, `tnt_pci_slots_9500`, `ans_pci_slots`); every
+Power Macintosh table opens with Bandit 1's three sockets
+(`TNT_BANDIT1_SOCKETS`, `tnt.h`), the 7200's being nothing else.  Sockets are PCI devices
 **13/14/15** on their bridge's bus — the ROM's own `slot-names` bitmask
 (`$0000E000`) on the bandit node, corroborated by Apple's Network Server
 developer note IDSEL table — and each socket's strapped INTA-D line
@@ -535,7 +538,7 @@ the 1995 Open Firmware image and 68k identification routine byte for byte
 ([tnt.md](../../../reference/machines/tnt/tnt.md) §6.5), so each board uses
 its predecessor's straps verbatim (the `tnt.h` strap macros): the 7300 and
 7600 the 7500's, the 8600 the 8500's, the 9600 the 9500's (and the 9500's six-slot PCI table,
-`pm9500_pci_slots`, now exported).  BoxFlag reads `$3E` / `$3F` / `$3D`.
+`tnt_pci_slots_9500`, kept in `tnt.c` beside the other shared tables).  BoxFlag reads `$3E` / `$3F` / `$3D`.
 
 ROMs: the 1997 v1 image (`$960E4BE9`) serves all four; the later
 `$960FC647` serves the 8600/9600; the 7600 also accepts the 1995 images,

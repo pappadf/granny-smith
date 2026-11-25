@@ -26,84 +26,8 @@
 
 // The internal fast-SCSI (MESH) bus carries the boot disks; the
 // 53C94 carries the CD-ROM drive and the external chain (machine.scsi2).
-
-// PCI topology.  Six sockets — three on
-// each Bandit, all at IDSEL 13/14/15 on their own bus (the bandit node's
-// FCode instantiates twice) — with their strapped INTA-D lines on Grand
-// Central externals 23/24/25 (Bandit 1) and 27/28/29 (Bandit 2), which is
-// Apple's own 9500 external-interrupt table verbatim.  Slot 7 carries the
-// Control/Chaos video deviation documented above.
-//
-// The slot LABELS come from each bridge's own `slot-names` property, dumped
-// live from a real 9500 under Open Firmware (Apple Technote 1062):
-// Bandit 1 publishes `0000E000 "A1" "B1" "C1"` and Bandit 2 publishes
-// `0000E000 "D2" "E2" "F2"`.  An earlier model declared the second bank
-// D1/E1/F1, having judged the strings "not decidable from the token
-// stream"; the ROM's own property decides them.
-// Shared with the 9600 (pm9600.c), the same six-slot board.
-const pci_slot_decl_t pm9500_pci_slots[] = {
-    // The factory card: the Apple Accelerated PCI Graphics Card (the Mach64
-    // GX) -- when its expansion ROM is offered; without it the default
-    // configuration has no card and Control stands in (slot 7).
-    {.slot = 1,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "PCI slot A1",
-     .detail = "A1",
-     .default_card = "mach64_gx",
-     .fill_order = 1,
-     .bus = TNT_PCI_BUS_1,
-     .device = 13,
-     .int_line = 23},
-    {.slot = 2,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "PCI slot B1",
-     .detail = "B1",
-     .fill_order = 2,
-     .bus = TNT_PCI_BUS_1,
-     .device = 14,
-     .int_line = 24},
-    {.slot = 3,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "PCI slot C1",
-     .detail = "C1",
-     .fill_order = 3,
-     .bus = TNT_PCI_BUS_1,
-     .device = 15,
-     .int_line = 25},
-    {.slot = 4,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "PCI slot D2",
-     .detail = "D2",
-     .fill_order = 4,
-     .bus = TNT_PCI_BUS_2,
-     .device = 13,
-     .int_line = 27},
-    {.slot = 5,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "PCI slot E2",
-     .detail = "E2",
-     .fill_order = 5,
-     .bus = TNT_PCI_BUS_2,
-     .device = 14,
-     .int_line = 28},
-    {.slot = 6,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "PCI slot F2",
-     .detail = "F2",
-     .fill_order = 6,
-     .bus = TNT_PCI_BUS_2,
-     .device = 15,
-     .int_line = 29},
-    {.slot = 7,
-     .kind = PCI_SLOT_BUILTIN_FALLBACK,
-     .label = "Built-in video",
-     .detail = "VCI",
-     .bus = TNT_PCI_BUS_VCI,
-     .device = 11,
-     .int_line = TNT_INT_VBL,
-     .builtin_card_id = "tnt_control"},
-    {0},
-};
+// The six-slot PCI topology, slot 7's Control stand-in included, is
+// tnt_pci_slots_9500 (tnt.c), which the 9600 shares.
 
 static const tnt_board_desc_t pm9500_board = {
     TNT_MAC_BOARD_COMMON,
@@ -135,7 +59,7 @@ const hw_profile_t machine_pm9500 = {
     .default_storage = tnt_default_storage, // the CD-ROM drive on the 53C94: see pm7500.c
     .cdrom_drive = &scsi_cd_drive_applecd_600i,
 
-    .pci_slots = pm9500_pci_slots,
+    .pci_slots = tnt_pci_slots_9500,
 
     .board = &pm9500_board,
 };

@@ -14,11 +14,8 @@
 // 168-pin DIMMs in 8 slots, interleaved in pairs; 1 GB architectural max.
 // Offered: the totals Hammerhead's four-pair carve maps today (DIMMs of at
 // most 64 MB); larger and odd totals wait on the carve.
-static const uint32_t pm7500_ram_options_kb[] = {
-    8192,   16384,  24576,  32768,  40960,  49152,  57344,  65536,  73728,  81920,  90112,  98304,
-    106496, 114688, 122880, 131072, 139264, 147456, 155648, 163840, 172032, 180224, 188416, 196608,
-    204800, 212992, 221184, 229376, 237568, 245760, 262144, 270336, 278528, 286720, 294912, 303104,
-    311296, 327680, 335872, 344064, 360448, 393216, 401408, 409600, 425984, 458752, 524288, 0};
+// The 8500's totals (tnt.c) and one more: the 7500's 8 MB minimum.
+static const uint32_t pm7500_ram_options_kb[] = {8192, TNT_RAM_TOTALS_KB, 0};
 
 // The internal fast-SCSI (MESH) bus carries the boot disks; the
 // 53C94 carries the CD-ROM drive and the external chain (machine.scsi2).

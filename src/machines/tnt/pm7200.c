@@ -53,30 +53,7 @@ static const storage_device_decl_t pm7200_default_storage[] = {
 // Grand Central externals 23/24/25, as on the 7500 — and no built-in PCI
 // device: the video is Platinum's.
 static const pci_slot_decl_t pm7200_pci_slots[] = {
-    {.slot = 1,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "PCI slot A1",
-     .detail = "A1",
-     .fill_order = 1,
-     .bus = TNT_PCI_BUS_1,
-     .device = 13,
-     .int_line = 23},
-    {.slot = 2,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "PCI slot B1",
-     .detail = "B1",
-     .fill_order = 2,
-     .bus = TNT_PCI_BUS_1,
-     .device = 14,
-     .int_line = 24},
-    {.slot = 3,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "PCI slot C1",
-     .detail = "C1",
-     .fill_order = 3,
-     .bus = TNT_PCI_BUS_1,
-     .device = 15,
-     .int_line = 25},
+    TNT_BANDIT1_SOCKETS(NULL),
     {0},
 };
 
