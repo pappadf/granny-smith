@@ -10,6 +10,7 @@
 
 #include "ariel.h"
 #include "board_io.h"
+#include "cpuid_page.h"
 #include "display.h"
 #include "display_class.h"
 #include "display_ramdac.h"
@@ -59,6 +60,7 @@ typedef struct v8_state {
     struct mmu_state *mmu;
 
     m68k_board_overlay_t overlay; // ROM at zero until the first ROM access
+    cpuid_page_t cpuid; // Sonora: the CPU ID page at $5FFFF000 (cpuid_page.h)
     board_io_t io; // the I/O island dispatch context
     memory_interface_t io_interface;
 

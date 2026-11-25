@@ -25,11 +25,13 @@ static uint16_t cpuid_read16(void *ctx, uint32_t offset) {
     return (uint16_t)((cpuid_read8(ctx, offset) << 8) | cpuid_read8(ctx, offset + 1));
 }
 
-// A long read: two words, or (long_low_half) the register's low half alone.
+// A long read: two words -- or, long_low_half, the register's low half at the
+// register and `fill` anywhere else (a long read never sees the signature,
+// not even one straddling into the register).
 static uint32_t cpuid_read32(void *ctx, uint32_t offset) {
     const cpuid_page_t *pg = ctx;
-    if (pg->long_low_half && (offset & 0xFFFu) >= CPUID_PAGE_REG)
-        return pg->value & 0xFFFFu;
+    if (pg->long_low_half)
+        return (offset & 0xFFFu) >= CPUID_PAGE_REG ? pg->value & 0xFFFFu : pg->fill * 0x01010101u;
     return ((uint32_t)cpuid_read16(ctx, offset) << 16) | cpuid_read16(ctx, offset + 2);
 }
 

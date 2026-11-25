@@ -43,6 +43,7 @@
 
 #include "board_io.h"
 #include "cpu.h"
+#include "cpuid_page.h"
 #include "log.h"
 #include "mdu_io.h" // the island rows Sonora extends
 #include "memory.h"
@@ -157,42 +158,6 @@ const board_io_range_t sonora_io_ranges_tbl[] = {
 };
 
 // ============================================================
-// CPU ID register
-// ============================================================
-
-// The page at $5FFFF000 answers only in its last longword: the ID, read-only
-// (the ROM checks a write does not change it).
-static uint8_t cpuid_byte(void *ctx, uint32_t addr) {
-    config_t *cfg = (config_t *)ctx;
-    uint32_t off = addr & 0xFFFu;
-    if (off < 0xFFCu)
-        return 0xFF;
-    return (uint8_t)(v8_board(cfg)->cpu_id >> (8 * (3 - (off & 3))));
-}
-static uint8_t cpuid_rd8(void *ctx, uint32_t a, bool peek) {
-    (void)peek;
-    return cpuid_byte(ctx, a);
-}
-static uint16_t cpuid_rd16(void *ctx, uint32_t a, bool peek) {
-    (void)peek;
-    return (uint16_t)((cpuid_byte(ctx, a) << 8) | cpuid_byte(ctx, a + 1));
-}
-static uint32_t cpuid_rd32(void *ctx, uint32_t a, bool peek) {
-    return ((uint32_t)cpuid_rd16(ctx, a, peek) << 16) | cpuid_rd16(ctx, a + 2, peek);
-}
-MEMORY_READ_FACE(cpuid)
-static void cpuid_write8(void *ctx, uint32_t a, uint8_t v) {
-    (void)ctx, (void)a, (void)v;
-}
-static void cpuid_write16(void *ctx, uint32_t a, uint16_t v) {
-    (void)ctx, (void)a, (void)v;
-}
-static void cpuid_write32(void *ctx, uint32_t a, uint32_t v) {
-    (void)ctx, (void)a, (void)v;
-}
-MEMORY_IFACE(cpuid);
-
-// ============================================================
 // RAM
 // ============================================================
 
@@ -262,7 +227,8 @@ static void sonora_memory_layout_init(config_t *cfg) {
 
     board_io_fill_interface(&st->io_interface);
     memory_map_add(cfg->memory_map, V8_ISLAND_BASE, V8_ISLAND_SIZE, "I/O", &st->io_interface, &st->io);
-    memory_map_add(cfg->memory_map, SONORA_CPUID_ADDR & ~0xFFFu, MEM_PAGE_SIZE, "CPU ID", &cpuid_iface, cfg);
+    // The CPU ID register: the shared page, answering only in its last longword
+    cpuid_page_install(&st->cpuid, cfg->memory_map, b->cpu_id);
 
     // VRAM: the soldered bank at $60B00000; the SIMM bank above it floats.
     if (st->video.vram) {

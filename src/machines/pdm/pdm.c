@@ -145,25 +145,6 @@ static void pdm_io_write32(void *ctx, uint32_t offset, uint32_t value) {
     pdm_io_write16(ctx, offset + 2, (uint16_t)value);
 }
 
-// Machine-ID page: byte reads deliver the ID, wider reads hide the
-// signature (hmc.c); writes are ignored.
-static uint16_t pdm_id_read16(void *ctx, uint32_t offset) {
-    return (uint16_t)((pdm_id_read8(ctx, offset) << 8) | pdm_id_read8(ctx, offset + 1));
-}
-
-static void pdm_id_write8(void *ctx, uint32_t offset, uint8_t value) {
-    (void)ctx;
-    LOG(3, "machine-ID write $%X = $%02X ignored", offset, value);
-}
-
-static void pdm_id_write16(void *ctx, uint32_t offset, uint16_t value) {
-    pdm_id_write8(ctx, offset, (uint8_t)value);
-}
-
-static void pdm_id_write32(void *ctx, uint32_t offset, uint32_t value) {
-    pdm_id_write8(ctx, offset, (uint8_t)value);
-}
-
 // ============================================================
 // Memory layout
 // ============================================================
@@ -197,14 +178,12 @@ static void pdm_memory_layout(config_t *cfg) {
     st->io_interface.peek_uint8 = pdm_io_peek8; // wider peeks compose
     memory_map_add(cfg->memory_map, 0x50F00000u, 0x00050000u, "I/O", &st->io_interface, cfg);
 
-    // Machine-ID page.
-    st->id_interface.read_uint8 = pdm_id_read8;
-    st->id_interface.read_uint16 = pdm_id_read16;
-    st->id_interface.read_uint32 = pdm_id_read32;
-    st->id_interface.write_uint8 = pdm_id_write8;
-    st->id_interface.write_uint16 = pdm_id_write16;
-    st->id_interface.write_uint32 = pdm_id_write32;
-    memory_map_add(cfg->memory_map, 0x5FFFF000u, 0x00001000u, "Machine ID", &st->id_interface, cfg);
+    // Machine-ID page (hmc.md): byte reads deliver $A55A30xx; a 32-bit read
+    // returns only the low half -- the ROM's long-probe must not find the
+    // signature -- and the rest of the page reads 0.  Writes are ignored.
+    cpuid_page_install(&st->cpuid, cfg->memory_map, 0xA55A0000u | pdm_board(cfg)->machine_id);
+    st->cpuid.fill = 0x00; // nothing else in the page answers non-zero
+    st->cpuid.long_low_half = true; // no $A55A signature on long reads
 
     // BART: the register file plus every window the bridge claims — slot
     // space, super slot space and the PDS slot-$E window — each of them

@@ -63,5 +63,7 @@ Byte reads deliver `$A55A30xx` (`$3010` 6100 — the `$3011` "PDM"
 ProductInfo value is a 68k software promotion, never in hardware;
 `$3012` 7100; `$3013` 8100).  A 32-bit read returns only the low half —
 the ROM's long-probe must fail to find the `$A55A` signature before it
-falls back to byte reads.  Writes are ignored.  The register must work
-from reset (HWInit reads it before any config write).
+falls back to byte reads.  Writes are ignored, and the rest of the page
+reads 0.  The register must work from reset (HWInit reads it before any
+config write).  The page is the shared `runtime/cpuid_page.c` (installed by
+`pdm_memory_layout` with a zero `fill` and `long_low_half`).
