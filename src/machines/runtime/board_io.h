@@ -72,7 +72,7 @@ typedef struct board_io_range {
     board_io_xform_t xform; // offset transform
     uint16_t read_off, write_off; // sub-offsets for BOARD_IO_FIXED windows
     // Optional code hooks for windows a (device, offset) row can't express —
-    // bus-error windows, DMA engines, stateful shift registers.  When set,
+    // DMA engines, stateful shift registers, faults a row decides itself.  When set,
     // the engine calls them with the machine config, the window-relative
     // sub-offset it has ALREADY decoded, and `addr`: the access's offset
     // within the memory region the I/O interface is mapped at (not masked
@@ -100,7 +100,10 @@ typedef struct board_io_range {
     // positional initializers stay valid; flagged rows set `.esync = 1`.
     uint16_t esync;
     // 1 = this window signals a bus error instead of completing a cycle
-    // (the IIfx RPU probe and FMC windows).  There is no bus turnaround to
+    // (the IIfx RPU probe and FMC windows, the MEMCjr's empty communication
+    // slot).  The engine raises it itself, at the full bus address
+    // (window_base + addr), and a read returns `unmapped_read`; such a row
+    // names no device and no handlers.  There is no bus turnaround to
     // charge, so `penalty` is legitimately 0 -- and saying so here is what
     // lets board_io_validate insist that every OTHER window declares one.
     uint16_t berr;

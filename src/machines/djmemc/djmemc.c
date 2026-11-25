@@ -404,25 +404,6 @@ const board_io_range_t djmemc_io_ranges[] = {
     {0}, // sentinel
 };
 
-// The communication slot's window (the LC 575's; the slot Apple's
-// Ethernet card puts its SONIC at): with no card fitted nothing answers and
-// the cycle bus-errors, which is how the ROM's probe finds the slot empty.
-static uint8_t memcjr_commslot_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
-    (void)win_off;
-    memory_signal_bus_error(djmemc_st(cfg)->io.window_base + addr, false);
-    return 0xFF;
-}
-
-static uint8_t memcjr_commslot_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
-    (void)cfg, (void)win_off, (void)addr;
-    return 0xFF; // what the faulting read returns, without the fault
-}
-
-static void memcjr_commslot_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
-    (void)win_off, (void)value;
-    memory_signal_bus_error(djmemc_st(cfg)->io.window_base + addr, true);
-}
-
 // The MEMCjr boards' island: the same decode less the SONIC, its PROM and
 // the Kiwi, which these boards do not carry (Apple, Macintosh LC 475 and
 // Macintosh Quadra 605 Developer Note (1993), Figure 2-2, p. 27).
@@ -431,9 +412,11 @@ const board_io_range_t memcjr_io_ranges[] = {
     {0x03A00, 0x03C00, 0, DJMEMC_VIA_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, djmemc_via2_ifr_read, djmemc_via2_ifr_write,
      "via2_ifr", .esync = 1, .peek_fn = djmemc_via2_ifr_peek},
     {0x02000, 0x04000, BOARD_DEV_VIA2, DJMEMC_VIA_IO_PENALTY, BOARD_IO_MASK_A0, 0, 0, NULL, NULL, "via2", .esync = 1},
-    // An empty communication slot: no turnaround to charge, the cycle aborts.
-    {0x0A000, 0x0C000, BOARD_DEV_VIA1, 0, BOARD_IO_NORMAL, 0, 0, memcjr_commslot_read, memcjr_commslot_write,
-     "comm_slot", .berr = 1, .peek_fn = memcjr_commslot_peek},
+    // The communication slot's window (the LC 575's; the slot Apple's
+    // Ethernet card puts its SONIC at): with no card fitted nothing answers
+    // and the cycle bus-errors, which is how the ROM's probe finds the slot
+    // empty.  No turnaround to charge.
+    {0x0A000, 0x0C000, 0, 0, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "comm_slot", .berr = 1},
     {0x0C000, 0x0E000, BOARD_DEV_SCC, DJMEMC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
     {0x0E000, 0x10000, 0, DJMEMC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, djmemc_reg_read, djmemc_reg_write, "memcjr"},
     {0x10000, 0x10100, BOARD_DEV_SCSI96, DJMEMC_IO_PENALTY, BOARD_IO_STRIDE_16, 0, 0, NULL, NULL, "scsi_53c96"},

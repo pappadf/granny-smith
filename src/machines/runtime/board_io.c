@@ -158,6 +158,11 @@ static inline uint8_t io_read_byte(board_io_t *io, uint32_t addr, const board_io
         io_log_miss_once(io, offset, false, 0);
         return io->unmapped_read;
     }
+    if (r->berr) {
+        // Nothing answers: the cycle aborts at the full bus address.
+        memory_signal_bus_error(io->window_base + addr, false);
+        return io->unmapped_read;
+    }
     if (r->esync)
         memory_io_esync_penalty(); // 6522: stall to the next E boundary
     else if (r->penalty)
@@ -177,7 +182,7 @@ static inline uint8_t io_read_byte(board_io_t *io, uint32_t addr, const board_io
 static inline uint8_t io_peek_byte(board_io_t *io, uint32_t addr, const board_io_range_t *hint) {
     uint32_t offset = addr & io->mirror_mask;
     const board_io_range_t *r = io_find(io, hint, offset);
-    if (!r)
+    if (!r || r->berr) // a bus-error window: what the faulting read returns, without the fault
         return io->unmapped_read;
     if (r->read_fn)
         return (r->peek_fn ? r->peek_fn : r->read_fn)(io->cfg, io_sub_offset(r, offset, true), addr);
@@ -195,6 +200,10 @@ static inline void io_write_byte(board_io_t *io, uint32_t addr, uint8_t value, c
     const board_io_range_t *r = io_find(io, hint, offset);
     if (!r) {
         io_log_miss_once(io, offset, true, value);
+        return;
+    }
+    if (r->berr) {
+        memory_signal_bus_error(io->window_base + addr, true);
         return;
     }
     if (r->esync)
@@ -435,7 +444,7 @@ int board_io_validate(const board_io_t *io, const char *machine_id) {
             unbound++;
             continue;
         }
-        if (r->read_fn) // handler-row: no device slot to bind
+        if (r->read_fn || r->berr) // handler-row or bus-error window: no device slot to bind
             continue;
         if (io->iface[r->device])
             continue;
