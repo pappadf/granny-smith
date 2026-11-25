@@ -72,6 +72,7 @@ LOG_USE_CATEGORY_NAME("platinum");
 #define PR_SENSE       23 // +$170: monitor sense lines
 #define PR_DISP_OFF    24 // +$180: nonzero = display off
 #define PR_STATUS      34 // +$220: bit 2 = vertical blank
+#define PR_VBL_ACK     35 // +$230: reading it acknowledges the retrace interrupt
 #define PR_TIMING      32 // +$200: first of the 26-register timing set
 #define PR_HTOTAL      44 // horizontal total - 1 (dot-clock units)
 #define PR_HACT_ON     48 // horizontal display start
@@ -420,16 +421,24 @@ static bool plat_in_vblank(config_t *cfg) {
 
 #define PLAT_INT_VBL 30
 
-// Every retrace latches an event on line 30; the System's video driver
-// unmasks it (Grand Central mask bit 30) once it is running, and the
-// interrupt block's own clear acknowledges it.  The rate is the programmed
-// raster's (dot clock over the totals), nominal 60 Hz until programmed.
+// Every retrace raises line 30 as a LEVEL, held until the driver
+// acknowledges it by reading reg 35 (+$230): the ROM's video driver's
+// interrupt handler (the native routine the ndrv installs, decoded live at
+// RAM $440F0 under System 7.5.3) is exactly two `lwz` of $F8000230 followed
+// by its VBL service — which is where it applies the gamma and CLUT loads
+// it defers.  The NanoKernel classifies a TNT interrupt from Levels & Mask,
+// so an edge-only pulse never reaches the driver (System 7.6 then never
+// loads its gamma table and the desktop shows as one flat grey).  The rate
+// is the programmed raster's (dot clock over the totals), nominal 60 Hz
+// until programmed.
 static void plat_vbl_event(void *source, uint64_t data) {
     (void)data;
     config_t *cfg = (config_t *)source;
     tnt_platinum_t *p = plat(cfg);
-    if (!p->reg[PR_DISP_OFF])
-        tnt_gc_pulse_event(cfg, PLAT_INT_VBL);
+    if (!p->reg[PR_DISP_OFF]) {
+        p->vbl_pending = 1;
+        tnt_gc_set_source(cfg, PLAT_INT_VBL, true);
+    }
     p->vbl_armed = 1;
     scheduler_new_cpu_event(cfg->scheduler, plat_vbl_event, cfg, 0, 0, plat_frame_ns(cfg));
 }
@@ -470,6 +479,12 @@ static uint32_t plat_reg_read(config_t *cfg, unsigned idx) {
         return plat_sense_read(cfg);
     case PR_STATUS:
         return (p->reg[idx] & ~PLAT_STATUS_VBL) | (plat_in_vblank(cfg) ? PLAT_STATUS_VBL : 0u);
+    case PR_VBL_ACK:
+        if (p->vbl_pending) {
+            p->vbl_pending = 0;
+            tnt_gc_set_source(cfg, PLAT_INT_VBL, false);
+        }
+        return p->reg[idx];
     default:
         return p->reg[idx];
     }
@@ -585,6 +600,8 @@ void tnt_plat_dac_write(config_t *cfg, uint32_t offset, uint8_t value) {
     default:
         if (ramdac_seq_write(&p->dac, value, &idx)) {
             memcpy(p->clut[idx], p->dac.pending, 3);
+            LOG(3, "CLUT[$%02X] = %02X %02X %02X pc=$%08X", idx, p->clut[idx][0], p->clut[idx][1], p->clut[idx][2],
+                ppc_get_pc(cfg->ppc));
             plat_refresh_clut(cfg);
         }
         break;

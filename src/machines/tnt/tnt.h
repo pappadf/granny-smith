@@ -214,6 +214,7 @@ typedef struct tnt_hammerhead {
 
 typedef struct tnt_platinum {
     uint32_t reg[TNT_PLAT_REGS];
+    uint8_t vbl_pending; // a retrace not yet acknowledged (line 30 held)
     uint8_t vbl_armed; // the retrace event is pending in the scheduler
     // DACula: the address register, the CLUT port's phase, the indexed
     // ("d2") register file and the palette.
