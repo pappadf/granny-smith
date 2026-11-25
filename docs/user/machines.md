@@ -16,7 +16,7 @@ with this checksum in lower case and continues with a second, longer one
 
 | ROM checksum | ROM | Boots |
 |---|---|---|
-| `4D1EEEE1`, `4D1EEAE1`, `4D1F8172` | Macintosh Plus, revisions 1, 2, 3 | Plus |
+| `4D1EEEE1`, `4D1EEAE1`, `4D1F8172` | Macintosh Plus, revisions 1, 2, 3 | Plus, 512K enhanced |
 | `97221136` | Universal IIx/IIcx/SE/30 ROM | SE/30, IIx, IIcx |
 | `368CADFE` | Macintosh IIci | IIci |
 | `36B7FB6C` | Macintosh IIsi | IIsi |
@@ -30,6 +30,10 @@ with this checksum in lower case and continues with a second, longer one
 | `9630C68B`, `962F6C13`, `49B2BE8F` | Apple Network Server (2.26B6, Win NT, 1.1.20.1, 1.1.22, 2.0 prototype) | Network Server 500, 700 |
 | `78F57389`, `79D68D63` | Power Macintosh G3 (Rev C, Rev A) | G3 Desktop, G3 Minitower |
 | `3F7B` | Lisa 2 Boot ROM, revision H | Lisa 2 |
+| `28BA61CE`, `28BA4E50` | Macintosh 128K/512K 64 KB ROM, revisions 1, 2 | 128K, 512K |
+| `B2E362A8` | Macintosh SE | SE |
+| `B306E171` | Macintosh SE FDHD | SE FDHD |
+| `A49F9914` | Macintosh Classic | Classic |
 | `D905` | Macintosh XL Boot ROM 3A | Macintosh XL |
 
 Where one ROM file serves several models, the New Machine dialog lists each
@@ -48,9 +52,23 @@ built-in video where it has one.
 | Model | id | Memory (default; choices) | Screen | Floppy | Hard disk |
 |---|---|---|---|---|---|
 | Macintosh Plus | `plus` | 4 MB; 1, 2, 2.5, 4 MB | built-in 9″, 512×342 black and white | 800K internal + 800K external | SCSI (external connector); CD-ROM possible |
+| Macintosh 128K | `mac128k` | 128 KB | built-in 9″, 512×342 black and white | 400K internal (+ optional 400K external) | — |
+| Macintosh 512K | `mac512k` | 512 KB | built-in 9″, 512×342 black and white | 400K internal (+ optional 400K external) | — |
+| Macintosh 512K enhanced | `mac512ke` | 512 KB | built-in 9″, 512×342 black and white | 800K internal (+ optional 800K external) | — |
+| Macintosh SE | `se` | 4 MB; 1, 2, 2.5, 4 MB | built-in 9″, 512×342 black and white | two internal 800K | SCSI; CD-ROM possible |
+| Macintosh SE FDHD | `sefdhd` | 4 MB; 1, 2, 2.5, 4 MB | built-in 9″, 512×342 black and white | two internal 1.4 MB SuperDrives | SCSI; CD-ROM possible |
+| Macintosh Classic | `classic` | 4 MB; 1, 2, 2.5, 4 MB | built-in 9″, 512×342 black and white | 1.4 MB SuperDrive (+ optional external) | SCSI; CD-ROM possible |
 | Macintosh SE/30 | `se30` | 8 MB; 1–128 MB | built-in 9″ | 1.4 MB SuperDrive (+ optional external) | SCSI; CD-ROM |
 | Lisa 2 | `lisa` | 1 MB; 0.5, 1, 1.5, 2 MB | built-in 12″, 720×364, tall pixels | one internal drive | ProFile on the parallel port |
 | Macintosh XL | `macxl` | 1 MB; 0.5, 1, 1.5, 2 MB | built-in 12″, 608×431, square pixels | one internal drive | internal ProFile |
+
+The 128K, 512K and 512K enhanced have no SCSI port: they start from a
+floppy only. The 128K and 512K read single-sided 400K disks (System 1 to
+about System 3.2 on the 128K, up to System 4.x on the 512K); the 512K
+enhanced has the Plus's ROM and 800K drive. The 128K to Plus use the
+original keyboard and mouse; the SE, SE FDHD and Classic use ADB. To start
+a Classic from the System 6.0.3 disk built into its ROM, hold
+Command-Option-X-O while it starts up.
 
 The Lisa 2's screen has tall pixels; Granny Smith draws them 1.5 times taller
 than wide so the picture has the right proportions. The Macintosh XL has the

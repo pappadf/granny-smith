@@ -183,6 +183,7 @@
     "suite-av-floppy": 96,
     "suite-av-floppy-boot": 31,
     "suite-av-sound": 217,
+    "suite-compact": 60,
     "suite-gossamer": 166,
     "suite-iici": 159,
     "suite-iicx": 32,

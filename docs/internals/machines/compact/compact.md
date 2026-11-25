@@ -140,5 +140,5 @@ power-on. The Plus keeps `suite-plus`.
 
 ## 8. See also
 
-- [docs/internals/core/peripherals/adb.md](../../core/peripherals/adb.md)
+- [docs/reference/hardware/adb.md](../../../reference/hardware/adb.md)
 - [docs/reference/hardware/iwm-floppy.md](../../../reference/hardware/iwm-floppy.md)

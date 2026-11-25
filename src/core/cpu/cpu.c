@@ -276,7 +276,7 @@ uint32_t cpu_get_ipl(cpu_t *restrict cpu) {
 // because every caller raises the IPL from one of exactly two places:
 //
 //   1. inside a scheduler event callback -- every *_update_ipl in
-//      m68k_board.c, av.c, iifx.c, lisa.c and plus.c reaches here that way;
+//      m68k_board.c, av.c, iifx.c, lisa.c and compact.c reaches here that way;
 //   2. before the run loop starts (the cold-boot `cpu_set_ipl(cpu, 0)` in
 //      m68k_board_finish and its siblings).
 //

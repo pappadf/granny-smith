@@ -417,6 +417,31 @@ for m in iix iifx; do
     assert_contains "$m" '{"id":"fd1","label":"Second internal floppy drive","types":[{"id":"none","label":"None"},{"id":"hd","label":"SuperDrive (1.4 MB)"}],"default":"none"}' "$m's second internal bay ships empty"
 done
 
+# The compact 68000 models beside the Plus (src/machines/compact): no MMU, no
+# FPU, no NuBus, AppleTalk on every one; SCSI from the SE on, none on the
+# 128K, 512K and 512K enhanced; the floppy positions of each.
+for m in mac128k mac512k mac512ke se sefdhd classic; do
+    assert_contains "$m" '"cpu":{"model":68000,"address_bits":24,"fpu":false}' "$m has a 68000"
+    assert_contains "$m" '"mmu":{"present":false,"kind":"none"}' "$m has no MMU"
+    assert_contains "$m" '"nubus":false,"pci":false' "$m has no slots"
+    assert_contains "$m" '{"id":"appletalk","label":"AppleTalk","kind":"choice","values":[{"id":"active","label":"Active"},{"id":"inactive","label":"Inactive"}],"default":"active"}' "$m has the AppleTalk option"
+done
+for m in mac128k mac512k mac512ke; do
+    assert_contains "$m" '"storage":[]' "$m has no SCSI"
+done
+for m in se sefdhd classic; do
+    assert_contains "$m" '"storage":[{"id":"scsi","label":"SCSI","kind":"scsi"' "$m has SCSI"
+done
+assert_contains mac128k '"values":[{"id":"128","label":"128 KB"}],"default":"128"' "mac128k has 128 KB"
+assert_contains mac512k '"values":[{"id":"512","label":"512 KB"}],"default":"512"' "mac512k has 512 KB"
+for m in mac128k mac512k; do
+    assert_contains "$m" '{"id":"fd0","label":"Internal floppy drive","types":[{"id":"400k","label":"400K drive"}],"default":"400k"}' "$m has the 400K drive"
+done
+assert_contains mac512ke '{"id":"fd0","label":"Internal floppy drive","types":[{"id":"800k","label":"800K drive"}],"default":"800k"}' "mac512ke has the 800K drive"
+assert_contains se '{"id":"fd1","label":"Second internal floppy drive","types":[{"id":"none","label":"None"},{"id":"800k","label":"800K drive"}],"default":"800k"}' "se has two internal 800K drives"
+assert_contains sefdhd '{"id":"fd1","label":"Second internal floppy drive","types":[{"id":"none","label":"None"},{"id":"hd","label":"SuperDrive (1.4 MB)"}],"default":"hd"}' "sefdhd has two internal SuperDrives"
+assert_contains classic '{"id":"fd1","label":"External floppy drive","types":[{"id":"none","label":"None"},{"id":"hd","label":"SuperDrive (1.4 MB)"}],"default":"none"}' "classic's external floppy port ships empty"
+
 # The floor: every registered model carries at least one assertion above.
 models=$(grep -o '^{"id":"[a-z0-9]*"' "$OUT" | sed 's/^{"id":"\(.*\)"/\1/')
 [ -n "$models" ] || { echo "FAIL: catalog.models dumped no profiles"; fail=1; }

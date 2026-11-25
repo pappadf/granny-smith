@@ -620,13 +620,14 @@ The original configuration: 128 KB of soldered DRAM (16 64-Kbit ICs in two rows 
 ROM, and a single-sided 400 KB internal drive [1] pp. 4, 18, 196. RAM ends at $01FFFF [1]
 Table 5-1 p. 191. Its parameter RAM is 20 bytes [1] pp. 77, 144. The 400 KB drive is the only member
 that *depends* on the disk-speed PWM channel of §2.7 for its variable-speed format. Its ROM image
-and version are not in the evidence set (§7.13).
+and version are not in the evidence set (§7.13). Machine page (stub): [mac128k.md](mac128k.md).
 
 ### 6.2 Macintosh 512K
 
 "Except for the additional memory, the Macintosh 512K is identical to the Macintosh 128K" [1] p. 4:
 512 KB of soldered 256-Kbit DRAM, RAM ending at $07FFFF [1] pp. 4, 196, Table 5-1 p. 191. Same
-64 KB ROM, same 400 KB drive, same 20-byte parameter RAM.
+64 KB ROM, same 400 KB drive, same 20-byte parameter RAM. Machine page (stub):
+[mac512k.md](mac512k.md).
 
 ### 6.3 Macintosh 512K enhanced
 
@@ -636,7 +637,8 @@ identical to the Macintosh 512K" [1] p. 4 — so it takes the 128 KB ROM (and it
 answers to $41FFFF, §2.5), the 800 KB double-sided drive with internal speed control, and the
 256-byte parameter RAM of the Plus [1] pp. 77, 144, while keeping the 512K's soldered RAM, DB-9
 serial connectors and lack of SCSI. Whether its logic board carries any other Plus-era changes
-beyond the ROM and drive is not established by the evidence set (§7.14).
+beyond the ROM and drive is not established by the evidence set (§7.14). Machine page (stub):
+[mac512ke.md](mac512ke.md).
 
 ### 6.4 Macintosh Plus
 
@@ -657,9 +659,9 @@ only where its image is known to share them (§7.13).
 The Macintosh SE is compact-cased but is not one of Apple's classic Macintosh computers [1] p. 4,
 and its board is a different architecture: the BBU custom IC replaces the PALs, ADB replaces the
 direct-wired keyboard and mouse, a 68000 PDS expansion connector appears, and the SCSI controller
-gains an interrupt line [1] pp. 8, 49–51, 62, 75. This page deliberately stops at the Plus. The SE itself has no page in this reference; the
-SE/30's general logic does, in [se30.md](../glue/se30.md). The Macintosh Classic and later
-compact-cased machines are later still and equally outside.
+gains an interrupt line [1] pp. 8, 49–51, 62, 75. This page deliberately stops at the Plus. The
+BBU machines have their own pages, so far stubs: [se.md](se.md), [sefdhd.md](sefdhd.md) and
+[classic.md](classic.md); the SE/30's general logic is in [se30.md](../glue/se30.md).
 
 ## 7. Open questions
 

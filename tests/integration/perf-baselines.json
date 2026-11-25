@@ -384,6 +384,74 @@
       "instr": 994156541,
       "tolerance": 0.2
     },
+    "suite-compact/classic-608-fd": {
+      "instr": 115500000,
+      "tolerance": 0.2
+    },
+    "suite-compact/classic-71-fd": {
+      "instr": 115000000,
+      "tolerance": 0.2
+    },
+    "suite-compact/classic-753-hd": {
+      "instr": 205000000,
+      "tolerance": 0.2
+    },
+    "suite-compact/classic-romdisk": {
+      "instr": 121000000,
+      "tolerance": 0.2
+    },
+    "suite-compact/m128k-20-fd": {
+      "instr": 113500000,
+      "tolerance": 0.2
+    },
+    "suite-compact/m128k-32-fd": {
+      "instr": 113500000,
+      "tolerance": 0.2
+    },
+    "suite-compact/m512k-20-fd": {
+      "instr": 113500000,
+      "tolerance": 0.2
+    },
+    "suite-compact/m512k-40-fd": {
+      "instr": 114000000,
+      "tolerance": 0.2
+    },
+    "suite-compact/m512ke-32-fd": {
+      "instr": 113500000,
+      "tolerance": 0.2
+    },
+    "suite-compact/m512ke-42-fd": {
+      "instr": 113500000,
+      "tolerance": 0.2
+    },
+    "suite-compact/se-608-fd": {
+      "instr": 115500000,
+      "tolerance": 0.2
+    },
+    "suite-compact/se-71-hd": {
+      "instr": 212000000,
+      "tolerance": 0.2
+    },
+    "suite-compact/se-753-hd": {
+      "instr": 205000000,
+      "tolerance": 0.2
+    },
+    "suite-compact/se-checkpoint": {
+      "instr": 120500000,
+      "tolerance": 0.2
+    },
+    "suite-compact/sefdhd-608-fd": {
+      "instr": 115500000,
+      "tolerance": 0.2
+    },
+    "suite-compact/sefdhd-71-fd": {
+      "instr": 115000000,
+      "tolerance": 0.2
+    },
+    "suite-compact/sefdhd-71-hd": {
+      "instr": 212000000,
+      "tolerance": 0.2
+    },
     "suite-gossamer/g3dt-floppy": {
       "instr": 5790623876,
       "tolerance": 0.2

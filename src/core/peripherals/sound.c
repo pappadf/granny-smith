@@ -100,7 +100,7 @@ void sound_use_buffer(sound_t *sound, bool main) {
 
 // Sets the sound volume (0-7)
 void sound_volume(sound_t *sound, unsigned int volume) {
-    // Both callers bound it: plus.c passes (output & 7), and the object
+    // Both callers bound it: compact.c passes (output & 7), and the object
     // surface rejects >= 8 with an error before it reaches here.
     GS_ASSERT(volume < 8);
 

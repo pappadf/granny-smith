@@ -18,6 +18,7 @@
 --   classic-romdisk Macintosh Classic, the System 6.0.3 ROM disk (Cmd-Opt-X-O)
 --   classic-71-fd   Macintosh Classic, System 7.1 off the 1.4 MB Disk Tools
 --   classic-753-hd  Macintosh Classic, System 7.5.3 off a SCSI hard disk
+--   se-checkpoint   the SE's checkpoint round trip
 --
 -- Every row asserts the machine and ROM ids, reaches the Finder, opens the
 -- first item of the Apple menu ("About the Finder" before System 7, "About
@@ -214,6 +215,30 @@ end)
 mac.row("classic-753-hd", function()
     about_row("classic-753-hd", {model = "classic", rom = rom_classic, rom_id = "a49f9914", ram = 4096, hd = hd_753,
         adb = true, clock = true, ceiling = 1200000000, system = "7.5.3", feature = "hd-boot scsi adb"})
+end)
+
+-- ---- se-checkpoint ----------------------------------------------------------
+-- The BBU boards' own checkpoint part (the access-dropped overlay) and the
+-- ADB/SCSI-interrupt wiring round-trip: boot the SE to the 6.0.8 Finder, save,
+-- boot a DIFFERENT machine, load, and require the restored SE to be the saved
+-- one down to the pixel, and still running.
+mac.row("se-checkpoint", function()
+    machine.boot{model = "se", ram = 2048, rom = rom_se}
+    machine.rtc.time = 3000000000
+    machine.floppy.drive[0].insert(ssw_608)
+    scheduler.run(30000000)
+    mac.wait_stable(600000000)
+    mac.check("goldens/se-608-fd-finder.png")
+    assert(checkpoint.save(F"${vars.WORK_DIR}/suite-compact.gsc"), "se-checkpoint: save failed")
+    machine.boot{model = "mac128k", ram = 128, rom = rom_128k}
+    assert(checkpoint.load(F"${vars.WORK_DIR}/suite-compact.gsc"), "se-checkpoint: load failed")
+    assert(machine.id == "se", "se-checkpoint: restored machine is not the SE")
+    assert(machine.ram == 2048, "se-checkpoint: restored RAM size wrong")
+    scheduler.run(5000000)
+    mac.check("goldens/se-608-fd-finder.png")
+    mac.about_box()
+    mac.check("goldens/se-608-fd-about.png")
+    mac.report_perf("suite-compact/se-checkpoint", scheduler.instr_count)
 end)
 
 mac.suite_done()

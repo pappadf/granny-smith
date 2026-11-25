@@ -1253,6 +1253,156 @@
       "addr32": null,
       "suite": "suite-ans",
       "media_gated": true
+    },
+    {
+      "machine": "mac128k",
+      "system": "2.0",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "mac128k",
+      "system": "3.2",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "mac512k",
+      "system": "2.0.1",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "mac512k",
+      "system": "4.0",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "mac512ke",
+      "system": "3.2",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "mac512ke",
+      "system": "4.2",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "se",
+      "system": "6.0.8",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "se",
+      "system": "7.1",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "se",
+      "system": "7.5.3",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "sefdhd",
+      "system": "6.0.8",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "sefdhd",
+      "system": "7.1",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "classic",
+      "system": "6.0.3",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "classic",
+      "system": "6.0.8",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "classic",
+      "system": "7.1",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "classic",
+      "system": "7.5.3",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
     }
   ]
 }
