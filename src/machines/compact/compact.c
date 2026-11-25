@@ -71,7 +71,7 @@ typedef struct compact_board {
     bool has_scsi; // an NCR 5380 at $580000 (Plus, SE, SE FDHD, Classic)
     floppy_type_t floppy_chip; // FLOPPY_TYPE_IWM, or FLOPPY_TYPE_SWIM (SE FDHD, Classic)
     // BBU boards: the second drive position is the upper internal drive
-    // (vDriveSel steers /ENBL1 to it) and the external port is not cabled;
+    // (vDriveSel steers /ENBL1 to it) and the external port is not modelled;
     // false: it is the external drive on /ENBL2, and no upper drive is fitted.
     bool second_internal;
     // BBU boards: VIA PA4 is vDriveSel, steering /ENBL1 between the lower and
@@ -543,8 +543,9 @@ static int compact_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->sound = st->sound; // mirror onto cfg so the object-model `sound`
                             // class can find it via cfg->sound
 
-    // VIA PA3 is the SCC's W/REQ line on a Plus, and it is held LOW at boot
-    // until the SCC comes out of reset.  This used to be the core VIA's port-A
+    // VIA PA3's input level is held LOW at boot.  (PA3 is an output here:
+    // vSndPg2 on the PAL boards, vSync on the BBU; the SCC's W/REQ is PA7,
+    // vSCCWrReq -- Guide 2e, Table 4-2.)  This used to be the core VIA's port-A
     // default (0xF7), which made one machine's boot condition every machine's
     // -- and on the II family the same pin is a NuBus slot /NMRQ, so each of
     // them had to raise it back up or slot $C asserted forever.
@@ -723,7 +724,7 @@ static void compact_update_ipl(config_t *cfg, int source, bool active) {
     // above describes (compact_irq_routes).
     int new_ipl = machine_irq_update(cfg, compact_irq_routes, source, active);
 
-    LOG(1, "compact_update_ipl: source=%d active=%d irq:%d->%d ipl:%d->%d", source, active ? 1 : 0, old_irq,
+    LOG(2, "compact_update_ipl: source=%d active=%d irq:%d->%d ipl:%d->%d", source, active ? 1 : 0, old_irq,
         cfg->rt.irq, old_ipl, new_ipl);
 }
 
@@ -984,8 +985,10 @@ static const uint32_t compact_ram_options_simm_kb[] = {1024, 2048, 2560, 4096, 0
 
 // The compact SCSI port: no internal bay on the Plus (its one SCSI bus is the
 // DB-25 on the back, so every device is "External"), an internal bay on the
-// SE and Classic.  Neither ROM keeps a startup-device record in parameter
-// memory, so the bus cannot hold the startup device (no "Start up from").
+// SE and Classic.  The Plus ROM keeps no startup-device record in parameter
+// memory, so its bus cannot hold the startup device (no "Start up from"); the
+// SE and Classic ROMs do (GetDefaultStartup, Inside Macintosh, vol. V,
+// ch. 19), and their bus is mac_storage_scsi_hd_bay's.
 static const storage_bus_decl_t plus_storage[] = {
     {.id = "scsi",
      .label = "SCSI",

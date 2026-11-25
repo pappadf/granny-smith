@@ -79,6 +79,15 @@ A9-A12 register decode (`compact_swim_*` wrapper over
 
 ## 3. Behaviour/algorithms
 
+**SCSI decode.** The 5380 answers over $580000-$5FFFFF on every board
+with SCSI (`COMPACT_SCSI_BASE`/`SIZE`), the ROM decode ending where it
+starts: A19 selects it and A18-A10 are don't-cares (Guide to the Macintosh
+Family Hardware, 2nd ed., ch. 3), so the window is 512 KB. The Plus model
+this family grew from mapped a 1 MB window from $500000, over the top of
+the ROM's mirror range; the Plus now takes the same $580000 window as the
+SE and Classic, where its ROM's SCSI addresses ($580000 read, $580001
+write) fall.
+
 **RAM decode.** RAM below 4 MB repeats up to $400000
 (`memory_populate_ram_mirror`), except at 2.5 MB: there the two unequal
 SIMM rows decode separately — the 2 MB row at $000000 and the 512 KB row
