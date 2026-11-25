@@ -464,6 +464,22 @@ TEST(zmbv_decoder_bad_input) {
     codec_zmbv_enc_free(e);
 }
 
+// A picture whose buffers would wrap a 32-bit size_t (4 bytes a pixel at
+// 32768 x 32768 is 2^32) is refused outright on wasm32, not allocated short.
+TEST(zmbv_decoder_size_wrap) {
+    int err = 0;
+    if (sizeof(size_t) == 4) {
+        ASSERT_TRUE(codec_zmbv_dec_new(32768, 32768, &err) == NULL);
+        ASSERT_EQ_INT(CODEC_ERR_ARG, err);
+        ASSERT_TRUE(codec_zmbv_dec_new(24000, 24000, &err) == NULL);
+        ASSERT_EQ_INT(CODEC_ERR_ARG, err);
+    }
+    // An ordinary size is taken on either
+    codec_zmbv_dec_t *d = codec_zmbv_dec_new(1024, 768, &err);
+    ASSERT_TRUE(d != NULL);
+    codec_zmbv_dec_free(d);
+}
+
 // ---- FLAC ------------------------------------------------------------------
 
 #define FL_MAX (CODEC_FLAC_BLOCK * 6)
@@ -664,6 +680,7 @@ int main(void) {
     RUN(zmbv_round_trips);
     RUN(zmbv_unchanged_is_tiny);
     RUN(zmbv_decoder_bad_input);
+    RUN(zmbv_decoder_size_wrap);
     RUN(flac_mono_round_trips);
     RUN(flac_stereo_round_trips);
     RUN(flac_streaminfo);

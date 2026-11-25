@@ -22,11 +22,14 @@
 #include "record/record_internal.h"
 #include "record/record_pixels.h"
 
+#include <errno.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 
 #ifndef TEST_OUT_DIR
 #define TEST_OUT_DIR "."
@@ -753,6 +756,62 @@ TEST(worker_full_ring_refuses) {
     rec_worker_free(w, NULL, NULL, 0);
 }
 
+TEST(coder_write_failure) {
+    // The disk fills mid-recording (a file-size limit stands in): the coder
+    // fails once with the write's errno, skips every later record without
+    // stalling a blocking producer, and the file is finalised as far as it got
+    char path[512];
+    out_path(path, sizeof path, "efbig.mkv");
+    remove(path);
+    struct rlimit old;
+    ASSERT_EQ_INT(0, getrlimit(RLIMIT_FSIZE, &old));
+    void (*old_sig)(int) = signal(SIGXFSZ, SIG_IGN); // write() returns EFBIG instead
+    struct rlimit lim = {.rlim_cur = 6000, .rlim_max = old.rlim_max};
+    ASSERT_EQ_INT(0, setrlimit(RLIMIT_FSIZE, &lim));
+    rec_worker_t *w = rec_worker_new(rec_coder_new(), 1u << 16, true, true);
+    ASSERT_TRUE(w != NULL);
+    put_segment(w, path, 64, 64, REC_CLASS_INDEXED, 1);
+    static uint8_t fb[64 * 64];
+    uint32_t x = 1;
+    for (int k = 0; k < 400; k++) {
+        // Noise compresses to nothing: every frame a few KB, a keyframe each
+        for (size_t i = 0; i < sizeof fb; i++) {
+            x = x * 1103515245u + 12345u;
+            fb[i] = (uint8_t)(x >> 24);
+        }
+        put_frame(w, REC_FR_WHOLE | REC_FR_MODE | REC_FR_TABLES, 64, 64, REC_PIX_8BPP, 64, 0, 64, NULL, 0, NULL, fb);
+        put_audio(w, 367, (int16_t)k);
+    }
+    put(w, REC_K_STOP, NULL, 0);
+    rec_stats_t st;
+    char msg[160] = "";
+    rec_worker_free(w, &st, msg, sizeof msg);
+    ASSERT_EQ_INT(0, setrlimit(RLIMIT_FSIZE, &old));
+    signal(SIGXFSZ, old_sig);
+    ASSERT_EQ_INT(-EFBIG, st.err);
+    ASSERT_TRUE(strncmp(msg, "write", 5) == 0);
+    ASSERT_TRUE(st.frames < 400);
+    // What reached the disk still reads, up to where it was cut
+    int err = 0;
+    mkv_reader_t *r = mkv_read_open(path, &err);
+    ASSERT_TRUE(r != NULL);
+    mkv_packet_t p;
+    while (mkv_read_packet(r, &p) == 1)
+        ;
+    mkv_read_close(r);
+
+    // A file that cannot take even its header: the open fails, and the
+    // records after it are skipped
+    w = rec_worker_new(rec_coder_new(), 1u << 16, false, true);
+    put_segment(w, "/dev/full", 64, 64, REC_CLASS_INDEXED, 1);
+    put_frame(w, REC_FR_WHOLE | REC_FR_MODE | REC_FR_TABLES, 64, 64, REC_PIX_8BPP, 64, 0, 64, NULL, 0, NULL, fb);
+    put(w, REC_K_STOP, NULL, 0);
+    rec_worker_free(w, &st, msg, sizeof msg);
+    ASSERT_EQ_INT(-ENOSPC, st.err);
+    ASSERT_TRUE(strncmp(msg, "open", 4) == 0);
+    ASSERT_EQ_INT(0, (int)st.frames);
+}
+
 int main(void) {
     RUN(timeline_hour_slow_chip);
     RUN(timeline_gap_is_held);
@@ -767,6 +826,7 @@ int main(void) {
     RUN(coder_close_then_sync);
     RUN(coder_direct_colour_tables);
     RUN(worker_full_ring_refuses);
+    RUN(coder_write_failure);
     fprintf(stderr, "record_capture: all tests passed\n");
     return 0;
 }

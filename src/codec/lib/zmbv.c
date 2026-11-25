@@ -91,7 +91,7 @@ static int apply_inter(codec_zmbv_dec_t *d, const uint8_t *body, size_t n) {
         for (int i = 0; i < d->bx; i++) {
             int x0 = i * d->bw, w = d->bw < d->width - x0 ? d->bw : d->width - x0;
             // dx and dy are signed 7-bit values above the "has delta" bit.
-            int b = (j * d->bx + i) * 2;
+            size_t b = ((size_t)j * (size_t)d->bx + (size_t)i) * 2; // 2^31 at 32768 x 32768 in 1x1 blocks
             bool has_delta = mv[b] & 1;
             int dx = (int8_t)mv[b] >> 1, dy = (int8_t)mv[b + 1] >> 1;
             size_t seg = (size_t)w * d->bpp;
@@ -135,6 +135,9 @@ codec_zmbv_dec_t *codec_zmbv_dec_new(int width, int height, int *err) {
         err = &e0;
     *err = CODEC_ERR_ARG;
     if (width <= 0 || height <= 0 || width > 32768 || height > 32768)
+        return NULL;
+    // The body buffer below is about 6 bytes a pixel: it must not wrap a 32-bit size_t
+    if ((uint64_t)width * (uint64_t)height > (SIZE_MAX - CODEC_ZMBV_PALETTE - 3) / 8)
         return NULL;
     codec_zmbv_dec_t *d = calloc(1, sizeof(*d));
     if (!d) {
