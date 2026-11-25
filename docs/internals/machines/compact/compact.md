@@ -38,8 +38,9 @@ has its own board for want of it). Every behavioural difference is a
 branch on one of them.
 
 **PAL boards** (128K, 512K, 512K enhanced, Plus) keep the Plus behaviour
-that this file grew from: the overlay follows VIA PA4 (read-side steer,
-`compact_set_rom_overlay`), the keyboard is the M0110 on the VIA shift
+that this file grew from: the overlay follows VIA PA4 — the shared
+`m68k_board_overlay_t` under its FOLLOW_READS policy, which steers reads
+only, so a write to low memory still reaches RAM — the keyboard is the M0110 on the VIA shift
 register (`keyboard.c`), the mouse is quadrature through the SCC DCD lines
 and VIA PB4/PB5 (`mouse.c`), PA3 selects the alternate sound buffer, and
 the phase-read window at $F00000 answers 0. The overlay map also places
@@ -47,7 +48,11 @@ RAM at $600000 (Inside Macintosh, vol. III, ch. 2, `ovlyRAM`): the 64 KB
 ROM runs its memory test and draws its error screen there before it
 clears vOverlay. The image exists only while the overlay is on — it is
 RAM from offset 0, wrapping on a board smaller than the 2 MB window — and
-the range is empty again once the ROM drops the overlay.
+the range is empty again once the ROM drops the overlay; the overlay
+object's `on_change` hook (`compact_pal_overlay_changed`) maps and clears
+it. Both generations take the shared `m68k_board_bus_reset` (overlay
+re-armed, then the common devices), and both map RAM back at zero with
+`m68k_board_overlay_map_ram_identity`, which wraps into the installed RAM.
 
 **BBU boards** (SE, SE FDHD, Classic) differ in four wired facts:
 
@@ -78,7 +83,7 @@ chip's own open-bus handlers at the decoded register index (see §7).
 
 - `compact_board_t` — the per-model data above.
 - `compact_state_t` — the display descriptor, the PWM sound handle, the
-  PAL overlay level, the BBU overlay object and the latched SCSI IRQ level.
+  overlay object (either policy) and the latched SCSI IRQ level.
 - `compact_substrate` — init, bus reset, teardown, PRAM seed, VBL, host I/O
   and media, and the display hook.
 

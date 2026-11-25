@@ -21,6 +21,7 @@
 // interrupt callbacks, the VBL trigger, and the hw_profile_t descriptors.
 
 #include "config_seed.h"
+#include "m68k_board.h" // m68k_board_bus_reset
 #include "m68k_board_overlay.h"
 #include "mac_host_io.h"
 #include "machine.h"
@@ -42,7 +43,6 @@
 #include "machine_checkpoint.h"
 #include "machine_irq.h"
 #include "memory.h"
-#include "mmu.h" // tlb_track_page
 #include "mouse.h"
 #include "page_fill.h"
 #include "pram_defaults.h"
@@ -97,14 +97,13 @@ typedef struct compact_state {
     // each time VIA PA6 toggles; fb_dirty is set on every change so
     // the renderer re-uploads.
     display_t display;
-    // PAL boards: VIA PA4 (vOverlay) as the address decoder sees it -- true
-    // while the ROM answers at $000000 (Guide 2e, ch. 3).  The line is pulled
-    // up, so it is high whenever PA4 is not driven -- at power-on and after
-    // /RESET.
-    bool rom_overlay;
-    // BBU boards: the access-triggered overlay (Guide 2e, ch. 3: "The BBU
-    // switches from the ROM overlay address map to the normal address map the
-    // first time an access is made in the range $40 0000 through $5F FFFF").
+    // The ROM overlay.  PAL boards: it follows VIA PA4 (vOverlay) as the
+    // address decoder sees it, armed while the ROM answers reads at $000000
+    // (Guide 2e, ch. 3); the line is pulled up, so it is high whenever PA4 is
+    // not driven -- at power-on and after /RESET.  BBU boards: it is
+    // access-triggered (Guide 2e, ch. 3: "The BBU switches from the ROM
+    // overlay address map to the normal address map the first time an access
+    // is made in the range $40 0000 through $5F FFFF").
     m68k_board_overlay_t overlay;
     // BBU boards: the 5380's IRQ output, before the PB6 mask.
     bool scsi_irq;
@@ -214,46 +213,22 @@ static display_t *compact_display(config_t *cfg) {
 // Memory layout
 // ============================================================
 
-// Point one page's READ side at `host_ptr`; the write side is left alone, so
-// with the overlay on a write to low memory still lands in RAM (the decoder
-// steers reads only, as on the II-family GLUE).
-static void compact_map_read_page(uint32_t p, uint8_t *host_ptr) {
-    if (p >= g_page_count)
-        return;
-    uintptr_t adjusted = MEM_RAM_ENTRY((uintptr_t)host_ptr - ((uintptr_t)p << MEM_PAGE_SHIFT));
-    memory_page_set_host(p, host_ptr, g_page_table[p].writable);
-    if (g_supervisor_read)
-        g_supervisor_read[p] = adjusted;
-    if (g_user_read)
-        g_user_read[p] = adjusted;
-    tlb_track_page(p); // on the tracker like every fast-path entry (page_fill_68k)
-    memory_logpoint_guard_page(p);
-}
-
-// PAL boards: drive the ROM overlay.  On maps the ROM image over the bottom
-// of the address space for reads, off puts RAM back.  The ROM drops it a few
+// PAL boards: what else the overlay map changes (the overlay object's
+// on_change hook).  The ROM itself is the shared object's FOLLOW_READS steer:
+// on maps the ROM image over the bottom of the address space for reads, off
+// puts RAM back, and writes reach RAM throughout.  The ROM drops it a few
 // instructions after the reset vector (CLR of PA4 at $4000D2 in the Plus v3
 // ROM), before it touches RAM; until then its reset vectors at $0/$4 are the
 // ROM's own.
-static void compact_set_rom_overlay(config_t *cfg, bool on) {
-    compact_state_t *st = compact_st(cfg);
-    if (st->rom_overlay == on)
-        return;
-    st->rom_overlay = on;
+//
+// The overlay map also places RAM at $600000 ("RAM is placed starting at
+// $600000", Inside Macintosh, vol. III, ch. 2; its ovlyRAM/ovlyScreen
+// equates): the 64 KB ROM runs its memory test and draws its error screen
+// there before it clears vOverlay.  The image is RAM from offset 0 (the 2 MB
+// window never reaches a 2.5 MB board's second row), wrapping on a smaller
+// board; it goes away with the overlay, leaving the range empty.
+static void compact_pal_overlay_changed(config_t *cfg, bool on) {
     uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
-    uint32_t rom_pages = cfg->machine->rom_size >> MEM_PAGE_SHIFT;
-    for (uint32_t p = 0; p < rom_pages; p++) {
-        // RAM below the ROM's size wraps (a 128K under a 64 KB ROM does not,
-        // but keep the offset inside the installed RAM regardless)
-        uint32_t ram_off = (p << MEM_PAGE_SHIFT) % cfg->ram_size;
-        compact_map_read_page(p, on ? ram + cfg->ram_size + (p << MEM_PAGE_SHIFT) : ram + ram_off);
-    }
-    // The overlay map also places RAM at $600000 ("RAM is placed starting at
-    // $600000", Inside Macintosh, vol. III, ch. 2; its ovlyRAM/ovlyScreen
-    // equates): the 64 KB ROM runs its memory test and draws its error screen
-    // there before it clears vOverlay.  The image is RAM from offset 0 (the
-    // 2 MB window never reaches a 2.5 MB board's second row), wrapping on a
-    // smaller board; it goes away with the overlay, leaving the range empty.
     for (uint32_t a = COMPACT_OVLY_RAM_START; a < COMPACT_OVLY_RAM_END; a += MEM_PAGE_SIZE) {
         if (on)
             page_fill_68k(a >> MEM_PAGE_SHIFT, ram + (a - COMPACT_OVLY_RAM_START) % cfg->ram_size, true);
@@ -261,15 +236,6 @@ static void compact_set_rom_overlay(config_t *cfg, bool on) {
             page_clear(a >> MEM_PAGE_SHIFT);
     }
     LOG(1, "ROM overlay %s", on ? "on: ROM at $000000" : "off: RAM at $000000");
-}
-
-// BBU boards: RAM back at zero once the overlay drops -- the pages the overlay
-// covered (the ROM's size from zero), wrapped into the installed RAM.
-static void compact_bbu_map_ram(config_t *cfg) {
-    uint32_t rom_pages = cfg->machine->rom_size >> MEM_PAGE_SHIFT;
-    uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
-    for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++)
-        page_fill_68k(p, ram + ((p << MEM_PAGE_SHIFT) % cfg->ram_size), true);
 }
 
 // BBU drive-select boards: steer /ENBL1 to the upper internal drive or, the
@@ -336,7 +302,7 @@ static void compact_memory_layout_init(config_t *cfg) {
     // Register the Phase Read device (PAL boards: the BBU has none)
     if (!board->bbu) {
         // (The overlay map's RAM image at $600000 comes and goes with the
-        // overlay: compact_set_rom_overlay.)
+        // overlay: compact_pal_overlay_changed.)
         memory_interface_t phase_read;
         memset(&phase_read, 0, sizeof(phase_read));
         phase_read.read_uint8 = &compact_phase_read_uint8;
@@ -350,7 +316,7 @@ static void compact_memory_layout_init(config_t *cfg) {
 // arm it.  Called once the RAM and ROM pages are in place.
 static void compact_bbu_overlay_init(config_t *cfg) {
     compact_state_t *st = compact_st(cfg);
-    m68k_board_overlay_init(&st->overlay, cfg, COMPACT_ROM_START, COMPACT_ROM_END, compact_bbu_map_ram,
+    m68k_board_overlay_init(&st->overlay, cfg, COMPACT_ROM_START, COMPACT_ROM_END, m68k_board_overlay_map_ram_identity,
                             cfg->machine->name);
     memory_map_add(cfg->memory_map, COMPACT_ROM_START, COMPACT_ROM_END - COMPACT_ROM_START, "ROM aperture",
                    &st->overlay.iface, &st->overlay);
@@ -445,8 +411,11 @@ static int compact_init(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part_begin(cfg, checkpoint, "cpu");
     if (board->bbu)
         compact_bbu_overlay_init(cfg);
-    else if (!checkpoint)
-        compact_set_rom_overlay(cfg, true);
+    else {
+        m68k_board_overlay_init_line_reads(&st->overlay, cfg, cfg->machine->name, compact_pal_overlay_changed);
+        if (!checkpoint)
+            m68k_board_overlay_arm(&st->overlay);
+    }
 
     // The profile is the source of truth for the CPU model, as it is for the
     // clock below and as m68k_board_build_core states for the II families.
@@ -717,7 +686,7 @@ static void compact_via_output(void *context, uint8_t port, uint8_t output) {
             bool pa4_driven = (via_port_direction(cfg->via1, 0) & 0x10) != 0;
             if (!bbu)
                 // PAL: PA4 is vOverlay, pulled up, so undriven means overlay ON
-                compact_set_rom_overlay(cfg, !pa4_driven || (output & 0x10) != 0);
+                m68k_board_overlay_set_line(&st->overlay, !pa4_driven || (output & 0x10) != 0);
             else if (compact_board(cfg)->drive_select)
                 // BBU: PA4 vDriveSel picks the lower (1) or the upper (0)
                 // internal drive for /ENBL1; undriven counts as lower.
@@ -750,21 +719,18 @@ static void compact_via_output(void *context, uint8_t port, uint8_t output) {
 
 // The board's /RESET net: "MC68000, VIA, SWIM, SCC, SCSI, BBU" (Guide 2e,
 // Table 14-2; the PAL boards have the IWM where that list says SWIM).  The
-// common set covers the VIA, SCC, floppy chip and the 5380.  The VIA comes
-// back with every pin an input, so on a PAL board PA4 floats high and the ROM
-// overlay is on again; the BBU re-arms its own -- which is what lets
-// machine.reset fetch the reset vectors from $0/$4.
+// shared bus reset re-arms the overlay -- on a PAL board the VIA comes back
+// with every pin an input, so PA4 floats high and the overlay is on again;
+// the BBU re-arms its own -- which is what lets machine.reset fetch the reset
+// vectors from $0/$4.  The common device set covers the VIA, SCC, floppy chip
+// and the 5380.
 static void compact_bus_reset(config_t *cfg) {
-    system_reset_common_devices(cfg);
-    if (compact_board(cfg)->bbu) {
-        m68k_board_overlay_arm(&compact_st(cfg)->overlay);
-        // PA4 (vDriveSel) floats too, which selects the lower drive: the VIA's
-        // reset drives no output callback, so put the /ENBL1 steering back
-        // here rather than wait for the ROM to rewrite the pin.
-        if (compact_board(cfg)->drive_select)
-            compact_route_enbl(cfg, false);
-    } else
-        compact_set_rom_overlay(cfg, true);
+    m68k_board_bus_reset(cfg, &compact_st(cfg)->overlay);
+    // PA4 (vDriveSel) floats too, which selects the lower drive: the VIA's
+    // reset drives no output callback, so put the /ENBL1 steering back here
+    // rather than wait for the ROM to rewrite the pin.
+    if (compact_board(cfg)->drive_select)
+        compact_route_enbl(cfg, false);
 }
 
 // PAL-board VIA shift-out callback: routes keyboard data to keyboard device
