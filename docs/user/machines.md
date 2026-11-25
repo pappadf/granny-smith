@@ -26,7 +26,11 @@ with this checksum in lower case and continues with a second, longer one
 | `5BF10FD1` | Quadra 840AV / 660AV | Quadra 840AV, Centris/Quadra 660AV |
 | `9FEB69B3` | Power Macintosh 6100/7100/8100 v1.0 | Power Mac 6100, 7100, 8100 |
 | `9B7A3AAD` | Power Macintosh 7100 v1.1 | Power Mac 7100 |
-| `96CD923D`, `9630C68B` | Power Macintosh 7500/8500/9500 v1, v2 | Power Mac 7500, 8500, 9500 |
+| `96CD923D`, `9630C68B` | Power Macintosh 7500/8500/9500 v1, v2 | Power Mac 7500, 8500, 9500, 7600 |
+| `960E4BE9` | Power Macintosh 7300/7600/8600/9600 (1997 v1) | Power Mac 7300, 7600, 8600, 9600 |
+| `960FC647` | Power Macintosh 8600/9600 (1997 v2) | Power Mac 8600, 9600 |
+| `9C7C98F7` | Workgroup Server 9150/80 | Workgroup Server 9150/80 |
+| `9B037F6F` | Workgroup Server 9150/120 | Workgroup Server 9150/120 |
 | `9630C68B`, `962F6C13`, `49B2BE8F` | Apple Network Server (2.26B6, Win NT, 1.1.20.1, 1.1.22, 2.0 prototype) | Network Server 500, 700 |
 | `78F57389`, `79D68D63` | Power Macintosh G3 (Rev C, Rev A) | G3 Desktop, G3 Minitower |
 | `3F7B` | Lisa 2 Boot ROM, revision H | Lisa 2 |
@@ -112,10 +116,19 @@ you can connect to your camera and microphone — see
 | Power Mac 7500 | `pm7500` | 32 MB; 8–512 MB | built-in (12″–21″) | internal SCSI bays; CD-ROM | PCI A1–C1 |
 | Power Mac 8500 | `pm8500` | 32 MB; 16–512 MB | built-in | internal SCSI bays; CD-ROM | PCI A1–C1 |
 | Power Mac 9500 | `pm9500` | 64 MB; 16–512 MB | PCI graphics card in A1 | internal SCSI bays; CD-ROM | PCI A1–F2 |
+| Power Mac 7300 | `pm7300` | 32 MB; 16–512 MB | built-in | internal SCSI bays; CD-ROM | PCI A1–C1 |
+| Power Mac 7600 | `pm7600` | 32 MB; 16–512 MB | built-in | internal SCSI bays; CD-ROM | PCI A1–C1 |
+| Power Mac 8600 | `pm8600` | 32 MB; 16–512 MB | built-in | internal SCSI bays; CD-ROM | PCI A1–C1 |
+| Power Mac 9600 | `pm9600` | 64 MB; 16–512 MB | PCI graphics card in A1 | internal SCSI bays; CD-ROM | PCI A1–F2 |
+| Workgroup Server 9150/80 | `wgs9150` | 32 MB; 8–264 MB | built-in | SCSI, CD-ROM | NuBus A–D |
+| Workgroup Server 9150/120 | `wgs9150_120` | 32 MB; 8–264 MB | built-in | SCSI, CD-ROM | NuBus A–D |
 | Power Mac G3 Desktop | `pmg3dt` | 64 MB; 32–768 MB | built-in ATI Rage Pro (13″, 15″/17″/20″ multiple-scan, 21″) | SCSI hard disk + CD-ROM; two ATA buses (hard disks, ATAPI CD-ROM) | PCI A1–C1 |
 | Power Mac G3 Minitower | `pmg3mt` | 64 MB; 32–768 MB | built-in ATI Rage Pro | as the Desktop | PCI A1–C1 |
 
-Power Macs always run in 32-bit mode. The 7500, 8500 and 9500 have their
+Power Macs always run in 32-bit mode. The 7300/7600/8600/9600 are the
+7500/8500/9500 with a faster processor (they run as a 604, not a 604e, and
+the 9600 as a single-processor machine). The Workgroup Server 9150 is the
+8100 with a fourth NuBus slot. The 7500, 8500 and 9500 (and their 1997 successors) have their
 CD-ROM drive at ID 3 on a second SCSI bus, the one that also goes to the
 external connector; the hard disk bays are on the fast internal bus. PCI cards you can add: the **Apple
 Accelerated PCI Graphics Card** (ATI Mach64 GX) and the **3dfx Voodoo2** 3D
@@ -146,6 +159,8 @@ Combinations the project tests regularly. Others may well work too.
 | Quadra 840AV / 660AV | System 7.1 with its enabler, 7.6 (840AV) |
 | Power Mac 6100 / 7100 / 8100 | System 7.5 – 7.6, Mac OS 8.1 – 9.0.4; MkLinux DR3 |
 | Power Mac 7500 / 8500 / 9500 | System 7.6, Mac OS 8.1; MkLinux DR3 (7500) |
+| Power Mac 7300 / 7600 / 8600 / 9600 | Mac OS 8.1 (1997 ROMs); System 7.6 (7600 with the 1995 ROM) |
+| Workgroup Server 9150 | System 7.5.3, 7.6 |
 | Power Mac G3 | Mac OS 9.2.1 (install from CD and boot); Mac OS X 10.0.3 (from ATA) |
 | Network Server 500 | AIX 4.1.5, Windows NT 4.0 for PowerPC, Network Server Diagnostic Utility |
 | Lisa 2 | Lisa Office System 3.1, Lisa Workshop, SCO Xenix 3.0 |
@@ -155,6 +170,9 @@ Notes:
 
 - A PCI Power Mac (7500/8500/9500) refuses a System 7.5 startup disk; use
   7.6 or later.
+- With the 1997 ROMs (`960E4BE9`, `960FC647`) the 7300/7600/8600/9600 also
+  refuse System 7.6; use Mac OS 8 or later (7.6.1 is not tested). The
+  Workgroup Server 9150 refuses System 7.5; use 7.5.3 or later.
 - System 7.6 and later on the 68K Macs that start in 24-bit mode: set
   **Addressing** to 32-bit (see §3).
 - MacWorks XL starts from its loader floppy, then asks for the MacWorks

@@ -785,7 +785,9 @@ The 7600, 8600 and 9600 have their own machine pages in this tree —
 [pm7600.md](pm7600.md), [pm8600.md](pm8600.md) and [pm9600.md](pm9600.md)
 (the last covering the 9600/200MP) — which carry this section's facts
 forward; the 7300, a Catalyst-platform machine rather than a Hammerhead
-one, remains covered by this section and §6.4.
+one, remains covered by this section and §6.4.  Its machine page, [pm7300.md](pm7300.md), is a
+placeholder: Apple's 1997 developer note lists the 7500/100 as the 7300's previous model, and
+which platform the shipping 7300 board belongs to is an open question there.
 
 ## 7. Open questions
 

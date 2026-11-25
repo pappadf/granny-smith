@@ -500,6 +500,51 @@ Known open items:
 
 ---
 
+# The 1997 machines — 7300, 7600, 8600, 9600
+
+`pm7300.c`, `pm7600.c`, `pm8600.c` and `pm9600.c` are the 7500/8500/9500
+boards with the 1997 processor cards: a 200 MHz part on a 50 MHz bus and
+the L2 cache the developer note fits (256 KB DIMM; 512 KB on the 9600),
+reported through Hammerhead `+$E0` (`l2_kb`).  Apple's note keeps the
+7600/8600/9600 on their predecessors' machine IDs, and the 1997 ROMs carry
+the 1995 Open Firmware image and 68k identification routine byte for byte
+([tnt.md](../../../reference/machines/tnt/tnt.md) §6.5), so each board uses
+its predecessor's straps verbatim: the 7300 and 7600 the 7500's, the 8600
+the 8500's, the 9600 the 9500's (and the 9500's six-slot PCI table,
+`pm9500_pci_slots`, now exported).  BoxFlag reads `$3E` / `$3F` / `$3D`.
+
+ROMs: the 1997 v1 image (`$960E4BE9`) serves all four; the later
+`$960FC647` serves the 8600/9600; the 7600 also accepts the 1995 images,
+which the 7600/120 and /132 shipped with.  The 1997 ROMs reject System 7.6
+("This startup disk will not work on this Macintosh model"), so their
+coverage boots Mac OS 8.1.
+
+Deliberate simplifications:
+
+- **The CPU is the 604 core with its default PVR (`$0004`), not a 604e
+  (`$0009`).**  Under a 604e PVR, POST times the processor by reading HID1's
+  PLL configuration (`mfspr hid1`), which the core implements only on the
+  750; the read takes a program exception and POST hangs at its `$700`
+  trap.  Under the 604 PVR the 1997 POST takes the 1995 path and everything
+  above it boots.  Modelling the 604e means a 604e HID1 in the CPU core.
+- **The 7300's machine ID.**  The note gives the 7300 "a new machine ID
+  value: 109", but nothing the ROM reads produces it: the 68k
+  identification synthesises one of four product words from Hammerhead and
+  BoxID, and the 1997 ROM's product records are the 1995 ones.  With the
+  7600's straps the 7300 reports Gestalt 68 (observed under MacTest Pro's
+  Mac OS); what tells the shipping 7300 apart is not established.
+- **No dual-processor card.**  The 9600/200MP is not modeled: the core runs
+  one PowerPC and Hammerhead's ArbConfig reports TwoCPU clear.
+- **No AV hardware** (Plan B video-in, Sixty6), as on the 7500/8500.
+
+Verification: `suite-tnt-1997` (Mac OS 8.1 to the Finder and About This
+Computer on all four models under both 1997 ROMs; System 7.6 from disk and
+floppy on the 7600 under the 1995 ROM).  Hardware reference:
+[pm7600.md](../../../reference/machines/tnt/pm7600.md),
+[pm8600.md](../../../reference/machines/tnt/pm8600.md),
+[pm9600.md](../../../reference/machines/tnt/pm9600.md) and the placeholder
+[pm7300.md](../../../reference/machines/tnt/pm7300.md).
+
 # The Apple Network Servers — a fourth board on this family
 
 `src/machines/tnt/ans500.c` / `ans700.c` add two machines to `tnt` that are
