@@ -3,7 +3,7 @@
 [![CI](https://github.com/pappadf/granny-smith/actions/workflows/tests.yml/badge.svg)](https://github.com/pappadf/granny-smith/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Granny Smith** is a browser-first Macintosh and Apple Lisa emulator spanning 24 computer models, from the Lisa 2 to the beige Power Macintosh G3 and the Apple Network Server.
+**Granny Smith** is a browser-first Macintosh and Apple Lisa emulator spanning 53 computer models, from the Lisa 2 to the beige Power Macintosh G3 and the Apple Network Server.
 
 > **See it:** [Demos of PlainTalk speech recognition, A/UX, Marathon, and more](GALLERY.md)
 
@@ -17,14 +17,17 @@
 All models run their original ROMs unpatched, with devices emulated closely enough so that original drivers work.
 
 - **Apple Lisa 2 and Macintosh XL**
-- **Macintosh Plus**
+- **Macintosh 128K, 512K, 512Ke, Plus, SE, SE FDHD, and Classic** (the compact 68000 Macs)
 - **Macintosh SE/30, IIx, and IIcx** (the "GLUE" family)
 - **Macintosh IIfx**
 - **Macintosh IIci and IIsi** (the "MDU" family)
+- **Macintosh LC II, Classic II, LC III, LC III+, LC 520, LC 550, Color Classic, and Color Classic II** (the "V8" family and its "Sonora" successor)
 - **Macintosh Quadra 700, 900, and 950** (the "MCU" family)
+- **Macintosh Centris 610 and 650, and Quadra 610, 650, and 800** (the "djMEMC" family)
+- **Macintosh LC 475, LC 575, and Quadra 605** (the "MEMCjr" family)
 - **Macintosh Quadra 840AV and Centris 660AV** (the "AV" family)
-- **Power Macintosh 6100, 7100, and 8100** (the "PDM" family)
-- **Power Macintosh 7500, 8500, and 9500** (the "TNT" family)
+- **Power Macintosh 6100, 7100, and 8100, and Workgroup Server 9150** (the "PDM" family)
+- **Power Macintosh 7200, 7300, 7500, 7600, 8500, 8600, 9500, and 9600** (the "TNT" family)
 - **Power Macintosh G3 (beige)** (the "Gossamer" family)
 - **Apple Network Server 500 and 700** ("Shiner" based on the "TNT" family)
 
