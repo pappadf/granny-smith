@@ -271,6 +271,14 @@ static void compact_bbu_map_ram(config_t *cfg) {
         page_fill_68k(p, ram + ((p << MEM_PAGE_SHIFT) % cfg->ram_size), true);
 }
 
+// BBU drive-select boards: steer /ENBL1 to the upper internal drive or, the
+// default, the lower one (/ENBL2, the external port, reaches no drive here).
+static void compact_route_enbl(config_t *cfg, bool upper) {
+    const compact_board_t *board = compact_board(cfg);
+    int enbl1 = upper ? (board->second_internal ? 1 : -1) : 0;
+    floppy_set_enbl_route(cfg->floppy, enbl1, board->second_internal ? -1 : 1);
+}
+
 // The PAL boards' Phase Read area -- a STUB.  On hardware the value read tells
 // the ROM whether the video and CPU clocks are in phase (Guide p.122, below);
 // the emulator's clocks always are, so every read answers 0 and the phase
@@ -635,6 +643,9 @@ static int compact_init(config_t *cfg, checkpoint_t *checkpoint) {
     // When restoring from a checkpoint, VIA outputs will re-drive the selection.
     if (!checkpoint) {
         compact_use_video_buffer(cfg, true);
+        // Power-on: PA4 is undriven, which selects the lower internal drive
+        if (board->bbu && board->drive_select)
+            compact_route_enbl(cfg, false);
         // Blank both screen buffers so a cold boot scans out black rather than
         // the white that zeroed DRAM gives at 1 bpp.  The framebuffer IS main
         // RAM, so this only touches the two visible windows, and only before
@@ -767,12 +778,8 @@ static void compact_bbu_via_output(config_t *cfg, uint8_t port, uint8_t output) 
         floppy_set_sel_signal(cfg->floppy, (output & 0x20) != 0);
         // PA4 vDriveSel picks the lower (1) or the upper (0) internal drive
         // for /ENBL1 (Guide 2e, Table 4-3); an undriven pin counts as lower.
-        if (cfg->via1 && compact_board(cfg)->drive_select) {
-            bool upper = (via_port_direction(cfg->via1, 0) & 0x10) && !(output & 0x10);
-            const compact_board_t *board = compact_board(cfg);
-            int enbl1 = upper ? (board->second_internal ? 1 : -1) : 0;
-            floppy_set_enbl_route(cfg->floppy, enbl1, board->second_internal ? -1 : 1);
-        }
+        if (cfg->via1 && compact_board(cfg)->drive_select)
+            compact_route_enbl(cfg, (via_port_direction(cfg->via1, 0) & 0x10) && !(output & 0x10));
         // PA3 vSync (synchronous modem clock on SCC channel A): not modelled.
         // PA0-PA2: the sound volume.  The BBU has no alternate sound buffer
         // (PA3 is vSync here, not vSndPg2), so the main buffer always plays.
@@ -811,9 +818,14 @@ static void compact_via_output(void *context, uint8_t port, uint8_t output) {
 // machine.reset fetch the reset vectors from $0/$4.
 static void compact_bus_reset(config_t *cfg) {
     system_reset_common_devices(cfg);
-    if (compact_board(cfg)->bbu)
+    if (compact_board(cfg)->bbu) {
         m68k_board_overlay_arm(&compact_st(cfg)->overlay);
-    else
+        // PA4 (vDriveSel) floats too, which selects the lower drive: the VIA's
+        // reset drives no output callback, so put the /ENBL1 steering back
+        // here rather than wait for the ROM to rewrite the pin.
+        if (compact_board(cfg)->drive_select)
+            compact_route_enbl(cfg, false);
+    } else
         compact_set_rom_overlay(cfg, true);
 }
 
