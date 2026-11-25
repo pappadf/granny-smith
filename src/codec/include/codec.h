@@ -21,7 +21,7 @@
 // its own.  Every encoder has one shape too (codec_enc_*): a whole input to
 // one complete stream, with state reused across calls.  One zlib stream can
 // also be written and read in sync-flushed chunks (codec_zstream_*), and
-// the media codecs have headers of their own (codec_zmbv.h).
+// the media codecs have headers of their own (codec_zmbv.h, codec_flac.h).
 //
 //   id                  decode  encode  stream
 //   CODEC_COPY            x             stored bytes
@@ -353,6 +353,14 @@ uint16_t codec_crc16_xmodem_byte(uint16_t crc, uint8_t b);
 // CRC-16/ARC (reflected polynomial 0xA001, initial 0, no final XOR), as
 // StuffIt checks a fork with it.  Chains like codec_crc16_xmodem.
 uint16_t codec_crc16_arc(uint16_t crc, const void *data, size_t len);
+
+// CRC-8/SMBUS (polynomial 0x07, MSB first, initial 0, no final XOR), as a
+// FLAC frame header ends with it (RFC 9639 §9.1.8).  Chains.
+uint8_t codec_crc8_smbus(uint8_t crc, const void *data, size_t len);
+
+// CRC-16/UMTS (polynomial 0x8005, MSB first, initial 0, no final XOR), as
+// a FLAC frame ends with it (RFC 9639 §9.3).  Chains.
+uint16_t codec_crc16_umts(uint16_t crc, const void *data, size_t len);
 
 #ifdef __cplusplus
 }

@@ -188,6 +188,13 @@ their own beside `codec.h`:
   the DOSBox capture video codec, frame by frame: an encoder
   (`codec_zmbv_enc_*`) and a decoder (`codec_zmbv_dec_*`) for 8 bpp
   palettised, 15, 16 and 32 bpp (§3).
+- **FLAC** ([`codec_flac.h`](../../../src/codec/include/codec_flac.h)),
+  RFC 9639, as a streaming encoder for 16-bit mono and stereo
+  (`codec_flac_enc_*`: samples pushed as they come, one frame out per
+  4096) and a decoder for the subset it writes (`codec_flac_dec_*`).
+
+Both are for the screen recorder's lossless Matroska files and the tools
+that read them back.
 
 ## 2. Key types & files
 
@@ -198,7 +205,7 @@ their own beside `codec.h`:
 | `codec_check_t` | a stated checksum over the decoded bytes, verified at the end |
 | `codec_enc_t` | an encoder, its state reused across inputs (§1.2) |
 | `codec_id_t` | `COPY`, `DEFLATE`, `ZLIB`, `GZIP`, `ADC`, `BZIP2`, `LZFSE`, `XZ`, `LZMA_ALONE`, `RLE90`, `RLE90_BINHEX`, `BINHEX`, `SIT2`, `SIT3`, `SIT13`, `SIT15`, `CPT_RLE`, `CPT_LZH`, `DCMP`, `GSRLE` |
-| `codec_crc32`, `codec_crc32_zeros`, `codec_crc32_msb`, `codec_crc64`, `codec_adler32`, `codec_crc16_xmodem`, `codec_crc16_xmodem_byte`, `codec_crc16_arc` | CRC-32 (reflected; zero runs in O(log n); also the BMAC multicast hash), CRC-32 MSB-first (bzip2), CRC-64/XZ, Adler-32, CRC-16/XMODEM (BinHex, MacBinary; per byte for the SWIM ISM and the MFM field CRC), CRC-16/ARC (StuffIt); constant tables, slice-by-8 for the CRC-32s, callable from any thread |
+| `codec_crc32`, `codec_crc32_zeros`, `codec_crc32_msb`, `codec_crc64`, `codec_adler32`, `codec_crc16_xmodem`, `codec_crc16_xmodem_byte`, `codec_crc16_arc`, `codec_crc8_smbus`, `codec_crc16_umts` | CRC-32 (reflected; zero runs in O(log n); also the BMAC multicast hash), CRC-32 MSB-first (bzip2), CRC-64/XZ, Adler-32, CRC-16/XMODEM (BinHex, MacBinary; per byte for the SWIM ISM and the MFM field CRC), CRC-16/ARC (StuffIt), CRC-8/SMBUS and CRC-16/UMTS (FLAC's header and frame CRCs); constant tables, slice-by-8 for the CRC-32s, callable from any thread |
 
 | File | |
 |---|---|
@@ -212,6 +219,7 @@ their own beside `codec.h`:
 | `lib/dcmp.c`, `lib/dcmp3_tables.h` | System 7 compressed resources |
 | `lib/gsrle.c`, `lib/gsrle_enc.c` | the checkpoint file's run lengths, both ways |
 | `lib/zmbv.c`, `lib/zmbv_enc.c`, `include/codec_zmbv.h` | ZMBV video, both ways |
+| `lib/flac.c`, `lib/flac_enc.c`, `include/codec_flac.h` | FLAC audio, both ways (the decoder for the encoder's subset) |
 | `lib/checksum.c` | every checksum |
 
 ## 3. Behaviour/algorithms
@@ -254,6 +262,30 @@ their own beside `codec.h`:
   so it can be retried. The decoder reads everything the encoder writes,
   any in-range motion vector and the uncompressed variant (compression 0)
   as well; vectors, deltas and sizes are checked against the frame.
+- **FLAC encoding.** RFC 9639, 16-bit, mono or stereo, any rate up to
+  655,350 Hz, a fixed block size of 4096 (the last frame shorter). Each
+  channel of a frame is a `CONSTANT` subframe when every sample is the
+  same (13 bytes a block of mono silence), else the smaller of `VERBATIM` and
+  the `FIXED` predictors of order 0 to 4, whose residuals are Rice-coded in
+  2^p partitions (p up to 8, as the block allows), each partition's
+  parameter (4-bit, or 5-bit when one exceeds 14) chosen from its
+  magnitude by the usual estimate and p by the total. Low bits that are
+  zero in every sample of a channel go in the wasted-bits field, so 8-bit
+  audio carried in int16 costs what the bare 8-bit values do. Stereo codes
+  left/right, left/side, side/right and mid/side and keeps the smallest
+  pair. A frame header carries the frame number (UTF-8 coded), the block
+  size and the rate (by code, or 8 or 16 bits after the header) and a
+  CRC-8; the frame ends in a CRC-16. There is no LPC. STREAMINFO is fixed
+  before any audio: block size 4096 both ways and zero, "unknown", for the
+  frame sizes, the total and the MD5 (RFC 9639 §8.2), so nothing has to
+  be patched once the stream ends — a container's track header can hold
+  it from the start. Samples are pushed in any amounts; a full block is
+  coded on request, and a flush codes the short last one.
+- **FLAC decoding.** One frame at a time: `CONSTANT`, `VERBATIM` and
+  `FIXED` subframes, wasted bits, the four stereo assignments, 4- and
+  5-bit Rice parameters and escaped partitions, 16-bit mono or stereo;
+  `LPC` is `UNSUPPORTED`. Both CRCs are checked, every count is bounded
+  by the block and the input, and the predictor runs in 64 bits.
 - **bzip2.** Per block: the symbol map, the selectors (move-to-front coded),
   the delta-coded code lengths of up to six canonical Huffman tables, then
   the run-length and move-to-front coded symbols, each Huffman code found
@@ -407,7 +439,14 @@ file's blocks, but keeps nothing of its own in one.)
   stored to 9, from whole frames, XOR bands and whole-frame bands, with
   palette changes, keyframes forced both ways and unchanged frames, every
   decoded picture and palette compared; the decoder against every prefix
-  and a corruption at every byte of a short stream.
+  and a corruption at every byte of a short stream — and FLAC: silence
+  (a constant non-zero level), 8-bit audio in the top byte (which must
+  cost exactly what the bare 8-bit values do), full-scale noise and a sine
+  in mono, at lengths of whole blocks, 1, 100, 4095 and whole blocks plus
+  a short last one; stereo correlated, uncorrelated and identical
+  channels (the side channel taken where it pays); every way a header
+  states the rate; each frame's CRC-16 recomputed, every decoded sample
+  compared, a flipped bit and a cut frame refused; STREAMINFO's bytes.
 - `tests/unit/suites/peeler` and `peeler_corpus` (and `make -C src/peeler
   test`, 38 real archives) decode every method through the containers;
   `zipgz.c` covers DEFLATE with a writer of its own (every block type,

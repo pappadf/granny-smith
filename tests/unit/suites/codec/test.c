@@ -1008,12 +1008,16 @@ TEST(checksums_match_check_values) {
     ASSERT_TRUE(codec_adler32(1, "Wikipedia", 9) == 0x11E60398u);
     ASSERT_TRUE(codec_crc16_xmodem(0, s, 9) == 0x31C3); // CRC-16/XMODEM
     ASSERT_TRUE(codec_crc16_arc(0, s, 9) == 0xBB3D); // CRC-16/ARC
+    ASSERT_TRUE(codec_crc8_smbus(0, s, 9) == 0xF4); // CRC-8/SMBUS
+    ASSERT_TRUE(codec_crc16_umts(0, s, 9) == 0xFEE8); // CRC-16/UMTS
     for (size_t k = 0; k <= 9; k++) {
         ASSERT_TRUE(codec_crc32(codec_crc32(0, s, k), s + k, 9 - k) == 0xCBF43926u);
         ASSERT_TRUE(codec_crc32_msb(codec_crc32_msb(0, s, k), s + k, 9 - k) == 0xFC891918u);
         ASSERT_TRUE(codec_crc64(codec_crc64(0, s, k), s + k, 9 - k) == 0x995DC9BBDF1939FAull);
         ASSERT_TRUE(codec_crc16_xmodem(codec_crc16_xmodem(0, s, k), s + k, 9 - k) == 0x31C3);
         ASSERT_TRUE(codec_crc16_arc(codec_crc16_arc(0, s, k), s + k, 9 - k) == 0xBB3D);
+        ASSERT_TRUE(codec_crc8_smbus(codec_crc8_smbus(0, s, k), s + k, 9 - k) == 0xF4);
+        ASSERT_TRUE(codec_crc16_umts(codec_crc16_umts(0, s, k), s + k, 9 - k) == 0xFEE8);
     }
     ASSERT_TRUE(codec_crc32(0, NULL, 0) == 0 && codec_crc64(0, NULL, 0) == 0);
     // The per-byte form keeps the same register; CRC-16/IBM-3740 (XMODEM's

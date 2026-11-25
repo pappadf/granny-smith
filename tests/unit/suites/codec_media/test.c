@@ -6,12 +6,15 @@
 // the in-tree chunked inflater and, natively, the system zlib; ZMBV at
 // every format, block size and awkward frame size, with palette changes,
 // forced keyframes and unchanged frames, from whole frames and from XOR
-// bands.
+// bands; FLAC on silence, 8-bit audio in 16 bits, full-scale noise, a
+// sine, stereo correlated and not, and short last blocks, with its CRCs.
 
 #include "codec.h"
+#include "codec_flac.h"
 #include "codec_zmbv.h"
 #include "test_assert.h"
 
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -461,6 +464,199 @@ TEST(zmbv_decoder_bad_input) {
     codec_zmbv_enc_free(e);
 }
 
+// ---- FLAC ------------------------------------------------------------------
+
+#define FL_MAX (CODEC_FLAC_BLOCK * 6)
+
+// Encode `n` sample frames (pushed in uneven pieces), decode every frame
+// and compare; the coded size.  `frames` counts the FLAC frames.
+static size_t flac_run(const int16_t *pcm, size_t n, int channels, uint32_t rate, int *frames, int *assign) {
+    int err = 0;
+    codec_flac_enc_t *e = codec_flac_enc_new(rate, channels, &err);
+    codec_flac_dec_t *d = codec_flac_dec_new(&err);
+    ASSERT_TRUE(e && d);
+    size_t cap = codec_flac_enc_bound(e), total = 0;
+    uint8_t *pkt = xmalloc(cap);
+    int16_t *back = xmalloc(sizeof(int16_t) * CODEC_FLAC_BLOCK * 2);
+    size_t done = 0, at = 0;
+    uint64_t expect_frame = 0;
+    *frames = 0;
+    for (;;) {
+        // Push in pieces of awkward sizes until the input is taken.
+        while (at < n && !codec_flac_enc_ready(e)) {
+            size_t piece = 1 + rnd_below(3000);
+            if (piece > n - at)
+                piece = n - at;
+            at += codec_flac_enc_push(e, pcm + at * channels, piece);
+        }
+        uint64_t first = 0;
+        int64_t len = at < n || codec_flac_enc_ready(e) ? codec_flac_enc_frame(e, pkt, cap, &first)
+                                                        : codec_flac_enc_flush(e, pkt, cap, &first);
+        if (len == 0)
+            break;
+        ASSERT_TRUE(len > 0);
+        ASSERT_TRUE((size_t)len <= cap);
+        ASSERT_EQ_INT((int)done, (int)first);
+        // Header and frame checksums, recomputed here.
+        ASSERT_TRUE(pkt[0] == 0xFF && pkt[1] == 0xF8);
+        uint16_t crc = codec_crc16_umts(0, pkt, (size_t)len - 2);
+        ASSERT_EQ_INT(crc, pkt[len - 2] << 8 | pkt[len - 1]);
+        if (assign)
+            *assign = pkt[3] >> 4;
+        size_t used = 0;
+        int64_t got = codec_flac_dec_frame(d, pkt, (size_t)len, back, CODEC_FLAC_BLOCK, &used);
+        if (got < 0)
+            fprintf(stderr, "       frame %d: %s\n", *frames, codec_flac_dec_message(d));
+        ASSERT_TRUE(got > 0);
+        ASSERT_EQ_INT((int)len, (int)used);
+        ASSERT_EQ_INT(channels, codec_flac_dec_channels(d));
+        ASSERT_EQ_INT((int)expect_frame, (int)codec_flac_dec_frame_number(d));
+        ASSERT_TRUE(codec_flac_dec_sample_rate(d) == rate);
+        ASSERT_TRUE(memcmp(back, pcm + done * channels, (size_t)got * channels * sizeof(int16_t)) == 0);
+        // A flipped bit anywhere is caught (by a CRC, or as a bad frame).
+        size_t flip = rnd_below((uint32_t)len);
+        pkt[flip] ^= (uint8_t)(1u << rnd_below(8));
+        ASSERT_TRUE(codec_flac_dec_frame(d, pkt, (size_t)len, back, CODEC_FLAC_BLOCK, NULL) < 0);
+        // Cut short: never a sample out.
+        ASSERT_TRUE(codec_flac_dec_frame(d, pkt, (size_t)len / 2, back, CODEC_FLAC_BLOCK, NULL) < 0);
+        done += (size_t)got;
+        total += (size_t)len;
+        expect_frame++;
+        (*frames)++;
+    }
+    ASSERT_EQ_INT((int)n, (int)done);
+    ASSERT_EQ_INT((int)n, (int)codec_flac_enc_samples(e));
+    free(pkt);
+    free(back);
+    codec_flac_dec_free(d);
+    codec_flac_enc_free(e);
+    return total;
+}
+
+// One channel's worth of a signal kind: 0 constant, 1 noise, 2 sine, 3
+// 8-bit noise-and-tone in the top byte.
+static int16_t signal_at(int kind, size_t i, double freq) {
+    switch (kind) {
+    case 0:
+        return -1234;
+    case 1:
+        return (int16_t)rnd();
+    case 2:
+        return (int16_t)lrint(30000.0 * sin(2 * 3.14159265358979 * freq * (double)i));
+    default: {
+        int v = (int)lrint(90.0 * sin(2 * 3.14159265358979 * freq * (double)i)) + (int)rnd_below(16) - 8;
+        return (int16_t)(v * 256);
+    }
+    }
+}
+
+// Mono: silence, 8-bit content, noise and a sine round-trip, and each
+// costs what it should.
+TEST(flac_mono_round_trips) {
+    static const size_t lengths[] = {
+        FL_MAX, CODEC_FLAC_BLOCK, CODEC_FLAC_BLOCK * 2 + 1, CODEC_FLAC_BLOCK * 3 + 15, 4095, 100, 1};
+    int16_t *pcm = xmalloc(sizeof(int16_t) * FL_MAX), *low = xmalloc(sizeof(int16_t) * FL_MAX);
+    for (int kind = 0; kind < 4; kind++)
+        for (size_t li = 0; li < sizeof(lengths) / sizeof(lengths[0]); li++) {
+            size_t n = lengths[li];
+            for (size_t i = 0; i < n; i++)
+                pcm[i] = signal_at(kind, i, 440.0 / 22255);
+            int frames = 0;
+            size_t bytes = flac_run(pcm, n, 1, 22255, &frames, NULL);
+            ASSERT_EQ_INT((int)((n + CODEC_FLAC_BLOCK - 1) / CODEC_FLAC_BLOCK), frames);
+            if (li == 0) {
+                fprintf(stderr, "       mono kind %d: %d samples -> %d bytes\n", kind, (int)n, (int)bytes);
+                if (kind == 0)
+                    ASSERT_TRUE(bytes <= 6 * 16); // CONSTANT: a few bytes a block
+                if (kind == 1)
+                    ASSERT_TRUE(bytes <= n * 2 + 6 * 24); // noise: VERBATIM, never worse
+                if (kind == 2)
+                    ASSERT_TRUE(bytes < n); // a sine predicts well
+                if (kind == 3) {
+                    // 8-bit audio in the top byte costs what the bare 8-bit
+                    // values do: the wasted bits are not coded.
+                    for (size_t i = 0; i < n; i++)
+                        low[i] = (int16_t)(pcm[i] / 256);
+                    size_t bare = flac_run(low, n, 1, 22255, &frames, NULL);
+                    fprintf(stderr, "       8-bit in 16: %d bytes, the bare 8-bit values: %d\n", (int)bytes, (int)bare);
+                    ASSERT_TRUE(bytes <= bare + 6 * 2);
+                }
+            }
+        }
+    free(pcm);
+    free(low);
+}
+
+// Stereo: correlated channels go out as a side channel, independent ones
+// as left/right, and every rate's header codes round-trip.
+TEST(flac_stereo_round_trips) {
+    static const uint32_t rates[] = {44100, 22255, 48000, 8000, 96000, 22257, 32000, 11025, 192000, 100000, 655350};
+    int16_t *pcm = xmalloc(sizeof(int16_t) * FL_MAX * 2);
+    for (int pattern = 0; pattern < 4; pattern++) {
+        size_t n = pattern == 3 ? CODEC_FLAC_BLOCK * 2 + 777 : FL_MAX;
+        for (size_t i = 0; i < n; i++) {
+            int16_t l = signal_at(2, i, 300.0 / 44100), r;
+            if (pattern == 0)
+                r = (int16_t)(l / 2 + (int)rnd_below(64)); // correlated
+            else if (pattern == 1)
+                r = (int16_t)rnd(); // uncorrelated noise beside a tone
+            else if (pattern == 2)
+                r = l; // identical
+            else
+                r = signal_at(3, i, 0.01);
+            pcm[2 * i] = l;
+            pcm[2 * i + 1] = r;
+        }
+        int frames = 0, assign = -1;
+        size_t bytes = flac_run(pcm, n, 2, rates[pattern], &frames, &assign);
+        fprintf(stderr, "       stereo pattern %d: %d bytes, last assignment %d\n", pattern, (int)bytes, assign);
+        if (pattern == 0 || pattern == 2)
+            ASSERT_TRUE(assign >= 8); // a side channel
+        if (pattern == 1)
+            ASSERT_TRUE(assign == 1 || assign == 8); // the noise is not helped by a side channel
+    }
+    // Every way of stating the rate in a header.
+    for (size_t i = 0; i < sizeof(rates) / sizeof(rates[0]); i++) {
+        size_t n = 5000;
+        for (size_t k = 0; k < n * 2; k++)
+            pcm[k] = signal_at(2, k, 0.003);
+        int frames = 0;
+        flac_run(pcm, n, 2, rates[i], &frames, NULL);
+    }
+    free(pcm);
+}
+
+// STREAMINFO: block size 4096 both ways, the rate, channels and depth, and
+// zero ("unknown") frame sizes, sample count and MD5; it parses back.
+TEST(flac_streaminfo) {
+    int err = 0;
+    codec_flac_enc_t *e = codec_flac_enc_new(22255, 2, &err);
+    ASSERT_TRUE(e != NULL);
+    uint8_t si[CODEC_FLAC_STREAMINFO];
+    codec_flac_enc_streaminfo(e, si);
+    static const uint8_t want[CODEC_FLAC_STREAMINFO] = {0x10, 0x00, 0x10, 0x00, 0, 0, 0, 0, 0, 0,
+                                                        // 22255 = 0x056EF: 20 bits, then 1 (2 ch), 15 (16 bits)
+                                                        0x05, 0x6E, 0xF2, 0xF0};
+    ASSERT_TRUE(memcmp(si, want, sizeof(want)) == 0);
+    codec_flac_streaminfo_t info;
+    ASSERT_EQ_INT(0, codec_flac_parse_streaminfo(si, sizeof(si), &info));
+    ASSERT_TRUE(info.min_block == 4096 && info.max_block == 4096 && info.sample_rate == 22255);
+    ASSERT_TRUE(info.channels == 2 && info.bits == 16 && info.total_samples == 0 && info.min_frame == 0);
+    // Bad arguments.
+    ASSERT_TRUE(codec_flac_enc_new(0, 1, &err) == NULL && err == CODEC_ERR_ARG);
+    ASSERT_TRUE(codec_flac_enc_new(44100, 3, &err) == NULL);
+    // Nothing pending: flush writes nothing; and after the short last
+    // frame the stream takes no more.
+    uint8_t buf[64];
+    ASSERT_EQ_INT(0, (int)codec_flac_enc_flush(e, buf, sizeof(buf), NULL));
+    int16_t two[4] = {1, 2, 3, 4};
+    ASSERT_EQ_INT(2, (int)codec_flac_enc_push(e, two, 2));
+    ASSERT_EQ_INT(CODEC_ERR_OVERFLOW, (int)codec_flac_enc_flush(e, buf, 4, NULL));
+    ASSERT_TRUE(codec_flac_enc_flush(e, buf, sizeof(buf), NULL) > 0);
+    ASSERT_EQ_INT(0, (int)codec_flac_enc_push(e, two, 2));
+    codec_flac_enc_free(e);
+}
+
 int main(void) {
     RUN(zstream_chunks_inflate);
     RUN(zstream_overflow_reset_and_truncation);
@@ -468,6 +664,9 @@ int main(void) {
     RUN(zmbv_round_trips);
     RUN(zmbv_unchanged_is_tiny);
     RUN(zmbv_decoder_bad_input);
+    RUN(flac_mono_round_trips);
+    RUN(flac_stereo_round_trips);
+    RUN(flac_streaminfo);
     fprintf(stderr, "codec_media: all tests passed\n");
     return 0;
 }
