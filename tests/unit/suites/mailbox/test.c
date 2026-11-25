@@ -229,7 +229,7 @@ struct job_task {
     uint32_t client_seen;
 };
 static bool task_waiting(job_task_t *t, int *rc);
-static bool task_seam_io(job_task_t *t, int *rc);
+static bool task_leaf_io(job_task_t *t, int *rc);
 job_task_t *job_glue_task_new(const char *src) {
     job_task_t *t = (job_task_t *)calloc(1, sizeof(*t));
     snprintf(t->src, sizeof t->src, "%s", src);
@@ -244,8 +244,8 @@ static void print_in_call(void) {
 bool job_glue_task_step(job_task_t *t, int *rc) {
     if (strcmp(t->src, "waiting") == 0)
         return task_waiting(t, rc);
-    if (strcmp(t->src, "seam_io") == 0)
-        return task_seam_io(t, rc);
+    if (strcmp(t->src, "leaf_io") == 0)
+        return task_leaf_io(t, rc);
     if (strcmp(t->src, "printing") == 0) {
         out_printf("one %s\n", "\"quoted\"");
         job_call_mark_t mark = job_task_call_begin(true);
@@ -1075,10 +1075,10 @@ TEST(an_io_leaf_answering_a_map_delivers_the_map) {
 
 // An I/O leaf whose work fails with a reason: the reason is the failure,
 // as is, whether the leaf deferred and the worker ran it, deferred with no
-// worker, or could not defer and worked there and then (a script on the
-// emulator thread, --jobs=inline).  The last two once lost it to "failed"
-// (the work's reason was copied onto itself) and the last added the leaf's
-// name, so inline and threaded scripts printed different errors.
+// worker, or could not defer and worked there and then.  The last two once
+// lost it to "failed" (the work's reason was copied onto itself) and the
+// last added the leaf's name, so the same failure printed different errors
+// by the path it took.
 #define LEAF_REASON "cannot create '/no/dir/out': No such file or directory"
 static int failing_work(io_leaf_t *j) {
     snprintf(j->err, sizeof j->err, "%s", LEAF_REASON);
@@ -1162,8 +1162,8 @@ static value_t call_counting_leaf(void) {
     j->answer = counting_answer;
     return io_leaf_dispatch(j);
 }
-static int g_seam_io_verdict; // 0 running, 1 as expected, -n the step that differed
-static bool task_seam_io(job_task_t *t, int *rc) {
+static int g_leaf_io_verdict; // 0 running, 1 as expected, -n the step that differed
+static bool task_leaf_io(job_task_t *t, int *rc) {
     char err[256] = "";
     value_t answer = {0};
     switch (t->step++) {
@@ -1172,7 +1172,7 @@ static bool task_seam_io(job_task_t *t, int *rc) {
         value_t provisional = call_counting_leaf();
         bool suspend = job_task_call_end(mark);
         if (provisional.kind != VK_UINT || provisional.u != 0 || !suspend)
-            g_seam_io_verdict = -1; // the leaf answered at once, before its work
+            g_leaf_io_verdict = -1; // the leaf answered at once, before its work
         value_free(&provisional);
         if (suspend)
             return false;
@@ -1180,9 +1180,9 @@ static bool task_seam_io(job_task_t *t, int *rc) {
     }
     case 1: {
         if (job_call_take_failure(err, sizeof err))
-            g_seam_io_verdict = -2;
+            g_leaf_io_verdict = -2;
         else if (!job_call_take_answer(&answer) || answer.kind != VK_UINT || answer.u != 42)
-            g_seam_io_verdict = -3;
+            g_leaf_io_verdict = -3;
         value_free(&answer);
         job_call_mark_t mark = job_task_call_begin(true);
         value_t provisional = dispatch_failing(failing_work);
@@ -1193,11 +1193,11 @@ static bool task_seam_io(job_task_t *t, int *rc) {
     }
     case 2:
         if (!job_call_take_failure(err, sizeof err) || strcmp(err, LEAF_REASON) != 0)
-            g_seam_io_verdict = -4;
+            g_leaf_io_verdict = -4;
         else if (job_call_take_answer(&answer))
-            g_seam_io_verdict = -5; // a failure has no answer
-        else if (g_seam_io_verdict == 0)
-            g_seam_io_verdict = 1;
+            g_leaf_io_verdict = -5; // a failure has no answer
+        else if (g_leaf_io_verdict == 0)
+            g_leaf_io_verdict = 1;
         break;
     }
     *rc = 0;
@@ -1207,8 +1207,8 @@ static bool task_seam_io(job_task_t *t, int *rc) {
 TEST(a_scripts_io_leaf_call_ends_with_the_works_answer_or_reason) {
     fresh();
     ASSERT_TRUE(io_worker_start(0));
-    g_seam_io_verdict = 0;
-    ASSERT_TRUE(post_script(111, "seam_io"));
+    g_leaf_io_verdict = 0;
+    ASSERT_TRUE(post_script(111, "leaf_io"));
     uint32_t id = 0, ok = 0;
     char json[256];
     double deadline = wait_deadline();
@@ -1218,7 +1218,7 @@ TEST(a_scripts_io_leaf_call_ends_with_the_works_answer_or_reason) {
     }
     ASSERT_EQ_INT(id, 111);
     ASSERT_EQ_INT(ok, 1);
-    ASSERT_EQ_INT(g_seam_io_verdict, 1);
+    ASSERT_EQ_INT(g_leaf_io_verdict, 1);
 }
 
 // The image layer io_leaf.c links against; the leaf above uses none of it.

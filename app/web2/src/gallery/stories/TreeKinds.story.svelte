@@ -73,10 +73,10 @@
     </li>
     <li>
       <TreeItem depth={0} kind="keyword">
-        {#snippet content()}<span class="gs-tree-item__label name keyword">let</span><span
+        {#snippet content()}<span class="gs-tree-item__label name keyword">local</span><span
             class="doc"
           >
-            Declare a variable
+            Declare a local variable
           </span>{/snippet}
       </TreeItem>
     </li>

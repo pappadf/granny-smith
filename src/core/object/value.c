@@ -127,45 +127,6 @@ value_t val_err(const char *fmt, ...) {
     return v;
 }
 
-value_t val_ref(const char *path) {
-    value_t v = {0};
-    v.kind = VK_REF;
-    v.ref = strdup(path ? path : "");
-    return v;
-}
-
-value_t val_range_step(int64_t start, int64_t stop, int64_t step) {
-    value_t v = {0};
-    v.kind = VK_RANGE;
-    v.range.start = start;
-    v.range.stop = stop;
-    v.range.step = step ? step : 1;
-    return v;
-}
-
-value_t val_range(int64_t start, int64_t stop) {
-    return val_range_step(start, stop, 1);
-}
-
-uint64_t val_range_count(const value_t *v) {
-    if (!v || v->kind != VK_RANGE)
-        return 0;
-    int64_t step = v->range.step ? v->range.step : 1;
-    // Compute the span in UINT64 so INT64_MIN..INT64_MAX cannot overflow the
-    // subtraction, which is undefined in int64.
-    if (step > 0) {
-        if (v->range.stop <= v->range.start)
-            return 0;
-        uint64_t span = (uint64_t)v->range.stop - (uint64_t)v->range.start;
-        return (span + (uint64_t)step - 1u) / (uint64_t)step;
-    }
-    if (v->range.stop >= v->range.start)
-        return 0;
-    uint64_t span = (uint64_t)v->range.start - (uint64_t)v->range.stop;
-    uint64_t mag = (uint64_t)(-(step + 1)) + 1u; // |step|, safe for INT64_MIN
-    return (span + mag - 1u) / mag;
-}
-
 bool val_is_heap(const value_t *v) {
     if (!v)
         return false;
@@ -175,7 +136,6 @@ bool val_is_heap(const value_t *v) {
     case VK_LIST:
     case VK_MAP:
     case VK_ERROR:
-    case VK_REF:
         return true;
     default:
         return false;
@@ -287,10 +247,6 @@ void value_free(value_t *v) {
         free(v->err);
         v->err = NULL;
         break;
-    case VK_REF:
-        free(v->ref);
-        v->ref = NULL;
-        break;
     case VK_BYTES:
         free(v->bytes.p);
         v->bytes.p = NULL;
@@ -336,8 +292,6 @@ value_t value_dup(const value_t *v) {
         return val_str(v->s ? v->s : "");
     case VK_ERROR:
         return val_err("%s", v->err ? v->err : "");
-    case VK_REF:
-        return val_ref(v->ref ? v->ref : "");
     case VK_BYTES:
         return val_bytes(v->bytes.p, v->bytes.n);
     case VK_LIST: {
@@ -494,10 +448,6 @@ bool val_as_bool(const value_t *v) {
         return false;
     case VK_ERROR:
         return false;
-    case VK_REF:
-        return v->ref != NULL; // a reference is truthy; deref happens before tests
-    case VK_RANGE:
-        return v->range.stop > v->range.start; // non-empty range
     }
     return false;
 }
@@ -540,10 +490,6 @@ const char *value_kind_name(value_kind_t k) {
         return "object";
     case VK_ERROR:
         return "error";
-    case VK_REF:
-        return "ref";
-    case VK_RANGE:
-        return "range";
     }
     return "?";
 }

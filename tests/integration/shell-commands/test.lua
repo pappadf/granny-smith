@@ -1,6 +1,6 @@
 -- Integration test: Shell Commands
--- Exercises the typed object-model dispatch surface: bare-path reads,
--- disasm, help, logpoint listing.
+-- Exercises the object-model surface from Lua: path reads, disasm, help,
+-- logpoint listing.
 
 -- Run a few instructions to initialize state
 scheduler.run(100)

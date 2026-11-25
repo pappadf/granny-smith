@@ -363,9 +363,10 @@ re-resolve on every access, so they survive `machine.boot`:
 
 The reserved words are Lua's (`local`, `function`, `if`, `then`,
 `elseif`, `else`, `end`, `while`, `do`, `for`, `in`, `repeat`, `until`,
-`break`, `goto`, `return`, `and`, `or`, `not`, `true`, `false`, `nil`).
-These may not be used as member, alias, or command names
-(`object_validate_name`), since a script could not spell them as `a.b`.
+`break`, `goto`, `return`, `and`, `or`, `not`, `true`, `false`, `nil`),
+plus `none`, a command line's literal for no value.  These may not be
+used as member, alias, or command names (`object_validate_name`), since a
+script could not spell Lua's as `a.b`.
 One table in `parse.c` holds them all, with each word's syntax;
 `shell.keywords` and completion read it. `on`/`off`/`yes`/`no`
 are **not** reserved — they remain accepted as input coercions for

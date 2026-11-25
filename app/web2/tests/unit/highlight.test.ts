@@ -26,12 +26,12 @@ describe('highlight', () => {
 
   it('cuts text into runs with and without a class', () => {
     expect(
-      highlightParts('let x = 1', [
-        { from: 0, to: 3, cls: 'decl' },
-        { from: 8, to: 9, cls: 'number' },
+      highlightParts('local x = 1', [
+        { from: 0, to: 5, cls: 'keyword' },
+        { from: 10, to: 11, cls: 'number' },
       ]),
     ).toEqual([
-      { text: 'let', cls: 'decl' },
+      { text: 'local', cls: 'keyword' },
       { text: ' x = ', cls: null },
       { text: '1', cls: 'number' },
     ]);

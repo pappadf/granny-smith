@@ -168,7 +168,7 @@ static bool aevt_dispatch(aevt_event_t *ev, char *err, size_t err_len);
 
 static aevt_event_t *aevt_alloc_event(void) {
     // Events are append-only for the life of the connection so the VK_OBJECT a
-    // send returns stays valid in a `let` binding (§8).
+    // send returns stays valid while a script holds it (§8).
     if (g_aevt == &g_no_link || g_aevt->event_count >= AEVT_MAX_EVENTS)
         return NULL;
     aevt_event_t *ev = &g_aevt->events[g_aevt->event_count];

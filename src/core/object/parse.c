@@ -34,7 +34,10 @@ static bool buf_append_char(char **buf, size_t *len, size_t *cap, char c) {
     return true;
 }
 
-bool parse_decode_escape(const char **p, char *out, bool allow_dollar) {
+// Decode one \-escape at *p (which points at the '\'): \n \t \r \0 \\ \" \'
+// \xHH.  Advances *p past it and writes the byte to *out; false, *p
+// unmoved, on a malformed escape.
+static bool parse_decode_escape(const char **p, char *out) {
     if ((*p)[0] != '\\')
         return false;
     char c = (*p)[1];
@@ -56,12 +59,6 @@ bool parse_decode_escape(const char **p, char *out, bool allow_dollar) {
     case '\'':
         *out = c;
         break;
-    case '$':
-        // Only where `$` would otherwise start a splice
-        if (!allow_dollar)
-            return false;
-        *out = '$';
-        break;
     case 'x': {
         // \xHH
         int hi = hex_digit((*p)[2]), lo = hi < 0 ? -1 : hex_digit((*p)[3]);
@@ -78,7 +75,10 @@ bool parse_decode_escape(const char **p, char *out, bool allow_dollar) {
     return true;
 }
 
-value_t parse_string_literal(const char **p) {
+// A quoted "..." string literal; *p points at the opening quote.  On
+// success advances *p past the closing quote and returns VK_STRING with the
+// escapes decoded.
+static value_t parse_string_literal(const char **p) {
     if (!p || !*p || **p != '"')
         return val_err("expected '\"' to start string literal");
     const char *q = *p + 1;
@@ -87,7 +87,7 @@ value_t parse_string_literal(const char **p) {
     while (*q && *q != '"') {
         if (*q == '\\') {
             char c = 0;
-            if (!parse_decode_escape(&q, &c, false)) {
+            if (!parse_decode_escape(&q, &c)) {
                 free(buf);
                 return val_err("bad string escape");
             }
@@ -237,7 +237,7 @@ static value_t parse_float_literal(const char **p) {
                 has_digits = true;
             q++;
         }
-        if (*q == '.' && q[1] != '.') { // `..` is the range operator, not a decimal point
+        if (*q == '.' && q[1] != '.') { // `..` (concatenation) is not a decimal point
             has_dot = true;
             q++;
             while (isxdigit((unsigned char)*q) || *q == '_') {
@@ -262,7 +262,7 @@ static value_t parse_float_literal(const char **p) {
                 has_digits = true;
             q++;
         }
-        if (*q == '.' && q[1] != '.') { // `..` is the range operator, not a decimal point
+        if (*q == '.' && q[1] != '.') { // `..` (concatenation) is not a decimal point
             has_dot = true;
             q++;
             while (isdigit((unsigned char)*q) || *q == '_') {
@@ -318,7 +318,9 @@ static const char *match_keyword(const char *q, const char *kw) {
     return NULL;
 }
 
-value_t parse_literal(const char **p, const char *const *enum_table, size_t n_enum) {
+// A single literal at *p: advances *p past it, or returns VK_ERROR with *p
+// on the failing position.  Trailing whitespace is not consumed.
+static value_t parse_literal(const char **p, const char *const *enum_table, size_t n_enum) {
     if (!p || !*p)
         return val_err("null parser input");
     skip_ws(p);
@@ -365,7 +367,7 @@ value_t parse_literal(const char **p, const char *const *enum_table, size_t n_en
             const char *r = scan + 2;
             while (isxdigit((unsigned char)*r) || *r == '_' || *r == '.') {
                 if (*r == '.') {
-                    if (r[1] != '.') // `..` is the range operator
+                    if (r[1] != '.') // `..` (concatenation) is not a fraction
                         maybe_float = true;
                     break;
                 }
@@ -381,7 +383,7 @@ value_t parse_literal(const char **p, const char *const *enum_table, size_t n_en
             const char *r = scan;
             while (isdigit((unsigned char)*r) || *r == '_')
                 r++;
-            if (*r == '.' && r[1] != '.') // `..` is the range operator
+            if (*r == '.' && r[1] != '.') // `..` (concatenation) is not a fraction
                 maybe_float = true;
             else if (*r == 'e' || *r == 'E')
                 maybe_float = true;
