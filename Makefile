@@ -11,6 +11,7 @@
 #   e2e-test                   Run Playwright end-to-end tests
 #   test                       Run unit + integration tests
 #   platen-module              Build the LaserWriter interpreter worker's module
+#   recdec-module              Build the MP4 export worker's decoder module
 #   run                        Build and serve the UI on :8080 (or the next free port)
 #   clean                      Remove all build artifacts (wasm, headless,
 #                              unit, integration, e2e)
@@ -60,8 +61,9 @@ CODEC_DIR     := src/codec
 
 include src/sources.mk
 
-# Platform-specific sources (WASM/Emscripten)
-PLATFORM_SRC := $(wildcard $(PLATFORM_DIR)/*.c)
+# Platform-specific sources (WASM/Emscripten).  recdec_main.c is the MP4
+# export's decoder module (recdec-module below), not part of the emulator.
+PLATFORM_SRC := $(filter-out $(PLATFORM_DIR)/recdec_main.c,$(wildcard $(PLATFORM_DIR)/*.c))
 
 # The LaserWriter bridge reaches its interpreter through one transport per
 # build (laserwriter_transport.h): in the browser the interpreter runs in
@@ -187,6 +189,35 @@ PLATEN_MODULE_LDFLAGS := -O2 \
            -sEXPORTED_RUNTIME_METHODS=HEAPU8,HEAPU32,UTF8ToString \
            -sINCOMING_MODULE_JS_API=locateFile,print,printErr
 
+# -- The MP4 export's decoder module (recdec-module) --
+# A standalone, NON-threaded Emscripten module the page's export worker
+# imports on its first export (app/web2/src/recorder/export.worker.ts): the
+# Matroska reader (src/core/record/mkv_read.c) and the codec library's ZMBV
+# and FLAC decoders behind the small C API of
+# src/platform/wasm/recdec_main.c, an ES6 module for a Web Worker (and
+# Node, so the app's vitest can drive it).  Its objects are compiled apart
+# from the emulator's, without -pthread: a module with no shared memory
+# cannot link objects built for one.  Served beside main.mjs (the Vite dev
+# middleware reads build/, `ui2` copies it into dist/) and cache-busted by
+# the page the way main.mjs is.
+RECDEC_MODULE_JS   := $(BUILD_DIR)/recdec.js
+RECDEC_OBJ_DIR     := $(BUILD_DIR)/recdec-obj
+RECDEC_SRC         := $(PLATFORM_DIR)/recdec_main.c $(CORE_DIR)/record/mkv_read.c $(CODEC_SRC)
+RECDEC_OBJ         := $(patsubst %.c,$(RECDEC_OBJ_DIR)/%.o,$(RECDEC_SRC))
+RECDEC_CFLAGS      := -MMD -MP -O2 $(WARN_CFLAGS) $(CODEC_INCLUDES) -I$(CORE_DIR)/record $(EXTRA_CFLAGS)
+RECDEC_MODULE_EXPORTS := _recdec_open,_recdec_last_error,_recdec_width,_recdec_height,_recdec_display_width,_recdec_display_height,_recdec_period_ns,_recdec_frames_total,_recdec_truncated,_recdec_audio_rate,_recdec_audio_channels,_recdec_audio_packets,_recdec_next,_recdec_frame_changed,_recdec_rgba,_recdec_pcm,_recdec_pcm_frames,_recdec_message,_recdec_close,_malloc,_free
+RECDEC_MODULE_LDFLAGS := -O2 \
+           --no-entry \
+           -sMODULARIZE=1 \
+           -sEXPORT_ES6=1 \
+           -sEXPORT_NAME=createRecdecModule \
+           -sENVIRONMENT=worker,node \
+           -sALLOW_MEMORY_GROWTH=1 \
+           -sSTACK_SIZE=256KB \
+           -sEXPORTED_FUNCTIONS=$(RECDEC_MODULE_EXPORTS) \
+           -sEXPORTED_RUNTIME_METHODS=HEAPU8,HEAP16,UTF8ToString \
+           -sINCOMING_MODULE_JS_API=locateFile,print,printErr
+
 # Objects depend on the flags they were compiled with, not only on their
 # sources: a stamp named after a hash of CFLAGS (MODE, EXTRA_CFLAGS, PLATEN,
 # the include list) is a prerequisite of every object, so `make debug` after
@@ -239,14 +270,14 @@ LDFLAGS_STAMP := $(OBJ_DIR)/ldflags-$(LDFLAGS_HASH).stamp
 
 # -- Phony targets --
 
-.PHONY: all release debug sanitize run \
+.PHONY: all release debug sanitize run recdec-module \
         headless unit-test integration-test integration-test-valgrind \
         e2e-test test clean help \
         ui2 ui2-dev ui2-test ui2-check ui2-check-dist ui2-prod-smoke ui2-e2e ui2-gallery ui2-diag run2
 
 # -- WASM build --
 
-all: $(OUTPUT)
+all: $(OUTPUT) recdec-module
 ifeq ($(PLATEN),1)
 all: platen-module
 endif
@@ -260,6 +291,21 @@ $(PLATEN_MODULE_JS): $(PLATEN_LIB_WASM) Makefile | check-emcc
 	@mkdir -p $(dir $@)
 	@echo "Linking the platen module ($(PLATEN_VERSION)) with $(CC)"
 	$(CC) $(PLATEN_MODULE_LDFLAGS) $< -o $@
+
+# The MP4 export's decoder module.  The Makefile is a prerequisite, as for
+# the platen module: RECDEC_MODULE_EXPORTS and the flags live here.
+recdec-module: $(RECDEC_MODULE_JS)
+
+$(RECDEC_OBJ_DIR)/%.o: %.c Makefile | check-emcc
+	@mkdir -p $(dir $@)
+	$(CC) $(RECDEC_CFLAGS) -c $< -o $@
+
+$(RECDEC_MODULE_JS): $(RECDEC_OBJ) Makefile | check-emcc
+	@mkdir -p $(dir $@)
+	@echo "Linking the recording decoder module with $(CC)"
+	$(CC) $(RECDEC_MODULE_LDFLAGS) $(RECDEC_OBJ) -o $@
+
+-include $(RECDEC_OBJ:.o=.d)
 
 release:
 	$(MAKE) MODE=release all
@@ -414,11 +460,13 @@ test: unit-test integration-test
 ui2: all
 	cd $(WEB2_DIR) && npm ci --silent && npm run build
 	@# Copy the WASM build's runtime artifacts into the served dist directory:
-	@# the module, the service worker and the LaserWriter interpreter.  Never
+	@# the module, the service worker, the LaserWriter interpreter and the
+	@# MP4 export's decoder.  Never
 	@# the object tree ($(BUILD_DIR)/wasm): nothing loads it, and dist/ is what
 	@# gets deployed.
 	@[ -f $(BUILD_DIR)/main.mjs ] || { echo "ui2: $(BUILD_DIR)/main.mjs missing after the WASM build" >&2; exit 1; }
 	cp $(BUILD_DIR)/main.mjs $(BUILD_DIR)/main.wasm $(WEB2_DIST)/
+	cp $(BUILD_DIR)/recdec.js $(BUILD_DIR)/recdec.wasm $(WEB2_DIST)/
 	@if [ -f $(BUILD_DIR)/coi-serviceworker.js ]; then \
 		cp $(BUILD_DIR)/coi-serviceworker.js $(WEB2_DIST)/ ; \
 	fi ; \
@@ -504,10 +552,11 @@ help:
 	@echo "Granny Smith Build System"
 	@echo ""
 	@echo "Build targets:"
-	@echo "  all (default)              Build WASM emulator (release) and the platen module"
+	@echo "  all (default)              Build WASM emulator (release), the platen and recdec modules"
 	@echo "  debug                      Build WASM emulator (debug)"
 	@echo "  sanitize                   Build WASM emulator (sanitizers)"
 	@echo "  platen-module              Build the LaserWriter interpreter worker's module"
+	@echo "  recdec-module              Build the MP4 export worker's decoder module"
 	@echo "  headless                   Build native headless CLI"
 	@echo "  run                        Build the UI and serve on :8080 (next free port if taken; RUN_PORT=n)"
 	@echo ""

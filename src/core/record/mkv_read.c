@@ -415,18 +415,26 @@ mkv_reader_t *mkv_read_open(const char *path, int *err) {
     int e0 = 0;
     if (!err)
         err = &e0;
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        *err = errno ? -errno : -EIO;
+        return NULL;
+    }
+    return mkv_read_open_file(f, err);
+}
+
+mkv_reader_t *mkv_read_open_file(FILE *f, int *err) {
+    int e0 = 0;
+    if (!err)
+        err = &e0;
     mkv_reader_t *r = calloc(1, sizeof(*r));
     if (!r) {
+        fclose(f);
         *err = -ENOMEM;
         return NULL;
     }
     r->scale = MKV_DEFAULT_SCALE;
-    r->f = fopen(path, "rb");
-    if (!r->f) {
-        *err = errno ? -errno : -EIO;
-        free(r);
-        return NULL;
-    }
+    r->f = f;
     int rc = -EINVAL;
     if (fseeko(r->f, 0, SEEK_END) == 0)
         r->file_size = (uint64_t)ftello(r->f);

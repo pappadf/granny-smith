@@ -20,6 +20,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 // === Constants ===
 
@@ -67,6 +68,11 @@ typedef struct mkv_reader mkv_reader_t;
 // *err set to a negative errno: -EINVAL for a file that is not Matroska,
 // -ENOTSUP for a feature outside the subset, or the open's.
 mkv_reader_t *mkv_read_open(const char *path, int *err);
+
+// The same over a stream opened for reading and seeking (the export
+// module's, whose reads go to a file the page holds); the reader owns `f`
+// from here on and closes it, also when the open fails.
+mkv_reader_t *mkv_read_open_file(FILE *f, int *err);
 
 // The tracks: their count, and the i-th.
 int mkv_read_track_count(const mkv_reader_t *r);
