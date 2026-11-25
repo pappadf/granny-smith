@@ -105,11 +105,11 @@
     aria-label="Find in console output"
     onkeydown={onKey}
   />
-  <span class="find-count"
-    >{find.hits.length
+  <span class="find-count">
+    {find.hits.length
       ? `${(find.index % find.hits.length) + 1} of ${find.hits.length}`
-      : 'No results'}</span
-  >
+      : 'No results'}
+  </span>
   <IconButton
     class="find-btn"
     tone="panel"

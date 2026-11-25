@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Print from the Lisa Office System on Serial A: first into a host file
 -- (machine.scc.a.output), then to the virtual ImageWriter.  See config.mk.
 -- Screen coordinates are the Office System's 720x364 desktop; mouse.move

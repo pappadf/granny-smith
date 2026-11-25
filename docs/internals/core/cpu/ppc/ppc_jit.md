@@ -673,7 +673,7 @@ PowerPC row a third time with the tier on, eagerly (`jit.threshold = 1`,
 `jit.cooldown = 16`, `jit.budget = 100`), when the build has it (`jit.available`), and
 compares the checkpoints with the switch core's.  Build the Node wasm
 build (`make -f Makefile.headless TARGET=node`) and run the test with it;
-the build is single-threaded, so it needs `--jobs=inline --io=sync`.
+the build is single-threaded, so it needs `--io=sync`.
 
 Two runs compare only when they split the run into the same
 `scheduler.run` calls: a branch folds or not by where the sprint ends.
@@ -683,7 +683,7 @@ translate supervisor code too.
 **Mac OS X.**  The kernel tier has no differential row; each change to it
 was checked by booting Mac OS X to a checkpoint at 3 G instructions with
 the tier on (supervisor code included) and off, in the Node build with
-`--jobs=inline --io=sync`, and comparing them: they must be identical but
+`--io=sync`, and comparing them: they must be identical but
 for the disk image's file name.  Compare 2 GB checkpoints with a streaming
 block-at-a-time compare (`cmp-checkpoints.py` holds both in memory); a
 checkpoint is tied to its build, so every rebuilt binary needs a fresh
@@ -702,7 +702,7 @@ run whose guest instruction count differs.  An arm meant as "predecoded
 only" must set `jit.enabled = 0`.  Row caveats: `pm6100-68kemu` is a
 diskless SCSI-scan loop, the tier's best case (about 257 instructions per
 call); a diskless pm8500 spends half its time in real-mode nanokernel
-code.  The interactive scenario (`tests/bench/osx-interactive.script`:
+code.  The interactive scenario (`tests/bench/osx-interactive.lua`:
 menus, minimizing a window to the Dock and restoring it), not the boot,
 decided `jit.supervisor`: the boot runs mostly once-only code.  Its
 baseline before the kernel tier's later work (3-run medians, cold / warm

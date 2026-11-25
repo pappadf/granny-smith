@@ -58,9 +58,9 @@
 
 <CollapsibleSection {title} {open} onToggle={toggle}>
   {#if machine.status === 'running'}
-    <Hint class="aux-hint" inset="block"
-      >Pause the machine to inspect the {cpu.name.toUpperCase()}.</Hint
-    >
+    <Hint class="aux-hint" inset="block">
+      Pause the machine to inspect the {cpu.name.toUpperCase()}.
+    </Hint>
   {:else if !frame}
     <Hint class="aux-hint" inset="block">{loading ? 'Reading…' : 'Not available.'}</Hint>
   {:else}
@@ -77,9 +77,9 @@
           {#each group.names as name (name)}
             <span class="aux-reg">
               <span class="aux-reg-name">{name.toUpperCase()}</span>
-              <span class="aux-reg-value mono"
-                >{fmtRegister(frame.arch, name, frame.rawRegs[name])}</span
-              >
+              <span class="aux-reg-value mono">
+                {fmtRegister(frame.arch, name, frame.rawRegs[name])}
+              </span>
             </span>
           {/each}
         </div>

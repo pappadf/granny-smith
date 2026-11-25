@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: attach toast.img/partition1/Disk.ndif as a CD (see
 -- config.mk).  The runner cd's into this directory; WORK_DIR is absolute.
 

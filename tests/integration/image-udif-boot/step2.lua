@@ -1,4 +1,3 @@
--- Converted from step2.script by scripts/script-to-lua.py
 -- image-udif-boot step 2, a fresh process: restore both checkpoints, then
 -- boot the exported disk.
 

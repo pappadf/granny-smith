@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 local STRIDE, SURF -- declared up front: read by functions defined before them
 -- The Rage 128 GL's 2D engine, exercised register by register.
 --

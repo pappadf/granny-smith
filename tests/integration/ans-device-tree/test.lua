@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 local bus_clock_lcd -- declared up front: read by functions defined before them
 -- The Apple Network Server's Open Firmware device tree, matched against
 -- Apple's published Listing 6-1.
@@ -19,7 +18,7 @@ local function go() return ans_go() end
 
 local function tree(model, ram_kb, bus_clock, l2_label)
     -- Two cold boots: the machine's shipping console is the 54M30, and the
-    -- row wants the serial port.  See lib/ans.script.
+    -- row wants the serial port.  See lib/ans.lua.
     local banner = ans_boot_serial(model, ram_kb)
     assert(gs.contains(banner, "OpenFirmware1.1.22"), F"S6: ${model} Open Firmware did not announce itself")
     assert(gs.contains(banner, "0 > "), F"S6: ${model} no Open Firmware prompt")

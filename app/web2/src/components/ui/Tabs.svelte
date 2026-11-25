@@ -35,9 +35,7 @@
     tabClass = '',
     class: cls = '',
     accessory,
-    // Bindable prop, written by the effect below; the rule mistakes the
-    // prop binding for a dead assignment.
-    // eslint-disable-next-line no-useless-assignment
+    // Bindable prop, written by the effect below.
     minWidth = $bindable(0),
   }: Props = $props();
 
@@ -164,8 +162,10 @@
       aria-haspopup="menu"
       aria-label="More views: {layout.hidden.map((i) => tabs[i].label).join(', ')}"
       title="More views"
-      onclick={openMore}>»</button
+      onclick={openMore}
     >
+      »
+    </button>
   {/if}
   {#if accessory}
     <span class="gs-tabs__accessory accessory">{@render accessory()}</span>
@@ -181,9 +181,9 @@
   >
     {#each tabs as tab (tab.key)}
       <!-- svelte-ignore a11y_role_supports_aria_props_implicit -->
-      <button type="button" class="gs-tabs__tab" tabindex="-1" aria-selected={tab.key === active}
-        >{tab.label}</button
-      >
+      <button type="button" class="gs-tabs__tab" tabindex="-1" aria-selected={tab.key === active}>
+        {tab.label}
+      </button>
     {/each}
     <button type="button" class="gs-tabs__tab gs-tabs__more" tabindex="-1">»</button>
   </div>

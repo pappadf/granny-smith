@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: IIcx + "Macintosh Display Card 8•24 GC" ("Dolphin").
 --
 -- Verifies the card model:

@@ -1,13 +1,12 @@
--- Converted from nt.script by scripts/script-to-lua.py
-local mac = dofile("mac.lua") -- NOTE: no direct mac.script include (this file is included by another); the library runs once per chunk
--- tests/integration/lib/nt.script — shared helpers for the Windows NT rows on
+local mac = dofile("mac.lua") -- NOTE: no direct mac.lua include (this file is included by another); the library runs once per chunk
+-- tests/integration/lib/nt.lua — shared helpers for the Windows NT rows on
 -- the Apple Network Server (ans-nt-install, ans-nt-installed-boot).
 --
--- Pull in after mac.script and ans.script:
+-- Pull in after mac.lua and ans.lua:
 --
---     include "../lib/mac.script"
---     include "../lib/ans.script"
---     include "../lib/nt.script"
+--     include "../lib/mac.lua"
+--     include "../lib/ans.lua"
+--     include "../lib/nt.lua"
 --
 -- NT on this machine comes from the powermac-nt-hal boot floppy
 -- (github.com/pappadf/powermac-nt-hal): two Open Firmware scripts on it
@@ -31,7 +30,7 @@ local mac = dofile("mac.lua") -- NOTE: no direct mac.script include (this file i
 -- transition of a packet and drops the rest.  Codes are the Apple Extended
 -- Keyboard's on the wire — the arrows in particular are 0x3B-0x3E, not the
 -- 0x7B-0x7E virtual codes the Mac OS uses, which NT does not map.
-function nt_key(code) -- global: included file
+function nt_key(code)
     machine.adb.keyboard.down(code)
     scheduler.run(3000000)
     machine.adb.keyboard.up(code)
@@ -39,7 +38,7 @@ function nt_key(code) -- global: included file
 end
 
 -- `n` presses of one key, with the guest given time to act on each.
-function nt_keys(code, n) -- global: included file
+function nt_keys(code, n)
     local k = 0
     while k < n do
         nt_key(code)
@@ -48,19 +47,19 @@ function nt_keys(code, n) -- global: included file
     end
 end
 
-K_RETURN = "0x24" -- global: included file
-K_ESCAPE = "0x35" -- global: included file
-K_PGDN = "0x79" -- global: included file
-K_F8 = "0x64" -- global: included file
-K_UP = "0x3E" -- global: included file
-K_DOWN = "0x3D" -- global: included file
+K_RETURN = "0x24"
+K_ESCAPE = "0x35"
+K_PGDN = "0x79"
+K_F8 = "0x64"
+K_UP = "0x3E"
+K_DOWN = "0x3D"
 
 -- --- Open Firmware on ttya ---------------------------------------------------
 
 -- Run until the prompt comes back, returning everything printed on the way.
 -- Drain first: a stale "0 > " from the previous command would end the wait
 -- before the command had even run.
-function nt_prompt(ceiling) -- global: included file
+function nt_prompt(ceiling)
     local out = mac.run_until_sent("a", "0 > ", 250000, ceiling)
     assert(gs.contains(out, "0 > "), F"Open Firmware never came back to its prompt: ${out}")
     return out
@@ -70,7 +69,7 @@ end
 -- comes in two pieces, `chunk1` and `chunk2`, from when the console was fed
 -- seven characters at a time).  Returns what the eval printed within `run`
 -- instructions; the caller waits for whatever the script starts.
-function nt_load_eval(chunk1, chunk2, run) -- global: included file
+function nt_load_eval(chunk1, chunk2, run)
     local junk = machine.scc.a.sent()
     ans_send(F"load fd:,\\${chunk1}${chunk2}")
     machine.scc.a.receive("\r")
@@ -97,7 +96,7 @@ end
 -- Send one key over the serial console and run until the next screen says
 -- `want`.  A little more time after the text appears lets the screen finish
 -- drawing and SETUPLDR get back to its keyboard poll.
-function nt_ldr(key, want, ceiling, rung) -- global: included file
+function nt_ldr(key, want, ceiling, rung)
     local junk = machine.scc.a.sent()
     if key ~= "" then
         machine.scc.a.receive(key)
@@ -120,14 +119,14 @@ end
 --
 -- Verify mode polls screen.matches() and fails with the usual diff
 -- artifacts at the ceiling.  REGEN mode waits for the picture to hold still
--- and captures it.  Two things about NT's screens make mac.script's
+-- and captures it.  Two things about NT's screens make mac.lua's
 -- wait_match unsuitable for that: its checksum covers the whole
 -- framebuffer, whose off-screen stride padding NT's display driver uses as
 -- scratch (so it churns under a still picture), and a focused edit control
 -- blinks its caret, so a page waiting for input alternates between two
 -- pictures for ever.  This one checksums the visible region and counts
 -- either of the last two pictures as still.
-function nt_screen(golden, ceiling) -- global: included file
+function nt_screen(golden, ceiling)
     if mac.REGEN_MODE == "1" then
         local seen = 0
         local seen2 = 0
@@ -164,7 +163,7 @@ end
 -- True when `out` carries the banner of a Network Server firmware NT runs
 -- on: the production 1.1.22 ROM or the 2.26NT ROM.  Both print it when they
 -- reach the prompt and after every reset.
-function nt_firmware_banner(out) -- global: included file
+function nt_firmware_banner(out)
     return gs.contains(out, "OpenFirmware1.1.22") or gs.contains(out, "OpenFirmware2.26")
 end
 
@@ -174,7 +173,7 @@ end
 -- OEM disk boot.of reads into RAM for NT sits at 59 MB (powermac-nt-hal
 -- include/oemdisk.h), so the 32 MB default cannot work.  Leaves the machine at `0 >`
 -- on ttya and returns what the firmware printed.
-function nt_power_on(rom) -- global: included file
+function nt_power_on(rom)
     machine.boot{model = "ans500", ram = 65536, rom = rom}
     local fw = ""
     local spins = 0
@@ -218,7 +217,7 @@ end
 -- floppy now runs as an ordinary big-endian client and switches the machine
 -- itself, so a row asserts the opposite of what it used to: the 604 is
 -- big-endian at the prompt and little-endian? reads false.
-function nt_factory_endian() -- global: included file
+function nt_factory_endian()
     assert((machine.cpu.msr & 1) == 0, "N2: the firmware is running little-endian at its prompt")
     ans_send("printenv little-endian?")
     local le = ans_go()
@@ -233,11 +232,11 @@ end
 -- line; the three goldens (logon screen, Logon Information dialog, desktop)
 -- are the caller's, named in its own script so check-goldens.py sees them.
 
-K_CONTROL = "0x36" -- global: included file
-K_OPTION = "0x3A" -- global: included file
-K_FWD_DELETE = "0x75" -- global: included file
+K_CONTROL = "0x36"
+K_OPTION = "0x3A"
+K_FWD_DELETE = "0x75"
 
-function nt_installed_boot_rungs(nt_rom, nt_disk, nt_floppy, row, g_logon, g_info, g_desktop) -- global: included file
+function nt_installed_boot_rungs(nt_rom, nt_disk, nt_floppy, row, g_logon, g_info, g_desktop)
     -- B1
     local fw = nt_power_on(nt_rom)
 

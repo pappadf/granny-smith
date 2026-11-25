@@ -30,10 +30,10 @@ emulated time (the `one_second` scheduler event), never by host time.
    executed, so the write lands before the ROM has read anything and is
    exactly equivalent to seeding at construction.
 
-```
-machine.boot model="se30" ram=8192 rom="${$ROM}"
-machine.rtc.time = 3000000000        # the device, directly
-scheduler.run ...
+```lua
+machine.boot{model = "se30", ram = 8192, rom = vars.ROM}
+machine.rtc.time = 3000000000        -- the device, directly
+scheduler.run(...)
 ```
 
 There is **no staged seed**. An earlier design held a pre-boot

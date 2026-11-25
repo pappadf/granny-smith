@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- The ATI Rage 128 GL's expansion ROMs, identified by content.
 --
 -- Identity is standard fields only: the PCI Data Structure's vendor and

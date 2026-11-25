@@ -23,7 +23,6 @@
 #include "ppc_jit.h"
 #include "predecode.h"
 #include "shell.h"
-#include "shell_funcs.h"
 #include "status.h"
 #include "system.h"
 #include "usage.h"
@@ -188,8 +187,8 @@ static const member_t emu_root_members[] = {
      .name = "quit",
      .doc = "Exit the emulator (headless; the browser page owns its own lifecycle and refuses)",
      .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = method_root_quit}                },
-    // `assert` is a statement keyword in shell v2 (script.c); the former
-    // root method is gone — its name is now a reserved word.
+    // `assert` is Lua's own (a script's assert(cond, message)); the former
+    // root method is gone.
     {.kind = MK_METHOD,
      .name = "echo",
      .doc = "Print arguments separated by spaces (final newline appended)",
@@ -324,7 +323,6 @@ void root_install(struct config *cfg) {
 
 void root_uninstall(void) {
     // Detach function entry objects before their parent stub goes away.
-    shell_funcs_uninstall();
     for (int i = g_stub_count - 1; i >= 0; i--) {
         struct object *o = g_stubs[i];
         object_destroy(&o);

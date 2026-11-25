@@ -1,4 +1,3 @@
--- Converted from step3.script by scripts/script-to-lua.py
 -- The base was replaced with other bytes of the same size: refused.
 machine.register("fedcba9876543210", "20261001T000000Z")
 assert(checkpoint.probe(), "the quick checkpoint is there")

@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- AV family suite — Quadra 840AV (Cyclone) and Centris/Quadra 660AV (Tempest).
 --
 -- Row map:
@@ -709,7 +708,7 @@ local function row_av_tts()
     assert(machine.dsp.state == "running", F"av-tts: DSP ${machine.dsp.state} after speech")
     assert(machine.dsp.emr == 0x8000, F"av-tts: emr=${machine.dsp.emr:04x} after speech — kernel died")
     assert(machine.sound.overruns == 0, F"av-tts: ${machine.sound.overruns} frame overruns")
-    mac.check_sound("goldens/av-tts.wav", 76320)
+    mac.check_sound("goldens/av-tts.wav", 76560)
     mac.report_perf("suite-av/av-tts", scheduler.instr_count)
 end
 

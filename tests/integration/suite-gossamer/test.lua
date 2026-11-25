@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Beige G3 family suite — Mac OS 9.2.1 from a MESH disk.
 --
 -- Row map:

@@ -1,4 +1,3 @@
--- Converted from plus.script by scripts/script-to-lua.py
 -- Plus, System 6.0.8 floppy: three checkpoints through the boot.
 predecode.enabled = $PD
 predecode.elide = $ELIDE

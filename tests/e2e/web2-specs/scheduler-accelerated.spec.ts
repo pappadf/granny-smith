@@ -51,7 +51,7 @@ async function probeCounters(
     const key = `rate${++probeSeq}`;
     await terminalRun(
       page,
-      `echo "${key}=\${scheduler.cycles},\${machine.cpu.instr_count}"`,
+      `print("${key}=" .. scheduler.cycles .. "," .. machine.cpu.instr_count)`,
     );
     await page.waitForTimeout(400);
     const text = await page.locator('.console-output').innerText();

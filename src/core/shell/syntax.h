@@ -2,13 +2,13 @@
 // Copyright (c) pappadf
 
 // syntax.h
-// The shell grammar's lexical layer, shared by the parser (script.c), the
-// highlighter (highlight.c) and tab completion (cmd_complete.c): what kind
-// of statement a text is, where a path or an argument word ends, how a line
-// splits into a block's parts, and which declared argument a word fills.
-// The parser builds its statement tree from these answers, so the two
-// console views read a line the way it runs.  Nothing here touches the
-// object tree; all scanning is bounded by an explicit end pointer.
+// The command line's lexical layer, shared by the highlighter (highlight.c)
+// and tab completion (cmd_complete.c): what shape a command line has (a
+// command with argument-mode words, or `PATH = VALUE`), where a path or an
+// argument word ends, and which declared argument a word fills -- the
+// grammar gs.shell_line (gs_lua_lib.lua) runs a command line by.  Lua lines
+// are not read here.  Nothing here touches the object tree; all scanning is
+// bounded by an explicit end pointer.
 
 #ifndef GS_SHELL_SYNTAX_H
 #define GS_SHELL_SYNTAX_H

@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- AppleShare from the beige G3: Chooser -> AppleShare over LocalTalk.
 -- See config.mk.  Coordinates are global, on the 640x480 desktop.
 

@@ -1,4 +1,3 @@
--- Converted from av.script by scripts/script-to-lua.py
 -- Quadra 840AV (68040 + 040 MMU, DSP3210): System 7.1 boot from the AV
 -- image, three checkpoints.  The row that found the ROM-overlay alias: the
 -- ROM runs at zero first and at $4080xxxx after, through the same host pages.

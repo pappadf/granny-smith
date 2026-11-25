@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Macintosh IIcx suite (see config.mk for why this suite is small).
 --
 -- Row map (former directory → row):

@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: Power Macintosh 7100 — install System 7.5.0 onto the volume
 -- Copland D11E4 will be installed into.
 --
@@ -102,7 +101,7 @@ local function phase3_install_75()
     -- (locked, and it says so) -> untitled.  The intervening move is required,
     -- not cosmetic: a same-spot warp emits no ADB motion, so a second click at
     -- the same pixel has no fresh position event to bind to and is dropped
-    -- (../lib/mac.script, click()).
+    -- (../lib/mac.lua, click()).
     mac.click(307, 355)
     mac.wait_stable(1000000000)
     machine.adb.mouse.move(420, 300, "global")

@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- The AppleTalk ImageWriter: Chooser, Print Directory over PAP, paper out,
 -- and the print after an abandoned job.
 -- See config.mk.  Screen coordinates are the Plus's 512x342 desktop.

@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Run a few thousand instructions so PC has actually moved.
 scheduler.run(50000)
 

@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Lisa 2 / Macintosh XL suite (see config.mk).
 --
 -- Row map (former directory → row):
@@ -25,7 +24,7 @@
 --                         DRVERR prompt rather than a clamp error
 --
 -- Every row keeps its original assertions and choreography verbatim; see
--- rows.script.
+-- rows.lua.
 
 local mac = dofile("../lib/mac.lua")
 dofile("rows.lua")

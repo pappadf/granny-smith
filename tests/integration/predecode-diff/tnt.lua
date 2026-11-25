@@ -1,4 +1,3 @@
--- Converted from tnt.script by scripts/script-to-lua.py
 -- Power Macintosh 7500 ROM boot (PowerPC 601): Open Firmware, POST and the
 -- 68K emulator's start-up, three checkpoints, no media.
 predecode.enabled = $PD

@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- machine.restart — power-cycle the running machine.
 --
 -- The contract under test:

@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Unused: run.sh drives its own per-model boots (it needs one run per machine,
 -- and this harness gives a runner exactly one). The shared runner requires the
 -- file to exist, so it exists.

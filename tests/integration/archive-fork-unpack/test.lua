@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Fork-preserving unpack: a StuffIt archive of Mac files (with resource forks)
 -- must extract to data-fork files PLUS AppleDouble "._<name>" sidecars.
 --

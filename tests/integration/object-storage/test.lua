@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- M8 (slice 2) integration: the `files` object class.
 -- Plus boots with one SCSI HD (hd1.img) and one floppy (System 6.0.8).
 -- files.images should enumerate at least these two entries.

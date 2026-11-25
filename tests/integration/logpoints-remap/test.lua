@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Armed before the guest runs: the ROM overlay is on, so page 0 reads the
 -- ROM.  The ROM drops the overlay (m68k_board_overlay.c re-maps page 0's
 -- reads to RAM) long before its VBL handler starts reading Ticks ($16A) to

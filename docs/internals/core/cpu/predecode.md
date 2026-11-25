@@ -1306,12 +1306,13 @@ The `predecode` node is a root sibling of `machine` (order 22, next to
 `predecode.enabled` switches at any time, mid-run, in every build; the
 two executors give the same guest timeline whichever ran which sprint.
 
-Typical uses:
+Typical uses, at the terminal: A/B a row against the switch core; which
+shapes does this workload decode; how much falls back, and why:
 
 ```
-predecode.enabled = 0                    # A/B a row against the switch core
-predecode.hist 30                        # which shapes does this workload decode?
-echo ${predecode.generic_steps} ${predecode.demotions}   # how much falls back, and why
+predecode.enabled = 0
+predecode.hist 30
+print(predecode.generic_steps, predecode.demotions)
 ```
 
 ## 5. Checkpointing

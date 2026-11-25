@@ -21,7 +21,6 @@
 #
 # Exit 0 when every test not allowed to differ printed the same, 1 when one
 # did not (the diffs are printed), 2 on a usage error.  Callers:
-# scripts/compare-jobs-inline.sh (threaded vs --jobs=inline) and
 # scripts/compare-output.sh (two binaries).
 set -euo pipefail
 cd "$(dirname "$0")/.."

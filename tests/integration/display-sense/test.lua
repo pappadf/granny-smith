@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Per-device monitor sense (see config.mk).
 
 -- The guest's screens: GDevices on DeviceList ($8A8), each a handle whose

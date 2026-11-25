@@ -148,10 +148,10 @@
     {#if debug.mmuSubtab === 'state'}
       <MmuStateTab {regs} {loaded} live={running} />
     {:else if running}
-      <Hint class="mmu-hint" inset="block"
-        >Pause the machine to translate, map or read descriptors; the State tab updates while it
-        runs.</Hint
-      >
+      <Hint class="mmu-hint" inset="block">
+        Pause the machine to translate, map or read descriptors; the State tab updates while it
+        runs.
+      </Hint>
     {:else if debug.mmuSubtab === 'translate'}
       <MmuTranslateTab />
     {:else if debug.mmuSubtab === 'map'}

@@ -243,9 +243,8 @@ static void answer_bool(mailbox_t *m, bool b) {
     m->out_len = (uint32_t)snprintf(m->out, GS_MBX_RESULT_MAX, b ? "true" : "false");
 }
 
-// REQ_SCRIPT: queued for the job thread (its result comes from
-// job_layer_service when the job ends), or run inline when there is no
-// job thread.  Returns whether an answer was built now.
+// REQ_SCRIPT: queued as a job (its result comes from job_layer_service when
+// the job ends).  Returns whether an answer was built now (an error).
 static bool serve_script(mailbox_t *m, const uint8_t *p, uint32_t payload_len) {
     m->out_id = payload_len >= 4 ? RD_LE32(p + 4 * GS_MBX_SCRIPT_ID) : 0;
     m->out_ok = 0;
@@ -266,24 +265,7 @@ static bool serve_script(mailbox_t *m, const uint8_t *p, uint32_t payload_len) {
     stat_add(m, GS_MBX_C_STAT_REQUESTS, 1);
     if (job_submit_script(client, m->out_id, src, src_len))
         return false;
-    // Inline: the script runs here, now, as this client.
-    char *copy = (char *)malloc(src_len + 1);
-    if (!copy) {
-        m->out_len = (uint32_t)snprintf(m->out, GS_MBX_RESULT_MAX, "{\"error\":\"out of memory\"}");
-        return true;
-    }
-    memcpy(copy, src, src_len);
-    copy[src_len] = '\0';
-    m->client = client;
-    int rc = job_glue_run_source(copy, true);
-    m->client = 0;
-    free(copy);
-    if (rc == 0) {
-        m->out_ok = m->eval("shell.prompt", NULL, m->out, GS_MBX_RESULT_OUT) == 0;
-        m->out_len = (uint32_t)strlen(m->out);
-    } else {
-        m->out_len = (uint32_t)snprintf(m->out, GS_MBX_RESULT_MAX, "{\"error\":\"command failed\"}");
-    }
+    m->out_len = (uint32_t)snprintf(m->out, GS_MBX_RESULT_MAX, "{\"error\":\"out of memory\"}");
     return true;
 }
 
@@ -352,7 +334,7 @@ uint32_t mailbox_result_defer(void) {
         m->deferred = true;
         return token;
     }
-    // Not a request: perhaps a job's call through the seam.
+    // Not a request: perhaps a tree call of a job's task (job.h).
     return job_call_defer();
 }
 
@@ -583,8 +565,8 @@ int mailbox_drain(mailbox_t *m, double budget_us, double (*now_us)(void)) {
         if (now_us && budget_us > 0.0 && now_us() - t0 >= budget_us)
             break;
     }
-    // The jobs: a call posted by the job thread, a job's result; and the
-    // I/O worker's completions.
+    // The jobs: a step of the active one, the results of finished ones; and
+    // the I/O worker's completions.
     written += job_layer_service(m);
     io_worker_service();
     if (written || mbx_unpublished(&m->evt)) {

@@ -35,11 +35,11 @@ tests/
 │   ├── suites/<name>/             #   One directory per suite
 │   └── support/                   #   Harnesses, stubs, header shims
 ├── bench/                          # CPU benchmark rows (BENCHMARKS.md)
-│   ├── lib/bench.script           #   Window, guard and state helpers
+│   ├── lib/bench.lua              #   Window, guard and state helpers
 │   ├── rows.json                  #   Row configuration and thresholds
-│   └── <row>.script               #   bench_boot() + bench_guard() per row
+│   └── <row>.lua                  #   bench_boot() + bench_guard() per row
 ├── integration/                    # Headless emulator integration tests
-│   ├── lib/                       #   Shared row/wait/golden library (include'd)
+│   ├── lib/                       #   Shared row/wait/golden library (dofile'd)
 │   ├── suite-<family>/            #   Per-machine suites (rows, goldens/)
 │   └── <name>/                    #   One directory per test (config.mk, test.lua)
 └── e2e/                            # Browser Playwright E2E tests (web2 UI)
@@ -174,9 +174,8 @@ Two rules suite rows must follow, both learned from real failures:
   same way in both. Screens that animate (a blinking "?" icon, a text
   caret) never settle at all — those rows use a fixed `run_ticks`
   window and their goldens are animation-phase-sensitive by design. Tests are Lua files (`test.lua`; `docs/internals/core/lua/lua.md` is the
-language's contract with the tree; a directory still holding a `test.script`
-runs on the shell's own language until it is ported, and
-`scripts/script-to-lua.py` does the mechanical part of a port). Shared
+language's contract with the tree; `scripts/script-to-lua.py` converts a
+test written in the old `.script` language, should one turn up). Shared
 harness functions live in `tests/integration/lib/mac.lua`, pulled in with
 `local mac = dofile("../lib/mac.lua")` and called as `mac.wait_match(...)`.
 The library provides
@@ -231,7 +230,7 @@ were taken with; changing it is a re-baseline (perf-baselines.json and, where
 the frame moves, the goldens), not a refactor.
 
 A second, machine-specific library sits beside it:
-`tests/integration/lib/ans.script`, for the Apple Network Servers. Those
+`tests/integration/lib/ans.lua`, for the Apple Network Servers. Those
 rows drive Open Firmware over the guest serial console rather than reading a
 screen, and two things about that machine are awkward exactly once and
 identical in every row — its console is the *monitor* until the firmware is
@@ -242,7 +241,7 @@ drops characters from an input burst, which the paced serial line avoids
 See the library's header; the reasoning is worth reading before writing a
 row against a machine that narrates instead of drawing.
 
-A third, `tests/integration/lib/gossamer.script`, holds the beige G3's
+A third, `tests/integration/lib/gossamer.lua`, holds the beige G3's
 Open Firmware entry (Command-Option-O-F on the keyboard, then `ttya io`)
 and the Mac OS 9.2.1 installer choreography the install rows share.
 
@@ -282,10 +281,10 @@ hardware (savedMode, RowWords, CLUT PBCR, the card's sister byte) and use the
 golden only to pin that the raster still scans out. Waive them explicitly, in
 the script, naming both files and the proof:
 
-```
-# golden-collision-ok: welcome-13in_rgb-640x480-1bpp.png welcome-13in_rgb-640x480-2bpp.png
-# - black-and-white splash, identical at both depths; the depth change is proven
-# by the savedMode/RowWords asserts above, not by the frame.
+```lua
+-- golden-collision-ok: welcome-13in_rgb-640x480-1bpp.png welcome-13in_rgb-640x480-2bpp.png
+-- - black-and-white splash, identical at both depths; the depth change is proven
+-- by the savedMode/RowWords asserts above, not by the frame.
 ```
 
 A waiver must name every file in the collision, so it cannot silently grow to
@@ -320,17 +319,17 @@ Instead of booting there again, the consumer restores the producer's
 checkpoint:
 
 - The producer's `config.mk` says `TEST_PROVIDES := <name>` and its script
-  calls `fixture_save("<name>")` at that point; the consumer says
-  `TEST_NEEDS := <name>` and calls `fixture_load("<name>")`, which returns
+  calls `mac.fixture_save("<name>")` at that point; the consumer says
+  `TEST_NEEDS := <name>` and calls `mac.fixture_load("<name>")`, which returns
   false when there is no fixture to load.
 - Only the aggregate `make test` provides fixtures.  It clears
   `build/integration/fixtures/`, makes each consumer wait for its producer
   (an order-only prerequisite), and passes the directory to every test as
-  `$FIXTURES`.  `scripts/order-tests.py` bin-packs a producer and its
+  `vars.FIXTURES`.  `scripts/order-tests.py` bin-packs a producer and its
   consumers as one item, so they always share a CI shard.
   `make test TESTS="a b"` runs a chosen set the same way.
 - A test run on its own (`make test-<name>`) gets no fixtures, so a consumer
-  always has its own way to the same state (`if !fixture_load(...) { ... }`).
+  always has its own way to the same state (`if not mac.fixture_load(...) then ... end`).
   That way must reach the fixture's state byte for byte, or the consumer's
   goldens would depend on how it ran.  A restored run is deterministic but
   is not always the straight run's timeline (`tnt-voodoo2-glide-sw`'s Quake

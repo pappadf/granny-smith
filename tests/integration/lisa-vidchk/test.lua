@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- The boot ROM's video self-test (VIDCHK, docs/reference/machines/lisa/
 -- video.md §4.3) on both Lisa ROMs, at three memory sizes, at 1x.
 --

@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- IIcx substitute-ROM video suite (see config.mk).
 --
 -- Row map (former directory → row):
@@ -14,7 +13,7 @@
 --   gsvrom-custom-mode  iicx-gsvrom-custom-mode: an 800x600x8 custom
 --                       geometry the generated vROM can declare
 --
--- Row bodies are in rows.script, transcribed by script from the absorbed
+-- Row bodies are in rows.lua, transcribed by script from the absorbed
 -- tests so the sweep's sense/PRAM seeding stays byte-exact.
 
 local mac = dofile("../lib/mac.lua")

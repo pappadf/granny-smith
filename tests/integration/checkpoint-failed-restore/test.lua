@@ -1,3 +1,2 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: a failed restore changes nothing (see config.mk).
 -- This test uses a custom runner (run.sh) - this file exists for auto-discovery

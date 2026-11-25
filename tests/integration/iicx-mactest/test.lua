@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: IIcx MacTest Boot
 -- Opens `Options > Test Selections` first, unchecks the two ADB
 -- Communication sub-tests (Keyboard + Mouse), confirms the dialog
@@ -10,7 +9,7 @@
 -- itself unaffected — so the per-phase screenshot baselines apply
 -- through `floppy-test-success.png`.
 --
--- See `tests/integration/iicx-mactest-options/test.script` for the
+-- See `tests/integration/iicx-mactest-options/test.lua` for the
 -- investigation harness that established the Options-menu and DITL
 -- checkbox coordinates used below.
 
@@ -83,7 +82,7 @@ mac.wait_mouse_taken(100000000)
 scheduler.run(10000000)
 
 -- Verify both ADB items are now unchecked.  This baseline was captured
--- by `tests/integration/iicx-mactest-options/test.script` after the
+-- by `tests/integration/iicx-mactest-options/test.lua` after the
 -- same two clicks at the same coordinates — so a mismatch here means
 -- the dialog DITL layout drifted or one of the clicks landed off the
 -- checkbox row.

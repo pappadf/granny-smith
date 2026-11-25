@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Apple Network Server PCI topology and the built-in device identities.
 --
 -- Config-port note, inherited verbatim from `tnt-pci-slots`: the Bandit

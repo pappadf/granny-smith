@@ -1,9 +1,8 @@
--- Converted from gossamer.script by scripts/script-to-lua.py
-local mac = dofile("mac.lua") -- NOTE: no direct mac.script include (this file is included by another); the library runs once per chunk
--- tests/integration/lib/gossamer.script — shared helpers for the beige
+local mac = dofile("mac.lua") -- NOTE: no direct mac.lua include (this file is included by another); the library runs once per chunk
+-- tests/integration/lib/gossamer.lua — shared helpers for the beige
 -- Power Macintosh G3 (Gossamer) rows.
 --
--- Pull in with `include "../lib/gossamer.script"`.
+-- Pull in with `include "../lib/gossamer.lua"`.
 --
 -- REACHING OPEN FIRMWARE.  A beige G3 boots straight through Open Firmware
 -- into Mac OS (`auto-boot?` defaults to true).  Apple's way in is to hold
@@ -33,7 +32,7 @@ local mac = dofile("mac.lua") -- NOTE: no direct mac.script include (this file i
 -- echoes, so a burst overflowed its buffer -- the reason the rows once sent
 -- seven characters and ran 5 M after each).  Returns when the firmware has
 -- read it all.
-function gos_send(s) -- global: included file
+function gos_send(s)
     mac.serial_type("a", s, 100000000)
 end
 
@@ -43,7 +42,7 @@ end
 -- instructions of a short command, so the slices start at 250 K and double
 -- (to 16 M) while a long reply is still coming; `chunks` 20 M slices'
 -- worth is the hang detector.
-function gos_wait_prompt(chunks) -- global: included file
+function gos_wait_prompt(chunks)
     local out = ""
     local spent = 0
     local slice = 250000
@@ -63,7 +62,7 @@ function gos_wait_prompt(chunks) -- global: included file
 end
 
 -- Complete the line and return the firmware's reply up to its next prompt.
-function gos_go() -- global: included file
+function gos_go()
     machine.scc.a.receive("\r")
     local out = gos_wait_prompt(100)
     assert(gs.contains(out, "0 > "), "Open Firmware did not return to its prompt")
@@ -73,7 +72,7 @@ end
 -- True while the CPU is executing Open Firmware (its image in RAM at
 -- $FF800000 as the boot program relocates it) rather than the boot
 -- program ($FFF0xxxx) or the 68k emulator ($FFExxxxx).
-function gos_in_of() -- global: included file
+function gos_in_of()
     return machine.cpu.pc >= 0xFF800000 and machine.cpu.pc < 0xFFC00000
 end
 
@@ -85,7 +84,7 @@ end
 -- boot to settle in Open Firmware (two consecutive samples inside it,
 -- past the probe), then types `ttya io` — the command the banner offers
 -- — on the keyboard, and checks the prompt over serial.
-function gos_boot_prompt(model, ram_kb) -- global: included file
+function gos_boot_prompt(model, ram_kb)
     machine.boot{model = model, ram = ram_kb, rom = vars.ROM}
     machine.adb.keyboard.down("Command")
     machine.adb.keyboard.down("Option")
@@ -130,7 +129,7 @@ end
 -- copy.  Leaves the installer's "installation process has finished" dialog
 -- up and checks it against `golden` (menu-bar clock excluded).  Every
 -- coordinate is the 640x480 desktop the Rage Pro comes up in.
-function gos_install_921(golden) -- global: included file
+function gos_install_921(golden)
     mac.double_click(318, 212) -- Utilities
     mac.run_ticks(240)
     mac.double_click(187, 180) -- Drive Setup

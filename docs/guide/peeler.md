@@ -187,9 +187,9 @@ true
 
 ### Script form
 
-```
-${files.identify("/tmp/myarchive.sit").archive}
-assert ${files.archive.extract("/tmp/myarchive.sit", "/tmp/out")}
+```lua
+print(files.identify("/tmp/myarchive.sit").archive)
+assert(files.archive.extract("/tmp/myarchive.sit", "/tmp/out"))
 ```
 
 ### Web drag-and-drop

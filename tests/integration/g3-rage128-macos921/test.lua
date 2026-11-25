@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Mac OS 9.2.1 on an ATI Rage 128 GL, the beige G3's only display.
 --
 -- The disk is installed and never booted, so the first boot runs the Setup

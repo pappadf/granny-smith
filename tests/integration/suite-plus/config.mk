@@ -2,7 +2,7 @@
 #
 # Grown out of boot-matrix, which already had the target shape (one
 # daemon, machine.boot between rows, per-row throughput floors); the rows
-# now come from the shared library in ../lib/mac.script and the suite
+# now come from the shared library in ../lib/mac.lua and the suite
 # absorbs plus-boot-beep, plus-floppy-blank, and scsi.
 #
 # Every floppy row picks a different one of the four RAM totals Apple
@@ -35,7 +35,7 @@ TEST_DESC := Boot beep, System 2.0/3.2/4.x/6.0.8 floppy rows across all four RAM
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 
 # Start the daemon on a Plus at 1 MB so the first machine.boot in
-# test.script has a sensible baseline to re-instantiate from.
+# test.lua has a sensible baseline to re-instantiate from.
 TEST_ARGS := model=plus ram=1024
 
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended

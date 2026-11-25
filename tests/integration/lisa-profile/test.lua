@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: Apple Lisa 2 — ProFile parallel hard disk.
 --
 -- Verifies the ProFile device end-to-end through Apple's own boot-ROM driver.

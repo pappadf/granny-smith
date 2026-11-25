@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- AppleShare from the AV Quadras over EtherTalk (see config.mk).
 -- Coordinates are global, on the 640x480 desktop.
 

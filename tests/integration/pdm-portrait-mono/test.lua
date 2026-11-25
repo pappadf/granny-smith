@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- PDM built-in video on the 15" Portrait (see config.mk).
 machine.boot{model = "pm6100", monitor = "portrait", rom = vars.ROM}
 scheduler.run(400000000)

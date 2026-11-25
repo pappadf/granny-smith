@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- The host's setting, read and written with no regard to the machine.
 pacing.mode = "accelerated"
 pacing.speed = 2.0

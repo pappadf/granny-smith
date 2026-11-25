@@ -1,4 +1,3 @@
--- Converted from iicx.script by scripts/script-to-lua.py
 -- IIcx (68030 + PMMU), System 6 HD with Marathon: three checkpoints.
 predecode.enabled = $PD
 predecode.elide = $ELIDE

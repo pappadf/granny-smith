@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- The SHIPPED Mac Glide driver against the Voodoo2 model.
 --
 -- Everything in this row is the guest's own software doing the work:
@@ -34,7 +33,7 @@ dofile("glide.lua")
 -- scripts/voodoo2/bench.sh can time (not a floor — see the script).
 local RASTER = vars.RASTER or "thread"
 
-img = F"${vars.WORK_DIR}/quake.img" -- global: used by an included file
+img = F"${vars.WORK_DIR}/quake.img"
 if mac.have_media(img) then
     glide_to_launch(RASTER)
 

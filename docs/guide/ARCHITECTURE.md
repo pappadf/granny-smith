@@ -57,7 +57,7 @@ features. The browser-based frontend renders the Macintosh display in a
 canvas, maps host keyboard and mouse events to the emulator, and drives every
 feature through the mailbox from the page (`docs/guide/web.md`); the headless
 build is an in-process client of the same mailbox, feeding it a script file,
-stdin or a TCP daemon connection (`docs/internals/core/shell/shell.md`). Both rely on the
+stdin or a TCP daemon connection (`docs/internals/core/lua/lua.md`). Both rely on the
 same portable core logic.
 
 This separation of concerns allows the emulator to be easily embedded in
@@ -71,20 +71,18 @@ what is the rule that keeps the machine deterministic:
 
 | Thread | Runs | Touches |
 |---|---|---|
-| **Emulator thread** | the tick: one VBL frame-unit at a time, then the mailbox drain | **all guest state**. Nothing of unbounded length runs here; every leaf of the object tree executes here, served from the drain |
-| **Job thread** (`src/core/job/job.h`) | scripts (a terminal line, a script file, a daemon statement), one at a time, FIFO | only the interpreter's own memory. Every read, write or call of the tree is handed to the emulator thread through the **seam** (`job_on_emulator`) and served in the next drain; a call that starts a mode holds the job until the mode ends |
+| **Emulator thread** | the tick: one VBL frame-unit at a time, then the mailbox drain, which also steps the active script **job** (`src/core/job/job.h`: a terminal line, a script file, a daemon statement, one at a time, FIFO, each a Lua coroutine) | **all guest state**. Nothing of unbounded length runs here at once: every leaf of the object tree executes here, served from the drain, and a job runs one time slice per drain, suspending while a mode it started runs ([job.md](../internals/core/job/job.md)) |
 | **I/O worker** (`src/core/io/io_worker.h`) | work proportional to a file: copies, exports, blank images, archive extraction, downloads, the quick checkpoint's write and rename | host files only, through its own handles; never guest state. Reports progress and completion back through the drain; cancellable between chunks |
 | **Platen worker**, **Voodoo2 raster / GPU worker** (browser) | the LaserWriter's PostScript interpreter; the Voodoo2's rasteriser | their own shared-memory rings (`mailbox_ring.h`), fed by the emulator thread |
 | **Browser main thread** | the page, the canvas, input | the mailbox's client side through `Module.HEAPU8` and Atomics; never a direct call into the core |
 | **WasmFS OPFS proxy** (browser) | every OPFS read, write and rename, one at a time | the filesystem — which is why file work is chunked and yields between chunks |
 
-Output follows the same ownership: what a leaf or the interpreter prints goes
+Output follows the same ownership: what a leaf or a script prints goes
 through the sink (`src/core/out.h`) to the client that asked — a job's text
 as output records before its result, a page leaf's text with its answer —
 and only text printed outside any request (boot messages, a breakpoint hit)
-reaches stdout directly. Headless can fold the job thread and the I/O worker
-back into the emulator thread (`--jobs=inline`, `--io=sync`) for bisecting;
-the output must not change.
+reaches stdout directly. Headless can fold the I/O worker back into the
+emulator thread (`--io=sync`) for bisecting; the output must not change.
 
 ## Modularized Architecture
 
@@ -193,14 +191,15 @@ Four caller surfaces walk that tree:
   See [`web.md`](web.md) for the wire layout and protocol.
 - **Threads**: the emulator thread owns all guest state and runs nothing
   of unbounded length: it ticks frames and drains the mailbox. A script
-  is a **job** on the job thread (`src/core/job/job.h`), reaching guest
-  state only through the seam, one served call at a time; a copy, an
+  is a **job** (`src/core/job/job.h`), a Lua coroutine the drain resumes
+  one step at a time, so its tree calls are plain calls on the emulator
+  thread; a copy, an
   export, an archive's extraction, a download or a checkpoint's write is
   an **I/O job** on the I/O worker (`src/core/io/io_worker.h`), answered
   later, reporting progress and cancellable between chunks. What any of
   them prints goes through the output sink (`src/core/out.h`) to the
-  client that asked. Headless runs the same three threads (`--io=sync`
-  and `--jobs=inline` fold a thread back in for bisecting).
+  client that asked. Headless runs the same threads (`--io=sync` folds
+  the I/O worker back in for bisecting).
 - **Inspector UI**: walks `objects()` / `attributes()` / `methods()` /
   `help()` to render the live tree.
 
@@ -212,9 +211,9 @@ See [`docs/internals/core/object/object-model.md`](../internals/core/object/obje
 path forms in detail, the lifecycle invariants (process-singleton vs.
 cfg-scoped), and the recipe for adding a new class.
 
-See [`docs/internals/core/shell/shell.md`](../internals/core/shell/shell.md) for the line-input layer specifically:
-tokenisation, `$alias` expansion, `${expr}` interpolation, shell
-variables, scripts, and tab completion.
+See [`docs/internals/core/lua/lua.md`](../internals/core/lua/lua.md) for the line-input layer specifically:
+Lua scripts and the `gs` library, the terminal's command lines and Lua
+lines, `$alias` and `${expr}` templates, and tab completion.
 
 ### Orchestration and System Wiring
 

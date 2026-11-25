@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: ejecting an ATA hard disk (see config.mk), through
 -- machine.eject_media and through the unit's image node.
 

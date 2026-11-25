@@ -66,7 +66,8 @@ let echoSeq = 0;
 // How long the terminal is given to answer an echo before its output is read.
 const ECHO_WAIT_MS = 400;
 
-// Echo `body` (shell text with ${...} splices) behind a fresh key, once, and
+// Print `body` (a template: text with ${expr} splices, the expressions Lua)
+// behind a fresh key, once, and
 // match the answer against `value` (a regex source with capture groups).
 // Returns the match, or null when the answer has not shown up yet.
 export async function terminalEcho(
@@ -75,7 +76,10 @@ export async function terminalEcho(
   value: string,
 ): Promise<RegExpMatchArray | null> {
   const key = `te${++echoSeq}`;
-  await terminalRun(page, `echo "${key}=${body}"`, { settleMs: 250 });
+  // The template expanded as a terminal argument's "..." is (shell.expand:
+  // a tree path keeps its text, hex for an address), in a level-1 long
+  // bracket so `body` may hold quotes and a `]` of its own.
+  await terminalRun(page, `print(shell.expand([=[${key}=${body}]=]))`, { settleMs: 250 });
   await page.waitForTimeout(ECHO_WAIT_MS);
   const text = await page.locator(CONSOLE_OUTPUT).innerText();
   return text.match(new RegExp(`${key}=${value}`));

@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: IIcx ADB no-reply Talk must not post a button event
 -- (issue #122).  The click sequence is the first half of iicx-mactest
 -- (Options > Test Selections, two checkboxes, OK), which is where the

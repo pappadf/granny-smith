@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Apple events against the Scriptable Finder — the payoff script.
 --
 -- Everything asserted here is a *value the guest computed*, read back through

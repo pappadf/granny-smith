@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- The 3dfx Voodoo2 (CVG) enumerating in socket A1 of a Power Macintosh
 -- 7500 — the first ROM-less socket card.
 --
@@ -23,18 +22,18 @@
 -- big-endian bus views, so literals go through swap32.  Socket A1 is
 -- device 13: one-hot IDSEL $00200000.
 
-function swap32(v) -- global: used by an included file
+function swap32(v)
     return ((v & 0xFF) << 24) | ((v & 0xFF00) << 8) | ((v >> 8) & 0xFF00) | ((v >> 24) & 0xFF)
 end
-function swap16(v) -- global: used by an included file
+function swap16(v)
     return ((v & 0xFF) << 8) | ((v >> 8) & 0xFF)
 end
-function cfg_wr(reg, val) -- global: used by an included file
+function cfg_wr(reg, val)
     machine.memory.poke.l(0xF2800000, swap32(0x00002000 | reg))
     machine.memory.poke.l(0xF2C00000, swap32(val))
     machine.memory.poke.l(0xF2800000, 0)
 end
-function cfg_rd(reg) -- global: used by an included file
+function cfg_rd(reg)
     machine.memory.poke.l(0xF2800000, swap32(0x00002000 | reg))
     local v = swap32(machine.memory.peek.l(0xF2C00000))
     machine.memory.poke.l(0xF2800000, 0)
@@ -118,17 +117,17 @@ assert(not machine.pci.slot[1].card.config.bar[0].mapped, "...so the card does n
 -- write, made here through the config port, exactly as the driver would.
 cfg_wr(0x04, cfg_rd(0x04) | 0x0002)
 assert(machine.pci.slot[1].card.config.bar[0].mapped, "the aperture decodes once the driver enables memory space")
-BAR = machine.pci.slot[1].card.config.bar[0].base -- global: used by an included file
+BAR = machine.pci.slot[1].card.config.bar[0].base
 
-function vreg_wr(off, val) -- global: used by an included file
+function vreg_wr(off, val)
     machine.memory.poke.l(BAR + off, swap32(val))
 end
-function vreg_rd(off) -- global: used by an included file
+function vreg_rd(off)
     return swap32(machine.memory.peek.l(BAR + off))
 end
 -- The §12.3 idle idiom with a CEILING: the failure mode of a busy bit
 -- that never clears must be a test failure, not a hung suite.
-function idle3() -- global: used by an included file
+function idle3()
     local ok = 0
     local polls = 0
     while ok < 3 do
@@ -184,7 +183,7 @@ mac.report_perf("tnt-pci-voodoo2", scheduler.instr_count)
 machine.boot{model = "pm7500", ram = 32768, rom = vars.ROM, pci_card = "voodoo2", pci_option = "raster=null,memory=8m"}
 cfg_wr(0x10, 0x81000000)
 cfg_wr(0x04, 0x0002)
-BAR = machine.pci.slot[1].card.config.bar[0].base -- global: used by an included file
+BAR = machine.pci.slot[1].card.config.bar[0].base
 cfg_wr(0x40, 0x00000003)
 vreg_wr(0x008, 0x00000320)
 vreg_wr(0x00C, 0x00000320)
@@ -209,7 +208,7 @@ assert(machine.pci.slot[1].card.regs.read(0x25C) == 1, "...but the triangle RETI
 machine.boot{model = "pm7500", ram = 32768, rom = vars.ROM, pci_card = "voodoo2", pci_option = "raster=sw,memory=8m"}
 cfg_wr(0x10, 0x81000000)
 cfg_wr(0x04, 0x0002)
-BAR = machine.pci.slot[1].card.config.bar[0].base -- global: used by an included file
+BAR = machine.pci.slot[1].card.config.bar[0].base
 echo(F"raster backend for the replay: ${machine.pci.slot[1].card.regs.raster}")
 dofile("glide-init.lua")
 dofile("draw.lua")
@@ -226,7 +225,7 @@ assert(machine.pci.slot[1].card.regs.raster == "sw", "the replay ran on the norm
 machine.boot{model = "pm7500", ram = 32768, rom = vars.ROM, pci_card = "voodoo2", pci_option = "memory=8m,xcheck=on"}
 cfg_wr(0x10, 0x81000000)
 cfg_wr(0x04, 0x0002)
-BAR = machine.pci.slot[1].card.config.bar[0].base -- global: used by an included file
+BAR = machine.pci.slot[1].card.config.bar[0].base
 assert(machine.pci.slot[1].card.regs.raster == "thread", "the cross-check runs on the default backend too")
 machine.pci.slot[1].card.watch.add{x = 55, y = 52}
 machine.pci.slot[1].card.watch.add{x = 60, y = 51}

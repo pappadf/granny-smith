@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: IIcx + 8•24 GC — 8-bpp colour rasterizer math, exact bytes.
 --
 -- Drives the DrawMultiObject queue directly (same poke transport as

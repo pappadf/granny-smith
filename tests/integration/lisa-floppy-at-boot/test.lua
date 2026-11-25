@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: Apple Lisa 2 -- a diskette in the drive at power-on.
 --
 -- The LOS 3.1 ProFile is the startup disk (BootVol = 2, as hd0= / the New

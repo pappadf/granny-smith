@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- AFP end-to-end fork fidelity.
 --
 -- One script that walks the whole chain and pins every protocol-visible stage:
@@ -59,7 +58,7 @@ assert(appletalk.afp.volumes.add("My Volume", F"${vars.WORK_DIR}/share").name ==
 assert(appletalk.afp.volumes["My Volume"].cnid_count == 1, "a fresh catalog holds only the root")
 
 -- Apple menu → Chooser → AppleShare → the server → Guest: the volume list
--- (lib/afp.script).
+-- (lib/afp.lua).
 afp_chooser_to_volumes("", "")
 
 -- Select "My Volume", then OK — the mount itself — and close the Chooser.

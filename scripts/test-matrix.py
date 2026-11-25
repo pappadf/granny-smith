@@ -3,8 +3,8 @@
 # Copyright (c) pappadf
 """test-matrix.py — extract the integration-test coverage matrix.
 
-Statically parses tests/integration/*/config.mk and test.lua (or a test
-not yet ported, test.script; plus any *.sh TEST_RUNNER scripts) and emits:
+Statically parses tests/integration/*/config.mk and test.lua (and its step
+files), plus any *.sh TEST_RUNNER scripts, and emits:
 
   - a per-test inventory table   (--tests)
   - a machine x system pivot     (--pivot, default)
@@ -71,12 +71,12 @@ def rom_defaults(roms):
               "(rows fall back to their model=)", file=sys.stderr)
         return {}
     with tempfile.TemporaryDirectory() as work:
-        script = Path(work) / "identify.script"
+        script = Path(work) / "identify.lua"
         lines = []
         for rel, path in files.items():
-            lines.append(f"echo GSROM {rel}")
-            lines.append(f'echo "${{machine.rom.identify(\'{path}\')}}"')
-        lines.append("quit")
+            lines.append(f"print({json.dumps('GSROM ' + rel)})")
+            lines.append(f"print(gs.str(machine.rom.identify({json.dumps(str(path))})))")
+        lines.append("quit()")
         script.write_text("\n".join(lines) + "\n")
         boot = next(iter(files.values()))  # headless needs a ROM to start with
         env = dict(os.environ, GS_STORAGE_CACHE=str(Path(work) / "cache"))
@@ -255,7 +255,7 @@ def parse_test(d):
         s = classify_media(fields["SETUP"])
         if s:
             test.ms.add((test.machine, s))
-    for script in sorted(d.glob("*.lua")) + sorted(d.glob("*.script")) + sorted(d.glob("*.sh")):
+    for script in sorted(d.glob("*.lua")) + sorted(d.glob("*.sh")):
         test.machine = test.default_machine     # each file starts fresh
         parse_script(test, script.read_text(errors="replace"), lua=script.suffix == ".lua")
     return test
@@ -523,7 +523,7 @@ def main():
     ROM_DEFAULT.update(rom_defaults(roms))
     tests = [parse_test(d) for d in sorted(root.iterdir())
              if (d / "config.mk").exists()
-             and ((d / "test.lua").exists() or (d / "test.script").exists())]
+             and (d / "test.lua").exists()]
     if "--tests" in flags:
         emit_tests(tests)
     if "--video" in flags:

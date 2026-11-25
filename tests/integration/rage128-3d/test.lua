@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- The Rage 128 GL's 3D engine, driven through the CCE.
 --
 -- As in rage128-2d and rage128-cce, a Power Macintosh 9500 that never runs

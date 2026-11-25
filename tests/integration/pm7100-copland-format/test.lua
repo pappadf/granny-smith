@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: Power Macintosh 7100 — format Copland's target volume.
 --
 -- Phases 1-2 of the Copland install: boot the host environment, then

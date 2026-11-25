@@ -15,7 +15,7 @@ Needs a gs-headless built with the page-heat profiler:
        EXTRA_CFLAGS=-DPD_PROFILE
   scripts/bench/page_heat.py --bin build/headless-prof/gs-headless
 
-The rows are tests/bench/<row>.script plus pm6100-desktop (below), each
+The rows are tests/bench/<row>.lua plus pm6100-desktop (below), each
 with its own boot; the window starts where the row's boot ends.
 """
 
@@ -31,17 +31,17 @@ import run as bench  # noqa: E402
 # The 601 at the same System 7.6 desktop as pm8500-finder (the browser
 # perf spec's pm6100desk): the ROM's interpretive 68K emulator.
 PM6100_DESKTOP = """
-def bench_boot() {
-    machine.boot model="pm6100" ram=24576 rom="${$TEST_DATA}/roms/pm6100-pm7100-pm8100-9feb69b3.rom"
+function bench_boot()
+    machine.boot{model = "pm6100", ram = 24576, rom = vars.TEST_DATA .. "/roms/pm6100-pm7100-pm8100-9feb69b3.rom"}
     machine.rtc.time = 3000000000
-    machine.scsi.attach_hd "${$TEST_DATA}/systems/system_7_6_170mb_24ac.img" 0
-    scheduler.run 4000000000
+    machine.scsi.attach_hd(vars.TEST_DATA .. "/systems/system_7_6_170mb_24ac.img", 0)
+    scheduler.run(4000000000)
     bench_guard()
-}
+end
 
-def bench_guard() {
+function bench_guard()
     bench_assert_68k_emulator("pm6100-desktop")
-}
+end
 """
 
 EXTRA_ROWS = {
@@ -67,22 +67,22 @@ def profile_row(binary, row, window, test_data, work):
     d = os.path.join(work, row["name"])
     os.makedirs(d, exist_ok=True)
     out = os.path.join(d, "heat.json")
-    script = os.path.join(d, "heat.script")
+    script = os.path.join(d, "heat.lua")
     with open(script, "w") as f:
-        f.write('include "%s"\n' % os.path.join(bench.ROOT, "tests", "integration", "lib", "mac.script"))
-        f.write('include "%s"\n' % os.path.join(bench.BENCH_DIR, "lib", "bench.script"))
         if "script" in row:
+            f.write("mac = dofile(%s)\n" % bench.lua_str(os.path.join(bench.ROOT, "tests", "integration", "lib", "mac.lua")))
+            f.write("dofile(%s)\n" % bench.lua_str(os.path.join(bench.BENCH_DIR, "lib", "bench.lua")))
             f.write(row["script"])
         else:
-            f.write('include "%s"\n' % os.path.join(bench.BENCH_DIR, row["name"] + ".script"))
+            f.write(bench.driver_prologue(row))
         f.write("bench_boot()\n")
         f.write("predecode.profile_reset()\n")
-        f.write("let i0 = scheduler.instr_count\n")
-        f.write("scheduler.run %d\n" % window)
-        f.write('echo "@@HEAT {\\"guest_instr\\":${scheduler.instr_count - $i0}}"\n')
-        f.write('predecode.profile("%s")\n' % out)
+        f.write("local i0 = scheduler.instr_count\n")
+        f.write("scheduler.run(%d)\n" % window)
+        f.write("print(string.format('@@HEAT {\"guest_instr\":%d}', scheduler.instr_count - i0))\n")
+        f.write("predecode.profile(%s)\n" % bench.lua_str(out))
         f.write("bench_check()\n")
-        f.write("quit\n")
+        f.write("quit()\n")
     cmd = [
         binary, "rom=" + os.path.join(test_data, row["rom"]), "model=" + row["model"], "ram=%d" % row["ram"],
         "script=" + script, "--var", "TEST_DATA=" + test_data, "--var", "BENCH_DIR=" + bench.BENCH_DIR,

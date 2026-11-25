@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: Apple Lisa 2 — machine.floppy.drive[0].image.export.
 --
 -- The Lisa's Sony disk keeps writes in a delta and its 12-byte sector tags in

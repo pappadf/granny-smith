@@ -1,4 +1,3 @@
--- Converted from q7.script by scripts/script-to-lua.py
 local mac = dofile("../lib/mac.lua")
 local hd_75 = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
 local hd_76 = "../../data/systems/system_7_6_170mb_24ac.img"

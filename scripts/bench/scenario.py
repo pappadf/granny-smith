@@ -5,7 +5,7 @@
 
 Times what a user waits for -- a menu opening, a window's genie into the
 Dock -- rather than a CPU-bound window.  A scenario is a script in
-tests/bench/ (osx-interactive.script, g3-boot-desktop.script) that boots to a state and saves a
+tests/bench/ (osx-interactive.lua, g3-boot-desktop.lua) that boots to a state and saves a
 checkpoint (MODE=boot), then loads it and plays its interactions, each a
 fixed stretch of scheduler slots, printing one @@SCEN line per interaction
 with its host wall time and the guest instructions it retired (MODE=run).
@@ -98,9 +98,11 @@ class Binary:
     def probe(self, rom):
         d = os.path.join(self.work, "probe")
         os.makedirs(d, exist_ok=True)
-        script = os.path.join(d, "probe.script")
+        script = os.path.join(d, "probe.lua")
         with open(script, "w") as f:
-            f.write('echo "@@PROBE {\\"jit\\":${try(jit.available, 0)}}"\nquit\n')
+            f.write("local ok, v = pcall(function() return jit.available end)\n"
+                    "print(string.format('@@PROBE {\"jit\":%d}', (ok and (v == true or v == 1)) and 1 or 0))\n"
+                    "quit()\n")
         p = subprocess.run([self.path, "rom=" + rom, "script=" + script] + EMU_FLAGS, cwd=d,
                            capture_output=True, text=True, timeout=300)
         probes = parse_tagged(p.stdout, "@@PROBE")
@@ -112,11 +114,12 @@ def run_scenario(binary, scen, name, mode, setup, test_data, tag, timeout):
     d = os.path.join(binary.work, name, tag)
     shutil.rmtree(d, ignore_errors=True)
     os.makedirs(d)
-    driver = os.path.join(d, "driver.script")
+    driver = os.path.join(d, "driver.lua")
     with open(driver, "w") as f:
-        body = "".join("    " + l + "\n" for l in setup.splitlines()) or "    let unused = 0\n"
-        f.write("def scen_setup() {\n%s}\n" % body)
-        f.write('include "%s"\n' % os.path.join(BENCH_DIR, name + ".script"))
+        body = "".join("    " + l + "\n" for l in setup.splitlines())
+        f.write("function scen_setup()\n%send\n" % body)
+        path = os.path.join(BENCH_DIR, name + ".lua")
+        f.write('dofile("%s")\n' % path.replace("\\", "\\\\").replace('"', '\\"'))
     cmd = [
         binary.path,
         "rom=" + os.path.join(test_data, scen["rom"]),
@@ -135,7 +138,9 @@ def run_scenario(binary, scen, name, mode, setup, test_data, tag, timeout):
         f.write("$ " + " ".join(cmd) + "\n" + p.stdout + p.stderr)
     shutil.rmtree(env["GS_STORAGE_CACHE"], ignore_errors=True)
     recs = parse_tagged(p.stdout, "@@SCEN")
-    failed = [l for l in (p.stdout + p.stderr).splitlines() if "ASSERT FAILED" in l]
+    # A failed script (an assert) ends the process with status 1; its error
+    # is the last line it wrote to stderr.
+    failed = (p.stderr.strip().splitlines() or ["exit %d" % p.returncode])[-1:] if p.returncode else []
     if failed or not recs:
         raise RuntimeError("%s %s %s failed (%s): %s" % (binary.label, name, tag, d, failed[:1] or "no @@SCEN lines"))
     return recs

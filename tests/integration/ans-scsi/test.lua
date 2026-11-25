@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- The SCRIPTS engine, driven by Open Firmware's own probe words.
 --
 -- What a successful probe proves is a whole chain, and none of it can be

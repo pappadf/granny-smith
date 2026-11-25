@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- TNT family suite — System 7.6 from a MESH disk, and the PCI display rows.
 --
 -- Row map:

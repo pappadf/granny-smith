@@ -1,7 +1,7 @@
 # Integration suite: Macintosh IIx
 #
 # One daemon run; rows re-instantiate via machine.boot and share the
-# harness in ../lib/mac.script. Absorbs iix-boot, iix-floppy and
+# harness in ../lib/mac.lua. Absorbs iix-boot, iix-floppy and
 # iix-824gc, and takes the re-hosted external-floppy test (the IIx
 # has two floppy bays, so the external FD1 path belongs on the two-bay
 # machine rather than the IIcx).

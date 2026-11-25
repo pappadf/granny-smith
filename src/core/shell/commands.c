@@ -7,7 +7,6 @@
 
 #include "commands.h"
 
-#include "shell_funcs.h"
 #include "status.h"
 #include "value.h"
 #include "job/job.h"
@@ -38,9 +37,7 @@ static const struct {
 };
 #define N_BUILTIN (sizeof(k_builtin) / sizeof(k_builtin[0]))
 
-// User commands, in declaration order.  Guarded by the job tables lock: the
-// interpreter (job thread) and completion / highlighting (emulator thread)
-// both read it.
+// User commands, in declaration order.
 typedef struct {
     char *name;
     char *target;
@@ -111,20 +108,17 @@ int shell_command_define(const char *name, const char *target, char *err, size_t
         snprintf(err, err_size, "out of memory");
         return -1;
     }
-    job_tables_lock();
     int i = user_index(name);
     if (i >= 0) {
         free(g_user[i].name);
         free(g_user[i].target);
         g_user[i] = (user_cmd_t){nm, tg};
-        job_tables_unlock();
         return 0;
     }
     if (g_user_count == g_user_cap) {
         size_t cap = g_user_cap ? g_user_cap * 2 : 8;
         user_cmd_t *grown = (user_cmd_t *)realloc(g_user, cap * sizeof(*grown));
         if (!grown) {
-            job_tables_unlock();
             free(nm);
             free(tg);
             snprintf(err, err_size, "out of memory");
@@ -134,7 +128,6 @@ int shell_command_define(const char *name, const char *target, char *err, size_t
         g_user_cap = cap;
     }
     g_user[g_user_count++] = (user_cmd_t){nm, tg};
-    job_tables_unlock();
     return 0;
 }
 
@@ -143,10 +136,8 @@ int shell_command_remove(const char *name, char *err, size_t err_size) {
         snprintf(err, err_size, "'%s' is a built-in command", name);
         return -1;
     }
-    job_tables_lock();
     int i = user_index(name);
     if (i < 0) {
-        job_tables_unlock();
         snprintf(err, err_size, "no command '%s'", name);
         return -1;
     }
@@ -154,7 +145,6 @@ int shell_command_remove(const char *name, char *err, size_t err_size) {
     free(g_user[i].target);
     memmove(&g_user[i], &g_user[i + 1], (g_user_count - (size_t)i - 1) * sizeof(*g_user));
     g_user_count--;
-    job_tables_unlock();
     return 0;
 }
 
@@ -166,11 +156,9 @@ bool shell_command_lookup(const char *word, node_t *out, char *target, size_t ta
     if (b >= 0) {
         snprintf(path, sizeof(path), "%s", k_builtin[b].target);
     } else {
-        job_tables_lock();
         int i = user_index(word);
         if (i >= 0)
             snprintf(path, sizeof(path), "%s", g_user[i].target);
-        job_tables_unlock();
         if (i < 0)
             return false;
     }
@@ -181,32 +169,18 @@ bool shell_command_lookup(const char *word, node_t *out, char *target, size_t ta
     return true;
 }
 
-shell_head_t shell_word_resolve(const char *word, size_t len, node_t *out, script_func_t **fn_out, char *target,
-                                size_t target_size) {
-    if (fn_out)
-        *fn_out = NULL;
+shell_head_t shell_word_resolve(const char *word, size_t len, node_t *out, char *target, size_t target_size) {
     if (len == 0 || len >= SHELL_NAME_MAX)
         return SHELL_HEAD_NONE;
     char name[SHELL_NAME_MAX];
     memcpy(name, word, len);
     name[len] = '\0';
-    script_func_t *fn = shell_func_find(name);
-    if (fn) {
-        if (fn_out)
-            *fn_out = fn;
-        else
-            shell_func_release(fn);
-        return SHELL_HEAD_FUNCTION;
-    }
     if (shell_command_lookup(name, out, target, target_size))
         return SHELL_HEAD_COMMAND;
     return SHELL_HEAD_NONE;
 }
 
-shell_head_t shell_head_resolve(const char *word, size_t len, node_t *out, script_func_t **fn_out, char *target,
-                                size_t target_size) {
-    if (fn_out)
-        *fn_out = NULL;
+shell_head_t shell_head_resolve(const char *word, size_t len, node_t *out, char *target, size_t target_size) {
     if (len == 0 || len >= SHELL_NAME_MAX)
         return SHELL_HEAD_NONE;
     char name[SHELL_NAME_MAX];
@@ -218,7 +192,7 @@ shell_head_t shell_head_resolve(const char *word, size_t len, node_t *out, scrip
             *out = n;
         return SHELL_HEAD_PATH;
     }
-    return shell_word_resolve(name, len, out, fn_out, target, target_size);
+    return shell_word_resolve(name, len, out, target, target_size);
 }
 
 void shell_command_each(shell_command_fn fn, void *ud) {
@@ -226,12 +200,10 @@ void shell_command_each(shell_command_fn fn, void *ud) {
         if (!fn(k_builtin[i].name, k_builtin[i].target, true, ud))
             return;
     // Copy under the lock: the callback may resolve paths or allocate.
-    job_tables_lock();
     size_t n = g_user_count;
     user_cmd_t *copy = n ? (user_cmd_t *)calloc(n, sizeof(*copy)) : NULL;
     for (size_t i = 0; copy && i < n; i++)
         copy[i] = (user_cmd_t){strdup(g_user[i].name), strdup(g_user[i].target)};
-    job_tables_unlock();
     bool go = true;
     for (size_t i = 0; copy && i < n; i++) {
         if (go && copy[i].name && copy[i].target)
@@ -243,13 +215,11 @@ void shell_command_each(shell_command_fn fn, void *ud) {
 }
 
 void shell_command_clear_user(void) {
-    job_tables_lock();
     for (size_t i = 0; i < g_user_count; i++) {
         free(g_user[i].name);
         free(g_user[i].target);
     }
     g_user_count = 0;
-    job_tables_unlock();
 }
 
 // === shell.command ============================================================
