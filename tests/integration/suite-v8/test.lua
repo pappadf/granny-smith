@@ -66,27 +66,33 @@ local function check_about(ref, clock)
 end
 
 -- One Finder + About row.
-local function about_row(label, model, media_kind, media, system, box, w, h, d, clock)
+local function about_row(label, model, media_kind, media, system, box, w, h, d, finder, about, clock)
     boot(model, media_kind, media)
     assert(machine.screen.width == w and machine.screen.height == h,
         F"${label}: screen ${machine.screen.width}x${machine.screen.height}")
     assert(machine.screen.depth == d, F"${label}: depth ${machine.screen.depth}")
-    local stem = F"goldens/${label}-${w}x${h}x${d}"
-    if clock then mac.check_ex(stem .. "-finder.png", 0, w - 150, 20, w - 60) else mac.check(stem .. "-finder.png") end
+    if clock then mac.check_ex(finder, 0, w - 150, 20, w - 60) else mac.check(finder) end
     mac.about_box()
-    check_about(stem .. "-about.png", clock)
+    check_about(about, clock)
     assert(box_flag() == box, F"${label}: BoxFlag ${box_flag()}, want ${box}")
     mac.report_row(system, "builtin", media_kind .. "-boot about")
     mac.report_perf("suite-v8/" .. label, scheduler.instr_count)
 end
 
-mac.row("lcii-701-fd", function() about_row("lcii-701-fd", "lcii", "fd", sys_701, "7.0.1", 13, 640, 480, 1) end)
-mac.row("lcii-71-hd", function() about_row("lcii-71-hd", "lcii", "hd", hd_71, "7.1", 31, 640, 480, 1) end)
-mac.row("lcii-753-hd", function() about_row("lcii-753-hd", "lcii", "hd", hd_753, "7.5.3", 31, 640, 480, 4, true) end)
-mac.row("clii-701-fd", function() about_row("clii-701-fd", "classicii", "fd", sys_701, "7.0.1", 17, 512, 342, 1) end)
-mac.row("clii-71-hd", function() about_row("clii-71-hd", "classicii", "hd", hd_71, "7.1", 17, 512, 342, 1) end)
-mac.row("ccl-753-hd", function() about_row("ccl-753-hd", "colorclassic", "hd", hd_753, "7.5.3", 43, 512, 384, 8, true) end)
-mac.row("ccl-76-hd", function() about_row("ccl-76-hd", "colorclassic", "hd", hd_76, "7.6", 43, 512, 384, 8, true) end)
+mac.row("lcii-701-fd", function() about_row("lcii-701-fd", "lcii", "fd", sys_701, "7.0.1", 13, 640, 480, 1,
+    "goldens/lcii-701-fd-640x480x1-finder.png", "goldens/lcii-701-fd-640x480x1-about.png") end)
+mac.row("lcii-71-hd", function() about_row("lcii-71-hd", "lcii", "hd", hd_71, "7.1", 31, 640, 480, 1,
+    "goldens/lcii-71-hd-640x480x1-finder.png", "goldens/lcii-71-hd-640x480x1-about.png") end)
+mac.row("lcii-753-hd", function() about_row("lcii-753-hd", "lcii", "hd", hd_753, "7.5.3", 31, 640, 480, 4,
+    "goldens/lcii-753-hd-640x480x4-finder.png", "goldens/lcii-753-hd-640x480x4-about.png", true) end)
+mac.row("clii-701-fd", function() about_row("clii-701-fd", "classicii", "fd", sys_701, "7.0.1", 17, 512, 342, 1,
+    "goldens/clii-701-fd-512x342x1-finder.png", "goldens/clii-701-fd-512x342x1-about.png") end)
+mac.row("clii-71-hd", function() about_row("clii-71-hd", "classicii", "hd", hd_71, "7.1", 17, 512, 342, 1,
+    "goldens/clii-71-hd-512x342x1-finder.png", "goldens/clii-71-hd-512x342x1-about.png") end)
+mac.row("ccl-753-hd", function() about_row("ccl-753-hd", "colorclassic", "hd", hd_753, "7.5.3", 43, 512, 384, 8,
+    "goldens/ccl-753-hd-512x384x8-finder.png", "goldens/ccl-753-hd-512x384x8-about.png", true) end)
+mac.row("ccl-76-hd", function() about_row("ccl-76-hd", "colorclassic", "hd", hd_76, "7.6", 43, 512, 384, 8,
+    "goldens/ccl-76-hd-512x384x8-finder.png", "goldens/ccl-76-hd-512x384x8-about.png", true) end)
 
 -- The Color Classic refuses System 7.0.1 with the startup alert, as the real
 -- machine does (it needs 7.1 and its System Enabler): the ROM identified the

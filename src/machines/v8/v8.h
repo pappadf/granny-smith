@@ -42,7 +42,7 @@ typedef struct v8_board {
     m68k_board_desc_t desc; // ROM window, I/O table, bus-error window
 
     // VIA1 port A machine-ID strap: the levels of PA6, PA4, PA2 and PA1
-    // (bit n of this byte is PAn), as the ROM's ProductInfo tables test them.
+    // (bit n of this byte is PAn), as the ROM's machine-identification tables test them.
     uint8_t id_strap;
 
     uint32_t pcb_ram; // RAM soldered to the logic board, in bytes (2 or 4 MB)

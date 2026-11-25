@@ -417,6 +417,21 @@ for m in iix iifx; do
     assert_contains "$m" '{"id":"fd1","label":"Second internal floppy drive","types":[{"id":"none","label":"None"},{"id":"hd","label":"SuperDrive (1.4 MB)"}],"default":"none"}' "$m's second internal bay ships empty"
 done
 
+# The V8 family (LC II, Classic II, Color Classic): a 68030 with its PMMU,
+# no NuBus, built-in video, AppleTalk; the Classic II alone keeps an
+# external floppy port.
+for m in lcii classicii colorclassic; do
+    assert_contains "$m" '"cpu":{"model":68030,"address_bits":32,"fpu":true}' "$m has a 68030 (FPU fitted: the optional 68882 is always modelled)"
+    assert_contains "$m" '"kind":"68030_pmmu"' "$m has the 68030 PMMU"
+    assert_contains "$m" '"nubus":false,"pci":false' "$m has no NuBus or PCI"
+    assert_contains "$m" '"freq":15667200' "$m runs at 15.6672 MHz"
+    assert_contains "$m" '{"id":"appletalk","label":"AppleTalk","kind":"choice","values":[{"id":"active","label":"Active"},{"id":"inactive","label":"Inactive"}],"default":"active"}' "$m has the AppleTalk option"
+    assert_contains "$m" '{"id":"10240","label":"10 MB"}],"default":"10240"' "$m tops out at the decoder's 10 MB"
+done
+assert_contains classicii '{"id":"fd1","label":"External floppy drive"' "classicii's external floppy port"
+assert_absent lcii '"id":"fd1"' "lcii has one floppy drive"
+assert_absent colorclassic '"id":"fd1"' "colorclassic has one floppy drive"
+
 # The floor: every registered model carries at least one assertion above.
 models=$(grep -o '^{"id":"[a-z0-9]*"' "$OUT" | sed 's/^{"id":"\(.*\)"/\1/')
 [ -n "$models" ] || { echo "FAIL: catalog.models dumped no profiles"; fail=1; }
