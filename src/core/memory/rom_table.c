@@ -52,16 +52,16 @@ static const char *const TNT[] = {"pm7500", "pm8500", "pm9500", "pm7600", NULL};
 // string as the 9500 v2 ROM.  Only the full id — header sum plus the
 // ConfigInfo 64-bit sum — tells them apart.  Never identify one by version.
 static const char *const ANS[] = {"ans500", "ans700", NULL};
+// Power Macintosh 7300/7600/8600/9600 1997 ROM ($960E4BE9) and the later
+// 8600/9600-only revision ($960FC647).
+static const char *const TNT97[] = {"pm7300", "pm7600", "pm8600", "pm9600", NULL};
+static const char *const TNT97_V2[] = {"pm8600", "pm9600", NULL};
 // Power Macintosh G3 (beige, "Gossamer") 4 MB ROMs.  One board program
 // serves the desktop, mini tower and Server G3 (and the All-in-One, not
 // emulated yet); the revision is an image property, not a model one.
 static const char *const G3[] = {"pmg3dt", "pmg3mt", NULL};
 // Apple Lisa 2 (rev H) and Macintosh XL ("3A") interleaved boot ROMs
 // (docs/reference/machines/lisa/lisa.md §16), each two 8 KB byte-slice chips.
-// Power Macintosh 7300/7600/8600/9600 1997 ROM ($960E4BE9) and the later
-// 8600/9600-only revision ($960FC647).
-static const char *const TNT97[] = {"pm7300", "pm7600", "pm8600", "pm9600", NULL};
-static const char *const TNT97_V2[] = {"pm8600", "pm9600", NULL};
 static const char *const LISA[] = {"lisa", NULL};
 static const char *const MACXL[] = {"macxl", NULL};
 
