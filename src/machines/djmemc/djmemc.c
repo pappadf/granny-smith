@@ -12,6 +12,7 @@
 #include "djmemc.h"
 
 #include "config_seed.h"
+#include "cpuid_page.h"
 #include "mac_host_io.h"
 #include "machine_checkpoint.h"
 #include "machine_teardown.h"
@@ -457,39 +458,6 @@ static void djmemc_io_bind(config_t *cfg) {
 }
 
 // ============================================================
-// CPU-ID register ($5FFFFFFC)
-// ============================================================
-
-static uint8_t djmemc_cpuid_read8(void *ctx, uint32_t offset) {
-    config_t *cfg = ctx;
-    uint32_t id = djmemc_board(cfg)->cpuid ? djmemc_board(cfg)->cpuid : DJMEMC_CPUID_VALUE;
-    if ((offset & 0xFFCu) == 0xFFCu)
-        return be_lane8(id, offset & 3u);
-    return 0xFF; // the rest of the page: nothing drives the bus
-}
-
-static uint16_t djmemc_cpuid_read16(void *ctx, uint32_t offset) {
-    return (uint16_t)((djmemc_cpuid_read8(ctx, offset) << 8) | djmemc_cpuid_read8(ctx, offset + 1));
-}
-
-static uint32_t djmemc_cpuid_read32(void *ctx, uint32_t offset) {
-    return ((uint32_t)djmemc_cpuid_read16(ctx, offset) << 16) | djmemc_cpuid_read16(ctx, offset + 2);
-}
-
-static void djmemc_cpuid_write8(void *ctx, uint32_t offset, uint8_t value) {
-    (void)ctx;
-    LOG(2, "CPU-ID write $%03X = $%02X ignored (read-only)", offset, value);
-}
-
-static void djmemc_cpuid_write16(void *ctx, uint32_t offset, uint16_t value) {
-    djmemc_cpuid_write8(ctx, offset, (uint8_t)value);
-}
-
-static void djmemc_cpuid_write32(void *ctx, uint32_t offset, uint32_t value) {
-    djmemc_cpuid_write8(ctx, offset, (uint8_t)value);
-}
-
-// ============================================================
 // /SLOTIRQ aggregation
 // ============================================================
 
@@ -643,13 +611,7 @@ static void djmemc_memory_layout(config_t *cfg) {
     memory_map_add(cfg->memory_map, 0x50000000u, 0x04000000u, "I/O", &st->io_interface, &st->io);
 
     // CPU-ID register page at $5FFFF000 (the register is its last long).
-    st->cpuid_interface.read_uint8 = djmemc_cpuid_read8;
-    st->cpuid_interface.read_uint16 = djmemc_cpuid_read16;
-    st->cpuid_interface.read_uint32 = djmemc_cpuid_read32;
-    st->cpuid_interface.write_uint8 = djmemc_cpuid_write8;
-    st->cpuid_interface.write_uint16 = djmemc_cpuid_write16;
-    st->cpuid_interface.write_uint32 = djmemc_cpuid_write32;
-    memory_map_add(cfg->memory_map, 0x5FFFF000u, 0x00001000u, "CPU-ID", &st->cpuid_interface, cfg);
+    cpuid_page_install(&st->cpuid, cfg->memory_map, desc->cpuid ? desc->cpuid : DJMEMC_CPUID_VALUE);
 
     // Video: the frame-buffer controller's registers at $F9800000, VRAM
     // pages direct at $F9000000.

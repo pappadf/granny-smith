@@ -46,6 +46,7 @@
 #define GS_MACHINES_DJMEMC_H
 
 #include "checkpoint.h"
+#include "cpuid_page.h"
 #include "iosb.h"
 #include "m68k_board.h"
 #include "m68k_board_io.h"
@@ -188,7 +189,7 @@ typedef struct djmemc_state {
 
     board_io_t io; // device handles for the shared I/O engine
     memory_interface_t io_interface; // registered at the $50000000 island
-    memory_interface_t cpuid_interface; // the CPU-ID page at $5FFFF000
+    cpuid_page_t cpuid; // the CPU-ID page at $5FFFF000
     memory_interface_t video_interface; // MEMCjr: the video registers seen through the latch
     const memory_interface_t *dafb_iface; // MEMCjr: the frame-buffer controller's own face
 
