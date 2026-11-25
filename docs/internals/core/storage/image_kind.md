@@ -447,10 +447,10 @@ table, not the identity.
 
 | Removed | Use |
 |---|---|
-| `files.identify_floppy(p)` | `contains(files.identify(p).fits, "floppy")` |
+| `files.identify_floppy(p)` | `gs.contains(files.identify(p).fits, "floppy")` |
 | `machine.floppy.identify(p)` | `files.identify(p).floppy` |
-| `machine.scsi.identify_hd(p)` | `contains(…fits, "hd")` |
-| `machine.scsi.identify_cdrom(p)` | `contains(…fits, "cd")` |
+| `machine.scsi.identify_hd(p)` | `gs.contains(…fits, "hd")` |
+| `machine.scsi.identify_cdrom(p)` | `gs.contains(…fits, "cd")` |
 | `machine.scsi.identify_iso(p)` | `…kind == "cd"` |
 | `files.image_error(p)` | `…refusal` |
 | `files.archive.identify(p)` | `…archive` (`files.archive.extract/import` stay) |

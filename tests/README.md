@@ -20,7 +20,7 @@ tests/
 │
 ├── integration/                    # Native C integration tests (headless)
 │   ├── Makefile                    #   Auto-discovers test dirs with test.lua
-│   ├── lib/                        #   Shared row/wait/golden library (include'd)
+│   ├── lib/                        #   Shared row/wait/golden library (dofile'd)
 │   ├── suite-<family>/             #   Per-machine suites (rows + goldens/)
 │   └── <name>/                     #   One directory per test (config.mk, test.lua)
 │
@@ -115,7 +115,7 @@ Adding New Tests
 2. `config.mk` sets `TEST_ROM`, `TEST_ARGS` and `TEST_TIER` (`unit`, `matrix`
    or `extended`; a test without a tier runs in no CI step). A boot belongs as
    a row in its machine's `suite-<family>` instead of a directory of its own.
-3. `test.lua` contains shell commands and expected-output checks.
+3. `test.lua` is the Lua script that drives the emulator and asserts (`docs/internals/core/lua/lua.md`).
 4. Run: `make -C tests/integration test-foo`.
 
 ### New e2e test
