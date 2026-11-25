@@ -60,6 +60,30 @@ typedef void (*m68k_board_fill_fn)(uint32_t page_index, uint8_t *host_ptr, bool 
 void m68k_board_map_mirrored(uint32_t start_page, uint32_t window_pages, uint8_t *host, uint32_t size_pages,
                              m68k_board_fill_fn fill, bool writable);
 
+// One DRAM bank as a memory controller places it.
+typedef struct m68k_board_bank {
+    uint32_t start; // the physical address the controller decodes it from
+    uint32_t size; // installed bytes (0 = an empty bank)
+    uint32_t image_off; // where its bytes live in the flat RAM image
+} m68k_board_bank_t;
+
+// Apply a memory controller's bank placement to the page table.  A populated
+// bank decodes from its start up to whichever populated bank starts next
+// above it, or `window` bytes if none does, and mirrors its size through
+// that span -- the boot ROMs size a bank by parking it on a window boundary
+// and finding where its image repeats.  `span` (0: none) caps every bank's
+// decode at the controller's reach.
+//
+// `extent` (NULL: keep whatever is mapped) is the caller's tracked reach of
+// the previous mapping: the pages below it are cleared first, so a bank that
+// moves (the ROMs park the banks, size them, then stitch them contiguous)
+// leaves no stale image, and it is updated to this mapping's reach.  Seed it
+// with the controller's whole reach whenever anything else may have filled
+// low pages (construction, the overlay arming).  `bus_mmu` (NULL: none) has
+// its TLB flushed afterwards.
+void m68k_board_map_banks(config_t *cfg, const m68k_board_bank_t *banks, int count, uint32_t window, uint32_t span,
+                          uint32_t *extent, struct mmu_state *bus_mmu);
+
 // Hardware RESET (the board's /RESET net): re-enable the ROM overlay and reset
 // the devices every board shares.  The 68030 PMMU is inside the CPU, not on the
 // net, so it is left to cpu_hardware_reset.  `overlay` is the machine's

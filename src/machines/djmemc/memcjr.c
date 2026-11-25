@@ -37,33 +37,12 @@ static const uint32_t memcjr_ram_options_kb[] = {4096, 5120, 6144, 8192, 12288, 
 
 // --- Boards --------------------------------------------------------------------
 
-// VRAM: two 68-pin VRAM SIMMs, 512 KB or 1 MB; modelled maxed.
-static const djmemc_board_desc_t lc475_board = {
-    .common = MEMCJR_BOARD_COMMON,
-    .chip = DJMEMC_CHIP_MEMCJR,
-    .cpuid = MEMCJR_CPUID_LC475,
-    .ram_onboard = 0x00400000u,
-    .simm_slots = 1,
-    .vram_size = 0x00100000u,
-};
+// A MEMCjr board: its CPU-ID; 4 MB soldered and one SIMM socket.
+#define MEMCJR_BOARD(cpuid_) {MEMCJR_DESC_COMMON, .cpuid = (cpuid_), .ram_onboard = 0x00400000u, .simm_slots = 1}
 
-static const djmemc_board_desc_t q605_board = {
-    .common = MEMCJR_BOARD_COMMON,
-    .chip = DJMEMC_CHIP_MEMCJR,
-    .cpuid = MEMCJR_CPUID_Q605,
-    .ram_onboard = 0x00400000u,
-    .simm_slots = 1,
-    .vram_size = 0x00100000u,
-};
-
-static const djmemc_board_desc_t lc575_board = {
-    .common = MEMCJR_BOARD_COMMON,
-    .chip = DJMEMC_CHIP_MEMCJR,
-    .cpuid = MEMCJR_CPUID_LC575,
-    .ram_onboard = 0x00400000u,
-    .simm_slots = 1,
-    .vram_size = 0x00100000u,
-};
+static const djmemc_board_desc_t lc475_board = MEMCJR_BOARD(MEMCJR_CPUID_LC475);
+static const djmemc_board_desc_t q605_board = MEMCJR_BOARD(MEMCJR_CPUID_Q605);
+static const djmemc_board_desc_t lc575_board = MEMCJR_BOARD(MEMCJR_CPUID_LC575);
 
 // --- The LC 575's built-in display ---------------------------------------------
 // The 14" colour CRT is cabled with the 640 x 480 RGB sense code (6).

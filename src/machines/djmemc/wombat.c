@@ -53,45 +53,20 @@ static const uint32_t wlcd_ram_options_kb[] = {4096, 8192, 12288, 16384, 20480, 
 
 // --- Boards --------------------------------------------------------------------
 
-static const djmemc_board_desc_t c610_board = {
-    .common = DJMEMC_BOARD_COMMON,
-    .via1_id = 0x40, // WLCD, 20 MHz
-    .ram_onboard = 0x00400000u,
-    .simm_slots = 2,
-    .vram_size = 0x00100000u, // modelled maxed (512 KB base)
-};
+// A djMEMC board: its VIA1 identity straps (package and clock), soldered RAM
+// and SIMM sockets.
+#define DJMEMC_BOARD(via1_id_, onboard_, simms_)                                                                       \
+    {DJMEMC_DESC_COMMON, .via1_id = (via1_id_), .ram_onboard = (onboard_), .simm_slots = (simms_)}
+// The WLCD boards: 4 MB soldered, two sockets.
+#define WLCD_BOARD(via1_id_) DJMEMC_BOARD(via1_id_, 0x00400000u, 2)
+// The Wombat boards: 8 MB soldered, four sockets.
+#define WOMBAT_BOARD(via1_id_) DJMEMC_BOARD(via1_id_, 0x00800000u, 4)
 
-static const djmemc_board_desc_t q610_board = {
-    .common = DJMEMC_BOARD_COMMON,
-    .via1_id = 0x44, // WLCD, 25 MHz
-    .ram_onboard = 0x00400000u,
-    .simm_slots = 2,
-    .vram_size = 0x00100000u,
-};
-
-static const djmemc_board_desc_t c650_board = {
-    .common = DJMEMC_BOARD_COMMON,
-    .via1_id = 0x46, // Lego package, 25 MHz
-    .ram_onboard = 0x00800000u,
-    .simm_slots = 4,
-    .vram_size = 0x00100000u,
-};
-
-static const djmemc_board_desc_t q650_board = {
-    .common = DJMEMC_BOARD_COMMON,
-    .via1_id = 0x52, // Lego package, 33 MHz
-    .ram_onboard = 0x00800000u,
-    .simm_slots = 4,
-    .vram_size = 0x00100000u,
-};
-
-static const djmemc_board_desc_t q800_board = {
-    .common = DJMEMC_BOARD_COMMON,
-    .via1_id = 0x12, // Frigidaire package, 33 MHz
-    .ram_onboard = 0x00800000u,
-    .simm_slots = 4,
-    .vram_size = 0x00100000u,
-};
+static const djmemc_board_desc_t c610_board = WLCD_BOARD(0x40); // WLCD, 20 MHz
+static const djmemc_board_desc_t q610_board = WLCD_BOARD(0x44); // WLCD, 25 MHz
+static const djmemc_board_desc_t c650_board = WOMBAT_BOARD(0x46); // Lego package, 25 MHz
+static const djmemc_board_desc_t q650_board = WOMBAT_BOARD(0x52); // Lego package, 33 MHz
+static const djmemc_board_desc_t q800_board = WOMBAT_BOARD(0x12); // Frigidaire package, 33 MHz
 
 // --- Profiles --------------------------------------------------------------------
 

@@ -17,6 +17,7 @@
 
 #include "checkpoint.h"
 #include "common.h"
+#include "cpu.h" // cpu_has_fpu (profile_has_fpu)
 #include "machine_build_opts.h"
 #include "machine_config_decl.h"
 #include <stdbool.h>
@@ -598,6 +599,12 @@ static inline bool hw_profile_ram_option_allowed(const hw_profile_t *p, uint32_t
             return true;
     }
     return false;
+}
+
+// True if the profile's CPU is built with its FPU: the model has one and the
+// board does not leave it out (fpu_absent).
+static inline bool profile_has_fpu(const hw_profile_t *p) {
+    return cpu_has_fpu(p->cpu_model) && !p->fpu_absent;
 }
 
 // Registry: enumerate the built-in profiles.  *out_count receives the count.
