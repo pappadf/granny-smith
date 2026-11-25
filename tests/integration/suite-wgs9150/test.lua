@@ -25,6 +25,8 @@
 -- BoxFlag assertions carry the model identity.
 
 local mac = dofile("../lib/mac.lua")
+local ppc = dofile("../lib/ppc_rows.lua")
+local boxflag, dispatch = ppc.boxflag, ppc.dispatch
 
 local hd_753 = "../../data/systems/system_7_5_3_25mb_bare.img"
 local hd_76 = "../../data/systems/system_7_6_170mb_24ac.img"
@@ -33,13 +35,6 @@ local rom_120 = "../../data/roms/wgs9150-120mhz-9b037f6f-d20052bd25d88bd6.rom"
 
 local id_80 = "9c7c98f7-e9220fe5992ffdf2"
 local id_120 = "9b037f6f-d20052bd25d88bd6"
-
--- BoxFlag, read through the user-context window once the 68k emulator is
--- in user mode.
-local function boxflag()
-    while (machine.cpu.msr & 0x4000) == 0 do scheduler.run(1000) end
-    return machine.cpu.mmu.peek(0xCB3, 1)
-end
 
 -- Boot `model` from `hd` at SCSI id 0 to a stable Finder desktop.
 local function boot_hd(model, rom, hd, slots)
@@ -87,12 +82,7 @@ local function row_wgs9150_120_76_hd()
 end
 
 local function row_wgs9150_76_fd()
-    machine.boot{model = "wgs9150", ram = 32768, rom = vars.ROM}
-    machine.rtc.time = 0xE0000000
-    machine.floppy.drive[0].insert(fd_76)
-    assert(machine.floppy.drive[0].present, "boot floppy not in FD0")
-    mac.run_until_match_ex("goldens/wgs9150-7.6-floppy-boot.png", 0, 440, 20, 640, 7600000000, 250000000)
-    mac.check_ex("goldens/wgs9150-7.6-floppy-boot.png", 0, 440, 20, 640)
+    ppc.boot_install1("wgs9150", 32768, vars.ROM, 0xE0000000, fd_76, "goldens/wgs9150-7.6-floppy-boot.png")
     assert(boxflag() == 0x21, F"BoxFlag ${boxflag()}, want $21")
     mac.report_row("7.6", "swim3", "fd-boot")
     mac.report_perf("suite-wgs9150/wgs9150-76-fd", scheduler.instr_count)
@@ -115,16 +105,6 @@ local function row_wgs9150_24ac_slot_a()
 end
 
 -- ---- row dispatch -----------------------------------------------------------
-
-local function dispatch(label, fn, media)
-    if mac.row_on(label) then
-        if mac.have_media(media) then
-            mac.row(label, fn)
-        else
-            echo(F"skip: ${label} (${media} not fetched)")
-        end
-    end
-end
 
 dispatch("wgs9150-753-hd", row_wgs9150_753_hd, hd_753)
 dispatch("wgs9150-120-76-hd", row_wgs9150_120_76_hd, hd_76)
