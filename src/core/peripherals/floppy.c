@@ -328,7 +328,7 @@ int floppy_disk_status_at(floppy_t *floppy, int drv, uint8_t lines, bool peek) {
             desc = is_hd ? "INDEX(HD)" : "INDEX(800K)";
         } else {
             const char *tach_reason = NULL;
-            ret = iwm_tach_signal(floppy->scheduler, drive, &tach_reason);
+            ret = iwm_tach_signal(floppy->scheduler, drive, floppy->pwm_rpm, &tach_reason);
             desc = "/TACH";
         }
         LOG(6, "Drive %d: Reading %s = %d (ism=%d ism_mode=0x%02X in_ism=%d track=%d)", drv, desc, ret, ism_index,
@@ -668,6 +668,12 @@ void floppy_iwm_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
 // ============================================================================
 // Public API
 // ============================================================================
+
+// The spindle speed the board's disk-speed PWM commands (0 = self-regulating)
+void floppy_set_pwm_rpm(floppy_t *floppy, double rpm) {
+    if (floppy)
+        floppy->pwm_rpm = rpm;
+}
 
 // Sets the VIA-driven SEL signal for head selection
 void floppy_set_sel_signal(floppy_t *floppy, bool sel) {

@@ -63,6 +63,12 @@ int floppy_insert(floppy_t *floppy, int drive, image_t *disk);
 bool floppy_is_inserted(floppy_t *floppy, int drive);
 // Sets the VIA-driven SEL signal for head selection
 void floppy_set_sel_signal(floppy_t *floppy, bool sel);
+
+// The spindle speed, in rpm, that the board's disk-speed PWM commands of a
+// drive without speed control of its own (the 128K/512K 400K drive): its
+// /TACH then follows it instead of the drive's track zone.  0 restores the
+// self-regulating drive.
+void floppy_set_pwm_rpm(floppy_t *floppy, double rpm);
 // The SWIM register file, addressed by INDEX (0-15).  Whoever owns the bus
 // window maps addresses onto the index -- the chip never sees an address.
 // Mirrors swim3_read / swim3_write.

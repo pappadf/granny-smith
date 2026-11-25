@@ -20,7 +20,13 @@
 
 // A ROM for a machine that is not emulated.
 static const char *const NONE[] = {NULL};
-static const char *const PLUS[] = {"plus", NULL};
+static const char *const PLUS[] = {"plus", "mac512ke", NULL};
+// The 64 KB ROM, both revisions of which ran in the 128K and the 512K.
+static const char *const MAC64K[] = {"mac128k", "mac512k", NULL};
+static const char *const MAC64K_512[] = {"mac512k", "mac128k", NULL};
+static const char *const SE[] = {"se", NULL};
+static const char *const SEFDHD[] = {"sefdhd", NULL};
+static const char *const CLASSIC[] = {"classic", NULL};
 // Universal ROM: same bytes for IIx, IIcx, SE/30. Listed in machine_register
 // order so the *first* entry serves as a UI default (for tests that don't pick
 // explicitly), but the API never auto-selects.
@@ -72,8 +78,8 @@ static const char *const MACXL[] = {"macxl", NULL};
 const rom_info_t rom_table[] = {
     // --- Mac 68k: the header sum at offset 0 ---
     // verified from images
-    {"Macintosh-512k ROM", NONE, "28ba4e50", 64 * 1024, 0, 0},
-    {"Macintosh-128k ROM", NONE, "28ba61ce", 64 * 1024, 0, 0},
+    {"Macintosh-512k ROM", MAC64K_512, "28ba4e50", 64 * 1024, 0, 0, "Rev 2"},
+    {"Macintosh-128k ROM", MAC64K, "28ba61ce", 64 * 1024, 0, 0, "Rev 1"},
     {"Macintosh Plus (Rev 2, Lonely Heifers)", PLUS, "4d1eeae1", 128 * 1024, 0, 0, "Rev 2"},
     {"Macintosh Plus (Rev 1, Lonely Hearts)", PLUS, "4d1eeee1", 128 * 1024, 0, 0, "Rev 1"},
     {"Macintosh Plus (Rev 3, Loud Harmonicas)", PLUS, "4d1f8172", 128 * 1024, 0, 0, "Rev 3"},
@@ -82,8 +88,8 @@ const rom_info_t rom_table[] = {
     {"Universal IIx/IIcx/SE/30 ROM", UNIVERSAL, "97221136", 256 * 1024, 0, 0},
     {"MacII (800k v2) ROM", NONE, "9779d2c4", 256 * 1024, 0, 0},
     {"MacII (800k v1) ROM", NONE, "97851db6", 256 * 1024, 0, 0},
-    {"Mac SE ROM", NONE, "b2e362a8", 256 * 1024, 0, 0},
-    {"Mac SE FDHD ROM", NONE, "b306e171", 256 * 1024, 0, 0},
+    {"Mac SE ROM", SE, "b2e362a8", 256 * 1024, 0, 0},
+    {"Mac SE FDHD ROM", SEFDHD, "b306e171", 256 * 1024, 0, 0},
     {"Classic II ROM", NONE, "3193670e", 512 * 1024, 0, 0},
     {"Mac LC ROM", NONE, "350eacf0", 512 * 1024, 0, 0},
     {"Mac LCII ROM", NONE, "35c28f5f", 512 * 1024, 0, 0},
@@ -91,7 +97,7 @@ const rom_info_t rom_table[] = {
     {"Macintosh IIsi ROM", IISI, "36b7fb6c", 512 * 1024, 0, 0},
     {"Macintosh IIfx ROM", IIFX, "4147dd77", 512 * 1024, 0, 0},
     // The Classic's header sum stops at 256 KB, where its built-in ROM disk starts.
-    {"Macintosh Classic ROM", NONE, "a49f9914", 512 * 1024, 256 * 1024, 0},
+    {"Macintosh Classic ROM", CLASSIC, "a49f9914", 512 * 1024, 256 * 1024, 0},
     {"Powerbook Duo 270 ROM", NONE, "0024d346", 1024 * 1024, 0, 0},
     {"Powerbook 280&280c ROM", NONE, "015621d7", 1024 * 1024, 0, 0},
     {"Performa 580 & 588 ROM", NONE, "064dc91d", 1024 * 1024, 0, 0},

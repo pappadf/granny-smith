@@ -287,6 +287,11 @@ struct floppy {
     // nor the object model may put a disk there.  Set from the profile at
     // every build, so not checkpointed.
     int n_drives;
+    // The spindle speed the board's disk-speed PWM commands, in rpm, for a
+    // drive with no speed control of its own (the 128K's and 512K's
+    // single-sided 400K drive); 0 = the drive regulates itself by track zone.
+    // Re-sent by the board every VBL, so not checkpointed.
+    double pwm_rpm;
 };
 
 // Size of plain-data portion for checkpointing (excludes pointers at end)
@@ -312,7 +317,7 @@ size_t iwm_disk_image_offset(int track, int side, int num_sides);
 int iwm_image_num_sides(image_t *img);
 
 // Calculates TACH signal state (60 pulses per revolution)
-int iwm_tach_signal(struct scheduler *scheduler, floppy_drive_t *drive, const char **reason);
+int iwm_tach_signal(struct scheduler *scheduler, floppy_drive_t *drive, double pwm_rpm, const char **reason);
 
 // Returns a pointer to GCR data for the given drive/image/side, encoding on demand
 uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct scheduler *scheduler);

@@ -41,7 +41,7 @@ LOG_USE_CATEGORY_NAME("system");
 #include <time.h>
 
 // The built-in machine profiles, each defined in its family's machine file
-// (compact/plus.c, glue/{se30,iicx,iix}.c, mdu/{iici,iisi}.c, oss/iifx.c,
+// (compact/compact.c, glue/{se30,iicx,iix}.c, mdu/{iici,iisi}.c, oss/iifx.c,
 // mcu/, av/, pdm/, tnt/, gossamer/, lisa/lisa.c).  Declared here, not in
 // machine.h: the registry below is their only reader, so no other file has
 // to see every machine.
@@ -69,15 +69,22 @@ extern const hw_profile_t machine_ans500;
 extern const hw_profile_t machine_ans700;
 extern const hw_profile_t machine_pmg3dt;
 extern const hw_profile_t machine_pmg3mt;
+extern const hw_profile_t machine_mac128k;
+extern const hw_profile_t machine_mac512k;
+extern const hw_profile_t machine_mac512ke;
+extern const hw_profile_t machine_se;
+extern const hw_profile_t machine_sefdhd;
+extern const hw_profile_t machine_classic;
 
 // Registry of built-in machine profiles.  A static const array iterated
 // directly: adding a machine is its extern above plus one entry here (this
 // file only), no runtime machine_register(), no MAX_MACHINES cap.
 static const hw_profile_t *const builtin_machines[] = {
-    &machine_plus,   &machine_se30,   &machine_iicx,   &machine_iix,    &machine_iifx,   &machine_iici,
-    &machine_iisi,   &machine_q700,   &machine_q900,   &machine_q950,   &machine_q840av, &machine_q660av,
-    &machine_pm6100, &machine_pm7100, &machine_pm8100, &machine_pm7500, &machine_pm8500, &machine_pm9500,
-    &machine_ans500, &machine_ans700, &machine_pmg3dt, &machine_pmg3mt, &machine_lisa,   &machine_macxl,
+    &machine_plus,    &machine_se30,    &machine_iicx,     &machine_iix,    &machine_iifx,   &machine_iici,
+    &machine_iisi,    &machine_q700,    &machine_q900,     &machine_q950,   &machine_q840av, &machine_q660av,
+    &machine_pm6100,  &machine_pm7100,  &machine_pm8100,   &machine_pm7500, &machine_pm8500, &machine_pm9500,
+    &machine_ans500,  &machine_ans700,  &machine_pmg3dt,   &machine_pmg3mt, &machine_lisa,   &machine_macxl,
+    &machine_mac128k, &machine_mac512k, &machine_mac512ke, &machine_se,     &machine_sefdhd, &machine_classic,
 };
 static const size_t builtin_machine_count = sizeof(builtin_machines) / sizeof(builtin_machines[0]);
 
