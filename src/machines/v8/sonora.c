@@ -239,16 +239,7 @@ static void sonora_map_ram(config_t *cfg) {
     sonora_map_ram_decode(cfg, v8_st(cfg)->ram_exp);
 }
 
-void sonora_ram_cfg_written(void *ctx, uint8_t value) {
-    config_t *cfg = (config_t *)ctx;
-    v8_state_t *st = v8_st(cfg);
-    LOG(2, "Sonora RAM configuration = $%02X (pc=%08X)", value, cpu_get_pc(cfg->cpu));
-    st->ram_exp = value;
-    if (!st->overlay.armed)
-        sonora_map_ram_decode(cfg, value);
-}
-
-int sonora_ram_layout(config_t *cfg) {
+static int sonora_ram_layout(config_t *cfg) {
     const v8_board_t *b = v8_board(cfg);
     v8_state_t *st = v8_st(cfg);
     uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
@@ -265,7 +256,7 @@ int sonora_ram_layout(config_t *cfg) {
 // Memory layout
 // ============================================================
 
-void sonora_memory_layout_init(config_t *cfg) {
+static void sonora_memory_layout_init(config_t *cfg) {
     const v8_board_t *b = v8_board(cfg);
     v8_state_t *st = v8_st(cfg);
 
@@ -280,9 +271,10 @@ void sonora_memory_layout_init(config_t *cfg) {
     }
 
     // The overlay: ROM at zero until the first access to the ROM space.
-    m68k_board_overlay_init(&st->overlay, cfg, b->desc.rom_base, b->desc.rom_end, sonora_map_ram, b->chip);
-    memory_map_add(cfg->memory_map, b->desc.rom_base, b->desc.rom_end - b->desc.rom_base, "ROM aperture",
-                   &st->overlay.iface, &st->overlay);
+    const m68k_board_desc_t *d = &sonora_chip_ops.desc;
+    m68k_board_overlay_init(&st->overlay, cfg, d->rom_base, d->rom_end, sonora_map_ram, b->chip);
+    memory_map_add(cfg->memory_map, d->rom_base, d->rom_end - d->rom_base, "ROM aperture", &st->overlay.iface,
+                   &st->overlay);
     m68k_board_overlay_arm(&st->overlay);
 }
 
@@ -290,12 +282,12 @@ void sonora_memory_layout_init(config_t *cfg) {
 // Checkpoint and reset
 // ============================================================
 
-void sonora_checkpoint(config_t *cfg, checkpoint_t *cp) {
+static void sonora_checkpoint(config_t *cfg, checkpoint_t *cp) {
     v8_state_t *st = v8_st(cfg);
     system_write_checkpoint_data(cp, &st->sonora, sizeof st->sonora);
 }
 
-void sonora_restore(config_t *cfg, checkpoint_t *cp) {
+static void sonora_restore(config_t *cfg, checkpoint_t *cp) {
     v8_state_t *st = v8_st(cfg);
     system_read_checkpoint_data(cp, &st->sonora, sizeof st->sonora);
     if (!st->overlay.armed)
@@ -303,11 +295,36 @@ void sonora_restore(config_t *cfg, checkpoint_t *cp) {
 }
 
 // /RESET: the decoder's registers back to power-on (sense lines tri-stated),
-// and the video they drive with them.
-void sonora_bus_reset(config_t *cfg) {
+// and the video they drive with them; the RBV half and the RAM decode
+// register follow (v8.c).
+static void sonora_bus_reset(config_t *cfg) {
     v8_state_t *st = v8_st(cfg);
     memset(&st->sonora, 0, sizeof st->sonora);
     st->sonora.vd_sense = 7;
-    st->ram_exp = 0;
     v8_video_reset(cfg);
 }
+
+// The Sonora and Ardbeg decoders: 32-bit only, ROM through the whole ROM
+// space (the overlay's trigger), the island with Sonora's registers.
+const v8_chip_ops_t sonora_chip_ops = {
+    .desc =
+        {
+               .chipset = "Sonora",
+               .rom_base = V8_ROM_START,
+               .rom_end = V8_ROM_END,
+               .io_ranges = sonora_io_ranges_tbl,
+               .io_mirror_mask = V8_IO_MIRROR,
+               .io_unmapped_read = 0xFF,
+               .bus_err_lo = 0xFE000000u,
+               .bus_err_hi = 0xFEFFFFFFu,
+               },
+    .ram_layout = sonora_ram_layout,
+    .map_ram_decode = sonora_map_ram_decode,
+    .memory_layout_init = sonora_memory_layout_init,
+    .bus_reset = sonora_bus_reset,
+    .checkpoint = sonora_checkpoint,
+    .restore = sonora_restore,
+    .vram_base = SONORA_VRAM_BASE,
+    .video_ctl = true,
+    // No 24-bit windows: its MMU tables do the remapping.
+};

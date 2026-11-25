@@ -70,7 +70,7 @@ static void v8_video_update(config_t *cfg) {
             store_size = st->pcb_size;
             offset = st->pcb_size - (V8_RAM_SPACE - V8_RAM_IMAGE) + (b->dram_fb - V8_RAM_IMAGE);
         }
-    } else if (b->kind == V8_KIND_SONORA) {
+    } else if (v8_ops(cfg)->video_ctl) {
         // Sonora: rows packed at the mode's width (the video driver's
         // row bytes are width x depth / 8 in every mode).
         v->display.format = v8_depth_format(v->depth_code);
@@ -105,8 +105,7 @@ static uint64_t v8_fb_base(void *owner) {
     const v8_board_t *b = v8_board(cfg);
     if (b->fb_source == V8_FB_DRAM)
         return b->dram_fb;
-    return display_guest_addr(&st->video.display, st->video.vram, b->vram_size,
-                              b->kind == V8_KIND_SONORA ? SONORA_VRAM_BASE : V8_VRAM_BASE);
+    return display_guest_addr(&st->video.display, st->video.vram, b->vram_size, v8_ops(cfg)->vram_base);
 }
 
 // Latch the monitor strap: the raster the port's sense code selects.

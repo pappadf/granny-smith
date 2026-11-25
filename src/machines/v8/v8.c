@@ -88,7 +88,7 @@ static const memory_interface_t v8_ariel_iface = {
 static void v8_io_bind(config_t *cfg) {
     v8_state_t *st = v8_st(cfg);
     board_io_t *io = &st->io;
-    m68k_board_io_install(io, cfg, &v8_board(cfg)->desc);
+    m68k_board_io_install(io, cfg, &v8_ops(cfg)->desc);
     io->window_base = V8_ISLAND_BASE; // the island is mapped here, not at the ROM space's end
     board_io_bind_dev(io, BOARD_DEV_VIA1, cfg->via1, via_get_memory_interface(cfg->via1));
     board_io_bind_dev(io, BOARD_DEV_SCC, cfg->scc, scc_get_memory_interface(cfg->scc));
@@ -145,15 +145,16 @@ static void v8_map_ram(config_t *cfg) {
         page_fill_68k(p, rom + (((p - (V8_ROM_START >> MEM_PAGE_SHIFT)) % rom_pages) << MEM_PAGE_SHIFT), false);
 }
 
-// V8 expansion-register write: re-decode the RAM space (unless the ROM
-// overlay still owns the bottom of it; the drop decodes then).
-static void v8_exp_written(void *ctx, uint8_t value) {
+// The RAM-decode register written (the V8's expansion register, Sonora's RAM
+// configuration register; both the RBV's register 1): re-decode the RAM space
+// (unless the ROM overlay still owns the bottom of it; the drop decodes then).
+static void v8_ram_reg_written(void *ctx, uint8_t value) {
     config_t *cfg = (config_t *)ctx;
     v8_state_t *st = v8_st(cfg);
-    LOG(2, "V8 expansion register = $%02X (pc=%08X)", value, cpu_get_pc(cfg->cpu));
+    LOG(2, "%s RAM decode register = $%02X (pc=%08X)", v8_board(cfg)->chip, value, cpu_get_pc(cfg->cpu));
     st->ram_exp = value;
     if (!st->overlay.armed)
-        v8_map_ram_decode(cfg, value);
+        v8_ops(cfg)->map_ram_decode(cfg, value);
 }
 
 // Split the configured total into the SIMM bank and the soldered RAM and lay
@@ -238,10 +239,37 @@ static void v8_memory_layout_init(config_t *cfg) {
     m68k_board_overlay_init(&st->overlay, cfg, V8_LOW_ROM_START, V8_LOW_ROM_END, v8_map_ram, b->chip);
     memory_map_add(cfg->memory_map, V8_LOW_ROM_START, V8_LOW_ROM_END - V8_LOW_ROM_START, "ROM aperture (24-bit)",
                    &st->overlay.iface, &st->overlay);
-    memory_map_add(cfg->memory_map, b->desc.rom_base, b->desc.rom_end - b->desc.rom_base, "ROM aperture",
-                   &st->overlay.iface, &st->overlay);
+    memory_map_add(cfg->memory_map, V8_ROM_START, V8_ROM_END - V8_ROM_START, "ROM aperture", &st->overlay.iface,
+                   &st->overlay);
     m68k_board_overlay_arm(&st->overlay);
 }
+
+static void v8_chip_bus_reset(config_t *cfg);
+
+// The V8, Eagle and Spice decoders: the ROM space at $40000000 with the
+// 24-bit windows below, the I/O island the MDU's, the PDS slot's space empty.
+const v8_chip_ops_t v8_chip_ops = {
+    .desc =
+        {
+               .chipset = "V8",
+               .rom_base = V8_ROM_START,
+               .rom_end = V8_ROM_END,
+               .io_ranges = mdu_io_ranges_tbl,
+               .io_mirror_mask = V8_IO_MIRROR,
+               .io_unmapped_read = 0xFF,
+               .bus_err_lo = 0xFE000000u,
+               .bus_err_hi = 0xFEFFFFFFu,
+               },
+    .ram_layout = v8_ram_layout,
+    .map_ram_decode = v8_map_ram_decode,
+    .memory_layout_init = v8_memory_layout_init,
+    .bus_reset = v8_chip_bus_reset,
+    .vram_base = V8_VRAM_BASE,
+    // The decoder answers the whole low 16 MB (RAM, the 24-bit ROM and I/O
+    // windows): nothing there times out.  A write the ROM's tables send to
+    // the ROM through $A00000 completes and is dropped, as on the hardware.
+    .ram_size_max = V8_LOW_IO_BASE + V8_LOW_IO_SIZE,
+};
 
 // ============================================================
 // VIA1 / RBV / Egret wiring
@@ -292,8 +320,8 @@ static void part_save_v8(void *obj, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &st->ram_exp, 1);
     if (st->pcb_hidden)
         system_write_checkpoint_data(cp, st->pcb_hidden, st->pcb_size - (V8_RAM_SPACE - 8 * MB));
-    if (v8_board(cfg)->kind == V8_KIND_SONORA)
-        sonora_checkpoint(cfg, cp);
+    if (v8_ops(cfg)->checkpoint)
+        v8_ops(cfg)->checkpoint(cfg, cp);
     v8_video_checkpoint(cfg, cp);
 }
 
@@ -303,6 +331,7 @@ static void part_save_v8(void *obj, checkpoint_t *cp) {
 
 static int v8_init(config_t *cfg, checkpoint_t *cp) {
     const v8_board_t *b = v8_board(cfg);
+    const v8_chip_ops_t *ops = v8_ops(cfg);
     v8_state_t *st = calloc(1, sizeof(*st));
     if (!st) {
         LOG(0, "Error: out of memory allocating the machine state for %s", cfg->machine->name);
@@ -310,7 +339,7 @@ static int v8_init(config_t *cfg, checkpoint_t *cp) {
     }
     cfg->machine_context = st;
 
-    m68k_board_build_core(cfg, &b->desc, cp);
+    m68k_board_build_core(cfg, &ops->desc, cp);
     machine_part_irq(cfg, cp);
     m68k_board_build_lowspeed(cfg, cp, NULL);
 
@@ -327,8 +356,7 @@ static int v8_init(config_t *cfg, checkpoint_t *cp) {
     via_input_c(cfg->via1, 0, 0, 1);
     via_input_c(cfg->via1, 1, 0, 1);
 
-    bool sonora = b->kind == V8_KIND_SONORA;
-    if ((sonora ? sonora_ram_layout(cfg) : v8_ram_layout(cfg)) != 0)
+    if (ops->ram_layout(cfg) != 0)
         return -1;
 
     // ADB, the images, the Combo's 5380, the sound block (an ASC subset),
@@ -354,31 +382,25 @@ static int v8_init(config_t *cfg, checkpoint_t *cp) {
     // RvVIDOff switches off the VRAM video (the LC II's and the Color
     // Classic's); the Classic II's screen is scanned from DRAM by other logic,
     // and its ROM leaves the bit set.
-    if (!sonora) {
+    if (!ops->video_ctl) {
         rbv_set_mode_callback(st->rbv, v8_rbv_mode, cfg);
         if (b->fb_source == V8_FB_VRAM)
             rbv_set_blank_callback(st->rbv, v8_rbv_blank, cfg);
     }
-    rbv_set_exp_callback(st->rbv, sonora ? sonora_ram_cfg_written : v8_exp_written, cfg);
+    rbv_set_exp_callback(st->rbv, v8_ram_reg_written, cfg);
 
-    st->mmu = m68k_board_build_mmu(cfg, b->desc.rom_base, b->desc.rom_end);
+    st->mmu = m68k_board_build_mmu(cfg, ops->desc.rom_base, ops->desc.rom_end);
     if (!st->mmu)
         return -1;
     // The ROMs' MMU-enable sequence runs on from the instruction cache
     // across PMOVE to TC (mmu.h, icache_hold_*)
     st->mmu->icache_hold_enabled = true;
-    // The decoder answers the whole low 16 MB (RAM, the 24-bit ROM and I/O
-    // windows): nothing there times out.  A write the ROM's tables send to the
-    // ROM through $A00000 completes and is dropped, as on the hardware.
-    // (Sonora has no 24-bit windows: its MMU tables do the remapping.)
-    if (!sonora)
-        st->mmu->ram_size_max = V8_LOW_IO_BASE + V8_LOW_IO_SIZE;
+    // How far the decoder answers the PMMU's physical space (v8_chip_ops_t).
+    if (ops->ram_size_max)
+        st->mmu->ram_size_max = ops->ram_size_max;
 
     v8_io_bind(cfg);
-    if (sonora)
-        sonora_memory_layout_init(cfg);
-    else
-        v8_memory_layout_init(cfg);
+    ops->memory_layout_init(cfg);
 
     machine_part_begin(cfg, cp, "v8");
     if (cp) {
@@ -387,8 +409,8 @@ static int v8_init(config_t *cfg, checkpoint_t *cp) {
         system_read_checkpoint_data(cp, &st->ram_exp, 1);
         if (st->pcb_hidden)
             system_read_checkpoint_data(cp, st->pcb_hidden, st->pcb_size - (V8_RAM_SPACE - 8 * MB));
-        if (sonora)
-            sonora_restore(cfg, cp);
+        if (ops->restore)
+            ops->restore(cfg, cp);
         v8_video_restore(cfg, cp);
         if (!armed)
             m68k_board_overlay_drop(&st->overlay);
@@ -400,22 +422,22 @@ static int v8_init(config_t *cfg, checkpoint_t *cp) {
     return 0;
 }
 
+// The V8's half of /RESET: the re-armed overlay drops on the next ROM access
+// in EITHER map -- the ROM's restart path runs on in the 32-bit ROM space
+// after its RESET.
+static void v8_chip_bus_reset(config_t *cfg) {
+    v8_state_t *st = v8_st(cfg);
+    for (uint32_t p = V8_ROM_START >> MEM_PAGE_SHIFT; p < (V8_ROM_END >> MEM_PAGE_SHIFT) && p < g_page_count; p++)
+        page_route_device(p, &st->overlay.iface, &st->overlay, V8_ROM_START);
+}
+
 // The board's /RESET net: the overlay re-arms, the shared devices, the
-// pseudo-VIA2 (whose expansion register clears, so the RAM decode follows).
+// decoder's own half, the pseudo-VIA2 (whose RAM-decode register clears, so
+// the RAM decode follows).
 static void v8_bus_reset(config_t *cfg) {
     v8_state_t *st = v8_st(cfg);
     m68k_board_bus_reset(cfg, &st->overlay);
-    if (v8_board(cfg)->kind == V8_KIND_SONORA) {
-        // The overlay's aperture is the ROM space itself; the decoder's own
-        // registers clear.
-        rbv_reset(st->rbv);
-        sonora_bus_reset(cfg);
-        return;
-    }
-    // The re-armed overlay drops on the next ROM access in EITHER map: the
-    // ROM's restart path runs on in the 32-bit ROM space after its RESET.
-    for (uint32_t p = V8_ROM_START >> MEM_PAGE_SHIFT; p < (V8_ROM_END >> MEM_PAGE_SHIFT) && p < g_page_count; p++)
-        page_route_device(p, &st->overlay.iface, &st->overlay, V8_ROM_START);
+    v8_ops(cfg)->bus_reset(cfg);
     rbv_reset(st->rbv);
     st->ram_exp = 0;
 }
