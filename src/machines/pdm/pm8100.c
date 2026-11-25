@@ -33,6 +33,7 @@ static const pdm_board_desc_t pm8100_board = {
     PDM_8100_BOARD_COMMON, // 2:1 bus; the discrete 53CF96
     .machine_id = 0x3013,
     .wait_state_penalty = 2, // pinned by the pdm-rom-ladder L7 bus-ratio row
+    .first_nubus_slot = 0xB, // $B decoded, never a connector; $C-$E behind BART
 };
 
 const hw_profile_t machine_pm8100 = {

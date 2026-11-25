@@ -39,7 +39,7 @@ static const pdm_board_desc_t wgs9150_80_board = {
     PDM_8100_BOARD_COMMON, // 2:1 bus; the 8100's discrete 53CF96 internal bus
     .machine_id = 0x3014, // the 9150's own CPU identification (%100)
     .wait_state_penalty = 2, // the 8100's (pdm-rom-ladder L7)
-    .has_slot_a = true, // the fourth NuBus connector
+    .first_nubus_slot = 0xA, // the fourth NuBus connector, slot $A
 };
 
 // The 9150/120: 120 MHz 601 on a 40 MHz bus (3:1).
@@ -49,7 +49,7 @@ static const pdm_board_desc_t wgs9150_120_board = {
     // Sized so HWInit's bus-ratio measurement lands on 3:1 (a 40 MHz bus;
     // 2 measured 60 MHz, the 2:1 boards' answer).
     .wait_state_penalty = 3,
-    .has_slot_a = true,
+    .first_nubus_slot = 0xA,
 };
 
 // The two speeds differ in name, clock and board; the rest is the 8100's

@@ -59,9 +59,11 @@ typedef struct pdm_board_desc {
     // 8100 only: the discrete 53CF96 on the fast internal bus (SCSI bus 0,
     // register file at island +$11000, AMIC DMA channel B).
     bool has_fast_scsi;
-    // Workgroup Server 9150 only: a fourth NuBus connector at slot $A, its
-    // /NMRQ on the FAT AMIC's pseudo-VIA2 slot bank bit 1 (wgs9150.c).
-    bool has_slot_a;
+    // The lowest NuBus slot BART decodes and whose /NMRQ reaches AMIC's
+    // pseudo-VIA2 slot bank (through $E): $B on the 6100/7100/8100 (decoded,
+    // never a connector), $A on the Workgroup Server 9150, whose fourth
+    // connector there lands on the FAT AMIC's slot bank bit 1 (wgs9150.c).
+    uint8_t first_nubus_slot;
 } pdm_board_desc_t;
 
 // === HMC state (hmc.c) ======================================================
@@ -305,6 +307,16 @@ static inline pdm_state_t *pdm_st(config_t *cfg) {
 
 static inline const pdm_board_desc_t *pdm_board(config_t *cfg) {
     return (const pdm_board_desc_t *)cfg->machine->board;
+}
+
+// The last NuBus slot with a decoded window and a slot-bank line: $E, the
+// PDS video pseudo-slot.
+#define PDM_LAST_NUBUS_SLOT 0x0E
+
+// The pseudo-VIA2 slot-bank bits the board's slot lines occupy (bit =
+// slot - 9, from first_nubus_slot through $E): $3C, or $3E with slot $A.
+static inline uint8_t pdm_slot_irq_bits(config_t *cfg) {
+    return (uint8_t)((0x3Fu << (pdm_board(cfg)->first_nubus_slot - 9u)) & 0x3Fu);
 }
 
 // === pdm.c ==================================================================

@@ -41,6 +41,7 @@ static const pdm_board_desc_t pm7100_board = {
     .bank_layout = PDM_BANKS_FIXED,
     .bank_count = 4,
     .wait_state_penalty = 2, // pinned by the pdm-rom-ladder L7 bus-ratio row
+    .first_nubus_slot = 0xB, // $B decoded, never a connector; $C-$E behind BART
 };
 
 const hw_profile_t machine_pm7100 = {
