@@ -214,13 +214,16 @@ typedef struct tnt_hammerhead {
 
 typedef struct tnt_platinum {
     uint32_t reg[TNT_PLAT_REGS];
-    uint8_t vbl_pending; // a retrace not yet acknowledged
-    uint8_t vbl_armed; // the frame event is pending in the scheduler
+    uint8_t vbl_armed; // the retrace event is pending in the scheduler
     // DACula: the address register, the CLUT port's phase, the indexed
     // ("d2") register file and the palette.
     ramdac_seq_t dac;
     uint8_t dac_reg[256];
     uint8_t clut[256][3];
+    // The hardware cursor's eight-entry palette (the d1 port) and its
+    // R/G/B phase over the shared address register.
+    uint8_t crsr[8][3];
+    ramdac_seq_t crsr_seq;
     // What each bank holds (bytes; 0 = no DRAM) and where its storage
     // starts in host RAM.  Construction data, rebuilt from the profile.
     uint32_t bank_size[TNT_PLAT_BANKS];

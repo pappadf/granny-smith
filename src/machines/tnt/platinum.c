@@ -88,7 +88,8 @@ LOG_USE_CATEGORY_NAME("platinum");
 #define PLAT_ID 0x30010000u
 
 // DACula
-#define DAC_CTRL      0x20u // bits 3:2 depth, bit 0 hardware cursor
+#define DAC_CTRL      0x20u // bits 3:2 depth, bit 1 hardware cursor
+#define DAC_CURSOR_ON 0x02u
 #define DAC_CLKSEL    0x23u // 2 = pair $24/$25 drives the clock, 3 = $27/$28
 #define DAC_TYPE      0x40u // reads the DACula type
 #define DAC_TYPE_NEW  0x84u // the "new" DACula (clock F = 15 MHz x c0 / (n+2) / 2^p)
@@ -249,6 +250,75 @@ static void plat_refresh_clut(config_t *cfg) {
     st->display.clut_dirty = true;
 }
 
+// The DACula hardware cursor (control register bit 1): the same scheme as
+// its RaDACal sibling on Control (control.c).  The image plane rides in the
+// 16 bytes before each scan line's pixel 0 — the reason pixel 0 sits 16
+// bytes past the programmed scan start — one row per line at the current
+// pitch: 16 pixels at 4 bits, nibble bit 3 opaque, bits 2:0 an entry of the
+// eight-colour cursor palette streamed through d1.  X is DACula registers
+// $10 (high) / $11 (low), hotspot-biased by one; Y is implicit, the driver
+// clears the old rows and draws the new ones.
+static uint8_t plat_clut_match(const tnt_platinum_t *p, const uint8_t *rgb) {
+    uint32_t best = 0, bestd = 0xFFFFFFFFu;
+    for (uint32_t i = 0; i < 256 && bestd; i++) {
+        int dr = (int)p->clut[i][0] - rgb[0], dg = (int)p->clut[i][1] - rgb[1], db = (int)p->clut[i][2] - rgb[2];
+        uint32_t d = (uint32_t)(dr * dr + dg * dg + db * db);
+        if (d < bestd) {
+            bestd = d;
+            best = i;
+        }
+    }
+    return (uint8_t)best;
+}
+
+static void plat_compose(config_t *cfg) {
+    tnt_state_t *st = tnt_st(cfg);
+    tnt_platinum_t *p = &st->plat;
+    if (!st->blank || !st->compose || !st->display.bits || st->display.bits == st->blank)
+        return;
+    if (!(p->dac_reg[DAC_CTRL] & DAC_CURSOR_ON))
+        return; // update() already points at live VRAM
+    uint32_t vsize = plat_vram_size(cfg);
+    uint32_t bpx = plat_bpp(p) / 8u;
+    uint32_t stride = st->display.stride, w = st->display.width, h = st->display.height;
+    uint64_t base = (uint64_t)(st->display.bits - st->vram);
+    if (st->display.bits == st->compose)
+        base = (p->reg[PR_FB_BASE] + PLAT_FB_OFF - PLAT_VRAM_BASE) & (PLAT_VRAM_APERTURE - 1u);
+    uint64_t span = (uint64_t)stride * h;
+    if (base + span > vsize)
+        return;
+    memcpy(st->compose, st->vram + base, (size_t)span);
+    uint32_t x = ((uint32_t)p->dac_reg[0x10] << 8 | p->dac_reg[0x11]) + 1u;
+    for (uint32_t y = 0; y < h; y++) {
+        uint64_t poff = base + (uint64_t)y * stride;
+        if (poff < 16u || poff + 8u > vsize)
+            continue;
+        const uint8_t *row = st->vram + poff - 16u;
+        uint8_t *line = st->compose + (size_t)y * stride;
+        for (uint32_t i = 0; i < 16u; i++) {
+            uint8_t nib = (i & 1u) ? (row[i >> 1] & 0x0Fu) : (row[i >> 1] >> 4);
+            uint32_t px = x + i;
+            if (!(nib & 0x8u) || px >= w || (uint64_t)(px + 1u) * bpx > stride)
+                continue;
+            const uint8_t *pal = p->crsr[nib & 7u];
+            uint8_t *dst = line + (size_t)px * bpx;
+            if (bpx == 1) {
+                dst[0] = plat_clut_match(p, pal);
+            } else if (bpx == 2) {
+                uint16_t v = display_pack555(pal[0], pal[1], pal[2]);
+                dst[0] = (uint8_t)(v >> 8);
+                dst[1] = (uint8_t)v;
+            } else {
+                dst[0] = 0;
+                dst[1] = pal[0];
+                dst[2] = pal[1];
+                dst[3] = pal[2];
+            }
+        }
+    }
+    st->display.bits = st->compose;
+}
+
 void tnt_plat_update(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     tnt_platinum_t *p = &st->plat;
@@ -279,6 +349,7 @@ void tnt_plat_update(config_t *cfg) {
     st->display.shape_dirty = true;
     st->display.fb_dirty = true;
     st->display.clut_dirty = true;
+    plat_compose(cfg);
     LOG(2, "mode: %ux%u %ubpp stride=%u base=+$%X dac_ctrl=$%02X%s", width, height, bpp, stride, base,
         p->dac_reg[DAC_CTRL], st->display.bits == st->blank ? " BLANKED" : "");
 }
@@ -292,8 +363,15 @@ struct display *tnt_plat_display(config_t *cfg) {
 
 void tnt_plat_host_vbl(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
-    if (st && st->blank && tnt_board(cfg)->has_platinum)
-        st->display.fb_dirty = true;
+    if (!st || !st->blank || !tnt_board(cfg)->has_platinum)
+        return;
+    // Back to live VRAM, then the cursor composite over it (a frame's worth
+    // of guest drawing bypasses the renderer either way).
+    if (st->display.bits == st->compose)
+        st->display.bits =
+            st->vram + ((st->plat.reg[PR_FB_BASE] + PLAT_FB_OFF - PLAT_VRAM_BASE) & (PLAT_VRAM_APERTURE - 1u));
+    plat_compose(cfg);
+    st->display.fb_dirty = true;
 }
 
 // The programmed dot clock in Hz (the "new" DACula's formula), 0 while
@@ -342,14 +420,26 @@ static bool plat_in_vblank(config_t *cfg) {
 
 #define PLAT_INT_VBL 30
 
-static void plat_vbl_sync(config_t *cfg) {
-    tnt_gc_set_source(cfg, PLAT_INT_VBL, plat(cfg)->vbl_pending);
-}
-
+// Every retrace latches an event on line 30; the System's video driver
+// unmasks it (Grand Central mask bit 30) once it is running, and the
+// interrupt block's own clear acknowledges it.  The rate is the programmed
+// raster's (dot clock over the totals), nominal 60 Hz until programmed.
 static void plat_vbl_event(void *source, uint64_t data) {
     (void)data;
     config_t *cfg = (config_t *)source;
     tnt_platinum_t *p = plat(cfg);
+    if (!p->reg[PR_DISP_OFF])
+        tnt_gc_pulse_event(cfg, PLAT_INT_VBL);
+    p->vbl_armed = 1;
+    scheduler_new_cpu_event(cfg->scheduler, plat_vbl_event, cfg, 0, 0, plat_frame_ns(cfg));
+}
+
+// Start the retrace clock once; it runs for the machine's lifetime (a reset
+// does not cancel a pending scheduler event, so the armed flag survives it).
+static void plat_vbl_arm(config_t *cfg) {
+    tnt_platinum_t *p = plat(cfg);
+    if (p->vbl_armed)
+        return;
     p->vbl_armed = 1;
     scheduler_new_cpu_event(cfg->scheduler, plat_vbl_event, cfg, 0, 0, plat_frame_ns(cfg));
 }
@@ -447,8 +537,11 @@ static uint8_t dac_read(config_t *cfg, uint32_t offset, bool peek) {
     switch (offset & 0x30u) {
     case 0x00:
         return ramdac_seq_addr(&p->dac);
-    case 0x10:
-        return 0;
+    case 0x10: // the cursor palette, entry auto-advancing like the CLUT port
+        p->crsr_seq.widx = p->crsr_seq.ridx = ramdac_seq_addr(&p->dac);
+        idx = ramdac_seq_read(&p->crsr_seq, peek, &comp);
+        p->dac.widx = p->dac.ridx = ramdac_seq_addr(&p->crsr_seq);
+        return p->crsr[idx & 7u][comp];
     case 0x20: {
         uint8_t a = ramdac_seq_addr(&p->dac);
         if (a == DAC_TYPE)
@@ -475,14 +568,18 @@ void tnt_plat_dac_write(config_t *cfg, uint32_t offset, uint8_t value) {
     switch (offset & 0x30u) {
     case 0x00:
         ramdac_seq_set_waddr(&p->dac, value);
+        ramdac_seq_set_waddr(&p->crsr_seq, value);
         break;
     case 0x10:
-        LOG(3, "DACula d1 [$%02X] = $%02X", a, value);
+        p->crsr_seq.widx = p->crsr_seq.ridx = a;
+        if (ramdac_seq_write(&p->crsr_seq, value, &idx))
+            memcpy(p->crsr[idx & 7u], p->crsr_seq.pending, 3);
+        p->dac.widx = p->dac.ridx = ramdac_seq_addr(&p->crsr_seq);
         break;
     case 0x20:
         LOG(2, "DACula reg[$%02X] = $%02X", a, value);
         p->dac_reg[a] = value;
-        if (a == DAC_CTRL)
+        if (a == DAC_CTRL || a == 0x10u || a == 0x11u)
             tnt_plat_update(cfg);
         break;
     default:
@@ -592,12 +689,13 @@ void tnt_plat_register_events(config_t *cfg) {
 
 void tnt_plat_reset(config_t *cfg) {
     tnt_platinum_t *p = plat(cfg);
-    uint8_t mon = p->mon_grounded;
+    uint8_t mon = p->mon_grounded, armed = p->vbl_armed;
     uint32_t bsize[TNT_PLAT_BANKS], boff[TNT_PLAT_BANKS];
     memcpy(bsize, p->bank_size, sizeof bsize);
     memcpy(boff, p->bank_host_off, sizeof boff);
     memset(p, 0, sizeof(*p));
     p->mon_grounded = mon;
+    p->vbl_armed = armed;
     memcpy(p->bank_size, bsize, sizeof bsize);
     memcpy(p->bank_host_off, boff, sizeof boff);
     p->reg[PR_ID] = PLAT_ID;
@@ -611,7 +709,8 @@ void tnt_plat_reset(config_t *cfg) {
         base += p->bank_size[k];
     }
     ramdac_seq_init(&p->dac, 0);
-    plat_vbl_sync(cfg);
+    ramdac_seq_init(&p->crsr_seq, 0);
+    plat_vbl_arm(cfg);
     tnt_plat_remap(cfg);
     tnt_plat_update(cfg);
 }
@@ -632,11 +731,13 @@ int tnt_plat_init(config_t *cfg) {
     st->plat.mon_grounded = (uint8_t)(~cfg->build_opts.builtin_sense & 7u);
     st->vram = calloc(1, TNT_VRAM_SIZE);
     st->blank = calloc(1, TNT_VRAM_SIZE);
-    if (!st->vram || !st->blank) {
+    st->compose = calloc(1, TNT_VRAM_SIZE);
+    if (!st->vram || !st->blank || !st->compose) {
         LOG(0, "Error: out of memory allocating Platinum's frame buffers");
         free(st->vram);
         free(st->blank);
-        st->vram = st->blank = NULL;
+        free(st->compose);
+        st->vram = st->blank = st->compose = NULL;
         return -1;
     }
     // The fitted VRAM on the page table (plat_vram_map, from the reset);
@@ -670,6 +771,8 @@ void tnt_plat_teardown(config_t *cfg) {
     st->vram = NULL;
     free(st->blank);
     st->blank = NULL;
+    free(st->compose);
+    st->compose = NULL;
 }
 
 // ============================================================
