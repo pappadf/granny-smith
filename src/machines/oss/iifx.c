@@ -965,34 +965,15 @@ static void iifx_scsidma_pump(config_t *cfg) {
 // ============================================================
 //
 // The OSS+FMC I/O map runs on the shared board_io engine (board_io.c).
-// Straightforward device windows are device-rows; the windows a (device,
-// offset) row can't express are handler-rows (read_fn/write_fn) — the FMC and
-// RPU bus-error windows (which must report the faulting address), the SCSI-DMA
-// engine, the OSS serial-shift / extension registers, and the BIU stub.  The
+// Straightforward device windows are device-rows, the FMC and RPU bus-error
+// windows `.berr` rows (the engine reports the faulting address); the windows
+// a (device, offset) row can't express are handler-rows (read_fn/write_fn) —
+// the SCSI-DMA engine, the OSS serial-shift / extension registers, and the BIU stub.  The
 // one thing even a handler-row can't carry is the machine-ID register at the
 // very top of the I/O space (above the $3FFFF mirror), so the read entry-points
 // keep a tiny pre-check for it before delegating to the engine.
 
 // --- Handler-rows -----------------------------------------------------------
-
-// FMC ($24000) + RPU-probe ($1e000): no chip present — bus-error like the real
-// BIU30 does when the parity controller / RPU is absent, reporting the address.
-static uint8_t iifx_io_berr_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
-    (void)win_off; // this window's handler decodes from addr itself
-    (void)cfg;
-    memory_signal_bus_error(IIFX_IO_BASE + addr, false);
-    return 0xff;
-}
-static uint8_t iifx_io_berr_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
-    (void)cfg, (void)win_off, (void)addr;
-    return 0xff; // what the faulting read returns, without the fault
-}
-static void iifx_io_berr_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
-    (void)win_off; // this window's handler decodes from addr itself
-    (void)cfg;
-    (void)value;
-    memory_signal_bus_error(IIFX_IO_BASE + addr, true);
-}
 
 // SCSI-DMA engine ($08000).
 static uint8_t iifx_io_scsidma_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
@@ -1077,14 +1058,14 @@ static const board_io_range_t iifx_io_ranges_tbl[] = {
     {IO_BIU, IO_BIU_END, BOARD_DEV_VIA1, IIFX_BIU_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, iifx_io_biu_read,
      iifx_io_biu_write, "biu"},
     {IO_OSS, IO_OSS_END, BOARD_DEV_OSS, IIFX_OSS_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "oss"},
-    // The two bus-error windows charge nothing on purpose: the cycle is
-    // aborted, so there is no turnaround to pay for.  `.berr` says so.
-    {IO_RPU_PROBE, IO_RPU_PROBE_END, BOARD_DEV_VIA1, 0, BOARD_IO_NORMAL, 0, 0, iifx_io_berr_read, iifx_io_berr_write,
-     "rpu_probe", .berr = 1, .peek_fn = iifx_io_berr_peek},
+    // FMC ($24000) + RPU-probe ($1e000): no chip present -- the engine
+    // bus-errors like the real BIU30 does when the parity controller / RPU
+    // is absent, reporting the address.  The two windows charge nothing on
+    // purpose: the cycle is aborted, so there is no turnaround to pay for.
+    {IO_RPU_PROBE, IO_RPU_PROBE_END, 0, 0, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "rpu_probe", .berr = 1},
     {IO_OSS_EXT_START, IO_OSS_EXT_END, BOARD_DEV_VIA1, IIFX_OSS_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, iifx_io_ossext_read,
      iifx_io_ossext_write, "oss_ext", .peek_fn = iifx_io_ossext_peek},
-    {IO_FMC_BERR, IO_FMC_BERR_END, BOARD_DEV_VIA1, 0, BOARD_IO_NORMAL, 0, 0, iifx_io_berr_read, iifx_io_berr_write,
-     "fmc_berr", .berr = 1, .peek_fn = iifx_io_berr_peek},
+    {IO_FMC_BERR, IO_FMC_BERR_END, 0, 0, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "fmc_berr", .berr = 1},
     {0}, // sentinel
 };
 
@@ -1454,7 +1435,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part_begin(cfg, checkpoint, "floppy");
     asc_set_mix(st->asc, ASC_MIX_CH_A); // internal speaker takes the left channel
     cfg->floppy =
-        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), checkpoint, config_images(cfg));
+        floppy_init(FLOPPY_TYPE_SWIM, cfg->scheduler, machine_floppy_count(cfg), checkpoint, config_images(cfg));
     machine_part(cfg, checkpoint, "floppy", part_save_floppy, cfg->floppy);
 
     // ADB device state: the IIfx's ADB bus is bit-banged by the SWIM IOP

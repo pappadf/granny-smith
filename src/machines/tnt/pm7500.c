@@ -14,61 +14,32 @@
 // 168-pin DIMMs in 8 slots, interleaved in pairs; 1 GB architectural max.
 // Offered: the totals Hammerhead's four-pair carve maps today (DIMMs of at
 // most 64 MB); larger and odd totals wait on the carve.
-static const uint32_t pm7500_ram_options_kb[] = {
-    8192,   16384,  24576,  32768,  40960,  49152,  57344,  65536,  73728,  81920,  90112,  98304,
-    106496, 114688, 122880, 131072, 139264, 147456, 155648, 163840, 172032, 180224, 188416, 196608,
-    204800, 212992, 221184, 229376, 237568, 245760, 262144, 270336, 278528, 286720, 294912, 303104,
-    311296, 327680, 335872, 344064, 360448, 393216, 401408, 409600, 425984, 458752, 524288, 0};
+// The 8500's totals (tnt.c) and one more: the 7500's 8 MB minimum.
+static const uint32_t pm7500_ram_options_kb[] = {8192, TNT_RAM_TOTALS_KB, 0};
 
 // The internal fast-SCSI (MESH) bus carries the boot disks; the
 // 53C94 carries the CD-ROM drive and the external chain (machine.scsi2).
 
 static const tnt_board_desc_t pm7500_board = {
-    // BoxID (little-endian bit numbering): bit 15 pulled high, bit 14 MESH
-    // present, bit 8 the factory-test strap idling HIGH, bit 11 CLEAR (set
-    // = 8500 — the shipping ROM's identification routine at $FFC14844),
-    // and bit 13 SET — Open Firmware's model decode (OpenFW image $10592)
-    // reads BoxID as xw@>>11 into its machine word and picks "AAPL,7500"
-    // over "AAPL,8500" on bit 13.
-    //
-    // Bit 8 is read by POST ($FFF201FC, `lwbrx` + `andi. r6,r6,0x100`) on
-    // every boot whose NVRAM already carries POST's "RobG" log signature —
-    // i.e. every boot but the first on a formatted store — and CLEAR sends
-    // the machine into the ROM's Serial Test Manager (`>` on ttya, no
-    // timeout) before Open Firmware ever runs: no device tree, no BAR
-    // assignment, a black screen (#115).  The earlier reading of the strap
-    // as "set = test monitor" was made on ladder rows that always booted a
-    // virgin store, where POST takes the fresh-log path and never tests
-    // the bit.  The Network Server board (ans500.c) found the same law.
-    .boxid = 0x8000u | 0x4000u | 0x2000u | 0x0100u,
-    // Hammerhead identity: first byte $39 selects the ROM's TNT path
-    // (a $3001xxxx identifier is the 7200/Catalyst); +$20 bit 31 SET =
-    // the 7500/8500 class in Open Firmware's selector (m = (b>>5) |
-    // ((b>>1)&8) over the +$20 top byte: $80 -> 4 -> 7500/8500,
-    // $40 -> 2 -> 9500), bit 30 clear = not a 9500 for the 68k routine.
-    // Without bit 31 OF emits compatible "AAPL,????" and never
-    // instantiates the chaos/control display nodes (and the boot never
-    // reaches video).
-    .hh_id = 0x39000000u,
-    .hh_r20 = 0x80000000u,
+    TNT_MAC_BOARD_COMMON,
+    // BoxID: MESH, bit 13 SET (Open Firmware's 7500 pick), bit 11 CLEAR
+    // (not the 68k routine's 8500), the idle-high straps (tnt.h).
+    .boxid = TNT_BOXID_7500,
+    .hh_r20 = TNT_HH_R20_7500, // bit 30 clear: not a 9500 for the 68k routine
     .bus_hz = 50000000u, // 2:1 bus (100 MHz 601 card)
     .bandit_count = 1,
-    .kind = TNT_BOARD_MAC,
-    .has_mesh = true, // the internal fast-SCSI cell (absent on the Network Servers)
 };
 
 const hw_profile_t machine_pm7500 = {
     .name = "Power Macintosh 7500",
     .id = "pm7500",
 
-    .cpu_model = CPU_MODEL_PPC601,
+    TNT_MAC_PROFILE_COMMON, // the ROM: $96CD923D / $9630C68B
+    TNT_CPU_601,
     .freq = 100000000, // 100 MHz
-    .mmu_kind = MMU_PPC_601,
 
-    .address_bits = 32,
     .ram_default = 0x2000000, // 32 MB (a typical well-equipped machine)
     .ram_max = 0x40000000, // 1 GB
-    .rom_size = 0x400000, // 4 MB ($96CD923D / $9630C68B)
 
     .ram_options = pm7500_ram_options_kb,
     // Factory configuration: an internal CD-ROM drive at SCSI ID 3, "Most
@@ -81,15 +52,11 @@ const hw_profile_t machine_pm7500 = {
     // instead breaks tnt-voodoo2-glide's Mac OS 8.1 startup.
     .storage = tnt_storage_7500,
     .default_storage = tnt_default_storage,
-    .appletalk = true,
     .cdrom_drive = &scsi_cd_drive_applecd_600i,
-    .floppy_slots = mac_floppy_slots_1hd,
 
     .pci_slots = tnt_pci_slots_1bandit,
 
     .builtin_video = &tnt_builtin_video,
 
-    .substrate = &tnt_substrate,
-    .of_nvram_check = of_nvram_check_tnt,
     .board = &pm7500_board,
 };

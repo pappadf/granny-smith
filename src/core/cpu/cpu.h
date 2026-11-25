@@ -73,6 +73,11 @@ typedef struct cpu cpu_t;
 // when non-NULL) and bind its `machine.cpu` object node.
 cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint);
 
+// cpu_init with the FPU's presence stated: `fpu` false builds the model
+// without its floating-point unit (the 68LC040), so every FPU instruction
+// takes the F-line trap and the OS falls back to software floating point.
+cpu_t *cpu_init_fpu(int cpu_model, bool fpu, checkpoint_t *checkpoint);
+
 // The CPU half of a reset: everything inside the package, PC and SSP reloaded
 // from the vectors at $0/$4.  The BUS half must already have run -- those
 // vectors are ROM only while the overlay is armed.  Level 2 (machine.reset(),

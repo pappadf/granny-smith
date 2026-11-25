@@ -42,6 +42,7 @@
 #include "nubus.h"
 #include "pram_defaults.h"
 #include "rbv.h"
+#include "rbv_board.h"
 #include "rtc.h"
 #include "scheduler.h"
 #include "scsi.h"
@@ -54,8 +55,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-LOG_USE_CATEGORY_NAME("board");
 
 // ============================================================
 // ROM overlay
@@ -169,7 +168,7 @@ static void iici_memory_layout_init(config_t *cfg) {
 }
 
 // ============================================================
-// VIA1 callbacks (the RBV / SCSI / sound wiring is shared: mdu_wire_rbv)
+// VIA1 callbacks (the RBV / SCSI / sound wiring is shared: rbv_board.c, mdu_wire_rbv)
 // ============================================================
 
 // VIA1 outputs.  Identical to the IIcx: floppy head-select + ROM overlay on
@@ -256,37 +255,18 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     via_input_c(cfg->via1, 0, 0, 1);
     via_input_c(cfg->via1, 1, 0, 1);
 
-    machine_part_begin(cfg, checkpoint, "adb");
-    cfg->adb = adb_init(cfg->via1, cfg->scheduler, checkpoint);
-    machine_part(cfg, checkpoint, "adb", part_save_adb, cfg->adb);
-
-    machine_part_images(cfg, checkpoint);
-
-    machine_part_begin(cfg, checkpoint, "scsi");
-    cfg->scsi = machine_scsi_bus_init(cfg, checkpoint, "scsi");
-    scsi_5380_attach(cfg->scsi, checkpoint); // IIci: NCR 5380
-    machine_part(cfg, checkpoint, "scsi", part_save_scsi, cfg->scsi);
-    scsi_set_irq_callback(cfg->scsi, mdu_scsi_irq, cfg); // through the RBV, not a VIA2
-
-    machine_part_begin(cfg, checkpoint, "asc");
-    st->asc = asc_init(NULL, cfg->scheduler, checkpoint);
-    machine_part(cfg, checkpoint, "asc", part_save_asc, st->asc);
-    machine_part_begin(cfg, checkpoint, "floppy");
-    asc_set_mix(st->asc, ASC_MIX_CH_A); // internal speaker takes the left channel
-    cfg->floppy =
-        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), checkpoint, config_images(cfg));
-    machine_part(cfg, checkpoint, "floppy", part_save_floppy, cfg->floppy);
+    // ADB on the VIA1 transceiver, the images, the 5380 (through the RBV,
+    // not a VIA2), the ASC and SWIM: no companion.
+    static const rbv_board_spec_t spec = {.companion = RBV_BOARD_NO_COMPANION};
+    const rbv_board_slots_t slots = {.rbv = &st->rbv, .asc = &st->asc};
+    if (rbv_board_build_devices(cfg, checkpoint, &spec, &slots) != 0)
+        return -1;
 
     // RBV chip (VIA2 replacement + video control), the built-in port's
     // monitor strapped on its sense lines (7, nothing connected, turns
     // built-in video off).  IRQ → IPL 2; RvPowerOff → scheduler stop.
-    machine_part_begin(cfg, checkpoint, "rbv");
-    st->rbv = rbv_init(RBV_VARIANT_IICI, cfg->build_opts.builtin_sense, checkpoint);
-    if (!st->rbv) {
-        LOG(0, "Error: out of memory constructing the RBV");
+    if (rbv_board_build_rbv(cfg, checkpoint, RBV_VARIANT_IICI, cfg->build_opts.builtin_sense, &slots) != 0)
         return -1;
-    }
-    machine_part(cfg, checkpoint, "rbv", part_save_rbv, st->rbv);
     mdu_wire_rbv(cfg);
 
     st->mmu = m68k_board_build_mmu(cfg, iici_board_desc.rom_base, iici_board_desc.rom_end);

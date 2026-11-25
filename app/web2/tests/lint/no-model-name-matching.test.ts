@@ -78,32 +78,25 @@ describe('frontend never matches on the model name', () => {
 // or slot kind, a card id or a model id -- the tree's ids are data the
 // renderers pass back, never names they compare against.  (Literals that are
 // not comparisons -- an icon named "floppy", a log category -- are fine.)
-const MODEL_IDS = [
-  'plus',
-  'se30',
-  'lisa',
-  'macxl',
-  'iix',
-  'iicx',
-  'iifx',
-  'iici',
-  'iisi',
-  'q700',
-  'q900',
-  'q950',
-  'q840av',
-  'q660av',
-  'pm6100',
-  'pm7100',
-  'pm8100',
-  'pm7500',
-  'pm8500',
-  'pm9500',
-  'ans500',
-  'ans700',
-  'pmg3dt',
-  'pmg3mt',
-];
+// Every model id, read from the machine-profile schema golden: its first
+// column is one row per registered model, and adding a model means updating
+// that file -- so this list cannot drift behind the catalog the way a
+// hand-kept copy did.
+const SCHEMA = join(
+  here,
+  '..',
+  '..',
+  '..',
+  '..',
+  'tests',
+  'integration',
+  'machine-profile-schema',
+  'schema.expected',
+);
+const MODEL_IDS = readFileSync(SCHEMA, 'utf8')
+  .split('\n')
+  .map((line) => line.split('\t')[0].trim())
+  .filter((id) => /^[a-z0-9_]+$/.test(id));
 const CARD_IDS = [
   'mdc_8_24',
   'display_card_24ac',
@@ -128,6 +121,12 @@ const ID_COMPARISON = new RegExp(
 
 describe('the frontend never branches on a bus, slot, card or model id', () => {
   const files = walk(SRC);
+  it('reads every model id from the schema golden', () => {
+    // Guard against a changed file layout silently emptying the list.
+    expect(MODEL_IDS.length).toBeGreaterThan(40);
+    for (const id of ['plus', 'mac128k', 'pm9600', 'wgs9150_120']) expect(MODEL_IDS).toContain(id);
+  });
+
   it('compares against none of them anywhere in src/', () => {
     const offenders: string[] = [];
     for (const file of files) {

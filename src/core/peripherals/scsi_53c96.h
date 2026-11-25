@@ -67,6 +67,12 @@ uint16_t scsi_53c96_pdma_peek16(scsi_53c96_t *c);
 uint8_t scsi_53c96_pdma_peek8(scsi_53c96_t *c);
 void scsi_53c96_pdma_write8(scsi_53c96_t *c, uint8_t value);
 
+// The aperture is drained by a DMA engine (AMIC, Grand Central's DBDMA)
+// rather than the CPU: every byte of a transfer moves through DREQ/DACK, so
+// an odd count leaves no residual byte in the FIFO.  Board wiring, set once
+// at construction.
+void scsi_53c96_set_bus_master(scsi_53c96_t *c, bool bus_master);
+
 // Live DRQ output (for the TurboSCSI DRQ-status bit).
 bool scsi_53c96_dreq(scsi_53c96_t *c);
 

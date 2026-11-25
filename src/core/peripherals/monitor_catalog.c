@@ -34,6 +34,8 @@ static const monitor_catalog_entry_t s_catalog[] = {
     {"pal",                 "PAL television",                          768,  576, false},
     {"compact_9in",         "Built-in 9" IN " screen",                 512,  342, true },
     {"lisa_12in",           "Built-in 12" IN " screen",                720,  364, true },
+    {"compact_10in_color",  "Built-in 10" IN " color screen",          512,  384, false},
+    {"builtin_14in_color",  "Built-in 14" IN " color display",         640,  480, false},
     {MONITOR_NONE,          "No monitor",                              0,    0,   false},
     {NULL,                  NULL,                                      0,    0,   false},
 };

@@ -26,116 +26,29 @@
 
 // The internal fast-SCSI (MESH) bus carries the boot disks; the
 // 53C94 carries the CD-ROM drive and the external chain (machine.scsi2).
-
-// PCI topology.  Six sockets — three on
-// each Bandit, all at IDSEL 13/14/15 on their own bus (the bandit node's
-// FCode instantiates twice) — with their strapped INTA-D lines on Grand
-// Central externals 23/24/25 (Bandit 1) and 27/28/29 (Bandit 2), which is
-// Apple's own 9500 external-interrupt table verbatim.  Slot 7 carries the
-// Control/Chaos video deviation documented above.
-//
-// The slot LABELS come from each bridge's own `slot-names` property, dumped
-// live from a real 9500 under Open Firmware (Apple Technote 1062):
-// Bandit 1 publishes `0000E000 "A1" "B1" "C1"` and Bandit 2 publishes
-// `0000E000 "D2" "E2" "F2"`.  An earlier model declared the second bank
-// D1/E1/F1, having judged the strings "not decidable from the token
-// stream"; the ROM's own property decides them.
-static const pci_slot_decl_t pm9500_pci_slots[] = {
-    // The factory card: the Apple Accelerated PCI Graphics Card (the Mach64
-    // GX) -- when its expansion ROM is offered; without it the default
-    // configuration has no card and Control stands in (slot 7).
-    {.slot = 1,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "PCI slot A1",
-     .detail = "A1",
-     .default_card = "mach64_gx",
-     .fill_order = 1,
-     .bus = TNT_PCI_BUS_1,
-     .device = 13,
-     .int_line = 23},
-    {.slot = 2,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "PCI slot B1",
-     .detail = "B1",
-     .fill_order = 2,
-     .bus = TNT_PCI_BUS_1,
-     .device = 14,
-     .int_line = 24},
-    {.slot = 3,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "PCI slot C1",
-     .detail = "C1",
-     .fill_order = 3,
-     .bus = TNT_PCI_BUS_1,
-     .device = 15,
-     .int_line = 25},
-    {.slot = 4,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "PCI slot D2",
-     .detail = "D2",
-     .fill_order = 4,
-     .bus = TNT_PCI_BUS_2,
-     .device = 13,
-     .int_line = 27},
-    {.slot = 5,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "PCI slot E2",
-     .detail = "E2",
-     .fill_order = 5,
-     .bus = TNT_PCI_BUS_2,
-     .device = 14,
-     .int_line = 28},
-    {.slot = 6,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "PCI slot F2",
-     .detail = "F2",
-     .fill_order = 6,
-     .bus = TNT_PCI_BUS_2,
-     .device = 15,
-     .int_line = 29},
-    {.slot = 7,
-     .kind = PCI_SLOT_BUILTIN_FALLBACK,
-     .label = "Built-in video",
-     .detail = "VCI",
-     .bus = TNT_PCI_BUS_VCI,
-     .device = 11,
-     .int_line = TNT_INT_VBL,
-     .builtin_card_id = "tnt_control"},
-    {0},
-};
+// The six-slot PCI topology, slot 7's Control stand-in included, is
+// tnt_pci_slots_9500 (tnt.c), which the 9600 shares.
 
 static const tnt_board_desc_t pm9500_board = {
+    TNT_MAC_BOARD_COMMON,
     // BoxID: bit 11 clear (the 9500 is flagged by Hammerhead +$20 bit 30
-    // instead — the shipping ROM's identification routine at $FFC14844),
-    // MESH present, idle-high straps, and bit 8 — the factory-test strap
-    // — HIGH: POST tests it on every boot after the first on a formatted
-    // store and a clear bit is the Serial Test Manager instead of a boot
-    // (pm7500.c).
-    .boxid = 0x8000u | 0x4000u | 0x0100u,
-    .hh_id = 0x39000000u, // $39 first byte = the TNT identification path
-    // +$20 bit 30 SET = 9500 (the 68k routine tests it directly; Open
-    // Firmware's selector m = (b>>5)|((b>>1)&8) over the top byte reads
-    // $40 as 2 -> "AAPL,9500").  Bit 31 must stay CLEAR — set it and OF
-    // classifies the box as a 7500/8500 (see pm7500.c).
-    .hh_r20 = 0x40000000u,
+    // instead), MESH, the idle-high straps (tnt.h).
+    .boxid = TNT_BOXID_9500,
+    .hh_r20 = TNT_HH_R20_9500, // bit 30 SET, bit 31 CLEAR: the 9500 class
     .bus_hz = 44000000u, // 3:1 bus (132 MHz 604 card)
     .bandit_count = 2,
-    .kind = TNT_BOARD_MAC,
-    .has_mesh = true, // the internal fast-SCSI cell (absent on the Network Servers)
 };
 
 const hw_profile_t machine_pm9500 = {
     .name = "Power Macintosh 9500",
     .id = "pm9500",
 
-    .cpu_model = CPU_MODEL_PPC604,
+    TNT_MAC_PROFILE_COMMON, // the ROM: $96CD923D / $9630C68B
+    TNT_CPU_604,
     .freq = 132000000, // 132 MHz
-    .mmu_kind = MMU_PPC_604,
 
-    .address_bits = 32,
     .ram_default = 0x4000000, // 64 MB (a typical well-equipped machine)
     .ram_max = 0x60000000, // 1.5 GB
-    .rom_size = 0x400000, // 4 MB ($96CD923D / $9630C68B)
 
     // Twelve DIMM slots, interleaved in pairs; 1.5 GB architectural max.
     // Offered: the totals Hammerhead's four-pair carve maps today (DIMMs of
@@ -144,13 +57,9 @@ const hw_profile_t machine_pm9500 = {
     .ram_options = tnt_ram_options_kb,
     .storage = tnt_storage_8500,
     .default_storage = tnt_default_storage, // the CD-ROM drive on the 53C94: see pm7500.c
-    .appletalk = true,
     .cdrom_drive = &scsi_cd_drive_applecd_600i,
-    .floppy_slots = mac_floppy_slots_1hd,
 
-    .pci_slots = pm9500_pci_slots,
+    .pci_slots = tnt_pci_slots_9500,
 
-    .substrate = &tnt_substrate,
-    .of_nvram_check = of_nvram_check_tnt,
     .board = &pm9500_board,
 };

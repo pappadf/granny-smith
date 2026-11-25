@@ -46,8 +46,14 @@ the Ariel II cell, §2.4 for the AMIC video-control registers.)
   (amic.md "Monitor sense"); `+3` vtest.
 - **Ariel II** (`$50F24000`): address / data (R,G,B per entry,
   auto-increment after blue) / config (low 3 bits mirror the depth code,
-  bit 3 "master mode") / key.  Register-compatible with the LC's
-  V8/Ariel DAC.
+  bit 3 "master mode"; reads back its low seven bits) / key.
+  Register-compatible with the LC's V8/Ariel DAC, and modelled by the same
+  code: `runtime/ariel.c` holds the register file (`ariel_t`, embedded in
+  `pdm_amic_t` where its fields always sat), the depth-windowed palette, the
+  depth codes and the Sonora timing-set table; `ariel.c` here keeps PDM's
+  parameters (depth codes 5-7 read as 8 bpp; mode code 10, the Vail
+  560-wide set, selects no timing; a one-gun monitor shows the blue
+  component).
 
 ## Scanout model
 
@@ -72,7 +78,10 @@ unused low lines driven high, so a pixel value *i* reads CLUT entry
 `(skip−1) + i×skip` with `skip = 256/2^depth` — the V8/Sonora convention
 (the driver programs `$7F` white / `$FF` black at 1 bpp).  The model
 materializes that window into the descriptor's palette; 16 bpp bypasses
-the CLUT.  Gamma is software-side (the driver pre-corrects CLUT writes);
+the CLUT.  A monochrome monitor (the 15" Portrait) has one video input:
+the ROM's Sonora driver loads its grays into the blue channel only
+(measured), so the palette shows the blue component on all three channels
+(the V8 family's one-gun Classic II CRT shows green: `v8/v8.md` §7).  Gamma is software-side (the driver pre-corrects CLUT writes);
 no monitor response curve is modeled.
 
 Everything here is derived presentation state, rebuilt from the register

@@ -103,7 +103,7 @@ void m68k_board_build_core(config_t *cfg, const struct m68k_board_desc *desc, ch
                                       &cfg->build_opts.rom, cp);
     machine_part(cfg, cp, "memory", part_save_memory, cfg->memory_map);
     machine_part_begin(cfg, cp, "cpu");
-    cfg->cpu = cpu_init(cfg->machine->cpu_model, cp);
+    cfg->cpu = cpu_init_fpu(cfg->machine->cpu_model, profile_has_fpu(cfg->machine), cp);
     machine_part(cfg, cp, "cpu", part_save_cpu, cfg->cpu);
     machine_part_begin(cfg, cp, "scheduler");
     sched_cpu_if_t cpu_if = cpu_sched_if(cfg->cpu); // the 68K main-CPU seam adapter
@@ -128,6 +128,41 @@ void m68k_board_map_mirrored(uint32_t start_page, uint32_t window_pages, uint8_t
         return; // a bank smaller than one page decodes nothing
     for (uint32_t i = 0; i < window_pages && start_page + i < g_page_count; i++)
         fill(start_page + i, host + ((i % size_pages) << MEM_PAGE_SHIFT), writable);
+}
+
+void m68k_board_map_banks(config_t *cfg, const m68k_board_bank_t *banks, int count, uint32_t window, uint32_t span,
+                          uint32_t *extent, struct mmu_state *bus_mmu) {
+    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
+    // Clear what the previous mapping (or the power-up map) left below its reach.
+    if (extent) {
+        uint32_t clear_pages = *extent >> MEM_PAGE_SHIFT;
+        for (uint32_t p = 0; p < clear_pages && p < g_page_count; p++)
+            page_clear(p);
+        *extent = 0;
+    }
+    for (int b = 0; b < count; b++) {
+        uint32_t size = banks[b].size;
+        if (!size)
+            continue;
+        uint32_t start = banks[b].start;
+        // The span this bank owns ends at the next populated bank above it.
+        uint32_t end = start + window;
+        for (int o = 0; o < count; o++) {
+            if (o != b && banks[o].size && banks[o].start > start && banks[o].start < end)
+                end = banks[o].start;
+        }
+        if (span && end > span)
+            end = span; // the controller decodes nothing beyond its reach
+        if (start >= end)
+            continue;
+        m68k_board_map_mirrored(start >> MEM_PAGE_SHIFT, (end - start) >> MEM_PAGE_SHIFT, ram_base + banks[b].image_off,
+                                size >> MEM_PAGE_SHIFT, page_fill_68k, true);
+        // Track the reach for the next remap's clear.
+        if (extent && end > *extent)
+            *extent = end;
+    }
+    if (bus_mmu)
+        mmu_invalidate_tlb(bus_mmu);
 }
 
 // Hardware RESET: ROM overlay back on, shared devices reset.

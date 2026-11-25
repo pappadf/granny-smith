@@ -15,6 +15,7 @@
 #include "regfile.h"
 
 #include "config_seed.h"
+#include "cpuid_page.h"
 #include "machine_teardown.h" // the shared config_t-owned delete chain
 
 #include "civic.h"
@@ -169,40 +170,10 @@ static void av_muni_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_
 // ============================================================
 // CPU-ID register ($5FFFFFFC = $A55A2830, read-only)
 // ============================================================
-// Registered as its own page-sized device window at $5FFFF000.  The ROM's
-// GetCPUIDReg validates the $A55A signature AND that the location is not
-// writable — writes are simply dropped, so the write-then-readback probe
-// sees the constant and concludes "not writable".
+// The shared CPU-ID page (cpuid_page.h): the ROM's GetCPUIDReg validates
+// the $A55A signature AND that the location is not writable.
 
 #define AV_CPUID_VALUE 0xA55A2830u
-
-static uint8_t av_cpuid_read8(void *ctx, uint32_t offset) {
-    (void)ctx;
-    if (offset >= 0xFFCu)
-        return be_lane8(AV_CPUID_VALUE, offset & 3);
-    return 0xFF; // nothing else decodes in this page — float high
-}
-
-static uint16_t av_cpuid_read16(void *ctx, uint32_t offset) {
-    return (uint16_t)((av_cpuid_read8(ctx, offset) << 8) | av_cpuid_read8(ctx, offset + 1));
-}
-
-static uint32_t av_cpuid_read32(void *ctx, uint32_t offset) {
-    return ((uint32_t)av_cpuid_read16(ctx, offset) << 16) | av_cpuid_read16(ctx, offset + 2);
-}
-
-static void av_cpuid_write8(void *ctx, uint32_t offset, uint8_t value) {
-    (void)ctx;
-    LOG(2, "CPU-ID write $%X = $%02X ignored (read-only)", offset, value);
-}
-
-static void av_cpuid_write16(void *ctx, uint32_t offset, uint16_t value) {
-    av_cpuid_write8(ctx, offset, (uint8_t)value);
-}
-
-static void av_cpuid_write32(void *ctx, uint32_t offset, uint32_t value) {
-    av_cpuid_write8(ctx, offset, (uint8_t)value);
-}
 
 // ============================================================
 // I/O island decode ($50F00000, 256 KiB, mirrored at $50F40000)
@@ -612,13 +583,7 @@ static void av_memory_layout(config_t *cfg) {
     memory_map_add(cfg->memory_map, 0x50F00000u, 0x00080000u, "I/O", &st->io_interface, &st->io);
 
     // CPU-ID register page at $5FFFF000 (the register itself is $5FFFFFFC).
-    st->cpuid_interface.read_uint8 = av_cpuid_read8;
-    st->cpuid_interface.read_uint16 = av_cpuid_read16;
-    st->cpuid_interface.read_uint32 = av_cpuid_read32;
-    st->cpuid_interface.write_uint8 = av_cpuid_write8;
-    st->cpuid_interface.write_uint16 = av_cpuid_write16;
-    st->cpuid_interface.write_uint32 = av_cpuid_write32;
-    memory_map_add(cfg->memory_map, 0x5FFFF000u, 0x00001000u, "CPU-ID", &st->cpuid_interface, cfg);
+    cpuid_page_install(&st->cpuid, cfg->memory_map, AV_CPUID_VALUE);
 
     // The overlay-trigger device for the ROM aperture is registered once;
     // arming/dropping only re-points page entries.
@@ -757,8 +722,7 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
     // island decodes the controller (av_io_ranges), so the shared module
     // only carries the drive and its media.
     machine_part_begin(cfg, cp, "floppy");
-    cfg->floppy =
-        floppy_init(FLOPPY_TYPE_NEW_AGE, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
+    cfg->floppy = floppy_init(FLOPPY_TYPE_NEW_AGE, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
     machine_part(cfg, cp, "floppy", part_save_floppy, cfg->floppy);
     machine_part_begin(cfg, cp, "new_age");
     st->fdc = av_new_age_init(cfg, cp);

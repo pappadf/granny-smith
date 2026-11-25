@@ -10,7 +10,7 @@
 #   1.0 MB = 4x 256 KB (factory default) · 2.0 MB = 2x 1 MB + 2 empty
 #   2.5 MB = 2x 1 MB + 2x 256 KB (asymmetric) · 4.0 MB = 4x 1 MB (max)
 # Sub-4 MB totals depend on the Plus RAM mirror in src/machines/compact/
-# plus.c: the ROM hardcodes its exception save area at $3FFC80, which on
+# compact.c: the ROM hardcodes its exception save area at $3FFC80, which on
 # real hardware wraps back into installed RAM through the un-decoded
 # address-bus gap.  Without the mirror the first exception hangs boot at
 # the "Welcome to Macintosh" splash — so these rows are that mirror's

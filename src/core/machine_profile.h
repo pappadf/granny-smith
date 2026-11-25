@@ -17,6 +17,7 @@
 
 #include "checkpoint.h"
 #include "common.h"
+#include "cpu.h" // cpu_has_fpu (profile_has_fpu)
 #include "machine_build_opts.h"
 #include "machine_config_decl.h"
 #include <stdbool.h>
@@ -415,8 +416,13 @@ typedef struct hw_profile {
     uint32_t freq; // CPU clock in Hz
     // Typed MMU kind — the single source of truth behind the exported
     // `mmu.kind` capability.  FPU presence is derived from
-    // cpu_model via cpu_has_fpu(); neither is a separate descriptor field.
+    // cpu_model via cpu_has_fpu(), less `fpu_absent` below.
     mmu_kind_t mmu_kind;
+    // The CPU is built without its FPU although its model has one: the
+    // 68LC040 (Centris 610), or a 68030 board that fits no 68882 (the V8
+    // family).  FPU presence is cpu_has_fpu(cpu_model) &&
+    // !fpu_absent.
+    bool fpu_absent;
 
     // Address space
     int address_bits; // 24 or 32
@@ -593,6 +599,12 @@ static inline bool hw_profile_ram_option_allowed(const hw_profile_t *p, uint32_t
             return true;
     }
     return false;
+}
+
+// True if the profile's CPU is built with its FPU: the model has one and the
+// board does not leave it out (fpu_absent).
+static inline bool profile_has_fpu(const hw_profile_t *p) {
+    return cpu_has_fpu(p->cpu_model) && !p->fpu_absent;
 }
 
 // Registry: enumerate the built-in profiles.  *out_count receives the count.
