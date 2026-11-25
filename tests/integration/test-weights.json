@@ -212,6 +212,7 @@
     "vrom-identify": 0,
     "watchpoints": 0,
     "suite-tnt-1997": 240,
-    "suite-wgs9150": 95
+    "suite-wgs9150": 95,
+    "suite-pm7200": 75
   }
 }

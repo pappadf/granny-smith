@@ -99,6 +99,7 @@ const MODEL_IDS = [
   'pm7500',
   'pm8500',
   'pm9500',
+  'pm7200',
   'ans500',
   'ans700',
   'pmg3dt',

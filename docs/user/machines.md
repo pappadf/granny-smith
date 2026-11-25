@@ -31,7 +31,7 @@ with this checksum in lower case and continues with a second, longer one
 | `5BF10FD1` | Quadra 840AV / 660AV | Quadra 840AV, Centris/Quadra 660AV |
 | `9FEB69B3` | Power Macintosh 6100/7100/8100 v1.0 | Power Mac 6100, 7100, 8100 |
 | `9B7A3AAD` | Power Macintosh 7100 v1.1 | Power Mac 7100 |
-| `96CD923D`, `9630C68B` | Power Macintosh 7500/8500/9500 v1, v2 | Power Mac 7500, 8500, 9500, 7600 |
+| `96CD923D`, `9630C68B` | Power Macintosh 7500/8500/9500 v1, v2 | Power Mac 7200, 7500, 8500, 9500, 7600 |
 | `960E4BE9` | Power Macintosh 7300/7600/8600/9600 (1997 v1) | Power Mac 7300, 7600, 8600, 9600 |
 | `960FC647` | Power Macintosh 8600/9600 (1997 v2) | Power Mac 8600, 9600 |
 | `9C7C98F7` | Workgroup Server 9150/80 | Workgroup Server 9150/80 |
@@ -157,6 +157,7 @@ this Macintosh model". System 7.5 and later start them without an enabler.
 | Power Mac 6100 | `pm6100` | 16 MB; 8–72 MB | built-in (13″, 15″ Portrait, 12″) | SCSI hard disk, CD-ROM | — |
 | Power Mac 7100 | `pm7100` | 24 MB; 8–136 MB | built-in | SCSI: two hard disks, CD-ROM | NuBus B–D |
 | Power Mac 8100 | `pm8100` | 32 MB; 8–264 MB | built-in | SCSI, CD-ROM | NuBus B–D |
+| Power Mac 7200 | `pm7200` | 16 MB; 8–256 MB | built-in, 1 MB VRAM (12″–21″) | one SCSI bus: hard disk, CD-ROM, external | PCI A1–C1 |
 | Power Mac 7500 | `pm7500` | 32 MB; 8–512 MB | built-in (12″–21″) | internal SCSI bays; CD-ROM | PCI A1–C1 |
 | Power Mac 8500 | `pm8500` | 32 MB; 16–512 MB | built-in | internal SCSI bays; CD-ROM | PCI A1–C1 |
 | Power Mac 9500 | `pm9500` | 64 MB; 16–512 MB | PCI graphics card in A1 | internal SCSI bays; CD-ROM | PCI A1–F2 |
@@ -172,7 +173,10 @@ this Macintosh model". System 7.5 and later start them without an enabler.
 Power Macs always run in 32-bit mode. The 7300/7600/8600/9600 are the
 7500/8500/9500 with a faster processor (they run as a 604, not a 604e, and
 the 9600 as a single-processor machine). The Workgroup Server 9150 is the
-8100 with a fourth NuBus slot. The 7500, 8500 and 9500 (and their 1997 successors) have their
+8100 with a fourth NuBus slot. The 7200 is the 7500's entry-level sibling:
+a 90 MHz 601, built-in video with 1 MB of video memory (thousands of colours
+at 640×480), and a single SCSI bus for the hard disk, the CD-ROM drive and
+the external connector. The 7500, 8500 and 9500 (and their 1997 successors) have their
 CD-ROM drive at ID 3 on a second SCSI bus, the one that also goes to the
 external connector; the hard disk bays are on the fast internal bus. PCI cards you can add: the **Apple
 Accelerated PCI Graphics Card** (ATI Mach64 GX) and the **3dfx Voodoo2** 3D
@@ -205,6 +209,7 @@ Combinations the project tests regularly. Others may well work too.
 | Quadra 700 / 900 / 950 | System 7.5 – 7.6; System 7.1 on the Quadra 700 |
 | Quadra 840AV / 660AV | System 7.1 with its enabler, 7.6 (840AV) |
 | Power Mac 6100 / 7100 / 8100 | System 7.5 – 7.6, Mac OS 8.1 – 9.0.4; MkLinux DR3 |
+| Power Mac 7200 | System 7.5.3, 7.6, Mac OS 8.1 |
 | Power Mac 7500 / 8500 / 9500 | System 7.6, Mac OS 8.1; MkLinux DR3 (7500) |
 | Power Mac 7300 / 7600 / 8600 / 9600 | Mac OS 8.1 (1997 ROMs); System 7.6 (7600 with the 1995 ROM) |
 | Workgroup Server 9150 | System 7.5.3, 7.6 |
@@ -216,7 +221,7 @@ Combinations the project tests regularly. Others may well work too.
 Notes:
 
 - A PCI Power Mac (7500/8500/9500) refuses a System 7.5 startup disk; use
-  7.6 or later.
+  7.6 or later. The 7200 starts System 7.5.2 or later (7.5.3 is tested).
 - With the 1997 ROMs (`960E4BE9`, `960FC647`) the 7300/7600/8600/9600 also
   refuse System 7.6; use Mac OS 8 or later (7.6.1 is not tested). The
   Workgroup Server 9150 refuses System 7.5; use 7.5.3 or later.

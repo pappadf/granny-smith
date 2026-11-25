@@ -286,6 +286,17 @@ for m in pm7300 pm7600 pm8600 pm9600; do
     assert_contains "$m" '"storage":[{"bus":"scsi","unit":0,"type":"hd"},{"bus":"scsi2","unit":3,"type":"cd"}]' "$m opens with the hard disk and the CD-ROM drive"
 done
 
+# The Power Macintosh 7200: the Catalyst board -- a 90 MHz 601, Platinum
+# video on the built-in port, and the 53C94 as the one SCSI bus (internal
+# bays and the external connector), no MESH (suite-pm7200).
+assert_contains pm7200 '"model":601' "pm7200 is a PowerPC 601"
+assert_contains pm7200 '"freq":90000000' "pm7200 runs at 90 MHz"
+assert_contains pm7200 '"pci":true' "pm7200 has PCI"
+assert_contains pm7200 '"detail":"Platinum"' "pm7200's built-in video is Platinum"
+assert_contains pm7200 '{"id":"scsi","label":"SCSI","kind":"scsi"' "pm7200 has one SCSI bus"
+assert_absent pm7200 '"id":"scsi2"' "pm7200 has no second SCSI bus"
+assert_contains pm7200 '"storage":[{"bus":"scsi","unit":0,"type":"hd"},{"bus":"scsi","unit":3,"type":"cd"}]' "pm7200 opens with a hard disk at ID 0 and the CD-ROM drive at ID 3"
+
 # The Workgroup Server 9150: the 8100's board plus a fourth NuBus socket at
 # $A (suite-wgs9150 row wgs9150-24ac-slot-a runs a 24AC's driver there).
 for m in wgs9150 wgs9150_120; do
@@ -423,7 +434,7 @@ done
 
 # Every Macintosh has the AppleTalk option, default Active (D22); the Lisa
 # and the Macintosh XL do not.
-for m in plus se30 iicx iix iifx iici iisi q700 q900 q950 q840av q660av pm6100 pm7100 pm8100 pm7500 pm8500 pm9500 ans500 ans700 pmg3dt pmg3mt pm7300 pm7600 pm8600 pm9600 wgs9150 wgs9150_120; do
+for m in plus se30 iicx iix iifx iici iisi q700 q900 q950 q840av q660av pm6100 pm7100 pm8100 pm7500 pm8500 pm9500 ans500 ans700 pmg3dt pmg3mt pm7300 pm7600 pm8600 pm9600 wgs9150 wgs9150_120 pm7200; do
     assert_contains "$m" '{"id":"appletalk","label":"AppleTalk","kind":"choice","values":[{"id":"active","label":"Active"},{"id":"inactive","label":"Inactive"}],"default":"active"}' "$m has the AppleTalk option"
 done
 for m in lisa macxl; do

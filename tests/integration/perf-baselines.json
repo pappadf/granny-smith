@@ -971,6 +971,22 @@
     "tnt-voodoo2-glide/thread": {
       "instr": 8177800000,
       "tolerance": 0.2
+    },
+    "suite-pm7200/pm7200-753-hd": {
+      "instr": 769000000,
+      "tolerance": 0.2
+    },
+    "suite-pm7200/pm7200-76-fd": {
+      "instr": 2750000000,
+      "tolerance": 0.2
+    },
+    "suite-pm7200/pm7200-76-hd": {
+      "instr": 1614500000,
+      "tolerance": 0.2
+    },
+    "suite-pm7200/pm7200-81-hd": {
+      "instr": 2089000000,
+      "tolerance": 0.2
     }
   }
 }

@@ -10,7 +10,7 @@
 -- Row map:
 --
 --   pm7300-81-hd        pm7300, 1997 v1 ROM, Mac OS 8.1 from the MESH disk:
---                       Finder, About This Computer, BoxFlag $3E.
+--                       Finder, About This Computer, BoxFlag $67.
 --   pm7600-81-hd        pm7600, 1997 v1 ROM, the same.
 --   pm8600-81-hd        pm8600 on the later $960FC647 ROM: BoxFlag $3F.
 --   pm9600-81-mach64    pm9600 (no onboard video) on an ATI Mach64 GX in
@@ -25,7 +25,9 @@
 -- predecessors' machine IDs, and the ROM's 68k identification is the 1995
 -- routine byte for byte — so BoxFlag ($0CB3) is the 7500's $3E (Gestalt
 -- 68), the 8500's $3F (69) and the 9500's $3D (67).  The 7300's documented
--- ID 109 is not produced by the ROM (see pm7300.c); it reads $3E here.
+-- ID 109 is not the ROM's: Mac OS 8.1's startup patch rewrites BoxFlag $3E
+-- to $67 (Gestalt 109) when BoxID bit 15 reads low, the 7300's strap (see
+-- pm7300.c), so its row reads $67.
 -- Neither Mac OS 8.1's "About This Computer" nor 7.6's names the model
 -- (both print the generic "Power Macintosh" / "Mac OS computer"), so the
 -- About goldens prove the boot reached a working Finder and the Apple menu,
@@ -86,7 +88,7 @@ end
 
 -- golden-collision-ok: pm7300-8.1-finder.png pm7600-8.1-finder.png pm8600-8.1-finder.png pm7300-8.1-about.png pm7600-8.1-about.png pm8600-8.1-about.png — the same Mac OS 8.1 desktop and About window on the same Control raster; the rows' BoxFlag and machine.id assertions carry the model identity, which this About window does not print.
 local function row_pm7300_81_hd()
-    tnt97_81_row("pm7300-81-hd", "pm7300", rom_97, id_97, "", 0x3E, "goldens/pm7300-8.1-finder.png", "goldens/pm7300-8.1-about.png")
+    tnt97_81_row("pm7300-81-hd", "pm7300", rom_97, id_97, "", 0x67, "goldens/pm7300-8.1-finder.png", "goldens/pm7300-8.1-about.png")
 end
 local function row_pm7600_81_hd()
     tnt97_81_row("pm7600-81-hd", "pm7600", rom_97, id_97, "", 0x3E, "goldens/pm7600-8.1-finder.png", "goldens/pm7600-8.1-about.png")

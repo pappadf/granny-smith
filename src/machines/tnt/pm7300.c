@@ -10,22 +10,30 @@
 // as the 7300/200: 200 MHz on a 50 MHz processor bus.
 //
 // Identification.  The developer note gives the 7300 "a new machine ID
-// value: 109 (hexadecimal 6D)" (ibid., "Machine Identification") — but the
-// 1997 ROM it ships with ($960E4BE9) carries the 1995 68k identification
-// routine and Open Firmware byte for byte, and both read the board only as
-// one of 7500/8500/9500 (or the 7200's Catalyst).  The 7500 straps below
-// are therefore what the ROM can see; the System software that shipped
-// with the machine is what tells a 7300 from a 7600.
+// value: 109 (hexadecimal 6D)" (ibid., "Machine Identification").  The ROM
+// does not produce it: the 1997 ROM ($960E4BE9) carries the 1995 68k
+// identification routine and Open Firmware byte for byte, and its
+// ProductInfo directory still holds only the 9500/7500/8500/7200 records
+// (BoxFlag $3D/$3E/$3F/$66).  The System does.  System 7.6 and Mac OS 8.1
+// both install a startup patch that, on the TNT ROM (ROM version $077D,
+// release $28 or $34) with a Hammerhead identifier byte of $39 and BoxFlag
+// $3E, reads BoxID with a big-endian `AND.L #...,$F301A000` and rewrites
+// the identity: little-endian bit 13 CLEAR -> BoxFlag $68 (Gestalt 110);
+// then little-endian bit 15 CLEAR -> BoxFlag $67 (Gestalt 109, the 7300).
+// (System 7.6 image, its patch code at disk offset $36E168.)  So the 7300
+// board is a 7600 whose BoxID bit 15 is strapped LOW — the bit every other
+// TNT board idles high — and bit 13 high (Open Firmware's 7500 pick).
 
 #include "of_nvram.h"
 #include "slot_tables.h"
 #include "tnt.h"
 
 static const tnt_board_desc_t pm7300_board = {
-    // The 7500/7600 straps (pm7500.c): bit 15 pulled high, bit 14 MESH
-    // present, bit 13 SET (Open Firmware's 7500 pick), bit 11 CLEAR, bit 8
-    // the factory-test strap idling HIGH.
-    .boxid = 0x8000u | 0x4000u | 0x2000u | 0x0100u,
+    // The 7600's straps (pm7500.c) with bit 15 LOW — the 7300 strap the
+    // System's identification patch reads (above): bit 14 MESH present,
+    // bit 13 SET (Open Firmware's 7500 pick), bit 11 CLEAR, bit 8 the
+    // factory-test strap idling HIGH.
+    .boxid = 0x4000u | 0x2000u | 0x0100u,
     .hh_id = 0x39000000u, // $39 first byte = the TNT identification path
     .hh_r20 = 0x80000000u, // the 7500/8500 class (pm7500.c)
     .bus_hz = 50000000u, // 4:1 bus (200 MHz 604e card)

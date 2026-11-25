@@ -1773,6 +1773,46 @@
       "addr32": false,
       "suite": "suite-djmemc",
       "media_gated": true
+    },
+    {
+      "machine": "pm7200",
+      "system": "7.5.3",
+      "card": "platinum",
+      "width": 640,
+      "height": 480,
+      "depth": 16,
+      "addr32": true,
+      "suite": "suite-pm7200"
+    },
+    {
+      "machine": "pm7200",
+      "system": "7.6",
+      "card": "platinum",
+      "width": 640,
+      "height": 480,
+      "depth": 16,
+      "addr32": true,
+      "suite": "suite-pm7200"
+    },
+    {
+      "machine": "pm7200",
+      "system": "8.1",
+      "card": "platinum",
+      "width": 640,
+      "height": 480,
+      "depth": 16,
+      "addr32": true,
+      "suite": "suite-pm7200"
+    },
+    {
+      "machine": "pm7200",
+      "system": "7.6",
+      "card": "swim3",
+      "width": 640,
+      "height": 480,
+      "depth": 16,
+      "addr32": true,
+      "suite": "suite-pm7200"
     }
   ]
 }
