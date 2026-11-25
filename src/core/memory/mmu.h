@@ -194,7 +194,12 @@ typedef struct mmu_state {
     // OLD translation: the next miss on that logical page refills from it
     // (read-only) once, and the next ATC invalidation drops the hold.  Page
     // granular, where the cache is 16-byte lines: an approximation that only
-    // ever serves bytes the instruction stream was already reading.
+    // ever serves bytes the instruction stream was already reading.  Only a
+    // board that sets `icache_hold_enabled` gets it, and only the fetch of
+    // the instruction after the PMOVE takes it: the first TLB miss of any
+    // other kind drops the hold unused.
+    bool icache_hold_enabled; // the board's ROM depends on the hold (the V8 family)
+    uint32_t icache_hold_pc; // the instruction the PMOVE was followed by
     uint32_t icache_hold_log; // logical page of the held code
     uint32_t icache_hold_phys; // its physical page under the old translation
     uint8_t icache_hold; // 0 none, 1 armed, 2 armed past the PMOVE's own flush

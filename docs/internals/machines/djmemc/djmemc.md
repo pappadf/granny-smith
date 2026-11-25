@@ -54,7 +54,7 @@ controller (`DJMEMC_CHIP_DJMEMC`, the default, or `DJMEMC_CHIP_MEMCJR`) and
 |---|---|---|---|---|---|---|
 | LC 475 | `lc475` | Primus | 25 MHz | 68LC040 | $A55A2221 | 83 |
 | Quadra 605 | `q605` | Aladdin | 25 MHz | 68LC040 | $A55A2225 | 88 |
-| LC 575 | `lc575` | Optimus | 33 MHz | 68040 | $A55A222E | 86 |
+| LC 575 | `lc575` | Optimus | 33 MHz | 68LC040 | $A55A222E | 86 |
 
 The ROM (`FF7439EE`) finds them by the CPU-ID alone (bit 11 clear: no VIA
 supplement); its low two bits name the clock, from which the ROM picks the

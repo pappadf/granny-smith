@@ -36,6 +36,7 @@ typedef struct v8_video {
     uint8_t key; // Ariel key-colour register
     uint8_t depth_code; // V8 MonP depth field: 0..4 = 1/2/4/8/16 bpp
     uint8_t mode_code; // Sonora monitor code (video mode register bits 0-3; 0 = from the sense)
+    bool blanked; // video switched off: V8 MonP RvVIDOff, Sonora video mode bit 7
 
     // --- not checkpointed below here ---
     display_t display;
@@ -106,6 +107,12 @@ display_t *v8_video_display(config_t *cfg);
 void v8_video_vbl(config_t *cfg);
 // The V8 MonP depth field changed (rbv mode callback).
 void v8_video_set_depth(config_t *cfg, int depth_code);
+// The video switched off (blank raster) or back on (rbv blank callback,
+// Sonora's video mode bit 7).
+void v8_video_set_blank(config_t *cfg, bool blanked);
+// /RESET: the video back to its power-on state (depth 0, the raster the
+// sense selects, not blanked).
+void v8_video_reset(config_t *cfg);
 // The monitor-sense code the V8 latches in MonP bits 3-5.
 uint8_t v8_video_sense(config_t *cfg);
 // Ariel register access at $50F24000 + off.

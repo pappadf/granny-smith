@@ -4,7 +4,7 @@
 // v8.c
 // The V8 family substrate -- see v8.h.  One build for the LC II (V8), the
 // Classic II (Eagle) and the Color Classic (Spice): the II-family core, VIA1
-// with the Egret companion on its shift register, the Combo's SCC and 5380,
+// with the Egret or Cuda companion on its shift register, the Combo's SCC and 5380,
 // the sound block (an ASC subset), SWIM, the RBV-style pseudo-VIA2 at
 // $50F26000, the Ariel CLUT and the built-in video, and the V8's RAM decode.
 //
@@ -94,6 +94,7 @@ static void v8_io_bind(config_t *cfg) {
     v8_state_t *st = v8_st(cfg);
     board_io_t *io = &st->io;
     m68k_board_io_install(io, cfg, &v8_board(cfg)->desc);
+    io->window_base = V8_ISLAND_BASE; // the island is mapped here, not at the ROM space's end
     board_io_bind_dev(io, BOARD_DEV_VIA1, cfg->via1, via_get_memory_interface(cfg->via1));
     board_io_bind_dev(io, BOARD_DEV_SCC, cfg->scc, scc_get_memory_interface(cfg->scc));
     board_io_bind_dev(io, BOARD_DEV_SCSI, cfg->scsi, scsi_get_memory_interface(cfg->scsi));
@@ -285,6 +286,11 @@ static void v8_rbv_mode(void *context, int depth_code) {
     v8_video_set_depth((config_t *)context, depth_code);
 }
 
+// MonP RvVIDOff -> the built-in video switched off or on.
+static void v8_rbv_blank(void *context, bool video_off) {
+    v8_video_set_blank((config_t *)context, video_off);
+}
+
 // The 5380's IRQ/DRQ through the pseudo-VIA2 flags.
 static void v8_scsi_irq(void *context, bool irq, bool drq) {
     v8_state_t *st = v8_st((config_t *)context);
@@ -306,9 +312,6 @@ static void v8_power_off(void *context) {
     if (cfg->scheduler)
         scheduler_stop(cfg->scheduler);
 }
-
-// The RBV register file's part save is the MDU family's (mdu.c).
-void part_save_rbv(void *obj, checkpoint_t *cp);
 
 // The family's own checkpoint block: overlay state, the decoded size bits
 // and the video.
@@ -411,13 +414,25 @@ static int v8_init(config_t *cfg, checkpoint_t *cp) {
         return -1;
     machine_part(cfg, cp, "rbv", part_save_rbv, st->rbv);
     rbv_set_irq_callback(st->rbv, v8_rbv_irq, cfg);
-    rbv_set_mode_callback(st->rbv, v8_rbv_mode, cfg);
+    // The V8's video follows MonP; Sonora's has its own depth and mode
+    // registers at $50F28000 (sonora.c), so a MonP write must not reach it.
+    // RvVIDOff switches off the VRAM video (the LC II's and the Color
+    // Classic's); the Classic II's screen is scanned from DRAM by other logic,
+    // and its ROM leaves the bit set.
+    if (!sonora) {
+        rbv_set_mode_callback(st->rbv, v8_rbv_mode, cfg);
+        if (b->fb_source == V8_FB_VRAM)
+            rbv_set_blank_callback(st->rbv, v8_rbv_blank, cfg);
+    }
     rbv_set_exp_callback(st->rbv, sonora ? sonora_ram_cfg_written : v8_exp_written, cfg);
     asc_set_irq_handler(st->asc, v8_asc_irq, st->rbv);
 
     st->mmu = m68k_board_build_mmu(cfg, b->desc.rom_base, b->desc.rom_end);
     if (!st->mmu)
         return -1;
+    // The ROMs' MMU-enable sequence runs on from the instruction cache
+    // across PMOVE to TC (mmu.h, icache_hold_*)
+    st->mmu->icache_hold_enabled = true;
     // The decoder answers the whole low 16 MB (RAM, the 24-bit ROM and I/O
     // windows): nothing there times out.  A write the ROM's tables send to the
     // ROM through $A00000 completes and is dropped, as on the hardware.

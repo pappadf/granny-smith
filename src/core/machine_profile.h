@@ -418,7 +418,8 @@ typedef struct hw_profile {
     // cpu_model via cpu_has_fpu(), less `fpu_absent` below.
     mmu_kind_t mmu_kind;
     // The CPU is built without its FPU although its model has one: the
-    // 68LC040 (Centris 610).  FPU presence is cpu_has_fpu(cpu_model) &&
+    // 68LC040 (Centris 610), or a 68030 board that fits no 68882 (the V8
+    // family).  FPU presence is cpu_has_fpu(cpu_model) &&
     // !fpu_absent.
     bool fpu_absent;
 

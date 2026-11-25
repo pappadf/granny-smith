@@ -128,6 +128,7 @@ const hw_profile_t machine_lc575 = {
     .id = "lc575",
     MEMCJR_PROFILE_COMMON,
     .freq = 33333333,
+    .fpu_absent = true, // 68LC040
     .storage = mac_storage_scsi_cd_bay, // the internal CD-ROM bay
     .builtin_video = &lc575_builtin_video,
     .board = &lc575_board,

@@ -73,12 +73,19 @@ local function settle(t)
 end
 
 -- Boot `t.model` with `t.rom` and `t.ram` KB off its media, reach the Finder
--- (`t.name`'s golden), open the About box and match it.  `t.adb` picks the
+-- (`t.finder`), open the About box and match it.  `t.adb` picks the
 -- ADB choreography over the quadrature one; `t.keys` are ADB raw key codes
 -- held from power-on until `t.keys_for` instructions have run; `t.dismiss`
--- is a startup dialog (its golden suffix and the button's {x, y}) clicked
--- away before the Finder; `t.clock` drops the menu-bar clock from the
--- matches.
+-- is a startup dialog (its golden and the button's {x, y}) clicked away
+-- before the Finder; `t.clock` drops the menu-bar clock from the matches.
+-- `t.finder` and `t.about` are the row's goldens, every golden named
+-- literally so that scripts/check-goldens.py can see it.
+--
+-- golden-collision-ok: se-608-fd-finder.png sefdhd-608-fd-finder.png classic-608-fd-finder.png — the same System 6.0.8 desktop off the same 800K disk; machine.id and rom.id (b2e362a8/b306e171/a49f9914) tell the rows apart, and their About goldens differ
+-- golden-collision-ok: se-71-hd-finder.png sefdhd-71-hd-finder.png — the same System 7.1 desktop off the same SCSI disk; machine.id and rom.id (b2e362a8 vs b306e171) tell the rows apart, and their About goldens (4 MB vs 2.5 MB) differ
+-- golden-collision-ok: se-71-hd-fsaccess.png sefdhd-71-hd-fsaccess.png — the same System 7.1 startup alert off the same SCSI disk; machine.id and rom.id (b2e362a8 vs b306e171) tell the rows apart
+-- golden-collision-ok: se-753-hd-finder.png classic-753-hd-finder.png — the same System 7.5.3 desktop off the same SCSI disk; machine.id and rom.id (b2e362a8 vs a49f9914) tell the rows apart
+-- golden-collision-ok: sefdhd-71-fd-finder.png classic-71-fd-finder.png — the same 7.1 Disk Tools desktop; machine.id and rom.id (b306e171 vs a49f9914) tell the rows apart
 local function about_row(label, t)
     machine.boot{model = t.model, ram = t.ram, rom = t.rom}
     assert(machine.id == t.model, F"${label}: machine.id ${machine.id} != ${t.model}")
@@ -95,7 +102,7 @@ local function about_row(label, t)
     scheduler.run(t.head or 30000000)
     settle(t)
     if t.dismiss then
-        check(F"goldens/${label}-${t.dismiss[1]}.png", t.clock)
+        check(t.dismiss[1], t.clock)
         -- The alert comes up while the extensions load, before the cursor
         -- task and Ticks are reliably running: fixed budgets, not tick waits
         machine.adb.mouse.move(t.dismiss[2], t.dismiss[3], "global")
@@ -108,9 +115,9 @@ local function about_row(label, t)
     end
     assert(debug.mac.os, F"${label}: the Finder is up but debug.mac.os is false")
     assert(machine.screen.width == 512 and machine.screen.height == 342, F"${label}: screen not 512x342")
-    check(F"goldens/${label}-finder.png", t.clock)
+    check(t.finder, t.clock)
     if t.adb then mac.about_box() else mac.about_box_quad() end
-    check(F"goldens/${label}-about.png", t.clock)
+    check(t.about, t.clock)
     mac.report_row(t.system, "builtin", t.feature .. " about")
     mac.report_perf("suite-compact/" .. label, scheduler.instr_count)
 end
@@ -118,83 +125,96 @@ end
 -- ---- Macintosh 128K ---------------------------------------------------------
 
 mac.row("m128k-20-fd", function()
-    about_row("m128k-20-fd", {model = "mac128k", rom = rom_128k, rom_id = "28ba61ce", ram = 128, fd = ssw_20,
+    about_row("m128k-20-fd", {finder = "goldens/m128k-20-fd-finder.png", about = "goldens/m128k-20-fd-about.png",
+        model = "mac128k", rom = rom_128k, rom_id = "28ba61ce", ram = 128, fd = ssw_20,
         system = "2.0", feature = "fd-boot iwm 400k-gcr pwm-speed"})
 end)
 
 mac.row("m128k-32-fd", function()
-    about_row("m128k-32-fd", {model = "mac128k", rom = rom_128k, rom_id = "28ba61ce", ram = 128, fd = ssw_32,
+    about_row("m128k-32-fd", {finder = "goldens/m128k-32-fd-finder.png", about = "goldens/m128k-32-fd-about.png",
+        model = "mac128k", rom = rom_128k, rom_id = "28ba61ce", ram = 128, fd = ssw_32,
         system = "3.2", feature = "fd-boot iwm 400k-gcr pwm-speed"})
 end)
 
 -- ---- Macintosh 512K ---------------------------------------------------------
 
 mac.row("m512k-20-fd", function()
-    about_row("m512k-20-fd", {model = "mac512k", rom = rom_512k, rom_id = "28ba4e50", ram = 512, fd = sys_201,
+    about_row("m512k-20-fd", {finder = "goldens/m512k-20-fd-finder.png", about = "goldens/m512k-20-fd-about.png",
+        model = "mac512k", rom = rom_512k, rom_id = "28ba4e50", ram = 512, fd = sys_201,
         system = "2.0.1", feature = "fd-boot iwm 400k-gcr pwm-speed"})
 end)
 
 mac.row("m512k-40-fd", function()
-    about_row("m512k-40-fd", {model = "mac512k", rom = rom_512k, rom_id = "28ba4e50", ram = 512, fd = sys_40,
+    about_row("m512k-40-fd", {finder = "goldens/m512k-40-fd-finder.png", about = "goldens/m512k-40-fd-about.png",
+        model = "mac512k", rom = rom_512k, rom_id = "28ba4e50", ram = 512, fd = sys_40,
         system = "4.0", feature = "fd-boot iwm 400k-gcr pwm-speed"})
 end)
 
 -- ---- Macintosh 512K enhanced ------------------------------------------------
 
 mac.row("m512ke-32-fd", function()
-    about_row("m512ke-32-fd", {model = "mac512ke", rom = rom_plus, rom_id = "4d1f8172", ram = 512, fd = sys_32,
+    about_row("m512ke-32-fd", {finder = "goldens/m512ke-32-fd-finder.png", about = "goldens/m512ke-32-fd-about.png",
+        model = "mac512ke", rom = rom_plus, rom_id = "4d1f8172", ram = 512, fd = sys_32,
         system = "3.2", feature = "fd-boot iwm 800k-gcr no-scsi"})
 end)
 
 mac.row("m512ke-42-fd", function()
-    about_row("m512ke-42-fd", {model = "mac512ke", rom = rom_plus, rom_id = "4d1f8172", ram = 512, fd = ssw_42,
+    about_row("m512ke-42-fd", {finder = "goldens/m512ke-42-fd-finder.png", about = "goldens/m512ke-42-fd-about.png",
+        model = "mac512ke", rom = rom_plus, rom_id = "4d1f8172", ram = 512, fd = ssw_42,
         system = "4.2", feature = "fd-boot iwm 800k-gcr no-scsi"})
 end)
 
 -- ---- Macintosh SE -----------------------------------------------------------
 
 mac.row("se-608-fd", function()
-    about_row("se-608-fd", {model = "se", rom = rom_se, rom_id = "b2e362a8", ram = 2048, fd = ssw_608, adb = true,
+    about_row("se-608-fd", {finder = "goldens/se-608-fd-finder.png", about = "goldens/se-608-fd-about.png",
+        model = "se", rom = rom_se, rom_id = "b2e362a8", ram = 2048, fd = ssw_608, adb = true,
         system = "6.0.8", feature = "fd-boot iwm 800k-gcr adb"})
 end)
 
 -- System 7.1 names the model in About This Macintosh ("Macintosh SE");
 -- 7.5.3 below names none of the compacts, the Plus included ("Macintosh").
 mac.row("se-71-hd", function()
-    about_row("se-71-hd", {model = "se", rom = rom_se, rom_id = "b2e362a8", ram = 4096, hd = hd_71, adb = true,
-        dismiss = {"fsaccess", 357, 245}, ceiling = 1200000000, system = "7.1",
+    about_row("se-71-hd", {finder = "goldens/se-71-hd-finder.png", about = "goldens/se-71-hd-about.png",
+        model = "se", rom = rom_se, rom_id = "b2e362a8", ram = 4096, hd = hd_71, adb = true,
+        dismiss = {"goldens/se-71-hd-fsaccess.png", 357, 245}, ceiling = 1200000000, system = "7.1",
         feature = "hd-boot scsi adb fs-access-dialog"})
 end)
 
 mac.row("se-753-hd", function()
-    about_row("se-753-hd", {model = "se", rom = rom_se, rom_id = "b2e362a8", ram = 4096, hd = hd_753, adb = true,
+    about_row("se-753-hd", {finder = "goldens/se-753-hd-finder.png", about = "goldens/se-753-hd-about.png",
+        model = "se", rom = rom_se, rom_id = "b2e362a8", ram = 4096, hd = hd_753, adb = true,
         clock = true, ceiling = 1200000000, system = "7.5.3", feature = "hd-boot scsi adb"})
 end)
 
 -- ---- Macintosh SE FDHD ------------------------------------------------------
 
 mac.row("sefdhd-71-fd", function()
-    about_row("sefdhd-71-fd", {model = "sefdhd", rom = rom_sefdhd, rom_id = "b306e171", ram = 4096,
+    about_row("sefdhd-71-fd", {finder = "goldens/sefdhd-71-fd-finder.png", about = "goldens/sefdhd-71-fd-about.png",
+        model = "sefdhd", rom = rom_sefdhd, rom_id = "b306e171", ram = 4096,
         fd = disk_tools_71, adb = true, ceiling = 1200000000, system = "7.1", feature = "fd-boot swim 1.44m-mfm adb"})
 end)
 
 mac.row("sefdhd-608-fd", function()
-    about_row("sefdhd-608-fd", {model = "sefdhd", rom = rom_sefdhd, rom_id = "b306e171", ram = 1024, fd = ssw_608,
+    about_row("sefdhd-608-fd", {finder = "goldens/sefdhd-608-fd-finder.png", about = "goldens/sefdhd-608-fd-about.png",
+        model = "sefdhd", rom = rom_sefdhd, rom_id = "b306e171", ram = 1024, fd = ssw_608,
         adb = true, system = "6.0.8", feature = "fd-boot swim 800k-gcr adb"})
 end)
 
 -- The universal 7.1 image on a 68000: Apple Photo Access (68020 code) fails
 -- to install and the System says so before the Finder, as on the Plus.
 mac.row("sefdhd-71-hd", function()
-    about_row("sefdhd-71-hd", {model = "sefdhd", rom = rom_sefdhd, rom_id = "b306e171", ram = 2560, hd = hd_71,
-        adb = true, dismiss = {"fsaccess", 357, 245}, ceiling = 1200000000, system = "7.1",
+    about_row("sefdhd-71-hd", {finder = "goldens/sefdhd-71-hd-finder.png", about = "goldens/sefdhd-71-hd-about.png",
+        model = "sefdhd", rom = rom_sefdhd, rom_id = "b306e171", ram = 2560, hd = hd_71,
+        adb = true, dismiss = {"goldens/sefdhd-71-hd-fsaccess.png", 357, 245}, ceiling = 1200000000, system = "7.1",
         feature = "hd-boot scsi adb fs-access-dialog"})
 end)
 
 -- ---- Macintosh Classic ------------------------------------------------------
 
 mac.row("classic-608-fd", function()
-    about_row("classic-608-fd", {model = "classic", rom = rom_classic, rom_id = "a49f9914", ram = 2560,
+    about_row("classic-608-fd", {finder = "goldens/classic-608-fd-finder.png", about = "goldens/classic-608-fd-about.png",
+        model = "classic", rom = rom_classic, rom_id = "a49f9914", ram = 2560,
         fd = ssw_608, adb = true, system = "6.0.8", feature = "fd-boot swim 800k-gcr adb"})
 end)
 
@@ -202,18 +222,21 @@ end)
 -- upper half of the Classic ROM.  Raw ADB codes: Command $37, Option $3A,
 -- X $07, O $1F.
 mac.row("classic-romdisk", function()
-    about_row("classic-romdisk", {model = "classic", rom = rom_classic, rom_id = "a49f9914", ram = 1024,
+    about_row("classic-romdisk", {finder = "goldens/classic-romdisk-finder.png", about = "goldens/classic-romdisk-about.png",
+        model = "classic", rom = rom_classic, rom_id = "a49f9914", ram = 1024,
         keys = {0x37, 0x3A, 0x07, 0x1F}, keys_for = 6000000, adb = true, system = "6.0.3",
         feature = "rom-disk adb"})
 end)
 
 mac.row("classic-71-fd", function()
-    about_row("classic-71-fd", {model = "classic", rom = rom_classic, rom_id = "a49f9914", ram = 4096,
+    about_row("classic-71-fd", {finder = "goldens/classic-71-fd-finder.png", about = "goldens/classic-71-fd-about.png",
+        model = "classic", rom = rom_classic, rom_id = "a49f9914", ram = 4096,
         fd = disk_tools_71, adb = true, ceiling = 1200000000, system = "7.1", feature = "fd-boot swim 1.44m-mfm adb"})
 end)
 
 mac.row("classic-753-hd", function()
-    about_row("classic-753-hd", {model = "classic", rom = rom_classic, rom_id = "a49f9914", ram = 4096, hd = hd_753,
+    about_row("classic-753-hd", {finder = "goldens/classic-753-hd-finder.png", about = "goldens/classic-753-hd-about.png",
+        model = "classic", rom = rom_classic, rom_id = "a49f9914", ram = 4096, hd = hd_753,
         adb = true, clock = true, ceiling = 1200000000, system = "7.5.3", feature = "hd-boot scsi adb"})
 end)
 

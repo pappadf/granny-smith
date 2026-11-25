@@ -42,7 +42,9 @@ and VIA PB4/PB5 (`mouse.c`), PA3 selects the alternate sound buffer, and
 the phase-read window at $F00000 answers 0. The overlay map also places
 RAM at $600000 (Inside Macintosh, vol. III, ch. 2, `ovlyRAM`): the 64 KB
 ROM runs its memory test and draws its error screen there before it
-clears vOverlay. The image is left mapped afterwards.
+clears vOverlay. The image exists only while the overlay is on — it is
+RAM from offset 0, wrapping on a board smaller than the 2 MB window — and
+the range is empty again once the ROM drops the overlay.
 
 **BBU boards** (SE, SE FDHD, Classic) differ in four wired facts:
 
@@ -76,6 +78,15 @@ A9-A12 register decode (`compact_swim_*` wrapper over
   and media, and the display hook.
 
 ## 3. Behaviour/algorithms
+
+**SCSI decode.** The 5380 answers over $580000-$5FFFFF on every board
+with SCSI (`COMPACT_SCSI_BASE`/`SIZE`), the ROM decode ending where it
+starts: A19 selects it and A18-A10 are don't-cares (Guide to the Macintosh
+Family Hardware, 2nd ed., ch. 3), so the window is 512 KB. The Plus model
+this family grew from mapped a 1 MB window from $500000, over the top of
+the ROM's mirror range; the Plus now takes the same $580000 window as the
+SE and Classic, where its ROM's SCSI addresses ($580000 read, $580001
+write) fall.
 
 **RAM decode.** RAM below 4 MB repeats up to $400000
 (`memory_populate_ram_mirror`), except at 2.5 MB: there the two unequal

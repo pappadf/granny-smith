@@ -71,7 +71,7 @@ typedef struct compact_board {
     bool has_scsi; // an NCR 5380 at $580000 (Plus, SE, SE FDHD, Classic)
     floppy_type_t floppy_chip; // FLOPPY_TYPE_IWM, or FLOPPY_TYPE_SWIM (SE FDHD, Classic)
     // BBU boards: the second drive position is the upper internal drive
-    // (vDriveSel steers /ENBL1 to it) and the external port is not cabled;
+    // (vDriveSel steers /ENBL1 to it) and the external port is not modelled;
     // false: it is the external drive on /ENBL2, and no upper drive is fitted.
     bool second_internal;
     // BBU boards: VIA PA4 is vDriveSel, steering /ENBL1 between the lower and
@@ -247,6 +247,18 @@ static void compact_set_rom_overlay(config_t *cfg, bool on) {
         uint32_t ram_off = (p << MEM_PAGE_SHIFT) % cfg->ram_size;
         compact_map_read_page(p, on ? ram + cfg->ram_size + (p << MEM_PAGE_SHIFT) : ram + ram_off);
     }
+    // The overlay map also places RAM at $600000 ("RAM is placed starting at
+    // $600000", Inside Macintosh, vol. III, ch. 2; its ovlyRAM/ovlyScreen
+    // equates): the 64 KB ROM runs its memory test and draws its error screen
+    // there before it clears vOverlay.  The image is RAM from offset 0 (the
+    // 2 MB window never reaches a 2.5 MB board's second row), wrapping on a
+    // smaller board; it goes away with the overlay, leaving the range empty.
+    for (uint32_t a = COMPACT_OVLY_RAM_START; a < COMPACT_OVLY_RAM_END; a += MEM_PAGE_SIZE) {
+        if (on)
+            page_fill_68k(a >> MEM_PAGE_SHIFT, ram + (a - COMPACT_OVLY_RAM_START) % cfg->ram_size, true);
+        else
+            page_clear(a >> MEM_PAGE_SHIFT);
+    }
     LOG(1, "ROM overlay %s", on ? "on: ROM at $000000" : "off: RAM at $000000");
 }
 
@@ -257,6 +269,14 @@ static void compact_bbu_map_ram(config_t *cfg) {
     uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
     for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++)
         page_fill_68k(p, ram + ((p << MEM_PAGE_SHIFT) % cfg->ram_size), true);
+}
+
+// BBU drive-select boards: steer /ENBL1 to the upper internal drive or, the
+// default, the lower one (/ENBL2, the external port, reaches no drive here).
+static void compact_route_enbl(config_t *cfg, bool upper) {
+    const compact_board_t *board = compact_board(cfg);
+    int enbl1 = upper ? (board->second_internal ? 1 : -1) : 0;
+    floppy_set_enbl_route(cfg->floppy, enbl1, board->second_internal ? -1 : 1);
 }
 
 // The PAL boards' Phase Read area -- a STUB.  On hardware the value read tells
@@ -340,15 +360,8 @@ static void compact_memory_layout_init(config_t *cfg) {
 
     // Register the Phase Read device (PAL boards: the BBU has none)
     if (!board->bbu) {
-        // The PALs' overlay map moves RAM to $600000 while ROM sits at zero:
-        // "a duplicate image of the same ROM starting at address 0 (where RAM
-        // normally is), while RAM is placed starting at $600000" (Inside
-        // Macintosh, vol. III, ch. 2; its ovlyRAM/ovlyScreen equates).  The
-        // 64 KB ROM runs its memory test and draws its error screen there
-        // before it clears vOverlay.  The image is left in place afterwards:
-        // nothing else is decoded in $600000-$7FFFFF on these boards.
-        memory_populate_ram_mirror(cfg->memory_map, COMPACT_OVLY_RAM_START, COMPACT_OVLY_RAM_END);
-
+        // (The overlay map's RAM image at $600000 comes and goes with the
+        // overlay: compact_set_rom_overlay.)
         memory_interface_t phase_read;
         memset(&phase_read, 0, sizeof(phase_read));
         phase_read.read_uint8 = &compact_phase_read_uint8;
@@ -530,8 +543,9 @@ static int compact_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->sound = st->sound; // mirror onto cfg so the object-model `sound`
                             // class can find it via cfg->sound
 
-    // VIA PA3 is the SCC's W/REQ line on a Plus, and it is held LOW at boot
-    // until the SCC comes out of reset.  This used to be the core VIA's port-A
+    // VIA PA3's input level is held LOW at boot.  (PA3 is an output here:
+    // vSndPg2 on the PAL boards, vSync on the BBU; the SCC's W/REQ is PA7,
+    // vSCCWrReq -- Guide 2e, Table 4-2.)  This used to be the core VIA's port-A
     // default (0xF7), which made one machine's boot condition every machine's
     // -- and on the II family the same pin is a NuBus slot /NMRQ, so each of
     // them had to raise it back up or slot $C asserted forever.
@@ -630,6 +644,9 @@ static int compact_init(config_t *cfg, checkpoint_t *checkpoint) {
     // When restoring from a checkpoint, VIA outputs will re-drive the selection.
     if (!checkpoint) {
         compact_use_video_buffer(cfg, true);
+        // Power-on: PA4 is undriven, which selects the lower internal drive
+        if (board->bbu && board->drive_select)
+            compact_route_enbl(cfg, false);
         // Blank both screen buffers so a cold boot scans out black rather than
         // the white that zeroed DRAM gives at 1 bpp.  The framebuffer IS main
         // RAM, so this only touches the two visible windows, and only before
@@ -707,7 +724,7 @@ static void compact_update_ipl(config_t *cfg, int source, bool active) {
     // above describes (compact_irq_routes).
     int new_ipl = machine_irq_update(cfg, compact_irq_routes, source, active);
 
-    LOG(1, "compact_update_ipl: source=%d active=%d irq:%d->%d ipl:%d->%d", source, active ? 1 : 0, old_irq,
+    LOG(2, "compact_update_ipl: source=%d active=%d irq:%d->%d ipl:%d->%d", source, active ? 1 : 0, old_irq,
         cfg->rt.irq, old_ipl, new_ipl);
 }
 
@@ -762,12 +779,8 @@ static void compact_bbu_via_output(config_t *cfg, uint8_t port, uint8_t output) 
         floppy_set_sel_signal(cfg->floppy, (output & 0x20) != 0);
         // PA4 vDriveSel picks the lower (1) or the upper (0) internal drive
         // for /ENBL1 (Guide 2e, Table 4-3); an undriven pin counts as lower.
-        if (cfg->via1 && compact_board(cfg)->drive_select) {
-            bool upper = (via_port_direction(cfg->via1, 0) & 0x10) && !(output & 0x10);
-            const compact_board_t *board = compact_board(cfg);
-            int enbl1 = upper ? (board->second_internal ? 1 : -1) : 0;
-            floppy_set_enbl_route(cfg->floppy, enbl1, board->second_internal ? -1 : 1);
-        }
+        if (cfg->via1 && compact_board(cfg)->drive_select)
+            compact_route_enbl(cfg, (via_port_direction(cfg->via1, 0) & 0x10) && !(output & 0x10));
         // PA3 vSync (synchronous modem clock on SCC channel A): not modelled.
         // PA0-PA2: the sound volume.  The BBU has no alternate sound buffer
         // (PA3 is vSync here, not vSndPg2), so the main buffer always plays.
@@ -806,9 +819,14 @@ static void compact_via_output(void *context, uint8_t port, uint8_t output) {
 // machine.reset fetch the reset vectors from $0/$4.
 static void compact_bus_reset(config_t *cfg) {
     system_reset_common_devices(cfg);
-    if (compact_board(cfg)->bbu)
+    if (compact_board(cfg)->bbu) {
         m68k_board_overlay_arm(&compact_st(cfg)->overlay);
-    else
+        // PA4 (vDriveSel) floats too, which selects the lower drive: the VIA's
+        // reset drives no output callback, so put the /ENBL1 steering back
+        // here rather than wait for the ROM to rewrite the pin.
+        if (compact_board(cfg)->drive_select)
+            compact_route_enbl(cfg, false);
+    } else
         compact_set_rom_overlay(cfg, true);
 }
 
@@ -967,8 +985,10 @@ static const uint32_t compact_ram_options_simm_kb[] = {1024, 2048, 2560, 4096, 0
 
 // The compact SCSI port: no internal bay on the Plus (its one SCSI bus is the
 // DB-25 on the back, so every device is "External"), an internal bay on the
-// SE and Classic.  Neither ROM keeps a startup-device record in parameter
-// memory, so the bus cannot hold the startup device (no "Start up from").
+// SE and Classic.  The Plus ROM keeps no startup-device record in parameter
+// memory, so its bus cannot hold the startup device (no "Start up from"); the
+// SE and Classic ROMs do (GetDefaultStartup, Inside Macintosh, vol. V,
+// ch. 19), and their bus is mac_storage_scsi_hd_bay's.
 static const storage_bus_decl_t plus_storage[] = {
     {.id = "scsi",
      .label = "SCSI",

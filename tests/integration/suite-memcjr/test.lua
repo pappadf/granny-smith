@@ -11,7 +11,7 @@
 --                 a 4 MB SIMM)
 --   lc475-71-hd   LC 475, 7.1 + Enabler 065 from SCSI (4 MB, the soldered
 --                 RAM alone)
---   lc575-71-hd   LC 575 (full 68040), 7.1 + Enabler 065 from SCSI (12 MB:
+--   lc575-71-hd   LC 575 (68LC040), 7.1 + Enabler 065 from SCSI (12 MB:
 --                 an 8 MB double-sided SIMM)
 --   q605-76-fd    Quadra 605, 7.6 Disk Tools from the SWIM II floppy
 --   lc575-76-fd   LC 575, 7.6 Disk Tools floppy (36 MB, the maximum: a

@@ -1754,6 +1754,14 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
 #define MOVES_ALT_READ(FC)  ((((FC)) & 4u) ? g_supervisor_read : g_user_read)
 #define MOVES_ALT_WRITE(FC) ((((FC)) & 4u) ? g_supervisor_write : g_user_write)
 
+// A MOVES in CPU space (FC 7) on a 68020/030 addressing the coprocessor
+// interface (A19-A16 = %0010) with no coprocessor at its cpID (A15-A13) to
+// answer: the bus cycle times out and the CPU takes a bus error.  The ROMs
+// probe for a 68882 this way (MOVES.W $22000 with SFC = 7), so a board with
+// no FPU must fault here rather than read memory.
+#define MOVES_NO_COPROCESSOR(FC, EA)                                                                                   \
+    ((FC) == 7u && !CPU_IS_68040(cpu) && ((EA) & 0x000F0000u) == 0x00020000u && (((EA) >> 13 & 7u) != 1u || !cpu->fpu))
+
 #define MOVES_EA_WITH_RETRY_SAFE(SIZE, VAR)                                                                            \
     uint32_t VAR;                                                                                                      \
     bool moves_autoinc_ = false, moves_autodec_ = false;                                                               \
@@ -1794,10 +1802,14 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
             uint32_t da_ = (ext_ >> 15) & 1u;                                                                          \
             uint32_t rn_ = (ext_ >> 12) & 7u;                                                                          \
             MOVES_EA_WITH_RETRY_SAFE(SIZE, ea_);                                                                       \
-            uintptr_t *saved_ = g_active_write;                                                                        \
-            g_active_write = MOVES_ALT_WRITE(cpu->dfc);                                                                \
-            WRITE##BITS(ea_, (uint##BITS##_t)MOVES_RN_SRC(SIZE, da_, rn_, ea_));                                       \
-            g_active_write = saved_;                                                                                   \
+            if (MOVES_NO_COPROCESSOR(cpu->dfc, ea_)) {                                                                 \
+                memory_signal_bus_error(ea_, true);                                                                    \
+            } else {                                                                                                   \
+                uintptr_t *saved_ = g_active_write;                                                                    \
+                g_active_write = MOVES_ALT_WRITE(cpu->dfc);                                                            \
+                WRITE##BITS(ea_, (uint##BITS##_t)MOVES_RN_SRC(SIZE, da_, rn_, ea_));                                   \
+                g_active_write = saved_;                                                                               \
+            }                                                                                                          \
             if (!g_bus_error_pending) {                                                                                \
                 MOVES_COMMIT_EA(SIZE);                                                                                 \
             }                                                                                                          \
@@ -1814,10 +1826,15 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
             uint32_t da_ = (ext_ >> 15) & 1u;                                                                          \
             uint32_t rn_ = (ext_ >> 12) & 7u;                                                                          \
             MOVES_EA_WITH_RETRY_SAFE(SIZE, ea_);                                                                       \
-            uintptr_t *saved_ = g_active_read;                                                                         \
-            g_active_read = MOVES_ALT_READ(cpu->sfc);                                                                  \
-            uint##BITS##_t v_ = READ##BITS(ea_);                                                                       \
-            g_active_read = saved_;                                                                                    \
+            uint##BITS##_t v_ = 0;                                                                                     \
+            if (MOVES_NO_COPROCESSOR(cpu->sfc, ea_)) {                                                                 \
+                memory_signal_bus_error(ea_, false);                                                                   \
+            } else {                                                                                                   \
+                uintptr_t *saved_ = g_active_read;                                                                     \
+                g_active_read = MOVES_ALT_READ(cpu->sfc);                                                              \
+                v_ = READ##BITS(ea_);                                                                                  \
+                g_active_read = saved_;                                                                                \
+            }                                                                                                          \
             if (!g_bus_error_pending) {                                                                                \
                 MOVES_COMMIT_EA(SIZE);                                                                                 \
                 if (da_)                                                                                               \

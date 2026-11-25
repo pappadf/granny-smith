@@ -76,6 +76,7 @@ const hw_profile_t machine_lc520 = {
     .cpu_model = 68030,
     .freq = 25000000,
     .mmu_kind = MMU_68030_PMMU,
+    .fpu_absent = true, // no FPU fitted by default: an empty 68882 socket
 
     .address_bits = 32,
     .ram_default = 0x800000, // 8 MB
@@ -102,6 +103,7 @@ const hw_profile_t machine_lc550 = {
     .cpu_model = 68030,
     .freq = 33000000,
     .mmu_kind = MMU_68030_PMMU,
+    .fpu_absent = true, // no FPU fitted by default: an empty 68882 socket
 
     .address_bits = 32,
     .ram_default = 0x800000, // 8 MB
