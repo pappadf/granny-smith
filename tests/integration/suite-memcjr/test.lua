@@ -30,9 +30,11 @@
 --
 -- BoxFlags (the ROM's): LC 475 83, LC 575 86, Quadra 605 88.
 --
--- golden-collision-ok: the Finder desktops of rows booting the same System
--- are alike across models; each row asserts its own BoxFlag and machine id,
--- and the 7.1 About goldens, which name the model, differ.
+-- The Finder desktops of rows booting the same System are alike across
+-- models; each row asserts its own BoxFlag and machine id, and the 7.1 About
+-- goldens, which name the model, differ:
+-- golden-collision-ok: lc475-7.1-hd-finder.png lc575-7.1-hd-finder.png q605-7.1-hd-finder.png — the same 7.1 desktop; BoxFlag, machine id and the About golden tell the models apart
+-- golden-collision-ok: q605-7.6-fd-finder.png lc575-7.6-fd-finder.png — the same Disk Tools desktop; BoxFlag, machine id and RAM tell the rows apart
 
 local mac = dofile("../lib/mac.lua")
 
@@ -62,35 +64,56 @@ local function boot(label, model, ram, kind, media, boxflag)
     assert(machine.screen.width == 640 and machine.screen.height == 480, F"${label}: not 640x480")
 end
 
--- One boot-to-About row.  `clock`: the System shows a menu-bar clock, so
--- the goldens leave its corner out.
-local function about_row(label, model, ram, kind, media, boxflag, system, clock)
+-- One boot-to-About row: `finder` and `about` are its two goldens.
+-- `clock`: the System shows a menu-bar clock, so the goldens leave its
+-- corner out.
+local function about_row(label, model, ram, kind, media, boxflag, system, clock, finder, about)
     local t0 = scheduler.host_user_ns
     boot(label, model, ram, kind, media, boxflag)
-    local stem = F"goldens/${model}-${system}-${kind}"
     if clock then
-        mac.check_ex(stem .. "-finder.png", 0, 440, 20, 640)
+        mac.check_ex(finder, 0, 440, 20, 640)
     else
-        mac.check(stem .. "-finder.png")
+        mac.check(finder)
     end
     mac.about_box()
     if clock then
-        mac.check_about_clock(stem .. "-about.png")
+        mac.check_about_clock(about)
     else
-        mac.check_about(stem .. "-about.png")
+        mac.check_about(about)
     end
     mac.mips_floor(label, t0, 3)
     mac.report_row(system, "memcjr", F"${kind}-boot about")
     mac.report_perf(F"suite-memcjr/${label}", scheduler.instr_count)
 end
 
-local function row_q605_71_hd() about_row("q605-71-hd", "q605", 8192, "hd", hd_71, 88, "7.1", false) end
-local function row_lc475_71_hd() about_row("lc475-71-hd", "lc475", 4096, "hd", hd_71, 83, "7.1", false) end
-local function row_lc575_71_hd() about_row("lc575-71-hd", "lc575", 12288, "hd", hd_71, 86, "7.1", false) end
-local function row_q605_76_fd() about_row("q605-76-fd", "q605", 8192, "fd", fd_76, 88, "7.6", true) end
-local function row_lc575_76_fd() about_row("lc575-76-fd", "lc575", 36864, "fd", fd_76, 86, "7.6", true) end
-local function row_lc475_75_hd() about_row("lc475-75-hd", "lc475", 20480, "hd", hd_75, 83, "7.5", true) end
-local function row_q605_753_hd() about_row("q605-753-hd", "q605", 6144, "hd", hd_753, 88, "7.5.3", true) end
+local function row_q605_71_hd()
+    about_row("q605-71-hd", "q605", 8192, "hd", hd_71, 88, "7.1", false,
+              "goldens/q605-7.1-hd-finder.png", "goldens/q605-7.1-hd-about.png")
+end
+local function row_lc475_71_hd()
+    about_row("lc475-71-hd", "lc475", 4096, "hd", hd_71, 83, "7.1", false,
+              "goldens/lc475-7.1-hd-finder.png", "goldens/lc475-7.1-hd-about.png")
+end
+local function row_lc575_71_hd()
+    about_row("lc575-71-hd", "lc575", 12288, "hd", hd_71, 86, "7.1", false,
+              "goldens/lc575-7.1-hd-finder.png", "goldens/lc575-7.1-hd-about.png")
+end
+local function row_q605_76_fd()
+    about_row("q605-76-fd", "q605", 8192, "fd", fd_76, 88, "7.6", true,
+              "goldens/q605-7.6-fd-finder.png", "goldens/q605-7.6-fd-about.png")
+end
+local function row_lc575_76_fd()
+    about_row("lc575-76-fd", "lc575", 36864, "fd", fd_76, 86, "7.6", true,
+              "goldens/lc575-7.6-fd-finder.png", "goldens/lc575-7.6-fd-about.png")
+end
+local function row_lc475_75_hd()
+    about_row("lc475-75-hd", "lc475", 20480, "hd", hd_75, 83, "7.5", true,
+              "goldens/lc475-7.5-hd-finder.png", "goldens/lc475-7.5-hd-about.png")
+end
+local function row_q605_753_hd()
+    about_row("q605-753-hd", "q605", 6144, "hd", hd_753, 88, "7.5.3", true,
+              "goldens/q605-7.5.3-hd-finder.png", "goldens/q605-7.5.3-hd-about.png")
+end
 
 -- ---- q605-checkpoint ---------------------------------------------------------
 -- The MEMCjr side of the family's checkpoint part (the bank latch values)
