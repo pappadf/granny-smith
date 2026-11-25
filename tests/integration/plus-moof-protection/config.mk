@@ -14,8 +14,10 @@
 # through the IWM, looking for the signature and counting the sync bytes.
 # Both are there only because the drive serves the captured tracks.  Then
 # the tracks are checked to stay the capture's through a consolidated and a
-# quick checkpoint restore, a second drive holding the same file, and an
-# eject.
+# quick checkpoint restore, a second drive holding the same file, an eject,
+# the same capture gzipped and inside a zip, and a .moof export taken while
+# the disk is mounted; and a write-protected disk's track takes no raw IWM
+# writes.
 
 TEST_NAME := Plus copy-protected MOOF — the drive serves the captured tracks
 TEST_DESC := A guest hook on the Sony driver finds a track signature and an exact sync count that exist only in the bits

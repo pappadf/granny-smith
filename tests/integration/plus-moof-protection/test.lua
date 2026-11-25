@@ -160,6 +160,16 @@ ext.insert(vars.MOOF, false)
 assert(ext.track_data(MARK_TRACK, 1) == mark0, "and again after a reinsert")
 ext.eject()
 
+-- Behind gzip, and inside a zip: the capture is the decoded source, or the
+-- archive member's, and stays readable for as long as the image is open.
+for _, path in ipairs({vars.MOOF .. ".gz", F"${vars.WORK_DIR}/protected.zip/protected.moof"}) do
+  ext.insert(path, false)
+  assert(ext.image.capture, F"${path}: the capture is kept")
+  assert(ext.track_data(SIG_TRACK, 0) == sig0 and ext.track_data(MARK_TRACK, 1) == mark0,
+    F"${path}: the protected tracks are served")
+  ext.eject()
+end
+
 -- Exported while mounted: the unchanged tracks are copied bit for bit, so
 -- the export serves the same protected tracks.
 local out = F"${vars.WORK_DIR}/exported.moof"

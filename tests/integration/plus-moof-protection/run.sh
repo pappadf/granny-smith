@@ -23,6 +23,12 @@ GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN \
 [ -f "$PLAIN" ] || { echo "ERROR: no MOOF was written"; exit 1; }
 
 python3 "$SCRIPT_DIR/make-protected-moof.py" "$PLAIN" "$PROTECTED"
+# The same capture behind a wrapper and inside an archive: the image keeps
+# the decoded inner source, and the zip member's, as its capture.
+python3 -c 'import gzip, shutil, sys, zipfile
+shutil.copyfileobj(open(sys.argv[1], "rb"), gzip.open(sys.argv[1] + ".gz", "wb"))
+zipfile.ZipFile(sys.argv[2], "w", zipfile.ZIP_DEFLATED).write(sys.argv[1], "protected.moof")' \
+    "$PROTECTED" "$WORK_DIR/protected.zip"
 
 cd "$SCRIPT_DIR"
 # shellcheck disable=SC2086 — TEST_VAR_ARGS is intentionally word-split
