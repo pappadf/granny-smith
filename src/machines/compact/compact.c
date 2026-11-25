@@ -690,48 +690,21 @@ static void compact_update_ipl(config_t *cfg, int source, bool active) {
         cfg->rt.irq, old_ipl, new_ipl);
 }
 
-// VIA output callback, PAL boards: routes port changes to floppy, video,
-// sound, RTC
-static void compact_pal_via_output(config_t *cfg, uint8_t port, uint8_t output) {
+// VIA output callback: routes port changes to the floppy, video, sound, RTC
+// and, by board generation, the overlay or drive select, ADB and the SCSI
+// mask (Guide 2e, Tables 4-2, 4-3 and 4-12).
+static void compact_via_output(void *context, uint8_t port, uint8_t output) {
+    config_t *cfg = (config_t *)context;
     compact_state_t *st = compact_st(cfg);
+    bool bbu = compact_board(cfg)->bbu;
 
     // via_init re-drives this callback while it restores a checkpoint, and
     // the VIA is now built before the sound chip (see compact_init), so the
     // half-built case is real and the sound_* entry points do not guard
     // against NULL.  Same shape as av.c's "scc_init fires this before the
-    // PSC is built" guard.
+    // PSC is built" guard.  cfg->via1 is still NULL then too;
+    // via_redrive_outputs runs again once it is set.
     sound_t *snd = st ? st->sound : NULL;
-
-    if (port == 0) {
-        // PA4 is vOverlay.  `output` is `ORA & DDRA`, so an undriven pin reads
-        // 0 here -- but the line is pulled up, so undriven means overlay ON.
-        // cfg->via1 is still NULL while via_init re-drives during a restore;
-        // via_redrive_outputs runs again once it is set.
-        if (st && cfg->via1) {
-            bool driven = (via_port_direction(cfg->via1, 0) & 0x10) != 0;
-            compact_set_rom_overlay(cfg, !driven || (output & 0x10) != 0);
-        }
-
-        floppy_set_sel_signal(cfg->floppy, (output & 0x20) != 0);
-
-        compact_use_video_buffer(cfg, (output >> 6) & 1);
-
-        if (snd) {
-            sound_use_buffer(snd, (output >> 3) & 1);
-            sound_volume(snd, output & 7);
-        }
-    } else {
-        rtc_via1_pb_output(cfg->rtc, output);
-
-        if (snd)
-            sound_enable(snd, (output & 0x80) == 0);
-    }
-}
-
-// VIA output callback, BBU boards (Guide 2e, Tables 4-3 and 4-12).
-static void compact_bbu_via_output(config_t *cfg, uint8_t port, uint8_t output) {
-    compact_state_t *st = compact_st(cfg);
-    sound_t *snd = st ? st->sound : NULL; // half-built while via_init restores
 
     if (port == 0) {
         // PA6 vPage2: 0 = alternate screen buffer, 1 = main
@@ -739,38 +712,40 @@ static void compact_bbu_via_output(config_t *cfg, uint8_t port, uint8_t output) 
             compact_use_video_buffer(cfg, (output >> 6) & 1);
         // PA5 vHeadSel: the drives' SEL line
         floppy_set_sel_signal(cfg->floppy, (output & 0x20) != 0);
-        // PA4 vDriveSel picks the lower (1) or the upper (0) internal drive
-        // for /ENBL1 (Guide 2e, Table 4-3); an undriven pin counts as lower.
-        if (cfg->via1 && compact_board(cfg)->drive_select)
-            compact_route_enbl(cfg, (via_port_direction(cfg->via1, 0) & 0x10) && !(output & 0x10));
-        // PA3 vSync (synchronous modem clock on SCC channel A): not modelled.
-        // PA0-PA2: the sound volume.  The BBU has no alternate sound buffer
-        // (PA3 is vSync here, not vSndPg2), so the main buffer always plays.
-        if (snd)
+        if (st && cfg->via1) {
+            // `output` is `ORA & DDRA`, so an undriven pin reads 0 here
+            bool pa4_driven = (via_port_direction(cfg->via1, 0) & 0x10) != 0;
+            if (!bbu)
+                // PAL: PA4 is vOverlay, pulled up, so undriven means overlay ON
+                compact_set_rom_overlay(cfg, !pa4_driven || (output & 0x10) != 0);
+            else if (compact_board(cfg)->drive_select)
+                // BBU: PA4 vDriveSel picks the lower (1) or the upper (0)
+                // internal drive for /ENBL1; undriven counts as lower.
+                compact_route_enbl(cfg, pa4_driven && !(output & 0x10));
+        }
+        if (snd) {
+            // PA3: vSndPg2 on the PAL boards (0 = the alternate sound
+            // buffer); vSync on the BBU (not modelled), which has no
+            // alternate sound buffer, so the main one always plays.
+            if (!bbu)
+                sound_use_buffer(snd, (output >> 3) & 1);
+            // PA0-PA2: the sound volume
             sound_volume(snd, output & 7);
+        }
     } else {
-        // PB4/PB5: the ADB state lines ST0/ST1 -> the transceiver.  (PB3,
+        // BBU PB4/PB5: the ADB state lines ST0/ST1 -> the transceiver.  (PB3,
         // vFDBInt, is its interrupt input.)
-        if (cfg->adb)
+        if (bbu && cfg->adb)
             adb_port_b_output(cfg->adb, output);
         // PB0-PB2: RTC enable, clock and data
         rtc_via1_pb_output(cfg->rtc, output);
-        // PB6 vH4: the SCSI interrupt mask
-        if (st && cfg->via1)
+        // BBU PB6 vH4: the SCSI interrupt mask
+        if (bbu && st && cfg->via1)
             compact_scsi_irq_update(cfg);
         // PB7 vSndEnb: 0 = sound enabled
         if (snd)
             sound_enable(snd, (output & 0x80) == 0);
     }
-}
-
-// VIA output callback: the board generation decides what the pins drive
-static void compact_via_output(void *context, uint8_t port, uint8_t output) {
-    config_t *cfg = (config_t *)context;
-    if (compact_board(cfg)->bbu)
-        compact_bbu_via_output(cfg, port, output);
-    else
-        compact_pal_via_output(cfg, port, output);
 }
 
 // The board's /RESET net: "MC68000, VIA, SWIM, SCC, SCSI, BBU" (Guide 2e,
