@@ -122,7 +122,7 @@ local function row_pm7200_76_fd()
     mac.run_until_match_ex("goldens/pm7200-7.6-floppy-boot.png", 0, 440, 20, 640, 7600000000, 250000000)
     mac.check_ex("goldens/pm7200-7.6-floppy-boot.png", 0, 440, 20, 640)
     check_board(id_v2)
-    mac.report_row("7.6", "platinum", "fd-boot swim3")
+    mac.report_row("7.6", "swim3", "fd-boot")
     mac.report_perf("suite-pm7200/pm7200-76-fd", scheduler.instr_count)
 end
 
