@@ -19,6 +19,8 @@ const { toasts, _resetForTests } = await import('@/state/toasts.svelte');
 const { storageHealth } = await import('@/state/storageHealth.svelte');
 const { filesystem } = await import('@/state/filesystem.svelte');
 const { layout } = await import('@/state/layout.svelte');
+const { probeExportSupport } = await import('@/recorder/mp4Export');
+const { mp4Export } = await import('@/state/mp4Export.svelte');
 
 // The core's recorder event, as record.c writes it.
 function ev(state: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
@@ -69,13 +71,27 @@ describe('the recorder store', () => {
     expect(recorder.paths).toHaveLength(2);
   });
 
-  it('a stopped recording is offered with Download and Show in Files', () => {
+  it('a stopped recording is offered with Download, Export MP4 and Show in Files', () => {
     applyRecorderEvent(ev('started'));
     applyRecorderEvent(ev('stopped'));
     expect(toasts.active).toHaveLength(1);
     const t = toasts.active[0];
     expect(t.msg).toBe('Recording saved: plus-20261125-120000.mkv');
-    expect(t.actions?.map((a) => a.label)).toEqual(['Download', 'Show in Files']);
+    expect(t.actions?.map((a) => a.label)).toEqual(['Download', 'Export MP4…', 'Show in Files']);
+  });
+
+  it('Export MP4 is disabled, saying why, where the browser has no H.264 encoder', async () => {
+    // jsdom has no WebCodecs: the probe says no
+    const s = await probeExportSupport();
+    expect(s.ok).toBe(false);
+    const exp = recordingActions(['/opfs/recordings/a.mkv'])[1];
+    expect(exp.label).toBe('Export MP4…');
+    expect(exp.disabled).toBe(true);
+    expect(exp.title).toMatch(/cannot encode H\.264/);
+    expect(exp.title).toContain('ffmpeg -i');
+    // Where it can, the action is there
+    mp4Export.support = { ok: true, reason: '', audio: 'aac' };
+    expect(recordingActions(['/opfs/recordings/a.mkv'])[1].disabled).toBe(false);
   });
 
   it('a stopped event with no recording running offers nothing', () => {
@@ -154,7 +170,7 @@ describe('the recorder bus', () => {
 
   it('Download saves every file; Show in Files reveals the last', async () => {
     const paths = ['/opfs/recordings/a.mkv', '/opfs/recordings/a-2.mkv'];
-    const [download, show] = recordingActions(paths);
+    const [download, , show] = recordingActions(paths);
     expect(download.label).toBe('Download (2 files)');
     download.action();
     await Promise.resolve();

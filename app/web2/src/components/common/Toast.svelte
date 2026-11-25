@@ -42,6 +42,8 @@
     <Button
       class="gs-toast__action toast-action"
       variant="ghost"
+      disabled={a.disabled}
+      title={a.title}
       onclick={() => {
         a.action();
         if (!a.keep) dismissToast(toast.id);

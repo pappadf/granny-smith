@@ -19,6 +19,7 @@ import { recorder, setRecordingFinishedHandler, type RecorderRate } from '@/stat
 import { storageHealth } from '@/state/storageHealth.svelte';
 import { revealInFilesystem } from '@/state/filesystem.svelte';
 import { showNotification, type ToastAction } from '@/state/toasts.svelte';
+import { exportActionState, openExportDialog, probeExportSupport } from '@/recorder/mp4Export';
 
 // Said before a recording starts when the browser's storage is not
 // persistent (files.persistent false): the file lives in memory only.
@@ -69,13 +70,21 @@ export function setRecorderAudio(on: boolean): void {
 }
 
 // The actions on a finished recording's files, in the order the toast
-// shows them.  This is where Export MP4 (a WebCodecs export of the .mkv,
-// read from OPFS by a worker) goes, between Download and Show in Files.
+// shows them: Download, Export MP4 (a WebCodecs export of the .mkv, read
+// from OPFS by a worker: recorder/mp4Export.ts; disabled with the reason
+// where this browser cannot encode H.264), Show in Files.
 export function recordingActions(paths: string[]): ToastAction[] {
+  const exp = exportActionState();
   return [
     {
       label: paths.length > 1 ? `Download (${paths.length} files)` : 'Download',
       action: () => void downloadRecording(paths),
+    },
+    {
+      label: 'Export MP4…',
+      action: () => void openExportDialog(paths),
+      disabled: exp.disabled,
+      title: exp.title,
     },
     { label: 'Show in Files', action: () => revealInFilesystem(paths[paths.length - 1]) },
   ];
@@ -98,3 +107,7 @@ export function offerRecording(paths: string[], error: string): void {
 }
 
 setRecordingFinishedHandler(offerRecording);
+
+// Ask the browser early what it can encode, so a finished recording's
+// Export MP4 is offered, or disabled with the reason, at once.
+void probeExportSupport();

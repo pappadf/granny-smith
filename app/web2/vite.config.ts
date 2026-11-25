@@ -6,9 +6,10 @@ import { join, resolve } from 'node:path';
 
 const buildDir = resolve(fileURLToPath(new URL('../../build', import.meta.url)));
 
-// Serve build/main.{mjs,wasm}, build/coi-serviceworker.js
-// and the LaserWriter interpreter's module build/platen-<version>.{js,wasm}
-// (`make platen-module`) from /<repo>/build/ directly via dev + preview
+// Serve build/main.{mjs,wasm}, build/coi-serviceworker.js, the LaserWriter
+// interpreter's module build/platen-<version>.{js,wasm} (`make
+// platen-module`) and the MP4 export's decoder build/recdec.{js,wasm}
+// (`make recdec-module`) from /<repo>/build/ directly via dev + preview
 // middleware. No copy step is needed during dev; `make ui2` copies these
 // into dist/ for production.
 function serveBuildArtifacts(): Plugin {
@@ -17,6 +18,7 @@ function serveBuildArtifacts(): Plugin {
     /^\/main\.wasm(\?.*)?$/,
     /^\/coi-serviceworker\.js(\?.*)?$/,
     /^\/platen-[0-9A-Za-z.-]+\.(js|wasm)(\?.*)?$/,
+    /^\/recdec\.(js|wasm)(\?.*)?$/,
   ];
 
   const handle = (

@@ -5,11 +5,14 @@
 export type ToastSeverity = 'info' | 'warning' | 'error';
 
 // A button on a toast (a finished recording's Download).  Running it
-// dismisses the toast unless `keep` is set.
+// dismisses the toast unless `keep` is set.  A `disabled` one is shown
+// greyed with `title` saying why (Export MP4 where the browser cannot).
 export interface ToastAction {
   label: string;
   action: () => void;
   keep?: boolean;
+  disabled?: boolean;
+  title?: string;
 }
 
 export interface Toast {

@@ -10,6 +10,7 @@ import {
   manifestMachine,
 } from '@/lib/checkpointMeta';
 import { gsEval, gsErrorText, gsOk, isModuleReady } from './emulator';
+import { getDirAtPath } from '@/lib/opfsDir';
 
 export interface OpfsBackend {
   list(dir: string): Promise<OpfsEntry[]>;
@@ -83,21 +84,9 @@ export function setOpfsBackend(b: OpfsBackend): void {
 // emulator's own OPFS handles. JSON config files are small and short-lived
 // — direct OPFS works fine.
 //
-// All paths use the `/opfs/...` prefix to match the C-side mount path.
-// BrowserOpfs strips the prefix before walking the navigator.storage tree.
-
-async function getDirAtPath(
-  path: string,
-  options: { create?: boolean } = {},
-): Promise<FileSystemDirectoryHandle> {
-  const rel = path.replace(/^\/opfs\/?/, '');
-  let dir = await navigator.storage.getDirectory();
-  if (!rel) return dir;
-  for (const part of rel.split('/').filter(Boolean)) {
-    dir = await dir.getDirectoryHandle(part, options);
-  }
-  return dir;
-}
+// All paths use the `/opfs/...` prefix to match the C-side mount path;
+// getDirAtPath (lib/opfsDir.ts) strips it before walking the
+// navigator.storage tree.
 
 export class BrowserOpfs implements OpfsBackend {
   async list(dir: string): Promise<OpfsEntry[]> {

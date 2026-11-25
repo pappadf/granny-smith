@@ -41,6 +41,8 @@
     VROMS_DIR,
   } from '@/lib/opfsPaths';
   import { showNotification } from '@/state/toasts.svelte';
+  import { exportActionState, openExportDialog, probeExportSupport } from '@/recorder/mp4Export';
+  import { mp4Export } from '@/state/mp4Export.svelte';
   import { images, bumpImagesRevision, setMounted } from '@/state/images.svelte';
   import { startActivity, endActivity, setActivityDetail } from '@/state/activity.svelte';
   import {
@@ -512,13 +514,27 @@
       });
     if (!multi && isFile(path) && isExpandable(path[path.length - 1]))
       items.push({ label: 'Unpack', action: () => doUnpack(path) });
+    // Recordings (.mkv) convert to MP4 -- disabled, with the reason, where
+    // this browser cannot encode H.264
+    const recordings = targets.filter((t) => isFile(t) && /\.mkv$/i.test(t[t.length - 1]));
+    const { clientX, clientY } = ev;
+    if (recordings.length && recordings.length === targets.length) {
+      if (!mp4Export.support) await probeExportSupport();
+      const exp = exportActionState();
+      items.push({
+        label: multi ? `Export ${recordings.length} files as MP4…` : 'Export MP4…',
+        action: () => void openExportDialog(recordings.map((t) => t[t.length - 1])),
+        disabled: exp.disabled,
+        title: exp.title,
+      });
+    }
     items.push({ sep: true });
     items.push({
       label: multi ? `Delete ${targets.length} items` : 'Delete',
       action: () => doDelete(targets),
       danger: true,
     });
-    openContextMenu(items, ev.clientX, ev.clientY);
+    openContextMenu(items, clientX, clientY);
   }
 
   // Drive actions for a file inside an image or archive that the core

@@ -5,6 +5,7 @@
   import CheckpointResumePrompt from './components/dialogs/CheckpointResumePrompt.svelte';
   import PreviewNoticeDialog from './components/dialogs/PreviewNoticeDialog.svelte';
   import PrintViewerDialog from './components/dialogs/PrintViewerDialog.svelte';
+  import ExportMp4Dialog from './components/dialogs/ExportMp4Dialog.svelte';
   import DialogHost from './components/dialogs/DialogHost.svelte';
   import StorageWarning from './components/common/StorageWarning.svelte';
   import EmulatorHealthBanner from './components/common/EmulatorHealthBanner.svelte';
@@ -50,6 +51,7 @@
 <CheckpointResumePrompt />
 <PreviewNoticeDialog />
 <PrintViewerDialog />
+<ExportMp4Dialog />
 <DialogHost />
 
 <style>
