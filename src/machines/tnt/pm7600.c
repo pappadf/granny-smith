@@ -18,18 +18,11 @@
 #include "tnt.h"
 
 static const tnt_board_desc_t pm7600_board = {
-    // The 7500's straps (pm7500.c): bit 15 pulled high, bit 14 MESH
-    // present, bit 13 SET (Open Firmware's 7500-over-8500 pick), bit 11
-    // CLEAR (the 68k routine's 8500 bit), bit 8 the factory-test strap
-    // idling HIGH.
-    .boxid = 0x8000u | 0x4000u | 0x2000u | 0x0100u,
-    .hh_id = 0x39000000u, // $39 first byte = the TNT identification path
-    .hh_r20 = 0x80000000u, // the 7500/8500 class (pm7500.c)
+    TNT_MAC_BOARD_COMMON,
+    .boxid = TNT_BOXID_7500, // the 7500's straps (tnt.h)
+    .hh_r20 = TNT_HH_R20_7500,
     .bus_hz = 50000000u, // 4:1 bus (200 MHz 604e card)
     .bandit_count = 1,
-    .kind = TNT_BOARD_MAC,
-    .has_mesh = true,
-    .has_chaos = true, // the display-bus bridge
     .l2_kb = 256u, // the 256 KB cache DIMM (ibid., Table 1-4)
 };
 
@@ -37,31 +30,22 @@ const hw_profile_t machine_pm7600 = {
     .name = "Power Macintosh 7600",
     .id = "pm7600",
 
-    // The 604 core with its default PVR ($0004), not the 604e ($0009): POST
-    // times a 604e through HID1's PLL configuration, which the core does not
-    // model on the 604 class; under a 604 PVR it takes the 1995 path.
-    .cpu_model = CPU_MODEL_PPC604,
+    TNT_MAC_PROFILE_COMMON, // the ROM: $960E4BE9; the 1995 $96CD923D / $9630C68B
+    TNT_CPU_604, // the 604e card, run as a 604 (tnt.h)
     .freq = 200000000, // 200 MHz
-    .mmu_kind = MMU_PPC_604,
 
-    .address_bits = 32,
     .ram_default = 0x2000000, // 32 MB (the shipping configuration, ibid. Table 1-4)
     .ram_max = 0x40000000, // 1 GB
-    .rom_size = 0x400000, // 4 MB ($960E4BE9; the 1995 $96CD923D / $9630C68B)
 
     // 168-pin DIMMs in 8 slots, interleaved in pairs, as on the 7500.
     .ram_options = tnt_ram_options_kb,
     .storage = tnt_storage_7500,
     .default_storage = tnt_default_storage, // the CD-ROM drive on the 53C94: see pm7500.c
-    .appletalk = true,
     .cdrom_drive = &scsi_cd_drive_applecd_1600i, // "a built-in 12X-speed CD-ROM drive, an AppleCD 1600i"
-    .floppy_slots = mac_floppy_slots_1hd,
 
     .pci_slots = tnt_pci_slots_1bandit,
 
     .builtin_video = &tnt_builtin_video,
 
-    .substrate = &tnt_substrate,
-    .of_nvram_check = of_nvram_check_tnt,
     .board = &pm7600_board,
 };

@@ -106,38 +106,25 @@ const pci_slot_decl_t pm9500_pci_slots[] = {
 };
 
 static const tnt_board_desc_t pm9500_board = {
+    TNT_MAC_BOARD_COMMON,
     // BoxID: bit 11 clear (the 9500 is flagged by Hammerhead +$20 bit 30
-    // instead — the shipping ROM's identification routine at $FFC14844),
-    // MESH present, idle-high straps, and bit 8 — the factory-test strap
-    // — HIGH: POST tests it on every boot after the first on a formatted
-    // store and a clear bit is the Serial Test Manager instead of a boot
-    // (pm7500.c).
-    .boxid = 0x8000u | 0x4000u | 0x0100u,
-    .hh_id = 0x39000000u, // $39 first byte = the TNT identification path
-    // +$20 bit 30 SET = 9500 (the 68k routine tests it directly; Open
-    // Firmware's selector m = (b>>5)|((b>>1)&8) over the top byte reads
-    // $40 as 2 -> "AAPL,9500").  Bit 31 must stay CLEAR — set it and OF
-    // classifies the box as a 7500/8500 (see pm7500.c).
-    .hh_r20 = 0x40000000u,
+    // instead), MESH, the idle-high straps (tnt.h).
+    .boxid = TNT_BOXID_9500,
+    .hh_r20 = TNT_HH_R20_9500, // bit 30 SET, bit 31 CLEAR: the 9500 class
     .bus_hz = 44000000u, // 3:1 bus (132 MHz 604 card)
     .bandit_count = 2,
-    .kind = TNT_BOARD_MAC,
-    .has_mesh = true, // the internal fast-SCSI cell (absent on the Network Servers)
-    .has_chaos = true, // the display-bus bridge
 };
 
 const hw_profile_t machine_pm9500 = {
     .name = "Power Macintosh 9500",
     .id = "pm9500",
 
-    .cpu_model = CPU_MODEL_PPC604,
+    TNT_MAC_PROFILE_COMMON, // the ROM: $96CD923D / $9630C68B
+    TNT_CPU_604,
     .freq = 132000000, // 132 MHz
-    .mmu_kind = MMU_PPC_604,
 
-    .address_bits = 32,
     .ram_default = 0x4000000, // 64 MB (a typical well-equipped machine)
     .ram_max = 0x60000000, // 1.5 GB
-    .rom_size = 0x400000, // 4 MB ($96CD923D / $9630C68B)
 
     // Twelve DIMM slots, interleaved in pairs; 1.5 GB architectural max.
     // Offered: the totals Hammerhead's four-pair carve maps today (DIMMs of
@@ -146,13 +133,9 @@ const hw_profile_t machine_pm9500 = {
     .ram_options = tnt_ram_options_kb,
     .storage = tnt_storage_8500,
     .default_storage = tnt_default_storage, // the CD-ROM drive on the 53C94: see pm7500.c
-    .appletalk = true,
     .cdrom_drive = &scsi_cd_drive_applecd_600i,
-    .floppy_slots = mac_floppy_slots_1hd,
 
     .pci_slots = pm9500_pci_slots,
 
-    .substrate = &tnt_substrate,
-    .of_nvram_check = of_nvram_check_tnt,
     .board = &pm9500_board,
 };

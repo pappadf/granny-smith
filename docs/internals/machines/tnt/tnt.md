@@ -18,6 +18,15 @@ the first machines on the `CPU_MODEL_PPC604` core model
 `pm7200` (7200/90, 90 MHz 601), the Catalyst board with Platinum in
 Hammerhead's place (see "The Catalyst board" below).
 
+One file per model holds its board descriptor and its profile; what the
+Macintosh models share is written once in `tnt.h` — `TNT_MAC_PROFILE_COMMON`
+(bus width, ROM size, LocalTalk, the SuperDrive, the substrate and its
+NVRAM check), `TNT_CPU_601` / `TNT_CPU_604`, `TNT_MAC_BOARD_COMMON` (the
+`$39` Hammerhead identifier, MESH, Chaos) and the strap macros
+(`TNT_BOXID_7500` / `_8500` / `_9500`, `TNT_HH_R20_7500` / `_9500`) with the
+reasoning behind each bit, which the 1997 boards take over from their
+predecessors instead of retyping.
+
 Sources: Apple, *Power Macintosh 7500 and 8500 Computers* Developer Note
 (1995); Apple, *Power Macintosh 9500 Computer* Developer Note (1995);
 Motorola, MPC604UM/AD; the shipping ROM itself (its Open Firmware device
@@ -524,8 +533,8 @@ reported through Hammerhead `+$E0` (`l2_kb`).  Apple's note keeps the
 7600/8600/9600 on their predecessors' machine IDs, and the 1997 ROMs carry
 the 1995 Open Firmware image and 68k identification routine byte for byte
 ([tnt.md](../../../reference/machines/tnt/tnt.md) §6.5), so each board uses
-its predecessor's straps verbatim: the 7300 and 7600 the 7500's, the 8600
-the 8500's, the 9600 the 9500's (and the 9500's six-slot PCI table,
+its predecessor's straps verbatim (the `tnt.h` strap macros): the 7300 and
+7600 the 7500's, the 8600 the 8500's, the 9600 the 9500's (and the 9500's six-slot PCI table,
 `pm9500_pci_slots`, now exported).  BoxFlag reads `$3E` / `$3F` / `$3D`.
 
 ROMs: the 1997 v1 image (`$960E4BE9`) serves all four; the later
@@ -542,6 +551,7 @@ Deliberate simplifications:
   750; the read takes a program exception and POST hangs at its `$700`
   trap.  Under the 604 PVR the 1997 POST takes the 1995 path and everything
   above it boots.  Modelling the 604e means a 604e HID1 in the CPU core.
+  (`TNT_CPU_604` in `tnt.h` carries the note for the four profiles.)
 - **The 7300's machine ID is the System's.**  The note gives the 7300 "a
   new machine ID value: 109", and nothing in the ROM produces it (four
   product records, the 1995 ones).  The System does: System 7.6 and Mac OS

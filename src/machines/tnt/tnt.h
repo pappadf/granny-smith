@@ -249,6 +249,58 @@ typedef struct tnt_board_desc {
     uint32_t vram_kb; // Platinum VRAM fitted: 1024 (soldered), 2048 or 4096
 } tnt_board_desc_t;
 
+// === The Macintosh boards' straps ===========================================
+// BoxID, as software reads it (little-endian bit numbering -- the guest
+// reads the register with lwbrx), one bit per fact:
+//
+//   * bit 15 idles pulled HIGH on every board but the 7300's, whose low
+//     strap is what the System's identification patch reads (pm7300.c);
+//   * bit 14 = MESH present;
+//   * bit 13 SET = 7500: Open Firmware's model decode (OpenFW image $10592)
+//     reads BoxID as xw@>>11 into its machine word and picks "AAPL,7500"
+//     over "AAPL,8500" on it (an earlier "composite video" reading was
+//     wrong);
+//   * bit 11 SET = 8500, the 68k identification's one BoxID test (the
+//     shipping ROM's routine at $FFC14844); the 9500 is told apart by
+//     Hammerhead +$20 instead (below);
+//   * bit 8 is the factory-test strap, idling HIGH.  POST reads it
+//     ($FFF201FC, `lwbrx` + `andi. r6,r6,0x100`) on every boot whose NVRAM
+//     already carries POST's "RobG" log signature -- every boot but the
+//     first on a formatted store -- and CLEAR sends the machine into the
+//     ROM's Serial Test Manager (`>` on ttya, no timeout) before Open
+//     Firmware ever runs: no device tree, no BAR assignment, a black
+//     screen (#115).  The earlier reading of the strap as "set = test
+//     monitor" was made on ladder rows that always booted a virgin store,
+//     where POST takes the fresh-log path and never tests the bit.  The
+//     Network Server board (ans500.c) found the same law.
+//
+// The 1997 boards (7300/7600/8600/9600) "have the same machine ID values
+// as their earlier counterparts" (Apple, "Power Macintosh 7300, 7600, 8600,
+// and 9600 Computers" Developer Note, 1996, "Machine Identification"), so
+// each takes its predecessor's straps from here.
+#define TNT_BOXID_IDLE     0x8000u // bit 15: pulled high
+#define TNT_BOXID_MESH     0x4000u // bit 14: MESH present
+#define TNT_BOXID_OF_7500  0x2000u // bit 13: Open Firmware's 7500 pick
+#define TNT_BOXID_68K_8500 0x0800u // bit 11: the 68k routine's 8500
+#define TNT_BOXID_NO_TEST  0x0100u // bit 8: the factory-test strap, idling high
+#define TNT_BOXID_7500     (TNT_BOXID_IDLE | TNT_BOXID_MESH | TNT_BOXID_OF_7500 | TNT_BOXID_NO_TEST)
+#define TNT_BOXID_8500     (TNT_BOXID_IDLE | TNT_BOXID_MESH | TNT_BOXID_68K_8500 | TNT_BOXID_NO_TEST)
+#define TNT_BOXID_9500     (TNT_BOXID_IDLE | TNT_BOXID_MESH | TNT_BOXID_NO_TEST)
+// Hammerhead identity: the part identifier's first byte $39 selects the
+// ROM's TNT path (a $3001xxxx identifier is the 7200/Catalyst, platinum.c).
+// The +$20 register's top byte is Open Firmware's class selector
+// (m = (b>>5) | ((b>>1)&8): $80 -> 4 -> 7500/8500, $40 -> 2 -> 9500), and
+// its bit 30 is the 68k routine's 9500 test.  Without bit 31 a 7500/8500
+// gets compatible "AAPL,????" and Open Firmware never instantiates the
+// chaos/control display nodes (the boot never reaches video); set it on a
+// 9500 and OF classifies the box as a 7500/8500.
+#define TNT_HH_ID       0x39000000u
+#define TNT_HH_R20_7500 0x80000000u // the 7500/8500 class
+#define TNT_HH_R20_9500 0x40000000u // the 9500 class
+// The fields every Hammerhead Macintosh board shares: the TNT identifier,
+// MESH and the Chaos bridge.
+#define TNT_MAC_BOARD_COMMON .hh_id = TNT_HH_ID, .kind = TNT_BOARD_MAC, .has_mesh = true, .has_chaos = true
+
 // === Hammerhead state (hammerhead.c) ========================================
 // 128 x 32-bit registers on $10 centres, big-endian (processor bus — the
 // one non-LE block), store-and-readback with a handful of special offsets.
@@ -533,6 +585,22 @@ extern const uint32_t ans_ram_options_kb[];
 // The six-slot two-Bandit topology of the 9500, which the 9600 shares
 // (pm9500.c).
 extern const pci_slot_decl_t pm9500_pci_slots[];
+
+// === The Macintosh profiles' shared fields ==================================
+// What every Power Macintosh TNT profile (pm7200 ... pm9600) carries
+// identically: a 32-bit bus, the 4 MB ROM, LocalTalk, the one internal
+// SuperDrive, the TNT substrate and its NVRAM check.  A model file includes
+// of_nvram.h and slot_tables.h for the names it expands to.
+#define TNT_MAC_PROFILE_COMMON                                                                                         \
+    .address_bits = 32, .rom_size = 0x400000, .appletalk = true, .floppy_slots = mac_floppy_slots_1hd,                 \
+    .substrate = &tnt_substrate, .of_nvram_check = of_nvram_check_tnt
+// The processor cards.  The 1997 boards' 604e cards (7300/7600/8600/9600)
+// run on the 604 core with its default PVR ($0004), not the 604e's
+// ($0009): POST times a 604e through HID1's PLL configuration, which the
+// core does not model on the 604 class; under a 604 PVR it takes the 1995
+// path.
+#define TNT_CPU_601 .cpu_model = CPU_MODEL_PPC601, .mmu_kind = MMU_PPC_601
+#define TNT_CPU_604 .cpu_model = CPU_MODEL_PPC604, .mmu_kind = MMU_PPC_604
 
 // The Network Servers' shared front backplane on fast/wide 0 (tnt.c), as
 // one storage_bus_decl_t initialiser; the second controller is the same

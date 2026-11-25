@@ -81,15 +81,17 @@ static const pci_slot_decl_t pm7200_pci_slots[] = {
 };
 
 static const tnt_board_desc_t pm7200_board = {
-    // BoxID: bit 15 pulled high, bit 8 the factory-test strap idling HIGH
-    // (pm7500.c), bit 14 CLEAR — no MESH.  Open Firmware's Catalyst arm
-    // publishes BoxID >> 11 as AAPL,cpu-id and reads no model bits.
-    .boxid = 0x8000u | 0x0100u,
+    // BoxID: the idle-high straps (tnt.h), bit 14 CLEAR — no MESH.  Open
+    // Firmware's Catalyst arm publishes BoxID >> 11 as AAPL,cpu-id and
+    // reads no model bits.
+    .boxid = TNT_BOXID_IDLE | TNT_BOXID_NO_TEST,
     .bus_hz = 45000000u, // half the 90 MHz processor clock
-    .bandit_count = 1,          .kind = TNT_BOARD_MAC,
+    .bandit_count = 1,
+    .kind = TNT_BOARD_MAC,
     .has_mesh = false, // the 53C94 is the one bus (tnt.c)
     .has_chaos = false, // the video is Platinum's, on the processor bus
-    .mc = &tnt_platinum_mc,     .video = &tnt_platinum_video_ops,
+    .mc = &tnt_platinum_mc,
+    .video = &tnt_platinum_video_ops,
     .vram_kb = 1024u, // the soldered 1 MB
 };
 
@@ -97,27 +99,21 @@ const hw_profile_t machine_pm7200 = {
     .name = "Power Macintosh 7200",
     .id = "pm7200",
 
-    .cpu_model = CPU_MODEL_PPC601,
+    TNT_MAC_PROFILE_COMMON, // the ROM: $96CD923D / $9630C68B
+    TNT_CPU_601,
     .freq = 90000000, // 90 MHz (the 7200/90)
-    .mmu_kind = MMU_PPC_601,
 
-    .address_bits = 32,
     .ram_default = 0x1000000, // 16 MB (the 7200/90 16/500 CD)
     .ram_max = 0x10000000, // 256 MB
-    .rom_size = 0x400000, // 4 MB ($96CD923D / $9630C68B)
 
     .ram_options = pm7200_ram_options_kb,
     .storage = pm7200_storage,
     .default_storage = pm7200_default_storage,
-    .appletalk = true,
     .cdrom_drive = &scsi_cd_drive_applecd_600i,
-    .floppy_slots = mac_floppy_slots_1hd,
 
     .pci_slots = pm7200_pci_slots,
 
     .builtin_video = &tnt_platinum_video,
 
-    .substrate = &tnt_substrate,
-    .of_nvram_check = of_nvram_check_tnt,
     .board = &pm7200_board,
 };
