@@ -103,7 +103,8 @@ void m68k_board_build_core(config_t *cfg, const struct m68k_board_desc *desc, ch
                                       &cfg->build_opts.rom, cp);
     machine_part(cfg, cp, "memory", part_save_memory, cfg->memory_map);
     machine_part_begin(cfg, cp, "cpu");
-    cfg->cpu = cpu_init(cfg->machine->cpu_model, cp);
+    cfg->cpu =
+        cpu_init_fpu(cfg->machine->cpu_model, cpu_has_fpu(cfg->machine->cpu_model) && !cfg->machine->fpu_absent, cp);
     machine_part(cfg, cp, "cpu", part_save_cpu, cfg->cpu);
     machine_part_begin(cfg, cp, "scheduler");
     sched_cpu_if_t cpu_if = cpu_sched_if(cfg->cpu); // the 68K main-CPU seam adapter
