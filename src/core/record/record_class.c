@@ -206,6 +206,19 @@ static DEF_GETTER(rec_attr_dropped) {
     return val_uint(8, st.dropped);
 }
 
+// `suspended`: the file is closed until recorder.resume.
+static DEF_GETTER(rec_attr_suspended) {
+    return val_bool(recorder_suspended());
+}
+
+// `external`: the screen is presented by the GPU, so it is read back for
+// each frame taken, at half rate at most.
+static DEF_GETTER(rec_attr_external) {
+    recorder_state_t st;
+    recorder_get_state(&st);
+    return val_bool(st.external);
+}
+
 // `segments`: files written so far.
 static DEF_GETTER(rec_attr_segments) {
     recorder_state_t st;
@@ -243,6 +256,24 @@ static DEF_METHOD(rec_method_stop) {
     }
     free(paths);
     return val_list(items, len);
+}
+
+// `recorder.suspend()`: close the file; nothing is recorded until resumed.
+static DEF_METHOD(rec_method_suspend) {
+    char err[200];
+    if (recorder_suspend(err, sizeof err) < 0)
+        return val_err("recorder.suspend: %s", err);
+    return val_none();
+}
+
+// `recorder.resume()`: continue a suspended recording in the next segment.
+static DEF_METHOD(rec_method_resume) {
+    char err[200];
+    if (recorder_resume(err, sizeof err) < 0)
+        return val_err("recorder.resume: %s", err);
+    recorder_state_t st;
+    recorder_get_state(&st);
+    return val_str(st.path);
 }
 
 // ============================================================================
@@ -683,6 +714,23 @@ static const member_t recorder_members[] = {
                 .result = VK_LIST,
                 .ui_flags = MM_MUTATE,
                 .fn = rec_method_stop}},
+    {.kind = MK_METHOD,
+     .name = "suspend",
+     .flags = M_CAT_ADVANCED,
+     .examples = EXAMPLES("recorder.suspend"),
+     .doc = "Finalise the file being written and record nothing until resume (the page does this when hidden)",
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .ui_flags = MM_MUTATE, .fn = rec_method_suspend}},
+    {.kind = MK_METHOD,
+     .name = "resume",
+     .flags = M_CAT_ADVANCED,
+     .examples = EXAMPLES("recorder.resume"),
+     .doc = "Continue a suspended recording in the next segment (name-N.mkv)",
+     .method = {.result_doc = "the path being written",
+                .args = NULL,
+                .nargs = 0,
+                .result = VK_STRING,
+                .ui_flags = MM_MUTATE,
+                .fn = rec_method_resume}},
     {.kind = MK_ATTR,
      .name = "rate",
      .doc = "Output frames per guest frame: full (60.15 fps), half or quarter; fixed while recording",
@@ -737,6 +785,16 @@ static const member_t recorder_members[] = {
      .flags = M_CAT_ADVANCED,
      .doc = "Frame-units completed since the recording started (frames = units / rate's divisor)",
      .attr = {.type = VK_UINT, .presentation_flags = VFLAG_VOLATILE, .get = rec_attr_units}},
+    {.kind = MK_ATTR,
+     .name = "suspended",
+     .flags = M_CAT_ADVANCED,
+     .doc = "True while a recording is suspended: its last file is closed, resume opens the next",
+     .attr = {.type = VK_BOOL, .presentation_flags = VFLAG_VOLATILE, .get = rec_attr_suspended}},
+    {.kind = MK_ATTR,
+     .name = "external",
+     .flags = M_CAT_ADVANCED,
+     .doc = "True when the GPU presents the screen (a WebGPU takeover): it is read back, at half rate at most",
+     .attr = {.type = VK_BOOL, .presentation_flags = VFLAG_VOLATILE, .get = rec_attr_external}},
     {.kind = MK_ATTR,
      .name = "segments",
      .flags = M_CAT_ADVANCED,

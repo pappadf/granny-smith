@@ -63,6 +63,8 @@ static bool s_default_dir_set = false;
 // One recording's emulator-thread state.
 static struct {
     bool active;
+    bool suspended; // the file is closed; resuming opens the next segment
+    bool external; // the last frame's screen was presented by the GPU (half rate at most)
     rec_worker_t *w;
     uint32_t div; // frame-units per output frame
     uint64_t units; // frame-units completed since start
@@ -111,10 +113,10 @@ static void rec_event(const char *state, const char *message) {
         msg[0] = '\0';
     event_emitf(GS_EVENT_STATE,
                 "{\"event\":\"recorder\",\"state\":\"%s\",\"path\":\"%s\",\"segment\":%u,\"frames\":%llu,"
-                "\"seconds\":%.3f,\"bytes\":%llu,\"dropped\":%llu%s%s%s}",
+                "\"seconds\":%.3f,\"bytes\":%llu,\"dropped\":%llu,\"external\":%s%s%s%s}",
                 state, path, (unsigned)st.segments, (unsigned long long)st.frames, st.seconds,
-                (unsigned long long)st.bytes, (unsigned long long)st.dropped, message ? ",\"message\":\"" : "",
-                message ? msg : "", message ? "\"" : "");
+                (unsigned long long)st.bytes, (unsigned long long)st.dropped, st.external ? "true" : "false",
+                message ? ",\"message\":\"" : "", message ? msg : "", message ? "\"" : "");
 }
 
 // ============================================================================
@@ -144,6 +146,8 @@ bool recorder_active(void) {
 void recorder_get_state(recorder_state_t *out) {
     memset(out, 0, sizeof(*out));
     out->active = R.active;
+    out->suspended = R.active && R.suspended;
+    out->external = R.active && R.external;
     out->path = R.npaths ? R.paths[R.npaths - 1] : s_last_path;
     out->frames = R.frames;
     out->units = R.units;
@@ -281,6 +285,7 @@ static void teardown(void) {
     R.shadow = NULL;
     R.have_mode = false;
     R.active = false;
+    R.suspended = false;
 }
 
 // Finalise the recording: the STOP record, then wait for the file to close.
@@ -384,6 +389,14 @@ static void capture(void) {
         R.pending++; // no picture to take: the last one stands
         return;
     }
+    // A screen the GPU presents (a WebGPU takeover) costs a readback per
+    // frame taken: at full rate only every other frame-unit is taken, the
+    // ones between are repeats (half and quarter rate are already so)
+    R.external = d->presented_externally;
+    if (R.external && R.div == 1 && (R.units & 1)) {
+        R.pending++;
+        return;
+    }
     // A card that builds its frame on demand brings `bits` current first
     display_sync_pixels(d);
     bool tables = display_tables(d);
@@ -466,7 +479,8 @@ static void capture(void) {
 // ============================================================================
 
 void recorder_frame_boundary(void) {
-    if (!R.active)
+    // Suspended: the file is closed and nothing is recorded until resumed
+    if (!R.active || R.suspended)
         return;
     R.units++;
     // The recorder thread failed: finalise what exists
@@ -491,7 +505,7 @@ void recorder_frame_boundary(void) {
 }
 
 void recorder_audio_push(const int16_t *frames, int nframes, int channels, uint32_t rate, int vol) {
-    if (!R.active || !R.arate || nframes <= 0 || channels < 1)
+    if (!R.active || R.suspended || !R.arate || nframes <= 0 || channels < 1)
         return;
     // Repeats owed come first, so the record order is the time order; with
     // no room for either, the timeline fills the gap
@@ -648,11 +662,65 @@ int recorder_stop(char ***paths, size_t *n_paths, char *err, size_t err_len) {
 }
 
 // ============================================================================
+// Suspend and resume
+// ============================================================================
+
+// The next segment, for the display `d` as it is now (none: the last canvas).
+static int segment_next(const display_t *d) {
+    uint32_t w = d && d->width ? d->width : R.cw, h = d && d->height ? d->height : R.ch;
+    uint32_t fmt = d ? d->format : REC_PIX_8BPP;
+    return segment_begin(w, h, fmt, display_tables(d), d);
+}
+
+bool recorder_suspended(void) {
+    return R.active && R.suspended;
+}
+
+int recorder_suspend(char *err, size_t err_len) {
+    if (!R.active)
+        return start_error(err, err_len, "not recording");
+    if (R.suspended)
+        return 0;
+    // The repeats owed belong to this file; then close it and wait until it is
+    flush_repeats(true);
+    if (rec_worker_reserve(R.w, REC_K_CLOSE, 0, 0, true))
+        rec_worker_commit(R.w);
+    rec_worker_sync(R.w);
+    rec_stats_t s;
+    rec_worker_stats(R.w, &s);
+    if (s.err) {
+        fail_stop();
+        return start_error(err, err_len, "the recorder failed");
+    }
+    R.suspended = true;
+    R.have_mode = false;
+    LOG(1, "suspended: %s closed after %llu frames", R.npaths ? R.paths[R.npaths - 1] : "",
+        (unsigned long long)R.frames);
+    rec_event("suspended", NULL);
+    return 0;
+}
+
+int recorder_resume(char *err, size_t err_len) {
+    if (!R.active)
+        return start_error(err, err_len, "not recording");
+    if (!R.suspended)
+        return 0;
+    if (segment_next(system_display()) < 0) {
+        fail_stop();
+        return start_error(err, err_len, "could not start the next segment");
+    }
+    R.suspended = false;
+    rec_event("segment", NULL);
+    return 0;
+}
+
+// ============================================================================
 // Machine events
 // ============================================================================
 
 void recorder_machine_attached(bool restored) {
-    if (!R.active)
+    // Suspended: the resume opens a segment for whatever machine is there then
+    if (!R.active || R.suspended)
         return;
     display_t *d = system_display();
     bool audio_same = !s_set.audio || (audio_out_rate() == R.arate && (!R.arate || audio_out_channels() == R.ach));
@@ -663,9 +731,7 @@ void recorder_machine_attached(bool restored) {
         return;
     }
     // A boot (a different machine is a different recording), or one that does not fit
-    uint32_t w = d && d->width ? d->width : R.cw, h = d && d->height ? d->height : R.ch;
-    uint32_t fmt = d ? d->format : REC_PIX_8BPP;
-    if (segment_begin(w, h, fmt, display_tables(d), d) < 0) {
+    if (segment_next(d) < 0) {
         fail_stop();
         return;
     }

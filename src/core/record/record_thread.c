@@ -571,6 +571,10 @@ int rec_coder_record(rec_coder_t *c, uint32_t kind, const uint8_t *p, size_t len
     case REC_K_STOP:
         rc = segment_close(c, true);
         break;
+    case REC_K_CLOSE:
+        // The file ends here; the timeline carries into the next SEGMENT
+        rc = segment_close(c, false);
+        break;
     default:
         break;
     }
@@ -750,7 +754,7 @@ void rec_worker_commit(rec_worker_t *w) {
     // ring or the recorder thread's own timer: a wake-up per push would cost
     // the emulator thread more than the copy
     bool urgent = w->last_kind == REC_K_FRAME || w->last_kind == REC_K_SEGMENT || w->last_kind == REC_K_STOP ||
-                  spsc_avail(w->ring.wr, mbx_load(w->ctrl, 1)) >= w->ring.size / 16;
+                  w->last_kind == REC_K_CLOSE || spsc_avail(w->ring.wr, mbx_load(w->ctrl, 1)) >= w->ring.size / 16;
     if (!urgent)
         return;
     pthread_mutex_lock(&w->mu);
@@ -785,6 +789,24 @@ int rec_worker_fit(rec_worker_t *w, size_t len) {
     w->ring.size = size;
     pthread_mutex_unlock(&w->mu);
     return 0;
+}
+
+void rec_worker_sync(rec_worker_t *w) {
+    if (!w->threaded) {
+        drain_inline(w);
+        return;
+    }
+    // The recorder thread gives each record back only once it is coded, so
+    // an empty ring means everything published has been
+    pthread_mutex_lock(&w->mu);
+    if (w->consumer_waiting)
+        pthread_cond_signal(&w->cv_work);
+    while (ring_used(w) != 0) {
+        w->producer_waiting = true;
+        pthread_cond_wait(&w->cv_room, &w->mu);
+        w->producer_waiting = false;
+    }
+    pthread_mutex_unlock(&w->mu);
 }
 
 void rec_worker_stats(rec_worker_t *w, rec_stats_t *out) {

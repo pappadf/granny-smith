@@ -19,6 +19,8 @@
 //            changed (always after a resync).
 //   REPEAT   `count` output frames identical to the one before.
 //   AUDIO    one push: its rate, channels, volume and samples.
+//   CLOSE    finalise the file; the recording carries on, and the next
+//            SEGMENT opens the next file (recorder_suspend).
 //   STOP     finalise the file and end.
 //
 // The coder (rec_coder_t) is the recorder thread's whole job and depends on
@@ -42,6 +44,7 @@
 #define REC_K_REPEAT  3
 #define REC_K_AUDIO   4
 #define REC_K_STOP    5
+#define REC_K_CLOSE   6
 
 // FRAME flags.
 #define REC_FR_WHOLE  0x01u // the band is whole rows, not XOR: code a keyframe
@@ -155,6 +158,10 @@ int rec_worker_fit(rec_worker_t *w, size_t len);
 
 // Change the full-ring policy.
 void rec_worker_set_block(rec_worker_t *w, bool block);
+
+// Wait until the coder has taken every record published so far (inline:
+// at once).  After a CLOSE, the file is then closed.
+void rec_worker_sync(rec_worker_t *w);
 
 // The coder's counters (any time).
 void rec_worker_stats(rec_worker_t *w, rec_stats_t *out);

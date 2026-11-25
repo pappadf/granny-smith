@@ -74,8 +74,23 @@ int recorder_start(const char *path, char *err, size_t err_len);
 // recording (err says so).
 int recorder_stop(char ***paths, size_t *n_paths, char *err, size_t err_len);
 
-// True while a recording runs.
+// True while a recording runs (suspended or not).
 bool recorder_active(void);
+
+// Finalise the file being written -- Cues, sizes and duration, closed --
+// and record nothing more until recorder_resume, which continues in the
+// next segment (`name-N.mkv`).  For a page being hidden or closed: the
+// file is whole if the page never comes back.  Returns once the file is
+// closed; 0 (also when already suspended), or -1 when not recording or the
+// recorder failed (err says why; a failure ends the recording).
+int recorder_suspend(char *err, size_t err_len);
+
+// Continue a suspended recording in the next segment, from the next
+// frame-unit.  0 (also when not suspended), or -1 (err says why).
+int recorder_resume(char *err, size_t err_len);
+
+// True while a recording is suspended.
+bool recorder_suspended(void);
 
 // === Machine events (system.c) ===
 
@@ -92,6 +107,8 @@ void recorder_machine_gone(void);
 // The recorder's state for its attributes.
 typedef struct recorder_state {
     bool active;
+    bool suspended; // recorder_suspend: the file is closed until resumed
+    bool external; // the screen is presented by the GPU: frames at half rate at most
     const char *path; // the current segment (or the last one written), "" if none
     uint64_t frames; // output frames, every segment
     uint64_t units; // frame-units completed since start

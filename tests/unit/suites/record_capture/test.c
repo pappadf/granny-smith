@@ -632,6 +632,56 @@ TEST(coder_segments) {
     }
 }
 
+TEST(coder_close_then_sync) {
+    // CLOSE finalises the file and the recording carries on: once
+    // rec_worker_sync returns the first file is whole, and a later SEGMENT
+    // opens the next, on a keyframe
+    char p1[512], p2[512];
+    out_path(p1, sizeof p1, "close-1.mkv");
+    out_path(p2, sizeof p2, "close-2.mkv");
+    rec_worker_t *w = rec_worker_new(rec_coder_new(), 1u << 20, true, true);
+    static uint8_t fb[32 * 32];
+    put_segment(w, p1, 32, 32, REC_CLASS_INDEXED, 1);
+    put_frame(w, REC_FR_WHOLE | REC_FR_MODE | REC_FR_TABLES, 32, 32, REC_PIX_8BPP, 32, 0, 32, NULL, 0, NULL, fb);
+    put_audio(w, 600, 100);
+    rec_repeat_hdr_t r = {.count = 3};
+    put(w, REC_K_REPEAT, &r, sizeof r);
+    put(w, REC_K_CLOSE, NULL, 0);
+    rec_worker_sync(w);
+    rec_stats_t st;
+    rec_worker_stats(w, &st);
+    ASSERT_EQ_INT(0, st.err);
+    int err = 0;
+    mkv_reader_t *rd = mkv_read_open(p1, &err);
+    ASSERT_TRUE(rd != NULL);
+    mkv_packet_t p;
+    int n = 0;
+    while (mkv_read_packet(rd, &p) == 1)
+        n += p.track == 1;
+    ASSERT_EQ_INT(4, n);
+    ASSERT_TRUE(!mkv_read_truncated(rd));
+    ASSERT_TRUE(mkv_read_duration(rd) > 0);
+    mkv_read_close(rd);
+    // The next segment, after a gap the recording did not see
+    put_segment(w, p2, 32, 32, REC_CLASS_INDEXED, 2);
+    put_frame(w, REC_FR_WHOLE | REC_FR_MODE | REC_FR_TABLES, 32, 32, REC_PIX_8BPP, 32, 0, 32, NULL, 0, NULL, fb);
+    put(w, REC_K_REPEAT, &r, sizeof r);
+    put(w, REC_K_STOP, NULL, 0);
+    rec_worker_free(w, &st, NULL, 0);
+    ASSERT_EQ_INT(0, st.err);
+    rd = mkv_read_open(p2, &err);
+    ASSERT_TRUE(rd != NULL);
+    n = 0;
+    int keys = 0;
+    while (mkv_read_packet(rd, &p) == 1) {
+        n += p.track == 1;
+        keys += p.track == 1 && p.keyframe;
+    }
+    ASSERT_EQ_INT(4, n);
+    ASSERT_EQ_INT(1, keys);
+    mkv_read_close(rd);
+}
+
 TEST(coder_direct_colour_tables) {
     // 32 bpp through a monitor curve, then the curve changes: a keyframe
     char path[512];
@@ -714,6 +764,7 @@ int main(void) {
     RUN(pixels_convert);
     RUN(coder_inline_and_threaded);
     RUN(coder_segments);
+    RUN(coder_close_then_sync);
     RUN(coder_direct_colour_tables);
     RUN(worker_full_ring_refuses);
     fprintf(stderr, "record_capture: all tests passed\n");
