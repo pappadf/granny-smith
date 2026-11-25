@@ -43,6 +43,7 @@
 
 #include "board_io.h"
 #include "cpu.h"
+#include "cpuid_page.h"
 #include "log.h"
 #include "mdu_io.h" // the island rows Sonora extends
 #include "memory.h"
@@ -117,32 +118,22 @@ static void sonora_vctl_write(config_t *cfg, uint32_t win_off, uint32_t addr, ui
     }
 }
 
-// $50F0A000: where the decoder selects a SONIC Ethernet controller.  None of
-// the modelled boards fits one, so nothing acknowledges and the cycle times
-// out -- which is how the ROM's Ethernet probe (run on the 33 MHz Vail
-// board, whose ProductInfo marks the SONIC valid) learns it is absent.
-static uint8_t sonora_enet_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
-    (void)win_off;
-    memory_signal_bus_error(v8_st(cfg)->io.window_base + addr, false); // `addr` is island-relative
-    return 0xFF;
-}
-
-static void sonora_enet_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
-    (void)win_off, (void)value;
-    memory_signal_bus_error(v8_st(cfg)->io.window_base + addr, true); // `addr` is island-relative
-}
-
 // The $50F00000 island: the MDU's rows (mdu_io.h) -- the V8's island --
 // plus Sonora's extra registers ahead of the RBV-style row they sit inside
 // (first match wins) and the video control block at $28000.  Handler rows
-// name no device (0), as djmemc.c's do: the SONIC window and Sonora's own
-// registers are not the pseudo-VIA2's.
+// name no device (0), as djmemc.c's do: Sonora's own registers are not the
+// pseudo-VIA2's.  $0A000 is where the decoder selects a SONIC Ethernet
+// controller: none of the modelled boards fits one, so nothing acknowledges
+// and the cycle times out (a .berr row, faulting at window_base -- the
+// island base -- plus the offset), which is how the ROM's Ethernet probe
+// (run on the 33 MHz Vail board, whose ProductInfo marks the SONIC valid)
+// learns it is absent.
 //   base     end      device penalty             xform            rd  wr     name
 const board_io_range_t sonora_io_ranges_tbl[] = {
     MDU_IO_ROW_VIA1,
     MDU_IO_ROW_SCC,
     MDU_IO_ROW_SCSI_DRQ,
-    {0x0A000, 0x0C000, 0, MDU_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, sonora_enet_read, sonora_enet_write, "sonic"},
+    {0x0A000, 0x0C000, 0, MDU_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "sonic", .berr = 1},
     MDU_IO_ROW_SCSI_REG,
     MDU_IO_ROW_SCSI_BLIND,
     MDU_IO_ROW_ASC,
@@ -155,42 +146,6 @@ const board_io_range_t sonora_io_ranges_tbl[] = {
       "sonora_video"},
     {0}, // sentinel
 };
-
-// ============================================================
-// CPU ID register
-// ============================================================
-
-// The page at $5FFFF000 answers only in its last longword: the ID, read-only
-// (the ROM checks a write does not change it).
-static uint8_t cpuid_byte(void *ctx, uint32_t addr) {
-    config_t *cfg = (config_t *)ctx;
-    uint32_t off = addr & 0xFFFu;
-    if (off < 0xFFCu)
-        return 0xFF;
-    return (uint8_t)(v8_board(cfg)->cpu_id >> (8 * (3 - (off & 3))));
-}
-static uint8_t cpuid_rd8(void *ctx, uint32_t a, bool peek) {
-    (void)peek;
-    return cpuid_byte(ctx, a);
-}
-static uint16_t cpuid_rd16(void *ctx, uint32_t a, bool peek) {
-    (void)peek;
-    return (uint16_t)((cpuid_byte(ctx, a) << 8) | cpuid_byte(ctx, a + 1));
-}
-static uint32_t cpuid_rd32(void *ctx, uint32_t a, bool peek) {
-    return ((uint32_t)cpuid_rd16(ctx, a, peek) << 16) | cpuid_rd16(ctx, a + 2, peek);
-}
-MEMORY_READ_FACE(cpuid)
-static void cpuid_write8(void *ctx, uint32_t a, uint8_t v) {
-    (void)ctx, (void)a, (void)v;
-}
-static void cpuid_write16(void *ctx, uint32_t a, uint16_t v) {
-    (void)ctx, (void)a, (void)v;
-}
-static void cpuid_write32(void *ctx, uint32_t a, uint32_t v) {
-    (void)ctx, (void)a, (void)v;
-}
-MEMORY_IFACE(cpuid);
 
 // ============================================================
 // RAM
@@ -262,7 +217,8 @@ static void sonora_memory_layout_init(config_t *cfg) {
 
     board_io_fill_interface(&st->io_interface);
     memory_map_add(cfg->memory_map, V8_ISLAND_BASE, V8_ISLAND_SIZE, "I/O", &st->io_interface, &st->io);
-    memory_map_add(cfg->memory_map, SONORA_CPUID_ADDR & ~0xFFFu, MEM_PAGE_SIZE, "CPU ID", &cpuid_iface, cfg);
+    // The CPU ID register: the shared page, answering only in its last longword
+    cpuid_page_install(&st->cpuid, cfg->memory_map, b->cpu_id);
 
     // VRAM: the soldered bank at $60B00000; the SIMM bank above it floats.
     if (st->video.vram) {

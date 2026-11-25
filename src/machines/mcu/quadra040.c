@@ -129,8 +129,7 @@ void quadra040_build_sonic_asc_floppy(config_t *cfg, checkpoint_t *cp, void (*so
     asc_set_mix(q->asc, ASC_MIX_CH_A);
     asc_set_irq_handler(q->asc, asc_irq, cfg);
     machine_part_begin(cfg, cp, "floppy");
-    cfg->floppy =
-        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
+    cfg->floppy = floppy_init(FLOPPY_TYPE_SWIM, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
     machine_part(cfg, cp, "floppy", part_save_floppy, cfg->floppy);
 }
 

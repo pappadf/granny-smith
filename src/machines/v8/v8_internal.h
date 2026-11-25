@@ -10,6 +10,7 @@
 
 #include "ariel.h"
 #include "board_io.h"
+#include "cpuid_page.h"
 #include "display.h"
 #include "display_class.h"
 #include "display_ramdac.h"
@@ -59,6 +60,7 @@ typedef struct v8_state {
     struct mmu_state *mmu;
 
     m68k_board_overlay_t overlay; // ROM at zero until the first ROM access
+    cpuid_page_t cpuid; // Sonora: the CPU ID page at $5FFFF000 (cpuid_page.h)
     board_io_t io; // the I/O island dispatch context
     memory_interface_t io_interface;
 
@@ -95,7 +97,7 @@ typedef struct v8_chip_ops {
     int (*ram_layout)(config_t *cfg); // split the RAM and lay out the host buffer
     void (*map_ram_decode)(config_t *cfg, uint8_t reg); // the RAM space as the decode register sets it
     void (*memory_layout_init)(config_t *cfg); // the memory map, the overlay armed
-    void (*bus_reset)(config_t *cfg); // the decoder's own /RESET half (before the RBV's)
+    void (*bus_reset)(config_t *cfg); // the decoder's own /RESET half (before the RBV's); optional
     void (*checkpoint)(config_t *cfg, checkpoint_t *cp); // the decoder's own block, or NULL
     void (*restore)(config_t *cfg, checkpoint_t *cp);
     uint32_t vram_base; // the frame buffer's bus address

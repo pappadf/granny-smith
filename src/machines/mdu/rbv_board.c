@@ -78,8 +78,7 @@ int rbv_board_build_devices(config_t *cfg, checkpoint_t *cp, const rbv_board_spe
     asc_set_mix(asc, ASC_MIX_CH_A); // the internal speaker takes the left channel
 
     machine_part_begin(cfg, cp, "floppy");
-    cfg->floppy =
-        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
+    cfg->floppy = floppy_init(FLOPPY_TYPE_SWIM, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
     machine_part(cfg, cp, "floppy", part_save_floppy, cfg->floppy);
 
     // The companion owns ADB / RTC / PRAM / the 1-second tick / soft

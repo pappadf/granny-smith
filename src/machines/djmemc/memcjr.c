@@ -30,8 +30,8 @@
 
 // RAM: 4 MB soldered + one 72-pin SIMM socket of 1 to 32 MB (to 36 MB).
 // (Apple, Macintosh LC 475 and Macintosh Quadra 605 Developer Note (1993),
-// "RAM SIMMs", p. 9.)
-static const uint32_t memcjr_ram_options_kb[] = {4096, 5120, 6144, 8192, 12288, 20480, 36864, 0};
+// "RAM SIMMs", p. 9.)  The options are the shared
+// mac_ram_options_4mb_72pin_kb (slot_tables.h).
 
 #define MEMCJR_RAM_MAX 0x02400000u // 36 MB
 
@@ -77,7 +77,7 @@ static const builtin_video_desc_t lc575_builtin_video = {
 #define MEMCJR_PROFILE_COMMON                                                                                          \
     .cpu_model = 68040, .mmu_kind = MMU_68040, .address_bits = 32, .rom_size = 0x100000,                               \
     .floppy_slots = mac_floppy_slots_1hd, .default_storage = mac_default_storage_hd0_cd3, .appletalk = true,           \
-    .ram_default = 0x00800000u, .ram_max = MEMCJR_RAM_MAX, .ram_options = memcjr_ram_options_kb,                       \
+    .ram_default = 0x00800000u, .ram_max = MEMCJR_RAM_MAX, .ram_options = mac_ram_options_4mb_72pin_kb,                \
     .cdrom_drive = &scsi_cd_drive_applecd_300i, .pram = &pram_defaults_iifx, .substrate = &djmemc_substrate
 
 const hw_profile_t machine_lc475 = {

@@ -9,8 +9,7 @@
 // writable, so writes are dropped and the write-then-readback probe sees the
 // constant.  The rest of the page reads `fill` (nothing drives the bus).
 //
-// The AV and djMEMC/MEMCjr boards install it; it is written so the other
-// boards with the same page (V8/Sonora, the PDM HMC) can adopt it: their
+// The AV, djMEMC/MEMCjr, Sonora and PDM boards install it.  The PDM's
 // differences -- a zero fill, a long read that drops the signature -- are
 // fields here.
 
@@ -30,12 +29,13 @@
 typedef struct cpuid_page {
     uint32_t value; // the register's value
     uint8_t fill; // what the rest of the page reads ($FF: floats high)
-    bool long_low_half; // a 32-bit read of the register returns only its low half (PDM)
+    bool long_low_half; // a 32-bit read returns the register's low half, elsewhere `fill` (PDM)
     memory_interface_t iface; // registered at CPUID_PAGE_BASE
 } cpuid_page_t;
 
 // Fill in `pg` (`fill` $FF, full-width long reads) and register its page at
-// CPUID_PAGE_BASE in `map` as "CPU-ID".  `pg` must outlive the map.
+// CPUID_PAGE_BASE in `map` as "CPU-ID".  `pg` must outlive the map.  A board
+// that differs sets `fill` / `long_low_half` after (they are read per access).
 void cpuid_page_install(cpuid_page_t *pg, memory_map_t *map, uint32_t value);
 
 #endif // GS_MACHINES_RUNTIME_CPUID_PAGE_H

@@ -22,6 +22,7 @@
 
 #include "ariel.h" // ariel_t, the Ariel CLUT/DAC
 #include "board_io.h" // board_io_t, the island decode engine
+#include "cpuid_page.h" // cpuid_page_t, the machine-ID page
 #include "display.h"
 #include "display_class.h"
 #include "display_ramdac.h"
@@ -286,7 +287,7 @@ typedef struct pdm_state {
 
     // Memory interfaces registered with the map
     memory_interface_t io_interface; // $50F00000..$50F4FFFF island
-    memory_interface_t id_interface; // $5FFFF000 machine-ID page
+    cpuid_page_t cpuid; // $5FFFF000 machine-ID page (cpuid_page.h)
     memory_interface_t wait_interface; // page-0 wait-state forwarder
     memory_interface_t bart_reg_interface; // $F0000000 BART register file
     // AMIC's island decode (amic.c): its range table bound to this machine's
@@ -331,9 +332,6 @@ void pdm_hmc_write(config_t *cfg, uint32_t offset, uint8_t value);
 // (Re)build the RAM decode per the current config code; also the cold-boot
 // power-on mapping when called with the reset config.
 void pdm_hmc_remap(config_t *cfg);
-// Machine-ID page handlers ($5FFFF000; the register itself is $5FFFFFFC)
-uint8_t pdm_id_read8(void *ctx, uint32_t offset);
-uint32_t pdm_id_read32(void *ctx, uint32_t offset);
 
 // === amic.c =================================================================
 

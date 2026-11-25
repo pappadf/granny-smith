@@ -1212,8 +1212,7 @@ const memory_interface_t floppy_swim_stride_iface = {
 // Sets up SWIM memory interface callbacks and ISM initial state.
 // Every SWIM machine decodes its own window: the compact boards through
 // floppy_map_stride_window, the rest through floppy_get_memory_interface().
-// `map` is unused (floppy_init's).
-void floppy_swim_setup(floppy_t *floppy, memory_map_t *map) {
+void floppy_swim_setup(floppy_t *floppy) {
     // ISM initial state (chip powers up in IWM mode)
     floppy->in_ism_mode = false;
     floppy->ism_phase = 0xF0;
@@ -1223,6 +1222,4 @@ void floppy_swim_setup(floppy_t *floppy, memory_map_t *map) {
 
     // Set up memory interface
     floppy->memory_interface = &swim_iface;
-
-    (void)map;
 }

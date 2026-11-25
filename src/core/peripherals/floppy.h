@@ -39,13 +39,13 @@ typedef struct floppy floppy_t;
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
 // Initializes a floppy controller of the given type.  It maps nothing: the
 // board places the chip's window (floppy_map_stride_window, or its own decode
-// over floppy_get_memory_interface); `map` is unused.
+// over floppy_get_memory_interface).
 // `n_drives` is how many of the controller's FLOPPY_NUM_DRIVES the machine
 // cables (its profile's floppy_slots): the chip always has two drive
 // selects, but drives past n_drives are not in the object model and refuse an
 // insert.
-floppy_t *floppy_init(floppy_type_t type, memory_map_t *map, struct scheduler *scheduler, int n_drives,
-                      checkpoint_t *checkpoint, const image_list_t *images);
+floppy_t *floppy_init(floppy_type_t type, struct scheduler *scheduler, int n_drives, checkpoint_t *checkpoint,
+                      const image_list_t *images);
 
 // How many drives the controller was built with (or restored with).
 int floppy_drive_count(const floppy_t *floppy);

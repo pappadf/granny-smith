@@ -159,7 +159,10 @@ static inline uint8_t io_read_byte(board_io_t *io, uint32_t addr, const board_io
         return io->unmapped_read;
     }
     if (r->berr) {
-        // Nothing answers: the cycle aborts at the full bus address.
+        // Nothing answers: the cycle aborts at the full bus address, after
+        // the row's declared penalty (0 on most bus-error rows).
+        if (r->penalty)
+            memory_io_penalty(r->penalty);
         memory_signal_bus_error(io->window_base + addr, false);
         return io->unmapped_read;
     }
@@ -203,6 +206,8 @@ static inline void io_write_byte(board_io_t *io, uint32_t addr, uint8_t value, c
         return;
     }
     if (r->berr) {
+        if (r->penalty)
+            memory_io_penalty(r->penalty); // the declared penalty, then the fault
         memory_signal_bus_error(io->window_base + addr, true);
         return;
     }
