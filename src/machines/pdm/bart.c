@@ -61,13 +61,12 @@ LOG_USE_CATEGORY_NAME("bart");
 // the model deliberately answers with something else.
 #define BART_ID_PROTOTYPE 0x43184000u
 
-// Slots whose /NMRQ the pseudo-VIA2 slot bank carries.  Bit = slot - 9, so
+// Slots whose /NMRQ the pseudo-VIA2 slot bank carries: the board's
+// first_nubus_slot through PDM_LAST_NUBUS_SLOT (pdm.h).  Bit = slot - 9, so
 // $B..$E are bits 2..5; the three connectors ($C/$D/$E) are bits 3/4/5 —
 // the set a booted OS actually enables — and bit 6 is the built-in video
 // VBL.  Nothing enables or services bit 2, which is why $B is decoded but
 // never a connector (pm8100.c).
-#define BART_SLOT_IRQ_FIRST 0x0B
-#define BART_SLOT_IRQ_LAST  0x0E
 
 // ============================================================
 // Fault windows
@@ -348,12 +347,11 @@ void pdm_bart_init(config_t *cfg) {
     // runs, and whose super slot space the PDS claims on the CPU bus.
     // The Workgroup Server 9150's fourth connector adds slot $A to both
     // windows (wgs9150.c).
-    const uint32_t first = pdm_board(cfg)->has_slot_a ? 0xAu : 0xBu;
-    for (uint32_t slot = first; slot <= 0xEu; slot++) {
+    for (uint32_t slot = pdm_board(cfg)->first_nubus_slot; slot <= PDM_LAST_NUBUS_SLOT; slot++) {
         char name[24];
         snprintf(name, sizeof(name), "NuBus slot $%X", slot);
         bart_claim_empty(cfg, nubus_slot_base(slot), 0x01000000u, name);
-        if (slot == 0xEu)
+        if (slot == PDM_LAST_NUBUS_SLOT)
             continue;
         snprintf(name, sizeof(name), "NuBus super slot $%X", slot);
         bart_claim_empty(cfg, nubus_super_slot_base(slot), 0x10000000u, name);
@@ -367,8 +365,7 @@ void pdm_bart_init(config_t *cfg) {
 // forwards to AMIC.
 void pdm_bart_slot_irq(config_t *cfg, int slot, bool active) {
     // The 9150's FAT AMIC adds slot $A's line at bit 1 (wgs9150.c).
-    const int first = pdm_board(cfg)->has_slot_a ? 0x0A : BART_SLOT_IRQ_FIRST;
-    if (slot < first || slot > BART_SLOT_IRQ_LAST) {
+    if (slot < pdm_board(cfg)->first_nubus_slot || slot > PDM_LAST_NUBUS_SLOT) {
         LOG(1, "bart: slot $%X has no interrupt line on this board", slot);
         return;
     }

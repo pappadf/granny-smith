@@ -28,6 +28,8 @@
 -- depth it can scan out (16 bpp at 640x480).
 
 local mac = dofile("../lib/mac.lua")
+local ppc = dofile("../lib/ppc_rows.lua")
+local boxflag, dispatch, check_about_81 = ppc.boxflag, ppc.dispatch, ppc.check_about_81
 
 local hd_753 = "../../data/systems/system_7_5_3_25mb_bare.img"
 local hd_76 = "../../data/systems/system_7_6_170mb_24ac.img"
@@ -38,13 +40,6 @@ local rom_v2 = "../../data/roms/pm7500-pm8500-pm9500-v2-9630c68b-4db4a42fea3b53b
 
 local id_v1 = "96cd923d-c241cd82bf90797a"
 local id_v2 = "9630c68b-4db4a42fea3b53b3"
-
--- BoxFlag, read through the user-context window once the 68k emulator is
--- in user mode.
-local function boxflag()
-    while (machine.cpu.msr & 0x4000) == 0 do scheduler.run(1000) end
-    return machine.cpu.mmu.peek(0xCB3, 1)
-end
 
 -- The board facts every row asserts: the model, the ROM revision, the
 -- Catalyst identity, Platinum at $F8000000 and the scan-out it set.
@@ -115,17 +110,6 @@ local function row_pm7200_76_hd()
     mac.report_perf("suite-pm7200/pm7200-76-hd", scheduler.instr_count)
 end
 
--- Mac OS 8.1's About This Computer, matched with the menu-bar clock, the
--- "Largest Unused Block" figure and the Mac OS row's figure and bar
--- excluded (the suite-tnt-1997 rectangles).
-local function check_about_81(ref)
-    if mac.REGEN_MODE == "1" then
-        machine.screen.save(ref)
-    else
-        machine.screen.match(ref, 0, 440, 20, 640, 182, 90, 197, 330, 202, 250, 219, 530)
-    end
-end
-
 local function row_pm7200_81_hd()
     boot_hd(vars.ROM, hd_81, 65536)
     check_board(id_v1)
@@ -139,28 +123,13 @@ end
 -- The System 7.6 "Install 1" floppy through the SWIM3: boot blocks,
 -- System, extensions, then the Installer.
 local function row_pm7200_76_fd()
-    machine.boot{model = "pm7200", ram = 16384, rom = rom_v2}
-    machine.rtc.time = "2026-04-26T21:30:36"
-    machine.floppy.drive[0].insert(fd_76)
-    assert(machine.floppy.drive[0].present, "boot floppy not in FD0")
-    mac.run_until_match_ex("goldens/pm7200-7.6-floppy-boot.png", 0, 440, 20, 640, 7600000000, 250000000)
-    mac.check_ex("goldens/pm7200-7.6-floppy-boot.png", 0, 440, 20, 640)
+    ppc.boot_install1("pm7200", 16384, rom_v2, "2026-04-26T21:30:36", fd_76, "goldens/pm7200-7.6-floppy-boot.png")
     check_board(id_v2)
     mac.report_row("7.6", "swim3", "fd-boot")
     mac.report_perf("suite-pm7200/pm7200-76-fd", scheduler.instr_count)
 end
 
 -- ---- row dispatch -----------------------------------------------------------
-
-local function dispatch(label, fn, media)
-    if mac.row_on(label) then
-        if mac.have_media(media) then
-            mac.row(label, fn)
-        else
-            echo(F"skip: ${label} (${media} not fetched)")
-        end
-    end
-end
 
 dispatch("pm7200-753-hd", row_pm7200_753_hd, hd_753)
 dispatch("pm7200-76-hd", row_pm7200_76_hd, hd_76)

@@ -29,17 +29,12 @@
 #include "tnt.h"
 
 static const tnt_board_desc_t pm7300_board = {
-    // The 7600's straps (pm7500.c) with bit 15 LOW — the 7300 strap the
-    // System's identification patch reads (above): bit 14 MESH present,
-    // bit 13 SET (Open Firmware's 7500 pick), bit 11 CLEAR, bit 8 the
-    // factory-test strap idling HIGH.
-    .boxid = 0x4000u | 0x2000u | 0x0100u,
-    .hh_id = 0x39000000u, // $39 first byte = the TNT identification path
-    .hh_r20 = 0x80000000u, // the 7500/8500 class (pm7500.c)
+    TNT_MAC_BOARD_COMMON,
+    // The 7600's straps (tnt.h) with bit 15 LOW -- the 7300 strap the
+    // System's identification patch reads (above).
+    .boxid = TNT_BOXID_7500 & ~TNT_BOXID_IDLE, .hh_r20 = TNT_HH_R20_7500,
     .bus_hz = 50000000u, // 4:1 bus (200 MHz 604e card)
     .bandit_count = 1,
-    .kind = TNT_BOARD_MAC,
-    .has_mesh = true,
     .l2_kb = 256u, // the 256 KB cache DIMM (ibid., Table 1-4)
 };
 
@@ -47,30 +42,21 @@ const hw_profile_t machine_pm7300 = {
     .name = "Power Macintosh 7300",
     .id = "pm7300",
 
-    // The 604 core with its default PVR ($0004), not the 604e ($0009): POST
-    // times a 604e through HID1's PLL configuration, which the core does not
-    // model on the 604 class; under a 604 PVR it takes the 1995 path.
-    .cpu_model = CPU_MODEL_PPC604,
+    TNT_MAC_PROFILE_COMMON, // the ROM: $960E4BE9
+    TNT_CPU_604, // the 604e card, run as a 604 (tnt.h)
     .freq = 200000000, // 200 MHz (the 7300/200)
-    .mmu_kind = MMU_PPC_604,
 
-    .address_bits = 32,
     .ram_default = 0x2000000, // 32 MB (the 7300/200's shipping configuration)
     .ram_max = 0x40000000, // 1 GB
-    .rom_size = 0x400000, // 4 MB ($960E4BE9)
 
     .ram_options = tnt_ram_options_kb,
     .storage = tnt_storage_7500,
     .default_storage = tnt_default_storage, // the CD-ROM drive on the 53C94: see pm7500.c
-    .appletalk = true,
     .cdrom_drive = &scsi_cd_drive_applecd_1600i, // "a built-in 12X-speed CD-ROM drive, an AppleCD 1600i"
-    .floppy_slots = mac_floppy_slots_1hd,
 
     .pci_slots = tnt_pci_slots_1bandit,
 
     .builtin_video = &tnt_builtin_video,
 
-    .substrate = &tnt_substrate,
-    .of_nvram_check = of_nvram_check_tnt,
     .board = &pm7300_board,
 };

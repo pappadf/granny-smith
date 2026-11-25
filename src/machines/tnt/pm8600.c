@@ -18,16 +18,11 @@
 #include "tnt.h"
 
 static const tnt_board_desc_t pm8600_board = {
-    // The 8500's straps (pm8500.c): bit 11 SET = 8500 for the 68k
-    // routine, bit 13 CLEAR = 8500 for Open Firmware, MESH present,
-    // bit 15 pulled high, bit 8 the factory-test strap idling HIGH.
-    .boxid = 0x8000u | 0x4000u | 0x0800u | 0x0100u,
-    .hh_id = 0x39000000u, // $39 first byte = the TNT identification path
-    .hh_r20 = 0x80000000u, // the 7500/8500 class (pm7500.c)
+    TNT_MAC_BOARD_COMMON,
+    .boxid = TNT_BOXID_8500, // the 8500's straps (tnt.h)
+    .hh_r20 = TNT_HH_R20_7500,
     .bus_hz = 50000000u, // 4:1 bus (200 MHz 604e card)
     .bandit_count = 2,
-    .kind = TNT_BOARD_MAC,
-    .has_mesh = true,
     .l2_kb = 256u, // the 256 KB cache DIMM (ibid., Table 1-4)
 };
 
@@ -35,31 +30,22 @@ const hw_profile_t machine_pm8600 = {
     .name = "Power Macintosh 8600",
     .id = "pm8600",
 
-    // The 604 core with its default PVR ($0004), not the 604e ($0009): POST
-    // times a 604e through HID1's PLL configuration, which the core does not
-    // model on the 604 class; under a 604 PVR it takes the 1995 path.
-    .cpu_model = CPU_MODEL_PPC604,
+    TNT_MAC_PROFILE_COMMON, // the ROM: $960E4BE9 / $960FC647
+    TNT_CPU_604, // the 604e card, run as a 604 (tnt.h)
     .freq = 200000000, // 200 MHz
-    .mmu_kind = MMU_PPC_604,
 
-    .address_bits = 32,
     .ram_default = 0x2000000, // 32 MB (the shipping configuration, ibid. Table 1-4)
     .ram_max = 0x40000000, // 1 GB
-    .rom_size = 0x400000, // 4 MB ($960E4BE9 / $960FC647)
 
     // 168-pin DIMMs in 8 slots, interleaved in pairs, as on the 8500.
     .ram_options = tnt_ram_options_kb,
     .storage = tnt_storage_8500,
     .default_storage = tnt_default_storage, // the CD-ROM drive on the 53C94: see pm7500.c
-    .appletalk = true,
     .cdrom_drive = &scsi_cd_drive_applecd_1600i, // "a built-in 12X-speed CD-ROM drive, an AppleCD 1600i"
-    .floppy_slots = mac_floppy_slots_1hd,
 
     .pci_slots = tnt_pci_slots_1bandit,
 
     .builtin_video = &tnt_builtin_video,
 
-    .substrate = &tnt_substrate,
-    .of_nvram_check = of_nvram_check_tnt,
     .board = &pm8600_board,
 };

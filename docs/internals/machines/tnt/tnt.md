@@ -18,6 +18,15 @@ the first machines on the `CPU_MODEL_PPC604` core model
 `pm7200` (7200/90, 90 MHz 601), the Catalyst board with Platinum in
 Hammerhead's place (see "The Catalyst board" below).
 
+One file per model holds its board descriptor and its profile; what the
+Macintosh models share is written once in `tnt.h` — `TNT_MAC_PROFILE_COMMON`
+(bus width, ROM size, LocalTalk, the SuperDrive, the substrate and its
+NVRAM check), `TNT_CPU_601` / `TNT_CPU_604`, `TNT_MAC_BOARD_COMMON` (the
+`$39` Hammerhead identifier, MESH, Chaos) and the strap macros
+(`TNT_BOXID_7500` / `_8500` / `_9500`, `TNT_HH_R20_7500` / `_9500`) with the
+reasoning behind each bit, which the 1997 boards take over from their
+predecessors instead of retyping.
+
 Sources: Apple, *Power Macintosh 7500 and 8500 Computers* Developer Note
 (1995); Apple, *Power Macintosh 9500 Computer* Developer Note (1995);
 Motorola, MPC604UM/AD; the shipping ROM itself (its Open Firmware device
@@ -278,6 +287,19 @@ The board model is the chipset skeleton plus the DMA architecture:
   mode-set).  Exercised end-to-end by the boot to the gray desktop: the ROM's own `mtej`
   control driver mode-sets the chip and QuickDraw paints the gray
   desktop into the BAR-assigned VRAM aperture (`ScrnBase $90800210`).
+- **The shared video half** (`tnt_fb.c`) — what Control and Platinum
+  have in common, because the RaDACal and the DACula are one RAMDAC
+  design: the address / cursor-palette / CLUT ports at GC `+$1B000`
+  (`tnt_dac_port_read`/`_write`; each chip decodes its own indexed
+  register port at `+$20`), the palette they serve (`tnt_dac_pal_t`, the
+  CLUT plus the eight-entry cursor palette, embedded byte-for-byte where
+  both chips' state always carried those fields, so neither chip's
+  `tnt.av` checkpoint layout moved), the depth code and the CLUT / DAC
+  table it selects, the hardware-cursor composite, the retrace-period
+  arithmetic and scan-line position, and the three host buffers plus the
+  `machine.video` node (`tnt_state_t.fb_node` / `video_node`).  Each chip
+  keeps its CRTC, its clock, its register file, its VRAM decode and its
+  VBL wiring.
 
 ### The interrupt fabric
 
@@ -347,9 +369,12 @@ lists in
 [pm8500.md](../../../reference/machines/tnt/pm8500.md) §4 and
 [pm9500.md](../../../reference/machines/tnt/pm9500.md) §4.)
 
-Each model declares a `pci_slot_decl_t` table (`pm7500.c` and friends)
-that the profile encoder and `pci_init` share, so `catalog.profile`'s
-`pci_slots` block and the runtime cannot drift.  Sockets are PCI devices
+Each model names a `pci_slot_decl_t` table that the profile encoder and
+`pci_init` share, so `catalog.profile`'s `pci_slots` block and the runtime
+cannot drift.  The tables more than one model uses live in `tnt.c`
+(`tnt_pci_slots_1bandit`, `tnt_pci_slots_9500`, `ans_pci_slots`); every
+Power Macintosh table opens with Bandit 1's three sockets
+(`TNT_BANDIT1_SOCKETS`, `tnt.h`), the 7200's being nothing else.  Sockets are PCI devices
 **13/14/15** on their bridge's bus — the ROM's own `slot-names` bitmask
 (`$0000E000`) on the bandit node, corroborated by Apple's Network Server
 developer note IDSEL table — and each socket's strapped INTA-D line
@@ -511,9 +536,9 @@ reported through Hammerhead `+$E0` (`l2_kb`).  Apple's note keeps the
 7600/8600/9600 on their predecessors' machine IDs, and the 1997 ROMs carry
 the 1995 Open Firmware image and 68k identification routine byte for byte
 ([tnt.md](../../../reference/machines/tnt/tnt.md) §6.5), so each board uses
-its predecessor's straps verbatim: the 7300 and 7600 the 7500's, the 8600
-the 8500's, the 9600 the 9500's (and the 9500's six-slot PCI table,
-`pm9500_pci_slots`, now exported).  BoxFlag reads `$3E` / `$3F` / `$3D`.
+its predecessor's straps verbatim (the `tnt.h` strap macros): the 7300 and
+7600 the 7500's, the 8600 the 8500's, the 9600 the 9500's (and the 9500's six-slot PCI table,
+`tnt_pci_slots_9500`, kept in `tnt.c` beside the other shared tables).  BoxFlag reads `$3E` / `$3F` / `$3D`.
 
 ROMs: the 1997 v1 image (`$960E4BE9`) serves all four; the later
 `$960FC647` serves the 8600/9600; the 7600 also accepts the 1995 images,
@@ -529,6 +554,7 @@ Deliberate simplifications:
   750; the read takes a program exception and POST hangs at its `$700`
   trap.  Under the 604 PVR the 1997 POST takes the 1995 path and everything
   above it boots.  Modelling the 604e means a 604e HID1 in the CPU core.
+  (`TNT_CPU_604` in `tnt.h` carries the note for the four profiles.)
 - **The 7300's machine ID is the System's.**  The note gives the 7300 "a
   new machine ID value: 109", and nothing in the ROM produces it (four
   product records, the 1995 ones).  The System does: System 7.6 and Mac OS
@@ -556,20 +582,31 @@ disk and floppy on the 7600 under the 1995 ROM).  Hardware reference:
 `pm7200.c` is the family's one non-Hammerhead board: the 7500's Bandit and
 Grand Central, but **Platinum** (`platinum.c`) at `$F8000000` as memory
 controller *and* video, the DACula RAMDAC in Grand Central's `+$1B000`
-cell, and the 53C94 as the only SCSI bus.  A board flag, not a family:
-`tnt_board_desc_t.has_platinum` (with `vram_kb`) switches the six areas
-below (some twenty tests of the flag across `tnt.c`, `bandit.c`,
-`grand_central.c` and `platinum.c`), and everything else — the island decode, DBDMA, Cuda, the interrupt fabric,
-NVRAM — is shared unchanged.
+cell, and the 53C94 as the only SCSI bus.  A board delta, not a family:
+the board names two chip-ops tables instead of setting a flag tnt.c tests
+— `tnt_board_desc_t.mc` (the memory controller at `$F8000000`:
+`tnt_platinum_mc`, where every other board takes the default
+`tnt_hammerhead_mc`) and `.video` (the on-board video with the RAMDAC at GC
+`+$1B000`: `tnt_platinum_video_ops` against `tnt_control_video`), resolved
+once into `tnt_state_t.mc` / `.video` — plus two plain board facts,
+`has_chaos` (clear) and `has_mesh` (clear: a Macintosh board without MESH
+has the 53C94 on `machine.scsi` and no `scsi2`), and `vram_kb`.  Everything
+else — the island decode, DBDMA, Cuda, the interrupt fabric, NVRAM — is
+shared unchanged.
 
-| Where | Hammerhead boards | `has_platinum` |
+| Where | Hammerhead boards | Catalyst board |
 |---|---|---|
-| `$F8000000` window (`tnt.c` `hh_read8`/`hh_write8`) | `hammerhead.c` | `tnt_plat_read`/`write` |
-| DRAM decode | `tnt_hh_remap` (26 bank pairs, interleave) | `tnt_plat_remap` (8 bank bases, linear) |
-| `$F0000000` / `$F1000000` (`bandit.c`, `tnt.c`) | the Chaos bridge and its window | no Chaos; `$F1000000` is Platinum's VRAM aperture |
-| GC `+$1B000` (`grand_central.c`) | RaDACal (`control.c`) | DACula (`platinum.c`) |
-| SCSI (`tnt.c`) | MESH on `machine.scsi`, 53C94 on `machine.scsi2` | 53C94 on `machine.scsi`; no `scsi2` |
-| Display | Control, a PCI card on the Chaos bus | `substrate.display` → `tnt_plat_display` |
+| `$F8000000` window (`tnt.c` `hh_read8`/`hh_write8` → `mc->read`/`write`) | `hammerhead.c` | `platinum.c` |
+| DRAM decode (`mc->map`, `mc->board_restored`) | `tnt_hh_remap` (26 bank pairs, interleave) | `tnt_plat_remap` (8 bank bases, linear) |
+| `$F0000000` / `$F1000000` (`bandit.c`, `tnt.c`; `has_chaos`) | the Chaos bridge and its window | no Chaos; `$F1000000` is Platinum's VRAM aperture |
+| GC `+$1B000` (`grand_central.c` → `video->dac_*`) | RaDACal (`control.c`) | DACula (`platinum.c`) |
+| SCSI (`tnt.c`; `has_mesh`) | MESH on `machine.scsi`, 53C94 on `machine.scsi2` | 53C94 on `machine.scsi`; no `scsi2` |
+| Display (`video->display`) | Control, a PCI card on the Chaos bus | `substrate.display` → `tnt_plat_display` |
+
+Hammerhead's register file is powered on (`tnt_hh_init`) on every board,
+the Catalyst board included: it is part of the `tnt` checkpoint part
+whatever the controller.  The Hammerhead hot path is one indirect call
+through the resolved table, with no per-access board test.
 
 The model's facts, each from the ROM's own behaviour
 ([platinum.md](../../../reference/machines/tnt/platinum.md)):
@@ -588,8 +625,8 @@ The model's facts, each from the ROM's own behaviour
   register 20 write and on restore).  Linearly mapped, the driver took it
   for 2 MB and set an unscannable 32 bpp mode.
 - **Pixel 0 is 16 bytes past the scan start**, and the 16 bytes before each
-  line are the DACula's hardware-cursor plane: `plat_compose` is Control's
-  cursor composite over Platinum's registers.
+  line are the DACula's hardware-cursor plane: `plat_compose` runs the
+  shared cursor composite (`tnt_fb.c`) over Platinum's registers.
 - **The retrace is a level acknowledged by reading register 35.**  An edge
   pulse booted 7.5.3 but left 7.6 and 8.1 on a flat grey screen: the ROM
   driver applies its gamma load in the retrace service, the NanoKernel
@@ -599,9 +636,10 @@ The model's facts, each from the ROM's own behaviour
   or four dots by mode; `plat_hunit` takes the largest that fits the pitch.
 
 Platinum's state (`tnt_platinum_t`) rides the `tnt.av` checkpoint part only
-on a Platinum board (`tnt_state_t.has_platinum`), so the Hammerhead boards'
-checkpoints are unchanged; the bank decode and the VRAM view are rebuilt
-from the restored registers.
+on a Platinum board (`tnt_video_ops_t.save`/`load`, after Control's block
+and the VRAM), so the Hammerhead boards' checkpoints are unchanged; the bank
+decode and the VRAM view are rebuilt from the restored registers
+(`video->restored`).
 
 Verification: `suite-pm7200` — System 7.5.3 (with a checkpoint round trip),
 System 7.6 and Mac OS 8.1 from the 53C94 disk to the Finder and About box,

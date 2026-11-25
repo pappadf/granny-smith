@@ -34,6 +34,8 @@
 -- and BoxFlag carries the model identity.
 
 local mac = dofile("../lib/mac.lua")
+local ppc = dofile("../lib/ppc_rows.lua")
+local boxflag, dispatch, check_about_81 = ppc.boxflag, ppc.dispatch, ppc.check_about_81
 
 local hd_81 = "../../data/apps/quake_8_1.img"
 local hd_76 = "../../data/systems/system_7_6_170mb_24ac.img"
@@ -46,24 +48,6 @@ local rom_95v2 = "../../data/roms/pm7500-pm8500-pm9500-v2-9630c68b-4db4a42fea3b5
 local id_97 = "960e4be9-949c2c56d07516b7"
 local id_97v2 = "960fc647-013bb98cd4ad16c4"
 local id_95v2 = "9630c68b-4db4a42fea3b53b3"
-
--- BoxFlag, read through the user-context window once the 68k emulator is
--- in user mode.
-local function boxflag()
-    while (machine.cpu.msr & 0x4000) == 0 do scheduler.run(1000) end
-    return machine.cpu.mmu.peek(0xCB3, 1)
-end
-
--- Mac OS 8.1's About This Computer, matched with the menu-bar clock, the
--- "Largest Unused Block" figure and the Mac OS row's figure and bar
--- excluded: they move with boot-time heap use (the check_about rationale).
-local function check_about_81(ref)
-    if mac.REGEN_MODE == "1" then
-        machine.screen.save(ref)
-    else
-        machine.screen.match(ref, 0, 440, 20, 640, 182, 90, 197, 330, 202, 250, 219, 530)
-    end
-end
 
 -- Boot `model` on `rom` from the Mac OS 8.1 disk at MESH id 0 to a stable
 -- Finder, then assert identity and open About This Computer.
@@ -131,28 +115,13 @@ end
 -- suite-pdm's pdm-floppy-boot; Disk Tools 2, which would open a Finder, is
 -- not in the fixture set).
 local function row_pm7600_76_fd()
-    machine.boot{model = "pm7600", ram = 32768, rom = rom_95v2}
-    machine.rtc.time = "2026-04-26T21:30:36"
-    machine.floppy.drive[0].insert(fd_76)
-    assert(machine.floppy.drive[0].present, "boot floppy not in FD0")
-    mac.run_until_match_ex("goldens/pm7600-7.6-floppy-boot.png", 0, 440, 20, 640, 7600000000, 250000000)
-    mac.check_ex("goldens/pm7600-7.6-floppy-boot.png", 0, 440, 20, 640)
+    ppc.boot_install1("pm7600", 32768, rom_95v2, "2026-04-26T21:30:36", fd_76, "goldens/pm7600-7.6-floppy-boot.png")
     assert(boxflag() == 0x3E, F"pm7600: BoxFlag ${boxflag()}, want $3E")
     mac.report_row("7.6", "control", "fd-boot swim3")
     mac.report_perf("suite-tnt-1997/pm7600-76-fd", scheduler.instr_count)
 end
 
 -- ---- row dispatch -----------------------------------------------------------
-
-local function dispatch(label, fn, media)
-    if mac.row_on(label) then
-        if mac.have_media(media) then
-            mac.row(label, fn)
-        else
-            echo(F"skip: ${label} (${media} not fetched)")
-        end
-    end
-end
 
 dispatch("pm7300-81-hd", row_pm7300_81_hd, hd_81)
 dispatch("pm7600-81-hd", row_pm7600_81_hd, hd_81)

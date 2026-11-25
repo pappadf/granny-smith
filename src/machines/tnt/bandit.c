@@ -444,7 +444,7 @@ void tnt_bandit_init(config_t *cfg, checkpoint_t *cp) {
 
     // The Catalyst board (7200) has no Chaos: its video is Platinum, on the
     // processor bus.
-    if (!tnt_board(cfg)->has_platinum)
+    if (tnt_board(cfg)->has_chaos)
         bridge_add(cfg, cp, TNT_CHAOS_BASE, true, TNT_PCI_BUS_VCI, "Chaos");
     tnt_bandit_t *bandit1 = bridge_add(cfg, cp, TNT_BANDIT1_BASE, false, TNT_PCI_BUS_1, "Bandit 1");
     tnt_bandit_t *bandit2 = NULL;
