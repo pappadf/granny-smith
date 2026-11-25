@@ -323,6 +323,49 @@ describe('MP4 writer', () => {
     expect(() => new Mp4Writer([video()], memorySink()).finish()).toThrow(/no samples/);
   });
 
+  it('finishes an hour at 60 fps (more samples than a call takes arguments)', () => {
+    const w = new Mp4Writer([video()], { write: () => {} });
+    const one = new Uint8Array(1);
+    const n = 60 * 60 * 60;
+    for (let i = 0; i < n; i++)
+      w.addSample(0, one, { pts: i * 20, duration: 20, key: i % 120 === 0 });
+    const r = w.finish();
+    const boxes = parseBoxes(r.head, 0, r.head.length - 8);
+    const stsz = findBox(boxes, 'stsz')!;
+    expect(new DataView(r.head.buffer).getUint32(stsz.body + 8)).toBe(n);
+  });
+
+  it('switches to co64 when the head pushes the last chunk past 4 GB', () => {
+    // Enough small audio samples that the sample tables pass 1 MB, then
+    // video to just under 4 GB - 1 MB of payload, then one more audio chunk:
+    // its offset, with the head in front, is past 2^32
+    const w = new Mp4Writer([video(), aac()], { write: () => {} });
+    const small = [new Uint8Array(1), new Uint8Array(2)];
+    for (let i = 0; i < 300_000; i++)
+      w.addSample(1, small[i & 1], { pts: 0, duration: 1024, key: true });
+    const big = new Uint8Array(64 << 20);
+    const target = 0xffffffff - 0x100000 - 10;
+    let k = 0;
+    while (w.payloadBytes < target) {
+      const left = target - w.payloadBytes;
+      const data = left >= big.length ? big : big.subarray(0, left);
+      w.addSample(0, data, { pts: k * 20, duration: 20, key: k === 0 });
+      k++;
+    }
+    const lastAt = w.payloadBytes;
+    w.addSample(1, small[0], { pts: 0, duration: 1024, key: true });
+    const r = w.finish();
+    expect(r.payload + 8).toBeLessThanOrEqual(0xffffffff); // a 32-bit mdat
+    const boxes = parseBoxes(r.head, 0, r.head.length - 8);
+    const audio = findBoxes(boxes, 'trak')[1];
+    const co64 = findBox([audio], 'co64');
+    expect(co64).toBeDefined();
+    const dv = new DataView(r.head.buffer);
+    const n = dv.getUint32(co64!.body + 4);
+    const at = co64!.body + 8 + (n - 1) * 8;
+    expect(dv.getUint32(at) * 0x100000000 + dv.getUint32(at + 4)).toBe(r.head.length + lastAt);
+  });
+
   it('times the three recording rates exactly in 1203 Hz', () => {
     expect(videoTiming(16_625_103)).toEqual({ timescale: 1203, duration: 20 });
     expect(videoTiming(33_250_206)).toEqual({ timescale: 1203, duration: 40 });

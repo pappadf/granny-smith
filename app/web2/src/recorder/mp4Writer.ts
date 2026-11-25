@@ -271,9 +271,15 @@ export class Mp4Writer {
           .u32(this.payload + 8)
           .str('mdat')
           .done();
-    // Offsets past 4 GB need co64; the moov's size does not depend on the base
-    const co64 = big || this.payload + 0x100000 > U32_MAX;
-    const sizeProbe = this.moov(0, co64).length;
+    // Offsets past 4 GB need co64: the last chunk's, counted from the file's
+    // start, so the head in front of it counts too (an hour's sample tables
+    // are megabytes).  The moov's size does not depend on the base.
+    let co64 = big;
+    let sizeProbe = this.moov(0, co64).length;
+    if (!co64 && ftyp.length + sizeProbe + mdatHead.length + this.payload > U32_MAX) {
+      co64 = true;
+      sizeProbe = this.moov(0, co64).length;
+    }
     const base = ftyp.length + sizeProbe + mdatHead.length;
     const moov = this.moov(base, co64);
     const head = new Uint8Array(ftyp.length + moov.length + mdatHead.length);
@@ -311,7 +317,9 @@ export class Mp4Writer {
     const raw: number[] = [];
     let min = 0;
     let reordered = false;
-    const first = Math.min(...s.pts);
+    // A loop, not Math.min(...pts): an hour at 60 fps is past the engine's argument limit
+    let first = Infinity;
+    for (const p of s.pts) if (p < first) first = p;
     for (let i = 0; i < s.pts.length; i++) {
       const c = s.pts[i] - first - dts;
       raw.push(c);
