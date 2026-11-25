@@ -139,8 +139,8 @@ static void mfm_buf_emit(void *ctx, uint8_t byte, bool is_mark) {
 }
 
 static void mfm_build_sector(floppy_t *floppy) {
-    int drv = (floppy->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0;
-    image_t *img = floppy->disk[drv];
+    int drv = ISM_DRIVE_INDEX(floppy);
+    image_t *img = drv < floppy->n_drives ? floppy->disk[drv] : NULL;
     if (!img) {
         floppy->mfm_buf_len = 0;
         return;
@@ -221,7 +221,7 @@ static void mfm_build_sector(floppy_t *floppy) {
 
 // Advances to the next MFM sector and builds its buffer
 static void mfm_advance_sector(floppy_t *floppy) {
-    int drv = (floppy->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0;
+    int drv = ISM_DRIVE_INDEX(floppy);
     int sectors_per_track = ism_mfm_spt(floppy, drv);
 
     floppy->mfm_cur_sector++;
@@ -398,8 +398,8 @@ static void ism_write_capture_flush(floppy_t *floppy) {
         return;
     }
 
-    int drv = (floppy->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0;
-    image_t *img = floppy->disk[drv];
+    int drv = ISM_DRIVE_INDEX(floppy);
+    image_t *img = drv < floppy->n_drives ? floppy->disk[drv] : NULL;
     if (!img) {
         LOG(2, "ISM write: no disk in drive %d", drv);
         return;
@@ -671,7 +671,7 @@ static uint8_t swim_ism_read(floppy_t *floppy, uint32_t offset, bool peek) {
 
     case 15: { // rHandshake: derive from current state
         // DRIVE2 selects drive 1; DRIVE1 (or neither) selects drive 0.
-        int drv = (floppy->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0;
+        int drv = ISM_DRIVE_INDEX(floppy);
 
         uint8_t hdshk = 0;
 
@@ -806,8 +806,8 @@ static void swim_handle_action_set(floppy_t *floppy, uint8_t old_mode) {
         uint8_t buf_side = floppy->mfm_cur_side;
         uint8_t buf_track = floppy->mfm_cur_track;
         ism_latch_head(floppy);
-        int drv_idx = (floppy->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0;
-        floppy->mfm_cur_track = (uint8_t)floppy->drives[drv_idx].track;
+        int drv_idx = ISM_DRIVE_INDEX(floppy);
+        floppy->mfm_cur_track = drv_idx < floppy->n_drives ? (uint8_t)floppy->drives[drv_idx].track : 0;
         // The read buffer describes the old position; drop it if that moved.
         if (floppy->mfm_cur_side != buf_side || floppy->mfm_cur_track != buf_track)
             floppy->mfm_buf_len = 0;
@@ -822,8 +822,8 @@ static void swim_handle_action_set(floppy_t *floppy, uint8_t old_mode) {
             ism_latch_head(floppy);
             LOG(3, "ISM: ACTION set, side=%d (sel=%d setup=0x%02X)", floppy->mfm_cur_side, floppy->sel,
                 floppy->ism_setup);
-            int drv_idx = (floppy->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0;
-            int cur_trk = floppy->drives[drv_idx].track;
+            int drv_idx = ISM_DRIVE_INDEX(floppy);
+            int cur_trk = drv_idx < floppy->n_drives ? floppy->drives[drv_idx].track : 0;
             // Invalidate buffer only when side or track changed
             if (floppy->mfm_buf_len > 0 && (floppy->mfm_cur_side != buf_side || cur_trk != buf_track)) {
                 floppy->mfm_buf_len = 0;

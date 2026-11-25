@@ -75,7 +75,7 @@ static void floppy_speed_settle_callback(void *source, uint64_t data) {
 
 // Returns pointer to the currently selected drive based on IWM SELECT line
 static floppy_drive_t *current_drive(floppy_t *floppy) {
-    return &floppy->drives[IWM_SELECT(floppy) ? 1 : 0];
+    return &floppy->drives[DRIVE_INDEX(floppy)];
 }
 
 // One read-head bit, for either side.
@@ -382,9 +382,11 @@ void floppy_disk_control(floppy_t *floppy) {
     // the step commands went to FD1 while /TKO was polled on FD0, so FD0's
     // recalibrate-to-track-0 never completed → endless seek → ioErr → the
     // external-floppy Finder bomb.
-    int drv = (floppy->type == FLOPPY_TYPE_SWIM && (floppy->ism_mode & ISM_MODE_ISM_IWM))
-                  ? ((floppy->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0)
-                  : DRIVE_INDEX(floppy);
+    int drv = (floppy->type == FLOPPY_TYPE_SWIM && (floppy->ism_mode & ISM_MODE_ISM_IWM)) ? ISM_DRIVE_INDEX(floppy)
+                                                                                          : DRIVE_INDEX(floppy);
+    // A select that reaches no drive commands nothing
+    if (drv >= floppy->n_drives)
+        return;
     floppy_drive_t *drive = &floppy->drives[drv];
 
     // Determine the correct motor callback based on controller type
@@ -477,7 +479,7 @@ static uint8_t iwm_reg_read(floppy_t *floppy, uint32_t offset, bool peek) {
     bool q6 = (lines & IWM_LINE_Q6) != 0, q7 = (lines & IWM_LINE_Q7) != 0;
     bool enable = (lines & IWM_LINE_ENABLE) != 0;
 
-    int drv = (lines & IWM_LINE_SELECT) ? 1 : 0;
+    int drv = floppy_enbl_drive(floppy, (lines & IWM_LINE_SELECT) ? 1 : 0);
 
     // Mode register is WRITE ONLY.  Guest-reachable -- any code can set Q6 and
     // Q7 and then read -- so it logs rather than asserting; GS_ASSERT pauses
@@ -526,7 +528,7 @@ static uint8_t iwm_reg_read(floppy_t *floppy, uint32_t offset, bool peek) {
             return 0xFF;
         }
 
-        if (floppy->disk[drv] == NULL) {
+        if (drv >= floppy->n_drives || floppy->disk[drv] == NULL) {
             LOG(6, "Drive %d: Reading data (no disk) = 0x00", drv);
             return 0x00;
         }
@@ -618,6 +620,8 @@ void floppy_iwm_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
     int drv = DRIVE_INDEX(floppy);
 
     if (IWM_ENABLE(floppy)) {
+        if (drv >= floppy->n_drives)
+            return; // the selected line reaches no drive
         // Write data to disk
         floppy_drive_t *drive = current_drive(floppy);
 
@@ -669,6 +673,14 @@ void floppy_iwm_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
 // Public API
 // ============================================================================
 
+// Steer the drive-enable lines (floppy.h)
+void floppy_set_enbl_route(floppy_t *floppy, int enbl1_drive, int enbl2_drive) {
+    if (!floppy)
+        return;
+    floppy->enbl_route[0] = (int8_t)(enbl1_drive < 0 ? FLOPPY_NO_DRIVE : enbl1_drive);
+    floppy->enbl_route[1] = (int8_t)(enbl2_drive < 0 ? FLOPPY_NO_DRIVE : enbl2_drive);
+}
+
 // The spindle speed the board's disk-speed PWM commands (0 = self-regulating)
 void floppy_set_pwm_rpm(floppy_t *floppy, double rpm) {
     if (floppy)
@@ -691,7 +703,7 @@ void floppy_set_sel_signal(floppy_t *floppy, bool sel) {
             LOG(6, "SEL signal: %s (no change)", sel ? "high" : "low");
         floppy->sel = sel;
         // Only update the current drive's data side when not actively reading/writing
-        if (!IWM_ENABLE(floppy))
+        if (!IWM_ENABLE(floppy) && DRIVE_INDEX(floppy) < floppy->n_drives)
             floppy_drive_latch_side(floppy, (unsigned)DRIVE_INDEX(floppy), sel);
     } else {
         LOG(6, "SEL signal: %s -> %s", floppy->sel ? "high" : "low", sel ? "high" : "low");
@@ -1031,6 +1043,8 @@ floppy_t *floppy_init(floppy_type_t type, memory_map_t *map, struct scheduler *s
     for (int d = 0; d < NUM_DRIVES; d++)
         floppy->drives[d].write_hdr_start = -1;
     floppy->type = type;
+    floppy->enbl_route[0] = 0; // /ENBL1 -> drive 0, /ENBL2 -> drive 1
+    floppy->enbl_route[1] = 1;
     static const char *const type_name[] = {"IWM", "SWIM", "SWIM3", "New Age"};
     LOG(2, "Floppy: Controller created (type=%s)", type_name[type >= 0 && type <= 3 ? type : 0]);
 

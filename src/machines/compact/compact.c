@@ -70,6 +70,14 @@ typedef struct compact_board {
     bool bbu;
     bool has_scsi; // an NCR 5380 at $580000 (Plus, SE, SE FDHD, Classic)
     floppy_type_t floppy_chip; // FLOPPY_TYPE_IWM, or FLOPPY_TYPE_SWIM (SE FDHD, Classic)
+    // BBU boards: the second drive position is the upper internal drive
+    // (vDriveSel steers /ENBL1 to it) and the external port is not cabled;
+    // false: it is the external drive on /ENBL2, and no upper drive is fitted.
+    bool second_internal;
+    // BBU boards: VIA PA4 is vDriveSel, steering /ENBL1 between the lower and
+    // the upper internal drive (SE, SE FDHD).  The Classic has one internal
+    // drive and gives PA4 no such job.
+    bool drive_select;
 } compact_board_t;
 
 // The model's board descriptor (hw_profile_t.board).
@@ -735,8 +743,14 @@ static void compact_bbu_via_output(config_t *cfg, uint8_t port, uint8_t output) 
             compact_use_video_buffer(cfg, (output >> 6) & 1);
         // PA5 vHeadSel: the drives' SEL line
         floppy_set_sel_signal(cfg->floppy, (output & 0x20) != 0);
-        // PA4 vDriveSel picks the lower or the upper internal drive for
-        // /ENBL1.  Not modelled: the one internal drive answers either way.
+        // PA4 vDriveSel picks the lower (1) or the upper (0) internal drive
+        // for /ENBL1 (Guide 2e, Table 4-3); an undriven pin counts as lower.
+        if (cfg->via1 && compact_board(cfg)->drive_select) {
+            bool upper = (via_port_direction(cfg->via1, 0) & 0x10) && !(output & 0x10);
+            const compact_board_t *board = compact_board(cfg);
+            int enbl1 = upper ? (board->second_internal ? 1 : -1) : 0;
+            floppy_set_enbl_route(cfg->floppy, enbl1, board->second_internal ? -1 : 1);
+        }
         // PA3 vSync (synchronous modem clock on SCC channel A): not modelled.
         // PA0-PA2: the sound volume.  The BBU has no alternate sound buffer
         // (PA3 is vSync here, not vSndPg2), so the main buffer always plays.
@@ -918,10 +932,15 @@ static const builtin_video_desc_t compact_builtin_video = {
 static const compact_board_t compact_board_pal = {.bbu = false, .has_scsi = false, .floppy_chip = FLOPPY_TYPE_IWM};
 // Plus: PALs, IWM, the 5380
 static const compact_board_t compact_board_plus = {.bbu = false, .has_scsi = true, .floppy_chip = FLOPPY_TYPE_IWM};
-// SE: BBU, IWM, the 5380
-static const compact_board_t compact_board_se = {.bbu = true, .has_scsi = true, .floppy_chip = FLOPPY_TYPE_IWM};
-// SE FDHD, Classic: BBU, SWIM, the 5380
-static const compact_board_t compact_board_se_swim = {.bbu = true, .has_scsi = true, .floppy_chip = FLOPPY_TYPE_SWIM};
+// SE: BBU, IWM, the 5380, two internal drives
+static const compact_board_t compact_board_se = {
+    .bbu = true, .has_scsi = true, .floppy_chip = FLOPPY_TYPE_IWM, .second_internal = true, .drive_select = true};
+// SE FDHD: BBU, SWIM, the 5380, two internal drives
+static const compact_board_t compact_board_sefdhd = {
+    .bbu = true, .has_scsi = true, .floppy_chip = FLOPPY_TYPE_SWIM, .second_internal = true, .drive_select = true};
+// Classic: BBU, SWIM, the 5380, one internal drive and the external port
+static const compact_board_t compact_board_classic = {
+    .bbu = true, .has_scsi = true, .floppy_chip = FLOPPY_TYPE_SWIM, .second_internal = false, .drive_select = false};
 
 // --- Shared configuration tables ---------------------------------------------
 
@@ -1071,10 +1090,18 @@ const hw_profile_t machine_mac512ke = {
 
 // --- Macintosh SE, SE FDHD and Classic --------------------------------------
 
-// The SE's internal 800K drive and the external port's.
+// The SE's two internal 800K drives, lower and upper (the upper one optional:
+// the other factory configuration put a hard disk there).
 static const floppy_slot_t se_floppy_slots[] = {
     {.label = "Internal floppy drive", .kind = FLOPPY_800K},
-    {.label = "External floppy drive", .kind = FLOPPY_800K, .optional = true, .default_none = true},
+    {.label = "Second internal floppy drive", .kind = FLOPPY_800K, .optional = true},
+    {0},
+};
+
+// The SE FDHD's: the same pair of SuperDrives.
+static const floppy_slot_t sefdhd_floppy_slots[] = {
+    {.label = "Internal floppy drive", .kind = FLOPPY_HD},
+    {.label = "Second internal floppy drive", .kind = FLOPPY_HD, .optional = true},
     {0},
 };
 
@@ -1111,7 +1138,7 @@ const hw_profile_t machine_sefdhd = {
     .ram_max = 0x400000,
     .rom_size = 0x040000, // 256 KB
     .ram_options = compact_ram_options_simm_kb,
-    .floppy_slots = mac_floppy_slots_ext,
+    .floppy_slots = sefdhd_floppy_slots,
     .storage = mac_storage_scsi_hd_bay,
     .default_storage = mac_default_storage_hd0_cd3,
     .cdrom_drive = &scsi_cd_drive_applecd_sc_plus,
@@ -1119,7 +1146,7 @@ const hw_profile_t machine_sefdhd = {
     .builtin_video = &compact_builtin_video,
     .pram = &pram_defaults_plus,
     .substrate = &compact_substrate,
-    .board = &compact_board_se_swim,
+    .board = &compact_board_sefdhd,
 };
 
 const hw_profile_t machine_classic = {
@@ -1141,5 +1168,5 @@ const hw_profile_t machine_classic = {
     .builtin_video = &compact_builtin_video,
     .pram = &pram_defaults_plus,
     .substrate = &compact_substrate,
-    .board = &compact_board_se_swim,
+    .board = &compact_board_classic,
 };

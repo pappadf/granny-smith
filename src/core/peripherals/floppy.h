@@ -69,6 +69,13 @@ void floppy_set_sel_signal(floppy_t *floppy, bool sel);
 // /TACH then follows it instead of the drive's track zone.  0 restores the
 // self-regulating drive.
 void floppy_set_pwm_rpm(floppy_t *floppy, double rpm);
+
+// Steer the controller's two drive-enable lines (/ENBL1, /ENBL2) to drive
+// positions: the drive index each reaches, or -1 for none.  The default is
+// /ENBL1 -> 0, /ENBL2 -> 1.  A board whose logic gates the enables with a
+// select line of its own (the SE's vDriveSel picks the lower or the upper
+// internal drive for /ENBL1) calls this whenever that line changes.
+void floppy_set_enbl_route(floppy_t *floppy, int enbl1_drive, int enbl2_drive);
 // The SWIM register file, addressed by INDEX (0-15).  Whoever owns the bus
 // window maps addresses onto the index -- the chip never sees an address.
 // Mirrors swim3_read / swim3_write.

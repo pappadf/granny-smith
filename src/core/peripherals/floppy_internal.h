@@ -66,8 +66,18 @@
 #define IWM_Q6(f)     (((f)->iwm_lines & IWM_LINE_Q6) != 0)
 #define IWM_Q7(f)     (((f)->iwm_lines & IWM_LINE_Q7) != 0)
 
-// Current drive index (0 or 1)
-#define DRIVE_INDEX(f) (IWM_SELECT(f) ? 1 : 0)
+// The drive a drive-enable line reaches: `line` 0 is /ENBL1, 1 is /ENBL2.
+// Normally drive 0 and drive 1, but a board may steer a line elsewhere or to
+// no drive at all (floppy_set_enbl_route): FLOPPY_NO_DRIVE, which every
+// caller treats as a drive select the machine does not cable.
+#define FLOPPY_NO_DRIVE NUM_DRIVES
+static inline int floppy_enbl_drive(const struct floppy *f, int line);
+
+// Current drive index (0 or 1, or FLOPPY_NO_DRIVE)
+#define DRIVE_INDEX(f) floppy_enbl_drive((f), IWM_SELECT(f) ? 1 : 0)
+// The drive the ISM mode register's DRIVE1/DRIVE2 enables select (DRIVE2
+// selects drive 1; DRIVE1, or neither, drive 0)
+#define ISM_DRIVE_INDEX(f) floppy_enbl_drive((f), ((f)->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0)
 
 // ============================================================================
 // IWM Mode Register Bits
@@ -292,7 +302,17 @@ struct floppy {
     // single-sided 400K drive); 0 = the drive regulates itself by track zone.
     // Re-sent by the board every VBL, so not checkpointed.
     double pwm_rpm;
+    // The drive each enable line reaches (floppy_enbl_drive): {0, 1} unless
+    // the board steers them.  Re-driven from the board's VIA on a restore,
+    // so not checkpointed.
+    int8_t enbl_route[2];
 };
+
+// See DRIVE_INDEX above.
+static inline int floppy_enbl_drive(const struct floppy *f, int line) {
+    int d = f->enbl_route[line & 1];
+    return (d < 0 || d >= NUM_DRIVES) ? FLOPPY_NO_DRIVE : d;
+}
 
 // Size of plain-data portion for checkpointing (excludes pointers at end)
 #define FLOPPY_CHECKPOINT_SIZE offsetof(floppy_t, disk)
