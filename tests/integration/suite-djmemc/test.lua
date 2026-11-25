@@ -31,10 +31,6 @@
 --
 -- BoxFlags (the ROM's): Centris 650 24, Quadra 800 29, Quadra 650 30,
 -- Centris 610 46, Quadra 610 47.  Both ROMs identify all five models.
---
--- golden-collision-ok: the Finder desktops of rows booting the same System
--- are alike across models; each row asserts its own BoxFlag and machine id,
--- and the About goldens, which name the model, differ.
 
 local mac = dofile("../lib/mac.lua")
 
