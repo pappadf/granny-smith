@@ -709,9 +709,11 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
     cfg->adb = adb_init(NULL, cfg->scheduler, cp);
     machine_part(cfg, cp, "adb", part_save_adb, cfg->adb);
 
-    // The behavioral Cuda on VIA1's shift register + PB3/PB4/PB5.
+    // The behavioral Cuda on VIA1's shift register + PB3/PB4/PB5.  The
+    // one-second tick carries the RTC (Mode3Clock): it is how the AV's
+    // System seeds its clock.
     machine_part_begin(cfg, cp, "cuda");
-    st->cuda = cuda_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp, /*mode3_clock=*/false);
+    st->cuda = cuda_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp, /*mode3_clock=*/true);
     if (!st->cuda) {
         LOG(0, "Error: out of memory constructing the Cuda");
         return -1;
