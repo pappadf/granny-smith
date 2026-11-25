@@ -60,6 +60,10 @@ static const char *const G3[] = {"pmg3dt", "pmg3mt", NULL};
 // (docs/reference/machines/lisa/lisa.md §16), each two 8 KB byte-slice chips.
 static const char *const LISA[] = {"lisa", NULL};
 static const char *const MACXL[] = {"macxl", NULL};
+// The V8-family 512 KB ROMs, one model each.
+static const char *const LCII[] = {"lcii", NULL};
+static const char *const CLASSICII[] = {"classicii", NULL};
+static const char *const COLORCLASSIC[] = {"colorclassic", NULL};
 
 // === The table ============================================================
 //
@@ -84,9 +88,9 @@ const rom_info_t rom_table[] = {
     {"MacII (800k v1) ROM", NONE, "97851db6", 256 * 1024, 0, 0},
     {"Mac SE ROM", NONE, "b2e362a8", 256 * 1024, 0, 0},
     {"Mac SE FDHD ROM", NONE, "b306e171", 256 * 1024, 0, 0},
-    {"Classic II ROM", NONE, "3193670e", 512 * 1024, 0, 0},
+    {"Classic II ROM", CLASSICII, "3193670e", 512 * 1024, 0, 0},
     {"Mac LC ROM", NONE, "350eacf0", 512 * 1024, 0, 0},
-    {"Mac LCII ROM", NONE, "35c28f5f", 512 * 1024, 0, 0},
+    {"Mac LCII ROM", LCII, "35c28f5f", 512 * 1024, 0, 0},
     {"Macintosh IIci ROM", IICI, "368cadfe", 512 * 1024, 0, 0},
     {"Macintosh IIsi ROM", IISI, "36b7fb6c", 512 * 1024, 0, 0},
     {"Macintosh IIfx ROM", IIFX, "4147dd77", 512 * 1024, 0, 0},
@@ -102,7 +106,7 @@ const rom_info_t rom_table[] = {
     {"Powerbook 160 & 165c & 180 & 180c ROM", NONE, "e33b2724", 1024 * 1024, 0, 0},
     {"LCIII (older) ROM", NONE, "ec904829", 1024 * 1024, 0, 0},
     {"Mac LCIII ROM", NONE, "ecbbc41c", 1024 * 1024, 0, 0},
-    {"Color Classic ROM", NONE, "ecd99dc0", 1024 * 1024, 0, 0},
+    {"Color Classic ROM", COLORCLASSIC, "ecd99dc0", 1024 * 1024, 0, 0},
     {"Powerbook 210,230,250 ROM", NONE, "ecfa989b", 1024 * 1024, 0, 0},
     {"Color Classic II & LC 550 & Performa 275,550,560 & Macintosh TV ROM", NONE, "ede66cbd", 1024 * 1024, 0, 0},
     {"Centris 610,650 ROM", NONE, "f1a6f343", 1024 * 1024, 0, 0},

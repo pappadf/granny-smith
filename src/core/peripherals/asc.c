@@ -885,6 +885,10 @@ void asc_set_mix(asc_t *asc, asc_mix_t mix) {
     asc->mix = mix;
 }
 
+void asc_set_version(asc_t *asc, uint8_t version) {
+    asc->version = version;
+}
+
 // ============================================================================
 // Object-model surface: `machine.sound` on ASC machines
 // ============================================================================

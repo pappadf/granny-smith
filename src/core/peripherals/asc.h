@@ -67,6 +67,12 @@ void asc_set_irq_handler(asc_t *asc, void (*fn)(void *ctx, bool active), void *c
 // machines call this unconditionally right after asc_init.
 void asc_set_mix(asc_t *asc, asc_mix_t mix);
 
+// Sets the chip's read-only VERSION byte ($800): $00 for the discrete ASC,
+// another value for an ASC block integrated into a decoder (the V8 family's
+// sound is "a subset of the Apple Sound Chip" and identifies as one).  Call
+// right after asc_init; a power-on clear keeps it.
+void asc_set_version(asc_t *asc, uint8_t version);
+
 // === Operations ===
 
 // Get the memory-mapped I/O interface for machine-level address decode
