@@ -418,6 +418,9 @@ static int v8_init(config_t *cfg, checkpoint_t *cp) {
     st->mmu = m68k_board_build_mmu(cfg, b->desc.rom_base, b->desc.rom_end);
     if (!st->mmu)
         return -1;
+    // The ROMs' MMU-enable sequence runs on from the instruction cache
+    // across PMOVE to TC (mmu.h, icache_hold_*)
+    st->mmu->icache_hold_enabled = true;
     // The decoder answers the whole low 16 MB (RAM, the 24-bit ROM and I/O
     // windows): nothing there times out.  A write the ROM's tables send to the
     // ROM through $A00000 completes and is dropped, as on the hardware.

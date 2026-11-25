@@ -920,12 +920,16 @@ static bool mmu_handle_fault_internal(mmu_state_t *mmu, uint32_t logical_addr, b
     // Align to emulator page boundary for SoA entry
     uint32_t emu_page = logical_addr & ~(uint32_t)MEM_PAGE_MASK;
 
-    // A read on the page the instruction cache held across a PMOVE to TC:
-    // served from the old translation, once (see mmu_icache_hold).
-    if (mmu->icache_hold && !write && emu_page == mmu->icache_hold_log) {
+    // The fetch of the instruction after a PMOVE to TC, which the instruction
+    // cache held: served from the old translation, once (see mmu_icache_hold).
+    // Any other miss -- a data access, a write -- drops the hold unused.
+    if (mmu->icache_hold) {
+        bool fetch = !write && logical_addr == mmu->icache_hold_pc;
         mmu->icache_hold = 0;
-        mmu_fill_soa_page(mmu, emu_page, mmu->icache_hold_phys, supervisor, !supervisor, false);
-        return true;
+        if (fetch) {
+            mmu_fill_soa_page(mmu, emu_page, mmu->icache_hold_phys, supervisor, !supervisor, false);
+            return true;
+        }
     }
 
     // Check transparent translation first
@@ -1068,9 +1072,10 @@ bool mmu_handle_fault(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool 
 }
 
 void mmu_icache_hold(mmu_state_t *mmu, uint32_t pc, bool supervisor) {
-    if (!mmu || mmu->m040)
+    if (!mmu || mmu->m040 || !mmu->icache_hold_enabled)
         return;
     uint32_t phys = mmu_translate_debug(mmu, pc, supervisor);
+    mmu->icache_hold_pc = pc;
     mmu->icache_hold_log = pc & ~(uint32_t)MEM_PAGE_MASK;
     mmu->icache_hold_phys = phys & ~(uint32_t)MEM_PAGE_MASK;
     mmu->icache_hold = phys_to_host(mmu, phys) != NULL;
