@@ -227,7 +227,7 @@ static void chaos_probe_write32(void *ctx, uint32_t offset, uint32_t value) {
 // Memory layout
 // ============================================================
 
-static void tnt_memory_layout(config_t *cfg, checkpoint_t *cp) {
+static int tnt_memory_layout(config_t *cfg, checkpoint_t *cp) {
     tnt_state_t *st = tnt_st(cfg);
 
     // RAM: wherever the Hammerhead's (Platinum's) bank base registers put
@@ -287,7 +287,8 @@ static void tnt_memory_layout(config_t *cfg, checkpoint_t *cp) {
     // On the Catalyst board $F1000000 is Platinum's frame-buffer aperture
     // instead, and the RAM decode is Platinum's.
     if (platinum) {
-        tnt_plat_init(cfg);
+        if (tnt_plat_init(cfg) != 0)
+            return -1;
         // The retrace clock starts on a fresh machine only: on a restore its
         // pending event comes back with the scheduler's queue
         // (scheduler_restore_events), and the reset arming it here too ran
@@ -299,6 +300,7 @@ static void tnt_memory_layout(config_t *cfg, checkpoint_t *cp) {
         memory_map_add(cfg->memory_map, TNT_CHAOS_BASE + 0x01000000u, 0x01000000u, "Chaos window hi",
                        &st->chaos_probe_interface, cfg);
     }
+    return 0;
 }
 
 // ============================================================
@@ -767,7 +769,8 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
         tnt_gbus_init(cfg);
         tnt_lcd_init(cfg);
     }
-    tnt_memory_layout(cfg, cp);
+    if (tnt_memory_layout(cfg, cp) != 0)
+        return -1;
 
     // The PCI slot walk: seats every device the machine's slot table names
     // — Control (the BUILTIN video entry, whose factory allocates its VRAM
