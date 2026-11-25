@@ -117,6 +117,40 @@ describe.skipIf(!!missing)('recording decoder module', () => {
     }
   });
 
+  // The page reads a block as pcm_frames x the track's channels, so a track
+  // whose Channels the frames contradict must fail, not read past the block
+  it('refuses audio whose frames contradict the track’s channel count', () => {
+    const whole = Buffer.from(readFileSync(fx.mkv));
+    // Channels (ID 9F, one-byte size, value 1): the only one in the header
+    const at = whole.indexOf(Buffer.from([0x9f, 0x81, 0x01]));
+    expect(at).toBeGreaterThan(0);
+    const stereo = join(fx.dir, 'stereo-track.mkv');
+    whole[at + 2] = 2;
+    writeFileSync(stereo, whole);
+    const rec = Recording.open(m, fileSource(stereo));
+    try {
+      expect(rec.info.audioChannels).toBe(2);
+      expect(() => {
+        for (let r = rec.next(); r !== NEXT_END; r = rec.next());
+      }).toThrow(/a frame has 1 channels, the track 2/);
+    } finally {
+      rec.close();
+    }
+    // More channels than a FLAC frame here has: the audio is left out
+    const many = join(fx.dir, 'five-track.mkv');
+    whole[at + 2] = 5;
+    writeFileSync(many, whole);
+    const rec5 = Recording.open(m, fileSource(many));
+    try {
+      expect(rec5.info.audioChannels).toBe(0);
+      let audio = 0;
+      for (let r = rec5.next(); r !== NEXT_END; r = rec5.next()) if (r === NEXT_AUDIO) audio++;
+      expect(audio).toBe(0);
+    } finally {
+      rec5.close();
+    }
+  });
+
   it('refuses a file that is not a recording, saying why', () => {
     const junk = join(fx.dir, 'junk.mkv');
     writeFileSync(junk, Buffer.from('not a matroska file at all'));

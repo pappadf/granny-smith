@@ -174,8 +174,9 @@ static bool open_reader(recdec_t *d) {
         snprintf(last_error, sizeof last_error, "the video is %s, not ZMBV", d->video->codec_id);
         return false;
     }
-    // An audio track in another codec is left out rather than refused
-    if (d->audio && strcmp(d->audio->codec_id, "A_FLAC") != 0)
+    // An audio track in another codec, or with channels FLAC frames here
+    // never have, is left out rather than refused
+    if (d->audio && (strcmp(d->audio->codec_id, "A_FLAC") != 0 || d->audio->channels > 2))
         d->audio = NULL;
     return true;
 }
@@ -310,6 +311,13 @@ EMSCRIPTEN_KEEPALIVE int recdec_next(recdec_t *d) {
             int64_t n = codec_flac_dec_frame(d->fd, p.data, p.len, d->pcm, CODEC_FLAC_BLOCK, NULL);
             if (n < 0) {
                 snprintf(d->message, sizeof d->message, "audio: %s", codec_flac_dec_message(d->fd));
+                return -1;
+            }
+            // The page reads pcm_frames x the track's channels: a frame with
+            // other than that many would be read past its end
+            if (codec_flac_dec_channels(d->fd) != recdec_audio_channels(d)) {
+                snprintf(d->message, sizeof d->message, "audio: a frame has %d channels, the track %d",
+                         codec_flac_dec_channels(d->fd), recdec_audio_channels(d));
                 return -1;
             }
             d->pcm_frames = (int)n;

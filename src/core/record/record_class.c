@@ -493,6 +493,12 @@ static const char *decode_audio(const char *path, int16_t **out, size_t *frames,
             why = err;
             break;
         }
+        // The frame's own channel count: a track that says otherwise is corrupt
+        if (codec_flac_dec_channels(fd) != ch) {
+            snprintf(err, cap, "audio: a frame has %d channels, the track %d", codec_flac_dec_channels(fd), ch);
+            why = err;
+            break;
+        }
         size_t add = (size_t)got * (size_t)ch;
         if (n + add > cap_s) {
             size_t nc = cap_s ? cap_s * 2 : 1u << 20;
