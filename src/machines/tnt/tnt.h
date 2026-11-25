@@ -205,6 +205,19 @@ typedef struct tnt_hammerhead {
     uint32_t bank_host_off[TNT_HH_BANKS];
 } tnt_hammerhead_t;
 
+// === The on-board RAMDAC's palette (tnt_fb.c) ===============================
+// Control's RaDACal and Platinum's DACula are one design: a 256-entry CLUT
+// behind an R/G/B-phased data port, and an eight-entry hardware-cursor
+// palette behind a port of its own whose phase runs over the shared address
+// register.  Byte-wide throughout (alignment 1), so embedding it where the
+// three fields used to sit leaves both chips' checkpointed layouts as they
+// were.
+typedef struct tnt_dac_pal {
+    uint8_t clut[256][3];
+    uint8_t crsr[8][3];
+    ramdac_seq_t crsr_seq;
+} tnt_dac_pal_t;
+
 // === Platinum state (platinum.c) ============================================
 // 128 x 32-bit registers on $10 centres, big-endian on the processor bus
 // like Hammerhead's.  The DRAM bank registers and the display timing set
@@ -220,11 +233,9 @@ typedef struct tnt_platinum {
     // ("d2") register file and the palette.
     ramdac_seq_t dac;
     uint8_t dac_reg[256];
-    uint8_t clut[256][3];
-    // The hardware cursor's eight-entry palette (the d1 port) and its
-    // R/G/B phase over the shared address register.
-    uint8_t crsr[8][3];
-    ramdac_seq_t crsr_seq;
+    // The CLUT, and the hardware cursor's eight-entry palette (the d1 port)
+    // with its R/G/B phase over the shared address register.
+    tnt_dac_pal_t pal;
     // What each bank holds (bytes; 0 = no DRAM) and where its storage
     // starts in host RAM.  Construction data, rebuilt from the profile.
     uint32_t bank_size[TNT_PLAT_BANKS];
@@ -329,9 +340,7 @@ typedef struct tnt_control {
     uint8_t rad_bank; // misc $21: VRAM bank select
     uint8_t rad_misc[2]; // misc $10/$11 (cursor, cleared on mode set)
     uint8_t rad_reg[256]; // every other misc index: latched, read back
-    uint8_t clut[256][3];
-    uint8_t crsr[8][3]; // cursor palette (+$10 port)
-    ramdac_seq_t crsr_seq; // the cursor port's phase (the index is rad's)
+    tnt_dac_pal_t pal; // the CLUT and the cursor palette (+$10 port; its phase, the index is rad's)
     // The pixel-clock synthesiser (Cuda I2C device $50, subaddresses 1..3):
     // divisor p0, multiplier p1, post-scale exponent p2.  Zero = unprogrammed.
     uint8_t clk[3];
@@ -381,9 +390,9 @@ typedef struct tnt_state {
     // derived views are rebuilt from the registers on restore.
     tnt_control_t control;
     // machine.video -- the framebuffer node every display source exposes
-    // (display_class.h).
-    display_fb_node_t control_fb_node;
-    struct object *control_video_node;
+    // (display_class.h), for whichever chip drives the on-board video.
+    display_fb_node_t fb_node;
+    struct object *video_node;
     pci_device_t *control_dev; // Control as a device on the Chaos bus (owned
                                // by the bus: its factory allocated it)
     mesh_t *mesh; // internal fast SCSI (core/peripherals/scsi_mesh.c)
@@ -605,6 +614,51 @@ struct display *tnt_control_display(config_t *cfg);
 // Guest physical address of the first byte Control scans (its VRAM BAR), 0 while blanked.
 uint64_t tnt_control_fb_base(config_t *cfg);
 void tnt_control_host_vbl(config_t *cfg);
+
+// === tnt_fb.c ===============================================================
+// The half of the on-board video Control and Platinum share (tnt_fb.c).
+
+// The RAMDAC control register's hardware-cursor enable (RaDACal misc $20,
+// DACula index $20; bits 3:2 there are the depth).
+#define TNT_DAC_CURSOR_ON 0x02u
+// The retrace period while the raster is unprogrammed, and the band outside
+// which a computed period is a mode line caught half-written.
+#define TNT_VBL_FALLBACK_NS (1000000000ull / 60u)
+#define TNT_VBL_MIN_NS      4000000ull // 250 Hz
+#define TNT_VBL_MAX_NS      40000000ull // 25 Hz
+
+// The address (+$00), cursor-palette (+$10) and CLUT (+$30) ports; the
+// indexed register port (+$20) is the chip's own.  A read steps the data
+// ports' phase unless `peek`; a write returns true when it completed a CLUT
+// entry, storing its index in *clut_idx.
+uint8_t tnt_dac_port_read(ramdac_seq_t *addr, tnt_dac_pal_t *pal, uint32_t offset, bool peek);
+bool tnt_dac_port_write(ramdac_seq_t *addr, tnt_dac_pal_t *pal, uint32_t offset, uint8_t value, uint8_t *clut_idx);
+// The depth the control register's bits 3:2 select (8/16/32 bpp).
+uint32_t tnt_fb_bpp(uint8_t ctrl);
+pixel_format_t tnt_fb_format(uint8_t ctrl);
+// Point the display descriptor at the CLUT (8 bpp) or the per-channel DAC
+// table (direct colour) for the depth `ctrl` selects.
+void tnt_fb_refresh_clut(tnt_state_t *st, const tnt_dac_pal_t *pal, uint8_t ctrl);
+// Composite the hardware cursor (when `ctrl` enables it) over the scan that
+// starts `base` bytes into VRAM, of which `vram_size` bytes are fitted;
+// display.bits moves to the composite when it is drawn.  `cursor_x` is the
+// raw X register pair.
+void tnt_fb_compose(tnt_state_t *st, const tnt_dac_pal_t *pal, uint8_t ctrl, uint32_t cursor_x, uint64_t base,
+                    uint32_t vram_size);
+// The retrace period of an htotal x vtotal raster at `dot_hz` (nonzero), or
+// the nominal fallback when that falls outside the plausible band.
+uint64_t tnt_fb_period_ns(uint64_t htotal, uint64_t vtotal, uint64_t dot_hz);
+// The scan line (0..vtotal-1) the CPU clock puts a `frame_ns` raster at;
+// false while the machine has no clock.
+bool tnt_fb_scan_line(config_t *cfg, uint64_t frame_ns, uint32_t vtotal, uint32_t *line);
+// VRAM, the blank stub and the composite buffer (TNT_VRAM_SIZE each); -1,
+// logged and with nothing held, when out of memory.
+int tnt_fb_alloc(config_t *cfg, const char *chip);
+// machine.video over the chip's descriptor and scan-base reporters.
+void tnt_fb_attach_node(config_t *cfg, display_t *(*resolve)(void *owner), uint64_t (*base)(void *owner),
+                        const char *label);
+// Detach machine.video and free the three buffers.
+void tnt_fb_free(config_t *cfg);
 
 // === grand_central.c ========================================================
 

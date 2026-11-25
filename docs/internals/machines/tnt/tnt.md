@@ -278,6 +278,19 @@ The board model is the chipset skeleton plus the DMA architecture:
   mode-set).  Exercised end-to-end by the boot to the gray desktop: the ROM's own `mtej`
   control driver mode-sets the chip and QuickDraw paints the gray
   desktop into the BAR-assigned VRAM aperture (`ScrnBase $90800210`).
+- **The shared video half** (`tnt_fb.c`) — what Control and Platinum
+  have in common, because the RaDACal and the DACula are one RAMDAC
+  design: the address / cursor-palette / CLUT ports at GC `+$1B000`
+  (`tnt_dac_port_read`/`_write`; each chip decodes its own indexed
+  register port at `+$20`), the palette they serve (`tnt_dac_pal_t`, the
+  CLUT plus the eight-entry cursor palette, embedded byte-for-byte where
+  both chips' state always carried those fields, so neither chip's
+  `tnt.av` checkpoint layout moved), the depth code and the CLUT / DAC
+  table it selects, the hardware-cursor composite, the retrace-period
+  arithmetic and scan-line position, and the three host buffers plus the
+  `machine.video` node (`tnt_state_t.fb_node` / `video_node`).  Each chip
+  keeps its CRTC, its clock, its register file, its VRAM decode and its
+  VBL wiring.
 
 ### The interrupt fabric
 
@@ -588,8 +601,8 @@ The model's facts, each from the ROM's own behaviour
   register 20 write and on restore).  Linearly mapped, the driver took it
   for 2 MB and set an unscannable 32 bpp mode.
 - **Pixel 0 is 16 bytes past the scan start**, and the 16 bytes before each
-  line are the DACula's hardware-cursor plane: `plat_compose` is Control's
-  cursor composite over Platinum's registers.
+  line are the DACula's hardware-cursor plane: `plat_compose` runs the
+  shared cursor composite (`tnt_fb.c`) over Platinum's registers.
 - **The retrace is a level acknowledged by reading register 35.**  An edge
   pulse booted 7.5.3 but left 7.6 and 8.1 on a flat grey screen: the ROM
   driver applies its gamma load in the retrace service, the NanoKernel
