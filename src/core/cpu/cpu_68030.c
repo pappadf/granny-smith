@@ -206,6 +206,10 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                 // reset loop).
                 uint32_t fd = x.fd;
                 if (mmu) {
+                    // CACR bit 0 (EI): the instruction cache keeps serving the
+                    // code around the PC across the switch (mmu.h).
+                    if ((cpu->cacr & 1u) && !mmu->enabled && TC_ENABLE(val))
+                        mmu_icache_hold(mmu, cpu->pc, cpu->supervisor);
                     mmu->tc = val;
                     mmu->enabled = TC_ENABLE(val) != 0;
                     // Validate TC configuration: IS+PS+TIA+TIB+TIC+TID must equal 32

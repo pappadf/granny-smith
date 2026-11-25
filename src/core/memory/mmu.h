@@ -183,6 +183,21 @@ typedef struct mmu_state {
     // when the CPU is currently in supervisor mode.  0 if no user-mode entry
     // has been observed yet.
     uint64_t last_user_crp;
+
+    // The instruction cache across a translation switch.  The 68030's
+    // on-chip instruction cache is logically addressed, so code that warms it
+    // and then turns translation on keeps executing the cached lines even
+    // where the new tables map nothing (the V8-family ROMs run their
+    // MMU-enable sequence twice from the 24-bit ROM window, then PMOVE TC and
+    // JMP to the 32-bit ROM space).  There is no instruction-cache model, so
+    // PMOVE to TC with the cache enabled holds the page the PC is in under its
+    // OLD translation: the next miss on that logical page refills from it
+    // (read-only) once, and the next ATC invalidation drops the hold.  Page
+    // granular, where the cache is 16-byte lines: an approximation that only
+    // ever serves bytes the instruction stream was already reading.
+    uint32_t icache_hold_log; // logical page of the held code
+    uint32_t icache_hold_phys; // its physical page under the old translation
+    uint8_t icache_hold; // 0 none, 1 armed, 2 armed past the PMOVE's own flush
 } mmu_state_t;
 
 // === Lifecycle ===
@@ -195,6 +210,10 @@ mmu_state_t *mmu_init(uint8_t *physical_ram, uint32_t ram_size, uint32_t ram_siz
 
 // Destroy MMU state
 void mmu_delete(mmu_state_t *mmu);
+
+// Arm the instruction-cache hold for the page holding `pc`, translated with
+// the CURRENT state (call before the new TC takes effect).  See icache_hold_*.
+void mmu_icache_hold(mmu_state_t *mmu, uint32_t pc, bool supervisor);
 
 // === TLB Management ===
 

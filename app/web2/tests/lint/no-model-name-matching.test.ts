@@ -103,6 +103,9 @@ const MODEL_IDS = [
   'ans700',
   'pmg3dt',
   'pmg3mt',
+  'lcii',
+  'classicii',
+  'colorclassic',
 ];
 const CARD_IDS = [
   'mdc_8_24',
