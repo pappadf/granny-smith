@@ -115,6 +115,21 @@ static void sonora_vctl_write(config_t *cfg, uint32_t win_off, uint32_t addr, ui
     }
 }
 
+// $50F0A000: where the decoder selects a SONIC Ethernet controller.  None of
+// the modelled boards fits one, so nothing acknowledges and the cycle times
+// out -- which is how the ROM's Ethernet probe (run on the 33 MHz Vail
+// board, whose ProductInfo marks the SONIC valid) learns it is absent.
+static uint8_t sonora_enet_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)cfg, (void)win_off;
+    memory_signal_bus_error(addr, false);
+    return 0xFF;
+}
+
+static void sonora_enet_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)cfg, (void)win_off, (void)value;
+    memory_signal_bus_error(addr, true);
+}
+
 BOARD_IO_ROW_READ(sonora_ariel_row_read, v8_ariel_read)
 BOARD_IO_ROW_READ(sonora_ariel_row_peek, v8_ariel_peek)
 BOARD_IO_ROW_WRITE(sonora_ariel_row_write, v8_ariel_write)
@@ -130,6 +145,8 @@ const board_io_range_t sonora_io_ranges_tbl[] = {
     {0x00000, 0x02000, BOARD_DEV_VIA1, SONORA_VIA_IO_PENALTY, BOARD_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},
     {0x04000, 0x06000, BOARD_DEV_SCC, SONORA_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
     {0x06000, 0x08000, BOARD_DEV_SCSI, SONORA_DEV_IO_PENALTY, BOARD_IO_FIXED, 0, 0x201, NULL, NULL, "scsi_drq"},
+    {0x0A000, 0x0C000, BOARD_DEV_RBV, SONORA_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, sonora_enet_read, sonora_enet_write,
+     "sonic"},
     {0x10000, 0x12000, BOARD_DEV_SCSI, SONORA_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scsi_reg"},
     {0x12000, 0x14000, BOARD_DEV_SCSI, SONORA_DEV_IO_PENALTY, BOARD_IO_FIXED, 0, 0x201, NULL, NULL, "scsi_blind"},
     {0x14000, 0x16000, BOARD_DEV_ASC, SONORA_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "asc"},
