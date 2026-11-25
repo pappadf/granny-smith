@@ -40,7 +40,8 @@
 // `0000E000 "D2" "E2" "F2"`.  An earlier model declared the second bank
 // D1/E1/F1, having judged the strings "not decidable from the token
 // stream"; the ROM's own property decides them.
-static const pci_slot_decl_t pm9500_pci_slots[] = {
+// Shared with the 9600 (pm9600.c), the same six-slot board.
+const pci_slot_decl_t pm9500_pci_slots[] = {
     // The factory card: the Apple Accelerated PCI Graphics Card (the Mach64
     // GX) -- when its expansion ROM is offered; without it the default
     // configuration has no card and Control stands in (slot 7).

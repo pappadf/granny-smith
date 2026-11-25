@@ -420,6 +420,9 @@ extern const pci_slot_decl_t ans_pci_slots[];
 extern const pci_slot_decl_t tnt_pci_slots_1bandit[];
 extern const uint32_t tnt_ram_options_kb[];
 extern const uint32_t ans_ram_options_kb[];
+// The six-slot two-Bandit topology of the 9500, which the 9600 shares
+// (pm9500.c).
+extern const pci_slot_decl_t pm9500_pci_slots[];
 
 // The Network Servers' shared front backplane on fast/wide 0 (tnt.c), as
 // one storage_bus_decl_t initialiser; the second controller is the same
