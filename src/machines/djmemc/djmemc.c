@@ -2,11 +2,12 @@
 // Copyright (c) pappadf
 
 // djmemc.c
-// The djMEMC family substrate (Centris 610/650, Quadra 610/650/800) -- see
-// djmemc.h.  Implements the family lifecycle and the pieces of this
-// generation: the djMEMC bank decode and register file, the ROM-at-zero
-// overlay, the CPU-ID register, the Kiwi NuBus controller's register file,
-// and the I/O island decode table run on the shared board_io engine.
+// The djMEMC family substrate (Centris 610/650, Quadra 610/650/800, and the
+// MEMCjr boards LC 475/575, Quadra 605) -- see djmemc.h.  Implements the
+// family lifecycle and the pieces of this generation: the djMEMC and MEMCjr
+// bank decodes and register files, the ROM-at-zero overlay, the CPU-ID
+// register, the Kiwi NuBus controller's register file, and the I/O island
+// decode tables run on the shared board_io engine.
 
 #include "djmemc.h"
 
@@ -23,6 +24,7 @@
 #include "checkpoint.h"
 #include "cpu.h"
 #include "cpu_internal.h" // cpu->mmu (the 040 walker the bus resolver serves)
+#include "cuda.h"
 #include "dafb.h"
 #include "dma_mem.h"
 #include "floppy.h"
@@ -49,9 +51,33 @@ static inline const djmemc_board_desc_t *djmemc_board(config_t *cfg) {
     return (const djmemc_board_desc_t *)cfg->machine->board;
 }
 
+// True on the MEMCjr boards.
+static inline bool djmemc_is_jr(config_t *cfg) {
+    return djmemc_board(cfg)->chip == DJMEMC_CHIP_MEMCJR;
+}
+
 // ============================================================
 // RAM banks
 // ============================================================
+
+// MEMCjr: the soldered bank 0, then the one SIMM socket's sides in banks 1
+// and 2.  The 1, 4 and 16 MB SIMMs are single-sided, the 2, 8 and 32 MB
+// ones two sides of half that.
+static bool memcjr_ram_banks(const djmemc_board_desc_t *desc, uint32_t ram, uint32_t size[DJMEMC_MAX_BANKS]) {
+    if (ram < desc->ram_onboard)
+        return false;
+    size[0] = desc->ram_onboard;
+    uint32_t simm = ram - desc->ram_onboard;
+    if (!simm)
+        return true;
+    if (!desc->simm_slots || simm > 0x02000000u || (simm & (simm - 1)))
+        return false;
+    // 1, 4, 16 MB: one side (an even power of two in MB); 2, 8, 32 MB: two.
+    bool one_side = ((__builtin_ctz(simm) - 20) & 1) == 0;
+    size[1] = one_side ? simm : simm / 2;
+    size[2] = one_side ? 0 : simm / 2;
+    return true;
+}
 
 bool djmemc_ram_banks(const djmemc_board_desc_t *desc, uint32_t ram, uint32_t size[DJMEMC_MAX_BANKS]) {
     // A SIMM, largest first: its bytes and how many 4/16 MB banks it fills.
@@ -65,6 +91,8 @@ bool djmemc_ram_banks(const djmemc_board_desc_t *desc, uint32_t ram, uint32_t si
     };
     for (int i = 0; i < DJMEMC_MAX_BANKS; i++)
         size[i] = 0;
+    if (desc->chip == DJMEMC_CHIP_MEMCJR)
+        return memcjr_ram_banks(desc, ram, size);
     if (ram < desc->ram_onboard)
         return false;
     // The soldered RAM is banks 0 and 1, 4 MB each.
@@ -91,7 +119,8 @@ bool djmemc_ram_banks(const djmemc_board_desc_t *desc, uint32_t ram, uint32_t si
 static void djmemc_bank_layout(config_t *cfg) {
     djmemc_state_t *st = djmemc_st(cfg);
     if (!djmemc_ram_banks(djmemc_board(cfg), cfg->ram_size, st->bank_size)) {
-        LOG(1, "djMEMC: %u KB is no SIMM population of this board; one bank", cfg->ram_size >> 10);
+        LOG(1, "%s: %u KB is no SIMM population of this board; one bank", djmemc_is_jr(cfg) ? "MEMCjr" : "djMEMC",
+            cfg->ram_size >> 10);
         for (int b = 0; b < DJMEMC_MAX_BANKS; b++)
             st->bank_size[b] = 0;
         st->bank_size[0] = cfg->ram_size;
@@ -105,9 +134,19 @@ static void djmemc_bank_layout(config_t *cfg) {
     }
 }
 
-// The start address bank `b`'s configuration register places it at.
-static uint32_t djmemc_bank_start(const djmemc_state_t *st, int b) {
-    return (st->memc_regs[(DJMEMC_REG_BANK0 >> 2) + b] & DJMEMC_BANK_START_MSK) * DJMEMC_BANK_UNIT;
+// The start address bank `b`'s configuration register places it at: the
+// djMEMC's 8-bit 4 MB field, or the MEMCjr's six register bits under the
+// four the latch gave that bank, in 1 MB units.
+static uint32_t djmemc_bank_start(const djmemc_board_desc_t *desc, const djmemc_state_t *st, int b) {
+    uint32_t reg = st->memc_regs[(DJMEMC_REG_BANK0 >> 2) + b];
+    if (desc->chip == DJMEMC_CHIP_MEMCJR) {
+        if (b >= MEMCJR_MAX_BANKS)
+            return 0;
+        uint32_t mb =
+            ((uint32_t)(st->jr_bank_hi[b] & MEMCJR_LATCH_HI_MSK) << MEMCJR_LATCH_HI_SHIFT) | (reg & MEMCJR_BANK_LO_MSK);
+        return mb * MEMCJR_BANK_UNIT;
+    }
+    return (reg & DJMEMC_BANK_START_MSK) * DJMEMC_BANK_UNIT;
 }
 
 // The physical span the bank registers can place RAM in: ten 64 MB windows.
@@ -123,6 +162,7 @@ static uint32_t djmemc_bank_start(const djmemc_state_t *st, int b) {
 // then stitches them contiguous) must not leave its old image behind.
 static void djmemc_map_ram(config_t *cfg) {
     djmemc_state_t *st = djmemc_st(cfg);
+    const djmemc_board_desc_t *desc = djmemc_board(cfg);
     uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
     uint32_t span_pages = DJMEMC_RAM_SPAN >> MEM_PAGE_SHIFT;
     for (uint32_t p = 0; p < span_pages && p < g_page_count; p++)
@@ -132,10 +172,10 @@ static void djmemc_map_ram(config_t *cfg) {
         uint32_t size = st->bank_size[b];
         if (!size)
             continue;
-        uint32_t start = djmemc_bank_start(st, b);
+        uint32_t start = djmemc_bank_start(desc, st, b);
         uint32_t end = start + DJMEMC_BANK_WINDOW;
         for (int o = 0; o < DJMEMC_MAX_BANKS; o++) {
-            uint32_t os = djmemc_bank_start(st, o);
+            uint32_t os = djmemc_bank_start(desc, st, o);
             if (o != b && st->bank_size[o] && os > start && os < end)
                 end = os;
         }
@@ -153,11 +193,31 @@ static void djmemc_map_ram(config_t *cfg) {
 // The power-up bank placement: bank n on the n-th 64 MB boundary, the same
 // split the ROM programs before it sizes.  So whatever the ROM touches
 // before sizing finds bank 0 at zero.
-static void djmemc_reset_regs(djmemc_state_t *st) {
+static void djmemc_reset_regs(const djmemc_board_desc_t *desc, djmemc_state_t *st) {
     memset(st->memc_regs, 0, sizeof st->memc_regs);
-    for (int b = 0; b < DJMEMC_MAX_BANKS; b++)
-        st->memc_regs[(DJMEMC_REG_BANK0 >> 2) + b] = 0x100u + (uint32_t)b * 0x10u;
+    memset(st->jr_bank_hi, 0, sizeof st->jr_bank_hi);
+    if (desc->chip == DJMEMC_CHIP_MEMCJR) {
+        // 64 MB is 64 units: the register's six bits clear, the latch's n.
+        for (int b = 0; b < MEMCJR_MAX_BANKS; b++)
+            st->jr_bank_hi[b] = (uint8_t)b;
+        st->memc_regs[MEMCJR_REG_LATCH >> 2] = 0xFFu;
+    } else {
+        for (int b = 0; b < DJMEMC_MAX_BANKS; b++)
+            st->memc_regs[(DJMEMC_REG_BANK0 >> 2) + b] = 0x100u + (uint32_t)b * 0x10u;
+    }
     st->memc_regs[DJMEMC_REG_MEMTOP >> 2] = 0xFFu;
+}
+
+// MEMCjr: a register read loads the latch with the register's bits 6-11.
+static void memcjr_latch_load(djmemc_state_t *st, uint32_t value) {
+    st->memc_regs[MEMCJR_REG_LATCH >> 2] = (value >> MEMCJR_LATCH_HI_SHIFT) & MEMCJR_LATCH_MSK;
+}
+
+// The register a window offset decodes to: the djMEMC repeats its sixteen
+// longwords through $7F, the MEMCjr decodes thirty-two.
+static uint32_t djmemc_reg_index(config_t *cfg, uint32_t win_off) {
+    uint32_t count = djmemc_is_jr(cfg) ? MEMCJR_REG_COUNT : DJMEMC_REG_COUNT;
+    return (win_off >> 2) & (count - 1);
 }
 
 // ============================================================
@@ -167,12 +227,16 @@ static void djmemc_reset_regs(djmemc_state_t *st) {
 uint8_t djmemc_reg_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
     (void)addr;
     djmemc_state_t *st = djmemc_st(cfg);
-    uint32_t idx = (win_off >> 2) & (DJMEMC_REG_COUNT - 1);
+    uint32_t idx = djmemc_reg_index(cfg, win_off);
     uint32_t v = st->memc_regs[idx];
+    // A MEMCjr register read hands its bits 6-11 to the latch (the read
+    // completes on the low lane).
+    if (djmemc_is_jr(cfg) && idx != (MEMCJR_REG_LATCH >> 2) && (win_off & 3u) == 3u)
+        memcjr_latch_load(st, v);
     // Interleave register bits 9-11 are the chip's version.  Version 0 is
     // the part the ROM does not enable interleaving on, which keeps the bank
     // map linear (interleaving scrambles it, and is a timing feature only).
-    if (idx == (DJMEMC_REG_INTERLEAVE >> 2))
+    if (idx == (DJMEMC_REG_INTERLEAVE >> 2) && !djmemc_is_jr(cfg))
         v &= ~0x0E00u;
     return be_lane8(v, win_off & 3u);
 }
@@ -180,13 +244,20 @@ uint8_t djmemc_reg_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
 void djmemc_reg_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
     (void)addr;
     djmemc_state_t *st = djmemc_st(cfg);
-    uint32_t idx = (win_off >> 2) & (DJMEMC_REG_COUNT - 1);
+    bool jr = djmemc_is_jr(cfg);
+    uint32_t idx = djmemc_reg_index(cfg, win_off);
     be_lane8_set(&st->memc_regs[idx], win_off & 3u, value);
     // A bank register's start field is its low byte: the longword is
     // complete when lane 3 lands, and the bank moves then.
-    bool bank = idx >= (DJMEMC_REG_BANK0 >> 2) && idx < (DJMEMC_REG_BANK0 >> 2) + DJMEMC_MAX_BANKS;
+    int nbanks = jr ? MEMCJR_MAX_BANKS : DJMEMC_MAX_BANKS;
+    bool bank = idx >= (DJMEMC_REG_BANK0 >> 2) && idx < (DJMEMC_REG_BANK0 >> 2) + (uint32_t)nbanks;
     if ((win_off & 3u) == 3u) {
-        LOG(2, "djMEMC $%02X = $%08X (pc=%08X)", idx << 2, st->memc_regs[idx], cpu_get_pc(cfg->cpu));
+        LOG(2, "%s $%02X = $%08X (pc=%08X)", jr ? "MEMCjr" : "djMEMC", idx << 2, st->memc_regs[idx],
+            cpu_get_pc(cfg->cpu));
+        // A MEMCjr bank takes its high start bits from the latch as it lands.
+        if (bank && jr)
+            st->jr_bank_hi[idx - (DJMEMC_REG_BANK0 >> 2)] =
+                (uint8_t)(st->memc_regs[MEMCJR_REG_LATCH >> 2] & MEMCJR_LATCH_HI_MSK);
         if (bank)
             djmemc_map_ram(cfg);
     }
@@ -355,6 +426,47 @@ const board_io_range_t djmemc_io_ranges[] = {
     {0}, // sentinel
 };
 
+// The communication slot's window (the LC 575's; the slot Apple's
+// Ethernet card puts its SONIC at): with no card fitted nothing answers and
+// the cycle bus-errors, which is how the ROM's probe finds the slot empty.
+static uint8_t memcjr_commslot_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off;
+    memory_signal_bus_error(djmemc_st(cfg)->io.window_base + addr, false);
+    return 0xFF;
+}
+
+static uint8_t memcjr_commslot_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)cfg, (void)win_off, (void)addr;
+    return 0xFF; // what the faulting read returns, without the fault
+}
+
+static void memcjr_commslot_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off, (void)value;
+    memory_signal_bus_error(djmemc_st(cfg)->io.window_base + addr, true);
+}
+
+// The MEMCjr boards' island: the same decode less the SONIC, its PROM and
+// the Kiwi, which these boards do not carry (Apple, Macintosh LC 475 and
+// Macintosh Quadra 605 Developer Note (1993), Figure 2-2, p. 27).
+const board_io_range_t memcjr_io_ranges[] = {
+    {0x00000, 0x02000, BOARD_DEV_VIA1, DJMEMC_VIA_IO_PENALTY, BOARD_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},
+    {0x03A00, 0x03C00, 0, DJMEMC_VIA_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, djmemc_via2_ifr_read, djmemc_via2_ifr_write,
+     "via2_ifr", .esync = 1, .peek_fn = djmemc_via2_ifr_peek},
+    {0x02000, 0x04000, BOARD_DEV_VIA2, DJMEMC_VIA_IO_PENALTY, BOARD_IO_MASK_A0, 0, 0, NULL, NULL, "via2", .esync = 1},
+    // An empty communication slot: no turnaround to charge, the cycle aborts.
+    {0x0A000, 0x0C000, BOARD_DEV_VIA1, 0, BOARD_IO_NORMAL, 0, 0, memcjr_commslot_read, memcjr_commslot_write,
+     "comm_slot", .berr = 1, .peek_fn = memcjr_commslot_peek},
+    {0x0C000, 0x0E000, BOARD_DEV_SCC, DJMEMC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
+    {0x0E000, 0x10000, 0, DJMEMC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, djmemc_reg_read, djmemc_reg_write, "memcjr"},
+    {0x10000, 0x10100, BOARD_DEV_SCSI96, DJMEMC_IO_PENALTY, BOARD_IO_STRIDE_16, 0, 0, NULL, NULL, "scsi_53c96"},
+    {0x10100, 0x10200, BOARD_DEV_SCSI96, DJMEMC_IO_PENALTY, BOARD_IO_FIXED, SCSI_53C96_PDMA_SUB, SCSI_53C96_PDMA_SUB,
+     NULL, NULL, "scsi_pdma"},
+    {0x14000, 0x16000, BOARD_DEV_ASC, DJMEMC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "sound"},
+    {0x18000, 0x1A000, 0, DJMEMC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, djmemc_iosb_read, djmemc_iosb_write, "primetime"},
+    {0x1E000, 0x20000, BOARD_DEV_FLOPPY, DJMEMC_SWIM_IO_PENALTY, BOARD_IO_STRIDE_512, 0, 0, NULL, NULL, "swim2"},
+    {0}, // sentinel
+};
+
 static void djmemc_io_bind(config_t *cfg) {
     djmemc_state_t *st = djmemc_st(cfg);
     board_io_t *io = &st->io;
@@ -372,9 +484,10 @@ static void djmemc_io_bind(config_t *cfg) {
 // ============================================================
 
 static uint8_t djmemc_cpuid_read8(void *ctx, uint32_t offset) {
-    (void)ctx;
+    config_t *cfg = ctx;
+    uint32_t id = djmemc_board(cfg)->cpuid ? djmemc_board(cfg)->cpuid : DJMEMC_CPUID_VALUE;
     if ((offset & 0xFFCu) == 0xFFCu)
-        return be_lane8(DJMEMC_CPUID_VALUE, offset & 3u);
+        return be_lane8(id, offset & 3u);
     return 0xFF; // the rest of the page: nothing drives the bus
 }
 
@@ -420,17 +533,28 @@ static void djmemc_nubus_slot_irq(config_t *cfg, int slot, bool active) {
 // ============================================================
 
 // VIA1 outputs: PA5 = floppy head select; PB = the classic RTC serial
-// (bits 0-2) and the ADB state lines (bits 4-5) -- the Quadra 700 wiring.
+// (bits 0-2) and the ADB state lines (bits 4-5) -- the Quadra 700 wiring --
+// or, on the MEMCjr boards, the Cuda handshake (PB3 TREQ in, PB4 BYTEACK,
+// PB5 TIP out).
 static void djmemc_via1_output(void *context, uint8_t port, uint8_t output) {
     config_t *cfg = (config_t *)context;
+    djmemc_state_t *st = djmemc_st(cfg);
     if (port == 0) {
         if (cfg->floppy)
             floppy_set_sel_signal(cfg->floppy, (output & 0x20) != 0);
+    } else if (st && djmemc_is_jr(cfg)) {
+        cuda_via1_port_output(st->cuda, port, output);
     } else {
         if (cfg->adb)
             adb_port_b_output(cfg->adb, output);
         rtc_via1_pb_output(cfg->rtc, output);
     }
+}
+
+// VIA1 shift register out: a Cuda command byte (MEMCjr boards).
+static void djmemc_via1_shift_out(void *context, uint8_t byte) {
+    djmemc_state_t *st = djmemc_st((config_t *)context);
+    cuda_via1_shift_input(st ? st->cuda : NULL, byte);
 }
 
 // VIA2 outputs: PB2 soft power, the rest unused by the model.
@@ -468,6 +592,63 @@ static bool djmemc_scsi_dreq(void *context) {
 }
 
 // ============================================================
+// MEMCjr video registers through the latch
+// ============================================================
+// The frame-buffer controller is the same DAFB-compatible block, but on the
+// MEMCjr its registers are read six bits at a time: a read of the low half
+// of a register loads the latch with bits 6-11, which the driver then reads
+// from $50F0E07C.  Writes carry the full value (the driver writes the latch
+// first and the whole value after), so they go straight through.
+
+static uint32_t memcjr_video_read32(void *ctx, uint32_t addr) {
+    djmemc_state_t *st = djmemc_st((config_t *)ctx);
+    uint32_t v = st->dafb_iface->read_uint32(st->dafb, addr);
+    memcjr_latch_load(st, v);
+    return v;
+}
+
+static uint16_t memcjr_video_read16(void *ctx, uint32_t addr) {
+    djmemc_state_t *st = djmemc_st((config_t *)ctx);
+    uint16_t v = st->dafb_iface->read_uint16(st->dafb, addr);
+    if (addr & 2u)
+        memcjr_latch_load(st, v);
+    return v;
+}
+
+static uint8_t memcjr_video_read8(void *ctx, uint32_t addr) {
+    djmemc_state_t *st = djmemc_st((config_t *)ctx);
+    return st->dafb_iface->read_uint8(st->dafb, addr);
+}
+
+static void memcjr_video_write8(void *ctx, uint32_t addr, uint8_t v) {
+    djmemc_state_t *st = djmemc_st((config_t *)ctx);
+    st->dafb_iface->write_uint8(st->dafb, addr, v);
+}
+
+static void memcjr_video_write16(void *ctx, uint32_t addr, uint16_t v) {
+    djmemc_state_t *st = djmemc_st((config_t *)ctx);
+    st->dafb_iface->write_uint16(st->dafb, addr, v);
+}
+
+static void memcjr_video_write32(void *ctx, uint32_t addr, uint32_t v) {
+    djmemc_state_t *st = djmemc_st((config_t *)ctx);
+    st->dafb_iface->write_uint32(st->dafb, addr, v);
+}
+
+static uint8_t memcjr_video_peek8(void *ctx, uint32_t addr) {
+    djmemc_state_t *st = djmemc_st((config_t *)ctx);
+    return memory_iface_read8(st->dafb_iface, st->dafb, addr, true);
+}
+
+static uint16_t memcjr_video_peek16(void *ctx, uint32_t addr) {
+    return (uint16_t)((memcjr_video_peek8(ctx, addr) << 8) | memcjr_video_peek8(ctx, addr + 1));
+}
+
+static uint32_t memcjr_video_peek32(void *ctx, uint32_t addr) {
+    return ((uint32_t)memcjr_video_peek16(ctx, addr) << 16) | memcjr_video_peek16(ctx, addr + 2);
+}
+
+// ============================================================
 // Memory layout
 // ============================================================
 
@@ -493,8 +674,25 @@ static void djmemc_memory_layout(config_t *cfg) {
 
     // Video: the frame-buffer controller's registers at $F9800000, VRAM
     // pages direct at $F9000000.
-    memory_map_add(cfg->memory_map, DAFB_REG_BASE, DAFB_REG_APERTURE, "djMEMC video regs",
-                   (memory_interface_t *)dafb_reg_interface(st->dafb), st->dafb);
+    if (desc->chip == DJMEMC_CHIP_MEMCJR) {
+        st->dafb_iface = dafb_reg_interface(st->dafb);
+        st->video_interface = (memory_interface_t){
+            .read_uint8 = memcjr_video_read8,
+            .read_uint16 = memcjr_video_read16,
+            .read_uint32 = memcjr_video_read32,
+            .write_uint8 = memcjr_video_write8,
+            .write_uint16 = memcjr_video_write16,
+            .write_uint32 = memcjr_video_write32,
+            .peek_uint8 = memcjr_video_peek8,
+            .peek_uint16 = memcjr_video_peek16,
+            .peek_uint32 = memcjr_video_peek32,
+        };
+        memory_map_add(cfg->memory_map, DAFB_REG_BASE, DAFB_REG_APERTURE, "MEMCjr video regs", &st->video_interface,
+                       cfg);
+    } else {
+        memory_map_add(cfg->memory_map, DAFB_REG_BASE, DAFB_REG_APERTURE, "djMEMC video regs",
+                       (memory_interface_t *)dafb_reg_interface(st->dafb), st->dafb);
+    }
     // The VRAM decode spans the whole 2 MB aperture whatever is fitted, the
     // installed VRAM repeating through it: PrimaryInit reads the top of
     // every possible VRAM size before it sizes (it must not bus-error), and
@@ -525,7 +723,8 @@ static void djmemc_memory_layout(config_t *cfg) {
     CP_ARRAY(OP, cp, (st)->kiwi_regs);                                                                                 \
     CP_FIELD(OP, cp, (st)->kiwi_touched);                                                                              \
     CP_FIELD(OP, cp, (st)->slot_pa_mask);                                                                              \
-    CP_FIELD(OP, cp, (st)->sonic_byte2)
+    CP_FIELD(OP, cp, (st)->sonic_byte2);                                                                               \
+    CP_ARRAY(OP, cp, (st)->jr_bank_hi)
 
 static void part_save_djmemc_private(void *obj, checkpoint_t *cp) {
     djmemc_state_t *st = obj;
@@ -567,7 +766,9 @@ static int djmemc_build_devices(config_t *cfg, checkpoint_t *cp) {
     djmemc_state_t *st = djmemc_st(cfg);
     const djmemc_board_desc_t *desc = djmemc_board(cfg);
 
-    rtc_set_via(cfg->rtc, cfg->via1);
+    bool jr = desc->chip == DJMEMC_CHIP_MEMCJR;
+    if (!jr)
+        rtc_set_via(cfg->rtc, cfg->via1);
 
     // VIA1 port A: the identity straps, PA7 and PA0 (the diagnostic strap)
     // high -- see mcu.h on PA0.
@@ -576,6 +777,9 @@ static int djmemc_build_devices(config_t *cfg, checkpoint_t *cp) {
         via_input(cfg->via1, 0, bit, (pa >> bit) & 1);
     via_input_c(cfg->via1, 0, 0, 1);
     via_input_c(cfg->via1, 1, 0, 1);
+    // The Cuda's TREQ (VIA1 PB3) idles high.
+    if (jr)
+        via_input(cfg->via1, 1, 3, 1);
 
     // VIA2 port A: slot/video/Ethernet requests, active low, idle high.
     for (int bit = 0; bit < 8; bit++)
@@ -583,9 +787,20 @@ static int djmemc_build_devices(config_t *cfg, checkpoint_t *cp) {
     via_input_c(cfg->via2, 0, 0, 1);
     via_input_c(cfg->via2, 1, 0, 1);
 
+    // ADB: the VIA shifter and transceiver on the djMEMC boards; on the
+    // MEMCjr ones the Cuda services it in packets (the VIA is not the ADB's).
     machine_part_begin(cfg, cp, "adb");
-    cfg->adb = adb_init(cfg->via1, cfg->scheduler, cp);
+    cfg->adb = adb_init(jr ? NULL : cfg->via1, cfg->scheduler, cp);
     machine_part(cfg, cp, "adb", part_save_adb, cfg->adb);
+    if (jr) {
+        machine_part_begin(cfg, cp, "cuda");
+        st->cuda = cuda_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp, /*mode3_clock=*/false);
+        if (!st->cuda) {
+            LOG(0, "Error: out of memory constructing the Cuda");
+            return -1;
+        }
+        machine_part(cfg, cp, "cuda", part_save_cuda, st->cuda);
+    }
 
     machine_part_images(cfg, cp);
 
@@ -604,11 +819,14 @@ static int djmemc_build_devices(config_t *cfg, checkpoint_t *cp) {
     iosb_set_dreq(&st->iosb, djmemc_scsi_dreq, st->scsi96);
 
     // The SONIC (no wire), bus-mastering through the guest-physical port.
-    machine_part_begin(cfg, cp, "sonic");
-    st->sonic = sonic_init(cp);
-    machine_part(cfg, cp, "sonic", part_save_sonic, st->sonic);
-    sonic_set_irq_callback(st->sonic, djmemc_sonic_irq, cfg);
-    sonic_set_memory_port(st->sonic, &dma_mem_port_physical);
+    // The MEMCjr boards have no Ethernet.
+    if (!jr) {
+        machine_part_begin(cfg, cp, "sonic");
+        st->sonic = sonic_init(cp);
+        machine_part(cfg, cp, "sonic", part_save_sonic, st->sonic);
+        sonic_set_irq_callback(st->sonic, djmemc_sonic_irq, cfg);
+        sonic_set_memory_port(st->sonic, &dma_mem_port_physical);
+    }
 
     machine_part_begin(cfg, cp, "asc");
     st->asc = asc_init(NULL, cfg->scheduler, cp);
@@ -666,7 +884,7 @@ static int djmemc_init(config_t *cfg, checkpoint_t *cp) {
         return -1;
     }
     cfg->machine_context = st;
-    djmemc_reset_regs(st);
+    djmemc_reset_regs(desc, st);
 
     m68k_board_build_core(cfg, &desc->common, cp);
     machine_part_irq(cfg, cp);
@@ -674,7 +892,8 @@ static int djmemc_init(config_t *cfg, checkpoint_t *cp) {
 
     uint8_t via_ff = via_freq_factor_for_clock(cfg->machine->freq);
     machine_part_begin(cfg, cp, "via1");
-    cfg->via1 = via_init(NULL, cfg->scheduler, via_ff, "via1", djmemc_via1_output, NULL, m68k_board_via1_irq, cfg, cp);
+    cfg->via1 = via_init(NULL, cfg->scheduler, via_ff, "via1", djmemc_via1_output,
+                         desc->chip == DJMEMC_CHIP_MEMCJR ? djmemc_via1_shift_out : NULL, m68k_board_via1_irq, cfg, cp);
     machine_part(cfg, cp, "via1", part_save_via, cfg->via1);
     machine_part_begin(cfg, cp, "via2");
     cfg->via2 = via_init(NULL, cfg->scheduler, via_ff, "via2", djmemc_via2_output, NULL, m68k_board_via2_irq, cfg, cp);
@@ -709,6 +928,10 @@ static void djmemc_bus_reset(config_t *cfg) {
 static void djmemc_teardown(config_t *cfg) {
     djmemc_state_t *st = djmemc_st(cfg);
     if (st) {
+        if (st->cuda) {
+            cuda_delete(st->cuda);
+            st->cuda = NULL;
+        }
         if (st->sonic) {
             sonic_delete(st->sonic);
             st->sonic = NULL;
@@ -749,6 +972,9 @@ static struct display *djmemc_display(config_t *cfg) {
 static void djmemc_power_on(config_t *cfg) {
     djmemc_state_t *st = djmemc_st(cfg);
     if (st) {
+        // Cuda stays powered; the host side of its handshake went down.
+        if (st->cuda)
+            cuda_host_power_cycle(st->cuda);
         dafb_power_on(st->dafb);
         dafb_reset(st->dafb);
     }
@@ -797,6 +1023,15 @@ static bool djmemc_monitor_sense(const char *id, uint8_t *out) {
 
 const builtin_video_desc_t djmemc_builtin_video = {
     .detail = "djMEMC (DAFB-compatible) + Antelope",
+    .monitor_at = djmemc_monitor_at,
+    .monitor_sense = djmemc_monitor_sense,
+    .default_monitor = "13in_rgb",
+    .indexed_sense = true,
+};
+
+// The LC 475's and Quadra 605's: the same monitors on the MEMCjr's video.
+const builtin_video_desc_t memcjr_builtin_video = {
+    .detail = "MEMCjr (DAFB-compatible) + Antelope",
     .monitor_at = djmemc_monitor_at,
     .monitor_sense = djmemc_monitor_sense,
     .default_monitor = "13in_rgb",

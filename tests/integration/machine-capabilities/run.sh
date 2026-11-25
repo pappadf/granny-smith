@@ -541,6 +541,28 @@ assert_contains q610 '"freq":25000000' "q610 runs at 25 MHz"
 assert_contains q650 '"freq":33333333' "q650 runs at 33 MHz"
 assert_contains q800 '"freq":33333333' "q800 runs at 33 MHz"
 
+# The MEMCjr machines (src/machines/djmemc/memcjr.c): a 68040 with its FPU
+# absent on the LC 475 and Quadra 605 (68LC040); no NuBus (the LC PDS is not
+# modelled); 4 MB soldered plus one SIMM up to 36 MB; the LC 575's built-in
+# 14" display, the external monitors on the other two.
+for m in lc475 lc575 q605; do
+    assert_contains "$m" '"mmu":{"present":true,"kind":"68040"}' "$m has the 68040 MMU"
+    assert_contains "$m" '"nubus":false,"pci":false' "$m has no NuBus or PCI"
+    assert_contains "$m" '"floppies":[{"id":"fd0","label":"Internal floppy drive","types":[{"id":"hd","label":"SuperDrive (1.4 MB)"}],"default":"hd"}]' "$m has one SuperDrive"
+    assert_contains "$m" '"storage":[{"id":"scsi","label":"SCSI","kind":"scsi"' "$m offers one SCSI bus"
+    assert_contains "$m" '{"id":"appletalk","label":"AppleTalk","kind":"choice","values":[{"id":"active","label":"Active"},{"id":"inactive","label":"Inactive"}],"default":"active"}' "$m has the AppleTalk option"
+    assert_contains "$m" '{"id":"4096","label":"4 MB"},' "$m's RAM opens at the soldered 4 MB"
+    assert_contains "$m" '{"id":"36864","label":"36 MB"}],"default":"8192"' "$m tops out at 36 MB"
+done
+for m in lc475 q605; do
+    assert_contains "$m" '"cpu":{"model":68040,"address_bits":32,"fpu":false}' "$m has a 68LC040 (no FPU)"
+    assert_contains "$m" '"freq":25000000' "$m runs at 25 MHz"
+    assert_contains "$m" '"builtin":{"id":"builtin","label":"Built-in video","detail":"MEMCjr (DAFB-compatible) + Antelope"' "$m's MEMCjr drives its built-in video"
+done
+assert_contains lc575 '"cpu":{"model":68040,"address_bits":32,"fpu":true}' "lc575 has a 68040 with FPU"
+assert_contains lc575 '"freq":33333333' "lc575 runs at 33 MHz"
+assert_contains lc575 '"default_monitor":"builtin_14in_color"' "lc575's display is the built-in 14-inch"
+
 # The floor: every registered model carries at least one assertion above.
 models=$(grep -o '^{"id":"[a-z0-9]*"' "$OUT" | sed 's/^{"id":"\(.*\)"/\1/')
 [ -n "$models" ] || { echo "FAIL: catalog.models dumped no profiles"; fail=1; }

@@ -1813,6 +1813,83 @@
       "depth": 16,
       "addr32": true,
       "suite": "suite-pm7200"
+    },
+    {
+      "machine": "q605",
+      "system": "7.1",
+      "card": "memcjr",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-memcjr",
+      "media_gated": true
+    },
+    {
+      "machine": "lc475",
+      "system": "7.1",
+      "card": "memcjr",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-memcjr",
+      "media_gated": true
+    },
+    {
+      "machine": "lc575",
+      "system": "7.1",
+      "card": "memcjr",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-memcjr",
+      "media_gated": true
+    },
+    {
+      "machine": "q605",
+      "system": "7.6",
+      "card": "memcjr",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-memcjr",
+      "media_gated": true
+    },
+    {
+      "machine": "lc575",
+      "system": "7.6",
+      "card": "memcjr",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-memcjr",
+      "media_gated": true
+    },
+    {
+      "machine": "lc475",
+      "system": "7.5",
+      "card": "memcjr",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-memcjr",
+      "media_gated": true
+    },
+    {
+      "machine": "q605",
+      "system": "7.5.3",
+      "card": "memcjr",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-memcjr",
+      "media_gated": true
     }
   ]
 }
