@@ -969,12 +969,13 @@ int floppy_drive_count(const floppy_t *floppy) {
 }
 
 // ============================================================================
-// Mac Plus IWM memory-mapped I/O (address decoding)
+// The compact boards' floppy window (address decoding)
 // ============================================================================
 //
-// The board-level wiring of the IWM-only controller: odd-byte lane, A9-A12
-// to the chip's A1-A4.  SWIM and the controller-driven chips are mapped by
-// their machines instead.
+// The board-level wiring of the 68000 compact Macs: odd-byte lane, A9-A12 to
+// the chip's register select.  The IWM's window is iwm_iface below; the SWIM's
+// (SE FDHD, Classic) is floppy_swim_stride_iface.  The other SWIM machines
+// and the controller-driven chips decode their own windows.
 
 // Memory interface handler for 8-bit reads from IWM address space
 static uint8_t iwm_read_uint8(void *floppy, uint32_t addr) {
@@ -1024,9 +1025,19 @@ static const memory_interface_t iwm_iface = {
 };
 
 // Sets up the IWM memory interface callbacks on the floppy controller
-static void floppy_iwm_setup(floppy_t *floppy, memory_map_t *map) {
+static void floppy_iwm_setup(floppy_t *floppy) {
     floppy->memory_interface = &iwm_iface;
-    memory_map_add(map, 0x00d80000, 0x00080000, "floppy", &iwm_iface, floppy);
+}
+
+// Map the compact boards' window (floppy.h).  The two chips keep their own
+// wide-access behaviour: the IWM's window answers a 16/32-bit access itself
+// with open bus (logging the bus address), the SWIM's hands it to the chip's
+// wide handlers at the decoded index (which log the index, and leave wide
+// peeks to the memory layer).
+void floppy_map_stride_window(floppy_t *floppy, memory_map_t *map, uint32_t base, uint32_t size) {
+    GS_ASSERT(floppy->type == FLOPPY_TYPE_IWM || floppy->type == FLOPPY_TYPE_SWIM);
+    const memory_interface_t *iface = floppy->type == FLOPPY_TYPE_SWIM ? &floppy_swim_stride_iface : &iwm_iface;
+    memory_map_add(map, base, size, "floppy", iface, floppy);
 }
 
 // Initializes a floppy controller of the given type and maps it to memory
@@ -1065,7 +1076,7 @@ floppy_t *floppy_init(floppy_type_t type, memory_map_t *map, struct scheduler *s
         floppy_swim_setup(floppy, map);
     } else {
         scheduler_new_event_type(scheduler, "floppy", floppy, "motor_spinup", &floppy_motor_spinup_callback);
-        floppy_iwm_setup(floppy, map);
+        floppy_iwm_setup(floppy);
     }
     scheduler_new_event_type(scheduler, "floppy", floppy, "step_settle", &floppy_step_settle_callback);
     scheduler_new_event_type(scheduler, "floppy", floppy, "speed_settle", &floppy_speed_settle_callback);

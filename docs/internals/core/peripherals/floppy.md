@@ -9,6 +9,18 @@ their own pages ([swim3.md](swim3.md), [new_age.md](new_age.md)). This page
 records the model's timing choices that deliberately depart from the drive
 specification.
 
+## Register windows
+
+The controller maps nothing itself (`floppy_init`'s `map` is unused). The
+68000 compact boards place either chip with `floppy_map_stride_window`: CPU
+A9-A12 select the register (a $200 stride) and the chip sits on the low
+byte lane. The IWM's window is `iwm_iface`, which also logs an even-address
+byte access and answers a wide access with open bus; the SWIM's is
+`floppy_swim_stride_iface`, which hands every access, wide ones included, to
+the chip at the decoded register index. Every other SWIM machine decodes its
+own window over `floppy_get_memory_interface` (the SWIM's index-addressed
+register file).
+
 ## Step settle time
 
 After each step command the drive's `/STEP` sense line reads 0 (step in

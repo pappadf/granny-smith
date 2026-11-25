@@ -108,8 +108,6 @@ typedef struct compact_state {
     m68k_board_overlay_t overlay;
     // BBU boards: the 5380's IRQ output, before the PB6 mask.
     bool scsi_irq;
-    // BBU boards with a SWIM: its register window, decoded like the IWM's.
-    memory_interface_t swim_window;
 } compact_state_t;
 
 // Helper: return the family state from a config handle
@@ -298,30 +296,6 @@ static uint32_t compact_phase_read_uint32(void *dev, uint32_t addr) {
     (void)dev;
     LOG(2, "Phase Read (long) at $%06x: not modelled, reads 0", addr);
     return 0;
-}
-
-// The SWIM as the BBU decodes it: the IWM's window, A9-A12 on the chip's
-// register select (Guide 2e, ch. 9), so the same $200 stride.
-static uint8_t compact_swim_read_uint8(void *dev, uint32_t addr) {
-    return floppy_get_memory_interface((floppy_t *)dev)->read_uint8(dev, (addr >> 9) & 0x0F);
-}
-static uint8_t compact_swim_peek_uint8(void *dev, uint32_t addr) {
-    return floppy_get_memory_interface((floppy_t *)dev)->peek_uint8(dev, (addr >> 9) & 0x0F);
-}
-static void compact_swim_write_uint8(void *dev, uint32_t addr, uint8_t value) {
-    floppy_get_memory_interface((floppy_t *)dev)->write_uint8(dev, (addr >> 9) & 0x0F, value);
-}
-static uint16_t compact_swim_read_uint16(void *dev, uint32_t addr) {
-    return floppy_get_memory_interface((floppy_t *)dev)->read_uint16(dev, (addr >> 9) & 0x0F);
-}
-static uint32_t compact_swim_read_uint32(void *dev, uint32_t addr) {
-    return floppy_get_memory_interface((floppy_t *)dev)->read_uint32(dev, (addr >> 9) & 0x0F);
-}
-static void compact_swim_write_uint16(void *dev, uint32_t addr, uint16_t value) {
-    floppy_get_memory_interface((floppy_t *)dev)->write_uint16(dev, (addr >> 9) & 0x0F, value);
-}
-static void compact_swim_write_uint32(void *dev, uint32_t addr, uint32_t value) {
-    floppy_get_memory_interface((floppy_t *)dev)->write_uint32(dev, (addr >> 9) & 0x0F, value);
 }
 
 // Populate the family memory layout in the page table.
@@ -608,24 +582,11 @@ static int compact_init(config_t *cfg, checkpoint_t *checkpoint) {
     // board->floppy_chip is the board's controller chip; the slot table's
     // kinds are the drive in each position.  They are different facts: the
     // IWM drives 400K/800K GCR drives, the SWIM the 1.4 MB SuperDrive too.
-    bool swim = board->floppy_chip == FLOPPY_TYPE_SWIM;
-    cfg->floppy = floppy_init(board->floppy_chip, swim ? NULL : cfg->memory_map, cfg->scheduler,
-                              machine_floppy_count(cfg), checkpoint, config_images(cfg));
+    cfg->floppy = floppy_init(board->floppy_chip, NULL, cfg->scheduler, machine_floppy_count(cfg), checkpoint,
+                              config_images(cfg));
     machine_part(cfg, checkpoint, "floppy", part_save_floppy, cfg->floppy);
-    if (swim) {
-        // The SWIM answers in the IWM's window, through the same A9-A12 decode
-        st->swim_window = (memory_interface_t){
-            .read_uint8 = compact_swim_read_uint8,
-            .peek_uint8 = compact_swim_peek_uint8,
-            .write_uint8 = compact_swim_write_uint8,
-            .read_uint16 = compact_swim_read_uint16,
-            .read_uint32 = compact_swim_read_uint32,
-            .write_uint16 = compact_swim_write_uint16,
-            .write_uint32 = compact_swim_write_uint32,
-        };
-        memory_map_add(cfg->memory_map, COMPACT_FLOPPY_BASE, COMPACT_FLOPPY_SIZE, "floppy", &st->swim_window,
-                       cfg->floppy);
-    }
+    // Either chip answers in the same window, through the same A9-A12 decode
+    floppy_map_stride_window(cfg->floppy, cfg->memory_map, COMPACT_FLOPPY_BASE, COMPACT_FLOPPY_SIZE);
 
     if (board->bbu)
         compact_bbu_part(cfg, checkpoint);

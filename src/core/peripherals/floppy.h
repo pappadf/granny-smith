@@ -37,7 +37,9 @@ struct floppy;
 typedef struct floppy floppy_t;
 
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
-// Initializes a floppy controller of the given type and maps it to memory.
+// Initializes a floppy controller of the given type.  It maps nothing: the
+// board places the chip's window (floppy_map_stride_window, or its own decode
+// over floppy_get_memory_interface); `map` is unused.
 // `n_drives` is how many of the controller's FLOPPY_NUM_DRIVES the machine
 // cables (its profile's floppy_slots): the chip always has two drive
 // selects, but drives past n_drives are not in the object model and refuse an
@@ -84,8 +86,16 @@ uint8_t floppy_swim_read(floppy_t *floppy, unsigned reg);
 uint8_t floppy_swim_peek(floppy_t *floppy, unsigned reg);
 void floppy_swim_write(floppy_t *floppy, unsigned reg, uint8_t value);
 
-// Get the memory-mapped I/O interface for machine-level address decode
+// Get the memory-mapped I/O interface for machine-level address decode.  The
+// SWIM's is addressed by register index; the IWM's is its compact-board
+// window below (bus addresses, A9-A12 decoded).
 const memory_interface_t *floppy_get_memory_interface(floppy_t *floppy);
+
+// The 68000 compact boards' window (128K to Classic): `size` bytes from
+// `base`, CPU A9-A12 on the chip's register select -- a $200 stride -- and
+// the chip on the low byte lane (the IWM logs an even-address byte access).
+// For an IWM or SWIM controller only.
+void floppy_map_stride_window(floppy_t *floppy, memory_map_t *map, uint32_t base, uint32_t size);
 // Frees and clears a drive's cached GCR track buffers.  Call after writing to
 // the drive's image behind the controller's back (the IIfx/Q900 IOP block
 // path), so the next read re-encodes from the image rather than serving stale

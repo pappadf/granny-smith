@@ -399,6 +399,8 @@ void floppy_iwm_write(floppy_t *floppy, uint32_t offset, uint8_t byte);
 
 // Sets up SWIM memory interface callbacks and ISM initial state
 void floppy_swim_setup(floppy_t *floppy, memory_map_t *map);
+// The SWIM behind the compact boards' $200-stride window (floppy_map_stride_window)
+extern const memory_interface_t floppy_swim_stride_iface;
 
 // Bus /RESET for the SWIM/ISM register file.
 void floppy_swim_bus_reset(floppy_t *floppy);

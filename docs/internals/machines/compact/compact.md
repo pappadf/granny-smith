@@ -68,15 +68,17 @@ the range is empty again once the ROM drops the overlay.
    mask (`compact_scsi_irq_update`, source `COMPACT_IRQ_SCSI`).
 
 On the SE FDHD and Classic the SWIM sits in the IWM's window with the same
-A9-A12 register decode (`compact_swim_*` wrapper over
-`floppy_get_memory_interface`).
+A9-A12 register decode: `compact_init` maps either chip with one call,
+`floppy_map_stride_window` (`floppy.c`). The two chips' windows still
+differ on a 16/32-bit access, which no compact ROM makes: the IWM's answers
+open bus and logs the bus address, the SWIM's hands the access to the
+chip's own open-bus handlers at the decoded register index (see §7).
 
 ## 2. Key types & files
 
 - `compact_board_t` — the per-model data above.
 - `compact_state_t` — the display descriptor, the PWM sound handle, the
-  PAL overlay level, the BBU overlay object, the latched SCSI IRQ level and
-  the SWIM window interface.
+  PAL overlay level, the BBU overlay object and the latched SCSI IRQ level.
 - `compact_substrate` — init, bus reset, teardown, PRAM seed, VBL, host I/O
   and media, and the display hook.
 
@@ -149,6 +151,11 @@ power-on. The Plus keeps `suite-plus`.
 - The SE/SE FDHD external floppy port and a third (external) drive are
   not modelled; the floppy controller has two drive positions.
 - vSync (SE PA3, the modem's receive clock) is ignored.
+- A wide access to the floppy window logs differently per chip (the IWM
+  window names the bus address, the SWIM window the register index), and
+  a wide debugger peek reads $FF.. from the IWM's but is composed from
+  byte peeks of the SWIM's. Neither is guest-visible beyond open bus;
+  kept as they were when the window moved into `floppy.c`.
 - The SE, SE FDHD and Classic take the Plus's power-up SysParam; their own
   PRAMInit values were not measured.
 
