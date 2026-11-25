@@ -8,6 +8,7 @@
 #ifndef GS_MACHINES_V8_V8_INTERNAL_H
 #define GS_MACHINES_V8_V8_INTERNAL_H
 
+#include "ariel.h"
 #include "board_io.h"
 #include "display.h"
 #include "display_class.h"
@@ -28,12 +29,10 @@ struct mmu_state;
 struct object;
 
 // The built-in video: the Ariel CLUT/DAC at $50F24000 and the scanout over
-// VRAM or a DRAM page.  Field order up to `display` is the checkpoint format.
+// VRAM or a DRAM page.  The fields up to `display` are checkpointed, in the
+// order v8_video_checkpoint writes them (the Ariel's table first).
 typedef struct v8_video {
-    uint8_t clut[256][3]; // Ariel colour table, R/G/B
-    ramdac_seq_t seq; // Ariel address/data sequencer
-    uint8_t ctrl; // Ariel control register (low 3 bits: depth)
-    uint8_t key; // Ariel key-colour register
+    ariel_t ariel; // the Ariel register file (runtime/ariel.h)
     uint8_t depth_code; // V8 MonP depth field: 0..4 = 1/2/4/8/16 bpp
     uint8_t mode_code; // Sonora monitor code (video mode register bits 0-3; 0 = from the sense)
     bool blanked; // video switched off: V8 MonP RvVIDOff, Sonora video mode bit 7

@@ -20,6 +20,7 @@
 #ifndef GS_MACHINES_PDM_H
 #define GS_MACHINES_PDM_H
 
+#include "ariel.h" // ariel_t, the Ariel CLUT/DAC
 #include "board_io.h" // board_io_t, the island decode engine
 #include "display.h"
 #include "display_class.h"
@@ -144,9 +145,7 @@ typedef struct pdm_amic {
     uint8_t vid_depth; // $50F28001
     uint8_t vid_sense; // $50F28002 (drive bits; sense readback stubbed)
     uint8_t vid_test; // $50F28003
-    ramdac_seq_t clut_seq; // Ariel's CLUT address and R/G/B phase
-    uint8_t clut_ctrl, clut_key;
-    uint8_t clut[256][3];
+    ariel_t ariel; // the Ariel CLUT/DAC (runtime/ariel.h): sequencer, control, key, table
     uint8_t snd_out_buf; // sound-out ping-pong: next buffer to complete (0/1)
     pdm_via2_t via2;
     // AWACS codec register shadows (write-only on hardware, loaded through
