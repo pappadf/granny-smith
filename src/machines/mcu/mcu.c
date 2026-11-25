@@ -134,6 +134,10 @@ static void mcu_bank_layout(config_t *cfg) {
         LOG(2, "Orwell bank %c: %u MB at image offset $%08X", 'A' + i, st->bank_size[i] >> 20, st->bank_image_off[i]);
 }
 
+// How far up the Orwell can place RAM: bank D's six-bit field (4 MB units)
+// plus its 64 MB window.
+#define MCU_RAM_REACH (((1u << ORWELL_BANK_BITS) - 1) * ORWELL_BANK_UNIT + ORWELL_BANK_WINDOW)
+
 // Apply the latched bank start addresses to the page table.
 //
 // A bank decodes from its start address up to whichever populated bank starts
@@ -146,7 +150,7 @@ static void mcu_map_ram(config_t *cfg) {
     for (int b = 0; b < ORWELL_MAX_BANKS; b++)
         banks[b] =
             (m68k_board_bank_t){st->bank_start[b], b < st->bank_count ? st->bank_size[b] : 0, st->bank_image_off[b]};
-    m68k_board_map_banks(cfg, banks, ORWELL_MAX_BANKS, ORWELL_BANK_WINDOW, 0, NULL, NULL);
+    m68k_board_map_banks(cfg, banks, ORWELL_MAX_BANKS, ORWELL_BANK_WINDOW, 0, &st->ram_extent, st->bus_mmu);
 }
 
 // Recompute bank starts from the staged config register and re-map.  Called
@@ -510,6 +514,8 @@ static void mcu_memory_layout_init(config_t *cfg) {
 
     // Work out the physical bank arrangement before anything maps RAM.
     mcu_bank_layout(cfg);
+    // Nothing tracked yet: the first remap clears the banks' whole reach.
+    st->ram_extent = MCU_RAM_REACH;
 
     // I/O island at $50000000 (256 KiB block; the published map mirrors it
     // through $53FFFFFF, current RE through $50FFFFFF — we register the
@@ -606,6 +612,7 @@ static void mcu_bus_reset(config_t *cfg) {
     // NuBus/SCSI fan-out with them.  The 040's own MMU is reset by
     // cpu_hardware_reset_040 -- it is inside the CPU, not on the net.
     m68k_board_overlay_arm(&st->overlay);
+    st->ram_extent = MCU_RAM_REACH; // the ROM at zero: the next remap clears the whole reach
     if (st->dafb)
         dafb_reset(st->dafb);
     // The MCU's BUS mmu is a board part, not the CPU's, so it stays here.

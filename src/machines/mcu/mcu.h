@@ -156,6 +156,7 @@ typedef struct mcu_state {
     uint32_t bank_size[ORWELL_MAX_BANKS]; // installed bytes in each bank (0 = empty socket)
     uint32_t bank_image_off[ORWELL_MAX_BANKS]; // where the bank lives in the flat RAM image
     int bank_count; // populated banks
+    uint32_t ram_extent; // how far up the last bank mapping reached (the next remap clears below it)
 
     // Accept-and-log YANCC bridge register file ($50028000).
     uint32_t yancc_regs[MCU_YANCC_REG_COUNT];
