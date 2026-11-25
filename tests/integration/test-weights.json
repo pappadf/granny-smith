@@ -208,6 +208,8 @@
     "tnt-voodoo2-glide-sw": 285,
     "vfs-rsrc": 0,
     "vrom-identify": 0,
-    "watchpoints": 0
+    "watchpoints": 0,
+    "suite-tnt-1997": 240,
+    "suite-wgs9150": 95
   }
 }

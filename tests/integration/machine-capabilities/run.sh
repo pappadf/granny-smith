@@ -273,6 +273,31 @@ assert_contains pm7500 '"freq":100000000' "pm7500 runs at 100 MHz"
 assert_contains pm8500 '"freq":120000000' "pm8500 runs at 120 MHz"
 assert_contains pm9500 '"freq":132000000' "pm9500 runs at 132 MHz"
 
+# The 1997 TNT machines: the 7500/8500/9500 boards with a 604e card (run
+# as the 604 core) at 200 MHz.  The same storage and floppy as their
+# predecessors; suite-tnt-1997 boots Mac OS 8.1 on all four.
+for m in pm7300 pm7600 pm8600 pm9600; do
+    assert_contains "$m" '"model":604' "$m is a PowerPC 604-class part"
+    assert_contains "$m" '"kind":"ppc_604"' "$m has the 604 split-BAT MMU"
+    assert_contains "$m" '"freq":200000000' "$m runs at 200 MHz"
+    assert_contains "$m" '"nubus":false' "$m has no NuBus"
+    assert_contains "$m" '{"id":"scsi","label":"Internal fast SCSI","kind":"scsi"' "$m has the internal MESH bus"
+    assert_contains "$m" '{"unit":3,"label":"ID 3 · CD-ROM bay","short":"ID 3"}' "$m has the CD-ROM bay at ID 3"
+    assert_contains "$m" '"storage":[{"bus":"scsi","unit":0,"type":"hd"},{"bus":"scsi2","unit":3,"type":"cd"}]' "$m opens with the hard disk and the CD-ROM drive"
+done
+
+# The Workgroup Server 9150: the 8100's board plus a fourth NuBus socket at
+# $A (suite-wgs9150 row wgs9150-24ac-slot-a runs a 24AC's driver there).
+for m in wgs9150 wgs9150_120; do
+    assert_contains "$m" '"model":601' "$m is a PowerPC 601"
+    assert_contains "$m" '"nubus":true' "$m has BART NuBus sockets"
+    assert_contains "$m" '{"id":"nubus_a","label":"NuBus slot A","detail":"Slot ID $A"' "$m declares socket \$A"
+    assert_contains "$m" '{"id":"nubus_c","label":"NuBus slot B","detail":"Slot ID $C"' "$m declares socket \$C"
+    assert_contains "$m" '"storage":[{"bus":"scsi","unit":0,"type":"hd"},{"bus":"scsi","unit":3,"type":"cd"}]' "$m opens with a hard disk at ID 0 and the CD-ROM drive at ID 3"
+done
+assert_contains wgs9150 '"freq":80000000' "wgs9150 runs at 80 MHz"
+assert_contains wgs9150_120 '"freq":120000000' "wgs9150_120 runs at 120 MHz"
+
 # The Apple Network Servers — the same TNT substrate with the Macintosh
 # removed.  Both are plain 604s and both advertise PCI; what distinguishes
 # them in the profile is the CPU clock, the shipping memory size and the
@@ -398,7 +423,7 @@ done
 
 # Every Macintosh has the AppleTalk option, default Active (D22); the Lisa
 # and the Macintosh XL do not.
-for m in plus se30 iicx iix iifx iici iisi q700 q900 q950 q840av q660av pm6100 pm7100 pm8100 pm7500 pm8500 pm9500 ans500 ans700 pmg3dt pmg3mt; do
+for m in plus se30 iicx iix iifx iici iisi q700 q900 q950 q840av q660av pm6100 pm7100 pm8100 pm7500 pm8500 pm9500 ans500 ans700 pmg3dt pmg3mt pm7300 pm7600 pm8600 pm9600 wgs9150 wgs9150_120; do
     assert_contains "$m" '{"id":"appletalk","label":"AppleTalk","kind":"choice","values":[{"id":"active","label":"Active"},{"id":"inactive","label":"Inactive"}],"default":"active"}' "$m has the AppleTalk option"
 done
 for m in lisa macxl; do

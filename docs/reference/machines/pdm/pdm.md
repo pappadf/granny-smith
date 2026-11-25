@@ -843,6 +843,10 @@ all three machines are the same motherboards with the AV card occupying the PDS 
 card's components and the DAV connector that lets NuBus cards tap the AV audio and video
 streams are described with the AV subsystem [1] §"AV Card" p. 42, §"DAV Interface" p. 53.
 
+The Workgroup Server 9150 has its own machine page, [wgs9150.md](wgs9150.md): the 8100 board
+with the machine-ID low bits `%100` and a fourth NuBus slot at `$A`, each speed grade on its own
+ROM image.
+
 ## 7. Open questions
 
 1. **The 6100 and 7100 boards are absent from the schematic evidence set** — the only board
