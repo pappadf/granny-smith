@@ -52,9 +52,9 @@ static const char *const PM7100[] = {"pm7100", NULL};
 static const char *const WGS9150_80[] = {"wgs9150", NULL};
 static const char *const WGS9150_120[] = {"wgs9150_120", NULL};
 // Power Macintosh 7500/8500/9500 shared 4 MB "Boot TNT 0.1" ROM (the same
-// image also serves the unemulated 7200).  Two revisions exist, differing
+// image also serves the 7200, whose Platinum board it identifies itself).  Two revisions exist, differing
 // only in the HWInit and Mac68KROM components.
-static const char *const TNT[] = {"pm7500", "pm8500", "pm9500", "pm7600", NULL};
+static const char *const TNT[] = {"pm7500", "pm8500", "pm9500", "pm7600", "pm7200", NULL};
 // Apple Network Server 500/700 ROMs.  TRAP: they share header sums with each
 // other (three are $962F6C13) and with the Power Macintosh 9500 v2 ROM
 // (2.26B6 is $9630C68B), and the production image carries the same version

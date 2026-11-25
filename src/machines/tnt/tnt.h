@@ -180,6 +180,14 @@ typedef struct tnt_board_desc {
     uint32_t l2_kb;
     // TwoSuppliesH — Board Register 1 bit 15, the redundant-PSU report and
     // the one register-level difference between a 700 and a 500 (§5.6).
+
+    // === The Catalyst delta (Power Macintosh 7200) ===========================
+    // Platinum (343S1184) at $F8000000 in place of Hammerhead: the memory
+    // controller and the on-board video in one part, its VRAM aperture at
+    // $F1000000 and the DACula RAMDAC behind Grand Central +$1B000.  No
+    // Chaos bridge and no Control on such a board (platinum.c).
+    bool has_platinum;
+    uint32_t vram_kb; // Platinum VRAM fitted: 1024 (soldered), 2048 or 4096
 } tnt_board_desc_t;
 
 // === Hammerhead state (hammerhead.c) ========================================
@@ -196,6 +204,30 @@ typedef struct tnt_hammerhead {
     uint32_t bank_size[TNT_HH_BANKS];
     uint32_t bank_host_off[TNT_HH_BANKS];
 } tnt_hammerhead_t;
+
+// === Platinum state (platinum.c) ============================================
+// 128 x 32-bit registers on $10 centres, big-endian on the processor bus
+// like Hammerhead's.  The DRAM bank registers and the display timing set
+// live in the one file.
+#define TNT_PLAT_REGS  128
+#define TNT_PLAT_BANKS 8 // two banks per DIMM slot, four slots
+
+typedef struct tnt_platinum {
+    uint32_t reg[TNT_PLAT_REGS];
+    uint8_t vbl_pending; // a retrace not yet acknowledged
+    uint8_t vbl_armed; // the frame event is pending in the scheduler
+    // DACula: the address register, the CLUT port's phase, the indexed
+    // ("d2") register file and the palette.
+    ramdac_seq_t dac;
+    uint8_t dac_reg[256];
+    uint8_t clut[256][3];
+    // What each bank holds (bytes; 0 = no DRAM) and where its storage
+    // starts in host RAM.  Construction data, rebuilt from the profile.
+    uint32_t bank_size[TNT_PLAT_BANKS];
+    uint32_t bank_host_off[TNT_PLAT_BANKS];
+    // The monitor on the sense lines, as the lines it straps to ground.
+    uint8_t mon_grounded;
+} tnt_platinum_t;
 
 // === Bandit / Chaos state (bandit.c) ========================================
 // Per-bridge software-visible state: the config address latch and the two
@@ -328,6 +360,8 @@ extern const builtin_video_desc_t tnt_builtin_video;
 // === Family state ===========================================================
 typedef struct tnt_state {
     tnt_hammerhead_t hh;
+    tnt_platinum_t plat; // the 7200's Platinum (zeroed and unread elsewhere)
+    bool has_platinum; // the board's has_platinum, for the checkpoint parts
     tnt_gc_t gc;
     tnt_bandit_t bridge[TNT_MAX_BRIDGES];
     int bridge_count;
@@ -390,6 +424,8 @@ typedef struct tnt_state {
     memory_interface_t chaos_probe_interface; // unclaimed Chaos window (logged)
     memory_interface_t control_regs_if; // Control BAR $14 (register block)
     memory_interface_t control_vram_if; // Control BAR $18 (VRAM aperture)
+    memory_interface_t plat_vram_if; // Platinum's $F1000000 aperture beyond the fitted VRAM
+    memory_interface_t plat_vhalf_if; // the 1 MB half bank seen through the 64-bit organisation
 } tnt_state_t;
 
 static inline tnt_state_t *tnt_st(config_t *cfg) {
@@ -521,6 +557,26 @@ uint8_t tnt_mace_read(config_t *cfg, uint32_t off); // off from +$11000
 uint8_t tnt_mace_peek(config_t *cfg, uint32_t off); // no read-to-clear
 void tnt_mace_write(config_t *cfg, uint32_t off, uint8_t value);
 // Island access for the +$18000 block (byte registers on $10 centres).
+
+// === platinum.c =============================================================
+
+// The Catalyst board's Platinum: register window, DRAM decode, VRAM
+// aperture, DACula and the display it scans.
+void tnt_plat_register_events(config_t *cfg); // event type (pre-start)
+int tnt_plat_init(config_t *cfg); // VRAM, display, map claim; 0 on success
+void tnt_plat_reset(config_t *cfg); // power-on registers (VRAM survives)
+void tnt_plat_teardown(config_t *cfg);
+void tnt_plat_remap(config_t *cfg); // rebuild the DRAM decode from the bank registers
+void tnt_plat_update(config_t *cfg); // re-derive the display descriptor
+uint8_t tnt_plat_read(config_t *cfg, uint32_t offset); // window offsets 0..$7FF
+void tnt_plat_write(config_t *cfg, uint32_t offset, uint8_t value);
+uint8_t tnt_plat_dac_read(config_t *cfg, uint32_t offset); // GC +$1B000 cells
+uint8_t tnt_plat_dac_peek(config_t *cfg, uint32_t offset);
+void tnt_plat_dac_write(config_t *cfg, uint32_t offset, uint8_t value);
+struct display *tnt_plat_display(config_t *cfg);
+void tnt_plat_host_vbl(config_t *cfg);
+// The built-in port of a Platinum board (monitor= choices).
+extern const builtin_video_desc_t tnt_platinum_video;
 
 // === control.c ==============================================================
 

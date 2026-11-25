@@ -867,9 +867,22 @@ static uint8_t gc_boxid_read8(config_t *cfg, uint32_t win_off, uint32_t addr) {
 }
 
 // RaDACal colormap bank (control.c).
-BOARD_IO_ROW_READ(gc_rad_read, tnt_control_rad_read)
-BOARD_IO_ROW_READ(gc_rad_peek, tnt_control_rad_peek)
-BOARD_IO_ROW_WRITE(gc_rad_write, tnt_control_rad_write)
+// The RAMDAC cells: RaDACal behind Control, or the Catalyst board's DACula.
+static uint8_t gc_ramdac_read(config_t *cfg, uint32_t off) {
+    return tnt_board(cfg)->has_platinum ? tnt_plat_dac_read(cfg, off) : tnt_control_rad_read(cfg, off);
+}
+static uint8_t gc_ramdac_peek(config_t *cfg, uint32_t off) {
+    return tnt_board(cfg)->has_platinum ? tnt_plat_dac_peek(cfg, off) : tnt_control_rad_peek(cfg, off);
+}
+static void gc_ramdac_write(config_t *cfg, uint32_t off, uint8_t value) {
+    if (tnt_board(cfg)->has_platinum)
+        tnt_plat_dac_write(cfg, off, value);
+    else
+        tnt_control_rad_write(cfg, off, value);
+}
+BOARD_IO_ROW_READ(gc_rad_read, gc_ramdac_read)
+BOARD_IO_ROW_READ(gc_rad_peek, gc_ramdac_peek)
+BOARD_IO_ROW_WRITE(gc_rad_write, gc_ramdac_write)
 
 // GBUS device 3: the ANS front-panel LCD and timebase enable (lcd.c).
 BOARD_IO_ROW_READ(gc_lcd_read, tnt_lcd_read8)

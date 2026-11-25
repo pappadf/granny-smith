@@ -78,6 +78,7 @@ extern const hw_profile_t machine_classic;
 extern const hw_profile_t machine_lcii;
 extern const hw_profile_t machine_clii; // Classic II
 extern const hw_profile_t machine_ccl; // Color Classic
+extern const hw_profile_t machine_pm7200;
 extern const hw_profile_t machine_pm7300;
 extern const hw_profile_t machine_pm7600;
 extern const hw_profile_t machine_pm8600;
@@ -95,7 +96,7 @@ static const hw_profile_t *const builtin_machines[] = {
     &machine_ans500,  &machine_ans700,  &machine_pmg3dt,      &machine_pmg3mt, &machine_lisa,   &machine_macxl,
     &machine_mac128k, &machine_mac512k, &machine_mac512ke,    &machine_se,     &machine_sefdhd, &machine_classic,
     &machine_lcii,    &machine_clii,    &machine_ccl,         &machine_pm7300, &machine_pm7600, &machine_pm8600,
-    &machine_pm9600,  &machine_wgs9150, &machine_wgs9150_120,
+    &machine_pm9600,  &machine_wgs9150, &machine_wgs9150_120, &machine_pm7200,
 };
 static const size_t builtin_machine_count = sizeof(builtin_machines) / sizeof(builtin_machines[0]);
 
