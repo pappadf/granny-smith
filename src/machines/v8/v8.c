@@ -446,6 +446,10 @@ static int v8_init(config_t *cfg, checkpoint_t *cp) {
 static void v8_bus_reset(config_t *cfg) {
     v8_state_t *st = v8_st(cfg);
     m68k_board_bus_reset(cfg, &st->overlay);
+    // The re-armed overlay drops on the next ROM access in EITHER map: the
+    // ROM's restart path runs on in the 32-bit ROM space after its RESET.
+    for (uint32_t p = V8_ROM_START >> MEM_PAGE_SHIFT; p < (V8_ROM_END >> MEM_PAGE_SHIFT) && p < g_page_count; p++)
+        page_route_device(p, &st->overlay.iface, &st->overlay, V8_ROM_START);
     rbv_reset(st->rbv);
     st->ram_exp = 0;
 }
