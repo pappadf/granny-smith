@@ -197,6 +197,30 @@ extern const builtin_video_desc_t pdm_builtin_video;
 // its single slot needs the optional PDS adapter, which carries the bridge.
 extern const struct nubus_slot_decl pdm_nubus_slots_cde[];
 
+// === The 8100's board, which the Workgroup Server 9150 is ==================
+// The Workgroup Server 9150 is the 8100's board in a tower case (wgs9150.c):
+// what the three profiles share is written once here.
+
+// 8 MB soldered + four SIMM pairs, carved into fixed-window banks of
+// {2,8,32} MB: every total the pairs make, up to 264 MB (pm8100.c).
+extern const uint32_t pm8100_ram_options_kb[];
+// The board facts: a 40 MHz bus, eight fixed-window SIMM banks, and the
+// discrete 53CF96 on the fast internal bus (island +$11000, DMA channel B).
+#define PDM_8100_BOARD_COMMON                                                                                          \
+    .bus_hz = 40000000u, .bank_layout = PDM_BANKS_FIXED, .bank_count = 8, .has_fast_scsi = true
+// The profile fields: a 601 with the 4 MB ROM, 32 MB of the 264 MB, the
+// 8100's SIMM totals, the SuperDrive, the Curio bus with its CD-ROM bay,
+// LocalTalk, the AppleCD 300i Plus, Ariel's built-in video and the PDM PRAM
+// and substrate.  A model file includes slot_tables.h and pram_defaults.h
+// for the names it expands to.
+#define PDM_8100_PROFILE_COMMON                                                                                        \
+    .cpu_model = CPU_MODEL_PPC601, .mmu_kind = MMU_PPC_601, .address_bits = 32, .ram_default = 0x2000000,              \
+    .ram_max = 0x10800000, .rom_size = 0x400000, .ram_options = pm8100_ram_options_kb,                                 \
+    .floppy_slots = mac_floppy_slots_1hd, .storage = mac_storage_scsi_cd_bay,                                          \
+    .default_storage = mac_default_storage_hd0_cd3, .appletalk = true,                                                 \
+    .cdrom_drive = &scsi_cd_drive_applecd_300i_plus, .builtin_video = &pdm_builtin_video, .pram = &pram_defaults_pdm,  \
+    .substrate = &pdm_substrate
+
 // === Video presentation state (ariel.c) =====================================
 // Everything here is DERIVED from the amic register file (vid_mode/vid_depth/
 // clut) and rebuilt on init, reset and checkpoint restore — never saved.
