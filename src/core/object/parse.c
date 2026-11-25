@@ -501,6 +501,8 @@ static const struct {
     {"true",     "true — the boolean literal",                                                    KW_RESERVED               },
     {"false",    "false — the boolean literal",                                                   KW_RESERVED               },
     {"nil",      "nil — no value",                                                                KW_RESERVED               },
+    // A command line's literal for no value (`debug.breakpoints.add 0x10 none`).
+    {"none",     "none — no value, in a command line's arguments",                                KW_RESERVED               },
     {"local",    "local <name> = <expr>",                                                           KW_RESERVED | KW_STATEMENT},
     {"function", "function <name>(<param>, …) … end",                                           KW_RESERVED | KW_STATEMENT},
     {"if",       "if <expr> then … [elseif <expr> then …] [else …] end",                      KW_RESERVED | KW_STATEMENT},
