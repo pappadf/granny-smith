@@ -85,8 +85,9 @@ declaration ROM: the boot ROM drives the video from the hard-coded
 
 ## Interrupt routing
 
-`iici_update_ipl` maps sources to 68030 IPL the same way as the IIcx,
-with the RBV at level 2 in place of VIA2:
+The board routes sources to 68030 IPL the same way as the IIcx, with the
+RBV at level 2 in place of VIA2 (`rbv_board.c` connects the RBV's combined
+interrupt through `m68k_board_via2_irq`):
 
 ```
 NMI  -> IPL 7
@@ -103,11 +104,21 @@ hard disk, to a working Finder desktop. The rows `iici-701-fd`,
 [tests/integration/suite-iici](../../../../tests/integration/suite-iici/test.lua)
 boot each and pixel-match the desktop.
 
-Deferred (not v1): the optional Parity Generator Card, the 32 KB L2
-cache card, and sound IRQ delivery (`RvSndIRQ` is unwired, matching the
-IIfx's ASC). The three NuBus sockets `$C/$D/$E` are declared and
+Deferred (not v1): the optional Parity Generator Card and the 32 KB L2
+cache card. The three NuBus sockets `$C/$D/$E` are declared and
 seat cards (the `iici-24ac-dual` row boots a dual-display desktop with a
 24AC in socket $C).
+
+## Construction
+
+`iici_build_devices` hands the device run after VIA1 -- ADB on the VIA1
+transceiver, the images, the 5380 (its IRQ/DRQ into the RBV flags), the ASC
+(its interrupt into `RvSndIRQ`), SWIM, then the RBV -- to `rbv_board.c`,
+which the IIsi (with Egret) and the V8 family (with Egret or Cuda) build
+through as well; `mdu_wire_rbv` adds the RBV's soft power-off and its depth
+and blank outputs to the built-in video card.  The I/O island is
+`mdu_io_ranges_tbl` (`mdu_io.c`), whose rows `mdu_io.h` exposes as macros
+for the V8 family's Sonora island.
 
 ## See also
 
