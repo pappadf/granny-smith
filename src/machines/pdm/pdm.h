@@ -59,6 +59,9 @@ typedef struct pdm_board_desc {
     // 8100 only: the discrete 53CF96 on the fast internal bus (SCSI bus 0,
     // register file at island +$11000, AMIC DMA channel B).
     bool has_fast_scsi;
+    // Workgroup Server 9150 only: a fourth NuBus connector at slot $A, its
+    // /NMRQ on the FAT AMIC's pseudo-VIA2 slot bank bit 1 (wgs9150.c).
+    bool has_slot_a;
 } pdm_board_desc_t;
 
 // === HMC state (hmc.c) ======================================================

@@ -346,7 +346,10 @@ void pdm_bart_init(config_t *cfg) {
     // still has to answer because the Start Manager probes its declaration
     // ROM for a "VidReset" signature on EVERY boot, before the Slot Manager
     // runs, and whose super slot space the PDS claims on the CPU bus.
-    for (uint32_t slot = 0xBu; slot <= 0xEu; slot++) {
+    // The Workgroup Server 9150's fourth connector adds slot $A to both
+    // windows (wgs9150.c).
+    const uint32_t first = pdm_board(cfg)->has_slot_a ? 0xAu : 0xBu;
+    for (uint32_t slot = first; slot <= 0xEu; slot++) {
         char name[24];
         snprintf(name, sizeof(name), "NuBus slot $%X", slot);
         bart_claim_empty(cfg, nubus_slot_base(slot), 0x01000000u, name);
@@ -363,7 +366,9 @@ void pdm_bart_init(config_t *cfg) {
 // (machine_substrate_t.nubus_slot_irq), so it lives with the bridge and
 // forwards to AMIC.
 void pdm_bart_slot_irq(config_t *cfg, int slot, bool active) {
-    if (slot < BART_SLOT_IRQ_FIRST || slot > BART_SLOT_IRQ_LAST) {
+    // The 9150's FAT AMIC adds slot $A's line at bit 1 (wgs9150.c).
+    const int first = pdm_board(cfg)->has_slot_a ? 0x0A : BART_SLOT_IRQ_FIRST;
+    if (slot < first || slot > BART_SLOT_IRQ_LAST) {
         LOG(1, "bart: slot $%X has no interrupt line on this board", slot);
         return;
     }

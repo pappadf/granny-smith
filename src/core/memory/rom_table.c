@@ -42,6 +42,9 @@ static const char *const PDM[] = {"pm6100", "pm7100", "pm8100", NULL};
 // The later "Boot PDM 601 1.1" ROM, listed for the 7100 only until it is
 // known which other models shipped it.
 static const char *const PM7100[] = {"pm7100", NULL};
+// Workgroup Server 9150 ROMs, one per speed (the board is the 8100's).
+static const char *const WGS9150_80[] = {"wgs9150", NULL};
+static const char *const WGS9150_120[] = {"wgs9150_120", NULL};
 // Power Macintosh 7500/8500/9500 shared 4 MB "Boot TNT 0.1" ROM (the same
 // image also serves the unemulated 7200).  Two revisions exist, differing
 // only in the HWInit and Mac68KROM components.
@@ -148,10 +151,10 @@ const rom_info_t rom_table[] = {
     {"Apple Network Server 500/700 ROM (Open Firmware 2.26B6)", ANS, "9630c68b-a71fb907dd180b8a", 4096 * 1024, 0, 0,
      "2.26B6"},
     {"Power Macintosh 7500/8500/9500 ROM (v1)", TNT, "96cd923d-c241cd82bf90797a", 4096 * 1024, 0, 0, "v1"},
-    {"Workgroup Server 9150-120 ROM", NONE, "9b037f6f-d20052bd25d88bd6", 4096 * 1024, 0, 0},
+    {"Workgroup Server 9150-120 ROM", WGS9150_120, "9b037f6f-d20052bd25d88bd6", 4096 * 1024, 0, 0},
     {"Power Macintosh 7100 ROM (newer, Boot PDM 601 1.1)", PM7100, "9b7a3aad-ed510ac937721e25", 4096 * 1024, 0, 0,
      "v1.1"},
-    {"Workgroup Server 9150-80 ROM", NONE, "9c7c98f7-e9220fe5992ffdf2", 4096 * 1024, 0, 0},
+    {"Workgroup Server 9150-80 ROM", WGS9150_80, "9c7c98f7-e9220fe5992ffdf2", 4096 * 1024, 0, 0},
     {"Power Macintosh 6100/7100/8100 ROM", PDM, "9feb69b3-dedc602cfc3b9221", 4096 * 1024, 0, 0, "v1.0"},
     {"PowerBook G3 Wallstreet PDQ ROM", NONE, "b46ffb63-69e8e6201908f35f", 4096 * 1024, 0, 0},
     {"PowerBook G3 Wallstreet ROM", NONE, "cbb01212-833504c219032ad5", 4096 * 1024, 0, 0},
