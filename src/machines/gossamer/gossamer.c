@@ -291,8 +291,7 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
         return -1;
     machine_part(cfg, cp, "dbdma", part_save_dbdma, st->dbdma);
     machine_part_begin(cfg, cp, "floppy");
-    cfg->floppy =
-        floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
+    cfg->floppy = floppy_init(FLOPPY_TYPE_SWIM3, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
     machine_part(cfg, cp, "floppy", part_save_floppy, cfg->floppy);
     gos_swim3_bind(cfg);
     gos_swim3_init(cfg);

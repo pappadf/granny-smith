@@ -1041,9 +1041,9 @@ void floppy_map_stride_window(floppy_t *floppy, memory_map_t *map, uint32_t base
     memory_map_add(map, base, size, "floppy", iface, floppy);
 }
 
-// Initializes a floppy controller of the given type and maps it to memory
-floppy_t *floppy_init(floppy_type_t type, memory_map_t *map, struct scheduler *scheduler, int n_drives,
-                      checkpoint_t *checkpoint, const image_list_t *images) {
+// Initializes a floppy controller of the given type (the board maps its window)
+floppy_t *floppy_init(floppy_type_t type, struct scheduler *scheduler, int n_drives, checkpoint_t *checkpoint,
+                      const image_list_t *images) {
     floppy_t *floppy = malloc(sizeof(floppy_t));
     if (!floppy) {
         LOG(1, "Floppy: Allocation failed");
@@ -1074,7 +1074,7 @@ floppy_t *floppy_init(floppy_type_t type, memory_map_t *map, struct scheduler *s
     } else if (type == FLOPPY_TYPE_SWIM) {
         scheduler_new_event_type(scheduler, "floppy", floppy, "motor_spinup", &floppy_swim_motor_spinup_callback);
         scheduler_new_event_type(scheduler, "floppy", floppy, "ism_service", &floppy_swim_service_callback);
-        floppy_swim_setup(floppy, map);
+        floppy_swim_setup(floppy);
     } else {
         scheduler_new_event_type(scheduler, "floppy", floppy, "motor_spinup", &floppy_motor_spinup_callback);
         floppy_iwm_setup(floppy);

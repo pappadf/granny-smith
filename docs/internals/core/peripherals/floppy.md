@@ -11,7 +11,7 @@ specification.
 
 ## Register windows
 
-The controller maps nothing itself (`floppy_init`'s `map` is unused). The
+The controller maps nothing itself (`floppy_init` takes no memory map). The
 68000 compact boards place either chip with `floppy_map_stride_window`: CPU
 A9-A12 select the register (a $200 stride) and the chip sits on the low
 byte lane. The IWM's window is `iwm_iface`, which also logs an even-address

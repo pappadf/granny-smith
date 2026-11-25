@@ -1435,7 +1435,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part_begin(cfg, checkpoint, "floppy");
     asc_set_mix(st->asc, ASC_MIX_CH_A); // internal speaker takes the left channel
     cfg->floppy =
-        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), checkpoint, config_images(cfg));
+        floppy_init(FLOPPY_TYPE_SWIM, cfg->scheduler, machine_floppy_count(cfg), checkpoint, config_images(cfg));
     machine_part(cfg, checkpoint, "floppy", part_save_floppy, cfg->floppy);
 
     // ADB device state: the IIfx's ADB bus is bit-banged by the SWIM IOP

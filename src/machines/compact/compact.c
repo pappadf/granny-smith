@@ -551,8 +551,8 @@ static int compact_init(config_t *cfg, checkpoint_t *checkpoint) {
     // board->floppy_chip is the board's controller chip; the slot table's
     // kinds are the drive in each position.  They are different facts: the
     // IWM drives 400K/800K GCR drives, the SWIM the 1.4 MB SuperDrive too.
-    cfg->floppy = floppy_init(board->floppy_chip, NULL, cfg->scheduler, machine_floppy_count(cfg), checkpoint,
-                              config_images(cfg));
+    cfg->floppy =
+        floppy_init(board->floppy_chip, cfg->scheduler, machine_floppy_count(cfg), checkpoint, config_images(cfg));
     machine_part(cfg, checkpoint, "floppy", part_save_floppy, cfg->floppy);
     // Either chip answers in the same window, through the same A9-A12 decode
     floppy_map_stride_window(cfg->floppy, cfg->memory_map, COMPACT_FLOPPY_BASE, COMPACT_FLOPPY_SIZE);
