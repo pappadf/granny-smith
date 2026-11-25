@@ -402,12 +402,41 @@ TEST(mkv_refusals) {
     ASSERT_EQ_INT(0, mux_close(m));
 }
 
+// A hand-made file whose cluster timestamp is INT64_MAX and whose block
+// adds one to it: the sum wraps (as the file's arithmetic does), it is not
+// undefined behaviour (the sanitizers stop on that).
+TEST(mkv_timestamp_wraps) {
+    static const uint8_t file[] = {
+        0x1A, 0x45, 0xDF, 0xA3, 0x8B, 0x42, 0x82, 0x88, 'm',  'a',  't',  'r',  'o',  's', 'k', 'a', // EBML
+        0x18, 0x53, 0x80, 0x67, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // Segment, size unknown
+        0x16, 0x54, 0xAE, 0x6B, 0x88, 0xAE, 0x86, 0xD7, 0x81, 0x01, 0x83, 0x81, 0x01, // Tracks: 1, video
+        0x1F, 0x43, 0xB6, 0x75, 0x90, // Cluster
+        0xE7, 0x88, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // Timestamp INT64_MAX
+        0xA3, 0x84, 0x81, 0x00, 0x01, 0x80, // SimpleBlock: track 1, +1, key, empty
+    };
+    char path[512];
+    out_path(path, sizeof(path), "ts-wrap.mkv");
+    FILE *f = fopen(path, "wb");
+    ASSERT_TRUE(f && fwrite(file, 1, sizeof(file), f) == sizeof(file));
+    fclose(f);
+    int err = 0;
+    mkv_reader_t *r = mkv_read_open(path, &err);
+    ASSERT_TRUE(r != NULL);
+    mkv_packet_t p;
+    ASSERT_EQ_INT(1, mkv_read_packet(r, &p));
+    ASSERT_TRUE(p.track == 1 && p.len == 0 && p.keyframe);
+    ASSERT_TRUE(p.timestamp == INT64_MIN);
+    ASSERT_EQ_INT(0, mkv_read_packet(r, &p));
+    mkv_read_close(r);
+}
+
 int main(void) {
     RUN(mkv_round_trip);
     RUN(mkv_video_only);
     RUN(mkv_truncated_mid_cluster);
     RUN(mkv_never_closed);
     RUN(mkv_refusals);
+    RUN(mkv_timestamp_wraps);
     fprintf(stderr, "record_mkv: all tests passed\n");
     return 0;
 }

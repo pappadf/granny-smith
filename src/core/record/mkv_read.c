@@ -400,7 +400,8 @@ static int parse_block(mkv_reader_t *r, const uint8_t *b, size_t n, bool simple,
     if (flags & LACING_MASK)
         return -ENOTSUP;
     p->track = track;
-    p->timestamp = r->cl_ts + rel;
+    // In unsigned arithmetic: a corrupt cluster timestamp near the top wraps, defined
+    p->timestamp = (int64_t)((uint64_t)r->cl_ts + (uint64_t)(int64_t)rel);
     p->keyframe = simple && (flags & SIMPLE_KEYFRAME);
     p->data = b + at;
     p->len = n - at;
