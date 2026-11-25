@@ -118,32 +118,22 @@ static void sonora_vctl_write(config_t *cfg, uint32_t win_off, uint32_t addr, ui
     }
 }
 
-// $50F0A000: where the decoder selects a SONIC Ethernet controller.  None of
-// the modelled boards fits one, so nothing acknowledges and the cycle times
-// out -- which is how the ROM's Ethernet probe (run on the 33 MHz Vail
-// board, whose ProductInfo marks the SONIC valid) learns it is absent.
-static uint8_t sonora_enet_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
-    (void)win_off;
-    memory_signal_bus_error(v8_st(cfg)->io.window_base + addr, false); // `addr` is island-relative
-    return 0xFF;
-}
-
-static void sonora_enet_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
-    (void)win_off, (void)value;
-    memory_signal_bus_error(v8_st(cfg)->io.window_base + addr, true); // `addr` is island-relative
-}
-
 // The $50F00000 island: the MDU's rows (mdu_io.h) -- the V8's island --
 // plus Sonora's extra registers ahead of the RBV-style row they sit inside
 // (first match wins) and the video control block at $28000.  Handler rows
-// name no device (0), as djmemc.c's do: the SONIC window and Sonora's own
-// registers are not the pseudo-VIA2's.
+// name no device (0), as djmemc.c's do: Sonora's own registers are not the
+// pseudo-VIA2's.  $0A000 is where the decoder selects a SONIC Ethernet
+// controller: none of the modelled boards fits one, so nothing acknowledges
+// and the cycle times out (a .berr row, faulting at window_base -- the
+// island base -- plus the offset), which is how the ROM's Ethernet probe
+// (run on the 33 MHz Vail board, whose ProductInfo marks the SONIC valid)
+// learns it is absent.
 //   base     end      device penalty             xform            rd  wr     name
 const board_io_range_t sonora_io_ranges_tbl[] = {
     MDU_IO_ROW_VIA1,
     MDU_IO_ROW_SCC,
     MDU_IO_ROW_SCSI_DRQ,
-    {0x0A000, 0x0C000, 0, MDU_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, sonora_enet_read, sonora_enet_write, "sonic"},
+    {0x0A000, 0x0C000, 0, MDU_DEV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "sonic", .berr = 1},
     MDU_IO_ROW_SCSI_REG,
     MDU_IO_ROW_SCSI_BLIND,
     MDU_IO_ROW_ASC,

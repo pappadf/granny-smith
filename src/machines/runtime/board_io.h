@@ -101,11 +101,13 @@ typedef struct board_io_range {
     uint16_t esync;
     // 1 = this window signals a bus error instead of completing a cycle
     // (the IIfx RPU probe and FMC windows, the MEMCjr's empty communication
-    // slot).  The engine raises it itself, at the full bus address
-    // (window_base + addr), and a read returns `unmapped_read`; such a row
-    // names no device and no handlers.  There is no bus turnaround to
-    // charge, so `penalty` is legitimately 0 -- and saying so here is what
-    // lets board_io_validate insist that every OTHER window declares one.
+    // slot, Sonora's SONIC window).  The engine raises it itself, at the full
+    // bus address (window_base + addr), and a read returns `unmapped_read`;
+    // such a row names no device and no handlers.  There is no bus
+    // turnaround to charge, so `penalty` is legitimately 0 -- and saying so
+    // here is what lets board_io_validate insist that every OTHER window
+    // declares one.  A row that does declare one (Sonora's) is charged it
+    // before the fault.
     uint16_t berr;
     // An inspection of a handler row (memory_interface_t.peek_*): the value
     // read_fn would return, with none of its side effects.  Set on every
