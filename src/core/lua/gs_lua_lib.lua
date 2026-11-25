@@ -659,9 +659,30 @@ local function run_lua(line)
   f()
 end
 
+-- A command line without its trailing comment: `#` or `--` after a blank,
+-- outside quotes (`files.ls /tmp  # where`).
+local function strip_comment(line)
+  local i, n, q = 1, #line, nil
+  while i <= n do
+    local c = line:sub(i, i)
+    if q then
+      if c == "\\" then i = i + 1 elseif c == q then q = nil end
+    elseif c == '"' or c == "'" then q = c
+    elseif (c == "#" or line:sub(i, i + 1) == "--") and (i == 1 or line:sub(i - 1, i - 1):match("%s")) then
+      return trim(line:sub(1, i - 1))
+    end
+    i = i + 1
+  end
+  return line
+end
+
 -- gs.classify(line): "command" or "lua" (nothing evaluated).
 function gs.classify(text)
   local line = trim(text)
+  if not line:find("\n") then
+    local bare = strip_comment(line)
+    if bare ~= line and bare ~= "" and gs.classify(bare) == "command" then return "command" end
+  end
   if line:find("\n") then return "lua" end
   local ok, path, i = pcall(command_head, line, false)
   if not ok or not path then return "lua" end
@@ -679,6 +700,7 @@ function gs.shell_line(text)
   local line = trim(text)
   if line == "" then return end
   if gs.classify(line) == "command" then
+    line = strip_comment(line)
     local path, i = command_head(line, true)
     local rest = trim(line:sub(i))
     if rest == "" then

@@ -17,6 +17,10 @@ assert(machine.cpu.d1 == 16, "a parenthesised right-hand side")
 shell.run("scheduler.mode = turbo")
 assert(scheduler.mode == "turbo", "a bare word is an enum label")
 shell.run("machine.cpu.d0")
+shell.run("machine.cpu.d4 = 0x44  # a trailing comment")
+assert(machine.cpu.d4 == 0x44, "a command line's # comment is dropped")
+shell.run('files.mkdir "' .. vars.WORK_DIR .. '/has # hash" -- and a Lua-style one')
+assert(files.path_exists(vars.WORK_DIR .. "/has # hash"), "a # inside quotes is text")
 
 -- $alias heads and arguments, (expr), "${...}" templates, named arguments.
 shell.run("$d2 = 7")
