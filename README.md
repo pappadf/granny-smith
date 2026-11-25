@@ -23,7 +23,7 @@ All models run their original ROMs unpatched, with devices emulated closely enou
 - **Macintosh IIci and IIsi** (the "MDU" family)
 - **Macintosh LC II, Classic II, LC III, LC III+, LC 520, LC 550, Color Classic, and Color Classic II** (the "V8" family and its "Sonora" successor)
 - **Macintosh Quadra 700, 900, and 950** (the "MCU" family)
-- **Macintosh Centris 610 and 650, and Quadra 610, 650, and 800** (the "djMEMC" family)
+- **Macintosh Centris 610 and 650, and Quadra 610, 650, and 800** (the "MEMC" family)
 - **Macintosh LC 475, LC 575, and Quadra 605** (the "MEMCjr" family)
 - **Macintosh Quadra 840AV and Centris 660AV** (the "AV" family)
 - **Power Macintosh 6100, 7100, and 8100, and Workgroup Server 9150** (the "PDM" family)
