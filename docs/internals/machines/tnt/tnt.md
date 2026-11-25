@@ -14,7 +14,9 @@ Models: `pm7500` (7500/100, 100 MHz 601, one Bandit), `pm8500` (8500/120,
 all sharing the 1995-08 TNT ROM (stored checksums `96CD923D` v1 /
 `9630C68B` v2, covering the image's 3 MB 68k half).  The 8500/9500 are
 the first machines on the `CPU_MODEL_PPC604` core model
-(docs/internals/core/cpu/ppc.md, "The 604 model").
+(docs/internals/core/cpu/ppc.md, "The 604 model").  The same ROM also runs
+`pm7200` (7200/90, 90 MHz 601), the Catalyst board with Platinum in
+Hammerhead's place (see "The Catalyst board" below).
 
 Sources: Apple, *Power Macintosh 7500 and 8500 Computers* Developer Note
 (1995); Apple, *Power Macintosh 9500 Computer* Developer Note (1995);
@@ -527,12 +529,15 @@ Deliberate simplifications:
   750; the read takes a program exception and POST hangs at its `$700`
   trap.  Under the 604 PVR the 1997 POST takes the 1995 path and everything
   above it boots.  Modelling the 604e means a 604e HID1 in the CPU core.
-- **The 7300's machine ID.**  The note gives the 7300 "a new machine ID
-  value: 109", but nothing the ROM reads produces it: the 68k
-  identification synthesises one of four product words from Hammerhead and
-  BoxID, and the 1997 ROM's product records are the 1995 ones.  With the
-  7600's straps the 7300 reports Gestalt 68 (observed under MacTest Pro's
-  Mac OS); what tells the shipping 7300 apart is not established.
+- **The 7300's machine ID is the System's.**  The note gives the 7300 "a
+  new machine ID value: 109", and nothing in the ROM produces it (four
+  product records, the 1995 ones).  The System does: System 7.6 and Mac OS
+  8.1 patch BoxFlag `$3E` to `$67` (Gestalt 109) when BoxID's little-endian
+  bit 15 reads clear on a TNT ROM with a `$39` Hammerhead
+  ([pm7300.md](../../../reference/machines/tnt/pm7300.md) §1).  `pm7300`
+  therefore straps BoxID bit 15 low — the one bit that differs from the
+  7600 — and `suite-tnt-1997`'s 7300 row reads BoxFlag `$67` under Mac OS
+  8.1.
 - **No dual-processor card.**  The 9600/200MP is not modeled: the core runs
   one PowerPC and Hammerhead's ArbConfig reports TwoCPU clear.
 - **No AV hardware** (Plan B video-in, Sixty6), as on the 7500/8500.
@@ -542,8 +547,66 @@ Computer on all four models under both 1997 ROMs; System 7.6 from disk and
 floppy on the 7600 under the 1995 ROM).  Hardware reference:
 [pm7600.md](../../../reference/machines/tnt/pm7600.md),
 [pm8600.md](../../../reference/machines/tnt/pm8600.md),
-[pm9600.md](../../../reference/machines/tnt/pm9600.md) and the placeholder
+[pm9600.md](../../../reference/machines/tnt/pm9600.md) and the partial
 [pm7300.md](../../../reference/machines/tnt/pm7300.md).
+
+# The Catalyst board — the Power Macintosh 7200
+
+`pm7200.c` is the family's one non-Hammerhead board: the 7500's Bandit and
+Grand Central, but **Platinum** (`platinum.c`) at `$F8000000` as memory
+controller *and* video, the DACula RAMDAC in Grand Central's `+$1B000`
+cell, and the 53C94 as the only SCSI bus.  A board flag, not a family:
+`tnt_board_desc_t.has_platinum` (with `vram_kb`) switches five places, and
+everything else — the island decode, DBDMA, Cuda, the interrupt fabric,
+NVRAM — is shared unchanged.
+
+| Where | Hammerhead boards | `has_platinum` |
+|---|---|---|
+| `$F8000000` window (`tnt.c` `hh_read8`/`hh_write8`) | `hammerhead.c` | `tnt_plat_read`/`write` |
+| DRAM decode | `tnt_hh_remap` (26 bank pairs, interleave) | `tnt_plat_remap` (8 bank bases, linear) |
+| `$F0000000` / `$F1000000` (`bandit.c`, `tnt.c`) | the Chaos bridge and its window | no Chaos; `$F1000000` is Platinum's VRAM aperture |
+| GC `+$1B000` (`grand_central.c`) | RaDACal (`control.c`) | DACula (`platinum.c`) |
+| SCSI (`tnt.c`) | MESH on `machine.scsi`, 53C94 on `machine.scsi2` | 53C94 on `machine.scsi`; no `scsi2` |
+| Display | Control, a PCI card on the Chaos bus | `substrate.display` → `tnt_plat_display` |
+
+The model's facts, each from the ROM's own behaviour
+([platinum.md](../../../reference/machines/tnt/platinum.md)):
+
+- **The bank base registers hold addresses.**  POST probes bank k at
+  k × 128 MB and re-bases the found banks as running sums; a bank shows its
+  DRAM aliased up to the next base or 128 MB.  `plat_bank_inventory` carves
+  the RAM size into power-of-two banks of at most 128 MB, one per bank.
+- **The sense read is inverted** — the first boot came up in 640×870
+  portrait on a 13" strap until it was.
+- **The soldered 1 MB is a half bank.**  Under register 20's 64-bit
+  organisation the VRAM pages route through `plat_vhalf_if`, which drops
+  the odd longword of every doubleword; the ROM driver's probe then reads
+  "1 MB" and programs the linear 32-bit organisation, which maps the VRAM
+  straight onto the page table again (`plat_vram_map`, rerun on every
+  register 20 write and on restore).  Linearly mapped, the driver took it
+  for 2 MB and set an unscannable 32 bpp mode.
+- **Pixel 0 is 16 bytes past the scan start**, and the 16 bytes before each
+  line are the DACula's hardware-cursor plane: `plat_compose` is Control's
+  cursor composite over Platinum's registers.
+- **The retrace is a level acknowledged by reading register 35.**  An edge
+  pulse booted 7.5.3 but left 7.6 and 8.1 on a flat grey screen: the ROM
+  driver applies its gamma load in the retrace service, the NanoKernel
+  dispatches from live levels, and the service never ran.  The rate comes
+  from the DACula's clock pair over the timing set (`plat_frame_ns`).
+- **Width needs a unit.**  The horizontal timing registers count one, two
+  or four dots by mode; `plat_hunit` takes the largest that fits the pitch.
+
+Platinum's state (`tnt_platinum_t`) rides the `tnt.av` checkpoint part only
+on a Platinum board (`tnt_state_t.has_platinum`), so the Hammerhead boards'
+checkpoints are unchanged; the bank decode and the VRAM view are rebuilt
+from the restored registers.
+
+Verification: `suite-pm7200` — System 7.5.3 (with a checkpoint round trip),
+System 7.6 and Mac OS 8.1 from the 53C94 disk to the Finder and About box,
+and the System 7.6 "Install 1" floppy to the Installer, asserting BoxFlag
+`$66`, the Platinum identifier and 640×480 at 16 bpp on 1 MB of VRAM.
+Hardware reference: [pm7200.md](../../../reference/machines/tnt/pm7200.md),
+[platinum.md](../../../reference/machines/tnt/platinum.md).
 
 # The Apple Network Servers — a fourth board on this family
 
