@@ -61,6 +61,7 @@ static const tnt_board_desc_t ans700_board = {
     .bandit_count = 2,
     .kind = TNT_BOARD_SHINER,
     .has_mesh = false,
+    .has_chaos = true, // the display-bus bridge
     .has_gbus = true,
     .has_parity = true,
     .l2_kb = 1024u, // 1 MB cache DIMM

@@ -86,7 +86,10 @@ static const tnt_board_desc_t pm7200_board = {
     // publishes BoxID >> 11 as AAPL,cpu-id and reads no model bits.
     .boxid = 0x8000u | 0x0100u,
     .bus_hz = 45000000u, // half the 90 MHz processor clock
-    .bandit_count = 1,          .kind = TNT_BOARD_MAC, .has_mesh = false, .has_platinum = true,
+    .bandit_count = 1,          .kind = TNT_BOARD_MAC,
+    .has_mesh = false, // the 53C94 is the one bus (tnt.c)
+    .has_chaos = false, // the video is Platinum's, on the processor bus
+    .mc = &tnt_platinum_mc,     .video = &tnt_platinum_video_ops,
     .vram_kb = 1024u, // the soldered 1 MB
 };
 

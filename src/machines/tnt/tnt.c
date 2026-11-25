@@ -161,18 +161,16 @@ static void gc_write32(void *ctx, uint32_t offset, uint32_t value) {
 // ============================================================
 // Byte-wide model with big-endian decomposition for wider access — the
 // one block on the machine that is NOT little-endian (processor bus).
+// Whichever controller the board has answers it (tnt_mc_ops_t).
 
 static uint8_t hh_read8(void *ctx, uint32_t offset) {
     config_t *cfg = (config_t *)ctx;
-    return tnt_board(cfg)->has_platinum ? tnt_plat_read(cfg, offset) : tnt_hh_read(cfg, offset);
+    return tnt_st(cfg)->mc->read(cfg, offset);
 }
 
 static void hh_write8(void *ctx, uint32_t offset, uint8_t value) {
     config_t *cfg = (config_t *)ctx;
-    if (tnt_board(cfg)->has_platinum)
-        tnt_plat_write(cfg, offset, value);
-    else
-        tnt_hh_write(cfg, offset, value);
+    tnt_st(cfg)->mc->write(cfg, offset, value);
 }
 
 static uint16_t hh_read16(void *ctx, uint32_t offset) {
@@ -230,14 +228,6 @@ static void chaos_probe_write32(void *ctx, uint32_t offset, uint32_t value) {
 static int tnt_memory_layout(config_t *cfg, checkpoint_t *cp) {
     tnt_state_t *st = tnt_st(cfg);
 
-    // RAM: wherever the Hammerhead's (Platinum's) bank base registers put
-    // the DIMMs (hammerhead.c, platinum.c).  POST sizes them and re-bases
-    // them contiguously from 0; Open Firmware then publishes /memory's reg
-    // -- the tree is the contract.
-    bool platinum = tnt_board(cfg)->has_platinum;
-    if (!platinum)
-        tnt_hh_remap(cfg);
-
     // ROM: 4 MB at $FFC00000 (direct read-only pages).
     uint8_t *rom = ram_native_pointer(cfg->memory_map, cfg->ram_size);
     for (uint32_t p = 0; p < (cfg->machine->rom_size >> MEM_PAGE_SHIFT); p++)
@@ -263,8 +253,7 @@ static int tnt_memory_layout(config_t *cfg, checkpoint_t *cp) {
     st->hh_interface.write_uint8 = hh_write8;
     st->hh_interface.write_uint16 = hh_write16;
     st->hh_interface.write_uint32 = hh_write32;
-    memory_map_add(cfg->memory_map, TNT_HH_BASE, MEM_PAGE_SIZE, platinum ? "Platinum" : "Hammerhead", &st->hh_interface,
-                   cfg);
+    memory_map_add(cfg->memory_map, TNT_HH_BASE, MEM_PAGE_SIZE, st->mc->name, &st->hh_interface, cfg);
 
     // PCI: the root first (the bridges create their buses on it), then the
     // bridges themselves — config ports, per-bridge bus, each bridge's own
@@ -284,23 +273,17 @@ static int tnt_memory_layout(config_t *cfg, checkpoint_t *cp) {
     st->chaos_probe_interface.write_uint16 = chaos_probe_write16;
     st->chaos_probe_interface.write_uint32 = chaos_probe_write32;
     memory_map_add(cfg->memory_map, TNT_CHAOS_BASE, TNT_PCI_CFG_ADDR, "Chaos window", &st->chaos_probe_interface, cfg);
-    // On the Catalyst board $F1000000 is Platinum's frame-buffer aperture
-    // instead, and the RAM decode is Platinum's.
-    if (platinum) {
-        if (tnt_plat_init(cfg) != 0)
-            return -1;
-        // The retrace clock starts on a fresh machine only: on a restore its
-        // pending event comes back with the scheduler's queue
-        // (scheduler_restore_events), and the reset arming it here too ran
-        // two chains.  Marked armed, the reset leaves it to the queue.
-        if (cp)
-            st->plat.vbl_armed = 1;
-        tnt_plat_reset(cfg);
-    } else {
+    // Without Chaos (the Catalyst board) $F1000000 is Platinum's frame-buffer
+    // aperture instead, which its map claims below.
+    if (tnt_board(cfg)->has_chaos)
         memory_map_add(cfg->memory_map, TNT_CHAOS_BASE + 0x01000000u, 0x01000000u, "Chaos window hi",
                        &st->chaos_probe_interface, cfg);
-    }
-    return 0;
+
+    // RAM: wherever the memory controller's bank base registers put the
+    // DIMMs (hammerhead.c, platinum.c).  POST sizes them and re-bases them
+    // contiguously from 0; Open Firmware then publishes /memory's reg -- the
+    // tree is the contract.
+    return st->mc->map(cfg, cp);
 }
 
 // ============================================================
@@ -607,21 +590,22 @@ static void part_save_tnt_board(void *obj, checkpoint_t *cp) {
     TNT_BOARD_CP_FIELDS(system_write_checkpoint_data, cp, st);
 }
 
-// AWACS and Control, with Control's VRAM where the board has Control.  A
+// AWACS and Control, with the on-board VRAM where the board has any.  A
 // Network Server's video is a PCI card in a socket, so `vram` is NULL and
-// the block is absent on both sides.
+// the block is absent on both sides.  The board's video then appends its
+// own chip state (tnt_video_ops_t.save: Platinum's register file).
 #define TNT_AV_CP_FIELDS(OP, cp, st)                                                                                   \
     CP_FIELD(OP, cp, (st)->awacs);                                                                                     \
     CP_FIELD(OP, cp, (st)->control);                                                                                   \
     if ((st)->vram)                                                                                                    \
-        OP((cp), (st)->vram, TNT_VRAM_SIZE);                                                                           \
-    if ((st)->has_platinum)                                                                                            \
-    CP_FIELD(OP, cp, (st)->plat)
+    OP((cp), (st)->vram, TNT_VRAM_SIZE)
 
-// Saves AWACS, Control and Control's VRAM.
+// Saves AWACS, Control, the VRAM and the board video's own state.
 static void part_save_tnt_av(void *obj, checkpoint_t *cp) {
     tnt_state_t *st = obj;
     TNT_AV_CP_FIELDS(system_write_checkpoint_data, cp, st);
+    if (st->video->save)
+        st->video->save(st, cp);
 }
 
 // The GBUS island (Network Servers only; zeroed and unread elsewhere), and
@@ -647,7 +631,9 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
         return -1;
     }
     cfg->machine_context = st;
-    st->has_platinum = tnt_board(cfg)->has_platinum;
+    // The board's chips (tnt.h): Hammerhead and Control unless it names others.
+    st->mc = tnt_board(cfg)->mc ? tnt_board(cfg)->mc : &tnt_hammerhead_mc;
+    st->video = tnt_board(cfg)->video ? tnt_board(cfg)->video : &tnt_control_video;
     tnt_nvram_factory(cfg); // a checkpoint below restores over it
 
     // Core: memory map, the 601/604 per profile, the scheduler on the PPC
@@ -749,13 +735,14 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // The AWACS sound face on channel 8 (Open Firmware's beep is the
     // first exerciser, long before the 68k chime).
     tnt_awacs_register_events(cfg);
-    if (st->has_platinum)
-        tnt_plat_register_events(cfg);
+    if (st->video->register_events)
+        st->video->register_events(cfg);
     tnt_swim3_register_events(cfg);
     tnt_awacs_init(cfg);
     tnt_awacs_reset(cfg);
 
-    // Board state + memory map.
+    // Board state + memory map.  Hammerhead's register file is powered on
+    // on every board: it is in the "tnt" part whatever the controller.
     tnt_hh_init(cfg);
     tnt_gc_init(cfg);
     tnt_gc_io_bind(cfg); // the island byte decode; construction only, not on reset
@@ -794,8 +781,8 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
         TNT_BOARD_CP_FIELDS(system_read_checkpoint_data, cp, st);
         memcpy(st->hh.bank_size, hh_built.bank_size, sizeof st->hh.bank_size);
         memcpy(st->hh.bank_host_off, hh_built.bank_host_off, sizeof st->hh.bank_host_off);
-        if (!st->has_platinum)
-            tnt_hh_remap(cfg); // reads only the Hammerhead's fields
+        if (st->mc->board_restored)
+            st->mc->board_restored(cfg); // the restored bank bases
         tnt_bandit_modes_restored(cfg); // the buses are rebuilt, not restored
     }
     machine_part(cfg, cp, "tnt", part_save_tnt_board, st);
@@ -809,24 +796,18 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
         // set at construction from the slot entry (tnt_control_init), and
         // the saved copy does not replace it.
         uint8_t mon_grounded = st->control.mon_grounded;
-        // Platinum's DIMM inventory is construction data like Hammerhead's
-        // (tnt_plat_init): kept from the build, not taken from the file.
-        tnt_platinum_t plat_built = st->plat;
         TNT_AV_CP_FIELDS(system_read_checkpoint_data, cp, st);
         st->control.mon_grounded = mon_grounded;
-        memcpy(st->plat.bank_size, plat_built.bank_size, sizeof st->plat.bank_size);
-        memcpy(st->plat.bank_host_off, plat_built.bank_host_off, sizeof st->plat.bank_host_off);
-        st->plat.mon_grounded = plat_built.mon_grounded; // the strap, as Control's above
+        // The board video's own state, which keeps its construction data
+        // the same way (Platinum's DIMM inventory and strap).
+        if (st->video->load)
+            st->video->load(st, cp);
     }
     machine_part(cfg, cp, "tnt.av", part_save_tnt_av, st);
     if (cp) {
         via_redrive_outputs(cfg->via1);
         tnt_gc_recompute(cfg);
-        if (st->has_platinum) {
-            tnt_plat_remap(cfg); // the restored bank bases
-            tnt_plat_update(cfg);
-        } else if (st->vram)
-            tnt_control_update(cfg); // rebuild the descriptor from restored regs
+        st->video->restored(cfg); // rebuild the derived views from the restored regs
     }
 
     // SCSI.  The image list restores before the devices that resolve media
@@ -848,11 +829,12 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // it as `machine.scsi2`.  On the Macintosh boards `machine.scsi2` is
     // the 53C94's bus instead (below), so every board has one.
     //
-    // The Catalyst board (7200) has no MESH and no second bus: the 53C94
-    // drives `machine.scsi` itself, internal bays and external connector
+    // A Macintosh board without MESH -- the Catalyst board (7200) -- has no
+    // second bus either: the 53C94 drives `machine.scsi` itself, internal bays and external connector
     // alike ("One bus, 5 MB per sec. transfer rates for internal and
     // external SCSI devices", Power Macintosh 7200 Developer Note, Table 1-1).
-    if (!st->has_platinum) {
+    bool one_bus = tnt_board(cfg)->kind == TNT_BOARD_MAC && !tnt_board(cfg)->has_mesh;
+    if (!one_bus) {
         machine_part_begin(cfg, cp, "scsi2");
         cfg->scsi2 = machine_scsi_bus_init(cfg, cp, "scsi2");
         machine_part(cfg, cp, "scsi2", part_save_scsi, cfg->scsi2);
@@ -866,7 +848,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // connector ("a SCSI bus for external SCSI devices and for the internal
     // CD-ROM drive", Power Macintosh 7500/8500 Developer Note, S3)
     if (tnt_board(cfg)->kind == TNT_BOARD_MAC)
-        scsi_53c96_attach_bus(st->scsi96, st->has_platinum ? cfg->scsi : cfg->scsi2);
+        scsi_53c96_attach_bus(st->scsi96, one_bus ? cfg->scsi : cfg->scsi2);
     if (tnt_board(cfg)->has_mesh) {
         // MESH is a controller like any other: the machine builds it, tells it
         // where its interrupt goes and which bus it drives, and registers its
@@ -933,8 +915,8 @@ static void tnt_bus_reset(config_t *cfg) {
     // persist across restarts (warm-restart semantics proper are observed at
     // the ladder).
     tnt_hh_init(cfg);
-    if (st->has_platinum)
-        tnt_plat_reset(cfg);
+    if (st->mc->reset)
+        st->mc->reset(cfg);
     tnt_gc_init(cfg);
     dbdma_reset(st->dbdma);
     // The floppy CONTROLLER behind Grand Central +$15000.  cfg->floppy (the
@@ -944,8 +926,8 @@ static void tnt_bus_reset(config_t *cfg) {
     if (!tnt_board(cfg)->has_gbus)
         tnt_mace_reset(cfg);
     tnt_awacs_reset(cfg);
-    if (!st->has_platinum)
-        tnt_control_reset(cfg);
+    if (st->video->reset)
+        st->video->reset(cfg);
     if (tnt_board(cfg)->has_mesh)
         mesh_reset(st->mesh);
     if (tnt_board(cfg)->has_gbus) {
@@ -977,8 +959,8 @@ static void tnt_teardown(config_t *cfg) {
         tnt_gbus_teardown(cfg);
         tnt_lcd_teardown(cfg);
         tnt_mace_teardown(cfg);
-        if (st->has_platinum)
-            tnt_plat_teardown(cfg);
+        if (st->video->teardown)
+            st->video->teardown(cfg);
     }
     // The PCI root is NOT deleted here: system_destroy owns both expansion
     // buses and tears them down before calling this, which is what frees
@@ -1039,10 +1021,7 @@ static void tnt_teardown(config_t *cfg) {
 static void tnt_trigger_vbl(config_t *cfg) {
     via_pulse_c(cfg->via1, 0, 0); // VBL: CA1 low then high
     image_tick_all(cfg);
-    if (tnt_st(cfg)->has_platinum)
-        tnt_plat_host_vbl(cfg);
-    else
-        tnt_control_host_vbl(cfg);
+    tnt_st(cfg)->video->host_vbl(cfg);
     pci_tick_vbl(cfg->pci);
 }
 
@@ -1401,7 +1380,8 @@ static void tnt_seed(config_t *cfg) {
 // substrate.display: Platinum's raster on the Catalyst board, which is no
 // slot device; every other board's built-in video is a PCI device (Control).
 static display_t *tnt_display(config_t *cfg) {
-    return tnt_plat_display(cfg);
+    tnt_state_t *st = tnt_st(cfg);
+    return (st && st->video->display) ? st->video->display(cfg) : NULL;
 }
 
 const machine_substrate_t tnt_substrate = {

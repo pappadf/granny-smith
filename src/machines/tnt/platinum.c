@@ -144,7 +144,8 @@ static uint32_t plat_bank_base(const tnt_platinum_t *p, unsigned k) {
 
 static void plat_vram_map(config_t *cfg);
 
-void tnt_plat_remap(config_t *cfg) {
+// Rebuild the DRAM decode (and the VRAM view) from the bank registers.
+static void tnt_plat_remap(config_t *cfg) {
     tnt_platinum_t *p = plat(cfg);
     plat_vram_map(cfg);
     uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
@@ -224,7 +225,8 @@ static void plat_compose(config_t *cfg) {
                    plat_scan_base(p), plat_vram_size(cfg));
 }
 
-void tnt_plat_update(config_t *cfg) {
+// Re-derive the display descriptor from the timing set and the DACula.
+static void tnt_plat_update(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     tnt_platinum_t *p = &st->plat;
     if (!st->blank)
@@ -257,16 +259,18 @@ void tnt_plat_update(config_t *cfg) {
         p->dac_reg[DAC_CTRL], st->display.bits == st->blank ? " BLANKED" : "");
 }
 
-struct display *tnt_plat_display(config_t *cfg) {
+// The raster's descriptor (substrate.display), NULL before init.
+static struct display *tnt_plat_display(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
-    if (!st || !st->blank || !tnt_board(cfg)->has_platinum)
+    if (!st || !st->blank)
         return NULL;
     return &st->display;
 }
 
-void tnt_plat_host_vbl(config_t *cfg) {
+// The host frame: re-composite the cursor over live VRAM, mark the frame dirty.
+static void tnt_plat_host_vbl(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
-    if (!st || !st->blank || !tnt_board(cfg)->has_platinum)
+    if (!st || !st->blank)
         return;
     // Back to live VRAM, then the cursor composite over it (a frame's worth
     // of guest drawing bypasses the renderer either way).
@@ -410,7 +414,8 @@ static void plat_reg_written(config_t *cfg, unsigned idx) {
     }
 }
 
-uint8_t tnt_plat_read(config_t *cfg, uint32_t offset) {
+// Byte read of the register window (offsets 0..$7FF), big-endian lanes.
+static uint8_t tnt_plat_read(config_t *cfg, uint32_t offset) {
     if (offset >= TNT_PLAT_REGS * 0x10u) {
         LOG(2, "read beyond the register file: +$%03X", offset);
         return 0;
@@ -422,7 +427,8 @@ uint8_t tnt_plat_read(config_t *cfg, uint32_t offset) {
     return b;
 }
 
-void tnt_plat_write(config_t *cfg, uint32_t offset, uint8_t value) {
+// Byte write of the register window; a register acts once its last lane lands.
+static void tnt_plat_write(config_t *cfg, uint32_t offset, uint8_t value) {
     tnt_platinum_t *p = plat(cfg);
     if (offset >= TNT_PLAT_REGS * 0x10u || (offset & 0xFu) >= 4) {
         LOG(2, "write outside the register lanes: +$%03X = $%02X", offset, value);
@@ -455,15 +461,18 @@ static uint8_t dac_read(config_t *cfg, uint32_t offset, bool peek) {
     return p->dac_reg[a];
 }
 
-uint8_t tnt_plat_dac_read(config_t *cfg, uint32_t offset) {
+// A DACula cell read (Grand Central +$1B000).
+static uint8_t tnt_plat_dac_read(config_t *cfg, uint32_t offset) {
     return dac_read(cfg, offset, false);
 }
 
-uint8_t tnt_plat_dac_peek(config_t *cfg, uint32_t offset) {
+// The same cell without the read's RGB-phase step.
+static uint8_t tnt_plat_dac_peek(config_t *cfg, uint32_t offset) {
     return dac_read(cfg, offset, true);
 }
 
-void tnt_plat_dac_write(config_t *cfg, uint32_t offset, uint8_t value) {
+// A DACula cell write.
+static void tnt_plat_dac_write(config_t *cfg, uint32_t offset, uint8_t value) {
     tnt_platinum_t *p = plat(cfg);
     uint8_t idx, a = ramdac_seq_addr(&p->dac);
     if ((offset & 0x30u) == 0x20u) {
@@ -570,11 +579,13 @@ static void plat_vram_map(config_t *cfg) {
 // Lifecycle
 // ============================================================
 
-void tnt_plat_register_events(config_t *cfg) {
+// The retrace event type (before the scheduler starts).
+static void tnt_plat_register_events(config_t *cfg) {
     scheduler_new_event_type(cfg->scheduler, "platinum", cfg, "vbl", plat_vbl_event);
 }
 
-void tnt_plat_reset(config_t *cfg) {
+// Power-on registers (VRAM and the DIMM inventory survive).
+static void tnt_plat_reset(config_t *cfg) {
     tnt_platinum_t *p = plat(cfg);
     uint8_t mon = p->mon_grounded, armed = p->vbl_armed;
     uint32_t bsize[TNT_PLAT_BANKS], boff[TNT_PLAT_BANKS];
@@ -612,7 +623,9 @@ static uint64_t plat_fb_base(void *owner) {
     return display_guest_addr(&st->display, st->vram, plat_vram_size(cfg), PLAT_VRAM_BASE);
 }
 
-int tnt_plat_init(config_t *cfg) {
+// The DIMM inventory, the strap, the buffers, the empty aperture and
+// machine.video; 0 on success.
+static int tnt_plat_init(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     plat_bank_inventory(cfg);
     st->plat.mon_grounded = (uint8_t)(~cfg->build_opts.builtin_sense & 7u);
@@ -640,9 +653,70 @@ int tnt_plat_init(config_t *cfg) {
     return 0;
 }
 
-void tnt_plat_teardown(config_t *cfg) {
+// Free the buffers and detach machine.video.
+static void tnt_plat_teardown(config_t *cfg) {
     tnt_fb_free(cfg);
 }
+
+// Claim Platinum's decode at construction: the buffers, the VRAM
+// aperture and the DRAM, through a power-on reset.
+static int plat_map(config_t *cfg, checkpoint_t *cp) {
+    if (tnt_plat_init(cfg) != 0)
+        return -1;
+    // The retrace clock starts on a fresh machine only: on a restore its
+    // pending event comes back with the scheduler's queue
+    // (scheduler_restore_events), and the reset arming it here too ran
+    // two chains.  Marked armed, the reset leaves it to the queue.
+    if (cp)
+        tnt_st(cfg)->plat.vbl_armed = 1;
+    tnt_plat_reset(cfg);
+    return 0;
+}
+
+// Platinum's chip state rides the "tnt.av" part after Control's block.
+static void plat_save(tnt_state_t *st, checkpoint_t *cp) {
+    CP_FIELD(system_write_checkpoint_data, cp, st->plat);
+}
+
+// Restore the chip state, keeping what is construction data: the DIMM
+// inventory (the remap points page entries at ram + bank_host_off) and the
+// monitor strap, both kept from the build like Hammerhead's and Control's.
+static void plat_load(tnt_state_t *st, checkpoint_t *cp) {
+    tnt_platinum_t built = st->plat;
+    CP_FIELD(system_read_checkpoint_data, cp, st->plat);
+    memcpy(st->plat.bank_size, built.bank_size, sizeof st->plat.bank_size);
+    memcpy(st->plat.bank_host_off, built.bank_host_off, sizeof st->plat.bank_host_off);
+    st->plat.mon_grounded = built.mon_grounded;
+}
+
+// After the "tnt.av" part: the restored bank bases and display registers.
+static void plat_restored(config_t *cfg) {
+    tnt_plat_remap(cfg);
+    tnt_plat_update(cfg);
+}
+
+// Platinum as the Catalyst board's memory controller (tnt.h) ...
+const tnt_mc_ops_t tnt_platinum_mc = {
+    .name = "Platinum",
+    .read = tnt_plat_read,
+    .write = tnt_plat_write,
+    .map = plat_map,
+    .reset = tnt_plat_reset,
+};
+
+// ... and as its video, whose raster is no slot device.
+const tnt_video_ops_t tnt_platinum_video_ops = {
+    .register_events = tnt_plat_register_events,
+    .dac_read = tnt_plat_dac_read,
+    .dac_peek = tnt_plat_dac_peek,
+    .dac_write = tnt_plat_dac_write,
+    .save = plat_save,
+    .load = plat_load,
+    .restored = plat_restored,
+    .teardown = tnt_plat_teardown,
+    .host_vbl = tnt_plat_host_vbl,
+    .display = tnt_plat_display,
+};
 
 // ============================================================
 // The built-in port

@@ -28,6 +28,7 @@ static const tnt_board_desc_t pm8600_board = {
     .bandit_count = 2,
     .kind = TNT_BOARD_MAC,
     .has_mesh = true,
+    .has_chaos = true, // the display-bus bridge
     .l2_kb = 256u, // the 256 KB cache DIMM (ibid., Table 1-4)
 };
 

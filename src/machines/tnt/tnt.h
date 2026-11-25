@@ -141,6 +141,60 @@ typedef enum tnt_board_kind {
     TNT_BOARD_SHINER, // Apple Network Server 500/700 ("Shiner")
 } tnt_board_kind_t;
 
+// === Per-board chip ops =====================================================
+// The two places the Catalyst board (7200) departs from the rest of the
+// family, as two tables a board names instead of a flag tnt.c tests: the
+// memory controller at $F8000000 (Hammerhead, or Platinum) and the on-board
+// video with the RAMDAC behind Grand Central +$1B000 (Control's RaDACal, or
+// Platinum's DACula).  A NULL hook is a step that board has nothing for.
+struct tnt_state;
+
+// The memory controller at $F8000000 (hammerhead.c, platinum.c).
+typedef struct tnt_mc_ops {
+    const char *name; // the window's memory-map label
+    uint8_t (*read)(config_t *cfg, uint32_t offset); // window offsets 0..$7FF
+    void (*write)(config_t *cfg, uint32_t offset, uint8_t value);
+    // Claim the DRAM decode, and any aperture the part owns, once the fixed
+    // map is in place (construction; `cp` on a restore).  0 on success.
+    int (*map)(config_t *cfg, checkpoint_t *cp);
+    // Re-project the restored "tnt" checkpoint part onto the page table.
+    void (*board_restored)(config_t *cfg);
+    // Bus reset: power-on registers, right after Hammerhead's.
+    void (*reset)(config_t *cfg);
+} tnt_mc_ops_t;
+
+// The on-board video and its RAMDAC (control.c, platinum.c).
+typedef struct tnt_video_ops {
+    void (*register_events)(config_t *cfg); // event types, before the scheduler starts
+    // The RAMDAC's byte cells at Grand Central +$1B000; peek is the read
+    // without its RGB-phase step.
+    uint8_t (*dac_read)(config_t *cfg, uint32_t offset);
+    uint8_t (*dac_peek)(config_t *cfg, uint32_t offset);
+    void (*dac_write)(config_t *cfg, uint32_t offset, uint8_t value);
+    // Bus reset: power-on registers, after AWACS's (VRAM survives).
+    void (*reset)(config_t *cfg);
+    // Chip state the "tnt.av" part carries after Control's block and VRAM
+    // (NULL: none), written and read in that order.
+    void (*save)(struct tnt_state *st, checkpoint_t *cp);
+    void (*load)(struct tnt_state *st, checkpoint_t *cp);
+    // Rebuild the derived views (page table, display descriptor) from the
+    // restored "tnt.av" part.
+    void (*restored)(config_t *cfg);
+    void (*teardown)(config_t *cfg);
+    void (*host_vbl)(config_t *cfg); // the host frame: re-composite, mark the frame dirty
+    // substrate.display: the board's own raster, for video that is no slot
+    // device (NULL: Control is a PCI device and presents through the bus).
+    display_t *(*display)(config_t *cfg);
+} tnt_video_ops_t;
+
+// The family's usual pair: Hammerhead with Control (on the Network Servers,
+// whose video is a card, Control's block simply stays unbuilt).
+extern const tnt_mc_ops_t tnt_hammerhead_mc;
+extern const tnt_video_ops_t tnt_control_video;
+// The Catalyst board's one part that is both (platinum.c).
+extern const tnt_mc_ops_t tnt_platinum_mc;
+extern const tnt_video_ops_t tnt_platinum_video_ops;
+
 // === Per-model board descriptor =============================================
 typedef struct tnt_board_desc {
     // BoxID power-on value (little-endian bit numbering — the guest reads
@@ -181,12 +235,17 @@ typedef struct tnt_board_desc {
     // TwoSuppliesH — Board Register 1 bit 15, the redundant-PSU report and
     // the one register-level difference between a 700 and a 500 (§5.6).
 
+    // Chaos (343S1155), the display-bus bridge at $F0000000 that Control
+    // sits behind; every board but the 7200's.
+    bool has_chaos;
+
     // === The Catalyst delta (Power Macintosh 7200) ===========================
-    // Platinum (343S1184) at $F8000000 in place of Hammerhead: the memory
-    // controller and the on-board video in one part, its VRAM aperture at
-    // $F1000000 and the DACula RAMDAC behind Grand Central +$1B000.  No
-    // Chaos bridge and no Control on such a board (platinum.c).
-    bool has_platinum;
+    // The memory controller and the on-board video (NULL: Hammerhead and
+    // Control).  The 7200 names Platinum (343S1184) for both: the memory
+    // controller and the video in one part, its VRAM aperture at $F1000000
+    // and the DACula RAMDAC behind Grand Central +$1B000 (platinum.c).
+    const tnt_mc_ops_t *mc;
+    const tnt_video_ops_t *video;
     uint32_t vram_kb; // Platinum VRAM fitted: 1024 (soldered), 2048 or 4096
 } tnt_board_desc_t;
 
@@ -374,7 +433,9 @@ extern const builtin_video_desc_t tnt_builtin_video;
 typedef struct tnt_state {
     tnt_hammerhead_t hh;
     tnt_platinum_t plat; // the 7200's Platinum (zeroed and unread elsewhere)
-    bool has_platinum; // the board's has_platinum, for the checkpoint parts
+    // The board's chip ops (tnt_board_desc_t.mc/.video, defaults resolved).
+    const tnt_mc_ops_t *mc;
+    const tnt_video_ops_t *video;
     tnt_gc_t gc;
     tnt_bandit_t bridge[TNT_MAX_BRIDGES];
     int bridge_count;
@@ -513,10 +574,9 @@ extern const builtin_video_desc_t ans_builtin_video;
 
 // === hammerhead.c ===========================================================
 
-void tnt_hh_init(config_t *cfg); // power-on register state + map claim
-uint8_t tnt_hh_read(config_t *cfg, uint32_t offset); // window offsets 0..$7FF
-void tnt_hh_write(config_t *cfg, uint32_t offset, uint8_t value);
-void tnt_hh_remap(config_t *cfg); // rebuild the DRAM decode from the bank registers
+// Power-on register state and the DIMM inventory.  Run on every board: the
+// register file is in the "tnt" checkpoint part whatever the controller.
+void tnt_hh_init(config_t *cfg);
 
 // === bandit.c ===============================================================
 
@@ -574,20 +634,8 @@ void tnt_mace_write(config_t *cfg, uint32_t off, uint8_t value);
 // === platinum.c =============================================================
 
 // The Catalyst board's Platinum: register window, DRAM decode, VRAM
-// aperture, DACula and the display it scans.
-void tnt_plat_register_events(config_t *cfg); // event type (pre-start)
-int tnt_plat_init(config_t *cfg); // VRAM, display, map claim; 0 on success
-void tnt_plat_reset(config_t *cfg); // power-on registers (VRAM survives)
-void tnt_plat_teardown(config_t *cfg);
-void tnt_plat_remap(config_t *cfg); // rebuild the DRAM decode from the bank registers
-void tnt_plat_update(config_t *cfg); // re-derive the display descriptor
-uint8_t tnt_plat_read(config_t *cfg, uint32_t offset); // window offsets 0..$7FF
-void tnt_plat_write(config_t *cfg, uint32_t offset, uint8_t value);
-uint8_t tnt_plat_dac_read(config_t *cfg, uint32_t offset); // GC +$1B000 cells
-uint8_t tnt_plat_dac_peek(config_t *cfg, uint32_t offset);
-void tnt_plat_dac_write(config_t *cfg, uint32_t offset, uint8_t value);
-struct display *tnt_plat_display(config_t *cfg);
-void tnt_plat_host_vbl(config_t *cfg);
+// aperture, DACula and the display it scans -- reached through
+// tnt_platinum_mc / tnt_platinum_video_ops (above).
 // The built-in port of a Platinum board (monitor= choices).
 extern const builtin_video_desc_t tnt_platinum_video;
 
@@ -601,19 +649,12 @@ int tnt_control_init(config_t *cfg, uint8_t sense); // VRAM, display, BAR backin
 void tnt_control_reset(config_t *cfg); // power-on registers (VRAM survives)
 void tnt_control_update(config_t *cfg); // re-derive the display descriptor
 void tnt_control_teardown(config_t *cfg);
-// RaDACal byte cells (Grand Central +$1B000, $10 centres).
-uint8_t tnt_control_rad_read(config_t *cfg, uint32_t offset);
-// The same cell without the read's RGB-phase step (memory_interface_t.peek_*).
-uint8_t tnt_control_rad_peek(config_t *cfg, uint32_t offset);
-void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value);
 // The pixel-clock synthesiser on Cuda's I2C bus (cuda_attach_i2c_write).
 bool tnt_control_i2c_write(void *ctx, uint8_t slave, const uint8_t *data, int len);
-// Presentation: the primary display descriptor (NULL before init), and the
-// host-frame dirty mark (guest CPU writes bypass the renderer).
+// Presentation: the primary display descriptor (NULL before init).
 struct display *tnt_control_display(config_t *cfg);
 // Guest physical address of the first byte Control scans (its VRAM BAR), 0 while blanked.
 uint64_t tnt_control_fb_base(config_t *cfg);
-void tnt_control_host_vbl(config_t *cfg);
 
 // === tnt_fb.c ===============================================================
 // The half of the on-board video Control and Platinum share (tnt_fb.c).

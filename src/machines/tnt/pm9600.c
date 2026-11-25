@@ -31,6 +31,7 @@ static const tnt_board_desc_t pm9600_board = {
     .bandit_count = 2,
     .kind = TNT_BOARD_MAC,
     .has_mesh = true,
+    .has_chaos = true, // the display-bus bridge
     .l2_kb = 512u, // "512 KB of fast static RAM on the main logic board" (ibid.)
 };
 

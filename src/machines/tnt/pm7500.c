@@ -55,6 +55,7 @@ static const tnt_board_desc_t pm7500_board = {
     .bandit_count = 1,
     .kind = TNT_BOARD_MAC,
     .has_mesh = true, // the internal fast-SCSI cell (absent on the Network Servers)
+    .has_chaos = true, // the display-bus bridge
 };
 
 const hw_profile_t machine_pm7500 = {

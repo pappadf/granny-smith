@@ -260,7 +260,8 @@ struct display *tnt_control_display(config_t *cfg) {
     return &st->display;
 }
 
-void tnt_control_host_vbl(config_t *cfg) {
+// The host frame: refresh the cursor composite and mark the frame dirty.
+static void tnt_control_host_vbl(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     if (st && st->blank) {
         control_compose(cfg); // refresh the hardware-cursor composite
@@ -675,15 +676,15 @@ static uint8_t rad_read(config_t *cfg, uint32_t offset, bool peek) {
     }
 }
 
-uint8_t tnt_control_rad_read(config_t *cfg, uint32_t offset) {
+static uint8_t tnt_control_rad_read(config_t *cfg, uint32_t offset) {
     return rad_read(cfg, offset, false);
 }
 
-uint8_t tnt_control_rad_peek(config_t *cfg, uint32_t offset) {
+static uint8_t tnt_control_rad_peek(config_t *cfg, uint32_t offset) {
     return rad_read(cfg, offset, true);
 }
 
-void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
+static void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
     tnt_control_t *c = ctl(cfg);
     uint8_t addr = ramdac_seq_addr(&c->rad);
     uint8_t idx;
@@ -864,3 +865,22 @@ int tnt_control_init(config_t *cfg, uint8_t sense) {
 void tnt_control_teardown(config_t *cfg) {
     tnt_fb_free(cfg);
 }
+
+// After the "tnt.av" part: rebuild the descriptor from the restored
+// registers, where the board built Control (a Network Server did not).
+static void control_restored(config_t *cfg) {
+    if (tnt_st(cfg)->vram)
+        tnt_control_update(cfg);
+}
+
+// The Hammerhead boards' video (tnt.h).  Control registers its event type
+// from its card factory and is freed by its PCI device's teardown, and it
+// presents through the bus rather than substrate.display.
+const tnt_video_ops_t tnt_control_video = {
+    .dac_read = tnt_control_rad_read,
+    .dac_peek = tnt_control_rad_peek,
+    .dac_write = tnt_control_rad_write,
+    .reset = tnt_control_reset,
+    .restored = control_restored,
+    .host_vbl = tnt_control_host_vbl,
+};

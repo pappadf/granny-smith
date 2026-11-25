@@ -569,20 +569,31 @@ disk and floppy on the 7600 under the 1995 ROM).  Hardware reference:
 `pm7200.c` is the family's one non-Hammerhead board: the 7500's Bandit and
 Grand Central, but **Platinum** (`platinum.c`) at `$F8000000` as memory
 controller *and* video, the DACula RAMDAC in Grand Central's `+$1B000`
-cell, and the 53C94 as the only SCSI bus.  A board flag, not a family:
-`tnt_board_desc_t.has_platinum` (with `vram_kb`) switches the six areas
-below (some twenty tests of the flag across `tnt.c`, `bandit.c`,
-`grand_central.c` and `platinum.c`), and everything else — the island decode, DBDMA, Cuda, the interrupt fabric,
-NVRAM — is shared unchanged.
+cell, and the 53C94 as the only SCSI bus.  A board delta, not a family:
+the board names two chip-ops tables instead of setting a flag tnt.c tests
+— `tnt_board_desc_t.mc` (the memory controller at `$F8000000`:
+`tnt_platinum_mc`, where every other board takes the default
+`tnt_hammerhead_mc`) and `.video` (the on-board video with the RAMDAC at GC
+`+$1B000`: `tnt_platinum_video_ops` against `tnt_control_video`), resolved
+once into `tnt_state_t.mc` / `.video` — plus two plain board facts,
+`has_chaos` (clear) and `has_mesh` (clear: a Macintosh board without MESH
+has the 53C94 on `machine.scsi` and no `scsi2`), and `vram_kb`.  Everything
+else — the island decode, DBDMA, Cuda, the interrupt fabric, NVRAM — is
+shared unchanged.
 
-| Where | Hammerhead boards | `has_platinum` |
+| Where | Hammerhead boards | Catalyst board |
 |---|---|---|
-| `$F8000000` window (`tnt.c` `hh_read8`/`hh_write8`) | `hammerhead.c` | `tnt_plat_read`/`write` |
-| DRAM decode | `tnt_hh_remap` (26 bank pairs, interleave) | `tnt_plat_remap` (8 bank bases, linear) |
-| `$F0000000` / `$F1000000` (`bandit.c`, `tnt.c`) | the Chaos bridge and its window | no Chaos; `$F1000000` is Platinum's VRAM aperture |
-| GC `+$1B000` (`grand_central.c`) | RaDACal (`control.c`) | DACula (`platinum.c`) |
-| SCSI (`tnt.c`) | MESH on `machine.scsi`, 53C94 on `machine.scsi2` | 53C94 on `machine.scsi`; no `scsi2` |
-| Display | Control, a PCI card on the Chaos bus | `substrate.display` → `tnt_plat_display` |
+| `$F8000000` window (`tnt.c` `hh_read8`/`hh_write8` → `mc->read`/`write`) | `hammerhead.c` | `platinum.c` |
+| DRAM decode (`mc->map`, `mc->board_restored`) | `tnt_hh_remap` (26 bank pairs, interleave) | `tnt_plat_remap` (8 bank bases, linear) |
+| `$F0000000` / `$F1000000` (`bandit.c`, `tnt.c`; `has_chaos`) | the Chaos bridge and its window | no Chaos; `$F1000000` is Platinum's VRAM aperture |
+| GC `+$1B000` (`grand_central.c` → `video->dac_*`) | RaDACal (`control.c`) | DACula (`platinum.c`) |
+| SCSI (`tnt.c`; `has_mesh`) | MESH on `machine.scsi`, 53C94 on `machine.scsi2` | 53C94 on `machine.scsi`; no `scsi2` |
+| Display (`video->display`) | Control, a PCI card on the Chaos bus | `substrate.display` → `tnt_plat_display` |
+
+Hammerhead's register file is powered on (`tnt_hh_init`) on every board,
+the Catalyst board included: it is part of the `tnt` checkpoint part
+whatever the controller.  The Hammerhead hot path is one indirect call
+through the resolved table, with no per-access board test.
 
 The model's facts, each from the ROM's own behaviour
 ([platinum.md](../../../reference/machines/tnt/platinum.md)):
@@ -612,9 +623,10 @@ The model's facts, each from the ROM's own behaviour
   or four dots by mode; `plat_hunit` takes the largest that fits the pitch.
 
 Platinum's state (`tnt_platinum_t`) rides the `tnt.av` checkpoint part only
-on a Platinum board (`tnt_state_t.has_platinum`), so the Hammerhead boards'
-checkpoints are unchanged; the bank decode and the VRAM view are rebuilt
-from the restored registers.
+on a Platinum board (`tnt_video_ops_t.save`/`load`, after Control's block
+and the VRAM), so the Hammerhead boards' checkpoints are unchanged; the bank
+decode and the VRAM view are rebuilt from the restored registers
+(`video->restored`).
 
 Verification: `suite-pm7200` — System 7.5.3 (with a checkpoint round trip),
 System 7.6 and Mac OS 8.1 from the 53C94 disk to the Finder and About box,
