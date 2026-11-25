@@ -2,8 +2,8 @@
 -- Classic II.
 --
 -- Each row: boot, settle at the Finder, match the Finder golden, open About
--- This Macintosh, match it (guest-memory figures excluded, as check_about
--- does on 640-wide screens), and assert id, ROM id and BoxFlag.  (Gestalt's
+-- This Macintosh, match it (guest-memory figures excluded: mac.check_about_at
+-- by screen size), and assert id, ROM id and BoxFlag (mac.about_row).  (Gestalt's
 -- machine type is BoxFlag + 6 on every ROM-identified model.)
 
 local mac = dofile("../lib/mac.lua")
@@ -20,95 +20,56 @@ local ROMS = {
     lc550 = {path = DATA .. "roms/lc550-cc2-mactv-ede66cbd.rom", id = "ede66cbd"},
 }
 
--- About-window exclusions on the Color Classic II's 512x384 screen: the
--- window sits 64 pixels left and 22 higher than on the 640-wide desktop
--- (7.5.3); 7.6 on the floppy places it 12 pixels higher still.
-local ABOUT_EXCL_384 = {
-    ["7.5.3"] = {122, 376, 136, 426, 140, 186, 154, 426},
-    ["7.6"] = {108, 376, 124, 426, 126, 186, 142, 426},
-}
+-- Every row: 8 MB, the clock pinned, a fixed head start then a stability
+-- wait (the settle these rows' perf baselines were taken with).  Every System
+-- here draws a menu-bar clock, left out of the matches.
+local ROW = {suite = "suite-sonora", ram = 8192, rtc = 3000000000, clock = true,
+    settle = {"stable", head = 250000000, ceiling = 1500000000}}
 
--- Boot `model` on `rom` from `media` ("fd" or "hd") and settle at the Finder.
-local function boot(model, rom, media_kind, media, ram)
-    ram = ram or 8192
-    machine.boot{model = model, ram = ram, rom = rom.path}
-    machine.rtc.time = 3000000000
-    if media_kind == "fd" then machine.floppy.drive[0].insert(media) else machine.scsi.attach_hd(media, 0) end
-    scheduler.run(250000000)
-    mac.wait_stable(1500000000)
-    assert(machine.id == model, F"${model}: machine.id ${machine.id}")
-    assert(machine.rom.id == rom.id, F"${model}: rom.id ${machine.rom.id}")
-    assert(machine.ram == ram, F"${model}: machine.ram ${machine.ram}")
+-- `rom` is a ROMS entry.
+local function fill(t)
+    t = mac.with(ROW, t)
+    t.rom, t.rom_id = t.rom.path, t.rom.id
+    if t.w then t.finder_ex = {0, t.w - 150, 20, t.w - 60} end
+    return t
 end
 
--- BoxFlag ($0CB3), read through the user-context window.
-local function box_flag()
-    return machine.cpu.mmu.peek(0xCB3, 1)
+local function row(t)
+    t = fill(t)
+    mac.row(t.label, function() mac.about_row(t) end)
 end
 
--- Match the About window (7.5+ draws a menu-bar clock, excluded too).
-local function check_about(ref, system)
-    if machine.screen.width == 640 then
-        mac.check_about_clock(ref)
-        return
-    end
-    if mac.REGEN_MODE == "1" then
-        machine.screen.save(ref)
-        return
-    end
-    local e = ABOUT_EXCL_384[system]
-    machine.screen.match(ref, e[1], e[2], e[3], e[4], e[5], e[6], e[7], e[8], 0, 360, 20, 450)
-end
-
--- One Finder + About row.
 -- golden-collision-ok: lc520-753-hd-640x480x8-finder.png lciii-753-hd-640x480x8-finder.png lciiip-753-hd-640x480x8-finder.png — the same System 7.5.3 desktop at 640x480x8; machine.id, rom.id and BoxFlag (50/21/56) tell the rows apart
 -- golden-collision-ok: lciii-753-hd-640x480x8-about.png lciiip-753-hd-640x480x8-about.png — 7.5.3 names both "Macintosh" with the same RAM; machine.id and BoxFlag (21 vs 56) tell them apart
 -- golden-collision-ok: lc550-76-hd-640x480x8-finder.png lciii-early-76-hd-640x480x8-finder.png — the same System 7.6 desktop; machine.id, rom.id (ede66cbd vs ec904829) and BoxFlag (74 vs 21) tell them apart
--- `finder` and `about` are the row's two goldens, named literally so that
--- scripts/check-goldens.py can see them.
-local function about_row(label, model, rom, media_kind, media, system, box, w, h, d, finder, about)
-    boot(model, rom, media_kind, media)
-    assert(machine.screen.width == w and machine.screen.height == h,
-        F"${label}: screen ${machine.screen.width}x${machine.screen.height}")
-    if mac.REGEN_MODE == "1" then echo(F"${label}: depth ${machine.screen.depth}") end
-    assert(mac.REGEN_MODE == "1" or machine.screen.depth == d, F"${label}: depth ${machine.screen.depth}")
-    mac.check_ex(finder, 0, w - 150, 20, w - 60)
-    mac.about_box()
-    check_about(about, system)
-    assert(box_flag() == box, F"${label}: BoxFlag ${box_flag()}, want ${box}")
-    mac.report_row(system, "builtin", media_kind .. "-boot about")
-    mac.report_perf("suite-sonora/" .. label, scheduler.instr_count)
-end
-
-mac.row("lciii-753-hd", function() about_row("lciii-753-hd", "lciii", ROMS.lciii, "hd", hd_753, "7.5.3", 21, 640, 480, 8,
-        "goldens/lciii-753-hd-640x480x8-finder.png", "goldens/lciii-753-hd-640x480x8-about.png") end)
-mac.row("lciii-76-fd", function() about_row("lciii-76-fd", "lciii", ROMS.lciii, "fd", fd_76, "7.6", 21, 640, 480, 8,
-        "goldens/lciii-76-fd-640x480x8-finder.png", "goldens/lciii-76-fd-640x480x8-about.png") end)
-mac.row("lciii-early-76-hd", function()
-    about_row("lciii-early-76-hd", "lciii", ROMS.lciii_early, "hd", hd_76, "7.6", 21, 640, 480, 8,
-        "goldens/lciii-early-76-hd-640x480x8-finder.png", "goldens/lciii-early-76-hd-640x480x8-about.png") end)
-mac.row("lciiip-753-hd", function() about_row("lciiip-753-hd", "lciiip", ROMS.lciii, "hd", hd_753, "7.5.3", 56, 640, 480, 8,
-        "goldens/lciiip-753-hd-640x480x8-finder.png", "goldens/lciiip-753-hd-640x480x8-about.png") end)
-mac.row("lc520-753-hd", function() about_row("lc520-753-hd", "lc520", ROMS.lc550, "hd", hd_753, "7.5.3", 50, 640, 480, 8,
-        "goldens/lc520-753-hd-640x480x8-finder.png", "goldens/lc520-753-hd-640x480x8-about.png") end)
-mac.row("lc550-76-hd", function() about_row("lc550-76-hd", "lc550", ROMS.lc550, "hd", hd_76, "7.6", 74, 640, 480, 8,
-        "goldens/lc550-76-hd-640x480x8-finder.png", "goldens/lc550-76-hd-640x480x8-about.png") end)
-mac.row("cc2-753-hd", function()
-    about_row("cc2-753-hd", "colorclassicii", ROMS.lc550, "hd", hd_753, "7.5.3", 77, 512, 384, 8,
-        "goldens/cc2-753-hd-512x384x8-finder.png", "goldens/cc2-753-hd-512x384x8-about.png") end)
-mac.row("cc2-76-fd", function()
-    about_row("cc2-76-fd", "colorclassicii", ROMS.lc550, "fd", fd_76, "7.6", 77, 512, 384, 8,
-        "goldens/cc2-76-fd-512x384x8-finder.png", "goldens/cc2-76-fd-512x384x8-about.png") end)
+row{label = "lciii-753-hd", model = "lciii", rom = ROMS.lciii, hd = hd_753, system = "7.5.3", box = 21, w = 640, h = 480, d = 8,
+    finder = "goldens/lciii-753-hd-640x480x8-finder.png", about = "goldens/lciii-753-hd-640x480x8-about.png"}
+row{label = "lciii-76-fd", model = "lciii", rom = ROMS.lciii, fd = fd_76, system = "7.6", box = 21, w = 640, h = 480, d = 8,
+    finder = "goldens/lciii-76-fd-640x480x8-finder.png", about = "goldens/lciii-76-fd-640x480x8-about.png"}
+row{label = "lciii-early-76-hd", model = "lciii", rom = ROMS.lciii_early, hd = hd_76, system = "7.6", box = 21,
+    w = 640, h = 480, d = 8,
+    finder = "goldens/lciii-early-76-hd-640x480x8-finder.png", about = "goldens/lciii-early-76-hd-640x480x8-about.png"}
+row{label = "lciiip-753-hd", model = "lciiip", rom = ROMS.lciii, hd = hd_753, system = "7.5.3", box = 56, w = 640, h = 480, d = 8,
+    finder = "goldens/lciiip-753-hd-640x480x8-finder.png", about = "goldens/lciiip-753-hd-640x480x8-about.png"}
+row{label = "lc520-753-hd", model = "lc520", rom = ROMS.lc550, hd = hd_753, system = "7.5.3", box = 50, w = 640, h = 480, d = 8,
+    finder = "goldens/lc520-753-hd-640x480x8-finder.png", about = "goldens/lc520-753-hd-640x480x8-about.png"}
+row{label = "lc550-76-hd", model = "lc550", rom = ROMS.lc550, hd = hd_76, system = "7.6", box = 74, w = 640, h = 480, d = 8,
+    finder = "goldens/lc550-76-hd-640x480x8-finder.png", about = "goldens/lc550-76-hd-640x480x8-about.png"}
+-- On the Color Classic II's 512x384 screen the About window sits 64 pixels
+-- left and 22 higher than on the 640-wide desktop (7.5.3); 7.6 on the
+-- floppy places it 12 pixels higher still.
+row{label = "cc2-753-hd", model = "colorclassicii", rom = ROMS.lc550, hd = hd_753, system = "7.5.3", box = 77,
+    w = 512, h = 384, d = 8,
+    finder = "goldens/cc2-753-hd-512x384x8-finder.png", about = "goldens/cc2-753-hd-512x384x8-about.png"}
+row{label = "cc2-76-fd", model = "colorclassicii", rom = ROMS.lc550, fd = fd_76, system = "7.6", box = 77,
+    w = 512, h = 384, d = 8, about_layout = "512x384 Disk Tools 7.6",
+    finder = "goldens/cc2-76-fd-512x384x8-finder.png", about = "goldens/cc2-76-fd-512x384x8-about.png"}
 
 -- System 7.1 refuses the LC III at startup without System Enabler 003, as on
 -- the real machine: the ROM identified the board before the System looked.
 mac.row("lciii-71-refused", function()
-    machine.boot{model = "lciii", ram = 8192, rom = ROMS.lciii.path}
-    machine.scsi.attach_hd(hd_71, 0)
-    scheduler.run(100000000)
-    mac.wait_stable(800000000)
-    assert(machine.id == "lciii" and machine.rom.id == ROMS.lciii.id, "lciii-71-refused: machine")
-    assert(box_flag() == 21, F"lciii-71-refused: BoxFlag ${box_flag()}")
+    mac.boot_finder(fill{label = "lciii-71-refused", model = "lciii", rom = ROMS.lciii, hd = hd_71, rtc = false, box = 21,
+        settle = {"stable", head = 100000000, ceiling = 800000000}})
     mac.check("goldens/lciii-71-refused-640x480.png")
     mac.report_perf("suite-sonora/lciii-71-refused", scheduler.instr_count)
 end)
@@ -118,13 +79,8 @@ end)
 -- round-trip: save, boot a different machine, load, re-match.  Covers the
 -- Sonora RAM decode with a SIMM and the restored video mode.
 mac.row("lciii-12in-checkpoint", function()
-    machine.boot{model = "lciii", ram = 20480, rom = ROMS.lciii.path,
-        config = "{\"displays\":{\"builtin\":{\"monitor\":\"12in_rgb\"}}}"}
-    machine.rtc.time = 3000000000
-    machine.scsi.attach_hd(hd_753, 0)
-    scheduler.run(250000000)
-    mac.wait_stable(1500000000)
-    assert(machine.screen.width == 512 and machine.screen.height == 384, "lciii-12in-checkpoint: not 512x384")
+    mac.boot_finder(fill{label = "lciii-12in-checkpoint", model = "lciii", rom = ROMS.lciii, ram = 20480, hd = hd_753,
+        w = 512, h = 384, boot = {config = "{\"displays\":{\"builtin\":{\"monitor\":\"12in_rgb\"}}}"}})
     assert(machine.cpu.mmu.peek(0x1EF8, 4) == 20480 * 1024, "lciii-12in-checkpoint: PhysMemTop")
     mac.check_ex("goldens/lciii-12in-753-512x384x8-finder.png", 0, 362, 20, 452)
     mac.report_row("7.5.3", "builtin", "hd-boot 12in-rgb")
