@@ -31,12 +31,16 @@ $9FFFF8/$BFFFF9, the floppy chip at $DFE1FF, one VIA at $EFE1FE, and a
 | Macintosh Classic | `classic` | BBU | 512 KB | 5380 | SWIM | SuperDrive internal / external |
 
 `compact_board_t` carries `bbu` (the generation of general logic),
-`has_scsi`, `floppy_chip`, and on the BBU boards `drive_select` and
-`second_internal`. Every behavioural difference is a branch on one of them.
+`has_scsi`, `floppy_chip`, `drive_select` (the SE and SE FDHD: PA4 steers
+/ENBL1 between two internal drives) and `pwm_disk_speed` (the 128K and
+512K: the disk-speed PWM sets the 400K drive's spindle; the 512K enhanced
+has its own board for want of it). Every behavioural difference is a
+branch on one of them.
 
 **PAL boards** (128K, 512K, 512K enhanced, Plus) keep the Plus behaviour
-that this file grew from: the overlay follows VIA PA4 (read-side steer,
-`compact_set_rom_overlay`), the keyboard is the M0110 on the VIA shift
+that this file grew from: the overlay follows VIA PA4 — the shared
+`m68k_board_overlay_t` under its FOLLOW_READS policy, which steers reads
+only, so a write to low memory still reaches RAM — the keyboard is the M0110 on the VIA shift
 register (`keyboard.c`), the mouse is quadrature through the SCC DCD lines
 and VIA PB4/PB5 (`mouse.c`), PA3 selects the alternate sound buffer, and
 the phase-read window at $F00000 answers 0. The overlay map also places
@@ -44,7 +48,11 @@ RAM at $600000 (Inside Macintosh, vol. III, ch. 2, `ovlyRAM`): the 64 KB
 ROM runs its memory test and draws its error screen there before it
 clears vOverlay. The image exists only while the overlay is on — it is
 RAM from offset 0, wrapping on a board smaller than the 2 MB window — and
-the range is empty again once the ROM drops the overlay.
+the range is empty again once the ROM drops the overlay; the overlay
+object's `on_change` hook (`compact_pal_overlay_changed`) maps and clears
+it. Both generations take the shared `m68k_board_bus_reset` (overlay
+re-armed, then the common devices), and both map RAM back at zero with
+`m68k_board_overlay_map_ram_identity`, which wraps into the installed RAM.
 
 **BBU boards** (SE, SE FDHD, Classic) differ in four wired facts:
 
@@ -65,15 +73,17 @@ the range is empty again once the ROM drops the overlay.
    mask (`compact_scsi_irq_update`, source `COMPACT_IRQ_SCSI`).
 
 On the SE FDHD and Classic the SWIM sits in the IWM's window with the same
-A9-A12 register decode (`compact_swim_*` wrapper over
-`floppy_get_memory_interface`).
+A9-A12 register decode: `compact_init` maps either chip with one call,
+`floppy_map_stride_window` (`floppy.c`). The two chips' windows still
+differ on a 16/32-bit access, which no compact ROM makes: the IWM's answers
+open bus and logs the bus address, the SWIM's hands the access to the
+chip's own open-bus handlers at the decoded register index (see §7).
 
 ## 2. Key types & files
 
 - `compact_board_t` — the per-model data above.
 - `compact_state_t` — the display descriptor, the PWM sound handle, the
-  PAL overlay level, the BBU overlay object, the latched SCSI IRQ level and
-  the SWIM window interface.
+  overlay object (either policy) and the latched SCSI IRQ level.
 - `compact_substrate` — init, bus reset, teardown, PRAM seed, VBL, host I/O
   and media, and the display hook.
 
@@ -101,7 +111,8 @@ spindle, and the 64 KB ROM calibrates that by timing /TACH at two speed
 settings and dividing by the difference — a self-regulating drive gives a
 zero difference and a divide-by-zero Sad Mac (0F0004). Once a frame
 `compact_trigger_vbl` averages the disk-speed bytes (the low byte of each
-of the 370 sound-buffer words) as positions along the PWM's 63-state
+of the 370 sound-buffer words, read through `sound_main_buffer`: always the
+main buffer, whichever one vSndPg2 selects for playback) as positions along the PWM's 63-state
 shift-register sequence and hands the resulting speed to
 `floppy_set_pwm_rpm`, which `/TACH` then follows. The speed law (700 rpm
 at position 0, 10 rpm less per step) is an assumption that spans the
@@ -146,6 +157,11 @@ power-on. The Plus keeps `suite-plus`.
 - The SE/SE FDHD external floppy port and a third (external) drive are
   not modelled; the floppy controller has two drive positions.
 - vSync (SE PA3, the modem's receive clock) is ignored.
+- A wide access to the floppy window logs differently per chip (the IWM
+  window names the bus address, the SWIM window the register index), and
+  a wide debugger peek reads $FF.. from the IWM's but is composed from
+  byte peeks of the SWIM's. Neither is guest-visible beyond open bus;
+  kept as they were when the window moved into `floppy.c`.
 - The SE, SE FDHD and Classic take the Plus's power-up SysParam; their own
   PRAMInit values were not measured.
 

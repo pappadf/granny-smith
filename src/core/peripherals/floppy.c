@@ -73,9 +73,9 @@ static void floppy_speed_settle_callback(void *source, uint64_t data) {
     LOG(5, "Drive %d: Speed settle complete", drive_index);
 }
 
-// Returns pointer to the currently selected drive based on IWM SELECT line
-static floppy_drive_t *current_drive(floppy_t *floppy) {
-    return &floppy->drives[DRIVE_INDEX(floppy)];
+// The drive the IWM SELECT line selects, or NULL when it reaches no drive
+static floppy_drive_t *selected_drive(floppy_t *floppy) {
+    return floppy_cabled_drive(floppy, DRIVE_INDEX(floppy));
 }
 
 // One read-head bit, for either side.
@@ -226,9 +226,9 @@ int floppy_disk_status_at(floppy_t *floppy, int drv, uint8_t lines, bool peek) {
     // sense line floats high, /DRVIN included ("no drive").  Answering for
     // it made a one-drive Quadra 700 or IIci report a second drive, and
     // MacTest Pro listed and tested "Floppy Drive 2".
-    if (drv >= floppy->n_drives)
+    floppy_drive_t *drive = floppy_cabled_drive(floppy, drv);
+    if (!drive)
         return 1;
-    floppy_drive_t *drive = &floppy->drives[drv];
     bool ca0 = (lines & IWM_LINE_CA0) != 0, ca1 = (lines & IWM_LINE_CA1) != 0, ca2 = (lines & IWM_LINE_CA2) != 0;
 
     // Build status key from CA lines and VIA SEL signal
@@ -385,9 +385,9 @@ void floppy_disk_control(floppy_t *floppy) {
     int drv = (floppy->type == FLOPPY_TYPE_SWIM && (floppy->ism_mode & ISM_MODE_ISM_IWM)) ? ISM_DRIVE_INDEX(floppy)
                                                                                           : DRIVE_INDEX(floppy);
     // A select that reaches no drive commands nothing
-    if (drv >= floppy->n_drives)
+    floppy_drive_t *drive = floppy_cabled_drive(floppy, drv);
+    if (!drive)
         return;
-    floppy_drive_t *drive = &floppy->drives[drv];
 
     // Determine the correct motor callback based on controller type
     // Commands only when SEL is low
@@ -528,14 +528,15 @@ static uint8_t iwm_reg_read(floppy_t *floppy, uint32_t offset, bool peek) {
             return 0xFF;
         }
 
-        if (drv >= floppy->n_drives || floppy->disk[drv] == NULL) {
+        image_t *disk = floppy_cabled_disk(floppy, drv);
+        if (!disk) {
             LOG(6, "Drive %d: Reading data (no disk) = 0x00", drv);
             return 0x00;
         }
 
         floppy_drive_t *drive = &floppy->drives[drv];
-        const uint8_t *data = peek ? iwm_track_data_peek(drive, floppy->disk[drv], floppy->sel)
-                                   : iwm_track_data(drive, floppy->disk[drv], floppy->sel, floppy->scheduler);
+        const uint8_t *data = peek ? iwm_track_data_peek(drive, disk, floppy->sel)
+                                   : iwm_track_data(drive, disk, floppy->sel, floppy->scheduler);
         if (!data) {
             // MFM media in the drive, or an allocation failure.  The SWIM
             // returns 0x00 so the ROM's GCR sync detection fails and it falls
@@ -620,10 +621,10 @@ void floppy_iwm_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
     int drv = DRIVE_INDEX(floppy);
 
     if (IWM_ENABLE(floppy)) {
-        if (drv >= floppy->n_drives)
+        floppy_drive_t *drive = selected_drive(floppy);
+        if (!drive)
             return; // the selected line reaches no drive
         // Write data to disk
-        floppy_drive_t *drive = current_drive(floppy);
 
         uint8_t *data = iwm_track_data(drive, floppy->disk[drv], floppy->sel, floppy->scheduler);
         if (!data) {
@@ -703,7 +704,7 @@ void floppy_set_sel_signal(floppy_t *floppy, bool sel) {
             LOG(6, "SEL signal: %s (no change)", sel ? "high" : "low");
         floppy->sel = sel;
         // Only update the current drive's data side when not actively reading/writing
-        if (!IWM_ENABLE(floppy) && DRIVE_INDEX(floppy) < floppy->n_drives)
+        if (!IWM_ENABLE(floppy) && selected_drive(floppy))
             floppy_drive_latch_side(floppy, (unsigned)DRIVE_INDEX(floppy), sel);
     } else {
         LOG(6, "SEL signal: %s -> %s", floppy->sel ? "high" : "low", sel ? "high" : "low");
@@ -969,12 +970,13 @@ int floppy_drive_count(const floppy_t *floppy) {
 }
 
 // ============================================================================
-// Mac Plus IWM memory-mapped I/O (address decoding)
+// The compact boards' floppy window (address decoding)
 // ============================================================================
 //
-// The board-level wiring of the IWM-only controller: odd-byte lane, A9-A12
-// to the chip's A1-A4.  SWIM and the controller-driven chips are mapped by
-// their machines instead.
+// The board-level wiring of the 68000 compact Macs: odd-byte lane, A9-A12 to
+// the chip's register select.  The IWM's window is iwm_iface below; the SWIM's
+// (SE FDHD, Classic) is floppy_swim_stride_iface.  The other SWIM machines
+// and the controller-driven chips decode their own windows.
 
 // Memory interface handler for 8-bit reads from IWM address space
 static uint8_t iwm_read_uint8(void *floppy, uint32_t addr) {
@@ -1024,9 +1026,19 @@ static const memory_interface_t iwm_iface = {
 };
 
 // Sets up the IWM memory interface callbacks on the floppy controller
-static void floppy_iwm_setup(floppy_t *floppy, memory_map_t *map) {
+static void floppy_iwm_setup(floppy_t *floppy) {
     floppy->memory_interface = &iwm_iface;
-    memory_map_add(map, 0x00d80000, 0x00080000, "floppy", &iwm_iface, floppy);
+}
+
+// Map the compact boards' window (floppy.h).  The two chips keep their own
+// wide-access behaviour: the IWM's window answers a 16/32-bit access itself
+// with open bus (logging the bus address), the SWIM's hands it to the chip's
+// wide handlers at the decoded index (which log the index, and leave wide
+// peeks to the memory layer).
+void floppy_map_stride_window(floppy_t *floppy, memory_map_t *map, uint32_t base, uint32_t size) {
+    GS_ASSERT(floppy->type == FLOPPY_TYPE_IWM || floppy->type == FLOPPY_TYPE_SWIM);
+    const memory_interface_t *iface = floppy->type == FLOPPY_TYPE_SWIM ? &floppy_swim_stride_iface : &iwm_iface;
+    memory_map_add(map, base, size, "floppy", iface, floppy);
 }
 
 // Initializes a floppy controller of the given type and maps it to memory
@@ -1065,7 +1077,7 @@ floppy_t *floppy_init(floppy_type_t type, memory_map_t *map, struct scheduler *s
         floppy_swim_setup(floppy, map);
     } else {
         scheduler_new_event_type(scheduler, "floppy", floppy, "motor_spinup", &floppy_motor_spinup_callback);
-        floppy_iwm_setup(floppy, map);
+        floppy_iwm_setup(floppy);
     }
     scheduler_new_event_type(scheduler, "floppy", floppy, "step_settle", &floppy_step_settle_callback);
     scheduler_new_event_type(scheduler, "floppy", floppy, "speed_settle", &floppy_speed_settle_callback);

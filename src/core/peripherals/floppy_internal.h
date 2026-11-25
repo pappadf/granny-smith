@@ -314,6 +314,20 @@ static inline int floppy_enbl_drive(const struct floppy *f, int line) {
     return (d < 0 || d >= NUM_DRIVES) ? FLOPPY_NO_DRIVE : d;
 }
 
+// The one "no drive" test for a drive select (DRIVE_INDEX, ISM_DRIVE_INDEX):
+// the drive `drv` names, or NULL when it reaches no drive -- FLOPPY_NO_DRIVE,
+// or a position past the drives the machine cables (n_drives).  Every path
+// that acts on the selected drive goes through this or floppy_cabled_disk,
+// so none can index drives[FLOPPY_NO_DRIVE].
+static inline floppy_drive_t *floppy_cabled_drive(struct floppy *f, int drv) {
+    return (drv >= 0 && drv < f->n_drives) ? &f->drives[drv] : NULL;
+}
+
+// The medium in the drive `drv` names: NULL with no disk, or no drive.
+static inline image_t *floppy_cabled_disk(const struct floppy *f, int drv) {
+    return (drv >= 0 && drv < f->n_drives) ? f->disk[drv] : NULL;
+}
+
 // Size of plain-data portion for checkpointing (excludes pointers at end)
 #define FLOPPY_CHECKPOINT_SIZE offsetof(floppy_t, disk)
 
@@ -399,6 +413,8 @@ void floppy_iwm_write(floppy_t *floppy, uint32_t offset, uint8_t byte);
 
 // Sets up SWIM memory interface callbacks and ISM initial state
 void floppy_swim_setup(floppy_t *floppy, memory_map_t *map);
+// The SWIM behind the compact boards' $200-stride window (floppy_map_stride_window)
+extern const memory_interface_t floppy_swim_stride_iface;
 
 // Bus /RESET for the SWIM/ISM register file.
 void floppy_swim_bus_reset(floppy_t *floppy);

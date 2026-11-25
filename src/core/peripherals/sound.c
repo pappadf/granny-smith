@@ -36,6 +36,11 @@ LOG_USE_CATEGORY_NAME("sound");
 
 #define BUF_SIZE 370
 
+// The main buffer ends $300 below the top of RAM; the alternate one sits
+// $5C00 below that (Guide 2e, ch. 2)
+#define MAIN_BUF_FROM_TOP 0x300u
+#define ALT_BUF_BELOW     0x5c00u
+
 // PWM scan output rate: 370 samples per VBL at ~60.15 Hz (~22.255 kHz)
 #define SOUND_SRC_RATE_HZ 22255
 
@@ -91,11 +96,20 @@ void sound_use_buffer(sound_t *sound, bool main) {
     uint32_t top = memory_ram_size(sound->mem);
     if (main) {
         // [2] the address of the main sound buffer is top of ram - 0x300
-        sound->buffer = (uint16_t *)ram_native_pointer(sound->mem, top - 0x300);
+        sound->buffer = (uint16_t *)ram_native_pointer(sound->mem, top - MAIN_BUF_FROM_TOP);
     } else {
         // [1] the address of the alternate sound buffer is SoundBase-$5C00
-        sound->buffer = (uint16_t *)ram_native_pointer(sound->mem, top - 0x300 - 0x5c00);
+        sound->buffer = (uint16_t *)ram_native_pointer(sound->mem, top - MAIN_BUF_FROM_TOP - ALT_BUF_BELOW);
     }
+}
+
+// The main sound buffer's bytes, whichever buffer plays (sound.h)
+const uint8_t *sound_main_buffer(const sound_t *sound, unsigned *words) {
+    if (words)
+        *words = sound ? BUF_SIZE : 0;
+    if (!sound)
+        return NULL;
+    return ram_native_pointer(sound->mem, memory_ram_size(sound->mem) - MAIN_BUF_FROM_TOP);
 }
 
 // Sets the sound volume (0-7)

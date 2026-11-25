@@ -67,6 +67,11 @@ extern const uint32_t mac_ram_options_4mb_72pin_kb[];
 #define MAC_SCSI_UNITS    0x7Fu
 #define MAC_SCSI_RESERVED 0x80u
 #define MAC_SCSI_BUS(id_, label_, media_bus_, bays_, external_)                                                        \
+    MAC_SCSI_BUS_STARTUP(id_, label_, media_bus_, bays_, external_, true)
+
+// The same, saying whether the bus can hold the startup device: false on a
+// machine whose ROM keeps no startup-device record (the Plus).
+#define MAC_SCSI_BUS_STARTUP(id_, label_, media_bus_, bays_, external_, startup_ok_)                                   \
     {.id = (id_),                                                                                                      \
      .label = (label_),                                                                                                \
      .kind = STORAGE_KIND_SCSI,                                                                                        \
@@ -76,6 +81,16 @@ extern const uint32_t mac_ram_options_4mb_72pin_kb[];
      .external_connector = (external_),                                                                                \
      .bays = (bays_),                                                                                                  \
      .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD,                                                                       \
-     .startup_ok = true}
+     .startup_ok = (startup_ok_)}
+
+// A two-position floppy table: the internal drive and a second, optional
+// one of the same kind -- `second_label_` names it ("External floppy drive",
+// "Second internal floppy drive"); `default_none_` ships that position empty.
+#define MAC_FLOPPY_PAIR(kind_, second_label_, default_none_)                                                           \
+    {                                                                                                                  \
+        {.label = "Internal floppy drive", .kind = (kind_)},                                                           \
+        {.label = (second_label_), .kind = (kind_), .optional = true, .default_none = (default_none_)},                \
+        {0},                                                                                                           \
+}
 
 #endif // GS_MACHINES_RUNTIME_SLOT_TABLES_H

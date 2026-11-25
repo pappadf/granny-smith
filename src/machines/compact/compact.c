@@ -21,6 +21,7 @@
 // interrupt callbacks, the VBL trigger, and the hw_profile_t descriptors.
 
 #include "config_seed.h"
+#include "m68k_board.h" // m68k_board_bus_reset
 #include "m68k_board_overlay.h"
 #include "mac_host_io.h"
 #include "machine.h"
@@ -42,7 +43,6 @@
 #include "machine_checkpoint.h"
 #include "machine_irq.h"
 #include "memory.h"
-#include "mmu.h" // tlb_track_page
 #include "mouse.h"
 #include "page_fill.h"
 #include "pram_defaults.h"
@@ -70,14 +70,17 @@ typedef struct compact_board {
     bool bbu;
     bool has_scsi; // an NCR 5380 at $580000 (Plus, SE, SE FDHD, Classic)
     floppy_type_t floppy_chip; // FLOPPY_TYPE_IWM, or FLOPPY_TYPE_SWIM (SE FDHD, Classic)
-    // BBU boards: the second drive position is the upper internal drive
-    // (vDriveSel steers /ENBL1 to it) and the external port is not modelled;
-    // false: it is the external drive on /ENBL2, and no upper drive is fitted.
-    bool second_internal;
-    // BBU boards: VIA PA4 is vDriveSel, steering /ENBL1 between the lower and
-    // the upper internal drive (SE, SE FDHD).  The Classic has one internal
-    // drive and gives PA4 no such job.
+    // BBU boards with two internal drives (SE, SE FDHD): VIA PA4 is vDriveSel,
+    // steering /ENBL1 between the lower and the upper internal drive, so the
+    // second drive position is the upper internal drive and the external port
+    // (/ENBL2) is not modelled.  False: the second position is the external
+    // drive on /ENBL2 and no upper drive is fitted; the Classic has one
+    // internal drive and gives PA4 no such job.
     bool drive_select;
+    // The 128K and 512K: the single-sided 400K drive has no speed control of
+    // its own, so the board's disk-speed PWM (the sound buffer's low bytes)
+    // sets its spindle (compact_pwm_rpm).
+    bool pwm_disk_speed;
 } compact_board_t;
 
 // The model's board descriptor (hw_profile_t.board).
@@ -94,19 +97,16 @@ typedef struct compact_state {
     // each time VIA PA6 toggles; fb_dirty is set on every change so
     // the renderer re-uploads.
     display_t display;
-    // PAL boards: VIA PA4 (vOverlay) as the address decoder sees it -- true
-    // while the ROM answers at $000000 (Guide 2e, ch. 3).  The line is pulled
-    // up, so it is high whenever PA4 is not driven -- at power-on and after
-    // /RESET.
-    bool rom_overlay;
-    // BBU boards: the access-triggered overlay (Guide 2e, ch. 3: "The BBU
-    // switches from the ROM overlay address map to the normal address map the
-    // first time an access is made in the range $40 0000 through $5F FFFF").
+    // The ROM overlay.  PAL boards: it follows VIA PA4 (vOverlay) as the
+    // address decoder sees it, armed while the ROM answers reads at $000000
+    // (Guide 2e, ch. 3); the line is pulled up, so it is high whenever PA4 is
+    // not driven -- at power-on and after /RESET.  BBU boards: it is
+    // access-triggered (Guide 2e, ch. 3: "The BBU switches from the ROM
+    // overlay address map to the normal address map the first time an access
+    // is made in the range $40 0000 through $5F FFFF").
     m68k_board_overlay_t overlay;
     // BBU boards: the 5380's IRQ output, before the PB6 mask.
     bool scsi_irq;
-    // BBU boards with a SWIM: its register window, decoded like the IWM's.
-    memory_interface_t swim_window;
 } compact_state_t;
 
 // Helper: return the family state from a config handle
@@ -213,46 +213,22 @@ static display_t *compact_display(config_t *cfg) {
 // Memory layout
 // ============================================================
 
-// Point one page's READ side at `host_ptr`; the write side is left alone, so
-// with the overlay on a write to low memory still lands in RAM (the decoder
-// steers reads only, as on the II-family GLUE).
-static void compact_map_read_page(uint32_t p, uint8_t *host_ptr) {
-    if (p >= g_page_count)
-        return;
-    uintptr_t adjusted = MEM_RAM_ENTRY((uintptr_t)host_ptr - ((uintptr_t)p << MEM_PAGE_SHIFT));
-    memory_page_set_host(p, host_ptr, g_page_table[p].writable);
-    if (g_supervisor_read)
-        g_supervisor_read[p] = adjusted;
-    if (g_user_read)
-        g_user_read[p] = adjusted;
-    tlb_track_page(p); // on the tracker like every fast-path entry (page_fill_68k)
-    memory_logpoint_guard_page(p);
-}
-
-// PAL boards: drive the ROM overlay.  On maps the ROM image over the bottom
-// of the address space for reads, off puts RAM back.  The ROM drops it a few
+// PAL boards: what else the overlay map changes (the overlay object's
+// on_change hook).  The ROM itself is the shared object's FOLLOW_READS steer:
+// on maps the ROM image over the bottom of the address space for reads, off
+// puts RAM back, and writes reach RAM throughout.  The ROM drops it a few
 // instructions after the reset vector (CLR of PA4 at $4000D2 in the Plus v3
 // ROM), before it touches RAM; until then its reset vectors at $0/$4 are the
 // ROM's own.
-static void compact_set_rom_overlay(config_t *cfg, bool on) {
-    compact_state_t *st = compact_st(cfg);
-    if (st->rom_overlay == on)
-        return;
-    st->rom_overlay = on;
+//
+// The overlay map also places RAM at $600000 ("RAM is placed starting at
+// $600000", Inside Macintosh, vol. III, ch. 2; its ovlyRAM/ovlyScreen
+// equates): the 64 KB ROM runs its memory test and draws its error screen
+// there before it clears vOverlay.  The image is RAM from offset 0 (the 2 MB
+// window never reaches a 2.5 MB board's second row), wrapping on a smaller
+// board; it goes away with the overlay, leaving the range empty.
+static void compact_pal_overlay_changed(config_t *cfg, bool on) {
     uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
-    uint32_t rom_pages = cfg->machine->rom_size >> MEM_PAGE_SHIFT;
-    for (uint32_t p = 0; p < rom_pages; p++) {
-        // RAM below the ROM's size wraps (a 128K under a 64 KB ROM does not,
-        // but keep the offset inside the installed RAM regardless)
-        uint32_t ram_off = (p << MEM_PAGE_SHIFT) % cfg->ram_size;
-        compact_map_read_page(p, on ? ram + cfg->ram_size + (p << MEM_PAGE_SHIFT) : ram + ram_off);
-    }
-    // The overlay map also places RAM at $600000 ("RAM is placed starting at
-    // $600000", Inside Macintosh, vol. III, ch. 2; its ovlyRAM/ovlyScreen
-    // equates): the 64 KB ROM runs its memory test and draws its error screen
-    // there before it clears vOverlay.  The image is RAM from offset 0 (the
-    // 2 MB window never reaches a 2.5 MB board's second row), wrapping on a
-    // smaller board; it goes away with the overlay, leaving the range empty.
     for (uint32_t a = COMPACT_OVLY_RAM_START; a < COMPACT_OVLY_RAM_END; a += MEM_PAGE_SIZE) {
         if (on)
             page_fill_68k(a >> MEM_PAGE_SHIFT, ram + (a - COMPACT_OVLY_RAM_START) % cfg->ram_size, true);
@@ -262,21 +238,10 @@ static void compact_set_rom_overlay(config_t *cfg, bool on) {
     LOG(1, "ROM overlay %s", on ? "on: ROM at $000000" : "off: RAM at $000000");
 }
 
-// BBU boards: RAM back at zero once the overlay drops -- the pages the overlay
-// covered (the ROM's size from zero), wrapped into the installed RAM.
-static void compact_bbu_map_ram(config_t *cfg) {
-    uint32_t rom_pages = cfg->machine->rom_size >> MEM_PAGE_SHIFT;
-    uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
-    for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++)
-        page_fill_68k(p, ram + ((p << MEM_PAGE_SHIFT) % cfg->ram_size), true);
-}
-
 // BBU drive-select boards: steer /ENBL1 to the upper internal drive or, the
 // default, the lower one (/ENBL2, the external port, reaches no drive here).
 static void compact_route_enbl(config_t *cfg, bool upper) {
-    const compact_board_t *board = compact_board(cfg);
-    int enbl1 = upper ? (board->second_internal ? 1 : -1) : 0;
-    floppy_set_enbl_route(cfg->floppy, enbl1, board->second_internal ? -1 : 1);
+    floppy_set_enbl_route(cfg->floppy, upper ? 1 : 0, -1);
 }
 
 // The PAL boards' Phase Read area -- a STUB.  On hardware the value read tells
@@ -297,30 +262,6 @@ static uint32_t compact_phase_read_uint32(void *dev, uint32_t addr) {
     (void)dev;
     LOG(2, "Phase Read (long) at $%06x: not modelled, reads 0", addr);
     return 0;
-}
-
-// The SWIM as the BBU decodes it: the IWM's window, A9-A12 on the chip's
-// register select (Guide 2e, ch. 9), so the same $200 stride.
-static uint8_t compact_swim_read_uint8(void *dev, uint32_t addr) {
-    return floppy_get_memory_interface((floppy_t *)dev)->read_uint8(dev, (addr >> 9) & 0x0F);
-}
-static uint8_t compact_swim_peek_uint8(void *dev, uint32_t addr) {
-    return floppy_get_memory_interface((floppy_t *)dev)->peek_uint8(dev, (addr >> 9) & 0x0F);
-}
-static void compact_swim_write_uint8(void *dev, uint32_t addr, uint8_t value) {
-    floppy_get_memory_interface((floppy_t *)dev)->write_uint8(dev, (addr >> 9) & 0x0F, value);
-}
-static uint16_t compact_swim_read_uint16(void *dev, uint32_t addr) {
-    return floppy_get_memory_interface((floppy_t *)dev)->read_uint16(dev, (addr >> 9) & 0x0F);
-}
-static uint32_t compact_swim_read_uint32(void *dev, uint32_t addr) {
-    return floppy_get_memory_interface((floppy_t *)dev)->read_uint32(dev, (addr >> 9) & 0x0F);
-}
-static void compact_swim_write_uint16(void *dev, uint32_t addr, uint16_t value) {
-    floppy_get_memory_interface((floppy_t *)dev)->write_uint16(dev, (addr >> 9) & 0x0F, value);
-}
-static void compact_swim_write_uint32(void *dev, uint32_t addr, uint32_t value) {
-    floppy_get_memory_interface((floppy_t *)dev)->write_uint32(dev, (addr >> 9) & 0x0F, value);
 }
 
 // Populate the family memory layout in the page table.
@@ -361,7 +302,7 @@ static void compact_memory_layout_init(config_t *cfg) {
     // Register the Phase Read device (PAL boards: the BBU has none)
     if (!board->bbu) {
         // (The overlay map's RAM image at $600000 comes and goes with the
-        // overlay: compact_set_rom_overlay.)
+        // overlay: compact_pal_overlay_changed.)
         memory_interface_t phase_read;
         memset(&phase_read, 0, sizeof(phase_read));
         phase_read.read_uint8 = &compact_phase_read_uint8;
@@ -375,7 +316,7 @@ static void compact_memory_layout_init(config_t *cfg) {
 // arm it.  Called once the RAM and ROM pages are in place.
 static void compact_bbu_overlay_init(config_t *cfg) {
     compact_state_t *st = compact_st(cfg);
-    m68k_board_overlay_init(&st->overlay, cfg, COMPACT_ROM_START, COMPACT_ROM_END, compact_bbu_map_ram,
+    m68k_board_overlay_init(&st->overlay, cfg, COMPACT_ROM_START, COMPACT_ROM_END, m68k_board_overlay_map_ram_identity,
                             cfg->machine->name);
     memory_map_add(cfg->memory_map, COMPACT_ROM_START, COMPACT_ROM_END - COMPACT_ROM_START, "ROM aperture",
                    &st->overlay.iface, &st->overlay);
@@ -470,8 +411,11 @@ static int compact_init(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part_begin(cfg, checkpoint, "cpu");
     if (board->bbu)
         compact_bbu_overlay_init(cfg);
-    else if (!checkpoint)
-        compact_set_rom_overlay(cfg, true);
+    else {
+        m68k_board_overlay_init_line_reads(&st->overlay, cfg, cfg->machine->name, compact_pal_overlay_changed);
+        if (!checkpoint)
+            m68k_board_overlay_arm(&st->overlay);
+    }
 
     // The profile is the source of truth for the CPU model, as it is for the
     // clock below and as m68k_board_build_core states for the II families.
@@ -607,24 +551,11 @@ static int compact_init(config_t *cfg, checkpoint_t *checkpoint) {
     // board->floppy_chip is the board's controller chip; the slot table's
     // kinds are the drive in each position.  They are different facts: the
     // IWM drives 400K/800K GCR drives, the SWIM the 1.4 MB SuperDrive too.
-    bool swim = board->floppy_chip == FLOPPY_TYPE_SWIM;
-    cfg->floppy = floppy_init(board->floppy_chip, swim ? NULL : cfg->memory_map, cfg->scheduler,
-                              machine_floppy_count(cfg), checkpoint, config_images(cfg));
+    cfg->floppy = floppy_init(board->floppy_chip, NULL, cfg->scheduler, machine_floppy_count(cfg), checkpoint,
+                              config_images(cfg));
     machine_part(cfg, checkpoint, "floppy", part_save_floppy, cfg->floppy);
-    if (swim) {
-        // The SWIM answers in the IWM's window, through the same A9-A12 decode
-        st->swim_window = (memory_interface_t){
-            .read_uint8 = compact_swim_read_uint8,
-            .peek_uint8 = compact_swim_peek_uint8,
-            .write_uint8 = compact_swim_write_uint8,
-            .read_uint16 = compact_swim_read_uint16,
-            .read_uint32 = compact_swim_read_uint32,
-            .write_uint16 = compact_swim_write_uint16,
-            .write_uint32 = compact_swim_write_uint32,
-        };
-        memory_map_add(cfg->memory_map, COMPACT_FLOPPY_BASE, COMPACT_FLOPPY_SIZE, "floppy", &st->swim_window,
-                       cfg->floppy);
-    }
+    // Either chip answers in the same window, through the same A9-A12 decode
+    floppy_map_stride_window(cfg->floppy, cfg->memory_map, COMPACT_FLOPPY_BASE, COMPACT_FLOPPY_SIZE);
 
     if (board->bbu)
         compact_bbu_part(cfg, checkpoint);
@@ -728,48 +659,21 @@ static void compact_update_ipl(config_t *cfg, int source, bool active) {
         cfg->rt.irq, old_ipl, new_ipl);
 }
 
-// VIA output callback, PAL boards: routes port changes to floppy, video,
-// sound, RTC
-static void compact_pal_via_output(config_t *cfg, uint8_t port, uint8_t output) {
+// VIA output callback: routes port changes to the floppy, video, sound, RTC
+// and, by board generation, the overlay or drive select, ADB and the SCSI
+// mask (Guide 2e, Tables 4-2, 4-3 and 4-12).
+static void compact_via_output(void *context, uint8_t port, uint8_t output) {
+    config_t *cfg = (config_t *)context;
     compact_state_t *st = compact_st(cfg);
+    bool bbu = compact_board(cfg)->bbu;
 
     // via_init re-drives this callback while it restores a checkpoint, and
     // the VIA is now built before the sound chip (see compact_init), so the
     // half-built case is real and the sound_* entry points do not guard
     // against NULL.  Same shape as av.c's "scc_init fires this before the
-    // PSC is built" guard.
+    // PSC is built" guard.  cfg->via1 is still NULL then too;
+    // via_redrive_outputs runs again once it is set.
     sound_t *snd = st ? st->sound : NULL;
-
-    if (port == 0) {
-        // PA4 is vOverlay.  `output` is `ORA & DDRA`, so an undriven pin reads
-        // 0 here -- but the line is pulled up, so undriven means overlay ON.
-        // cfg->via1 is still NULL while via_init re-drives during a restore;
-        // via_redrive_outputs runs again once it is set.
-        if (st && cfg->via1) {
-            bool driven = (via_port_direction(cfg->via1, 0) & 0x10) != 0;
-            compact_set_rom_overlay(cfg, !driven || (output & 0x10) != 0);
-        }
-
-        floppy_set_sel_signal(cfg->floppy, (output & 0x20) != 0);
-
-        compact_use_video_buffer(cfg, (output >> 6) & 1);
-
-        if (snd) {
-            sound_use_buffer(snd, (output >> 3) & 1);
-            sound_volume(snd, output & 7);
-        }
-    } else {
-        rtc_via1_pb_output(cfg->rtc, output);
-
-        if (snd)
-            sound_enable(snd, (output & 0x80) == 0);
-    }
-}
-
-// VIA output callback, BBU boards (Guide 2e, Tables 4-3 and 4-12).
-static void compact_bbu_via_output(config_t *cfg, uint8_t port, uint8_t output) {
-    compact_state_t *st = compact_st(cfg);
-    sound_t *snd = st ? st->sound : NULL; // half-built while via_init restores
 
     if (port == 0) {
         // PA6 vPage2: 0 = alternate screen buffer, 1 = main
@@ -777,24 +681,35 @@ static void compact_bbu_via_output(config_t *cfg, uint8_t port, uint8_t output) 
             compact_use_video_buffer(cfg, (output >> 6) & 1);
         // PA5 vHeadSel: the drives' SEL line
         floppy_set_sel_signal(cfg->floppy, (output & 0x20) != 0);
-        // PA4 vDriveSel picks the lower (1) or the upper (0) internal drive
-        // for /ENBL1 (Guide 2e, Table 4-3); an undriven pin counts as lower.
-        if (cfg->via1 && compact_board(cfg)->drive_select)
-            compact_route_enbl(cfg, (via_port_direction(cfg->via1, 0) & 0x10) && !(output & 0x10));
-        // PA3 vSync (synchronous modem clock on SCC channel A): not modelled.
-        // PA0-PA2: the sound volume.  The BBU has no alternate sound buffer
-        // (PA3 is vSync here, not vSndPg2), so the main buffer always plays.
-        if (snd)
+        if (st && cfg->via1) {
+            // `output` is `ORA & DDRA`, so an undriven pin reads 0 here
+            bool pa4_driven = (via_port_direction(cfg->via1, 0) & 0x10) != 0;
+            if (!bbu)
+                // PAL: PA4 is vOverlay, pulled up, so undriven means overlay ON
+                m68k_board_overlay_set_line(&st->overlay, !pa4_driven || (output & 0x10) != 0);
+            else if (compact_board(cfg)->drive_select)
+                // BBU: PA4 vDriveSel picks the lower (1) or the upper (0)
+                // internal drive for /ENBL1; undriven counts as lower.
+                compact_route_enbl(cfg, pa4_driven && !(output & 0x10));
+        }
+        if (snd) {
+            // PA3: vSndPg2 on the PAL boards (0 = the alternate sound
+            // buffer); vSync on the BBU (not modelled), which has no
+            // alternate sound buffer, so the main one always plays.
+            if (!bbu)
+                sound_use_buffer(snd, (output >> 3) & 1);
+            // PA0-PA2: the sound volume
             sound_volume(snd, output & 7);
+        }
     } else {
-        // PB4/PB5: the ADB state lines ST0/ST1 -> the transceiver.  (PB3,
+        // BBU PB4/PB5: the ADB state lines ST0/ST1 -> the transceiver.  (PB3,
         // vFDBInt, is its interrupt input.)
-        if (cfg->adb)
+        if (bbu && cfg->adb)
             adb_port_b_output(cfg->adb, output);
         // PB0-PB2: RTC enable, clock and data
         rtc_via1_pb_output(cfg->rtc, output);
-        // PB6 vH4: the SCSI interrupt mask
-        if (st && cfg->via1)
+        // BBU PB6 vH4: the SCSI interrupt mask
+        if (bbu && st && cfg->via1)
             compact_scsi_irq_update(cfg);
         // PB7 vSndEnb: 0 = sound enabled
         if (snd)
@@ -802,32 +717,20 @@ static void compact_bbu_via_output(config_t *cfg, uint8_t port, uint8_t output) 
     }
 }
 
-// VIA output callback: the board generation decides what the pins drive
-static void compact_via_output(void *context, uint8_t port, uint8_t output) {
-    config_t *cfg = (config_t *)context;
-    if (compact_board(cfg)->bbu)
-        compact_bbu_via_output(cfg, port, output);
-    else
-        compact_pal_via_output(cfg, port, output);
-}
-
 // The board's /RESET net: "MC68000, VIA, SWIM, SCC, SCSI, BBU" (Guide 2e,
 // Table 14-2; the PAL boards have the IWM where that list says SWIM).  The
-// common set covers the VIA, SCC, floppy chip and the 5380.  The VIA comes
-// back with every pin an input, so on a PAL board PA4 floats high and the ROM
-// overlay is on again; the BBU re-arms its own -- which is what lets
-// machine.reset fetch the reset vectors from $0/$4.
+// shared bus reset re-arms the overlay -- on a PAL board the VIA comes back
+// with every pin an input, so PA4 floats high and the overlay is on again;
+// the BBU re-arms its own -- which is what lets machine.reset fetch the reset
+// vectors from $0/$4.  The common device set covers the VIA, SCC, floppy chip
+// and the 5380.
 static void compact_bus_reset(config_t *cfg) {
-    system_reset_common_devices(cfg);
-    if (compact_board(cfg)->bbu) {
-        m68k_board_overlay_arm(&compact_st(cfg)->overlay);
-        // PA4 (vDriveSel) floats too, which selects the lower drive: the VIA's
-        // reset drives no output callback, so put the /ENBL1 steering back
-        // here rather than wait for the ROM to rewrite the pin.
-        if (compact_board(cfg)->drive_select)
-            compact_route_enbl(cfg, false);
-    } else
-        compact_set_rom_overlay(cfg, true);
+    m68k_board_bus_reset(cfg, &compact_st(cfg)->overlay);
+    // PA4 (vDriveSel) floats too, which selects the lower drive: the VIA's
+    // reset drives no output callback, so put the /ENBL1 steering back here
+    // rather than wait for the ROM to rewrite the pin.
+    if (compact_board(cfg)->drive_select)
+        compact_route_enbl(cfg, false);
 }
 
 // PAL-board VIA shift-out callback: routes keyboard data to keyboard device
@@ -850,10 +753,6 @@ static void compact_scc_irq(void *context, bool active) {
 // Disk-speed PWM (the 128K and 512K)
 // ============================================================
 
-// The sound buffer: 370 words ending $300 below the top of RAM (Guide 2e,
-// ch. 2); the low byte of each word is the disk-speed sample.
-#define COMPACT_SOUND_FROM_TOP 0x300u
-#define COMPACT_SOUND_WORDS    370
 // The pulse-width generator counts its 6-bit sample through a 63-state
 // shift-register sequence, so a sample's duty is its distance along that
 // sequence, not its binary value.  The sequence (next = x >> 1, with bit 5
@@ -887,14 +786,16 @@ static int compact_pwm_position(uint8_t sample) {
 }
 
 // The spindle speed the disk-speed samples in the sound buffer command: the
-// mean duty position over the buffer, through the drive's speed law.
+// mean duty position over the buffer, through the drive's speed law.  The
+// low byte of each sound-buffer word is the disk-speed sample (Guide 2e,
+// ch. 2); this reads the main buffer whichever one vSndPg2 selects.
 static double compact_pwm_rpm(config_t *cfg) {
-    uint32_t base = cfg->ram_size - COMPACT_SOUND_FROM_TOP;
-    const uint8_t *buf = ram_native_pointer(cfg->memory_map, base);
+    unsigned words;
+    const uint8_t *buf = sound_main_buffer(compact_st(cfg)->sound, &words);
     if (!buf)
         return 0;
     int sum = 0, n = 0;
-    for (int i = 0; i < COMPACT_SOUND_WORDS; i++) {
+    for (unsigned i = 0; i < words; i++) {
         int pos = compact_pwm_position(buf[2 * i + 1]); // the word's low byte
         if (pos >= 0) {
             sum += pos;
@@ -924,7 +825,7 @@ static void compact_trigger_vbl(config_t *cfg) {
 
     // A 400K single-sided drive has no speed control of its own: the board's
     // disk-speed PWM sets its spindle, re-read once a frame
-    if (cfg->machine->floppy_slots && cfg->machine->floppy_slots[0].kind == FLOPPY_400K)
+    if (compact_board(cfg)->pwm_disk_speed)
         floppy_set_pwm_rpm(cfg->floppy, compact_pwm_rpm(cfg));
 
     image_tick_all(cfg);
@@ -963,19 +864,22 @@ static const builtin_video_desc_t compact_builtin_video = {
 
 // --- Board descriptors -----------------------------------------------------
 
-// 128K, 512K: PALs, IWM, no SCSI
-static const compact_board_t compact_board_pal = {.bbu = false, .has_scsi = false, .floppy_chip = FLOPPY_TYPE_IWM};
+// 128K, 512K: PALs, IWM, no SCSI, the 400K drive on the disk-speed PWM
+static const compact_board_t compact_board_pal = {
+    .bbu = false, .has_scsi = false, .floppy_chip = FLOPPY_TYPE_IWM, .pwm_disk_speed = true};
+// 512K enhanced: the same board with the Plus's 800K drive, which regulates
+// its own speed
+static const compact_board_t compact_board_512ke = {.bbu = false, .has_scsi = false, .floppy_chip = FLOPPY_TYPE_IWM};
 // Plus: PALs, IWM, the 5380
 static const compact_board_t compact_board_plus = {.bbu = false, .has_scsi = true, .floppy_chip = FLOPPY_TYPE_IWM};
 // SE: BBU, IWM, the 5380, two internal drives
 static const compact_board_t compact_board_se = {
-    .bbu = true, .has_scsi = true, .floppy_chip = FLOPPY_TYPE_IWM, .second_internal = true, .drive_select = true};
+    .bbu = true, .has_scsi = true, .floppy_chip = FLOPPY_TYPE_IWM, .drive_select = true};
 // SE FDHD: BBU, SWIM, the 5380, two internal drives
 static const compact_board_t compact_board_sefdhd = {
-    .bbu = true, .has_scsi = true, .floppy_chip = FLOPPY_TYPE_SWIM, .second_internal = true, .drive_select = true};
+    .bbu = true, .has_scsi = true, .floppy_chip = FLOPPY_TYPE_SWIM, .drive_select = true};
 // Classic: BBU, SWIM, the 5380, one internal drive and the external port
-static const compact_board_t compact_board_classic = {
-    .bbu = true, .has_scsi = true, .floppy_chip = FLOPPY_TYPE_SWIM, .second_internal = false, .drive_select = false};
+static const compact_board_t compact_board_classic = {.bbu = true, .has_scsi = true, .floppy_chip = FLOPPY_TYPE_SWIM};
 
 // --- Shared configuration tables ---------------------------------------------
 
@@ -990,58 +894,44 @@ static const uint32_t compact_ram_options_simm_kb[] = {1024, 2048, 2560, 4096, 0
 // SE and Classic ROMs do (GetDefaultStartup, Inside Macintosh, vol. V,
 // ch. 19), and their bus is mac_storage_scsi_hd_bay's.
 static const storage_bus_decl_t plus_storage[] = {
-    {.id = "scsi",
-     .label = "SCSI",
-     .kind = STORAGE_KIND_SCSI,
-     .media_bus = MEDIA_BUS_SCSI,
-     .units = MAC_SCSI_UNITS,
-     .reserved = MAC_SCSI_RESERVED,
-     .external_connector = true,
-     .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD,
-     .startup_ok = false},
+    MAC_SCSI_BUS_STARTUP("scsi", "SCSI", MEDIA_BUS_SCSI, NULL, true, false),
     {0},
 };
+
+// --- Profile fields every compact model shares --------------------------------
+
+// The 7.8336 MHz MC68000 (the Plus's actual clock), no MMU, a 24-bit address
+// space, the SCC's AppleTalk port, the built-in 9" screen, the Plus's PRAM
+// defaults and this substrate.  Only fields no model overrides belong here
+// (an override would trip -Woverride-init).
+#define COMPACT_PROFILE_COMMON                                                                                         \
+    .cpu_model = 68000, .freq = 7833600, .mmu_kind = MMU_NONE, .address_bits = 24, .appletalk = true,                  \
+    .builtin_video = &compact_builtin_video, .pram = &pram_defaults_plus, .substrate = &compact_substrate
+
+// The SCSI models' default devices: a hard disk at ID 0 and an external
+// CD-ROM drive at ID 3 -- Apple's CD-ROM driver runs on the Plus.  The bus
+// declaration itself (.storage) differs between the Plus and the BBU boards.
+#define COMPACT_SCSI_COMMON                                                                                            \
+    .default_storage = mac_default_storage_hd0_cd3, .cdrom_drive = &scsi_cd_drive_applecd_sc_plus
 
 // --- Macintosh Plus ----------------------------------------------------------
 
 // The external drive was an option, not factory equipment; a stock Plus here
 // keeps one, as it always has, and the user may remove it.
-static const floppy_slot_t plus_floppy_slots[] = {
-    {.label = "Internal floppy drive", .kind = FLOPPY_800K},
-    {.label = "External floppy drive", .kind = FLOPPY_800K, .optional = true},
-    {0},
-};
+static const floppy_slot_t plus_floppy_slots[] = MAC_FLOPPY_PAIR(FLOPPY_800K, "External floppy drive", false);
 
 const hw_profile_t machine_plus = {
     .name = "Macintosh Plus",
     .id = "plus",
-
-    // 68000 at 7.8336 MHz (actual Plus clock)
-    .cpu_model = 68000,
-    .freq = 7833600,
-    .mmu_kind = MMU_NONE,
-
-    // 24-bit address space
-    .address_bits = 24,
+    COMPACT_PROFILE_COMMON,
     .ram_default = 0x400000, // 4 MB
     .ram_max = 0x400000, // 4 MB max
     .rom_size = 0x020000, // 128 KB
-
-    // Configuration-dialog shape
     .ram_options = compact_ram_options_simm_kb,
     .floppy_slots = plus_floppy_slots,
     .storage = plus_storage,
-    // An external CD-ROM drive at ID 3: Apple's CD-ROM driver runs on the Plus.
-    .default_storage = mac_default_storage_hd0_cd3,
-    .cdrom_drive = &scsi_cd_drive_applecd_sc_plus,
-    .appletalk = true,
-    .builtin_video = &compact_builtin_video,
-
-    // Single VIA, no ADB, no NuBus
-
-    .pram = &pram_defaults_plus,
-    .substrate = &compact_substrate,
-    .board = &compact_board_plus,
+    COMPACT_SCSI_COMMON,
+    .board = &compact_board_plus, // single VIA, no ADB, no NuBus
 };
 
 // --- Macintosh 128K and 512K -------------------------------------------------
@@ -1051,48 +941,30 @@ static const uint32_t mac128k_ram_options_kb[] = {128, 0};
 static const uint32_t mac512k_ram_options_kb[] = {512, 0};
 
 // The single-sided 400K drive inside, and the optional external one.
-static const floppy_slot_t mac400k_floppy_slots[] = {
-    {.label = "Internal floppy drive", .kind = FLOPPY_400K},
-    {.label = "External floppy drive", .kind = FLOPPY_400K, .optional = true, .default_none = true},
-    {0},
-};
+static const floppy_slot_t mac400k_floppy_slots[] = MAC_FLOPPY_PAIR(FLOPPY_400K, "External floppy drive", true);
 
+// No SCSI on the 128K, 512K and 512K enhanced: no storage bus, no CD-ROM drive
 const hw_profile_t machine_mac128k = {
     .name = "Macintosh 128K",
     .id = "mac128k",
-    .cpu_model = 68000,
-    .freq = 7833600,
-    .mmu_kind = MMU_NONE,
-    .address_bits = 24,
+    COMPACT_PROFILE_COMMON,
     .ram_default = 0x020000, // 128 KB
     .ram_max = 0x020000,
     .rom_size = 0x010000, // 64 KB
     .ram_options = mac128k_ram_options_kb,
     .floppy_slots = mac400k_floppy_slots,
-    // No SCSI: no storage bus, no CD-ROM drive
-    .appletalk = true,
-    .builtin_video = &compact_builtin_video,
-    .pram = &pram_defaults_plus,
-    .substrate = &compact_substrate,
     .board = &compact_board_pal,
 };
 
 const hw_profile_t machine_mac512k = {
     .name = "Macintosh 512K",
     .id = "mac512k",
-    .cpu_model = 68000,
-    .freq = 7833600,
-    .mmu_kind = MMU_NONE,
-    .address_bits = 24,
+    COMPACT_PROFILE_COMMON,
     .ram_default = 0x080000, // 512 KB
     .ram_max = 0x080000,
     .rom_size = 0x010000, // 64 KB
     .ram_options = mac512k_ram_options_kb,
     .floppy_slots = mac400k_floppy_slots,
-    .appletalk = true,
-    .builtin_video = &compact_builtin_video,
-    .pram = &pram_defaults_plus,
-    .substrate = &compact_substrate,
     .board = &compact_board_pal,
 };
 
@@ -1100,110 +972,69 @@ const hw_profile_t machine_mac512k = {
 
 // "The ROM and disk drive in the Macintosh 512K enhanced computer are the same
 // as those used in the Macintosh Plus" (Guide 2e, ch. 1): the 800K drive.
-static const floppy_slot_t mac512ke_floppy_slots[] = {
-    {.label = "Internal floppy drive", .kind = FLOPPY_800K},
-    {.label = "External floppy drive", .kind = FLOPPY_800K, .optional = true, .default_none = true},
-    {0},
-};
+// Unlike the Plus's, the external position ships empty.
+static const floppy_slot_t mac512ke_floppy_slots[] = MAC_FLOPPY_PAIR(FLOPPY_800K, "External floppy drive", true);
 
 const hw_profile_t machine_mac512ke = {
     .name = "Macintosh 512K enhanced",
     .id = "mac512ke",
-    .cpu_model = 68000,
-    .freq = 7833600,
-    .mmu_kind = MMU_NONE,
-    .address_bits = 24,
+    COMPACT_PROFILE_COMMON,
     .ram_default = 0x080000, // 512 KB
     .ram_max = 0x080000,
     .rom_size = 0x020000, // 128 KB, the Plus ROM
     .ram_options = mac512k_ram_options_kb,
     .floppy_slots = mac512ke_floppy_slots,
-    .appletalk = true,
-    .builtin_video = &compact_builtin_video,
-    .pram = &pram_defaults_plus,
-    .substrate = &compact_substrate,
-    .board = &compact_board_pal,
+    .board = &compact_board_512ke,
 };
 
 // --- Macintosh SE, SE FDHD and Classic --------------------------------------
 
 // The SE's two internal 800K drives, lower and upper (the upper one optional:
 // the other factory configuration put a hard disk there).
-static const floppy_slot_t se_floppy_slots[] = {
-    {.label = "Internal floppy drive", .kind = FLOPPY_800K},
-    {.label = "Second internal floppy drive", .kind = FLOPPY_800K, .optional = true},
-    {0},
-};
+static const floppy_slot_t se_floppy_slots[] = MAC_FLOPPY_PAIR(FLOPPY_800K, "Second internal floppy drive", false);
 
-// The SE FDHD's: the same pair of SuperDrives.
-static const floppy_slot_t sefdhd_floppy_slots[] = {
-    {.label = "Internal floppy drive", .kind = FLOPPY_HD},
-    {.label = "Second internal floppy drive", .kind = FLOPPY_HD, .optional = true},
-    {0},
-};
+// The SE FDHD's: the same pair of SuperDrives.  (mac_floppy_slots_2int is
+// this table with the second bay shipping empty, as on the IIx and IIfx.)
+static const floppy_slot_t sefdhd_floppy_slots[] = MAC_FLOPPY_PAIR(FLOPPY_HD, "Second internal floppy drive", false);
 
 const hw_profile_t machine_se = {
     .name = "Macintosh SE",
     .id = "se",
-    .cpu_model = 68000,
-    .freq = 7833600,
-    .mmu_kind = MMU_NONE,
-    .address_bits = 24,
+    COMPACT_PROFILE_COMMON,
     .ram_default = 0x400000, // 4 MB
     .ram_max = 0x400000,
     .rom_size = 0x040000, // 256 KB
     .ram_options = compact_ram_options_simm_kb,
     .floppy_slots = se_floppy_slots,
     .storage = mac_storage_scsi_hd_bay,
-    .default_storage = mac_default_storage_hd0_cd3,
-    .cdrom_drive = &scsi_cd_drive_applecd_sc_plus,
-    .appletalk = true,
-    .builtin_video = &compact_builtin_video,
-    .pram = &pram_defaults_plus,
-    .substrate = &compact_substrate,
+    COMPACT_SCSI_COMMON,
     .board = &compact_board_se,
 };
 
 const hw_profile_t machine_sefdhd = {
     .name = "Macintosh SE FDHD",
     .id = "sefdhd",
-    .cpu_model = 68000,
-    .freq = 7833600,
-    .mmu_kind = MMU_NONE,
-    .address_bits = 24,
+    COMPACT_PROFILE_COMMON,
     .ram_default = 0x400000, // 4 MB
     .ram_max = 0x400000,
     .rom_size = 0x040000, // 256 KB
     .ram_options = compact_ram_options_simm_kb,
     .floppy_slots = sefdhd_floppy_slots,
     .storage = mac_storage_scsi_hd_bay,
-    .default_storage = mac_default_storage_hd0_cd3,
-    .cdrom_drive = &scsi_cd_drive_applecd_sc_plus,
-    .appletalk = true,
-    .builtin_video = &compact_builtin_video,
-    .pram = &pram_defaults_plus,
-    .substrate = &compact_substrate,
+    COMPACT_SCSI_COMMON,
     .board = &compact_board_sefdhd,
 };
 
 const hw_profile_t machine_classic = {
     .name = "Macintosh Classic",
     .id = "classic",
-    .cpu_model = 68000,
-    .freq = 7833600,
-    .mmu_kind = MMU_NONE,
-    .address_bits = 24,
+    COMPACT_PROFILE_COMMON,
     .ram_default = 0x400000, // 4 MB
     .ram_max = 0x400000,
     .rom_size = 0x080000, // 512 KB, the ROM disk in its upper half
     .ram_options = compact_ram_options_simm_kb,
     .floppy_slots = mac_floppy_slots_ext,
     .storage = mac_storage_scsi_hd_bay,
-    .default_storage = mac_default_storage_hd0_cd3,
-    .cdrom_drive = &scsi_cd_drive_applecd_sc_plus,
-    .appletalk = true,
-    .builtin_video = &compact_builtin_video,
-    .pram = &pram_defaults_plus,
-    .substrate = &compact_substrate,
+    COMPACT_SCSI_COMMON,
     .board = &compact_board_classic,
 };
