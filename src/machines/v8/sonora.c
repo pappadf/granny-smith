@@ -101,6 +101,7 @@ static void sonora_vctl_write(config_t *cfg, uint32_t win_off, uint32_t addr, ui
         LOG(2, "Sonora video mode = $%02X", value);
         st->sonora.vd_mode = value;
         v8_video_set_mode(cfg, value & 0x0Fu);
+        v8_video_set_blank(cfg, (value & 0x80u) != 0); // bit 7 switches the video off
         break;
     case 1:
         LOG(2, "Sonora video depth = $%02X", value);
@@ -307,10 +308,12 @@ void sonora_restore(config_t *cfg, checkpoint_t *cp) {
         sonora_map_ram_decode(cfg, st->ram_exp);
 }
 
-// /RESET: the decoder's registers back to power-on (sense lines tri-stated).
+// /RESET: the decoder's registers back to power-on (sense lines tri-stated),
+// and the video they drive with them.
 void sonora_bus_reset(config_t *cfg) {
     v8_state_t *st = v8_st(cfg);
     memset(&st->sonora, 0, sizeof st->sonora);
     st->sonora.vd_sense = 7;
     st->ram_exp = 0;
+    v8_video_reset(cfg);
 }

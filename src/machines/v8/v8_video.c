@@ -108,7 +108,7 @@ static void v8_video_update(config_t *cfg) {
         store = v->vram;
         store_size = b->vram_size;
     }
-    bool live = (b->crt_width || v->sense != 7) && v->width && v->height;
+    bool live = !v->blanked && (b->crt_width || v->sense != 7) && v->width && v->height;
     display_set_scanout(&v->display, live ? store : NULL, store_size, offset, stride, v->width, v->height, v->blank,
                         v->blank_size);
     v8_video_refresh_clut(cfg);
@@ -210,6 +210,24 @@ void v8_video_set_depth(config_t *cfg, int depth_code) {
     v8_video_t *v = &v8_st(cfg)->video;
     v->depth_code = (uint8_t)depth_code;
     LOG(2, "V8 video: depth code %d", depth_code);
+    v8_video_update(cfg);
+}
+
+void v8_video_set_blank(config_t *cfg, bool blanked) {
+    v8_video_t *v = &v8_st(cfg)->video;
+    if (v->blanked == blanked)
+        return;
+    v->blanked = blanked;
+    LOG(2, "V8 video: %s", blanked ? "off (blanked)" : "on");
+    v8_video_update(cfg);
+}
+
+void v8_video_reset(config_t *cfg) {
+    v8_video_t *v = &v8_st(cfg)->video;
+    v->depth_code = 0;
+    v->mode_code = 0;
+    v->blanked = false;
+    v8_video_set_sense(cfg, v->sense); // the raster the strap selects again
     v8_video_update(cfg);
 }
 

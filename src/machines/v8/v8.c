@@ -285,6 +285,11 @@ static void v8_rbv_mode(void *context, int depth_code) {
     v8_video_set_depth((config_t *)context, depth_code);
 }
 
+// MonP RvVIDOff -> the built-in video switched off or on.
+static void v8_rbv_blank(void *context, bool video_off) {
+    v8_video_set_blank((config_t *)context, video_off);
+}
+
 // The 5380's IRQ/DRQ through the pseudo-VIA2 flags.
 static void v8_scsi_irq(void *context, bool irq, bool drq) {
     v8_state_t *st = v8_st((config_t *)context);
@@ -411,7 +416,16 @@ static int v8_init(config_t *cfg, checkpoint_t *cp) {
         return -1;
     machine_part(cfg, cp, "rbv", part_save_rbv, st->rbv);
     rbv_set_irq_callback(st->rbv, v8_rbv_irq, cfg);
-    rbv_set_mode_callback(st->rbv, v8_rbv_mode, cfg);
+    // The V8's video follows MonP; Sonora's has its own depth and mode
+    // registers at $50F28000 (sonora.c), so a MonP write must not reach it.
+    // RvVIDOff switches off the VRAM video (the LC II's and the Color
+    // Classic's); the Classic II's screen is scanned from DRAM by other logic,
+    // and its ROM leaves the bit set.
+    if (!sonora) {
+        rbv_set_mode_callback(st->rbv, v8_rbv_mode, cfg);
+        if (b->fb_source == V8_FB_VRAM)
+            rbv_set_blank_callback(st->rbv, v8_rbv_blank, cfg);
+    }
     rbv_set_exp_callback(st->rbv, sonora ? sonora_ram_cfg_written : v8_exp_written, cfg);
     asc_set_irq_handler(st->asc, v8_asc_irq, st->rbv);
 
