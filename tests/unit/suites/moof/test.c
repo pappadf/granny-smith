@@ -11,9 +11,11 @@
 #include "codec.h"
 #include "common.h"
 #include "format_registry.h"
+#include "gcr.h"
 #include "image_moof.h"
 #include "test_assert.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -320,6 +322,74 @@ TEST(moof_unwraps_through_the_registry) {
     free(tags);
 }
 
+// Every MOOF in the test corpus (tests/data, when it is there): on every
+// track, the steady-state revolution (gcr_frame_revolution) is what the
+// framer gives on the revolution after it too -- the buffer the drive loops
+// is the head's steady state.
+TEST(moof_corpus_frames_steadily) {
+    static const char *const dirs[] = {"../../../data/apps", "tests/data/apps"};
+    int files = 0;
+    for (size_t di = 0; di < sizeof dirs / sizeof dirs[0] && !files; di++) {
+        DIR *dir = opendir(dirs[di]);
+        if (!dir)
+            continue;
+        struct dirent *e;
+        while ((e = readdir(dir)) != NULL) {
+            size_t nl = strlen(e->d_name);
+            if (nl < 5 || strcmp(e->d_name + nl - 5, ".moof") != 0)
+                continue;
+            char path[512];
+            snprintf(path, sizeof path, "%s/%s", dirs[di], e->d_name);
+            FILE *fp = fopen(path, "rb");
+            ASSERT_TRUE(fp != NULL);
+            fseek(fp, 0, SEEK_END);
+            size_t len = (size_t)ftell(fp);
+            fseek(fp, 0, SEEK_SET);
+            uint8_t *f = malloc(len);
+            ASSERT_EQ_INT((int)len, (int)fread(f, 1, len, fp));
+            fclose(fp);
+            moof_index_t ix;
+            ASSERT_EQ_INT(0, moof_index(f, len, &ix));
+            for (int t = 0; t < 80; t++)
+                for (int s = 0; s < ix.sides; s++) {
+                    const uint8_t *bits;
+                    uint8_t *owned = NULL;
+                    uint32_t n = moof_track_bits(&ix, t, s, &bits, &owned);
+                    if (!n)
+                        continue;
+                    // Revolutions 2 and 3 from a cold register, apart.
+                    size_t cap = n / 8 + 2, k2 = 0, k3 = 0;
+                    uint8_t *r2 = malloc(cap), *r3 = malloc(cap), *got = malloc(cap);
+                    uint32_t reg = 0;
+                    for (int rev = 0; rev < 3; rev++)
+                        for (uint32_t i = 0; i < n; i++) {
+                            reg = ((reg << 1) | ((bits[i >> 3] >> (7 - (i & 7))) & 1)) & 0xFF;
+                            if (reg & 0x80) {
+                                if (rev == 1)
+                                    r2[k2++] = (uint8_t)reg;
+                                else if (rev == 2)
+                                    r3[k3++] = (uint8_t)reg;
+                                reg = 0;
+                            }
+                        }
+                    ASSERT_EQ_INT((int)k2, (int)k3);
+                    ASSERT_EQ_INT(0, memcmp(r2, r3, k2));
+                    ASSERT_EQ_INT((int)k2, (int)gcr_frame_revolution(bits, n, got, cap));
+                    ASSERT_EQ_INT(0, memcmp(got, r2, k2));
+                    free(r2);
+                    free(r3);
+                    free(got);
+                    free(owned);
+                }
+            free(f);
+            files++;
+        }
+        closedir(dir);
+    }
+    if (!files)
+        printf("  (no MOOF in the test corpus: nothing to check)\n");
+}
+
 int main(void) {
     RUN(moof_round_trip_800k);
     RUN(moof_encode_golden);
@@ -329,6 +399,7 @@ int main(void) {
     RUN(moof_flux_track);
     RUN(moof_refuses_what_it_cannot_read);
     RUN(moof_unwraps_through_the_registry);
+    RUN(moof_corpus_frames_steadily);
     fprintf(stderr, "All moof tests passed.\n");
     return 0;
 }

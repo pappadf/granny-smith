@@ -13,6 +13,7 @@
 #define GCR_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #define GCR_TAG_BYTES     12
@@ -52,5 +53,16 @@ void gcr_addr_encode(int track, int sector, int side, uint8_t format, uint8_t ou
 // Five disk bytes of an address field -> its fields; false when a byte is
 // no codeword or the checksum does not match.  Any output may be NULL.
 bool gcr_addr_from_disk(const uint8_t disk[GCR_ADDR_VALUES], int *track, int *sector, int *side, uint8_t *format);
+
+// Frame a looped bitstream (MSB first, `nbits` cells, the track looping at
+// the end) into disk bytes the way the IWM does in steady state: shift bits
+// in, a byte completes once its top bit is set, and the shift register
+// carries across the index.  One revolution is pre-rolled and the second is
+// kept, so the bytes are what the head delivers on every pass once the
+// framer has synced -- framing cold from the first cell can differ.  A byte
+// that straddles the index is the revolution's first (it completes there).
+// Returns the byte count; at most `cap`, which nbits / 8 + 2 always covers
+// (0 for an empty track or no room).
+size_t gcr_frame_revolution(const uint8_t *bits, uint32_t nbits, uint8_t *out, size_t cap);
 
 #endif // GCR_H

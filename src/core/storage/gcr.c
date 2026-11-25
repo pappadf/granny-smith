@@ -187,3 +187,29 @@ bool gcr_addr_from_disk(const uint8_t disk[GCR_ADDR_VALUES], int *track, int *se
         *format = h[3];
     return true;
 }
+
+// ============================================================================
+// Framing
+// ============================================================================
+
+size_t gcr_frame_revolution(const uint8_t *bits, uint32_t nbits, uint8_t *out, size_t cap) {
+    if (!bits || !out || nbits == 0)
+        return 0;
+    uint32_t reg = 0;
+    size_t n = 0;
+    // Revolution 1 only syncs the shift register; revolution 2 is kept.
+    for (int rev = 0; rev < 2; rev++) {
+        for (uint32_t k = 0; k < nbits; k++) {
+            reg = ((reg << 1) | ((bits[k >> 3] >> (7 - (k & 7))) & 1)) & 0xFF; // shift one cell in
+            if (!(reg & 0x80))
+                continue; // the byte is not complete yet
+            if (rev == 1) {
+                if (n == cap)
+                    return 0; // the caller's buffer is too small
+                out[n++] = (uint8_t)reg;
+            }
+            reg = 0; // the latch takes the byte and the register restarts
+        }
+    }
+    return n;
+}
