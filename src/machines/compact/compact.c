@@ -994,15 +994,7 @@ static const uint32_t compact_ram_options_simm_kb[] = {1024, 2048, 2560, 4096, 0
 // SE and Classic ROMs do (GetDefaultStartup, Inside Macintosh, vol. V,
 // ch. 19), and their bus is mac_storage_scsi_hd_bay's.
 static const storage_bus_decl_t plus_storage[] = {
-    {.id = "scsi",
-     .label = "SCSI",
-     .kind = STORAGE_KIND_SCSI,
-     .media_bus = MEDIA_BUS_SCSI,
-     .units = MAC_SCSI_UNITS,
-     .reserved = MAC_SCSI_RESERVED,
-     .external_connector = true,
-     .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD,
-     .startup_ok = false},
+    MAC_SCSI_BUS_STARTUP("scsi", "SCSI", MEDIA_BUS_SCSI, NULL, true, false),
     {0},
 };
 
@@ -1026,11 +1018,7 @@ static const storage_bus_decl_t plus_storage[] = {
 
 // The external drive was an option, not factory equipment; a stock Plus here
 // keeps one, as it always has, and the user may remove it.
-static const floppy_slot_t plus_floppy_slots[] = {
-    {.label = "Internal floppy drive", .kind = FLOPPY_800K},
-    {.label = "External floppy drive", .kind = FLOPPY_800K, .optional = true},
-    {0},
-};
+static const floppy_slot_t plus_floppy_slots[] = MAC_FLOPPY_PAIR(FLOPPY_800K, "External floppy drive", false);
 
 const hw_profile_t machine_plus = {
     .name = "Macintosh Plus",
@@ -1053,11 +1041,7 @@ static const uint32_t mac128k_ram_options_kb[] = {128, 0};
 static const uint32_t mac512k_ram_options_kb[] = {512, 0};
 
 // The single-sided 400K drive inside, and the optional external one.
-static const floppy_slot_t mac400k_floppy_slots[] = {
-    {.label = "Internal floppy drive", .kind = FLOPPY_400K},
-    {.label = "External floppy drive", .kind = FLOPPY_400K, .optional = true, .default_none = true},
-    {0},
-};
+static const floppy_slot_t mac400k_floppy_slots[] = MAC_FLOPPY_PAIR(FLOPPY_400K, "External floppy drive", true);
 
 // No SCSI on the 128K, 512K and 512K enhanced: no storage bus, no CD-ROM drive
 const hw_profile_t machine_mac128k = {
@@ -1088,11 +1072,8 @@ const hw_profile_t machine_mac512k = {
 
 // "The ROM and disk drive in the Macintosh 512K enhanced computer are the same
 // as those used in the Macintosh Plus" (Guide 2e, ch. 1): the 800K drive.
-static const floppy_slot_t mac512ke_floppy_slots[] = {
-    {.label = "Internal floppy drive", .kind = FLOPPY_800K},
-    {.label = "External floppy drive", .kind = FLOPPY_800K, .optional = true, .default_none = true},
-    {0},
-};
+// Unlike the Plus's, the external position ships empty.
+static const floppy_slot_t mac512ke_floppy_slots[] = MAC_FLOPPY_PAIR(FLOPPY_800K, "External floppy drive", true);
 
 const hw_profile_t machine_mac512ke = {
     .name = "Macintosh 512K enhanced",
@@ -1110,18 +1091,11 @@ const hw_profile_t machine_mac512ke = {
 
 // The SE's two internal 800K drives, lower and upper (the upper one optional:
 // the other factory configuration put a hard disk there).
-static const floppy_slot_t se_floppy_slots[] = {
-    {.label = "Internal floppy drive", .kind = FLOPPY_800K},
-    {.label = "Second internal floppy drive", .kind = FLOPPY_800K, .optional = true},
-    {0},
-};
+static const floppy_slot_t se_floppy_slots[] = MAC_FLOPPY_PAIR(FLOPPY_800K, "Second internal floppy drive", false);
 
-// The SE FDHD's: the same pair of SuperDrives.
-static const floppy_slot_t sefdhd_floppy_slots[] = {
-    {.label = "Internal floppy drive", .kind = FLOPPY_HD},
-    {.label = "Second internal floppy drive", .kind = FLOPPY_HD, .optional = true},
-    {0},
-};
+// The SE FDHD's: the same pair of SuperDrives.  (mac_floppy_slots_2int is
+// this table with the second bay shipping empty, as on the IIx and IIfx.)
+static const floppy_slot_t sefdhd_floppy_slots[] = MAC_FLOPPY_PAIR(FLOPPY_HD, "Second internal floppy drive", false);
 
 const hw_profile_t machine_se = {
     .name = "Macintosh SE",
