@@ -800,6 +800,50 @@
       "instr": 2540000000,
       "tolerance": 0.2
     },
+    "suite-tnt-1997/pm7300-81-hd": {
+      "instr": 3684000000,
+      "tolerance": 0.2
+    },
+    "suite-tnt-1997/pm7600-76-fd": {
+      "instr": 5500000000,
+      "tolerance": 0.2
+    },
+    "suite-tnt-1997/pm7600-76-hd": {
+      "instr": 4565000000,
+      "tolerance": 0.2
+    },
+    "suite-tnt-1997/pm7600-81-hd": {
+      "instr": 3684000000,
+      "tolerance": 0.2
+    },
+    "suite-tnt-1997/pm8600-81-hd": {
+      "instr": 3745500000,
+      "tolerance": 0.2
+    },
+    "suite-tnt-1997/pm9600-81-mach64": {
+      "instr": 3725000000,
+      "tolerance": 0.2
+    },
+    "suite-tnt-1997/pm9600-81-mach64-v2": {
+      "instr": 3724500000,
+      "tolerance": 0.2
+    },
+    "suite-wgs9150/wgs9150-120-76-hd": {
+      "instr": 2547975400,
+      "tolerance": 0.2
+    },
+    "suite-wgs9150/wgs9150-24ac-slot-a": {
+      "instr": 1589983600,
+      "tolerance": 0.2
+    },
+    "suite-wgs9150/wgs9150-753-hd": {
+      "instr": 1302483600,
+      "tolerance": 0.2
+    },
+    "suite-wgs9150/wgs9150-76-fd": {
+      "instr": 4249983600,
+      "tolerance": 0.2
+    },
     "tnt-pci-scsi-card/finder": {
       "instr": 2500000000,
       "tolerance": 0.2

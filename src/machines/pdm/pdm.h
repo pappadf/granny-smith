@@ -226,8 +226,8 @@ typedef struct pdm_bart_window {
 } pdm_bart_window_t;
 
 // Three connectors x (standard + super slot space), the PDS slot-$E window,
-// and the no-bridge register page.
-#define PDM_BART_WINDOWS 8
+// and the no-bridge register page — plus the 9150's slot $A pair.
+#define PDM_BART_WINDOWS 10
 
 typedef struct pdm_bart {
     uint8_t slow; // $F0000001 — wait-state bit (latch; the ROM never writes it)

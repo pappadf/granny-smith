@@ -1253,6 +1253,96 @@
       "addr32": null,
       "suite": "suite-ans",
       "media_gated": true
+    },
+    {
+      "machine": "pm7300",
+      "system": "8.1",
+      "card": "control",
+      "width": 640,
+      "height": 480,
+      "depth": 32,
+      "addr32": true,
+      "suite": "suite-tnt-1997"
+    },
+    {
+      "machine": "pm7600",
+      "system": "8.1",
+      "card": "control",
+      "width": 640,
+      "height": 480,
+      "depth": 32,
+      "addr32": true,
+      "suite": "suite-tnt-1997"
+    },
+    {
+      "machine": "pm8600",
+      "system": "8.1",
+      "card": "control",
+      "width": 640,
+      "height": 480,
+      "depth": 32,
+      "addr32": true,
+      "suite": "suite-tnt-1997"
+    },
+    {
+      "machine": "pm9600",
+      "system": "8.1",
+      "card": "mach64_gx",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-tnt-1997"
+    },
+    {
+      "machine": "pm7600",
+      "system": "7.6",
+      "card": "control",
+      "width": 640,
+      "height": 480,
+      "depth": 32,
+      "addr32": true,
+      "suite": "suite-tnt-1997"
+    },
+    {
+      "machine": "wgs9150",
+      "system": "7.5.3",
+      "card": "ariel",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-wgs9150"
+    },
+    {
+      "machine": "wgs9150",
+      "system": "7.6",
+      "card": "swim3",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-wgs9150"
+    },
+    {
+      "machine": "wgs9150",
+      "system": "7.6",
+      "card": "24ac",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-wgs9150"
+    },
+    {
+      "machine": "wgs9150_120",
+      "system": "7.6",
+      "card": "ariel",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-wgs9150"
     }
   ]
 }
