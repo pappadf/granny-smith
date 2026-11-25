@@ -106,6 +106,11 @@ const MODEL_IDS = [
   'lcii',
   'classicii',
   'colorclassic',
+  'lciii',
+  'lciiip',
+  'lc520',
+  'lc550',
+  'colorclassicii',
 ];
 const CARD_IDS = [
   'mdc_8_24',

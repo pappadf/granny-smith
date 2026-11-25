@@ -23,6 +23,8 @@ with this checksum in lower case and continues with a second, longer one
 | `35C28F5F` | Macintosh LC II | LC II |
 | `3193670E` | Macintosh Classic II | Classic II |
 | `ECD99DC0` | Macintosh Color Classic | Color Classic |
+| `ECBBC41C`, `EC904829` | Macintosh LC III (later, early) | LC III, LC III+ |
+| `EDE66CBD` | LC 520/550, Color Classic II, Macintosh TV | LC 520, LC 550, Color Classic II |
 | `4147DD77` | Macintosh IIfx | IIfx |
 | `420DBFF3` | Quadra 700/900 | Quadra 700, Quadra 900 |
 | `3DC27823` | Quadra 950 | Quadra 950 |
@@ -66,6 +68,9 @@ built-in video where it has one.
 | Macintosh XL | `macxl` | 1 MB; 0.5, 1, 1.5, 2 MB | built-in 12″, 608×431, square pixels | one internal drive | internal ProFile |
 | Macintosh Classic II (Performa 200) | `classicii` | 10 MB; 2, 4, 6, 10 MB | built-in 9″, 512×342 black and white | 1.4 MB SuperDrive + optional external | SCSI; CD-ROM |
 | Macintosh Color Classic (Performa 250) | `colorclassic` | 10 MB; 4, 6, 8, 10 MB | built-in 10″, 512×384 colour (up to 256 colours) | 1.4 MB SuperDrive | SCSI; CD-ROM |
+| Macintosh Color Classic II (Performa 275) | `colorclassicii` | 8 MB; 4, 5, 6, 8, 12, 20, 36 MB | built-in 10″, 512×384 colour (up to 256 colours) | 1.4 MB SuperDrive | SCSI; CD-ROM |
+| Macintosh LC 520 (Performa 520) | `lc520` | 8 MB; 4, 5, 6, 8, 12, 20, 36 MB | built-in 14″, 640×480 colour (up to 256 colours) | 1.4 MB SuperDrive | SCSI; CD-ROM |
+| Macintosh LC 550 (Performa 550, 560) | `lc550` | 8 MB; 4, 5, 6, 8, 12, 20, 36 MB | built-in 14″, 640×480 colour (up to 256 colours) | 1.4 MB SuperDrive | SCSI; CD-ROM |
 
 The 128K, 512K and 512K enhanced have no SCSI port: they start from a
 floppy only. The 128K and 512K read single-sided 400K disks (System 1 to
@@ -98,6 +103,8 @@ would.
 | Macintosh IIci | `iici` | 8 MB; 1–128 MB | built-in (13″ RGB or 15″ Portrait) | internal + optional external | NuBus 4–6 |
 | Macintosh IIsi | `iisi` | 9 MB; 1, 2, 3, 5, 9, 17, 65 MB | built-in (13″, 15″ Portrait, 12″ RGB) | internal + optional external | — |
 | Macintosh IIfx | `iifx` | 8 MB; 4–128 MB | Display Card 8•24 in slot 1 | two internal 1.4 MB | NuBus 1–6 |
+| Macintosh LC III (Performa 450) | `lciii` | 8 MB; 4, 5, 6, 8, 12, 20, 36 MB | built-in (13″ RGB 640×480 or 12″ RGB 512×384, up to 256 colours) | one internal 1.4 MB | — (PDS empty) |
+| Macintosh LC III+ (Performa 460–467) | `lciiip` | 8 MB; 4, 5, 6, 8, 12, 20, 36 MB | built-in (13″ RGB 640×480 or 12″ RGB 512×384, up to 256 colours) | one internal 1.4 MB | — (PDS empty) |
 | Macintosh LC II (Performa 400–430) | `lcii` | 10 MB; 4, 6, 8, 10 MB | built-in (13″ RGB 640×480 up to 16 colours, or 12″ RGB 512×384 up to 256) | one internal 1.4 MB | — (PDS empty) |
 
 All have SCSI with a hard disk at ID 0 and a CD-ROM drive at ID 3 by
@@ -168,6 +175,7 @@ Combinations the project tests regularly. Others may well work too.
 | IIfx | System 6.0.8 – 7.6; A/UX 3.0.1 with X11; Mac OS 8.1 |
 | LC II, Classic II | System 7.0.1, 7.1; 7.5.3 (LC II) |
 | Color Classic | System 7.5.3, 7.6 (7.1 needs the machine's System Enabler) |
+| LC III, LC III+, LC 520, LC 550, Color Classic II | System 7.5.3, 7.6 (7.1 needs the machine's System Enabler) |
 | Quadra 700 / 900 / 950 | System 7.5 – 7.6; System 7.1 on the Quadra 700 |
 | Quadra 840AV / 660AV | System 7.1 with its enabler, 7.6 (840AV) |
 | Power Mac 6100 / 7100 / 8100 | System 7.5 – 7.6, Mac OS 8.1 – 9.0.4; MkLinux DR3 |
