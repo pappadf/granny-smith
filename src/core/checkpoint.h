@@ -12,6 +12,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 // Opaque checkpoint stream; modules receive a pointer to it when saving and
 // restoring state.  A header that only passes the pointer through can
@@ -112,6 +113,67 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
 #define system_read_checkpoint_data(...)  CP_SELECT_4(__VA_ARGS__, CP_READ_TAGGED, CP_READ_PLAIN)(__VA_ARGS__)
 #define system_write_checkpoint_data(...) CP_SELECT_4(__VA_ARGS__, CP_WRITE_TAGGED, CP_WRITE_PLAIN)(__VA_ARGS__)
 
+// === Plain-data prefixes ===
+//
+// A device struct puts its plain data first and its pointers last
+// (STYLE_GUIDE, "Device module conventions"), so the bytes before the first
+// pointer are saved as one block.  Name that boundary once, beside the
+// struct:
+//     CHECKPOINT_PREFIX(via_t, scheduler);
+// and save and restore it under the type's name as its tag:
+//     checkpoint_save_prefix(cp, via, via_t);
+//     checkpoint_load_prefix(cp, via, via_t);
+// The tag means a swapped equal-sized restore is caught (see the tag note
+// above), and no host pointer reaches the stream.
+#define CHECKPOINT_PREFIX(type, member)     enum { type##_cp_prefix = offsetof(type, member) }
+#define checkpoint_save_prefix(cp, p, type) system_write_checkpoint_data((cp), (p), (size_t)type##_cp_prefix, #type)
+#define checkpoint_load_prefix(cp, p, type) system_read_checkpoint_data((cp), (p), (size_t)type##_cp_prefix, #type)
+
+// === Field lists ===
+//
+// A save and its restore that walk the same fields are written once, as an
+// X-macro over the direction (lisa_mmu.c's LISA_MMU_CP_FIELDS is the model):
+//     #define DEV_CP_FIELDS(OP, cp, d) CP_FIELD(OP, cp, (d)->a); CP_FIELD(OP, cp, (d)->b)
+//     DEV_CP_FIELDS(system_write_checkpoint_data, cp, d);   // save
+//     DEV_CP_FIELDS(system_read_checkpoint_data, cp, d);    // restore
+// Restore-only fixups go after the list, never between its entries.
+#define CP_FIELD(OP, cp, lv) OP((cp), &(lv), sizeof(lv))
+#define CP_ARRAY(OP, cp, a)  OP((cp), (a), sizeof(a))
+
+// An entry whose save and restore are two functions picks one by OP, as
+// SWIM3_CP does (swim3.h): the plain-data prefix and a sparse buffer.
+#define CP_PREFIX(OP, cp, p, type)                            CP_PREFIX_##OP(cp, p, type)
+#define CP_PREFIX_system_write_checkpoint_data(cp, p, type)   checkpoint_save_prefix(cp, p, type)
+#define CP_PREFIX_system_read_checkpoint_data(cp, p, type)    checkpoint_load_prefix(cp, p, type)
+#define CP_SPARSE(OP, cp, buf, size, page)                    CP_SPARSE_##OP(cp, buf, size, page)
+#define CP_SPARSE_system_write_checkpoint_data(cp, b, sz, pg) checkpoint_write_sparse((cp), (b), (sz), (pg))
+#define CP_SPARSE_system_read_checkpoint_data(cp, b, sz, pg)  checkpoint_read_sparse((cp), (b), (sz), (pg))
+
+// === Staging structs ===
+//
+// A device that saves a fixed-width snapshot struct (so `bool`s and the
+// padding have one defined layout in the stream) still writes its field list
+// once: the list moves each field between the snapshot and the live device,
+// and OP picks the direction.
+//     #define DEV_STAGE_FIELDS(OP, c, d) OP((c)->regs, (d)->regs); OP##_BOOL((c)->on, (d)->on)
+//     DEV_STAGE_FIELDS(CP_STAGE_OUT, &c, d);   // save: live -> snapshot
+//     DEV_STAGE_FIELDS(CP_STAGE_IN, &c, d);    // restore: snapshot -> live
+// A snapshot field has the live field's size (checked at compile time); a
+// `bool` is staged as a byte through the _BOOL forms, and reads back as
+// "non-zero", whatever byte the file holds.
+#define CP_STAGE_OUT(snap, live)                                                                                       \
+    do {                                                                                                               \
+        _Static_assert(sizeof(snap) == sizeof(live), "staged field size");                                             \
+        memcpy(&(snap), &(live), sizeof(snap));                                                                        \
+    } while (0)
+#define CP_STAGE_IN(snap, live)                                                                                        \
+    do {                                                                                                               \
+        _Static_assert(sizeof(snap) == sizeof(live), "staged field size");                                             \
+        memcpy(&(live), &(snap), sizeof(live));                                                                        \
+    } while (0)
+#define CP_STAGE_OUT_BOOL(snap, live) ((snap) = (live) ? 1u : 0u)
+#define CP_STAGE_IN_BOOL(snap, live)  ((live) = (snap) != 0)
+
 // === Bounded reads from an untrusted stream ===
 //
 // A checkpoint is a user-supplied file and the build-ID gate is not a defence
@@ -136,6 +198,25 @@ char *checkpoint_read_string(checkpoint_t *checkpoint, uint32_t max, const char 
 // The writer checkpoint_read_string reads: `uint32 length + bytes`, the length
 // counting the NUL.  NULL and "" both write length 0 (and read back as NULL).
 void checkpoint_write_string(checkpoint_t *checkpoint, const char *s);
+
+// A `uint32 length + bytes` blob; both carry `tag` (may be NULL).
+void checkpoint_write_blob(checkpoint_t *checkpoint, const void *data, uint32_t len, const char *tag);
+
+// Read what checkpoint_write_blob wrote, bounded by `max`: a malloc'd copy
+// (caller frees) and its length in *len.  NULL with *len = 0 for an empty
+// blob and for a refused one (over `max`, OOM, short read -- each flags the
+// checkpoint; check checkpoint_has_error() to tell them apart).  `what`
+// names the blob in the diagnostic and is its tag.
+uint8_t *checkpoint_read_blob(checkpoint_t *checkpoint, uint32_t max, uint32_t *len, const char *what);
+
+// A fixed-size buffer that is mostly zero, as only its non-zero `page`-byte
+// pages: `uint32 count`, then per page `uint32 index + page bytes`.
+void checkpoint_write_sparse(checkpoint_t *checkpoint, const uint8_t *buf, size_t size, uint32_t page);
+
+// Read what checkpoint_write_sparse wrote into `buf` (zeroed first: absent
+// pages are zero).  A count over size/page or an index past the buffer flags
+// the checkpoint and stops.
+void checkpoint_read_sparse(checkpoint_t *checkpoint, uint8_t *buf, size_t size, uint32_t page);
 
 // === File Serialization (content or reference mode) ===
 

@@ -8,7 +8,7 @@
 // SE/30 fixtures the MMU tabs, and the L:/P: labels next to breakpoints,
 // stack frames and memory rows, used to show as if they were live.
 
-import { gsEval, isGsError, isModuleReady } from './emulator';
+import { gsEval, isGsError, isGsObject, isModuleReady } from './emulator';
 import { fmtHex32 } from '@/lib/hex';
 import type { MmuKind } from '@/state/machine.svelte';
 
@@ -49,26 +49,49 @@ function toTranslation(o: Record<string, unknown>): Translation {
   };
 }
 
-// The core's argument map for (addr, supervisor?, fetch?).
-function modeArgs(supervisor?: boolean, fetch?: boolean): Record<string, unknown> {
+// The Lisa's four MMU contexts: 0 is the operating system's, 1-3 user
+// programs'.  The methods below take one as a trailing `context` on the
+// Lisa; no other MMU kind has the argument (the core refuses it there), so
+// callers pass it only when machine.mmuKind is 'lisa_segment'.
+export const LISA_CONTEXTS = [0, 1, 2, 3] as const;
+
+// The core's argument map for (addr, supervisor?, fetch?, context?).  A
+// Lisa context names the descriptor set outright, so `supervisor` is left
+// out with it.
+function modeArgs(
+  supervisor?: boolean,
+  fetch?: boolean,
+  context?: number,
+): Record<string, unknown> {
   const args: Record<string, unknown> = {};
-  if (supervisor !== undefined) args.supervisor = supervisor;
+  if (context !== undefined) args.context = context;
+  else if (supervisor !== undefined) args.supervisor = supervisor;
   if (fetch) args.fetch = true;
   return args;
 }
 
-// Translate one logical address.  `supervisor` omitted: the CPU's state.
+// Translate one logical address.  `supervisor` omitted: the CPU's state;
+// `context` (the Lisa) given: that context's segments.
 export async function translateAddr(
   addr: number,
   supervisor?: boolean,
+  context?: number,
 ): Promise<Translation | null> {
   if (!isModuleReady()) return null;
   const r = await gsEval('machine.cpu.mmu.translate', {
     addr: addr >>> 0,
-    ...modeArgs(supervisor),
+    ...modeArgs(supervisor, false, context),
   });
-  if (!r || typeof r !== 'object' || isGsError(r)) return null;
+  if (!isGsObject(r)) return null;
   return toTranslation(r as Record<string, unknown>);
+}
+
+// One address in each of the Lisa's four contexts, side by side: entry i
+// is context i (null where the core did not answer).
+export async function translateContexts(addr: number): Promise<(Translation | null)[]> {
+  const out: (Translation | null)[] = [];
+  for (const c of LISA_CONTEXTS) out.push(await translateAddr(addr, undefined, c));
+  return out;
 }
 
 // One step of a walk: what was consulted (`step`: tt / root / level / bat /
@@ -107,13 +130,14 @@ export async function walkAddr(
   addr: number,
   supervisor?: boolean,
   fetch?: boolean,
+  context?: number,
 ): Promise<Walk | null> {
   if (!isModuleReady()) return null;
   const r = await gsEval('machine.cpu.mmu.walk', {
     addr: addr >>> 0,
-    ...modeArgs(supervisor, fetch),
+    ...modeArgs(supervisor, fetch, context),
   });
-  if (!r || typeof r !== 'object' || isGsError(r)) return null;
+  if (!isGsObject(r)) return null;
   const o = r as Record<string, unknown>;
   const steps = Array.isArray(o.steps) ? o.steps : [];
   return {
@@ -146,11 +170,12 @@ export async function mapRange(
   start: number,
   end: number | undefined,
   supervisor?: boolean,
+  context?: number,
 ): Promise<MapRun[] | null> {
   if (!isModuleReady()) return null;
   const args: Record<string, unknown> = {
     start: start >>> 0,
-    ...modeArgs(supervisor),
+    ...modeArgs(supervisor, false, context),
     limit: MAP_LIMIT,
   };
   if (end !== undefined) args.end = end;
@@ -190,15 +215,18 @@ export function descriptorFormats(kind: MmuKind): string[] {
 export type Descriptor = Record<string, number | boolean | string>;
 
 // Decode `count` descriptors at `addr` (a physical address, or the Lisa's
-// segment number), read as `format` when the kind has formats.
+// segment number), read as `format` when the kind has formats -- or, on
+// the Lisa, from `context`'s descriptor set (omitted: the latch context).
 export async function readDescriptors(
   addr: number,
   count: number,
   format?: string,
+  context?: number,
 ): Promise<Descriptor[] | null> {
   if (!isModuleReady()) return null;
   const args: unknown[] = [addr >>> 0, count];
   if (format) args.push(format);
+  else if (context !== undefined) args.push(context);
   const r = await gsEval('machine.cpu.mmu.descriptor', args);
   if (!Array.isArray(r)) return null;
   return r
@@ -207,12 +235,15 @@ export async function readDescriptors(
 }
 
 // Translate several addresses (each once), for a list of labels.
-export async function translateMany(addrs: number[]): Promise<Record<number, Translation>> {
+export async function translateMany(
+  addrs: number[],
+  context?: number,
+): Promise<Record<number, Translation>> {
   const out: Record<number, Translation> = {};
   for (const a of addrs) {
     const key = a >>> 0;
     if (key in out) continue;
-    const t = await translateAddr(key);
+    const t = await translateAddr(key, undefined, context);
     if (t) out[key] = t;
   }
   return out;

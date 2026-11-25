@@ -57,7 +57,7 @@ features. The browser-based frontend renders the Macintosh display in a
 canvas, maps host keyboard and mouse events to the emulator, and drives every
 feature through the mailbox from the page (`docs/guide/web.md`); the headless
 build is an in-process client of the same mailbox, feeding it a script file,
-stdin or a TCP daemon connection (`docs/internals/core/shell/shell.md`). Both rely on the
+stdin or a TCP daemon connection (`docs/internals/core/lua/lua.md`). Both rely on the
 same portable core logic.
 
 This separation of concerns allows the emulator to be easily embedded in
@@ -71,20 +71,18 @@ what is the rule that keeps the machine deterministic:
 
 | Thread | Runs | Touches |
 |---|---|---|
-| **Emulator thread** | the tick: one VBL frame-unit at a time, then the mailbox drain | **all guest state**. Nothing of unbounded length runs here; every leaf of the object tree executes here, served from the drain |
-| **Job thread** (`src/core/job/job.h`) | scripts (a terminal line, a script file, a daemon statement), one at a time, FIFO | only the interpreter's own memory. Every read, write or call of the tree is handed to the emulator thread through the **seam** (`job_on_emulator`) and served in the next drain; a call that starts a mode holds the job until the mode ends |
+| **Emulator thread** | the tick: one VBL frame-unit at a time, then the mailbox drain, which also steps the active script **job** (`src/core/job/job.h`: a terminal line, a script file, a daemon statement, one at a time, FIFO, each a Lua coroutine) | **all guest state**. Nothing of unbounded length runs here at once: every leaf of the object tree executes here, served from the drain, and a job runs one time slice per drain, suspending while a mode it started runs ([job.md](../internals/core/job/job.md)) |
 | **I/O worker** (`src/core/io/io_worker.h`) | work proportional to a file: copies, exports, blank images, archive extraction, downloads, the quick checkpoint's write and rename | host files only, through its own handles; never guest state. Reports progress and completion back through the drain; cancellable between chunks |
 | **Platen worker**, **Voodoo2 raster / GPU worker** (browser) | the LaserWriter's PostScript interpreter; the Voodoo2's rasteriser | their own shared-memory rings (`mailbox_ring.h`), fed by the emulator thread |
 | **Browser main thread** | the page, the canvas, input | the mailbox's client side through `Module.HEAPU8` and Atomics; never a direct call into the core |
 | **WasmFS OPFS proxy** (browser) | every OPFS read, write and rename, one at a time | the filesystem — which is why file work is chunked and yields between chunks |
 
-Output follows the same ownership: what a leaf or the interpreter prints goes
+Output follows the same ownership: what a leaf or a script prints goes
 through the sink (`src/core/out.h`) to the client that asked — a job's text
 as output records before its result, a page leaf's text with its answer —
 and only text printed outside any request (boot messages, a breakpoint hit)
-reaches stdout directly. Headless can fold the job thread and the I/O worker
-back into the emulator thread (`--jobs=inline`, `--io=sync`) for bisecting;
-the output must not change.
+reaches stdout directly. Headless can fold the I/O worker back into the
+emulator thread (`--io=sync`) for bisecting; the output must not change.
 
 ## Modularized Architecture
 
@@ -193,14 +191,15 @@ Four caller surfaces walk that tree:
   See [`web.md`](web.md) for the wire layout and protocol.
 - **Threads**: the emulator thread owns all guest state and runs nothing
   of unbounded length: it ticks frames and drains the mailbox. A script
-  is a **job** on the job thread (`src/core/job/job.h`), reaching guest
-  state only through the seam, one served call at a time; a copy, an
+  is a **job** (`src/core/job/job.h`), a Lua coroutine the drain resumes
+  one step at a time, so its tree calls are plain calls on the emulator
+  thread; a copy, an
   export, an archive's extraction, a download or a checkpoint's write is
   an **I/O job** on the I/O worker (`src/core/io/io_worker.h`), answered
   later, reporting progress and cancellable between chunks. What any of
   them prints goes through the output sink (`src/core/out.h`) to the
-  client that asked. Headless runs the same three threads (`--io=sync`
-  and `--jobs=inline` fold a thread back in for bisecting).
+  client that asked. Headless runs the same threads (`--io=sync` folds
+  the I/O worker back in for bisecting).
 - **Inspector UI**: walks `objects()` / `attributes()` / `methods()` /
   `help()` to render the live tree.
 
@@ -212,9 +211,9 @@ See [`docs/internals/core/object/object-model.md`](../internals/core/object/obje
 path forms in detail, the lifecycle invariants (process-singleton vs.
 cfg-scoped), and the recipe for adding a new class.
 
-See [`docs/internals/core/shell/shell.md`](../internals/core/shell/shell.md) for the line-input layer specifically:
-tokenisation, `$alias` expansion, `${expr}` interpolation, shell
-variables, scripts, and tab completion.
+See [`docs/internals/core/lua/lua.md`](../internals/core/lua/lua.md) for the line-input layer specifically:
+Lua scripts and the `gs` library, the terminal's command lines and Lua
+lines, `$alias` and `${expr}` templates, and tab completion.
 
 ### Orchestration and System Wiring
 
@@ -250,9 +249,11 @@ interactions are handled cleanly.
   - `system_swap_in(config_t *, bool restored)`: makes a built machine the
     active one (global, object root, memory-map selection, label,
     `machine_booted`) and destroys the machine it replaces.
-  - `system_destroy(config_t *)`: Deletes the NuBus cards, calls
-    `profile->substrate->teardown(cfg)` (the family delete-chain, reverse
-    order), closes images, and frees the configuration.
+  - `system_destroy(config_t *)`: Deletes the NuBus cards, then stops the
+    scheduler, calls `profile->substrate->teardown(cfg)` (the family's own
+    devices, then the shared `machine_teardown_config_devices` chain) and
+    frees `machine_context` (`machine_teardown_bracket`), closes images, and
+    frees the configuration.
 
 - **Module interconnection via callbacks:**
   - Peripherals use function pointer callbacks for hardware signal routing,
@@ -263,7 +264,7 @@ interactions are handled cleanly.
     - SCC accepts a `scc_irq_fn` callback for interrupt routing.
   - These signal callbacks live in the owning machine or family file under
     `src/machines/` (e.g. `plus_via_output`/`plus_scc_irq`, or a GLUE family's
-    shared `mac030_glue_via1_irq`) — not in `system.c` — and are passed to
+    shared `m68k_board_via1_irq`) — not in `system.c` — and are passed to
     peripherals at construction, so machines route signals differently without
     changing peripheral code.
   - Machine *behavior* (init, teardown, reset, checkpoint, IRQ→IPL, VBL,
@@ -434,15 +435,17 @@ The repository is organized as follows:
     (machine *implementations* — the platform-agnostic core must not include
     these; the public types live in `core/machine_profile.h`)
     - _machine.c_ — Static `const` profile registry + the `machine.*` object surface
-    - _runtime/_ — Family-agnostic helpers (image + MMU checkpoint, host I/O)
-    - _mac030/_ — Macintosh II-family 68030 substrate (lifecycle spine,
-      table-driven I/O dispatch engine, ROM overlay, MMU register block)
-    - _glue/_ — GLUE chipset family (se30, iicx, iix) + built-in SE/30 video
-    - _mdu/_ — MDU+RBV chipset family (iici, iisi) + rbv, egret, built-in RBV video
-    - _oss/_ — OSS+FMC chipset family (iifx) + oss, iop\*
+    - _runtime/_ — Family-agnostic helpers (image + MMU checkpoint, host I/O),
+      the table-driven I/O dispatch engine every family shares (`board_io`),
+      and the 68k II/Quadra board runtime (`m68k_board*`: lifecycle spine,
+      descriptor face of the I/O engine, ROM overlay, IRQ routing)
+    - _glue/_ — GLUE chipset family (se30, iicx, iix: `glue.c`, `glue_io.c`) +
+      built-in SE/30 video
+    - _mdu/_ — MDU+RBV chipset family (iici, iisi) + rbv, built-in RBV video
+    - _oss/_ — OSS+FMC chipset family (iifx) + oss
     - _mcu/_ — MCU+DAFB chipset family (q700, q900, q950) + dafb
     - _av/_ — YMCA+PSC "AV" chipset family (q840av, q660av) + psc, civic,
-      cuda, dsp, mace, new_age, vdc, singer
+      dsp, mace, new_age, vdc, singer
     - _compact/_ — Compact-68000 substrate (plus; Mac SE assumed next)
     - _lisa/_ — Lisa segment-MMU substrate (lisa, macxl) + cops, lisa_fdc, lisa_profile
     - _pdm/_ — Power Macintosh PDM substrate (pm6100, pm7100, pm8100) +
@@ -496,23 +499,26 @@ registry.)
 
 - **Tier 1 — generic chips** (`src/core/peripherals/`): the platform-agnostic
   silicon every family reuses — VIA, SCC, RTC, ADB, ASC, SWIM/IWM floppy,
-  NCR-5380 SCSI, sound, the NuBus subtree. Single-machine chips do **not** live
+  NCR-5380 SCSI, sound, the NuBus subtree, and the chips several families
+  share (Egret, Cuda and the IOP). Single-machine chips do **not** live
   here.
 - **Tier 2 — substrates** (`src/machines/<substrate>/`): a substrate owns a
-  machine's lifecycle. Six exist: **`mac030`** (the Macintosh II-family 68030
-  core — lifecycle spine, a table-driven `$50Fxxxxx` I/O dispatch engine, the
-  ROM overlay, and the 68030 MMU register block), **`compact`** (the compact
+  machine's lifecycle. Six exist: **`m68k_board`** (the Macintosh II/Quadra
+  board runtime in `runtime/` — lifecycle spine, the descriptor face of the
+  table-driven `$50Fxxxxx` I/O dispatch engine `board_io`, the ROM overlay,
+  and the 68030 MMU builder), **`compact`** (the compact
   68000 Macs — Plus today, Mac SE assumed next), **`lisa`** (the Lisa
   segment-MMU machines), and the three PowerPC substrates, **`pdm`**
   (pm6100/pm7100/pm8100), **`tnt`** (pm7500/pm8500/pm9500 and the Network
   Servers) and **`gossamer`** (the beige G3: pmg3dt/pmg3mt).
-- **Tier 3 — chipset families** compose `mac030` as *siblings* (not as
+- **Tier 3 — chipset families** compose `m68k_board` as *siblings* (not as
   descendants of any one chipset): **GLUE** (`glue/` — se30/iicx/iix), **MDU+RBV**
   (`mdu/` — iici/iisi), **OSS+FMC** (`oss/` — iifx), **MCU+DAFB** (`mcu/` —
   q700/q900/q950, the first 68040 generation) and **YMCA+PSC** (`av/` —
   q840av/q660av, the Cyclone/Tempest "AV" generation). Each family supplies
   its own I/O window table, IRQ routing, and the few code hooks a data table
-  can't express; the shared `mac030` engine drives all five. The 68040
+  can't express; the shared `board_io` engine drives all five (and the PowerPC
+  I/O islands). The 68040
   families reuse the spine for its lifecycle, I/O engine and IRQ resolver,
   and bring their own MMU (`mmu040`) and interrupt map — the AV family
   notably has **no VIA2 chip at all**, so `config_t.via2` stays NULL and the
@@ -553,7 +559,7 @@ behavior pointers:
   bind `av_substrate`, and the bespoke IIfx binds `iifx_substrate`. `system.c` and
   `nubus.c` dispatch through this vtable, so they hold no machine knowledge.
 - **`.board`** — a typed-by-convention board descriptor (e.g.
-  `mac030_glue_board_t`) the family substrate interprets: the ROM window, the
+  `glue_board_t`) the family substrate interprets: the ROM window, the
   I/O window table, NuBus slots, and per-machine hooks (VIA output, machine-ID
   strap, memory layout, optional checkpoint/VBL deltas). Adding a same-family
   machine is a new profile + board descriptor and one registry line — no new

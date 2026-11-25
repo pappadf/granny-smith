@@ -224,6 +224,11 @@ static void fdc_execute_rwts(lisa_fdc_t *fdc) {
         fdc->ram[FDC_STATUS] = (got == 512) ? 0x00 : 0x17;
         LOG(2, "fdc read trk=%d side=%d sec=%d off=%zu -> status=%02x", track, side, sector, offset,
             fdc->ram[FDC_STATUS]);
+    } else if (rwts == RWTS_WRITE && !image_is_writable(fdc->image)) {
+        // A write-protected diskette: the controller refuses before touching
+        // the medium (status $20, the write-protect error).
+        fdc->ram[FDC_STATUS] = 0x20;
+        LOG(2, "fdc write trk=%d side=%d sec=%d: write-protected", track, side, sector);
     } else if (rwts == RWTS_WRITE) {
         size_t put = disk_write_data(fdc->image, offset, &fdc->ram[FDC_DATA], 512);
         // The Sony controller writes the data sector AND its tag (pagelabel)
@@ -236,9 +241,7 @@ static void fdc_execute_rwts(lisa_fdc_t *fdc) {
         // The drive goes empty until the host inserts new media; that is how the
         // Mac ROM's "no system, blink ?-disk" loop drains a non-system disk so a
         // system disk can be inserted in its place.
-        fdc->image = NULL;
-        fdc_update_disktype(fdc);
-        fdc->ram[FDC_DRVSTAT] = 0;
+        lisa_fdc_eject(fdc);
         fdc->ram[FDC_STATUS] = 0x00;
         LOG(2, "fdc unclamp -> eject (drive now empty)");
     } else {
@@ -467,6 +470,10 @@ void lisa_fdc_update_int(lisa_fdc_t *fdc) {
         fdc_update_int(fdc);
 }
 void lisa_fdc_eject(lisa_fdc_t *fdc) {
+    // The image stays open in the machine's table, unlike other drives':
+    // fdc_attach's reinsert cache hands the same image back when the same
+    // diskette goes in again, so what the OS wrote to it survives the eject
+    // (the boot diskette's overmount stamp).
     fdc->image = NULL;
     fdc_update_disktype(fdc);
     fdc->ram[FDC_DRVSTAT] = 0; // no media → no pending drive events
@@ -679,31 +686,8 @@ lisa_fdc_t *lisa_fdc_init(struct scheduler *scheduler, lisa_fdc_fdir_fn fdir_cb,
     if (cp) {
         uint8_t attached = 0;
         system_read_checkpoint_data(cp, &attached, sizeof(attached));
-        if (attached) {
-            uint32_t len = 0;
-            system_read_checkpoint_data(cp, &len, sizeof(len));
-            if (len) {
-                char *name = (char *)malloc(len);
-                if (name) {
-                    system_read_checkpoint_data(cp, name, len);
-                    name[len - 1] = '\0';
-                    disk = images_find(images, name);
-                    if (!disk) {
-                        // The drive held a disk: a restore without it is not
-                        // the machine that was saved.
-                        LOG(0, "the checkpoint's diskette '%s' is not among its images", name);
-                        checkpoint_set_error(cp);
-                    }
-                    free(name);
-                } else {
-                    // Keep the stream aligned even if the allocation fails.
-                    for (uint32_t k = 0; k < len; ++k) {
-                        char tmp;
-                        system_read_checkpoint_data(cp, &tmp, 1);
-                    }
-                }
-            }
-        }
+        if (attached)
+            disk = checkpoint_read_image_ref(cp, images, "diskette", NULL);
         int32_t sides = 1;
         system_read_checkpoint_data(cp, &sides, sizeof(sides));
         fdc->num_sides = (int)sides;
@@ -754,11 +738,7 @@ void lisa_fdc_checkpoint(lisa_fdc_t *fdc, checkpoint_t *cp) {
     uint8_t attached = (fdc && fdc->image) ? 1u : 0u;
     system_write_checkpoint_data(cp, &attached, sizeof(attached));
     if (attached) {
-        const char *fn = image_get_filename(fdc->image);
-        uint32_t len = fn ? (uint32_t)(strlen(fn) + 1) : 0u;
-        system_write_checkpoint_data(cp, &len, sizeof(len));
-        if (len)
-            system_write_checkpoint_data(cp, fn, len);
+        checkpoint_write_image_ref(cp, fdc->image);
     }
     int32_t sides = fdc ? (int32_t)fdc->num_sides : 1;
     system_write_checkpoint_data(cp, &sides, sizeof(sides));

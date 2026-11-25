@@ -49,8 +49,11 @@
 #include "log.h"
 #include "machine.h"
 #include "object.h"
+#include "object_order.h"
+#include "page_fill.h"
 #include "pci.h"
 #include "ppc.h"
+#include "regfile.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -99,8 +102,7 @@ LOG_USE_CATEGORY_NAME("grackle");
 
 // Little-endian register access into the byte file.
 static uint32_t cfg32(const gos_grackle_t *g, uint32_t reg) {
-    return (uint32_t)g->cfg[reg] | ((uint32_t)g->cfg[reg + 1] << 8) | ((uint32_t)g->cfg[reg + 2] << 16) |
-           ((uint32_t)g->cfg[reg + 3] << 24);
+    return RD_LE32(&g->cfg[reg]);
 }
 
 static void set_cfg32(gos_grackle_t *g, uint32_t reg, uint32_t v) {
@@ -130,7 +132,7 @@ void gos_grackle_remap(config_t *cfg) {
     // enabled bank reads all-ones and drops writes (§6), which an empty
     // page gives by default.
     for (uint32_t p = 0; p < (0x40000000u >> MEM_PAGE_SHIFT); p++)
-        gos_clear_page(p);
+        page_clear(p);
     bool memgo = (cfg32(g, G_MCCR1) & MCCR1_MEMGO) != 0;
     uint8_t enables = g->cfg[G_BANK_EN];
     if (!memgo) {
@@ -154,7 +156,7 @@ void gos_grackle_remap(config_t *cfg) {
         uint8_t *host = ram + g->bank_host_off[n];
         uint32_t span = hi - lo + 1u;
         for (uint32_t p = 0; p < (span >> MEM_PAGE_SHIFT); p++)
-            gos_fill_page((lo >> MEM_PAGE_SHIFT) + p, host + (((uint64_t)p << MEM_PAGE_SHIFT) % size), true);
+            page_fill_identity_sv((lo >> MEM_PAGE_SHIFT) + p, host + (((uint64_t)p << MEM_PAGE_SHIFT) % size), true);
         LOG(2, "bank %u: $%08X-$%08X -> %u MB of DIMM storage at host +$%X", n, lo, hi, size >> 20,
             g->bank_host_off[n]);
     }
@@ -339,7 +341,7 @@ static uint8_t data_read8(config_t *cfg, uint32_t offset) {
     if (!cfg_decode(&st->grackle, &dev, &fn, &reg))
         return 0xFF;
     uint32_t v = pci_bus_cfg_read(st->bus, dev, fn, reg);
-    return (uint8_t)(v >> (8 * (offset & 3u)));
+    return le_lane8(v, offset);
 }
 
 static void data_write8(config_t *cfg, uint32_t offset, uint8_t value) {
@@ -354,13 +356,12 @@ static void data_write8(config_t *cfg, uint32_t offset, uint8_t value) {
 
 // CONFIG_ADDR: byte i of the port is byte i of the little-endian latch.
 static uint8_t addr_read8(void *ctx, uint32_t offset) {
-    return (uint8_t)(gos_st((config_t *)ctx)->grackle.cfg_addr >> (8 * (offset & 3u)));
+    return le_lane8(gos_st((config_t *)ctx)->grackle.cfg_addr, offset);
 }
 
 static void addr_write8(void *ctx, uint32_t offset, uint8_t value) {
     gos_grackle_t *g = &gos_st((config_t *)ctx)->grackle;
-    uint32_t shift = 8 * (offset & 3u);
-    g->cfg_addr = (g->cfg_addr & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+    le_lane8_set(&g->cfg_addr, offset, value);
 }
 
 static uint16_t addr_read16(void *ctx, uint32_t offset) {
@@ -636,19 +637,13 @@ void gos_grackle_attach_objects(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
     if (!st || st->grackle_object)
         return;
-    st->grackle_object = object_new(&grk_class, cfg, "grackle");
-    if (st->grackle_object) {
-        object_set_label(st->grackle_object, "Grackle");
-        object_set_order(st->grackle_object, 44);
-        object_attach(machine_object(), st->grackle_object);
-    }
+    st->grackle_object =
+        object_attach_new(machine_object(), &grk_class, cfg, "grackle", "Grackle", OBJ_ORDER_HOST_BRIDGE);
 }
 
 void gos_grackle_detach_objects(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
     if (st && st->grackle_object) {
-        object_detach(st->grackle_object);
-        object_delete(st->grackle_object);
-        st->grackle_object = NULL;
+        object_destroy(&st->grackle_object);
     }
 }

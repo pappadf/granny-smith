@@ -50,7 +50,7 @@
 // every file is listed up front and its download progress reported for the
 // progress view that stands in for Welcome (components/display/UrlBootView).
 
-import { gsEval, gsEvalWithProgress, gsErrorText, gsOk, isModuleReady } from './emulator';
+import { gsEval, gsEvalWithProgress, gsErrorText, isGsObject, isModuleReady } from './emulator';
 import { xferReadAll } from './xfer';
 import { reconcileUiWithMachine, prepareFreshMachine } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
@@ -66,7 +66,6 @@ import {
   skipQueuedUrlFiles,
 } from '@/state/urlBoot.svelte';
 import { setMounted, clearMounts } from '@/state/images.svelte';
-import { unzipAll, type UnzippedFile } from '@/lib/archive';
 import {
   canonicalParamName,
   planMediaFetch,
@@ -75,6 +74,7 @@ import {
   decodeConfigParam,
   type MediaFetchPlan,
 } from '@/lib/mediaUrl';
+import { formatSize } from '@/lib/format';
 import { identifyRom, MEDIA_TYPES, type MediaTypeId } from '@/lib/media';
 import {
   addUrlConfigParam,
@@ -83,13 +83,8 @@ import {
   isUrlConfigParam,
   type UrlConfigParams,
 } from '@/lib/urlConfig';
-import {
-  persistAs,
-  storeRomPair,
-  streamToOpfs,
-  discardStaging,
-  stagedArchiveFormat,
-} from './upload';
+import { persistAs, storeRomPair, streamToOpfs, stagedArchiveFormat } from './upload';
+import { rmPath, walkFiles } from './vfs';
 import { scratchPath, FD_DIR, HD_DIR } from '@/lib/opfsPaths';
 import {
   parseBlankValue,
@@ -490,13 +485,16 @@ async function provideBlank(
       if (!urlBoot.requested) showNotification(`${label}: ${name} (blank, already stored)`, 'info');
       return path;
     }
-    const rm = await gsEval('files.rm', [path]);
-    if (!gsOk(rm)) return fail(`could not replace ${name}: ${gsErrorText(rm)}`);
+    try {
+      await rmPath(path, { checked: true });
+    } catch (e) {
+      return fail(`could not replace ${name}: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
-  const made = await gsEval(plan.method, [path, plan.arg]);
+  const made = await gsEval('files.create', [path, plan.kind, plan.size]);
   if (made !== true) {
-    // The core parses an hd_create spec; its refusal is the spec's fault.
-    if (plan.method === 'files.hd_create') return fail(hardDiskSpecRefused(blank.spec));
+    // The core parses a hard disk's spec; its refusal is the spec's fault.
+    if (plan.kind === 'hd') return fail(hardDiskSpecRefused(blank.spec));
     return fail(`could not create ${name}: ${gsErrorText(made)}`);
   }
   updateUrlFile(slot, { status: 'done' });
@@ -641,7 +639,7 @@ async function fetchAndPersist(
     rejectDownload(slot, staged.name, stored.reason);
     return undefined;
   } finally {
-    await discardStaging(staged.path);
+    await rmPath(staged.path);
   }
 }
 
@@ -679,7 +677,7 @@ async function storeCompact(
         updateUrlFile(slot, { stored: { done, total } });
       },
     );
-    if (!r || typeof r !== 'object' || 'error' in (r as object)) {
+    if (!isGsObject(r)) {
       // The caller stores the staged file as it is.
       if (before) updateUrlFile(slot, { status: before });
       return false;
@@ -693,7 +691,7 @@ async function storeCompact(
     rejectDownload(slot, staged.name, stored.reason);
     return undefined;
   } finally {
-    await discardStaging(part);
+    await rmPath(part);
   }
 }
 
@@ -793,7 +791,7 @@ async function fetchAndImport(
   const name = out.path.split('/').pop() ?? plan.fileName;
   if (!urlBoot.requested)
     showNotification(
-      `${label}: ${name}${typeof size === 'number' ? ` (${sizeText(size)} stored)` : ''}`,
+      `${label}: ${name}${typeof size === 'number' ? ` (${formatSize(size)} stored)` : ''}`,
       'info',
     );
   // The row's size is the disk's: what was received is the compressed
@@ -830,15 +828,9 @@ async function fetchRomPair(urlA: string, urlB: string): Promise<string | undefi
     rejectDownload('rom', name, stored.reason);
     return undefined;
   } finally {
-    await discardStaging(a.path);
-    if (b) await discardStaging(b.path);
+    await rmPath(a.path);
+    if (b) await rmPath(b.path);
   }
-}
-
-// Human size for messages ("512 KB", "25.0 MB").
-function sizeText(bytes: number): string {
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 // A failed fetch() of `url`: a TypeError is the browser refusing to hand the
@@ -854,9 +846,9 @@ function fetchFailureText(e: unknown, url: string): string {
 // (scratchPath, so a later URL boot of the same slot never writes the file a
 // running machine may still be reading), streamed through the one chunked writer (upload.ts streamToOpfs).  When
 // the value names a member of a container, the container is fetched whole
-// and the member taken out of it (a zip in JS — unzipping needs the whole
-// archive in memory — a Mac archive by the C side); archive.org extracts zip
-// members itself.  A container fetched without a member path keeps the old
+// and the member taken out of it by the core's archive reader (peeler, through
+// files.archive.extract), whatever kind of archive it is; archive.org extracts
+// zip members itself.  A container fetched without a member path keeps the old
 // behaviour: a zip's first file, a Mac archive's found medium.  Returns the
 // staged path and the name to store it under -- the caller discards it --
 // or null, with nothing left behind.  `downloaded` is the value's body
@@ -875,7 +867,7 @@ async function fetchAndStage(
     const msg = fetchFailureText(e, url);
     showNotification(`${label}: ${msg}`, 'error');
     updateUrlFile(slot, { status: 'failed', error: msg });
-    if (downloaded) await discardStaging(downloaded);
+    if (downloaded) await rmPath(downloaded);
     return null;
   }
   const storeAs = urlMediaNameFor(slot, url);
@@ -911,7 +903,9 @@ async function fetchAndStage(
 
     if (plan.member !== null) {
       // The value named a member: take exactly that one out.
-      if (!(await extractMember(slot, staged, plan))) return null;
+      const pick = { member: plan.member, plan };
+      if (!(await unpackArchive(slot, staged, plan.containerName ?? plan.fileName, pick)))
+        return null;
     } else if (archive === 'gz' || (!archive && /gzip/i.test(ct))) {
       // A gzip body: what it holds (a floppy, a ROM).  Not a zip, though its
       // Content-Type ("application/gzip") says "zip" too.
@@ -923,20 +917,18 @@ async function fetchAndStage(
           c.close();
         },
       }).pipeThrough(decompressor('gzip'));
-      await discardStaging(staged);
+      await rmPath(staged);
       if (!(await streamToOpfs(staged, body))) return null;
     } else if (archive === 'zip' || /\bzip/i.test(ct)) {
       // A bare zip: its first file, as before member paths existed.
       updateUrlFile(slot, { status: 'unpacking' });
-      const first = (await unzipStaged(staged, plan.fileName))[0];
-      if (!first) throw new MediaUrlError(`${plan.fileName}: the zip is empty`);
-      if (!(await streamToOpfs(staged, first.data))) return null;
+      if (!(await unpackArchive(slot, staged, plan.fileName, 'first'))) return null;
     } else if (archive) {
-      await unpackMacArchive(slot, staged, null);
+      await unpackArchive(slot, staged, plan.fileName, 'medium');
     }
 
     const size = await gsEval('files.path_size', [staged]);
-    const sz = typeof size === 'number' ? ` (${sizeText(size)})` : '';
+    const sz = typeof size === 'number' ? ` (${formatSize(size)})` : '';
     // The progress view lists each file as it lands; a toast per file is
     // for a page that is not showing it.
     if (!urlBoot.requested) showNotification(`${label}: ${storeAs}${sz}`, 'info');
@@ -954,7 +946,7 @@ async function fetchAndStage(
     return null;
   } finally {
     // Every exit but the one handing the file to the caller discards it.
-    if (!handedOver) await discardStaging(staged);
+    if (!handedOver) await rmPath(staged);
   }
 }
 
@@ -970,90 +962,52 @@ function progressReporter(slot: string): (bytes: number) => void {
   };
 }
 
-// Replace the container staged at `staged` with its member `plan.member`.
-// Throws MediaUrlError (listing what is there) when the member is absent.
-async function extractMember(slot: string, staged: string, plan: MediaFetchPlan): Promise<boolean> {
-  const member = plan.member ?? '';
-  if (plan.container === 'zip') {
-    const entries = (await unzipStaged(staged, plan.containerName ?? plan.fileName)).filter(
-      (f) => f.name,
-    );
-    const hit = findMember(
-      entries.map((f) => f.name),
-      member,
-    );
-    if (!hit)
-      throw memberNotFound(
-        plan,
-        entries.map((f) => f.name),
-      );
-    const data = entries.find((f) => f.name === hit)?.data;
-    return !!data && (await streamToOpfs(staged, data));
-  }
-  return unpackMacArchive(slot, staged, member, plan);
-}
+// What to take out of an archive: the member a URL named, its first file (a
+// bare zip), or the medium files.find_media picks (a bare Mac archive).
+type ArchivePick = { member: string; plan: MediaFetchPlan } | 'first' | 'medium';
 
-// The files of the zip staged at `staged` (named `name`), or a MediaUrlError
-// saying it is not one: jszip's own message ("Can't find end of central
-// directory : is this a zip file ?" and a link to its documentation) reached
-// the user as it was.
-async function unzipStaged(staged: string, name: string): Promise<UnzippedFile[]> {
-  try {
-    return await unzipAll(await xferReadAll(staged));
-  } catch {
-    throw new MediaUrlError(`${name} is not a zip archive this page can read`);
-  }
-}
-
-// Unpack the Mac archive staged at `staged` (StuffIt, BinHex, Compact Pro,
-// MacBinary) and put `member` — or, with none, the medium files.find_media
-// picks — in its place.
-async function unpackMacArchive(
+// Unpack the archive staged at `staged` (named `name`; zip, StuffIt, BinHex,
+// Compact Pro, MacBinary, tar -- whatever the core's reader identifies) and
+// put what `pick` names in its place.  Throws MediaUrlError when the file is
+// not an archive and something was to be taken out of it, or when the member
+// is absent (listing what is there).
+async function unpackArchive(
   slot: string,
   staged: string,
-  member: string | null,
-  plan?: MediaFetchPlan,
+  name: string,
+  pick: ArchivePick,
 ): Promise<boolean> {
-  const fmt = await gsEval('files.archive.identify', [staged]);
-  if (typeof fmt !== 'string' || fmt.length === 0) {
-    if (member !== null && plan) throw new MediaUrlError(`${plan.containerName}: not an archive`);
-    return true;
+  if (!(await stagedArchiveFormat(staged))) {
+    if (pick === 'medium') return true;
+    throw new MediaUrlError(`${name} is not an archive this page can read`);
   }
   const extractDir = scratchPath(`url_${slot}_unpacked`);
   try {
     if ((await gsEval('files.archive.extract', [staged, extractDir])) !== true)
-      throw new MediaUrlError(`could not unpack ${plan?.containerName ?? 'the archive'}`);
-    if (member === null) {
+      throw new MediaUrlError(`could not unpack ${name}`);
+    if (pick === 'medium') {
       await gsEval('files.find_media', [extractDir, staged]);
       return true;
     }
-    const names = await listTree(extractDir);
-    const hit = findMember(names, member);
-    if (!hit) throw memberNotFound(plan as MediaFetchPlan, names);
+    // A subdirectory that cannot be listed rejects the URL's media, never
+    // passes for an empty one.
+    const names = await walkFiles(extractDir, { relative: true }).catch((e: unknown) => {
+      throw new MediaUrlError(e instanceof Error ? e.message : String(e));
+    });
+    let hit: string | null;
+    if (pick === 'first') {
+      // A file's resource fork and Finder info come out as a "._" sidecar
+      // beside it (files.cp): never the file itself.
+      hit = names.find((n) => !(n.split('/').pop() ?? '').startsWith('._')) ?? null;
+      if (!hit) throw new MediaUrlError(`${name}: the zip is empty`);
+    } else {
+      hit = findMember(names, pick.member);
+      if (!hit) throw memberNotFound(pick.plan, names);
+    }
     return (await gsEval('files.cp', [`${extractDir}/${hit}`, staged])) === true;
   } finally {
-    await discardStaging(extractDir);
+    await rmPath(extractDir);
   }
-}
-
-// Every file under `dir`, as paths relative to it.  Each entry says what it is
-// (files.list), so a subdirectory that cannot be listed is an error -- the
-// URL's media is rejected -- never taken for a file.
-async function listTree(dir: string, prefix = ''): Promise<string[]> {
-  const at = prefix ? `${dir}/${prefix}` : dir;
-  const entries = await gsEval('files.list', [at]);
-  // An unreadable or oversized listing is the core's error: said, not taken
-  // for an empty one.
-  if (!Array.isArray(entries))
-    throw new MediaUrlError(`cannot list ${at}: ${gsErrorText(entries)}`);
-  const out: string[] = [];
-  for (const e of entries as { name?: unknown; kind?: unknown }[]) {
-    if (typeof e?.name !== 'string' || e.name === '.' || e.name === '..') continue;
-    const rel = prefix ? `${prefix}/${e.name}` : e.name;
-    if (e.kind === 'directory') out.push(...(await listTree(dir, rel)));
-    else out.push(rel);
-  }
-  return out;
 }
 
 // The error for a member path that is not in its container.

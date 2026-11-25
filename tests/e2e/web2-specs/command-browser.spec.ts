@@ -11,6 +11,7 @@ import { test, expect } from "../helpers/test";
 import * as path from "node:path";
 import { gotoWeb2 } from "../helpers/web2-fs";
 import { CONSOLE_INPUT, focusTerminal } from "../helpers/terminal";
+import { uploadRomViaWelcome } from "../helpers/upload";
 
 const SE30_ROM = path.join(
   path.resolve(__dirname, "../../data"),
@@ -69,11 +70,7 @@ test("the command browser walks the model and shows usage", async ({
 test("the browser follows the console and writes to it", async ({ page }) => {
   test.setTimeout(180_000);
   await gotoWeb2(page);
-  const [romChooser] = await Promise.all([
-    page.waitForEvent("filechooser"),
-    page.getByRole("button", { name: "Load ROM..." }).click(),
-  ]);
-  await romChooser.setFiles(SE30_ROM);
+  await uploadRomViaWelcome(page, SE30_ROM);
   await page.getByRole("button", { name: "New Machine..." }).click();
   const model = page.locator("#cfg-model");
   await expect(model.locator('option[value="se30"]')).toHaveCount(1, {

@@ -15,6 +15,7 @@
 #include "appletalk_internal.h"
 #include "appletalk_ppc.h"
 #include "object.h"
+#include "object_order.h"
 #include "value.h"
 
 #include <stdio.h>
@@ -61,7 +62,7 @@ void atalk_install_objects(void) {
     if (!atalk)
         return;
     g_atalk_object = atalk;
-    object_set_order(atalk, 100);
+    object_set_order(atalk, OBJ_ORDER_APPLETALK);
     object_set_domain(atalk, OBJ_DOMAIN_NETWORK);
     object_attach(object_root(), atalk);
 
@@ -158,6 +159,8 @@ static DEF_GETTER(atalk_stats_get) {
 static const member_t atalk_stats_members[] = {
     OBJ_U64_FIELD_WITH(atalk_stats_t, llap_rx, "LLAP frames received", atalk_stats_get),
     OBJ_U64_FIELD_WITH(atalk_stats_t, llap_tx, "LLAP frames transmitted", atalk_stats_get),
+    OBJ_U64_FIELD_WITH(atalk_stats_t, elap_rx, "EtherTalk frames received (DDP and AARP)", atalk_stats_get),
+    OBJ_U64_FIELD_WITH(atalk_stats_t, elap_tx, "EtherTalk frames transmitted", atalk_stats_get),
     OBJ_U64_FIELD_WITH(atalk_stats_t, malformed, "Frames discarded as malformed, at any layer", atalk_stats_get),
     OBJ_U64_FIELD_WITH(atalk_stats_t, unhandled, "Well-formed frames nothing here serves", atalk_stats_get),
     OBJ_U64_FIELD_WITH(atalk_stats_t, tx_dropped, "Frames the stack gave up transmitting", atalk_stats_get),

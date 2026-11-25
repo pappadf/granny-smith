@@ -150,12 +150,11 @@ void laserwriter_transport_poll(void);
 const char *laserwriter_transport_name(void);
 
 // === Ring transport platform hooks ===
-// Weak no-ops in laserwriter_transport_ring.c; the wasm platform overrides
-// them (em_main.c): the first asks the page to attach the interpreter
-// worker to the control block at `ctrl_addr`, the second wakes a worker
-// parked on a control word (Atomics.notify on the address).
+// A weak no-op in laserwriter_transport_ring.c; the wasm platform
+// overrides it (em_main.c) to ask the page to attach the interpreter worker
+// to the control block at `ctrl_addr`.  The worker is woken through
+// platform_wake (platform_hooks.h) on a control word.
 
 void laserwriter_ring_attach_requested(uintptr_t ctrl_addr);
-void laserwriter_ring_notify(volatile uint32_t *addr);
 
 #endif // LASERWRITER_TRANSPORT_H

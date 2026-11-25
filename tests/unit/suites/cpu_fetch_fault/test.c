@@ -393,6 +393,32 @@ TEST(fadd_x_postinc_fault_leaves_an_and_fpn) {
     teardown_mmu(cpu, mmu);
 }
 
+// PMOVE (A0),MMUSR whose operand read faults must not load MMUSR from the
+// failed read (the fill value): the other PMOVE <ea>-to-register arms
+// already refused to commit a faulted operand.  MMUSR keeps the status the
+// failing walk published (I set, two levels searched).
+TEST(pmove_to_mmusr_fault_leaves_mmusr) {
+    cpu_t *cpu = test_get_cpu(test_get_active_context());
+    memory_map_t *mem = test_get_memory(test_get_active_context());
+    cpu->cpu_model = CPU_MODEL_68030;
+    mmu_state_t *mmu = setup_mmu(cpu, mem);
+    ASSERT_TRUE(mmu != NULL);
+    mmu->mmusr = 0x1234;
+    uint8_t *ram = ram_native_pointer(mem, 0);
+    store_be16(ram + 0x3F00, 0xF010); // PMOVE (A0),MMUSR
+    store_be16(ram + 0x3F02, 0x6000);
+    cpu->pc = 0x3F00;
+    cpu->a[0] = 0x4100; // in the invalid page
+    cpu->a[7] = STACK_TOP;
+    cpu->supervisor = 1;
+    cpu->halted = 0;
+    run_one(cpu);
+    run_one(cpu);
+    ASSERT_TRUE(cpu->pc >= HANDLER_ADDR && cpu->pc <= HANDLER_ADDR + 4);
+    ASSERT_EQ_INT((int)mmu->mmusr, MMUSR_I | 2);
+    teardown_mmu(cpu, mmu);
+}
+
 int main(void) {
     test_context_t *ctx = test_harness_init();
     if (!ctx) {
@@ -416,6 +442,7 @@ int main(void) {
     RUN(fsave_predec_fault_leaves_an);
     RUN(fmovem_predec_fault_leaves_an);
     RUN(fadd_x_postinc_fault_leaves_an_and_fpn);
+    RUN(pmove_to_mmusr_fault_leaves_mmusr);
 
     test_harness_destroy(ctx);
     return 0;

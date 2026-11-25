@@ -37,18 +37,18 @@ __attribute__((weak)) bool platform_checkpoint_auto_get(void) {
 
 __attribute__((weak)) int platform_checkpoint_auto_set(bool enabled) {
     (void)enabled;
-    return -2; // no auto-checkpoint loop on this platform
+    return PLATFORM_E_UNSUPPORTED; // no auto-checkpoint loop on this platform
 }
 
 // Platform-specific entry points (see platform_hooks.h): the weak defaults say "not
-// supported on this platform" (-2), and a platform that has the thing
+// supported on this platform" (PLATFORM_E_UNSUPPORTED), and a platform that has the thing
 // overrides them -- headless quit, wasm download.
 __attribute__((weak)) int platform_quit(void) {
-    return -2; // the browser owns the page's lifecycle
+    return PLATFORM_E_UNSUPPORTED; // the browser owns the page's lifecycle
 }
 __attribute__((weak)) int platform_download(const char *path) {
     (void)path;
-    return -2; // no browser to hand a file to
+    return PLATFORM_E_UNSUPPORTED; // no browser to hand a file to
 }
 
 // Host video-input seam: the defaults model "no camera attached" — the
@@ -67,33 +67,34 @@ __attribute__((weak)) void platform_video_in_state(bool active) {
     (void)active;
 }
 
+// Shared-memory wake seam (platform_hooks.h): no waiter on a native host.
+__attribute__((weak)) void platform_wake(volatile uint32_t *word) {
+    (void)word;
+}
+
+__attribute__((weak)) int platform_wait(volatile uint32_t *word, uint32_t expect, uint32_t timeout_ms) {
+    (void)word;
+    (void)expect;
+    (void)timeout_ms;
+    return -1;
+}
+
 // Host GPU-transport seam (platform_hooks.h): no GPU on a native host.
-__attribute__((weak)) bool platform_v2gpu_available(void) {
+__attribute__((weak)) bool platform_gpu_available(void) {
     return false;
 }
 
-__attribute__((weak)) bool platform_v2gpu_attach(void *ctrl, uint32_t bytes) {
+__attribute__((weak)) bool platform_gpu_attach(void *ctrl, uint32_t bytes) {
     (void)ctrl;
     (void)bytes;
     return false;
 }
 
-__attribute__((weak)) void platform_v2gpu_detach(void *ctrl) {
+__attribute__((weak)) void platform_gpu_detach(void *ctrl) {
     (void)ctrl;
 }
 
-__attribute__((weak)) int platform_v2gpu_wait(volatile uint32_t *addr, uint32_t expected, uint32_t timeout_ms) {
-    (void)addr;
-    (void)expected;
-    (void)timeout_ms;
-    return -1;
-}
-
-__attribute__((weak)) void platform_v2gpu_notify(volatile uint32_t *addr) {
-    (void)addr;
-}
-
-__attribute__((weak)) void platform_v2gpu_keepalive(void) {}
+__attribute__((weak)) void platform_gpu_keepalive(void) {}
 
 // Host audio-input seam: the defaults model "no microphone attached" —
 // the headless build drives capture from the deterministic
@@ -121,4 +122,37 @@ __attribute__((weak)) bool platform_audio_in_debug(char *buf, size_t buflen) {
     (void)buf;
     (void)buflen;
     return false;
+}
+
+// Host audio output: no sink (headless).  Deterministic capture for
+// golden-WAV tests lives core-side in audio_out.c, ahead of this boundary.
+__attribute__((weak)) void platform_audio_open(uint32_t src_rate_hz, int channels) {
+    (void)src_rate_hz;
+    (void)channels;
+}
+
+__attribute__((weak)) void platform_audio_push(const int16_t *frames, int nframes, int vol_0_7) {
+    (void)frames;
+    (void)nframes;
+    (void)vol_0_7;
+}
+
+__attribute__((weak)) void platform_audio_set_rate(uint32_t src_rate_hz) {
+    (void)src_rate_hz;
+}
+
+// No host audio ring: the governor's audio signal is simply absent.
+__attribute__((weak)) double platform_audio_ring_fill(void) {
+    return -1.0;
+}
+
+// No screen of the host's own to redraw.
+__attribute__((weak)) void platform_force_redraw(void) {}
+
+// No host callstack to print.
+__attribute__((weak)) void platform_print_host_callstack(void) {}
+
+// No card ROMs kept beside the machine ROM.
+__attribute__((weak)) void platform_offer_sibling_card_roms(const char *rom_path) {
+    (void)rom_path;
 }

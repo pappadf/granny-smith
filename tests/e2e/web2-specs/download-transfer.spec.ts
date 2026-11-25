@@ -17,8 +17,8 @@ import { test, expect } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
 import { terminalRun } from '../helpers/terminal';
+import { DATA } from '../helpers/paths';
 
-const DATA = path.resolve(__dirname, '../../data');
 const ROM = path.join(DATA, 'roms', 'iix-iicx-se30-97221136.rom');
 
 test('a download arrives in transfer-buffer chunks and lands as one file', async ({ page }) => {
@@ -32,10 +32,12 @@ test('a download arrives in transfer-buffer chunks and lands as one file', async
   await page.waitForTimeout(2_000);
 
   // A 9 MB blank image (an I/O job itself), then its download.
-  await terminalRun(page, 'files.hd_create("/tmp/dl.img", "9m")');
-  await expect(page.locator('.console-output')).toContainText('hd create: created', {
-    timeout: 60_000,
-  });
+  await terminalRun(page, 'files.create("/tmp/dl.img", "hd", "9m")');
+  // files.create answers true once the file is written.
+  await expect(page.locator('.console-output')).toContainText(
+    /files\.create\("\/tmp\/dl\.img", "hd", "9m"\)\s*true/,
+    { timeout: 60_000 },
+  );
   const download = page.waitForEvent('download', { timeout: 60_000 });
   await terminalRun(page, 'files.download "/tmp/dl.img"');
   const dl = await download;

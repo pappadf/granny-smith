@@ -23,23 +23,19 @@ with no recorded weight counts as the median.
 """
 
 import json
+import os
 import pathlib
 import re
 import statistics
 import sys
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+from e2e import serial_specs, spec_key
+
 E2E = pathlib.Path(__file__).resolve().parent.parent / "tests" / "e2e"
-CONFIG = E2E / "playwright.web2.config.ts"
 WEIGHTS = E2E / "e2e-weights.json"
 SPECS = E2E / "web2-specs"
 WORKERS = 3  # GS_E2E_WORKERS in the workflow
-
-
-def serial_specs():
-    # The config's SERIAL list: the specs that run in the `serial` project
-    text = CONFIG.read_text()
-    block = re.search(r"const SERIAL = \[(.*?)\];", text, re.S).group(1)
-    return set(re.findall(r"'([^']+\.spec\.ts)'", block))
 
 
 def main(argv):
@@ -53,7 +49,7 @@ def main(argv):
 
     specs = []
     for path in sorted(SPECS.rglob("*.spec.ts")):
-        rel = str(path.relative_to(E2E))
+        rel = spec_key(path.relative_to(E2E))
         w = weights.get(rel, {})
         secs = w.get("secs", default)
         # Whole file on one worker, unless it runs its tests side by side

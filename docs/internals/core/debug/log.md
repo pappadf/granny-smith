@@ -18,7 +18,7 @@ This document describes the implemented, lightweight logging framework for Grann
 - Non‑goals (for now)
   - Persistent configuration (e.g., storing levels in localStorage). See “future extensions”.
   - Rich sinks (JSON, structured fields). Current implementation writes formatted text lines to per‑category sinks.
-  - Asynchronous logging. `LOG(...)` is called from the emulator thread (the tick, every leaf) and from the job thread (the interpreter); the sink is a synchronous write in the caller's thread. A line from a leaf serving a request travels to that client through the output sink (`out.h`) like any other printed text; the per-line `log` event (`event_emit`) is the structured stream the browser's Logs view reads.
+  - Asynchronous logging. `LOG(...)` is called from the emulator thread (the tick, every leaf, and scripts, which run there as job tasks); the sink is a synchronous write in the caller's thread. A line from a leaf serving a request travels to that client through the output sink (`out.h`) like any other printed text; the per-line `log` event (`event_emit`) is the structured stream the browser's Logs view reads.
 
 
 ## Terminology
@@ -62,6 +62,8 @@ Header is minimal and C‑friendly. All symbols prefixed with `log_` or `LOG_`.
   - `void log_emit(const log_category_t* cat, int level, const char* fmt, ...)`
     - `printf`‑style, `__attribute__((format(printf,3,4)))` when available.
   - `void log_vemit(const log_category_t* cat, int level, const char* fmt, va_list ap)`
+  - `void log_hex(const log_category_t* cat, int level, const char* tag, const void* data, size_t len, size_t max)`
+    - A hex dump, formatted only when `level` would print: `max == 0` is one record per 16-byte row (offset, hex, ASCII gutter); `max > 0` is one line of the first `max` bytes.
 
 - Macros for zero‑overhead disable
   - Implicit category (preferred, simplest call site): `LOG(level, fmt, ...)` — uses the file’s implicit category (see below).
@@ -162,12 +164,20 @@ in a retry loop cannot flood the console. `log.alerts` counts them.
 The machine watch (`watch.c`, polled from the browser's main loop) adds
 `log_status` lines: once every `log.status_every` seconds (0 by default, which
 is off; it is opt-in, like `log.perf_every`) it prints run state, PC, MIPS and the JIT's share, disk
-reads/writes per drive kind, the Mac OS `Ticks`, `CurApName` and `DSErrCode`,
-the screen's geometry and whether it is one flat colour, `checkpoint.auto`
+reads/writes per drive kind, the Mac OS `Ticks`, `CurApName` and `DSErrCode`
+(or "not Mac OS"), the screen's geometry and whether it is one flat colour, `checkpoint.auto`
 and the alert count. `log.status()` prints the line now. Its detectors raise
 alerts on a Mac OS system error (DSErrCode changes to a positive ID), `Ticks` frozen for 15 s
 while the CPU runs (armed only once Ticks has been seen moving), and a
-running machine whose CPU retires nothing for 15 s; a poll more than 3 s late
+running machine whose CPU retires nothing for 15 s. The two Mac OS detectors
+and the line's Mac OS part apply only while the guest runs Mac OS
+(`debug_mac_os_running`, `debug.mac.os`: ROMBase points at the machine's ROM,
+whose first longword is its checksum, and on a 68K the line-A vector leads to
+Mac OS's trap dispatcher, in the ROM or the system heap; on a Lisa, MacWorks).
+A/UX keeps the boot's page 0, ROMBase included, but not the vector. A Macintosh model
+is not enough: the ROM's tests, A/UX, and the Lisa's own systems leave those
+globals as arbitrary memory, and under Xenix they read as system errors and a
+frozen Ticks. The CPU detector applies to every guest; a poll more than 3 s late
 says the emulator thread was blocked that long. The headless build does not
 poll the watch, so script output is unchanged there.
 
@@ -199,7 +209,7 @@ poll the watch, so script output is unchanged there.
     - Write directly to the sink (default: stdout). For Emscripten, stdout maps to console; we may optionally add a JS sink later.
 
 - Thread‑safety
-  - No locking. `LOG` runs on the emulator thread and the job thread, so this rests on two facts:
+  - No locking. Nothing confines `LOG` to the emulator thread, so this rests on two facts:
     - Registry mutation happens at setup only: `log_register_manifest` creates every category, so later `log_register_category` calls (the lazy `LOG_USE_CATEGORY_NAME` first use included) are read-only lookups.
     - Configuration (`level`, sinks, the indent, the global sink) is written by `log.set` and the host at quiet points; a racing reader sees the old or the new `int`/pointer. Should that stop being enough, those fields become `atomic_int`/atomic pointers without an API change — open debt.
 
@@ -209,12 +219,12 @@ poll the watch, so script output is unchanged there.
 
 ## Shell surface (`log.set`)
 
-The shell exposes the configuration as a typed method on the root `log` object: `log.set(category, level=, stdout=, file=, ts=, pc=)`, with real named arguments (the legacy flat `log` command and the earlier `debug.log` method are retired). The category is a VK_ENUM over the manifest, so completion offers every declared name and a typo is rejected at the call, not silently configured.
+The shell exposes the configuration as a typed method on the root `log` object: `log.set category level= stdout= file= ts= pc=` at the terminal, `log.set(category, {level = …})` from Lua, with real named arguments (the legacy flat `log` command and the earlier `debug.log` method are retired). The category is a VK_ENUM over the manifest, so completion offers every declared name and a typo is rejected at the call, not silently configured.
 
 - Grammar
   - `log.levels` — every registered category and its current level, as a map
-  - `log.set(<cat>)` — show one category's settings
-  - `log.set(<cat>, level=<n>, stdout=<bool>, file=<path>, ts=<bool>, pc=<bool>)` — any subset of the named arguments; each given one is applied, then the settings print
+  - `log.set <cat>` — show one category's settings
+  - `log.set <cat> level=<n> stdout=<bool> file=<path> ts=<bool> pc=<bool>` — any subset of the named arguments; each given one is applied, then the settings print
 
 - Behavior
   - Categories come from the manifest; an unknown name is an error, never auto-created.
@@ -223,15 +233,19 @@ The shell exposes the configuration as a typed method on the root `log` object: 
   - `ts=<bool>` toggles including a timestamp prefix based on `cpu_instr_count()`.
   - `pc=<bool>` toggles including the PC register in the prefix.
 
-- Examples
+- Examples (terminal command lines: list all categories and levels; show
+  cpu's settings; set its level to 5; level 7 with stdout quiet; append to a
+  file as well; include the instruction-count timestamp in the prefix)
   ```
-  log.levels                                 # list all categories and levels
-  log.set("cpu")                            # show cpu settings
-  log.set("cpu", level=5)                   # set level to 5
-  log.set("cpu", level=7, stdout=false)      # quiet stdout for cpu
-  log.set("cpu", file="tmp/cpu.log")         # append to file as well
-  log.set("cpu", ts=true)                    # include instruction-count timestamp in prefix
+  log.levels
+  log.set cpu
+  log.set cpu level=5
+  log.set cpu level=7 stdout=false
+  log.set cpu file=tmp/cpu.log
+  log.set cpu ts=true
   ```
+  From a Lua script the same calls take a trailing table:
+  `log.set("cpu", {level = 7, stdout = false})`.
 
 
 ## Usage by modules
@@ -351,15 +365,15 @@ Three pre-defined categories pair with debug shell commands and feed into the
 standard log pipeline:
 
 - **`logpoint`** — emitted by PC logpoints (`debug.logpoints.add addr=<addr> [message="…"]`).
-  Default level 0 (silent). Enable with `log.set("logpoint", level=1)` to see each hit.
+  Default level 0 (silent). Enable with `log.set logpoint level=1` to see each hit.
 - **`memory`** — emitted by memory read/write logpoints
   (`debug.logpoints.add addr=<addr> mode=read|write|rw [width=b|w|l] [message="…"]`). Each event reports `addr`, `size`,
   `value`, `pc`, and optionally a substituted user message: `${expr}` splices
-  any expression (`${machine.cpu.pc}`), while `$value`, `$addr` and `$size`
+  any Lua expression (`${machine.cpu.pc}`, `${machine.cpu.d0:08x}`), while `$value`, `$addr` and `$size`
   are per-fire bindings that exist only at the hit.
   See `docs/internals/core/memory/memory.md` for the fast-path-preserving mechanism that backs these.
 - **`exceptions`** — emitted by the CPU exception trace ring
-  (`debug.exceptions [filter]` dumps the ring; `log.set("exceptions", level=1)` streams every event).
+  (`debug.exceptions [filter]` dumps the ring; `log.set exceptions level=1` streams every event).
   Each line includes vector, frame format, faulting/stacked PC, fault address,
   R/W direction, SR, VBR, and a marker for double-fault detection. Replaces
   ad-hoc `fprintf` instrumentation in `cpu_internal.h` for MMU/bus-error

@@ -669,6 +669,35 @@ static const uint16_t g_greggy_static[256] = {
 #define GREGGY_BYTE_TABLE_SAVED 0x01u // payload begins with a dynamic table
 #define GREGGY_BITMAPPED_DATA   0x02u // mixed compressed/uncompressed runs
 
+// Decode one bitmapped run of `words` (at most 8) words.  The bitmap's
+// high bit is the first word: set => one input byte indexed into `table`;
+// clear => two raw input bytes copied verbatim.  Inline: it runs once per
+// eight output words.
+static inline int dcmp2_run(ic_t *ic, oc_t *oc, const uint16_t *table, uint8_t bitmap, size_t words) {
+    for (size_t i = 0; i < words; i++) {
+        bool compressed = (bitmap & 0x80) != 0;
+        bitmap = (uint8_t)(bitmap << 1);
+        if (compressed) {
+            uint8_t idx;
+            if (ic_get_u8(ic, &idx) < 0)
+                return -1;
+            if (oc_put_u16_be(oc, table[idx]) < 0)
+                return -1;
+        } else {
+            uint8_t b0, b1;
+            if (ic_get_u8(ic, &b0) < 0)
+                return -1;
+            if (ic_get_u8(ic, &b1) < 0)
+                return -1;
+            if (oc_put_u8(oc, b0) < 0)
+                return -1;
+            if (oc_put_u8(oc, b1) < 0)
+                return -1;
+        }
+    }
+    return 0;
+}
+
 // Run the GreggyBits (dcmp 2) decompression.  `payload`/`payload_len`
 // are the bytes *after* the 18-byte common header.  `actual_size` is
 // the target output byte count; `byte_table_size_field` is the raw
@@ -745,53 +774,15 @@ static int dcmp2_decompress(ic_t *icp, oc_t *ocp, size_t actual_size, uint8_t by
             }
             continue;
         }
-        for (int i = 0; i < 8; i++) {
-            bool compressed = (bitmap & 0x80) != 0;
-            bitmap = (uint8_t)(bitmap << 1);
-            if (compressed) {
-                uint8_t idx;
-                if (ic_get_u8(&ic, &idx) < 0)
-                    return -1;
-                if (oc_put_u16_be(&oc, table[idx]) < 0)
-                    return -1;
-            } else {
-                uint8_t b0, b1;
-                if (ic_get_u8(&ic, &b0) < 0)
-                    return -1;
-                if (ic_get_u8(&ic, &b1) < 0)
-                    return -1;
-                if (oc_put_u8(&oc, b0) < 0)
-                    return -1;
-                if (oc_put_u8(&oc, b1) < 0)
-                    return -1;
-            }
-        }
+        if (dcmp2_run(&ic, &oc, table, bitmap, 8) < 0)
+            return -1;
     }
     if (last_run_words > 0) {
         uint8_t bitmap;
         if (ic_get_u8(&ic, &bitmap) < 0)
             return -1;
-        for (size_t i = 0; i < last_run_words; i++) {
-            bool compressed = (bitmap & 0x80) != 0;
-            bitmap = (uint8_t)(bitmap << 1);
-            if (compressed) {
-                uint8_t idx;
-                if (ic_get_u8(&ic, &idx) < 0)
-                    return -1;
-                if (oc_put_u16_be(&oc, table[idx]) < 0)
-                    return -1;
-            } else {
-                uint8_t b0, b1;
-                if (ic_get_u8(&ic, &b0) < 0)
-                    return -1;
-                if (ic_get_u8(&ic, &b1) < 0)
-                    return -1;
-                if (oc_put_u8(&oc, b0) < 0)
-                    return -1;
-                if (oc_put_u8(&oc, b1) < 0)
-                    return -1;
-            }
-        }
+        if (dcmp2_run(&ic, &oc, table, bitmap, last_run_words) < 0)
+            return -1;
     }
     if (odd_extra) {
         uint8_t b;

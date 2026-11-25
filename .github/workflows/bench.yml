@@ -26,7 +26,7 @@ on:
       - 'Makefile'
       - 'Makefile.headless'
       - 'tests/bench/**'
-      - 'tests/integration/lib/mac.script'
+      - 'tests/integration/lib/mac.lua'
       - 'scripts/bench/**'
       - '.github/workflows/bench.yml'
   schedule:
@@ -103,25 +103,17 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
-      - name: Verify valgrind, taskset and m68k binutils
-        run: |
-          which valgrind || { echo 'valgrind not on PATH — the pinned dev image is wrong or stale'; exit 1; }
-          which taskset || { echo 'taskset not on PATH — the pinned dev image is wrong or stale'; exit 1; }
-          which m68k-linux-gnu-as || { echo 'm68k-linux-gnu-as not on PATH — the pinned dev image is wrong or stale'; exit 1; }
-          valgrind --version
-
-      - name: Fetch test data
+      - name: Verify valgrind, taskset and m68k binutils, fetch test data
         id: fetch-data
-        run: |
-          if [ -n "$GS_TEST_DATA_TOKEN" ]; then
-            ./scripts/fetch-test-data.sh
-            echo "has_test_data=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_test_data=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Test data not available: the CPU benchmarks are skipped"
-          fi
-        env:
-          GS_TEST_DATA_TOKEN: ${{ secrets.GS_TEST_DATA_TOKEN }}
+        uses: ./.github/actions/gs-setup
+        with:
+          tools: valgrind taskset m68k-linux-gnu-as
+          data: optional
+          data-token: ${{ secrets.GS_TEST_DATA_TOKEN }}
+          no-data-message: "Test data not available: the CPU benchmarks are skipped"
+
+      - name: Valgrind version
+        run: valgrind --version
 
       # What to run: mode, rows, metrics, and the base commit (pr mode).
       - name: Plan
@@ -251,16 +243,11 @@ jobs:
 
       - name: Fetch test data
         id: fetch-data
-        run: |
-          if [ -n "$GS_TEST_DATA_TOKEN" ]; then
-            ./scripts/fetch-test-data.sh
-            echo "has_test_data=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_test_data=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Test data not available: the browser benchmark is skipped"
-          fi
-        env:
-          GS_TEST_DATA_TOKEN: ${{ secrets.GS_TEST_DATA_TOKEN }}
+        uses: ./.github/actions/gs-setup
+        with:
+          data: optional
+          data-token: ${{ secrets.GS_TEST_DATA_TOKEN }}
+          no-data-message: "Test data not available: the browser benchmark is skipped"
 
       - name: Build head and base (WASM)
         if: steps.fetch-data.outputs.has_test_data == 'true'

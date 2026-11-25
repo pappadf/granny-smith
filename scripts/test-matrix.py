@@ -3,8 +3,8 @@
 # Copyright (c) pappadf
 """test-matrix.py — extract the integration-test coverage matrix.
 
-Statically parses tests/integration/*/config.mk and test.script (plus any
-*.sh TEST_RUNNER scripts) and emits:
+Statically parses tests/integration/*/config.mk and test.lua (and its step
+files), plus any *.sh TEST_RUNNER scripts, and emits:
 
   - a per-test inventory table   (--tests)
   - a machine x system pivot     (--pivot, default)
@@ -35,6 +35,8 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+from testconfig import read_config  # noqa: E402  (the one config.mk reader)
 SRC = ROOT / "src"
 
 
@@ -69,12 +71,12 @@ def rom_defaults(roms):
               "(rows fall back to their model=)", file=sys.stderr)
         return {}
     with tempfile.TemporaryDirectory() as work:
-        script = Path(work) / "identify.script"
+        script = Path(work) / "identify.lua"
         lines = []
         for rel, path in files.items():
-            lines.append(f"echo GSROM {rel}")
-            lines.append(f'echo "${{machine.rom.identify(\'{path}\')}}"')
-        lines.append("quit")
+            lines.append(f"print({json.dumps('GSROM ' + rel)})")
+            lines.append(f"print(gs.str(machine.rom.identify({json.dumps(str(path))})))")
+        lines.append("quit()")
         script.write_text("\n".join(lines) + "\n")
         boot = next(iter(files.values()))  # headless needs a ROM to start with
         env = dict(os.environ, GS_STORAGE_CACHE=str(Path(work) / "cache"))
@@ -123,7 +125,7 @@ BAD_VALUES = {"bogus", "nonesuch", "none", ""}
 
 
 def unquote(v):
-    return v.strip('"\'').rstrip("),")
+    return v.strip('"\'').rstrip("),}")
 
 
 def classify_media(path):
@@ -199,9 +201,12 @@ class Test:
                 self.note_media(v, "cd")
 
 
-def parse_script(test, text):
+def parse_script(test, text, lua=False):
     for line in text.splitlines():
-        line = line.split("#", 1)[0]
+        line = line.split("--" if lua else "#", 1)[0]
+        # A Lua call's named arguments are `key = value` in a table (also in
+        # the Lua a runner script writes).
+        line = re.sub(r'(\w+)\s+=\s+(?=["\'\w$])', r'\1=', line)
         if not line.strip() or "try(" in line:
             continue
         if "machine.boot" in line:
@@ -213,17 +218,19 @@ def parse_script(test, text):
         m = re.search(r'\b\w+\(\s*"([a-z0-9]+)"', line)
         if m and m.group(1) in MACHINES:
             test.machine = m.group(1)
-        m = re.search(r'\.insert\s+("[^"]+"|\S+)', line)
+        # The image is the rest of the line: a quoted path, or one built
+        # from a binding (`"${$D}/x.dmg"`, `tostring(D) .. "/x.dmg"`).
+        m = re.search(r'\.insert\b\s*\(?(.*)', line)
         if m:
-            test.note_media(unquote(m.group(1)), "fd")
-        m = re.search(r'attach_hd\s+("[^"]+"|\S+)', line)
+            test.note_media(m.group(1), "fd")
+        m = re.search(r'attach_hd\b\s*\(?(.*)', line)
         if m:
-            test.note_media(unquote(m.group(1)), "hd")
+            test.note_media(m.group(1), "hd")
         if re.search(r'\bscreen\.match\b', line):
             test.goldens += 1
         if re.search(r'\bsound\.match\b', line):
             test.sound_goldens += 1
-        m = re.search(r'scheduler\.run\s+(\d+)', line)
+        m = re.search(r'scheduler\.run[\s(]+(\d+)', line)
         if m:
             test.cycles += int(m.group(1))
         mw = re.search(r'screen\.width\s*==\s*(\d+)', line)
@@ -232,15 +239,9 @@ def parse_script(test, text):
 
 
 def parse_test(d):
-    cfg = (d / "config.mk").read_text(errors="replace")
-    rom = ""
-    fields = {}
-    for line in cfg.splitlines():
-        m = re.match(r'\s*TEST_(ROM|ARGS|SETUP|RUNNER)\s*:?=\s*(.*)', line)
-        if m:
-            fields[m.group(1)] = m.group(2)
-            if m.group(1) == "ROM":
-                rom = m.group(2).strip()
+    cfg = read_config(d)
+    fields = {k: cfg["TEST_" + k] for k in ("ROM", "ARGS", "SETUP", "RUNNER") if "TEST_" + k in cfg}
+    rom = fields.get("ROM", "")
     # What the ROM boots by default is the core's answer, not its filename.
     default = ROM_DEFAULT.get(rom)
     # model= in TEST_ARGS overrides the ROM-derived default
@@ -254,9 +255,9 @@ def parse_test(d):
         s = classify_media(fields["SETUP"])
         if s:
             test.ms.add((test.machine, s))
-    for script in sorted(d.glob("*.script")) + sorted(d.glob("*.sh")):
+    for script in sorted(d.glob("*.lua")) + sorted(d.glob("*.sh")):
         test.machine = test.default_machine     # each file starts fresh
-        parse_script(test, script.read_text(errors="replace"))
+        parse_script(test, script.read_text(errors="replace"), lua=script.suffix == ".lua")
     return test
 
 
@@ -414,11 +415,8 @@ def check_perf(baseline_path, log_paths):
 
 def owner_tier(suite_root, suite):
     """TEST_TIER of the directory that owes a cell (read from its config.mk)."""
-    cfg = Path(suite_root) / suite / "config.mk"
-    if not cfg.exists():
-        return None
-    m = re.search(r"^TEST_TIER\s*:=\s*(\w+)", cfg.read_text(), re.M)
-    return m.group(1) if m else None
+    m = re.match(r"\w+", read_config(Path(suite_root) / suite).get("TEST_TIER", ""))
+    return m.group(0) if m else None
 
 
 def check_coverage(target_path, log_paths, suite_root, tier=None):
@@ -519,12 +517,13 @@ def main():
     root = Path(paths[0]) if paths else Path("tests/integration")
     roms = set()
     for cfg in root.glob("*/config.mk"):
-        m = re.search(r"^\s*TEST_ROM\s*:?=\s*(\S+)", cfg.read_text(errors="replace"), re.M)
-        if m:
-            roms.add(m.group(1))
+        rom = read_config(cfg.parent).get("TEST_ROM", "").split()
+        if rom:
+            roms.add(rom[0])
     ROM_DEFAULT.update(rom_defaults(roms))
     tests = [parse_test(d) for d in sorted(root.iterdir())
-             if (d / "config.mk").exists() and (d / "test.script").exists()]
+             if (d / "config.mk").exists()
+             and (d / "test.lua").exists()]
     if "--tests" in flags:
         emit_tests(tests)
     if "--video" in flags:

@@ -29,4 +29,5 @@ def sit5(name, data):
     h2[4:12] = b"TEXTttxt"
     return bytes(top + h1 + h2) + data
 
-open(sys.argv[1], "wb").write(sit5(sys.argv[2], sys.argv[3].encode()))
+if __name__ == "__main__":
+    open(sys.argv[1], "wb").write(sit5(sys.argv[2], sys.argv[3].encode()))

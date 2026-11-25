@@ -20,9 +20,9 @@
 # moment its id appears below.
 set -euo pipefail
 
-SCRIPT="$WORK_DIR/boot.script"
+SCRIPT="$WORK_DIR/boot.lua"
 mkdir -p "$WORK_DIR"
-printf 'scheduler.run 200000\nquit\n' > "$SCRIPT"
+printf 'scheduler.run(200000)\nquit()\n' > "$SCRIPT"
 
 # model:rom-under-tests/data/roms
 MODELS="

@@ -2,13 +2,13 @@
 // Copyright (c) pappadf
 
 // syntax.h
-// The shell grammar's lexical layer, shared by the parser (script.c), the
-// highlighter (highlight.c) and tab completion (cmd_complete.c): what kind
-// of statement a text is, where a path or an argument word ends, how a line
-// splits into a block's parts, and which declared argument a word fills.
-// The parser builds its statement tree from these answers, so the two
-// console views read a line the way it runs.  Nothing here touches the
-// object tree; all scanning is bounded by an explicit end pointer.
+// The command line's lexical layer, shared by the highlighter (highlight.c)
+// and tab completion (cmd_complete.c): what shape a command line has (a
+// command with argument-mode words, or `PATH = VALUE`), where a path or an
+// argument word ends, and which declared argument a word fills -- the
+// grammar gs.shell_line (gs_lua_lib.lua) runs a command line by.  Lua lines
+// are not read here.  Nothing here touches the object tree; all scanning is
+// bounded by an explicit end pointer.
 
 #ifndef GS_SHELL_SYNTAX_H
 #define GS_SHELL_SYNTAX_H
@@ -17,6 +17,46 @@
 #include <stddef.h>
 
 #include "object.h"
+
+// The identifier characters of the shell grammar: ASCII letters, digits and
+// `_` (never the locale's letters), the same in every scanner.
+static inline bool script_ident_start(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+
+static inline bool script_ident_char(char c) {
+    return script_ident_start(c) || (c >= '0' && c <= '9');
+}
+
+// Quote state for the quote-aware scans (brackets, braces, comments): the
+// parser's rule, where a backslash escapes the next byte inside and outside
+// quotes.
+typedef struct {
+    char quote; // 0, '"' or '\''
+    bool esc;
+} script_quote_t;
+
+// Advance the quote state over c.
+static inline void script_quote_step(script_quote_t *q, char c) {
+    if (q->esc) {
+        q->esc = false;
+        return;
+    }
+    if (c == '\\') {
+        q->esc = true;
+        return;
+    }
+    if (q->quote) {
+        if (c == q->quote)
+            q->quote = 0;
+        return;
+    }
+    if (c == '"' || c == '\'')
+        q->quote = c;
+}
+
+// The first unquoted `c` in [p, end), or NULL.
+const char *script_find_unquoted(const char *p, const char *end, char c);
 
 // What a statement is, decided by its first word(s).
 typedef enum {

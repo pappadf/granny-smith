@@ -19,8 +19,8 @@ import { test, expect } from "../helpers/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { gotoWeb2, stageOpfsFile } from "../helpers/web2-fs";
+import { DATA } from "../helpers/paths";
 
-const DATA = path.resolve(__dirname, "../../data");
 const ROM = path.join(DATA, "roms", "iix-iicx-se30-97221136.rom");
 const WINDOW_MS = 50_000; // covers three auto checkpoints
 
@@ -61,7 +61,7 @@ for (const ramKb of [32768, 131072]) {
     await typeLine(page, "scheduler.run");
     await page.waitForTimeout(2_000);
     // The checkpoint needs a machine directory, which an attached disk gives.
-    await typeLine(page, 'files.hd_create("/opfs/images/hd/cp.img", "20mb")');
+    await typeLine(page, 'files.create("/opfs/images/hd/cp.img", "hd", "20mb")');
     await page.waitForTimeout(3_000);
     await typeLine(page, 'machine.scsi.attach_hd "/opfs/images/hd/cp.img" 0');
     await page.waitForTimeout(3_000);

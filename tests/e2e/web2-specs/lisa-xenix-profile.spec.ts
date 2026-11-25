@@ -25,6 +25,7 @@
 import { test, expect } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
+import { uploadRomViaWelcome } from '../helpers/upload';
 
 const LISA_ROM = path.resolve(__dirname, '../../data/roms/lisa2-revh-098917b2.rom');
 const XENIX_HD = path.resolve(__dirname, '../../data/Lisa/Xenix-3.0/Xenix-3.0-ProFile.image');
@@ -35,11 +36,7 @@ test('configure a Lisa 2 with the Xenix ProFile and boot', async ({ page }) => {
   await gotoWeb2(page);
 
   // --- 1. Upload the Lisa 2 ROM via the Welcome "Load ROM..." button. ------
-  const [romChooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Load ROM...' }).click(),
-  ]);
-  await romChooser.setFiles(LISA_ROM);
+  await uploadRomViaWelcome(page, LISA_ROM);
 
   // --- 2. Open the New Machine config dialog and pick the Lisa model. --------
   // The upload pipeline persists the ROM and bumps the image revision, which
@@ -86,11 +83,7 @@ test('create a blank ProFile from the config dialog', async ({ page }) => {
   test.setTimeout(120_000);
   await gotoWeb2(page);
 
-  const [romChooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Load ROM...' }).click(),
-  ]);
-  await romChooser.setFiles(LISA_ROM);
+  await uploadRomViaWelcome(page, LISA_ROM);
 
   await page.getByRole('button', { name: 'New Machine...' }).click();
   const model = page.locator('#cfg-model');
@@ -109,7 +102,7 @@ test('create a blank ProFile from the config dialog', async ({ page }) => {
   await expect(dlg.getByText('10 MB Widget')).toBeVisible();
 
   // Create the 10 MB Widget; the dialog closes and the new image is selected in
-  // the ProFile row (files.profile_create wrote a raw 19448×532 image, which
+  // the ProFile row (files.create wrote a raw 19448×532 ProFile image, which
   // the OPFS rescan now lists).
   await dlg.getByText('10 MB Widget').click();
   await dlg.getByRole('button', { name: 'Create' }).click();

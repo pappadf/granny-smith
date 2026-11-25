@@ -6,6 +6,7 @@
 
 #include "chunk_cache.h"
 
+#include "common.h"
 #include "image_scratch.h"
 #include "storage_util.h"
 
@@ -78,12 +79,10 @@ struct chunk_cache {
 
 // FNV-1a over the key, then the index.
 static uint64_t cc_hash(const char *key, uint64_t idx) {
-    uint64_t h = 1469598103934665603ull;
-    for (const unsigned char *p = (const unsigned char *)key; *p; p++)
-        h = (h ^ *p) * 1099511628211ull;
+    uint8_t le[8]; // the index little-endian, whatever the host
     for (int i = 0; i < 8; i++)
-        h = (h ^ ((idx >> (8 * i)) & 0xFF)) * 1099511628211ull;
-    return h;
+        le[i] = (uint8_t)(idx >> (8 * i));
+    return fnv1a64(fnv1a64_str(FNV1A64_INIT, key), le, sizeof le);
 }
 
 static cc_entry_t *find_entry(chunk_cache_t *c, uint64_t h, const char *key, uint64_t idx) {

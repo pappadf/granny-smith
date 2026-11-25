@@ -1,24 +1,20 @@
 <script lang="ts">
-  import { readMmuState, type MmuRegister } from '@/bus/mmu';
+  import { type MmuRegister } from '@/bus/mmu';
   import { decodeTc, decodeRootPointer } from '@/lib/mmu';
   import { fmtHex32 } from '@/lib/hex';
   import { machine } from '@/state/machine.svelte';
-  import { debugFrame } from '@/state/debugFrame.svelte';
 
   // The MMU's own registers, read from the core for whichever kind this
-  // machine has (bus/mmu.ts), re-read with each new debug frame.
-  let regs = $state<MmuRegister[]>([]);
-  // Set once a read has come back, so an empty answer is not shown as an
-  // endless "Reading…".
-  let loaded = $state(false);
-  $effect(() => {
-    void debugFrame.current;
-    const kind = machine.mmuKind;
-    void readMmuState(kind).then((r) => {
-      regs = r;
-      loaded = true;
-    });
-  });
+  // machine has (bus/mmu.ts) by MmuSection: with each new debug frame, and
+  // a few times a second while the machine runs (`live`).
+  interface Props {
+    regs: MmuRegister[];
+    // Set once a read has come back, so an empty answer is not shown as an
+    // endless "Reading…".
+    loaded: boolean;
+    live?: boolean;
+  }
+  let { regs, loaded, live = false }: Props = $props();
 
   const byName = $derived(Object.fromEntries(regs.map((r) => [r.name, r.value])));
   // The 68030's TC / root pointers get their fields decoded as well.
@@ -26,6 +22,7 @@
   const tc = $derived(pmmu ? decodeTc(byName.tc) : null);
   const crp = $derived(pmmu ? decodeRootPointer(byName.crp_hi, byName.crp_lo) : null);
   const srp = $derived(pmmu ? decodeRootPointer(byName.srp_hi, byName.srp_lo) : null);
+  const isLisa = $derived(machine.mmuKind === 'lisa_segment');
 
   const KIND_LABEL: Record<string, string> = {
     '68030_pmmu': '68030 PMMU',
@@ -34,19 +31,35 @@
     ppc_604: 'PowerPC 604 MMU',
     lisa_segment: 'Lisa segment MMU',
   };
+
+  // The Lisa's two registers in words.
+  function lisaMeaning(name: string, value: number): string | null {
+    if (name === 'start')
+      return value
+        ? 'setup mode: the boot ROM is programming the MMU (low addresses bypass it)'
+        : 'translating: every address goes through the segments';
+    if (name === 'context')
+      return value === 0
+        ? 'user programs would run in context 0, the operating system’s'
+        : `user programs run in context ${value}; supervisor code always uses context 0 (the operating system)`;
+    return null;
+  }
 </script>
 
 <div class="state-body">
-  <p class="summary">{KIND_LABEL[machine.mmuKind] ?? 'MMU'}</p>
+  <p class="summary">
+    {KIND_LABEL[machine.mmuKind] ?? 'MMU'}{#if live}<span class="live">&nbsp;· live</span>{/if}
+  </p>
   {#if regs.length === 0}
     <p class="summary">{loaded ? 'No MMU registers to show.' : 'Reading the MMU…'}</p>
   {/if}
   {#each regs as r (r.name)}
-    <div class="reg-block">
+    <div class="reg-block" data-reg={r.name}>
       <div class="reg-line">
-        <span class="reg-name">{r.name.toUpperCase()}</span>= $<span class="reg-hex"
-          >{fmtHex32(r.value)}</span
-        >
+        <span class="reg-name">{r.name.toUpperCase()}</span>{#if isLisa}=
+          <span class="reg-hex">{r.value}</span>{:else}= $<span class="reg-hex"
+            >{fmtHex32(r.value)}</span
+          >{/if}
       </div>
       {#if tc && r.name === 'tc'}
         <div class="reg-decoded">
@@ -61,6 +74,8 @@
         <div class="reg-decoded">
           SRP limit={srp.limit} · DT={srp.dt} · pointer=${fmtHex32(srp.pointer)}
         </div>
+      {:else if isLisa && lisaMeaning(r.name, r.value)}
+        <div class="reg-decoded">{lisaMeaning(r.name, r.value)}</div>
       {/if}
     </div>
   {/each}
@@ -77,6 +92,9 @@
     color: var(--gs-text-muted);
     font-size: var(--gs-font-size-xs);
     margin: 0 0 var(--gs-space-1) 0;
+  }
+  .live {
+    color: var(--gs-success-fg);
   }
   .reg-block {
     display: flex;

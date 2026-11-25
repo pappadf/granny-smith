@@ -2,7 +2,9 @@
 // view can use it without loading CodeMirror (which is code-split, fetched
 // when the Terminal first opens).
 
-export const HISTORY_KEY = 'gs.console.history';
+import { KEYS } from './storage';
+
+export const HISTORY_KEY = KEYS.consoleHistory;
 export const HISTORY_MAX = 500;
 
 // The last 500 submissions (a multi-line block is one entry), kept in

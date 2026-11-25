@@ -35,7 +35,8 @@ reach one register file (`io_read8` / `io_write8`, lines 923-1074):
 - **Attribute** `$3C0` (write, index and data alternating) and `$3C1` (read).
   Reading Input Status 1 resets the index/data flip-flop.
 - **DAC** `$3C8` (write index), `$3C7` (read index), `$3C9` (data): R, G, B per
-  entry with auto-advance. Values are six bits; the palette handed to the
+  entry, latched and stored on B, with auto-advance (the shared RAMDAC
+  sequencer, `display_ramdac.h`, with separate write and read indices). Values are six bits; the palette handed to the
   renderer replicates the top two bits into the bottom, so `$3F` becomes `$FF`
   (line 906).
 - **Input Status 1** `$3BA`/`$3DA`: not store-and-readback. Bits 3 (vertical
@@ -81,8 +82,8 @@ them the mode: the display op returns NULL until the firmware programs one.
 A checkpoint stores the register files, the port latches (the index
 registers, the attribute flip-flop and the DAC's position within an entry),
 the palette and all of display memory; restore rebuilds the palette and the
-scanout from them (line 1321). The framebuffer node's base is the byte offset
-the scanout actually starts at, after the fall-back above.
+scanout from them (line 1321). The framebuffer node's base is BAR0's base plus the
+byte offset the scanout actually starts at, after the fall-back above.
 
 ## What it does not implement
 

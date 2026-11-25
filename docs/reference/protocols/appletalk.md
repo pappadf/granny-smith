@@ -1,15 +1,13 @@
-# AppleTalk Phase 2 over LocalTalk
+# AppleTalk Phase 2 over LocalTalk and EtherTalk
 
-**Scope: LocalTalk only.** The stack is entered from the SCC: LLAP frames
-arrive on the serial port's channel B in SDLC mode and leave the same way
-(`scc_set_frame_sink`). The Ethernet controllers the emulator models --
-SONIC ([`sonic.md`](../../internals/core/peripherals/sonic.md)) and the AV machines' MACE
-([`av.md`](../machines/av/av.md)) -- carry no AppleTalk: they have no
-datapath into this stack, so EtherTalk is not available. (The AV machines'
-built-in Ethernet driver does *self-test* with EtherType $809B loopback
-frames — [mace.md](../machines/av/mace.md) §4.7 — but no received EtherTalk
-frame reaches this stack.) It would be an
-ELAP shim under `ddp_in`, AARP included, beside the LLAP one.
+**Scope: LocalTalk, and EtherTalk Phase 2 without a router.** The stack is
+entered from the SCC -- LLAP frames arrive on the serial port's channel B in
+SDLC mode and leave the same way (`scc_set_frame_sink`) -- and, on a machine
+whose Ethernet controller is cabled to it (the AV Quadras' MACE,
+[`enet.md`](../../internals/machines/av/enet.md)), from that port: 802.3
+frames carrying ELAP and AARP (Part I-B). SONIC
+([`sonic.md`](../../internals/core/peripherals/sonic.md)), BMAC and the TNT
+boards' MACE have no cable.
 
 # Part I — Physical and Link Layers
 
@@ -177,6 +175,89 @@ If A receives no CTS, it backs off randomly before retrying.
 * Maintain NodeID map (1–254) → MAC instance.
 * Treat broadcast (**255**) as multi-cast to all nodes.
 * CRC-CCITT calculated over Dest..Data fields; initial value = 0xFFFF.
+
+---
+
+# Part I-B — EtherTalk (ELAP and AARP)
+
+*(Source references: Inside AppleTalk 2nd ed., ch. 2 "AppleTalk Address
+Resolution Protocol", ch. 3 "EtherTalk and TokenTalk Link Access Protocols",
+ch. 4 "Datagram Delivery Protocol" — extended networks and the startup
+range.)*
+
+### I-B.1 Framing
+
+ELAP rides IEEE 802.3 with an 802.2 LLC header (DSAP = SSAP = `$AA`,
+control `$03`) and a SNAP protocol discriminator:
+
+| Protocol | SNAP (OUI + type) | Carries |
+|---|---|---|
+| DDP | `08 00 07` `80 9B` | an extended DDP datagram |
+| AARP | `00 00 00` `80 F3` | an AARP packet |
+
+The 802.3 length field counts the 8 LLC/SNAP bytes and the data; a frame
+shorter than 60 bytes is padded, and the padding is outside that length.
+AppleTalk broadcasts and AARP requests and probes go to the multicast
+address `09:00:07:FF:FF:FF`. (Phase 1 EtherTalk used Ethernet II type
+`$809B` instead; the AV driver's own loopback self-test frames have that
+shape, addressed to the machine itself.)
+
+### I-B.2 Extended DDP header (13 bytes)
+
+```
+byte 0     hop count (bits 5..2), length[9:8] (bits 1..0)
+byte 1     length[7:0]           -- header + data
+bytes 2-3  checksum (0 = none)
+bytes 4-5  destination network
+bytes 6-7  source network
+byte 8     destination node      -- $FF = broadcast
+byte 9     source node
+byte 10    destination socket
+byte 11    source socket
+byte 12    DDP type
+```
+
+### I-B.3 AARP packet (28 bytes on Ethernet)
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 2 | hardware type, `$0001` (Ethernet) |
+| 2 | 2 | protocol type, `$809B` (AppleTalk) |
+| 4 | 1 | hardware address length, 6 |
+| 5 | 1 | protocol address length, 4 |
+| 6 | 2 | function: 1 request, 2 response, 3 probe |
+| 8 | 6 | source hardware address |
+| 14 | 4 | source AppleTalk address: 0, network (2), node |
+| 18 | 6 | destination hardware address (zero in a request or probe) |
+| 24 | 4 | destination AppleTalk address |
+
+A node acquiring an address probes its tentative (network, node) ten times
+at 1/5-second intervals; any node owning that address answers with a
+response, and the prober picks another. Requests resolve a known address to
+its station; every packet heard refreshes the mapping.
+
+### I-B.4 Addressing without a router
+
+A node starting on an extended network takes a provisional address with
+its network number in the **startup range** `$FF00`–`$FFFE` and asks for
+the network's range with a ZIP GetNetInfo. With no router, no reply comes,
+and the provisional address becomes final; only zone `*` is valid in NBP
+lookups. Datagrams to a network in the startup range are delivered on the
+local network.
+
+### I-B.5 Implementation notes (for emulation)
+
+* The emulator's host is node 33 on the guest's own network, learned from
+  the guest's first frame; until then a probe for node 33 on any network is
+  defended. Its station address is `02:00:00:47:53:21`.
+* Requests and probes for the host's address are answered; everything else
+  in AARP only refreshes the address map. No router functions (RTMP, ZIP)
+  are provided, so the guest stays in the startup range.
+* NBP tuples on EtherTalk carry the host's real network number (a
+  LocalTalk tuple's 0, "this network", is not usable on an extended
+  network).
+* A reply leaves on the port its request came in on; traffic the host
+  originates follows the port the guest last sent DDP on.
 
 ---
 

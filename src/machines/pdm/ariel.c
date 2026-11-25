@@ -252,15 +252,16 @@ static display_t *ariel_fb_resolve(void *owner) {
     return pdm_video_display((config_t *)owner);
 }
 static uint64_t ariel_fb_base(void *owner) {
-    // A PHYSICAL address: there is no framebuffer-base register on Ariel, the
-    // scan window is picked by an HMC serial-config bit and the raster lives
-    // in main RAM.
+    // The guest physical address of the first displayed byte.  There is no
+    // framebuffer-base register on Ariel: the scan window is picked by an HMC
+    // serial-config bit and the raster lives in main RAM, which starts at
+    // physical 0 -- so Mac OS's window reads 0 here, the same as "blanked".
     config_t *cfg = (config_t *)owner;
     pdm_state_t *st = cfg ? pdm_st(cfg) : NULL;
-    if (!st || !st->video.display.bits || st->video.display.bits == st->video.blank)
+    if (!st)
         return 0;
-    const uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
-    return ram ? (uint64_t)(st->video.display.bits - ram) : 0;
+    return display_guest_addr(&st->video.display, ram_native_pointer(cfg->memory_map, 0),
+                              memory_ram_size(cfg->memory_map), 0);
 }
 
 void pdm_video_init(config_t *cfg, uint8_t monitor) {
@@ -368,14 +369,11 @@ static uint8_t ariel_read(config_t *cfg, uint32_t off, bool peek) {
     pdm_amic_t *a = &pdm_st(cfg)->amic;
     switch (off & 3) {
     case 0:
-        return a->clut_addr;
+        return ramdac_seq_addr(&a->clut_seq);
     case 1: { // data reads auto-advance the RGB phase / address
-        uint8_t v = a->clut[a->clut_addr][a->clut_phase];
-        if (!peek && ++a->clut_phase == 3) {
-            a->clut_phase = 0;
-            a->clut_addr++;
-        }
-        return v;
+        uint8_t comp;
+        uint8_t idx = ramdac_seq_read(&a->clut_seq, peek, &comp);
+        return a->clut[idx][comp];
     }
     case 2:
         return (uint8_t)(a->clut_ctrl & 0x7Fu);
@@ -397,18 +395,17 @@ void pdm_ariel_write(config_t *cfg, uint32_t off, uint8_t value) {
     pdm_amic_t *a = &st->amic;
     switch (off & 3) {
     case 0:
-        a->clut_addr = value;
-        a->clut_phase = 0; // address write resets the RGB byte index
+        ramdac_seq_set_waddr(&a->clut_seq, value); // address write resets the RGB byte index
         break;
-    case 1:
-        a->clut[a->clut_addr][a->clut_phase] = value;
-        if (++a->clut_phase == 3) {
-            a->clut_phase = 0;
-            a->clut_addr++;
+    case 1: { // latched R, G, B; the entry is stored on B
+        uint8_t idx;
+        if (ramdac_seq_write(&a->clut_seq, value, &idx)) {
+            memcpy(a->clut[idx], a->clut_seq.pending, 3);
             if (st->video.blank)
                 pdm_video_refresh_clut(st);
         }
         break;
+    }
     case 2:
         // Low 3 bits mirror the depth code; the driver always programs
         // VdColrReg in the same blanking window, which is where the

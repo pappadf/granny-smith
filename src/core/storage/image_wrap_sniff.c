@@ -10,63 +10,38 @@
 #include "image_apm.h"
 #include "image_wrap.h"
 
+#include "common.h"
+#include "image_volume.h"
+#include "mac_disk_layout.h"
+
 #include <stdlib.h>
 #include <string.h>
 
 #define BLK 512u
 
-// Block 0: the Driver Descriptor Map fields the sniff reads.
-#define DDM_SIG        0 // 'ER'
-#define DDM_DRVR_COUNT 16
-
 // Head read for the sniff: block 0 and the longest map the prefix itself
 // would hold (entries 1..63).
 #define SNIFF_BLOCKS (IMAGE_WRAP_MAP_START + IMAGE_WRAP_MAP_BLOCKS)
 
-// Load a big-endian 16-bit value.
-static uint32_t get16(const uint8_t *p) {
-    return (uint32_t)p[0] << 8 | p[1];
-}
-
-// Load a big-endian 32-bit value.
-static uint32_t get32(const uint8_t *p) {
-    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
-}
-
 bool image_wrap_is_bare_volume(const uint8_t *head, size_t len) {
     if (!head || len < 3 * BLK)
         return false;
-    // A partitioned disk: DDM in block 0 or map entries in block 1.
-    if (head[0] == 'E' && head[1] == 'R')
+    // A partitioned disk: DDM in block 0 or map entries in block 1 (any
+    // "PM", even one the classifier finds implausible, rules a volume out).
+    if (RD_BE16(head + DDM_OFF_SIG) == DDM_SIG_ER || RD_BE16(head + BLK + APM_OFF_SIG) == APM_SIG_PM)
         return false;
-    if (head[BLK] == 'P' && head[BLK + 1] == 'M')
-        return false;
-    // HFS Master Directory Block or HFS+ volume header at the bare position.
-    const uint8_t *mdb = head + 2 * BLK;
-    return (mdb[0] == 'B' && mdb[1] == 'D') || (mdb[0] == 'H' && mdb[1] == '+');
+    // An HFS or HFS Plus volume at the bare position.  Not HFSX, which no
+    // classic Mac OS the GSDisk driver serves can mount, and not MFS, which
+    // the system mounts from floppies only: either is left to read as the
+    // raw disk it is.
+    volume_kind_t k = volume_sniff(head, len, len).kind;
+    return k == VOL_HFS || k == VOL_HFSPLUS;
 }
 
 uint64_t image_wrap_volume_blocks(const uint8_t *vol, size_t len) {
     if (!vol || len < 3 * BLK)
         return 0;
-    const uint8_t *h = vol + 2 * BLK;
-    if (h[0] == 'B' && h[1] == 'D') {
-        // HFS: the allocation blocks start drAlBlSt blocks in, and the
-        // alternate MDB and one reserved block follow the last of them.
-        uint32_t nm = get16(h + 18), size = get32(h + 20), first = get16(h + 28);
-        if (size == 0 || size % BLK)
-            return 0;
-        return (uint64_t)first + (uint64_t)nm * (size / BLK) + 2;
-    }
-    if (h[0] == 'H' && h[1] == '+') {
-        // HFS+: totalBlocks allocation blocks cover the whole volume,
-        // the alternate header included.
-        uint32_t size = get32(h + 40), total = get32(h + 44);
-        if (size == 0 || size % BLK)
-            return 0;
-        return (uint64_t)total * (size / BLK);
-    }
-    return 0;
+    return volume_hfs_blocks(vol + MAC_VOLUME_HEADER_OFF);
 }
 
 bool image_wrap_find_driverless_hfs(const uint8_t *head, size_t len, uint64_t *start, uint64_t *blocks) {
@@ -74,7 +49,7 @@ bool image_wrap_find_driverless_hfs(const uint8_t *head, size_t len, uint64_t *s
         return false;
     // A DDM that names a driver means the disk has one (or claims to): leave
     // it to the ROM.
-    if (head[DDM_SIG] == 'E' && head[DDM_SIG + 1] == 'R' && (head[DDM_DRVR_COUNT] || head[DDM_DRVR_COUNT + 1]))
+    if (RD_BE16(head + DDM_OFF_SIG) == DDM_SIG_ER && RD_BE16(head + DDM_OFF_DRVR_COUNT) != 0)
         return false;
     apm_table_t *t = image_apm_parse_buffer(head, len, NULL);
     if (!t)

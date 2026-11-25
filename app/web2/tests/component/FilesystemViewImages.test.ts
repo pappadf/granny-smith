@@ -25,7 +25,10 @@ vi.mock('@/bus/emulator', () => ({
 
 // The drive helpers, so "Insert into floppy drive" on an in-image file can be
 // checked for the path it hands over without a machine profile behind it.
-vi.mock('@/bus/media', () => ({
+vi.mock('@/bus/media', async (importOriginal) => ({
+  // The real thin wrappers (machineCreated, fdDrivePresent, ...) over the
+  // mocked gsEval; the attach helpers mocked.
+  ...(await importOriginal<typeof import('@/bus/media')>()),
   insertFloppy: (...a: unknown[]) => mediaMock.insertFloppy(...a),
   mountImage: (...a: unknown[]) => mediaMock.mountImage(...a),
   imageInUseUnder: async () => core.inUse,
@@ -112,10 +115,19 @@ beforeEach(() => {
     const target = (args?.[0] as string) ?? '';
     if (path === 'files.path_size')
       return target.endsWith('.img') ? (target.endsWith('HD.img') ? 20971520 : 819200) : 4522;
-    if (path === 'machine.floppy.identify')
-      return target.endsWith('.img') && !target.endsWith('HD.img') ? '800K' : '';
-    if (path === 'machine.scsi.identify_hd') return target.endsWith('HD.img');
-    if (path === 'machine.scsi.identify_cdrom') return false;
+    if (path === 'files.identify') {
+      const floppy = target.endsWith('.img') && !target.endsWith('HD.img');
+      const hd = target.endsWith('HD.img');
+      return {
+        opens: floppy || hd,
+        refusal: '',
+        archive: '',
+        floppy: floppy ? 'gcr800' : '',
+        fits: floppy ? ['floppy'] : hd ? ['hd'] : [],
+        kind: floppy ? 'floppy' : hd ? 'hd' : '',
+        volumes: [],
+      };
+    }
     if (path !== 'files.list') return null;
     const dir = (args?.[0] as string) ?? '';
     if (dir === '/opfs') return OPFS_ROOT_LISTING;

@@ -28,7 +28,10 @@
 import { test, expect, type Page } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
-import { terminalRun as typeLine } from '../helpers/terminal';
+import { terminalRun as typeLine, terminalEval } from '../helpers/terminal';
+import { DATA } from '../helpers/paths';
+import { uploadRomViaWelcome } from '../helpers/upload';
+import { probeSample } from '../helpers/perf';
 
 // Real pacing, not web2's default Faster: it measures pacing itself.
 test.use({ gsSpeed: 'paced' });
@@ -37,7 +40,6 @@ test.use({ gsSpeed: 'paced' });
 const terminalRun = (page: Page, line: string) =>
   typeLine(page, line, { settleMs: 250 });
 
-const DATA = path.resolve(__dirname, '../../data');
 const SE30_ROM = path.join(DATA, 'roms', 'iix-iicx-se30-97221136.rom');
 
 const LABEL = process.env.PERF_LABEL ?? 'unlabeled';
@@ -46,38 +48,6 @@ const WINDOW_SECS = Number(process.env.PERF_WINDOW_SECS ?? 8);
 
 // Atomically sample {instr_count, host_wall_ns} inside the worker via a
 // single echo expansion, keyed so stale terminal echoes can't match.
-let probeSeq = 0;
-async function probeSample(
-  page: Page,
-): Promise<{ instr: number; wallNs: number }> {
-  for (let attempt = 0; attempt < 30; attempt++) {
-    const key = `pb${++probeSeq}`;
-    await terminalRun(
-      page,
-      `echo "${key}=\${machine.cpu.instr_count},\${scheduler.host_wall_ns}"`,
-    );
-    await page.waitForTimeout(400);
-    const text = await page.locator('.console-output').innerText();
-    const m = text.match(new RegExp(`${key}=(\\d+),(\\d+)`));
-    if (m) return { instr: Number(m[1]), wallNs: Number(m[2]) };
-  }
-  throw new Error('terminal sample probe never answered');
-}
-
-// Read a string/number expression through the terminal (strict value pattern
-// so the echoed input line can't satisfy the match).
-async function probeString(page: Page, expr: string): Promise<string> {
-  for (let attempt = 0; attempt < 30; attempt++) {
-    const key = `ps${++probeSeq}`;
-    await terminalRun(page, `echo "${key}=[${'$'}{${expr}}]"`);
-    await page.waitForTimeout(400);
-    const text = await page.locator('.console-output').innerText();
-    const m = text.match(new RegExp(`${key}=\\[([A-Za-z0-9_.-]+)\\]`));
-    if (m) return m[1];
-  }
-  throw new Error('terminal string probe never answered');
-}
-
 // Measure `windows` intervals of WINDOW_SECS and report MIPS per window plus
 // the live multiplier alongside each sample.
 async function measureWindows(
@@ -91,7 +61,7 @@ async function measureWindows(
     await page.waitForTimeout(WINDOW_SECS * 1000);
     const b = await probeSample(page);
     const mips = (b.instr - a.instr) / ((b.wallNs - a.wallNs) / 1e9) / 1e6;
-    const speed = await probeString(page, 'scheduler.speed');
+    const speed = await terminalEval(page, 'scheduler.speed');
     mipsPerWindow.push(mips);
     console.log(
       `PERFBENCH label=${LABEL} mode=${modeLabel} window=${w} mips=${mips.toFixed(2)} speed=${speed}`,
@@ -112,11 +82,7 @@ test('perf-bench: accelerated + turbo throughput (tracked numbers)', async ({
   await gotoWeb2(page);
 
   // SE/30 ROM via the Welcome "Load ROM..." button; built-in video.
-  const [romChooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Load ROM...' }).click(),
-  ]);
-  await romChooser.setFiles(SE30_ROM);
+  await uploadRomViaWelcome(page, SE30_ROM);
 
   // New Machine: SE/30, 8 MB, no media.
   await page.getByRole('button', { name: 'New Machine...' }).click();
@@ -138,9 +104,9 @@ test('perf-bench: accelerated + turbo throughput (tracked numbers)', async ({
   // --- PRIMARY: Accelerated via the web2 toolbar ----------------------------
   await page.getByRole('button', { name: 'Faster', exact: true }).click();
   await expect
-    .poll(async () => probeString(page, 'scheduler.mode'), { timeout: 30_000 })
+    .poll(async () => terminalEval(page, 'scheduler.mode'), { timeout: 30_000 })
     .toBe('accelerated');
-  expect(await probeString(page, 'scheduler.speed_auto')).toBe('true');
+  expect(await terminalEval(page, 'scheduler.speed_auto')).toBe('true');
 
   // Wait for the adaptive governor to plateau: the multiplier must hold the
   // same value across two consecutive 4 s samples (the ladder dwells ~2 s per
@@ -150,7 +116,7 @@ test('perf-bench: accelerated + turbo throughput (tracked numbers)', async ({
   const deadline = Date.now() + 90_000;
   while (Date.now() < deadline && stable < 2) {
     await page.waitForTimeout(4_000);
-    const s = await probeString(page, 'scheduler.speed');
+    const s = await terminalEval(page, 'scheduler.speed');
     stable = s === lastSpeed ? stable + 1 : 0;
     lastSpeed = s;
   }
@@ -160,7 +126,7 @@ test('perf-bench: accelerated + turbo throughput (tracked numbers)', async ({
 
   // --- SECONDARY: turbo engine throughput -----------------------------------
   await terminalRun(page, 'scheduler.mode = "turbo"');
-  expect(await probeString(page, 'scheduler.mode')).toBe('turbo');
+  expect(await terminalEval(page, 'scheduler.mode')).toBe('turbo');
   await page.waitForTimeout(3_000);
   const turbo = await measureWindows(page, 'turbo', WINDOWS);
 

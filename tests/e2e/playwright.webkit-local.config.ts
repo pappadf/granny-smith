@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // Runs the upload spec (web2-specs/upload.spec.ts) on WebKit, the Safari
-// engine, against the LOCAL build.  The local server (test_server.py) sends
+// engine, against the LOCAL build.  The local server (scripts/dev_server.py) sends
 // real COOP/COEP headers, so WebKit is cross-origin isolated and the WASM
 // module boots without needing the coi-serviceworker — which lets the test
 // reach the upload path and exercise Safari's OPFS behavior directly.  The
@@ -25,7 +25,7 @@ export default defineConfig({
   webServer: {
     // `cwd` below starts this in tests/e2e, so `cd ../..` reaches the repo
     // root — not `git rev-parse`, which trips CI's git-ownership guard.
-    command: `bash -c 'cd ../.. && make ui2 && exec python3 tests/e2e/test_server.py --root app/web2/dist --port ${PORT}'`,
+    command: `bash -c 'cd ../.. && make ui2 && exec python3 scripts/dev_server.py --root app/web2/dist --port ${PORT} --host 0.0.0.0 --strict-port'`,
     cwd: __dirname,
     url: `http://localhost:${PORT}/index.html`,
     reuseExistingServer: !process.env.CI,

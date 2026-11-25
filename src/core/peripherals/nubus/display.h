@@ -121,7 +121,7 @@ typedef struct rgba8 {
 // Only one monitor in the tree has a non-NULL curve: the JMFB's Kong 21".  Its
 // goldens carry the JMFB driver's gamma pre-distortion, so their white reads
 // (255, 247, 214) rather than (255, 255, 255) -- the round trip through
-// kong_crt_response is exact.  tests/integration/iicx-video-modes/test.script
+// kong_crt_response is exact.  tests/integration/iicx-video-modes/test.lua
 // records the reasoning with the driver disassembly ($40FF7E06).
 //
 // Unifying them would make four goldens depend on a table transcribed from
@@ -231,6 +231,53 @@ static inline uint8_t display_expand6(uint8_t v) {
     return (uint8_t)((v << 2) | (v >> 4));
 }
 
+// The inverse: 8-bit channels truncated into an x-5-5-5 / 5-6-5 pixel (the
+// packing every chip's 16 bpp cursor, scaler and rasteriser path uses).
+static inline uint16_t display_pack555(uint32_t r, uint32_t g, uint32_t b) {
+    return (uint16_t)(((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3));
+}
+static inline uint16_t display_pack565(uint32_t r, uint32_t g, uint32_t b) {
+    return (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+}
+
+// The index of the 256-entry palette's colour nearest `rgb` (0xRRGGBB) by
+// squared distance, the first on a tie: how a DAC that overlays true colour
+// (a hardware cursor) is shown in an 8 bpp composite.
+static inline uint32_t display_nearest_index(const rgba8_t clut[256], uint32_t rgb) {
+    int r = (int)(rgb >> 16) & 0xFF, g = (int)(rgb >> 8) & 0xFF, b = (int)rgb & 0xFF;
+    uint32_t best = 0, best_d = 0xFFFFFFFFu;
+    for (uint32_t i = 0; i < 256; i++) {
+        int dr = (int)clut[i].r - r, dg = (int)clut[i].g - g, db = (int)clut[i].b - b;
+        uint32_t d = (uint32_t)(dr * dr + dg * dg + db * db);
+        // Strictly closer only, so the lowest index wins a tie
+        if (d < best_d) {
+            best_d = d;
+            best = i;
+        }
+    }
+    return best;
+}
+
+// One hardware-cursor pixel, as a cursor's row decoder reports it.
+#define DISPLAY_CURSOR_CLR0        0 // colour 0
+#define DISPLAY_CURSOR_CLR1        1 // colour 1
+#define DISPLAY_CURSOR_TRANSPARENT 2 // the frame shows through
+#define DISPLAY_CURSOR_INVERT      3 // the frame's bytes inverted
+
+// Decode row `row` of a cursor definition into codes[0..size-1]
+// (DISPLAY_CURSOR_*): the per-chip half of a hardware-cursor overlay.
+typedef void (*display_cursor_row_fn)(const void *ctx, uint32_t row, uint8_t *codes);
+
+// Overlay a size x size hardware cursor on a composite frame `dst` (`stride`
+// bytes a row, `width` x `height` pixels of `bpp` bytes, big-endian): the
+// definition's pixel (ox, oy) lands at frame (px, py), and the walk stops at
+// the frame's right and bottom edges.  `clr` holds the two colours already in
+// the frame's own pixel format.  The clip walk shared by the Mach64 and the
+// Rage 128; how a definition encodes its pixels is the decoder's (size <= 64).
+void display_cursor_overlay(uint8_t *dst, uint32_t stride, uint32_t width, uint32_t height, uint32_t bpp, uint32_t px,
+                            uint32_t py, uint32_t ox, uint32_t oy, uint32_t size, display_cursor_row_fn decode,
+                            const void *ctx, const uint32_t clr[2]);
+
 // The shell-facing name of a format.  One spelling, so machine.screen and a
 // card's framebuffer node cannot disagree about what the guest is running.
 static inline const char *display_format_name(pixel_format_t format) {
@@ -272,7 +319,8 @@ static inline const char *display_format_name(pixel_format_t format) {
 // The fix is still worth having: it stops the trap arming itself the day
 // checkpoints become portable between the wasm and native builds.
 //
-// Fixed widths throughout, so the layout is the same on every target.
+// Fixed widths throughout, so the layout is the same on every target.  The
+// producers write it through display_head_save / display_head_restore.
 typedef struct display_head {
     uint32_t width, height, stride;
     uint32_t par_w, par_h;
@@ -319,6 +367,22 @@ static inline void display_head_apply(display_t *d, const display_head_t *h) {
     }
 }
 
+struct checkpoint;
+
+// Save the head of `d` as one fixed-width block, tag "display.head"
+// (display.c: this header stays free of checkpoint.h).
+void display_head_save(struct checkpoint *cp, const display_t *d);
+
+// Read what display_head_save wrote and apply it to `d`.
+void display_head_restore(struct checkpoint *cp, display_t *d);
+
+// The head as an entry of a card's CP_FIELD list (checkpoint.h): OP is
+// system_write_checkpoint_data or system_read_checkpoint_data, and picks
+// display_head_save or display_head_restore.
+#define DISPLAY_HEAD_CP(OP, cp, d)                          DISPLAY_HEAD_CP_##OP((cp), (d))
+#define DISPLAY_HEAD_CP_system_write_checkpoint_data(cp, d) display_head_save((cp), (d))
+#define DISPLAY_HEAD_CP_system_read_checkpoint_data(cp, d)  display_head_restore((cp), (d))
+
 // One pixel of a row, as RGB.
 //
 // `clut_len` of zero used to reach `idx % clut_len` and divide by zero; a
@@ -345,14 +409,14 @@ static inline void display_pixel_rgb(const display_t *d, const uint8_t *src_row,
         idx = src_row[x];
         break;
     case PIXEL_16BPP_555: {
-        uint16_t v = (uint16_t)(((uint16_t)src_row[x * 2] << 8) | src_row[x * 2 + 1]);
+        uint16_t v = RD_BE16(src_row + x * 2);
         r = display_expand5((uint8_t)((v >> 10) & 0x1F));
         g = display_expand5((uint8_t)((v >> 5) & 0x1F));
         b = display_expand5((uint8_t)(v & 0x1F));
         goto done;
     }
     case PIXEL_16BPP_565: {
-        uint16_t v = (uint16_t)(((uint16_t)src_row[x * 2] << 8) | src_row[x * 2 + 1]);
+        uint16_t v = RD_BE16(src_row + x * 2);
         r = display_expand5((uint8_t)((v >> 11) & 0x1F));
         g = display_expand6((uint8_t)((v >> 5) & 0x3F));
         b = display_expand5((uint8_t)(v & 0x1F));
@@ -401,6 +465,23 @@ static inline void display_row_to_rgba(const display_t *d, uint32_t y, uint8_t *
 static inline void display_sync_pixels(display_t *d) {
     if (d && d->sync_pixels)
         d->sync_pixels(d->sync_ctx);
+}
+
+// Mark everything the frontend caches from `d` stale (geometry, pixels,
+// palette and response curve), as a construction or a restore must.
+static inline void display_mark_all_dirty(display_t *d) {
+    d->shape_dirty = true;
+    d->clut_dirty = true;
+    d->fb_dirty = true;
+    d->response_dirty = true;
+}
+
+// Seed a 256-entry palette with an opaque grey ramp, the power-up CLUT that
+// keeps the canvas from being blank before the guest's driver programs one
+// (its first cscSetEntries overwrites it).
+static inline void display_seed_gray_ramp(rgba8_t clut[256]) {
+    for (int i = 0; i < 256; i++)
+        clut[i] = (rgba8_t){.r = (uint8_t)i, .g = (uint8_t)i, .b = (uint8_t)i, .a = 255};
 }
 
 // Blank the visible raster of a fully-populated descriptor to black.
@@ -492,6 +573,22 @@ static inline bool display_set_scanout(display_t *d, const uint8_t *buf, size_t 
     d->height = (uint32_t)rows;
     memset(blank, display_black_fill(d->format), (size_t)stride * (size_t)rows);
     return false;
+}
+
+// The guest physical address of the first byte `d` scans, for a producer
+// whose `bits` points into `store` -- a buffer the guest reaches at
+// `store_addr`.  0 when `bits` is somewhere else (the blank, a composed
+// frame, a private buffer): that frame is not in guest-addressable memory.
+// This is what every framebuffer node's `base` reports (display_class.h).
+static inline uint64_t display_guest_addr(const display_t *d, const uint8_t *store, size_t store_size,
+                                          uint64_t store_addr) {
+    if (!d || !d->bits || !store)
+        return 0;
+    uintptr_t bits = (uintptr_t)d->bits, lo = (uintptr_t)store;
+    // Compared as integers: `bits` may point into a different allocation
+    if (bits < lo || bits - lo >= store_size)
+        return 0;
+    return store_addr + (bits - lo);
 }
 
 // True when the visible raster still holds nothing but its power-on blank,

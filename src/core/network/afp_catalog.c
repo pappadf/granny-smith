@@ -10,6 +10,7 @@
 
 #include "afp_meta.h"
 #include "log.h"
+#include "vbuf.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -135,10 +136,7 @@ static long slot_of(afp_catalog_t *cat, uint32_t cnid) {
 // in case, and each needs its own CNID.
 
 static uint32_t child_hash(uint32_t parent, const char *name) {
-    uint32_t h = 2166136261u ^ (parent * 2654435761u); // FNV-1a, seeded with the parent
-    for (const unsigned char *p = (const unsigned char *)name; *p; p++)
-        h = (h ^ *p) * 16777619u;
-    return h;
+    return fnv1a32_str(FNV1A32_INIT ^ (parent * 2654435761u), name); // FNV-1a, seeded with the parent
 }
 
 static uint32_t *child_bucket(afp_catalog_t *cat, uint32_t parent, const char *name) {
@@ -183,14 +181,10 @@ static bool child_rebuild(afp_catalog_t *cat, size_t cap) {
 static long slot_push(afp_catalog_t *cat, uint32_t cnid, uint32_t parent, bool is_dir, const char *name) {
     if (cat->len && cnid <= cat->slots[cat->len - 1].cnid)
         return -1;
-    if (cat->len == cat->cap) {
-        size_t cap = cat->cap ? cat->cap * 2 : 32;
-        cat_slot_t *tmp = (cat_slot_t *)realloc(cat->slots, cap * sizeof(cat_slot_t));
-        if (!tmp)
-            return -1;
-        cat->slots = tmp;
-        cat->cap = cap;
-    }
+    cat_slot_t *tmp = gs_grow(cat->slots, &cat->cap, cat->len + 1, sizeof(cat_slot_t), 32);
+    if (!tmp)
+        return -1;
+    cat->slots = tmp;
     cat_slot_t *s = &cat->slots[cat->len];
     memset(s, 0, sizeof(*s));
     s->cnid = cnid;

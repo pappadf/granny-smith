@@ -62,17 +62,92 @@ value_t debug_mmu_walk(debug_mmu_xlate_fn fn, void *ctx, bool default_supervisor
 value_t debug_mmu_map(debug_mmu_xlate_fn fn, void *ctx, bool default_supervisor, uint64_t space_end, uint32_t page_bits,
                       int argc, const value_t *argv);
 
-// The shared argument tables (translate and walk share one).
+// The shared argument tables (translate and walk share one).  The
+// DECLS macros are the same entries as initialisers, so an MMU that takes
+// one more trailing argument (the Lisa's `context`) can build its own table
+// without restating these.
+#define DEBUG_MMU_XLATE_ARG_DECLS                                                                                      \
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "logical (effective) address"},          \
+        {.name = "supervisor",                                                                                         \
+         .kind = VK_BOOL,                                                                                              \
+         .validation_flags = OBJ_ARG_OPTIONAL,                                                                         \
+         .doc = "translate for supervisor (true) or user (false)",                                                     \
+         .default_doc = "the CPU's current state"},                                                                    \
+    {                                                                                                                  \
+        .name = "fetch", .kind = VK_BOOL, .validation_flags = OBJ_ARG_OPTIONAL,                                        \
+        .doc = "an instruction fetch (the 68040's ITT registers, the PowerPC's IBATs and MSR[IT]) rather than a "      \
+               "data access"                                                                                           \
+    }
+#define DEBUG_MMU_MAP_ARG_DECLS                                                                                        \
+    {.name = "start",                                                                                                  \
+     .kind = VK_UINT,                                                                                                  \
+     .presentation_flags = VFLAG_HEX,                                                                                  \
+     .validation_flags = OBJ_ARG_OPTIONAL,                                                                             \
+     .doc = "first logical address",                                                                                   \
+     .default_doc = "0"},                                                                                              \
+        {.name = "end",                                                                                                \
+         .kind = VK_UINT,                                                                                              \
+         .presentation_flags = VFLAG_HEX,                                                                              \
+         .validation_flags = OBJ_ARG_OPTIONAL,                                                                         \
+         .doc = "end of the range (exclusive)",                                                                        \
+         .default_doc = "the end of the address space"},                                                               \
+        {.name = "supervisor",                                                                                         \
+         .kind = VK_BOOL,                                                                                              \
+         .validation_flags = OBJ_ARG_OPTIONAL,                                                                         \
+         .doc = "map the supervisor (true) or user (false) view",                                                      \
+         .default_doc = "the CPU's current state"},                                                                    \
+        {.name = "fetch",                                                                                              \
+         .kind = VK_BOOL,                                                                                              \
+         .validation_flags = OBJ_ARG_OPTIONAL,                                                                         \
+         .doc = "the instruction-fetch view rather than the data view"},                                               \
+    {                                                                                                                  \
+        .name = "limit", .kind = VK_UINT, .validation_flags = OBJ_ARG_OPTIONAL,                                        \
+        .default_value = &debug_mmu_map_limit_default,                                                                 \
+        .doc = "most runs to list; continue from the last run's end for more"                                          \
+    }
 #define DEBUG_MMU_XLATE_NARGS 3
 extern const arg_decl_t debug_mmu_xlate_args[DEBUG_MMU_XLATE_NARGS];
 #define DEBUG_MMU_MAP_NARGS 5
 extern const arg_decl_t debug_mmu_map_args[DEBUG_MMU_MAP_NARGS];
+// map's default `limit` (512 runs).
+extern const value_t debug_mmu_map_limit_default;
 
 // descriptor's (addr, [count]) leading arguments; each MMU appends its own
 // `format` enum.  `count` defaults to 1 and is capped at DEBUG_MMU_DESC_MAX.
 #define DEBUG_MMU_DESC_MAX 256
 extern const value_t debug_mmu_desc_count_default;
 uint32_t debug_mmu_desc_count(int argc, const value_t *argv);
+
+// One peek read: `size` (1, 2 or 4) bytes at `addr`, big-endian, through the
+// MMU unless `physical`.  Returns val_none() with *out set, or the error to
+// hand back (an address with no translation, a refused space).
+typedef value_t (*debug_mmu_read_fn)(void *ctx, uint32_t addr, unsigned size, bool physical, uint32_t *out);
+
+// The peek method body: argv is (addr, [size], [space]); the space is checked
+// before the size, every error starts "peek:", and the result is a plain
+// VK_UINT of `size` bytes on every MMU kind.
+value_t debug_mmu_peek(debug_mmu_read_fn fn, void *ctx, int argc, const value_t *argv);
+
+// peek's (addr, size, space) table; `addr_doc` and `space_doc` are what
+// differ between MMU kinds, so each kind keeps its own table built from this.
+#define DEBUG_MMU_PEEK_NARGS 3
+// The same entries without the outer braces, for a kind that appends an
+// argument of its own (the Lisa's `context`).
+#define DEBUG_MMU_PEEK_ARG_DECLS(addr_doc, space_doc)                                                                  \
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = (addr_doc)},                             \
+        {.name = "size",                                                                                               \
+         .kind = VK_UINT,                                                                                              \
+         .validation_flags = OBJ_ARG_OPTIONAL,                                                                         \
+         .default_value = &debug_mmu_peek_size_default,                                                                \
+         .doc = "1, 2 or 4 bytes"},                                                                                    \
+    {                                                                                                                  \
+        .name = "space", .kind = VK_ENUM, .enum_values = debug_space_values, .validation_flags = OBJ_ARG_OPTIONAL,     \
+        .doc = (space_doc), .default_doc = "logical"                                                                   \
+    }
+#define DEBUG_MMU_PEEK_ARGS(addr_doc, space_doc) {DEBUG_MMU_PEEK_ARG_DECLS(addr_doc, space_doc)}
+
+// peek's default size (4).
+extern const value_t debug_mmu_peek_size_default;
 
 // Helpers for descriptor decoders: put a hex / bool field into a map.
 void debug_mmu_put_hex(value_map_builder_t *b, const char *key, uint32_t v);

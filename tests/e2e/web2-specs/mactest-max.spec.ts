@@ -20,8 +20,8 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { gotoWeb2, stageOpfsFile, stageOpfsFileStreaming } from '../helpers/web2-fs';
 import { gsEvalInPage, gsCallInPage } from '../helpers/web2-eval';
+import { DATA } from '../helpers/paths';
 
-const DATA = path.resolve(__dirname, '../../data');
 const ROM = path.join(DATA, 'roms/iici-368cadfe.rom');
 const CD = path.join(DATA, 'apps/mactest_pro_68k_feb_1996.iso');
 const GOLDENS = path.resolve(__dirname, '../../integration/iici-mactest-pro');
@@ -82,8 +82,8 @@ async function waitStable(page: Page, quietMs: number, maxMs: number): Promise<v
 }
 
 // Clicks run inside the worker as one shell command each: the headless
-// row's click_fixed / double_click_fixed (tests/integration/lib/mac.script,
-// staged into OPFS and included), paced in guest ticks.  Driving the mouse
+// row's mac.click_fixed / mac.double_click_fixed (tests/integration/lib/mac.lua,
+// staged into OPFS and loaded as the global `mac`), paced in guest ticks.  Driving the mouse
 // from the page instead does not work at Max: each object-model call from
 // the page waits for a turbo slice boundary (~16 ms of wall time, some 18
 // guest ticks at the speed reached here), so the two clicks of a double
@@ -102,13 +102,13 @@ async function runLive(page: Page): Promise<void> {
 }
 
 async function click(page: Page, x: number, y: number): Promise<void> {
-  await typeLine(page, `click_fixed(${x}, ${y})`);
+  await typeLine(page, `mac.click_fixed(${x}, ${y})`);
   await shellDone(page);
   await runLive(page);
 }
 
 async function doubleClick(page: Page, x: number, y: number): Promise<void> {
-  await typeLine(page, `double_click_fixed(${x}, ${y})`);
+  await typeLine(page, `mac.double_click_fixed(${x}, ${y})`);
   await shellDone(page);
   await runLive(page);
 }
@@ -125,7 +125,7 @@ test('MacTest Pro (68k) on a IIci with a 24AC and an 8*24 GC passes at Max speed
   for (const v of ['display-card-24ac-d8daab87.vrom', '824gc-v1.1-revb-d722b053.vrom'])
     await stageOpfsFile(page, `/opfs/images/vrom/${v}`, path.join(DATA, 'roms', v));
   await stageOpfsFileStreaming(page, '/opfs/images/cd/mactest68k.iso', CD);
-  await stageOpfsFile(page, '/opfs/upload/mtmax/mac.script', path.resolve(__dirname, '../../integration/lib/mac.script'));
+  await stageOpfsFile(page, '/opfs/upload/mtmax/mac.lua', path.resolve(__dirname, '../../integration/lib/mac.lua'));
   for (const g of ['finder.png', 'run-folder.png', 'main-window.png', 'insert-disk.png', 'passed.png'])
     await stageOpfsFile(page, `/opfs/upload/mtmax/g/${g}`, path.join(GOLDENS, g));
   // The worker's mount sees main-thread OPFS writes after a reload.
@@ -141,7 +141,7 @@ test('MacTest Pro (68k) on a IIci with a 24AC and an 8*24 GC passes at Max speed
   await typeLine(page, 'machine.rtc.time = "2026-10-01T12:00:00"');
   await typeLine(page, 'machine.scsi.attach_cdrom "/opfs/images/cd/mactest68k.iso" 3');
   await sleep(page, 1_000);
-  await typeLine(page, 'include "/opfs/upload/mtmax/mac.script"');
+  await typeLine(page, 'mac = dofile("/opfs/upload/mtmax/mac.lua")');
   await shellDone(page);
   // A terminal boot leaves the machine stopped: run it live, at Max.
   await typeLine(page, 'scheduler.run');
@@ -178,7 +178,7 @@ test('MacTest Pro (68k) on a IIci with a 24AC and an 8*24 GC passes at Max speed
   await shot(page, '4-insert-disk');
   expect(promptMs, 'the floppy test asks for a disk').toBeGreaterThanOrEqual(0);
 
-  await gsCallInPage(page, 'files.fd_create', ['/opfs/upload/mtmax/blank-hd.dsk', true]);
+  await gsCallInPage(page, 'files.create', ['/opfs/upload/mtmax/blank-hd.dsk', 'floppy', '1440K']);
   await gsCallInPage(page, 'machine.floppy.drive[0].insert', ['/opfs/upload/mtmax/blank-hd.dsk', true]);
   log('blank HD floppy inserted');
 

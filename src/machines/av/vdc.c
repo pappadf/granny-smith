@@ -31,10 +31,13 @@
 #include "civic.h"
 
 #include "checkpoint.h"
+#include "cuda.h"
 #include "debug.h"
+#include "display.h"
 #include "log.h"
 #include "machine_profile.h"
 #include "object.h"
+#include "object_order.h"
 #include "platform_hooks.h"
 #include "scheduler.h"
 #include "system.h"
@@ -179,6 +182,26 @@ int av_vdc_i2c_read(av_vdc_t *vdc, uint8_t slave, bool has_sub, uint8_t sub, uin
     for (int r = sub; r < nregs && n < maxlen; r++)
         out[n++] = regs[r];
     return n;
+}
+
+// The digitizer's face on Cuda's pseudo-command $22 (cuda_i2c_targets_t):
+// the context is the av_vdc_t.
+static int vdc_cuda_i2c_read(void *ctx, uint8_t slave, bool has_sub, uint8_t sub, uint8_t *out, int max) {
+    return av_vdc_i2c_read((av_vdc_t *)ctx, slave, has_sub, sub, out, max);
+}
+
+static void vdc_cuda_i2c_write(void *ctx, uint8_t slave, const uint8_t *data, int len) {
+    av_vdc_i2c_write((av_vdc_t *)ctx, slave, data, len);
+}
+
+static const cuda_i2c_targets_t vdc_cuda_i2c_targets = {
+    .slave_known = av_vdc_i2c_slave_known,
+    .read = vdc_cuda_i2c_read,
+    .write = vdc_cuda_i2c_write,
+};
+
+void av_vdc_attach_cuda(av_vdc_t *vdc, struct cuda *cuda) {
+    cuda_attach_i2c_targets(cuda, vdc ? &vdc_cuda_i2c_targets : NULL, vdc);
 }
 
 // ============================================================
@@ -329,7 +352,7 @@ static void vdc_write_field(av_vdc_t *vdc, av_civic_t *cv, int parity) {
                 // 1-5-5-5 ARGB, α = 0 (keyer disabled is Apple's shipping
                 // state), 8→5 bit truncation, guest
                 // big-endian byte order.
-                uint16_t px = (uint16_t)(((p[0] >> 3) << 10) | ((p[1] >> 3) << 5) | (p[2] >> 3));
+                uint16_t px = display_pack555(p[0], p[1], p[2]);
                 dst[i * 2 + 0] = (uint8_t)(px >> 8);
                 dst[i * 2 + 1] = (uint8_t)px;
             } else {
@@ -502,6 +525,9 @@ static const class_desc_t videoin_class = {
 // Lifecycle
 // ============================================================
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(av_vdc_t, cfg);
+
 av_vdc_t *av_vdc_init(config_t *cfg, checkpoint_t *cp) {
     av_vdc_t *vdc = calloc(1, sizeof(*vdc));
     if (!vdc)
@@ -514,8 +540,7 @@ av_vdc_t *av_vdc_init(config_t *cfg, checkpoint_t *cp) {
     }
 
     if (cp) {
-        size_t data_size = offsetof(av_vdc_t, cfg);
-        system_read_checkpoint_data(cp, vdc, data_size);
+        checkpoint_load_prefix(cp, vdc, av_vdc_t);
         if (vdc->src_mode == VDC_SRC_FILE) {
             vdc->file_frame = malloc((size_t)AV_VDC_SRC_W * AV_VDC_SRC_H * 4);
             if (vdc->file_frame)
@@ -534,7 +559,7 @@ av_vdc_t *av_vdc_init(config_t *cfg, checkpoint_t *cp) {
     vdc->object = object_new(&videoin_class, vdc, "videoin");
     if (vdc->object) {
         object_set_label(vdc->object, "Video In");
-        object_set_order(vdc->object, 125);
+        object_set_order(vdc->object, OBJ_ORDER_VIDEO_IN);
         object_attach(machine_object(), vdc->object);
     }
 
@@ -550,10 +575,7 @@ av_vdc_t *av_vdc_init(config_t *cfg, checkpoint_t *cp) {
 void av_vdc_delete(av_vdc_t *vdc) {
     if (!vdc)
         return;
-    if (vdc->object) {
-        object_detach(vdc->object);
-        object_delete(vdc->object);
-    }
+    object_destroy(&vdc->object);
     if (vdc->cfg)
         scheduler_forget_source(vdc->cfg->scheduler, vdc);
     free(vdc->file_frame);
@@ -564,8 +586,7 @@ void av_vdc_delete(av_vdc_t *vdc) {
 void av_vdc_checkpoint(av_vdc_t *vdc, checkpoint_t *cp) {
     if (!vdc || !cp)
         return;
-    size_t data_size = offsetof(av_vdc_t, cfg);
-    system_write_checkpoint_data(cp, vdc, data_size);
+    checkpoint_save_prefix(cp, vdc, av_vdc_t);
     // The loaded source frame is state (a restore must keep producing the
     // same pixels); the webcam is host-ephemeral and outside scope.
     if (vdc->src_mode == VDC_SRC_FILE && vdc->file_frame)

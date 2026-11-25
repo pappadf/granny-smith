@@ -133,12 +133,51 @@ the screen while it holds the output, whichever device the monitor is
 connected to (`pci_connected_display`).
 `machine_slots_resolve` validates every entry before the running machine
 is touched — the card fits (`pci_card_fits_socket`), the kind accepts each
-option (`accepts_option`), the PROM identifies as the card's — and puts the
+option (`pci_card_accepts_option`), the entry's monitor is one of the card's
+(`card_monitor_check`), the PROM identifies as the card's — and puts the
 result in `cfg->build_opts`. `pci_seat_slots` seats each socket from its
-entry, else its `default_card`, and hands the factory its slot's entry.
+entry, else its `default_card`, and hands the card its slot's entry.
+
+### The monitor
+
+A display card's monitor reaches it one way, as on NuBus: the slot entry's
+`monitor` (`slot_opts_t.monitor`), the id of one of the kind's monitor rows
+(`pci_card_kind_t.monitors`, `nubus_monitor_t`) or `none`. A row's id is the
+`monitor_catalog` id it names, and the row carries what the card's sense
+hardware answers: the 3-bit `sense_code`, Apple's 6-bit extended code
+(`ext_sense`, derived from the strap when 0 — `card_monitor_ext_sense`) and
+whether the monitor answers DDC (`ddc`). A configuration plugs a monitor in
+with `displays.<slot>.monitor` (a catalogue id), which `apply_displays` turns
+into the card's row and its sense; one check, shared with NuBus
+(`card_monitor_check`), refuses a monitor the card does not drive; and the
+bus gives every display card a definite monitor before it is built (its
+first row when the entry names none). A card reads its row with
+`card_monitor_row`. There is no `monitor=` card option.
+
+The built-in video of a PCI machine (Control, the beige G3's Rage Pro, the
+Network Server's 54M30) takes its monitors from its kind's rows the same
+way (`builtin_video_desc_t.slot_monitors`): the build resolves the
+document's monitor to a row (`machine_build_opts_t.builtin_monitor`, with
+its `builtin_sense`) and the bus copies both into the built-in slot's entry.
+A `BUILTIN_FALLBACK` stand-in that seats (the 9500's Control) takes its own
+row for the monitor of the card it stands in for.
+
+The bus builds the device (`pci_card_construct`), the way NuBus builds its
+cards: a kind declares its vtable (`ops`), its config-header declaration
+(`decl`), the size of its private state (`priv_size`) and an `init` hook.
+The bus allocates the `pci_device_t` and `priv_size` zeroed bytes of `priv`,
+sets `ops`, `decl`, `slot_index` and `bus`, resets the generic header, and
+only then calls `init` -- so a card is a whole device while it is built and
+can raise its slot interrupt. A failing `init` frees only what it
+allocated; the bus drops the device. On teardown the bus frees the `priv`
+it allocated (`pci_device_free`), so a card's `teardown` releases only its
+own buffers. A kind whose state the bus does not allocate (Control, whose
+state is the machine's; the 53C825A, whose engine allocates its own) leaves
+`priv_size` 0 and sets `priv` in `init`. The older `factory` form is still
+honoured for a kind with no `init`.
 
 Card-specific object children go through the kind's `attach_objects()`
-hook, and options through `accepts_option()`, so the generic layer never
+hook, and unadvertised options through `accepts_option()`, so the generic layer never
 learns a card's identity — the two places `nubus.c` had to include card
 headers.
 
@@ -147,6 +186,12 @@ Each seated card names its kind (`machine.pci.slot[N].card.id`, and
 checkpoint carries the slot entries it seated, which a checkpoint restore
 builds the slots from. (`machine.restart` builds nothing: the cards it
 power-cycles are the ones already seated.)
+
+A power cycle (`pci_power_on`, from `system_machine_power_cycle`) runs each
+device's `power_on`, or, for a device without one, the bus default over its
+`vram` hook (`pci_card.h`): reset, zero the VRAM, blank the raster, so a card
+does not keep showing the last session's frame -- the NuBus default's twin
+(`nubus_power_on`).
 
 ## Interrupts
 
@@ -159,13 +204,25 @@ own source bit in the machine's interrupt controller.
 
 ## Object model
 
-`machine.pci.slot[N]` carries `number`, `label`, `bus`, `device` and
-`irq`. A node exists for **every declared socket and builtin, populated or
-not** — the board's topology. It configures nothing: a different card is a
-different `machine.boot`. A populated slot
-grows a `card` subtree with the identity attributes and a `config` child
+`machine.pci.slot[N]` carries `number`, `empty`, `label`, `firmware_name`,
+`bus`, `device` and `irq`. A node exists for **every declared socket and
+builtin, populated or not** — the board's topology, built by the slot
+collection both buses share (`card_slots.c`; `machine.nubus.slot[N]` is made
+the same way). It configures nothing: a different card is a different
+`machine.boot`. An empty slot reads `empty` true and has no `card` child; a
+populated slot reads `empty` false and grows a `card` subtree with the identity attributes and a `config` child
 (Advanced) exposing the live header and one `bar[i]` node per declared BAR
 plus the expansion-ROM BAR. `catalog.pci_cards` lists the registry.
+
+Every seated device whose ops have a `display` hook also gets a
+`framebuffer` child — the node `display_class.c` shares with NuBus and the
+built-in chips, attached here so no card builds its own — and the one
+`machine.screen.source` resolves to while that device is the primary
+display. Its `base` is the device's optional `fb_base` op: the guest
+physical address of the first displayed byte (the aperture BAR's base plus
+the scan offset), or 0 when the displayed frame is not in guest memory (a
+blanked scanout; the Voodoo2's converted pass-through frame). Card-specific
+children come from the kind's `attach_objects` hook.
 
 ## Why not one expansion-bus abstraction
 
@@ -297,6 +354,16 @@ the Apple Accelerated PCI Graphics Card
 (`src/core/peripherals/pci/cards/mach64gx.c`), which boots System 7.6 to a
 desktop on a Power Macintosh 9500.
 
+The expansion ROM is the bus's, not the card's: for a kind with
+`requires_prom`, `pci_seat_slots` resolves it before the card is built (the
+image the slot's checkpoint block carries on a restore, else
+`prom_load_card` for `pci_card_rom_id(kind)`), leaves the slot empty with a
+log when nothing resolves, hands the image to `init` as its `rom`
+argument and keeps it as `dev->rom`. A device that declares a ROM BAR
+(`decl->rom_size`) and backs it with nothing of its own gets the bus's
+default face over `dev->rom`: big-endian bytes, `$FF` past the image, writes
+logged and ignored.
+
 The **ROM-less socket-card path** is exercised for real by the 3dfx Voodoo2
 (`cards/voodoo2.c`, `docs/internals/core/peripherals/pci/cards/voodoo2.md`):
 `rom_size = 0` and `requires_prom = false` were always legal (no-ROM cards
@@ -323,18 +390,31 @@ exist on these machines).
 
 `machine.boot`'s `pci_option="key=value[,key=value]"` carries options to
 the card `pci_card=` names (a `slots=` entry carries them for any slot).
-The generic layer only splits them; each pair is offered to the kind's
-`accepts_option()` hook before the boot begins, and one the card does not
-accept rejects the boot, so no card identity reaches the boot path and a
-typo is never silently the default. The factory reads its options from its
-slot's entry (`slot_opts_option`).
+The generic layer only splits them; each pair is checked before the boot
+begins (`pci_card_accepts_option`), and one the card does not accept
+rejects the boot, so no card identity reaches the boot path and a typo is
+never silently the default. The card reads its options from its slot's
+entry (`slot_opts_option`), or, for an option whose values carry a
+`payloads` row (a VRAM size), `pci_card_option_payload`, which also
+resolves the option's default.
 
 A kind also DECLARES the options a user should be offered
 (`pci_card_kind_t.options`), and `catalog.profile` publishes them, so a
 frontend can render a control per option without knowing which card it is.
-Declaring is separate from accepting: a card may still take keys it does
-not advertise (the Mach64 GX accepts `monitor=` for debugging but offers
-only `vram=`, because it senses its monitor for itself).
+The declaration is also the validation: a value an advertised option lists
+is accepted with no card code. Only what the card does not advertise goes
+to the kind's `accepts_option()` hook (the Rage 128's `gpu=`; the Voodoo2's
+hidden `raster=sw|null` and `memory=`). The monitor is not an option (see
+"The monitor", above).
+
+A **variant** kind (`rage128_webgpu`, `voodoo2_webgpu`) is a stored id for
+one of its base card's option values, not a card of its own: it names the
+base (`variant_of`) and the options that make it the variant
+(`variant_defaults`, `raster=webgpu`), and has no `init` or options. The
+bus validates its options against the base card and builds the base kind
+with the defaults merged into a copy of the slot's entry wherever the entry
+does not name the option itself; the slot keeps the variant's kind, so a
+checkpoint stores the same id.
 
 A PCI display card's video MODE is a different matter and still has no
 path: `video_mode=` is NuBus sugar and a PCI slot entry takes no `mode=`

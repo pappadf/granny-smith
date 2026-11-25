@@ -17,6 +17,7 @@
 #include "memory.h"
 #include "mmu.h"
 #include "object.h"
+#include "object_order.h"
 #include "out.h"
 #include "system.h"
 #include "value.h"
@@ -91,7 +92,9 @@ static const arg_decl_t mem_read_cstring_args[] = {
      .doc = "max chars to read (1..4096)"},
 };
 
-// `memory.dump(addr, [count])` — hex-dump `count` bytes from `addr`.
+static uint8_t peek_byte_in_space(uint32_t addr, bool physical);
+
+// `memory.dump(addr, [count], [space], [context])` — hex-dump `count` bytes from `addr`.
 // Replaces the legacy gdb-style `x` / `examine` command. `addr` accepts an
 // integer or a string (alias / register name / expression resolved by the
 // rich-parser). Output goes to stdout in the legacy `x` layout; the method
@@ -113,7 +116,7 @@ static DEF_METHOD(method_mem_dump) {
     }
 
     uint32_t nbytes = 64;
-    if (argc >= 2) {
+    if (argc >= 2 && argv[1].kind != VK_NONE) {
         int64_t count = argv[1].i;
         if (count <= 0)
             return val_err("memory.dump: byte count must be > 0");
@@ -121,27 +124,41 @@ static DEF_METHOD(method_mem_dump) {
     }
     if (nbytes > 512)
         nbytes = 512;
+    // `space` omitted keeps the historical read; given, it means the same on
+    // every architecture (peek_byte_in_space).  `context` is the Lisa's.
+    bool have_space = argc >= 3 && argv[2].kind == VK_ENUM;
+    bool physical;
+    if (!debug_parse_space(argc, argv, 2, &physical))
+        return val_err("memory.dump: space must be \"logical\" or \"physical\"");
+    int prev_view;
+    value_t err;
+    if (!debug_view_begin(argc, argv, 3, physical, &prev_view, &err))
+        return err;
 
     // Classic hex + ASCII layout, 16 bytes per row. Uses the
     // side-effect-free debug read so a dump across unmapped pages can't
     // latch a spurious guest bus error.
     for (uint32_t i = 0; i < nbytes; i += 16) {
         out_printf("$%08X  ", addr + i);
+        uint8_t row[16];
+        for (uint32_t j = 0; j < 16 && i + j < nbytes; j++) // one read per byte: device registers may count reads
+            row[j] = have_space ? peek_byte_in_space(addr + i + j, physical) : memory_debug_read_uint8(addr + i + j);
         for (uint32_t j = 0; j < 16; j++) {
             if (i + j < nbytes)
-                out_printf("%02x ", memory_debug_read_uint8(addr + i + j));
+                out_printf("%02x ", row[j]);
             else
                 out_printf("   ");
         }
         out_printf(" ");
         for (uint32_t j = 0; j < 16; j++) {
             if (i + j < nbytes) {
-                uint8_t byte = memory_debug_read_uint8(addr + i + j);
+                uint8_t byte = row[j];
                 out_printf("%c", (byte >= 0x20 && byte <= 0x7e) ? byte : '.');
             }
         }
         out_printf("\n");
     }
+    debug_view_end(prev_view);
     return val_none();
 }
 
@@ -156,6 +173,17 @@ static const arg_decl_t mem_dump_args[] = {
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &mem_def_dump_count,
      .doc = "byte count (max 512)"},
+    {.name = "space",
+     .kind = VK_ENUM,
+     .enum_values = debug_space_values,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "\"logical\" (through the CPU's translation) or \"physical\" (on the Lisa: main memory)",
+     .default_doc = "68K logical, PowerPC physical"},
+    {.name = "context",
+     .kind = VK_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Lisa only: read through this MMU context's segments (0-3; 0 is the operating system's)",
+     .default_doc = "the CPU's current context"},
 };
 
 // `memory.translate(addr)` — report the debug-path translation of a logical
@@ -248,9 +276,10 @@ static const member_t memory_members[] = {
                 .fn = method_mem_read_cstring}},
     {.kind = MK_METHOD,
      .name = "dump",
-     .examples = EXAMPLES("machine.memory.dump 0x400", "machine.memory.dump $pc 32"),
+     .examples = EXAMPLES("machine.memory.dump 0x400", "machine.memory.dump $pc 32",
+     "machine.memory.dump 0x20000 32 context=1", "machine.memory.dump 0x1c0a00 32 physical"),
      .doc = "Hex-dump count bytes at addr",
-     .method = {.args = mem_dump_args, .nargs = 2, .result = VK_NONE, .fn = method_mem_dump}},
+     .method = {.args = mem_dump_args, .nargs = 4, .result = VK_NONE, .fn = method_mem_dump}},
     {.kind = MK_METHOD,
      .name = "translate",
      .examples = EXAMPLES("machine.memory.translate 0x400"),
@@ -325,20 +354,27 @@ static DEF_METHOD(method_mem_peek_bytes) {
     bool physical;
     if (!debug_parse_space(argc, argv, 2, &physical))
         return val_err("memory.peek.bytes: space must be \"logical\" or \"physical\"");
-    if (have_space && physical && g_lisa_mmu)
-        return val_err("memory.peek.bytes: the Lisa has three physical spaces (RAM, I/O, ROM); read a logical address");
-    if (count == 0)
+    int prev_view;
+    value_t err;
+    if (!debug_view_begin(argc, argv, 3, physical, &prev_view, &err))
+        return err;
+    if (count == 0) {
+        debug_view_end(prev_view);
         return val_bytes(NULL, 0);
+    }
     // Cap at 4 KB. The bridge serialises VK_BYTES as a base64-ish JSON
     // string; 4 KB × 4/3 ≈ 5.5 KB, well under the mailbox result limit (GS_MBX_RESULT_MAX).
     if (count > 4096)
         count = 4096;
     uint8_t *buf = (uint8_t *)malloc(count);
-    if (!buf)
+    if (!buf) {
+        debug_view_end(prev_view);
         return val_err("memory.peek.bytes: out of memory");
+    }
     for (uint64_t i = 0; i < count; i++)
         buf[i] = have_space ? peek_byte_in_space((uint32_t)(addr + i), physical)
                             : memory_debug_read_uint8((uint32_t)(addr + i));
+    debug_view_end(prev_view);
     value_t v = val_bytes(buf, (size_t)count);
     free(buf);
     return v;
@@ -355,8 +391,13 @@ static const arg_decl_t mem_peek_bytes_args[] = {
      .kind = VK_ENUM,
      .enum_values = debug_space_values,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "\"logical\" (through the CPU's translation) or \"physical\"",
+     .doc = "\"logical\" (through the CPU's translation) or \"physical\" (on the Lisa: main memory)",
      .default_doc = "68K logical, PowerPC physical"},
+    {.name = "context",
+     .kind = VK_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Lisa only: read through this MMU context's segments (0-3; 0 is the operating system's)",
+     .default_doc = "the CPU's current context"},
 };
 
 static const member_t mem_peek_members[] = {
@@ -364,22 +405,22 @@ static const member_t mem_peek_members[] = {
      .name = "b",
      .examples = EXAMPLES("machine.memory.peek.b 0x12f"),
      .doc = "Read 1 byte at addr",
-     .method = {.args = mem_peek_args, .nargs = 1, .result = VK_UINT, .fn = method_mem_peek_b}           },
+     .method = {.args = mem_peek_args, .nargs = 1, .result = VK_UINT, .fn = method_mem_peek_b}},
     {.kind = MK_METHOD,
      .name = "w",
      .examples = EXAMPLES("machine.memory.peek.w 0x28e"),
      .doc = "Read 2 bytes (big-endian word) at addr",
-     .method = {.args = mem_peek_args, .nargs = 1, .result = VK_UINT, .fn = method_mem_peek_w}           },
+     .method = {.args = mem_peek_args, .nargs = 1, .result = VK_UINT, .fn = method_mem_peek_w}},
     {.kind = MK_METHOD,
      .name = "l",
      .examples = EXAMPLES("machine.memory.peek.l 0x16a"),
      .doc = "Read 4 bytes (big-endian long) at addr",
-     .method = {.args = mem_peek_args, .nargs = 1, .result = VK_UINT, .fn = method_mem_peek_l}           },
+     .method = {.args = mem_peek_args, .nargs = 1, .result = VK_UINT, .fn = method_mem_peek_l}},
     {.kind = MK_METHOD,
      .name = "bytes",
-     .examples = EXAMPLES("machine.memory.peek.bytes 0x400 16"),
+     .examples = EXAMPLES("machine.memory.peek.bytes 0x400 16", "machine.memory.peek.bytes 0x20000 16 logical 1"),
      .doc = "Read count bytes at addr (bulk; max 4096 bytes per call)",
-     .method = {.args = mem_peek_bytes_args, .nargs = 3, .result = VK_BYTES, .fn = method_mem_peek_bytes}},
+     .method = {.args = mem_peek_bytes_args, .nargs = 4, .result = VK_BYTES, .fn = method_mem_peek_bytes}},
 };
 
 static const class_desc_t mem_peek_class = {
@@ -444,7 +485,7 @@ struct object *memory_object_new(memory_map_t *mem, struct object **peek_out, st
     if (!obj)
         return NULL;
     object_set_label(obj, "Memory");
-    object_set_order(obj, 20);
+    object_set_order(obj, OBJ_ORDER_MEMORY);
     object_attach(machine_object(), obj);
     // memory.peek's accessors call into the global memory_read_* helpers
     // directly, so its instance_data is unused (likewise poke).
@@ -458,11 +499,8 @@ struct object *memory_object_new(memory_map_t *mem, struct object **peek_out, st
 }
 
 void memory_object_delete(struct object *obj, struct object *peek, struct object *poke) {
-    struct object *nodes[3] = {peek, poke, obj}; // children first
-    for (int i = 0; i < 3; i++) {
-        if (!nodes[i])
-            continue;
-        object_detach(nodes[i]);
-        object_delete(nodes[i]);
-    }
+    // Children first
+    object_destroy(&peek);
+    object_destroy(&poke);
+    object_destroy(&obj);
 }

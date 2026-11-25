@@ -23,6 +23,22 @@
 #include <stdlib.h>
 #include <string.h>
 
+// DSP32 32-bit floating-point format [IM §3.4.2] -> host double
+static double dsp3210_dsp32_to_double(uint32_t w) {
+    return dsp3210_acc_double(dsp3210_acc_unpack(w));
+}
+
+// Host double -> DSP32 32-bit float, saturating out-of-range exponents
+static uint32_t dsp3210_double_to_dsp32(double v) {
+    if (v != 0.0 && isfinite(v)) {
+        int exp;
+        frexp(v, &exp);
+        if (exp - 1 + 128 > 255) /* saturate [IM §8.2.4.1] */
+            return v > 0 ? 0x7FFFFFFFu : 0x800000FFu;
+    }
+    return dsp3210_acc_pack(dsp3210_acc_from_double(v));
+}
+
 static int failures;
 
 #define CHECK(cond)                                                                                                    \

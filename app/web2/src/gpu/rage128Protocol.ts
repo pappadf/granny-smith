@@ -3,33 +3,15 @@
 // the emulator thread writes records into a byte ring inside the wasm heap;
 // the GPU worker (rage128Gpu.worker.ts) consumes them.  Keep the two in
 // step: PROTOCOL_VERSION is checked at attach.  The control block's layout
-// is the Voodoo2's (voodoo2Protocol.ts), word for word.
+// is the Voodoo2's, word for word (takeoverProtocol.ts), plus one word.
+
+export * from './takeoverProtocol';
 
 export const PROTOCOL_VERSION = 2;
 export const MAGIC = 0x52313247; // 'R12G'
 
-// Control-block word indices (Uint32 view at the control base).
-export const C_MAGIC = 0;
-export const C_VERSION = 1;
-export const C_RING_OFF = 2;
-export const C_RING_SIZE = 3;
-export const C_RB_OFF = 4;
-export const C_RB_SIZE = 5;
-export const C_HEAD = 6;
-export const C_TAIL = 7;
-export const C_REQ = 8;
-export const C_ACK = 9;
-export const C_STATUS = 10;
-export const C_STAT_FRAMES = 11;
-export const C_STAT_DRAWS = 12;
-export const C_STAT_FLUSHES = 13;
-export const C_STAT_PIPELINES = 14;
-export const C_STAT_READBACKS = 15;
+// The control block's word past the shared ones.
 export const C_PRESENTS_DONE = 16;
-
-export const STATUS_DETACHED = 0;
-export const STATUS_ATTACHED = 1;
-export const STATUS_LOST = 2;
 
 // Record kinds.
 export const R_PAD = 0;
@@ -48,22 +30,6 @@ export const R_MODE = 12; // {engaged, w, h}
 export const R_FENCE = 13; // {seq}
 export const R_SHUTDOWN = 14; // {seq}
 export const R_CURSOR = 15; // {on, x, y, has_map} [+ 64 x 64 u32 map]
-
-export const ROLE_COLOR = 0;
-export const ROLE_DEPTH = 1;
-
-// The DRAW header, in words after the {kind, len} pair.
-export const DH_COLOR_ID = 0;
-export const DH_DEPTH_ID = 1;
-export const DH_TEX0 = 2;
-export const DH_TEX1 = 3;
-export const DH_PIPE_KEY = 4;
-export const DH_SX0 = 5;
-export const DH_SY0 = 6;
-export const DH_SX1 = 7;
-export const DH_SY1 = 8;
-export const DH_N_VERTS = 9;
-export const DH_WORDS = 11;
 
 // Pipeline-key bits.
 export const PK_BLEND = 1 << 0;

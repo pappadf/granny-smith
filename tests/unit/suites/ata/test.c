@@ -81,18 +81,22 @@ uint32_t disk_block_size(image_t *img) {
 const char *image_get_filename(const image_t *img) {
     return img == &s_hd_img ? "hd.img" : img == &s_cd_img ? "cd.iso" : NULL;
 }
-image_t *images_find(const image_list_t *images, const char *filename) {
-    (void)images;
-    if (filename && strcmp(filename, "hd.img") == 0)
-        return &s_hd_img;
-    if (filename && strcmp(filename, "cd.iso") == 0)
-        return &s_cd_img;
-    return NULL;
-}
+// The machine's restored image list: the positions a checkpoint names.
+static image_t *const s_items[] = {&s_hd_img, &s_cd_img};
+static const image_list_t s_images = {s_items, 2};
+
+static bool s_cp_error; // a restore flagged the stream
 
 // scsi_init flags a checkpoint whose bus lacks the CD bay's drive.
 void checkpoint_set_error(checkpoint_t *checkpoint) {
     (void)checkpoint;
+    s_cp_error = true;
+}
+
+// Whether a restore has flagged the stream
+bool checkpoint_has_error(checkpoint_t *checkpoint) {
+    (void)checkpoint;
+    return s_cp_error;
 }
 
 // ============================================================
@@ -101,6 +105,7 @@ void checkpoint_set_error(checkpoint_t *checkpoint) {
 
 static uint8_t *s_cp;
 static size_t s_cp_len, s_cp_cap, s_cp_pos;
+static size_t s_cp_max_read; // the largest single read a restore asked for
 
 void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *d, size_t n, const char *tag, const char *f,
                                       int l) {
@@ -114,7 +119,15 @@ void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *d, size_t n,
 }
 void system_read_checkpoint_data_loc(checkpoint_t *cp, void *d, size_t n, const char *tag, const char *f, int l) {
     (void)cp, (void)tag, (void)f, (void)l;
+    if (n > s_cp_max_read)
+        s_cp_max_read = n;
     if (s_cp_pos + n > s_cp_len) {
+        // Past the end: the stream is short.  Only a bounded read is zeroed,
+        // so an on-disk length that escaped its bound shows up as a huge
+        // request rather than as a multi-gigabyte memset.
+        s_cp_error = true;
+        if (n > 4u * ATA_BUF_SIZE)
+            return;
         memset(d, 0, n);
         return;
     }
@@ -130,7 +143,16 @@ void system_read_checkpoint_data_loc(checkpoint_t *cp, void *d, size_t n, const 
 config_t *system_config(void) {
     return NULL;
 }
-void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
+// An eject hands its image back to the running machine's table; this suite
+// has no machine, and its images are its own.
+config_t *system_running(void) {
+    return NULL;
+}
+void config_release_image(config_t *cfg, image_t *image) {
+    (void)cfg;
+    (void)image;
+}
+void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, const memory_interface_t *iface,
                     void *context) {
     (void)mem, (void)addr, (void)size, (void)name, (void)iface, (void)context;
 }
@@ -240,7 +262,9 @@ static void setup(void) {
         s_hd[i] = (uint8_t)(i * 7u + (i >> 9));
     for (size_t i = 0; i < sizeof s_cd; i++)
         s_cd[i] = (uint8_t)(i * 13u + (i >> 11));
-    s_cd_img.type = image_cdrom;
+    s_cd_img.kind = IMAGE_KIND_CD;
+    s_hd_img.checkpoint_index = 0; // their positions in the saved list
+    s_cd_img.checkpoint_index = 1;
     s_cd_img.raw_size = sizeof s_cd; // what the bus model's range check reads
     s_hd_img.raw_size = sizeof s_hd;
     s_bus = scsi_init_named(NULL, NULL, NULL, "atapi");
@@ -654,9 +678,60 @@ TEST(a_checkpoint_mid_read_resumes_the_stream) {
     ata_channel_init(&s_ch, 0);
     ata_set_irq(&s_ch, on_irq, NULL);
     ata_set_atapi_bus(&s_ch, s_bus);
-    ata_checkpoint_restore(&s_ch, NULL, NULL);
+    ata_checkpoint_restore(&s_ch, NULL, &s_images);
     pio_in(b + 256, 1024 - 256);
     ASSERT_TRUE(memcmp(b, s_hd + 30 * 512, sizeof b) == 0);
+    teardown();
+}
+
+// Restore the saved stream into a fresh channel, recording what it asked for
+static void restore_fresh(void) {
+    ata_channel_free(&s_ch);
+    ata_channel_init(&s_ch, 0);
+    ata_set_irq(&s_ch, on_irq, NULL);
+    ata_set_atapi_bus(&s_ch, s_bus);
+    s_cp_error = false;
+    s_cp_max_read = 0;
+    s_cp_pos = 0;
+    ata_checkpoint_restore(&s_ch, NULL, &s_images);
+}
+
+// A drive's image is named by its position in the saved image list; a
+// position the restored list does not hold fails the restore rather than
+// reading past the list.
+TEST(an_image_position_the_list_lacks_is_refused) {
+    setup();
+    s_cp_len = s_cp_pos = 0;
+    ata_checkpoint_save(&s_ch, NULL);
+    // The first unit's reference follows the prefix, the sector buffer and
+    // the (empty) ATAPI response blob
+    size_t at = offsetof(ata_channel_t, buf) + ATA_BUF_SIZE + sizeof(uint32_t) + s_ch.atapi_resp_len;
+    uint32_t index;
+    memcpy(&index, s_cp + at, sizeof index);
+    ASSERT_EQ_INT(index, 0); // the hard disk: position 0
+    index = 0xFFFFFFF0u;
+    memcpy(s_cp + at, &index, sizeof index);
+    restore_fresh();
+    ASSERT_TRUE(s_cp_error);
+    ASSERT_TRUE(s_ch.img[0] == NULL);
+    // Nothing larger than the channel's own buffer was asked for
+    ASSERT_TRUE(s_cp_max_read <= ATA_BUF_SIZE);
+    s_cp_error = false;
+    teardown();
+}
+
+// The ATAPI response's length in the POD prefix is the file's word: a
+// hostile one must not drive the allocation or the read.
+TEST(a_hostile_atapi_response_length_drives_no_read) {
+    setup();
+    s_cp_len = s_cp_pos = 0;
+    ata_checkpoint_save(&s_ch, NULL);
+    uint32_t len = 0xFFFFFFF0u;
+    memcpy(s_cp + offsetof(ata_channel_t, atapi_resp_len), &len, sizeof len);
+    restore_fresh();
+    ASSERT_TRUE(s_cp_max_read <= ATA_BUF_SIZE);
+    ASSERT_TRUE(s_ch.atapi_resp_len == 0 && s_ch.atapi_resp == NULL);
+    s_cp_error = false;
     teardown();
 }
 
@@ -680,6 +755,8 @@ int main(void) {
     RUN(atapi_read_by_dma);
     RUN(atapi_check_condition_reports_the_sense_key);
     RUN(a_checkpoint_mid_read_resumes_the_stream);
+    RUN(an_image_position_the_list_lacks_is_refused);
+    RUN(a_hostile_atapi_response_length_drives_no_read);
     free(s_cp);
     printf("All ata tests passed\n");
     return 0;

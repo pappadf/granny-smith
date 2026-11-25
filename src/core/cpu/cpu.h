@@ -101,7 +101,15 @@ void cpu_attach_mmu_node(cpu_t *cpu, const struct class_desc *cls, void *data);
 // Run the model's decoder until the burn-down counter *instructions reaches 0.
 void cpu_run_sprint(cpu_t *restrict cpu, uint32_t *instructions);
 
-// Disassemble the instruction in instr[] into buf; returns its length in words.
+// The buffer cpu_disasm writes into: an exhaustive sweep puts the longest
+// line at 76 bytes (see debug.h's disasm seam)
+#define CPU_DISASM_BUF_SIZE 100
+
+// Disassemble the instruction in instr[] into buf, at most `cap` bytes
+// including the NUL (a longer line is truncated); returns its length in words.
+int cpu_disasm_n(uint16_t *instr, char *buf, size_t cap);
+
+// cpu_disasm_n into a buffer of CPU_DISASM_BUF_SIZE bytes.
 int cpu_disasm(uint16_t *instr, char *buf);
 
 uint32_t cpu_get_an(cpu_t *restrict cpu, int n);
@@ -143,6 +151,17 @@ void cpu_set_ipl(cpu_t *restrict cpu, uint32_t value);
 // interrupt that should wake a halted CPU (see cpu.c).
 bool cpu_is_stopped(cpu_t *restrict cpu);
 void cpu_poll_interrupt(cpu_t *restrict cpu);
+
+// Hold the CPU as a machine whose power has gone: stopped, with every
+// maskable interrupt masked, so it executes nothing more while the scheduler
+// keeps time.  Only a reset (a power cycle) brings it back.
+void cpu_power_off(cpu_t *restrict cpu);
+
+// Point the memory system's active view (the supervisor or user tables) at
+// the CPU's own privilege.  The CPU re-derives it when it runs; a debugger
+// read before that -- right after a checkpoint load, which selects the
+// supervisor view -- needs it now.
+void cpu_select_active_view(cpu_t *restrict cpu);
 
 // Get/set vector base register (68010+)
 uint32_t cpu_get_vbr(cpu_t *restrict cpu);

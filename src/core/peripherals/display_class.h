@@ -34,10 +34,13 @@ typedef struct display_fb_node {
     // The live descriptor, or NULL when the source currently has none (a
     // refused scanout, an empty socket).  Every attribute reads 0 / "" then.
     display_t *(*resolve)(void *owner);
-    // Where the framebuffer sits, in whatever address space the source's
-    // guest reaches it through: NuBus slot space, a byte offset into VRAM, a
-    // physical address.  Optional -- `base` reads 0 without it, because "this
-    // source does not have one address" is a real answer.
+    // The guest PHYSICAL address of the first displayed byte -- the same
+    // meaning on every source (a NuBus card's slot or super-slot space, a PCI
+    // card's aperture, a built-in chip's VRAM window, main RAM), so a script
+    // can peek `base` on any machine and read the top-left pixel.  0 when the
+    // displayed frame is not in guest-addressable memory (the blank a
+    // refused or blanked scanout shows, a composed overlay frame).  Optional:
+    // without it `base` reads 0.
     uint64_t (*base)(void *owner);
 } display_fb_node_t;
 

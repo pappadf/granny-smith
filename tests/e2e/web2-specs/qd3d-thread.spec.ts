@@ -17,46 +17,16 @@
 // Everything goes through the shipped Terminal panel.
 
 import { test, expect, type Page } from '../helpers/test';
-import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
-import { terminalRun as typeLine } from '../helpers/terminal';
+import { terminalRun as typeLine, terminalEval } from '../helpers/terminal';
+import { uploadRomViaWelcome } from '../helpers/upload';
+import { STORED_ROM, TNT_ROM, cfgWrite, hex } from '../helpers/tnt';
 
 const terminalRun = (page: Page, line: string) =>
   typeLine(page, line, { settleMs: 250 });
 
-const DATA = path.resolve(__dirname, '../../data');
-const TNT_ROM = path.join(DATA, 'roms', 'pm7500-pm8500-pm9500-96cd923d.rom');
-const STORED_ROM = '/opfs/images/rom/96cd923d-c241cd82bf90797a';
-
-// Bandit 1's config ports are little-endian and machine.memory.poke is a
-// raw big-endian bus view, so config literals are byte-swapped; the card's
-// own BAR and the frame in RAM are big-endian and go out as they are.
-function swap32(v: number): number {
-  return (((v & 0xff) << 24) | ((v & 0xff00) << 8) | ((v >>> 8) & 0xff00) | ((v >>> 24) & 0xff)) >>> 0;
-}
-const hex = (v: number): string => '0x' + (v >>> 0).toString(16).toUpperCase().padStart(8, '0');
-
-let probeSeq = 0;
-async function probe(page: Page, expr: string): Promise<string> {
-  for (let attempt = 0; attempt < 30; attempt++) {
-    const key = `q3p${++probeSeq}`;
-    await terminalRun(page, `echo "${key}=[${'$'}{${expr}}]"`);
-    await page.waitForTimeout(400);
-    const text = await page.locator('.console-output').innerText();
-    const m = text.match(new RegExp(`${key}=\\[([A-Za-z0-9_.-]+)\\]`));
-    if (m) return m[1];
-  }
-  throw new Error(`terminal probe never answered: ${expr}`);
-}
-
-// One PCI config-space dword write through Bandit 1's ports: socket A1 is
-// device 13, one-hot IDSEL $00200000.
-async function cfgWrite(page: Page, reg: number, value: number): Promise<void> {
-  await terminalRun(page, `machine.memory.poke.l(0xF2800000, ${hex(swap32(0x00002000 | reg))})`);
-  await terminalRun(page, `machine.memory.poke.l(0xF2C00000, ${hex(swap32(value))})`);
-  await terminalRun(page, `machine.memory.poke.l(0xF2800000, 0)`);
-}
-
+// The card's own BAR and the frame in RAM are big-endian and go out as
+// they are; only Bandit 1's config ports take swapped literals (cfgWrite).
 const put = (page: Page, addr: number, value: number) =>
   terminalRun(page, `machine.memory.poke.l(${hex(addr)}, ${hex(value)})`);
 
@@ -71,11 +41,7 @@ test('the QuickDraw 3D card renders on a Web Worker, and a frame lands when it c
   test.setTimeout(6 * 60 * 1000);
   await gotoWeb2(page);
 
-  const [chooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Load ROM...' }).click(),
-  ]);
-  await chooser.setFiles(TNT_ROM);
+  await uploadRomViaWelcome(page, TNT_ROM);
   await expect(
     page.locator('.toast .msg').filter({ hasText: 'pm7500-pm8500-pm9500-96cd923d.rom added' }),
   ).toBeVisible({ timeout: 60_000 });
@@ -98,12 +64,12 @@ test('the QuickDraw 3D card renders on a Web Worker, and a frame lands when it c
   await terminalRun(page, 'scheduler.stop');
   await terminalRun(page, 'scheduler.run 50000000');
   await page.waitForTimeout(1000);
-  expect(await probe(page, 'scheduler.running')).toBe('false');
-  expect(await probe(page, 'machine.pci.slot[1].card.renderer.frames')).toBe('0');
+  expect(await terminalEval(page, 'scheduler.running')).toBe('false');
+  expect(await terminalEval(page, 'machine.pci.slot[1].card.renderer.frames')).toBe('0');
 
   // "thread" means pthread_create succeeded on Emscripten's Workers; a
   // fallback to "sw" is exactly the failure this spec exists to catch.
-  expect(await probe(page, 'machine.pci.slot[1].card.renderer.raster')).toBe('thread');
+  expect(await terminalEval(page, 'machine.pci.slot[1].card.renderer.raster')).toBe('thread');
 
   // The BAR at $81000000, memory space and bus mastering on.
   await cfgWrite(page, 0x10, BAR);
@@ -136,15 +102,15 @@ test('the QuickDraw 3D card renders on a Web Worker, and a frame lands when it c
   await put(page, BAR, PROG);
 
   // Walked at the go write; the pixels wait for the frame's completion.
-  expect(await probe(page, 'machine.pci.slot[1].card.renderer.frames')).toBe('1');
-  expect(await probe(page, 'machine.pci.slot[1].card.renderer.objects')).toBe('1');
-  expect(await probe(page, 'machine.pci.slot[1].card.renderer.irq')).toBe('false');
-  expect(Number(await probe(page, `machine.memory.peek.l(${hex(OUT)})`))).toBe(0xeeeeeeee);
+  expect(await terminalEval(page, 'machine.pci.slot[1].card.renderer.frames')).toBe('1');
+  expect(await terminalEval(page, 'machine.pci.slot[1].card.renderer.objects')).toBe('1');
+  expect(await terminalEval(page, 'machine.pci.slot[1].card.renderer.irq')).toBe('false');
+  expect(Number(await terminalEval(page, `machine.memory.peek.l(${hex(OUT)})`))).toBe(0xeeeeeeee);
 
   await terminalRun(page, 'scheduler.run 200000');
   await page.waitForTimeout(1000);
-  expect(await probe(page, 'machine.pci.slot[1].card.renderer.irq')).toBe('true');
+  expect(await terminalEval(page, 'machine.pci.slot[1].card.renderer.irq')).toBe('true');
   // Pixel 0 under the triangle, red; pixel 15 past it, the background.
-  expect(Number(await probe(page, `machine.memory.peek.l(${hex(OUT)})`))).toBe(0x00ff0000);
-  expect(Number(await probe(page, `machine.memory.peek.l(${hex(OUT + 60)})`))).toBe(0x00404040);
+  expect(Number(await terminalEval(page, `machine.memory.peek.l(${hex(OUT)})`))).toBe(0x00ff0000);
+  expect(Number(await terminalEval(page, `machine.memory.peek.l(${hex(OUT + 60)})`))).toBe(0x00404040);
 });

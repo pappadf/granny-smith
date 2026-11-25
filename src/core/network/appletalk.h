@@ -58,6 +58,8 @@ unsigned atalk_node_id(void);
 typedef struct {
     uint64_t llap_rx;
     uint64_t llap_tx;
+    uint64_t elap_rx; // EtherTalk frames (DDP and AARP) from the machine's Ethernet port
+    uint64_t elap_tx; // EtherTalk frames to it
     uint64_t malformed; // frames discarded as malformed, at any layer
     uint64_t unhandled; // well-formed frames nothing here serves
     uint64_t tx_dropped; // frames the stack gave up transmitting
@@ -215,9 +217,10 @@ int atalk_imagewriter_publish(bool on);
 // AppleTalk ImageWriter, a part of each machine, attaches under it.
 struct object *atalk_object(void);
 bool atalk_imagewriter_published(void);
-// The NBP object name ("Virtual ImageWriter"); renaming re-publishes.
+// The NBP object name ("Virtual ImageWriter"); renaming re-publishes.  The
+// name follows NBP's rule (atalk_nbp_name_check); -1 with `err` saying why.
 const char *atalk_imagewriter_name(void);
-int atalk_imagewriter_set_name(const char *name);
+int atalk_imagewriter_set_name(const char *name, char *err, size_t err_len);
 
 // === Printer (object model: `appletalk.printer`) ============================
 
@@ -234,7 +237,7 @@ const char *atalk_printer_get_status(void);
 bool atalk_printer_has_interpreter(void);
 
 // Whether each job's PostScript is also handed to the platform, as it was
-// sent (laserwriter_sink_capture): a .ps beside the PDF, or a download.
+// sent (printer_sink_capture): a .ps beside the PDF, or a download.
 bool atalk_printer_get_capture(void);
 void atalk_printer_set_capture(bool enabled);
 
@@ -357,6 +360,25 @@ atalk_conn_t *atalk_conn_new(atalk_network_t *network, scheduler_t *scheduler, s
 
 // Write the connection's block (its checkpoint part, machine_parts.h).
 void atalk_conn_checkpoint(const atalk_conn_t *conn, checkpoint_t *checkpoint);
+
+// === EtherTalk: a machine's Ethernet port ===================================
+//
+// A machine whose Ethernet controller is cabled to the network attaches its
+// port to its connection: the network sends frames to the machine through
+// `send` (an 802.3 frame, destination address first, no FCS), and the
+// machine hands every frame its controller puts on the cable to
+// atalk_conn_ether_input.  The network speaks EtherTalk Phase 2 there:
+// ELAP (802.2 LLC/SNAP, protocol $809B) carrying extended DDP, and AARP
+// ($80F3) to resolve and defend the host's AppleTalk address.  With no
+// router on the cable the guest keeps an address in the startup range, and
+// the host takes its node on the guest's network.  NULL detaches the port.
+typedef void (*atalk_ether_send_fn)(void *ctx, const uint8_t *frame, size_t len);
+void atalk_conn_attach_ether(atalk_conn_t *conn, atalk_ether_send_fn send, void *ctx);
+// A frame the machine's controller transmitted; only the plugged-in,
+// enabled connection acts on it.
+void atalk_conn_ether_input(atalk_conn_t *conn, const uint8_t *frame, size_t len);
+// The host's Ethernet station address on that cable.
+#define ATALK_HOST_MAC_INIT {0x02, 0x00, 0x00, 0x47, 0x53, 0x21}
 
 // Put `conn` on the cable, unplugging whichever connection is there.
 void atalk_conn_plug(atalk_conn_t *conn);

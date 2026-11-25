@@ -223,6 +223,16 @@ __attribute__((weak)) struct image *config_get_image(const struct config *cfg, i
     (void)index;
     return NULL;
 }
+// An eject hands its image back to the running machine's table
+// (config_release_image).  The harness has no machine and no table: the
+// suite that made the image closes it.
+__attribute__((weak)) struct config *system_running(void) {
+    return NULL;
+}
+__attribute__((weak)) void config_release_image(struct config *cfg, struct image *image) {
+    (void)cfg;
+    (void)image;
+}
 // The bound on a machine's image list (system.c's MAX_IMAGES), for suites
 // that link checkpoint_images.c.
 __attribute__((weak)) int config_max_images(void) {

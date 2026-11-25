@@ -14,6 +14,7 @@
 #include "log.h"
 #include "resource_fork.h"
 #include "storage_util.h"
+#include "vbuf.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -44,17 +45,14 @@ typedef struct {
     uint64_t size; // decoded image size
     char *key;
     const char *what; // "ndif" / "udif" / "qcow2", for messages
+    const char *what_upper; // "NDIF" / "UDIF" / "QCOW2", for the open log
 } cm_src_t;
 
 static int cm_add(cm_src_t *m, cm_run_t r) {
-    if (m->n_runs == m->cap_runs) {
-        size_t ncap = m->cap_runs ? m->cap_runs * 2 : 64;
-        cm_run_t *nr = realloc(m->runs, ncap * sizeof(*nr));
-        if (!nr)
-            return -ENOMEM;
-        m->runs = nr;
-        m->cap_runs = ncap;
-    }
+    cm_run_t *nr = gs_grow(m->runs, &m->cap_runs, m->n_runs + 1, sizeof(*nr), 64);
+    if (!nr)
+        return -ENOMEM;
+    m->runs = nr;
     m->runs[m->n_runs++] = r;
     return 0;
 }
@@ -91,6 +89,30 @@ typedef struct {
     const cm_run_t *run;
 } cm_fetch_t;
 
+// Decode one compressed run's stored bytes `in` into `buf` (`cap` bytes, at
+// least the run's out_len): the one dispatch over the formats' decoders.
+// Each keeps its own policy -- an NDIF ADC chunk that runs short is
+// zero-padded, a UDIF chunk must decode to exactly its sectors, a QCOW2
+// cluster to the whole cluster.  0 or a negative errno.
+static int cm_decode_run(const cm_run_t *r, const uint8_t *in, uint8_t *buf, size_t cap) {
+    switch (r->kind) {
+    case RUN_NDIF: {
+        ndif_chunk_t c = {.count = (uint32_t)(r->out_len / CM_SECTOR), .type = (uint8_t)r->type};
+        return ndif_decode_chunk(&c, in, (size_t)r->in_len, buf, cap);
+    }
+    case RUN_UDIF: {
+        udif_chunk_t c = {.type = r->type, .count = r->out_len / CM_SECTOR};
+        return udif_decode_chunk(&c, in, (size_t)r->in_len, buf, cap);
+    }
+    case RUN_QCOW2:
+        // The cluster bits ride in `type`; the last cluster may be cut short.
+        return r->out_len <= cap ? qcow2_decode_cluster(in, (size_t)r->in_len, r->type, buf, (size_t)r->out_len)
+                                 : -EINVAL;
+    default:
+        return -EINVAL; // zero and raw runs never reach the cache
+    }
+}
+
 // Decode one compressed run for the chunk cache.
 static int64_t cm_fetch(void *ctx, uint64_t idx, uint8_t *buf, size_t cap) {
     (void)idx;
@@ -104,21 +126,7 @@ static int64_t cm_fetch(void *ctx, uint64_t idx, uint8_t *buf, size_t cap) {
     }
     int rc = r->in_len ? source_read_exact(f->m->data, r->in_off, in, (size_t)r->in_len) : 0;
     if (rc == 0) {
-        if (r->kind == RUN_NDIF) {
-            ndif_chunk_t c = {.sector = 0,
-                              .count = (uint32_t)(r->out_len / CM_SECTOR),
-                              .type = (uint8_t)r->type,
-                              .offset = 0,
-                              .length = (uint32_t)r->in_len};
-            rc = ndif_decode_chunk(&c, in, (size_t)r->in_len, buf, cap);
-        } else if (r->kind == RUN_QCOW2) {
-            rc = r->out_len <= cap ? qcow2_decode_cluster(in, (size_t)r->in_len, r->type, buf, (size_t)r->out_len)
-                                   : -EINVAL;
-        } else {
-            udif_chunk_t c = {
-                .type = r->type, .sector = 0, .count = r->out_len / CM_SECTOR, .offset = 0, .length = r->in_len};
-            rc = udif_decode_chunk(&c, in, (size_t)r->in_len, buf, cap);
-        }
+        rc = cm_decode_run(r, in, buf, cap);
         if (rc != 0)
             LOG(1, "%s chunk at %llu (type %#x) failed to decode: %d", f->m->what, (unsigned long long)r->out_off,
                 r->type, rc);
@@ -204,18 +212,47 @@ static void cm_close(source_t *s) {
 
 static const source_ops_t cm_ops = {cm_read, cm_size, cm_key, cm_tier, cm_close};
 
-static cm_src_t *cm_new(source_t *data, const char *what) {
+static cm_src_t *cm_new(source_t *data, const char *what, const char *what_upper) {
     cm_src_t *m = calloc(1, sizeof(*m));
     if (!m)
         return NULL;
     m->data = source_retain(data);
     m->what = what;
+    m->what_upper = what_upper;
     m->key = str_printf("%s#%s", source_key(data), what);
     if (!m->key) {
         cm_free(m);
         return NULL;
     }
     return m;
+}
+
+// The run's stored bytes lie inside the data fork of `dsize` bytes (a zero
+// run stores none); checked without a wrapping add.  0 or -EINVAL.
+static int cm_check_bounds(const cm_run_t *r, uint64_t dsize) {
+    if (r->kind != RUN_ZERO && (r->in_off > dsize || r->in_len > dsize - r->in_off))
+        return -EINVAL;
+    return 0;
+}
+
+// The one open tail: sort and check the map built into `m` (when `rc` is
+// still 0) and publish it as a source, or log the failure ("UDIF '<key>':
+// unusable block map (rc)"), free `m` and set *err.  `m` may be NULL when
+// building it ran out of memory.
+static source_t *cm_publish(cm_src_t *m, int rc, const char *map_name, source_t *data, int *err) {
+    if (rc == 0)
+        rc = cm_finish(m);
+    if (rc != 0) {
+        if (m)
+            LOG(1, "%s '%s': unusable %s (%d)", m->what_upper, source_key(data), map_name, rc);
+        cm_free(m);
+        *err = rc;
+        return NULL;
+    }
+    // source_new closes `m` itself on failure.
+    source_t *s = source_new(&cm_ops, m, NULL);
+    *err = s ? 0 : -ENOMEM;
+    return s;
 }
 
 // ============================================================================
@@ -252,7 +289,7 @@ source_t *ndif_source_open(source_t *data, source_t *rsrc, int *err) {
         *err = rc;
         return NULL;
     }
-    cm_src_t *m = cm_new(data, "ndif");
+    cm_src_t *m = cm_new(data, "ndif", "NDIF");
     if (!m) {
         ndif_map_free(map);
         *err = -ENOMEM;
@@ -289,23 +326,13 @@ source_t *ndif_source_open(source_t *data, source_t *rsrc, int *err) {
         } else {
             rc = -ENOTSUP; // KenCode / RLE / LZH / StuffIt chunks
         }
-        if (rc == 0 && r.kind != RUN_ZERO && (r.in_off > dsize || r.in_len > dsize - r.in_off))
-            rc = -EINVAL;
+        if (rc == 0)
+            rc = cm_check_bounds(&r, dsize);
         if (rc == 0)
             rc = cm_add(m, r);
     }
     ndif_map_free(map);
-    if (rc == 0)
-        rc = cm_finish(m);
-    if (rc != 0) {
-        LOG(1, "NDIF '%s': unusable block map (%d)", source_key(data), rc);
-        cm_free(m);
-        *err = rc;
-        return NULL;
-    }
-    source_t *s = peel_source_new(&cm_ops, m, NULL);
-    *err = s ? 0 : -ENOMEM;
-    return s;
+    return cm_publish(m, rc, "block map", data, err);
 }
 
 // ============================================================================
@@ -315,9 +342,6 @@ source_t *ndif_source_open(source_t *data, source_t *rsrc, int *err) {
 bool udif_source_detect(const uint8_t *tail, size_t len) {
     return len >= UDIF_TRAILER_SIZE && udif_detect(tail + len - UDIF_TRAILER_SIZE, UDIF_TRAILER_SIZE);
 }
-
-// Largest XML block map read.  Real ones are a few hundred KB.
-#define UDIF_MAX_XML (64u * 1024u * 1024u)
 
 // Largest decoded chunk a foreign UDIF is read in place with (each miss
 // decodes a whole chunk into the image cache).
@@ -333,13 +357,64 @@ void udif_set_inplace_max_chunk(size_t bytes) {
                                                    : bytes;
 }
 
-bool udif_xml_is_gs_profile(const uint8_t *xml, size_t len) {
-    static const char tag[] = "<key>gs-profile</key>";
-    size_t n = sizeof(tag) - 1;
-    for (size_t i = 0; i + n <= len; i++)
-        if (xml[i] == '<' && memcmp(xml + i, tag, n) == 0)
-            return true;
-    return false;
+bool udif_xml_is_gs_profile(const char *xml, size_t len) {
+    char v[16];
+    return udif_plist_value(xml, len, "gs-profile", v, sizeof(v));
+}
+
+int udif_load(source_t *data, udif_trailer_t *tr, char **xml, size_t *xml_len, udif_map_t **map, const char **why) {
+    const char *dummy;
+    if (!why)
+        why = &dummy;
+    *why = NULL;
+    *map = NULL;
+    if (xml)
+        *xml = NULL;
+    if (!data)
+        return -EINVAL;
+    uint64_t dsize = source_size(data);
+    uint8_t trailer[UDIF_TRAILER_SIZE];
+    // No trailer at all: not UDIF, nothing to explain.
+    if (dsize < UDIF_TRAILER_SIZE || source_read_exact(data, dsize - UDIF_TRAILER_SIZE, trailer, sizeof(trailer)) ||
+        !udif_detect(trailer, sizeof(trailer)))
+        return -EINVAL;
+    int rc = udif_parse_trailer(trailer, sizeof(trailer), tr);
+    if (rc != 0) {
+        *why = UDIF_NO_TRAILER;
+        return rc;
+    }
+    if (tr->xml_offset > dsize || tr->xml_length > dsize - tr->xml_offset) {
+        *why = "the block map lies outside the file";
+        return -EINVAL;
+    }
+    // udif_parse_trailer bounds xml_length (non-zero, at most 16 MB).
+    size_t xl = (size_t)tr->xml_length;
+    char *buf = malloc(xl + 1);
+    if (!buf) {
+        *why = "out of memory";
+        return -ENOMEM;
+    }
+    rc = source_read_exact(data, tr->xml_offset, buf, xl);
+    if (rc != 0) {
+        *why = "cannot read the block map";
+        free(buf);
+        return -EIO;
+    }
+    buf[xl] = '\0';
+    rc = udif_parse_blkx((const uint8_t *)buf, xl, map);
+    if (rc != 0) {
+        *why = "the block map does not parse";
+        free(buf);
+        return rc;
+    }
+    if (xml) {
+        *xml = buf;
+        if (xml_len)
+            *xml_len = xl;
+    } else {
+        free(buf);
+    }
+    return 0;
 }
 
 source_t *udif_source_open(source_t *data, int *err) {
@@ -352,43 +427,24 @@ source_t *udif_source_open_bounded(source_t *data, size_t max_chunk, int *err) {
         err = &e;
     *err = -EINVAL;
     uint64_t dsize = source_size(data);
-    uint8_t trailer[UDIF_TRAILER_SIZE];
-    if (dsize < UDIF_TRAILER_SIZE || source_read_exact(data, dsize - UDIF_TRAILER_SIZE, trailer, sizeof(trailer)))
-        return NULL;
-    if (!udif_detect(trailer, sizeof(trailer)))
-        return NULL;
     udif_trailer_t tr;
-    int rc = udif_parse_trailer(trailer, sizeof(trailer), &tr);
+    udif_map_t *map = NULL;
+    char *xml = NULL;
+    size_t xml_len = 0;
+    const char *why = NULL;
+    int rc = udif_load(data, &tr, &xml, &xml_len, &map, &why);
     if (rc != 0) {
-        LOG(1, "unsupported UDIF trailer in '%s' (%d)", source_key(data), rc);
+        if (why)
+            LOG(1, "UDIF '%s': %s (%d)", source_key(data), why, rc);
         *err = rc;
         return NULL;
     }
-    if (tr.xml_offset > dsize || tr.xml_length > dsize - tr.xml_offset || tr.xml_length > UDIF_MAX_XML) {
-        *err = -EINVAL;
-        return NULL;
-    }
-    uint8_t *xml = malloc(tr.xml_length ? (size_t)tr.xml_length : 1);
-    if (!xml) {
-        *err = -ENOMEM;
-        return NULL;
-    }
-    udif_map_t *map = NULL;
-    rc = source_read_exact(data, tr.xml_offset, xml, (size_t)tr.xml_length);
-    if (rc == 0)
-        rc = udif_parse_blkx(xml, (size_t)tr.xml_length, &map);
     // An image this emulator wrote has chunks of its own bounded size; any
     // other is held to the in-place bound.
-    bool ours = rc == 0 && udif_xml_is_gs_profile(xml, (size_t)tr.xml_length);
     if (!max_chunk)
-        max_chunk = ours ? NDIF_MAX_CHUNK_BYTES : g_inplace_max;
+        max_chunk = udif_xml_is_gs_profile(xml, xml_len) ? NDIF_MAX_CHUNK_BYTES : g_inplace_max;
     free(xml);
-    if (rc != 0) {
-        LOG(1, "UDIF '%s': block map unreadable (%d)", source_key(data), rc);
-        *err = rc;
-        return NULL;
-    }
-    cm_src_t *m = cm_new(data, "udif");
+    cm_src_t *m = cm_new(data, "udif", "UDIF");
     if (!m) {
         udif_map_free(map);
         *err = -ENOMEM;
@@ -431,24 +487,14 @@ source_t *udif_source_open_bounded(source_t *data, size_t max_chunk, int *err) {
                 LOG(1, "UDIF '%s': chunk codec %#x not supported", source_key(data), c->type);
                 rc = -ENOTSUP; // a type no UDIF writer is known to use
             }
-            if (rc == 0 && r.kind != RUN_ZERO && (r.in_off > dsize || r.in_len > dsize - r.in_off))
-                rc = -EINVAL;
+            if (rc == 0)
+                rc = cm_check_bounds(&r, dsize);
             if (rc == 0)
                 rc = cm_add(m, r);
         }
     }
     udif_map_free(map);
-    if (rc == 0)
-        rc = cm_finish(m);
-    if (rc != 0) {
-        LOG(1, "UDIF '%s': unusable block map (%d)", source_key(data), rc);
-        cm_free(m);
-        *err = rc;
-        return NULL;
-    }
-    source_t *s = peel_source_new(&cm_ops, m, NULL);
-    *err = s ? 0 : -ENOMEM;
-    return s;
+    return cm_publish(m, rc, "block map", data, err);
 }
 
 // ============================================================================
@@ -585,7 +631,7 @@ source_t *qcow2_source_open(source_t *data, int *err) {
     }
     uint8_t *l1 = malloc(l1n ? (size_t)l1n * 8u : 1);
     uint8_t *l2 = malloc((size_t)cluster);
-    cm_src_t *m = cm_new(data, "qcow2");
+    cm_src_t *m = cm_new(data, "qcow2", "QCOW2");
     rc = (l1 && l2 && m) ? 0 : -ENOMEM;
     if (rc == 0)
         m->size = h.size;
@@ -606,16 +652,5 @@ source_t *qcow2_source_open(source_t *data, int *err) {
     }
     free(l1);
     free(l2);
-    if (rc == 0)
-        rc = cm_finish(m);
-    if (rc != 0) {
-        if (m)
-            LOG(1, "QCOW2 '%s': unusable cluster map (%d)", source_key(data), rc);
-        cm_free(m);
-        *err = rc;
-        return NULL;
-    }
-    source_t *s = peel_source_new(&cm_ops, m, NULL);
-    *err = s ? 0 : -ENOMEM;
-    return s;
+    return cm_publish(m, rc, "cluster map", data, err);
 }

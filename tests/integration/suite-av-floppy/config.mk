@@ -1,6 +1,6 @@
 # Integration suite: part of the AV family suite, run as its own test so
-# no single test sets the CI shard floor.  test.script names the rows
-# (av-floppy-mount, av-floppy-800k, av-floppy-write-eject, av-floppy-format) and includes ../suite-av/test.script, whose header describes
+# no single test sets the CI shard floor.  test.lua names the rows
+# (av-floppy-mount, av-floppy-800k, av-floppy-write-eject, av-floppy-format) and includes ../suite-av/test.lua, whose header describes
 # them; goldens/ links to that directory's goldens.
 #
 #   make test-suite-av-floppy

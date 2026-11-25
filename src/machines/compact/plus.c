@@ -26,6 +26,7 @@
 #include "keyboard.h"
 #include "log.h"
 #include "machine_checkpoint.h"
+#include "machine_irq.h"
 #include "memory.h"
 #include "mmu.h" // tlb_track_page
 #include "mouse.h"
@@ -62,7 +63,7 @@ typedef struct plus_state {
 } plus_state_t;
 
 // Helper: return the Plus-specific state from a config handle
-static inline plus_state_t *plus_state(config_t *cfg) {
+static inline plus_state_t *plus_st(config_t *cfg) {
     return (plus_state_t *)cfg->machine_context;
 }
 
@@ -80,13 +81,21 @@ static void plus_update_ipl(config_t *cfg, int source, bool active);
 // Video buffer helper (Plus-specific address constants)
 // ============================================================
 
-// Interrupt source bits in cfg->rt.irq, matching the MAC030_GLUE_IRQ_* /
+// Interrupt source bits in cfg->rt.irq, matching the M68K_BOARD_IRQ_* /
 // AV_IRQ_* convention.  These are a source MASK, not an IPL level: the PALs
 // derive the level from the set of asserted sources (plus_update_ipl).  The
 // Lisa's identically-named lisa_update_ipl() really does take a level, so two
 // adjacent 68000 families used one signature with opposite meanings.
 #define PLUS_IRQ_VIA (1u << 0)
 #define PLUS_IRQ_SCC (1u << 1)
+
+// The PALs' routing: the SCC on /IPL1 (level 2) wins over the VIA on /IPL0
+// (level 1).
+static const machine_irq_route_t plus_irq_routes[] = {
+    {PLUS_IRQ_SCC, 2},
+    {PLUS_IRQ_VIA, 1},
+    {0,            0}, // sentinel
+};
 
 #define PLUS_SCSI_BASE 0x500000UL
 #define PLUS_SCSI_SIZE 0x100000UL
@@ -110,7 +119,7 @@ static void plus_update_ipl(config_t *cfg, int source, bool active);
 // descriptor's `bits` field and marks the framebuffer dirty so the
 // renderer re-uploads on the next frame.
 static void plus_use_video_buffer(config_t *cfg, bool main) {
-    plus_state_t *ps = plus_state(cfg);
+    plus_state_t *ps = plus_st(cfg);
     uint32_t top = cfg->ram_size;
     uint32_t addr = main ? (top - PLUS_SCREEN_FROM_TOP) : (top - PLUS_SCREEN_FROM_TOP - PLUS_ALT_SCREEN_BELOW);
     ps->display.bits = ram_native_pointer(cfg->memory_map, addr);
@@ -120,7 +129,7 @@ static void plus_use_video_buffer(config_t *cfg, bool main) {
 // Initialise the Plus display descriptor.  Called once during plus_init,
 // before plus_use_video_buffer fills in `bits`.
 static void plus_display_init(config_t *cfg) {
-    plus_state_t *ps = plus_state(cfg);
+    plus_state_t *ps = plus_st(cfg);
     ps->display.width = 512;
     ps->display.height = 342;
     ps->display.stride = 512 / 8;
@@ -134,7 +143,7 @@ static void plus_display_init(config_t *cfg) {
 // hw_profile_t.display callback — surface the Plus framebuffer to
 // system_display() on the non-NuBus path.
 static display_t *plus_display(config_t *cfg) {
-    plus_state_t *ps = plus_state(cfg);
+    plus_state_t *ps = plus_st(cfg);
     return ps && ps->display.bits ? &ps->display : NULL;
 }
 
@@ -154,7 +163,7 @@ static void plus_map_read_page(uint32_t p, uint8_t *host_ptr) {
         g_supervisor_read[p] = adjusted;
     if (g_user_read)
         g_user_read[p] = adjusted;
-    tlb_track_page(p); // on the tracker like every fast-path entry (mac030_fill_page)
+    tlb_track_page(p); // on the tracker like every fast-path entry (page_fill_68k)
     memory_logpoint_guard_page(p);
 }
 
@@ -163,7 +172,7 @@ static void plus_map_read_page(uint32_t p, uint8_t *host_ptr) {
 // after the reset vector (CLR of PA4 at $4000D2 in the v3 ROM), before it
 // touches RAM; until then its reset vectors at $0/$4 are the ROM's own.
 static void plus_set_rom_overlay(config_t *cfg, bool on) {
-    plus_state_t *ps = plus_state(cfg);
+    plus_state_t *ps = plus_st(cfg);
     if (ps->rom_overlay == on)
         return;
     ps->rom_overlay = on;
@@ -253,7 +262,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
         plus_set_rom_overlay(cfg, true);
 
     // The profile is the source of truth for the CPU model, as it is for the
-    // clock below and as mac030_build_core states for the II families.  Both
+    // clock below and as m68k_board_build_core states for the II families.  Both
     // profiles behind this substrate declare 68000, so this reads back exactly
     // what the constant said -- but system_create derives cfg->cpu_arch from
     // the profile unconditionally, so a profile that ever disagreed with a
@@ -310,7 +319,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
                          plus_via_output, plus_via_shift_out, plus_via_irq, cfg, checkpoint);
     machine_part(cfg, checkpoint, "via1", part_save_via, cfg->via1);
     // The RTC's data line rides VIA1 PB0: wired right after the VIA is built,
-    // the same position as the GLUE family (mac030_glue_init).
+    // the same position as the GLUE family (glue_init).
     rtc_set_via(cfg->rtc, cfg->via1);
 
     machine_part_begin(cfg, checkpoint, "sound");
@@ -349,7 +358,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     // scsi_5380_attach() used to do this itself, from inside src/core, with
     // this address compiled into the chip model.  Every other 5380 machine
     // already took scsi_get_memory_interface() and placed it with its own
-    // decode (mac030_glue_io.c, mdu_io.c, iifx.c); the Plus now does the same.
+    // decode (glue_io.c, mdu_io.c, iifx.c); the Plus now does the same.
     memory_map_add(cfg->memory_map, PLUS_SCSI_BASE, PLUS_SCSI_SIZE, "scsi",
                    (memory_interface_t *)scsi_get_memory_interface(cfg->scsi), cfg->scsi);
 
@@ -386,7 +395,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
         // main RAM, so this only touches the two visible windows, and only
         // before the guest runs — the ROM's RAM test writes and reads back its
         // own patterns over them regardless.
-        plus_state_t *ps = plus_state(cfg);
+        plus_state_t *ps = plus_st(cfg);
         size_t screen_bytes = (size_t)ps->display.stride * ps->display.height;
         uint8_t fill = display_black_fill(ps->display.format);
         for (int main_buf = 0; main_buf <= 1; main_buf++) {
@@ -400,22 +409,15 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->debugger = debug_init();
 
     // Initialise IRQ/IPL only for cold boot; on restore, devices already re-assert.
-    if (!checkpoint) {
-        cfg->rt.irq = 0;
-        cpu_set_ipl(cfg->cpu, 0);
-    }
+    machine_irq_cold_reset(cfg, checkpoint);
     return 0;
 }
 
 // Tear down all Plus resources in reverse init order.
 static void plus_teardown(config_t *cfg) {
-    if (cfg->scheduler)
-        scheduler_stop(cfg->scheduler);
-
     // Machine-owned devices first, then the shared delete-chain.  This is the
-    // shape mac030_glue_teardown uses and the other six families already
-    // follow; the Plus and the Lisa were the two that still hand-rolled the
-    // whole thing.
+    // shape every family follows; the Plus and the Lisa were the last two that
+    // hand-rolled the whole thing.
     //
     // ORDER IS LOAD-BEARING and this is why: the floppy used to be deleted
     // AFTER scheduler_delete here.  That was harmless while floppy_delete only
@@ -424,7 +426,7 @@ static void plus_teardown(config_t *cfg) {
     // holds a scheduler handle must go before the scheduler does, which is
     // exactly what machine_teardown_config_devices guarantees by deleting the
     // scheduler itself, last.
-    plus_state_t *ps = plus_state(cfg);
+    plus_state_t *ps = plus_st(cfg);
     if (cfg->keyboard) {
         keyboard_delete(cfg->keyboard);
         cfg->keyboard = NULL;
@@ -433,25 +435,15 @@ static void plus_teardown(config_t *cfg) {
         mouse_delete(cfg->mouse);
         cfg->mouse = NULL;
     }
-    if (cfg->floppy) {
-        floppy_delete(cfg->floppy);
-        cfg->floppy = NULL;
-    }
     if (ps && ps->sound) {
         sound_delete(ps->sound);
         ps->sound = NULL;
         cfg->sound = NULL;
     }
 
-    // scsi, appletalk, scc, rtc, via1, the scheduler, the CPU, the memory map
-    // and the debugger -- in the one order that is documented once.
+    // floppy, scsi, appletalk, scc, rtc, via1, the scheduler, the CPU, the
+    // memory map and the debugger -- in the one order that is documented once.
     machine_teardown_config_devices(cfg);
-
-    // Machine-specific state; images are freed by system_destroy().
-    if (ps) {
-        free(ps);
-        cfg->machine_context = NULL;
-    }
 }
 
 // ============================================================
@@ -466,14 +458,10 @@ static void plus_teardown(config_t *cfg) {
 
 // Plus-specific interrupt routing: set/clear one PLUS_IRQ_* source bit and
 // re-derive the CPU IPL -- the same (cfg, source, active) shape as
-// mac030_glue_update_ipl.
+// m68k_board_update_ipl.
 static void plus_update_ipl(config_t *cfg, int source, bool active) {
     int old_irq = cfg->rt.irq;
     int old_ipl = cpu_get_ipl(cfg->cpu);
-    if (active)
-        cfg->rt.irq |= source;
-    else
-        cfg->rt.irq &= ~source;
 
     // Guide to the Macintosh Family Hardware, chapter 3:
     // The interrupt request line from the VIA goes to the PALs,
@@ -482,27 +470,19 @@ static void plus_update_ipl(config_t *cfg, int source, bool active) {
     // and deassert /IPL0 whenever /IPL1 is asserted.
 
     // The SCC on /IPL1 wins over the VIA on /IPL0, exactly as the quote
-    // above describes.  Previously spelled `irq > 1` / `irq == 1`, which is
-    // the same test only because these are the only two sources.
-    uint32_t new_ipl;
-    if (cfg->rt.irq & PLUS_IRQ_SCC)
-        new_ipl = 2;
-    else if (cfg->rt.irq & PLUS_IRQ_VIA)
-        new_ipl = 1;
-    else
-        new_ipl = 0;
-    cpu_set_ipl(cfg->cpu, new_ipl);
+    // above describes (plus_irq_routes).  Previously spelled `irq > 1` /
+    // `irq == 1`, which is the same test only because these are the only two
+    // sources.
+    int new_ipl = machine_irq_update(cfg, plus_irq_routes, source, active);
 
     LOG(1, "plus_update_ipl: source=%d active=%d irq:%d->%d ipl:%d->%d", source, active ? 1 : 0, old_irq, cfg->rt.irq,
         old_ipl, new_ipl);
-
-    cpu_reschedule(cfg->scheduler);
 }
 
 // Plus-specific VIA output callback: routes port changes to floppy, video, sound, RTC
 static void plus_via_output(void *context, uint8_t port, uint8_t output) {
     config_t *cfg = (config_t *)context;
-    plus_state_t *ps = plus_state(cfg);
+    plus_state_t *ps = plus_st(cfg);
 
     // via_init re-drives this callback while it restores a checkpoint, and
     // the VIA is now built before the sound chip (see plus_init), so the
@@ -569,11 +549,10 @@ static void plus_scc_irq(void *context, bool active) {
 
 // Trigger vertical blanking interval for the Plus.
 static void plus_trigger_vbl(config_t *cfg) {
-    plus_state_t *ps = plus_state(cfg);
+    plus_state_t *ps = plus_st(cfg);
 
     // Assert then deassert VIA CA1 to signal VBL to the CPU
-    via_input_c(cfg->via1, 0, 0, 0);
-    via_input_c(cfg->via1, 0, 0, 1);
+    via_pulse_c(cfg->via1, 0, 0); // VBL: CA1 low then high
 
     // Advance the sound DMA phase
     if (ps && ps->sound) {
@@ -638,14 +617,8 @@ static const machine_substrate_t plus_substrate = {
     .teardown = plus_teardown,
     .seed = mac_seed_rtc_pram,
     .trigger_vbl = plus_trigger_vbl,
-    .fd_insert = mac_fd_insert,
-    .fd_present = mac_fd_present,
-    .input_key = mac_input_key,
-    .input_mouse_move = mac_input_mouse_move,
-    .input_mouse_button = mac_input_mouse_button,
-    .media_attach = system_media_attach_std,
-    .media_present = system_media_present_std,
-    .media_eject = system_media_eject_std,
+    MAC_SUBSTRATE_HOST_IO,
+    MAC_SUBSTRATE_MEDIA_STD,
     .display = plus_display,
 };
 

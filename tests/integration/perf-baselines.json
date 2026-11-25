@@ -164,6 +164,10 @@
       "instr": 4224742625,
       "tolerance": 0.2
     },
+    "iici-aux201-boot/uname": {
+      "instr": 263404627,
+      "tolerance": 0.2
+    },
     "iici-aux3-8bpp/login": {
       "instr": 302331169,
       "tolerance": 0.2
@@ -528,6 +532,10 @@
       "instr": 389140998,
       "tolerance": 0.2
     },
+    "suite-iisi/iisi-checkpoint": {
+      "instr": 295423279,
+      "tolerance": 0.2
+    },
     "suite-iisi/iisi-chime": {
       "instr": 10095757,
       "tolerance": 0.2
@@ -573,27 +581,31 @@
       "tolerance": 0.2
     },
     "suite-lisa/lisa-checkpoint": {
-      "instr": 67000000,
+      "instr": 55108750,
+      "tolerance": 0.2
+    },
+    "suite-lisa/lisa-los31-idle": {
+      "instr": 47792619,
       "tolerance": 0.2
     },
     "suite-lisa/lisa-los31-lisaem": {
-      "instr": 107734163,
+      "instr": 109422441,
       "tolerance": 0.2
     },
     "suite-lisa/lisa-los31-profile": {
-      "instr": 40976910,
+      "instr": 37617396,
       "tolerance": 0.2
     },
     "suite-lisa/lisa-xenix-boot": {
-      "instr": 191400000,
+      "instr": 182653376,
       "tolerance": 0.2
     },
     "suite-lisa/lisa-xenix-hdinit": {
-      "instr": 367000000,
+      "instr": 321588077,
       "tolerance": 0.2
     },
     "suite-lisa/lisa-xenix-nofloppy": {
-      "instr": 116800000,
+      "instr": 99552053,
       "tolerance": 0.2
     },
     "suite-lisa/xl-macworks-boot": {

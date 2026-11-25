@@ -93,7 +93,7 @@ Keeping it simple means for users that the emulator runs in the browser with no 
 
 Disk images can be raw (`.dsk`, `.img`), UDIF (`.dmg`, read and written), QCOW2 (imported and staged, then converted on the fly), bare HFS volumes or driverless partitioned disks (such as many archive.org images), compressed (`.sit.hqx`), or packaged in `.zip` archives. They are decompressed transparently via the in-tree [peeler](src/peeler) library.
 
-Every subsystem is exposed through a self-describing object model, reachable from the built-in Terminal console (syntax highlighting, completion, signature hints, and a structural command browser) — breakpoints, watchpoints, logpoints, and MMU translation on every MMU kind.
+Every subsystem is exposed through a self-describing object model, reachable from the built-in Terminal console (syntax highlighting, completion, signature hints, and a structural command browser) and from Lua scripts — breakpoints, watchpoints, logpoints, and MMU translation on every MMU kind.
 
 For build, test, and contribution instructions, see [CONTRIBUTING.md](CONTRIBUTING.md). Architecture and design docs live in [docs/guide/ARCHITECTURE.md](docs/guide/ARCHITECTURE.md), and coding guidelines in [AGENTS.md](AGENTS.md).
 
@@ -101,7 +101,7 @@ For build, test, and contribution instructions, see [CONTRIBUTING.md](CONTRIBUTI
 
 - **Safari** - starts and runs (v0.9.0 fixed startup on static hosts and mouse grabbing), but known rendering and audio issues remain
 - **Firefox** - works partially; some compatibility problems remain
-- **Ethernet** - the Quadras' SONIC, the AV machines' MACE and the beige G3's BMAC controllers are modeled at the register level (BMAC down to its transmit/receive filters) but are not bridged to a network; networking is AppleTalk over LocalTalk (serial) only
+- **Ethernet** - the AV machines' built-in Ethernet (MACE) carries EtherTalk to the emulated AppleTalk network (choose "EtherTalk Built In" in the Network control panel); the Quadras' SONIC, the PCI Power Macs' MACE and the beige G3's BMAC are modeled at the register level but have no cable; nothing is bridged to a host network, and everywhere else networking is AppleTalk over LocalTalk (serial)
 - **Sound input** - modeled on the AV machines (Singer): the browser microphone reaches the guest's Sound control panel and PlainTalk speech recognition. The PDM and TNT machines' AWACS plays sound but its input is not modeled, and the Quadras' EASC runs as an ASC-compatible core
 
 ## A Note on AI
@@ -124,7 +124,6 @@ Sibling projects this one is built on:
 ## Acknowledgments
 
 - [raddad772](https://github.com/raddad772) for the 68K test suite ([single-step-tests](https://github.com/SingleStepTests/m68000))
-- [JSZip](https://stuk.github.io/jszip/) for ZIP file handling
 - [Emscripten](https://emscripten.org/) for the WebAssembly toolchain
 
 ## Trademarks

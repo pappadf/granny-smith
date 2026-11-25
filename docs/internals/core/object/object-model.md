@@ -40,15 +40,15 @@ the same errors. There is no shadow API.
 | [object.c](../../../../src/core/object/object.c) | Substrate implementation (tree topology, resolver, validation, invalidators) |
 | [value.h](../../../../src/core/object/value.h) | Tagged-union `value_t` used at every boundary |
 | [value.c](../../../../src/core/object/value.c) | Value lifetime, conversions, formatting helpers |
-| [parse.c](../../../../src/core/object/parse.c) | The literal parser (one integer grammar for literals, path indices and the expression lexer) and the keyword / reserved-word table |
-| [expr.h](../../../../src/core/object/expr.h) | `${...}` expression parser and evaluator |
+| [parse.c](../../../../src/core/object/parse.c) | The literal parser (one integer grammar for literals and path indices) and the keyword / reserved-word table |
+| [gs_lua.c](../../../../src/core/lua/gs_lua.c) | The Lua bridge: node proxies, value conversions, the `gs` library, `F"…"` templates ([lua.md](../lua/lua.md)) |
 | [alias.h](../../../../src/core/object/alias.h) | Two-tier `$name` alias table (built-in + user) |
 | [alias_class.c](../../../../src/core/object/alias_class.c) | The `shell.alias` class (`add`/`remove`/`list`) over that table |
 | [api.h](../../../../src/core/object/api.h) | Public C entry point (`object_eval` — single dispatch for reads, writes, calls, schema, completion, and shell-line input) |
 | [meta.h](../../../../src/core/object/meta.h) | The synthetic `meta` class (`<path>.meta.*` introspection + `meta.complete`) |
 | [usage.h](../../../../src/core/object/usage.h) | Usage text for any path (`help`, `shell.usage`) |
 | [lint.h](../../../../src/core/object/lint.h) | The member-doc lint behind `shell.lint_members` |
-| [shell_class.c](../../../../src/core/shell/shell_class.c) | The `Shell` class (`shell.run`, `shell.complete`, `shell.expand`, `shell.script_run`, `shell.interrupt`, `shell.prompt`/`running`/`vars`; aliases live on its `shell.alias` child: `add`/`remove`/`list`) |
+| [shell_class.c](../../../../src/core/shell/shell_class.c) | The `Shell` class (`shell.run`, `shell.eval`, `shell.complete`, `shell.expand`, `shell.script_run`, `shell.interrupt`, `shell.prompt`/`running`/`vars`; aliases live on its `shell.alias` child: `add`/`remove`/`list`) |
 | [root.c](../../../../src/core/object/root.c) | The `emu` root class plus install/uninstall lifecycle |
 
 ## Core concepts
@@ -63,6 +63,12 @@ flags (`VFLAG_HEX`, `VFLAG_VOLATILE`, `VFLAG_SENSITIVE`, `VFLAG_PATH`, …). Err
 in-band: a `value_t` of kind `VK_ERROR` carries a string message rather
 than relying on a separate return channel or out-pointer.
 
+An attribute is read one way, `object_attr_get`: its getter, then the
+member's `presentation_flags` merged onto the value.  `node_get` and the
+REPL's object and list tables all go through it, so a getter returns a
+plain value and never sets a flag its member declares, and the REPL prints
+a `VFLAG_SENSITIVE` value as `<sensitive>`.
+
 Ownership is single-owner: the receiver of a `value_t` owns it and
 must call `value_free` (which is safe on every kind, including the
 inline ones). Heap-owning kinds (`VK_STRING`, `VK_BYTES`, `VK_ERROR`,
@@ -76,9 +82,10 @@ owned values. Map-shaped method results (`catalog.profile`,
 directly; the gsEval bridge serialises it as a JSON object exactly once
 (the browser receives a native object, never a JSON string to re-parse).
 Methods build maps with the `val_map_new` / `val_map_put` /
-`val_map_finish` builder and read them with `value_map_get`. In `${…}`
-interpolation a map renders as compact canonical JSON, so
-`echo "${catalog.profile("se30")}"` emits machine-parseable text.
+`val_map_finish` builder and read them with `value_map_get`. In Lua a map
+is a table that keeps the tree's insertion order; a `${…}` template (and
+`gs.str`) renders it as compact canonical JSON, so
+`print(F"${catalog.profile('se30')}")` emits machine-parseable text.
 
 A method's UI metadata (`meta.method_info(name)`, and each method entry of
 `meta.members()`) carries four flags from `ui_flags`: `destructive`,
@@ -179,7 +186,7 @@ entries (and perhaps a verb or two) is built from the descriptor alone by
 `category["scsi"]`; keys are short identifiers, `[A-Za-z0-9_.-]{1,63}`
 (`object_valid_key`).
 
-Entries, and lookup-backed named children such as `drive[n].disk` and
+Entries, and lookup-backed named children such as `drive[n].image` and
 `device[n].image`, are handed out by callbacks and never attached, so they
 have no parent of their own. They get a **logical parent**
 (`object_set_logical_parent(obj, parent, name, index, key)`): a
@@ -202,8 +209,8 @@ with any attached subtree.
 
 ### The root
 
-The root's children, in their fixed order (`object_set_order`), fall in three
-domains:
+The root's children, in their fixed order (`object_set_order`, with the
+weights named in `src/core/object/object_order.h`), fall in three domains:
 
 | Order | Node | Domain | Holds |
 |---|---|---|---|
@@ -213,10 +220,10 @@ domains:
 | 21 | `pacing` | emulator | the host's pacing setting (`mode`, `speed`, `min_speed`, `max_speed`), there with or without a machine; advanced |
 | 22 | `predecode` | emulator | the predecoded executors' switch (`enabled`), tuning (`elide`, `pool_cap`, the thrash rule), counters and `hist` ([predecode.md](../cpu/predecode.md)); advanced |
 | 23 | `jit` | emulator | the PowerPC translation tier's switch (`enabled`), tuning, counters and `trace` ([ppc_jit.md](../cpu/ppc/ppc_jit.md)); `available` is 0 in native builds; advanced |
-| 30 | `files` | emulator | host files and disk images (`ls`, `cp`, `hd_create`, …, `download`), `files.images[n]` (the machine's configured images), `files.mounts[n]` (the image-VFS auto-mount cache, indexed by a never-reused mount serial; `find(path)`, `[n].unmount()`), `files.archive` |
+| 30 | `files` | emulator | host files and disk images (`ls`, `cp`, `create`, …, `download`), `files.images[n]` (the machine's configured images), `files.mounts[n]` (the image-VFS auto-mount cache, indexed by a never-reused mount serial; `find(path)`, `[n].unmount()`), `files.archive` |
 | 40 | `debug` | emulator | breakpoints, logpoints, watchpoints, `debug.find` (memory search), `debug.mac` |
 | 50 | `log` | emulator | `log.set(cat, level=, …)`, `log.levels`, `log.category["<cat>"]` with `level` / `stdout` / `file` / `ts` / `pc` |
-| 60 | `shell` | emulator | bindings, functions, `shell.alias` |
+| 60 | `shell` | emulator | `run`, `eval`, `expand`, `script_run`, `vars`, `keywords`, `shell.alias` |
 | 70 | `catalog` | emulator | what the emulator can build or fit: `models`, `profile(model)`, `nubus_cards`, `pci_cards`, `vroms`, `proms` |
 | 100 | `appletalk` | network | the simulated network |
 
@@ -260,7 +267,14 @@ other than none or the empty string), `member_is_readonly`,
 questions for meta, usage and lint.
 
 `machine` is the instance; `catalog` is the catalogue. `machine.nubus` and
-`machine.pci` are attached only on a machine with that bus. The root's own
+`machine.pci` are attached only on a machine with that bus. Both build their
+`slot` collection the same way (`peripherals/card_slots.c`): one
+`slot[N]` node for **every slot the machine declares** (a socket or a
+built-in slot), populated or not, carrying `number` and `empty`. An empty
+slot is its node with `empty` true and no `card` child; a populated one has
+`empty` false and its card under `card` (`machine.nubus.slot[N].card`,
+`machine.pci.slot[N].card`). PCI's slot nodes add the declaration (`label`,
+`firmware_name`, `bus`, `device`, `irq`). The root's own
 methods are `objects`, `attributes`, `methods`, `help`, `time`, `quit` and
 `echo`.
 
@@ -295,67 +309,65 @@ same language:
 | `path` | Read the attribute, format the result, return / print | `machine.cpu.pc` |
 | `path = value` | Write the attribute (setter) | `machine.cpu.d0 = 0x1234` |
 | `path arg arg …` | Call the method, shell form (whitespace-separated args) | `machine.floppy.drive[0].insert /tmp/fd0 false` |
-| `path(arg, arg, …)` | Call the method, expression form (used inside `${…}`) | `${machine.memory.peek.l(0x1000)}` |
+| `path(arg, arg, …)` | Call the method, Lua form (scripts, Lua lines, `${…}`) | `machine.memory.peek.l(0x1000)` |
 
-Shell form is what users type interactively. Expression form is what
-appears inside `${…}` interpolation in scripts and logpoint messages.
-Both compile to the same `node_call` underneath.
+Shell form is what a terminal command line uses (argument mode, see
+[lua.md](../lua/lua.md), "The terminal"). Lua form is what scripts, Lua
+terminal lines, breakpoint conditions and the `${…}` slots of templates
+and logpoint messages use. Both compile to the same `node_call` underneath.
 
-`${…}` (inside a double-quoted string) evaluates an expression and
-splices its formatted value. Inside expression mode, a bare path is a
-`node_get` (or, with a trailing call-form argument list, `node_call`);
-`$name` reads a binding; literals and operators work the way they do
-in C, **with one deliberate exception**: the bitwise operators `&`, `^` and
-`|` bind *tighter* than the comparisons, where C binds them looser. So
-`${machine.cpu.sr & 0x2000 == 0x2000}` means `(sr & 0x2000) == 0x2000` here
-and `sr & (0x2000 == 0x2000)` in C. C's order is a well-known trap and this
-is the friendlier reading; the full precedence table is `expr.c`'s grammar
-comment, the authority in code. Truthiness is per kind: numbers ≠ 0, non-empty
-strings/lists/bytes/maps, `none` never, and errors are not truth values —
-an error reaching a condition aborts. The one operator that consumes an
-error is `!`: it reads an error as false, so `!err` is true and
-`assert !machine.cpu.broken` passes when the attribute is missing or false.
-`&&`, `||` and `?:` parse the side they do not take and discard its value
-and any error in it — a method call there still runs.
+In Lua the root children are globals and a path is a proxy: indexing it
+down to an attribute is a `node_get`, assigning one a `node_set`, calling a
+method a `node_call` ([lua.md](../lua/lua.md), "The tree from Lua").
+`${…}` (in an `F"…"` template, a `"…"` command-line argument or a logpoint
+message) evaluates a Lua expression and splices its formatted value. Lua's
+bitwise operators `&`, `~` (xor) and `|` bind *tighter* than its
+comparisons, where C binds them looser. So
+`machine.cpu.sr & 0x2000 == 0x2000` means `(sr & 0x2000) == 0x2000` here
+and `sr & (0x2000 == 0x2000)` in C. Truthiness is Lua's (only `nil` and
+`false` are false), except in a breakpoint condition, where 0 and none are
+false too and an error counts as true. An error from a node operation is
+raised; `gs.try` / `pcall` catch it, so
+`not gs.truthy(function() return machine.cpu.broken end)` is true when the
+attribute is missing or false.
 
-Paths keep resolving *into* structured values (`VK_MAP` / `VK_LIST`):
-when a path prefix names a node whose value is a map or list, the
-remaining segments index into that value — dotted `map.key`, bracket
-`map["key"]` (any string expression), and numeric `list[N]`. The same
-segments work after a call form and through bindings:
+A value read from the tree is a Lua value (`VK_MAP` a table, `VK_LIST` a
+**1-based** sequence), so the segments after it index it the way Lua does
+— dotted `map.key`, bracket `map["key"]`, and numeric `list[N]` — after a
+call form and through locals alike:
 
-    machine.rom.identify("boot.rom").compatible[0]   # call → map → list → value
+    machine.rom.identify("boot.rom").compatible[1]   -- call → map → list → value
     catalog.profile("se30").capabilities.mmu.kind
-    let info = machine.rom.identify("boot.rom")
-    echo "${$info.checksum} ${$info["name"]}"
-    for k in catalog.profile("se30").capabilities { echo "$k" }   # keys
+    local info = machine.rom.identify("boot.rom")
+    print(info.checksum, info["name"])
+    for k in pairs(catalog.profile("se30").capabilities) do print(k) end   -- keys
 
-`for … in` over a map iterates its keys (fetch values with `map[$k]`);
-`len(map)` counts entries. Maps are read-only through this surface —
-there is no `map.key = …` write path.
+`pairs` over a map iterates its entries in the tree's order; `#list`
+counts a list's items. Maps are values: changing the table does not write
+the tree — there is no `map.key = …` write path.
 
-`$name` is the unified binding surface: scoped
-`let` bindings first, then the alias table, whose entries behave as
-**reference bindings** — they store path text and re-resolve on every
-access, so they survive `machine.boot`:
+`$name` reads an alias in a terminal line, a breakpoint condition or a
+template (a script names the path, or holds a proxy in a local). The alias
+table's entries behave as **reference bindings** — they store path text and
+re-resolve on every access, so they survive `machine.boot`:
 
 - **Built-in aliases** are registered by subsystems at `*_init` time.
   `cpu_init` sets up `$pc` → `machine.cpu.pc`, `$d0` → `machine.cpu.d0`, … . Re-
   registering with the same target is a no-op, so repeated machine
   boots are safe.
-- **User aliases** are added with the `alias NAME = PATH` statement
-  (or `shell.alias.add`). They cannot collide with built-ins or
+- **User aliases** are added with `shell.alias.add`
+  (`shell.alias.add NAME PATH` at the terminal). They cannot collide with built-ins or
   reserved words, and they don't persist across the process.
 
 ### Reserved words
 
-Statement keywords: `let`, `alias`, `if`, `elif`, `else`, `while`,
-`for`, `in`, `break`, `continue`, `return`, `def`, `assert`, `include`.
-Literals: `true`, `false`, `none`. Held: `do`. These may not be used as
-member, alias, or binding names (`object_validate_name`). `command` is a
-keyword too, but contextual: only `command NAME = PATH` is the statement,
-so a member may be named `command`. One table in `object.c` holds them all,
-with each word's syntax; `shell.keywords` and completion read it. `on`/`off`/`yes`/`no`
+The reserved words are Lua's (`local`, `function`, `if`, `then`,
+`elseif`, `else`, `end`, `while`, `do`, `for`, `in`, `repeat`, `until`,
+`break`, `goto`, `return`, `and`, `or`, `not`, `true`, `false`, `nil`).
+These may not be used as member, alias, or command names
+(`object_validate_name`), since a script could not spell them as `a.b`.
+One table in `parse.c` holds them all, with each word's syntax;
+`shell.keywords` and completion read it. `on`/`off`/`yes`/`no`
 are **not** reserved — they remain accepted as input coercions for
 bool-typed argument slots only.
 
@@ -371,7 +383,8 @@ bool-typed argument slots only.
   message plus a bool. `VK_BOOL` returns are reserved for methods whose
   *answer* is a boolean (`files.path_exists`).
 - **Absence is never `none`.** "Not found" is an empty collection;
-  failure is `VK_ERROR`; `none` is the script-side no-value.
+  failure is `VK_ERROR`; `none` is the no-value (`nil` in Lua,
+  `gs.none` inside a list).
 - **Named arguments replace spec strings.** `debug.logpoints.add
   addr=0x16A width=l mode=write level=5 message="…"` — no flag
   grammars inside strings.
@@ -545,15 +558,17 @@ still the norm, and it is what makes the assertion useful.
 The same tree is what users navigate interactively, what scripts
 configure, and what the JS frontend operates on:
 
-- **Interactive shell.** The terminal tokenises the line and dispatches
-  to `node_get` / `node_set` / `node_call` based on the form. Tab
+- **Interactive shell.** The terminal classifies the line — a command
+  line or a Lua chunk ([lua.md](../lua/lua.md), "The terminal") — and
+  dispatches to `node_get` / `node_set` / `node_call` based on the form. Tab
   completion walks the same tree; argument-position completion
   consults the resolved method's `arg_decl_t` table for enum values
   and other hints.
 - **Scripts (headless).** Integration tests and reproducible boot
-  scripts contain exactly the same path forms users type. `assert`,
-  `echo`, and `${…}` interpolation are root methods on `emu`.
-  Scripted machine setup (`machine.boot(model=..., rom=...)`,
+  scripts are Lua files over the same paths users type (root children
+  are globals). `echo` is a root method on `emu`; `assert` is Lua's own
+  and `F"…"` templates come from the `gs` library.
+  Scripted machine setup (`machine.boot{model = ..., rom = ...}`,
   `machine.floppy.drive[0].insert(...)`, `machine.scsi.attach_hd(...)`) is the same
   call sequence whether it runs from a script, from the user's
   terminal, or from the URL-media auto-boot path on the web.
@@ -565,20 +580,18 @@ configure, and what the JS frontend operates on:
   and the worker's `shell_poll()` drains every tick, and an event ring
   the answers come back on, each carrying its request's id.
   `Atomics.waitAsync` + `emscripten_atomic_notify` carry the wake-ups —
-  no polling. The worker-thread guard
-  in `worker_thread.h` enforces that `object_eval` only runs on the worker
-  pthread, never via direct `Module.ccall` from the main thread. JS
+  no polling. The thread-affinity guard
+  (`EMU_THREAD_CHECK`, [`job/job.md`](../job/job.md)) enforces that
+  `object_eval` only runs on the emulator pthread, never via direct `Module.ccall` from the main thread. JS
   callers see numbers, strings, lists, and `{error: "…"}` shapes —
   never raw exit codes. See [`web.md`](../../../guide/web.md) for the wire layout
   and protocol.
 - **Which thread runs a leaf.** Always the emulator thread. A script runs
-  on the job thread (`src/core/job/job.h`), but its `node_get` /
-  `node_set` / `node_call` marshal through the **seam**
-  (`job_on_emulator`) and execute in the emulator thread's drain, so a
-  leaf's author never sees another thread: guest state is reachable
-  without locks, and the seam is what makes the interpreter's scope,
-  alias and function tables the only shared ones (behind
-  `job_tables_lock`). A leaf whose cost is the size of a file — flagged
+  as a job (`src/core/job/job.h`): a Lua coroutine that the emulator
+  thread's drain resumes one step at a time ([job.md](../job/job.md)), so
+  its `node_get` / `node_set` / `node_call` are plain C calls on that
+  thread and a leaf's author never sees another thread: guest state is
+  reachable without locks. A leaf whose cost is the size of a file — flagged
   `io` (above) — hands its work to the I/O worker through `io_leaf.h` and
   answers later (`mailbox_result_defer` / `mailbox_result_complete`); the worker
   touches host files only. What a leaf prints goes through `out.h`
@@ -604,7 +617,7 @@ configure, and what the JS frontend operates on:
 
 There is no separate "shell command framework" or "JS API" layer. Each
 caller is a thin adapter that translates its native input (typed line,
-JSON-RPC-shaped message, expression AST) into a node operation.
+JSON-RPC-shaped message, Lua proxy access) into a node operation.
 
 ## Lifecycle
 
@@ -706,8 +719,8 @@ every other field falls back to the **model's** defaults, never to the
 previous machine. That holds across a model change too
 (`tests/integration/boot-config`). For this reason the integration runner
 passes the ROM explicitly: it starts headless with `rom=` and also exports
-the same path as `$ROM`, so a script re-boots with
-`machine.boot model=... rom="${$ROM}"`
+the same path as `--var ROM=…`, so a script re-boots with
+`machine.boot{model = ..., rom = vars.ROM}`
 (`scripts/run-integration-test.sh`). To get the machine you have again
 from scratch, boot the same document again with `machine.boot`, or restore
 a checkpoint with `checkpoint.load`; a bare `machine.boot()` is an error. A new boot does still see three kinds
@@ -786,7 +799,7 @@ old machine keeps running.
 | `monitor` | string | the model's default | Sugar for `displays.builtin.monitor`: the monitor on the **built-in** video port, a monitor-catalogue id the port takes (`catalog.profile(id).displays.builtin.monitors`; the family's own legacy ids are accepted too). `none` leaves the port unconnected, which connects the monitor to the first display card instead. It resolves to the port's sense code at construction. |
 | `pci_card` | string | the slot default | Card id for the machine's **first** PCI socket (sugar for its `slots=` entry). Rejected on a model with no PCI slots, and for an unknown id. |
 | `prom` | string | resolved from the offers | A PCI expansion-ROM file: the ROM of every slot whose card its content provides. The file must identify as a known Open Firmware expansion ROM (`prom_identify_card`). |
-| `pci_option` | string | none | `key=value[,key=value]` options for the `pci_card` socket (for example `vram=4m`; sugar for that slot's options). Each pair must be one the card's `accepts_option` hook accepts, or the boot is rejected. |
+| `pci_option` | string | none | `key=value[,key=value]` options for the `pci_card` socket (for example `vram=4m`; sugar for that slot's options). Each pair must be one the card advertises or its `accepts_option` hook accepts, or the boot is rejected. |
 
 The sugar and `slots=` resolve, once, into one entry per configured slot
 (`machine_slots_resolve`); below `machine_boot_apply` nothing knows the
@@ -844,7 +857,7 @@ machine with no drives; `"startup": null` is "no default startup device"
 -- one of the Apple drives `docs/internals/core/peripherals/scsi_cdrom.md`
 §1.1 lists; absent, it is the profile's (`hw_profile_t.cdrom_drive`).
 `startup` may also name a `partition`: the startup
-volume's partition number on that disk as attached (`files.partitions`),
+volume's partition number on that disk as attached (`files.identify`'s `volumes`),
 which a family whose firmware boots a partition seeds (the G3's Open
 Firmware `boot-device`, for an ATA disk); the others ignore it.  A `model` member must agree with `model=`.  Images
 are not configuration: they are attached after the boot to the device at a
@@ -982,8 +995,8 @@ written months ago.
 
 ## See also
 
-- [shell.md](../shell) — terminal-side dispatch, tab completion,
-  symbol resolution.
+- [lua.md](../lua/lua.md) — the Lua bridge, the terminal's command
+  lines and Lua lines, conditions and templates.
 - [ARCHITECTURE.md](../../../guide/ARCHITECTURE.md) — overall code organisation.
 - `src/core/object/object.h` — the substrate contract, with detailed
   docstrings on every public function.

@@ -18,8 +18,8 @@ struct config;
 
 // Free every config_t-owned device, in the one canonical order:
 //
-//   scsi -> via2 -> via1 -> atalk -> scc -> rtc -> scheduler ->
-//   cpu | ppc -> memory_map -> debugger
+//   floppy -> adb -> scsi -> scsi2 -> via2 -> via1 -> atalk -> scc -> rtc ->
+//   scheduler -> cpu | ppc -> memory_map -> debugger
 //
 // Any NULL handle is skipped, so a machine with one VIA or no SCSI passes
 // straight through those steps, and the 68k/PowerPC split falls out of which
@@ -30,14 +30,15 @@ struct config;
 // pointer it was built with, so it goes before scc_delete; and every device
 // that holds a VIA must already be gone by the time the VIAs are freed.
 //
-// Call it AFTER freeing whatever lives in the machine's private state, and
-// free that state afterwards.  Every family's teardown is therefore:
+// Call it AFTER freeing whatever lives in the machine's private state.  The
+// bracket around a family's teardown is system.c's (machine_teardown_bracket):
 //
-//   scheduler_stop -> the family's own devices -> this -> free(st)
+//   scheduler_stop -> substrate teardown (own devices -> this) -> free(st)
 //
-// Note that scheduler_stop() comes first, so no device callback can fire
-// while the chain runs; the only hazard ordering guards against is one
-// delete reading through a pointer into an already-freed object.
+// so a family teardown deletes only what it alone built.  scheduler_stop()
+// comes first, so no device callback can fire while the chain runs; the only
+// hazard ordering guards against is one delete reading through a pointer
+// into an already-freed object.
 void machine_teardown_config_devices(struct config *cfg);
 
 #endif // GS_MACHINES_RUNTIME_MACHINE_TEARDOWN_H

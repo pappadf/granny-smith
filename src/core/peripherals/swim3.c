@@ -27,6 +27,7 @@
 
 #include "swim3.h"
 
+#include "checkpoint.h"
 #include "floppy.h"
 #include "log.h"
 #include "scheduler.h"
@@ -444,4 +445,17 @@ void swim3_write(swim3_t *sw, unsigned reg, uint8_t value) {
         LOG(2, "write to reg %u = $%02X ignored", reg, value);
         break;
     }
+}
+
+// === Checkpointing ===========================================================
+
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(swim3_t, fd);
+
+void swim3_checkpoint(const swim3_t *sw, checkpoint_t *cp) {
+    checkpoint_save_prefix(cp, sw, swim3_t); // the prefix only
+}
+
+void swim3_restore(swim3_t *sw, checkpoint_t *cp) {
+    checkpoint_load_prefix(cp, sw, swim3_t); // the prefix only
 }

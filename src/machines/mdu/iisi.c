@@ -20,11 +20,10 @@
 // Everything else (MDU I/O map, RBV interrupt → IPL 2, soft power-off, SCSI via
 // RBV, Mode-24 framebuffer aliasing) matches the IIci.
 
-#include "mac030_glue.h"
+#include "m68k_board.h"
 #include "machine.h"
 #include "machine_checkpoint.h"
-#include "mdu.h" // mdu_substrate + mac030_mdu_board_t
-#include "mmu_checkpoint.h"
+#include "mdu.h" // mdu_substrate + mdu_board_t
 #include "slot_tables.h"
 #include "system_internal.h"
 
@@ -62,7 +61,7 @@ LOG_USE_CATEGORY_NAME("board");
 // ============================================================
 
 static void iisi_set_rom_overlay(config_t *cfg, bool overlay) {
-    mac030_glue_set_rom_overlay(cfg, &iisi_state(cfg)->rom_overlay, IISI_ROM_START, overlay);
+    m68k_board_overlay_set_line(&iisi_st(cfg)->overlay, overlay);
 }
 
 // ============================================================
@@ -78,7 +77,7 @@ static void iisi_set_rom_overlay(config_t *cfg, bool overlay) {
 // ============================================================
 
 static void iisi_memory_layout_init(config_t *cfg) {
-    iisi_state_t *st = iisi_state(cfg);
+    iisi_state_t *st = iisi_st(cfg);
 
     uint32_t ram_size = cfg->ram_size;
     uint32_t rom_size = cfg->machine->rom_size;
@@ -92,14 +91,14 @@ static void iisi_memory_layout_init(config_t *cfg) {
     // (the boot ROM sizes a bank by that wrap).  This static (MMU-off) page table
     // models the physical map the ROM probes before it builds its PMMU tree.
     uint32_t bank_a_pages = IISI_BANK_A_SIZE >> MEM_PAGE_SHIFT; // 1 MB / 4 KB = 256
-    mac030_map_mirrored(0, IISI_BANK_B_PHYS >> MEM_PAGE_SHIFT, ram_base, bank_a_pages, mac030_fill_page, true);
+    m68k_board_map_mirrored(0, IISI_BANK_B_PHYS >> MEM_PAGE_SHIFT, ram_base, bank_a_pages, page_fill_68k, true);
 
     uint8_t *bank_b = ram_base + IISI_BANK_A_SIZE;
     uint32_t bank_b_size = (ram_size > IISI_BANK_A_SIZE) ? (ram_size - IISI_BANK_A_SIZE) : 0;
     uint32_t bank_b_pages = bank_b_size >> MEM_PAGE_SHIFT;
     uint32_t bank_b_start_page = IISI_BANK_B_PHYS >> MEM_PAGE_SHIFT;
     uint32_t bank_b_window_pages = IISI_BANK_WINDOW >> MEM_PAGE_SHIFT;
-    mac030_map_mirrored(bank_b_start_page, bank_b_window_pages, bank_b, bank_b_pages, mac030_fill_page, true);
+    m68k_board_map_mirrored(bank_b_start_page, bank_b_window_pages, bank_b, bank_b_pages, page_fill_68k, true);
 
     uint32_t rom_pages = rom_size >> MEM_PAGE_SHIFT;
     uint32_t rom_start_page = IISI_ROM_START >> MEM_PAGE_SHIFT;
@@ -107,11 +106,11 @@ static void iisi_memory_layout_init(config_t *cfg) {
     if (rom_pages > 0) {
         for (uint32_t p = rom_start_page; p < rom_end_page && p < g_page_count; p++) {
             uint32_t offset_in_rom = (p - rom_start_page) % rom_pages;
-            mac030_fill_page(p, rom_data + (offset_in_rom << MEM_PAGE_SHIFT), false);
+            page_fill_68k(p, rom_data + (offset_in_rom << MEM_PAGE_SHIFT), false);
         }
     }
 
-    mac030_io_fill_interface(&st->io_interface);
+    board_io_fill_interface(&st->io_interface);
     memory_map_add(cfg->memory_map, IISI_IO_BASE, IISI_IO_SIZE, "I/O", &st->io_interface, &st->mdu_io);
 
     // No separate VRAM aperture to wire: the on-board frame buffer IS the bottom
@@ -119,57 +118,13 @@ static void iisi_memory_layout_init(config_t *cfg) {
     // (slot-$E base $FEE08000 / $00E08000 -> physical 0 -> Bank A), and the card
     // renders straight out of Bank A — both resolve via the normal RAM path.
 
-    st->rom_overlay = false;
-    iisi_set_rom_overlay(cfg, true);
+    m68k_board_overlay_init_line(&st->overlay, cfg, cfg->machine->name);
+    m68k_board_overlay_arm(&st->overlay);
 }
 
 // ============================================================
-// RBV / SCC / SCSI / Egret callbacks
+// VIA1 callbacks (the RBV / SCSI / sound wiring is shared: mdu_wire_rbv)
 // ============================================================
-
-// RBV combined interrupt → 68030 IPL 2.
-static void iisi_rbv_irq(void *context, bool active) {
-    mac030_glue_update_ipl((config_t *)context, IISI_IRQ_RBV, active);
-}
-
-// Soft power-off — from either RBV RvPowerOff or Egret PwrDown.  Stop the
-// scheduler so the headless run exits cleanly.
-static void iisi_power_off(void *context) {
-    config_t *cfg = (config_t *)context;
-    LOG(1, "IIsi soft power-off");
-    if (cfg->scheduler)
-        scheduler_stop(cfg->scheduler);
-}
-
-// RBV depth change (V8MonP bits 0-2) → reshape the built-in video display.
-// RBV video on/off (RvMonP bit 6) -> blank or unblank the raster.
-static void iisi_rbv_blank(void *context, bool video_off) {
-    config_t *cfg = (config_t *)context;
-    iisi_state_t *st = iisi_state(cfg);
-    builtin_rbv_video_set_blank(st->video_card, video_off);
-}
-
-static void iisi_rbv_mode(void *context, int depth_code) {
-    config_t *cfg = (config_t *)context;
-    iisi_state_t *st = iisi_state(cfg);
-    builtin_rbv_video_set_depth(st->video_card, depth_code);
-}
-
-// SCSI IRQ/DRQ → RBV flag bits (RvSCSIRQ / RvSCSIDRQ), as on the IIci.
-static void iisi_scsi_irq(void *context, bool irq, bool drq) {
-    config_t *cfg = (config_t *)context;
-    iisi_state_t *st = iisi_state(cfg);
-    if (!st->rbv)
-        return;
-    rbv_set_scsi_irq(st->rbv, irq);
-    rbv_set_scsi_drq(st->rbv, drq);
-}
-
-// ASC interrupt output → RBV sound flag (RvSndIRQ, RvIFR bit 4), as on the
-// IIci (the V8 mirrors the RBV's VsSndIRQ bit layout).
-static void iisi_asc_irq(void *context, bool active) {
-    rbv_set_snd_irq((rbv_t *)context, active);
-}
 
 // VIA1 outputs.  Port A: floppy head-select (PA5) + ROM overlay (PA4 — an
 // input on the IIsi, so it reads 0 and the first port-A write disables the
@@ -177,11 +132,11 @@ static void iisi_asc_irq(void *context, bool active) {
 // (PB3 xcvrSes / PB4 viaFull / PB5 sysSes), routed wholesale to the Egret chip.
 static void iisi_via1_output(void *context, uint8_t port, uint8_t output) {
     config_t *cfg = (config_t *)context;
-    iisi_state_t *st = iisi_state(cfg);
+    iisi_state_t *st = iisi_st(cfg);
 
     if (port == 0) {
-        if (st->floppy)
-            floppy_set_sel_signal(st->floppy, (output & 0x20) != 0);
+        if (cfg->floppy)
+            floppy_set_sel_signal(cfg->floppy, (output & 0x20) != 0);
         // ROM overlay.  Unlike the IIci (reset PC in high ROM) the IIsi reset
         // vector is $0000002A: the ROM runs its early POST from the $0 overlay
         // and PA4 here is a machine-ID *input* (not the SE/30's overlay output).
@@ -191,7 +146,7 @@ static void iisi_via1_output(void *context, uint8_t port, uint8_t output) {
         // model the MDU's "first high-ROM access turns the overlay off" by
         // disabling it on the first VIA port-A write issued from high ROM (the
         // ROM's INITVIAS, which runs only after the relocation jump).
-        if (st->rom_overlay && cpu_get_pc(cfg->cpu) >= IISI_ROM_START)
+        if (st->overlay.armed && cpu_get_pc(cfg->cpu) >= IISI_ROM_START)
             iisi_set_rom_overlay(cfg, false);
         return;
     }
@@ -200,7 +155,7 @@ static void iisi_via1_output(void *context, uint8_t port, uint8_t output) {
 
 // VIA1 shift-out: bytes the host shifts to Egret (command packets).
 static void iisi_via1_shift_out(void *context, uint8_t byte) {
-    egret_via1_shift_input(iisi_state((config_t *)context)->egret, byte);
+    egret_via1_shift_input(iisi_st((config_t *)context)->egret, byte);
 }
 
 // ============================================================
@@ -221,14 +176,14 @@ static const nubus_slot_decl_t iisi_slots[] = {
 // The IIsi board descriptor: MDU+RBV hardware data, consumed
 // at init by the shared helpers.  Shares the MDU window table + 18-bit mirror
 // with the IIci; ROM repeating through $4xxxxxxx (ROMBase $40800000).  (The IIsi's two-bank RAM layout is set up
-// in iisi_init after mac030_build_mmu — it isn't board-descriptor data.)
-static const mac030_board_desc_t iisi_board_desc = {
+// in iisi_init after m68k_board_build_mmu — it isn't board-descriptor data.)
+static const m68k_board_desc_t iisi_board_desc = {
     .chipset = "MDU+RBV",
     .rom_base = IISI_ROM_START,
     .rom_end = IISI_ROM_END,
     .io_ranges = mdu_io_ranges_tbl,
     .io_mirror_mask = 0x0003FFFFUL,
-    .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
+    .io_unmapped_read = 0xFF, // undecoded island reads float high (see m68k_board.h)
     // No addressable card in slot $E (built-in video is main DRAM mapped by
     // the OS), so the $FExxxxxx slot aperture legitimately bus-errors.
     .bus_err_lo = NUBUS_BERR_LO,
@@ -239,11 +194,11 @@ static const mac030_board_desc_t iisi_board_desc = {
 // Init / Teardown
 // ============================================================
 
-// IIsi device construction (mac030_mdu_board_t.build_devices): everything after
-// the shared core/RTC/SCC/VIA1 prefix and before mac030_glue_finish.  No
+// IIsi device construction (mdu_board_t.build_devices): everything after
+// the shared core/RTC/SCC/VIA1 prefix and before m68k_board_finish.  No
 // rtc_set_via — the IIsi drives the RTC through Egret, not the VIA1 transceiver.
 static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
-    iisi_state_t *st = iisi_state(cfg);
+    iisi_state_t *st = iisi_st(cfg);
 
     // Machine-ID readback on VIA1 port A: PA6/PA4/PA2/PA1 = 0/1/1/1 for the
     // IIsi ("Erickson") — mask $56, value $16 per InfoMacIIsi.
@@ -258,9 +213,8 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     // ADB is driven by Egret via adb_iop_transact() (like the IIfx IOP path),
     // not by the VIA1 shift register — pass NULL for the VIA argument.
     machine_part_begin(cfg, checkpoint, "adb");
-    st->adb = adb_init(NULL, cfg->scheduler, checkpoint);
-    cfg->adb = st->adb;
-    machine_part(cfg, checkpoint, "adb", part_save_adb, st->adb);
+    cfg->adb = adb_init(NULL, cfg->scheduler, checkpoint);
+    machine_part(cfg, checkpoint, "adb", part_save_adb, cfg->adb);
 
     machine_part_images(cfg, checkpoint);
 
@@ -268,28 +222,27 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->scsi = machine_scsi_bus_init(cfg, checkpoint, "scsi");
     scsi_5380_attach(cfg->scsi, checkpoint); // IIsi: NCR 5380
     machine_part(cfg, checkpoint, "scsi", part_save_scsi, cfg->scsi);
-    scsi_set_irq_callback(cfg->scsi, iisi_scsi_irq, cfg);
+    scsi_set_irq_callback(cfg->scsi, mdu_scsi_irq, cfg); // through the RBV, as on the IIci
 
     machine_part_begin(cfg, checkpoint, "asc");
     st->asc = asc_init(NULL, cfg->scheduler, checkpoint);
     machine_part(cfg, checkpoint, "asc", part_save_asc, st->asc);
     machine_part_begin(cfg, checkpoint, "floppy");
     asc_set_mix(st->asc, ASC_MIX_CH_A); // internal speaker takes the left channel
-    st->floppy =
+    cfg->floppy =
         floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), checkpoint, config_images(cfg));
-    cfg->floppy = st->floppy;
-    machine_part(cfg, checkpoint, "floppy", part_save_floppy, st->floppy);
+    machine_part(cfg, checkpoint, "floppy", part_save_floppy, cfg->floppy);
 
     // Egret companion: owns ADB / RTC / PRAM / 1-sec tick / soft power-off via
     // the VIA1 shift register.  Created after via1/rtc/adb exist.
     machine_part_begin(cfg, checkpoint, "egret");
-    st->egret = egret_init(cfg->via1, cfg->rtc, st->adb, cfg->scheduler, checkpoint);
+    st->egret = egret_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, checkpoint);
     if (!st->egret) {
         LOG(0, "Error: out of memory constructing the Egret");
         return -1;
     }
     machine_part(cfg, checkpoint, "egret", part_save_egret, st->egret);
-    egret_set_power_off_callback(st->egret, iisi_power_off, cfg);
+    egret_set_power_off_callback(st->egret, mdu_power_off, cfg);
 
     // RBV chip in the V8/VISA variant, the built-in port's monitor strapped
     // on its sense lines (7, nothing connected, turns built-in video off).
@@ -300,19 +253,15 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
         return -1;
     }
     machine_part(cfg, checkpoint, "rbv", part_save_rbv, st->rbv);
-    rbv_set_irq_callback(st->rbv, iisi_rbv_irq, cfg);
-    rbv_set_power_off_callback(st->rbv, iisi_power_off, cfg);
-    rbv_set_mode_callback(st->rbv, iisi_rbv_mode, cfg);
-    rbv_set_blank_callback(st->rbv, iisi_rbv_blank, cfg);
-    asc_set_irq_handler(st->asc, iisi_asc_irq, st->rbv); // sound IRQ → RvIFR bit 4
+    mdu_wire_rbv(cfg);
 
     uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
     uint32_t ram_size = cfg->ram_size;
-    st->mmu = mac030_build_mmu(cfg, iisi_board_desc.rom_base, iisi_board_desc.rom_end);
+    st->mmu = m68k_board_build_mmu(cfg, iisi_board_desc.rom_base, iisi_board_desc.rom_end);
     if (!st->mmu)
-        return -1; // mac030_build_mmu reported the reason
+        return -1; // m68k_board_build_mmu reported the reason
     // TT1 identity-maps NuBus space $F0-$FF for supervisor FCs (same as IIci).
-    st->mmu->tt1 = st->mmu->tt1_board = MAC030_TT1_NUBUS_SUPER; // from power-on
+    st->mmu->tt1 = st->mmu->tt1_board = M68K_BOARD_TT1_NUBUS_SUPER; // from power-on
 
     // Two physical RAM banks (Developer Note §3.2/§3.3): Bank A is the soldered
     // 1 MB at physical 0 (its bottom is the video frame buffer); Bank B is the
@@ -329,7 +278,7 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     builtin_rbv_video_set_rbv(st->video_card, st->rbv);
 
     // Bind device handles + the board's I/O window table for the shared engine.
-    mdu_io_bind(&st->mdu_io, cfg, &iisi_board_desc, st->asc, st->floppy, st->rbv, st->video_card);
+    mdu_io_bind(&st->mdu_io, cfg, &iisi_board_desc, st->asc, cfg->floppy, st->rbv, st->video_card);
 
     // On-board video reads its frame buffer from the BOTTOM of Bank A — physical
     // 0 (Developer Note §8.2; VideoInfoMacIIsi screen physical base = 0), and
@@ -341,17 +290,9 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
 
     iisi_memory_layout_init(cfg);
 
-    machine_part_begin(cfg, checkpoint, "mmu");
-    if (checkpoint) {
-        mmu_checkpoint_restore(st->mmu, checkpoint);
-        mmu_invalidate_tlb(st->mmu);
-        // Set both, always together: the fault hook runs on the map's PMMU and
-        // the 68030 bus-error path reads cpu->mmu (asserted equal there).
-        memory_map_set_pmmu(cfg->memory_map, st->mmu);
-        cpu_attach_mmu(cfg->cpu, st->mmu);
-        via_redrive_outputs(cfg->via1);
-    }
-    machine_part(cfg, checkpoint, "mmu", part_save_mmu, st->mmu);
+    // VIA1 is re-driven before the PMMU restore, as on the IIci: the frame
+    // buffer is the bottom of Bank A, past which the guest's tables start
+    machine_part_pmmu(cfg, checkpoint, st->mmu, cfg->via1, NULL);
     return 0;
 }
 
@@ -368,7 +309,7 @@ static const uint32_t iisi_ram_options_kb[] = {1024, 2048, 3072, 5120, 9216, 174
 
 // IIsi board: the shared mdu_substrate reads its data descriptor + VIA1 hooks
 // + the device-construction body (Egret + 2-bank RAM live inside build_devices).
-static const mac030_mdu_board_t iisi_board = {
+static const mdu_board_t iisi_board = {
     .desc = &iisi_board_desc,
     .via1_output = iisi_via1_output,
     .via1_shift_out = iisi_via1_shift_out,

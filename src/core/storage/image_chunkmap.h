@@ -21,6 +21,7 @@
 #ifndef GS_IMAGE_CHUNKMAP_H
 #define GS_IMAGE_CHUNKMAP_H
 
+#include "image_udif.h"
 #include "source.h"
 
 // The decoded image of an NDIF file: `data` is its data fork, `rsrc` its
@@ -48,9 +49,20 @@ source_t *udif_source_open_bounded(source_t *data, size_t max_chunk, int *err);
 size_t udif_inplace_max_chunk(void);
 void udif_set_inplace_max_chunk(size_t bytes);
 
+// Read a UDIF file's trailer, property list and block map: the one load
+// sequence under udif_source_open, udif_verify and udif_info.  Returns 0 with
+// *tr and *map set (free with udif_map_free) and, when `xml` is not NULL, the
+// property list in *xml (NUL-terminated, *xml_len bytes before the NUL; the
+// caller frees it).  On failure a negative errno, nothing to free, and *why
+// (if not NULL) a sentence naming the step that failed -- left NULL when
+// `data` simply has no UDIF trailer (UDIF_NO_TRAILER says that).  A read
+// failure is -EIO, an allocation failure -ENOMEM.
+#define UDIF_NO_TRAILER "not a UDIF image (no usable 'koly' trailer)"
+int udif_load(source_t *data, udif_trailer_t *tr, char **xml, size_t *xml_len, udif_map_t **map, const char **why);
+
 // True when a UDIF property list carries the gs-profile key: an image this
 // emulator wrote (udif_writer.h).
-bool udif_xml_is_gs_profile(const uint8_t *xml, size_t len);
+bool udif_xml_is_gs_profile(const char *xml, size_t len);
 
 // True when the last 512 bytes (`tail`, `len` of them) are a UDIF trailer.
 bool udif_source_detect(const uint8_t *tail, size_t len);

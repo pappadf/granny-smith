@@ -8,6 +8,7 @@
 // layout matches real Disk Copy 6.3.3 images and Aaru's NDIF Structs.cs.
 
 #include "codec.h"
+#include "common.h"
 #include "image_chunkmap.h"
 #include "image_ndif.h"
 #include "resource_fork.h"
@@ -18,17 +19,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-static void w_u16(uint8_t *p, uint16_t v) {
-    p[0] = (uint8_t)(v >> 8);
-    p[1] = (uint8_t)v;
-}
-static void w_u32(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v >> 24);
-    p[1] = (uint8_t)(v >> 16);
-    p[2] = (uint8_t)(v >> 8);
-    p[3] = (uint8_t)v;
-}
 
 // ---- ADC decompressor ------------------------------------------------------
 
@@ -130,23 +120,23 @@ static uint8_t *build_bcem(uint32_t sectors, uint32_t crc, const char *name, con
                            const uint32_t *offs, const uint32_t *lens, uint32_t n, size_t *out_len) {
     size_t len = 128 + (size_t)n * 12;
     uint8_t *b = calloc(1, len);
-    w_u16(b + 0x00, 11); // version
-    w_u16(b + 0x02, 0); // driver (HFS)
+    WR_BE16(b + 0x00, 11); // version
+    WR_BE16(b + 0x02, 0); // driver (HFS)
     size_t nl = strlen(name);
     if (nl > 63)
         nl = 63;
     b[0x04] = (uint8_t)nl;
     memcpy(b + 0x05, name, nl);
-    w_u32(b + 0x44, sectors);
-    w_u32(b + 0x48, 128); // maxSectorsPerChunk
-    w_u32(b + 0x4C, 0); // dataOffset
-    w_u32(b + 0x50, crc);
-    w_u32(b + 0x7C, n); // chunk count
+    WR_BE32(b + 0x44, sectors);
+    WR_BE32(b + 0x48, 128); // maxSectorsPerChunk
+    WR_BE32(b + 0x4C, 0); // dataOffset
+    WR_BE32(b + 0x50, crc);
+    WR_BE32(b + 0x7C, n); // chunk count
     for (uint32_t i = 0; i < n; i++) {
         uint8_t *e = b + 128 + (size_t)i * 12;
-        w_u32(e + 0, words[i]);
-        w_u32(e + 4, offs[i]);
-        w_u32(e + 8, lens[i]);
+        WR_BE32(e + 0, words[i]);
+        WR_BE32(e + 4, offs[i]);
+        WR_BE32(e + 8, lens[i]);
     }
     *out_len = len;
     return b;
@@ -160,30 +150,30 @@ static uint8_t *build_bcem_fork(const uint8_t *bcem, size_t bcem_len, size_t *ou
     uint8_t *buf = calloc(1, fork_len);
     uint32_t data_off = 16;
     uint32_t map_off = (uint32_t)(16 + data_area);
-    w_u32(buf + 0, data_off);
-    w_u32(buf + 4, map_off);
-    w_u32(buf + 8, (uint32_t)data_area);
-    w_u32(buf + 12, (uint32_t)map_area);
+    WR_BE32(buf + 0, data_off);
+    WR_BE32(buf + 4, map_off);
+    WR_BE32(buf + 8, (uint32_t)data_area);
+    WR_BE32(buf + 12, (uint32_t)map_area);
     // Data record: 4-byte length prefix + body.
-    w_u32(buf + data_off, (uint32_t)bcem_len);
+    WR_BE32(buf + data_off, (uint32_t)bcem_len);
     memcpy(buf + data_off + 4, bcem, bcem_len);
     // Map area.
     uint8_t *map = buf + map_off;
     uint16_t tlo = 28; // type-list offset
     uint16_t ref_start = (uint16_t)(tlo + 2 + 8);
     uint16_t nlo = (uint16_t)(ref_start + 12);
-    w_u16(map + 24, tlo);
-    w_u16(map + 26, nlo);
-    w_u16(map + tlo, 0); // num types - 1 = 0
+    WR_BE16(map + 24, tlo);
+    WR_BE16(map + 26, nlo);
+    WR_BE16(map + tlo, 0); // num types - 1 = 0
     uint8_t *te = map + tlo + 2;
     te[0] = 'b';
     te[1] = 'c';
     te[2] = 'e';
     te[3] = 'm';
-    w_u16(te + 4, 0); // count - 1 = 0
-    w_u16(te + 6, (uint16_t)(ref_start - tlo));
+    WR_BE16(te + 4, 0); // count - 1 = 0
+    WR_BE16(te + 6, (uint16_t)(ref_start - tlo));
     uint8_t *re = map + ref_start;
-    w_u16(re, 128); // resource id
+    WR_BE16(re, 128); // resource id
     re[2] = 0xFF; // name offset -1 high byte
     re[3] = 0xFF;
     re[4] = 0; // attrs

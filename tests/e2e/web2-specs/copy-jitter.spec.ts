@@ -12,8 +12,8 @@ import { test, expect } from "../helpers/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { gotoWeb2, stageOpfsFile } from "../helpers/web2-fs";
+import { DATA } from "../helpers/paths";
 
-const DATA = path.resolve(__dirname, "../../data");
 const ROM = path.join(DATA, "roms", "iix-iicx-se30-97221136.rom");
 
 async function typeLine(
@@ -49,12 +49,11 @@ test("request round trips while a 192 MB copy runs", async ({ page }) => {
   await page.waitForTimeout(2_000);
   // The source: a sparse blank image is fast to make; the copy reads and
   // writes every byte.
-  await typeLine(page, 'files.hd_create("/opfs/images/hd/src.img", "192mb")');
+  await typeLine(page, 'files.create("/opfs/images/hd/src.img", "hd", "192mb")');
+  // files.create answers true once the file is written.
   await expect(page.locator(".console-output")).toContainText(
-    "hd create: created",
-    {
-      timeout: 60_000,
-    },
+    /files\.create\("\/opfs\/images\/hd\/src\.img", "hd", "192mb"\)\s*true/,
+    { timeout: 60_000 },
   );
   await page.waitForTimeout(500);
 

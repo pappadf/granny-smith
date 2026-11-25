@@ -12,7 +12,7 @@
 # This exercises the login window's Options menu, its modal
 # "Change Session Type" dialog (text entry + list selection + the enabled
 # session buttons), and the X11 startup path — none of which the plain
-# iifx-aux3-boot login pin touches.  See test.script.
+# iifx-aux3-boot login pin touches.  See test.lua.
 
 TEST_NAME := IIfx A/UX 3.0.1 X11 Session
 TEST_DESC := Boot IIfx from the A/UX 3.0.1 HD image, choose an X11 session type at the login window, and log in as root to the X11 desktop.

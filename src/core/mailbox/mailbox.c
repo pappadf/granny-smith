@@ -6,7 +6,10 @@
 #include "mailbox.h"
 
 #include "common.h"
+#include "json_escape.h"
 #include "log.h"
+#include "platform_hooks.h"
+#include "spsc_index.h"
 #include "io/io_worker.h"
 #include "job/job.h"
 
@@ -15,10 +18,6 @@
 #include <string.h>
 
 LOG_USE_CATEGORY_NAME("mailbox");
-
-__attribute__((weak)) void mailbox_notify(volatile uint32_t *word) {
-    (void)word;
-}
 
 // The I/O worker's completions wake the emulator thread the way a request
 // does: on REQ_HEAD, where the idle wait parks.
@@ -29,7 +28,7 @@ static mailbox_t *g_serving_mailbox;
 static mailbox_t *g_mailbox_for_completion;
 static void wake_on_req_head(void) {
     if (g_wake_word)
-        mailbox_notify(g_wake_word);
+        platform_wake(g_wake_word);
 }
 
 // A quarter of the event ring (mailbox_set_record_max); the default holds
@@ -170,7 +169,7 @@ void mailbox_transfer_release(uint32_t handle) {
 
 void mailbox_set_ready(mailbox_t *m) {
     mbx_store(m->ctrl, GS_MBX_C_READY, 1u);
-    mailbox_notify(&m->ctrl[GS_MBX_C_READY]);
+    platform_wake(&m->ctrl[GS_MBX_C_READY]);
 }
 
 void mailbox_heartbeat(mailbox_t *m) {
@@ -244,9 +243,8 @@ static void answer_bool(mailbox_t *m, bool b) {
     m->out_len = (uint32_t)snprintf(m->out, GS_MBX_RESULT_MAX, b ? "true" : "false");
 }
 
-// REQ_SCRIPT: queued for the job thread (its result comes from
-// job_layer_service when the job ends), or run inline when there is no
-// job thread.  Returns whether an answer was built now.
+// REQ_SCRIPT: queued as a job (its result comes from job_layer_service when
+// the job ends).  Returns whether an answer was built now (an error).
 static bool serve_script(mailbox_t *m, const uint8_t *p, uint32_t payload_len) {
     m->out_id = payload_len >= 4 ? RD_LE32(p + 4 * GS_MBX_SCRIPT_ID) : 0;
     m->out_ok = 0;
@@ -267,24 +265,7 @@ static bool serve_script(mailbox_t *m, const uint8_t *p, uint32_t payload_len) {
     stat_add(m, GS_MBX_C_STAT_REQUESTS, 1);
     if (job_submit_script(client, m->out_id, src, src_len))
         return false;
-    // Inline: the script runs here, now, as this client.
-    char *copy = (char *)malloc(src_len + 1);
-    if (!copy) {
-        m->out_len = (uint32_t)snprintf(m->out, GS_MBX_RESULT_MAX, "{\"error\":\"out of memory\"}");
-        return true;
-    }
-    memcpy(copy, src, src_len);
-    copy[src_len] = '\0';
-    m->client = client;
-    int rc = job_glue_run_source(copy, true);
-    m->client = 0;
-    free(copy);
-    if (rc == 0) {
-        m->out_ok = m->eval("shell.prompt", NULL, m->out, GS_MBX_RESULT_OUT) == 0;
-        m->out_len = (uint32_t)strlen(m->out);
-    } else {
-        m->out_len = (uint32_t)snprintf(m->out, GS_MBX_RESULT_MAX, "{\"error\":\"command failed\"}");
-    }
+    m->out_len = (uint32_t)snprintf(m->out, GS_MBX_RESULT_MAX, "{\"error\":\"out of memory\"}");
     return true;
 }
 
@@ -353,7 +334,7 @@ uint32_t mailbox_result_defer(void) {
         m->deferred = true;
         return token;
     }
-    // Not a request: perhaps a job's call through the seam.
+    // Not a request: perhaps a tree call of a job's task (job.h).
     return job_call_defer();
 }
 
@@ -395,7 +376,7 @@ void mailbox_result_complete(uint32_t token, bool ok, const char *json) {
             return;
         }
         mbx_publish(&m->evt);
-        mailbox_notify(&m->ctrl[GS_MBX_C_EVT_HEAD]);
+        platform_wake(&m->ctrl[GS_MBX_C_EVT_HEAD]);
         return;
     }
 }
@@ -453,15 +434,14 @@ static bool cancel_request(uint32_t client, uint32_t target) {
 void mailbox_result_complete_error(uint32_t token, const char *message) {
     char buf[512];
     size_t o = (size_t)snprintf(buf, sizeof buf, "{\"error\":\"");
-    for (const char *c = message ? message : "failed"; *c && o + 8 < sizeof buf; c++) {
-        if (*c == '"' || *c == '\\') {
-            buf[o++] = '\\';
+    // A long message is cut, never the document: room is kept for an
+    // escape and the closing "}
+    for (const char *c = message ? message : "failed"; *c && o + JSON_ESCAPE_MAX + 3 < sizeof buf; c++) {
+        size_t k = json_escape_char((unsigned char)*c, buf + o);
+        if (k)
+            o += k;
+        else
             buf[o++] = *c;
-        } else if ((unsigned char)*c < 0x20) {
-            buf[o++] = ' ';
-        } else {
-            buf[o++] = *c;
-        }
     }
     snprintf(buf + o, sizeof buf - o, "\"}");
     mailbox_result_complete(token, false, buf);
@@ -480,7 +460,7 @@ bool mailbox_emit(mailbox_t *m, uint32_t kind, const char *json) {
     // logging at full speed) must leave room for state events and answers
     if (kind == GS_MBX_EVT_LOG) {
         uint32_t tail = mbx_load(m->evt.ctrl, m->evt.tail_word);
-        if (m->evt.size - (m->evt.wr - tail) < m->evt.size / 2u + MBX_PAD8(len)) {
+        if (spsc_room(m->evt.size, m->evt.wr, tail) < m->evt.size / 2u + MBX_PAD8(len)) {
             stat_add(m, GS_MBX_C_STAT_DROPPED, 1);
             return false;
         }
@@ -495,7 +475,7 @@ bool mailbox_emit(mailbox_t *m, uint32_t kind, const char *json) {
     memcpy(p + 4 * GS_MBX_EVENT_WORDS, json, n);
     stat_add(m, GS_MBX_C_STAT_EVENTS, 1);
     mbx_publish(&m->evt);
-    mailbox_notify(&m->ctrl[GS_MBX_C_EVT_HEAD]);
+    platform_wake(&m->ctrl[GS_MBX_C_EVT_HEAD]);
     return true;
 }
 
@@ -535,7 +515,7 @@ int mailbox_drain(mailbox_t *m, double budget_us, double (*now_us)(void)) {
             LOG(0, "mailbox: request ring corrupt at %u; mailbox lost", (unsigned)m->req.rd);
             mbx_store(m->ctrl, GS_MBX_C_STATUS, GS_MBX_STATUS_LOST);
             mbx_abandon(&m->req, head);
-            mailbox_notify(&m->ctrl[GS_MBX_C_STATUS]);
+            platform_wake(&m->ctrl[GS_MBX_C_STATUS]);
             break;
         }
         if (rec.kind == MBX_R_PAD) {
@@ -585,13 +565,13 @@ int mailbox_drain(mailbox_t *m, double budget_us, double (*now_us)(void)) {
         if (now_us && budget_us > 0.0 && now_us() - t0 >= budget_us)
             break;
     }
-    // The jobs: a call posted by the job thread, a job's result; and the
-    // I/O worker's completions.
+    // The jobs: a step of the active one, the results of finished ones; and
+    // the I/O worker's completions.
     written += job_layer_service(m);
     io_worker_service();
     if (written || mbx_unpublished(&m->evt)) {
         mbx_publish(&m->evt);
-        mailbox_notify(&m->ctrl[GS_MBX_C_EVT_HEAD]);
+        platform_wake(&m->ctrl[GS_MBX_C_EVT_HEAD]);
         if (now_us) {
             double us = now_us() - t0;
             if (us > (double)m->ctrl[GS_MBX_C_STAT_DRAIN_US])

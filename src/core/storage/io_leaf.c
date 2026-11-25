@@ -8,6 +8,7 @@
 #include "image.h"
 #include "value_format.h"
 #include "io/io_worker.h"
+#include "job/job.h"
 #include "mailbox/mailbox.h"
 
 #include <stdio.h>
@@ -35,21 +36,34 @@ bool io_leaf_destination_attached(const char *dst) {
     return dst && image_path_is_open_writable(dst);
 }
 
+// The work, on either thread.  Its reason is always in j->err; the worker's
+// own buffer (`err`) gets a copy.  io_leaf_dispatch's inline runs pass no
+// buffer: copying j->err onto itself (an overlapping snprintf) emptied it,
+// and the reason was lost to "failed".
 static int io_leaf_run(void *ud, char *err, size_t cap) {
     io_leaf_t *j = (io_leaf_t *)ud;
     int rc = j->work(j);
-    if (rc != 0 && err)
-        snprintf(err, cap, "%s", j->err[0] ? j->err : "failed");
+    if (rc != 0 && !j->err[0])
+        snprintf(j->err, sizeof j->err, "failed"); // a work that gave no reason
+    if (rc != 0 && err && err != j->err)
+        snprintf(err, cap, "%s", j->err);
     return rc;
 }
 
 // The success value as the JSON the answer carries: a string, a number, a
 // boolean, a map or a list; anything else is `true`.  A map or a list is
-// formatted as object_eval formats one, and is held to the same result limit.
+// formatted as object_eval formats one; it and a string are held to the same
+// result limit.
 static void complete_with(uint32_t token, value_t *v) {
-    if (v->kind == VK_MAP || v->kind == VK_LIST) {
+    // A script's call through the job seam takes the value itself.
+    if (job_call_complete_value(token, v))
+        return;
+    if (v->kind == VK_MAP || v->kind == VK_LIST || (v->kind == VK_STRING && v->s)) {
         vbuf_t b = {0};
-        value_format(v, VFMT_JSON_TAGGED, &b);
+        if (v->kind == VK_STRING)
+            vbuf_append_json_string(&b, v->s);
+        else
+            value_format(v, VFMT_JSON_TAGGED, &b);
         if (b.p && b.len < GS_MBX_RESULT_MAX) // the result's limit (mailbox.h), its NUL aside
             mailbox_result_complete(token, true, b.p);
         else {
@@ -61,16 +75,8 @@ static void complete_with(uint32_t token, value_t *v) {
         vbuf_free(&b);
         return;
     }
-    char json[1100];
-    if (v->kind == VK_STRING && v->s) {
-        size_t o = (size_t)snprintf(json, sizeof json, "\"");
-        for (const char *c = v->s; *c && o + 4 < sizeof json; c++) {
-            if (*c == '"' || *c == '\\')
-                json[o++] = '\\';
-            json[o++] = *c;
-        }
-        snprintf(json + o, sizeof json - o, "\"");
-    } else if (v->kind == VK_UINT) {
+    char json[64];
+    if (v->kind == VK_UINT) {
         snprintf(json, sizeof json, "%llu", (unsigned long long)v->u);
     } else if (v->kind == VK_INT) {
         snprintf(json, sizeof json, "%lld", (long long)v->i);
@@ -101,7 +107,7 @@ static void io_leaf_progress(uint64_t done, uint64_t total, void *ud) {
         mailbox_result_progress(j->token, done, total);
 }
 
-value_t io_leaf_dispatch(io_leaf_t *j, const char *what) {
+value_t io_leaf_dispatch(io_leaf_t *j) {
     j->token = mailbox_result_defer();
     io_job_desc_t d = {
         .work = io_leaf_run,
@@ -112,8 +118,9 @@ value_t io_leaf_dispatch(io_leaf_t *j, const char *what) {
         .observer_ud = j,
     };
     if (j->token) {
-        // Provisional, of the declared kind (a script's call sees it on
-        // success; the completion carries the real answer or the error).
+        // Provisional, of the declared kind (what the leaf returns now;
+        // the completion carries the real answer or the error, to a
+        // request and to a script's call alike).
         value_t provisional = j->answer ? j->answer(j) : val_bool(true);
         j->io_id = io_submit_job(&d);
         if (j->io_id) {
@@ -121,19 +128,15 @@ value_t io_leaf_dispatch(io_leaf_t *j, const char *what) {
             return provisional;
         }
         // Deferred but no worker: work now and answer the deferral at once.
-        int rc = io_run_inline(&d, j->err, sizeof j->err);
-        if (rc == 0)
-            io_leaf_done(true, 0.0, NULL, j);
-        else
-            io_leaf_done(false, 0.0, j->err[0] ? j->err : "failed", j);
+        int rc = io_run_inline(&d, NULL, 0);
+        io_leaf_done(rc == 0, 0.0, rc == 0 ? NULL : j->err, j);
         return provisional;
     }
-    int rc = io_run_inline(&d, j->err, sizeof j->err);
-    value_t v;
-    if (rc == 0)
-        v = j->answer ? j->answer(j) : val_bool(true);
-    else
-        v = val_err("%s: %s", what, j->err[0] ? j->err : "failed");
+    // Nothing that can wait: the work runs now, and its failure reads as a
+    // deferred one's does (the worker's reason, as is), so a script says the
+    // same whether its call could suspend or not, with or without a worker.
+    int rc = io_run_inline(&d, NULL, 0);
+    value_t v = rc == 0 ? (j->answer ? j->answer(j) : val_bool(true)) : val_err("%s", j->err);
     io_leaf_free(j);
     return v;
 }
@@ -167,5 +170,5 @@ value_t io_leaf_export_image(struct image *img, const char *dest, const char *co
     j->ud = e;
     j->work = work_export_image;
     j->cleanup = cleanup_export_image;
-    return io_leaf_dispatch(j, what);
+    return io_leaf_dispatch(j);
 }

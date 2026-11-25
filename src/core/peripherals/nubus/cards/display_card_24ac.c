@@ -35,9 +35,11 @@
 #include "checkpoint.h"
 #include "declrom.h"
 #include "display.h"
+#include "display_ramdac.h"
 #include "gsvrom.h"
 #include "log.h"
 #include "memory.h"
+#include "memory_iface_sized.h"
 #include "nubus.h"
 #include "object.h"
 #include "system.h"
@@ -76,9 +78,7 @@ struct display_card_24ac_priv {
     // CLUT / RAMDAC write sub-state.  Both the init (0xC8000E/0xC8000A)
     // and runtime (0xC8001E/0xC8001A) index/data pairs feed this; an index
     // write resets the R/G/B sub-counter, then three data writes load R,G,B.
-    uint8_t clut_idx; // current palette index
-    uint8_t clut_phase; // 0 = R, 1 = G, 2 = B
-    rgba8_t clut_pending; // accumulating entry
+    ramdac_seq_t clut_seq; // index, R/G/B phase and the accumulating entry
 
     // Standard video register shadows (the few the vrom driver drives).
     uint8_t vidctl; // 0xD00403 shadow (VBL mask / commit / depth bits)
@@ -138,9 +138,6 @@ struct display_card_24ac_priv {
     display_t display;
     nubus_card_t *card; // back-pointer for IRQ helpers
     uint8_t *vram; // DISPLAY_CARD_24AC_VRAM_SIZE
-    uint8_t *vrom; // 128 KB bus-space declaration ROM
-    char *vrom_path; // path the VROM was loaded from
-    uint32_t vrom_size; // 128 KB; 0 if no VROM loaded
     uint32_t slot_base; // physical bus base (== nubus_slot_base(slot))
 
     // Region contexts (one per registered register/engine region).
@@ -245,33 +242,18 @@ static void apply_mode_depth(display_card_24ac_priv_t *p, uint8_t mode_byte) {
 // palette.)  At 8 bpp the driver's index pack-shift is 0 (shift table 0x2230
 // = `07 04 00 …`), so the staged index byte is a clean ~N.
 static void clut_set_index(display_card_24ac_priv_t *p, uint8_t idx) {
-    p->clut_idx = (uint8_t)~idx;
-    p->clut_phase = 0;
+    ramdac_seq_set_waddr(&p->clut_seq, (uint8_t)~idx);
 }
 
 // Data-register write: accumulate R, G, B over three writes, commit, and
 // auto-increment the index for a run-write.
 static void clut_write_data(display_card_24ac_priv_t *p, uint8_t comp) {
     // Active-low RAMDAC: the driver writes ~component (see clut_set_index).
-    comp = (uint8_t)~comp;
-    switch (p->clut_phase) {
-    case 0:
-        p->clut_pending.r = comp;
-        p->clut_phase = 1;
-        break;
-    case 1:
-        p->clut_pending.g = comp;
-        p->clut_phase = 2;
-        break;
-    case 2:
-    default:
-        p->clut_pending.b = comp;
-        p->clut_pending.a = 255;
-        p->clut[p->clut_idx] = p->clut_pending;
-        p->clut_idx++; // auto-increment for run-write
-        p->clut_phase = 0;
+    uint8_t idx;
+    if (ramdac_seq_write(&p->clut_seq, (uint8_t)~comp, &idx)) {
+        const uint8_t *c = p->clut_seq.pending;
+        p->clut[idx] = (rgba8_t){c[0], c[1], c[2], 255};
         p->display.clut_dirty = true;
-        break;
     }
 }
 
@@ -623,71 +605,17 @@ static void reg_write(display_card_24ac_priv_t *p, uint32_t off, uint32_t val, u
 
 // === Memory interface (single dispatcher over every region) =================
 
-static uint8_t io_read8(void *dev, uint32_t addr) {
-    reg_ctx_t *c = dev;
-    return (uint8_t)reg_read(c->p, c->region_off + addr, 1, false);
+// The sized handlers over one region's context: its offset within the card.
+static uint32_t ac24_io_read(reg_ctx_t *c, uint32_t addr, unsigned width, bool peek) {
+    return reg_read(c->p, c->region_off + addr, width, peek);
 }
-static uint16_t io_read16(void *dev, uint32_t addr) {
-    reg_ctx_t *c = dev;
-    return (uint16_t)reg_read(c->p, c->region_off + addr, 2, false);
-}
-static uint32_t io_read32(void *dev, uint32_t addr) {
-    reg_ctx_t *c = dev;
-    return reg_read(c->p, c->region_off + addr, 4, false);
-}
-static uint8_t io_peek8(void *dev, uint32_t addr) {
-    reg_ctx_t *c = dev;
-    return (uint8_t)reg_read(c->p, c->region_off + addr, 1, true);
-}
-static uint16_t io_peek16(void *dev, uint32_t addr) {
-    reg_ctx_t *c = dev;
-    return (uint16_t)reg_read(c->p, c->region_off + addr, 2, true);
-}
-static uint32_t io_peek32(void *dev, uint32_t addr) {
-    reg_ctx_t *c = dev;
-    return reg_read(c->p, c->region_off + addr, 4, true);
-}
-static void io_write8(void *dev, uint32_t addr, uint8_t val) {
-    reg_ctx_t *c = dev;
-    reg_write(c->p, c->region_off + addr, val, 1);
-}
-static void io_write16(void *dev, uint32_t addr, uint16_t val) {
-    reg_ctx_t *c = dev;
-    reg_write(c->p, c->region_off + addr, val, 2);
-}
-static void io_write32(void *dev, uint32_t addr, uint32_t val) {
-    reg_ctx_t *c = dev;
-    reg_write(c->p, c->region_off + addr, val, 4);
+static void ac24_io_write(reg_ctx_t *c, uint32_t addr, uint32_t val, unsigned width) {
+    reg_write(c->p, c->region_off + addr, val, width);
 }
 
-static memory_interface_t s_display_card_24ac_mem_iface = {
-    .read_uint8 = io_read8,
-    .read_uint16 = io_read16,
-    .read_uint32 = io_read32,
-    .write_uint8 = io_write8,
-    .write_uint16 = io_write16,
-    .write_uint32 = io_write32,
-    .peek_uint8 = io_peek8,
-    .peek_uint16 = io_peek16,
-    .peek_uint32 = io_peek32,
-};
+MEMORY_IFACE_SIZED(s_display_card_24ac_mem_iface, reg_ctx_t, ac24_io_read, ac24_io_write);
 
 // === VROM load ==============================================================
-
-// Load the 24AC declaration ROM through the shared content-driven declrom
-// loader: the slot's own ROM file when the document names one, else the
-// offered candidates (the Format-Block-CRC catalog's preferred revision, then
-// catalog order; see vrom.h), then byteLanes expansion.  Returns true on success.
-static bool load_vrom(display_card_24ac_priv_t *p, const char *rom) {
-    char *path = NULL;
-    if (!declrom_load_vrom_card(p->card, display_card_24ac_kind.id, rom, p->vrom, DISPLAY_CARD_24AC_DECLROM_BUS_SIZE,
-                                &path))
-        return false;
-    free(p->vrom_path);
-    p->vrom_path = path;
-    p->vrom_size = DISPLAY_CARD_24AC_DECLROM_BUS_SIZE;
-    return true;
-}
 
 // bpp → MODE register depth bits (vrom RE depth ladder; no 2-bpp mode).
 static uint8_t modebits_for_format(pixel_format_t f) {
@@ -823,9 +751,7 @@ static void set_poweron_defaults(display_card_24ac_priv_t *p, bool cold) {
     p->status_busy = 0;
 
     // CLUT write sub-state (index / R-G-B phase / accumulating entry).
-    p->clut_idx = 0;
-    p->clut_phase = 0;
-    p->clut_pending = (rgba8_t){0};
+    ramdac_seq_init(&p->clut_seq, 0);
 
     // Engine geometry bits, kept consistent with the large-VRAM framebuffer
     // we present; engine handshake latches idle.
@@ -859,19 +785,11 @@ static void set_poweron_defaults(display_card_24ac_priv_t *p, bool cold) {
     p->display.clut = p->clut;
     p->display.clut_len = 256;
     p->display.crt_response = NULL; // identity until a monitor needs gamma
-    p->display.shape_dirty = true;
-    p->display.clut_dirty = true;
-    p->display.fb_dirty = true;
-    p->display.response_dirty = true;
+    display_mark_all_dirty(&p->display);
 
     // Initial CLUT — grayscale ramp so the canvas isn't blank before the OS
     // programs a palette; the driver's first cscSetEntries overwrites it.
-    for (int i = 0; i < 256; i++) {
-        p->clut[i].r = (uint8_t)i;
-        p->clut[i].g = (uint8_t)i;
-        p->clut[i].b = (uint8_t)i;
-        p->clut[i].a = 255;
-    }
+    display_seed_gray_ramp(p->clut);
 }
 
 static bool video_mode_lookup(const char *id, const nubus_monitor_t **out_monitor, int *out_depth_bpp);
@@ -894,43 +812,10 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
         seeded_depth_bpp = 0;
 
     p->vram = calloc(1, DISPLAY_CARD_24AC_VRAM_SIZE);
-    p->vrom = calloc(1, DISPLAY_CARD_24AC_DECLROM_BUS_SIZE);
-    if (!p->vram || !p->vrom) {
-        free(p->vram);
-        free(p->vrom);
+    if (!p->vram) {
         free(p);
         return -1;
     }
-
-    if (opts->substitute) {
-        // The substitute ROM: the GS declaration ROM generated here --
-        // records from the card's monitors[] table, code fragments spliced,
-        // CRC stamped in C; the offer registry is never consulted.
-        declrom_builder_t *bld = gsvrom_generate(GSVROM_BOOGIE, display_card_24ac_kind.monitors);
-        size_t img_size = 0;
-        const uint8_t *img = bld ? declrom_builder_bytes(bld, &img_size) : NULL;
-        if (img && declrom_install_builtin(p->card, display_card_24ac_kind.id, img, img_size, p->vrom,
-                                           DISPLAY_CARD_24AC_DECLROM_BUS_SIZE))
-            p->vrom_size = DISPLAY_CARD_24AC_DECLROM_BUS_SIZE;
-        else
-            LOG(0, "24AC: the substitute declaration ROM failed to generate; declaration ROM is zero-filled");
-        declrom_builder_free(bld);
-    } else if (!load_vrom(p, opts->rom[0] ? opts->rom : NULL)) {
-        // The bus seats Apple's ROM only when it is offered (else the
-        // substitute), so this is a file that went away or a checkpoint whose
-        // ROM is not this card's: the slot stays empty.
-        LOG(0, "24AC: slot $%X: the 24AC declaration ROM could not be loaded", card->slot);
-        free(p->vram);
-        free(p->vrom);
-        free(p);
-        return -1;
-    }
-
-    // Publish the declaration ROM on the generic card handle so the
-    // object-model `slot[N].card.declrom` node reads it without reaching into
-    // card-private state.
-    card->declrom = p->vrom;
-    card->declrom_size = p->vrom_size;
 
     // The monitor on the connector: its seat's row and sense code, or none
     // (every line open, the extended answer "nothing": PrimaryInit turns the
@@ -986,7 +871,8 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
     memory_map_host_region(cfg->memory_map, "display_card_24ac_vram", p->vram, p->slot_base,
                            DISPLAY_CARD_24AC_VRAM_VISIBLE,
                            /*writable*/ true);
-    memory_map_host_region(cfg->memory_map, "display_card_24ac_declrom", p->vrom,
+    // The declaration ROM the bus seated (declrom_seat)
+    memory_map_host_region(cfg->memory_map, "display_card_24ac_declrom", card->declrom,
                            p->slot_base + DISPLAY_CARD_24AC_DECLROM_BUS_OFFSET, DISPLAY_CARD_24AC_DECLROM_BUS_SIZE,
                            /*writable*/ false);
     // 24-bit Memory Manager mode framebuffer alias (mirrors VRAM at
@@ -1036,10 +922,6 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
     if (!p)
         return;
     free(p->vram);
-    // p->vrom is published as card->declrom (for the object-model declrom
-    // node); nubus_delete owns and frees card->declrom after this teardown,
-    // so we must NOT free it here (doing so double-frees).
-    free(p->vrom_path);
     free(p);
     card->priv = NULL;
 }
@@ -1075,13 +957,30 @@ static display_t *card_display(nubus_card_t *card) {
     return p ? &p->display : NULL;
 }
 
+// The guest physical address of the first displayed byte: the VRAM sits at
+// the bottom of the card's slot space.  0 while the blank is scanned.
+static uint64_t card_fb_base(nubus_card_t *card) {
+    display_card_24ac_priv_t *p = card->priv;
+    return p ? display_guest_addr(&p->display, p->vram, DISPLAY_CARD_24AC_VRAM_SIZE, p->slot_base) : 0;
+}
+
+// The VRAM a power cycle loses (the bus default, nubus_power_on).
+static size_t card_vram(nubus_card_t *card, uint8_t **base) {
+    display_card_24ac_priv_t *p = card->priv;
+    *base = p ? p->vram : NULL;
+    return p ? DISPLAY_CARD_24AC_VRAM_SIZE : 0;
+}
+
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(display_card_24ac_priv_t, display);
+
 // === Checkpoint =============================================================
 // VRAM is a private calloc (card_init), not part of the RAM image
 // memory_map_checkpoint saves, so without these a restored machine comes back
 // with a blank screen and a default palette until the guest redraws.
 //
-// Excluded on purpose: the four pointer members (card, vram, vrom, vrom_path),
-// the construction facts beside them (vrom_size, slot_base), and the six
+// Excluded on purpose: the two pointer members (card, vram), the construction
+// fact beside them (slot_base), and the six
 // reg_ctx_t region bindings at the tail -- each of those holds a back-pointer
 // to this struct and is re-registered with the memory map by card_init, so
 // writing them back from a checkpoint would install stale addresses.
@@ -1093,14 +992,8 @@ static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
     if (!p)
         return;
     system_write_checkpoint_data(cp, p->vram, DISPLAY_CARD_24AC_VRAM_SIZE);
-    system_write_checkpoint_data(cp, p, offsetof(struct display_card_24ac_priv, display));
-    {
-        // Fixed widths, not a raw struct prefix: the prefix carried a bare
-        // pixel_format_t, whose size is implementation-defined (see
-        // display.h).
-        display_head_t head = display_head_of(&p->display);
-        system_write_checkpoint_data(cp, &head, sizeof head);
-    }
+    checkpoint_save_prefix(cp, p, display_card_24ac_priv_t);
+    display_head_save(cp, &p->display);
 }
 
 static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
@@ -1108,22 +1001,15 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
     if (!p)
         return;
     system_read_checkpoint_data(cp, p->vram, DISPLAY_CARD_24AC_VRAM_SIZE);
-    system_read_checkpoint_data(cp, p, offsetof(struct display_card_24ac_priv, display));
-    {
-        display_head_t head;
-        system_read_checkpoint_data(cp, &head, sizeof head);
-        display_head_apply(&p->display, &head);
-    }
+    checkpoint_load_prefix(cp, p, display_card_24ac_priv_t);
+    display_head_restore(cp, &p->display);
 
     // stride follows from the restored width and format.
     recompute_stride(p);
 
     // display.bits still points into p->vram (card_init set it and the buffer
     // has not moved), but everything the frontend caches is now stale.
-    p->display.shape_dirty = true;
-    p->display.clut_dirty = true;
-    p->display.fb_dirty = true;
-    p->display.response_dirty = true;
+    display_mark_all_dirty(&p->display);
 }
 
 static const nubus_card_ops_t display_card_24ac_ops = {
@@ -1132,6 +1018,8 @@ static const nubus_card_ops_t display_card_24ac_ops = {
     .reset = card_reset,
     .on_vbl = card_on_vbl,
     .display = card_display,
+    .fb_base = card_fb_base,
+    .vram = card_vram,
     .checkpoint_save = card_checkpoint_save,
     .checkpoint_restore = card_checkpoint_restore,
 };
@@ -1276,6 +1164,8 @@ const nubus_card_kind_t display_card_24ac_kind = {
     // crt_response and the GS ROM ships identity gamma.
     .substitute = true,
     .monitors = display_card_24ac_monitors,
+    .declrom_bus_size = DISPLAY_CARD_24AC_DECLROM_BUS_SIZE,
+    .gsvrom = GSVROM_BOOGIE,
     .ops = &display_card_24ac_ops,
     .startup_record = startup_record,
     .attach_objects = display_card_24ac_attach_objects,

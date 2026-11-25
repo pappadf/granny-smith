@@ -12,10 +12,10 @@
     ['20 MB (HD20SC)', '21411840', 20],
     ['38 MB (HD40SC)', '40061952', 38],
     ['76 MB (HD80SC)', '80061440', 76],
-  ].map(([label, arg, mb]) => ({
+  ].map(([label, size, mb]) => ({
     label: String(label),
-    method: 'files.hd_create',
-    arg: String(arg),
+    kind: 'hd',
+    size: Number(size),
     name: `blank_${mb}MB`,
     ext: '.dmg',
   }));

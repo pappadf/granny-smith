@@ -2,7 +2,7 @@
   // A path argument's field: text, plus a Browse list of the emulator's file
   // system (files.list), one directory at a time.  Picking a directory opens
   // it; picking a file (or "Use this folder") fills the field.
-  import { gsEval, gsErrorText } from '@/bus/emulator';
+  import { listRaw } from '@/bus/vfs';
   import Button from '@/components/ui/Button.svelte';
   import TextInput from '@/components/ui/TextInput.svelte';
 
@@ -32,15 +32,17 @@
 
   async function list(d: string): Promise<void> {
     error = '';
-    const r = await gsEval('files.list', [d]);
-    if (!Array.isArray(r)) {
-      error = `cannot list ${d}: ${gsErrorText(r)}`;
+    const r = await listRaw(d);
+    if (typeof r === 'string') {
+      error = `cannot list ${d}: ${r}`;
       entries = [];
       return;
     }
     dir = d;
     entries = r
-      .filter((e): e is Entry => !!e && typeof e === 'object' && typeof e.name === 'string')
+      .filter(
+        (e): e is Entry => !!e && typeof e === 'object' && typeof (e as Entry).name === 'string',
+      )
       .sort((a, b) =>
         a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'directory' ? -1 : 1,
       );

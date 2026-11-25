@@ -106,7 +106,7 @@ export function createConsole(): Console {
         if (failed) notice(`Command failed: ${failed}`);
         state.runningSince = null;
         refreshPrompt();
-        // A line that may have changed the stored files (files.hd_create, cp,
+        // A line that may have changed the stored files (files.create, cp,
         // rm, …) re-scans the Images panel, which otherwise kept its old
         // listing until it was reopened.
         if (/\b(files\.|cp|mv|rm|mkdir)\b|\/opfs\/images/.test(text)) bumpImagesRevision();

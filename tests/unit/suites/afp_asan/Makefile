@@ -13,6 +13,7 @@ TEST_HARNESS := isolated
 # the browser's OPFS backend does.
 EXTRA_LDFLAGS := -Wl,--wrap=rename
 EXTRA_SRCS := ../../../../src/core/network/appletalk_server.c \
+              ../../../../src/core/network/appletalk_nbp_service.c \
               ../../../../src/core/network/afp_volume.c \
               ../../../../src/core/network/afp_params.c \
               ../../../../src/core/network/afp_enum.c \

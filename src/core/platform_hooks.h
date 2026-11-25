@@ -9,17 +9,22 @@
 // models "this host has none of it" -- no camera, no GPU worker, no
 // auto-checkpoint loop -- and a platform that has the thing links a strong
 // definition of the same name.  A default that is asked to DO something it
-// cannot answers -2 ("not supported on this platform"); 0 is success and
-// other negative values are failures of a platform that tried.  The `gs_`
+// cannot answers PLATFORM_E_UNSUPPORTED ("not supported on this platform");
+// 0 is success and other negative values are failures of a platform that
+// tried.  The `gs_`
 // prefix marks a hook of this contract (Granny Smith's platform surface);
 // core-owned functions use `system_`.
 
 #ifndef PLATFORM_HOOKS_H
 #define PLATFORM_HOOKS_H
 
+#include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+// A weak default's "this platform has none of it" (once a literal -2).
+#define PLATFORM_E_UNSUPPORTED (-ENOTSUP)
 
 // A new machine has become the active one (boot or restore).  The host
 // re-bases its samples of the machine and announces what it shows of it; the
@@ -39,12 +44,12 @@ bool platform_storage_persistent(void);
 
 // Background auto-checkpoint state.  The wasm platform overrides the weak
 // defaults to read/write its live flag; a platform with no auto-checkpoint
-// loop (headless) reads false and refuses the set (-2, "not supported").
+// loop (headless) reads false and refuses the set (PLATFORM_E_UNSUPPORTED).
 bool platform_checkpoint_auto_get(void);
 int platform_checkpoint_auto_set(bool enabled);
 
 // Platform-specific entry points used by typed root methods: the weak default
-// answers -2 ("not supported on this platform"), and the platform that has
+// answers PLATFORM_E_UNSUPPORTED, and the platform that has
 // the thing overrides it.  0 on success.
 //
 //   platform_quit()                — request emulator shutdown.  Headless sets
@@ -72,23 +77,33 @@ bool platform_video_in_connected(void);
 int platform_video_in_frame(uint8_t *rgba);
 void platform_video_in_state(bool active);
 
-// Host GPU-transport seam for the Voodoo2's WebGPU takeover
-// (voodoo2_gpu.c): the browser build attaches a GPU worker to a shared
-// region in the wasm heap and wakes it through Atomics; the defaults
-// model "no GPU" so native builds fall back to the thread backend.  `ctrl`
-// is the region's control block (voodoo2_gpu_protocol.h); `wait` blocks the
-// CALLING pthread until *addr != expected or the timeout (returns 0 when
-// woken).
-bool platform_v2gpu_available(void);
-bool platform_v2gpu_attach(void *ctrl, uint32_t bytes);
-void platform_v2gpu_detach(void *ctrl);
-int platform_v2gpu_wait(volatile uint32_t *addr, uint32_t expected, uint32_t timeout_ms);
-void platform_v2gpu_notify(volatile uint32_t *addr);
+// The host's one wake primitive for the shared-memory transports (the
+// mailbox, the LaserWriter ring, the GPU takeovers): the page's workers
+// park in Atomics.waitAsync on a control word, and the core wakes them
+// after it publishes.  `platform_wake` wakes every waiter on `word`;
+// `platform_wait` blocks the CALLING thread until *word != expect or
+// `timeout_ms` passes (0 when woken, negative on a timeout).  The weak
+// defaults model a host with no such waiter: wake is a no-op, and wait
+// returns -1 at once (timed out).  The wasm build overrides both (em_main.c);
+// every transport wakes and waits through these two, never a hook of its own.
+void platform_wake(volatile uint32_t *word);
+int platform_wait(volatile uint32_t *word, uint32_t expect, uint32_t timeout_ms);
+
+// Host GPU-transport seam for the WebGPU takeovers (the Voodoo2's,
+// voodoo2_gpu.c, and the Rage 128's, rage128_gpu.c): the browser build
+// attaches a GPU worker to a shared region in the wasm heap and wakes it
+// through Atomics; the defaults model "no GPU" so native builds fall back to
+// the thread backend.  `ctrl` is the region's control block (the card's
+// *_gpu_protocol.h); the two sides wake each other through platform_wake /
+// platform_wait on its words.
+bool platform_gpu_available(void);
+bool platform_gpu_attach(void *ctrl, uint32_t bytes);
+void platform_gpu_detach(void *ctrl);
 // The Rage 128's takeover (rage128_gpu.c) shares this seam but waits on
 // the EMULATOR thread itself: a wait that may be long (a software adapter
 // compiling a pipeline on first use) calls this to tell the page the core
 // is busy, not dead.  A no-op natively.
-void platform_v2gpu_keepalive(void);
+void platform_gpu_keepalive(void);
 
 // Host audio-input seam (the AV Singer codec's microphone source,
 // mirroring the video-in seam).  The weak defaults model "no microphone":
@@ -118,5 +133,35 @@ bool platform_audio_in_debug(char *buf, size_t buflen);
 // just fed.  Pure UX — the emulated input path is untouched (the browser
 // plays the same file from its own storage).  Weak default: silent.
 void platform_audio_in_injected(const char *path);
+
+// Host audio (em_audio.c; the weak defaults model "no host audio").
+// One parameterized stream for all machines: open sets the source rate and
+// channel count, push feeds interleaved int16 frames (vol_0_7 is the guest's
+// 3-bit volume), set_rate restarts the stream at a new source rate.
+void platform_audio_open(uint32_t src_rate_hz, int channels);
+void platform_audio_push(const int16_t *frames, int nframes, int vol_0_7);
+void platform_audio_set_rate(uint32_t src_rate_hz);
+// The host ring's fill against its target depth (0.0 empty, 1.0 at target),
+// or < 0 when there is no fresh signal (no stream, no host audio) -- optional
+// feedback for the accelerated-mode governor.
+double platform_audio_ring_fill(void);
+
+// Redraw the whole screen from the active display now, whatever its dirty
+// flags say (a restored checkpoint's framebuffer).  The weak default (a host
+// with no screen of its own: headless) does nothing.
+void platform_force_redraw(void);
+
+// Print the host's callstack, for the failure handler.  The weak default
+// prints nothing; headless and wasm each print theirs.
+void platform_print_host_callstack(void);
+
+// A ROM at `rom_path` is about to boot (machine_boot_apply, after the
+// document validated): the host's chance to offer the card ROMs it keeps
+// beside it (vrom_offer_dir / prom_offer_dir).  Core builds no search path
+// of its own (docs/reference/formats/mac-rom.md).  Headless walks the ROM's directory
+// for *.vrom / *.prom, as it does for the CLI's rom= at startup; the browser
+// has nothing to do, its card ROMs live in OPFS and are offered on upload,
+// so it keeps the weak default, which does nothing.
+void platform_offer_sibling_card_roms(const char *rom_path);
 
 #endif // PLATFORM_HOOKS_H

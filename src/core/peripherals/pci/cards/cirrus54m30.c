@@ -50,8 +50,9 @@
 
 #include "card.h"
 #include "checkpoint.h"
+#include "config_space.h"
 #include "display.h"
-#include "display_class.h"
+#include "display_ramdac.h"
 #include "log.h"
 #include "pci.h"
 #include "scheduler.h"
@@ -183,7 +184,7 @@ typedef struct c54m30 {
     uint8_t attr[C54M30_ATTR_REGS]; // attribute   ($3C0, index/data alternating)
     uint8_t seq_index, crtc_index, gr_index, attr_index;
     bool attr_data; // the attribute port's index/data flip-flop
-    uint8_t dac_write_index, dac_read_index, dac_phase;
+    ramdac_seq_t dac_seq; // the VGA DAC's separate write/read indices over one R/G/B phase
     uint8_t dac[256][3]; // the palette, as written: six bits (VGA) or eight (hidden DAC, below)
     // The Cirrus "hidden DAC register" sits behind the pel mask: four consecutive reads of
     // $3C6 and the fifth access to $3C6 reaches it instead.  Bit 1 puts the palette DAC in its
@@ -196,12 +197,8 @@ typedef struct c54m30 {
     uint32_t scan_start; // byte offset the scanout starts at (after the fall-back)
     display_t display;
     rgba8_t clut[256]; // the palette materialised for the renderer
-    memory_interface_t fb_if;
-    memory_interface_t io_if;
-    memory_interface_t vga_if; // the fixed legacy $3B0-$3DF block
     c54m30_blt_t blt; // the BitBLT engine's only state that outlives a register write
     uint32_t win_logged; // accesses to the legacy-window mirror logged loudly so far
-    display_fb_node_t fb_node; // instance data for the shared framebuffer class
 } c54m30_t;
 
 static void c54m30_update(c54m30_t *c);
@@ -973,13 +970,11 @@ static uint8_t io_rd8(c54m30_t *c, uint32_t offset, bool peek, uint8_t *pelmask_
     case C54M30_DAC_DATA: {
         // Stored as written (see the write side), but read back the way the DAC holds it:
         // six bits unless the hidden DAC register has put the palette in 8-bit mode.
-        uint8_t v = c->dac[c->dac_read_index][c->dac_phase];
+        uint8_t comp;
+        uint8_t idx = ramdac_seq_read(&c->dac_seq, peek, &comp);
+        uint8_t v = c->dac[idx][comp];
         if (!c->dac_8bit)
             v &= 0x3Fu;
-        if (!peek && ++c->dac_phase == 3) {
-            c->dac_phase = 0;
-            c->dac_read_index++;
-        }
         return v;
     }
     default:
@@ -1077,28 +1072,26 @@ static void io_write8(void *ctx, uint32_t offset, uint8_t value) {
         c->attr_data = !c->attr_data;
         return;
     case C54M30_DAC_WINDEX:
-        c->dac_write_index = value;
-        c->dac_phase = 0;
+        ramdac_seq_set_waddr(&c->dac_seq, value);
         return;
     case C54M30_DAC_RINDEX:
-        c->dac_read_index = value;
-        c->dac_phase = 0;
+        ramdac_seq_set_raddr(&c->dac_seq, value);
         return;
-    case C54M30_DAC_DATA:
-        // Three writes per entry, R then G then B, and the index
-        // auto-advances — which is how a driver loads 256 colours with one
-        // index write and 768 data writes.
+    case C54M30_DAC_DATA: {
+        // Three writes per entry, R then G then B, latched and stored on B,
+        // and the index auto-advances — which is how a driver loads 256
+        // colours with one index write and 768 data writes.
         // Stored as written; the hidden DAC register decides whether six or eight bits count.
         // (A guess from the values -- "above $3F must mean 8-bit" -- was tried and was wrong:
         // one stray $FF darkened a driver's whole 6-bit palette.)
-        c->dac[c->dac_write_index][c->dac_phase] = value;
-        if (++c->dac_phase == 3) {
-            c->dac_phase = 0;
-            c54m30_materialise(c, c->dac_write_index);
+        uint8_t idx;
+        if (ramdac_seq_write(&c->dac_seq, value, &idx)) {
+            memcpy(c->dac[idx], c->dac_seq.pending, 3);
+            c54m30_materialise(c, idx);
             c->display.clut_dirty = true;
-            c->dac_write_index++;
         }
         return;
+    }
     default:
         return;
     }
@@ -1288,6 +1281,25 @@ static display_t *c54m30_display(pci_device_t *dev) {
     return (c && c->display.width && c->display.height) ? &c->display : NULL;
 }
 
+// The guest physical address of the first displayed byte: BAR0's base plus
+// where the scanout actually starts, as c54m30_update derived it (CR0C/CR0D
+// with the CR1B extension, and the fall-back to 0 for a start that runs the
+// raster off the end).  The display memory sits at the bottom of the 16 MB
+// aperture, byte for byte.  0 with no scanout or no aperture decoded.
+static uint64_t c54m30_fb_base(pci_device_t *dev) {
+    c54m30_t *c = (c54m30_t *)dev->priv;
+    if (!c || !c->display.bits || !pci_cfg_bar_enabled(dev, C54M30_BAR_FB))
+        return 0;
+    return (uint64_t)pci_cfg_bar_base(dev, C54M30_BAR_FB) + c->scan_start;
+}
+
+// The display memory a power cycle loses (the bus default, pci_power_on).
+static size_t c54m30_vram(pci_device_t *dev, uint8_t **base) {
+    c54m30_t *c = (c54m30_t *)dev->priv;
+    *base = c ? c->vram : NULL;
+    return c ? C54M30_VRAM : 0;
+}
+
 static void c54m30_reset(pci_device_t *dev, config_t *cfg) {
     (void)cfg;
     c54m30_t *c = (c54m30_t *)dev->priv;
@@ -1308,9 +1320,7 @@ static void c54m30_reset(pci_device_t *dev, config_t *cfg) {
     c->gr_index = 0;
     c->attr_index = 0;
     c->attr_data = false;
-    c->dac_write_index = 0;
-    c->dac_read_index = 0;
-    c->dac_phase = 0;
+    ramdac_seq_init(&c->dac_seq, RAMDAC_SPLIT_INDEX);
     // The hidden DAC register is part of that register file, and it powers up at zero: six-bit
     // palette data, and the $3C6 door shut.  Carrying an eight-bit selection across a reset
     // makes every VGA palette write afterwards four times too dark -- which is what a guest
@@ -1343,9 +1353,7 @@ static void c54m30_teardown(pci_device_t *dev, config_t *cfg) {
     c54m30_t *c = (c54m30_t *)dev->priv;
     if (!c)
         return;
-    free(c->vram);
-    free(c);
-    dev->priv = NULL;
+    free(c->vram); // `c` itself is the bus's (priv_size)
 }
 
 static void c54m30_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
@@ -1360,9 +1368,11 @@ static void c54m30_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, c->dac, sizeof(c->dac));
     // The port latches: a checkpoint taken between an index write and its
     // data write, or partway through a palette entry, must resume there.
-    uint8_t latches[8] = {c->seq_index,           c->crtc_index,      c->gr_index,       c->attr_index,
-                          c->attr_data ? 1u : 0u, c->dac_write_index, c->dac_read_index, c->dac_phase};
+    uint8_t latches[8] = {c->seq_index,           c->crtc_index,   c->gr_index,     c->attr_index,
+                          c->attr_data ? 1u : 0u, c->dac_seq.widx, c->dac_seq.ridx, c->dac_seq.phase};
     system_write_checkpoint_data(cp, latches, sizeof(latches));
+    // ...and the components of a palette entry written partway
+    system_write_checkpoint_data(cp, c->dac_seq.pending, sizeof(c->dac_seq.pending));
     system_write_checkpoint_data(cp, c->vram, C54M30_VRAM);
     // A system-to-screen BLT half-fed by the CPU is the only engine state not already in the
     // register shadows; without it a restore would leave the guest polling a status bit that
@@ -1389,9 +1399,11 @@ static void c54m30_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     // them in range (& 0x1F, wrap at 3), and a checkpoint is file content.
     c->attr_index = latches[3] & (C54M30_ATTR_REGS - 1u);
     c->attr_data = latches[4] != 0;
-    c->dac_write_index = latches[5];
-    c->dac_read_index = latches[6];
-    c->dac_phase = latches[7] < 3u ? latches[7] : 0u;
+    ramdac_seq_init(&c->dac_seq, RAMDAC_SPLIT_INDEX);
+    c->dac_seq.widx = latches[5];
+    c->dac_seq.ridx = latches[6];
+    c->dac_seq.phase = latches[7] < 3u ? latches[7] : 0u;
+    system_read_checkpoint_data(cp, c->dac_seq.pending, sizeof(c->dac_seq.pending));
     system_read_checkpoint_data(cp, c->vram, C54M30_VRAM);
     system_read_checkpoint_data(cp, &c->blt, sizeof(c->blt));
     // The palette view and the scanout descriptor are DERIVED: rebuild them
@@ -1408,6 +1420,8 @@ static void c54m30_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
 
 static const pci_device_ops_t c54m30_ops = {
     .display = c54m30_display,
+    .fb_base = c54m30_fb_base,
+    .vram = c54m30_vram,
     .reset = c54m30_reset,
     .teardown = c54m30_teardown,
     .checkpoint_save = c54m30_checkpoint_save,
@@ -1415,99 +1429,36 @@ static const pci_device_ops_t c54m30_ops = {
     .name = c54m30_name,
 };
 
-static pci_device_t *c54m30_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
+// The card's faces: the BAR0 framebuffer, the BAR1 registers and the fixed
+// legacy $3B0-$3DF block.  One table each serves every card.
+MEMORY_IFACE(fb);
+MEMORY_IFACE(io);
+MEMORY_IFACE(vga);
+
+// The bus has allocated `dev` and its c54m30_t and reset the header.
+static int c54m30_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     (void)rom;
     (void)opts;
-    pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
-    c54m30_t *c = (c54m30_t *)calloc(1, sizeof(*c));
+    c54m30_t *c = (c54m30_t *)dev->priv;
     uint8_t *vram = (uint8_t *)calloc(1, C54M30_VRAM);
-    if (!dev || !c || !vram) {
-        free(dev);
-        free(c);
-        free(vram);
-        return NULL;
-    }
-    dev->ops = &c54m30_ops;
-    dev->decl = &c54m30_decl;
-    dev->priv = c;
-    pci_cfg_reset(dev);
+    if (!vram)
+        return -1;
     c->dev = dev;
     c->cfg = cfg;
     c->vram = vram;
 
-    c->fb_if.read_uint8 = fb_read8;
-    c->fb_if.read_uint16 = fb_read16;
-    c->fb_if.read_uint32 = fb_read32;
-    c->fb_if.write_uint8 = fb_write8;
-    c->fb_if.write_uint16 = fb_write16;
-    c->fb_if.write_uint32 = fb_write32;
-    c->fb_if.peek_uint8 = fb_peek8;
-    c->fb_if.peek_uint16 = fb_peek16;
-    c->fb_if.peek_uint32 = fb_peek32;
-    c->io_if.read_uint8 = io_read8;
-    c->io_if.read_uint16 = io_read16;
-    c->io_if.read_uint32 = io_read32;
-    c->io_if.write_uint8 = io_write8;
-    c->io_if.write_uint16 = io_write16;
-    c->io_if.write_uint32 = io_write32;
-    c->io_if.peek_uint8 = io_peek8;
-    c->io_if.peek_uint16 = io_peek16;
-    c->io_if.peek_uint32 = io_peek32;
-
-    c->vga_if.read_uint8 = vga_read8;
-    c->vga_if.read_uint16 = vga_read16;
-    c->vga_if.read_uint32 = vga_read32;
-    c->vga_if.write_uint8 = vga_write8;
-    c->vga_if.write_uint16 = vga_write16;
-    c->vga_if.write_uint32 = vga_write32;
-    c->vga_if.peek_uint8 = vga_peek8;
-    c->vga_if.peek_uint16 = vga_peek16;
-    c->vga_if.peek_uint32 = vga_peek32;
-
     c54m30_reset(dev, cfg);
 
-    pci_bar_backing_iface(dev, C54M30_BAR_FB, &c->fb_if, c);
-    pci_bar_backing_iface(dev, C54M30_BAR_IO, &c->io_if, c);
+    pci_bar_backing_iface(dev, C54M30_BAR_FB, &fb_iface, c);
+    pci_bar_backing_iface(dev, C54M30_BAR_IO, &io_iface, c);
     // The legacy VGA block: a contiguous strapped claim (match mask 0), not
     // a BAR.  Faking a BAR for it would be worse than doing nothing —
     // Open Firmware would size it, assign it, and invent an address the
     // card does not decode.
-    pci_device_add_fixed_region(dev, PCI_SPACE_IO, C54M30_VGA_IO_BASE, C54M30_VGA_IO_SPAN, 0, 0, &c->vga_if, c);
+    pci_device_add_fixed_region(dev, PCI_SPACE_IO, C54M30_VGA_IO_BASE, C54M30_VGA_IO_SPAN, 0, 0, &vga_iface, c);
 
-    LOG(1, "54M30: seated in slot %d: %u KB display memory, no interrupt line", slot_index, C54M30_VRAM >> 10);
-    return dev;
-}
-
-// The framebuffer node, shared with every other display source
-// (display_class.h).  This card declared no attach_objects at all, so on a
-// Network Server `machine.screen.source` resolved to nothing and there was no
-// way to read the geometry the VGA CRTC had been programmed with.
-static display_t *c54m30_fb_resolve(void *owner) {
-    c54m30_t *c = (c54m30_t *)owner;
-    return c ? &c->display : NULL;
-}
-static uint64_t c54m30_fb_base(void *owner) {
-    // A byte offset into display memory: where the scanout actually starts,
-    // as c54m30_update derived it (CR0C/CR0D with the CR1B extension, and the
-    // fall-back to 0 for a start that runs the raster off the end).
-    c54m30_t *c = (c54m30_t *)owner;
-    return c ? c->scan_start : 0;
-}
-
-static void c54m30_attach_objects(pci_device_t *dev, struct object *card_node) {
-    c54m30_t *c = dev ? (c54m30_t *)dev->priv : NULL;
-    if (!c || !card_node)
-        return;
-    c->fb_node = (display_fb_node_t){.owner = c, .resolve = c54m30_fb_resolve, .base = c54m30_fb_base};
-    struct object *fb = object_new(&display_fb_class, &c->fb_node, "framebuffer");
-    if (!fb)
-        return;
-    object_set_label(fb, "Framebuffer");
-    object_set_order(fb, 10);
-    object_attach(card_node, fb);
-    // Nominate it, so `machine.screen.source` resolves here when this card is
-    // the primary display.
-    pci_card_set_framebuffer_object(dev, fb);
+    LOG(1, "54M30: seated in slot %d: %u KB display memory, no interrupt line", dev->slot_index, C54M30_VRAM >> 10);
+    return 0;
 }
 
 // The monitor a socketed card can drive.  Without one the configuration
@@ -1533,7 +1484,9 @@ const pci_card_kind_t cirrus_54m30_kind = {
     .display_name = "Cirrus Logic 54M30 VGA card",
     .attach = PCI_ATTACH_PCI,
     .card_class = "display",
-    .factory = c54m30_factory,
-    .attach_objects = c54m30_attach_objects,
+    .ops = &c54m30_ops,
+    .decl = &c54m30_decl,
+    .priv_size = sizeof(c54m30_t),
+    .init = c54m30_init,
     .monitors = c54m30_monitors,
 };

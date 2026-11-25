@@ -157,8 +157,15 @@ sprint's entry decides again.  Same semantics, no per-instruction test.
 The three 68K decoders (`cpu_68000.c`, `cpu_68030.c`, `cpu_68040.c`) share
 their operand, memory and exception macros (`cpu_decoder_macros.h`) and
 differ only in the `CPU_DECODER_PROLOGUE` / `CPU_DECODER_EPILOGUE` around the
-`cpu_decode.h` template. Two details of the per-instruction prologue need
-more explanation than fits beside the code.
+`cpu_decode.h` template. The once-per-sprint halves of those are
+`m68k_sprint_enter` and `m68k_sprint_exit` in `cpu_sprint.h`, which the
+predecoded run loop calls too: `always_inline` bodies specialised on the
+including core's `CPU_DECODER_IS_*`, so each core compiles to what it had
+when each spelled them out (the 68000 keeps no trace arm), and
+`m68k_hw_reset` is the one double-bus-fault reset. What stays per core is
+the per-instruction fetch (the 68000's 24-bit PC mask, odd-PC check and
+`ir` latch). Two details of the per-instruction prologue need more
+explanation than fits beside the code.
 
 **Saturating burn-down decrement.** The prologue ends with
 `if (*instructions > 0) (*instructions)--;` rather than a bare decrement.
@@ -231,12 +238,15 @@ harmless only when the register is not also an input to the restart: A/UX
 1.1's stdio computes a read size with `MOVE.L $4019E4(,D0.L*4),D0`, the
 table page faults, and the restart indexed with `D0 = $FFFFFFFF`
 (`read(fd, buf, -12888)` — `chown: unknown user id root`).  So the MMU
-fault sites in `memory.c` snapshot D0–D7 at the first fault of an
-instruction (`g_fault_dregs`, through the `g_fault_dregs_src` pointer each
-68k sprint prologue sets), and `exception_bus_error_retry()` puts them
-back on the 68020/030 path.  The address registers stay with the per-op
-rollbacks: those restore pre-instruction values, which a snapshot taken at
-the fault would undo.
+fault sites in `memory.c` copy the register file at the first fault of an
+instruction (`g_bus_fault_regs`, D0–D7 then A0–A7, through the
+`g_bus_fault_regfile` pointer that `cpu_run_sprint()` sets outside the
+decoders), and `exception_bus_error_retry()` puts D0–D7 back on the
+030 and 040 paths.  The address registers mostly stay with the per-op
+rollbacks, which restore pre-instruction values a copy taken at the fault
+would undo; the retry takes from the copy only the An writes it can
+recognise (a MOVEA/ADDA/SUBA destination, the stack step of RTS/RTD,
+LINK and UNLK, and an operand's `(An)+`/`-(An)`).
 
 The retry function detects a **double bus error** the way real hardware
 does — not by comparing PCs (legitimate retry loops would false-trigger)
@@ -263,7 +273,8 @@ The duplication is concrete, not notional: `dsp3210_disassemble` and
 `exec_insn` carry **36 `case` labels each, in identical order**, behind the
 same three-step preamble (`op6 = w >> 26`, then `opcode_is_illegal(op6)`, then
 the `w >> 29` DA-class dispatch). `opcode_is_illegal` is **14 byte-identical
-lines** in both, as are `bits()` and `sext16()`. Four helper pairs
+lines** in both. (`bits()`, `sext16()` and the CAU register-code map are
+shared now, in `dsp3210_fields.h`.) Four helper pairs
 (`dis_da`/`exec_da`, `dis_ca_alu_reg`/`exec_alu_reg`,
 `dis_ca_alu_imm`/`exec_alu_imm`, `dis_ca_move`/`exec_move`) and several operand
 tables are hand-synchronised. Nothing but the `dsp3210_disasm` unit suite stops

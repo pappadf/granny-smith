@@ -40,7 +40,9 @@
 #include "log.h"
 #include "machine.h"
 #include "object.h"
+#include "object_order.h"
 #include "system.h"
+#include "via.h" // via_setclr
 
 #include <stddef.h>
 #include <stdlib.h>
@@ -335,22 +337,14 @@ static void rbv_write_byte(void *device, uint32_t addr, uint8_t value) {
         return;
     case RV_SENB: {
         // RvSEnb uses the same set/clr-via-bit-7 convention as RvIER.
-        uint8_t bits = value & 0x7Fu;
-        if (value & 0x80u)
-            rbv->reg_senb |= bits;
-        else
-            rbv->reg_senb &= (uint8_t)~bits;
+        rbv->reg_senb = via_setclr(rbv->reg_senb, value, 0x7Fu);
         LOG(3, "write RvSEnb = $%02X -> $%02X", value, rbv->reg_senb);
         rbv_update_irq(rbv);
         return;
     }
     case RV_IER: {
         // Bit 7 selects set (1) vs clear (0) of the named enable bits.
-        uint8_t bits = value & 0x7Fu;
-        if (value & 0x80u)
-            rbv->reg_ier |= bits;
-        else
-            rbv->reg_ier &= (uint8_t)~bits;
+        rbv->reg_ier = via_setclr(rbv->reg_ier, value, 0x7Fu);
         LOG(3, "write RvIER = $%02X -> $%02X", value, rbv->reg_ier);
         rbv_update_irq(rbv);
         return;
@@ -404,7 +398,7 @@ static uint32_t rbv_obj_enabled(void *ctx) {
     return ((const rbv_t *)ctx)->reg_ier & 0x7Fu;
 }
 // One line to the CPU: the combined interrupt the IIci and IIsi route to
-// IPL 2, where the VIA2 it replaces sat (iici_rbv_irq / iisi_rbv_irq).
+// IPL 2, where the VIA2 it replaces sat (mdu_rbv_irq).
 static int rbv_obj_ipl(void *ctx) {
     const rbv_t *rbv = (const rbv_t *)ctx;
     return (rbv_compose_ifr(rbv) & rbv->reg_ier & 0x7Fu) ? 2 : 0;
@@ -467,6 +461,9 @@ static const class_desc_t rbv_class = {
     .n_members = sizeof(rbv_members) / sizeof(rbv_members[0]),
 };
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(rbv_t, memory_interface);
+
 rbv_t *rbv_init(rbv_variant_t variant, uint8_t sense3, checkpoint_t *cp) {
     rbv_t *rbv = (rbv_t *)calloc(1, sizeof(*rbv));
     if (!rbv)
@@ -491,15 +488,11 @@ rbv_t *rbv_init(rbv_variant_t variant, uint8_t sense3, checkpoint_t *cp) {
     };
 
     if (cp) {
-        size_t data_size = offsetof(rbv_t, memory_interface);
-        system_read_checkpoint_data(cp, rbv, data_size);
+        checkpoint_load_prefix(cp, rbv, rbv_t);
     }
 
-    rbv->object = object_new(&rbv_class, rbv, "rbv");
-    if (rbv->object) {
-        object_set_order(rbv->object, 45); // beside the other controllers
-        object_attach(machine_object(), rbv->object);
-    }
+    rbv->object = object_attach_new(machine_object(), &rbv_class, rbv, "rbv", NULL,
+                                    OBJ_ORDER_IO_CONTROLLER); // beside the other controllers
     return rbv;
 }
 
@@ -534,18 +527,15 @@ void rbv_reset(rbv_t *rbv) {
 }
 
 void rbv_delete(rbv_t *rbv) {
-    if (rbv && rbv->object) {
-        object_detach(rbv->object);
-        object_delete(rbv->object);
-    }
+    if (rbv)
+        object_destroy(&rbv->object);
     free(rbv);
 }
 
 void rbv_checkpoint(rbv_t *rbv, checkpoint_t *cp) {
     if (!rbv || !cp)
         return;
-    size_t data_size = offsetof(rbv_t, memory_interface);
-    system_write_checkpoint_data(cp, rbv, data_size);
+    checkpoint_save_prefix(cp, rbv, rbv_t);
 }
 
 // === Wiring =================================================================

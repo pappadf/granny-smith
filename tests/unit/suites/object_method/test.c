@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
-// Unit tests for argument-position expressions and method
-// dispatch over the object model.
+// Unit tests for method dispatch over the object model.
 //
 // Strategy: register a small toy `math2` class with methods that
 // exercise the same patterns the real `math` object uses
-// (close/abs/min/max). Drive both via node_call and via expr_eval
-// over `$(class.method(args))` to confirm the call form parses and
-// evaluates inside expressions.
+// (close/abs/min/max), and drive them via node_call.
 //
 // `math2.poly` covers the VK_ANY result slot (issue #106): a method
 // whose result kind follows its argument, the shape
@@ -15,7 +12,6 @@
 // assertion-enabled build — node_call's return-kind assert is what
 // used to abort the process on the VK_BYTES branch.
 
-#include "expr.h"
 #include "object.h"
 #include "status.h"
 #include "test_assert.h"
@@ -157,11 +153,6 @@ static void install_math2(void) {
     object_attach(object_root(), o);
 }
 
-static value_t eval_with_root(const char *src) {
-    expr_ctx_t ctx = {.root = object_root()};
-    return expr_eval(src, &ctx);
-}
-
 // === Tests ===============================================================
 
 TEST(test_node_call_succeeds) {
@@ -189,53 +180,6 @@ TEST(test_node_call_too_few_args) {
     ASSERT_TRUE(val_is_error(&r));
     value_free(&r);
     value_free(&one);
-    object_root_reset();
-}
-
-TEST(test_call_form_inside_expr) {
-    install_math2();
-    value_t v = eval_with_root("math2.min(3, 7)");
-    ASSERT_EQ_INT(VK_INT, v.kind);
-    ASSERT_EQ_INT(3, (int)v.i);
-    value_free(&v);
-    object_root_reset();
-}
-
-TEST(test_method_in_arithmetic) {
-    install_math2();
-    // Result of method call participates in arithmetic.
-    value_t v = eval_with_root("math2.min(10, 20) + 1");
-    bool ok = false;
-    int64_t i = val_as_i64(&v, &ok);
-    ASSERT_TRUE(ok);
-    ASSERT_EQ_INT(11, (int)i);
-    value_free(&v);
-    object_root_reset();
-}
-
-TEST(test_method_predicate) {
-    install_math2();
-    // close(1.0, 1.0001, 0.001) → true
-    value_t v = eval_with_root("math2.close(1.0, 1.0001, 0.001)");
-    ASSERT_EQ_INT(VK_BOOL, v.kind);
-    ASSERT_TRUE(v.b);
-    value_free(&v);
-
-    // close(1.0, 1.5, 0.001) → false
-    v = eval_with_root("math2.close(1.0, 1.5, 0.001)");
-    ASSERT_EQ_INT(VK_BOOL, v.kind);
-    ASSERT_TRUE(!v.b);
-    value_free(&v);
-    object_root_reset();
-}
-
-TEST(test_method_error_propagates) {
-    install_math2();
-    // math2.id requires 1 arg; calling with zero args inside an
-    // expression should propagate as VK_ERROR through arithmetic.
-    value_t v = eval_with_root("math2.id() + 1");
-    ASSERT_TRUE(val_is_error(&v));
-    value_free(&v);
     object_root_reset();
 }
 
@@ -294,25 +238,6 @@ TEST(test_variant_result_error_branch) {
     ASSERT_TRUE(val_is_error(&r));
     value_free(&r);
     value_free(&zero);
-    object_root_reset();
-}
-
-TEST(test_variant_result_in_expr) {
-    install_math2();
-    // Both branches reachable from expression context: arithmetic on
-    // the uint one, len() on the bytes one.
-    value_t v = eval_with_root("math2.poly(2) + 1");
-    bool ok = false;
-    int64_t i = val_as_i64(&v, &ok);
-    ASSERT_TRUE(ok);
-    ASSERT_EQ_INT(0x1123, (int)i); // 0x11223344 >> 16, + 1
-    value_free(&v);
-
-    v = eval_with_root("len(math2.poly(10))");
-    i = val_as_i64(&v, &ok);
-    ASSERT_TRUE(ok);
-    ASSERT_EQ_INT(10, (int)i);
-    value_free(&v);
     object_root_reset();
 }
 
@@ -629,15 +554,10 @@ int main(void) {
     RUN(test_counter_fields_read_their_block);
     RUN(test_node_call_succeeds);
     RUN(test_node_call_too_few_args);
-    RUN(test_call_form_inside_expr);
-    RUN(test_method_in_arithmetic);
-    RUN(test_method_predicate);
-    RUN(test_method_error_propagates);
     RUN(test_zero_arg_method_call_explicit);
     RUN(test_variant_result_uint_branch);
     RUN(test_variant_result_bytes_branch);
     RUN(test_variant_result_error_branch);
-    RUN(test_variant_result_in_expr);
     RUN(test_any_arg_slot_accepts_every_kind);
     RUN(test_any_attribute_slot_rejected);
     RUN(test_interior_optional_slot_can_be_skipped);

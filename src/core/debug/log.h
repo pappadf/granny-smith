@@ -104,6 +104,13 @@ void log_emit(const log_category_t *cat, int level, const char *fmt, ...)
 
 void log_vemit(const log_category_t *cat, int level, const char *fmt, va_list ap);
 
+// A hex dump of `len` bytes of `data` under `tag`, at `level` of `cat`, and
+// formatted only when that level would print.  `max` == 0 dumps everything,
+// one record per 16-byte row with an offset and an ASCII gutter (a record is
+// capped at 512 bytes, so a whole frame does not fit in one); `max` > 0 is
+// one line of the first `max` bytes ("tag (len bytes): XX XX ... ...").
+void log_hex(const log_category_t *cat, int level, const char *tag, const void *data, size_t len, size_t max);
+
 // Fast-path predicate -------------------------------------------------------
 // Returns non-zero if a message at 'level' for 'cat' would be emitted.
 // The comparison is `<=` on purpose: level 0 is the always-on level, so a

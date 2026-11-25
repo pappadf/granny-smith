@@ -23,7 +23,6 @@
 #include "ppc_jit.h"
 #include "predecode.h"
 #include "shell.h"
-#include "shell_funcs.h"
 #include "status.h"
 #include "system.h"
 #include "usage.h"
@@ -52,101 +51,25 @@ static struct object *resolve_target(const value_t *path_arg) {
     return c ? c : n.obj;
 }
 
-// Growable VK_STRING list used to accumulate object/attribute/method
-// names for the introspection methods.
-typedef struct {
-    value_t *items;
-    size_t len;
-    size_t cap;
-    bool oom; // set when a push failed; the list must not be returned short
-} string_list_acc_t;
-
-// Append `name` as a VK_STRING through the shared accumulator.
-//
-// This was one of five near-identical {items, len, cap} doublers -- root.c,
-// meta.c, alias.c, an inline one in object.c and another in debug.c -- beside
-// val_list_push, which already existed and which object.c's copy already
-// used.  Each copy had its own OOM behaviour, and four of the five DISCARDED
-// the failure, so an allocation failure silently truncated the returned list
-// instead of erroring: objects(), attributes(), methods(), meta.children and
-// meta.indices would report a short list as if it were complete, which the
-// inspector then renders as "these are all the members".  A truncated schema
-// is worse than an error because the caller cannot tell.
-static bool string_list_push(string_list_acc_t *acc, const char *name) {
-    if (!name)
-        return true;
-    return val_list_push(&acc->items, &acc->len, &acc->cap, val_str(name));
-}
-
-static void each_attached_collect(struct object *parent, struct object *child, void *ud) {
-    (void)parent;
-    string_list_acc_t *acc = (string_list_acc_t *)ud;
-    if (!string_list_push(acc, object_name(child)))
-        acc->oom = true; // reported by the caller; see string_list_push
-}
-
 static DEF_METHOD(method_root_objects) {
     struct object *target = resolve_target(argc >= 1 ? &argv[0] : NULL);
     if (!target)
         return val_err("objects: path did not resolve");
-    string_list_acc_t acc = {0};
-    const class_desc_t *cls = object_class(target);
-    if (cls) {
-        for (size_t i = 0; i < cls->n_members; i++)
-            if (cls->members[i].kind == MK_CHILD)
-                if (!string_list_push(&acc, cls->members[i].name))
-                    acc.oom = true;
-    }
-    object_each_attached(target, each_attached_collect, &acc);
-    if (acc.oom) {
-        for (size_t i = 0; i < acc.len; i++)
-            value_free(&acc.items[i]);
-        free(acc.items);
-        return val_err("out of memory");
-    }
-    return val_list(acc.items, acc.len);
+    return object_member_names(target, MK_CHILD);
 }
 
 static DEF_METHOD(method_root_attributes) {
     struct object *target = resolve_target(argc >= 1 ? &argv[0] : NULL);
     if (!target)
         return val_err("attributes: path did not resolve");
-    string_list_acc_t acc = {0};
-    const class_desc_t *cls = object_class(target);
-    if (cls) {
-        for (size_t i = 0; i < cls->n_members; i++)
-            if (cls->members[i].kind == MK_ATTR)
-                if (!string_list_push(&acc, cls->members[i].name))
-                    acc.oom = true;
-    }
-    if (acc.oom) {
-        for (size_t i = 0; i < acc.len; i++)
-            value_free(&acc.items[i]);
-        free(acc.items);
-        return val_err("out of memory");
-    }
-    return val_list(acc.items, acc.len);
+    return object_member_names(target, MK_ATTR);
 }
 
 static DEF_METHOD(method_root_methods) {
     struct object *target = resolve_target(argc >= 1 ? &argv[0] : NULL);
     if (!target)
         return val_err("methods: path did not resolve");
-    string_list_acc_t acc = {0};
-    const class_desc_t *cls = object_class(target);
-    if (cls) {
-        for (size_t i = 0; i < cls->n_members; i++)
-            if (cls->members[i].kind == MK_METHOD)
-                if (!string_list_push(&acc, cls->members[i].name))
-                    acc.oom = true;
-    }
-    if (acc.oom) {
-        for (size_t i = 0; i < acc.len; i++)
-            value_free(&acc.items[i]);
-        free(acc.items);
-        return val_err("out of memory");
-    }
-    return val_list(acc.items, acc.len);
+    return object_member_names(target, MK_METHOD);
 }
 
 // `help(path?)` — the usage text of any path (usage.c): a method's
@@ -264,8 +187,8 @@ static const member_t emu_root_members[] = {
      .name = "quit",
      .doc = "Exit the emulator (headless; the browser page owns its own lifecycle and refuses)",
      .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = method_root_quit}                },
-    // `assert` is a statement keyword in shell v2 (script.c); the former
-    // root method is gone — its name is now a reserved word.
+    // `assert` is Lua's own (a script's assert(cond, message)); the former
+    // root method is gone.
     {.kind = MK_METHOD,
      .name = "echo",
      .doc = "Print arguments separated by spaces (final newline appended)",
@@ -400,13 +323,9 @@ void root_install(struct config *cfg) {
 
 void root_uninstall(void) {
     // Detach function entry objects before their parent stub goes away.
-    shell_funcs_uninstall();
     for (int i = g_stub_count - 1; i >= 0; i--) {
         struct object *o = g_stubs[i];
-        if (o) {
-            object_detach(o);
-            object_delete(o);
-        }
+        object_destroy(&o);
         g_stubs[i] = NULL;
     }
     g_stub_count = 0;

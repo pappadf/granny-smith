@@ -3,7 +3,7 @@
   import Button from '@/components/ui/Button.svelte';
   import Hint from '@/components/ui/Hint.svelte';
   import RadioGroup from '@/components/ui/RadioGroup.svelte';
-  import { gsEval, gsErrorText } from '@/bus';
+  import { createBlankImage } from '@/bus/media';
   import type { BlankDisk } from '@/bus/profile';
   import { FD_DIR, HD_DIR } from '@/lib/opfsPaths';
 
@@ -52,7 +52,7 @@
     creating = true;
     try {
       let name: string;
-      let res: unknown;
+      let res: true | string;
       if (kind === 'hd') {
         const disk = disks[diskIndex];
         if (!disk) {
@@ -60,14 +60,13 @@
           return;
         }
         name = `${disk.name}_${stamp()}${disk.ext}`;
-        res = await gsEval(disk.method, [`${HD_DIR}/${name}`, disk.arg]);
+        res = await createBlankImage(disk, `${HD_DIR}/${name}`);
       } else {
-        const highDensity = fdDensity === '1440K';
         name = `blank_${fdDensity}_${stamp()}.dsk`;
-        res = await gsEval('files.fd_create', [`${FD_DIR}/${name}`, highDensity]);
+        res = await createBlankImage({ kind: 'floppy', size: fdDensity }, `${FD_DIR}/${name}`);
       }
       if (res !== true) {
-        error = `Failed to create the disk image: ${gsErrorText(res)}`;
+        error = `Failed to create the disk image: ${res}`;
         return;
       }
       onCreated(name);

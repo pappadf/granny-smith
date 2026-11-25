@@ -6,6 +6,8 @@
 
 #include "image_iso9660.h"
 
+#include "common.h"
+#include "macroman.h"
 #include "source.h"
 
 #include <errno.h>
@@ -48,14 +50,6 @@ struct iso_dir_iter {
     const uint8_t *assoc; // the associated-file record just passed, if any
 };
 
-static uint32_t le32(const uint8_t *p) {
-    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
-}
-
-static uint16_t le16(const uint8_t *p) {
-    return (uint16_t)(p[0] | p[1] << 8);
-}
-
 // A run of `n` UCS-2 big-endian code units as UTF-8 (Joliet names).
 static void ucs2_to_utf8(const uint8_t *p, size_t n, char *out, size_t cap) {
     size_t o = 0;
@@ -96,7 +90,7 @@ static void slash_to_colon(char *s) {
 // Open
 // ============================================================================
 
-bool iso_probe_source(struct peel_source *src, uint64_t off, uint64_t size) {
+bool iso_probe_source(source_t *src, uint64_t off, uint64_t size) {
     uint8_t vd[8];
     if (!src || size < ISO9660_VD_OFF + ISO_SECTOR || source_read_exact(src, off + ISO9660_VD_OFF, vd, sizeof(vd)) != 0)
         return false;
@@ -192,15 +186,15 @@ static bool record_finder_info(const uint8_t *r, size_t rlen, uint32_t *type, ui
     }
     if (!fi)
         return false;
-    *type = (uint32_t)fi[0] << 24 | (uint32_t)fi[1] << 16 | (uint32_t)fi[2] << 8 | fi[3];
-    *creator = (uint32_t)fi[4] << 24 | (uint32_t)fi[5] << 16 | (uint32_t)fi[6] << 8 | fi[7];
-    *flags = (uint16_t)((fi[8] << 8 | fi[9]) & (0x2000 | 0x1000));
+    *type = RD_BE32(fi);
+    *creator = RD_BE32(fi + 4);
+    *flags = (uint16_t)(RD_BE16(fi + 8) & (0x2000 | 0x1000));
     if (r[25] & ISO_FLAG_HIDDEN)
         *flags |= 0x4000;
     return true;
 }
 
-iso_volume_t *iso_open_source(struct peel_source *src, uint64_t off, uint64_t size) {
+iso_volume_t *iso_open_source(source_t *src, uint64_t off, uint64_t size) {
     if (!iso_probe_source(src, off, size))
         return NULL;
     iso_volume_t *v = calloc(1, sizeof(*v));
@@ -220,13 +214,13 @@ iso_volume_t *iso_open_source(struct peel_source *src, uint64_t off, uint64_t si
         bool joliet = vd[0] == ISO_VD_SUPPLEM && vd[88] == '%' && vd[89] == '/' &&
                       (vd[90] == '@' || vd[90] == 'C' || vd[90] == 'E');
         if ((vd[0] == ISO_VD_PRIMARY && !have_primary) || joliet) {
-            uint16_t block = le16(vd + 128);
+            uint16_t block = RD_LE16(vd + 128);
             const uint8_t *root = vd + 156; // the root directory record
             if (block < 512 || block > ISO_SECTOR || (block & (block - 1)))
                 continue;
             v->block = block;
-            v->root_extent = le32(root + 2);
-            v->root_size = le32(root + 10);
+            v->root_extent = RD_LE32(root + 2);
+            v->root_size = RD_LE32(root + 10);
             if (vd[0] == ISO_VD_PRIMARY) {
                 have_primary = true;
                 size_t k = 32;
@@ -337,12 +331,12 @@ int iso_readdir_next(iso_dir_iter_t *it, iso_dirent_t *out) {
         if ((flags & ISO_FLAG_MULTI) || r[26] || r[27])
             return -EIO; // multi-extent or interleaved: not supported
         out->is_dir = (flags & ISO_FLAG_DIR) != 0;
-        out->extent = le32(r + 2);
-        out->size = le32(r + 10);
+        out->extent = RD_LE32(r + 2);
+        out->size = RD_LE32(r + 10);
         bool paired = assoc && assoc[32] == r[32] && memcmp(assoc + 33, r + 33, r[32]) == 0;
         if (paired) {
-            out->rsrc_extent = le32(assoc + 2);
-            out->rsrc_size = le32(assoc + 10);
+            out->rsrc_extent = RD_LE32(assoc + 2);
+            out->rsrc_size = RD_LE32(assoc + 10);
         }
         // Finder info from the file's own record, else from its associated
         // file's (some mastering tools put it only there).
@@ -354,7 +348,8 @@ int iso_readdir_next(iso_dir_iter_t *it, iso_dirent_t *out) {
     return it->pos >= it->len ? 0 : -EIO;
 }
 
-// Names compare case-insensitively over ASCII.
+// Plain ISO 9660 (and Rock Ridge) names compare case-insensitively over
+// ASCII: d-characters are ASCII to begin with.
 static bool iso_name_eq(const char *a, const char *b) {
     for (;; a++, b++) {
         unsigned char ca = (unsigned char)*a, cb = (unsigned char)*b;
@@ -386,7 +381,9 @@ int iso_lookup(iso_volume_t *vol, const char *const *comp, size_t nc, iso_dirent
         int rc;
         bool found = false;
         while ((rc = iso_readdir_next(it, &e)) > 0) {
-            if (iso_name_eq(e.name, comp[i])) {
+            // Joliet names are UCS-2, so any character: matched as the
+            // Finder matches a Mac name ("café" finds "CAFÉ").
+            if (vol->joliet ? mac_name_eq(e.name, comp[i]) : iso_name_eq(e.name, comp[i])) {
                 found = true;
                 break;
             }

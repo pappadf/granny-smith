@@ -39,12 +39,11 @@ typedef struct cpu_debug_if {
     // algebraic syntax like the DSP3210's; empty string for illegal
     // encodings; buf holds `buflen` >= 100 bytes).  Returns bytes consumed
     // (68K: 2..20; PPC and DSP3210: always 4).
-    // The length is passed explicitly because the 68K adapter's backend is 39
-    // unbounded sprintf calls into whatever the caller supplied.  An exhaustive
-    // sweep (every MOVEM mask x every full-format extension word x six MOVEM
-    // opcodes, plus an all-opcode pass) puts the true worst case at 76 bytes
-    // against the caller's 100, so there is no live overflow -- this is the
-    // contract being written down rather than left to coincide.
+    // Every backend writes bounded by `buflen` (the 68K one through
+    // cpu_disasm_n).  An exhaustive sweep (every MOVEM mask x every
+    // full-format extension word x six MOVEM opcodes, plus an all-opcode
+    // pass) puts the 68K worst case at 76 bytes against the caller's 100, so
+    // a line is never truncated in practice.
     int (*disasm)(void *ctx, uint32_t pc, char *buf, size_t buflen);
     // Translate a logical address in the core's current context; *ok reports
     // whether a valid translation exists (identity when translation is off).
@@ -99,10 +98,27 @@ extern const class_desc_t find_class;
 // omitted) or "physical".  Returns false for anything else.
 bool debug_parse_space(int argc, const value_t *argv, int idx, bool *physical);
 
+// The Lisa's memory views for the inspection methods that take an optional
+// `context` (memory.dump, memory.peek.bytes, debug.disasm): read the
+// argument at argv[idx] (0-3; omitted: the CPU's current view) and, on a
+// Lisa, point the side-effect-free reads at that context -- or at physical
+// main memory when `physical` -- until debug_view_end(*prev).  A context on
+// a machine without contexts fails with *err set.  Every other machine
+// keeps its reads as they were.
+bool debug_view_begin(int argc, const value_t *argv, int idx, bool physical, int *prev, value_t *err);
+void debug_view_end(int prev);
+
 // Resolve a 68k low-memory address through the mac-world translation
 // (identity on 68K machines and when no machine is live).  Shared by
 // debug.mac and the globals object methods.
 uint32_t debug_mac_xlate(uint32_t addr);
+
+// True while the guest runs the Macintosh Operating System itself, not just
+// on a Macintosh: ROMBase points at the machine's ROM and, on a 68K, the
+// A-trap vector at Mac OS's dispatcher (on a Lisa: MacWorks).
+// debug.mac.mode "on"/"off" forces the answer.  debug.mac.os; the machine
+// watch's Mac OS detectors (watch.c) apply only then.
+bool debug_mac_os_running(void);
 
 struct breakpoint;
 typedef struct breakpoint breakpoint_t;
@@ -168,68 +184,6 @@ int save_framebuffer_as_png(const display_t *d, const char *filename);
 // Decode a width x height PNG into a caller-owned RGBA8888 buffer
 // (width*height*4 bytes).  Returns 0 / -1 (the machine.videoin.load path).
 int debug_load_png_rgba(const char *filename, int width, int height, uint8_t *out_rgba);
-
-// === Object-model accessors ================================================
-//
-// debug.{breakpoints,logpoints,watchpoints}.add(...) / .N.remove(), the
-// per-entry classes and their factories live in debug.c, below the
-// operations.  They reach into the debug_t lists via these accessors, which
-// keep struct breakpoint / struct logpoint (also defined in debug.c) opaque.
-//
-// Identity: every breakpoint and logpoint carries a sparse stable id
-// (never recycled, max-id-ever + 1 on add). The id is
-// what the indexed-child callbacks expose as the "index" segment.
-
-// Allocate a fresh sparse id. Caller assigns it to its entry struct
-// before linking it into the list. Pure helper, no side effects beyond
-// bumping the counter.
-int debug_alloc_breakpoint_id(debug_t *debug);
-int debug_alloc_logpoint_id(debug_t *debug);
-
-// Look up an entry by sparse id. Returns NULL if no live entry has
-// this id. Used by indexed-child get(parent, index).
-breakpoint_t *debug_breakpoint_by_id(debug_t *debug, int id);
-logpoint_t *debug_logpoint_by_id(debug_t *debug, int id);
-
-// Walk the live entries in id order. count() returns the live entry
-// count; next(prev) returns the smallest id strictly greater than prev,
-// or -1 if no more entries (prev = -1 returns the smallest live id).
-int debug_breakpoint_count(debug_t *debug);
-int debug_breakpoint_next_id(debug_t *debug, int prev_id);
-int debug_logpoint_count(debug_t *debug);
-int debug_logpoint_next_id(debug_t *debug, int prev_id);
-// The watchpoints: the stopping entries of the same list, which the two
-// collections split between them (`debug.logpoints` never lists one).
-int debug_watchpoint_count(debug_t *debug);
-int debug_watchpoint_next_id(debug_t *debug, int prev_id);
-
-// Remove by sparse id. Returns true if an entry was removed. Frees the
-// entry's attached object_t (which fires invalidators) before freeing
-// the entry struct.
-bool debug_remove_breakpoint(debug_t *debug, int id);
-bool debug_remove_logpoint(debug_t *debug, int id);
-
-// Per-entry attribute getters (read-only at this stage; setters arrive
-// alongside writable conditions / messages in a future milestone).
-uint32_t breakpoint_get_addr(const breakpoint_t *bp);
-addr_space_t breakpoint_get_space(const breakpoint_t *bp);
-const char *breakpoint_get_condition(const breakpoint_t *bp); // NULL if none
-uint32_t breakpoint_get_hit_count(const breakpoint_t *bp);
-int breakpoint_get_id(const breakpoint_t *bp);
-struct object *breakpoint_get_entry_object(const breakpoint_t *bp);
-// Replace the condition string. NULL clears it. Takes ownership semantics
-// via strdup; caller's buffer is not retained.
-void breakpoint_set_condition(breakpoint_t *bp, const char *expr);
-
-uint32_t logpoint_get_addr(const logpoint_t *lp);
-uint32_t logpoint_get_end_addr(const logpoint_t *lp);
-int logpoint_get_kind(const logpoint_t *lp); // enum logpoint_kind
-int logpoint_get_level(const logpoint_t *lp);
-const char *logpoint_get_category_name(const logpoint_t *lp);
-const char *logpoint_get_message(const logpoint_t *lp);
-uint32_t logpoint_get_hit_count(const logpoint_t *lp);
-int logpoint_get_id(const logpoint_t *lp);
-struct object *logpoint_get_entry_object(const logpoint_t *lp);
 
 void debugger_disasm_pc(char *buf, size_t buf_size);
 

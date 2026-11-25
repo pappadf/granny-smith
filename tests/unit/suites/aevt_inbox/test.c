@@ -6,7 +6,6 @@
 // fill.  See Makefile.
 
 #include "appletalk_aevt.h"
-#include "expr.h"
 #include "object.h"
 #include "stub_ppc.h"
 #include "test_assert.h"
@@ -39,9 +38,14 @@ static uint64_t u64_at(const char *path) {
     return n;
 }
 
-static value_t eval(const char *src) {
-    expr_ctx_t ctx = {.root = object_root()};
-    return expr_eval(src, &ctx);
+// aevt.send(target, event), called as a script calls it.
+static value_t send(const char *target, const char *event) {
+    node_t n = object_resolve(object_root(), "aevt.send");
+    value_t args[2] = {val_str(target), val_str(event)};
+    value_t r = node_call(n, 2, args);
+    value_free(&args[0]);
+    value_free(&args[1]);
+    return r;
 }
 
 // An event from the guest: misc/dosc with no parameters.
@@ -80,22 +84,18 @@ TEST(clearing_the_inbox_makes_room) {
 }
 
 // The event table holds 256 sends a run.  The next is an error the script
-// sees -- a statement producing one stops the script -- and try() turns it
-// into the fallback a script that wants to carry on can test.
+// sees (raised; gs.try turns it into a fallback).
 TEST(a_full_event_table_is_a_script_error) {
     setup();
     for (int i = 0; i < 256; i++) {
-        value_t v = eval("aevt.send(\"nowhere\", \"aevt/oapp{}\")");
+        value_t v = send("nowhere", "aevt/oapp{}");
         ASSERT_TRUE(!val_is_error(&v));
         value_free(&v);
     }
-    value_t full = eval("aevt.send(\"nowhere\", \"aevt/oapp{}\")");
+    value_t full = send("nowhere", "aevt/oapp{}");
     ASSERT_TRUE(val_is_error(&full));
     ASSERT_TRUE(strstr(val_as_str(&full), "limit 256") != NULL);
     value_free(&full);
-    value_t fallback = eval("try(aevt.send(\"nowhere\", \"aevt/oapp{}\"), 7)");
-    ASSERT_EQ_INT(7, (int)val_as_i64(&fallback, NULL));
-    value_free(&fallback);
 }
 
 int main(void) {

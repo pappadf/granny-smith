@@ -66,4 +66,14 @@ void machine_parts_free(struct config *cfg);
         fn((type *)obj, cp);                                                                                           \
     }
 
+// The extern twin, for an adapter other files register:
+// MACHINE_PART_SAVE_EXTERN(scc, scc_checkpoint, scc_t) defines
+// part_save_scc(void *, checkpoint_t *).  A typed call through the adapter,
+// never a cast of fn to machine_part_save_fn (a call through a mismatched
+// function type is undefined behaviour).
+#define MACHINE_PART_SAVE_EXTERN(name, fn, type)                                                                       \
+    void part_save_##name(void *obj, checkpoint_t *cp) {                                                               \
+        fn((type *)obj, cp);                                                                                           \
+    }
+
 #endif // MACHINE_PARTS_H

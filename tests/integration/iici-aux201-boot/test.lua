@@ -1,0 +1,62 @@
+-- IIci: A/UX 2.0.1 from an installed HD80SC.
+--
+-- The disk's Mac side has A/UX Startup as its Startup program, and A/UX
+-- Startup boots /unix from the A/UX Root partition without stopping: the
+-- kernel comes up multi-user and the Mac environment shows A/UX's graphical
+-- login.  root (no password) logs in to the A/UX Finder; CommandShell, chosen
+-- from the Apple menu, opens a shell window where `uname -a` runs.
+--
+-- A/UX 2.0 reads the RTC, so the date CommandShell prints comes from the
+-- pinned clock plus the emulated time since boot: deterministic at a fixed
+-- instruction count.
+--
+-- Waits: A/UX idles in STOP at each prompt, so a step of scheduler.run
+-- retires few instructions there.  The login dialog's text caret blinks, so
+-- login.png is reached with run_until_match (one caret phase) rather than a
+-- settle.  Mouse moves use the "aux" mode: under A/UX the Mac's low-memory
+-- mouse globals live in the Mac environment's address space, which the
+-- "global" mode cannot reach from the kernel's context.
+
+local mac = dofile("../lib/mac.lua")
+
+local D = "../../data/systems"
+
+local function row_iici_aux201()
+    machine.boot{model = "iici", ram = 8192, rom = vars.ROM}
+    machine.rtc.time = "1991-06-01T10:00:00"
+    machine.scsi.attach_hd(tostring(D) .. "/aux_2_0_1_80mb_iici.dmg", 0)
+    assert(machine.id == "iici", "machine.id != iici")
+
+    -- Mac OS, A/UX Startup, the kernel and init to the login dialog: measured
+    -- at under 0.2 G instructions.
+    mac.run_until_match("login.png", 3000000000, 25000000)
+    mac.check("login.png")
+    mac.report_row_foreign("A/UX 2.0.1", "rbv", "hd-boot login")
+
+    -- root, no password: the A/UX Finder opens the MacPartition window.
+    mac.type_settle("root\n", 25000000, 1000000000)
+    machine.adb.keyboard.press("Return")
+    mac.wait_keys_taken(300000000)
+    mac.run_until_match("finder.png", 2000000000, 25000000)
+    mac.check("finder.png")
+
+    -- Apple menu > CommandShell (the third item, under the separator).
+    machine.adb.mouse.move(20, 10, "aux")
+    scheduler.run(15000000)
+    machine.adb.mouse.click(true)
+    scheduler.run(15000000)
+    machine.adb.mouse.move(60, 76, "aux")
+    scheduler.run(15000000)
+    machine.adb.mouse.click(false)
+    mac.settle_steps(25000000, 1000000000)
+    mac.check("shell.png")
+
+    mac.type_settle("uname -a\n", 25000000, 1000000000)
+    mac.check("uname.png")
+    mac.report_row_foreign("A/UX 2.0.1", "rbv", "login finder commandshell uname")
+    mac.report_perf("iici-aux201-boot/uname", scheduler.instr_count)
+end
+
+mac.row("iici-aux201-boot", row_iici_aux201)
+mac.suite_done()
+quit()

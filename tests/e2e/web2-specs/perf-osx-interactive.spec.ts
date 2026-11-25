@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // web2 in-browser run of the interactive Mac OS X scenario
-// (tests/bench/osx-interactive.script; docs/guide/BENCHMARKS.md,
+// (tests/bench/osx-interactive.lua; docs/guide/BENCHMARKS.md,
 // "Interactive scenarios"): Mac OS X 10.0.3 with the Aqua look on the beige
 // G3 at the Finder -- open and close the File menu, minimize the Finder
 // window into the Dock, restore it -- under the predecoded executor and the
@@ -36,18 +36,18 @@ import * as path from "node:path";
 import { stageOpfsText } from "../helpers/web2-fs";
 import { gsEvalInPage } from "../helpers/web2-eval";
 import { CONSOLE_OUTPUT, terminalRun as typeLine } from "../helpers/terminal";
+import { DATA } from "../helpers/paths";
 
 const terminalRun = (page: Page, line: string) =>
   typeLine(page, line, { settleMs: 250 });
 
-const DATA = path.resolve(__dirname, "../../data");
 const ROM = path.join(DATA, "roms/pmg3dt-pmg3mt-78f57389.rom");
 const DISK = path.join(DATA, "systems/mac_os_x_10_0_3_2gb_g3_minimal_aqua.dmg");
 const SIDECAR = path.join(
   DATA,
   "systems/mac_os_x_10_0_3_2gb_g3_minimal_aqua.json",
 );
-const SCENARIO = path.resolve(__dirname, "../../bench/osx-interactive.script");
+const SCENARIO = path.resolve(__dirname, "../../bench/osx-interactive.lua");
 
 const LABEL = process.env.PERF_LABEL ?? "unlabeled";
 const RUNS = Number(process.env.PERF_RUNS ?? 1);
@@ -130,7 +130,7 @@ async function waitFor(
 ): Promise<string> {
   try {
     await expect(page.locator(CONSOLE_OUTPUT)).toContainText(
-      new RegExp(`${marker}|ASSERT FAILED|failed`),
+      new RegExp(`${marker}|failed|error`),
       {
         timeout: timeoutMs,
       },
@@ -170,7 +170,7 @@ test("perf-osx-interactive: Mac OS X menu, minimize and restore (turbo, tracked 
       await bootFromLink(page);
       await stageOpfsText(
         page,
-        "/opfs/upload/osx-interactive.script",
+        "/opfs/upload/osx-interactive.lua",
         scenario,
       );
       const body = setup
@@ -183,19 +183,19 @@ test("perf-osx-interactive: Mac OS X menu, minimize and restore (turbo, tracked 
       // play the scenario where it stands
       await stageOpfsText(
         page,
-        "/opfs/upload/osx-driver.script",
-        `let MODE = "live"\nlet CKPT = ""\nlet TEST_DATA = "/opfs"\ndef scen_setup() {\n${body}\n}\n` +
-          `scheduler.run 25000000000\n` +
-          `assert machine.screen.width == 1024 "not at the Finder's 1024 x 768"\n` +
-          `include "/opfs/upload/osx-interactive.script"\n`,
+        "/opfs/upload/osx-driver.lua",
+        `vars.MODE = "live"\nvars.CKPT = ""\nvars.TEST_DATA = "/opfs"\nfunction scen_setup()\n${body}\nend\n` +
+          `scheduler.run(25000000000)\n` +
+          `assert(machine.screen.width == 1024, "not at the Finder's 1024 x 768")\n` +
+          `dofile("/opfs/upload/osx-interactive.lua")\n`,
       );
-      await terminalRun(page, 'include "/opfs/upload/osx-driver.script"');
+      await terminalRun(page, 'dofile("/opfs/upload/osx-driver.lua")');
       const text = await waitFor(
         page,
         '"phase":"restore2"[^}]*}',
         60 * 60 * 1000,
       );
-      expect(text).not.toContain("ASSERT FAILED");
+      expect(text).not.toMatch(/osx-interactive\.lua:\d+:|osx-driver\.lua:\d+:/);
       for (const m of text.matchAll(/@@SCEN (\{[^}]*\})/g)) {
         const rec = JSON.parse(m[1]) as {
           phase: string;

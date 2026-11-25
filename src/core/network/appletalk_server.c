@@ -32,7 +32,8 @@
 #include "gs_assert.h"
 #include "log.h"
 #include "macroman.h"
-#include "worker_thread.h"
+#include "vbuf.h"
+#include "job/job.h" // EMU_THREAD_CHECK
 
 #include <ctype.h>
 #include <dirent.h>
@@ -56,21 +57,9 @@ LOG_USE_CATEGORY_NAME("afp");
 
 // Emit a short hex dump at LOG level 2 for AFP request/response payloads
 void afp_log_hex(const char *label, const uint8_t *buf, int len) {
-    (void)label; // only read by LOG(), which the unit harness compiles out
-    if (!buf || len <= 0)
-        return;
-    char line[AFP_LOG_HEX_MAX * 3 + 5];
-    int pos = 0;
-    int cap = (int)(sizeof(line) - 4);
-    int limit = len;
-    if (limit > AFP_LOG_HEX_MAX)
-        limit = AFP_LOG_HEX_MAX;
-    for (int i = 0; i < limit && pos < cap; i++) {
-        pos += snprintf(&line[pos], (size_t)(cap - pos), "%02X%s", buf[i], (i + 1 == limit) ? "" : " ");
-    }
-    if (limit < len && pos < cap)
-        snprintf(&line[pos], (size_t)(sizeof(line) - pos), " …");
-    LOG(2, "%s (%d bytes): %s", label ? label : "AFP hex", len, line);
+    // Gated: formatted only when level 2 prints (FPEnumerate calls this on
+    // every request and reply)
+    log_hex(log_local_category(), 2, label ? label : "AFP hex", buf, len > 0 ? (size_t)len : 0, AFP_LOG_HEX_MAX);
 }
 
 // ============================================================================
@@ -1035,16 +1024,13 @@ int afp_move_entries(const char *from, const char *to) {
     while ((ent = readdir(dir)) != NULL) {
         if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
             continue;
-        if (n == cap) {
-            cap = cap ? cap * 2 : 16;
-            char **grown = realloc(names, cap * sizeof(*names));
-            if (!grown) {
-                rc = -1;
-                errno = ENOMEM;
-                break;
-            }
-            names = grown;
+        char **grown = gs_grow(names, &cap, n + 1, sizeof(*names), 16);
+        if (!grown) {
+            rc = -1;
+            errno = ENOMEM;
+            break;
         }
+        names = grown;
         if (!(names[n] = strdup(ent->d_name))) {
             rc = -1;
             errno = ENOMEM;
@@ -2317,14 +2303,10 @@ static void catsearch_adopt_tree(vol_t *vol, const char *dir_rel, int depth) {
     while ((dent = readdir(dir)) != NULL) {
         if (strcmp(dent->d_name, ".") == 0 || strcmp(dent->d_name, "..") == 0 || !afp_name_visible(dent->d_name))
             continue;
-        if (count == cap) {
-            size_t ncap = cap ? cap * 2 : 32;
-            char **tmp = (char **)realloc(names, ncap * sizeof(char *));
-            if (!tmp)
-                break;
-            names = tmp;
-            cap = ncap;
-        }
+        char **tmp = gs_grow(names, &cap, count + 1, sizeof(char *), 32);
+        if (!tmp)
+            break;
+        names = tmp;
         names[count] = strdup(dent->d_name);
         if (names[count])
             count++;
@@ -2594,7 +2576,7 @@ int atalk_afp_ok_command_at(int index, const char **out_name, uint64_t *out_coun
 uint32_t afp_handle_command(uint16_t session_id, uint8_t opcode, const uint8_t *in, int in_len, uint8_t *out,
                             int out_max, int *out_len) {
     // The server's tables are unlocked globals: single worker thread only
-    worker_thread_check("afp_handle_command");
+    EMU_THREAD_CHECK("afp_handle_command");
     if (out_len)
         *out_len = 0;
     // Handlers write their fixed-size replies without checking the room: the

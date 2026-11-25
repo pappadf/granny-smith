@@ -151,7 +151,7 @@ describe('one post-boot reconciliation, every path', () => {
     images.mounted['/opfs/images/fd/old.img'] = { kind: 'fd', drive: 1 };
     bridge.reply('machine.floppy.drive[0].present', true);
     bridge.reply('machine.floppy.drive[1].present', false);
-    bridge.reply('machine.floppy.drive[0].disk.filename', '/opfs/images/fd/sys.img');
+    bridge.reply('machine.floppy.drive[0].image.source', '/opfs/images/fd/sys.img');
     bridge.reply('machine.storage', [
       {
         bus: 'scsi',
@@ -159,7 +159,7 @@ describe('one post-boot reconciliation, every path', () => {
         type: 'hd',
         present: true,
         media: { bus: 'scsi', id: 0, label: 'SCSI' },
-        filename: '/opfs/images/hd/a.img',
+        source: '/opfs/images/hd/a.img',
       },
       {
         bus: 'ata1',
@@ -167,7 +167,7 @@ describe('one post-boot reconciliation, every path', () => {
         type: 'hd',
         present: true,
         media: { bus: 'ata', id: 2, label: 'Secondary ATA bus' },
-        filename: '/opfs/images/hd/b.img',
+        source: '/opfs/images/hd/b.img',
       },
       {
         bus: 'scsi',
@@ -175,7 +175,7 @@ describe('one post-boot reconciliation, every path', () => {
         type: 'cd',
         present: true,
         media: { bus: 'scsi', id: 3, label: 'SCSI' },
-        filename: '/opfs/images/cd/c.iso',
+        source: '/opfs/images/cd/c.iso',
       },
       {
         bus: 'scsi',
@@ -183,7 +183,7 @@ describe('one post-boot reconciliation, every path', () => {
         type: 'cd',
         present: false,
         media: { bus: 'scsi', id: 4 },
-        filename: '',
+        source: '',
       },
     ]);
     await reconcileUiWithMachine('restore');
@@ -196,7 +196,7 @@ describe('one post-boot reconciliation, every path', () => {
     expect(images.fdDriveCount).toBe(2);
     // A machine that cannot say what it holds shows nothing mounted.
     bridge.reply('machine.storage', { error: 'machine.storage: no machine is running' });
-    bridge.reply('machine.floppy.drive[0].disk.filename', { error: 'no disk' });
+    bridge.reply('machine.floppy.drive[0].image.source', { error: 'no disk' });
     await reconcileUiWithMachine('restore');
     expect(images.mounted).toEqual({});
   });

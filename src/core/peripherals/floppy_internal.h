@@ -16,25 +16,13 @@
 #include "floppy.h" // FLOPPY_NUM_DRIVES, FLOPPY_TYPE_*
 #include "floppy_geometry.h" // zone helpers + floppy_media_t (public API)
 #include "image.h"
+#include "image_class.h"
 #include "memory.h"
 #include "scheduler.h"
 
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-
-// ============================================================================
-// Controller Type Constants
-// ============================================================================
-
-// IWM-only controller (Mac Plus)
-#define FLOPPY_TYPE_IWM 0
-// SWIM dual-mode controller (SE/30)
-#define FLOPPY_TYPE_SWIM 1
-// SWIM III, controller-driven (PDM 6100/7100/8100)
-#define FLOPPY_TYPE_SWIM3 2
-// New Age (µPD72070), controller-driven (Quadra 840AV / Centris 660AV)
-#define FLOPPY_TYPE_NEW_AGE 3
 
 // ============================================================================
 // Drive and Track Geometry
@@ -162,9 +150,6 @@
 // ISM FIFO capacity
 #define ISM_FIFO_SIZE 2
 
-// CRC-CCITT initial value
-#define CRC_INIT 0xFFFF
-
 // IWM->ISM mode switch: expected bit-6 pattern in 4 consecutive mode writes
 extern const uint8_t ISM_SWITCH_PATTERN[4];
 
@@ -285,14 +270,15 @@ struct floppy {
     // === Pointers (not checkpointed) ===
     image_t *disk[NUM_DRIVES]; // disk image pointers
     struct scheduler *scheduler; // scheduler for timed events
-    memory_interface_t memory_interface; // memory interface
+    const memory_interface_t *memory_interface; // the controller's register window (IWM or SWIM)
 
     // Object-tree binding — lifetime tied to floppy_init / floppy_delete.
     struct object *object; // top-level floppy node
     struct object *controller_object; // floppy.controller node (the register file)
     struct object *drives_object; // floppy.drive collection child
     struct object *drive_objects[NUM_DRIVES]; // per-drive entry objects
-    struct object *disk_objects[NUM_DRIVES]; // per-drive medium (disk) nodes — drive[N].disk
+    struct object *image_objects[NUM_DRIVES]; // per-drive image nodes — drive[N].image
+    image_node_t image_nodes[NUM_DRIVES]; // their data: this floppy and the drive (image_class.h)
     // Per-drive back-link used as instance_data for each drive entry.
     floppy_drive_link_t drive_links[NUM_DRIVES];
     // How many of the controller's NUM_DRIVES the machine has cabled
@@ -342,7 +328,7 @@ void iwm_flush_modified_tracks(floppy_drive_t *drive, image_t *img, int drive_in
 // See the comment at the definition (floppy_gcr.c) for why this exists.
 void iwm_write_through(floppy_drive_t *drive, image_t *img, int drive_index, int side);
 
-// gcr_codewords / decode_gcr / the triplet chain are public: floppy_geometry.h.
+// The GCR codec (codeword tables, sector nibblizer, address field) is gcr.h.
 
 // ============================================================================
 // Shared drive/IWM functions (defined in floppy.c), genuinely shared with

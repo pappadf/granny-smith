@@ -10,7 +10,7 @@
 
 #include "breadcrumb.h" // the GPU wait totals
 #include "cpu.h" // cpu_get_pc
-#include "debug.h" // debug_mac_xlate
+#include "debug.h" // debug_mac_xlate, debug_mac_os_running
 #include "display.h" // display_t
 #include "drive_activity.h" // DRIVE_KIND_*
 #include "log.h"
@@ -60,6 +60,7 @@ typedef struct {
     double instr_since_ms; // when the count last changed
     bool instr_alerted; // the still alert is out (until it moves again)
     uint16_t ds_err; // DSErrCode at the last poll
+    bool mac_os; // the guest ran Mac OS at the last poll (debug_mac_os_running)
 } watch_t;
 
 static watch_t g_watch;
@@ -196,9 +197,8 @@ static void format_screen(char *buf, size_t size) {
         }
     }
     if (flat) {
-        char hex[2 * 4 + 1] = "";
-        for (uint32_t i = 0; i < px_bytes && i < 4; i++)
-            snprintf(hex + 2 * i, sizeof hex - 2 * i, "%02x", first[i]);
+        char hex[2 * 4 + 1];
+        hex_encode(hex, first, px_bytes < 4 ? px_bytes : 4, false);
         snprintf(buf + k, size - (size_t)k, " (uniform, every sampled pixel %s)", hex);
     }
 }
@@ -219,10 +219,16 @@ static void report(config_t *m, double now_ms) {
     uint64_t dj = js.insns >= g_watch.rep_jit ? js.insns - g_watch.rep_jit : js.insns;
     double mips = secs > 0 ? (double)di / secs / 1e6 : 0;
 
-    char pc[48], screen[96], app[40];
+    char pc[48], screen[96], app[40], mac[96];
     format_pc(m, pc, sizeof pc);
     format_screen(screen, sizeof screen);
-    mac_app_name(app, sizeof app);
+    // The Mac OS globals mean something only while the guest runs Mac OS
+    if (debug_mac_os_running()) {
+        mac_app_name(app, sizeof app);
+        snprintf(mac, sizeof mac, "mac Ticks=%u app=\"%s\" DSErrCode=%d", (unsigned)mac_read32(MAC_TICKS), app,
+                 (int)(int16_t)mac_read16(MAC_DS_ERRCODE));
+    } else
+        snprintf(mac, sizeof mac, "not Mac OS");
 
     // Disk traffic since the last line, per kind (read/write calls)
     uint64_t d[2 * DRIVE_KIND_COUNT];
@@ -232,13 +238,12 @@ static void report(config_t *m, double now_ms) {
     }
 
     log_status("t+%.0fs %s, %s, %.1f MIPS (jit %s %.0f%%), %" PRIu64 " instr; disk r/w hd %" PRIu64 "/%" PRIu64
-               " cd %" PRIu64 "/%" PRIu64 " fd %" PRIu64 "/%" PRIu64
-               "; mac Ticks=%u app=\"%s\" DSErrCode=%d; %s; checkpoint.auto=%s; alerts %lu (+%lu)",
+               " cd %" PRIu64 "/%" PRIu64 " fd %" PRIu64 "/%" PRIu64 "; %s; %s; checkpoint.auto=%s; alerts %lu (+%lu)",
                (now_ms - g_watch.start_ms) / 1000.0, sched && scheduler_is_running(sched) ? "running" : "stopped", pc,
                mips, js.on ? "on" : "off", di ? 100.0 * (double)dj / (double)di : 0.0, instr, d[2 * DRIVE_KIND_HD],
                d[2 * DRIVE_KIND_HD + 1], d[2 * DRIVE_KIND_CD], d[2 * DRIVE_KIND_CD + 1], d[2 * DRIVE_KIND_FD],
-               d[2 * DRIVE_KIND_FD + 1], (unsigned)mac_read32(MAC_TICKS), app, (int)(int16_t)mac_read16(MAC_DS_ERRCODE),
-               screen, platform_checkpoint_auto_get() ? "on" : "off", alerts, alerts - g_watch.rep_alerts);
+               d[2 * DRIVE_KIND_FD + 1], mac, screen, platform_checkpoint_auto_get() ? "on" : "off", alerts,
+               alerts - g_watch.rep_alerts);
 
     // Each device's own line
     for (int i = 0; i < WATCH_MAX_REPORTERS; i++) {
@@ -398,10 +403,9 @@ static void perf_report(config_t *m, double now_ms) {
     perf_take_baseline(m, now_ms);
 }
 
-// The detectors: a system error, Ticks frozen, the CPU not advancing
-static void detect(config_t *m, double now_ms) {
-    scheduler_t *sched = m->scheduler;
-    bool running = sched && scheduler_is_running(sched);
+// The Mac OS detectors (detect, while the guest runs Mac OS): a system
+// error, and Ticks frozen while the CPU runs
+static void detect_mac_os(config_t *m, double now_ms, bool running) {
     char pc[48];
 
     // A Mac OS system error (the bomb box, or a debugger break with one):
@@ -418,22 +422,9 @@ static void detect(config_t *m, double now_ms) {
     g_watch.ds_err = ds;
 
     if (!running) {
-        // A stopped machine is not stuck: restart the clocks
-        g_watch.ticks_since_ms = g_watch.instr_since_ms = now_ms;
+        // A stopped machine is not stuck: restart the clock
+        g_watch.ticks_since_ms = now_ms;
         return;
-    }
-
-    // The CPU retires instructions
-    uint64_t instr = scheduler_instr_count(sched);
-    if (instr != g_watch.instr) {
-        g_watch.instr = instr;
-        g_watch.instr_since_ms = now_ms;
-        g_watch.instr_alerted = false;
-    } else if (!g_watch.instr_alerted && now_ms - g_watch.instr_since_ms >= WATCH_CPU_STILL_S * 1000.0) {
-        g_watch.instr_alerted = true;
-        format_pc(m, pc, sizeof pc);
-        LOG_ALERT("the machine is running but its CPU has retired no instruction for %d s (%s): halted or wedged",
-                  WATCH_CPU_STILL_S, pc);
     }
 
     // Ticks advances (the OS's 60 Hz interrupt is being taken).  Armed only
@@ -454,6 +445,53 @@ static void detect(config_t *m, double now_ms) {
                   "(interrupts masked, or spinning)",
                   (unsigned)ticks, WATCH_TICKS_FROZEN_S, pc);
     }
+}
+
+// The detectors: a system error, Ticks frozen (both Mac OS only), the CPU
+// not advancing (every guest)
+static void detect(config_t *m, double now_ms) {
+    scheduler_t *sched = m->scheduler;
+    bool running = sched && scheduler_is_running(sched);
+    char pc[48];
+
+    // The Mac OS detectors read Mac OS's low-memory globals, which under
+    // another system (Xenix, the Lisa Office System, A/UX) or before Mac OS
+    // has started are arbitrary memory.  They apply only while the guest runs
+    // Mac OS, from fresh baselines each time it starts to.
+    bool mac_os = debug_mac_os_running();
+    if (mac_os && !g_watch.mac_os) {
+        g_watch.ds_err = mac_read16(MAC_DS_ERRCODE);
+        g_watch.ticks = mac_read32(MAC_TICKS);
+        g_watch.ticks_since_ms = now_ms;
+    } else if (!mac_os) {
+        g_watch.ticks_alive = false; // re-armed by Ticks moving under Mac OS
+        g_watch.ticks_alerted = false;
+    }
+    g_watch.mac_os = mac_os;
+
+    if (!running) {
+        // A stopped machine is not stuck: restart the clocks
+        g_watch.instr_since_ms = now_ms;
+        if (mac_os)
+            detect_mac_os(m, now_ms, false);
+        return;
+    }
+
+    // The CPU retires instructions
+    uint64_t instr = scheduler_instr_count(sched);
+    if (instr != g_watch.instr) {
+        g_watch.instr = instr;
+        g_watch.instr_since_ms = now_ms;
+        g_watch.instr_alerted = false;
+    } else if (!g_watch.instr_alerted && now_ms - g_watch.instr_since_ms >= WATCH_CPU_STILL_S * 1000.0) {
+        g_watch.instr_alerted = true;
+        format_pc(m, pc, sizeof pc);
+        LOG_ALERT("the machine is running but its CPU has retired no instruction for %d s (%s): halted or wedged",
+                  WATCH_CPU_STILL_S, pc);
+    }
+
+    if (mac_os)
+        detect_mac_os(m, now_ms, true);
 }
 
 void watch_poll(double now_ms) {

@@ -31,12 +31,9 @@
 static bool parse_hex_byte(const char *tok, uint8_t *byte_out) {
     if (!tok || !tok[0] || !tok[1] || tok[2] != '\0')
         return false;
-    int hi = 0, lo = 0;
-    // Decode high nibble
-    if (!isxdigit((unsigned char)tok[0]) || !isxdigit((unsigned char)tok[1]))
+    int hi = hex_digit(tok[0]), lo = hex_digit(tok[1]);
+    if (hi < 0 || lo < 0)
         return false;
-    hi = (tok[0] <= '9') ? (tok[0] - '0') : (tolower((unsigned char)tok[0]) - 'a' + 10);
-    lo = (tok[1] <= '9') ? (tok[1] - '0') : (tolower((unsigned char)tok[1]) - 'a' + 10);
     *byte_out = (uint8_t)((hi << 4) | lo);
     return true;
 }
@@ -218,50 +215,31 @@ static DEF_METHOD(find_method_long) {
 // alone failed with "missing argument 'start'".
 static const value_t find_def_start = {.kind = VK_UINT, .u = 0};
 
+// The optional `start` / `end` scan range every find method takes after its
+// needle
+#define FIND_RANGE_ARGS                                                                                                \
+    {.name = "start",                                                                                                  \
+     .kind = VK_UINT,                                                                                                  \
+     .validation_flags = OBJ_ARG_OPTIONAL,                                                                             \
+     .presentation_flags = VFLAG_HEX,                                                                                  \
+     .default_value = &find_def_start,                                                                                 \
+     .doc = "Scan start address"},                                                                                     \
+    {                                                                                                                  \
+        .name = "end", .kind = VK_UINT, .validation_flags = OBJ_ARG_OPTIONAL, .presentation_flags = VFLAG_HEX,         \
+        .doc = "Scan end address, inclusive", .default_doc = "the address mask"                                        \
+    }
+
 static const arg_decl_t find_str_args[] = {
     {.name = "text", .kind = VK_STRING, .doc = "Search text"},
-    {.name = "start",
-     .kind = VK_UINT,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .presentation_flags = VFLAG_HEX,
-     .default_value = &find_def_start,
-     .doc = "Scan start address"},
-    {.name = "end",
-     .kind = VK_UINT,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .presentation_flags = VFLAG_HEX,
-     .doc = "Scan end address, inclusive",
-     .default_doc = "the address mask"},
+    FIND_RANGE_ARGS,
 };
 static const arg_decl_t find_bytes_args[] = {
     {.name = "hex", .kind = VK_STRING, .doc = "Space-separated hex bytes (\"4E 71\")"},
-    {.name = "start",
-     .kind = VK_UINT,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .presentation_flags = VFLAG_HEX,
-     .default_value = &find_def_start,
-     .doc = "Scan start address"},
-    {.name = "end",
-     .kind = VK_UINT,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .presentation_flags = VFLAG_HEX,
-     .doc = "Scan end address, inclusive",
-     .default_doc = "the address mask"},
+    FIND_RANGE_ARGS,
 };
 static const arg_decl_t find_int_args[] = {
     {.name = "value", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "Integer value to search for"},
-    {.name = "start",
-     .kind = VK_UINT,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .presentation_flags = VFLAG_HEX,
-     .default_value = &find_def_start,
-     .doc = "Scan start address"},
-    {.name = "end",
-     .kind = VK_UINT,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .presentation_flags = VFLAG_HEX,
-     .doc = "Scan end address, inclusive",
-     .default_doc = "the address mask"},
+    FIND_RANGE_ARGS,
 };
 
 static const member_t find_members[] = {

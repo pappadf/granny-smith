@@ -23,7 +23,7 @@ without talking to the others, and a local `SHARD=K/N` reproduces CI's.
 
 Checkpoint fixtures: a test whose config.mk says `TEST_PROVIDES := name`
 saves that fixture, and one that says `TEST_NEEDS := name` loads it (both
-take a space-separated list; lib/mac.script's fixture_load / fixture_save).
+take a space-separated list; lib/mac.lua's fixture_load / fixture_save).
 A producer and its consumers are bin-packed as ONE item of their summed
 weight, so they always land on the same shard.  --deps prints the make
 edges for the given tests, one `consumer:producer` per line (the Makefile
@@ -31,19 +31,16 @@ turns them into order-only prerequisites).  Run from tests/integration.
 """
 
 import json
+import os
 import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+from testconfig import read_config  # noqa: E402  (the one config.mk reader)
 
 
 def config_list(test, key):
     """The names a test's config.mk lists under `key :=` (empty if none)."""
-    try:
-        with open(f"{test}/config.mk") as f:
-            for line in f:
-                if line.startswith(key) and ":=" in line and line.split(":=")[0].strip() == key:
-                    return line.split(":=", 1)[1].split()
-    except FileNotFoundError:
-        pass
-    return []
+    return read_config(test).get(key, "").split()
 
 
 def fixture_edges(tests):

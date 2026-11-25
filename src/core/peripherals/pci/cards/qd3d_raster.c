@@ -15,27 +15,16 @@
 
 #include "qd3d_raster.h"
 
+#include "display.h"
 #include "log.h"
 
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
-// The thread backend builds everywhere the core builds: native pthreads,
-// and Emscripten's pthreads-on-Web-Workers, created on demand at the
-// card's first boot exactly as the Voodoo2's (voodoo2_raster.c).  A build
-// can leave it out with -DGS_QD3D_THREAD_BACKEND=0 (EXTRA_CFLAGS): no
-// pthread code is compiled, raster=thread falls back to the walker with a
-// log line, and the default backend becomes the walker.
-#ifndef GS_QD3D_THREAD_BACKEND
-#define GS_QD3D_THREAD_BACKEND 1
-#endif
-#define Q3_HAVE_THREAD_BACKEND GS_QD3D_THREAD_BACKEND
-#if Q3_HAVE_THREAD_BACKEND
-#include <pthread.h>
-#include <stdatomic.h>
-#include <time.h>
-#endif
+// The thread backend (and its -DGS_RASTER_THREAD_BACKEND=0 build knob) is
+// the shared raster queue's -- raster_queue.h.
+#include "raster_queue.h"
 
 LOG_USE_CATEGORY_NAME("qd3d");
 
@@ -361,7 +350,7 @@ static inline uint8_t to_byte(float v) {
 // Pack one pixel into the output stream: big-endian x1555 or xRGB8888.
 static inline uint8_t *put_pixel(uint8_t *out, bool dest16, uint8_t R, uint8_t G, uint8_t B) {
     if (dest16) {
-        uint16_t p = (uint16_t)(((R >> 3) << 10) | ((G >> 3) << 5) | (B >> 3));
+        uint16_t p = display_pack555(R, G, B);
         *out++ = (uint8_t)(p >> 8);
         *out++ = (uint8_t)p;
     } else {
@@ -502,174 +491,26 @@ typedef enum q3_backend_kind {
     Q3_BACKEND_THREAD,
 } q3_backend_kind_t;
 
-#if Q3_HAVE_THREAD_BACKEND
-// The worker thread and its bounded single-producer/single-consumer ring,
-// as the Voodoo2's: `head` counts commands submitted, `tail` commands
-// RETIRED (executed to completion).  Both sides sleep on condition
-// variables only when they have announced they are about to (the
-// idle/waiting flags), so the steady state makes no system calls.
-typedef struct q3_thread {
-    q3_cmd_t *q;
-    _Atomic uint64_t head, tail;
-    _Atomic int worker_idle; // the worker is (about to be) asleep
-    _Atomic int producer_waiting; // the producer is (about to be) asleep
-    pthread_mutex_t mu;
-    pthread_cond_t cv_work, cv_done;
-    bool stop;
-    bool started;
-    pthread_t thr;
-    // GS_QD3D_STATS=1: the decomposition printed at teardown.
-    uint64_t n_submit, n_sync, n_sync_wait, n_room_wait, n_state_wait, n_worker_sleep;
-    uint64_t wait_ns;
-    double worker_cpu_s;
-} q3_thread_t;
-
-// Monotonic nanoseconds, for the stats.
-static uint64_t q3_now_ns(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
-}
-#endif
-
 struct q3_raster {
     q3_backend_kind_t kind;
     q3_target_t *tgt;
     q3_state_build_fn build;
     void *ctx;
-    // The draw-state ring: a slot is rewritten only once every command
-    // that referenced it has retired (st_seq holds 1 + the sequence
-    // number of the last such command; 0 = never used).
-    q3_draw_state_t *st;
-    uint64_t *st_seq;
-    uint32_t st_cur;
-    bool st_dirty;
-#if Q3_HAVE_THREAD_BACKEND
-    q3_thread_t th;
-#endif
+    rq_t rq; // the draw-state ring and, for the thread backend, the worker
 };
 
-#if Q3_HAVE_THREAD_BACKEND
-// One iteration of a busy-wait: a pause hint where the ISA has one.
-static inline void q3_cpu_relax(void) {
-#if defined(__x86_64__) || defined(__i386__)
-    __builtin_ia32_pause();
-#elif defined(__aarch64__)
-    __asm__ volatile("yield");
-#else
-    __asm__ volatile("" ::: "memory");
-#endif
+// The producer's state build, as the queue calls it (rq_build_fn).
+static void q3_state_build(void *ctx, void *state) {
+    q3_raster_t *r = (q3_raster_t *)ctx;
+    r->build(r->ctx, (q3_draw_state_t *)state);
 }
 
-// How long a dry worker spins before it sleeps: a frame's commands arrive
-// in a burst while the card walks the control program, so a short spin
-// catches the next one; between frames the worker sleeps.
-#define Q3_WORKER_SPIN 4096
-
-// The worker: drain the ring, execute in order, retire, sleep when dry.
-static void *q3_worker_main(void *arg) {
-    q3_raster_t *r = (q3_raster_t *)arg;
-    q3_thread_t *th = &r->th;
-    for (;;) {
-        uint64_t t = atomic_load_explicit(&th->tail, memory_order_relaxed);
-        uint64_t h = atomic_load_explicit(&th->head, memory_order_acquire);
-        for (int spin = 0; h == t && spin < Q3_WORKER_SPIN; spin++) {
-            q3_cpu_relax();
-            h = atomic_load_explicit(&th->head, memory_order_acquire);
-        }
-        if (h == t) {
-            th->n_worker_sleep++;
-            pthread_mutex_lock(&th->mu);
-            atomic_store_explicit(&th->worker_idle, 1, memory_order_seq_cst);
-            // Re-check under the lock: a producer that stored head after
-            // our first load either sees worker_idle and signals, or its
-            // store is visible here (Dekker on head/worker_idle).
-            while (atomic_load_explicit(&th->head, memory_order_seq_cst) == t && !th->stop)
-                pthread_cond_wait(&th->cv_work, &th->mu);
-            atomic_store_explicit(&th->worker_idle, 0, memory_order_seq_cst);
-            bool stop = th->stop && atomic_load_explicit(&th->head, memory_order_seq_cst) == t;
-            pthread_mutex_unlock(&th->mu);
-            if (stop) {
-                struct timespec ts = {0, 0}; // stays zero where the clock is unsupported (wasm)
-                clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
-                th->worker_cpu_s = (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
-                return NULL;
-            }
-            continue;
-        }
-        const q3_cmd_t *cmd = &th->q[t & (Q3_QUEUE_DEPTH - 1u)];
-        q3_raster_execute(&r->st[cmd->state], r->tgt, cmd);
-        atomic_store_explicit(&th->tail, t + 1u, memory_order_seq_cst);
-        if (atomic_load_explicit(&th->producer_waiting, memory_order_seq_cst)) {
-            pthread_mutex_lock(&th->mu);
-            pthread_cond_broadcast(&th->cv_done);
-            pthread_mutex_unlock(&th->mu);
-        }
-    }
+// The worker's per-command step (rq_exec_fn).
+static void q3_worker_exec(void *ctx, const void *cmd) {
+    q3_raster_t *r = (q3_raster_t *)ctx;
+    const q3_cmd_t *c = (const q3_cmd_t *)cmd;
+    q3_raster_execute(rq_state(&r->rq, c->state), r->tgt, c);
 }
-
-// Block the producer until `tail` reaches at least `want`.
-static void q3_thread_wait_tail(q3_thread_t *th, uint64_t want) {
-    if (atomic_load_explicit(&th->tail, memory_order_acquire) >= want)
-        return;
-    uint64_t t0 = q3_now_ns();
-    pthread_mutex_lock(&th->mu);
-    atomic_store_explicit(&th->producer_waiting, 1, memory_order_seq_cst);
-    while (atomic_load_explicit(&th->tail, memory_order_seq_cst) < want)
-        pthread_cond_wait(&th->cv_done, &th->mu);
-    atomic_store_explicit(&th->producer_waiting, 0, memory_order_seq_cst);
-    pthread_mutex_unlock(&th->mu);
-    th->wait_ns += q3_now_ns() - t0;
-}
-
-static bool q3_thread_start(q3_raster_t *r) {
-    q3_thread_t *th = &r->th;
-    th->q = (q3_cmd_t *)calloc(Q3_QUEUE_DEPTH, sizeof(q3_cmd_t));
-    if (!th->q)
-        return false;
-    atomic_store(&th->head, 0);
-    atomic_store(&th->tail, 0);
-    atomic_store(&th->worker_idle, 0);
-    atomic_store(&th->producer_waiting, 0);
-    pthread_mutex_init(&th->mu, NULL);
-    pthread_cond_init(&th->cv_work, NULL);
-    pthread_cond_init(&th->cv_done, NULL);
-    th->stop = false;
-    if (pthread_create(&th->thr, NULL, q3_worker_main, r) != 0) {
-        free(th->q);
-        th->q = NULL;
-        return false;
-    }
-    th->started = true;
-    return true;
-}
-
-static void q3_thread_stop(q3_raster_t *r) {
-    q3_thread_t *th = &r->th;
-    if (!th->started)
-        return;
-    q3_thread_wait_tail(th, atomic_load(&th->head));
-    pthread_mutex_lock(&th->mu);
-    th->stop = true;
-    pthread_cond_broadcast(&th->cv_work);
-    pthread_mutex_unlock(&th->mu);
-    pthread_join(th->thr, NULL);
-    const char *stats = getenv("GS_QD3D_STATS");
-    if (stats && *stats && *stats != '0')
-        LOG(0,
-            "raster=thread stats: %llu commands, %llu syncs (%llu waited), %llu room waits, %llu state waits, "
-            "%.3f s waited total, %llu worker sleeps, worker cpu %.1f s",
-            (unsigned long long)th->n_submit, (unsigned long long)th->n_sync, (unsigned long long)th->n_sync_wait,
-            (unsigned long long)th->n_room_wait, (unsigned long long)th->n_state_wait, (double)th->wait_ns * 1e-9,
-            (unsigned long long)th->n_worker_sleep, th->worker_cpu_s);
-    pthread_mutex_destroy(&th->mu);
-    pthread_cond_destroy(&th->cv_work);
-    pthread_cond_destroy(&th->cv_done);
-    free(th->q);
-    th->q = NULL;
-    th->started = false;
-}
-#endif
 
 q3_raster_t *q3_raster_create(const char *kind, q3_target_t *tgt, q3_state_build_fn build, void *ctx) {
     q3_raster_t *r = (q3_raster_t *)calloc(1, sizeof(*r));
@@ -678,27 +519,22 @@ q3_raster_t *q3_raster_create(const char *kind, q3_target_t *tgt, q3_state_build
     r->tgt = tgt;
     r->build = build;
     r->ctx = ctx;
-    r->st = (q3_draw_state_t *)calloc(Q3_STATE_SLOTS, sizeof(q3_draw_state_t));
-    r->st_seq = (uint64_t *)calloc(Q3_STATE_SLOTS, sizeof(uint64_t));
-    if (!r->st || !r->st_seq) {
-        free(r->st);
-        free(r->st_seq);
+    if (!rq_init(&r->rq, sizeof(q3_draw_state_t), Q3_STATE_SLOTS, q3_state_build, r)) {
         free(r);
         return NULL;
     }
-    r->st_dirty = true;
     r->kind = Q3_BACKEND_SW;
     if (kind && strcmp(kind, "null") == 0) {
         r->kind = Q3_BACKEND_NULL;
     } else if (kind && strcmp(kind, "thread") == 0) {
-#if Q3_HAVE_THREAD_BACKEND
-        if (q3_thread_start(r))
+#if GS_RASTER_THREAD_BACKEND
+        if (rq_start_thread(&r->rq, sizeof(q3_cmd_t), Q3_QUEUE_DEPTH, q3_worker_exec, NULL, r))
             r->kind = Q3_BACKEND_THREAD;
         else
             LOG(0, "raster=thread: could not start the worker thread -- using the synchronous walker");
 #else
-        LOG(1, "raster=thread: this build compiled the thread backend out (GS_QD3D_THREAD_BACKEND=0) -- using the "
-               "synchronous walker");
+        LOG(1, "raster=thread: this build compiled the thread backend out (GS_RASTER_THREAD_BACKEND=0) -- using "
+               "the synchronous walker");
 #endif
     } else if (kind && strcmp(kind, "sw") != 0) {
         LOG(0, "unknown raster backend '%s' -- using the synchronous walker", kind);
@@ -709,12 +545,17 @@ q3_raster_t *q3_raster_create(const char *kind, q3_target_t *tgt, q3_state_build
 void q3_raster_destroy(q3_raster_t *r) {
     if (!r)
         return;
-#if Q3_HAVE_THREAD_BACKEND
-    if (r->kind == Q3_BACKEND_THREAD)
-        q3_thread_stop(r);
-#endif
-    free(r->st);
-    free(r->st_seq);
+    bool threaded = r->kind == Q3_BACKEND_THREAD;
+    rq_stats_t st;
+    rq_fini(&r->rq, &st);
+    // The thread backend's decomposition, at teardown (Q3_LOG_STATS)
+    if (threaded)
+        LOG(Q3_LOG_STATS,
+            "raster=thread stats: %llu commands, %llu syncs (%llu waited), %llu room waits, %llu state waits, "
+            "%.3f s waited total, %llu worker sleeps, worker cpu %.1f s",
+            (unsigned long long)st.n_submit, (unsigned long long)st.n_sync, (unsigned long long)st.n_sync_wait,
+            (unsigned long long)st.n_room_wait, (unsigned long long)st.n_state_wait, (double)st.wait_ns * 1e-9,
+            (unsigned long long)st.n_worker_sleep, st.worker_cpu_s);
     free(r);
 }
 
@@ -730,74 +571,27 @@ const char *q3_raster_name(const q3_raster_t *r) {
 }
 
 void q3_raster_state_dirty(q3_raster_t *r) {
-    r->st_dirty = true;
+    rq_state_dirty(&r->rq);
 }
 
 void q3_raster_sync(q3_raster_t *r) {
-#if Q3_HAVE_THREAD_BACKEND
-    if (r->kind == Q3_BACKEND_THREAD) {
-        uint64_t h = atomic_load_explicit(&r->th.head, memory_order_relaxed);
-        r->th.n_sync++;
-        if (atomic_load_explicit(&r->th.tail, memory_order_acquire) < h)
-            r->th.n_sync_wait++;
-        q3_thread_wait_tail(&r->th, h);
-    }
-#else
-    (void)r;
-#endif
+    rq_sync(&r->rq);
 }
 
 void q3_raster_submit(q3_raster_t *r, q3_cmd_t *cmd) {
-    uint64_t seq = 0;
-#if Q3_HAVE_THREAD_BACKEND
-    if (r->kind == Q3_BACKEND_THREAD)
-        seq = atomic_load_explicit(&r->th.head, memory_order_relaxed);
-#endif
-    if (r->st_dirty) {
-        // Take the next ring slot -- after everything that read it has
-        // retired -- and let the producer fill it from the live registers.
-        uint32_t next = (r->st_cur + 1u) & (Q3_STATE_SLOTS - 1u);
-#if Q3_HAVE_THREAD_BACKEND
-        if (r->kind == Q3_BACKEND_THREAD && r->st_seq[next]) {
-            if (atomic_load_explicit(&r->th.tail, memory_order_acquire) < r->st_seq[next])
-                r->th.n_state_wait++;
-            q3_thread_wait_tail(&r->th, r->st_seq[next]);
-        }
-#endif
-        r->build(r->ctx, &r->st[next]);
-        r->st_cur = next;
-        r->st_dirty = false;
-    }
-    cmd->state = (uint16_t)r->st_cur;
-    r->st_seq[r->st_cur] = seq + 1u;
+    // Charge the command to the current draw state (built now if dirty)
+    cmd->state = (uint16_t)rq_begin(&r->rq);
     switch (r->kind) {
     case Q3_BACKEND_NULL:
         if (cmd->kind == Q3_CMD_OBJECT)
             return; // the null backend draws nothing: every frame is the background
-        q3_raster_execute(&r->st[r->st_cur], r->tgt, cmd);
+        q3_raster_execute(rq_state(&r->rq, cmd->state), r->tgt, cmd);
         return;
     case Q3_BACKEND_SW:
-        q3_raster_execute(&r->st[r->st_cur], r->tgt, cmd);
+        q3_raster_execute(rq_state(&r->rq, cmd->state), r->tgt, cmd);
         return;
-    case Q3_BACKEND_THREAD: {
-#if Q3_HAVE_THREAD_BACKEND
-        q3_thread_t *th = &r->th;
-        // Room: the slot we are about to write must have been retired.
-        th->n_submit++;
-        if (seq >= Q3_QUEUE_DEPTH) {
-            if (atomic_load_explicit(&th->tail, memory_order_acquire) < seq + 1u - Q3_QUEUE_DEPTH)
-                th->n_room_wait++;
-            q3_thread_wait_tail(th, seq + 1u - Q3_QUEUE_DEPTH);
-        }
-        th->q[seq & (Q3_QUEUE_DEPTH - 1u)] = *cmd;
-        atomic_store_explicit(&th->head, seq + 1u, memory_order_seq_cst);
-        if (atomic_load_explicit(&th->worker_idle, memory_order_seq_cst)) {
-            pthread_mutex_lock(&th->mu);
-            pthread_cond_signal(&th->cv_work);
-            pthread_mutex_unlock(&th->mu);
-        }
-#endif
+    case Q3_BACKEND_THREAD:
+        rq_enqueue(&r->rq, cmd);
         return;
-    }
     }
 }

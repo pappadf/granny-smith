@@ -581,6 +581,10 @@ while (remaining_cycles > 0) {
 
     // 4. Fire events due at or before the new cpu_cycles
     process_event_queue(&cpu_events, cpu_cycles);
+
+    // 5. Debugger probe (breakpoints, logpoints, watchpoints) -- after step 4,
+    //    so a breakpoint stop never leaves an overdue event queued (#419)
+    if (debugger_active && debug_break_and_trace()) break;
 }
 ```
 
@@ -858,7 +862,7 @@ Headless does not arm any VBL event. Its run loops
 
 - one loop (`hl_pump_once`: a frame-unit while the machine runs, then the mailbox
   drain) serves the script file, stdin, the REPL and the daemon alike — each statement
-  is a job on the job thread, and the loop pumps while it waits for the job's result,
+  is a job the drain steps on the emulator thread, and the loop pumps while it waits for the job's result,
   emitting the ~1 Hz heartbeat and polling the daemon socket for disconnect / `stop`;
 - so the REPL stays responsive to Ctrl-C and the `--max-cycles` cap, and a
   `scheduler.run` with no budget holds the statement until the machine stops.

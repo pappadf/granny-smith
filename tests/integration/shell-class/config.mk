@@ -2,7 +2,7 @@
 # Verifies that the `shell.*` surface — attributes (prompt / running /
 # aliases / vars) and methods (run / complete / expand / script_run /
 # alias_set / alias_unset / interrupt) — is reachable through object_eval
-# and behaves as docs/internals/core/shell/shell.md describes.
+# and behaves as docs/internals/core/lua/lua.md describes.
 
 TEST_NAME := Shell class surface
 TEST_DESC := shell.{run,complete,expand,alias_set,alias_unset,vars,aliases,prompt,running} via object_eval

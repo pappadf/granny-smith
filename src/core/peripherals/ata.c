@@ -62,13 +62,9 @@ bool ata_intrq(const ata_channel_t *ch) {
     return ch->enabled && d->kind != ATA_DEV_NONE && d->intrq && !(ch->devctl & ATA_DC_NIEN);
 }
 
+// Drives INTRQ from the selected device; the consumer hears edges only
 static void update_line(ata_channel_t *ch) {
-    bool level = ata_intrq(ch);
-    if (level == (ch->line != 0))
-        return;
-    ch->line = level ? 1 : 0;
-    if (ch->irq)
-        ch->irq(ch->irq_ctx, level);
+    irq_line_set(&ch->irq, ata_intrq(ch));
 }
 
 static void post_intrq(ata_channel_t *ch, ata_dev_t *d) {
@@ -132,8 +128,7 @@ void ata_channel_free(ata_channel_t *ch) {
 }
 
 void ata_set_irq(ata_channel_t *ch, ata_irq_fn fn, void *ctx) {
-    ch->irq = fn;
-    ch->irq_ctx = ctx;
+    irq_line_bind(&ch->irq, fn, ctx);
 }
 
 void ata_set_dma_kick(ata_channel_t *ch, ata_dma_kick_fn fn, void *ctx) {
@@ -1032,63 +1027,38 @@ int ata_dma_out(void *ctx, const uint8_t *buf, int len) {
 
 // ---- checkpoint ------------------------------------------------------------------
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(ata_channel_t, buf);
+
 void ata_checkpoint_save(ata_channel_t *ch, checkpoint_t *cp) {
-    system_write_checkpoint_data(cp, ch, offsetof(ata_channel_t, buf));
+    checkpoint_save_prefix(cp, ch, ata_channel_t);
     system_write_checkpoint_data(cp, ch->buf, ATA_BUF_SIZE);
-    if (ch->atapi_resp_len)
-        system_write_checkpoint_data(cp, ch->atapi_resp, ch->atapi_resp_len);
-    for (int u = 0; u < 2; u++) {
-        const char *name = ch->img[u] ? image_get_filename(ch->img[u]) : NULL;
-        uint32_t len = (name && *name) ? (uint32_t)strlen(name) + 1u : 0u;
-        system_write_checkpoint_data(cp, &len, sizeof len);
-        if (len)
-            system_write_checkpoint_data(cp, name, len);
-    }
+    checkpoint_write_blob(cp, ch->atapi_resp, ch->atapi_resp ? ch->atapi_resp_len : 0, "ata.resp");
+    for (int u = 0; u < 2; u++)
+        checkpoint_write_image_ref(cp, ch->img[u]);
 }
 
 void ata_checkpoint_restore(ata_channel_t *ch, checkpoint_t *cp, const image_list_t *images) {
     free_resp(ch);
-    system_read_checkpoint_data(cp, ch, offsetof(ata_channel_t, buf));
+    checkpoint_load_prefix(cp, ch, ata_channel_t);
     system_read_checkpoint_data(cp, ch->buf, ATA_BUF_SIZE);
-    if (ch->atapi_resp_len) {
-        ch->atapi_resp = (uint8_t *)malloc(ch->atapi_resp_len);
-        if (ch->atapi_resp) {
-            system_read_checkpoint_data(cp, ch->atapi_resp, ch->atapi_resp_len);
-        } else {
-            uint8_t tmp;
-            for (uint32_t i = 0; i < ch->atapi_resp_len; i++)
-                system_read_checkpoint_data(cp, &tmp, 1);
-            ch->atapi_resp_len = 0;
-        }
+    // The response's length is the blob's, bounded as a PACKET command
+    // bounds it, not the prefix's word
+    ch->atapi_resp = checkpoint_read_blob(cp, ATAPI_RESP_MAX, &ch->atapi_resp_len, "ata.resp");
+    if (ch->atapi_resp_pos > ch->atapi_resp_len) {
+        // A cursor past the response is not what the save wrote
+        free_resp(ch);
+        checkpoint_set_error(cp);
     }
     for (int u = 0; u < 2; u++) {
-        uint32_t len = 0;
-        system_read_checkpoint_data(cp, &len, sizeof len);
-        ch->img[u] = NULL;
-        if (!len)
-            continue;
-        char *name = (char *)malloc(len);
-        if (!name) {
-            uint8_t tmp;
-            for (uint32_t i = 0; i < len; i++)
-                system_read_checkpoint_data(cp, &tmp, 1);
-            continue;
-        }
-        system_read_checkpoint_data(cp, name, len);
-        name[len - 1] = '\0';
-        ch->img[u] = images_find(images, name);
-        if (!ch->img[u]) {
-            // The unit held a disk: a restore without it is not the machine
-            // that was saved.
-            LOG(0, "ch%d dev%d: the checkpoint's image '%s' is not among its images", ch->index, u, name);
-            checkpoint_set_error(cp);
-        }
-        free(name);
+        char what[24];
+        snprintf(what, sizeof what, "ch%d dev%d", ch->index, u);
+        ch->img[u] = checkpoint_read_image_ref(cp, images, what, NULL);
     }
     for (int u = 0; u < 2; u++)
         if (ch->dev[u].kind == ATA_DEV_HD && !ch->img[u])
             ch->dev[u].kind = ATA_DEV_NONE;
     // The line is whatever the restored state drives; the owner's restored
     // interrupt controller already holds the matching source level.
-    ch->line = ata_intrq(ch) ? 1 : 0;
+    ch->irq.level = ata_intrq(ch);
 }

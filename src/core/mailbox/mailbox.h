@@ -14,7 +14,7 @@
 // ring through shared wasm memory (app/web2/src/bus/mailbox.ts is the
 // mirror of this header), the headless daemon will feed it from a socket,
 // and the unit suite feeds it from the same process.  The platform decides
-// where the region lives, who wakes whom (mailbox_notify) and what the
+// where the region lives, who wakes whom (platform_wake) and what the
 // drain budget is; this file decides what the records mean.
 //
 // Control block, 32 uint32 words, 64-byte aligned, then the two rings:
@@ -350,8 +350,8 @@ uint32_t mailbox_client_take(mailbox_client_t *c, uint8_t *buf, size_t cap, uint
 // value (dropped), and the completion calls mailbox_result_complete*.  The
 // token is 0 when nothing is being served that can wait (the leaf then
 // does its work now).  Works for a page request (the EVT_RESULT is written
-// at completion) and for a job's call through the seam (the job is held,
-// and a failure becomes the call's error).  Emulator thread only.
+// at completion) and for a tree call of a job's task (the task suspends
+// until the completion, and a failure becomes the call's error).  Emulator thread only.
 uint32_t mailbox_result_defer(void);
 void mailbox_result_complete(uint32_t token, bool ok, const char *json);
 void mailbox_result_complete_ok(uint32_t token);
@@ -364,9 +364,5 @@ void mailbox_result_bind_io(uint32_t token, uint32_t io_job);
 void mailbox_result_progress(uint32_t token, uint64_t done, uint64_t total);
 // The request id a token answers (0: unknown), for events that name it.
 uint32_t mailbox_result_request_id(uint32_t token);
-
-// Platform hook: wake whoever waits on a control word (the client parks in
-// Atomics.waitAsync on EVT_HEAD and READY).  Weak no-op by default.
-void mailbox_notify(volatile uint32_t *word);
 
 #endif // GS_MAILBOX_H

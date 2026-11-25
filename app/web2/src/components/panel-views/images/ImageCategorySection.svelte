@@ -16,14 +16,19 @@
     mountImage,
     machineDevices,
     deviceLabel,
+    fdDrivePresent,
+    romIdentity,
+    cardRomIdentity,
+    convertImage,
     type MachineDevice,
   } from '@/bus/media';
+  import { pathSize, pathExists, rmPath } from '@/bus/vfs';
   import { showNotification } from '@/state/toasts.svelte';
   import type { OpfsEntry, ImageCategory } from '@/bus/types';
-  import { LARGE_IMPORT_BYTES, identifyRom, identifyCardRom, type MediaTypeId } from '@/lib/media';
+  import { LARGE_IMPORT_BYTES, type MediaTypeId } from '@/lib/media';
+  import { formatSize } from '@/lib/format';
   import { downloadFiles, downloadRawImage } from '@/bus/fsOps';
   import { storedDmgName } from '@/bus/importImage';
-  import { gsEval, gsErrorText, gsEvalWithProgress } from '@/bus/emulator';
   import { startActivity, endActivity, setActivityDetail } from '@/state/activity.svelte';
   import { machine } from '@/state/machine.svelte';
   import IconButton from '@/components/ui/IconButton.svelte';
@@ -76,10 +81,10 @@
       if (e.path in romDesc) continue;
       let desc = '';
       if (cat === 'rom') {
-        const r = await identifyRom(gsEval, e.path).catch(() => null);
+        const r = await romIdentity(e.path).catch(() => null);
         if (r) desc = r.name; // the ROM's name already carries its revision
       } else {
-        const r = await identifyCardRom(gsEval, cat, e.path).catch(() => null);
+        const r = await cardRomIdentity(cat, e.path).catch(() => null);
         if (r) desc = r.cardId;
       }
       romDesc[e.path] = desc;
@@ -192,7 +197,7 @@
         for (let d = 0; d < drives; d++)
           items.push({
             label: `Insert into drive ${d + 1}`,
-            disabled: (await gsEval(`machine.floppy.drive[${d}].present`)) === true,
+            disabled: await fdDrivePresent(d),
             action: () => mount(entry, undefined, d),
           });
       items.push({ sep: true });
@@ -288,8 +293,8 @@
   // file.  A saved state that used the raw file by name no longer finds it,
   // so the user is asked first.
   async function doCompact(entry: OpfsEntry) {
-    const size = (await gsEval('files.path_size', [entry.path])) as number;
-    if (typeof size === 'number' && size <= LARGE_IMPORT_BYTES) {
+    const size = await pathSize(entry.path);
+    if (size !== null && size <= LARGE_IMPORT_BYTES) {
       showNotification(`'${entry.name}' is small already`, 'info');
       return;
     }
@@ -301,25 +306,25 @@
     if (!ok) return;
     const dir = entry.path.replace(/\/[^/]+$/, '');
     let dest = `${dir}/${storedDmgName(entry.name)}`;
-    for (let i = 2; (await gsEval('files.path_exists', [dest])) === true; i++)
+    for (let i = 2; await pathExists(dest); i++)
       dest = `${dir}/${storedDmgName(entry.name).replace(/\.dmg$/, `_${i}.dmg`)}`;
     startActivity(entry.name, 'Compacting');
     busy[entry.path] = 'Compacting…';
     try {
-      const r = await gsEvalWithProgress('files.convert', [entry.path, dest], (done, total) => {
+      const r = await convertImage(entry.path, dest, (done, total) => {
         if (total <= 0) return;
         const pct = `${Math.round((100 * done) / total)} %`;
         busy[entry.path] = `Compacting · ${pct}`;
         setActivityDetail(pct);
       });
-      if (!r || typeof r !== 'object' || 'error' in (r as object)) {
-        showNotification(`Could not compact '${entry.name}': ${gsErrorText(r)}`, 'error');
+      if (typeof r === 'string') {
+        showNotification(`Could not compact '${entry.name}': ${r}`, 'error');
         return;
       }
-      const st = r as { bytes_in?: number; stored_bytes?: number };
-      await gsEval('files.rm', [entry.path]);
+      const st = r;
+      await rmPath(entry.path);
       showNotification(
-        `'${entry.name}' compacted: ${Math.round((st.bytes_in ?? size) / 1048576)} MB disk in ${Math.max(1, Math.round((st.stored_bytes ?? 0) / 1048576))} MB`,
+        `'${entry.name}' compacted: ${formatSize(st.bytes_in ?? size ?? 0)} disk in ${formatSize(st.stored_bytes ?? 0)}`,
         'info',
       );
       bumpImagesRevision();

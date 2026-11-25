@@ -90,7 +90,15 @@ export function installFakeCoreFs(
     for (let i = 0; i < n; i++) if (a[i] !== b[i]) return i;
     return a.length === b.length ? -1 : n;
   });
-  // Nothing is an archive.
-  bridge.reply('files.archive.identify', '');
+  // Nothing is an archive, nor a disk image any drive takes.
+  bridge.reply('files.identify', {
+    opens: false,
+    refusal: '',
+    archive: '',
+    floppy: '',
+    fits: [],
+    kind: '',
+    volumes: [],
+  });
   return files;
 }

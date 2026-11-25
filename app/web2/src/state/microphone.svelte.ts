@@ -44,13 +44,15 @@ import {
   MIC_W_RING_OFF,
   MIC_W_UNDERRUNS,
   MIC_W_WR,
-  shmBlockOk,
+  lazyShmBlock,
 } from '@/bus/shmLayout';
+import { coalesced } from '@/lib/serialize';
 import { micRingSlot } from './micRing';
 import { gsEval } from '@/bus/emulator';
 import { opfs } from '@/bus/opfs';
 import { machine } from './machine.svelte';
 import { showNotification } from './toasts.svelte';
+import { exposeDebug } from '@/lib/debugGlobal';
 
 export interface AudioInputDevice {
   id: string;
@@ -87,8 +89,6 @@ export const microphone: MicrophoneState = $state({
 // Shared-heap transport, announced by em_audio_in.c at startup; the layout
 // (bus/shmLayout.ts) comes from its control block, read on first use -- the
 // address arrives while the module is still starting.
-let announcedPtr = 0;
-let layoutChecked = false;
 let shmPtr = 0;
 let ringLen = 0;
 let ringOff = 0;
@@ -113,49 +113,50 @@ let source: MediaStreamAudioSourceNode | null = null;
 // buildGraph — so it is not taken as a parameter here at all; the rate
 // actually negotiated travels the other way instead, via resetRing.
 export function onAudioInReady(ptr: number): void {
-  announcedPtr = ptr;
-  layoutChecked = false;
+  block.announce(ptr);
   shmPtr = 0;
 }
+
+// The transport's control block, checked on first use (bus/shmLayout.ts).
+const block = lazyShmBlock({
+  magic: MIC_MAGIC,
+  version: MIC_VERSION,
+  onMismatch() {
+    // Leave the microphone off, and say why.
+    console.error('[mic] sample transport layout not recognised; microphone disabled');
+    showNotification(
+      'Microphone unavailable: this emulator build has a different ring layout',
+      'error',
+    );
+  },
+  onClaim(i32, w) {
+    ringOff = Atomics.load(i32, w + MIC_W_RING_OFF);
+    ringLen = Atomics.load(i32, w + MIC_W_RING_LEN);
+    labelOff = Atomics.load(i32, w + MIC_W_LABEL_OFF);
+    labelMax = Atomics.load(i32, w + MIC_W_LABEL_LEN) - 1;
+  },
+});
 
 // The transport's heap views, once its control block has been read and
 // found to be the layout this build speaks; null otherwise.
 function transport(): ReturnType<typeof getModuleHeap> {
   const heap = getModuleHeap();
-  if (!heap || !announcedPtr) return null;
-  if (!layoutChecked) {
-    layoutChecked = true;
-    if (!shmBlockOk(heap.i32, announcedPtr, MIC_MAGIC, MIC_VERSION)) {
-      // A core from another build: writing through a guessed layout would
-      // corrupt the heap. Say so, and leave the microphone off.
-      console.error('[mic] sample transport layout not recognised; microphone disabled');
-      showNotification(
-        'Microphone unavailable: this emulator build has a different ring layout',
-        'error',
-      );
-      return null;
-    }
-    const w = announcedPtr >> 2;
-    ringOff = Atomics.load(heap.i32, w + MIC_W_RING_OFF);
-    ringLen = Atomics.load(heap.i32, w + MIC_W_RING_LEN);
-    labelOff = Atomics.load(heap.i32, w + MIC_W_LABEL_OFF);
-    labelMax = Atomics.load(heap.i32, w + MIC_W_LABEL_LEN) - 1;
-    shmPtr = announcedPtr;
-  }
+  if (!heap) return null;
+  shmPtr = block.claim(heap.i32);
   return shmPtr ? heap : null;
 }
 
 // Expose the counters for the e2e spec (and for anyone debugging in the
 // console). Cheap, and the alternative is guessing at which layer is dead.
-if (typeof globalThis !== 'undefined') {
-  (globalThis as unknown as { __micStats?: () => unknown }).__micStats = () => micStats();
-  (globalThis as unknown as { __micLive?: () => unknown }).__micLive = () => ({
+if (typeof window !== 'undefined') {
+  exposeDebug('__micStats', () => micStats());
+  exposeDebug('__micLive', () => ({
     enabled: microphone.enabled,
     guestActive: microphone.guestActive,
     live: microphone.live,
     ctx: audioCtx ? audioCtx.state + '@' + audioCtx.sampleRate : 'none',
     node: node ? node.constructor.name : 'none',
-  });
+  }));
 }
 
 export function onAudioInState(active: boolean): void {
@@ -441,22 +442,8 @@ function stopStream(): void {
 // the other's AudioContext mid-construction. That surfaced as
 // "Construction of ScriptProcessorNode is not useful when context is
 // closed", a failed buildGraph, and the toggle switching itself back off.
-let syncing: Promise<void> | null = null;
-async function syncStream(): Promise<void> {
-  // Coalesce: a call arriving mid-flight waits for the in-flight one, then
-  // re-reconciles, so the final state always matches the latest intent.
-  while (syncing) {
-    const inFlight = syncing;
-    await inFlight;
-    if (syncing === inFlight) break;
-  }
-  syncing = syncStreamInner();
-  try {
-    await syncing;
-  } finally {
-    syncing = null;
-  }
-}
+// lib/serialize.ts coalesces them: the final run matches the latest intent.
+const syncStream = coalesced(() => syncStreamInner());
 
 async function syncStreamInner(): Promise<void> {
   // The USER's toolbar toggle owns the stream; the guest's DMA state does NOT.

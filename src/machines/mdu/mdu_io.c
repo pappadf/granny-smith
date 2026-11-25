@@ -3,13 +3,13 @@
 
 // mdu_io.c
 // The MDU+RBV family's dispatch table — see mdu_io.h.  The decode itself runs
-// on the shared mac030 I/O engine (mac030_glue_io.c); this file just supplies
+// on the shared board_io engine (board_io.c); this file just supplies
 // the MDU window table, mirror mask, and device set.  The decode and per-window
 // penalties are the IIci dispatcher verbatim (the IIsi's was byte-identical).
 
 #include "mdu_io.h"
 
-#include "mac030_glue.h" // mac030_board_desc_t
+#include "m68k_board.h" // m68k_board_desc_t
 
 #include "asc.h"
 #include "builtin_rbv_video.h"
@@ -54,31 +54,31 @@ static const memory_interface_t mdu_vdac_iface = {
 // and the RBV control registers ($26000).  Gaps decode to nothing.
 //
 //   base     end      device            penalty              xform               rd  wr     name
-const mac030_io_range_t mdu_io_ranges_tbl[] = {
-    {0x00000, 0x02000, MAC030_DEV_VIA1, MDU_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},
-    {0x04000, 0x06000, MAC030_DEV_SCC, MDU_SCC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
-    {0x06000, 0x08000, MAC030_DEV_SCSI, MDU_SCSI_IO_PENALTY, MAC030_IO_FIXED, 0, 0x201, NULL, NULL, "scsi_drq"},
-    {0x10000, 0x12000, MAC030_DEV_SCSI, MDU_SCSI_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scsi_reg"},
-    {0x12000, 0x14000, MAC030_DEV_SCSI, MDU_SCSI_IO_PENALTY, MAC030_IO_FIXED, 0, 0x201, NULL, NULL, "scsi_blind"},
-    {0x14000, 0x16000, MAC030_DEV_ASC, MDU_ASC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "asc"},
-    {0x16000, 0x18000, MAC030_DEV_FLOPPY, MDU_SWIM_IO_PENALTY, MAC030_IO_STRIDE_512, 0, 0, NULL, NULL, "swim"},
-    {0x24000, 0x26000, MAC030_DEV_VDAC, MDU_VDAC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "vdac"},
-    {0x26000, 0x28000, MAC030_DEV_RBV, MDU_RBV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "rbv"},
+const board_io_range_t mdu_io_ranges_tbl[] = {
+    {0x00000, 0x02000, BOARD_DEV_VIA1, MDU_VIA_IO_PENALTY, BOARD_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},
+    {0x04000, 0x06000, BOARD_DEV_SCC, MDU_SCC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
+    {0x06000, 0x08000, BOARD_DEV_SCSI, MDU_SCSI_IO_PENALTY, BOARD_IO_FIXED, 0, 0x201, NULL, NULL, "scsi_drq"},
+    {0x10000, 0x12000, BOARD_DEV_SCSI, MDU_SCSI_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scsi_reg"},
+    {0x12000, 0x14000, BOARD_DEV_SCSI, MDU_SCSI_IO_PENALTY, BOARD_IO_FIXED, 0, 0x201, NULL, NULL, "scsi_blind"},
+    {0x14000, 0x16000, BOARD_DEV_ASC, MDU_ASC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "asc"},
+    {0x16000, 0x18000, BOARD_DEV_FLOPPY, MDU_SWIM_IO_PENALTY, BOARD_IO_STRIDE_512, 0, 0, NULL, NULL, "swim"},
+    {0x24000, 0x26000, BOARD_DEV_VDAC, MDU_VDAC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "vdac"},
+    {0x26000, 0x28000, BOARD_DEV_RBV, MDU_RBV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "rbv"},
     {0}, // sentinel: end == 0
 };
 
-const mac030_io_range_t *mdu_io_ranges(void) {
+const board_io_range_t *mdu_io_ranges(void) {
     return mdu_io_ranges_tbl;
 }
 
-void mdu_io_bind(mdu_io_t *io, config_t *cfg, const struct mac030_board_desc *desc, void *asc, void *floppy, void *rbv,
+void mdu_io_bind(mdu_io_t *io, config_t *cfg, const struct m68k_board_desc *desc, void *asc, void *floppy, void *rbv,
                  struct nubus_card *video_card) {
-    mac030_io_install(io, cfg, desc);
-    mac030_io_bind_dev(io, MAC030_DEV_VIA1, cfg->via1, via_get_memory_interface(cfg->via1));
-    mac030_io_bind_dev(io, MAC030_DEV_SCC, cfg->scc, scc_get_memory_interface(cfg->scc));
-    mac030_io_bind_dev(io, MAC030_DEV_SCSI, cfg->scsi, scsi_get_memory_interface(cfg->scsi));
-    mac030_io_bind_dev(io, MAC030_DEV_ASC, asc, asc_get_memory_interface((asc_t *)asc));
-    mac030_io_bind_dev(io, MAC030_DEV_FLOPPY, floppy, floppy_get_memory_interface((floppy_t *)floppy));
-    mac030_io_bind_dev(io, MAC030_DEV_RBV, rbv, rbv_get_memory_interface((rbv_t *)rbv));
-    mac030_io_bind_dev(io, MAC030_DEV_VDAC, video_card, &mdu_vdac_iface);
+    m68k_board_io_install(io, cfg, desc);
+    board_io_bind_dev(io, BOARD_DEV_VIA1, cfg->via1, via_get_memory_interface(cfg->via1));
+    board_io_bind_dev(io, BOARD_DEV_SCC, cfg->scc, scc_get_memory_interface(cfg->scc));
+    board_io_bind_dev(io, BOARD_DEV_SCSI, cfg->scsi, scsi_get_memory_interface(cfg->scsi));
+    board_io_bind_dev(io, BOARD_DEV_ASC, asc, asc_get_memory_interface((asc_t *)asc));
+    board_io_bind_dev(io, BOARD_DEV_FLOPPY, floppy, floppy_get_memory_interface((floppy_t *)floppy));
+    board_io_bind_dev(io, BOARD_DEV_RBV, rbv, rbv_get_memory_interface((rbv_t *)rbv));
+    board_io_bind_dev(io, BOARD_DEV_VDAC, video_card, &mdu_vdac_iface);
 }

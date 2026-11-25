@@ -19,6 +19,8 @@
 #ifndef GS_NETWORK_AFP_META_H
 #define GS_NETWORK_AFP_META_H
 
+#include "common.h" // MAC_EPOCH_UNIX_OFFSET
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -26,7 +28,7 @@
 
 // AFP timestamps count seconds from 1904-01-01 GMT (appletalk_server.md §1.7);
 // AppleDouble's DATES entry counts signed seconds from 2000-01-01 GMT.
-#define AFP_META_EPOCH_DELTA 3029529600u
+#define AFP_META_EPOCH_DELTA (MAC_EPOCH_UNIX_OFFSET + 946684800u) // 1904 -> 2000
 
 // "Never" in an AFP date field — what a real server reports for a backup date
 // that has never been set (appletalk_server.md, FPCreateFile details).

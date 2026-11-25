@@ -1030,7 +1030,7 @@ static inline int quick_data(uint16_t op) {
 #ifdef CPU_DECODER_IS_68030
 
 // OP_UNDEFINED: the saved PC is the instruction's own address (MC68030UM 8.1.5).
-#define OP_UNDEFINED OP(exception(cpu, 0x010, cpu->instruction_pc, cpu_get_sr(cpu)); continue)
+#define OP_UNDEFINED OP(EXC_ILLEGAL(); continue)
 
 // --- Bit-field helper functions (register and memory operands) ---
 
@@ -1579,7 +1579,7 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
             offset_ += 4;                                                                                              \
             break; /* 6-word frame: +instruction address */                                                            \
         case 0x3: /* 68040 FP post-instruction frame: +effective address */                                            \
-            if (cpu->cpu_model >= CPU_MODEL_68040)                                                                     \
+            if (CPU_IS_68040(cpu))                                                                                     \
                 offset_ += 4;                                                                                          \
             else                                                                                                       \
                 fmterr_ = 1;                                                                                           \
@@ -1588,7 +1588,7 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
             /* MC68040 access error (30-word) frame.  Writebacks are never  */                                         \
             /* pending in this functional model, so the WBxS fields the     */                                         \
             /* handler may have completed are simply discarded.             */                                         \
-            if (cpu->cpu_model >= CPU_MODEL_68040)                                                                     \
+            if (CPU_IS_68040(cpu))                                                                                     \
                 offset_ += 52;                                                                                         \
             else                                                                                                       \
                 fmterr_ = 1;                                                                                           \
@@ -1596,19 +1596,19 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
         /* $9/$A/$B are 68020/030 frames; the 68040 defines only $0-$4 and */                                          \
         /* $7 (MC68040UM §8.4) and takes a format error on anything else.  */                                         \
         case 0x9: /* coprocessor mid-instruction (+12) */                                                              \
-            if (cpu->cpu_model >= CPU_MODEL_68040)                                                                     \
+            if (CPU_IS_68040(cpu))                                                                                     \
                 fmterr_ = 1;                                                                                           \
             else                                                                                                       \
                 offset_ += 12;                                                                                         \
             break;                                                                                                     \
         case 0xA: /* short bus fault (+24) */                                                                          \
-            if (cpu->cpu_model >= CPU_MODEL_68040)                                                                     \
+            if (CPU_IS_68040(cpu))                                                                                     \
                 fmterr_ = 1;                                                                                           \
             else                                                                                                       \
                 offset_ += 24;                                                                                         \
             break;                                                                                                     \
         case 0xB: /* long bus fault (+84) */                                                                           \
-            if (cpu->cpu_model >= CPU_MODEL_68040)                                                                     \
+            if (CPU_IS_68040(cpu))                                                                                     \
                 fmterr_ = 1;                                                                                           \
             else                                                                                                       \
                 offset_ += 84;                                                                                         \
@@ -1621,7 +1621,7 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
             /* Invalid format: clear trace bits, format error (vector 14) */                                           \
             /* SP is NOT advanced; stacked SR is the current (pre-RTE) SR */                                           \
             cpu->trace = 0;                                                                                            \
-            exception(cpu, 0x038, cpu->instruction_pc, GET_SR());                                                      \
+            exception(cpu, M68K_VEC_FORMAT, cpu->instruction_pc, GET_SR());                                            \
         } else {                                                                                                       \
             /* Valid format: advance SP past entire frame, apply new SR and PC */                                      \
             SP += offset_;                                                                                             \
@@ -1784,129 +1784,60 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
                  : (((RN) == (uint32_t)EA_REG && moves_autodec_) ? (EA) : A(RN)))                                      \
           : D(RN))
 
-#define OP_MOVES_B_RN_EA                                                                                               \
+// MOVES Rn,<ea> of BITS (8/16/32) and SIZE bytes, written in DFC's space;
+// the <ea> step commits only if the write did not fault.
+#define OP_MOVES_RN_EA_T(BITS, SIZE)                                                                                   \
     OP({                                                                                                               \
         VALID_EA(ea_memory &ea_alterable);                                                                             \
         SUPER({                                                                                                        \
             uint16_t ext_ = FETCH16();                                                                                 \
             uint32_t da_ = (ext_ >> 15) & 1u;                                                                          \
             uint32_t rn_ = (ext_ >> 12) & 7u;                                                                          \
-            MOVES_EA_WITH_RETRY_SAFE(1, ea_);                                                                          \
+            MOVES_EA_WITH_RETRY_SAFE(SIZE, ea_);                                                                       \
             uintptr_t *saved_ = g_active_write;                                                                        \
             g_active_write = MOVES_ALT_WRITE(cpu->dfc);                                                                \
-            WRITE8(ea_, (uint8_t)MOVES_RN_SRC(1, da_, rn_, ea_));                                                      \
+            WRITE##BITS(ea_, (uint##BITS##_t)MOVES_RN_SRC(SIZE, da_, rn_, ea_));                                       \
             g_active_write = saved_;                                                                                   \
             if (!g_bus_error_pending) {                                                                                \
-                MOVES_COMMIT_EA(1);                                                                                    \
+                MOVES_COMMIT_EA(SIZE);                                                                                 \
             }                                                                                                          \
         });                                                                                                            \
     })
 
-#define OP_MOVES_W_RN_EA                                                                                               \
+// MOVES <ea>,Rn of BITS and SIZE bytes, read in SFC's space; nothing
+// commits if the read faulted.
+#define OP_MOVES_EA_RN_T(BITS, SIZE)                                                                                   \
     OP({                                                                                                               \
         VALID_EA(ea_memory &ea_alterable);                                                                             \
         SUPER({                                                                                                        \
             uint16_t ext_ = FETCH16();                                                                                 \
             uint32_t da_ = (ext_ >> 15) & 1u;                                                                          \
             uint32_t rn_ = (ext_ >> 12) & 7u;                                                                          \
-            MOVES_EA_WITH_RETRY_SAFE(2, ea_);                                                                          \
-            uintptr_t *saved_ = g_active_write;                                                                        \
-            g_active_write = MOVES_ALT_WRITE(cpu->dfc);                                                                \
-            WRITE16(ea_, (uint16_t)MOVES_RN_SRC(2, da_, rn_, ea_));                                                    \
-            g_active_write = saved_;                                                                                   \
-            if (!g_bus_error_pending) {                                                                                \
-                MOVES_COMMIT_EA(2);                                                                                    \
-            }                                                                                                          \
-        });                                                                                                            \
-    })
-
-#define OP_MOVES_L_RN_EA                                                                                               \
-    OP({                                                                                                               \
-        VALID_EA(ea_memory &ea_alterable);                                                                             \
-        SUPER({                                                                                                        \
-            uint16_t ext_ = FETCH16();                                                                                 \
-            uint32_t da_ = (ext_ >> 15) & 1u;                                                                          \
-            uint32_t rn_ = (ext_ >> 12) & 7u;                                                                          \
-            MOVES_EA_WITH_RETRY_SAFE(4, ea_);                                                                          \
-            uintptr_t *saved_ = g_active_write;                                                                        \
-            g_active_write = MOVES_ALT_WRITE(cpu->dfc);                                                                \
-            WRITE32(ea_, MOVES_RN_SRC(4, da_, rn_, ea_));                                                              \
-            g_active_write = saved_;                                                                                   \
-            if (!g_bus_error_pending) {                                                                                \
-                MOVES_COMMIT_EA(4);                                                                                    \
-            }                                                                                                          \
-        });                                                                                                            \
-    })
-
-#define OP_MOVES_B_EA_RN                                                                                               \
-    OP({                                                                                                               \
-        VALID_EA(ea_memory &ea_alterable);                                                                             \
-        SUPER({                                                                                                        \
-            uint16_t ext_ = FETCH16();                                                                                 \
-            uint32_t da_ = (ext_ >> 15) & 1u;                                                                          \
-            uint32_t rn_ = (ext_ >> 12) & 7u;                                                                          \
-            MOVES_EA_WITH_RETRY_SAFE(1, ea_);                                                                          \
+            MOVES_EA_WITH_RETRY_SAFE(SIZE, ea_);                                                                       \
             uintptr_t *saved_ = g_active_read;                                                                         \
             g_active_read = MOVES_ALT_READ(cpu->sfc);                                                                  \
-            uint8_t v_ = READ8(ea_);                                                                                   \
+            uint##BITS##_t v_ = READ##BITS(ea_);                                                                       \
             g_active_read = saved_;                                                                                    \
             if (!g_bus_error_pending) {                                                                                \
-                MOVES_COMMIT_EA(1);                                                                                    \
+                MOVES_COMMIT_EA(SIZE);                                                                                 \
                 if (da_)                                                                                               \
-                    A(rn_) = (int32_t)(int8_t)v_;                                                                      \
+                    A(rn_) = (int32_t)(int##BITS##_t)v_; /* An takes the value sign-extended */                        \
                 else                                                                                                   \
-                    STORE_DN(8, rn_, v_);                                                                              \
+                    STORE_DN(BITS, rn_, v_);                                                                           \
             }                                                                                                          \
         });                                                                                                            \
     })
 
-#define OP_MOVES_W_EA_RN                                                                                               \
-    OP({                                                                                                               \
-        VALID_EA(ea_memory &ea_alterable);                                                                             \
-        SUPER({                                                                                                        \
-            uint16_t ext_ = FETCH16();                                                                                 \
-            uint32_t da_ = (ext_ >> 15) & 1u;                                                                          \
-            uint32_t rn_ = (ext_ >> 12) & 7u;                                                                          \
-            MOVES_EA_WITH_RETRY_SAFE(2, ea_);                                                                          \
-            uintptr_t *saved_ = g_active_read;                                                                         \
-            g_active_read = MOVES_ALT_READ(cpu->sfc);                                                                  \
-            uint16_t v_ = READ16(ea_);                                                                                 \
-            g_active_read = saved_;                                                                                    \
-            if (!g_bus_error_pending) {                                                                                \
-                MOVES_COMMIT_EA(2);                                                                                    \
-                if (da_)                                                                                               \
-                    A(rn_) = (int32_t)(int16_t)v_;                                                                     \
-                else                                                                                                   \
-                    STORE_DN(16, rn_, v_);                                                                             \
-            }                                                                                                          \
-        });                                                                                                            \
-    })
-
-#define OP_MOVES_L_EA_RN                                                                                               \
-    OP({                                                                                                               \
-        VALID_EA(ea_memory &ea_alterable);                                                                             \
-        SUPER({                                                                                                        \
-            uint16_t ext_ = FETCH16();                                                                                 \
-            uint32_t da_ = (ext_ >> 15) & 1u;                                                                          \
-            uint32_t rn_ = (ext_ >> 12) & 7u;                                                                          \
-            MOVES_EA_WITH_RETRY_SAFE(4, ea_);                                                                          \
-            uintptr_t *saved_ = g_active_read;                                                                         \
-            g_active_read = MOVES_ALT_READ(cpu->sfc);                                                                  \
-            uint32_t v_ = READ32(ea_);                                                                                 \
-            g_active_read = saved_;                                                                                    \
-            if (!g_bus_error_pending) {                                                                                \
-                MOVES_COMMIT_EA(4);                                                                                    \
-                if (da_)                                                                                               \
-                    A(rn_) = v_;                                                                                       \
-                else                                                                                                   \
-                    D(rn_) = v_;                                                                                       \
-            }                                                                                                          \
-        });                                                                                                            \
-    })
+#define OP_MOVES_B_RN_EA OP_MOVES_RN_EA_T(8, 1)
+#define OP_MOVES_W_RN_EA OP_MOVES_RN_EA_T(16, 2)
+#define OP_MOVES_L_RN_EA OP_MOVES_RN_EA_T(32, 4)
+#define OP_MOVES_B_EA_RN OP_MOVES_EA_RN_T(8, 1)
+#define OP_MOVES_W_EA_RN OP_MOVES_EA_RN_T(16, 2)
+#define OP_MOVES_L_EA_RN OP_MOVES_EA_RN_T(32, 4)
 
 // --- BKPT: Software Breakpoint (generate BKPT trap = vector 4 illegal instruction) ---
 // Push the opcode's own address, not the advanced pc.
-#define OP_BKPT_DATA OP(exception(cpu, 0x010, cpu->instruction_pc, cpu_get_sr(cpu)))
+#define OP_BKPT_DATA OP(EXC_ILLEGAL())
 
 // --- MOVE CCR,<ea>: read CCR into EA as a word (not privileged on 68010+) ---
 #define OP_MOVE_B_CCR_EA OP(VALID_EA(ea_data &ea_alterable); STORE_EA(16, READ_CCR()))
@@ -2130,6 +2061,15 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
         }                                                                                                              \
     })
 
+// The FPU frame functions FSAVE/FRESTORE are written against, and the size of
+// the frame a -(An) FSAVE pushes: the 6888x frames here; cpu_68040.c binds the
+// 040's single-longword formats before including this file.
+#ifndef FPU_FSAVE_FN
+#define FPU_FSAVE_FN               fpu_fsave
+#define FPU_FRESTORE_FN            fpu_frestore
+#define FPU_FSAVE_PREDEC_SIZE(fpu) ((fpu)->initialized ? (4 + FSAVE_IDLE_SIZE) : 4)
+#endif
+
 // FSAVE: write idle or null state frame (supervisor only)
 #undef OP_FSAVE_EA
 #define OP_FSAVE_EA                                                                                                    \
@@ -2141,11 +2081,11 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
                 fpu_state_t *fpu_ = (fpu_state_t *)cpu->fpu;                                                           \
                 if (EA_MODE == 4) {                                                                                    \
                     /* -(An) predecrement: compute frame size, then write */                                           \
-                    int sz_ = fpu_->initialized ? (4 + FSAVE_IDLE_SIZE) : 4;                                           \
+                    int sz_ = FPU_FSAVE_PREDEC_SIZE(fpu_);                                                             \
                     bool init_ = fpu_->initialized;                                                                    \
                     uint32_t mask_ = fpu_->pre_exc_mask;                                                               \
                     AY -= (uint32_t)sz_;                                                                               \
-                    fpu_fsave(fpu_, AY);                                                                               \
+                    FPU_FSAVE_FN(fpu_, AY);                                                                            \
                     /* A faulted save rolls back An and the FPU state it left: */                                      \
                     /* the Format $B retry must write the same frame again.    */                                      \
                     if (__builtin_expect(g_bus_error_pending, 0)) {                                                    \
@@ -2155,7 +2095,7 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
                     }                                                                                                  \
                 } else {                                                                                               \
                     uint32_t ea_ = GET_EA;                                                                             \
-                    fpu_fsave(fpu_, ea_);                                                                              \
+                    FPU_FSAVE_FN(fpu_, ea_);                                                                           \
                 }                                                                                                      \
             })                                                                                                         \
     })
@@ -2170,10 +2110,10 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
             SUPER({                                                                                                    \
                 fpu_state_t *fpu_ = (fpu_state_t *)cpu->fpu;                                                           \
                 uint32_t ea_ = (EA_MODE == 3) ? AY : GET_EA;                                                           \
-                int sz_ = fpu_frestore(fpu_, ea_);                                                                     \
+                int sz_ = FPU_FRESTORE_FN(fpu_, ea_);                                                                  \
                 if (sz_ < 0) {                                                                                         \
                     /* not this part's frame: format error (vector 14), PC at the FRESTORE */                          \
-                    exception(cpu, 0x038, cpu->instruction_pc, GET_SR());                                              \
+                    exception(cpu, M68K_VEC_FORMAT, cpu->instruction_pc, GET_SR());                                    \
                 } else if (EA_MODE == 3 && __builtin_expect(!g_bus_error_pending, 1)) {                                \
                     AY += (uint32_t)sz_; /* (An)+ steps by the frame the format word declared */                       \
                 }                                                                                                      \

@@ -16,6 +16,11 @@
 // overlay (`msgout_pending`, `msgin_taken`), because those feed register and
 // REQ logic that has nothing to do with message parsing.
 //
+// The NCR 5380 uses it too, from the other side of the same seam: there the
+// register file drives the bus's phase machine directly, and the 5380's
+// MESSAGE OUT used to be decoded one byte at a time (scsi.c write_icr), so an
+// extended message ended the command after its first byte.
+//
 // Capability limits are per chip and come from the parts, not from each other:
 //
 //   MESH     min_period 25, max_offset 15, narrow.  Its sync_params register
@@ -75,6 +80,7 @@ typedef struct {
     bool wdtr; // a width agreement was reached
     bool wide; // ...16-bit if true, 8-bit if the chip is narrow
     bool rejected; // the initiator sent MESSAGE REJECT
+    bool abort; // the initiator sent ABORT or BUS DEVICE RESET: the target goes bus free
     bool incomplete; // an extended message is still arriving; nothing consumed
 } scsi_msg_result_t;
 

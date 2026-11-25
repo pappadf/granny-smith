@@ -44,9 +44,10 @@ BENCH_DIR = os.path.join(ROOT, "tests", "bench")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ckptdiff  # noqa: E402
 
-# Every emulator run: deterministic pacing, no job thread and no I/O worker.
-# Under Valgrind the threads are serialized, and a job thread polling for the
-# emulator costs 15x the run itself; natively it removes a source of jitter.
+# Every emulator run: deterministic pacing and no I/O worker.  `--jobs=inline`
+# is for a base binary that still had a job thread (under Valgrind its
+# polling cost 15x the run itself); a current one accepts and ignores it, its
+# scripts always running on the emulator thread.
 EMU_FLAGS = ["--speed=turbo", "--jobs=inline", "--io=sync"]
 
 CALLGRIND = ["valgrind", "--tool=callgrind"]
@@ -120,9 +121,9 @@ class Binary:
         switch (predecode.enabled) where the build carries it."""
         d = os.path.join(self.work, "probe")
         os.makedirs(d, exist_ok=True)
-        script = os.path.join(d, "probe.script")
+        script = os.path.join(d, "probe.lua")
         with open(script, "w") as f:
-            f.write('echo "@@PROBE {\\"predecode\\":${try(predecode.enabled, -1)},\\"jit\\":${try(jit.available, 0)}}"\nquit\n')
+            f.write(PROBE_LUA)
         p = subprocess.run(
             [self.path, "rom=" + os.path.join(test_data, rom), "script=" + script] + EMU_FLAGS,
             cwd=d, capture_output=True, text=True, timeout=120,
@@ -145,11 +146,29 @@ def exec_setup(binary, executor):
     return lines
 
 
+def lua_str(s):
+    """`s` as a Lua string literal."""
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+# Which executors a build has, as one @@PROBE line (a missing attribute reads
+# as -1 / 0); `true`/`false` read as 1/0.
+PROBE_LUA = (
+    "local function n(f, d) local ok, v = pcall(f) if not ok then return d end"
+    " if v == true then return 1 elseif v == false then return 0 end return v end\n"
+    "print(string.format('@@PROBE {\"predecode\":%d,\"jit\":%d}',"
+    " n(function() return predecode.enabled end, -1), n(function() return jit.available end, 0)))\n"
+    "quit()\n"
+)
+
+
 def driver_prologue(row):
+    """A driver's first lines: the Mac library as the global `mac`, the bench
+    helpers and the row (both define globals)."""
     return (
-        'include "%s"\n' % os.path.join(ROOT, "tests", "integration", "lib", "mac.script")
-        + 'include "%s"\n' % os.path.join(BENCH_DIR, "lib", "bench.script")
-        + 'include "%s"\n' % os.path.join(BENCH_DIR, row["name"] + ".script")
+        "mac = dofile(%s)\n" % lua_str(os.path.join(ROOT, "tests", "integration", "lib", "mac.lua"))
+        + "dofile(%s)\n" % lua_str(os.path.join(BENCH_DIR, "lib", "bench.lua"))
+        + "dofile(%s)\n" % lua_str(os.path.join(BENCH_DIR, row["name"] + ".lua"))
     )
 
 
@@ -201,13 +220,13 @@ def boot_row(binary, row, test_data):
     """Boot `row` on `binary` to its state and save the checkpoint."""
     d = run_dir(binary, row, "boot")
     ck = checkpoint_path(binary, row)
-    script = os.path.join(d, "boot.script")
+    script = os.path.join(d, "boot.lua")
     with open(script, "w") as f:
         f.write(driver_prologue(row))
         f.write("bench_boot()\n")
-        f.write('assert checkpoint.save("%s")\n' % ck)
-        f.write('echo "@@BOOTED {\\"guest_instr\\":${scheduler.instr_count}}"\n')
-        f.write("quit\n")
+        f.write("assert(checkpoint.save(%s))\n" % lua_str(ck))
+        f.write("print(string.format('@@BOOTED {\"guest_instr\":%d}', scheduler.instr_count))\n")
+        f.write("quit()\n")
     p, secs = run_emu(emu_cmd(binary, row, script, test_data), d, 1800)
     booted = parse_tagged(p.stdout, "@@BOOTED")
     ok = p.returncode == 0 and bool(booted) and os.path.exists(ck)
@@ -223,16 +242,16 @@ def boot_row(binary, row, test_data):
 
 
 def window_script(d, binary, row, executor, warm, n):
-    script = os.path.join(d, "measure.script")
+    script = os.path.join(d, "measure.lua")
     with open(script, "w") as f:
         f.write(driver_prologue(row))
-        f.write('assert checkpoint.load("%s")\n' % checkpoint_path(binary, row))
+        f.write("assert(checkpoint.load(%s))\n" % lua_str(checkpoint_path(binary, row)))
         f.write(exec_setup(binary, executor))
         if warm:
-            f.write("scheduler.run %d\n" % warm)
+            f.write("scheduler.run(%d)\n" % warm)
         f.write("bench_window(%d)\n" % n)
         f.write("bench_check()\n")
-        f.write("quit\n")
+        f.write("quit()\n")
     return script
 
 

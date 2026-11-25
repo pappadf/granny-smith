@@ -22,12 +22,11 @@ mkdir -p "$EXTRACT"
 GS_STORAGE_CACHE="$STORAGE_CACHE" "$HEADLESS_BIN" \
     rom="$ROM_PATH" \
     --no-prompt --script-stdin --speed=turbo <<EOF
-files.probe $IMG
+files.identify "$IMG"
 files.cp "$FINDER" "$EXTRACT/data"
 files.cp "$FINDER/rsrc/_raw" "$EXTRACT/rsrc"
 files.cp "$FINDER/finf" "$EXTRACT/finf"
-let n = files.mounts.find("$IMG")
-files.mounts[\$n].unmount
+files.mounts[files.mounts.find("$IMG")].unmount()
 quit
 EOF
 

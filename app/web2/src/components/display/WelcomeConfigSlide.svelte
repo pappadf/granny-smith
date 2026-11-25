@@ -8,11 +8,14 @@
   import { onMount, tick, untrack } from 'svelte';
   import { setWelcomeSlide } from '@/state/layout.svelte';
   import { showNotification } from '@/state/toasts.svelte';
-  import { initEmulator, opfs, gsEval, whenModuleReady } from '@/bus';
+  import { initEmulator, opfs, whenModuleReady } from '@/bus';
+  import { romIdentity } from '@/bus/media';
+  import { diskPartitions } from '@/bus/vfs';
   import { pickAndUploadAs } from '@/bus/upload';
   import {
     getProfile,
     clearProfileCache,
+    catalogModels,
     type BlankDisk,
     type Card,
     type ConfigDocument,
@@ -20,7 +23,7 @@
     type MachineProfile,
     type StorageBus,
   } from '@/bus/profile';
-  import { identifyRom, type MediaTypeId, type RomIdentity } from '@/lib/media';
+  import { type MediaTypeId, type RomIdentity } from '@/lib/media';
   import * as mc from '@/lib/machineConfig';
   import type { ImageCategory, MediaImage, OpfsEntry } from '@/bus/types';
   import { images } from '@/state/images.svelte';
@@ -185,15 +188,15 @@
     const fits = fitsUnder(fdPaths, max);
     return fdNames.filter((n) => fits(n) && !MFM_720K.has(mediaSizes[fdPaths[n]]));
   }
-  // A bus whose blank disks are ProFile images (files.profile_create, the
-  // argument a block count) takes ProFile-sized disks: its menu left out
-  // nothing, so the Lisa's ProFile port offered 170 MB SCSI disks.  Twice
-  // the largest blank disk at 1 KB a block is a generous ceiling.
+  // A bus whose blank disks are no hard disks (the ProFile port's) takes
+  // disks of their size: its menu left out nothing, so the Lisa's ProFile
+  // port offered 170 MB SCSI disks.  Four times the largest blank disk's
+  // data size (twice its blocks at 1 KB each) is a generous ceiling.
   function diskChoices(bus: StorageBus): string[] {
     const blanks = bus.blank_disks;
-    const profile = blanks.length > 0 && blanks.every((b) => b.method === 'files.profile_create');
-    if (!profile) return hdNames;
-    const max = 2 * 1024 * Math.max(...blanks.map((b) => Number(b.arg) || 0));
+    const small = blanks.length > 0 && blanks.every((b) => b.kind !== 'hd');
+    if (!small) return hdNames;
+    const max = 4 * Math.max(...blanks.map((b) => Number(b.size) || 0));
     return hdNames.filter(fitsUnder(hdPaths, max));
   }
 
@@ -217,15 +220,14 @@
         opfs.scanImages('hd').catch(() => []),
         opfs.scanImages('cd').catch(() => []),
       ]);
-      const identified = (await Promise.all(roms.map((r) => identifyRom(gsEval, r.path)))).filter(
+      const identified = (await Promise.all(roms.map((r) => romIdentity(r.path)))).filter(
         (e): e is RomIdentity => e !== null,
       );
       // A card's availability follows the card ROMs stored, which may just
       // have changed: ask the core again.
       clearProfileCache();
-      const order = await gsEval('catalog.models').catch(() => null);
-      if (Array.isArray(order))
-        modelOrder = order.filter((m): m is string => typeof m === 'string');
+      const order = await catalogModels();
+      if (order) modelOrder = order;
       const ids = [...new Set(identified.flatMap((r) => r.compatible))].sort(
         (a, b) => orderOf(a) - orderOf(b),
       );
@@ -303,7 +305,7 @@
     profile && doc ? mc.dropImagelessDisks(profile, doc, mediaImages).doc : null,
   );
   // The Mac OS volumes of each hard disk image chosen, by OPFS path
-  // (files.partitions, numbered as the attached disk's partitions), and by
+  // (files.identify's volumes, numbered as the attached disk's partitions), and by
   // storage position: "Start up from" offers a disk's volumes by name.
   let volumesByPath = $state<Record<string, mc.DiskPartition[]>>({});
   // eslint-disable-next-line svelte/prefer-svelte-reactivity -- bookkeeping, not state
@@ -313,9 +315,9 @@
   }
   async function lookUpVolumes(path: string): Promise<void> {
     volumesAsked.add(path);
-    const r = await gsEval('files.partitions', [path]).catch(() => null);
     // An image the core cannot read offers no volumes: the disk itself.
-    volumesByPath = { ...volumesByPath, [path]: Array.isArray(r) ? (r as mc.DiskPartition[]) : [] };
+    const r = (await diskPartitions(path)) as mc.DiskPartition[];
+    volumesByPath = { ...volumesByPath, [path]: r };
   }
   $effect(() => {
     for (const d of doc?.storage ?? []) {
@@ -573,12 +575,11 @@
     }
     const selected = romsForCurrentModel.find((r) => r.path === romPath) ?? romsForCurrentModel[0];
     // A hard disk with no image is dropped, never a reason not to start.
+    // Leaving a slot empty is a choice (a Lisa started from a diskette), so
+    // this is a note, not a warning.
     const { doc: booted, dropped } = mc.dropImagelessDisks(profile, doc, mediaImages);
     for (const d of dropped)
-      showNotification(
-        `Hard disk at ${mc.storageLabel(profile, d)} has no image and was not attached`,
-        'warning',
-      );
+      showNotification(`Started with no hard disk at ${mc.storageLabel(profile, d)}`, 'info');
     const floppies: Record<string, string> = {};
     for (const [id, name] of Object.entries(floppyImages)) {
       if (name && (booted.floppies[id] ?? 'none') !== 'none')

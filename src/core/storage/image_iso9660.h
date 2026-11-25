@@ -27,7 +27,7 @@
 // Volume descriptors start at logical sector 16 (of 2048 bytes).
 #define ISO9660_VD_OFF (16u * 2048u)
 
-struct peel_source;
+typedef struct peel_source source_t; // source.h's byte source, without peeler.h
 typedef struct iso_volume iso_volume_t;
 
 // One directory entry.  A directory's (extent, size) is what iso_opendir
@@ -46,17 +46,18 @@ typedef struct {
 } iso_dirent_t;
 
 // Does the volume at `off` carry an ISO 9660 primary volume descriptor?
-bool iso_probe_source(struct peel_source *src, uint64_t off, uint64_t size);
+bool iso_probe_source(source_t *src, uint64_t off, uint64_t size);
 
 // Open the volume at `off` (of `size` bytes).  The source is retained.
 // NULL when it is not ISO 9660, is corrupt, or memory runs out.
-iso_volume_t *iso_open_source(struct peel_source *src, uint64_t off, uint64_t size);
+iso_volume_t *iso_open_source(source_t *src, uint64_t off, uint64_t size);
 void iso_close(iso_volume_t *vol);
 
 // The volume identifier (UTF-8, trailing spaces dropped).
 const char *iso_volume_name(const iso_volume_t *vol);
 
-// Look up a path (UTF-8 components, case-insensitive) from the root;
+// Look up a path (UTF-8 components, case-insensitive: as a Mac name,
+// mac_name_eq, on a Joliet volume; over ASCII otherwise) from the root;
 // `nc` 0 is the root itself.  0, -ENOENT, -ENOTDIR, or another negative
 // errno.
 int iso_lookup(iso_volume_t *vol, const char *const *comp, size_t nc, iso_dirent_t *out);

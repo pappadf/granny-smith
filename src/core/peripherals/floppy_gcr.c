@@ -6,6 +6,8 @@
 // These functions are used by both IWM and SWIM code paths.
 
 #include "floppy_internal.h"
+
+#include "codec.h"
 #include "gs_assert.h"
 #include "log.h"
 #include "memory.h"
@@ -19,13 +21,6 @@
 #include "image.h"
 
 LOG_USE_CATEGORY_NAME("floppy");
-
-// GCR codeword table as described in [7]
-const uint8_t gcr_codewords[] = {0x96, 0x97, 0x9A, 0x9B, 0x9D, 0x9E, 0x9F, 0xA6, 0xA7, 0xAB, 0xAC, 0xAD, 0xAE,
-                                 0xAF, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE,
-                                 0xBF, 0xCB, 0xCD, 0xCE, 0xCF, 0xD3, 0xD6, 0xD7, 0xD9, 0xDA, 0xDB, 0xDC, 0xDD,
-                                 0xDE, 0xDF, 0xE5, 0xE6, 0xE7, 0xE9, 0xEA, 0xEB, 0xEC, 0xED, 0xEE, 0xEF, 0xF2,
-                                 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF};
 
 // ============================================================================
 // Shared Utility Functions (parameterized, used by both IWM and SWIM paths)
@@ -127,18 +122,18 @@ bool floppy_media_from_image(image_t *img, floppy_media_t *out) {
     if (!img)
         return false;
     out->img = img;
-    switch (image_get_type(img)) {
-    case image_fd_hd:
+    switch (image_layout(img)) {
+    case IMAGE_LAYOUT_MFM1440:
         out->hd = true; // the only HD class we model
         floppy_media_apply_format(out, FLOPPY_FMT_MFM_1440K);
         break;
-    case image_fd_dd_mfm:
+    case IMAGE_LAYOUT_MFM720:
         floppy_media_apply_format(out, FLOPPY_FMT_MFM_720K);
         break;
-    case image_fd_ds:
+    case IMAGE_LAYOUT_GCR800:
         floppy_media_apply_format(out, FLOPPY_FMT_GCR_800K);
         break;
-    case image_fd_ss:
+    case IMAGE_LAYOUT_GCR400:
         floppy_media_apply_format(out, FLOPPY_FMT_GCR_400K);
         break;
     default:
@@ -214,7 +209,7 @@ int iwm_image_num_sides(image_t *img) {
     if (!img)
         return 2; // Default to double-sided if unknown
     // Only the 400K disk is single-sided; 720K, 800K and 1440K are not.
-    return (image_get_type(img) == image_fd_ss) ? 1 : 2;
+    return (image_layout(img) == IMAGE_LAYOUT_GCR400) ? 1 : 2;
 }
 
 // Calculates TACH signal state (60 pulses per revolution) based on current time and motor speed
@@ -239,78 +234,17 @@ int iwm_tach_signal(struct scheduler *scheduler, floppy_drive_t *drive, const ch
 // GCR Encoding
 // ============================================================================
 
-// GCR encoding helper macros.
-// These rely on a caller-scope `uint8_t *dst` that gets advanced as bytes are
-// written. Only used inside `encode_sector` / `encode_track` below — do NOT
-// invoke from any function that doesn't have a `dst` in scope.
-#define RAW(x) (*dst++ = (x))
-#define GCR(x) (*dst++ = gcr_codewords[(x) & 0x3F])
-#define GCR3(a, b, c)                                                                                                  \
-    do {                                                                                                               \
-        GCR(((a) >> 2 & 0x30) | ((b) >> 4 & 0x0C) | ((c) >> 6 & 0x03));                                                \
-        GCR(a);                                                                                                        \
-        GCR(b);                                                                                                        \
-        GCR(c);                                                                                                        \
-    } while (0)
-#define GCR2(a, b)                                                                                                     \
-    do {                                                                                                               \
-        GCR(((a) >> 2 & 0x30) | ((b) >> 4 & 0x0C));                                                                    \
-        GCR(a);                                                                                                        \
-        GCR(b);                                                                                                        \
-    } while (0)
-
-// Encodes a triplet of bytes with checksum update and advances src pointer
-#define ENCODE_TRIPLET(src, ca, cb, cc, ba, bb, bc)                                                                    \
-    do {                                                                                                               \
-        (cc) = ((cc) << 1) | ((cc) >> 7 & 1);                                                                          \
-        (ca) &= 0xFF;                                                                                                  \
-        (ca) += *(src) + ((cc) & 1);                                                                                   \
-        (ba) = *(src)++ ^ (cc);                                                                                        \
-        (cb) &= 0xFF;                                                                                                  \
-        (cb) += *(src) + ((ca) >> 8 & 1);                                                                              \
-        (bb) = *(src)++ ^ (ca);                                                                                        \
-        (cc) &= 0xFF;                                                                                                  \
-        (cc) += *(src) + ((cb) >> 8 & 1);                                                                              \
-        (bc) = *(src)++ ^ (cb);                                                                                        \
-        GCR3(ba, bb, bc);                                                                                              \
-    } while (0)
-
-// The checksum chain in function form.  floppy_gcr.c's ENCODE_TRIPLET /
-// DECODE_TRIPLET macros are the whole-track variant of the same algorithm --
-// they advance a source pointer and capture into a destination in place, which
-// is what encode_sector/decode_sector want; these are the DMA-stream variant
-// SWIM3 wants.  tests/unit/suites/floppy pins that the two agree.
-void gcr_encode_triplet(const uint8_t *src, uint16_t *ca, uint16_t *cb, uint16_t *cc, uint8_t *dst) {
-    *cc = (uint16_t)((*cc << 1) | ((*cc >> 7) & 1));
-    *ca &= 0xFF;
-    *ca = (uint16_t)(*ca + src[0] + (*cc & 1));
-    uint8_t ba = (uint8_t)(src[0] ^ *cc);
-    *cb &= 0xFF;
-    *cb = (uint16_t)(*cb + src[1] + ((*ca >> 8) & 1));
-    uint8_t bb = (uint8_t)(src[1] ^ *ca);
-    *cc &= 0xFF;
-    *cc = (uint16_t)(*cc + src[2] + ((*cb >> 8) & 1));
-    uint8_t bc = (uint8_t)(src[2] ^ *cb);
-    dst[0] = (uint8_t)(((ba >> 2) & 0x30) | ((bb >> 4) & 0x0C) | ((bc >> 6) & 0x03));
-    dst[1] = (uint8_t)(ba & 0x3F);
-    dst[2] = (uint8_t)(bb & 0x3F);
-    dst[3] = (uint8_t)(bc & 0x3F);
+// Lay `n` six-bit values down as their codewords.
+static uint8_t *put_gcr(uint8_t *dst, const uint8_t *v6, int n) {
+    for (int i = 0; i < n; i++)
+        *dst++ = gcr_encode6[v6[i] & 0x3F];
+    return dst;
 }
 
-void gcr_decode_triplet(const uint8_t *src, uint16_t *ca, uint16_t *cb, uint16_t *cc, uint8_t *dst) {
-    uint8_t ba = (uint8_t)(((src[0] << 2) & 0xC0) | (src[1] & 0x3F));
-    uint8_t bb = (uint8_t)(((src[0] << 4) & 0xC0) | (src[2] & 0x3F));
-    uint8_t bc = (uint8_t)(((src[0] << 6) & 0xC0) | (src[3] & 0x3F));
-    *cc = (uint16_t)((*cc << 1) | ((*cc >> 7) & 1));
-    dst[0] = (uint8_t)(ba ^ *cc);
-    *ca &= 0xFF;
-    *ca = (uint16_t)(*ca + dst[0] + (*cc & 1));
-    dst[1] = (uint8_t)(bb ^ *ca);
-    *cb &= 0xFF;
-    *cb = (uint16_t)(*cb + dst[1] + ((*ca >> 8) & 1));
-    dst[2] = (uint8_t)(bc ^ *cb);
-    *cc &= 0xFF;
-    *cc = (uint16_t)(*cc + dst[2] + ((*cb >> 8) & 1));
+// Lay `n` raw (unencoded) bytes down.
+static uint8_t *put_raw(uint8_t *dst, const uint8_t *raw, int n) {
+    memcpy(dst, raw, (size_t)n);
+    return dst + n;
 }
 
 // Encodes a sector to GCR format with header and data fields.  `bad_data`
@@ -322,66 +256,31 @@ static uint8_t *encode_sector(uint8_t *dst, const uint8_t *tag, const uint8_t *d
                               int num_sides, bool bad_data) {
     GS_ASSERT(data != NULL);
 
-    uint16_t ca = 0, cb = 0, cc = 0; // checksum registers
-    uint8_t ba, bb, bc; // encoded bytes
+    static const uint8_t sync[5] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    static const uint8_t addr_mark[3] = {0xD5, 0xAA, 0x96}, data_mark[3] = {0xD5, 0xAA, 0xAD};
+    static const uint8_t slip[3] = {0xDE, 0xAA, 0xFF};
     // 0x02 = single-sided GCR, 0x22 = double-sided GCR
     uint8_t format = (num_sides > 1) ? 0x22 : 0x02;
 
-    // Header sync field (5 bytes)
-    for (int i = 0; i < 5; i++)
-        RAW(0xFF);
+    // Header: sync, address mark, track / sector / side / format / checksum,
+    // bit-slip marks.
+    uint8_t addr[GCR_ADDR_VALUES];
+    gcr_addr_encode(track, sector, side, format, addr);
+    dst = put_raw(dst, sync, 5);
+    dst = put_raw(dst, addr_mark, 3);
+    dst = put_gcr(dst, addr, GCR_ADDR_VALUES);
+    dst = put_raw(dst, slip, 3);
 
-    // Header field: address marks + metadata
-    RAW(0xD5);
-    RAW(0xAA);
-    RAW(0x96);
-    GCR(track);
-    GCR(sector);
-    uint8_t side_enc = (side << 5) | (track >> 6 & 0x1F);
-    GCR(side_enc);
-    GCR(format);
-    GCR(track ^ sector ^ side_enc ^ format);
-    RAW(0xDE);
-    RAW(0xAA);
-    RAW(0xFF);
-
-    // Data sync field (5 bytes)
-    for (int i = 0; i < 5; i++)
-        RAW(0xFF);
-
-    // Data field: marks + sector number + encoded data + checksum
-    RAW(0xD5);
-    RAW(0xAA);
-    RAW(0xAD);
-    GCR(sector);
-
-    // Encode 12-byte tag with checksum
-    for (int i = 0; i < 12; i += 3)
-        ENCODE_TRIPLET(tag, ca, cb, cc, ba, bb, bc);
-
-    // Encode 510 bytes of data (170 triplets)
-    for (int i = 0; i < 510; i += 3)
-        ENCODE_TRIPLET(data, ca, cb, cc, ba, bb, bc);
-
-    // Encode final 2 bytes
-    cc = (cc << 1) | (cc >> 7 & 1);
-    ca &= 0xFF;
-    ca += *data + (cc & 1);
-    ba = *data++ ^ cc;
-    cb &= 0xFF;
-    cb += *data + (ca >> 8 & 1);
-    bb = *data++ ^ ca;
-    GCR2(ba, bb);
-
-    // Encode 24-bit checksum
-    if (bad_data)
-        ca ^= 0xFF;
-    GCR3(ca, cb, cc);
-
-    // End markers
-    RAW(0xDE);
-    RAW(0xAA);
-    RAW(0xFF);
+    // Data field: sync, data mark, sector number, the 703 values of tag,
+    // data and checksum, bit-slip marks.
+    uint8_t sec6 = (uint8_t)sector;
+    uint8_t values[GCR_SECTOR_VALUES];
+    gcr_sector_nibblize(tag, data, bad_data, values);
+    dst = put_raw(dst, sync, 5);
+    dst = put_raw(dst, data_mark, 3);
+    dst = put_gcr(dst, &sec6, 1);
+    dst = put_gcr(dst, values, GCR_SECTOR_VALUES);
+    dst = put_raw(dst, slip, 3);
 
     return dst;
 }
@@ -454,7 +353,7 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
     // (SWIM) read path.  This used to test `== image_fd_hd`, so a 720K disk
     // (which once classified as a hard disk) was GCR-encoded from
     // MFM-laid-out bytes and handed to the IWM as if it were an 800K disk.
-    if (image_is_mfm_floppy(image_get_type(img)))
+    if (image_layout_is_mfm(image_layout(img)))
         return NULL;
     GS_ASSERT(drive->track < NUM_TRACKS);
 
@@ -524,7 +423,7 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
 // or MFM).
 const uint8_t *iwm_track_data_peek(const floppy_drive_t *drive, image_t *img, int sel) {
     static uint8_t sync_track[9320]; // iwm_track_length's longest zone
-    if (!img || image_is_mfm_floppy(image_get_type(img)) || drive->track < 0 || drive->track >= NUM_TRACKS)
+    if (!img || image_layout_is_mfm(image_layout(img)) || drive->track < 0 || drive->track >= NUM_TRACKS)
         return NULL;
     const floppy_track_t *track = &drive->tracks[sel][drive->track];
     if (track->data)
@@ -538,65 +437,15 @@ const uint8_t *iwm_track_data_peek(const floppy_drive_t *drive, image_t *img, in
 // GCR Decoding
 // ============================================================================
 
-// GCR decoding helpers
-#define READ_GCR3(src, a, b, c)                                                                                        \
-    do {                                                                                                               \
-        uint8_t msb = decode_gcr(*(src)++);                                                                            \
-        (a) = decode_gcr(*(src)++) | ((msb << 2) & 0xC0);                                                              \
-        (b) = decode_gcr(*(src)++) | ((msb << 4) & 0xC0);                                                              \
-        (c) = decode_gcr(*(src)++) | ((msb << 6) & 0xC0);                                                              \
-    } while (0)
-
-#define READ_GCR2(src, a, b)                                                                                           \
-    do {                                                                                                               \
-        uint8_t msb = decode_gcr(*(src)++);                                                                            \
-        (a) = decode_gcr(*(src)++) | ((msb << 2) & 0xC0);                                                              \
-        (b) = decode_gcr(*(src)++) | ((msb << 4) & 0xC0);                                                              \
-    } while (0)
-
-// Decode triplet with checksum update (writes to dst pointer)
-#define DECODE_TRIPLET(src, dst, ca, cb, cc, ba, bb, bc)                                                               \
-    do {                                                                                                               \
-        (cc) = ((cc) << 1 & 0xFE) | ((cc) >> 7 & 1);                                                                   \
-        READ_GCR3(src, ba, bb, bc);                                                                                    \
-        (ca) &= 0xFF;                                                                                                  \
-        *(dst)++ = (ba) = (ba) ^ (cc);                                                                                 \
-        (ca) += (ba) + ((cc) & 1);                                                                                     \
-        (cb) &= 0xFF;                                                                                                  \
-        *(dst)++ = (bb) = (bb) ^ (ca);                                                                                 \
-        (cb) += (bb) + ((ca) >> 8 & 1);                                                                                \
-        (cc) &= 0xFF;                                                                                                  \
-        *(dst)++ = (bc) = (bc) ^ (cb);                                                                                 \
-        (cc) += (bc) + ((cb) >> 8 & 1);                                                                                \
-    } while (0)
-
-// Converts a GCR codeword to its 6-bit value, or GCR_BAD_CODEWORD.
-//
-// The table is 256 entries keyed on the WHOLE byte.  It used to be a lazily
-// malloc'd 128 keyed on `codeword & 0x7F` -- and since every legal codeword has
-// bit 7 set ($96..$FF), that aliased 64 illegal bytes onto legal values ($16 ->
-// $96, $1F -> $9F, ...), defeating the very check meant to catch corrupt
-// nibbles.  The old table was also never freed and made the function
-// non-reentrant.
-uint8_t decode_gcr(uint8_t gcr_codeword) {
-    static uint8_t decode_table[256];
-    static bool built = false;
-    if (!built) {
-        memset(decode_table, GCR_BAD_CODEWORD, sizeof decode_table);
-        for (int i = 0; i < (int)sizeof(gcr_codewords); i++)
-            decode_table[gcr_codewords[i]] = (uint8_t)i;
-        built = true;
-    }
-    return decode_table[gcr_codeword];
-}
-
 // Decodes a GCR sector back to tag and data buffers with checksum verification
 // Every byte this walks is whatever the guest wrote into the track buffer
 // through the IWM/SWIM data register, so NOTHING here may assert: GS_ASSERT
 // prints and pauses the scheduler and then CONTINUES, so a guest that writes a
 // plausible header with a bad checksum used to halt the emulator from inside a
 // flush; and under GS_FAST the asserts vanish entirely and corrupt nibbles were
-// written to the user's disk image as data.
+// written to the user's disk image as data.  A byte that is no codeword is
+// refused in the data field as in the header (gcr_sector_from_disk): it can
+// leave the checksum intact, so the checksum alone does not catch it.
 //
 // Returns NULL on any malformed field, having consumed nothing the caller
 // relies on; the caller skips the sector and rescans.  `end` bounds every
@@ -611,14 +460,6 @@ static uint8_t *decode_sector(uint8_t *tag, uint8_t *data, uint8_t *src, const u
         if (src + (n) > end)                                                                                           \
             return NULL;                                                                                               \
     } while (0)
-#define GCR_OR_FAIL(dst)                                                                                               \
-    do {                                                                                                               \
-        NEED(1);                                                                                                       \
-        uint8_t v_ = decode_gcr(*src++);                                                                               \
-        if (v_ == GCR_BAD_CODEWORD)                                                                                    \
-            return NULL;                                                                                               \
-        (dst) = v_;                                                                                                    \
-    } while (0)
 
     // Read and verify header marks
     NEED(3);
@@ -626,26 +467,19 @@ static uint8_t *decode_sector(uint8_t *tag, uint8_t *data, uint8_t *src, const u
         return NULL;
     src += 3;
 
-    // Decode header fields
-    uint8_t track, sector, side, format, checksum;
-    GCR_OR_FAIL(track);
-    GCR_OR_FAIL(sector);
-    GCR_OR_FAIL(side);
-    GCR_OR_FAIL(format);
-    GCR_OR_FAIL(checksum);
-
-    if (checksum != (track ^ sector ^ side ^ format))
+    // Decode header fields: every byte a codeword, and the checksum right.
+    NEED(GCR_ADDR_VALUES);
+    int track, sector, side;
+    if (!gcr_addr_from_disk(src, &track, &sector, &side, NULL))
         return NULL;
-
-    track = (side << 6 & 0x40) | (track & 0x3F);
-    side = side >> 5 & 1;
+    src += GCR_ADDR_VALUES;
 
     if (track_out)
-        *track_out = (int)track;
+        *track_out = track;
     if (side_out)
-        *side_out = (int)side;
+        *side_out = side;
     if (sector_out)
-        *sector_out = (int)sector;
+        *sector_out = sector;
 
     NEED(2);
     if (src[0] != 0xDE || src[1] != 0xAA)
@@ -663,45 +497,20 @@ static uint8_t *decode_sector(uint8_t *tag, uint8_t *data, uint8_t *src, const u
         return NULL;
     src += 3;
 
-    uint8_t data_sector;
-    GCR_OR_FAIL(data_sector);
-    if (data_sector != sector)
+    // The data field repeats the sector number.
+    NEED(1);
+    if (gcr_decode6[*src++] != (uint8_t)sector)
         return NULL;
 
-    // Everything below reads a fixed 703 six-bit values plus the 3-byte
-    // checksum, so one bound covers the rest.
-    NEED(16 + 680 + 3 + 4);
-
-    // Decode data with checksum verification
-    uint16_t ca = 0, cb = 0, cc = 0;
-    uint8_t ba, bb, bc;
-
-    // Decode 12-byte tag
-    for (int i = 0; i < 12; i += 3)
-        DECODE_TRIPLET(src, tag, ca, cb, cc, ba, bb, bc);
-
-    // Decode 510 bytes of data
-    for (int i = 0; i < 510; i += 3)
-        DECODE_TRIPLET(src, data, ca, cb, cc, ba, bb, bc);
-
-    // Decode final 2 bytes
-    cc = (cc << 1 & 0xFE) | (cc >> 7 & 1);
-    READ_GCR2(src, ba, bb);
-    ca &= 0xFF;
-    *data++ = ba = ba ^ cc;
-    ca += ba + (cc & 1);
-    cb &= 0xFF;
-    *data++ = bb = bb ^ ca;
-    cb += bb + (ca >> 8 & 1);
-
-    // Verify checksum
-    READ_GCR3(src, ba, bb, bc);
-    if ((ca & 0xFF) != ba || (cb & 0xFF) != bb || (cc & 0xFF) != bc)
+    // Everything below reads a fixed 703 values (tag, data and checksum),
+    // so one bound covers the rest.
+    NEED(GCR_SECTOR_VALUES);
+    if (gcr_sector_from_disk(src, tag, data) != 1)
         return NULL;
+    src += GCR_SECTOR_VALUES;
 
     return src;
 #undef NEED
-#undef GCR_OR_FAIL
 }
 
 // === Index / tachometer (floppy_geometry.h) =================================
@@ -734,15 +543,6 @@ int floppy_index_signal(floppy_index_mode_t mode, double now_ns, double rev_ns, 
 
 // === MFM sector layout (floppy_geometry.h) ==================================
 
-#define MFM_CRC_INIT 0xFFFFu
-
-static uint16_t mfm_crc_byte(uint16_t crc, uint8_t byte) {
-    crc ^= (uint16_t)byte << 8;
-    for (int i = 0; i < 8; i++)
-        crc = (crc & 0x8000) ? (uint16_t)((crc << 1) ^ 0x1021) : (uint16_t)(crc << 1);
-    return crc;
-}
-
 void floppy_mfm_emit_sector(floppy_mfm_emit_fn emit, void *ctx, int track, int side, int sector, const uint8_t *data,
                             int gap3_len, bool emit_crc) {
     if (!emit)
@@ -758,11 +558,10 @@ void floppy_mfm_emit_sector(floppy_mfm_emit_fn emit, void *ctx, int track, int s
     for (int i = 0; i < 4; i++)
         emit(ctx, hdr[i], false);
     if (emit_crc) {
-        uint16_t crc = MFM_CRC_INIT;
-        crc = mfm_crc_byte(crc, 0xA1);
-        crc = mfm_crc_byte(crc, 0xFE);
-        for (int i = 0; i < 4; i++)
-            crc = mfm_crc_byte(crc, hdr[i]);
+        // One $A1 after the seed: the ISM resets its CRC on each mark byte,
+        // so only the last of the three counts (floppy_swim.c)
+        const uint8_t id[6] = {0xA1, 0xFE, hdr[0], hdr[1], hdr[2], hdr[3]};
+        uint16_t crc = codec_crc16_xmodem(FLOPPY_MFM_CRC_INIT, id, sizeof id);
         emit(ctx, (uint8_t)(crc >> 8), false);
         emit(ctx, (uint8_t)(crc & 0xFF), false);
     }
@@ -778,11 +577,9 @@ void floppy_mfm_emit_sector(floppy_mfm_emit_fn emit, void *ctx, int track, int s
     for (int i = 0; i < 512; i++)
         emit(ctx, data[i], false);
     if (emit_crc) {
-        uint16_t crc = MFM_CRC_INIT;
-        crc = mfm_crc_byte(crc, 0xA1);
-        crc = mfm_crc_byte(crc, 0xFB);
-        for (int i = 0; i < 512; i++)
-            crc = mfm_crc_byte(crc, data[i]);
+        static const uint8_t mark[2] = {0xA1, 0xFB};
+        uint16_t crc = codec_crc16_xmodem(FLOPPY_MFM_CRC_INIT, mark, sizeof mark);
+        crc = codec_crc16_xmodem(crc, data, 512);
         emit(ctx, (uint8_t)(crc >> 8), false);
         emit(ctx, (uint8_t)(crc & 0xFF), false);
     }

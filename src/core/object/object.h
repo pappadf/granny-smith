@@ -116,6 +116,11 @@ void arg_doc_text(const arg_decl_t *a, char *buf, size_t size);
 // A NULL-terminated example list for member_t.examples.
 #define EXAMPLES(...) ((const char *const[]){__VA_ARGS__, NULL})
 
+// A method's argument table and its count, counted from the table itself:
+// `.method = {METHOD_ARGS(foo_args), ...}`.  A literal `.nargs` that falls
+// behind the table makes the binder silently ignore the new argument.
+#define METHOD_ARGS(tbl) .args = (tbl), .nargs = (int)(sizeof(tbl) / sizeof((tbl)[0]))
+
 // A required string argument naming a VFS path.
 #define ARG_PATH(arg_name, arg_doc)                                                                                    \
     {.name = (arg_name), .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = (arg_doc)}
@@ -330,6 +335,12 @@ void object_delete(struct object *o);
 // runs before its wrapper memory is freed.
 void object_delete_tree(struct object *o);
 
+// Tear down a node you own and clear the pointer you keep it in:
+// object_delete_tree(*slot), then *slot = NULL; a no-op on NULL.  The
+// cascade takes its attached children, so destroy a child whose pointer is
+// stored elsewhere before its parent (or clear that pointer too).
+void object_destroy(struct object **slot);
+
 // Per-object destructor, run by object_delete / object_delete_tree just
 // before the wrapper memory is freed (after invalidators fire and the meta
 // node is released). The substrate always frees the object wrapper itself;
@@ -357,7 +368,7 @@ struct object *object_parent(struct object *o);
 // === Logical parents =========================================================
 //
 // Objects handed out by a child callback -- collection entries (get/lookup)
-// and lookup-backed named children such as drive[n].disk -- are never
+// and lookup-backed named children such as drive[n].image -- are never
 // attached, so they have no parent and, without this, no path.  Their
 // creator registers the node whose member produces them: a non-owning
 // back-link (not added to the parent's child list, not cascade-deleted),
@@ -478,6 +489,27 @@ value_t obj_u64_field_get(struct object *self, const member_t *m);
     }
 #define OBJ_U64_FIELD(block_type, field, doc_text) OBJ_U64_FIELD_WITH(block_type, field, doc_text, obj_u64_field_get)
 
+// The same for a uint32_t field (a register file): a 4-byte VK_UINT read at
+// the member's offset, 0 when the object has no block.  OBJ_U32_GET is the
+// .attr fragment, for a member table that spells out its other fields;
+// OBJ_U32_FIELD a whole read-only member with its presentation flags.  The
+// field must be 32 bits wide (checked at compile time).
+value_t obj_u32_at(const void *block, const member_t *m);
+value_t obj_u32_field_get(struct object *self, const member_t *m);
+
+#define OBJ_U32_OFFSET(block_type, field)                                                                              \
+    (offsetof(block_type, field) + 0 * sizeof(char[sizeof(((block_type *)0)->field) == 4 ? 1 : -1]))
+#define OBJ_U32_GET(block_type, field)                                                                                 \
+    .get = obj_u32_field_get, .user_data = (const void *)(uintptr_t)OBJ_U32_OFFSET(block_type, field)
+#define OBJ_U32_FIELD(block_type, field, doc_text, pflags)                                                             \
+    {                                                                                                                  \
+        .kind = MK_ATTR, .name = #field, .doc = doc_text, .attr = {                                                    \
+            .type = VK_UINT,                                                                                           \
+            .presentation_flags = (pflags),                                                                            \
+            OBJ_U32_GET(block_type, field)                                                                             \
+        }                                                                                                              \
+    }
+
 // === Display label & ordering ================================================
 //
 // An object's `name` is its stable path segment (`machine`); its `label`
@@ -493,6 +525,13 @@ const char *object_label(struct object *o); // label if set, else name
 // object_each_attached_ordered (and thus meta.children).
 void object_set_order(struct object *o, int order);
 int object_order(struct object *o);
+
+// object_new + object_set_label (when `label` is non-NULL) + object_set_order
+// + object_attach to `parent`, the block every hardware node's constructor
+// spells out.  Returns the new object, or NULL (nothing attached) when the
+// allocation fails.
+struct object *object_attach_new(struct object *parent, const class_desc_t *cls, void *instance_data, const char *name,
+                                 const char *label, int order);
 
 // Visibility category for an attached child object. Per-
 // member visibility lives in member_t.flags (M_CAT_*); attached hardware
@@ -528,6 +567,13 @@ void object_each_attached(struct object *o, void (*fn)(struct object *parent, st
 // in a stable, meaningful sequence.
 void object_each_attached_ordered(struct object *o, void (*fn)(struct object *parent, struct object *child, void *ud),
                                   void *ud);
+
+// The names of `o`'s class members of `kind`, as a VK_LIST of VK_STRING;
+// MK_CHILD also appends the attached children, in display order
+// (object_each_attached_ordered).  An error on OOM, never a short list.
+// The one body behind root objects()/attributes()/methods() and
+// meta.children/attributes/methods.
+value_t object_member_names(struct object *o, member_kind_t kind);
 
 // Linear lookup of a member by name. Returns NULL if not found.
 const member_t *class_find_member(const class_desc_t *cls, const char *name);
@@ -602,6 +648,13 @@ node_t object_resolve(struct object *root, const char *path);
 // otherwise hands ownership to the attribute's setter (see attr_set_fn).
 // Callers must not free `v` afterwards.
 value_t node_get(node_t n);
+
+// Read attribute `m` of `o` the one way: its getter, then the slot's
+// presentation_flags (VFLAG_HEX, VFLAG_SENSITIVE, ...) merged onto the value,
+// then (debug builds) the declared-type check.  node_get and every shell
+// listing read through it, so a getter never sets a flag its member
+// already declares.  On the calling thread (node_get marshals).
+value_t object_attr_get(struct object *o, const member_t *m);
 value_t node_set(node_t n, value_t v);
 value_t node_call(node_t n, int argc, const value_t *argv);
 
@@ -637,6 +690,11 @@ typedef struct {
 // on success, VK_ERROR on a binding error.
 value_t node_bind_args(node_t n, int pos_argc, const value_t *pos_argv, int named_n, const named_arg_t *named,
                        value_t *out_argv, int *out_argc);
+
+// Call the method at `n` with positional and named arguments: binds when
+// `named` is given (refusing more than OBJ_BIND_MAX_ARGS named ones), then
+// node_call; a NULL `named` is a plain node_call.  The arguments stay the caller's, as with node_bind_args.
+value_t node_call_named(node_t n, int argc, const value_t *argv, int named_n, const named_arg_t *named);
 
 // Single-segment descent. Used by the resolver and by the completer.
 node_t node_child(node_t n, const char *segment);

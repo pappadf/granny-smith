@@ -1,5 +1,6 @@
 # Shared storage helpers (src/core/storage/storage_util.c): mkdir -p, rm -r,
-# the capped file reader, the JSON escaper, the atomic writer.
+# the capped file reader and the command-line stream reader, the JSON escaper,
+# the atomic writer.
 
 TEST_NAME := storage_util
 TEST_SRCS := test.c

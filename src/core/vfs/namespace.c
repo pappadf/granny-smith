@@ -8,11 +8,7 @@
 #include "namespace.h"
 
 #include "format_registry.h"
-#include "image_apm.h"
-#include "image_hfs.h"
-#include "image_iso9660.h"
-#include "image_mfs.h"
-#include "image_ufs.h"
+#include "image_volume.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -134,31 +130,10 @@ void ns_finder_info(uint32_t type, uint32_t creator, uint16_t flags, uint8_t out
 
 // A disk: an Apple Partition Map at block 1, or a bare HFS/HFS+, MFS, UFS
 // or ISO 9660 volume.  From the probe's head alone (the ISO descriptor at
-// 32 KiB is inside it).
+// 32 KiB is inside it), by the classifier ns_open_disk opens with, so a disk
+// claimed here is one it accepts.
 static bool disk_detect(const format_probe_t *p) {
-    const uint8_t *h = p->p.head;
-    size_t n = p->p.head_len;
-    if (n >= 1024 && image_apm_probe_magic(h + 512))
-        return true;
-    if (n >= 1024 + 2) {
-        uint16_t sig = (uint16_t)(h[1024] << 8 | h[1025]);
-        if (sig == HFS_SIG_BD || sig == HFS_SIG_HP || sig == HFS_SIG_HX || sig == MFS_SIG)
-            return true;
-    }
-    // ISO 9660: a primary volume descriptor at sector 16 (of 2048 bytes).
-    if (n >= ISO9660_VD_OFF + 7) {
-        const uint8_t *vd = h + ISO9660_VD_OFF;
-        if (vd[0] == 1 && memcmp(vd + 1, ISO9660_ID, 5) == 0 && vd[6] == 1)
-            return true;
-    }
-    if (n >= UFS_SBOFF + 1372 + 4) {
-        const uint8_t *m = h + UFS_SBOFF + 1372;
-        uint32_t be = (uint32_t)m[0] << 24 | (uint32_t)m[1] << 16 | (uint32_t)m[2] << 8 | m[3];
-        uint32_t le = (uint32_t)m[3] << 24 | (uint32_t)m[2] << 16 | (uint32_t)m[1] << 8 | m[0];
-        if (be == UFS_FS_MAGIC || le == UFS_FS_MAGIC)
-            return true;
-    }
-    return false;
+    return volume_sniff(p->p.head, p->p.head_len, p->p.size).kind != VOL_NONE;
 }
 
 static struct ns *disk_open(source_t *data, source_t *rsrc) {

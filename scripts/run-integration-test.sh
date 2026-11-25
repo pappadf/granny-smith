@@ -41,14 +41,17 @@ LABEL="${WRAPPER:+ (valgrind)}"
 trap 'echo "=== FAIL${LABEL}: $TEST (runner error at line $LINENO) ==="; echo FAIL > "${TEST_RESULTS_DIR:-/nonexistent}/status" 2>/dev/null || true' ERR
 
 # Wall seconds per test: printed on the result line and appended, one JSON
-# record per test, to durations.jsonl beside the per-test result dirs --
-# what scripts/gen-test-weights.py turns into test-weights.json, the
+# record per test, to DURATIONS_FILE (unset: durations.jsonl beside the
+# per-test result dirs; empty: not recorded, as under Valgrind) -- what
+# scripts/gen-test-weights.py turns into test-weights.json, the
 # longest-first order make -j starts the tests in.  An O_APPEND write of one
 # short line is atomic, so concurrent tests do not interleave records.
 SECONDS=0
+DURATIONS_FILE="${DURATIONS_FILE-$(dirname "$TEST_RESULTS_DIR")/durations.jsonl}"
 record_duration() {
+    [ -n "$DURATIONS_FILE" ] || return 0
     printf '{"test":"%s","secs":%d,"status":"%s"}\n' "$TEST" "$SECONDS" "$1" \
-        >> "$(dirname "$TEST_RESULTS_DIR")/durations.jsonl" 2>/dev/null || true
+        >> "$DURATIONS_FILE" 2>/dev/null || true
 }
 
 fail() {
@@ -59,7 +62,9 @@ fail() {
 }
 
 [ -d "$TEST" ] || { echo "ERROR: Test directory '$TEST' not found"; exit 1; }
-[ -f "$TEST/test.script" ] || { echo "ERROR: Test script '$TEST/test.script' not found"; exit 1; }
+# The test's script: test.lua.
+[ -f "$TEST/test.lua" ] || { echo "ERROR: Test script '$TEST/test.lua' not found"; exit 1; }
+TEST_SCRIPT=test.lua
 [ -f "$TEST/config.mk" ] || { echo "ERROR: Test config '$TEST/config.mk' not found"; exit 1; }
 
 # Extract configuration from config.mk: the first `KEY :=` line, exactly that
@@ -184,7 +189,7 @@ else
     timeout -k 30 "$TEST_TIMEOUT" ${WRAPPER:-} "$HEADLESS_BIN" \
         rom="$ROM_PATH" \
         $EXPANDED_ARGS \
-        script=test.script \
+        script="$TEST_SCRIPT" \
         --var WORK_DIR="$WORK_DIR" \
         --var TEST_RESULTS_DIR="$TEST_RESULTS_DIR" \
         --var ROM="$ROM_PATH" \
@@ -196,7 +201,7 @@ else
     check_rc "${rc:-0}"
 fi
 
-# A test that could not run at all (lib/mac.script's skip_test(), for media
+# A test that could not run at all (lib/mac.lua's skip_test(), for media
 # the fetched test data does not have) still exits 0, so it does not fail
 # the run, but it says SKIP rather than PASS: CI must not report green for
 # coverage it did not exercise.

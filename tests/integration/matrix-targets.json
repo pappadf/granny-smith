@@ -30,7 +30,7 @@
     "A `blocked` reason is stated in full on the cell, with the GitHub issue",
     "that tracks the defect where there is one. A defect that has code to",
     "reproduce it also has a row: a milestone row (row_end_milestone in",
-    "lib/mac.script; it runs nightly, reports red and does not fail the",
+    "lib/mac.lua; it runs nightly, reports red and does not fail the",
     "suite) or a suite row that is skipped until the fix lands. A cell",
     "blocked by a media fact or an observability limit needs no row.",
     "",
@@ -180,6 +180,16 @@
       "depth": 8,
       "addr32": true,
       "suite": "iici-aux3-8bpp"
+    },
+    {
+      "machine": "iici",
+      "system": "A/UX 2.0.1",
+      "card": "rbv",
+      "width": 640,
+      "height": 480,
+      "depth": 1,
+      "addr32": null,
+      "suite": "iici-aux201-boot"
     },
     {
       "machine": "iici",
@@ -681,7 +691,7 @@
       "width": 720,
       "height": 364,
       "depth": 1,
-      "addr32": false,
+      "addr32": null,
       "suite": "suite-lisa"
     },
     {
@@ -691,7 +701,7 @@
       "width": 720,
       "height": 364,
       "depth": 1,
-      "addr32": false,
+      "addr32": null,
       "suite": "suite-lisa"
     },
     {

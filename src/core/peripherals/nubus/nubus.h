@@ -189,7 +189,7 @@ nubus_card_t *nubus_card(nubus_bus_t *bus, int slot);
 
 // The KIND that seated `slot`, or NULL.  How the object layer reaches a
 // card's attach_objects hook without knowing which cards exist.
-const nubus_card_kind_t *nubus_slot_kind(nubus_bus_t *bus, int slot);
+const nubus_card_kind_t *nubus_seated_kind(nubus_bus_t *bus, int slot);
 
 // What `slot` was built from (its seat: card, ROM, monitor, sense), or NULL
 // for a slot out of range.
@@ -238,7 +238,8 @@ void nubus_tick_vbl(nubus_bus_t *bus);
 void nubus_reset(nubus_bus_t *bus);
 
 // Power-cycle fan-out (system_machine_power_cycle, ahead of the /RESET):
-// each populated card's ops->power_on, which drops what power loses (VRAM).
+// each populated card's ops->power_on, which drops what power loses (VRAM),
+// or for a card without one the bus default over its ops->vram (card.h).
 void nubus_power_on(nubus_bus_t *bus);
 
 #endif // NUBUS_H

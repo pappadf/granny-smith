@@ -463,6 +463,61 @@ TEST(test_receive_filter) {
     ASSERT_TRUE(bmac_receive(s_b, f, n));
 }
 
+// The drivers' multicast hash, as Linux's bmac_crc writes it (CRC-32 register
+// MSB first, address bytes fed LSB first, low six bits bit-reversed): the
+// independent reference the model's codec_crc32 form must match bit for bit.
+static int ref_hash(const uint8_t *da) {
+    uint32_t crc = 0xFFFFFFFFu;
+    for (int i = 0; i < 6; i++) {
+        uint8_t d = da[i];
+        for (int k = 0; k < 8; k++) {
+            bool hi = (crc & 0x80000000u) != 0;
+            crc <<= 1;
+            if (hi ^ (d & 1u))
+                crc ^= 0x04C11DB7u;
+            d >>= 1;
+        }
+    }
+    int h = 0;
+    for (int k = 0; k < 6; k++)
+        h |= (int)((crc >> k) & 1u) << (5 - k);
+    return h;
+}
+
+// A multicast frame passes exactly when the driver's hash bit for it is set:
+// over many addresses, the one bit (HASH3-based, Linux's mapping) admits it
+// and every other bit does not.
+TEST(test_multicast_hash_matches_driver) {
+    uint32_t seed = 12345;
+    for (int n = 0; n < 200; n++) {
+        // A fresh chip each time, so the receive queue never fills
+        fixture();
+        chip_init(0x0B00);
+        uint8_t da[6];
+        for (int i = 0; i < 6; i++) {
+            seed = seed * 1103515245u + 12345u;
+            da[i] = (uint8_t)(seed >> 16);
+        }
+        da[0] |= 1; // multicast
+        if (memcmp(da, k_bcast, 6) == 0)
+            continue;
+        int h = ref_hash(da);
+        uint8_t f[64];
+        int len = frame(f, da, k_other, 46);
+        for (uint32_t r = BMAC_HASH3; r <= BMAC_HASH0; r += 0x10)
+            bmac_write(s_b, r, 0);
+        bmac_write(s_b, BMAC_HASH3 + 0x10u * (uint32_t)(h >> 4), (uint16_t)(1u << (h & 15)));
+        ASSERT_TRUE(bmac_receive(s_b, f, len));
+        // Every bit but h, in both mappings (HASH3 + word and HASH0 - word)
+        for (uint32_t r = BMAC_HASH3; r <= BMAC_HASH0; r += 0x10)
+            bmac_write(s_b, r, 0xFFFF);
+        uint16_t keep = (uint16_t) ~(1u << (h & 15));
+        bmac_write(s_b, BMAC_HASH3 + 0x10u * (uint32_t)(h >> 4), keep);
+        bmac_write(s_b, BMAC_HASH0 - 0x10u * (uint32_t)(h >> 4), keep);
+        ASSERT_TRUE(!bmac_receive(s_b, f, len));
+    }
+}
+
 // Loopback (XIFC XIFLoopback): a transmitted frame comes back through the
 // receive filter — except the drivers' self-addressed warm-up frame,
 // which RxRejectOwnPackets keeps out.
@@ -546,6 +601,7 @@ int main(void) {
     RUN(test_receive_apple_two_segment_slots);
     RUN(test_receive_exact_fill);
     RUN(test_receive_filter);
+    RUN(test_multicast_hash_matches_driver);
     RUN(test_loopback);
     RUN(test_receive_overflow);
     RUN(test_checkpoint_roundtrip);

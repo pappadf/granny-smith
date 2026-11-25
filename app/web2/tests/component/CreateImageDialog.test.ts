@@ -18,8 +18,8 @@ function callTo(name: string) {
 }
 
 describe('CreateImageDialog', () => {
-  it('creates a blank floppy (800 KB default) via files.fd_create', async () => {
-    gsEvalMock.mockImplementation(async (p: string) => (p === 'files.fd_create' ? true : null));
+  it('creates a blank floppy (800 KB default) via files.create', async () => {
+    gsEvalMock.mockImplementation(async (p: string) => (p === 'files.create' ? true : null));
     const onCreated = vi.fn();
     const { getByText } = render(CreateImageDialog, {
       open: true,
@@ -29,14 +29,14 @@ describe('CreateImageDialog', () => {
     });
     await fireEvent.click(getByText('Create'));
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
-    const cp = callTo('files.fd_create')!;
+    const cp = callTo('files.create')!;
     expect(cp[1][0]).toMatch(/^\/opfs\/images\/fd\/blank_800K_\d+\.dsk$/);
-    expect(cp[1][1]).toBe(false); // 800K → not high-density
+    expect(cp[1].slice(1)).toEqual(['floppy', '800K']);
     expect(onCreated).toHaveBeenCalledWith(expect.stringMatching(/^blank_800K_\d+\.dsk$/));
   });
 
   it('creates a 1.4 MB floppy when high density is selected', async () => {
-    gsEvalMock.mockImplementation(async (p: string) => (p === 'files.fd_create' ? true : null));
+    gsEvalMock.mockImplementation(async (p: string) => (p === 'files.create' ? true : null));
     const onCreated = vi.fn();
     const { getByText, container } = render(CreateImageDialog, {
       open: true,
@@ -47,9 +47,9 @@ describe('CreateImageDialog', () => {
     await fireEvent.click(container.querySelector('input[value="1440K"]') as HTMLElement);
     await fireEvent.click(getByText('Create'));
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
-    const cp = callTo('files.fd_create')!;
+    const cp = callTo('files.create')!;
     expect(cp[1][0]).toMatch(/^\/opfs\/images\/fd\/blank_1440K_\d+\.dsk$/);
-    expect(cp[1][1]).toBe(true);
+    expect(cp[1].slice(1)).toEqual(['floppy', '1440K']);
   });
 
   // S1018-29: an 800K drive was offered a 1.4 MB blank, and then started empty.
@@ -68,22 +68,22 @@ describe('CreateImageDialog', () => {
   const scsiDisks = [
     {
       label: '20 MB (HD20SC)',
-      method: 'files.hd_create',
-      arg: '21411840',
+      kind: 'hd',
+      size: 21411840,
       name: 'blank_20MB',
       ext: '.dmg',
     },
     {
       label: '38 MB (HD40SC)',
-      method: 'files.hd_create',
-      arg: '40061952',
+      kind: 'hd',
+      size: 40061952,
       name: 'blank_38MB',
       ext: '.dmg',
     },
   ];
 
-  it("lists the bus's blank disks and creates the chosen one with its method", async () => {
-    gsEvalMock.mockImplementation(async (p: string) => (p === 'files.hd_create' ? true : null));
+  it("lists the bus's blank disks and creates the chosen one with its kind and size", async () => {
+    gsEvalMock.mockImplementation(async (p: string) => (p === 'files.create' ? true : null));
     const onCreated = vi.fn();
     const { getByText, container } = render(CreateImageDialog, {
       open: true,
@@ -96,15 +96,13 @@ describe('CreateImageDialog', () => {
     await fireEvent.click(container.querySelector('input[value="1"]') as HTMLElement);
     await fireEvent.click(getByText('Create'));
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
-    const cp = callTo('files.hd_create')!;
+    const cp = callTo('files.create')!;
     expect(cp[1][0]).toMatch(/^\/opfs\/images\/hd\/blank_38MB_\d+\.dmg$/);
-    expect(cp[1][1]).toBe('40061952');
+    expect(cp[1].slice(1)).toEqual(['hd', 40061952]);
   });
 
   it('creates a ProFile image when that is what the bus takes', async () => {
-    gsEvalMock.mockImplementation(async (p: string) =>
-      p === 'files.profile_create' ? true : null,
-    );
+    gsEvalMock.mockImplementation(async (p: string) => (p === 'files.create' ? true : null));
     const onCreated = vi.fn();
     const { getByText } = render(CreateImageDialog, {
       open: true,
@@ -112,8 +110,8 @@ describe('CreateImageDialog', () => {
       disks: [
         {
           label: '5 MB ProFile (9728 blocks)',
-          method: 'files.profile_create',
-          arg: '9728',
+          kind: 'profile',
+          size: 4980736,
           name: 'blank_profile_5MB',
           ext: '.image',
         },
@@ -123,9 +121,9 @@ describe('CreateImageDialog', () => {
     });
     await fireEvent.click(getByText('Create'));
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
-    const cp = callTo('files.profile_create')!;
+    const cp = callTo('files.create')!;
     expect(cp[1][0]).toMatch(/^\/opfs\/images\/hd\/blank_profile_5MB_\d+\.image$/);
-    expect(cp[1][1]).toBe('9728');
+    expect(cp[1].slice(1)).toEqual(['profile', 4980736]);
   });
 
   it('says so for a device that takes no hard disk', () => {
@@ -140,7 +138,7 @@ describe('CreateImageDialog', () => {
   });
 
   it('shows an error and does not fire onCreated when creation fails', async () => {
-    gsEvalMock.mockImplementation(async (p: string) => (p === 'files.fd_create' ? false : null));
+    gsEvalMock.mockImplementation(async (p: string) => (p === 'files.create' ? false : null));
     const onCreated = vi.fn();
     const { getByText, container } = render(CreateImageDialog, {
       open: true,
@@ -155,7 +153,7 @@ describe('CreateImageDialog', () => {
 
   it("shows the core's reason for a failed create", async () => {
     gsEvalMock.mockImplementation(async (p: string) =>
-      p === 'files.fd_create' ? { error: 'quota exceeded' } : null,
+      p === 'files.create' ? { error: 'quota exceeded' } : null,
     );
     const { getByText, container } = render(CreateImageDialog, {
       open: true,

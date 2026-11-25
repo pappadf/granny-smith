@@ -370,13 +370,19 @@ instructions.
 ### 3.3 Translation
 
 `translate()` classifies the chunk's words with the predecoded tier's
-classifier, plus the translator's own shapes (`jit_classify`): every
+classifier, plus the translator's own shapes (`ppc_jit_classify.h`, the
+decode tree's fourth instantiation: its leaves return the translator's
+ids, so a form the interpreter rejects -- an invalid BO, a reserved field
+set on a row that checks it -- is never translated; the hand classifier
+it replaced translated `bc`/`bclr`/`bcctr` with an invalid BO and the
+`addme`/`addze`/`subfme`/`subfze`/`neg` forms with rB set): every
 `bc` form the T0 ids leave out (linking, decrementing with a condition),
 conditional, decrementing and linking `bclr`/`bcctr`, the X-form loads and
 stores, the XO-form carrying, extended and OE add/subtract family, the
 D-form accesses with rA = 0, `lmw`/`stmw` (one test for the whole transfer: word-aligned, inside one page, the page's SoA entry present -- anything else leaves at the instruction for the C forms), `mcrxr`, and `mfspr`/`mtspr` of the plain
-supervisor SPRs (DSISR, DAR, SRR0/1, SPRG0-3: fields of `ppc_t` with no
-side effect; in a user-mode region they raise a program interrupt, so
+supervisor SPRs (DSISR, DAR, SRR0/1, SPRG0-3, the `PPC_SPR_JIT` rows of
+`ppc_spr.h`, which a static assertion holds to supervisor-only, every model
+and a plain field both ways: fields of `ppc_t` with no side effect; in a user-mode region they raise a program interrupt, so
 they stay in C there).  For a kernel that runs translated (Mac OS X):
 `mfmsr`; `mtmsr` when only bits nothing translated depends on change
 (EE, RI, FP, ME, FE0/FE1, PM) and no BAT write is pending -- any other
@@ -412,8 +418,9 @@ FPRF ±zero), with IEEE's signed-zero rules, which round to nearest shares
 with the kernel (a product of two nonzero factors that underflows to zero
 still leaves); any check that fails, and every other arithmetic or move with
 Rc clear, and `fcmpu`/`fcmpo`, call an imported helper (`ppc_jit_fp`)
-that runs the interpreter's own routines, so results and FPSCR are the
-predecoded loop's either way; it declines (leave at the instruction)
+that runs the interpreter's own leaves (`ppc_execute_fp`, the decode tree
+with only the FP register-to-register leaves of `ppc_ops_fp.h` live), so
+results and FPSCR are the predecoded loop's either way; it declines (leave at the instruction)
 when FP is unavailable or an FP exception is enabled, and a compare
 returns its CR field for the translation's CR local.  A compare with
 ordered operands (no NaN) runs inline instead, as `ppc_fcmp`'s ordered
@@ -666,7 +673,7 @@ PowerPC row a third time with the tier on, eagerly (`jit.threshold = 1`,
 `jit.cooldown = 16`, `jit.budget = 100`), when the build has it (`jit.available`), and
 compares the checkpoints with the switch core's.  Build the Node wasm
 build (`make -f Makefile.headless TARGET=node`) and run the test with it;
-the build is single-threaded, so it needs `--jobs=inline --io=sync`.
+the build is single-threaded, so it needs `--io=sync`.
 
 Two runs compare only when they split the run into the same
 `scheduler.run` calls: a branch folds or not by where the sprint ends.
@@ -676,7 +683,7 @@ translate supervisor code too.
 **Mac OS X.**  The kernel tier has no differential row; each change to it
 was checked by booting Mac OS X to a checkpoint at 3 G instructions with
 the tier on (supervisor code included) and off, in the Node build with
-`--jobs=inline --io=sync`, and comparing them: they must be identical but
+`--io=sync`, and comparing them: they must be identical but
 for the disk image's file name.  Compare 2 GB checkpoints with a streaming
 block-at-a-time compare (`cmp-checkpoints.py` holds both in memory); a
 checkpoint is tied to its build, so every rebuilt binary needs a fresh
@@ -695,7 +702,7 @@ run whose guest instruction count differs.  An arm meant as "predecoded
 only" must set `jit.enabled = 0`.  Row caveats: `pm6100-68kemu` is a
 diskless SCSI-scan loop, the tier's best case (about 257 instructions per
 call); a diskless pm8500 spends half its time in real-mode nanokernel
-code.  The interactive scenario (`tests/bench/osx-interactive.script`:
+code.  The interactive scenario (`tests/bench/osx-interactive.lua`:
 menus, minimizing a window to the Dock and restoring it), not the boot,
 decided `jit.supervisor`: the boot runs mostly once-only code.  Its
 baseline before the kernel tier's later work (3-run medians, cold / warm

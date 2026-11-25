@@ -52,16 +52,12 @@ ifeq ($(origin CC),default)
 CC := gcc
 endif
 
-# The product builds' dialect and warnings (see Makefile), with the feature
-# macros headless uses: without _GNU_SOURCE glibc hides strptime and the
-# like, and the unit build saw different declarations than the product.
-# WERROR=1 (set in CI) makes every warning an error.
-BASE_CFLAGS := -O0 -g -std=gnu11 -Wall -Wextra -Wno-missing-field-initializers \
-               -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L
-WERROR ?= 0
-ifeq ($(WERROR),1)
-BASE_CFLAGS += -Werror
-endif
+# The product builds' dialect and warnings, with the feature macros headless
+# uses (src/build-flags.mk): without them the unit build sees different
+# declarations than the product.  WERROR=1 (set in CI) makes every warning
+# an error.
+include $(WORKSPACE_ROOT)/src/build-flags.mk
+BASE_CFLAGS := -O0 -g $(WARN_CFLAGS) $(FEATURE_CFLAGS)
 
 # The core and machine header directories are the ones both product builds
 # use (src/sources.mk); the unit build puts its support shims first and
@@ -80,7 +76,7 @@ include $(WORKSPACE_ROOT)/src/sources.mk
 # USE_SOURCE_LAYER := 1 before including this file.
 SOURCE_LAYER_SRCS := $(addprefix $(CORE_DIR)/storage/,source.c source_cache.c chunk_cache.c format_registry.c \
                        image_chunkmap.c image_ndif.c image_qcow2.c image_udif.c image_moof.c image_scratch.c \
-                       udif_writer.c resource_fork.c \
+                       udif_writer.c image_volume.c gcr.c resource_fork.c \
                        macroman.c storage_util.c) \
                      $(PEELER_SRC) $(CODEC_SRC)
 
@@ -94,9 +90,8 @@ INCLUDE_FLAGS ?= -I$(UNIT_ROOT)/support \
 
 # The predecoded cores include generated T1 headers (scripts/gen_pd_cases.py);
 # they are produced once into $(WORKSPACE_ROOT)/build/gen for every suite.
-PDGEN_OUT := $(WORKSPACE_ROOT)/build/gen
-PDGEN_CPU_HEADERS := $(PDGEN_OUT)/cpu_pd_t1_ids.h $(PDGEN_OUT)/cpu_pd_t1_classify.h $(PDGEN_OUT)/cpu_pd_t1_cases.h $(PDGEN_OUT)/cpu_pd_t1_names.h
-PDGEN_PPC_HEADERS := $(PDGEN_OUT)/ppc_pd_t1_ids.h $(PDGEN_OUT)/ppc_pd_t1_classify.h $(PDGEN_OUT)/ppc_pd_t1_cases.h $(PDGEN_OUT)/ppc_pd_t1_names.h
+GS_ROOT := $(WORKSPACE_ROOT)/
+include $(WORKSPACE_ROOT)/src/core/cpu/pdgen.mk
 INCLUDE_FLAGS += -I$(PDGEN_OUT)
 
 SANITIZE ?=
@@ -124,6 +119,7 @@ else ifeq ($(TEST_HARNESS),isolated)
   STUB_SRCS := $(UNIT_ROOT)/support/stub_platform.c \
                $(UNIT_ROOT)/support/stub_shell.c \
                $(UNIT_ROOT)/support/stub_checkpoint.c \
+               $(UNIT_ROOT)/support/stub_checkpoint_strings.c \
                $(UNIT_ROOT)/support/stub_system.c \
                $(UNIT_ROOT)/support/stub_memory.c \
                $(UNIT_ROOT)/support/stub_debugger.c \
@@ -138,6 +134,7 @@ else ifeq ($(TEST_HARNESS),cpu)
   STUB_SRCS := $(UNIT_ROOT)/support/stub_platform.c \
                $(UNIT_ROOT)/support/stub_shell.c \
                $(UNIT_ROOT)/support/stub_checkpoint.c \
+               $(UNIT_ROOT)/support/stub_checkpoint_strings.c \
                $(UNIT_ROOT)/support/stub_system.c \
                $(UNIT_ROOT)/support/stub_debugger.c \
                $(UNIT_ROOT)/support/stub_peripherals.c \
@@ -171,9 +168,14 @@ else
 endif
 
 # Harness stubs a suite replaces with the real module (e.g. memory), and
-# support stubs it adds by name.
+# support stubs it adds by name.  The checkpoint stub brings the bounded
+# count/string readers built over it (stub_checkpoint_strings.c).
+STUBS := $(STUBS) $(if $(filter checkpoint,$(STUBS)),$(if $(filter checkpoint_strings,$(STUBS)),,checkpoint_strings))
 COMMON_SRCS := $(filter-out $(foreach s,$(OMIT_STUBS),$(UNIT_ROOT)/support/stub_$(s).c),$(COMMON_SRCS)) \
                $(foreach s,$(STUBS),$(UNIT_ROOT)/support/stub_$(s).c)
+# The GS_ASSERT handlers come with the assert stub: they are the tools'
+# too, so they live outside the unit tree (src/platform/gs_assert_abort.c).
+COMMON_SRCS += $(if $(filter $(UNIT_ROOT)/support/stub_assert.c,$(COMMON_SRCS)),$(EMU_ROOT)/platform/gs_assert_abort.c)
 
 # -- Source and object file collection --
 # All source paths are converted to absolute, then mapped to object
@@ -226,15 +228,10 @@ $(TARGET): $(OBJ)
 # Include auto-generated header dependency files
 -include $(DEP)
 
-# Generated T1 headers: every core object depends on its architecture's set.
-$(PDGEN_CPU_HEADERS) &: $(EMU_ROOT)/core/cpu/cpu_decode.h $(WORKSPACE_ROOT)/scripts/gen_pd_cases.py
-	@mkdir -p $(PDGEN_OUT)
-	python3 $(WORKSPACE_ROOT)/scripts/gen_pd_cases.py --tree $(EMU_ROOT)/core/cpu/cpu_decode.h --prefix cpu --base 16 --out $(PDGEN_OUT)
-$(PDGEN_PPC_HEADERS) &: $(EMU_ROOT)/core/cpu/ppc/ppc_decode.h $(WORKSPACE_ROOT)/scripts/gen_pd_cases.py
-	@mkdir -p $(PDGEN_OUT)
-	python3 $(WORKSPACE_ROOT)/scripts/gen_pd_cases.py --tree $(EMU_ROOT)/core/cpu/ppc/ppc_decode.h --prefix ppc --base 16 --out $(PDGEN_OUT)
-$(OBJ_DIR)/src/core/cpu/cpu.o $(OBJ_DIR)/src/core/cpu/cpu_68000.o $(OBJ_DIR)/src/core/cpu/cpu_68030.o $(OBJ_DIR)/src/core/cpu/cpu_68040.o: $(PDGEN_CPU_HEADERS)
-$(OBJ_DIR)/src/core/cpu/ppc/ppc.o $(OBJ_DIR)/src/core/cpu/ppc/ppc_run.o: $(PDGEN_PPC_HEADERS)
+# Generated T1 headers (pdgen.mk): every core object depends on its
+# architecture's set.
+$(call pdgen_cpu_objs,$(OBJ_DIR)/src/core): $(PDGEN_CPU_HEADERS)
+$(call pdgen_ppc_objs,$(OBJ_DIR)/src/core): $(PDGEN_PPC_HEADERS)
 
 # Run the test binary.  EXEC_WRAPPER lets the same suite run on wasm32 -- `make run
 # CC=emcc EXEC_WRAPPER=node` -- where size_t and long are 32 bits.  It is

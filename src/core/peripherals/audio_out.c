@@ -13,14 +13,19 @@
 #include "object.h"
 #include "out.h"
 #include "platform.h"
+#include "storage_util.h"
 #include "value.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 
 LOG_USE_CATEGORY_NAME("audio");
+
+// The 1.5 dB D/A attenuation ladder the codec engines share (audio_out.h).
+const uint32_t audio_atten_1p5db_x65536[16] = {
+    65536, 55142, 46396, 39037, 32846, 27636, 23253, 19565, 16462, 13851, 11654, 9806, 8250, 6942, 5841, 4915,
+};
 
 // Forward declaration — class descriptor is at the bottom of the file.
 static const class_desc_t audio_capture_class;
@@ -395,8 +400,7 @@ static DEF_METHOD(capture_method_start) {
 static DEF_METHOD(capture_method_stop) {
     const char *path = (argc >= 1 && argv[0].s && *argv[0].s) ? argv[0].s : NULL;
     if (path) {
-        size_t n = strlen(path);
-        if (n < 4 || strcasecmp(path + n - 4, ".wav") != 0)
+        if (!path_has_ext(path, ".wav"))
             return val_err("sound.capture.stop: path must end in .wav (got '%s')", path);
     }
     if (!audio_out_capture_active())

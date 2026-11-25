@@ -15,17 +15,17 @@
 //     (register semantics are not publicly documented: no silent zeros,
 //     every access is loggable)
 //   * the 256 KiB I/O island at $50000000 with the family decode,
-//     run on the shared mac030 I/O engine
+//     run on the shared board_io engine
 //   * interrupts: VIA1→1, VIA2→2, SCC→4, NMI→7 (same routing table
-//     as GLUE, so mac030_glue_update_ipl is reused verbatim)
+//     as GLUE, so m68k_board_update_ipl is reused verbatim)
 
 #ifndef GS_MACHINES_MCU_H
 #define GS_MACHINES_MCU_H
 
 #include "checkpoint.h"
-#include "mac030_glue.h" // shared core builder + IRQ resolver + fill_page
-#include "mac030_glue_io.h" // the shared I/O dispatch engine
-#include "mac030_rom_overlay.h"
+#include "m68k_board.h" // shared core builder + IRQ resolver + fill_page
+#include "m68k_board_io.h" // the shared I/O dispatch engine, board-descriptor face
+#include "m68k_board_overlay.h"
 #include "memory.h"
 #include "system_internal.h"
 
@@ -79,11 +79,11 @@ struct sonic;
 #define MCU_YANCC_REG_COUNT 64
 
 // The MCU-family board descriptor: per-machine hardware data consumed by the
-// shared substrate (parallel to mac030_board_desc_t).
+// shared substrate (parallel to m68k_board_desc_t).
 typedef struct mcu_board_desc {
-    // The eight fields the shared 68k code reads -- see mac030_board_desc_t.
+    // The eight fields the shared 68k code reads -- see m68k_board_desc_t.
     // Embedded, not repeated: one definition, one place to document it.
-    mac030_board_desc_t common;
+    m68k_board_desc_t common;
     uint32_t ram_onboard_size; // soldered RAM forming bank A (Q700: 4 MB; 0 = SIMM banks only)
     uint8_t ram_bank_count; // physical banks the board decodes (Q700: 2, towers: 4)
     uint8_t via1_pa_model; // VIA1 PA model sense ($C0 Q700, $D0 Q900, $90 Q950)
@@ -99,6 +99,22 @@ typedef struct mcu_board_desc {
     uint32_t dafb_vram_size;
 } mcu_board_desc_t;
 
+// The .common block every MCU board shares: MCU+DAFB, the 256 MB ROM window
+// at $40000000, the 256 KiB I/O island whose undecoded reads float high (see
+// m68k_board.h), and slots $1-$E bus-erroring (this board decodes below
+// $F9); only the island's decode table differs.
+#define MCU_BOARD_COMMON(io_ranges_)                                                                                   \
+    {                                                                                                                  \
+        .chipset = "MCU+DAFB",                                                                                         \
+        .rom_base = 0x40000000u,                                                                                       \
+        .rom_end = 0x50000000u,                                                                                        \
+        .io_ranges = (io_ranges_),                                                                                     \
+        .io_mirror_mask = 0x0003FFFFu,                                                                                 \
+        .io_unmapped_read = 0xFF,                                                                                      \
+        .bus_err_lo = 0xF1000000u,                                                                                     \
+        .bus_err_hi = NUBUS_BERR_HI,                                                                                   \
+    }
+
 // Per-machine hooks + data, named by hw_profile_t.board.
 typedef struct mcu_board {
     const mcu_board_desc_t *desc;
@@ -106,7 +122,7 @@ typedef struct mcu_board {
     void (*via1_shift_out)(void *context, uint8_t byte);
     void (*via2_output)(void *context, uint8_t port, uint8_t value);
     int (*build_devices)(config_t *cfg, checkpoint_t *cp); // machine-specific tail
-    // SCC chip IRQ callback override (NULL → mac030_glue_scc_irq).  The towers
+    // SCC chip IRQ callback override (NULL → m68k_board_scc_irq).  The towers
     // OR the SCC chip INT with the SCC IOP host INT onto the level-4 source,
     // so they intercept the chip line here.
     void (*scc_irq)(void *context, bool active);
@@ -114,9 +130,7 @@ typedef struct mcu_board {
 
 // Unified MCU-family machine state.
 typedef struct mcu_state {
-    struct adb *adb;
-    struct asc *asc; // EASC (ASC-compatible core)
-    struct floppy *floppy;
+    struct asc *asc; // EASC (ASC-compatible core); the adb and floppy are cfg->'s
     struct dafb *dafb; // DAFB video
     struct scsi_53c96 *scsi96; // NCR 53C96
     struct sonic *sonic; // DP83932 SONIC Ethernet (no wire in v1)
@@ -127,14 +141,13 @@ typedef struct mcu_state {
     struct iop *scc_iop; // SCC behind an Apple PIC/IOP at island $C000
     struct iop *swim_iop; // SWIM/ADB behind the second IOP at island $1E000
     struct scsi_53c96 *scsi96_ext; // second 53C96 — external bus (regs $F402, pdma $F502)
-    struct scsi *scsi_ext; // external SCSI bus (no default devices in v1)
     uint8_t scc_irq_or; // level-4 requesters: bit0 = SCC chip, bit1 = SCC IOP host INT
     uint8_t scsi_irq_or; // VIA2 CB2 requesters: bit0 = internal 53C96, bit1 = external
 
-    mac030_rom_overlay_t overlay; // ROM-at-zero until the aperture is touched
+    m68k_board_overlay_t overlay; // ROM-at-zero until the aperture is touched
     struct mmu_state *bus_mmu; // bus-side resolver; 040 walker regs live on the CPU
 
-    mac030_io_t io; // device handles for the shared I/O engine
+    board_io_t io; // device handles for the shared I/O engine
 
     // Orwell memory controller ($5000E000).  `orwell_cfg` is the 34-bit
     // shift-in register; `bank_start` holds the values latched from it.
@@ -156,6 +169,11 @@ typedef struct mcu_state {
     memory_interface_t io_interface; // registered at the $50000000 island
 } mcu_state_t;
 
+// The MCU family's machine state (cfg->machine_context).
+static inline mcu_state_t *mcu_st(config_t *cfg) {
+    return (mcu_state_t *)cfg->machine_context;
+}
+
 // The one MCU-family substrate; q700/q900/q950 bind this.
 extern const machine_substrate_t mcu_substrate;
 
@@ -166,21 +184,21 @@ extern const builtin_video_desc_t mcu_builtin_video_q900;
 extern const builtin_video_desc_t mcu_builtin_video_q950;
 
 // Q700 I/O window table (exposed for the address-map unit test).
-extern const mac030_io_range_t mcu_q700_io_ranges[];
+extern const board_io_range_t mcu_q700_io_ranges[];
 
 // Q900/Q950 tower I/O window table: IOP apertures replace direct SCC/SWIM,
 // second 53C96 windows at $F400/$F500.
-extern const mac030_io_range_t mcu_q900_io_ranges[];
+extern const board_io_range_t mcu_q900_io_ranges[];
 
 // Bind the family device set + board tables into the shared I/O engine.
 // Bind the MCU's I/O dispatcher.  Deliberately NOT a call through to
-// mac030_glue_io_bind, even though desc->common is now the same type it
-// takes: the two bind different device sets.  The GLUE version also binds MAC030_DEV_SCSI, and
+// glue_io_bind, even though desc->common is now the same type it
+// takes: the two bind different device sets.  The GLUE version also binds BOARD_DEV_SCSI, and
 // neither this family's window table nor the AV's ever routes to that device
 // index -- both decode a 53C96 through their own windows instead -- so
 // delegating would install a handle nothing consults.  Merging these is a
 // question about device sets, not about the descriptor type.
-void mcu_io_bind(mac030_io_t *io, config_t *cfg, const mcu_board_desc_t *desc, void *asc, void *floppy);
+void mcu_io_bind(board_io_t *io, config_t *cfg, const mcu_board_desc_t *desc, void *asc, void *floppy);
 
 // Install the family memory layout: I/O island, DAFB apertures, ROM-aperture
 // trigger device, and the armed overlay.  Called from a machine's
@@ -221,6 +239,17 @@ void mcu_private_part(config_t *cfg, checkpoint_t *cp);
 // from the descriptor unconditionally is what makes the Q700 honour its own
 // board data instead of coinciding with dafb_init()'s zeroed defaults.
 int mcu_build_dafb(config_t *cfg, checkpoint_t *cp);
+
+// The internal SCSI bus (part "scsi", with the configured disks and CD) and
+// the 53C96 fronting it (part "scsi96"), its interrupt on `irq`.  The Q900
+// builds its external bus after this, before the SONIC.
+void mcu_build_scsi0(config_t *cfg, checkpoint_t *cp, void (*irq)(void *ctx, bool active));
+
+// The SONIC Ethernet (no wire; bus-master DMA through the guest-physical
+// port), the EASC (left channel to the internal speaker) and the SWIM floppy,
+// as parts "sonic", "asc" and "floppy", in that order.
+void mcu_build_sonic_asc_floppy(config_t *cfg, checkpoint_t *cp, void (*sonic_irq)(void *ctx, bool active),
+                                void (*asc_irq)(void *ctx, bool active));
 
 void mcu_slot_irq_source(config_t *cfg, int pa_bit, bool active);
 

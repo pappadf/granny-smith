@@ -1,0 +1,42 @@
+-- g3dt-boot — the 750 (G3) core: a Power Macintosh G3 desktop booting Mac OS
+-- 9.2.1 (the suite-gossamer image), checkpointed 4.8 G scheduler slots in
+-- (3.25 G instructions), where the system loads its native extensions.
+-- Mostly native PowerPC code with the MMU on.  Not the idle desktop: there
+-- Mac OS 9 naps the 750, which would measure the idle loop's sleep, not the
+-- CPU.  The boot naps in stretches already (from ~1.4 G instructions on);
+-- the checkpoint opens a run of at least 500 M instructions without one,
+-- so the B window (30 M + 300 M) never reaches a nap.  At 4 G slots it
+-- did: the window ran 15 M instructions and stopped in the nap loop.
+
+function bench_boot()
+    machine.boot{model = "pmg3dt", ram = 65536, rom = F"${vars.TEST_DATA}/roms/pmg3dt-pmg3mt-78f57389.rom"}
+    -- CPI pinned at 2, the value the checkpoint was placed with, so a change
+    -- of the machine's default CPI does not move the row to other code (at
+    -- CPI 1 the same budget lands at 3.6 G instructions, where A is 21 %
+    -- higher only because the code is different; on one guest state the
+    -- two CPIs cost the same per instruction).
+    scheduler.cpi = 2
+    machine.rtc.time = "2026-10-01T12:00:00"
+    -- Open Firmware's factory boot, as the checkpoint was placed with: a new
+    -- G3 is seeded with Apple's Mac OS X patch (nvramrc, `0 bootr`), whose
+    -- boot reaches other code at the same budget.  On an older binary these
+    -- are the values the store holds already.
+    machine.nvram.setenv("use-nvramrc?", "false")
+    machine.nvram.setenv("load-base", "4000")
+    machine.nvram.setenv("nvramrc", "")
+    machine.nvram.setenv("boot-command", "boot")
+    machine.scsi.attach_hd(F"${vars.TEST_DATA}/systems/mac_os_9_2_1_516mb_g3.img", 0)
+    -- The cable in, as the checkpoint was placed with: with no cable (the
+    -- BMAC's default since it reports one only on request) the boot naps
+    -- past 4.8 G.  Written only when it reads down -- an older binary has
+    -- the cable in already, and its `link` setter asserts.
+    if gs.try(function() return machine.bmac.link end, true) == false then machine.bmac.link = true end
+    scheduler.run(4800000000)
+    bench_guard()
+end
+
+function bench_guard()
+    -- Instruction and data translation on: the system is running, not the
+    -- ROM's real-mode start-up.
+    assert((machine.cpu.msr & 0x30) == 0x30, F"g3dt-boot: translation is off (MSR=${machine.cpu.msr:08x})")
+end

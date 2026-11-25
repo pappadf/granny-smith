@@ -31,6 +31,7 @@
 
 #include "log.h"
 #include "object.h"
+#include "object_order.h"
 #include "ppc.h"
 #include "rtc.h"
 #include "system.h"
@@ -563,19 +564,12 @@ void tnt_gbus_init(config_t *cfg) {
     g->rear_locked = 1;
     tnt_gbus_reset(cfg);
 
-    st->board_object = object_new(&tnt_board_class, cfg, "board");
-    if (st->board_object) {
-        object_set_label(st->board_object, "Board");
-        object_set_order(st->board_object, 120);
-        object_attach(machine_object(), st->board_object);
-    }
+    st->board_object = object_attach_new(machine_object(), &tnt_board_class, cfg, "board", "Board", OBJ_ORDER_BOARD);
 }
 
 void tnt_gbus_teardown(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     if (st && st->board_object) {
-        object_detach(st->board_object);
-        object_delete(st->board_object);
-        st->board_object = NULL;
+        object_destroy(&st->board_object);
     }
 }

@@ -24,17 +24,7 @@
 static const uint32_t q840av_ram_options_kb[] = {8192, 16384, 32768, 65536, 131072, 0};
 
 static const av_board_desc_t q840av_board_desc = {
-    .common =
-        {
-                 .chipset = "YMCA+PSC",
-                 .rom_base = 0x40800000u,
-                 .rom_end = 0x40A00000u,
-                 .io_ranges = av_io_ranges,
-                 .io_mirror_mask = 0x0003FFFFu, // 256 KiB island + the $50F40000 alias
-            .io_unmapped_read = 0xFF, // undecoded island reads float high
-            .bus_err_lo = 0xA0000000u, // super-slots + slots; see nubus.h
-            .bus_err_hi = NUBUS_BERR_HI,
-                 },
+    .common = AV_BOARD_COMMON,
     .strap_nibble = 0xF, // Cyclone40 straps %1111
     .muni_present = true,
     .ram_onboard = 0, // all RAM on SIMMs

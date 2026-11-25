@@ -73,7 +73,9 @@ declaration ROM: the boot ROM drives the video from the hard-coded
   1/2/4/8 bpp selected via `RvMonP`; the 15" Portrait (sense `1`) gives
   640×870, and any other code halts video — see [rbv.md](rbv.md),
   "Monitor sense". The CLUT is programmed through the VDAC and surfaces
-  via `display.clut`.
+  via `display.clut`.  The VDAC's palette ports are the shared RAMDAC
+  sequencer (`display_ramdac.h`): latched R, G, B stored on blue, and runs in
+  either direction advance the one index after blue.
 - The slot-0 video VBL interrupt (`RvIRQ0`) is asserted once per frame
   in the card's `on_vbl`; the boot ROM polls `RvSInt` bit 6 for it during
   video init.
@@ -98,7 +100,7 @@ VIA1 -> IPL 1
 The IIci boots stock System 7.0.1 from floppy, and 7.1, 7.5 and 7.6 from
 hard disk, to a working Finder desktop. The rows `iici-701-fd`,
 `iici-71-hd`, `iici-75-hd` and `iici-76-hd` of
-[tests/integration/suite-iici](../../../../tests/integration/suite-iici/test.script)
+[tests/integration/suite-iici](../../../../tests/integration/suite-iici/test.lua)
 boot each and pixel-match the desktop.
 
 Deferred (not v1): the optional Parity Generator Card, the 32 KB L2

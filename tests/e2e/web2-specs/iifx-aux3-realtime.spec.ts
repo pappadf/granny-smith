@@ -33,11 +33,12 @@ import { test, expect } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile, stageOpfsFileStreaming } from '../helpers/web2-fs';
 import { terminalRun } from '../helpers/terminal';
+import { DATA } from '../helpers/paths';
+import { uploadRomViaWelcome } from '../helpers/upload';
 
 // Real pacing, not web2's default Faster: its point is a real-time boot.
 test.use({ gsSpeed: 'paced' });
 
-const DATA = path.resolve(__dirname, '../../data');
 const IIFX_ROM = path.join(DATA, 'roms', 'iifx-4147dd77.rom');
 const JMFB_VROM = path.join(DATA, 'roms', 'mdc-8-24-revb-d1629664.vrom');
 const AUX_HD = path.join(DATA, 'aux', 'aux_3.0.1', 'hd160-with-aux-301.img');
@@ -68,11 +69,7 @@ test('IIfx A/UX 3.0.1 free-runs under the real RAF scheduler to the login', asyn
   await stageOpfsFileStreaming(page, '/opfs/images/hd/hd160-with-aux-301.img', AUX_HD);
 
   // IIfx ROM via the Welcome "Load ROM..." button.
-  const [romChooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Load ROM...' }).click(),
-  ]);
-  await romChooser.setFiles(IIFX_ROM);
+  await uploadRomViaWelcome(page, IIFX_ROM);
 
   // New Machine: IIfx, 16 MB, 13" RGB at 8 bpp, the A/UX HD.
   await page.getByRole('button', { name: 'New Machine...' }).click();

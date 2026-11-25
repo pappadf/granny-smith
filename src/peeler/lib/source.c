@@ -54,7 +54,7 @@ void peel_source_release(peel_source_t *s) {
 
 int64_t peel_source_read(peel_source_t *s, uint64_t off, void *buf, size_t len) {
     if (!s || !s->ops || !s->ops->read)
-        return -22;
+        return -EINVAL;
     if (len == 0)
         return 0;
     return s->ops->read(s, off, buf, len);
@@ -102,7 +102,7 @@ int peel_source_read_exact(peel_source_t *s, uint64_t off, void *buf, size_t len
         if (n < 0)
             return (int)n;
         if (n == 0)
-            return -5; // short source
+            return -EIO; // short source
         p += n;
         off += (uint64_t)n;
         len -= (size_t)n;
@@ -274,10 +274,10 @@ static int64_t file_read(peel_source_t *s, uint64_t off, void *buf, size_t len) 
     // C99 fseek takes a long: a file source past 2 GiB on a 32-bit long is
     // refused at open, so this cannot wrap.
     if (fseek(f->fp, (long)off, SEEK_SET) != 0)
-        return -5;
+        return -EIO;
     size_t n = fread(buf, 1, len, f->fp);
     if (n == 0 && ferror(f->fp))
-        return -5;
+        return -EIO;
     return (int64_t)n;
 }
 
@@ -430,7 +430,7 @@ static peel_source_t *heap_create(void *ctx, const char *key, uint64_t expected_
 static int64_t heap_write(peel_source_t *sink, uint64_t off, const void *buf, size_t len) {
     heap_sink_t *h = sink->ctx;
     if (off > h->len || off + len > PEEL_MAX_FORK)
-        return -22; // written in order, never past the fork cap
+        return -EINVAL; // written in order, never past the fork cap
     size_t need = (size_t)off + len;
     if (need > h->cap) {
         size_t ncap = h->cap ? h->cap : 4096;
@@ -440,7 +440,7 @@ static int64_t heap_write(peel_source_t *sink, uint64_t off, const void *buf, si
             ncap = (size_t)h->expected; // exact when the size is known
         uint8_t *nb = realloc(h->buf, ncap);
         if (!nb)
-            return -12;
+            return -ENOMEM;
         h->buf = nb;
         h->cap = ncap;
     }
@@ -475,7 +475,7 @@ int peel_probe_init(peel_probe_t *p, peel_source_t *src) {
     bool separate = size > PEEL_DETECT_BUDGET;
     p->owned = malloc(head + (separate ? tail : 0) + 1);
     if (!p->owned)
-        return -12;
+        return -ENOMEM;
     int rc = head ? peel_source_read_exact(src, 0, p->owned, head) : 0;
     if (rc != 0) {
         peel_probe_free(p);

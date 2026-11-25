@@ -20,8 +20,10 @@
 #ifndef GS_MACHINES_PDM_H
 #define GS_MACHINES_PDM_H
 
+#include "board_io.h" // board_io_t, the island decode engine
 #include "display.h"
 #include "display_class.h"
+#include "display_ramdac.h"
 #include "machine.h"
 #include "memory.h"
 #include "nubus.h" // struct nubus_slot_decl, for the shared slot table below
@@ -31,7 +33,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-struct av_cuda; // the shared behavioral Cuda model (machines/av/cuda.h)
+struct cuda; // the shared behavioral Cuda model (core/peripherals/cuda.h)
 struct object;
 struct scsi_53c96; // the shared 53C9x register core (peripherals/scsi_53c96.h)
 
@@ -139,7 +141,8 @@ typedef struct pdm_amic {
     uint8_t vid_depth; // $50F28001
     uint8_t vid_sense; // $50F28002 (drive bits; sense readback stubbed)
     uint8_t vid_test; // $50F28003
-    uint8_t clut_addr, clut_phase, clut_ctrl, clut_key;
+    ramdac_seq_t clut_seq; // Ariel's CLUT address and R/G/B phase
+    uint8_t clut_ctrl, clut_key;
     uint8_t clut[256][3];
     uint8_t snd_out_buf; // sound-out ping-pong: next buffer to complete (0/1)
     pdm_via2_t via2;
@@ -148,7 +151,7 @@ typedef struct pdm_amic {
     // ever addressed by PDM software.
     uint16_t codec[8];
     double snd_half_start_ns; // when the in-flight output half began playing
-    uint32_t snd_halves; // output half-buffers rendered since power-on
+    uint64_t snd_frames; // output sample frames rendered since power-on (machine.sound.frames)
     int32_t snd_peak; // loudest |sample| pushed to the host since power-on
     uint64_t snd_underruns; // half-buffers the guest never consumed (machine.sound.overruns)
 } pdm_amic_t;
@@ -236,7 +239,7 @@ typedef struct pdm_state {
     pdm_hmc_t hmc;
     pdm_amic_t amic;
     swim3_t swim3; // floppy controller (see above; NOT inside pdm_amic_t)
-    struct av_cuda *cuda;
+    struct cuda *cuda;
     // SCSI: [0] = the Curio 53C94 cell (all models, island +$10000, AMIC
     // DMA channel A, bus = cfg->scsi); [1] = the 8100's discrete 53CF96
     // (island +$11000, channel B) — instantiated with no bus attached, so
@@ -258,6 +261,9 @@ typedef struct pdm_state {
     memory_interface_t id_interface; // $5FFFF000 machine-ID page
     memory_interface_t wait_interface; // page-0 wait-state forwarder
     memory_interface_t bart_reg_interface; // $F0000000 BART register file
+    // AMIC's island decode (amic.c): its range table bound to this machine's
+    // VIA and SCC.  Host pointers, rebuilt at init, never checkpointed.
+    board_io_t amic_io;
 
     // Derived presentation state, never checkpointed
     pdm_video_t video; // scanout descriptor (ariel.c)
@@ -278,14 +284,6 @@ static inline const pdm_board_desc_t *pdm_board(config_t *cfg) {
 
 extern const machine_substrate_t pdm_substrate;
 
-// Fill one physical page in the AoS table + SoA fast-path arrays (the
-// mac030_fill_page shape, local so pdm stays free of 68K-family headers).
-void pdm_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable);
-
-// Clear a physical page back to unmapped (reads 0 outside the bus-error
-// range — how empty RAM windows fail the probe signature compare).
-void pdm_clear_page(uint32_t page_index);
-
 // === hmc.c ==================================================================
 
 void pdm_hmc_init(config_t *cfg);
@@ -301,10 +299,16 @@ uint32_t pdm_id_read32(void *ctx, uint32_t offset);
 
 // === amic.c =================================================================
 
+// AMIC answers the first 256 KB of the $50F00000 island; HMC the rest.
+#define PDM_AMIC_ISLAND_SIZE 0x40000u
+
 void pdm_amic_init(config_t *cfg);
 void pdm_amic_register_events(config_t *cfg); // at construction
 void pdm_amic_start_vbl(config_t *cfg); // fresh boot: free-running raster
-uint8_t pdm_amic_read(config_t *cfg, uint32_t offset); // island offsets < $40000
+// Install AMIC's island decode table and bind its VIA and SCC rows; once, at
+// construction, after cfg->via1 and cfg->scc exist.
+void pdm_amic_io_bind(config_t *cfg);
+uint8_t pdm_amic_read(config_t *cfg, uint32_t offset); // island offsets < PDM_AMIC_ISLAND_SIZE
 uint8_t pdm_amic_peek(config_t *cfg, uint32_t offset); // the same, side-effect-free
 void pdm_amic_write(config_t *cfg, uint32_t offset, uint8_t value);
 // Recompute the ICR source levels and drive the 601 EXT line (level-
@@ -374,84 +378,6 @@ void pdm_swim3_write(config_t *cfg, uint32_t off, uint8_t value);
 void pdm_swim3_bind(config_t *cfg); // after floppy_init and after a restore
 void pdm_swim3_register_events(config_t *cfg); // at construction
 void pdm_swim3_xfer_register_events(config_t *cfg); // at construction
-
-// === bart.c =================================================================
-// The NuBus '90 bridge: the $F0000000 register file, the slot-space windows,
-// and the recoverable faults an empty slot answers with.  Call from the
-// family memory layout, BEFORE nubus_init builds the cards.
-void pdm_bart_init(config_t *cfg);
-// A card's /NMRQ, which reaches the CPU through AMIC and not through BART.
-void pdm_bart_slot_irq(config_t *cfg, int slot, bool active);
-
-// === awacs.c ================================================================
-// The AWACS codec + AMIC sound engine: the $50F14000 register block, the
-// command-port handshake, and the output datapath (half-buffer render into
-// the host audio stream).  State lives in pdm_amic_t; these are the
-// behavior.
-void pdm_awacs_register_events(config_t *cfg); // at construction
-void pdm_awacs_init(config_t *cfg); // staging buffer + machine.sound node
-void pdm_awacs_teardown(config_t *cfg);
-uint8_t pdm_awacs_read(config_t *cfg, uint32_t offset); // block offsets 0..$1F
-void pdm_awacs_write(config_t *cfg, uint32_t offset, uint8_t value);
-// Combinational ICR mirror bytes ($50F2A008/$50F2A00A): per-channel flag
-// AND enable summaries the interrupt fabric folds into the DMA source bit.
-uint8_t pdm_awacs_irq_summary(pdm_amic_t *a); // the $0A sound byte
-
-// === swim3.c ================================================================
-// SWIM3 floppy controller register file + Sony-drive sense/strobe model
-// (see pdm_swim3_t above).  Island offsets 0..$1FFF from $50F16000; byte
-// accesses only.
-uint8_t pdm_swim3_read(config_t *cfg, uint32_t off);
-void pdm_swim3_write(config_t *cfg, uint32_t off, uint8_t value);
-// Raise/clear the chip's IRQ line from the current Interrupt/IntMask/mode
-// picture (§7.9: IRQ = EnableInts && (Interrupt & IntMask)).
-void pdm_swim3_update_irq(config_t *cfg);
-// Post an interrupt source (the I_* bits below) and re-evaluate the line.
-void pdm_swim3_raise(config_t *cfg, uint8_t bits);
-
-// Interrupt / IntMask bit assignments (§3.5)
-#define SWIM3_INT_TIMER 0x01u
-#define SWIM3_INT_STEP  0x02u
-#define SWIM3_INT_ID    0x04u
-#define SWIM3_INT_DONE  0x08u
-#define SWIM3_INT_SENSE 0x10u
-
-// Mode register bits (§3.2)
-#define SWIM3_M_ENABLE_INTS 0x01u
-#define SWIM3_M_DRIVE1      0x02u
-#define SWIM3_M_DRIVE2      0x04u
-#define SWIM3_M_ACTION      0x08u // GO
-#define SWIM3_M_WRITE       0x10u
-#define SWIM3_M_HEADSEL     0x20u
-#define SWIM3_M_FORMAT      0x40u
-#define SWIM3_M_GOSTEP      0x80u
-
-// Setup register bits (§3.1)
-#define SWIM3_S_COPYPROT   0x02u
-#define SWIM3_S_GCR        0x04u
-#define SWIM3_S_DISGCRCONV 0x10u
-#define SWIM3_S_IBMDRIVE   0x20u
-
-// Error register bits (§3.4)
-#define SWIM3_E_UNDERRUN 0x01u
-#define SWIM3_E_OVERRUN  0x04u
-#define SWIM3_E_CRC_ADDR 0x40u
-#define SWIM3_E_CRC_DATA 0x80u
-
-// === swim3_xfer.c ===========================================================
-// The media transfer engine: header hunt, sector read/write, whole-track
-// format, raw (copy-protect) capture, and the GCR nibble codec.  It reads
-// and writes the disk image through the shared floppy module and moves its
-// bytes through the AMIC floppy DMA channel.
-void pdm_swim3_register_events(config_t *cfg); // at construction
-void pdm_swim3_xfer_register_events(config_t *cfg); // at construction
-// Mode-register edges: GO or GoStep just became set / cleared.
-void pdm_swim3_engine_update(config_t *cfg);
-// Drive geometry answers the sense protocol needs (media present, density,
-// write protection) — implemented next to the geometry table.
-bool pdm_swim3_media_is_hd(config_t *cfg);
-// The drive's index / tach line for sense address 11.
-int pdm_swim3_index_pulse(config_t *cfg);
 
 // === ariel.c ================================================================
 // Onboard video: the Sonora-model control registers ($50F28000), the Ariel II

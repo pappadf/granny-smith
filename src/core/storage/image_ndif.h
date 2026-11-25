@@ -65,8 +65,9 @@ void ndif_map_free(ndif_map_t *m);
 
 // Decode one chunk: `src`/`src_len` are the stored data-fork bytes for the
 // chunk, `dst`/`dst_len` the output (must be >= chunk->count*512).  Handles
-// ZERO, COPY, and ADC; returns -EINVAL for unsupported types or a decode
-// error.  Returns 0 on success.
+// ZERO, COPY, and ADC; returns -EINVAL for unsupported types or bad
+// arguments, -EIO for a corrupt stream (codec_errno) or one that runs past
+// the chunk.  Returns 0 on success.
 int ndif_decode_chunk(const ndif_chunk_t *chunk, const uint8_t *src, size_t src_len, uint8_t *dst, size_t dst_len);
 
 // Largest compressed chunk decoded in one buffer.  Disk Copy writes chunks

@@ -157,7 +157,8 @@ controller — verified headless: `fdc read trk=0 sec=0 → status=00`, then
 The boot ROM validates the boot block by reading sector 0's **tag** (12-byte
 header) and checking `FILEID` (tag offset 4) `== $AAAA` (`BOOTPAT`). DiskCopy
 4.2 images store these per-sector tags in a section after the data; the image
-layer now loads that section (`image_load_diskcopy_tags`) and exposes
+layer serves them in-band (each sector stored as its 12 tag bytes then its
+512 data bytes, the DiskCopy file seen through a tagged view) and exposes
 `disk_read_tag()`, and this controller fills the header buffer with the real
 sector tag on every read. So the boot block validates (its tag is all `$AA` →
 `FILEID = $AAAA`) and other blocks carry their true file-ids — exactly what the
@@ -167,7 +168,8 @@ loaded OS expects.
 sector **and** its 12-byte tag (pagelabel) together; modelling only the data
 would drop the FS's pagelabel updates (the OS writes a sector's tag on every
 write). So `RWTS_WRITE` calls `disk_write_tag()` (a `disk_read_tag` mirror that
-updates the in-memory `image->tags`) in addition to `disk_write_data()`. (The
+writes the tag into its sector's block, so it lands in the delta beside the
+data) in addition to `disk_write_data()`. (The
 read-only base image is never touched — both data and tag writes land in the
 per-run delta / in-memory tag buffer.)
 
@@ -197,3 +199,13 @@ Two FDC behaviours this relies on: the `$C05F` status byte holds **latched
 interrupt events** that `CLRSTAT` ($85) drains (not live state — see
 docs/reference/machines/lisa/lisa.md §13.3); and controller byte 10 reports the **Sony disk type** so
 the loader picks the right block→(track,sector) geometry (see above).
+
+**Saving an ejected diskette.** An eject, the guest's `unclamp` or the
+host's `eject`, empties the drive (its `image` child goes) but leaves the
+image open in the machine's tracked list, for the reinsert cache. It is
+still `files.images[N]` there, with the OS's writes and the sector tags,
+and `files.images[N].export` saves it. This is the moment worth saving:
+the Lisa ejects a diskette itself once the OS has put it away cleanly
+(Housekeeping > Eject Micro Diskette), whereas a diskette exported while
+still in the drive is one the OS later reports "in use when the Lisa
+failed".

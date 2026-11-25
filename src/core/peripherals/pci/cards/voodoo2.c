@@ -69,6 +69,7 @@
 #include "object.h"
 #include "pci.h"
 #include "platform_hooks.h"
+#include "regfile.h"
 #include "scheduler.h"
 #include "system.h"
 #include "system_internal.h"
@@ -442,16 +443,32 @@ typedef struct voodoo2 {
     bool warned_tex_read;
     bool warned_cmdfifo;
 
-    memory_interface_t bar_if;
+    // The producer side of the decomposition (log.set voodoo2
+    // V2_LOG_STATS before the card is created): TSC ticks spent inside
+    // the card's aperture handlers (all of it), and the buckets that
+    // could in principle move to a renderer thread — the CMDFIFO parser,
+    // the setup engine's gradients, the LFB pixel path and texture
+    // downloads.  Printed at teardown as fractions of the run.
+    struct {
+        bool on; // the category was at V2_LOG_STATS when the card was made
+        int depth; // aperture-handler nesting (the fifo re-enters it)
+        uint64_t run0, card, fifo, setup, lfb, tex;
+    } stats;
+
+    // The pixel-provenance watch's object surface (card.watch; the pixels
+    // themselves are the target's, tgt.watch[]): the entry objects by id,
+    // the next id, and the backend the first add swapped out for the
+    // synchronous walker ("" when it swapped none), put back by the last
+    // removal.
+    struct {
+        object_cache_t entries;
+        int next_id;
+        char restore[8];
+    } watch;
 } voodoo2_t;
 
-// GS_V2_STATS=1 — the producer side of the decomposition: TSC ticks
-// spent inside the card's aperture handlers (all of it), and the
-// buckets that could in principle move to a renderer thread — the
-// CMDFIFO parser, the setup engine's gradients, the LFB pixel path and
-// texture downloads.  Printed at teardown as fractions of the run.
-static bool s_prod_stats;
-static uint64_t s_tsc_run0, s_tsc_card, s_tsc_fifo, s_tsc_setup, s_tsc_lfb, s_tsc_tex;
+static const class_desc_t v2_watch_entry_class; // card.watch's entries (below)
+
 static inline uint64_t v2_tsc(void) {
 #if defined(__x86_64__) || defined(__i386__)
     return __rdtsc();
@@ -471,11 +488,11 @@ static inline uint64_t v2_tsc(void) {
 // the goldens are indifferent and the CPU emulation gets the overlap.
 // -DGS_V2_RASTER_DEFAULT='"sw"' (EXTRA_CFLAGS) makes a build default to
 // the synchronous walker; pci_option="raster=..." overrides per boot.
-// -DGS_V2_THREAD_BACKEND=0 compiles the thread backend out of
+// -DGS_RASTER_THREAD_BACKEND=0 compiles the thread backend out of
 // voodoo2_raster.c; the default then falls back to the walker at
 // create time, but say so here so the default's name is honest too.
 #ifndef GS_V2_RASTER_DEFAULT
-#if defined(GS_V2_THREAD_BACKEND) && !GS_V2_THREAD_BACKEND
+#if defined(GS_RASTER_THREAD_BACKEND) && !GS_RASTER_THREAD_BACKEND
 #define GS_V2_RASTER_DEFAULT "sw"
 #else
 #define GS_V2_RASTER_DEFAULT "thread"
@@ -730,17 +747,17 @@ static bool v2_lfb_expand16(uint32_t fmt, uint32_t lanes, uint16_t d, uint32_t *
         c1 = (d >> 11) & 0x1Fu;
         c2 = (d >> 5) & 0x3Fu;
         c3 = d & 0x1Fu;
-        c1 = (c1 << 3) | (c1 >> 2);
-        c2 = (c2 << 2) | (c2 >> 4);
-        c3 = (c3 << 3) | (c3 >> 2);
+        c1 = display_expand5(c1);
+        c2 = display_expand6(c2);
+        c3 = display_expand5(c3);
         *a = 255;
     } else { // x-5-5-5 or 1-5-5-5
         c1 = (d >> 10) & 0x1Fu;
         c2 = (d >> 5) & 0x1Fu;
         c3 = d & 0x1Fu;
-        c1 = (c1 << 3) | (c1 >> 2);
-        c2 = (c2 << 3) | (c2 >> 2);
-        c3 = (c3 << 3) | (c3 >> 2);
+        c1 = display_expand5(c1);
+        c2 = display_expand5(c2);
+        c3 = display_expand5(c3);
         if (fmt == 2u || fmt == 14u) {
             *a = (d >> 15) ? 255u : 0u;
             has_a = true;
@@ -1111,7 +1128,7 @@ static void v2_lfb_pixel(voodoo2_t *v, uint32_t buffer, uint32_t x, uint32_t y, 
 // field-encoded aperture offset `off` (V2 p.119), decoded by the
 // executor against the TMU state in force now.
 static void v2_tex_write_words(voodoo2_t *v, uint32_t off, const uint32_t *words, uint32_t n) {
-    uint64_t t0 = s_prod_stats ? v2_tsc() : 0;
+    uint64_t t0 = v->stats.on ? v2_tsc() : 0;
     while (n > 0) {
         v2_cmd_t cmd;
         cmd.kind = V2_CMD_TEX_WRITE;
@@ -1123,8 +1140,8 @@ static void v2_tex_write_words(voodoo2_t *v, uint32_t off, const uint32_t *words
         words += cmd.u.tex.n;
         n -= cmd.u.tex.n;
     }
-    if (s_prod_stats)
-        s_tsc_tex += v2_tsc() - t0;
+    if (v->stats.on)
+        v->stats.tex += v2_tsc() - t0;
 }
 
 // Hand a converged triangle to the backend.  The trace line — one
@@ -1240,10 +1257,10 @@ static float v2_f32(uint32_t bits) {
 // Compute the gradients from the three float vertices and draw.
 static void v2_setup_draw_body(voodoo2_t *v);
 static void v2_setup_draw(voodoo2_t *v) {
-    uint64_t t0 = s_prod_stats ? v2_tsc() : 0;
+    uint64_t t0 = v->stats.on ? v2_tsc() : 0;
     v2_setup_draw_body(v);
-    if (s_prod_stats)
-        s_tsc_setup += v2_tsc() - t0;
+    if (v->stats.on)
+        v->stats.setup += v2_tsc() - t0;
 }
 static void v2_setup_draw_body(voodoo2_t *v) {
     uint32_t sm = v->reg[R_SETUPMODE];
@@ -1905,10 +1922,10 @@ static void v2_bar_write32(void *ctx, uint32_t off, uint32_t data);
 // Execute complete packets from the fifo until depth runs dry.
 static void v2_fifo_execute_body(voodoo2_t *v);
 static void v2_fifo_execute(voodoo2_t *v) {
-    uint64_t t0 = s_prod_stats ? v2_tsc() : 0;
+    uint64_t t0 = v->stats.on ? v2_tsc() : 0;
     v2_fifo_execute_body(v);
-    if (s_prod_stats)
-        s_tsc_fifo += v2_tsc() - t0;
+    if (v->stats.on)
+        v->stats.fifo += v2_tsc() - t0;
 }
 static void v2_fifo_execute_body(voodoo2_t *v) {
     int guard = 1 << 20; // a bounded parser, never a hung emulator
@@ -2244,7 +2261,7 @@ static uint32_t v2_bar_rd32(voodoo2_t *v, uint32_t off, bool peek) {
 // One 32-bit LFB-face write, decoded per lfbMode's format and lanes
 // into one or two pixel commands.
 static void v2_lfb_write32(voodoo2_t *v, uint32_t off, uint32_t le) {
-    uint64_t t0 = s_prod_stats ? v2_tsc() : 0;
+    uint64_t t0 = v->stats.on ? v2_tsc() : 0;
     uint32_t mode = v->reg[R_LFBMODE];
     uint32_t fmt = LFB_FMT(mode);
     uint32_t buffer, x, y;
@@ -2305,24 +2322,24 @@ static void v2_lfb_write32(voodoo2_t *v, uint32_t off, uint32_t le) {
         goto done;
     }
 done:
-    if (s_prod_stats)
-        s_tsc_lfb += v2_tsc() - t0;
+    if (v->stats.on)
+        v->stats.lfb += v2_tsc() - t0;
 }
 
 static void v2_bar_write32_body(void *ctx, uint32_t off, uint32_t data);
 static void v2_bar_write32(void *ctx, uint32_t off, uint32_t data) {
-    if (!s_prod_stats) {
+    voodoo2_t *v = (voodoo2_t *)ctx;
+    if (!v->stats.on) {
         v2_bar_write32_body(ctx, off, data);
         return;
     }
     // Nested: the fifo parser re-enters this handler for packet-5 LFB
     // spans; only the OUTERMOST entry counts toward the card total.
-    static int depth;
     uint64_t t0 = v2_tsc();
-    depth++;
+    v->stats.depth++;
     v2_bar_write32_body(ctx, off, data);
-    if (--depth == 0)
-        s_tsc_card += v2_tsc() - t0;
+    if (--v->stats.depth == 0)
+        v->stats.card += v2_tsc() - t0;
 }
 static void v2_bar_write32_body(void *ctx, uint32_t off, uint32_t data) {
     voodoo2_t *v = (voodoo2_t *)ctx;
@@ -2426,24 +2443,8 @@ static uint8_t v2_bar_rd8(voodoo2_t *v, uint32_t off, bool peek) {
     return 0xFFu;
 }
 
-static uint8_t v2_bar_read8(void *ctx, uint32_t off) {
-    return v2_bar_rd8(ctx, off, false);
-}
-static uint16_t v2_bar_read16(void *ctx, uint32_t off) {
-    return v2_bar_rd16(ctx, off, false);
-}
-static uint32_t v2_bar_read32(void *ctx, uint32_t off) {
-    return v2_bar_rd32(ctx, off, false);
-}
-static uint8_t v2_bar_peek8(void *ctx, uint32_t off) {
-    return v2_bar_rd8(ctx, off, true);
-}
-static uint16_t v2_bar_peek16(void *ctx, uint32_t off) {
-    return v2_bar_rd16(ctx, off, true);
-}
-static uint32_t v2_bar_peek32(void *ctx, uint32_t off) {
-    return v2_bar_rd32(ctx, off, true);
-}
+// The guest's read_* and the debugger's peek_* around the BAR's rd8/16/32
+MEMORY_READ_FACE(v2_bar)
 
 static void v2_bar_write8(void *ctx, uint32_t off, uint8_t data) {
     voodoo2_t *v = (voodoo2_t *)ctx;
@@ -2521,24 +2522,23 @@ static bool v2_cfg_read(pci_device_t *dev, uint32_t reg, uint32_t *out) {
 
 static bool v2_cfg_write(pci_device_t *dev, uint32_t reg, uint32_t byte, uint8_t value) {
     voodoo2_t *v = (voodoo2_t *)dev->priv;
-    uint32_t shift = 8u * byte, mask = 0xFFu << shift;
     switch (reg) {
     case CFG_INIT_ENABLE:
-        v->init_enable = (v->init_enable & ~mask) | ((uint32_t)value << shift);
+        le_lane8_set(&v->init_enable, byte, value);
         return true;
     case CFG_BUS_SNOOP0:
-        v->bus_snoop[0] = (v->bus_snoop[0] & ~mask) | ((uint32_t)value << shift);
+        le_lane8_set(&v->bus_snoop[0], byte, value);
         return true;
     case CFG_BUS_SNOOP1:
-        v->bus_snoop[1] = (v->bus_snoop[1] & ~mask) | ((uint32_t)value << shift);
+        le_lane8_set(&v->bus_snoop[1], byte, value);
         return true;
     case CFG_STATUS:
         return true; // the alias is read-only
     case CFG_SCRATCH:
-        v->cfg_scratch = (v->cfg_scratch & ~mask) | ((uint32_t)value << shift);
+        le_lane8_set(&v->cfg_scratch, byte, value);
         return true;
     case CFG_SIPROCESS:
-        v->si_process = (v->si_process & ~mask) | ((uint32_t)value << shift);
+        le_lane8_set(&v->si_process, byte, value);
         return true;
     default:
         if (reg >= 0x58u && !v->warned_cfg_unknown) {
@@ -2612,21 +2612,21 @@ static void v2_teardown(pci_device_t *dev, config_t *cfg) {
     voodoo2_t *v = (voodoo2_t *)dev->priv;
     if (!v)
         return;
-    if (s_prod_stats) {
-        double run = (double)(v2_tsc() - s_tsc_run0);
-        LOG(0,
+    object_cache_clear(&v->watch.entries); // the watch's entry objects
+    if (v->stats.on) {
+        double run = (double)(v2_tsc() - v->stats.run0);
+        LOG(V2_LOG_STATS,
             "producer stats: card handlers %.1f%% of the run (fifo parse %.1f%%, setup engine %.1f%%, lfb %.1f%%, "
             "tex %.1f%%)",
-            100.0 * (double)s_tsc_card / run, 100.0 * (double)s_tsc_fifo / run, 100.0 * (double)s_tsc_setup / run,
-            100.0 * (double)s_tsc_lfb / run, 100.0 * (double)s_tsc_tex / run);
+            100.0 * (double)v->stats.card / run, 100.0 * (double)v->stats.fifo / run,
+            100.0 * (double)v->stats.setup / run, 100.0 * (double)v->stats.lfb / run,
+            100.0 * (double)v->stats.tex / run);
     }
     v2_raster_destroy(v->raster); // fences and joins the worker before the memories go
     free(v->fb_ram);
     free(v->scanout);
     for (int t = 0; t < V2_NUM_TMUS; t++)
-        free(v->tex_ram[t]);
-    free(v);
-    dev->priv = NULL;
+        free(v->tex_ram[t]); // `v` itself is the bus's (priv_size)
 }
 
 static const char *v2_name(const pci_device_t *dev) {
@@ -2879,6 +2879,37 @@ typedef struct v2_ckpt {
     uint32_t clut[33];
 } v2_ckpt_t;
 
+// The fields staged through v2_ckpt_t, one list for both directions
+// (checkpoint.h, "Staging structs").  tex_size is not among them: the save
+// records it and the restore resizes to it, below.
+#define V2_STAGE_FIELDS(OP, c, v)                                                                                      \
+    OP((c)->reg, (v)->reg);                                                                                            \
+    OP((c)->tmu_reg, (v)->tmu_reg);                                                                                    \
+    OP((c)->tmu_param, (v)->tmu_param);                                                                                \
+    OP((c)->ncc, (v)->tgt.ncc);                                                                                        \
+    OP((c)->palette, (v)->tgt.palette);                                                                                \
+    OP((c)->sv_cur, (v)->sv_cur);                                                                                      \
+    OP((c)->sv, (v)->sv);                                                                                              \
+    OP((c)->sv_count, (v)->sv_count);                                                                                  \
+    OP##_BOOL((c)->sv_flip, (v)->sv_flip);                                                                             \
+    OP((c)->init_enable, (v)->init_enable);                                                                            \
+    OP((c)->bus_snoop, (v)->bus_snoop);                                                                                \
+    OP((c)->cfg_scratch, (v)->cfg_scratch);                                                                            \
+    OP((c)->si_process, (v)->si_process);                                                                              \
+    OP((c)->dac_direct, (v)->dac_direct);                                                                              \
+    OP((c)->dac_pll, (v)->dac_pll);                                                                                    \
+    OP((c)->dac_pll_wr_addr, (v)->dac_pll_wr_addr);                                                                    \
+    OP((c)->dac_pll_rd_addr, (v)->dac_pll_rd_addr);                                                                    \
+    OP((c)->dac_pll_wr_phase, (v)->dac_pll_wr_phase);                                                                  \
+    OP((c)->dac_pll_rd_phase, (v)->dac_pll_rd_phase);                                                                  \
+    OP((c)->dac_read_latch, (v)->dac_read_latch);                                                                      \
+    OP((c)->swaps_pending, (v)->swaps_pending);                                                                        \
+    OP((c)->swap_issue_frame, (v)->swap_issue_frame);                                                                  \
+    OP((c)->displayed_buffer, (v)->displayed_buffer);                                                                  \
+    OP##_BOOL((c)->driving, (v)->driving);                                                                             \
+    OP##_BOOL((c)->clut_written, (v)->clut_written);                                                                   \
+    OP((c)->clut, (v)->clut)
+
 static void v2_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
     voodoo2_t *v = (voodoo2_t *)dev->priv;
     // Retire the queue and mirror the executor's counters/stipple into
@@ -2890,34 +2921,8 @@ static void v2_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
     v2_raster_sync_fb(v->raster, 0, V2_FB_SIZE, false);
     v2_ckpt_t c;
     memset(&c, 0, sizeof(c));
-    memcpy(c.reg, v->reg, sizeof(c.reg));
-    memcpy(c.tmu_reg, v->tmu_reg, sizeof(c.tmu_reg));
-    memcpy(c.tmu_param, v->tmu_param, sizeof(c.tmu_param));
-    memcpy(c.ncc, v->tgt.ncc, sizeof(c.ncc));
-    memcpy(c.palette, v->tgt.palette, sizeof(c.palette));
-    memcpy(c.sv_cur, &v->sv_cur, sizeof(c.sv_cur));
-    memcpy(c.sv, v->sv, sizeof(c.sv));
-    c.sv_count = v->sv_count;
-    c.sv_flip = v->sv_flip ? 1u : 0u;
-    c.init_enable = v->init_enable;
-    c.bus_snoop[0] = v->bus_snoop[0];
-    c.bus_snoop[1] = v->bus_snoop[1];
-    c.cfg_scratch = v->cfg_scratch;
-    c.si_process = v->si_process;
-    memcpy(c.dac_direct, v->dac_direct, sizeof(c.dac_direct));
-    memcpy(c.dac_pll, v->dac_pll, sizeof(c.dac_pll));
-    c.dac_pll_wr_addr = v->dac_pll_wr_addr;
-    c.dac_pll_rd_addr = v->dac_pll_rd_addr;
-    c.dac_pll_wr_phase = v->dac_pll_wr_phase;
-    c.dac_pll_rd_phase = v->dac_pll_rd_phase;
-    c.dac_read_latch = v->dac_read_latch;
-    c.swaps_pending = v->swaps_pending;
-    c.swap_issue_frame = v->swap_issue_frame;
-    c.displayed_buffer = v->displayed_buffer;
-    c.driving = v->driving ? 1u : 0u;
-    c.clut_written = v->clut_written ? 1u : 0u;
+    V2_STAGE_FIELDS(CP_STAGE_OUT, &c, v);
     c.tex_size = v->tex_size;
-    memcpy(c.clut, v->clut, sizeof(c.clut));
     system_write_checkpoint_data(cp, &c, sizeof(c));
     system_write_checkpoint_data(cp, v->fb_ram, V2_FB_SIZE);
     for (int t = 0; t < V2_NUM_TMUS; t++)
@@ -2933,11 +2938,7 @@ static void v2_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     v2_raster_sync(v->raster);
     v2_ckpt_t c;
     system_read_checkpoint_data(cp, &c, sizeof(c));
-    memcpy(v->reg, c.reg, sizeof(v->reg));
-    memcpy(v->tmu_reg, c.tmu_reg, sizeof(v->tmu_reg));
-    memcpy(v->tmu_param, c.tmu_param, sizeof(v->tmu_param));
-    memcpy(v->tgt.ncc, c.ncc, sizeof(v->tgt.ncc));
-    memcpy(v->tgt.palette, c.palette, sizeof(v->tgt.palette));
+    V2_STAGE_FIELDS(CP_STAGE_IN, &c, v);
     // The executor-owned counters and stipple were mirrored into the
     // register file at save; seed them back, and re-snapshot.
     v->tgt.pixels_in = c.reg[R_PIXELS_IN];
@@ -2949,24 +2950,6 @@ static void v2_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     v->tgt.pal_gen[0]++;
     v->tgt.pal_gen[1]++;
     v2_raster_state_dirty(v->raster);
-    memcpy(&v->sv_cur, c.sv_cur, sizeof(v->sv_cur));
-    memcpy(v->sv, c.sv, sizeof(v->sv));
-    v->sv_count = c.sv_count;
-    v->sv_flip = c.sv_flip != 0;
-    v->init_enable = c.init_enable;
-    v->bus_snoop[0] = c.bus_snoop[0];
-    v->bus_snoop[1] = c.bus_snoop[1];
-    v->cfg_scratch = c.cfg_scratch;
-    v->si_process = c.si_process;
-    memcpy(v->dac_direct, c.dac_direct, sizeof(v->dac_direct));
-    memcpy(v->dac_pll, c.dac_pll, sizeof(v->dac_pll));
-    v->dac_pll_wr_addr = c.dac_pll_wr_addr;
-    v->dac_pll_rd_addr = c.dac_pll_rd_addr;
-    v->dac_pll_wr_phase = c.dac_pll_wr_phase;
-    v->dac_pll_rd_phase = c.dac_pll_rd_phase;
-    v->dac_read_latch = c.dac_read_latch;
-    v->swaps_pending = c.swaps_pending;
-    v->swap_issue_frame = c.swap_issue_frame;
     // A checkpoint from a 12 MB board must not restore into 8 MB
     // buffers: resize rather than truncate (the mach64gx.c pattern).
     // All TMUs resize or none do, and tex_size moves only with them: setting
@@ -2992,10 +2975,6 @@ static void v2_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
                 c.tex_size);
         }
     }
-    v->displayed_buffer = c.displayed_buffer;
-    v->driving = c.driving != 0;
-    v->clut_written = c.clut_written != 0;
-    memcpy(v->clut, c.clut, sizeof(v->clut));
     v->clut_dirty = true; // gamma_lut is derived state
     system_read_checkpoint_data(cp, v->fb_ram, V2_FB_SIZE);
     for (int t = 0; t < V2_NUM_TMUS; t++)
@@ -3015,6 +2994,12 @@ static const pci_device_ops_t v2_ops = {
     .reset = v2_reset,
     .name = v2_name,
     .display = v2_display,
+    // No fb_base: what the monitor shows is the gamma-converted XRGB shadow
+    // of a 5-6-5 colour buffer, and the LFB that reaches that buffer is a
+    // mode-dependent pixel port (lfbMode picks the buffer, the format and the
+    // Y origin over a 1024-pixel logical line), not a linear raster -- so the
+    // first displayed byte is in no guest-addressable memory and `base` reads
+    // 0.  video.displayed_buffer says which colour buffer is scanned.
     .on_vbl = v2_on_vbl,
     .cfg_read = v2_cfg_read,
     .cfg_write = v2_cfg_write,
@@ -3100,13 +3085,23 @@ static DEF_GETTER(regs_attr_raster) {
     voodoo2_t *v = node_card(self);
     return val_str(v ? v2_raster_name(v->raster) : "");
 }
-// Swap the raster backend in place: fence and join the old one, then build
+// Swap the raster backend in place (regs.raster, card.watch): fence and join the old one, then build
 // the new one on the same target.  The backends are equivalent by contract
 // (queue order is submission order, every observation point fences), so a
 // run can switch at any instruction boundary; tests use it to replay one
 // restored checkpoint under each backend.  The WebGPU takeover holds
 // pixels outside the shadow, so it neither gives up nor takes the card
 // here.
+static bool v2_swap_raster(voodoo2_t *v, const char *kind) {
+    v2_raster_sync(v->raster);
+    v2_raster_t *next = v2_raster_create(kind, &v->tgt, v2_build_state, v);
+    if (!next)
+        return false;
+    v2_raster_destroy(v->raster);
+    v->raster = next;
+    v2_raster_state_dirty(v->raster);
+    return true;
+}
 static DEF_SETTER(regs_attr_raster_set) {
     voodoo2_t *v = node_card(self);
     char kind[8];
@@ -3118,13 +3113,11 @@ static DEF_SETTER(regs_attr_raster_set) {
         return val_err("regs.raster: %s is not one of thread, sw, null", kind);
     if (strcmp(v2_raster_name(v->raster), "webgpu") == 0)
         return val_err("regs.raster: the webgpu backend cannot be swapped at run time");
-    v2_raster_sync(v->raster);
-    v2_raster_t *next = v2_raster_create(kind, &v->tgt, v2_build_state, v);
-    if (!next)
+    if (v2_raster_watch_armed(&v->tgt) && strcmp(kind, "sw") != 0)
+        return val_err("regs.raster: the pixel watch needs the synchronous walker (watch.clear first)");
+    if (!v2_swap_raster(v, kind))
         return val_err("regs.raster: could not create the %s backend", kind);
-    v2_raster_destroy(v->raster);
-    v->raster = next;
-    v2_raster_state_dirty(v->raster);
+    v->watch.restore[0] = '\0'; // chosen by hand: the watch puts nothing back
     return val_none();
 }
 static DEF_GETTER(regs_attr_gpu_engaged) {
@@ -3326,54 +3319,13 @@ static const class_desc_t v2_dac_class = {
     .n_members = sizeof(dac_members) / sizeof(dac_members[0]),
 };
 
-static DEF_GETTER(fb_attr_width) {
-    voodoo2_t *v = node_card(self);
-    return val_uint(4, v ? v2_screen_width(v) : 0);
-}
-static DEF_GETTER(fb_attr_height) {
-    voodoo2_t *v = node_card(self);
-    return val_uint(4, v ? v2_screen_height(v) : 0);
-}
-static DEF_GETTER(fb_attr_depth) {
-    return val_uint(4, 16); // the framebuffer is natively 5-6-5
-}
-static DEF_GETTER(fb_attr_stride) {
-    voodoo2_t *v = node_card(self);
-    return val_uint(4, v ? v2_screen_width(v) * 2u : 0);
-}
-static DEF_GETTER(fb_attr_displayed) {
+// The displayed buffer: the video node's, beside the pass-through predicate.
+// The `framebuffer` node is the generic layer's (pci_objects_build): it
+// reads v2_display, which answers only while the card drives the monitor.
+static DEF_GETTER(video_attr_displayed) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v->displayed_buffer : 0);
 }
-
-static const member_t fb_members[] = {
-    {.kind = MK_ATTR,
-     .name = "width",
-     .doc = "Active raster width in pixels (videoDimensions)",
-     .attr = {.type = VK_UINT, .get = fb_attr_width}    },
-    {.kind = MK_ATTR,
-     .name = "height",
-     .doc = "Active raster height in lines",
-     .attr = {.type = VK_UINT, .get = fb_attr_height}   },
-    {.kind = MK_ATTR,
-     .name = "depth",
-     .doc = "Bits per pixel (always 16 — the framebuffer is 5-6-5)",
-     .attr = {.type = VK_UINT, .get = fb_attr_depth}    },
-    {.kind = MK_ATTR,
-     .name = "stride",
-     .doc = "Scanout bytes per row",
-     .attr = {.type = VK_UINT, .get = fb_attr_stride}   },
-    {.kind = MK_ATTR,
-     .name = "displayed_buffer",
-     .doc = "Physical colour buffer being scanned (status[11:10])",
-     .attr = {.type = VK_UINT, .get = fb_attr_displayed}},
-};
-static const class_desc_t v2_fb_class = {
-    .name = "voodoo2_fb",
-    .doc = "The Voodoo2 framebuffer: geometry and the displayed buffer",
-    .members = fb_members,
-    .n_members = sizeof(fb_members) / sizeof(fb_members[0]),
-};
 
 static DEF_GETTER(video_attr_drives) {
     voodoo2_t *v = node_card(self);
@@ -3396,6 +3348,10 @@ static const member_t video_members[] = {
      .name = "swaps_pending",
      .doc = "swapbufferCMDs issued and not yet retired at a frame boundary",
      .attr = {.type = VK_UINT, .get = video_attr_swaps_pending}                                                                 },
+    {.kind = MK_ATTR,
+     .name = "displayed_buffer",
+     .doc = "Physical colour buffer being scanned (status[11:10])",
+     .attr = {.type = VK_UINT, .get = video_attr_displayed}                                                                     },
 };
 static const class_desc_t v2_video_class = {
     .name = "voodoo2_video",
@@ -3404,77 +3360,249 @@ static const class_desc_t v2_video_class = {
     .n_members = sizeof(video_members) / sizeof(video_members[0]),
 };
 
+// --- card.watch: the pixel-provenance watch ---------------------------------
+//
+// A logpoint on screen pixels, in the debug.logpoints shape: `add x y`
+// returns the entry, `entries` lists them by id, `clear` and each entry's
+// `remove` take them away.  While any is armed every colour-buffer store to
+// a watched pixel, the texels that shaded it and the pipe's stages are
+// logged under `voodoo2` at level 1 (V2_LOG_WATCH; `log.set voodoo2 1`).
+// The instrument runs inside the executor, so it needs the synchronous
+// walker: the first add swaps a thread backend for it at a fence (as
+// regs.raster does) and the last removal swaps the thread back; the WebGPU
+// takeover cannot be swapped at run time and the null backend draws no
+// triangles, so there an add is refused.  The pixels live in the target
+// (tgt.watch[]), written here only while the walker is the backend, i.e.
+// while no worker reads them.
+
+// The watch pixel entry `id` names, or NULL.
+static v2_watch_px_t *v2_watch_by_id(voodoo2_t *v, int id) {
+    for (int i = 0; i < v->tgt.n_watch; i++)
+        if (v->tgt.watch[i].id == id)
+            return &v->tgt.watch[i];
+    return NULL;
+}
+
+// Is a cached entry object still a watch pixel? (object_cache_sweep)
+static bool v2_watch_entry_live(struct object *entry, void *ud) {
+    return v2_watch_by_id((voodoo2_t *)ud, object_entry_index(entry)) != NULL;
+}
+
+// The pixel set changed: pick the walker copy, drop dead entry objects, and
+// once the last pixel is gone put back the backend the first add swapped out.
+static void v2_watch_changed(voodoo2_t *v) {
+    v2_raster_instruments_changed(v->raster);
+    object_cache_sweep(&v->watch.entries, v2_watch_entry_live, v);
+    if (v->tgt.n_watch == 0 && v->watch.restore[0]) {
+        if (!v2_swap_raster(v, v->watch.restore))
+            LOG(0, "watch: could not put the %s backend back -- staying on the synchronous walker", v->watch.restore);
+        v->watch.restore[0] = '\0';
+    }
+}
+
+// The card an entry or the container belongs to.
+static voodoo2_t *watch_card(struct object *self) {
+    return (voodoo2_t *)object_data(self);
+}
+
+static DEF_GETTER(watch_entry_attr_x) {
+    v2_watch_px_t *w = watch_card(self) ? v2_watch_by_id(watch_card(self), object_entry_index(self)) : NULL;
+    return w ? val_int(w->x) : val_err("watch entry removed");
+}
+static DEF_GETTER(watch_entry_attr_y) {
+    v2_watch_px_t *w = watch_card(self) ? v2_watch_by_id(watch_card(self), object_entry_index(self)) : NULL;
+    return w ? val_int(w->y) : val_err("watch entry removed");
+}
+static DEF_GETTER(watch_entry_attr_id) {
+    return val_int(object_entry_index(self));
+}
+static DEF_GETTER(watch_entry_attr_hits) {
+    voodoo2_t *v = watch_card(self);
+    v2_watch_px_t *w = v ? v2_watch_by_id(v, object_entry_index(self)) : NULL;
+    if (!w)
+        return val_err("watch entry removed");
+    v2_raster_sync(v->raster); // the walker counts (synchronous: a no-op)
+    return val_uint(4, w->hits);
+}
+static DEF_METHOD(watch_entry_method_remove) {
+    voodoo2_t *v = watch_card(self);
+    int id = object_entry_index(self);
+    v2_watch_px_t *w = v ? v2_watch_by_id(v, id) : NULL;
+    if (!w)
+        return val_err("watch entry #%d already removed", id);
+    v2_raster_sync(v->raster);
+    *w = v->tgt.watch[--v->tgt.n_watch]; // order is not observable
+    v2_watch_changed(v); // frees this entry object: touch nothing after
+    return val_none();
+}
+
+static const member_t watch_entry_members[] = {
+    {.kind = MK_ATTR,
+     .name = "x",
+     .doc = "Screen pixel column watched",
+     .attr = {.type = VK_INT, .get = watch_entry_attr_x}                                     },
+    {.kind = MK_ATTR,
+     .name = "y",
+     .doc = "Screen pixel row watched",
+     .attr = {.type = VK_INT, .get = watch_entry_attr_y}                                     },
+    {.kind = MK_ATTR,
+     .name = "hit_count",
+     .doc = "Colour-buffer stores to this pixel since it was added",
+     .attr = {.type = VK_UINT, .get = watch_entry_attr_hits}                                 },
+    {.kind = MK_ATTR,
+     .name = "id",
+     .doc = "Stable identifier; survives the removal of other entries",
+     .attr = {.type = VK_INT, .get = watch_entry_attr_id}                                    },
+    {.kind = MK_METHOD,
+     .name = "remove",
+     .doc = "Stop watching this pixel",
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = watch_entry_method_remove}},
+};
+static const class_desc_t v2_watch_entry_class = {
+    .name = "watch_pixel",
+    .doc = "One watched screen pixel",
+    .members = watch_entry_members,
+    .n_members = sizeof(watch_entry_members) / sizeof(watch_entry_members[0]),
+};
+
+static struct object *watch_entries_get(struct object *self, int index) {
+    voodoo2_t *v = watch_card(self);
+    if (!v || !v2_watch_by_id(v, index))
+        return NULL;
+    return object_cache_at(&v->watch.entries, index, v);
+}
+static int watch_entries_next(struct object *self, int prev_index) {
+    voodoo2_t *v = watch_card(self);
+    int best = -1;
+    for (int i = 0; v && i < v->tgt.n_watch; i++)
+        if (v->tgt.watch[i].id > prev_index && (best < 0 || v->tgt.watch[i].id < best))
+            best = v->tgt.watch[i].id;
+    return best;
+}
+
+// `card.watch.add x=320 y=240` -- watch one screen pixel; adding a pixel
+// already watched returns its entry.
+static DEF_METHOD(watch_method_add) {
+    voodoo2_t *v = watch_card(self);
+    if (!v)
+        return val_err("watch.add: no card");
+    int64_t x = argv[0].i, y = argv[1].i;
+    if (x < 0 || y < 0 || x >= V2_SCANOUT_MAX_W || y >= V2_SCANOUT_MAX_H)
+        return val_err("watch.add: (%lld,%lld) is off the largest screen (%ux%u)", (long long)x, (long long)y,
+                       (unsigned)V2_SCANOUT_MAX_W, (unsigned)V2_SCANOUT_MAX_H);
+    for (int i = 0; i < v->tgt.n_watch; i++)
+        if (v->tgt.watch[i].x == x && v->tgt.watch[i].y == y)
+            return val_obj(object_cache_at(&v->watch.entries, v->tgt.watch[i].id, v));
+    if (v->tgt.n_watch >= V2_WATCH_MAX)
+        return val_err("watch.add: at most %d pixels are watched at once", V2_WATCH_MAX);
+    const char *backend = v2_raster_name(v->raster);
+    if (strcmp(backend, "webgpu") == 0)
+        return val_err("watch.add: the watch needs the synchronous walker, and the webgpu backend cannot be swapped "
+                       "at run time -- boot with pci_option=\"raster=sw\"");
+    if (strcmp(backend, "null") == 0)
+        return val_err("watch.add: the null backend draws no triangles -- regs.raster = \"sw\" first");
+    if (!v2_raster_is_walker(v->raster)) {
+        // The thread backend: swap in the walker at a fence, put it back on the last removal
+        snprintf(v->watch.restore, sizeof(v->watch.restore), "%s", backend);
+        if (!v2_swap_raster(v, "sw")) {
+            v->watch.restore[0] = '\0';
+            return val_err("watch.add: could not switch to the synchronous walker");
+        }
+    }
+    v2_watch_px_t *w = &v->tgt.watch[v->tgt.n_watch++];
+    *w = (v2_watch_px_t){.x = (int32_t)x, .y = (int32_t)y, .id = v->watch.next_id++, .hits = 0};
+    v2_raster_instruments_changed(v->raster);
+    return val_obj(object_cache_at(&v->watch.entries, w->id, v));
+}
+
+static DEF_METHOD(watch_method_clear) {
+    voodoo2_t *v = watch_card(self);
+    if (!v)
+        return val_err("watch.clear: no card");
+    v2_raster_sync(v->raster);
+    v->tgt.n_watch = 0;
+    v2_watch_changed(v);
+    return val_none();
+}
+
+static const arg_decl_t watch_add_args[] = {
+    {.name = "x", .kind = VK_INT, .doc = "Screen pixel column"},
+    {.name = "y", .kind = VK_INT, .doc = "Screen pixel row"   },
+};
+
+static const collection_desc_t v2_watch_entries = {
+    .entry = &v2_watch_entry_class, .by_index = {.get = watch_entries_get, .next = watch_entries_next}
+};
+
+static const member_t watch_members[] = {
+    {.kind = MK_METHOD,
+     .name = "add",
+     .examples = EXAMPLES("machine.pci.slot[1].card.watch.add x=320 y=240"),
+     .doc = "Watch a screen pixel: log every colour-buffer store to it, the texels that shaded it and the pipe's "
+            "stages, under voodoo2 at level 1; adding a watched pixel returns its entry", .method = {.result_doc = "the watch entry",
+                .args = watch_add_args,
+                .nargs = 2,
+                .result = VK_OBJECT,
+                .fn = watch_method_add}},
+    {.kind = MK_METHOD,
+     .name = "clear",
+     .examples = EXAMPLES("machine.pci.slot[1].card.watch.clear"),
+     .doc = "Stop watching every pixel",
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = watch_method_clear}                                          },
+    OBJ_ENTRIES(&v2_watch_entries, NULL),
+};
+static const class_desc_t v2_watch_class = {
+    .name = "voodoo2_watch",
+    .doc = "The pixel-provenance watch: logpoints on screen pixels; entries by id",
+    .members = watch_members,
+    .n_members = sizeof(watch_members) / sizeof(watch_members[0]),
+};
+
 static void v2_attach_objects(pci_device_t *dev, struct object *card_node) {
     voodoo2_t *v = (voodoo2_t *)dev->priv;
     if (!v || !card_node)
         return;
-    struct object *fb = object_new(&v2_fb_class, v, "framebuffer");
-    if (fb) {
-        object_set_label(fb, "Framebuffer");
-        object_set_order(fb, 10);
-        object_attach(card_node, fb);
-        // Nominate it: machine.screen.source resolves to whichever
-        // framebuffer node belongs to the current primary display, so
-        // it follows the pass-through switch automatically.
-        pci_card_set_framebuffer_object(dev, fb);
-    }
-    struct object *video = object_new(&v2_video_class, v, "video");
-    if (video) {
-        object_set_label(video, "Video / Pass-through");
-        object_set_order(video, 20);
-        object_attach(card_node, video);
-    }
-    struct object *regs = object_new(&v2_regs_class, v, "regs");
-    if (regs) {
-        object_set_label(regs, "Registers");
-        object_set_order(regs, 30);
-        object_set_category(regs, M_CAT_ADVANCED);
-        object_attach(card_node, regs);
-    }
-    struct object *dac = object_new(&v2_dac_class, v, "dac");
-    if (dac) {
-        object_set_label(dac, "DAC (ICS5342)");
-        object_set_order(dac, 40);
-        object_set_category(dac, M_CAT_ADVANCED);
-        object_attach(card_node, dac);
-    }
+    object_attach_new(card_node, &v2_video_class, v, "video", "Video / Pass-through", 20);
+    struct object *regs = object_attach_new(card_node, &v2_regs_class, v, "regs", "Registers", 30);
+    object_set_category(regs, M_CAT_ADVANCED);
+    struct object *dac = object_attach_new(card_node, &v2_dac_class, v, "dac", "DAC (ICS5342)", 40);
+    object_set_category(dac, M_CAT_ADVANCED);
+    struct object *watch = object_attach_new(card_node, &v2_watch_class, v, "watch", "Pixel watch", 50);
+    object_set_category(watch, M_CAT_ADVANCED);
+    object_cache_set_parent(&v->watch.entries, watch);
 }
 
 // ============================================================
 // Options, factory, and the card kind
 // ============================================================
 
-// No ADVERTISED options: the two the card accepts — the board memory
-// and the rasteriser — are not choices a user should have to make.
-// Nothing needs the 8 MB board, and the rasteriser is the difference
-// between the two REGISTERED KINDS below: "voodoo2" draws exactly on its
-// worker thread, "voodoo2_webgpu" on the host GPU.  Both keys stay
+// One ADVERTISED option, the rasteriser (v2_options below).  The board
+// memory is not a choice a user should have to make -- nothing needs the
+// 8 MB board -- and neither are the rasteriser's other backends; they stay
 // accepted through pci_option for the tests and the terminal:
-// memory=8m|12m, raster=thread|sw|null|webgpu.
+// memory=8m|12m, raster=thread|sw|null, and the walker cross-check,
+// xcheck=on|off (the soak run: every walker shortcut recomputed the long
+// way, a mismatch logged and aborted on; off by default).
 
 static bool v2_accepts_option(const char *key, const char *value) {
     if (strcmp(key, "memory") == 0)
         return strcmp(value, "8m") == 0 || strcmp(value, "12m") == 0;
     if (strcmp(key, "raster") == 0)
-        return strcmp(value, "thread") == 0 || strcmp(value, "sw") == 0 || strcmp(value, "null") == 0 ||
-               strcmp(value, "webgpu") == 0;
+        return strcmp(value, "thread") == 0 || strcmp(value, "sw") == 0 || strcmp(value, "null") == 0;
+    if (strcmp(key, "xcheck") == 0)
+        return strcmp(value, "on") == 0 || strcmp(value, "off") == 0;
     return false;
 }
 
-// The one builder both kinds share; they differ only in the rasteriser used
-// when the document names none (`default_raster`).
-static pci_device_t *v2_build(int slot_index, config_t *cfg, const slot_opts_t *opts, const char *default_raster) {
-    pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
-    voodoo2_t *v = (voodoo2_t *)calloc(1, sizeof(*v));
-    if (!dev || !v) {
-        free(dev);
-        free(v);
-        return NULL;
-    }
-    dev->ops = &v2_ops;
-    dev->decl = &v2_decl;
-    dev->priv = v;
-    pci_cfg_reset(dev); // power-on header state, including status_reset
+// The one BAR face; the card rides beside the table at the mapping.
+MEMORY_IFACE(v2_bar);
+
+// The card's initialiser: the bus has allocated `dev` and its voodoo2_t and
+// reset the header.  The WebGPU variant kind is built here too, with its
+// raster=webgpu default merged into `opts` by the bus.
+static int v2_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
+    (void)rom;
+    voodoo2_t *v = (voodoo2_t *)dev->priv;
     v->dev = dev;
     v->cfg = cfg;
 
@@ -3491,63 +3619,45 @@ static pci_device_t *v2_build(int slot_index, config_t *cfg, const slot_opts_t *
     v->tgt.fb = v->fb_ram;
     v->tgt.tex[0] = v->tex_ram[0];
     v->tgt.tex[1] = v->tex_ram[1];
+    // The debug instruments, this card's own: the walker cross-check
+    // (pci_option xcheck=on), the producer decomposition (the voodoo2 log
+    // category's level now), and the watch's entries (card.watch, none yet)
+    const char *xcheck = slot_opts_option(opts, "xcheck");
+    v->tgt.xcheck = xcheck && strcmp(xcheck, "on") == 0;
+    v->watch.entries = (object_cache_t)OBJECT_CACHE(&v2_watch_entry_class, NULL);
+    v->stats.on = log_would_log(log_local_category(), V2_LOG_STATS);
+    v->stats.run0 = v2_tsc();
     const char *raster = slot_opts_option(opts, "raster");
-    v->raster = v2_raster_create(raster ? raster : default_raster, &v->tgt, v2_build_state, v);
-    {
-        const char *st = getenv("GS_V2_STATS");
-        s_prod_stats = st && *st && *st != '0';
-        s_tsc_run0 = v2_tsc();
-        s_tsc_card = s_tsc_fifo = s_tsc_setup = s_tsc_lfb = s_tsc_tex = 0;
-    }
+    v->raster = v2_raster_create(raster ? raster : V2_DEFAULT_RASTER, &v->tgt, v2_build_state, v);
     if (!v->fb_ram || !v->scanout || !v->tex_ram[0] || !v->tex_ram[1] || !v->raster) {
         v2_raster_destroy(v->raster);
         free(v->fb_ram);
         free(v->scanout);
         free(v->tex_ram[0]);
         free(v->tex_ram[1]);
-        free(v);
-        free(dev);
-        return NULL;
+        return -1;
     }
 
     v2_reset(dev, cfg);
 
-    v->bar_if.read_uint8 = v2_bar_read8;
-    v->bar_if.read_uint16 = v2_bar_read16;
-    v->bar_if.read_uint32 = v2_bar_read32;
-    v->bar_if.write_uint8 = v2_bar_write8;
-    v->bar_if.write_uint16 = v2_bar_write16;
-    v->bar_if.write_uint32 = v2_bar_write32;
-    v->bar_if.peek_uint8 = v2_bar_peek8;
-    v->bar_if.peek_uint16 = v2_bar_peek16;
-    v->bar_if.peek_uint32 = v2_bar_peek32;
-    pci_bar_backing_iface(dev, 0, &v->bar_if, v);
+    pci_bar_backing_iface(dev, 0, &v2_bar_iface, v);
 
-    LOG(1, "seated in slot %d: 4 MB framebuffer + 2 x %u MB texture (%u MB board), raster backend %s", slot_index,
+    LOG(1, "seated in slot %d: 4 MB framebuffer + 2 x %u MB texture (%u MB board), raster backend %s", dev->slot_index,
         v->tex_size >> 20, (V2_FB_SIZE + 2u * v->tex_size) >> 20, v2_raster_name(v->raster));
-    return dev;
-}
-
-static pci_device_t *v2_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
-    (void)rom;
-    return v2_build(slot_index, cfg, opts, V2_DEFAULT_RASTER);
+    return 0;
 }
 
 // The WebGPU variant: the same card, rasterised by the host's GPU unless
 // the boot document named a rasteriser itself.  Falls back to the exact
 // thread backend at creation where no GPU worker attaches (a checkpoint
 // restored without WebGPU, a native build), which regs.raster reports.
-static pci_device_t *v2_webgpu_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
-    (void)rom;
-    return v2_build(slot_index, cfg, opts, "webgpu");
-}
-
 // Offered only where a WebGPU device exists (the page writes the answer
 // before it reports ready, so no boot or catalog read precedes it);
 // registered everywhere so the id resolves regardless.
-static bool v2_webgpu_offered(void) {
-    return platform_v2gpu_available();
-}
+static const pci_option_default_t v2_webgpu_defaults[] = {
+    {"raster", "webgpu"},
+    {NULL,     NULL    },
+};
 
 // The rasteriser is the one option a user is offered: the emulator's own
 // (software) or the host GPU's, where the host has one.  WebGPU is a way of
@@ -3557,7 +3667,7 @@ static const char *const v2_raster_labels[] = {"Software", "WebGPU", NULL};
 
 // WebGPU is offered only where a WebGPU device exists.
 static bool v2_raster_offered(const char *value) {
-    return strcmp(value, "webgpu") != 0 || platform_v2gpu_available();
+    return strcmp(value, "webgpu") != 0 || platform_gpu_available();
 }
 
 static const pci_card_option_t v2_options[] = {
@@ -3579,7 +3689,10 @@ const pci_card_kind_t voodoo2_kind = {
                         // never retire a machine's builtin-fallback video
     .monitors = NULL, // it drives a monitor, but it is not the machine's
                       // display device
-    .factory = v2_factory,
+    .ops = &v2_ops,
+    .decl = &v2_decl,
+    .priv_size = sizeof(voodoo2_t),
+    .init = v2_init,
     .options = v2_options,
     .accepts_option = v2_accepts_option,
     .attach_objects = v2_attach_objects,
@@ -3592,10 +3705,8 @@ const pci_card_kind_t voodoo2_webgpu_kind = {
     .requires_prom = false,
     .card_class = "3d",
     .monitors = NULL,
-    .factory = v2_webgpu_factory,
-    .options = NULL,
-    .accepts_option = v2_accepts_option,
     .attach_objects = v2_attach_objects,
-    .offered = v2_webgpu_offered,
+    .offered = platform_gpu_available,
     .variant_of = "voodoo2", // its "Rendering: WebGPU" option
+    .variant_defaults = v2_webgpu_defaults,
 };

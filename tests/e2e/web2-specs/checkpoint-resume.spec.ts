@@ -31,21 +31,12 @@ import { test, expect, type Page } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
 import { gsCallInPage, gsEvalInPage } from '../helpers/web2-eval';
+import { uploadRomViaWelcome } from '../helpers/upload';
 
 const PLUS_ROM = path.resolve(__dirname, '../../data/roms/plus-v3-4d1f8172.rom');
 const SE30_ROM = path.resolve(__dirname, '../../data/roms/iix-iicx-se30-97221136.rom');
 const SE30_VROM = path.resolve(__dirname, '../../data/roms/builtin-se30-video-4f71ff1a.vrom');
 const SYSTEM_608 = path.resolve(__dirname, '../../data/systems/System_6_0_8.dsk');
-
-// Upload a ROM via the Welcome "Load ROM..." button (the shipped path; the
-// persist bumps the image revision so the config slide re-scans).
-async function uploadRom(page: Page, romPath: string): Promise<void> {
-  const [chooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Load ROM...' }).click(),
-  ]);
-  await chooser.setFiles(romPath);
-}
 
 // Open the New Machine dialog, pick a model, and start it.
 async function startMachine(page: Page, modelId: string): Promise<void> {
@@ -103,7 +94,7 @@ test('tick-auto checkpoint: status-bar CP glyph updates, terminal stays silent',
   // 60 s tooltip poll leaves generous RAF-jitter margin.
   test.setTimeout(180_000);
   await gotoWeb2(page);
-  await uploadRom(page, PLUS_ROM);
+  await uploadRomViaWelcome(page, PLUS_ROM);
   await startMachine(page, 'plus');
 
   // Terminal open from the start so any stray "Checkpoint saved" print
@@ -132,7 +123,7 @@ test.describe('checkpoint save → reload → resume', () => {
   }) => {
     test.setTimeout(180_000);
     await gotoWeb2(page);
-    await uploadRom(page, PLUS_ROM);
+    await uploadRomViaWelcome(page, PLUS_ROM);
     await startMachine(page, 'plus');
 
     // Let the ROM run a little so there is real machine state to capture.
@@ -161,13 +152,13 @@ test.describe('checkpoint save → reload → resume', () => {
     test.setTimeout(180_000);
     await gotoWeb2(page);
     await stageOpfsFile(page, '/opfs/images/fd/System_6_0_8.dsk', SYSTEM_608);
-    await uploadRom(page, PLUS_ROM);
+    await uploadRomViaWelcome(page, PLUS_ROM);
     await startMachine(page, 'plus');
     await gsCallInPage(page, 'machine.floppy.drive[0].insert', {
       path: '/opfs/images/fd/System_6_0_8.dsk',
       writable: true,
     });
-    expect(await gsEvalInPage(page, 'files.images[0].filename')).toBe('/opfs/images/fd/System_6_0_8.dsk');
+    expect(await gsEvalInPage(page, 'files.images[0].source')).toBe('/opfs/images/fd/System_6_0_8.dsk');
     await page.waitForTimeout(2_000);
     await createCheckpoint(page);
 
@@ -178,7 +169,7 @@ test.describe('checkpoint save → reload → resume', () => {
       page.locator('.toast .msg').filter({ hasText: 'Resumed from saved checkpoint' }),
     ).toBeVisible({ timeout: 60_000 });
     await expect(statusLabel(page)).toHaveText('Running', { timeout: 15_000 });
-    expect(await gsEvalInPage(page, 'files.images[0].filename')).toBe('/opfs/images/fd/System_6_0_8.dsk');
+    expect(await gsEvalInPage(page, 'files.images[0].source')).toBe('/opfs/images/fd/System_6_0_8.dsk');
   });
 
   test('Start fresh discards the checkpoint and a second reload does not re-prompt', async ({
@@ -186,7 +177,7 @@ test.describe('checkpoint save → reload → resume', () => {
   }) => {
     test.setTimeout(180_000);
     await gotoWeb2(page);
-    await uploadRom(page, PLUS_ROM);
+    await uploadRomViaWelcome(page, PLUS_ROM);
     await startMachine(page, 'plus');
     await page.waitForTimeout(2_000);
     await createCheckpoint(page);
@@ -212,7 +203,7 @@ test.describe('checkpoint save → reload → resume', () => {
   test('Shut down leaves no machine and a reload does not offer Resume', async ({ page }) => {
     test.setTimeout(180_000);
     await gotoWeb2(page);
-    await uploadRom(page, PLUS_ROM);
+    await uploadRomViaWelcome(page, PLUS_ROM);
     await startMachine(page, 'plus');
     await page.waitForTimeout(2_000);
     await createCheckpoint(page);
@@ -244,7 +235,7 @@ test.describe('checkpoint save → reload → resume', () => {
     // The SE/30's onboard video card requires a vROM; stage it before the ROM
     // upload so the config slide's re-scan identifies both in one pass.
     await stageOpfsFile(page, '/opfs/images/vrom/builtin-se30-video-4f71ff1a.vrom', SE30_VROM);
-    await uploadRom(page, SE30_ROM);
+    await uploadRomViaWelcome(page, SE30_ROM);
     await startMachine(page, 'se30');
 
     await page.waitForTimeout(2_000);

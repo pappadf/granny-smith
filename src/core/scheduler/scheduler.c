@@ -45,7 +45,7 @@ LOG_USE_CATEGORY_NAME("scheduler");
 #define CYCLES_PER_INSTR_DEFAULT 12
 // Fallback clock, used only until a machine calls scheduler_set_frequency().
 // Every substrate now does so from hw_profile_t.freq -- five call sites, three
-// direct and the rest through mac030_build_core -- so no machine's timing
+// direct and the rest through m68k_board_build_core -- so no machine's timing
 // depends on this value any more.  It stays for the unit-test harness, which
 // builds a scheduler with no profile behind it.
 #define MAC_CPU_FREQUENCY 7833600.0
@@ -1366,6 +1366,15 @@ void scheduler_set_frequency(struct scheduler *restrict s, uint32_t frequency_hz
     s->esync_period_x256 = (uint32_t)(((uint64_t)frequency_hz * 256 + 783360 / 2) / 783360);
 }
 
+// Set the E-clock period as a whole number of CPU cycles, for a machine whose
+// 6522s sit on the 68000's own E (CPU/10) rather than a 783.36 kHz clock
+void scheduler_set_esync_divider(struct scheduler *restrict s, uint32_t cpu_cycles_per_e) {
+    if (!s)
+        return;
+    GS_ASSERT(cpu_cycles_per_e > 0);
+    s->esync_period_x256 = cpu_cycles_per_e << 8;
+}
+
 // Set the per-machine cycles-per-instruction constant (mode-independent)
 void scheduler_set_cpi(struct scheduler *restrict s, uint32_t cpi) {
     if (!s)
@@ -1575,6 +1584,23 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
             GS_ASSERT(s->cpu_events->timestamp + max_overshoot_cycles(s) >= s->saved.cpu_cycles);
         }
 
+        // Fire any events that are now due.  This comes BEFORE the debugger
+        // probe, not after it: a breakpoint stop leaves the loop, and an
+        // event the instruction just ran past (one-instruction overshoot,
+        // allowed above) would otherwise stay queued behind cpu_cycles --
+        // a stopped machine with a head event in the past, which every
+        // strict check below and the next run's entry check reject (#419).
+        // It is also the state the next instruction runs in, so a breakpoint
+        // condition or a logpoint message sees what the CPU will see.
+        process_event_queue(&s->cpu_events, s->saved.cpu_cycles);
+
+        // Strict now, not relaxed as above: process_event_queue fires every
+        // event due at or before cpu_cycles -- including any a callback or a
+        // periodic re-arm queued at or before it -- so whatever is left is
+        // in the future, and a callback cannot have scheduled into the past.
+        if (s->cpu_events != NULL)
+            GS_ASSERT(s->cpu_events->timestamp >= s->saved.cpu_cycles);
+
         // Handle debugger single-step
         if (debugger_active) {
             if (debug_break_and_trace()) {
@@ -1585,16 +1611,6 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
                 break;
             }
         }
-
-        // Fire any events that are now due
-        process_event_queue(&s->cpu_events, s->saved.cpu_cycles);
-
-        // Strict now, not relaxed as above: process_event_queue fires every
-        // event due at or before cpu_cycles -- including any a callback or a
-        // periodic re-arm queued at or before it -- so whatever is left is
-        // in the future, and a callback cannot have scheduled into the past.
-        if (s->cpu_events != NULL)
-            GS_ASSERT(s->cpu_events->timestamp >= s->saved.cpu_cycles);
 
         if (!s->saved.running) {
             reconcile_sprint(s);

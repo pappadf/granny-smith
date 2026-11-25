@@ -40,12 +40,6 @@ typedef enum scsi_phase {
 
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
 
-// Mount a pre-machine `scsi` singleton at root carrying just the static
-// helpers — hd_models, identify_hd, identify_cdrom — so file-shape
-// validation works before any machine has been booted. Called from
-// core_init alongside rom_init. Idempotent.
-void scsi_class_register(void);
-
 // What one firmware lineage of CD-ROM drive answers where drives differ.
 //
 // Apple's drives ran Apple firmware on Sony and Matsushita mechanisms, and the

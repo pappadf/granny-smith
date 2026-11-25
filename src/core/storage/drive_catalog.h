@@ -3,7 +3,7 @@
 
 // drive_catalog.h
 // Single source of truth for known SCSI hard disk drive models.
-// Used by the shell (hd create/validate/models), SCSI attachment,
+// Used by files.create, catalog.hd_models, SCSI attachment,
 // and queried by the web frontend via `hd models`.
 
 #pragma once

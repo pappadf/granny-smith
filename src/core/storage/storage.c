@@ -30,6 +30,7 @@
 #include "storage.h"
 
 #include "checkpoint.h"
+#include "common.h"
 #include "source.h"
 #include "status.h"
 #include "io/io_worker.h"
@@ -139,6 +140,11 @@ struct storage_t {
 
     // The delta file, for an export view's own handle.
     char *delta_path;
+    char *journal_path; // the journal's; kept for a lazy instance's first write
+    // A lazy instance (storage_config_t.lazy) whose delta and journal do not
+    // exist yet: created by the first write, so an image nothing writes to
+    // never touches the filesystem.
+    bool files_pending;
     int export_locks; // exports in flight: guest writes are refused
     struct storage_t *live_next; // the registry of live storages (export_view_end)
 };
@@ -190,7 +196,7 @@ static inline void bitmap_clear(uint8_t *bm, uint32_t bit) {
 //
 // Every multi-byte field this file puts on disk or in a checkpoint stream is
 // little-endian: the delta header, the journal's LBAs and the snapshot
-// header go through the helpers below.  The cluster tables are arrays of
+// header go through common.h's RD_LE*/WR_LE*.  The cluster tables are arrays of
 // uint32_t written and read in place, which is little-endian only on a
 // little-endian host -- every target is one (x86-64, arm64, wasm32), and the
 // assertion below stops a big-endian build rather than let it write deltas
@@ -199,21 +205,6 @@ static inline void bitmap_clear(uint8_t *bm, uint32_t bit) {
 #if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__)
 _Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "the delta's cluster tables are stored host-order (LE)");
 #endif
-
-static void put_le32(uint8_t *p, uint32_t v) {
-    for (int i = 0; i < 4; i++)
-        p[i] = (uint8_t)(v >> (8 * i));
-}
-static void put_le64(uint8_t *p, uint64_t v) {
-    for (int i = 0; i < 8; i++)
-        p[i] = (uint8_t)(v >> (8 * i));
-}
-static uint32_t get_le32(const uint8_t *p) {
-    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
-}
-static uint64_t get_le64(const uint8_t *p) {
-    return (uint64_t)get_le32(p) | (uint64_t)get_le32(p + 4) << 32;
-}
 
 // ============================================================================
 // Journal helpers
@@ -253,7 +244,7 @@ static void journal_trim_partial(storage_t *s) {
 // Append a preimage entry to the journal file and index.
 static status_t journal_append(storage_t *s, uint32_t lba, const uint8_t *data) {
     uint8_t le[4];
-    put_le32(le, lba);
+    WR_LE32(le, lba);
     // Write-ahead: the preimage has to leave this FILE's buffer before the
     // overwrite of the block it saves can leave the delta's (the next seek
     // on the delta flushes that one).  Deferring this to the checkpoint
@@ -316,8 +307,8 @@ static uint64_t slot_bytes(const storage_t *s) {
 // Cut the data area back to the slots in use, dropping any slot allocated
 // after them (v2).
 static status_t delta_truncate_slots(storage_t *s) {
-    if (s->version != STORAGE_DELTA_VERSION)
-        return STATUS_OK;
+    if (s->version != STORAGE_DELTA_VERSION || !s->delta_fp)
+        return STATUS_OK; // (no delta file yet: nothing was ever written)
     fflush(s->delta_fp);
     off_t want = (off_t)(s->data_offset + s->slots_used * slot_bytes(s));
     if (fseeko(s->delta_fp, 0, SEEK_END) != 0)
@@ -361,7 +352,7 @@ static status_t journal_load_index(storage_t *s) {
         uint8_t le[4];
         if (fread(le, sizeof(le), 1, s->journal_fp) != 1)
             break;
-        uint32_t lba = get_le32(le);
+        uint32_t lba = RD_LE32(le);
         if (lba >= s->block_count) {
             LOG(0,
                 "storage: journal entry %" PRIu64 " names block %" PRIu32 " of %" PRIu64 "; discarding it and the rest",
@@ -395,14 +386,14 @@ static status_t journal_load_index(storage_t *s) {
 static status_t delta_write_header(storage_t *s) {
     uint8_t h[STORAGE_DELTA_HEADER_SIZE] = {0};
     memcpy(h, STORAGE_DELTA_MAGIC, STORAGE_DELTA_MAGIC_SIZE);
-    put_le32(h + 4, s->version);
-    put_le64(h + 8, s->block_count);
-    put_le32(h + 16, s->block_size);
+    WR_LE32(h + 4, s->version);
+    WR_LE64(h + 8, s->block_count);
+    WR_LE32(h + 16, s->block_size);
     size_t len = STORAGE_DELTA_HEADER_V1;
     if (s->version == STORAGE_DELTA_VERSION) {
-        put_le32(h + 20, s->cluster_blocks);
-        put_le64(h + 24, s->cluster_count);
-        put_le64(h + 32, s->slots_committed);
+        WR_LE32(h + 20, s->cluster_blocks);
+        WR_LE64(h + 24, s->cluster_count);
+        WR_LE64(h + 32, s->slots_committed);
         len = STORAGE_DELTA_HEADER_SIZE;
     }
     if (fseeko(s->delta_fp, 0, SEEK_SET) != 0 || fwrite(h, len, 1, s->delta_fp) != 1)
@@ -443,22 +434,22 @@ static status_t delta_read_header(storage_t *s) {
         return STATUS_E_IO;
     if (memcmp(h, STORAGE_DELTA_MAGIC, STORAGE_DELTA_MAGIC_SIZE) != 0)
         return STATUS_E_INVAL;
-    uint32_t version = get_le32(h + 4);
+    uint32_t version = RD_LE32(h + 4);
     if (version != STORAGE_DELTA_VERSION && version != STORAGE_DELTA_VERSION_V1)
         return STATUS_E_INVAL;
-    if (get_le64(h + 8) != s->block_count || get_le32(h + 16) != s->block_size)
+    if (RD_LE64(h + 8) != s->block_count || RD_LE32(h + 16) != s->block_size)
         return STATUS_E_INVAL;
     s->version = version;
     if (version == STORAGE_DELTA_VERSION) {
         if (fread(h + STORAGE_DELTA_HEADER_V1, STORAGE_DELTA_HEADER_SIZE - STORAGE_DELTA_HEADER_V1, 1, s->delta_fp) !=
             1)
             return STATUS_E_IO;
-        s->cluster_blocks = get_le32(h + 20);
+        s->cluster_blocks = RD_LE32(h + 20);
         if (s->cluster_blocks == 0 || s->cluster_blocks > (1u << 20))
             return STATUS_E_INVAL;
-        if (get_le64(h + 24) != (s->block_count + s->cluster_blocks - 1) / s->cluster_blocks)
+        if (RD_LE64(h + 24) != (s->block_count + s->cluster_blocks - 1) / s->cluster_blocks)
             return STATUS_E_INVAL;
-        s->slots_committed = get_le64(h + 32);
+        s->slots_committed = RD_LE64(h + 32);
     }
     return delta_layout_init(s);
 }
@@ -467,6 +458,8 @@ static status_t delta_read_header(storage_t *s) {
 // slot count.  The data the tables point at is flushed first, so a table
 // never names a slot the file does not yet hold.
 static status_t delta_flush_bitmaps(storage_t *s) {
+    if (!s->delta_fp)
+        return STATUS_OK; // a lazy instance nothing has written: no file to flush
     fflush(s->delta_fp);
     if (fseeko(s->delta_fp, (off_t)s->bitmap_offset, SEEK_SET) != 0)
         return STATUS_E_IO;
@@ -534,6 +527,59 @@ static status_t delta_create(storage_t *s) {
     return STATUS_OK;
 }
 
+// Open (creating) the delta and journal files and load the journal index.
+// Called once by storage_new, or by the first write of a lazy instance.
+static status_t storage_open_files(storage_t *s) {
+    // Open or create delta file. Try the "existing" path first so an
+    // access()-then-fopen() race can't silently clobber the existing file
+    // if a concurrent process deletes it between the two calls. ENOENT
+    // means "go create one" — anything else is a real failure.
+    bool delta_exists = false;
+    s->delta_fp = fopen(s->delta_path, "r+b");
+    if (s->delta_fp) {
+        delta_exists = true;
+    } else if (errno == ENOENT) {
+        s->delta_fp = fopen(s->delta_path, "w+b");
+    }
+    if (!s->delta_fp)
+        return STATUS_E_IO;
+
+    status_t rc;
+    if (delta_exists) {
+        // Read and validate existing header + bitmaps (either version)
+        rc = delta_read_header(s);
+        if (rc == STATUS_OK)
+            rc = delta_read_bitmaps(s);
+    } else {
+        // A new delta is always version 2: header, empty bitmaps and tables
+        s->version = STORAGE_DELTA_VERSION;
+        s->cluster_blocks = STORAGE_DELTA_CLUSTER_BLOCKS;
+        rc = delta_layout_init(s);
+        if (rc == STATUS_OK)
+            rc = delta_create(s);
+    }
+    if (rc != STATUS_OK)
+        return rc;
+
+    // Open or create journal
+    s->journal_fp = fopen(s->journal_path, "a+b");
+    if (!s->journal_fp)
+        return STATUS_E_IO;
+
+    // Load journal index (does not replay — caller decides).  It repairs a
+    // damaged tail itself; failing here means it could not (the file could
+    // not be read or truncated back into alignment).
+    return journal_load_index(s);
+}
+
+// A lazy instance's files, created on its first write.
+static status_t storage_files_ready(storage_t *s) {
+    if (!s->files_pending)
+        return STATUS_OK;
+    s->files_pending = false;
+    return storage_open_files(s);
+}
+
 // ============================================================================
 // Checkpoint stream callbacks
 // ============================================================================
@@ -579,6 +625,7 @@ status_t storage_new(const storage_config_t *config, storage_t **out_storage) {
     s->block_count = config->block_count;
     s->block_size = config->block_size;
     s->delta_path = strdup(config->delta_path);
+    s->journal_path = strdup(config->journal_path);
     s->bitmap_bytes = (size_t)((config->block_count + 7) / 8);
     status_t rc = STATUS_E_NOMEM; // what a `goto fail` reports
 
@@ -586,7 +633,7 @@ status_t storage_new(const storage_config_t *config, storage_t **out_storage) {
     s->bitmap = calloc(1, s->bitmap_bytes);
     s->committed_bitmap = calloc(1, s->bitmap_bytes);
     s->journaled = calloc(1, s->bitmap_bytes);
-    if (!s->bitmap || !s->committed_bitmap || !s->journaled)
+    if (!s->bitmap || !s->committed_bitmap || !s->journaled || !s->delta_path || !s->journal_path)
         goto fail;
 
     // The base (optional — NULL for a blank image).  Reads go through a
@@ -598,49 +645,16 @@ status_t storage_new(const storage_config_t *config, storage_t **out_storage) {
             goto fail;
     }
 
-    // Open or create delta file. Try the "existing" path first so an
-    // access()-then-fopen() race can't silently clobber the existing file
-    // if a concurrent process deletes it between the two calls. ENOENT
-    // means "go create one" — anything else is a real failure.
-    bool delta_exists = false;
-    s->delta_fp = fopen(config->delta_path, "r+b");
-    if (s->delta_fp) {
-        delta_exists = true;
-    } else if (errno == ENOENT) {
-        s->delta_fp = fopen(config->delta_path, "w+b");
-    }
-    if (!s->delta_fp) {
-        rc = STATUS_E_IO;
-        goto fail;
-    }
-
-    if (delta_exists) {
-        // Read and validate existing header + bitmaps (either version)
-        rc = delta_read_header(s);
-        if (rc == STATUS_OK)
-            rc = delta_read_bitmaps(s);
-    } else {
-        // A new delta is always version 2: header, empty bitmaps and tables
+    if (config->lazy && access(config->delta_path, F_OK) != 0) {
+        // Nothing on disk yet, and nothing is until the first write: the
+        // layout of a fresh version-2 delta, in memory only.
         s->version = STORAGE_DELTA_VERSION;
         s->cluster_blocks = STORAGE_DELTA_CLUSTER_BLOCKS;
         rc = delta_layout_init(s);
-        if (rc == STATUS_OK)
-            rc = delta_create(s);
+        s->files_pending = true;
+    } else {
+        rc = storage_open_files(s);
     }
-    if (rc != STATUS_OK)
-        goto fail;
-
-    // Open or create journal
-    s->journal_fp = fopen(config->journal_path, "a+b");
-    if (!s->journal_fp) {
-        rc = STATUS_E_IO;
-        goto fail;
-    }
-
-    // Load journal index (does not replay — caller decides).  It repairs a
-    // damaged tail itself; failing here means it could not (the file could
-    // not be read or truncated back into alignment).
-    rc = journal_load_index(s);
     if (rc != STATUS_OK)
         goto fail;
 
@@ -659,6 +673,7 @@ status_t storage_delete(storage_t *storage) {
         return STATUS_OK;
     live_remove(storage);
     free(storage->delta_path);
+    free(storage->journal_path);
     source_release(storage->base);
     if (storage->delta_fp)
         fclose(storage->delta_fp);
@@ -780,6 +795,12 @@ status_t storage_write_block(storage_t *storage, uint64_t offset, const void *bu
         return STATUS_ERROR;
     }
 
+    status_t frc = storage_files_ready(storage);
+    if (frc != STATUS_OK) {
+        LOG_ALERT("disk write failed: cannot create the delta %s: %s", storage->delta_path, strerror(errno));
+        return frc;
+    }
+
     // Where the block goes.  The first write to any block of a cluster
     // gives the cluster the next slot at the end of the data area; a
     // committed block's cluster is committed too, so its slot is stable and
@@ -870,7 +891,7 @@ status_t storage_apply_rollback(storage_t *storage) {
 
         if (fread(le, sizeof(le), 1, storage->journal_fp) != 1)
             return STATUS_E_IO;
-        uint32_t lba = get_le32(le);
+        uint32_t lba = RD_LE32(le);
         if (fread(data, storage->block_size, 1, storage->journal_fp) != 1)
             return STATUS_E_IO;
 
@@ -948,10 +969,10 @@ status_t storage_checkpoint(storage_t *storage, checkpoint_t *checkpoint) {
     header.block_count = storage->block_count;
     header.block_size = storage->block_size;
     uint8_t h[STORAGE_SNAPSHOT_HEADER_BYTES] = {0};
-    put_le32(h, header.version);
+    WR_LE32(h, header.version);
     h[4] = header.has_data;
-    put_le64(h + 8, header.block_count);
-    put_le32(h + 16, header.block_size);
+    WR_LE64(h + 8, header.block_count);
+    WR_LE32(h + 16, header.block_size);
     system_write_checkpoint_data(checkpoint, h, sizeof(h));
     if (checkpoint_has_error(checkpoint))
         return STATUS_ERROR;
@@ -969,9 +990,9 @@ status_t storage_checkpoint(storage_t *storage, checkpoint_t *checkpoint) {
         system_write_checkpoint_data(checkpoint, storage->bitmap, storage->bitmap_bytes);
         uint32_t cb = storage->version == STORAGE_DELTA_VERSION ? storage->cluster_blocks : 0;
         uint8_t le[8];
-        put_le32(le, cb);
+        WR_LE32(le, cb);
         system_write_checkpoint_data(checkpoint, le, 4);
-        put_le64(le, storage->slots_used);
+        WR_LE64(le, storage->slots_used);
         system_write_checkpoint_data(checkpoint, le, 8);
         if (cb)
             system_write_checkpoint_data(checkpoint, storage->table, storage->table_bytes);
@@ -988,9 +1009,9 @@ static status_t read_quick_layout(checkpoint_t *checkpoint, uint64_t block_count
                                   uint32_t *table, size_t table_bytes) {
     uint8_t le[8];
     system_read_checkpoint_data(checkpoint, le, 4);
-    *cb = get_le32(le);
+    *cb = RD_LE32(le);
     system_read_checkpoint_data(checkpoint, le, 8);
-    *slots = get_le64(le);
+    *slots = RD_LE64(le);
     if (checkpoint_has_error(checkpoint))
         return STATUS_ERROR;
     if (!*cb)
@@ -1056,7 +1077,7 @@ status_t storage_restore_from_checkpoint(storage_t *storage, checkpoint_t *check
     if (checkpoint_has_error(checkpoint))
         return STATUS_ERROR;
     storage_snapshot_header_t header = {
-        .version = get_le32(h), .has_data = h[4], .block_count = get_le64(h + 8), .block_size = get_le32(h + 16)};
+        .version = RD_LE32(h), .has_data = h[4], .block_count = RD_LE64(h + 8), .block_size = RD_LE32(h + 16)};
     if (header.version != STORAGE_SNAPSHOT_VERSION) {
         LOG(0, "storage: snapshot version mismatch (got %u, expected %u)", header.version, STORAGE_SNAPSHOT_VERSION);
         return STATUS_E_INVAL;
@@ -1314,8 +1335,10 @@ storage_export_view_t *storage_export_view_begin(storage_t *storage) {
     // The base source is shared (its reads are locked); the delta gets a
     // handle of its own.
     v->src.base = source_retain(storage->base);
-    v->src.delta_fp = storage->delta_path ? fopen(storage->delta_path, "rb") : NULL;
-    if (!v->src.delta_fp) {
+    // A lazy instance nothing has written has no delta file: every block
+    // comes from the base, and the (all-clear) bitmap never asks for one.
+    v->src.delta_fp = storage->delta_fp ? fopen(storage->delta_path, "rb") : NULL;
+    if (storage->delta_fp && !v->src.delta_fp) {
         source_release(v->src.base);
         free(v->bitmap_copy);
         free(v->table_copy);
@@ -1380,6 +1403,9 @@ static void read_base_run(storage_t *storage, uint64_t first, uint64_t n, uint8_
 status_t storage_load_state(storage_t *storage, void *context, storage_read_callback_t read_cb) {
     if (!storage || !context || !read_cb)
         return STATUS_E_INVAL;
+    status_t frc = storage_files_ready(storage);
+    if (frc != STATUS_OK)
+        return frc;
 
     // The stream yields a block at a time, but the delta is written a run at
     // a time: a seek and a write per block was a filesystem call per 512

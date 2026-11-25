@@ -10,9 +10,11 @@
 // zone geometry each existed twice) was cheap to make safe with a round-trip
 // test and dangerous without one.  These tests exist to make the codec merge
 // safe -- they pin the behaviour that must survive it -- and to catch the class
-// of bug test_track_rpm and test_codeword_round_trip describe.
+// of bug test_track_rpm describes.  The codec itself (storage/gcr.c: tables,
+// sector nibblizer, address field) has its own suite, suites/gcr; here it is
+// exercised through the IWM / SWIM track encoder and decoder.
 //
-// floppy_gcr.c is #included so the tests can reach its static codec.
+// floppy_gcr.c is #included so the tests can reach its static track codec.
 // Deterministic; no emulator, ROM, MMU or scheduler.
 
 #include "gs_assert.h"
@@ -86,32 +88,6 @@ TEST(test_track_length_by_zone) {
     // Every track must hold its sectors' encoded form with room for gaps.
     for (int t = 0; t < NUM_TRACKS; t++)
         ASSERT_TRUE(iwm_track_length(t) > (size_t)iwm_sectors_per_track(t) * 700u);
-}
-
-// ---------------------------------------------------------------------------
-// The GCR codeword table
-// ---------------------------------------------------------------------------
-
-// 64 six-bit values map to 64 legal disk bytes.  Two properties the decoder
-// depends on, and which decode_gcr's lookup shows are not free: every codeword
-// has bit 7 set, and the table is strictly increasing (so it is a bijection).
-TEST(test_codeword_table_shape) {
-    for (int i = 0; i < 64; i++) {
-        ASSERT_TRUE(gcr_codewords[i] >= 0x96);
-        ASSERT_TRUE((gcr_codewords[i] & 0x80) != 0);
-        if (i > 0)
-            ASSERT_TRUE(gcr_codewords[i] > gcr_codewords[i - 1]);
-    }
-}
-
-// decode_gcr keys its lookup on `codeword & 0x7F`.  Since every legal codeword
-// has bit 7 set, that aliases 64 illegal bytes ($16 -> $96, $1F -> $9F, ...)
-// onto legal values -- defeating the very check meant to catch corrupt nibbles.
-// This test pins the round trip that must hold, and records the aliasing so the
-// fix has a home.
-TEST(test_codeword_round_trip) {
-    for (int i = 0; i < 64; i++)
-        ASSERT_EQ_INT(decode_gcr(gcr_codewords[i]), i);
 }
 
 // ---------------------------------------------------------------------------
@@ -391,7 +367,7 @@ static int write_through_side(int hdr_side) {
     drive.write_hdr_start = -1;
     image_t img;
     memset(&img, 0, sizeof img);
-    img.type = image_fd_ss;
+    img.raw_size = 400 * 1024;
     img.writable = true;
     stub_disk_size = 400 * 1024;
     stub_write_count = 0;
@@ -435,7 +411,7 @@ enum { W_DATA = 0, W_MARK = 1, W_CRC = 2, W_SETUP = 5, W_ZEROS = 6, W_ONES = 7 }
 static void swim_ism_rig(floppy_t *f, image_t *img, uint8_t *disk, int track, int cur_sector) {
     memset(f, 0, sizeof *f);
     memset(img, 0, sizeof *img);
-    img->type = image_fd_hd;
+    img->raw_size = 1440 * 1024;
     img->writable = true;
     stub_disk_size = 1440 * 1024;
     stub_disk_buf = disk;
@@ -592,9 +568,9 @@ TEST(test_decode_sector_rejects_corruption) {
 
     // A byte that is not a legal codeword must be refused, not aliased.  $16
     // is exactly the case the old `& 0x7F` lookup folded onto $96.
-    ASSERT_EQ_INT(decode_gcr(0x16), GCR_BAD_CODEWORD);
-    ASSERT_EQ_INT(decode_gcr(0x00), GCR_BAD_CODEWORD);
-    ASSERT_EQ_INT(decode_gcr(0x95), GCR_BAD_CODEWORD);
+    ASSERT_EQ_INT(gcr_decode6[0x16], GCR_BAD_CODEWORD);
+    ASSERT_EQ_INT(gcr_decode6[0x00], GCR_BAD_CODEWORD);
+    ASSERT_EQ_INT(gcr_decode6[0x95], GCR_BAD_CODEWORD);
     uint8_t save = mark[3];
     mark[3] = 0x16;
     ASSERT_TRUE(decode_sector(out_tag, out, mark, end, &t, &sd, &sc) == NULL);
@@ -609,47 +585,86 @@ TEST(test_decode_sector_rejects_corruption) {
     ASSERT_TRUE(decode_sector(out_tag, out, buf, buf + sizeof buf, &t, &sd, &sc) == NULL);
 }
 
-// The two forms of the checksum chain must agree.  ENCODE_TRIPLET is the
-// whole-track variant (advances a source pointer, captures in place);
-// gcr_encode_triplet is the DMA-stream variant SWIM3 uses.  They were two
-// independent transcriptions of the same subtle algorithm with nothing holding
-// them together; this is what holds them together.
-TEST(test_triplet_forms_agree) {
-    uint8_t src[3 * 64];
-    for (unsigned i = 0; i < sizeof src; i++)
-        src[i] = (uint8_t)(i * 31 + 7);
+// FNV-1a over `n` bytes: a compact fingerprint for the golden encodings.
+static uint32_t fnv1a(const uint8_t *p, size_t n) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < n; i++)
+        h = (h ^ p[i]) * 16777619u;
+    return h;
+}
 
-    // Function form over the whole buffer.
-    uint8_t fn_out[4 * 64];
-    uint16_t fa = 0, fb = 0, fc = 0;
-    for (unsigned i = 0; i < sizeof src; i += 3)
-        gcr_encode_triplet(src + i, &fa, &fb, &fc, fn_out + (i / 3) * 4);
+// The bytes encode_sector lays down are on disk (and in checkpoints' track
+// buffers): pinned byte for byte, with a good and a deliberately bad data
+// checksum, on an outer double-sided and an inner single-sided track.
+TEST(test_encode_sector_golden) {
+    static uint8_t buf[1024];
+    uint8_t data[512], tag[12];
+    for (int i = 0; i < 512; i++)
+        data[i] = (uint8_t)(i * 37 + 11);
+    for (int i = 0; i < 12; i++)
+        tag[i] = (uint8_t)(0x5C + i * 3);
+    static const struct {
+        int track, sector, side, sides;
+        bool bad;
+        uint32_t want;
+    } cases[] = {
+        {37, 3, 1, 2, false, 0x9C52AA3Eu},
+        {37, 3, 1, 2, true,  0xF26E7F97u},
+        {70, 7, 0, 1, false, 0xC186A1BAu},
+        {79, 0, 1, 2, false, 0x97C06971u},
+    };
+    for (size_t c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+        memset(buf, 0, sizeof buf);
+        uint8_t *end =
+            encode_sector(buf, tag, data, cases[c].track, cases[c].sector, cases[c].side, cases[c].sides, cases[c].bad);
+        // sync 5, marks 3, address 5, slip 3; sync 5, marks 3, sector 1, 703 values, slip 3
+        ASSERT_EQ_INT((int)(end - buf), 731);
+        uint32_t h = fnv1a(buf, (size_t)(end - buf));
+        if (h != cases[c].want)
+            printf("  case %zu: fnv 0x%08X\n", c, h);
+        ASSERT_EQ_INT((int)h, (int)cases[c].want);
+    }
+}
 
-    // Macro form over the same buffer.
-    uint8_t mac_out[4 * 64];
-    uint8_t *dst = mac_out;
-    const uint8_t *sp = src;
-    uint16_t ma = 0, mb = 0, mc = 0;
-    uint8_t ba, bb, bc;
-    for (unsigned i = 0; i < sizeof src; i += 3)
-        ENCODE_TRIPLET(sp, ma, mb, mc, ba, bb, bc);
-
-    // The macro emits ENCODED disk bytes (its GCR() applies the 6-to-8 table);
-    // the function emits the raw six-bit values the DMA stream carries.  Same
-    // chain, different output form -- so map one onto the other.
-    for (unsigned i = 0; i < sizeof fn_out; i++)
-        ASSERT_EQ_INT(mac_out[i], gcr_codewords[fn_out[i] & 0x3F]);
-    // ...and the checksum registers must have advanced identically.
-    ASSERT_EQ_INT((int)(fa & 0xFF), (int)(ma & 0xFF));
-    ASSERT_EQ_INT((int)(fb & 0xFF), (int)(mb & 0xFF));
-    ASSERT_EQ_INT((int)(fc & 0xFF), (int)(mc & 0xFF));
-
-    // Decode agrees too: the function form must invert the macro's output.
-    uint8_t back[3 * 64];
-    uint16_t da = 0, db = 0, dc = 0;
-    for (unsigned i = 0; i < sizeof src; i += 3)
-        gcr_decode_triplet(fn_out + (i / 3) * 4, &da, &db, &dc, back + i);
-    ASSERT_TRUE(memcmp(back, src, sizeof src) == 0);
+// A data field whose nibbles are not all legal codewords is refused even
+// when the corrupt byte happens to leave the checksum intact.  An illegal
+// byte decodes as $FF; put one where the legal codeword $FF (six-bit $3F)
+// stood under a high-bits nibble of %11, and the reassembled byte -- and so
+// the checksum -- is what it was.  The MOOF reader always refused it; the
+// IWM / SWIM path accepted it as data.
+TEST(test_decode_sector_rejects_illegal_data_codeword) {
+    static uint8_t buf[1024];
+    uint8_t data[512], tag[12], out[512], out_tag[12];
+    memset(tag, 0, sizeof tag);
+    bool planted = false;
+    for (uint32_t seed = 1; seed < 64 && !planted; seed++) {
+        for (int i = 0; i < 512; i++)
+            data[i] = (uint8_t)((i + 1) * seed * 2654435761u >> 24);
+        memset(buf, 0, sizeof buf);
+        uint8_t *end = encode_sector(buf, tag, data, 12, 2, 0, 2, false);
+        uint8_t *mark = find_address_mark(buf, end);
+        ASSERT_TRUE(mark != NULL);
+        int t, sd, sc;
+        ASSERT_TRUE(decode_sector(out_tag, out, mark, end, &t, &sd, &sc) != NULL);
+        // The 699 data nibbles start after the data mark and sector byte.
+        uint8_t *field = mark + 3 + 5 + 3 + 5 + 3 + 1; // marks, address, slip, sync, marks, sector
+        ASSERT_TRUE(field[-4] == 0xD5 && field[-3] == 0xAA && field[-2] == 0xAD);
+        // Groups of four: high bits, then the low six bits of three bytes.
+        for (int g = 0; g < 174 && !planted; g++) {
+            uint8_t *grp = field + g * 4;
+            uint8_t hi = gcr_decode6[grp[0]];
+            for (int k = 1; k <= 3 && !planted; k++) {
+                uint8_t hi_bits = (uint8_t)((hi << (2 * k)) & 0xC0);
+                if (grp[k] == 0xFF && hi_bits == 0xC0) {
+                    grp[k] = 0x16; // no codeword; decodes as $FF all the same
+                    planted = true;
+                }
+            }
+        }
+        if (planted)
+            ASSERT_TRUE(decode_sector(out_tag, out, mark, end, &t, &sd, &sc) == NULL);
+    }
+    ASSERT_TRUE(planted);
 }
 
 // ---------------------------------------------------------------------------
@@ -659,23 +674,23 @@ TEST(test_triplet_forms_agree) {
 // The four Macintosh floppy capacities, each pinning an encoding, a side count
 // and a sector layout.  720K is the one that used to be missing: it classified
 // as a hard disk, so the GCR path encoded MFM-laid-out bytes as if they were an
-// 800K disk, the media senses reported DD GCR, and floppy.identify said "not a
+// 800K disk, the media senses reported DD GCR, and files.identify said "not a
 // floppy".
 TEST(test_media_descriptor) {
     struct {
-        enum image_type type;
+        uint64_t size;
         bool mfm, hd;
         int sides, mfm_spt;
     } cases[] = {
-        {image_fd_ss,     false, false, 1, 0 },
-        {image_fd_ds,     false, false, 2, 0 },
-        {image_fd_dd_mfm, true,  false, 2, 9 },
-        {image_fd_hd,     true,  true,  2, 18},
+        {400 * 1024,  false, false, 1, 0 },
+        {800 * 1024,  false, false, 2, 0 },
+        {720 * 1024,  true,  false, 2, 9 },
+        {1440 * 1024, true,  true,  2, 18},
     };
     for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
         image_t img;
         memset(&img, 0, sizeof img);
-        img.type = cases[i].type;
+        img.raw_size = cases[i].size;
         floppy_media_t m;
         ASSERT_TRUE(floppy_media_from_image(&img, &m));
         ASSERT_TRUE(m.valid);
@@ -684,9 +699,9 @@ TEST(test_media_descriptor) {
         ASSERT_EQ_INT(m.sides, cases[i].sides);
         ASSERT_EQ_INT(m.mfm_spt, cases[i].mfm_spt);
         ASSERT_TRUE(m.img == &img);
-        // The predicate callers should ask with, rather than == image_fd_hd.
-        ASSERT_EQ_INT(image_is_mfm_floppy(cases[i].type), cases[i].mfm);
-        ASSERT_TRUE(image_is_floppy(cases[i].type));
+        // The predicate callers should ask with, rather than == MFM1440.
+        ASSERT_EQ_INT(image_layout_is_mfm(image_layout(&img)), cases[i].mfm);
+        ASSERT_TRUE(image_layout(&img) != IMAGE_LAYOUT_NONE);
     }
 
     // An empty drive and a hard disk are both "not a floppy geometry".
@@ -695,9 +710,9 @@ TEST(test_media_descriptor) {
     ASSERT_TRUE(!m.valid);
     image_t hd;
     memset(&hd, 0, sizeof hd);
-    hd.type = image_hd;
+    hd.raw_size = 20u * 1024 * 1024;
     ASSERT_TRUE(!floppy_media_from_image(&hd, &m));
-    ASSERT_TRUE(!image_is_floppy(image_hd));
+    ASSERT_TRUE(image_layout(&hd) == IMAGE_LAYOUT_NONE);
 }
 
 // The medium's CLASS and its FORMAT are different facts.  An 800K image and a
@@ -711,18 +726,18 @@ TEST(test_media_class_vs_format) {
     floppy_media_t m;
 
     // Every DD format shares one class.
-    const enum image_type dd[] = {image_fd_ss, image_fd_ds, image_fd_dd_mfm};
+    const uint64_t dd[] = {400 * 1024, 800 * 1024, 720 * 1024};
     for (unsigned i = 0; i < sizeof dd / sizeof dd[0]; i++) {
-        img.type = dd[i];
+        img.raw_size = dd[i];
         ASSERT_TRUE(floppy_media_from_image(&img, &m));
         ASSERT_TRUE(!m.hd); // class: double density
     }
-    img.type = image_fd_hd;
+    img.raw_size = 1440 * 1024;
     ASSERT_TRUE(floppy_media_from_image(&img, &m));
     ASSERT_TRUE(m.hd);
 
     // The format that a size implies is only the starting guess.
-    img.type = image_fd_ds;
+    img.raw_size = 800 * 1024;
     ASSERT_TRUE(floppy_media_from_image(&img, &m));
     ASSERT_EQ_INT(m.format, FLOPPY_FMT_GCR_800K);
     ASSERT_TRUE(!m.mfm);
@@ -752,7 +767,7 @@ TEST(test_media_sector_offset) {
     memset(&img, 0, sizeof img);
     floppy_media_t m;
 
-    img.type = image_fd_hd; // 1440K: 18 spt, uniform
+    img.raw_size = 1440 * 1024; // 1440K: 18 spt, uniform
     ASSERT_TRUE(floppy_media_from_image(&img, &m));
     ASSERT_EQ_INT(floppy_media_spt(&m, 0), 18);
     ASSERT_EQ_INT(floppy_media_spt(&m, 79), 18);
@@ -760,12 +775,12 @@ TEST(test_media_sector_offset) {
     ASSERT_EQ_INT((int)floppy_media_sector_offset(&m, 0, 1, 0), 18 * 512);
     ASSERT_EQ_INT((int)floppy_media_sector_offset(&m, 1, 0, 0), 2 * 18 * 512);
 
-    img.type = image_fd_dd_mfm; // 720K: 9 spt
+    img.raw_size = 720 * 1024; // 720K: 9 spt
     ASSERT_TRUE(floppy_media_from_image(&img, &m));
     ASSERT_EQ_INT(floppy_media_spt(&m, 40), 9);
     ASSERT_EQ_INT((int)floppy_media_sector_offset(&m, 1, 0, 0), 2 * 9 * 512);
 
-    img.type = image_fd_ds; // 800K GCR: zoned, and the offset accumulates
+    img.raw_size = 800 * 1024; // 800K GCR: zoned, and the offset accumulates
     ASSERT_TRUE(floppy_media_from_image(&img, &m));
     ASSERT_EQ_INT(floppy_media_spt(&m, 0), 12);
     ASSERT_EQ_INT(floppy_media_spt(&m, 79), 8);
@@ -782,17 +797,17 @@ TEST(test_media_rotation) {
     memset(&img, 0, sizeof img);
     floppy_media_t m;
 
-    img.type = image_fd_hd;
+    img.raw_size = 1440 * 1024;
     ASSERT_TRUE(floppy_media_from_image(&img, &m));
     ASSERT_EQ_INT((int)(floppy_media_rev_ns(&m, 0, FLOPPY_MFM_RPM) / 1e3), 200000); // 300 rpm
     ASSERT_EQ_INT((int)(floppy_media_rev_ns(&m, 0, FLOPPY_MFM_DD_RPM_NA) / 1e3), 200000);
 
-    img.type = image_fd_dd_mfm;
+    img.raw_size = 720 * 1024;
     ASSERT_TRUE(floppy_media_from_image(&img, &m));
     ASSERT_EQ_INT((int)(floppy_media_rev_ns(&m, 0, FLOPPY_MFM_RPM) / 1e3), 200000);
     ASSERT_EQ_INT((int)(floppy_media_rev_ns(&m, 0, FLOPPY_MFM_DD_RPM_NA) / 1e3), 100000); // 600 rpm
 
-    img.type = image_fd_ds; // GCR: the zone's speed whatever the caller says
+    img.raw_size = 800 * 1024; // GCR: the zone's speed whatever the caller says
     ASSERT_TRUE(floppy_media_from_image(&img, &m));
     ASSERT_TRUE(floppy_media_rev_ns(&m, 0, FLOPPY_MFM_RPM) == 60.0e9 / 394.0);
     ASSERT_TRUE(floppy_media_rev_ns(&m, 79, FLOPPY_MFM_DD_RPM_NA) == 60.0e9 / 590.0);
@@ -801,7 +816,7 @@ TEST(test_media_rotation) {
     // standing exactly on a slot boundary -- an event aimed at a header --
     // is handed the NEXT header, not the one just delivered, even when the
     // division comes out a hair under the integer.
-    img.type = image_fd_hd;
+    img.raw_size = 1440 * 1024;
     ASSERT_TRUE(floppy_media_from_image(&img, &m));
     double rev = floppy_media_rev_ns(&m, 0, FLOPPY_MFM_RPM);
     double slot = rev / 18.0;
@@ -821,7 +836,7 @@ TEST(test_media_sector_bounds) {
     floppy_media_t m;
     uint8_t buf[512];
 
-    img.type = image_fd_ss; // 400K: one side, 12 sectors on track 0
+    img.raw_size = 400 * 1024; // 400K: one side, 12 sectors on track 0
     ASSERT_TRUE(floppy_media_from_image(&img, &m));
     ASSERT_TRUE(!floppy_media_read_sector(&m, 0, 1, 0, buf)); // no side 1
     ASSERT_TRUE(!floppy_media_read_sector(&m, 0, 0, 12, buf)); // no sector 12
@@ -834,14 +849,13 @@ int main(void) {
     RUN(test_track_rpm);
     RUN(test_disk_image_offset);
     RUN(test_track_length_by_zone);
-    RUN(test_codeword_table_shape);
-    RUN(test_codeword_round_trip);
     RUN(test_sector_round_trip);
     RUN(test_sector_round_trip_edge_payloads);
     RUN(test_track_round_trip);
     RUN(test_track_unreadable_sector_fails_its_checksum);
     RUN(test_decode_sector_rejects_corruption);
-    RUN(test_triplet_forms_agree);
+    RUN(test_encode_sector_golden);
+    RUN(test_decode_sector_rejects_illegal_data_codeword);
     RUN(test_media_descriptor);
     RUN(test_media_class_vs_format);
     RUN(test_media_sector_offset);

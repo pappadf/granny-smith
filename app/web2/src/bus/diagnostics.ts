@@ -16,11 +16,12 @@ import {
   breadcrumbsPtr,
   bridgeDeadReason,
   getMailbox,
-  getModule,
   gsEval,
+  heapBuffer,
   recentCoreEvents,
 } from '@/bus/emulator';
 import { routePrintLine } from '@/bus/logSink';
+import { formatSize } from '@/lib/format';
 import { rage128GpuProbe, rage128GpuWorkerStats } from '@/gpu/rage128Gpu.svelte';
 
 // The breadcrumb block's words (keep in step with breadcrumb.h)
@@ -99,11 +100,9 @@ interface Crumbs {
 }
 
 function readCrumbs(): Crumbs | null {
-  const mod = getModule();
+  const buffer = heapBuffer();
   const ptr = breadcrumbsPtr();
-  if (!mod || !ptr) return null;
-  const buffer =
-    (mod as unknown as { wasmMemory?: WebAssembly.Memory }).wasmMemory?.buffer ?? mod.HEAPU8.buffer;
+  if (!buffer || !ptr) return null;
   const w = new Uint32Array(buffer, ptr, 32);
   const at = (i: number) => Atomics.load(w, i) >>> 0;
   if (at(CRUMB.MAGIC) !== CRUMB_MAGIC) return null;
@@ -142,19 +141,13 @@ function crumbsLine(c: Crumbs): string {
 }
 
 function memoryLine(): string {
-  const mod = getModule();
-  const wasm =
-    (mod as unknown as { wasmMemory?: WebAssembly.Memory } | null)?.wasmMemory?.buffer.byteLength ??
-    mod?.HEAPU8.buffer.byteLength ??
-    0;
+  const wasm = heapBuffer()?.byteLength ?? 0;
   const js = (
     performance as unknown as { memory?: { usedJSHeapSize: number; jsHeapSizeLimit: number } }
   ).memory;
   return (
-    `wasm memory ${(wasm / 2 ** 20).toFixed(0)} MB` +
-    (js
-      ? `, js heap ${(js.usedJSHeapSize / 2 ** 20).toFixed(0)} of ${(js.jsHeapSizeLimit / 2 ** 20).toFixed(0)} MB`
-      : '')
+    `wasm memory ${formatSize(wasm)}` +
+    (js ? `, js heap ${formatSize(js.usedJSHeapSize)} of ${formatSize(js.jsHeapSizeLimit)}` : '')
   );
 }
 
@@ -162,7 +155,7 @@ function workerStatsLine(s: Record<string, unknown>): string {
   const n = (k: string) => (typeof s[k] === 'number' ? (s[k] as number) : 0);
   const t = n('seconds') || 1;
   return (
-    `${n('records')} records (${(n('records') / t).toFixed(0)}/s, ${(n('bytes') / 1024 / t).toFixed(0)} KB/s), ` +
+    `${n('records')} records (${(n('records') / t).toFixed(0)}/s, ${formatSize(n('bytes') / t)}/s), ` +
     `${n('draws')} draws, drains ${n('drains')} busy ${n('drainMs').toFixed(0)} ms (${((100 * n('drainMs')) / (t * 1000)).toFixed(0)}%, longest ${n('drainMaxMs').toFixed(0)} ms), ` +
     `readbacks ${n('readbacks')} avg ${(n('readbacks') ? n('readbackMs') / n('readbacks') : 0).toFixed(1)} ms max ${n('readbackMaxMs').toFixed(0)} ms, ` +
     `presents ${n('presents')} (GPU completion lag max ${n('presentLagMaxMs').toFixed(0)} ms), idle waits ${n('idleWaits')}; ` +

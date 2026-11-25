@@ -12,17 +12,18 @@
 
 #include "alias.h"
 #include "cmd_complete.h"
+#include "commands.h"
 #include "cpu.h"
 #include "debug.h"
-#include "expr.h"
+#include "gs_lua.h"
 #include "log.h"
 #include "log_context.h"
 #include "meta.h"
 #include "object.h"
 #include "parse.h"
-#include "script.h"
-#include "shell_var.h"
+#include "report.h"
 #include "system.h"
+#include "usage.h"
 #include "value.h"
 #include "vfs.h"
 #include "job/job.h"
@@ -47,6 +48,9 @@ static bool shell_initialized = false;
 
 // === Value printing (the REPL formatting surface) ==========================
 
+// What the REPL prints in place of a VFLAG_SENSITIVE value
+#define SHELL_SENSITIVE_TEXT "<sensitive>"
+
 // Print one scalar value inline (no trailing newline). Used as the
 // rhs in the object-attribute table dump and inside list expansion.
 // Mirrors the per-kind formatting in format_value_print but without
@@ -54,6 +58,11 @@ static bool shell_initialized = false;
 static void format_scalar_inline(const value_t *v) {
     if (!v)
         return;
+    // A sensitive value (VFLAG_SENSITIVE: a password, a key) never prints
+    if (v->flags & VFLAG_SENSITIVE) {
+        out_puts(SHELL_SENSITIVE_TEXT);
+        return;
+    }
     vbuf_t b = {0};
     value_format(v, VFMT_INLINE, &b);
     if (b.p)
@@ -112,7 +121,7 @@ static void format_object_table(struct object *o) {
             continue;
         if (!mb->attr.get)
             continue;
-        value_t v = mb->attr.get(o, mb);
+        value_t v = object_attr_get(o, mb);
         print_name_cell(mb->name, width);
         out_puts(" = ");
         format_scalar_inline(&v);
@@ -133,6 +142,10 @@ static void format_object_table(struct object *o) {
 // Render one cell of the object-list table into buf. Scalar kinds only;
 // structured kinds render as compact placeholders.
 static void format_cell(const value_t *v, char *buf, size_t buf_size) {
+    if (v->flags & VFLAG_SENSITIVE) {
+        snprintf(buf, buf_size, "%s", SHELL_SENSITIVE_TEXT);
+        return;
+    }
     value_format_into(v, VFMT_CELL, buf, buf_size);
 }
 
@@ -177,7 +190,7 @@ static bool try_print_object_table(const value_t *v) {
     for (size_t i = 0; i < v->list.len; i++) {
         for (int c = 0; c < n_cols; c++) {
             const member_t *mb = &cls->members[cols[c]];
-            value_t cv = mb->attr.get(v->list.items[i].obj, mb);
+            value_t cv = object_attr_get(v->list.items[i].obj, mb);
             format_cell(&cv, cell, sizeof(cell));
             value_free(&cv);
             int len = (int)strlen(cell);
@@ -191,7 +204,7 @@ static bool try_print_object_table(const value_t *v) {
     for (size_t i = 0; i < v->list.len; i++) {
         for (int c = 0; c < n_cols; c++) {
             const member_t *mb = &cls->members[cols[c]];
-            value_t cv = mb->attr.get(v->list.items[i].obj, mb);
+            value_t cv = object_attr_get(v->list.items[i].obj, mb);
             format_cell(&cv, cell, sizeof(cell));
             value_free(&cv);
             out_printf("%-*s%s", width[c], cell, c + 1 < n_cols ? "  " : "\n");
@@ -268,6 +281,10 @@ static void format_value_print(const value_t *v) {
         break;
 
     default: {
+        if (v->flags & VFLAG_SENSITIVE) {
+            out_puts(SHELL_SENSITIVE_TEXT "\n");
+            break;
+        }
         vbuf_t b = {0};
         value_format(v, VFMT_REPL, &b);
         if (b.p)
@@ -279,10 +296,9 @@ static void format_value_print(const value_t *v) {
     }
 }
 
-// Public print surface for the script interpreter (REPL result
-// printing).
-// Printing reads attributes (an object renders as its attribute table),
-// so it runs on the emulator thread: a job hands it over (job/job.h).
+// Public print surface for the terminal's results (gs_lua.c's command
+// form).  Printing reads attributes (an object renders as its attribute
+// table); everything that prints runs on the emulator thread.
 //
 // Inside a job the printed text is bracketed by annotation records: a
 // `value_begin` before it and a `value` after it carrying the value as
@@ -309,7 +325,7 @@ static void print_value_here(void *p) {
 }
 
 void shell_print_value(const value_t *v) {
-    job_on_emulator(print_value_here, (void *)v);
+    print_value_here((void *)v);
 }
 
 // Compose the current shell prompt.  Short and state-aware:
@@ -361,19 +377,27 @@ static value_t shell_meta_complete_provider(const char *line, int cursor) {
     return val_list(items, (size_t)n);
 }
 
+// The usage layer's reading of a word that is no path: a command.
+static usage_word_t usage_word(const char *word, char *target, size_t target_size) {
+    return shell_command_lookup(word, NULL, target, target_size) ? USAGE_WORD_COMMAND : USAGE_WORD_NONE;
+}
+
 /* --- shell init ---------------------------------------------------------- */
-// The shell's own setup: its binding store and the completion provider.
+// The shell's own setup: the script engine's reporter and the completion
+// provider.
 // Process bootstrap (logging, the job layer, the object root and its
 // singletons) is core_init's (core_init.c), which calls this.
 int shell_init(void) {
     if (shell_initialized)
         return 0;
 
-    shell_var_init();
+    // A failed script reports to its job's stream (report.h).
+    gs_lua_set_reporter(script_report_error);
 
     // Wire the Meta class's `complete(line, cursor)` method to the
     // shell's tab-completion engine.
     meta_complete_register(shell_meta_complete_provider);
+    object_usage_set_word_resolver(usage_word);
 
     shell_initialized = true;
     return 0;

@@ -18,7 +18,7 @@
 //
 // Around those: the PowerPC 750 (the ppc core's CPU_MODEL_PPC750), the
 // board-identification halfword at $FF000004, Cuda (fourth instance of
-// av/cuda.c) whose I2C bus carries the three DIMMs' SPD EEPROMs and the
+// core/peripherals/cuda.c) whose I2C bus carries the three DIMMs' SPD EEPROMs and the
 // PERCH personality-card ID EEPROM (gossamer_i2c.c), and the cells the
 // repository already models (6522, Z8530, MESH, SWIM3, DBDMA).
 //
@@ -40,19 +40,23 @@
 #define GS_MACHINES_GOSSAMER_H
 
 #include "ata.h" // the two ATA cells
+#include "board_io.h" // board_io_t, the island decode engine
 #include "checkpoint.h"
 #include "davbus.h" // the DAVbus sound cell (Screamer face)
+#include "escc_dbdma.h"
+#include "image_class.h"
 #include "machine.h"
 #include "machine_profile.h"
 #include "memory.h"
 #include "pci.h"
 #include "swim3.h"
+#include "swim3_dbdma.h"
 #include "system_internal.h"
 
 #include <stdbool.h>
 #include <stdint.h>
 
-struct av_cuda; // the shared behavioral Cuda model (machines/av/cuda.h)
+struct cuda; // the shared behavioral Cuda model (core/peripherals/cuda.h)
 struct dbdma; // the DBDMA engine (core/peripherals/dbdma.h)
 struct object;
 
@@ -219,20 +223,6 @@ typedef struct gos_i2c {
     uint8_t ptr; // current EEPROM byte pointer (last subaddress)
 } gos_i2c_t;
 
-// The SWIM3 byte ring between the chip and DBDMA channel 1 (the tnt.c
-// shape).
-#define GOS_FDRING_SIZE 4096u
-typedef struct gos_fdring {
-    uint8_t buf[GOS_FDRING_SIZE];
-    uint32_t head, tail; // free-running; count = tail - head
-} gos_fdring_t;
-
-// ESCC DBDMA port contexts (one per SCC channel).
-typedef struct gos_scc_dma_ctx {
-    config_t *cfg;
-    unsigned ch;
-} gos_scc_dma_ctx_t;
-
 // === Family state ===========================================================
 // Callback context of one ATA cell (IRQ, DMA kick, the dma_pump event's
 // source): names its machine and cell.  Owned by the machine's state, so two
@@ -250,16 +240,18 @@ typedef struct gossamer_state {
     struct pci_bus *bus; // the one Grackle PCI bus
     pci_device_t grackle_dev; // Grackle's own header at device 0
     pci_device_t heathrow_dev; // Heathrow's header at device $10
-    struct av_cuda *cuda;
+    struct cuda *cuda;
     struct dbdma *dbdma; // 13 channel blocks (Heathrow +$8000)
     struct mesh *mesh; // internal SCSI (core/peripherals/scsi_mesh.c)
     // The DAVbus sound cell at +$14000, Screamer variant, output on DBDMA
     // channel 8: the register block is checkpointed, the host is wiring.
     davbus_t screamer;
     davbus_host_t screamer_host;
+    // The floppy: the shared SWIM3 model and its DBDMA channel-1 port
+    // (runtime/swim3_dbdma.c; the ring is checkpointed, the wiring is not).
     swim3_t swim3;
-    gos_fdring_t fdring;
-    gos_scc_dma_ctx_t scc_dma_ctx[2];
+    swim3_dbdma_t fdport;
+    escc_dbdma_t escc_dma; // the ESCC's four DBDMA ports (runtime/escc_dbdma.c; rebuilt at init)
     // The two ATA cells (+$20000, +$21000) and the SCSI bus that carries
     // their ATAPI CD-ROMs (machine.atapi): gossamer_ata.c.
     ata_channel_t ata[2];
@@ -267,6 +259,10 @@ typedef struct gossamer_state {
     struct scsi *atapi;
     bool ata_ready;
     struct object *ata_object; // machine.ata
+    struct object *ata_devices_object; // machine.ata.device
+    struct object *ata_device_objects[4]; // machine.ata.device[U], U = cell * 2 + device
+    struct object *ata_image_objects[4]; // machine.ata.device[U].image
+    image_node_t ata_nodes[4]; // both nodes' data: the config and U (image_class.h)
     // The Ethernet cell at +$11000 (gossamer_bmac.c).
     struct bmac *bmac;
     struct object *bmac_object; // machine.bmac
@@ -280,6 +276,10 @@ typedef struct gossamer_state {
     memory_interface_t intack_if; // $FEF00000
     memory_interface_t board_if; // $FF000000 bank-1 page
     memory_interface_t heathrow_if; // BAR0 backing
+    // Heathrow's byte decode (heathrow.c): its range table bound to this
+    // machine's VIA and SCC.  Host pointers, rebuilt at init, never
+    // checkpointed.
+    board_io_t hr_io;
 } gossamer_state_t;
 
 static inline gossamer_state_t *gos_st(config_t *cfg) {
@@ -297,11 +297,10 @@ extern const storage_bus_decl_t gossamer_storage[];
 extern const storage_device_decl_t gossamer_default_storage[];
 extern const builtin_video_desc_t gossamer_builtin_video;
 extern const pci_slot_decl_t gossamer_pci_slots[];
-
-// Fill/clear one physical page in the AoS table + SoA fast-path arrays
-// (the tnt_fill_page shape; the PPC MMU owns the user arrays).
-void gos_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable);
-void gos_clear_page(uint32_t page_index);
+// Shared by pmg3dt and pmg3mt (gossamer.c): the DIMM totals and the
+// Whisper card's ID EEPROM.
+extern const uint32_t gossamer_ram_options_kb[];
+extern const uint8_t gossamer_whisper_eeprom[16];
 
 // DBDMA channel -> Heathrow interrupt source (the table, not the index:
 // ATA 11/12 on sources 2/3, BMAC 2/3 on bank-2 sources 32/33).  -1 for a
@@ -338,7 +337,7 @@ void gos_nvram_clear(config_t *cfg);
 // Carve the profile's RAM size into DIMMs and build their SPD bytes, and
 // the PERCH EEPROM image.
 void gos_i2c_init(config_t *cfg);
-// The Cuda I2C transaction hooks (av_cuda_attach_i2c).
+// The Cuda I2C transaction hooks (cuda_attach_i2c).
 int gos_i2c_read(void *ctx, uint8_t addr8, bool has_sub, uint8_t sub, uint8_t *out, int max);
 bool gos_i2c_write(void *ctx, uint8_t addr8, const uint8_t *data, int len);
 // The TDA7433's volume and front attenuators as the stage after the codec

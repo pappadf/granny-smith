@@ -93,11 +93,11 @@ A backend is only where the executor runs:
 |---|---|
 | `sw` | inline at submit — the **normative** one |
 | `null` | as `sw`, with object commands dropped: every frame is the background |
-| `thread` | the **default**: a bounded single-producer, single-consumer ring drained by one worker pthread (in the browser a Web Worker created on demand), the Voodoo2's design; the fence waits for the ring to drain |
+| `thread` | the **default**: a bounded single-producer, single-consumer ring drained by one worker pthread (in the browser a Web Worker created on demand); the ring, the worker and the draw-state ring are the shared raster queue (`raster_queue.{c,h}`), the Voodoo2's too; the fence waits for the ring to drain |
 
 `pci_option="raster=thread|sw|null"` picks one per boot; `machine.pci.slot[N].card.renderer.raster`
 reports it and, assigned, swaps it in place. `-DGS_QD3D_RASTER_DEFAULT='"sw"'` makes a build default to the
-walker and `-DGS_QD3D_THREAD_BACKEND=0` compiles the thread backend out. `GS_QD3D_STATS=1` logs the thread
+walker and `-DGS_RASTER_THREAD_BACKEND=0` compiles the thread backend out. `log.set qd3d 1` logs the thread
 backend's counters at teardown (commands, fences and how long they waited, the worker's CPU time). There is
 no user-facing option: unlike the Voodoo2 the card has one rasteriser, the emulator's own.
 

@@ -28,6 +28,7 @@
 #include "machine_profile.h"
 #include "mmu.h"
 #include "object.h"
+#include "object_order.h"
 #include "platform_hooks.h"
 #include "scheduler.h"
 #include "sound_surface.h"
@@ -51,6 +52,13 @@ LOG_USE_CATEGORY_NAME("singer");
 // always programs 240; the register is 16-bit).
 #define SINGER_MAX_FRAMES 0x4000u
 
+// Largest WAV the microphone source loads, in stereo frames (an hour at
+// 48 kHz): the bound a checkpoint restore holds the stored length to.
+#define SINGER_WAV_MAX_FRAMES (48000u * 3600u)
+
+// Bytes per loaded WAV frame: interleaved stereo int16
+#define SINGER_WAV_FRAME_BYTES (2u * (uint32_t)sizeof(int16_t))
+
 // Host audio source selection (machine.audioin.source).
 typedef enum {
     AIN_SRC_NONE = 0, // no microphone (default; input records silence)
@@ -61,7 +69,7 @@ typedef enum {
 
 struct av_singer {
     // --- plain data (checkpointed up to `cfg`) ---
-    uint64_t frames; // frame ticks serviced since power-on
+    uint64_t frames; // output sample frames pushed since power-on (machine.sound.frames)
     uint32_t overruns; // frame boundaries that passed unserviced
     uint32_t open_rate; // rate the host stream was opened at
     uint16_t last_com; // previous sndComCtl (edge-triggered logging)
@@ -176,11 +184,6 @@ static uint32_t singer_size(av_singer_t *s) {
 // The frame engine
 // ============================================================
 
-// D/A attenuation ladder: 1.5 dB steps as x65536 gains.
-static const uint32_t singer_atten_x65536[16] = {
-    65536, 55142, 46396, 39037, 32846, 27636, 23253, 19565, 16462, 13851, 11654, 9806, 8250, 6942, 5841, 4915,
-};
-
 // A/D gain ladder (singerCtl bits 12-19): the same 1.5 dB
 // steps upwards, 0 dB to +22.5 dB.  The driver's `singerCtlInit` selects
 // +7.5 dB on both channels, and the speech front end's AGC drives this
@@ -194,8 +197,8 @@ static const uint32_t singer_adgain_x65536[16] = {
 // applied — the capture sink then records exactly what the codec drives.
 static void singer_stage_output(av_singer_t *s, uint32_t base, uint32_t nframes) {
     uint32_t ctl = av_psc_snd_read32(singer_st(s)->psc, 0x04); // singerCtl
-    uint32_t gl = singer_atten_x65536[(ctl >> 8) & 15]; // pLeftAtten
-    uint32_t gr = singer_atten_x65536[(ctl >> 4) & 15]; // pRightAtten
+    uint32_t gl = audio_atten_1p5db_x65536[(ctl >> 8) & 15]; // pLeftAtten
+    uint32_t gr = audio_atten_1p5db_x65536[(ctl >> 4) & 15]; // pRightAtten
     bool mute = (ctl & (1u << 22)) != 0;
     for (uint32_t i = 0; i < nframes; i++) {
         uint32_t addr = base + i * 4;
@@ -252,11 +255,7 @@ static void singer_ain_dither(av_singer_t *s, uint32_t nframes) {
         h *= 1274126177u;
         h ^= h >> 16;
         int32_t v = (int32_t)s->stage[i] + (int32_t)(h % 3u) - 1; // -1, 0, +1
-        if (v > 32767)
-            v = 32767;
-        if (v < -32768)
-            v = -32768;
-        s->stage[i] = (int16_t)v;
+        s->stage[i] = audio_sat16(v);
     }
 }
 
@@ -295,12 +294,7 @@ static void singer_ain_pull(av_singer_t *s, uint32_t nframes, uint32_t rate) {
     }
     if (s->ain_gain != 100) {
         for (uint32_t i = 0; i < nframes * 2; i++) {
-            int32_t v = (int32_t)s->stage[i] * s->ain_gain / 100;
-            if (v > 32767)
-                v = 32767;
-            if (v < -32768)
-                v = -32768;
-            s->stage[i] = (int16_t)v;
+            s->stage[i] = audio_sat16((int32_t)s->stage[i] * s->ain_gain / 100);
         }
     }
     singer_ain_dither(s, nframes);
@@ -591,10 +585,9 @@ static void singer_fill_input(av_singer_t *s, uint32_t base, uint32_t nframes) {
 
     if (agl != 65536 || agr != 65536) {
         for (uint32_t i = 0; i < nframes; i++) {
-            int64_t l = ((int64_t)s->stage[i * 2] * agl) >> 16;
-            int64_t r = ((int64_t)s->stage[i * 2 + 1] * agr) >> 16;
-            s->stage[i * 2] = (int16_t)(l > 32767 ? 32767 : l < -32768 ? -32768 : l);
-            s->stage[i * 2 + 1] = (int16_t)(r > 32767 ? 32767 : r < -32768 ? -32768 : r);
+            // A gain of at most +22.5 dB keeps the int16 product inside int32
+            s->stage[i * 2] = audio_sat16((int32_t)(((int64_t)s->stage[i * 2] * agl) >> 16));
+            s->stage[i * 2 + 1] = audio_sat16((int32_t)(((int64_t)s->stage[i * 2 + 1] * agr) >> 16));
         }
     }
     if (base != s->dbg_in_base || nframes != s->dbg_in_frames || singer_rate(s) != s->dbg_in_rate ||
@@ -634,10 +627,10 @@ static void singer_frame_event(void *source, uint64_t data) {
 
     if (com & SND_OUT_EN) {
         uint32_t base = av_psc_snd_read32(st->psc, 0x14) + half * size * 4; // sndOutBase
-        if (audio_out_rate() != rate)
-            audio_out_set_rate(rate);
+        audio_out_ensure_rate(rate);
         singer_stage_output(s, base, size);
         audio_out_push(s->stage, (int)size, 7);
+        s->frames += size; // sample frames, the unit machine.sound.frames is in
     }
     if (com & SND_IN_EN) {
         uint32_t base = av_psc_snd_read32(st->psc, 0x10) + half * size * 4; // sndInBase
@@ -672,8 +665,6 @@ static void singer_frame_event(void *source, uint64_t data) {
         if (st->dsp)
             av_dsp_ext1_tick(st->dsp);
     }
-
-    s->frames++;
 
     // Next boundary of the absolute formula (re-reads rate/size next tick
     // so reprogramming takes effect at a frame edge, like the hardware).
@@ -735,14 +726,13 @@ static int singer_load_wav(av_singer_t *s, const char *path) {
     long data_off = 0;
     uint32_t data_len = 0;
     while (fread(chunk, 1, 8, fp) == 8) {
-        uint32_t len =
-            (uint32_t)chunk[4] | ((uint32_t)chunk[5] << 8) | ((uint32_t)chunk[6] << 16) | ((uint32_t)chunk[7] << 24);
+        uint32_t len = RD_LE32(chunk + 4);
         if (memcmp(chunk, "fmt ", 4) == 0 && len >= 16) {
             uint8_t fmt[16];
             if (fread(fmt, 1, 16, fp) != 16)
                 break;
-            channels = (uint16_t)(fmt[2] | (fmt[3] << 8));
-            bits = (uint16_t)(fmt[14] | (fmt[15] << 8));
+            channels = RD_LE16(fmt + 2);
+            bits = RD_LE16(fmt + 14);
             if (len > 16)
                 fseek(fp, (long)((len + 1) & ~1u) - 16, SEEK_CUR); // RIFF pads odd chunks to even
         } else if (memcmp(chunk, "data", 4) == 0) {
@@ -758,6 +748,11 @@ static int singer_load_wav(av_singer_t *s, const char *path) {
         return -1;
     }
     uint32_t nframes = data_len / (channels * 2u);
+    // Longer than a checkpoint would take back: refuse it here instead
+    if (nframes > SINGER_WAV_MAX_FRAMES) {
+        fclose(fp);
+        return -1;
+    }
     int16_t *buf = malloc((size_t)nframes * 2 * sizeof(int16_t));
     uint8_t *raw = malloc(data_len);
     if (!buf || !raw) {
@@ -1124,6 +1119,9 @@ static uint64_t av_snd_overruns(void *ctx) {
 // Lifecycle
 // ============================================================
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(av_singer_t, cfg);
+
 av_singer_t *av_singer_init(config_t *cfg, checkpoint_t *cp) {
     av_singer_t *s = calloc(1, sizeof(*s));
     if (!s)
@@ -1136,18 +1134,18 @@ av_singer_t *av_singer_init(config_t *cfg, checkpoint_t *cp) {
     }
 
     if (cp) {
-        size_t data_size = offsetof(av_singer_t, cfg);
-        system_read_checkpoint_data(cp, s, data_size);
-        if (s->wav_frames) {
-            s->wav = malloc((size_t)s->wav_frames * 2 * sizeof(int16_t));
-            if (s->wav) {
-                system_read_checkpoint_data(cp, s->wav, (size_t)s->wav_frames * 2 * sizeof(int16_t));
-            } else {
-                // The unread block would misalign every later read: refuse
-                // the load, and leave no length without its buffer.
-                s->wav_frames = 0;
-                checkpoint_set_error(cp);
-            }
+        checkpoint_load_prefix(cp, s, av_singer_t);
+        // The WAV's length is the blob's, bounded, not the prefix's word
+        uint32_t bytes = 0;
+        s->wav =
+            (int16_t *)checkpoint_read_blob(cp, SINGER_WAV_MAX_FRAMES * SINGER_WAV_FRAME_BYTES, &bytes, "singer.wav");
+        s->wav_frames = bytes / SINGER_WAV_FRAME_BYTES;
+        if (bytes % SINGER_WAV_FRAME_BYTES || s->wav_pos > s->wav_frames) {
+            // A torn frame or a cursor past the end is not what the save wrote
+            free(s->wav);
+            s->wav = NULL;
+            s->wav_frames = 0;
+            checkpoint_set_error(cp);
         }
     }
 
@@ -1184,7 +1182,7 @@ av_singer_t *av_singer_init(config_t *cfg, checkpoint_t *cp) {
     s->ain_object = object_new(&av_audioin_class, s, "audioin");
     if (s->ain_object) {
         object_set_label(s->ain_object, "Audio In");
-        object_set_order(s->ain_object, 126);
+        object_set_order(s->ain_object, OBJ_ORDER_AUDIO_IN);
         object_attach(machine_object(), s->ain_object);
         s->ain_cap_object = object_new(&av_audioin_capture_class, s, "capture");
         if (s->ain_cap_object) {
@@ -1200,14 +1198,8 @@ av_singer_t *av_singer_init(config_t *cfg, checkpoint_t *cp) {
 void av_singer_delete(av_singer_t *s) {
     if (!s)
         return;
-    if (s->ain_cap_object) {
-        object_detach(s->ain_cap_object);
-        object_delete(s->ain_cap_object);
-    }
-    if (s->ain_object) {
-        object_detach(s->ain_object);
-        object_delete(s->ain_object);
-    }
+    object_destroy(&s->ain_cap_object);
+    object_destroy(&s->ain_object);
     if (s->object) {
         // The sound node only: sound_object_delete() takes the malloc'd surface
         // copy and the attached detail child with it, which object_delete()
@@ -1226,10 +1218,8 @@ void av_singer_delete(av_singer_t *s) {
 void av_singer_checkpoint(av_singer_t *s, checkpoint_t *cp) {
     if (!s || !cp)
         return;
-    size_t data_size = offsetof(av_singer_t, cfg);
-    system_write_checkpoint_data(cp, s, data_size);
+    checkpoint_save_prefix(cp, s, av_singer_t);
     // The loaded WAV is state (a restore must keep producing the same
     // samples); the host microphone is checkpoint-ephemeral.
-    if (s->wav_frames && s->wav)
-        system_write_checkpoint_data(cp, s->wav, (size_t)s->wav_frames * 2 * sizeof(int16_t));
+    checkpoint_write_blob(cp, s->wav, s->wav ? s->wav_frames * SINGER_WAV_FRAME_BYTES : 0, "singer.wav");
 }

@@ -15,6 +15,7 @@ import { test, expect } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
 import { gsCallInPage, gsEvalInPage } from '../helpers/web2-eval';
+import { uploadRomViaWelcome } from '../helpers/upload';
 
 const IICX_ROM = path.resolve(__dirname, '../../data/roms/iix-iicx-se30-97221136.rom');
 
@@ -25,11 +26,7 @@ test('Restart keeps the attached hard disk — same medium, same open instance',
   await gotoWeb2(page);
 
   // Upload the IIcx ROM via the Welcome button (no auto-boot).
-  const [chooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Load ROM...' }).click(),
-  ]);
-  await chooser.setFiles(IICX_ROM);
+  await uploadRomViaWelcome(page, IICX_ROM);
   await expect(
     page.locator('.toast .msg').filter({ hasText: 'iix-iicx-se30-97221136.rom added' }),
   ).toBeVisible({ timeout: 60_000 });
@@ -37,11 +34,11 @@ test('Restart keeps the attached hard disk — same medium, same open instance',
   // Boot and attach a scratch HD.
   await gsCallInPage(page, 'machine.boot', { model: 'iicx', ram: 8192, rom: '/opfs/images/rom/97221136' });
   await expect.poll(() => gsEvalInPage(page, 'machine.id'), { timeout: 30_000 }).toBe('iicx');
-  await gsCallInPage(page, 'files.hd_create', ['/tmp/restart-scratch.img', '20mb']);
+  await gsCallInPage(page, 'files.create', ['/tmp/restart-scratch.img', 'hd', '20mb']);
   await gsCallInPage(page, 'machine.scsi.attach_hd', ['/tmp/restart-scratch.img', 0]);
-  expect(await gsEvalInPage(page, 'machine.scsi.device[0].image.present')).toBe(true);
-  const stem0 = await gsEvalInPage(page, 'machine.scsi.device[0].image.path');
-  const file0 = await gsEvalInPage(page, 'machine.scsi.device[0].image.filename');
+  expect(await gsEvalInPage(page, 'machine.scsi.device[0].present')).toBe(true);
+  const stem0 = await gsEvalInPage(page, 'machine.scsi.device[0].image.delta');
+  const file0 = await gsEvalInPage(page, 'machine.scsi.device[0].image.source');
   expect(stem0).toBeTruthy();
   expect(file0).toBeTruthy();
 
@@ -67,7 +64,7 @@ test('Restart keeps the attached hard disk — same medium, same open instance',
 
   // The HD survived the power-cycle as the SAME open instance.
   expect(await gsEvalInPage(page, 'machine.created')).toBe(true);
-  expect(await gsEvalInPage(page, 'machine.scsi.device[0].image.present')).toBe(true);
-  expect(await gsEvalInPage(page, 'machine.scsi.device[0].image.filename')).toBe(file0);
-  expect(await gsEvalInPage(page, 'machine.scsi.device[0].image.path')).toBe(stem0);
+  expect(await gsEvalInPage(page, 'machine.scsi.device[0].present')).toBe(true);
+  expect(await gsEvalInPage(page, 'machine.scsi.device[0].image.source')).toBe(file0);
+  expect(await gsEvalInPage(page, 'machine.scsi.device[0].image.delta')).toBe(stem0);
 });

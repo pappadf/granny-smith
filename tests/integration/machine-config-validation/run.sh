@@ -20,10 +20,10 @@ n=0
 # boot_case <name> <model> <rom> <config JSON> <expected message | OK>
 boot_case() {
     local name=$1 model=$2 rom=$3 config=$4 want=$5
-    local script="$WORK_DIR/$name.script" out="$WORK_DIR/$name.out"
+    local script="$WORK_DIR/$name.lua" out="$WORK_DIR/$name.out"
     local escaped=${config//\\/\\\\}
     escaped=${escaped//\"/\\\"}
-    printf 'machine.boot model="%s" rom="%s" config="%s"\necho "BOOTED ${machine.id}"\nquit\n' \
+    printf 'machine.boot{model = "%s", rom = "%s", config = "%s"}\necho(F"BOOTED ${machine.id}")\nquit()\n' \
         "$model" "$rom" "$escaped" > "$script"
     "$HEADLESS_BIN" rom="$IICI" script="$script" --speed=turbo > "$out" 2>&1 || true
     n=$((n + 1))
@@ -98,6 +98,10 @@ boot_case v7-builtin-mode iici "$IICI" '{"displays":{"builtin":{"monitor":"13in_
 # A socketed Cirrus 54M30 takes a VGA monitor, moved off the built-in video.
 boot_case v7-pci-vga pm8500 "$TNT" \
     '{"cards":[{"slot":"pci_3","card":"cirrus_54m30"}],"displays":{"pci_3":{"monitor":"vga"}}}' OK
+# A PCI display card takes the monitors its kind lists, and nothing else.
+boot_case v7-pci-monitor pm9500 "$TNT" \
+    '{"cards":[{"slot":"pci_1","card":"mach64_gx"}],"displays":{"pci_1":{"monitor":"vga"}}}' \
+    'displays.pci_1: monitor "vga" is not one this device takes'
 boot_case v7-builtin-depth iici "$IICI" '{"displays":{"builtin":{"monitor":"13in_rgb","mode":"640x480x16"}}}' \
     'displays.builtin: mode "640x480x16" is not one of the built-in video'"'"'s modes on that monitor'
 
@@ -124,9 +128,9 @@ boot_case ok-shared q900 "$Q900" \
 boot_case ok-empty iici "$IICI" '{"storage":[],"cards":[],"startup":null}' OK
 
 # V10's twin: the variables are in the new machine's NVRAM before it runs.
-script="$WORK_DIR/v10-set.script"
-printf 'machine.boot model="pmg3dt" rom="%s" config="{\\"nvram\\":{\\"boot-command\\":\\"0 bootr\\",\\"use-nvramrc?\\":true,\\"load-base\\":\\"600000\\"}}"\n' "$G3" > "$script"
-printf '%s\n' 'echo "NV ${machine.nvram.getenv("boot-command")}|${machine.nvram.getenv("use-nvramrc?")}|${machine.nvram.getenv("load-base")}"' quit >> "$script"
+script="$WORK_DIR/v10-set.lua"
+printf 'machine.boot{model = "pmg3dt", rom = "%s", config = "{\\"nvram\\":{\\"boot-command\\":\\"0 bootr\\",\\"use-nvramrc?\\":true,\\"load-base\\":\\"600000\\"}}"}\n' "$G3" > "$script"
+printf '%s\n' 'echo(F"NV ${machine.nvram.getenv(\"boot-command\")}|${machine.nvram.getenv(\"use-nvramrc?\")}|${machine.nvram.getenv(\"load-base\")}")' 'quit()' >> "$script"
 "$HEADLESS_BIN" rom="$IICI" script="$script" --speed=turbo > "$WORK_DIR/v10-set.out" 2>&1 || true
 n=$((n + 1))
 if ! grep -qx 'NV 0 bootr|true|600000' "$WORK_DIR/v10-set.out"; then
@@ -138,9 +142,9 @@ fi
 # A CD-ROM drive's model is the drive the bus is built with: an AppleCD 600i
 # in a IIci answers INQUIRY as one (the product field is space-padded to its
 # sixteen bytes), and machine.storage names it.
-script="$WORK_DIR/cd-model.script"
-printf 'machine.boot model="iici" rom="%s" config="{\\"storage\\":[{\\"bus\\":\\"scsi\\",\\"unit\\":3,\\"type\\":\\"cd\\",\\"model\\":\\"applecd600i\\"}]}"\n' "$IICI" > "$script"
-printf '%s\n' 'echo "CD ${machine.storage[0].model}|${machine.scsi.device[3].vendor}|${machine.scsi.device[3].product}"' quit >> "$script"
+script="$WORK_DIR/cd-model.lua"
+printf 'machine.boot{model = "iici", rom = "%s", config = "{\\"storage\\":[{\\"bus\\":\\"scsi\\",\\"unit\\":3,\\"type\\":\\"cd\\",\\"model\\":\\"applecd600i\\"}]}"}\n' "$IICI" > "$script"
+printf '%s\n' 'echo(F"CD ${machine.storage[1].model}|${machine.scsi.device[3].vendor}|${machine.scsi.device[3].product}")' 'quit()' >> "$script"
 "$HEADLESS_BIN" rom="$IICI" script="$script" --speed=turbo > "$WORK_DIR/cd-model.out" 2>&1 || true
 n=$((n + 1))
 if ! grep -qx 'CD applecd600i|MATSHITA|CD-ROM CR-8005A ' "$WORK_DIR/cd-model.out"; then
@@ -150,14 +154,41 @@ if ! grep -qx 'CD applecd600i|MATSHITA|CD-ROM CR-8005A ' "$WORK_DIR/cd-model.out
 fi
 
 # V8, which needs a legacy argument beside the document.
-script="$WORK_DIR/v8.script"
-printf 'machine.boot model="iici" rom="%s" video_card="mdc_8_24" config="{\\"cards\\":[]}"\nquit\n' "$IICI" > "$script"
+script="$WORK_DIR/v8.lua"
+printf 'machine.boot{model = "iici", rom = "%s", video_card = "mdc_8_24", config = "{\\"cards\\":[]}"}\nquit()\n' "$IICI" > "$script"
 "$HEADLESS_BIN" rom="$IICI" script="$script" --speed=turbo > "$WORK_DIR/v8.out" 2>&1 || true
 n=$((n + 1))
 if ! grep -qF "machine.boot: config's cards and the legacy card arguments" "$WORK_DIR/v8.out"; then
     echo "FAIL: v8: expected the mixing to be refused"
     fail=1
 fi
+
+# The monitor reaches a PCI card one way, its slot entry: it is no card
+# option, and the configuration's monitor is the row the card is built with,
+# whose code its sense lines read (the 21" grounds all three: 0; the 17"
+# multiple-scan reads 6).
+script="$WORK_DIR/pci-monitor.lua"
+printf 'machine.boot{model = "pm9500", rom = "%s", pci_card = "mach64_gx", pci_option = "monitor=21in_rgb"}\nquit()\n' "$TNT" > "$script"
+"$HEADLESS_BIN" rom="$IICI" script="$script" --speed=turbo > "$WORK_DIR/pci-monitor.out" 2>&1 || true
+n=$((n + 1))
+if ! grep -qF "machine.boot: slot 1's card 'mach64_gx' does not take option monitor=21in_rgb" "$WORK_DIR/pci-monitor.out"; then
+    echo "FAIL: pci-monitor-option: expected monitor= to be refused as a card option"
+    sed -n '/running/,$p' "$WORK_DIR/pci-monitor.out" | head -5
+    fail=1
+fi
+for row in "21in_rgb 0" "multiscan_17 6"; do
+    set -- $row
+    script="$WORK_DIR/pci-sense-$1.lua"
+    printf 'machine.boot{model = "pm9500", rom = "%s", config = "{\\"cards\\":[{\\"slot\\":\\"pci_1\\",\\"card\\":\\"mach64_gx\\"}],\\"displays\\":{\\"pci_1\\":{\\"monitor\\":\\"%s\\"}}}"}\n' "$TNT" "$1" > "$script"
+    printf '%s\n' 'echo(F"MON ${machine.pci.slot[1].card.monitor.id}|${machine.pci.slot[1].card.monitor.sense_code}")' 'quit()' >> "$script"
+    "$HEADLESS_BIN" rom="$IICI" script="$script" --speed=turbo > "$WORK_DIR/pci-sense-$1.out" 2>&1 || true
+    n=$((n + 1))
+    if ! grep -qx "MON $1|$2" "$WORK_DIR/pci-sense-$1.out"; then
+        echo "FAIL: pci-sense-$1: expected the card strapped with $1, sense code $2"
+        sed -n '/running/,$p' "$WORK_DIR/pci-sense-$1.out" | head -5
+        fail=1
+    fi
+done
 
 if [ "$fail" -ne 0 ]; then
     exit 1

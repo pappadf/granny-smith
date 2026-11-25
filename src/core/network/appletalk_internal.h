@@ -120,8 +120,13 @@ typedef struct {
 // one and ddp_short_in parses one.  It carries the short-header fields plus
 // the extended header's network numbers, which a short header (all this
 // stack sends or accepts) does not carry: zero when parsed.
+// The link a DDP datagram came in on, and a reply goes out on.
+#define ATALK_PORT_LOCALTALK 0 // the SCC's LocalTalk channel: LLAP, short headers
+#define ATALK_PORT_ETHER     1 // the machine's Ethernet port: ELAP, extended headers
+
 typedef struct {
-    llap_header_t llap;
+    llap_header_t llap; // on EtherTalk: dst/src carry the extended header's node numbers
+    uint8_t port; // ATALK_PORT_*
     uint8_t hop;
     uint16_t len;
     uint16_t checksum;
@@ -259,6 +264,22 @@ void atalk_printer_link_free(pap_link_t *link);
 void atalk_printer_register_timers(struct atalk_conn *conn, pap_link_t *link);
 void atalk_printer_plug(pap_link_t *link);
 void atalk_printer_link_down(void);
+
+// === Advertised names of the host's services (appletalk_nbp_service.c) ====
+
+struct atalk_nbp_entry; // appletalk.h's atalk_nbp_entry_t
+
+// Advertise `object` as `type` on the host's `socket`, in zone "*", through
+// *entry: registered, or renamed in place (atalk_nbp_publish).  0 or -1.
+int atalk_nbp_publish_host(struct atalk_nbp_entry **entry, const char *object, const char *type, uint8_t socket);
+
+// The one rename rule: `name` must pass atalk_nbp_name_check (`what` names
+// it in the message) and, when the service is `published`, is advertised
+// under it first -- "the name '...' is already taken on the network" when
+// another entity holds it.  The caller stores the name only on 0; on -1
+// nothing changed and `err` says why.
+int atalk_nbp_rename(struct atalk_nbp_entry **entry, const char *what, const char *name, const char *type,
+                     uint8_t socket, bool published, char *err, size_t err_len);
 
 // The ImageWriter's LocalTalk Option card (appletalk_imagewriter.c): its
 // socket is installed when the network comes up, its timers with each

@@ -1,5 +1,5 @@
 # Integration test configuration: Mac floppy export (Plus, IWM).
-# machine.floppy.drive[N].disk.export writes the inserted disk to a new file;
+# machine.floppy.drive[N].image.export writes the inserted disk to a new file;
 # the name picks the format (image_export_to).
 
 TEST_NAME := Floppy disk export

@@ -17,6 +17,7 @@ TEST_HARNESS := isolated
 EXTRA_SRCS   := ../../../../src/core/job/seam.c \
               ../../../../src/core/peripherals/scsi.c \
                 ../../../../src/core/peripherals/scsi_bus.c \
+                ../../../../src/core/peripherals/scsi_msgsession.c \
                 ../../../../src/core/event/event.c \
                 ../../../../src/core/peripherals/scsi_cdrom.c \
                 ../../../../src/core/storage/image.c \
@@ -36,13 +37,15 @@ EXTRA_SRCS   := ../../../../src/core/job/seam.c \
                 ../../../../src/core/object/value.c \
                 ../../../../src/core/object/meta.c \
                 ../../../../src/core/object/api.c \
-        ../../../../src/core/object/value_format.c \
+                ../../../../src/core/object/json_value.c \
+        ../../../../src/core/object/value_format.c ../../../../src/core/vbuf.c \
                 ../../../../src/core/storage/drive_catalog.c
 EXTRA_SRCS += ../../../../src/core/storage/image_part.c
 USE_SOURCE_LAYER := 1
 EXTRA_SRCS += ../../../../src/core/storage/image_iso9660.c
 # The image_t accessors (image.h)
 EXTRA_SRCS += ../../../../src/core/storage/image_access.c
+EXTRA_SRCS += ../../../../src/core/storage/image_class.c
 # On wasm32 the suite's files live on the host filesystem (NODERAWFS), not
 # emscripten's in-memory one: the 4 GB test opens a sparse 5 GiB disk, which
 # MEMFS would have to allocate whole.  `override` because run-wasm32 passes
@@ -50,4 +53,6 @@ EXTRA_SRCS += ../../../../src/core/storage/image_access.c
 ifneq ($(filter emcc%,$(notdir $(firstword $(CC)))),)
 override LDFLAGS += -sNODERAWFS=1
 endif
+# The drive-to-image checkpoint reference the media controllers write
+EXTRA_SRCS += ../../../../src/core/storage/image_ref.c
 include ../../common.mk

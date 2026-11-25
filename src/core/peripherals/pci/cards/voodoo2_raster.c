@@ -23,6 +23,7 @@
 #include "voodoo2_gpu.h"
 #include "voodoo2_raster_priv.h"
 
+#include "display.h"
 #include "log.h"
 
 #include <math.h>
@@ -38,18 +39,12 @@
 // for its own proxied main thread — the creator here is a pthread, the
 // browser's main thread spawns the Worker asynchronously, and the first
 // fence simply waits on the queue until it is running.  A build can leave
-// it out entirely with -DGS_V2_THREAD_BACKEND=0 (EXTRA_CFLAGS): no
+// it out entirely with -DGS_RASTER_THREAD_BACKEND=0 (EXTRA_CFLAGS): no
 // pthread code is compiled, raster=thread falls back to the walker
-// with a log line, and the default backend becomes the walker.
-#ifndef GS_V2_THREAD_BACKEND
-#define GS_V2_THREAD_BACKEND 1
-#endif
-#define V2_HAVE_THREAD_BACKEND GS_V2_THREAD_BACKEND
-#if V2_HAVE_THREAD_BACKEND
-#include <pthread.h>
-#include <stdatomic.h>
-#include <time.h>
-#endif
+// with a log line, and the default backend becomes the walker.  The
+// ring, the worker and the knob are the shared raster queue's
+// (raster_queue.h).
+#include "raster_queue.h"
 
 LOG_USE_CATEGORY_NAME("voodoo2");
 
@@ -70,45 +65,63 @@ typedef struct v2_pix {
 } v2_pix_t;
 
 // ============================================================
-// The pixel-provenance watch (trace instrument, GS_V2_WATCH="x,y")
+// The pixel-provenance watch and the walker cross-check
 // ============================================================
-// Armed by the pixel pipe for the watched pixel so the texel fetches
-// that shade it can identify themselves.  Read once from the
-// environment; a threaded backend refuses to start while it is armed
-// (the instrument logs from inside the executor, and diagnosis uses
-// the synchronous walker).
-
-static int s_watch_x = -2, s_watch_y = -2;
-static bool s_watch_now;
-// GS_V2_XCHECK=1: the soak-run cross-check for the dataflow rungs of
-// the walker-optimization ladder (TMU skip, incremental; voodoo2.md) —
+// Both are the card's own, in its target (tgt->watch[], tgt->xcheck):
+// the watch's pixels come and go through machine.pci.slot[N].card.watch
+// (voodoo2.c), the cross-check is pci_option xcheck=on, read at create.
+//
+// NEITHER COSTS THE NORMAL WALK ANYTHING.  Every walker function that
+// carries an instrument is written once over a constant `dbg` and
+// compiled twice: the _plain copy (dbg false: the instrument code is not
+// there) and the _dbg copy.  The backend picks the instrumented executor
+// only while an instrument is on (V2_BACKEND_SW_DEBUG, the worker's
+// v2_worker_exec_dbg), so with both off the walker runs no watch or
+// cross-check test at all -- per pixel, per span or per command.
+//
+// The watch (trace instrument): every colour-buffer store to a watched
+// pixel is logged, and the pixel pipe arms tgt->watch_now for it so the
+// texel fetches that shade it can identify themselves.  It needs the
+// synchronous walker (the instrument logs from inside the executor):
+// a thread backend refuses to start while it is armed.
+//
+// The cross-check: the soak run for the dataflow rungs of the
+// walker-optimization ladder (TMU skip, incremental; voodoo2.md) —
 // every shortcut is recomputed the long way and a mismatch aborts.
-// Release builds keep the code (the check is one predictable branch per
-// pixel), so the soak runs the exact binary that ships.
-static bool s_xcheck;
-
-static void v2_watch_init(void) {
-    if (s_watch_x == -2) {
-        const char *w = getenv("GS_V2_WATCH");
-        s_watch_x = s_watch_y = -1;
-        if (w)
-            sscanf(w, "%d,%d", &s_watch_x, &s_watch_y);
-        const char *x = getenv("GS_V2_XCHECK");
-        s_xcheck = x && *x && *x != '0';
-    }
-}
+// Release builds keep the code, so the soak runs the exact binary that
+// ships, on whichever walker backend the boot picks.
 
 // The cross-check's failure: loud, with both values, then abort — a
 // soak run that disagrees is a finding, not a warning.
 static void v2_xcheck_fail(const char *what, uint64_t fast, uint64_t slow) {
-    LOG(0, "GS_V2_XCHECK: %s differs — shortcut %llX, reference %llX", what, (unsigned long long)fast,
+    LOG(0, "xcheck: %s differs — shortcut %llX, reference %llX", what, (unsigned long long)fast,
         (unsigned long long)slow);
     abort();
 }
 
-bool v2_raster_watch_armed(void) {
-    v2_watch_init();
-    return s_watch_x >= 0;
+bool v2_raster_watch_armed(const v2_target_t *tgt) {
+    return tgt->n_watch > 0;
+}
+
+// The watch entry for pixel (x, y), or NULL (the instrumented walker only).
+static v2_watch_px_t *v2_watch_find(v2_target_t *tgt, int32_t x, int32_t y) {
+    for (int i = 0; i < tgt->n_watch; i++)
+        if (tgt->watch[i].x == x && tgt->watch[i].y == y)
+            return &tgt->watch[i];
+    return NULL;
+}
+
+// A colour-buffer store to a watched pixel: count it and log it with the
+// state that shaded it — the tool that traces one wrong pixel back to its
+// texture.
+static void __attribute__((cold, noinline)) v2_watch_store(const v2_draw_state_t *st, v2_target_t *tgt, uint32_t buffer,
+                                                           int32_t x, int32_t y, uint16_t px) {
+    v2_watch_px_t *w = buffer <= 1u ? v2_watch_find(tgt, x, y) : NULL;
+    if (!w)
+        return;
+    w->hits++;
+    LOG(V2_LOG_WATCH, "watch #%d (%d,%d) buf %u px %04X fbzcp=%08X fbz=%08X alpha=%08X t0mode=%08X t0base=%08X", w->id,
+        x, y, buffer, px, st->fcp, st->fbz, st->amode, st->tmu[0].mode, st->tmu[0].texbase);
 }
 
 // ============================================================
@@ -125,13 +138,9 @@ V2_INLINE uint16_t v2_fb_load(const v2_draw_state_t *st, const v2_target_t *tgt,
 }
 
 V2_INLINE void v2_fb_store(const v2_draw_state_t *st, v2_target_t *tgt, uint32_t buffer, int32_t x, int32_t y,
-                           uint16_t px) {
-    // Pixel-provenance watch (trace instrument): GS_V2_WATCH="x,y" logs
-    // every color-buffer store to that pixel with the state that shaded
-    // it — the tool that traces one wrong pixel back to its texture.
-    if (__builtin_expect(x == s_watch_x && y == s_watch_y && buffer <= 1u, 0))
-        LOG(1, "watch (%d,%d) buf %u px %04X fbzcp=%08X fbz=%08X alpha=%08X t0mode=%08X t0base=%08X", x, y, buffer, px,
-            st->fcp, st->fbz, st->amode, st->tmu[0].mode, st->tmu[0].texbase);
+                           uint16_t px, const bool dbg) {
+    if (dbg) // the watch sees every store (the _dbg walker only)
+        v2_watch_store(st, tgt, buffer, x, y, px);
     uint32_t at = v2_fb_addr(st, buffer, (uint32_t)x, (uint32_t)y);
     tgt->fb[at] = (uint8_t)px;
     tgt->fb[(at + 1u) & V2_FB_MASK] = (uint8_t)(px >> 8);
@@ -286,13 +295,15 @@ uint32_t v2_texel_expand(const v2_tmu_state_t *tm, const v2_target_t *tgt, int t
         r = (raw >> 11) & 0x1Fu;
         g = (raw >> 5) & 0x3Fu;
         b = raw & 0x1Fu;
-        return 0xFF000000u | (((r << 3) | (r >> 2)) << 16) | (((g << 2) | (g >> 4)) << 8) | (b << 3) | (b >> 2);
+        return 0xFF000000u | ((uint32_t)display_expand5(r) << 16) | ((uint32_t)display_expand6(g) << 8) |
+               display_expand5(b);
     case 11: // 16-bit ARGB 1-5-5-5
         a = (raw >> 15) ? 0xFFu : 0u;
         r = (raw >> 10) & 0x1Fu;
         g = (raw >> 5) & 0x1Fu;
         b = raw & 0x1Fu;
-        return (a << 24) | (((r << 3) | (r >> 2)) << 16) | (((g << 3) | (g >> 2)) << 8) | (b << 3) | (b >> 2);
+        return (a << 24) | ((uint32_t)display_expand5(r) << 16) | ((uint32_t)display_expand5(g) << 8) |
+               display_expand5(b);
     case 12: // 16-bit ARGB 4-4-4-4
         a = (raw >> 12) & 0xFu;
         r = (raw >> 8) & 0xFu;
@@ -336,8 +347,8 @@ static const double s_pow2neg[V2_RASTER_LODS] = {1.0,      1.0 / 2,  1.0 / 4,   
 // filter bits and whether the LOD clamped to lodmin.  The bilinear
 // footprint clamps/wraps each coordinate once and fetches the 2x2
 // block through the expansion cache for 8-bit formats.
-static uint32_t v2_tmu_sample(const v2_tmu_state_t *tm, v2_target_t *tgt, int tmu, double s, double t, int lod,
-                              bool magnify) {
+V2_INLINE uint32_t v2_tmu_sample_t(const v2_tmu_state_t *tm, v2_target_t *tgt, int tmu, double s, double t, int lod,
+                                   bool magnify, const bool dbg) {
     bool bilinear = magnify ? tm->bilin_mag : tm->bilin_min;
     s *= s_pow2neg[lod];
     t *= s_pow2neg[lod];
@@ -348,9 +359,9 @@ static uint32_t v2_tmu_sample(const v2_tmu_state_t *tm, v2_target_t *tgt, int tm
         uint32_t sa = v2_tex_coord(si, w, tm->clamp_s), ta = v2_tex_coord(ti, h, tm->clamp_t);
         uint32_t raw = v2_texel_raw(tm, tgt, tmu, lod, sa, ta);
         uint32_t argb = lut ? lut[raw] : v2_texel_expand(tm, tgt, tmu, raw);
-        if (__builtin_expect(s_watch_now, 0))
-            LOG(1, "watch texel tmu%d lod%d (s,t)=(%d,%d) addr %06X lodbase %06X raw %04X argb %08X", tmu, lod, (int)sa,
-                (int)ta, v2_texel_addr(tm, lod, sa, ta), tm->lod_base[lod], raw, argb);
+        if (dbg && tgt->watch_now)
+            LOG(V2_LOG_WATCH, "watch texel tmu%d lod%d (s,t)=(%d,%d) addr %06X lodbase %06X raw %04X argb %08X", tmu,
+                lod, (int)sa, (int)ta, v2_texel_addr(tm, lod, sa, ta), tm->lod_base[lod], raw, argb);
         return argb;
     }
     // Bilinear: the four closest texels blended by the fractions of the
@@ -375,15 +386,15 @@ static uint32_t v2_tmu_sample(const v2_tmu_state_t *tm, v2_target_t *tgt, int tm
         c01 = v2_texel_expand(tm, tgt, tmu, r01);
         c11 = v2_texel_expand(tm, tgt, tmu, r11);
     }
-    if (__builtin_expect(s_watch_now, 0)) {
-        LOG(1, "watch texel tmu%d lod%d (s,t)=(%d,%d) addr %06X lodbase %06X raw %04X argb %08X", tmu, lod, (int)sa,
-            (int)ta, v2_texel_addr(tm, lod, sa, ta), tm->lod_base[lod], r00, c00);
-        LOG(1, "watch texel tmu%d lod%d (s,t)=(%d,%d) addr %06X lodbase %06X raw %04X argb %08X", tmu, lod, (int)sb,
-            (int)ta, v2_texel_addr(tm, lod, sb, ta), tm->lod_base[lod], r10, c10);
-        LOG(1, "watch texel tmu%d lod%d (s,t)=(%d,%d) addr %06X lodbase %06X raw %04X argb %08X", tmu, lod, (int)sa,
-            (int)tb, v2_texel_addr(tm, lod, sa, tb), tm->lod_base[lod], r01, c01);
-        LOG(1, "watch texel tmu%d lod%d (s,t)=(%d,%d) addr %06X lodbase %06X raw %04X argb %08X", tmu, lod, (int)sb,
-            (int)tb, v2_texel_addr(tm, lod, sb, tb), tm->lod_base[lod], r11, c11);
+    if (dbg && tgt->watch_now) {
+        LOG(V2_LOG_WATCH, "watch texel tmu%d lod%d (s,t)=(%d,%d) addr %06X lodbase %06X raw %04X argb %08X", tmu, lod,
+            (int)sa, (int)ta, v2_texel_addr(tm, lod, sa, ta), tm->lod_base[lod], r00, c00);
+        LOG(V2_LOG_WATCH, "watch texel tmu%d lod%d (s,t)=(%d,%d) addr %06X lodbase %06X raw %04X argb %08X", tmu, lod,
+            (int)sb, (int)ta, v2_texel_addr(tm, lod, sb, ta), tm->lod_base[lod], r10, c10);
+        LOG(V2_LOG_WATCH, "watch texel tmu%d lod%d (s,t)=(%d,%d) addr %06X lodbase %06X raw %04X argb %08X", tmu, lod,
+            (int)sa, (int)tb, v2_texel_addr(tm, lod, sa, tb), tm->lod_base[lod], r01, c01);
+        LOG(V2_LOG_WATCH, "watch texel tmu%d lod%d (s,t)=(%d,%d) addr %06X lodbase %06X raw %04X argb %08X", tmu, lod,
+            (int)sb, (int)tb, v2_texel_addr(tm, lod, sb, tb), tm->lod_base[lod], r11, c11);
     }
     uint32_t out = 0;
     for (int sh = 0; sh < 32; sh += 8) {
@@ -394,6 +405,15 @@ static uint32_t v2_tmu_sample(const v2_tmu_state_t *tm, v2_target_t *tgt, int tm
         out |= (((top * (256u - frac_t) + bot * frac_t) >> 8) & 0xFFu) << sh;
     }
     return out;
+}
+// The two copies (see "The pixel-provenance watch" above).
+static uint32_t v2_tmu_sample_plain(const v2_tmu_state_t *tm, v2_target_t *tgt, int tmu, double s, double t, int lod,
+                                    bool magnify) {
+    return v2_tmu_sample_t(tm, tgt, tmu, s, t, lod, magnify, false);
+}
+static uint32_t v2_tmu_sample_dbg(const v2_tmu_state_t *tm, v2_target_t *tgt, int tmu, double s, double t, int lod,
+                                  bool magnify) {
+    return v2_tmu_sample_t(tm, tgt, tmu, s, t, lod, magnify, true);
 }
 
 // ============================================================
@@ -539,8 +559,9 @@ V2_INLINE uint32_t v2_blend_mul(uint32_t c, uint32_t f) {
 // The back half of the pipeline for one pixel.  Returns true if the
 // pixel was written.  The caller has already applied clipping and
 // computed the iterated values and the texture chain.
-static bool v2_pixel_pipe(const v2_draw_state_t *st, v2_target_t *tgt, v2_pix_t *p) {
-    s_watch_now = (p->x == s_watch_x && p->y == s_watch_y);
+V2_INLINE bool v2_pixel_pipe_t(const v2_draw_state_t *st, v2_target_t *tgt, v2_pix_t *p, const bool dbg) {
+    if (dbg)
+        tgt->watch_now = v2_watch_find(tgt, p->x, p->y) != NULL;
     uint32_t fbz = st->fbz;
     uint32_t fcp = st->fcp;
     uint32_t amode = st->amode;
@@ -766,8 +787,9 @@ static bool v2_pixel_pipe(const v2_draw_state_t *st, v2_target_t *tgt, v2_pix_t 
         out_g = mul_g + add_g2 > 255u ? 255u : mul_g + add_g2;
         out_b = mul_b + add_b2 > 255u ? 255u : mul_b + add_b2;
     }
-    if (s_watch_now)
-        LOG(1, "watch pipe tex=%08X iter=(%u,%u,%u,%u) cc=(%u,%u,%u) fogmode=%08X fogcolor=%08X post=(%u,%u,%u)",
+    if (dbg && tgt->watch_now)
+        LOG(V2_LOG_WATCH,
+            "watch pipe tex=%08X iter=(%u,%u,%u,%u) cc=(%u,%u,%u) fogmode=%08X fogcolor=%08X post=(%u,%u,%u)",
             p->tex_argb, p->r, p->g, p->b, p->a, prefog_r, prefog_g, prefog_b, fog, st->fogcolor, out_r, out_g, out_b);
 
     // Alpha test (alphaMode[3:0]) and the alpha-channel mask
@@ -869,9 +891,9 @@ static bool v2_pixel_pipe(const v2_draw_state_t *st, v2_target_t *tgt, v2_pix_t 
         uint32_t dr = ((dst565 >> 11) & 0x1Fu);
         uint32_t dg = ((dst565 >> 5) & 0x3Fu);
         uint32_t db = dst565 & 0x1Fu;
-        dr = (dr << 3) | (dr >> 2);
-        dg = (dg << 2) | (dg >> 4);
-        db = (db << 3) | (db >> 2);
+        dr = display_expand5(dr);
+        dg = display_expand6(dg);
+        db = display_expand5(db);
         uint32_t dst_a = 255; // destination alpha planes not enabled
         uint32_t sf = (amode >> 8) & 0xFu, df = (amode >> 12) & 0xFu;
         uint32_t nr = v2_blend_mul(out_r, v2_blend_factor(sf, true, out_a, dst_a, dr, 0)) +
@@ -887,11 +909,17 @@ static bool v2_pixel_pipe(const v2_draw_state_t *st, v2_target_t *tgt, v2_pix_t 
 
     // Write masks and the stores (fbzMode[9], [10]).
     if (fbz & 0x200u)
-        v2_fb_store(st, tgt, draw_buf, p->x, p->y, v2_pack565(st, p->x, p->y, out_r, out_g, out_b));
+        v2_fb_store(st, tgt, draw_buf, p->x, p->y, v2_pack565(st, p->x, p->y, out_r, out_g, out_b), dbg);
     if (fbz & 0x400u)
-        v2_fb_store(st, tgt, 3u, p->x, p->y, (uint16_t)depth_write);
+        v2_fb_store(st, tgt, 3u, p->x, p->y, (uint16_t)depth_write, dbg);
     tgt->pixels_out = (tgt->pixels_out + 1u) & 0xFFFFFFu;
     return true;
+}
+static bool v2_pixel_pipe_plain(const v2_draw_state_t *st, v2_target_t *tgt, v2_pix_t *p) {
+    return v2_pixel_pipe_t(st, tgt, p, false);
+}
+static bool v2_pixel_pipe_dbg(const v2_draw_state_t *st, v2_target_t *tgt, v2_pix_t *p) {
+    return v2_pixel_pipe_t(st, tgt, p, true);
 }
 
 // ============================================================
@@ -946,9 +974,9 @@ V2_INLINE uint32_t v2_iter_w8(int64_t it, bool clamp) {
 
 // The texture chain for one pixel: TMU1 samples and combines first, its
 // output feeding TMU0's c_other (single-pass multitexture).
-static uint32_t v2_texture_chain_full(const v2_draw_state_t *st, v2_target_t *tgt, const voodoo2_tri_t *T,
-                                      const int64_t *s_its, const int64_t *t_its, const int64_t *w_its,
-                                      bool skip_tmu1) {
+V2_INLINE uint32_t v2_texture_chain_full_t(const v2_draw_state_t *st, v2_target_t *tgt, const voodoo2_tri_t *T,
+                                           const int64_t *s_its, const int64_t *t_its, const int64_t *w_its,
+                                           bool skip_tmu1, const bool dbg) {
     uint32_t chain = 0; // most-upstream c_other is zero
     for (int tmu = V2_RASTER_TMUS - 1; tmu >= 0; tmu--) {
         const v2_tmu_state_t *tm = &st->tmu[tmu];
@@ -1013,7 +1041,7 @@ static uint32_t v2_texture_chain_full(const v2_draw_state_t *st, v2_target_t *tg
         // full path.
         int32_t lod4;
         bool magnify;
-        if (tm->lod_pinned && !s_xcheck) {
+        if (tm->lod_pinned && !(dbg && tgt->xcheck)) {
             lod4 = tm->lodmin;
             magnify = false; // moot: bilin_min == bilin_mag
         } else {
@@ -1044,7 +1072,7 @@ static uint32_t v2_texture_chain_full(const v2_draw_state_t *st, v2_target_t *tg
             lod4 += tm->lodbias;
             magnify = lod4 <= tm->lodmin;
             lod4 = lod4 < tm->lodmin ? tm->lodmin : (lod4 > tm->lodmax ? tm->lodmax : lod4);
-            if (__builtin_expect(s_xcheck && tm->lod_pinned, 0)) {
+            if (dbg && tgt->xcheck && tm->lod_pinned) {
                 // The shortcut's claim, checked: the pinned level and the
                 // filter the estimate would have selected.
                 if (lod4 != tm->lodmin)
@@ -1058,7 +1086,8 @@ static uint32_t v2_texture_chain_full(const v2_draw_state_t *st, v2_target_t *tg
             if (((uint32_t)level & 1u) != tm->lod_odd)
                 level += 1;
         }
-        uint32_t texel = v2_tmu_sample(tm, tgt, tmu, s, t, level, magnify);
+        uint32_t texel = dbg ? v2_tmu_sample_dbg(tm, tgt, tmu, s, t, level, magnify)
+                             : v2_tmu_sample_plain(tm, tgt, tmu, s, t, level, magnify);
 
         // Texture Combine Unit (textureMode[29:12]; V2 p.82): c_local is
         // this TMU's texel, c_other the downstream chain.
@@ -1127,14 +1156,26 @@ static uint32_t v2_texture_chain_full(const v2_draw_state_t *st, v2_target_t *tg
     }
     return chain;
 }
+static uint32_t v2_texture_chain_full_plain(const v2_draw_state_t *st, v2_target_t *tgt, const voodoo2_tri_t *T,
+                                            const int64_t *s_its, const int64_t *t_its, const int64_t *w_its,
+                                            bool skip_tmu1) {
+    return v2_texture_chain_full_t(st, tgt, T, s_its, t_its, w_its, skip_tmu1, false);
+}
+static uint32_t v2_texture_chain_full_dbg(const v2_draw_state_t *st, v2_target_t *tgt, const voodoo2_tri_t *T,
+                                          const int64_t *s_its, const int64_t *t_its, const int64_t *w_its,
+                                          bool skip_tmu1) {
+    return v2_texture_chain_full_t(st, tgt, T, s_its, t_its, w_its, skip_tmu1, true);
+}
 
 // The texture chain for one pixel, with the dead-TMU shortcut — and,
-// under GS_V2_XCHECK, the unshortened chain beside it.
+// under the cross-check (tgt->xcheck), the unshortened chain beside it.
 V2_INLINE uint32_t v2_texture_chain(const v2_draw_state_t *st, v2_target_t *tgt, const voodoo2_tri_t *T,
-                                    const int64_t *s_its, const int64_t *t_its, const int64_t *w_its) {
-    uint32_t chain = v2_texture_chain_full(st, tgt, T, s_its, t_its, w_its, st->skip_tmu1);
-    if (__builtin_expect(s_xcheck && st->skip_tmu1, 0)) {
-        uint32_t full = v2_texture_chain_full(st, tgt, T, s_its, t_its, w_its, false);
+                                    const int64_t *s_its, const int64_t *t_its, const int64_t *w_its, const bool dbg) {
+    if (!dbg)
+        return v2_texture_chain_full_plain(st, tgt, T, s_its, t_its, w_its, st->skip_tmu1);
+    uint32_t chain = v2_texture_chain_full_dbg(st, tgt, T, s_its, t_its, w_its, st->skip_tmu1);
+    if (tgt->xcheck && st->skip_tmu1) {
+        uint32_t full = v2_texture_chain_full_dbg(st, tgt, T, s_its, t_its, w_its, false);
         if (full != chain)
             v2_xcheck_fail("texture chain (TMU1 skip)", chain, full);
     }
@@ -1181,7 +1222,7 @@ V2_INLINE void v2_iters_step_x(v2_iters_t *it, const voodoo2_tri_t *T) {
     }
 }
 
-static void v2_sw_triangle(const v2_draw_state_t *st, v2_target_t *tgt, const voodoo2_tri_t *T) {
+V2_INLINE void v2_sw_triangle_t(const v2_draw_state_t *st, v2_target_t *tgt, const voodoo2_tri_t *T, const bool dbg) {
     // Orientation from the COMMAND's sign — a sign that disagrees with
     // the geometry fails every inside test and draws nothing.
     int64_t o = T->area_sign ? -1 : 1;
@@ -1206,23 +1247,8 @@ static void v2_sw_triangle(const v2_draw_state_t *st, v2_target_t *tgt, const vo
         e_stepx[e] = -16 * o * e_dye[e];
     }
 
-    int32_t minx = T->ax, maxx = T->ax, miny = T->ay, maxy = T->ay;
-    if (T->bx < minx)
-        minx = T->bx;
-    if (T->cx < minx)
-        minx = T->cx;
-    if (T->bx > maxx)
-        maxx = T->bx;
-    if (T->cx > maxx)
-        maxx = T->cx;
-    if (T->by < miny)
-        miny = T->by;
-    if (T->cy < miny)
-        miny = T->cy;
-    if (T->by > maxy)
-        maxy = T->by;
-    if (T->cy > maxy)
-        maxy = T->cy;
+    int32_t minx, maxx, miny, maxy;
+    v2_tri_bbox(T, &minx, &maxx, &miny, &maxy);
 
     int32_t cx0 = st->clip_x0, cx1 = st->clip_x1, cy0 = st->clip_y0, cy1 = st->clip_y1;
     int32_t x0 = minx >> 4, x1 = (maxx + 15) >> 4;
@@ -1238,7 +1264,7 @@ static void v2_sw_triangle(const v2_draw_state_t *st, v2_target_t *tgt, const vo
 
     bool clamp = (st->fcp >> 28) & 1u;
     bool tex_on = st->tex_on;
-    bool uses_tex = st->uses_tex || s_xcheck; // the soak run computes everything
+    bool uses_tex = st->uses_tex || (dbg && tgt->xcheck); // the soak run computes everything
     bool y_flip = (st->fbz >> 17) & 1u;
     int32_t ax_i = T->ax >> 4, ay_i = T->ay >> 4;
 
@@ -1260,7 +1286,7 @@ static void v2_sw_triangle(const v2_draw_state_t *st, v2_target_t *tgt, const vo
                     break;
                 }
             }
-            if (__builtin_expect(s_xcheck, 0)) {
+            if (dbg && tgt->xcheck) {
                 // The reference test, pixel by pixel.
                 bool ref = true;
                 for (int e = 0; e < 3 && ref; e++) {
@@ -1286,7 +1312,7 @@ static void v2_sw_triangle(const v2_draw_state_t *st, v2_target_t *tgt, const vo
                 in_run = true;
             } else {
                 v2_iters_step_x(&it, T);
-                if (__builtin_expect(s_xcheck, 0)) {
+                if (dbg && tgt->xcheck) {
                     v2_iters_t ref;
                     v2_iters_at(&ref, T, dx, dy);
                     if (memcmp(&ref, &it, sizeof(ref)) != 0)
@@ -1305,18 +1331,24 @@ static void v2_sw_triangle(const v2_draw_state_t *st, v2_target_t *tgt, const vo
             p.w_raw = it.w;
             p.w8 = v2_iter_w8(p.w_raw, clamp);
             p.have_tex = tex_on;
-            s_watch_now = (p.x == s_watch_x && p.y == s_watch_y);
+            if (dbg)
+                tgt->watch_now = v2_watch_find(tgt, p.x, p.y) != NULL;
             // The chain runs only when the pipeline reads its output
             // (uses_tex) — or the watch wants to print it.
-            p.tex_argb = (tex_on && (uses_tex || s_watch_now)) ? v2_texture_chain(st, tgt, T, it.s, it.t, it.tw) : 0u;
-            v2_pixel_pipe(st, tgt, &p);
+            p.tex_argb = (tex_on && (uses_tex || (dbg && tgt->watch_now)))
+                             ? v2_texture_chain(st, tgt, T, it.s, it.t, it.tw, dbg)
+                             : 0u;
+            if (dbg)
+                v2_pixel_pipe_dbg(st, tgt, &p);
+            else
+                v2_pixel_pipe_plain(st, tgt, &p);
             for (int e = 0; e < 3; e++)
                 ev[e] += e_stepx[e];
         }
     }
 }
 
-static void v2_sw_fastfill(const v2_draw_state_t *st, v2_target_t *tgt) {
+V2_INLINE void v2_sw_fastfill_t(const v2_draw_state_t *st, v2_target_t *tgt, const bool dbg) {
     // FASTFILL clears the clip rectangle with color1 (dithered) and/or
     // zaColor[15:0], honouring only the write masks and draw-buffer
     // select — the depth/alpha/blend stages are bypassed (V2 §5.24).
@@ -1334,9 +1366,9 @@ static void v2_sw_fastfill(const v2_draw_state_t *st, v2_target_t *tgt) {
         int32_t py = y_flip ? (int32_t)st->screen_h - 1 - y : y;
         for (int32_t x = x0; x < x1; x++) {
             if (fbz & 0x200u)
-                v2_fb_store(st, tgt, draw_buf, x, py, v2_pack565(st, x, py, cr, cg, cb));
+                v2_fb_store(st, tgt, draw_buf, x, py, v2_pack565(st, x, py, cr, cg, cb), dbg);
             if (fbz & 0x400u)
-                v2_fb_store(st, tgt, 3u, x, py, za);
+                v2_fb_store(st, tgt, 3u, x, py, za, dbg);
         }
     }
 }
@@ -1344,15 +1376,15 @@ static void v2_sw_fastfill(const v2_draw_state_t *st, v2_target_t *tgt) {
 // One pixel entering the LFB path: either written raw (bypass — only
 // dithering applies) or pushed through the full pixel pipeline with its
 // depth/alpha from the data or zaColor (lfbMode[8]; V2 p.51-52).
-static void v2_lfb_pixel(const v2_draw_state_t *st, v2_target_t *tgt, const v2_cmd_t *cmd) {
+V2_INLINE void v2_lfb_pixel_t(const v2_draw_state_t *st, v2_target_t *tgt, const v2_cmd_t *cmd, const bool dbg) {
     uint32_t buffer = cmd->u.lfb.buffer, x = cmd->u.lfb.x, y = cmd->u.lfb.y;
     uint32_t r = cmd->u.lfb.r, g = cmd->u.lfb.g, b = cmd->u.lfb.b, a = cmd->u.lfb.a;
     uint32_t mode = st->lfbmode;
     if (!((mode >> 8) & 1u)) { // not pipeline-processed: the bypass
         if (cmd->u.lfb.write_color)
-            v2_fb_store(st, tgt, buffer, (int32_t)x, (int32_t)y, v2_pack565(st, (int32_t)x, (int32_t)y, r, g, b));
+            v2_fb_store(st, tgt, buffer, (int32_t)x, (int32_t)y, v2_pack565(st, (int32_t)x, (int32_t)y, r, g, b), dbg);
         if (cmd->u.lfb.write_z)
-            v2_fb_store(st, tgt, 3u, (int32_t)x, (int32_t)y, cmd->u.lfb.z);
+            v2_fb_store(st, tgt, 3u, (int32_t)x, (int32_t)y, cmd->u.lfb.z, dbg);
         return;
     }
     // Pipeline-processed: the Y origin is fbzMode[17]'s, clipping
@@ -1379,7 +1411,10 @@ static void v2_lfb_pixel(const v2_draw_state_t *st, v2_target_t *tgt, const v2_c
     p.w8 = v2_iter_w8(p.w_raw, (st->fcp >> 28) & 1u);
     p.tex_argb = 0;
     p.have_tex = false;
-    v2_pixel_pipe(st, tgt, &p);
+    if (dbg)
+        v2_pixel_pipe_dbg(st, tgt, &p);
+    else
+        v2_pixel_pipe_plain(st, tgt, &p);
 }
 
 // The 2D engine's SGRAM block fill (bltCommand FRECTFILL + GO), in page
@@ -1404,16 +1439,18 @@ static void v2_blt_fill(v2_target_t *tgt, const v2_cmd_t *cmd) {
 // The executor entry
 // ============================================================
 
-void v2_raster_execute(const v2_draw_state_t *st, v2_target_t *tgt, const v2_cmd_t *cmd) {
+// One body, two copies: v2_raster_execute (the plain walker) and
+// v2_raster_execute_dbg (the instruments compiled in).
+V2_INLINE void v2_raster_execute_t(const v2_draw_state_t *st, v2_target_t *tgt, const v2_cmd_t *cmd, const bool dbg) {
     switch ((v2_cmd_kind_t)cmd->kind) {
     case V2_CMD_TRIANGLE:
-        v2_sw_triangle(st, tgt, &cmd->u.tri);
+        v2_sw_triangle_t(st, tgt, &cmd->u.tri, dbg);
         break;
     case V2_CMD_FASTFILL:
-        v2_sw_fastfill(st, tgt);
+        v2_sw_fastfill_t(st, tgt, dbg);
         break;
     case V2_CMD_LFB_PIXEL:
-        v2_lfb_pixel(st, tgt, cmd);
+        v2_lfb_pixel_t(st, tgt, cmd, dbg);
         break;
     case V2_CMD_FB_STORE16: {
         uint32_t at = v2_fb_addr(st, cmd->u.store.buffer, cmd->u.store.x, cmd->u.store.y);
@@ -1450,6 +1487,15 @@ void v2_raster_execute(const v2_draw_state_t *st, v2_target_t *tgt, const v2_cmd
     }
 }
 
+void v2_raster_execute(const v2_draw_state_t *st, v2_target_t *tgt, const v2_cmd_t *cmd) {
+    v2_raster_execute_t(st, tgt, cmd, false);
+}
+
+// The instrumented walker: the watch and the cross-check compiled in.
+static void v2_raster_execute_dbg(const v2_draw_state_t *st, v2_target_t *tgt, const v2_cmd_t *cmd) {
+    v2_raster_execute_t(st, tgt, cmd, true);
+}
+
 // ============================================================
 // Backends — WHERE the executor runs
 // ============================================================
@@ -1459,194 +1505,65 @@ void v2_raster_execute(const v2_draw_state_t *st, v2_target_t *tgt, const v2_cmd
 
 typedef enum v2_backend_kind {
     V2_BACKEND_SW,
+    V2_BACKEND_SW_DEBUG, // the synchronous walker with an instrument on (watch, xcheck): reports "sw"
     V2_BACKEND_NULL,
     V2_BACKEND_THREAD,
     V2_BACKEND_WEBGPU // the thread backend whose worker translates for the browser's GPU (voodoo2_gpu.c)
 } v2_backend_kind_t;
-
-#if V2_HAVE_THREAD_BACKEND
-// The worker thread and its bounded single-producer/single-consumer
-// ring.  `head` counts commands submitted, `tail` commands RETIRED
-// (executed to completion): head == tail is "everything observed",
-// head - tail == depth is "full".  Both sides sleep on condition
-// variables only when they have announced they are about to (the
-// idle/waiting flags), so the steady state — worker busy, producer
-// ahead — makes no system calls at all.
-typedef struct v2_thread {
-    v2_cmd_t *q;
-    _Atomic uint64_t head, tail;
-    _Atomic int worker_idle; // the worker is (about to be) asleep
-    _Atomic int producer_waiting; // the producer is (about to be) asleep
-    pthread_mutex_t mu;
-    pthread_cond_t cv_work, cv_done;
-    bool stop;
-    bool started;
-    pthread_t thr;
-    // GS_V2_STATS=1: the decomposition printed at teardown — how many
-    // commands, how often the producer fenced and how long it waited,
-    // how often the worker went to sleep, and the worker's own CPU time.
-    uint64_t n_submit, n_sync, n_sync_wait, n_room_wait, n_state_wait, n_worker_sleep;
-    uint64_t wait_ns;
-    double worker_cpu_s;
-} v2_thread_t;
-
-// Monotonic nanoseconds, for the stats.
-static uint64_t v2_now_ns(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
-}
-#endif
 
 struct v2_raster {
     v2_backend_kind_t kind;
     v2_target_t *tgt;
     v2_state_build_fn build;
     void *ctx;
-    // The draw-state ring: a slot is rewritten only once every command
-    // that referenced it has retired (st_seq holds 1 + the sequence
-    // number of the last such command; 0 = never used).
-    v2_draw_state_t *st;
-    uint64_t *st_seq;
-    uint32_t st_cur;
-    bool st_dirty;
-#if V2_HAVE_THREAD_BACKEND
-    v2_thread_t th;
-#endif
+    rq_t rq; // the draw-state ring and, threaded, the worker (raster_queue.h)
     v2_gpu_t *gpu; // the WebGPU translator (V2_BACKEND_WEBGPU only)
     char stats_buf[1024];
 };
 
-#if V2_HAVE_THREAD_BACKEND
-// One iteration of a busy-wait: a pause hint where the ISA has one.
-static inline void v2_cpu_relax(void) {
-#if defined(__x86_64__) || defined(__i386__)
-    __builtin_ia32_pause();
-#elif defined(__aarch64__)
-    __asm__ volatile("yield");
-#else
-    __asm__ volatile("" ::: "memory");
-#endif
+// The producer's state build, as the queue calls it (rq_build_fn).
+static void v2_state_build(void *ctx, void *state) {
+    v2_raster_t *r = (v2_raster_t *)ctx;
+    r->build(r->ctx, (v2_draw_state_t *)state);
 }
 
-// How long a dry worker spins before it sleeps.  The commands are
-// small and arrive in bursts (a triangle every few microseconds of
-// producer time), so a worker that slept on every empty poll would pay
-// a futex wake and a context switch per command — measured: the
-// threaded row took LONGER than the synchronous one.  A short spin
-// catches the next command in the common case; the sleep path is for
-// the genuinely idle stretches (the guest not rendering).
-#define V2_WORKER_SPIN 4096
-
-// The worker: drain the ring, execute in order, retire, sleep when dry.
-static void *v2_worker_main(void *arg) {
-    v2_raster_t *r = (v2_raster_t *)arg;
-    v2_thread_t *th = &r->th;
-    for (;;) {
-        uint64_t t = atomic_load_explicit(&th->tail, memory_order_relaxed);
-        uint64_t h = atomic_load_explicit(&th->head, memory_order_acquire);
-        for (int spin = 0; h == t && spin < V2_WORKER_SPIN; spin++) {
-            v2_cpu_relax();
-            h = atomic_load_explicit(&th->head, memory_order_acquire);
-        }
-        if (h == t) {
-            th->n_worker_sleep++;
-            if (r->gpu)
-                v2_gpu_idle(r->gpu); // publish the open draw range before sleeping
-            pthread_mutex_lock(&th->mu);
-            atomic_store_explicit(&th->worker_idle, 1, memory_order_seq_cst);
-            // Re-check under the lock: a producer that stored head after
-            // our first load either sees worker_idle and signals, or its
-            // store is visible here (Dekker on head/worker_idle).
-            while (atomic_load_explicit(&th->head, memory_order_seq_cst) == t && !th->stop)
-                pthread_cond_wait(&th->cv_work, &th->mu);
-            atomic_store_explicit(&th->worker_idle, 0, memory_order_seq_cst);
-            bool stop = th->stop && atomic_load_explicit(&th->head, memory_order_seq_cst) == t;
-            pthread_mutex_unlock(&th->mu);
-            if (stop) {
-                struct timespec ts = {0, 0}; // stays zero where the clock is unsupported (wasm)
-                clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
-                th->worker_cpu_s = (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
-                return NULL;
-            }
-            continue;
-        }
-        const v2_cmd_t *cmd = &th->q[t & (V2_QUEUE_DEPTH - 1u)];
-        if (r->gpu)
-            v2_gpu_execute(r->gpu, &r->st[cmd->state], r->tgt, cmd);
-        else
-            v2_raster_execute(&r->st[cmd->state], r->tgt, cmd);
-        atomic_store_explicit(&th->tail, t + 1u, memory_order_seq_cst);
-        if (atomic_load_explicit(&th->producer_waiting, memory_order_seq_cst)) {
-            pthread_mutex_lock(&th->mu);
-            pthread_cond_broadcast(&th->cv_done);
-            pthread_mutex_unlock(&th->mu);
-        }
-    }
+// The worker's per-command step (rq_exec_fn): the translator when the
+// WebGPU takeover attached one, else the walker.
+static void v2_worker_exec(void *ctx, const void *cmd) {
+    v2_raster_t *r = (v2_raster_t *)ctx;
+    const v2_cmd_t *c = (const v2_cmd_t *)cmd;
+    v2_draw_state_t *st = rq_state(&r->rq, c->state);
+    if (r->gpu)
+        v2_gpu_execute(r->gpu, st, r->tgt, c);
+    else
+        v2_raster_execute(st, r->tgt, c);
 }
 
-// Block the producer until `tail` reaches at least `want`.
-static void v2_thread_wait_tail(v2_thread_t *th, uint64_t want) {
-    if (atomic_load_explicit(&th->tail, memory_order_acquire) >= want)
-        return;
-    uint64_t t0 = v2_now_ns();
-    pthread_mutex_lock(&th->mu);
-    atomic_store_explicit(&th->producer_waiting, 1, memory_order_seq_cst);
-    while (atomic_load_explicit(&th->tail, memory_order_seq_cst) < want)
-        pthread_cond_wait(&th->cv_done, &th->mu);
-    atomic_store_explicit(&th->producer_waiting, 0, memory_order_seq_cst);
-    pthread_mutex_unlock(&th->mu);
-    th->wait_ns += v2_now_ns() - t0;
+// The same with the cross-check compiled in (pci_option xcheck=on), the
+// step v2_thread_start picks for that card: the plain step never tests.
+static void v2_worker_exec_dbg(void *ctx, const void *cmd) {
+    v2_raster_t *r = (v2_raster_t *)ctx;
+    const v2_cmd_t *c = (const v2_cmd_t *)cmd;
+    v2_draw_state_t *st = rq_state(&r->rq, c->state);
+    if (r->gpu)
+        v2_gpu_execute(r->gpu, st, r->tgt, c);
+    else
+        v2_raster_execute_dbg(st, r->tgt, c);
 }
 
+// The worker's step before it sleeps (rq_idle_fn): publish the
+// translator's open draw range.
+static void v2_worker_idle(void *ctx) {
+    v2_raster_t *r = (v2_raster_t *)ctx;
+    if (r->gpu)
+        v2_gpu_idle(r->gpu);
+}
+
+// Starts the worker over the command ring.
 static bool v2_thread_start(v2_raster_t *r) {
-    v2_thread_t *th = &r->th;
-    th->q = (v2_cmd_t *)calloc(V2_QUEUE_DEPTH, sizeof(v2_cmd_t));
-    if (!th->q)
-        return false;
-    atomic_store(&th->head, 0);
-    atomic_store(&th->tail, 0);
-    atomic_store(&th->worker_idle, 0);
-    atomic_store(&th->producer_waiting, 0);
-    pthread_mutex_init(&th->mu, NULL);
-    pthread_cond_init(&th->cv_work, NULL);
-    pthread_cond_init(&th->cv_done, NULL);
-    th->stop = false;
-    if (pthread_create(&th->thr, NULL, v2_worker_main, r) != 0) {
-        free(th->q);
-        th->q = NULL;
-        return false;
-    }
-    th->started = true;
-    return true;
+    return rq_start_thread(&r->rq, sizeof(v2_cmd_t), V2_QUEUE_DEPTH,
+                           r->tgt->xcheck ? v2_worker_exec_dbg : v2_worker_exec, v2_worker_idle, r);
 }
-
-static void v2_thread_stop(v2_raster_t *r) {
-    v2_thread_t *th = &r->th;
-    if (!th->started)
-        return;
-    v2_thread_wait_tail(th, atomic_load(&th->head));
-    pthread_mutex_lock(&th->mu);
-    th->stop = true;
-    pthread_cond_broadcast(&th->cv_work);
-    pthread_mutex_unlock(&th->mu);
-    pthread_join(th->thr, NULL);
-    const char *stats = getenv("GS_V2_STATS");
-    if (stats && *stats && *stats != '0')
-        LOG(0,
-            "raster=thread stats: %llu commands, %llu syncs (%llu waited), %llu room waits, %llu state waits, "
-            "%.3f s waited total, %llu worker sleeps, worker cpu %.1f s",
-            (unsigned long long)th->n_submit, (unsigned long long)th->n_sync, (unsigned long long)th->n_sync_wait,
-            (unsigned long long)th->n_room_wait, (unsigned long long)th->n_state_wait, (double)th->wait_ns * 1e-9,
-            (unsigned long long)th->n_worker_sleep, th->worker_cpu_s);
-    pthread_mutex_destroy(&th->mu);
-    pthread_cond_destroy(&th->cv_work);
-    pthread_cond_destroy(&th->cv_done);
-    free(th->q);
-    th->q = NULL;
-    th->started = false;
-}
-#endif
 
 v2_raster_t *v2_raster_create(const char *kind, v2_target_t *tgt, v2_state_build_fn build, void *ctx) {
     v2_raster_t *r = (v2_raster_t *)calloc(1, sizeof(*r));
@@ -1655,31 +1572,25 @@ v2_raster_t *v2_raster_create(const char *kind, v2_target_t *tgt, v2_state_build
     r->tgt = tgt;
     r->build = build;
     r->ctx = ctx;
-    r->st = (v2_draw_state_t *)calloc(V2_STATE_SLOTS, sizeof(v2_draw_state_t));
-    r->st_seq = (uint64_t *)calloc(V2_STATE_SLOTS, sizeof(uint64_t));
-    if (!r->st || !r->st_seq) {
-        free(r->st);
-        free(r->st_seq);
+    if (!rq_init(&r->rq, sizeof(v2_draw_state_t), V2_STATE_SLOTS, v2_state_build, r)) {
         free(r);
         return NULL;
     }
-    r->st_dirty = true;
     r->kind = V2_BACKEND_SW;
-    v2_watch_init(); // the instrument reads its environment once, here
     v2_dither_tables_init();
     if (kind && strcmp(kind, "null") == 0) {
         r->kind = V2_BACKEND_NULL;
     } else if (kind && strcmp(kind, "thread") == 0) {
-#if V2_HAVE_THREAD_BACKEND
-        if (v2_raster_watch_armed()) {
-            LOG(0, "raster=thread refused while GS_V2_WATCH is armed — using the synchronous walker");
+#if GS_RASTER_THREAD_BACKEND
+        if (v2_raster_watch_armed(tgt)) {
+            LOG(0, "raster=thread refused while the pixel-provenance watch is armed — using the synchronous walker");
         } else if (v2_thread_start(r)) {
             r->kind = V2_BACKEND_THREAD;
         } else {
             LOG(0, "raster=thread: could not start the worker thread — using the synchronous walker");
         }
 #else
-        LOG(1, "raster=thread: this build compiled the thread backend out (GS_V2_THREAD_BACKEND=0) — using the "
+        LOG(1, "raster=thread: this build compiled the thread backend out (GS_RASTER_THREAD_BACKEND=0) — using the "
                "synchronous walker");
 #endif
     } else if (kind && strcmp(kind, "webgpu") == 0) {
@@ -1687,9 +1598,9 @@ v2_raster_t *v2_raster_create(const char *kind, v2_target_t *tgt, v2_state_build
         // worker.  The translator attaches the browser's GPU worker (or
         // reports that it cannot); the pthread is started after it, so
         // the worker finds r->gpu set from its first command.
-#if V2_HAVE_THREAD_BACKEND
-        if (v2_raster_watch_armed()) {
-            LOG(0, "raster=webgpu refused while GS_V2_WATCH is armed — using the synchronous walker");
+#if GS_RASTER_THREAD_BACKEND
+        if (v2_raster_watch_armed(tgt)) {
+            LOG(0, "raster=webgpu refused while the pixel-provenance watch is armed — using the synchronous walker");
         } else {
             r->gpu = v2_gpu_create(tgt);
             if (v2_thread_start(r))
@@ -1698,25 +1609,42 @@ v2_raster_t *v2_raster_create(const char *kind, v2_target_t *tgt, v2_state_build
                 LOG(0, "raster=webgpu: could not start the worker thread — using the synchronous walker");
         }
 #else
-        LOG(1, "raster=webgpu: this build compiled the thread backend out (GS_V2_THREAD_BACKEND=0) — using the "
+        LOG(1, "raster=webgpu: this build compiled the thread backend out (GS_RASTER_THREAD_BACKEND=0) — using the "
                "synchronous walker");
 #endif
     } else if (kind && strcmp(kind, "sw") != 0) {
         LOG(0, "unknown raster backend '%s' — using the synchronous walker", kind);
     }
+    v2_raster_instruments_changed(r);
     return r;
+}
+
+void v2_raster_instruments_changed(v2_raster_t *r) {
+    // Only the synchronous walker switches copies here; the worker's
+    // step was chosen when it started (v2_thread_start)
+    if (r->kind == V2_BACKEND_SW || r->kind == V2_BACKEND_SW_DEBUG)
+        r->kind = (r->tgt->xcheck || v2_raster_watch_armed(r->tgt)) ? V2_BACKEND_SW_DEBUG : V2_BACKEND_SW;
+}
+
+bool v2_raster_is_walker(const v2_raster_t *r) {
+    return r->kind == V2_BACKEND_SW || r->kind == V2_BACKEND_SW_DEBUG;
 }
 
 void v2_raster_destroy(v2_raster_t *r) {
     if (!r)
         return;
-#if V2_HAVE_THREAD_BACKEND
-    if (r->kind == V2_BACKEND_THREAD || r->kind == V2_BACKEND_WEBGPU)
-        v2_thread_stop(r);
-#endif
+    bool threaded = r->rq.threaded;
+    rq_stats_t st;
+    rq_fini(&r->rq, &st); // drains and joins the worker first
+    // The thread backend's decomposition, at teardown (V2_LOG_STATS)
+    if (threaded)
+        LOG(V2_LOG_STATS,
+            "raster=thread stats: %llu commands, %llu syncs (%llu waited), %llu room waits, %llu state waits, "
+            "%.3f s waited total, %llu worker sleeps, worker cpu %.1f s",
+            (unsigned long long)st.n_submit, (unsigned long long)st.n_sync, (unsigned long long)st.n_sync_wait,
+            (unsigned long long)st.n_room_wait, (unsigned long long)st.n_state_wait, (double)st.wait_ns * 1e-9,
+            (unsigned long long)st.n_worker_sleep, st.worker_cpu_s);
     v2_gpu_destroy(r->gpu); // after the worker joined: the translator's ring is idle
-    free(r->st);
-    free(r->st_seq);
     free(r);
 }
 
@@ -1734,81 +1662,32 @@ const char *v2_raster_name(const v2_raster_t *r) {
 }
 
 void v2_raster_state_dirty(v2_raster_t *r) {
-    r->st_dirty = true;
-}
-
-// Does the backend run the executor on the worker pthread?
-static inline bool v2_uses_thread(const v2_raster_t *r) {
-    return r->kind == V2_BACKEND_THREAD || r->kind == V2_BACKEND_WEBGPU;
+    rq_state_dirty(&r->rq);
 }
 
 void v2_raster_sync(v2_raster_t *r) {
-#if V2_HAVE_THREAD_BACKEND
-    if (v2_uses_thread(r)) {
-        uint64_t h = atomic_load_explicit(&r->th.head, memory_order_relaxed);
-        r->th.n_sync++;
-        if (atomic_load_explicit(&r->th.tail, memory_order_acquire) < h)
-            r->th.n_sync_wait++;
-        v2_thread_wait_tail(&r->th, h);
-    }
-#else
-    (void)r;
-#endif
+    rq_sync(&r->rq);
 }
 
 void v2_raster_submit(v2_raster_t *r, v2_cmd_t *cmd) {
-    uint64_t seq = 0;
-#if V2_HAVE_THREAD_BACKEND
-    if (v2_uses_thread(r))
-        seq = atomic_load_explicit(&r->th.head, memory_order_relaxed);
-#endif
-    if (r->st_dirty) {
-        // Take the next ring slot — after everything that read it has
-        // retired — and let the producer fill it from the live registers.
-        uint32_t next = (r->st_cur + 1u) & (V2_STATE_SLOTS - 1u);
-#if V2_HAVE_THREAD_BACKEND
-        if (v2_uses_thread(r) && r->st_seq[next]) {
-            if (atomic_load_explicit(&r->th.tail, memory_order_acquire) < r->st_seq[next])
-                r->th.n_state_wait++;
-            v2_thread_wait_tail(&r->th, r->st_seq[next]);
-        }
-#endif
-        r->build(r->ctx, &r->st[next]);
-        r->st_cur = next;
-        r->st_dirty = false;
-    }
-    cmd->state = (uint16_t)r->st_cur;
-    r->st_seq[r->st_cur] = seq + 1u;
+    // Charge the command to the current draw state (built now if dirty)
+    cmd->state = (uint16_t)rq_begin(&r->rq);
     switch (r->kind) {
     case V2_BACKEND_NULL:
         if (cmd->kind == V2_CMD_TRIANGLE)
             return; // the null backend draws nothing — fastfill stays: it is the clear path
-        v2_raster_execute(&r->st[r->st_cur], r->tgt, cmd);
+        v2_raster_execute(rq_state(&r->rq, cmd->state), r->tgt, cmd);
         return;
     case V2_BACKEND_SW:
-        v2_raster_execute(&r->st[r->st_cur], r->tgt, cmd);
+        v2_raster_execute(rq_state(&r->rq, cmd->state), r->tgt, cmd);
+        return;
+    case V2_BACKEND_SW_DEBUG:
+        v2_raster_execute_dbg(rq_state(&r->rq, cmd->state), r->tgt, cmd);
         return;
     case V2_BACKEND_THREAD:
-    case V2_BACKEND_WEBGPU: {
-#if V2_HAVE_THREAD_BACKEND
-        v2_thread_t *th = &r->th;
-        // Room: the slot we are about to write must have been retired.
-        th->n_submit++;
-        if (seq >= V2_QUEUE_DEPTH) {
-            if (atomic_load_explicit(&th->tail, memory_order_acquire) < seq + 1u - V2_QUEUE_DEPTH)
-                th->n_room_wait++;
-            v2_thread_wait_tail(th, seq + 1u - V2_QUEUE_DEPTH);
-        }
-        th->q[seq & (V2_QUEUE_DEPTH - 1u)] = *cmd;
-        atomic_store_explicit(&th->head, seq + 1u, memory_order_seq_cst);
-        if (atomic_load_explicit(&th->worker_idle, memory_order_seq_cst)) {
-            pthread_mutex_lock(&th->mu);
-            pthread_cond_signal(&th->cv_work);
-            pthread_mutex_unlock(&th->mu);
-        }
-#endif
+    case V2_BACKEND_WEBGPU:
+        rq_enqueue(&r->rq, cmd);
         return;
-    }
     }
 }
 

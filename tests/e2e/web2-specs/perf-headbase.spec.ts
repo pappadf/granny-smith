@@ -38,11 +38,13 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { stageOpfsFile, stageOpfsFileStreaming } from '../helpers/web2-fs';
-import { CONSOLE_OUTPUT, terminalRun as typeLine } from '../helpers/terminal';
+import { CONSOLE_OUTPUT, terminalRun as typeLine, terminalEval } from '../helpers/terminal';
+import { DATA } from '../helpers/paths';
+import { uploadRomViaWelcome } from '../helpers/upload';
+import { instrCount, launchMarathon, measureOnce, probeSample, settleFinder } from '../helpers/perf';
 
 const terminalRun = (page: Page, line: string) => typeLine(page, line, { settleMs: 250 });
 
-const DATA = path.resolve(__dirname, '../../data');
 const LABEL = process.env.PERF_LABEL ?? 'unlabeled';
 const PAIRS = Number(process.env.PERF_PAIRS ?? 3);
 const WINDOW_SECS = Number(process.env.PERF_WINDOW_SECS ?? 6);
@@ -107,69 +109,7 @@ const ROWS: Record<string, Row> = {
 
 // --- terminal probes ----------------------------------------------------------
 
-let probeSeq = 0;
-
-// {instr_count, host_wall_ns} sampled in ONE expansion inside the worker.
-async function probeSample(page: Page): Promise<{ instr: number; wallNs: number }> {
-  for (let attempt = 0; attempt < 30; attempt++) {
-    const key = `pb${++probeSeq}`;
-    await terminalRun(page, `echo "${key}=\${machine.cpu.instr_count},\${scheduler.host_wall_ns}"`);
-    await page.waitForTimeout(400);
-    const text = await page.locator(CONSOLE_OUTPUT).innerText();
-    const m = text.match(new RegExp(`${key}=(\\d+),(\\d+)`));
-    if (m) return { instr: Number(m[1]), wallNs: Number(m[2]) };
-  }
-  throw new Error('terminal sample probe never answered');
-}
-
-async function probeString(page: Page, expr: string): Promise<string> {
-  for (let attempt = 0; attempt < 30; attempt++) {
-    const key = `ps${++probeSeq}`;
-    await terminalRun(page, `echo "${key}=[${'$'}{${expr}}]"`);
-    await page.waitForTimeout(400);
-    const text = await page.locator(CONSOLE_OUTPUT).innerText();
-    const m = text.match(new RegExp(`${key}=\\[([A-Za-z0-9_.-]+)\\]`));
-    if (m) return m[1];
-  }
-  throw new Error('terminal string probe never answered');
-}
-
-async function instrCount(page: Page): Promise<number> {
-  return (await probeSample(page)).instr;
-}
-
 // --- reaching the state ------------------------------------------------------------
-
-// The Finder is the application, then 150 M more instructions to go idle.
-async function settleFinder(page: Page): Promise<void> {
-  await expect
-    .poll(() => probeString(page, 'debug.mac.globals.read("ApplZone") != debug.mac.globals.read("SysZone")'), {
-      timeout: 600_000,
-      intervals: [5_000],
-    })
-    .toMatch(/^(true|1)$/);
-  const at = await instrCount(page);
-  await expect
-    .poll(() => instrCount(page), { timeout: 240_000, intervals: [3_000] })
-    .toBeGreaterThan(at + 150_000_000);
-}
-
-// The native iicx-marathon row's launch choreography, typed into the shell.
-async function launchMarathon(page: Page): Promise<void> {
-  await expect
-    .poll(() => instrCount(page), { timeout: 240_000, intervals: [3_000] })
-    .toBeGreaterThan(230_000_000);
-  await terminalRun(page, 'machine.adb.mouse.move 237 157 "global"');
-  await page.waitForTimeout(500);
-  for (let i = 0; i < 2; i++) {
-    await terminalRun(page, 'machine.adb.mouse.click true');
-    await terminalRun(page, 'machine.adb.mouse.click false');
-  }
-  const after = await instrCount(page);
-  await expect
-    .poll(() => instrCount(page), { timeout: 240_000, intervals: [3_000] })
-    .toBeGreaterThan(after + 120_000_000);
-}
 
 // Load web2 at `url`, stage the row's media, configure and start the machine,
 // switch to turbo and run it to the row's state.
@@ -193,11 +133,7 @@ async function bootRow(page: Page, url: string, machine: string, row: Row): Prom
   if (row.vrom)
     await stageOpfsFile(page, `/opfs/images/vrom/${path.basename(row.vrom)}`, path.join(DATA, row.vrom));
 
-  const [romChooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Load ROM...' }).click(),
-  ]);
-  await romChooser.setFiles(path.join(DATA, 'roms', row.rom));
+  await uploadRomViaWelcome(page, path.join(DATA, 'roms', row.rom));
 
   await page.getByRole('button', { name: 'New Machine...' }).click();
   const model = page.locator('#cfg-model');
@@ -220,7 +156,7 @@ async function bootRow(page: Page, url: string, machine: string, row: Row): Prom
   await page.locator('button.ptab[data-tab="terminal"]').click();
   await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
   await terminalRun(page, 'scheduler.mode = "turbo"');
-  expect(await probeString(page, 'scheduler.mode')).toBe('turbo');
+  expect(await terminalEval(page, 'scheduler.mode')).toBe('turbo');
   if (row.settle === 'finder') await settleFinder(page);
   else if (row.settle === 'marathon') await launchMarathon(page);
   else
@@ -230,15 +166,13 @@ async function bootRow(page: Page, url: string, machine: string, row: Row): Prom
 }
 
 // One measured window on the page in front, its machine running.
-async function measureOnce(page: Page): Promise<number> {
+async function measureFront(page: Page): Promise<number> {
   await page.bringToFront();
   await terminalRun(page, 'scheduler.run');
   await page.waitForTimeout(2_000);
-  const a = await probeSample(page);
-  await page.waitForTimeout(WINDOW_SECS * 1000);
-  const b = await probeSample(page);
+  const mips = await measureOnce(page, WINDOW_SECS);
   await terminalRun(page, 'scheduler.stop');
-  return (b.instr - a.instr) / ((b.wallNs - a.wallNs) / 1e9) / 1e6;
+  return mips;
 }
 
 // --- the calibration kernels, ported from src/platform/headless/calibrate.c ---
@@ -398,7 +332,7 @@ let baseServer: ChildProcess | undefined;
 
 test.beforeAll(async () => {
   if (!BASE_DIST) return;
-  baseServer = spawn('python3', [path.join(__dirname, '..', 'test_server.py'), '--root', BASE_DIST, '--port', String(BASE_PORT)], {
+  baseServer = spawn('python3', [path.join(__dirname, '..', '..', '..', 'scripts', 'dev_server.py'), '--root', BASE_DIST, '--port', String(BASE_PORT), '--host', '0.0.0.0', '--strict-port'], {
     stdio: 'ignore',
   });
   // Up when it answers.
@@ -442,7 +376,7 @@ for (const machine of MACHINES) {
       // Alternate which side goes first, so slow drift hits both alike.
       const order = pair % 2 ? (['head', 'base'] as const) : (['base', 'head'] as const);
       for (const side of order) {
-        const mips = await measureOnce(pages[side]);
+        const mips = await measureFront(pages[side]);
         results[side].push(mips);
         console.log(`PERFBENCH label=${LABEL} machine=${machine} binary=${side} pair=${pair} mips=${mips.toFixed(2)}`);
       }
@@ -450,7 +384,7 @@ for (const machine of MACHINES) {
     const median = (v: number[]) => [...v].sort((x, y) => x - y)[Math.floor(v.length / 2)];
     for (const side of ['head', 'base'] as const) {
       // try(): a base without the predecoded cores has no `predecode` object.
-      const pd = (attr: string) => probeString(pages[side], `try(predecode.${attr}, "none")`);
+      const pd = (attr: string) => terminalEval(pages[side], `gs.try(function() return predecode.${attr} end, "none")`);
       console.log(
         `PERFBENCH label=${LABEL} machine=${machine} binary=${side} predecode=${await pd('enabled')} ` +
           `lookups=${await pd('lookups')} generic=${await pd('generic_steps')} instr=${await instrCount(pages[side])}`,

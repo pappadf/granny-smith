@@ -52,7 +52,7 @@ void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, 
     (void)tag;
     (void)cp, (void)data, (void)size, (void)file, (void)line;
 }
-void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
+void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, const memory_interface_t *iface,
                     void *device) {
     (void)mem, (void)addr, (void)size, (void)name, (void)iface, (void)device;
 }

@@ -202,7 +202,7 @@ static void v2gpu_publish(v2_gpu_t *g) {
     if (!mbx_unpublished(&g->ring))
         return;
     mbx_publish(&g->ring);
-    platform_v2gpu_notify(&g->ctrl[V2GPU_C_HEAD]);
+    platform_wake(&g->ctrl[V2GPU_C_HEAD]);
 }
 
 // Reserve a record of `len` bytes (header included; the ring rounds it
@@ -219,7 +219,8 @@ static uint32_t v2gpu_reserve(v2_gpu_t *g, uint32_t kind, uint32_t len) {
         if (v2gpu_worker_lost(g))
             return UINT32_MAX;
         v2gpu_publish(g); // the worker can only free what it can see
-        platform_v2gpu_wait(&g->ctrl[V2GPU_C_TAIL], tail, 20);
+        platform_wait(&g->ctrl[V2GPU_C_TAIL], tail, 20);
+        platform_gpu_keepalive(); // the page's stall watch: busy, not dead
         if (v2gpu_now_ms() - t0 > (double)V2GPU_ACK_MS) {
             v2gpu_mark_lost(g, "the GPU worker stopped consuming the op ring");
             return UINT32_MAX;
@@ -251,7 +252,8 @@ static bool v2gpu_wait_ack(v2_gpu_t *g, uint32_t seq) {
             return true;
         if (v2gpu_worker_lost(g))
             return false;
-        platform_v2gpu_wait(&g->ctrl[V2GPU_C_ACK], ack, 20);
+        platform_wait(&g->ctrl[V2GPU_C_ACK], ack, 20);
+        platform_gpu_keepalive(); // the page's stall watch: busy, not dead
         if (v2gpu_now_ms() - t0 > (double)V2GPU_ACK_MS) {
             v2gpu_mark_lost(g, "the GPU worker stopped answering");
             return false;
@@ -1092,23 +1094,8 @@ static void v2gpu_fallback(v2_gpu_t *g, const v2_draw_state_t *st, v2_target_t *
 static void v2gpu_triangle(v2_gpu_t *g, const v2_draw_state_t *st, v2_target_t *tgt, const v2_cmd_t *cmd) {
     const voodoo2_tri_t *T = &cmd->u.tri;
     uint32_t fbz = st->fbz, amode = st->amode;
-    int32_t minx = T->ax, maxx = T->ax, miny = T->ay, maxy = T->ay;
-    if (T->bx < minx)
-        minx = T->bx;
-    if (T->cx < minx)
-        minx = T->cx;
-    if (T->bx > maxx)
-        maxx = T->bx;
-    if (T->cx > maxx)
-        maxx = T->cx;
-    if (T->by < miny)
-        miny = T->by;
-    if (T->cy < miny)
-        miny = T->cy;
-    if (T->by > maxy)
-        maxy = T->by;
-    if (T->cy > maxy)
-        maxy = T->cy;
+    int32_t minx, maxx, miny, maxy;
+    v2_tri_bbox(T, &minx, &maxx, &miny, &maxy);
     int32_t bx0 = minx >> 4, bx1 = (maxx + 15) >> 4, by0 = miny >> 4, by1 = (maxy + 15) >> 4;
     // The fallbacks: a rotate-mode stipple MASK (per-pixel register order),
     // the "colour before fog" destination factor, and the zaColor depth
@@ -1628,7 +1615,7 @@ const char *v2_gpu_stats(v2_gpu_t *g, char *buf, size_t n) {
 // ============================================================
 
 v2_gpu_t *v2_gpu_create(v2_target_t *tgt) {
-    if (!platform_v2gpu_available()) {
+    if (!platform_gpu_available()) {
         LOG(1, "raster=webgpu: no WebGPU transport on this host — using the thread backend");
         return NULL;
     }
@@ -1662,7 +1649,7 @@ v2_gpu_t *v2_gpu_create(v2_target_t *tgt) {
     g->ctrl[V2GPU_C_RB_OFF] = ctrl_bytes + ring_size;
     g->ctrl[V2GPU_C_RB_SIZE] = g->rb_size;
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    if (!platform_v2gpu_attach((void *)g->ctrl, ctrl_bytes + ring_size + g->rb_size)) {
+    if (!platform_gpu_attach((void *)g->ctrl, ctrl_bytes + ring_size + g->rb_size)) {
         LOG(0, "raster=webgpu: the host refused to attach a GPU worker — using the thread backend");
         v2_gpu_destroy(g);
         return NULL;
@@ -1672,11 +1659,12 @@ v2_gpu_t *v2_gpu_create(v2_target_t *tgt) {
         if (v2gpu_now_ms() - t0 >= (double)V2GPU_ATTACH_MS) {
             LOG(0, "raster=webgpu: the GPU worker did not attach within %u ms — using the thread backend",
                 V2GPU_ATTACH_MS);
-            platform_v2gpu_detach((void *)g->ctrl);
+            platform_gpu_detach((void *)g->ctrl);
             v2_gpu_destroy(g);
             return NULL;
         }
-        platform_v2gpu_wait(&g->ctrl[V2GPU_C_STATUS], V2GPU_STATUS_DETACHED, 20);
+        platform_wait(&g->ctrl[V2GPU_C_STATUS], V2GPU_STATUS_DETACHED, 20);
+        platform_gpu_keepalive(); // the page's stall watch: busy, not dead
     }
     g->attached = true;
     LOG(1, "raster=webgpu: GPU worker attached (op ring %u KB)", g->ring.size >> 10);
@@ -1694,7 +1682,7 @@ void v2_gpu_destroy(v2_gpu_t *g) {
         v2gpu_wait_ack(g, seq);
     }
     if (g->attached)
-        platform_v2gpu_detach((void *)g->ctrl);
+        platform_gpu_detach((void *)g->ctrl);
     free(g->region);
     free(g->tex);
     for (int t = 0; t < V2_RASTER_TMUS; t++)

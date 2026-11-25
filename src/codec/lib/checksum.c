@@ -747,6 +747,10 @@ static const uint16_t k_crc16_xmodem_table[256] = {
     0x2E93, 0x3EB2, 0x0ED1, 0x1EF0,
 };
 
+uint16_t codec_crc16_xmodem_byte(uint16_t crc, uint8_t b) {
+    return (uint16_t)((crc << 8) ^ k_crc16_xmodem_table[((crc >> 8) ^ b) & 0xFF]);
+}
+
 uint16_t codec_crc16_xmodem(uint16_t crc, const void *data, size_t len) {
     const uint8_t *p = (const uint8_t *)data;
     for (size_t i = 0; i < len; i++)

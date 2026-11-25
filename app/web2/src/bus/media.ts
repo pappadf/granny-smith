@@ -8,7 +8,15 @@
 // the CD-ROM drive of the model's default configuration".  Nothing here
 // knows a bus.
 
-import { gsEval, gsOk, gsErrorText, isGsError } from './emulator';
+import { gsEval, gsEvalWithProgress, gsOk, gsErrorText, isGsError, isGsObject } from './emulator';
+import {
+  MEDIA_TYPES,
+  identifyFile,
+  identifyRom,
+  identifyCardRom,
+  type MediaTypeId,
+  type RomIdentity,
+} from '@/lib/media';
 import type { MediaBay } from './profile';
 import { images, type MountInfo } from '@/state/images.svelte';
 
@@ -36,7 +44,7 @@ export type MediaResult =
   | { ok: false; reason: string; full?: boolean };
 
 function bayResult(kind: 'hd' | 'cd', r: unknown): MediaResult {
-  if (!r || typeof r !== 'object' || isGsError(r)) return { ok: false, reason: gsErrorText(r) };
+  if (!isGsObject(r)) return { ok: false, reason: gsErrorText(r) };
   const bay = r as Partial<MediaBay>;
   return { ok: true, mount: { kind, bus: bay.bus ?? '', drive: bay.id ?? 0 } };
 }
@@ -162,7 +170,7 @@ export async function readMounts(): Promise<Record<string, MountInfo>> {
   const out: Record<string, MountInfo> = {};
   const count = await detectFdDriveCount(true);
   for (let d = 0; d < count; d++) {
-    const name = await gsEval(`machine.floppy.drive[${d}].disk.filename`);
+    const name = await gsEval(`machine.floppy.drive[${d}].image.source`);
     if (gsOk(name) && typeof name === 'string' && name)
       out[name] = { kind: 'fd', bus: 'floppy', drive: d };
   }
@@ -170,8 +178,8 @@ export async function readMounts(): Promise<Record<string, MountInfo>> {
   if (!Array.isArray(devices)) return out;
   for (const d of devices as Record<string, unknown>[]) {
     const bay = d.media as Partial<MediaBay> | undefined;
-    if (d.present !== true || typeof d.filename !== 'string' || !d.filename || !bay) continue;
-    out[d.filename] = {
+    if (d.present !== true || typeof d.source !== 'string' || !d.source || !bay) continue;
+    out[d.source] = {
       kind: d.type === 'cd' ? 'cd' : 'hd',
       bus: bay.bus ?? '',
       drive: bay.id ?? 0,
@@ -209,4 +217,73 @@ export async function imageInUseUnder(paths: string[]): Promise<string | null> {
   const used = await pathsInUse();
   for (const p of paths) for (const u of used) if (u === p || u.startsWith(`${p}/`)) return u;
   return null;
+}
+
+// Whether a machine exists to attach to: asked of the core, since a machine
+// booted from the terminal exists before it first runs.
+export async function machineCreated(): Promise<boolean> {
+  return (await gsEval('machine.created')) === true;
+}
+
+// Whether floppy drive `d` holds a disk.
+export async function fdDrivePresent(d: number): Promise<boolean> {
+  return (await gsEval(`machine.floppy.drive[${d}].present`)) === true;
+}
+
+// The floppy layout `path` is (gcr400, gcr800, mfm720, mfm1440), or "" when
+// it is no floppy (files.identify).
+export async function identifyFloppy(path: string): Promise<string> {
+  return (await identifyFile(gsEval, path))?.floppy ?? '';
+}
+
+// Whether the core takes `path` as a medium of type `id` (lib/media).
+export async function validateMedium(id: MediaTypeId, path: string): Promise<boolean> {
+  return (await MEDIA_TYPES[id].validate(path, gsEval)).valid;
+}
+
+// The ROM at `path` as the core identifies it (lib/media identifyRom).
+export function romIdentity(path: string): Promise<RomIdentity | null> {
+  return identifyRom(gsEval, path);
+}
+
+// The card ROM at `path` as the core identifies it (lib/media identifyCardRom).
+export function cardRomIdentity(
+  what: 'vrom' | 'prom',
+  path: string,
+): ReturnType<typeof identifyCardRom> {
+  return identifyCardRom(gsEval, what, path);
+}
+
+// Create a blank image of `kind` and `size` at `path` (files.create): a
+// profile's blank-disk entry, or a floppy of its size.  true when made, or
+// the core's reason.
+export async function createBlankImage(
+  disk: { kind: string; size: number | string },
+  path: string,
+): Promise<true | string> {
+  const res = await gsEval('files.create', [path, disk.kind, disk.size]);
+  return res === true ? true : gsErrorText(res);
+}
+
+// Convert the image at `src` to a UDIF at `dest` (files.convert, an I/O
+// job reporting its progress): the core's stats, or its reason.
+export async function convertImage(
+  src: string,
+  dest: string,
+  onProgress: (done: number, total: number) => void,
+): Promise<{ bytes_in?: number; stored_bytes?: number } | string> {
+  const r = await gsEvalWithProgress('files.convert', [src, dest], onProgress);
+  return isGsObject(r) ? (r as { bytes_in?: number; stored_bytes?: number }) : gsErrorText(r);
+}
+
+// The file name an attached image suggests for itself (`<image>.source`).
+export async function imageFileName(target: string): Promise<string> {
+  const r = await gsEval(`${target}.source`);
+  return typeof r === 'string' ? r : '';
+}
+
+// Export an attached image to `dest`: true, or the core's raw answer (an
+// error naming why, or false).
+export async function exportImage(target: string, dest: string): Promise<unknown> {
+  return gsEval(`${target}.export`, [dest]);
 }

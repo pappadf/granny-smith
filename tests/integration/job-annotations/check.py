@@ -49,9 +49,9 @@ need(block[-1][0] in ("value", "out"), "stream ends with the last statement")
 errs = [r for i in ids for k, r in jobs[i] if k == "error"]
 need(len(errs) == 1, "expected one error record, got %d" % len(errs))
 if errs:
-    need(errs[0]["lines"] == ["ASSERT FAILED: boom"], "error lines %r" % errs[0]["lines"])
+    need(errs[0]["lines"] == ["stdin:1: boom"], "error lines %r" % errs[0]["lines"])
     need(not any(l in stderr for l in errs[0]["lines"]), "the error is not written to stderr as well")
-    need(errs[0]["message"] == "ASSERT FAILED: boom", "error message")
+    need(errs[0]["message"] == "stdin:1: boom", "error message")
 
 # 3. A 256 KiB string: its value record is the reduced form.
 big = [r for i in ids for k, r in jobs[i] if k == "value" and r.get("truncated")]

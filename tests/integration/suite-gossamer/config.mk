@@ -13,7 +13,7 @@ TEST_TIMEOUT := 3600
 
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 # The g3dt row saves its 12 G mid-boot state for gossamer-checkpoint
-# (lib/mac.script, "checkpoint fixtures").
+# (lib/mac.lua, "checkpoint fixtures").
 TEST_PROVIDES := g3dt-921-midboot
 
 TEST_TIER := matrix

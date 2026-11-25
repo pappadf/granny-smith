@@ -9,6 +9,7 @@
 // scenarios that must produce a defined error rather than a crash.
 
 #include "codec.h"
+#include "common.h"
 #include "macroman.h"
 #include "resource_fork.h"
 #include "test_assert.h"
@@ -33,20 +34,6 @@ static uint8_t *dcmp_decode(const uint8_t *src, size_t len, size_t *out_len, int
 }
 
 // ---- Big-endian writer helpers --------------------------------------------
-
-static void w_u16(uint8_t *p, uint16_t v) {
-    p[0] = (uint8_t)(v >> 8);
-    p[1] = (uint8_t)(v & 0xFF);
-}
-static void w_u32(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v >> 24);
-    p[1] = (uint8_t)(v >> 16);
-    p[2] = (uint8_t)(v >> 8);
-    p[3] = (uint8_t)v;
-}
-static void w_i16(uint8_t *p, int16_t v) {
-    w_u16(p, (uint16_t)v);
-}
 
 // ---- Fork builder ----------------------------------------------------------
 //
@@ -88,17 +75,17 @@ static uint8_t *build_fork(const test_res_t *resources, size_t n_resources, cons
     uint32_t map_off = (uint32_t)(16 + data_area);
     uint32_t data_len = (uint32_t)data_area;
     uint32_t map_len = (uint32_t)map_area;
-    w_u32(buf + 0, data_off);
-    w_u32(buf + 4, map_off);
-    w_u32(buf + 8, data_len);
-    w_u32(buf + 12, map_len);
+    WR_BE32(buf + 0, data_off);
+    WR_BE32(buf + 4, map_off);
+    WR_BE32(buf + 8, data_len);
+    WR_BE32(buf + 12, map_len);
 
     // Lay out data records and record absolute offsets within the data area.
     uint32_t *res_data_off = calloc(n_resources, sizeof(uint32_t));
     uint32_t cur = 0;
     for (size_t r = 0; r < n_resources; r++) {
         res_data_off[r] = cur;
-        w_u32(buf + data_off + cur, (uint32_t)resources[r].data_len);
+        WR_BE32(buf + data_off + cur, (uint32_t)resources[r].data_len);
         memcpy(buf + data_off + cur + 4, resources[r].data, resources[r].data_len);
         cur += 4 + (uint32_t)resources[r].data_len;
     }
@@ -110,13 +97,13 @@ static uint8_t *build_fork(const test_res_t *resources, size_t n_resources, cons
     uint8_t *map = buf + map_off;
     uint16_t type_list_off = 28;
     uint16_t name_list_off = (uint16_t)(type_list_off + 2 + 8 * n_types + 12 * n_resources);
-    w_u16(map + 22, 0); // fork attrs
-    w_u16(map + 24, type_list_off);
-    w_u16(map + 26, name_list_off);
+    WR_BE16(map + 22, 0); // fork attrs
+    WR_BE16(map + 24, type_list_off);
+    WR_BE16(map + 26, name_list_off);
     if (n_types == 0)
-        w_u16(map + type_list_off, 0xFFFF); // num_types - 1 sentinel for empty fork
+        WR_BE16(map + type_list_off, 0xFFFF); // num_types - 1 sentinel for empty fork
     else
-        w_u16(map + type_list_off, (uint16_t)(n_types - 1));
+        WR_BE16(map + type_list_off, (uint16_t)(n_types - 1));
 
     // Type list entries start at type_list_off + 2; ref list entries follow
     // the type list contiguously.
@@ -126,14 +113,14 @@ static uint8_t *build_fork(const test_res_t *resources, size_t n_resources, cons
     for (size_t t = 0; t < n_types; t++) {
         uint8_t *te = map + type_entry_off + 8 * t;
         memcpy(te, type_ccs[t], 4);
-        w_u16(te + 4, (uint16_t)(type_counts[t] - 1));
+        WR_BE16(te + 4, (uint16_t)(type_counts[t] - 1));
         // ref-list offset is relative to type_list_off (not entry start).
         uint16_t this_ref_off = (uint16_t)(ref_table_start + 12 * resource_cursor - type_list_off);
-        w_u16(te + 6, this_ref_off);
+        WR_BE16(te + 6, this_ref_off);
         for (size_t r = 0; r < type_counts[t]; r++) {
             uint8_t *re = map + ref_table_start + 12 * (resource_cursor + r);
-            w_i16(re + 0, resources[resource_cursor + r].id);
-            w_i16(re + 2, resources[resource_cursor + r].name_off);
+            WR_BE16(re + 0, resources[resource_cursor + r].id);
+            WR_BE16(re + 2, resources[resource_cursor + r].name_off);
             re[4] = resources[resource_cursor + r].attrs;
             uint32_t doff = res_data_off[resource_cursor + r];
             re[5] = (uint8_t)((doff >> 16) & 0xFF);
@@ -377,7 +364,7 @@ TEST(test_huge_resource_length_rejected) {
     };
     size_t fork_len;
     uint8_t *buf = build_fork(res, 1, cc, counts, 1, NULL, &fork_len);
-    w_u32(buf + 16, 0xFFFFFFF0u); // the resource's length word
+    WR_BE32(buf + 16, 0xFFFFFFF0u); // the resource's length word
     const char *err = NULL;
     rfork_t *rf = rfork_parse(buf, fork_len, &err);
     ASSERT_TRUE(rf == NULL);
@@ -400,10 +387,10 @@ TEST(test_info_format_worst_case_name) {
 TEST(test_corrupt_offsets) {
     // Header fields claim data and map regions past the end of the buffer.
     uint8_t buf[64] = {0};
-    w_u32(buf + 0, 16); // data_off
-    w_u32(buf + 4, 4096); // map_off way past EOF
-    w_u32(buf + 8, 0);
-    w_u32(buf + 12, 30); // map_len
+    WR_BE32(buf + 0, 16); // data_off
+    WR_BE32(buf + 4, 4096); // map_off way past EOF
+    WR_BE32(buf + 8, 0);
+    WR_BE32(buf + 12, 30); // map_len
     const char *err = NULL;
     rfork_t *rf = rfork_parse(buf, sizeof(buf), &err);
     ASSERT_TRUE(rf == NULL);
@@ -635,6 +622,35 @@ TEST(test_dcmp2_greggy_bitmapped) {
     free(out);
 }
 
+TEST(test_dcmp2_greggy_bitmapped_tail) {
+    // A full all-literal run (bitmap 0x00), then a 2-word final run
+    // (bitmap 0x80: one table index, one raw word), then the odd byte:
+    // actual_size 21 = 10 words + 1.  Covers the final-run decoder.
+    uint8_t payload[] = {
+        0xA8, 0x9F, 0x65, 0x72, 0x00, 0x12, 0x09, 0x00, 0x00, 0x00, 0x00, 0x15, // actual_size = 21 bytes
+        0x00, 0x02, // dcmp_id = 2
+        0x00, 0x00, // slop
+        0x00, // byte_table_size
+        0x02, // compress_flags: bitmappedData
+        0x00, // bitmap: 8 raw words
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+        0x80, // bitmap of the last 2 words: first compressed, second raw
+        0x04, // -> static[0x04] = 0x4E75
+        0xAB, 0xCD, // raw word
+        0x7E, // the odd trailing byte
+    };
+    size_t out_len = 0;
+    uint8_t *out = dcmp_decode(payload, sizeof(payload), &out_len, NULL);
+    ASSERT_TRUE(out != NULL);
+    ASSERT_EQ_INT(21, (int)out_len);
+    uint8_t expected[21] = {
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+        0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x4E, 0x75, 0xAB, 0xCD, 0x7E,
+    };
+    ASSERT_EQ_INT(0, memcmp(out, expected, 21));
+    free(out);
+}
+
 TEST(test_dcmp_zero_pads_short_streams) {
     // actual_size = 10 but the stream emits 4 bytes before 0xFF — the
     // remaining 6 bytes must come back as zeros so callers see a buffer
@@ -684,7 +700,7 @@ TEST(test_dcmp_size_bound_is_exact) {
     };
     uint32_t sizes[2] = {CODEC_DCMP_MAX_SIZE, CODEC_DCMP_MAX_SIZE + 1};
     for (int i = 0; i < 2; i++) {
-        w_u32(payload + 8, sizes[i]);
+        WR_BE32(payload + 8, sizes[i]);
         size_t out_len = 0;
         uint8_t *out = dcmp_decode(payload, sizeof(payload), &out_len, NULL);
         if (i == 0) {
@@ -724,7 +740,7 @@ static void dcmp0_zeros(uint8_t hdr[19], uint32_t actual) {
     static const uint8_t base[19] = {0xA8, 0x9F, 0x65, 0x72, 0x00, 0x12, 0x08, 0x00, 0,   0,
                                      0,    0,    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF};
     memcpy(hdr, base, sizeof(base));
-    w_u32(hdr + 8, actual);
+    WR_BE32(hdr + 8, actual);
 }
 
 // A compressed resource is handed back inflated, and the same inflated copy
@@ -812,6 +828,7 @@ int main(void) {
     RUN(test_dcmp_rejects_wrong_dcmp_id);
     RUN(test_dcmp2_greggy_static_nonbitmapped);
     RUN(test_dcmp2_greggy_bitmapped);
+    RUN(test_dcmp2_greggy_bitmapped_tail);
     RUN(test_dcmp_zero_pads_short_streams);
     RUN(test_dcmp_huge_actual_size_is_refused);
     RUN(test_dcmp_size_bound_is_exact);

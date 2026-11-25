@@ -43,12 +43,13 @@ import { showNotification } from '@/state/toasts.svelte';
 import { machine } from '@/state/machine.svelte';
 import { setMounted, clearMounts, bumpImagesRevision } from '@/state/images.svelte';
 import { startActivity, endActivity } from '@/state/activity.svelte';
-import { sanitizeName } from '@/lib/archive';
+import { sanitizeName } from '@/lib/fileName';
 import { interleaveHalves } from '@/lib/mediaUrl';
 import { fileHasCheckpointSignature, scratchPath, ROMS_DIR, HD_DIR, CD_DIR } from '@/lib/opfsPaths';
 import {
   MEDIA_TYPES,
   LARGE_IMPORT_BYTES,
+  identifyFile,
   identifyRom,
   validateUnstated,
   type MediaTypeId,
@@ -56,6 +57,7 @@ import {
 } from '@/lib/media';
 import { mountImage, insertFloppy } from './media';
 import { opfsSafeName, adSidecarPath } from './fsOps';
+import { pathExists, rmPath, uniquePath, walkFiles } from './vfs';
 import { importImage, isGzipFile, isQcow2File, type DiskCategory } from './importImage';
 
 // The one chunked writer: everything the page puts on the emulator's
@@ -126,19 +128,12 @@ export async function streamToOpfs(
 
 // Stage an uploaded file in the scratch area for probing/persisting and return
 // the staged path (or null on failure, with nothing left behind).  Callers
-// discard it via discardStaging() on every exit.
+// discard it via rmPath() on every exit.
 async function stageUpload(file: File): Promise<string | null> {
   const path = scratchPath(sanitizeName(file.name) || 'image.img');
   if (await streamToOpfs(path, file)) return path;
-  await discardStaging(path); // a partial write
+  await rmPath(path); // a partial write
   return null;
-}
-
-// Best-effort removal of a staged file or directory. Everything staging touches is written
-// by the worker (FS streaming above), so the rm runs worker-side too —
-// keeping its WasmFS view coherent.
-export async function discardStaging(path: string): Promise<void> {
-  await gsEval('files.rm', [path]);
 }
 
 // Top-level entry. Caller supplies a flat list of File objects.
@@ -281,7 +276,7 @@ async function acceptOne(file: File, quiet: boolean): Promise<FileOutcome> {
   try {
     return await probeStaged(staging, file.name, quiet);
   } finally {
-    await discardStaging(staging);
+    await rmPath(staging);
   }
 }
 
@@ -362,7 +357,7 @@ export async function acceptFilesAsCategory(
       if (autoMount) await maybeBootFromRom(first.outcome.path);
       return first.outcome.path;
     }
-    await Promise.all(chips.map((c) => discardStaging(c.path)));
+    await Promise.all(chips.map((c) => rmPath(c.path)));
   }
   startActivity(file.name);
   try {
@@ -382,7 +377,7 @@ export async function acceptFilesAsCategory(
     try {
       stored = await persistAs(staging, file.name, category);
     } finally {
-      await discardStaging(staging);
+      await rmPath(staging);
     }
     if (!stored.ok) {
       showNotification(`'${file.name}' ${stored.reason}`, 'error');
@@ -598,7 +593,16 @@ async function probeStaged(path: string, name: string, quiet: boolean): Promise<
 // validates.  Dot files (AppleDouble "._" sidecars, which some zips carry)
 // are never media.  Null when no member is a medium.
 async function probeArchive(stagingPath: string, quiet: boolean): Promise<FileOutcome | null> {
-  for (const inner of await listFiles(stagingPath)) {
+  let members: string[];
+  try {
+    members = await walkFiles(stagingPath);
+  } catch (e) {
+    // An unreadable or oversized listing is said, not taken for an empty one.
+    const msg = e instanceof Error ? e.message : String(e);
+    showNotification(msg.charAt(0).toUpperCase() + msg.slice(1), 'error');
+    return null;
+  }
+  for (const inner of members) {
     const base = inner.split('/').pop() ?? '';
     if (!base || base.startsWith('.')) continue;
     // Stored under its member name, made safe for OPFS (an HFS-derived
@@ -612,48 +616,13 @@ async function probeArchive(stagingPath: string, quiet: boolean): Promise<FileOu
   return null;
 }
 
-// Where to store `name` in `dir`: its own name when nothing is there, the
-// file there when it is byte-identical to `source` (`same`: it is stored
-// already), else the first "name N.ext" free.
-async function freeStorePath(
-  dir: string,
-  name: string,
-  source: string,
-): Promise<{ path: string; same: boolean }> {
-  const dot = name.lastIndexOf('.');
-  const stem = dot > 0 ? name.slice(0, dot) : name;
-  const ext = dot > 0 ? name.slice(dot) : '';
-  for (let n = 1; ; n++) {
-    const path = n === 1 ? `${dir}/${name}` : `${dir}/${stem} ${n}${ext}`;
-    if ((await gsEval('files.path_exists', [path])) !== true) return { path, same: false };
-    if ((await gsEval('files.path_compare', [source, path])) === -1) return { path, same: true };
-  }
-}
-
-// Every file under `dir` (depth first, in listing order), as full paths.
-async function listFiles(dir: string): Promise<string[]> {
-  const entries = await gsEval('files.list', [dir]);
-  if (!Array.isArray(entries)) {
-    // An unreadable or oversized listing is said, not taken for an empty one.
-    showNotification(`Cannot list ${dir}: ${gsErrorText(entries)}`, 'error');
-    return [];
-  }
-  const out: string[] = [];
-  for (const e of entries as { name: string; kind: string }[]) {
-    const path = `${dir}/${e.name}`;
-    if (e.kind === 'directory') out.push(...(await listFiles(path)));
-    else out.push(path);
-  }
-  return out;
-}
-
 // The archive format of the file at `path` ("zip", "sit", "cpt", "hqx",
 // "bin", "gz"), or '' when it is none -- decided by the core from the file's
-// content (a bounded read of its head and tail), whatever it is called.
+// content (a bounded read of its head and tail), whatever it is called
+// (files.identify).
 export async function stagedArchiveFormat(path: string): Promise<string> {
   try {
-    const fmt = await gsEval('files.archive.identify', [path]);
-    return typeof fmt === 'string' ? fmt : '';
+    return (await identifyFile(gsEval, path))?.archive ?? '';
   } catch {
     return '';
   }
@@ -690,7 +659,9 @@ async function persist(
   // place and this one is stored beside it ("name 2.ext"), so two media of
   // one name -- two floppies of a URL, two uploads -- never overwrite each
   // other.
-  const { path: finalPath, same } = await freeStorePath(targetDir, finalName, sourcePath);
+  const { path: finalPath, same } = await uniquePath(targetDir, finalName, {
+    sameAs: sourcePath,
+  });
   // The same file stored already is left as it is: copying over it failed
   // ("could not be stored") when a drive had it open.  Anything else is
   // moved, not copied, so storing never holds the file twice.
@@ -710,11 +681,11 @@ async function persist(
       inArchive &&
       descriptor.id !== 'hd' &&
       descriptor.id !== 'cdrom' &&
-      (await gsEval('files.path_exists', [sidecar])) === true
+      (await pathExists(sidecar))
     )
-      await gsEval('files.rm', [sidecar]);
+      await rmPath(sidecar);
   }
-  if (!inArchive) await discardStaging(sourcePath);
+  if (!inArchive) await rmPath(sourcePath);
   // Offer a freshly stored vROM to the core's content-addressed registry.
   // The startup enumeration ran once at page load, so without this an
   // "(auto)" boot after a mid-session upload would not see the file until
@@ -804,7 +775,7 @@ export async function storeRomPair(
     }
     return { ok: false, reason: 'do not interleave into a ROM whose checksum verifies' };
   } finally {
-    await discardStaging(combined);
+    await rmPath(combined);
   }
 }
 
@@ -855,7 +826,7 @@ async function stageLisaChips(files: File[]): Promise<{ chips: StagedChip[]; res
       continue;
     }
     // Not a chip: the single-file flow stages it again on its own.
-    if (path) await discardStaging(path);
+    if (path) await rmPath(path);
     rest.push(file);
   }
   return { chips, rest };
@@ -907,7 +878,7 @@ async function storeLisaChips(
       });
     }
   } finally {
-    await Promise.all(chips.map((c) => discardStaging(c.path)));
+    await Promise.all(chips.map((c) => rmPath(c.path)));
   }
   return out;
 }
@@ -960,7 +931,7 @@ async function loadCheckpointFile(file: File): Promise<void> {
     showNotification(`Loading checkpoint ${file.name}…`, 'info');
     res = await gsEval('checkpoint.load', [staged]);
   } finally {
-    await discardStaging(staged);
+    await rmPath(staged);
   }
   if (res === true) {
     await reconcileUiWithMachine('restore');

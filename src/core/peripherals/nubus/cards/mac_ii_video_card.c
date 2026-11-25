@@ -30,6 +30,7 @@
 #include "checkpoint.h"
 #include "declrom.h"
 #include "display.h"
+#include "display_ramdac.h"
 #include "log.h"
 #include "memory.h"
 #include "nubus.h"
@@ -55,8 +56,7 @@ typedef struct {
     // address -- which for a pixel is the complemented VRAM value, left-aligned
     // in the 8-bit index (see rebuild_display_clut).
     uint8_t ramdac[256][3];
-    uint8_t ramdac_addr; // the Bt453 address register
-    uint8_t ramdac_comp; // 0..2: which of R, G, B the next data access is
+    ramdac_seq_t ramdac_seq; // the Bt453 address register and R/G/B phase
     uint8_t vint_enabled; // ClrVInt enables, DisableVInt masks
     uint8_t vint_pending; // the slot line is asserted
     uint8_t vsync; // RdVSync bit 0, toggled per guest read
@@ -70,7 +70,6 @@ typedef struct {
     rgba8_t clut[256]; // the palette by guest pixel value (rebuilt; not saved)
     nubus_card_t *card;
     uint8_t *vram;
-    uint8_t *vrom; // bus-space image of the declaration ROM
     uint8_t *blank; // the black raster a blanked card scans out
     size_t blank_size;
     uint32_t slot_base;
@@ -140,17 +139,16 @@ static uint32_t smear(uint32_t val, unsigned size) {
 static void ramdac_write(toby_t *t, unsigned reg, uint8_t v) {
     switch (reg) {
     case 3: // wCLUTAddReg / rCLUTAddReg: the address, restarting at R
-        t->ramdac_addr = v;
-        t->ramdac_comp = 0;
+        ramdac_seq_set_waddr(&t->ramdac_seq, v);
         break;
-    case 2: // wCLUTDataReg: R, G, B, then on to the next entry
-        t->ramdac[t->ramdac_addr][t->ramdac_comp] = v;
-        if (++t->ramdac_comp == 3) {
-            t->ramdac_comp = 0;
+    case 2: { // wCLUTDataReg: R, G, B, then on to the next entry
+        uint8_t idx;
+        if (ramdac_seq_write(&t->ramdac_seq, v, &idx)) {
+            memcpy(t->ramdac[idx], t->ramdac_seq.pending, 3);
             rebuild_display_clut(t);
-            t->ramdac_addr++;
         }
         break;
+    }
     default:
         LOG(2, "TFB: RAMDAC write to register %u = $%02X (unmodelled)", reg, v);
         break;
@@ -160,14 +158,11 @@ static void ramdac_write(toby_t *t, unsigned reg, uint8_t v) {
 static uint8_t ramdac_read(toby_t *t, unsigned reg, bool peek) {
     switch (reg) {
     case 3:
-        return t->ramdac_addr;
+        return ramdac_seq_addr(&t->ramdac_seq);
     case 2: {
-        uint8_t v = t->ramdac[t->ramdac_addr][t->ramdac_comp];
-        if (!peek && ++t->ramdac_comp == 3) {
-            t->ramdac_comp = 0;
-            t->ramdac_addr++;
-        }
-        return v;
+        uint8_t comp;
+        uint8_t idx = ramdac_seq_read(&t->ramdac_seq, peek, &comp);
+        return t->ramdac[idx][comp];
     }
     default:
         return 0;
@@ -266,7 +261,7 @@ static void io_write32(void *dev, uint32_t addr, uint32_t val) {
     io_write(dev, addr, val);
 }
 
-static memory_interface_t s_toby_iface = {
+static const memory_interface_t s_toby_iface = {
     .read_uint8 = io_read8,
     .read_uint16 = io_read16,
     .read_uint32 = io_read32,
@@ -288,8 +283,8 @@ static memory_interface_t s_toby_iface = {
 // JMFB -- see jmfb.c), and the declaration ROM at the slot top.
 static void map_regions(toby_t *t, config_t *cfg) {
     memory_map_host_region(cfg->memory_map, "toby_vram", t->vram, t->slot_base, TOBY_VRAM_SIZE, true);
-    memory_map_host_region(cfg->memory_map, "toby_declrom", t->vrom, t->slot_base + 0x1000000u - TOBY_DECLROM_BUS_SIZE,
-                           TOBY_DECLROM_BUS_SIZE, false);
+    memory_map_host_region(cfg->memory_map, "toby_declrom", t->card->declrom,
+                           t->slot_base + 0x1000000u - TOBY_DECLROM_BUS_SIZE, TOBY_DECLROM_BUS_SIZE, false);
     memory_map_host_region_alias(cfg->memory_map, t->slot_base + 0x900000u, t->slot_base);
     memory_map_add(cfg->memory_map, t->slot_base + TOBY_TFB_BASE, TOBY_IO_END - TOBY_TFB_BASE, "TFB regs",
                    &s_toby_iface, t);
@@ -301,8 +296,7 @@ static void map_regions(toby_t *t, config_t *cfg) {
 // VBL interrupt masked, 1 bpp, a palette of black.
 static void power_on_registers(toby_t *t) {
     memset(t->tfb, 0, sizeof t->tfb);
-    t->ramdac_addr = 0;
-    t->ramdac_comp = 0;
+    ramdac_seq_init(&t->ramdac_seq, 0);
     t->vint_enabled = 0;
     t->vint_pending = 0;
     t->vsync = 0;
@@ -311,33 +305,22 @@ static void power_on_registers(toby_t *t) {
 
 static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
     (void)cp;
+    (void)opts;
     toby_t *t = calloc(1, sizeof *t);
     if (!t)
         return -1;
     t->card = card;
     t->slot_base = nubus_slot_base(card->slot);
     t->vram = calloc(1, TOBY_VRAM_SIZE);
-    t->vrom = calloc(1, TOBY_DECLROM_BUS_SIZE);
     t->blank_size = (size_t)(128u << 3) * TOBY_HEIGHT; // the widest stride
     t->blank = calloc(1, t->blank_size);
-    if (!t->vram || !t->vrom || !t->blank) {
+    if (!t->vram || !t->blank) {
         free(t->vram);
-        free(t->vrom);
         free(t->blank);
         free(t);
         return -1;
     }
-    if (!declrom_load_vrom_card(card, mac_ii_video_card_kind.id, opts->rom[0] ? opts->rom : NULL, t->vrom,
-                                TOBY_DECLROM_BUS_SIZE, NULL)) {
-        LOG(0, "TFB: slot $%X: the Macintosh II Video Card declaration ROM could not be loaded", card->slot);
-        free(t->vram);
-        free(t->vrom);
-        free(t->blank);
-        free(t);
-        return -1;
-    }
-    card->declrom = t->vrom;
-    card->declrom_size = TOBY_DECLROM_BUS_SIZE;
+    // The declaration ROM is card->declrom, seated by the bus (declrom_seat)
 
     power_on_registers(t);
     t->display.format = PIXEL_1BPP_MSB;
@@ -359,7 +342,6 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
         return;
     free(t->vram);
     free(t->blank);
-    // t->vrom is published as card->declrom; nubus_delete frees it.
     free(t);
     card->priv = NULL;
 }
@@ -405,12 +387,23 @@ static display_t *card_display(nubus_card_t *card) {
     return t ? &t->display : NULL;
 }
 
+// The guest physical address of the first displayed byte: the VRAM sits at
+// the bottom of the card's slot space, and the TFB base registers pick the
+// page scanned.  0 while the blank is scanned.
+static uint64_t card_fb_base(nubus_card_t *card) {
+    toby_t *t = card->priv;
+    return t ? display_guest_addr(&t->display, t->vram, TOBY_VRAM_SIZE, t->slot_base) : 0;
+}
+
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(toby_t, display);
+
 static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
     toby_t *t = card ? card->priv : NULL;
     if (!t)
         return;
     system_write_checkpoint_data(cp, t->vram, TOBY_VRAM_SIZE);
-    system_write_checkpoint_data(cp, t, offsetof(toby_t, display));
+    checkpoint_save_prefix(cp, t, toby_t);
 }
 
 static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
@@ -418,7 +411,7 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
     if (!t)
         return;
     system_read_checkpoint_data(cp, t->vram, TOBY_VRAM_SIZE);
-    system_read_checkpoint_data(cp, t, offsetof(toby_t, display));
+    checkpoint_load_prefix(cp, t, toby_t);
     if (t->vint_pending)
         nubus_assert_irq(card);
     apply_scanout(t);
@@ -433,6 +426,7 @@ static const nubus_card_ops_t mac_ii_video_card_ops = {
     .teardown = card_teardown,
     .on_vbl = card_on_vbl,
     .display = card_display,
+    .fb_base = card_fb_base,
     .checkpoint_save = card_checkpoint_save,
     .checkpoint_restore = card_checkpoint_restore,
 };
@@ -457,7 +451,7 @@ static bool toby_startup_record(const slot_opts_t *e, uint8_t rec[8]) {
     int depth = 0;
     if (!e->video_mode[0] || !nubus_monitor_mode_lookup(toby_monitors, e->video_mode, &row, &depth))
         return false;
-    uint8_t sp_depth = depth == 2 ? 0x81 : depth == 4 ? 0x82 : depth == 8 ? 0x83 : 0x80;
+    uint8_t sp_depth = nubus_spdepth_for_bpp(depth, 0x80);
     const uint8_t r[8] = {0x00, 0x05, sp_depth, 0x80, 0x80, 0, 0, 0};
     memcpy(rec, r, sizeof r);
     return true;
@@ -470,6 +464,7 @@ const nubus_card_kind_t mac_ii_video_card_kind = {
     .requires_vrom = true,
     .substitute = false,
     .monitors = toby_monitors,
+    .declrom_bus_size = TOBY_DECLROM_BUS_SIZE,
     .ops = &mac_ii_video_card_ops,
     .startup_record = toby_startup_record,
 };

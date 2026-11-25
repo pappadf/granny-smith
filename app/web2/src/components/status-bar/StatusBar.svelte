@@ -4,6 +4,7 @@
   import { printer, reopenPrintedDocument } from '@/state/printer.svelte';
   import { setCapsLock, setCpuEngine } from '@/bus/emulator';
   import { shortModel } from '@/lib/machine';
+  import { formatSize } from '@/lib/format';
   import Icon from '../common/Icon.svelte';
   import ToggleChip from '../ui/ToggleChip.svelte';
   import DriveLight from '../ui/DriveLight.svelte';
@@ -25,8 +26,12 @@
     crashed: 'Crashed',
   };
 
+  // A machine that switched itself off (machine.poweredOff) says so.
+  const POWERED_OFF = 'Powered off';
+  const shownLabel = $derived(machine.poweredOff ? POWERED_OFF : stateLabel[machine.status]);
+
   // Every non-empty label, laid invisibly under the shown one to size the field.
-  const stateSizers = Object.values(stateLabel).filter((l) => l);
+  const stateSizers = [...Object.values(stateLabel).filter((l) => l), POWERED_OFF];
 
   const desc = $derived(
     machine.model && machine.ram ? `${shortModel(machine.model)} · ${machine.ram}` : '',
@@ -116,7 +121,7 @@
   );
   const engineTitle = $derived(
     machine.engine === 'jit'
-      ? `CPU engine: predecoded interpreter + PowerPC JIT (${machine.jitSupervisor ? 'kernel code included' : 'user code only'}). ${machine.jitPct.toFixed(0)}% of the last second's instructions ran as translated code (${machine.jitRegions} regions, ${(machine.jitKb / 1024).toFixed(1)} MB compiled). Click to change.`
+      ? `CPU engine: predecoded interpreter + PowerPC JIT (${machine.jitSupervisor ? 'kernel code included' : 'user code only'}). ${machine.jitPct.toFixed(0)}% of the last second's instructions ran as translated code (${machine.jitRegions} regions, ${formatSize(machine.jitKb * 1024)} compiled). Click to change.`
       : machine.engine === 'predecoded'
         ? `CPU engine: predecoded interpreter${machine.ppc ? ' (the PowerPC JIT is off)' : ''}. Click to change.`
         : 'CPU engine: the plain interpreter (predecoding off). Click to change.',
@@ -183,7 +188,7 @@
               state={barState}
             />{/if}</span
         ><span class="text"
-          ><span class="label">{stateLabel[machine.status]}</span>{#each stateSizers as s (s)}<span
+          ><span class="label">{shownLabel}</span>{#each stateSizers as s (s)}<span
               class="sizer"
               aria-hidden="true">{s}</span
             >{/each}</span

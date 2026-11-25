@@ -5,7 +5,7 @@
 // PUBLIC machine descriptor + capability types.  This is the one machine-
 // subsystem header the platform-agnostic core is allowed to include
 // (system.c / system_internal.h store and read a `const hw_profile_t *`).  The
-// machine *implementation* headers (mac030/…, glue/…, mdu/…, oss/…, lisa/…,
+// machine *implementation* headers (glue/…, mdu/…, oss/…, lisa/…,
 // runtime/…, the per-machine _internal.h) are off-limits to core — a CI
 // layering check enforces that.
 //
@@ -97,9 +97,11 @@ static inline cpu_arch_t cpu_arch_for_model(int cpu_model) {
 // whatever per-monitor data it needs private: the PDM's table carries a
 // 3-bit sense strap the registry has no business seeing.
 //
-// On a machine whose built-in video is a BUILTIN NuBus pseudo-slot (SE/30,
-// IIci, IIsi) the card kind in that slot supplies the monitors; such a
-// profile sets only the label fields here and `slot_monitors` true.
+// On a machine whose built-in video is a BUILTIN slot's card kind -- a NuBus
+// pseudo-slot (SE/30, IIci, IIsi) or a PCI device (Control, the Rage Pro, the
+// Network Server's 54M30) -- that kind's monitor rows supply the monitors;
+// such a profile sets only the label fields (and default_monitor) here and
+// `slot_monitors` true.
 // One saved mode a built-in video port starts in (the startup video mode):
 // its depth, and the savedMode byte the port's slot PRAM record holds for it.
 typedef struct builtin_startup_mode {
@@ -141,8 +143,9 @@ typedef struct builtin_video_desc {
     // saved mode, and the modes by monitor.  0 / NULL: it offers none.
     int startup_slot;
     const builtin_startup_t *startup;
-    // The monitors come from the card kind in the machine's BUILTIN NuBus
-    // slot (its nubus_monitor_t list); monitor_at / monitor_sense are NULL.
+    // The monitors come from the card kind in the machine's BUILTIN NuBus or
+    // PCI slot (its nubus_monitor_t rows); monitor_at / monitor_sense are
+    // NULL, and the legacy monitor= argument names a row's id.
     bool slot_monitors;
 } builtin_video_desc_t;
 
@@ -538,10 +541,10 @@ typedef struct hw_profile {
     // the Network Servers, whose store starts blank.
     const char *(*of_nvram_check)(int n, const char *packed, const char **bad);
 
-    // "Bespoke substrate" is not "bespoke machine": every 68k family, the IIfx
-    // included, builds through mac030_build_core + mac030_build_lowspeed and
-    // tears down through
-    // machine_teardown_config_devices.  What a family keeps for itself is what
+    // "Bespoke substrate" is not "bespoke machine": every II-class 68k family,
+    // the IIfx included, builds through m68k_board_build_core +
+    // m68k_board_build_lowspeed (the Plus and the Lisa build their own core), and
+    // every family tears down through machine_teardown_config_devices.  What a family keeps for itself is what
     // its hardware actually does differently -- for the IIfx, the OSS
     // interrupt controller, the FMC ROM-invert POST window, the SCSI DMA
     // engine, and a ROM overlay that doubles as a trip-wire.
@@ -551,7 +554,7 @@ typedef struct hw_profile {
     // interprets.  Typed by convention: the family
     // substrate casts it to its concrete type.  NULL where a substrate serves
     // exactly one machine and can therefore reach its data directly (Plus,
-    // IIfx).  The IIfx does define a mac030_board_desc_t of its own -- it
+    // IIfx).  The IIfx does define a m68k_board_desc_t of its own -- it
     // simply has no second machine to vary against, so routing it through here
     // would add a cast without adding sharing.
     //

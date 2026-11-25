@@ -30,6 +30,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as zlib from "node:zlib";
 import { gsEvalInPage, scratchFiles } from "../helpers/web2-eval";
+import { uploadRomViaWelcome } from "../helpers/upload";
 
 // The imports are independent (each test has its own browser context, so its
 // own OPFS and quota, and each worker starts its own image server below), so
@@ -278,8 +279,9 @@ test("a blank 2 GB disk made as .dmg costs a few KB", async ({ page }) => {
   await waitReady(page);
   const before = await usageGrowth(page);
   expect(
-    await gsEvalInPage(page, "files.hd_create", [
+    await gsEvalInPage(page, "files.create", [
       "/opfs/images/hd/blank.dmg",
+      "hd",
       "2147483648",
     ]),
   ).toBe(true);
@@ -313,11 +315,7 @@ test("a 2 GiB local file upload is stored compact, never expanded", async ({
     await waitReady(page);
     const cont = page.getByRole("button", { name: "Continue" });
     if (await cont.isVisible().catch(() => false)) await cont.click();
-    const [chooser] = await Promise.all([
-      page.waitForEvent("filechooser"),
-      page.getByRole("button", { name: "Load ROM..." }).click(),
-    ]);
-    await chooser.setFiles(file);
+    await uploadRomViaWelcome(page, file);
     await expect
       .poll(async () => (await storedDisks(page)).map((d) => d.name), {
         timeout: 540_000,

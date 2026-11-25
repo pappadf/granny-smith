@@ -113,7 +113,7 @@ void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host_ptr
 void memory_map_host_region_alias(memory_map_t *m, uint32_t alias_phys_base, uint32_t original_phys_base) {
     (void)m, (void)alias_phys_base, (void)original_phys_base;
 }
-void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
+void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, const memory_interface_t *iface,
                     void *device) {
     (void)mem, (void)addr, (void)size, (void)name, (void)iface, (void)device;
 }

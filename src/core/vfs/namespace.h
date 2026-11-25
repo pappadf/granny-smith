@@ -19,6 +19,7 @@
 #include "source.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 // One directory entry.
@@ -90,8 +91,25 @@ ns_t *ns_open_ufs(source_t *src);
 
 // An archive peeler reads (sit, cpt, zip, and the wrappers hqx, bin, gz):
 // the member tree, two-fork members with their resource forks and Finder
-// info.  `format` is the peeler format name.
+// info.  `format` is the peeler format name.  Members are named and matched
+// as below.
 ns_t *ns_open_archive(source_t *src, const char *format);
+
+// Whether archive format `format` (a peeler format name) stores member names
+// in MacRoman: the Mac formats (sit, cpt, hqx, bin).  Their names are shown
+// in UTF-8, a '/' inside one as ':' (mac_name_to_vfs), and matched as the
+// Finder matches them (mac_name_eq).  Zip, tar and gzip names are shown as
+// stored and matched exactly.
+bool ns_archive_names_are_macroman(const char *format);
+
+// The VFS path of peeler entry path `raw` in an archive of `format`, into
+// `out` (NUL-terminated, truncated to `cap`).  Each component goes through
+// mac_name_to_vfs when the format's names are MacRoman, else is copied.
+void ns_archive_member_path(const char *format, const char *raw, char *out, size_t cap);
+
+// Whether member path `vpath` (as ns_archive_member_path spells it) is the
+// path `want` (no leading or trailing '/'), component by component.
+bool ns_archive_member_eq(const char *format, const char *vpath, const char *want);
 
 // What a namespace is, for listings: a disk's "APM" / "HFS" / "UFS", an
 // archive's peeler format ("zip", "sit", "bin", ...).  NULL when `ns` is

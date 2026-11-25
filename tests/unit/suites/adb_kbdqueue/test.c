@@ -26,15 +26,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define ASSERT_EQ_HEX(a, b)                                                                                            \
-    do {                                                                                                               \
-        unsigned a_ = (unsigned)(a), b_ = (unsigned)(b);                                                               \
-        if (a_ != b_) {                                                                                                \
-            fprintf(stderr, "[FAIL] %s:%d: %s != %s ($%02X != $%02X)\n", __FILE__, __LINE__, #a, #b, a_, b_);          \
-            exit(1);                                                                                                   \
-        }                                                                                                              \
-    } while (0)
-
 // --- The environment adb.c reaches into -------------------------------------
 //
 // None of it is needed to exercise the queue: no VIA (the transport is the IOP
@@ -100,6 +91,10 @@ struct object *object_new(const class_desc_t *cls, void *instance_data, const ch
 void object_delete(struct object *o) {
     (void)o;
 }
+void object_destroy(struct object **slot) {
+    if (slot)
+        *slot = NULL;
+}
 void object_attach(struct object *parent, struct object *child) {
     (void)parent;
     (void)child;
@@ -136,12 +131,6 @@ value_t val_err(const char *fmt, ...) {
     (void)fmt;
     value_t v = {0};
     return v;
-}
-
-int debug_mac_resolve_ascii(char c, bool *shift) {
-    (void)c;
-    (void)shift;
-    return -1;
 }
 
 #define KEY_SHIFT 0x38u

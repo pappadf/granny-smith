@@ -25,7 +25,9 @@
 
 #include "checkpoint.h"
 #include "display_class.h"
+#include "display_ramdac.h"
 #include "log.h"
+#include "regfile.h"
 #include "scheduler.h"
 #include "system.h"
 #include "system_internal.h" // full config_t, for cfg->build_opts
@@ -89,11 +91,9 @@ struct dafb {
     struct object *video_node;
     rgba8_t clut[256];
 
-    // AC842 write machine: index + RGB component phase (the partial
+    // AC842 palette port: index + RGB component phase (the partial
     // triplet is real state and checkpoints with the device).
-    uint8_t dac_idx;
-    uint8_t dac_phase;
-    uint8_t dac_rgb[3];
+    ramdac_seq_t dac;
     uint8_t pcbr0;
 
     // AC842a (Q950): PCBR1 lives behind AddrReg==1 at the config register
@@ -124,9 +124,7 @@ struct dafb {
     bool timing_valid;
 
     // Video IRQ output
-    dafb_irq_cb irq_cb;
-    void *irq_ctx;
-    bool irq_line;
+    irq_line_t irq;
 };
 
 // ============================================================
@@ -137,11 +135,7 @@ static void update_irq(dafb_t *dafb) {
     uint32_t enable = dafb->regs[SWATCH_INTR_ENABLE >> 2];
     uint32_t status = dafb->regs[SWATCH_INTR_STATUS >> 2];
     bool active = (enable & status & 0x7u) != 0;
-    if (active != dafb->irq_line) {
-        dafb->irq_line = active;
-        if (dafb->irq_cb)
-            dafb->irq_cb(dafb->irq_ctx, active);
-    }
+    irq_line_set(&dafb->irq, active);
 }
 
 // ============================================================
@@ -419,23 +413,18 @@ static void dp8531_commit(dafb_t *dafb) {
 static void ac842_write(dafb_t *dafb, uint32_t reg, uint8_t value) {
     switch (reg) {
     case AC842_ADDR:
-        dafb->dac_idx = value;
-        dafb->dac_phase = 0;
+        ramdac_seq_set_waddr(&dafb->dac, value);
         break;
-    case AC842_DATA:
-        if (dafb->dac_phase < 3)
-            dafb->dac_rgb[dafb->dac_phase] = value;
-        dafb->dac_phase++;
-        if (dafb->dac_phase >= 3) {
-            dafb->clut[dafb->dac_idx].r = dafb->dac_rgb[0];
-            dafb->clut[dafb->dac_idx].g = dafb->dac_rgb[1];
-            dafb->clut[dafb->dac_idx].b = dafb->dac_rgb[2];
-            dafb->clut[dafb->dac_idx].a = 255;
-            dafb->dac_idx++;
-            dafb->dac_phase = 0;
+    case AC842_DATA: {
+        // Latched R, G, B; the entry is stored on blue (display_ramdac.h)
+        uint8_t idx;
+        if (ramdac_seq_write(&dafb->dac, value, &idx)) {
+            const uint8_t *c = dafb->dac.pending;
+            dafb->clut[idx] = (rgba8_t){c[0], c[1], c[2], 255};
             dafb->display.clut_dirty = true;
         }
         break;
+    }
     case AC842_PCBR0:
         // On an AC842a, AddrReg == 1 routes the config register to PCBR1
         // (Apple's own driver: "Move.l #1,ACDC_AddrReg … Tell ACDC to use
@@ -443,7 +432,7 @@ static void ac842_write(dafb_t *dafb, uint32_t reg, uint8_t value) {
         // is no PCBR1 — the write always lands in PCBR0, which is exactly
         // what PrimaryInit's presence probe exploits ($06 into PCBR0,
         // 0 "into PCBR1", read PCBR0 back: $06 ⇒ AC842a, 0 ⇒ AC842).
-        if (dafb->ac842a && dafb->dac_idx == 1) {
+        if (dafb->ac842a && ramdac_seq_addr(&dafb->dac) == 1) {
             dafb->pcbr1 = (uint8_t)((value & 0xF0u) | (dafb->pcbr1 & 0x0Fu)); // low nibble = RO mfg/rev
             LOG(2, "AC842a PCBR1 = $%02X%s", dafb->pcbr1, (dafb->pcbr1 & 0xC0u) == 0xC0u ? " (x555 16bpp)" : "");
         } else {
@@ -461,19 +450,18 @@ static void ac842_write(dafb_t *dafb, uint32_t reg, uint8_t value) {
 static uint8_t ac842_read(dafb_t *dafb, uint32_t reg, bool peek) {
     switch (reg) {
     case AC842_ADDR:
-        return dafb->dac_idx;
+        return ramdac_seq_addr(&dafb->dac);
     case AC842_DATA: {
-        const uint8_t *entry = (const uint8_t *)&dafb->clut[dafb->dac_idx];
-        uint8_t v = (dafb->dac_phase < 3) ? entry[dafb->dac_phase] : 0;
-        if (!peek)
-            dafb->dac_phase = (uint8_t)((dafb->dac_phase + 1) % 3);
-        return v;
+        // The run-read advances the index after blue, as the write does
+        uint8_t comp;
+        uint8_t idx = ramdac_seq_read(&dafb->dac, peek, &comp);
+        return ((const uint8_t *)&dafb->clut[idx])[comp];
     }
     case AC842_PCBR0:
         // AC842a: AddrReg == 1 reads PCBR1 (low nibble = mfg/rev, 0 here —
         // the non-Antelope answer, so the driver loads the sparse
         // Trans5to8 CLUT for x555).
-        if (dafb->ac842a && dafb->dac_idx == 1)
+        if (dafb->ac842a && ramdac_seq_addr(&dafb->dac) == 1)
             return dafb->pcbr1;
         return dafb->pcbr0;
     default:
@@ -593,7 +581,7 @@ static uint32_t dafb_read32(void *ctx, uint32_t offset) {
     return reg_read(ctx, offset, false);
 }
 static uint8_t dafb_read8(void *ctx, uint32_t offset) {
-    return (uint8_t)(reg_read(ctx, offset, false) >> (8 * (3 - (offset & 3))));
+    return be_lane8(reg_read(ctx, offset, false), offset);
 }
 static uint16_t dafb_read16(void *ctx, uint32_t offset) {
     return (uint16_t)(reg_read(ctx, offset & ~1u, false) >> (8 * (2 - (offset & 2))));
@@ -602,7 +590,7 @@ static uint32_t dafb_peek32(void *ctx, uint32_t offset) {
     return reg_read(ctx, offset, true);
 }
 static uint8_t dafb_peek8(void *ctx, uint32_t offset) {
-    return (uint8_t)(reg_read(ctx, offset, true) >> (8 * (3 - (offset & 3))));
+    return be_lane8(reg_read(ctx, offset, true), offset);
 }
 static uint16_t dafb_peek16(void *ctx, uint32_t offset) {
     return (uint16_t)(reg_read(ctx, offset & ~1u, true) >> (8 * (2 - (offset & 2))));
@@ -643,8 +631,7 @@ static void dafb_write_lanes(dafb_t *dafb, uint32_t offset, const uint8_t *bytes
         uint32_t v = dafb->regs[off >> 2];
         // Absorb every remaining byte that lands in THIS longword.
         while (i < n && reg_off(offset + (uint32_t)i) == off) {
-            uint32_t shift = 8u * (3u - ((offset + (uint32_t)i) & 3u));
-            v = (v & ~(0xFFu << shift)) | ((uint32_t)bytes[i] << shift);
+            be_lane8_set(&v, offset + (uint32_t)i, bytes[i]);
             i++;
         }
         dafb->regs[off >> 2] = v;
@@ -698,10 +685,7 @@ static void dafb_poweron_display(dafb_t *dafb, bool cold) {
         display_blank_raster(&dafb->display);
     dafb->display.clut = dafb->clut;
     dafb->display.clut_len = 256;
-    dafb->display.shape_dirty = true;
-    dafb->display.clut_dirty = true;
-    dafb->display.fb_dirty = true;
-    dafb->display.response_dirty = true;
+    display_mark_all_dirty(&dafb->display);
     for (int i = 0; i < 256; i++) {
         dafb->clut[i].r = dafb->clut[i].g = dafb->clut[i].b = (uint8_t)i;
         dafb->clut[i].a = 255;
@@ -725,6 +709,20 @@ static void dafb_present_blanked(dafb_t *dafb) {
 // ============================================================
 
 static void dafb_set_monitor_sense(dafb_t *dafb, uint8_t code);
+
+// The chip's checkpointed state, one list for dafb_checkpoint and the
+// restore in dafb_init: registers, CLUT, DAC, the clock registers, VRAM
+// (vram_size is the construction's, so both sides agree) and the blank flag.
+#define DAFB_CP_FIELDS(OP, cp, d)                                                                                      \
+    CP_ARRAY(OP, cp, (d)->regs);                                                                                       \
+    CP_ARRAY(OP, cp, (d)->clut);                                                                                       \
+    CP_FIELD(OP, cp, (d)->dac);                                                                                        \
+    CP_FIELD(OP, cp, (d)->pcbr0);                                                                                      \
+    CP_FIELD(OP, cp, (d)->pcbr1);                                                                                      \
+    CP_ARRAY(OP, cp, (d)->clk_reg);                                                                                    \
+    CP_FIELD(OP, cp, (d)->clock_hz);                                                                                   \
+    OP((cp), (d)->vram, (d)->vram_size);                                                                               \
+    CP_FIELD(OP, cp, (d)->blanked)
 
 dafb_t *dafb_init(uint32_t vram_size, uint8_t monitor, checkpoint_t *cp) {
     dafb_t *dafb = (dafb_t *)calloc(1, sizeof(dafb_t));
@@ -750,17 +748,7 @@ dafb_t *dafb_init(uint32_t vram_size, uint8_t monitor, checkpoint_t *cp) {
     dafb_poweron_display(dafb, /*cold*/ true);
 
     if (cp) {
-        system_read_checkpoint_data(cp, dafb->regs, sizeof(dafb->regs));
-        system_read_checkpoint_data(cp, dafb->clut, sizeof(dafb->clut));
-        system_read_checkpoint_data(cp, &dafb->dac_idx, sizeof(dafb->dac_idx));
-        system_read_checkpoint_data(cp, &dafb->dac_phase, sizeof(dafb->dac_phase));
-        system_read_checkpoint_data(cp, dafb->dac_rgb, sizeof(dafb->dac_rgb));
-        system_read_checkpoint_data(cp, &dafb->pcbr0, sizeof(dafb->pcbr0));
-        system_read_checkpoint_data(cp, &dafb->pcbr1, sizeof(dafb->pcbr1));
-        system_read_checkpoint_data(cp, dafb->clk_reg, sizeof(dafb->clk_reg));
-        system_read_checkpoint_data(cp, &dafb->clock_hz, sizeof(dafb->clock_hz));
-        system_read_checkpoint_data(cp, dafb->vram, vram_size);
-        system_read_checkpoint_data(cp, &dafb->blanked, sizeof(dafb->blanked));
+        DAFB_CP_FIELDS(system_read_checkpoint_data, cp, dafb);
         // Still between a /RESET and the ROM's mode set: stay blanked rather
         // than letting reconfigure() un-blank on registers half programmed.
         if (dafb->blanked)
@@ -768,11 +756,11 @@ dafb_t *dafb_init(uint32_t vram_size, uint8_t monitor, checkpoint_t *cp) {
         else
             reconfigure(dafb);
         // ...and the INTERRUPT LEVEL, which is derived from the register file
-        // exactly as the descriptor is.  `irq_line` is not in the stream (it
+        // exactly as the descriptor is.  `irq.level` is not in the stream (it
         // is an output, not state), so it starts false; a checkpoint taken
         // with SWATCH_INTR_STATUS & _ENABLE non-zero has to re-assert it here,
-        // or the level is lost -- and update_irq's `active != irq_line` edge
-        // filter means a later status change may not re-raise it either.  The
+        // or the level is lost -- and irq_line_set's edge filter means a
+        // later status change may not re-raise it either.  The
         // Quadra's whole VBL chain hangs off this level.
         update_irq(dafb);
     }
@@ -783,13 +771,11 @@ static display_t *dafb_fb_resolve(void *owner) {
     return dafb_display((dafb_t *)owner);
 }
 static uint64_t dafb_fb_base(void *owner) {
-    // A byte offset into the chip's own VRAM, which is where the Swatch
-    // scan base points.
+    // The guest physical address of the first displayed byte: the VRAM
+    // window at DAFB_VRAM_BASE plus where the Swatch scan base points.  Held
+    // blanked, the scan runs from the blank, which is not in VRAM: 0.
     dafb_t *d = (dafb_t *)owner;
-    // Held blanked, the scan runs from the blank, which is not in VRAM.
-    if (!d || !d->display.bits || d->display.bits == d->blank || !d->vram)
-        return 0;
-    return (uint64_t)(d->display.bits - d->vram);
+    return d ? display_guest_addr(&d->display, d->vram, d->vram_size, DAFB_VRAM_BASE) : 0;
 }
 
 void dafb_attach_objects(dafb_t *dafb) {
@@ -813,26 +799,14 @@ void dafb_delete(dafb_t *dafb) {
 void dafb_checkpoint(dafb_t *dafb, checkpoint_t *cp) {
     if (!dafb || !cp)
         return;
-    system_write_checkpoint_data(cp, dafb->regs, sizeof(dafb->regs));
-    system_write_checkpoint_data(cp, dafb->clut, sizeof(dafb->clut));
-    system_write_checkpoint_data(cp, &dafb->dac_idx, sizeof(dafb->dac_idx));
-    system_write_checkpoint_data(cp, &dafb->dac_phase, sizeof(dafb->dac_phase));
-    system_write_checkpoint_data(cp, dafb->dac_rgb, sizeof(dafb->dac_rgb));
-    system_write_checkpoint_data(cp, &dafb->pcbr0, sizeof(dafb->pcbr0));
-    system_write_checkpoint_data(cp, &dafb->pcbr1, sizeof(dafb->pcbr1));
-    system_write_checkpoint_data(cp, dafb->clk_reg, sizeof(dafb->clk_reg));
-    system_write_checkpoint_data(cp, &dafb->clock_hz, sizeof(dafb->clock_hz));
-    system_write_checkpoint_data(cp, dafb->vram, dafb->vram_size);
-    system_write_checkpoint_data(cp, &dafb->blanked, sizeof(dafb->blanked));
+    DAFB_CP_FIELDS(system_write_checkpoint_data, cp, dafb);
 }
 
 void dafb_set_irq_callback(dafb_t *dafb, dafb_irq_cb cb, void *context) {
     if (!dafb)
         return;
-    dafb->irq_cb = cb;
-    dafb->irq_ctx = context;
-    if (cb)
-        cb(context, dafb->irq_line);
+    irq_line_bind(&dafb->irq, cb, context);
+    irq_line_force(&dafb->irq, dafb->irq.level);
 }
 
 // Apple maps the extended-sense monitors into the bottom of the normal sense
@@ -912,13 +886,10 @@ void dafb_reset(dafb_t *dafb) {
     memset(dafb->clk_reg, 0, sizeof(dafb->clk_reg));
     dafb->pcbr0 = 0;
     dafb->pcbr1 = 0;
-    dafb->dac_idx = 0;
-    dafb->dac_phase = 0;
+    ramdac_seq_init(&dafb->dac, 0);
     dafb->clock_hz = 0;
     dafb->timing_valid = false;
-    dafb->irq_line = false;
-    if (dafb->irq_cb)
-        dafb->irq_cb(dafb->irq_ctx, false);
+    irq_line_force(&dafb->irq, false); // reset drops the line, told unconditionally
     // ...and the presentation state that is DERIVED from those registers.
     // Zeroing the register file is not a reset of the chip if the descriptor
     // it produced survives.  The Swatch comes out of /RESET with sync off,

@@ -30,17 +30,11 @@ struct nubus_card;
 
 // IIci state is the unified MDU+RBV state struct (mdu_io.h).  The IIci leaves
 // the egret member NULL.
-typedef mac030_mdu_state_t iici_state_t;
+typedef mdu_state_t iici_state_t;
 
-static inline iici_state_t *iici_state(config_t *cfg) {
+static inline iici_state_t *iici_st(config_t *cfg) {
     return (iici_state_t *)cfg->machine_context;
 }
-
-// IRQ source bit assignments (RBV at level 2 replaces the IIcx VIA2).
-#define IICI_IRQ_VIA1 (1 << 0)
-#define IICI_IRQ_RBV  (1 << 1)
-#define IICI_IRQ_SCC  (1 << 2)
-#define IICI_IRQ_NMI  (1 << 3)
 
 // (I/O penalties + window offsets live with the shared dispatcher, mdu_io.c.)
 

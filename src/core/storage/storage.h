@@ -44,18 +44,22 @@ extern "C" {
 typedef struct storage_t storage_t;
 
 // A byte source (source.h); storage reads its base through one.
-struct peel_source;
+typedef struct peel_source source_t; // source.h's byte source, without peeler.h
 
 // Configuration passed to storage_new().
 typedef struct {
     // The original image, read-only: any byte source -- a host file, a view
     // past a DiskCopy header, an NDIF chunk map, a member of an archive.
     // storage_new takes its own reference.  NULL for a blank disk.
-    struct peel_source *base;
+    source_t *base;
     const char *delta_path; // Path to delta file (read-write, created if missing)
     const char *journal_path; // Path to preimage journal (created if missing)
     uint64_t block_count; // Number of logical blocks
     uint32_t block_size; // Bytes per block: a multiple of 4 in [512, STORAGE_MAX_BLOCK_SIZE] (512 default, 532 ProFile)
+    // Create the delta and journal on the first write rather than now, when
+    // they do not exist yet: a read-only image's scratch pair, which a probe
+    // or a mount that never writes then never puts on disk.
+    bool lazy;
 } storage_config_t;
 
 // Callback signatures for streaming block data.
@@ -74,7 +78,9 @@ typedef struct storage_export_view storage_export_view_t;
 storage_export_view_t *storage_export_view_begin(storage_t *storage);
 // Any thread: streams every block (one callback per block, the checkpoint
 // record shape), reporting progress and stopping on cancel (io_worker.h).
-// A status_t (STATUS_OK or a STATUS_E_* failure), or -ECANCELED.
+// STATUS_OK; STATUS_E_IO when a block of the disk could not be read,
+// STATUS_ERROR when write_cb failed, another STATUS_E_* failure, or
+// -ECANCELED (a status_t is a negative errno, status.h, so one int holds all).
 int storage_export_view_write(storage_export_view_t *v, void *context, storage_write_callback_t write_cb);
 // Emulator thread: closes the view's handles and lifts the lock.
 void storage_export_view_end(storage_export_view_t *v);

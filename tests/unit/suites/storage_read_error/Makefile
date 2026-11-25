@@ -17,6 +17,7 @@ S := ../../../../src/core
 EXTRA_SRCS   := $(S)/job/seam.c \
                 $(S)/peripherals/scsi.c \
                 $(S)/peripherals/scsi_bus.c \
+                $(S)/peripherals/scsi_msgsession.c \
                 $(S)/event/event.c \
                 $(S)/peripherals/scsi_cdrom.c \
                 $(S)/storage/image.c \
@@ -28,12 +29,14 @@ EXTRA_SRCS   := $(S)/job/seam.c \
                 $(S)/storage/image_part.c \
                 $(S)/storage/image_iso9660.c \
                 $(S)/storage/image_access.c \
+                $(S)/storage/image_class.c \
                 $(S)/object/object.c \
                 $(S)/object/parse.c \
                 $(S)/object/value.c \
                 $(S)/object/meta.c \
                 $(S)/object/api.c \
-                $(S)/object/value_format.c \
+                $(S)/object/json_value.c \
+                $(S)/object/value_format.c $(S)/vbuf.c \
                 $(S)/storage/drive_catalog.c
 USE_SOURCE_LAYER := 1
 
@@ -41,4 +44,6 @@ SANITIZE := $(if $(filter emcc%,$(notdir $(firstword $(CC)))),,-fsanitize=addres
 EXTRA_CFLAGS := $(SANITIZE)
 LDFLAGS += $(SANITIZE)
 
+# The drive-to-image checkpoint reference the media controllers write
+EXTRA_SRCS += ../../../../src/core/storage/image_ref.c
 include ../../common.mk

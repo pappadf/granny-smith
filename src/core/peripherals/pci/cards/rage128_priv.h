@@ -13,7 +13,6 @@
 
 #include "config_space.h"
 #include "display.h"
-#include "display_class.h"
 #include "memory.h"
 #include "pci.h"
 
@@ -228,18 +227,11 @@
 // no VSYNC loopback, so the FCode takes the VGA path — sense code $717,
 // 640 x 480 at 60 Hz — and, if the monitor answers DDC, reads its EDID and
 // publishes it.  An Apple monitor on an Apple-sense cable loops VSYNC back
-// and ties the three sense lines: `primary` is the 3-bit code with nothing
-// driven, the ext pairs what the other two lines read while one is driven
-// low (the Mach64 card's model of the same Apple scheme).
-typedef struct r128_monitor {
-    const char *id;
-    bool apple_sense; // VSYNC loopback on MONID3 + tied sense lines
-    bool ddc; // an EDID EEPROM answers on MONID2/MONID1
-    uint8_t primary; // SENSE2..0 with nothing driven
-    uint8_t ext01; // SENSE2 driven low: (SENSE1, SENSE0)
-    uint8_t ext02; // SENSE1 driven low: (SENSE2, SENSE0)
-    uint8_t ext12; // SENSE0 driven low: (SENSE2, SENSE1)
-} r128_monitor_t;
+// and ties the three sense lines: the row's sense code is the 3-bit code
+// with nothing driven, its extended code what the other two lines read while
+// one is driven low (the Mach64 card's model of the same Apple scheme).  The
+// monitors are the card kind's rows (r128_monitors, rage128.c).
+struct nubus_monitor;
 
 // ============================================================
 // Device state
@@ -316,18 +308,13 @@ typedef struct rage128 {
     uint8_t pal_w; // PALETTE_W_INDEX, auto-incrementing
     uint8_t pal_r; // PALETTE_R_INDEX, auto-incrementing
 
-    const r128_monitor_t *mon; // the attached monitor
+    const struct nubus_monitor *mon; // the attached monitor; NULL: no cable
+    uint8_t mon_ext; // its 6-bit extended sense code (card_monitor_ext_sense)
     uint8_t edid[128];
     r128_ddc_t ddc;
 
-    memory_interface_t aper_if; // BAR0
-    memory_interface_t io_if; // BAR1
-    memory_interface_t regs_if; // BAR2
-    memory_interface_t rom_if; // expansion ROM
-
     // Scanout, rebuilt from the CRTC registers whenever one moves.
     display_t display;
-    display_fb_node_t fb_node;
     rgba8_t clut_view[256];
     uint8_t dac_view[3][256]; // the palette as the direct-colour DAC table (display_t.dac_lut)
     uint8_t *blank; // black stub while the raster is off (vram_size)

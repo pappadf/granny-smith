@@ -9,7 +9,7 @@
 // availability follows the ROMs uploaded, so the cache is dropped when the
 // stored ROM set changes (clearProfileCache).
 
-import { gsEval, isGsError } from './emulator';
+import { gsEval, isGsObject } from './emulator';
 
 // A place a medium goes, as the attach verbs answer it: the bus it is on
 // and the unit there.
@@ -76,10 +76,11 @@ export interface StorageBus {
   card_slot?: string;
 }
 
+// One blank disk a bus's drives take: files.create(path, kind, size).
 export interface BlankDisk {
   label: string;
-  method: string;
-  arg: string;
+  kind: string;
+  size: number;
   name: string;
   ext: string;
 }
@@ -155,7 +156,7 @@ export interface ConfigDocument {
   floppies: Record<string, string>;
   storage: StorageDevice[];
   // partition: the startup volume's partition number on that disk
-  // (files.partitions), when one is chosen.
+  // (files.identify's volumes), when one is chosen.
   startup: { bus: string; unit: number; partition?: number } | null;
   cards: CardEntry[];
   displays: Record<string, DisplayEntry>;
@@ -196,7 +197,7 @@ export function getProfile(model: string): Promise<MachineProfile | null> {
   if (hit) return hit;
   const p = (async () => {
     const r = await gsEval('catalog.profile', [model]);
-    if (!r || typeof r !== 'object' || isGsError(r)) return null;
+    if (!isGsObject(r)) return null;
     return normalise(r as Partial<MachineProfile>);
   })();
   cache.set(model, p);
@@ -288,4 +289,11 @@ function normalise(r: Partial<MachineProfile>): MachineProfile {
       startup: d.startup ?? null,
     },
   };
+}
+
+// The models the core can build, in its family order (catalog.models);
+// null when it does not answer with a list.
+export async function catalogModels(): Promise<string[] | null> {
+  const order = await gsEval('catalog.models').catch(() => null);
+  return Array.isArray(order) ? order.filter((m): m is string => typeof m === 'string') : null;
 }

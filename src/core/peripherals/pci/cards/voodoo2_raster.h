@@ -43,7 +43,7 @@
 //           pthreads; in the browser a second Web Worker, created on demand
 //           — see voodoo2_raster.c).  A build can default to sw with
 //           -DGS_V2_RASTER_DEFAULT='"sw"', or leave the backend out with
-//           -DGS_V2_THREAD_BACKEND=0; any boot can pick one with
+//           -DGS_RASTER_THREAD_BACKEND=0; any boot can pick one with
 //           pci_option="raster=...".
 //   webgpu  the thread backend whose worker TRANSLATES for the
 //           browser's GPU while the card drives the monitor
@@ -147,6 +147,15 @@ typedef struct v2_draw_state {
     v2_tmu_state_t tmu[V2_RASTER_TMUS];
 } v2_draw_state_t;
 
+// One pixel of the pixel-provenance watch (machine.pci.slot[N].card.watch):
+// the screen pixel, the entry's id, and the colour-buffer stores it saw.
+#define V2_WATCH_MAX 8
+typedef struct v2_watch_px {
+    int32_t x, y;
+    int id;
+    uint32_t hits;
+} v2_watch_px_t;
+
 // The executor's target: the memories it renders into and the
 // guest-visible state it MUTATES per pixel.  Owned by the executor;
 // the producer reads it only after a sync() and writes it only through
@@ -163,6 +172,16 @@ typedef struct v2_target {
     uint32_t pal_gen[V2_RASTER_TMUS];
     uint32_t lut_key[V2_RASTER_TMUS];
     uint32_t lut[V2_RASTER_TMUS][256];
+    // The card's debug instruments, after everything the walker touches
+    // (voodoo2.c sets them; only the instrumented walker copy reads them):
+    // the pixel-provenance watch's pixels, written by the producer only
+    // while the backend is the synchronous walker; whether a watched pixel
+    // is the one in the pipe now; the walker cross-check (pci_option
+    // xcheck=on, fixed when the card is created).
+    v2_watch_px_t watch[V2_WATCH_MAX];
+    int n_watch;
+    bool watch_now;
+    bool xcheck;
 } v2_target_t;
 
 // The command stream.  Order is submission order, always.
@@ -234,10 +253,19 @@ typedef struct v2_cmd {
 // Execute one command against the target with the given snapshot.
 void v2_raster_execute(const v2_draw_state_t *st, v2_target_t *tgt, const v2_cmd_t *cmd);
 
-// Is the GS_V2_WATCH pixel-provenance instrument armed?  (Read once
-// from the environment.)  A threaded backend refuses to start while it
-// is: diagnosis uses the synchronous walker.
-bool v2_raster_watch_armed(void);
+// The `voodoo2` log category's levels the debug instruments report at:
+//   V2_LOG_STATS   the producer and raster=thread decompositions at teardown
+//                  (the level when the card is created turns them on)
+//   V2_LOG_WATCH   the pixel-provenance watch's lines (card.watch), gated
+//                  like a level-1 logpoint
+// The walker cross-check is no level: pci_option xcheck=on, and its
+// mismatch line is a level-0 (always-on) line before the abort.
+#define V2_LOG_STATS 1
+#define V2_LOG_WATCH 1
+
+// Is `tgt`'s pixel-provenance watch armed?  A threaded backend refuses
+// to start while it is: diagnosis uses the synchronous walker.
+bool v2_raster_watch_armed(const v2_target_t *tgt);
 
 // --- the backend context ---------------------------------------------------
 
@@ -256,6 +284,12 @@ v2_raster_t *v2_raster_create(const char *kind, v2_target_t *tgt, v2_state_build
 // Fence, stop the worker if any, free.
 void v2_raster_destroy(v2_raster_t *r);
 const char *v2_raster_name(const v2_raster_t *r);
+// Is the backend the synchronous walker (sw), the one the watch needs?
+bool v2_raster_is_walker(const v2_raster_t *r);
+// The target's instruments changed (a watch pixel added or removed): the
+// synchronous walker switches to the instrumented copy while one is on,
+// and back to the plain one when none is.
+void v2_raster_instruments_changed(v2_raster_t *r);
 // The producer changed a state register: the next command snapshots.
 void v2_raster_state_dirty(v2_raster_t *r);
 // Submit one command (copied).  cmd->state is filled in here.

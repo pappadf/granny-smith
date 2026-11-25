@@ -9,6 +9,7 @@
 
 #include "checkpoint.h"
 #include "common.h"
+#include "gsvrom.h" // gsvrom_personality_t, for the substitute the bus seats
 #include "machine_build_opts.h" // slot_opts_t
 #include <stdbool.h>
 #include <stddef.h>
@@ -52,8 +53,15 @@ typedef struct nubus_card_ops {
     // Called on a power cycle (machine.restart), before the /RESET that
     // follows it: the card loses what losing power loses -- VRAM -- and
     // comes up showing what a cold card shows.  A warm /RESET (above) keeps
-    // VRAM.  NULL hooks are safe and skipped.
+    // VRAM.  NULL takes the bus default (nubus_power_on): /RESET, zero the
+    // VRAM `vram` reports, and blank the raster -- a card overrides it only
+    // for state beyond that.
     void (*power_on)(nubus_card_t *card, config_t *cfg);
+
+    // The card's own VRAM, for the power-cycle default: its size, with the
+    // buffer in *base.  NULL (or 0) for a card with none, or whose
+    // framebuffer is the machine's main RAM.
+    size_t (*vram)(nubus_card_t *card, uint8_t **base);
 
     // Called from the family VBL trigger (via nubus_tick_vbl) once per
     // VBL.  Cards that drive their own VSync IRQ call nubus_assert_irq()
@@ -65,6 +73,13 @@ typedef struct nubus_card_ops {
     // stable across the card's lifetime; the descriptor's contents are
     // live-mutable (see display.h for the dirty-flag contract).
     display_t *(*display)(nubus_card_t *card);
+
+    // Optional: the guest physical address of the first byte `display`
+    // scans -- in the card's slot or super-slot space, or main RAM for a
+    // built-in that scans it -- or 0 when that frame is not in
+    // guest-addressable memory (the blank).  What the card's `framebuffer`
+    // node reports as `base` (display_class.h); NULL reads 0.
+    uint64_t (*fb_base)(nubus_card_t *card);
 
     // Checkpoint hooks; the bus controller calls these for every populated
     // slot in canonical slot order.
@@ -120,6 +135,12 @@ struct nubus_card {
 // sResource ID that the card's driver picks up from its slot PRAM record for
 // this monitor, which the seeding step writes from a chosen video mode
 // (nubus_card_kind_t.startup_record).
+//
+// The same rows serve a PCI display card (pci_card_kind_t.monitors) and the
+// built-in video of a PCI machine: one row per monitor the card drives, its
+// id the monitor_catalog id, carrying what the card's sense hardware needs
+// (`ext_sense`, `ddc`).  slot_opts_t.monitor names a row (or "none"), and
+// card_monitor_check (card_registry.h) is the one check of it for both buses.
 typedef struct nubus_monitor {
     const char *id; // "13in_rgb" -- the card's own token, what a mode id names
     const char *monitor; // the shared catalogue id (monitor_catalog.h)
@@ -132,6 +153,14 @@ typedef struct nubus_monitor {
     // it; uint8_t because only the low three bits exist.
     uint8_t sense_code;
     uint8_t srsrc_sister; // top-level Ax sister sResource ID (savedSRsrcID)
+    // Apple's 6-bit extended sense code, for a card that walks the extended
+    // probe (drive one line, read the other two): (pin1,pin0) << 4 |
+    // (pin2,pin0) << 2 | (pin2,pin1).  0 means the monitor has no tie
+    // resistors and answers with its strap alone (card_monitor_ext_sense
+    // derives it -- for sense code 0 that is $00 too).
+    uint8_t ext_sense;
+    // The monitor answers DDC with an EDID, which a VGA-cable card publishes.
+    bool ddc;
     // CRT response curve (physical phosphor / gamma response) that the
     // monitor on the far end of the cable would apply.  Mac System 7's
     // video driver gamma-pre-corrects CLUT writes for THIS specific
@@ -180,6 +209,20 @@ typedef struct nubus_card_kind {
     // The monitors the substitute ROM drives, when fewer than the card's
     // (the 8•24 GC's carries only its 640 × 480 configuration); NULL: all.
     const nubus_monitor_t *substitute_monitors;
+    // The substitute's monitors when the slot changes them (JMFB's custom
+    // geometry): fills `scratch` (NUBUS_SUBST_MONITORS_MAX entries, sentinel
+    // included) and returns it, or returns NULL for the lists above.
+    const nubus_monitor_t *(*substitute_monitors_for)(const slot_opts_t *opts, nubus_monitor_t *scratch);
+
+    // The declaration ROM the bus seats before ops->init (declrom_seat):
+    // the size of its bus window, 0 for a card that seats none.  The bus
+    // allocates card->declrom, fills it (Apple's ROM, or the substitute
+    // generated with `gsvrom`), and frees it; the card only reads it.
+    uint32_t declrom_bus_size;
+    gsvrom_personality_t gsvrom;
+    // Apple's ROM failing to load runs the substitute instead of leaving the
+    // slot empty: a board's built-in video (the SE/30's) cannot be unseated.
+    bool declrom_falls_back;
     // The card's vtable.  The bus controller allocates the nubus_card_t,
     // fills in ops / bus / slot, and calls ops->init once per populated slot.
     //
@@ -221,10 +264,37 @@ typedef struct nubus_card_kind {
 bool nubus_monitor_mode_lookup(const nubus_monitor_t *list, const char *id, const nubus_monitor_t **out_monitor,
                                int *out_depth_bpp);
 
+// The Slot Manager's spDepth for a pixel depth: $80 + log2(bpp) for the
+// 1/2/4/8/16/32 bpp modes, as the startup-mode record's savedMode byte
+// carries it (docs/reference/formats/mac-pram.md §6).  `fallback` answers
+// any other depth (no catalogue row offers one).  The 24AC numbers its modes
+// its own way (savedmode_for_bpp) and does not use this.
+static inline uint8_t nubus_spdepth_for_bpp(int bpp, uint8_t fallback) {
+    switch (bpp) {
+    case 1:
+        return 0x80;
+    case 2:
+        return 0x81;
+    case 4:
+        return 0x82;
+    case 8:
+        return 0x83;
+    case 16:
+        return 0x84;
+    case 32:
+        return 0x85;
+    default:
+        return fallback;
+    }
+}
+
 // The widest video-mode id any catalogue can name, plus room for the "_32bpp"
 // suffix and the terminator.  One size for what were a 32-byte buffer in one
 // card and 40-byte buffers in the other two.
 #define NUBUS_VIDEO_MODE_ID_MAX 40
+
+// Most entries a substitute_monitors_for scratch list holds, sentinel included.
+#define NUBUS_SUBST_MONITORS_MAX 8
 
 // Registry accessors.  The registry itself is an explicit, NULL-terminated
 // list in nubus.c -- no linker constructors.  nubus_card_find returns NULL

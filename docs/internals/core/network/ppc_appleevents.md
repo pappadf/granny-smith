@@ -406,7 +406,7 @@ An event decodes to an ordered map:
   of the raw bytes, for types §5.6 leaves opaque). Zero-length types such as
   `true` and `null` carry neither.
 * On a reply the event object also surfaces `errn` as an integer attribute of
-  its own, so a script asserts `$e.errn == 0` without descending.
+  its own, so a script asserts `e.errn == 0` without descending.
 
 ### 6.2 Text form
 
@@ -591,27 +591,29 @@ appletalk
 `send` is **non-blocking**: replies only arrive while the guest runs, and the
 script owns the scheduler. The idiom is
 
-```
-let e = appletalk.aevt.send("Finder", "core/getd{'----':obj{…}}", tag="version")
-while $e.state == "sent" { scheduler.run 2000000 }
-assert $e.errn == 0
+```lua
+local e = appletalk.aevt.send("Finder", "core/getd{'----':obj{…}}", {tag = "version"})
+while e.state == "sent" do scheduler.run(2000000) end
+assert(e.errn == 0)
 ```
 
-Named arguments use the shell's `name=value` form — `timeout=`, `tag=`,
-`mode=` — not a `name:` spelling.
+Named arguments go in a trailing table from Lua (`{timeout = …, tag = …,
+mode = …}`) and as `name=value` words on a terminal command line — not a
+`name:` spelling.
 
 Event objects are append-only for the life of the machine's connection to
-the network, so the `VK_OBJECT` a `send` returns stays valid in a `let`
-binding.
+the network, so the object a `send` returns stays valid in a `local`.
 
 **Limits.** A connection holds **256 events** and an inbox of **32**.
 
 - The 257th `send` (or `send_raw`) is an error: "no room for another event
   on this connection (limit 256)". With no machine plugged into the network
   a `send` is the error "no machine is connected to the network". A
-  statement that produces an error stops the
-  script at that line (`shell.md`, Errors), so a script that wants to carry
-  on writes `let e = try(appletalk.aevt.send(…), none)` and tests `$e`.
+  call that produces an error raises it, which stops the
+  script at that line ([lua.md](../lua/lua.md), "The tree from Lua"), so a
+  script that wants to carry on writes
+  `local e = gs.try(function() return appletalk.aevt.send(…) end, nil)` and
+  tests `e`.
   There is no `events.clear()`: it would invalidate — or silently re-point —
   the event objects scripts hold.
 - An event a guest sends to a full inbox is still **answered** — its

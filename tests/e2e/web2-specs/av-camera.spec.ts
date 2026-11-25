@@ -33,7 +33,7 @@ import {
   FAKE_MEDIA_ARGS,
   PLUS_ROM,
   holdRealTime,
-  probe,
+  probeValue,
   shutDown,
   startMachine,
 } from '../helpers/av';
@@ -62,22 +62,22 @@ test('AV camera control drives the video-in path with the fake camera', async ({
   await holdRealTime(page);
 
   // Nothing plugged in yet: the guest sees no signal.
-  expect(await probe(page, 'machine.videoin.source')).toBe('none');
-  expect(await probe(page, 'machine.videoin.connected')).toBe('false');
+  expect(await probeValue(page, 'machine.videoin.source')).toBe('none');
+  expect(await probeValue(page, 'machine.videoin.connected')).toBe('false');
 
   // --- 3. Connect the camera. The click is the user gesture getUserMedia
   // needs; the fake-UI flag auto-grants. The core's source flips to `host`
   // and `connected` reads back through em_camera.c's shared-heap flag.
   await camBtn.click();
   await expect(camBtn).toHaveAttribute('aria-pressed', 'true');
-  await expect.poll(async () => probe(page, 'machine.videoin.source')).toBe('host');
+  await expect.poll(async () => probeValue(page, 'machine.videoin.source')).toBe('host');
   await expect
-    .poll(async () => probe(page, 'machine.videoin.connected'), { timeout: 30_000 })
+    .poll(async () => probeValue(page, 'machine.videoin.connected'), { timeout: 30_000 })
     .toBe('true');
 
   // --- 4. Disconnect: the guest goes back to "no signal".
   await camBtn.click();
   await expect(camBtn).toHaveAttribute('aria-pressed', 'false');
-  await expect.poll(async () => probe(page, 'machine.videoin.source')).toBe('none');
-  expect(await probe(page, 'machine.videoin.connected')).toBe('false');
+  await expect.poll(async () => probeValue(page, 'machine.videoin.source')).toBe('none');
+  expect(await probeValue(page, 'machine.videoin.connected')).toBe('false');
 });

@@ -38,6 +38,7 @@
 #include "machine_profile.h"
 #include "mmu.h"
 #include "object.h"
+#include "object_order.h"
 #include "scheduler.h"
 #include "system.h"
 #include "value.h"
@@ -561,6 +562,9 @@ static const class_desc_t av_dsp_class = {
 // Lifecycle
 // ============================================================
 
+// The checkpointed plain-data prefix, up to the first host pointer
+CHECKPOINT_PREFIX(av_dsp_t, cfg);
+
 av_dsp_t *av_dsp_init(config_t *cfg, checkpoint_t *cp) {
     av_dsp_t *d = calloc(1, sizeof(*d));
     if (!d)
@@ -583,8 +587,7 @@ av_dsp_t *av_dsp_init(config_t *cfg, checkpoint_t *cp) {
     dsp3210_reset(d->core, 0); // processor-mode straps
 
     if (cp) {
-        size_t data_size = offsetof(av_dsp_t, cfg);
-        system_read_checkpoint_data(cp, d, data_size);
+        checkpoint_load_prefix(cp, d, av_dsp_t);
         system_read_checkpoint_data(cp, d->core, DSP3210_CHECKPOINT_SIZE);
     }
 
@@ -597,12 +600,7 @@ av_dsp_t *av_dsp_init(config_t *cfg, checkpoint_t *cp) {
 
     scheduler_new_event_type(cfg->scheduler, "dsp", d, "burst", &av_dsp_burst_event);
 
-    d->object = object_new(&av_dsp_class, d, "dsp");
-    if (d->object) {
-        object_set_label(d->object, "DSP3210");
-        object_set_order(d->object, 15);
-        object_attach(machine_object(), d->object);
-    }
+    d->object = object_attach_new(machine_object(), &av_dsp_class, d, "dsp", "DSP3210", OBJ_ORDER_DSP);
 
     LOG(1, "DSP3210 init (%u Hz, ratio_x256=%u)", dsp_freq, d->ratio_x256);
     return d;
@@ -611,10 +609,7 @@ av_dsp_t *av_dsp_init(config_t *cfg, checkpoint_t *cp) {
 void av_dsp_delete(av_dsp_t *d) {
     if (!d)
         return;
-    if (d->object) {
-        object_detach(d->object);
-        object_delete(d->object);
-    }
+    object_destroy(&d->object);
     if (d->cfg)
         scheduler_forget_source(d->cfg->scheduler, d);
     free(d->core);
@@ -624,7 +619,6 @@ void av_dsp_delete(av_dsp_t *d) {
 void av_dsp_checkpoint(av_dsp_t *d, checkpoint_t *cp) {
     if (!d || !cp)
         return;
-    size_t data_size = offsetof(av_dsp_t, cfg);
-    system_write_checkpoint_data(cp, d, data_size);
+    checkpoint_save_prefix(cp, d, av_dsp_t);
     system_write_checkpoint_data(cp, d->core, DSP3210_CHECKPOINT_SIZE);
 }

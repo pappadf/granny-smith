@@ -11,7 +11,9 @@
 
 #include "checkpoint.h"
 #include "chunk_cache.h"
+#include "drive_catalog.h"
 #include "format_registry.h"
+#include "image_class.h"
 #include "io_leaf.h"
 #include "out.h"
 #include "storage.h"
@@ -26,12 +28,15 @@
 #include "image_hfs.h"
 #include "image_internal.h"
 #include "image_iso9660.h"
+#include "image_kind.h"
 #include "image_ndif.h"
 #include "image_part.h"
 #include "image_udif.h"
 #include "image_vfs.h"
+#include "image_volume.h"
 #include "image_wrap.h"
 #include "object.h"
+#include "object_order.h"
 #include "platform_hooks.h"
 #include "root.h"
 #include "shell.h"
@@ -57,120 +62,27 @@
 // `files.images`
 // enumerates the machine's tracked images (config_get_image). Slot index in
 // the collection matches the image's slot; the slots are dense from 0 to
-// config_get_n_images() - 1.  Each entry's data is the cfg; its index is its
-// slot.
+// config_get_n_images() - 1.  Each entry is the one image node
+// (image_class.h) over its slot, the same class every drive mounts; its
+// eject() is not a drive's, and says where to eject it.
 
-static image_t *files_image_at(struct object *self) {
-    return config_get_image((config_t *)object_data(self), object_entry_index(self));
-}
+#define FILES_IMAGE_SLOTS 16 // at least the image table's capacity (system.c)
 
-static DEF_GETTER(files_image_attr_index) {
-    return val_int(object_entry_index(self));
+static image_t *files_node_image(void *dev, unsigned slot) {
+    return config_get_image((config_t *)dev, (int)slot);
 }
-static DEF_GETTER(files_image_attr_filename) {
-    image_t *img = files_image_at(self);
-    const char *s = img ? image_get_filename(img) : NULL;
-    return val_str(s ? s : "");
-}
-static DEF_GETTER(files_image_attr_path) {
-    image_t *img = files_image_at(self);
-    const char *s = img ? image_path(img) : NULL;
-    return val_str(s ? s : "");
-}
-static DEF_GETTER(files_image_attr_raw_size) {
-    image_t *img = files_image_at(self);
-    return val_uint(8, img ? (uint64_t)img->raw_size : 0);
-}
-static DEF_GETTER(files_image_attr_writable) {
-    image_t *img = files_image_at(self);
-    return val_bool(img ? img->writable : false);
-}
-
-static DEF_GETTER(files_image_attr_reads) {
-    image_t *img = files_image_at(self);
-    return val_uint(8, img ? img->reads : 0);
-}
-static DEF_GETTER(files_image_attr_writes) {
-    image_t *img = files_image_at(self);
-    return val_uint(8, img ? img->writes : 0);
-}
-
-static value_t files_image_attr_format(struct object *self, const member_t *m) {
-    (void)m;
-    image_t *img = files_image_at(self);
-    return val_str(img && img->format ? img->format : "");
-}
-
-// Designated-initialiser table keyed by `image_type` so a future enum
-// reorder (or a value inserted out of order) keeps the labels aligned.
-static const char *const STORAGE_IMAGE_TYPE_NAMES[] = {
-    [image_other] = "other", [image_fd_ss] = "fd_ss", [image_fd_ds] = "fd_ds", [image_fd_dd_mfm] = "fd_720k_mfm",
-    [image_fd_hd] = "fd_hd", [image_hd] = "hd",       [image_cdrom] = "cdrom",
-};
-
-static DEF_GETTER(files_image_attr_type) {
-    image_t *img = files_image_at(self);
-    int t = img ? (int)img->type : 0;
-    int max = (int)(sizeof(STORAGE_IMAGE_TYPE_NAMES) / sizeof(STORAGE_IMAGE_TYPE_NAMES[0]));
-    if (t < 0 || t >= max || !STORAGE_IMAGE_TYPE_NAMES[t])
-        t = 0;
-    return val_enum(t, STORAGE_IMAGE_TYPE_NAMES, (size_t)max);
-}
-
-static const member_t files_image_members[] = {
-    {.kind = MK_ATTR,
-     .name = "index",
-     .doc = "Position in files.images; stable only while no image is added or removed",
-     .attr = {.type = VK_INT, .get = files_image_attr_index, .set = NULL}                                        },
-    {.kind = MK_ATTR,
-     .name = "filename",
-     .doc = "Last path component, for display",
-     .attr = {.type = VK_STRING, .get = files_image_attr_filename, .set = NULL}                                  },
-    {.kind = MK_ATTR,
-     .name = "path",
-     .doc = "Full host path or storage URI the image was opened from",
-     .attr = {.type = VK_STRING, .get = files_image_attr_path, .set = NULL}                                      },
-    {.kind = MK_ATTR,
-     .name = "raw_size",
-     .doc = "Logical size of the image in bytes, before any container or compression layer",
-     .attr = {.type = VK_UINT, .get = files_image_attr_raw_size, .set = NULL}                                    },
-    {.kind = MK_ATTR,
-     .name = "writable",
-     .doc = "True when guest writes reach the image (directly or through a checkpoint delta)",
-     .attr = {.type = VK_BOOL, .get = files_image_attr_writable, .set = NULL}                                    },
-    {.kind = MK_ATTR,
-     .name = "type",
-     .doc = "Media the image was identified as: fd_ss, fd_ds, fd_720k_mfm, fd_hd, hd, cdrom, or other",
-     .attr = {.type = VK_ENUM, .get = files_image_attr_type, .set = NULL}                                        },
-    {.kind = MK_ATTR,
-     .name = "format",
-     .doc = "Wrapper layers peeled to reach the disk, outermost first: raw, dc42, udif, bin+ndif, gz+dc42, ...",
-     .attr = {.type = VK_STRING, .get = files_image_attr_format, .set = NULL}                                    },
-    {.kind = MK_ATTR,
-     .name = "reads",
-     .doc = "Drive reads served from the image since it was opened (what lights the activity light)",
-     .attr = {.type = VK_UINT, .get = files_image_attr_reads, .set = NULL, .presentation_flags = VFLAG_VOLATILE} },
-    {.kind = MK_ATTR,
-     .name = "writes",
-     .doc = "Drive writes to the image since it was opened",
-     .attr = {.type = VK_UINT, .get = files_image_attr_writes, .set = NULL, .presentation_flags = VFLAG_VOLATILE}},
-};
-
-static const class_desc_t files_image_class = {
-    .name = "image",
-    .members = files_image_members,
-    .n_members = sizeof(files_image_members) / sizeof(files_image_members[0]),
-    .doc = "One configured disk image",
-};
+static const image_node_ops_t files_image_ops = {.image = files_node_image, .eject = NULL};
+static image_node_t g_image_nodes[FILES_IMAGE_SLOTS];
 
 // The image entry objects, made on first use; freed with the machine.
-static object_cache_t g_images = OBJECT_CACHE(&files_image_class, NULL);
+static object_cache_t g_images = OBJECT_CACHE(&image_class, NULL);
 
 static struct object *files_images_get(struct object *self, int index) {
     config_t *cfg = (config_t *)object_data(self);
-    if (!config_get_image(cfg, index))
+    if (index < 0 || index >= FILES_IMAGE_SLOTS || !config_get_image(cfg, index))
         return NULL;
-    return object_cache_at(&g_images, index, cfg);
+    g_image_nodes[index] = (image_node_t){.ops = &files_image_ops, .dev = cfg, .slot = (unsigned)index};
+    return object_cache_at(&g_images, index, &g_image_nodes[index]);
 }
 
 // The next tracked image's slot after `prev` (-1 to start), or -1 at the end.
@@ -212,28 +124,9 @@ static int work_export_raw(io_leaf_t *j) {
     return vfs_export_raw_image(j->a, j->b, j->err, sizeof j->err);
 }
 
-static int work_hd_create(io_leaf_t *j) {
-    int rc = system_hd_create(j->a, j->size_str);
-    if (rc != 0)
-        snprintf(j->err, sizeof j->err, "could not create '%s' (%s)", j->a, j->size_str);
-    return rc == 0 ? 0 : -EIO;
-}
-
-static int work_fd_create(io_leaf_t *j) {
-    int rc = image_create_blank_floppy(j->a, false, j->flag);
-    if (rc == IMAGE_CREATE_EXISTS)
-        snprintf(j->err, sizeof j->err, "file already exists: %s", j->a);
-    else if (rc != 0)
-        snprintf(j->err, sizeof j->err, "failed to create blank floppy '%s'", j->a);
-    return rc == 0 ? 0 : -EIO;
-}
-
-static int work_profile_create(io_leaf_t *j) {
-    int rc = image_create_blank_profile(j->a, j->blocks);
-    if (rc == IMAGE_CREATE_EXISTS)
-        snprintf(j->err, sizeof j->err, "file already exists: %s", j->a);
-    else if (rc != 0)
-        snprintf(j->err, sizeof j->err, "failed to create blank ProFile image '%s'", j->a);
+// files.create's work: the blank file (image_create_file_kind).
+static int work_create(io_leaf_t *j) {
+    int rc = image_create_file_kind(j->a, (image_kind_t)j->kind, j->size, j->err, sizeof j->err);
     return rc == 0 ? 0 : -EIO;
 }
 
@@ -253,7 +146,7 @@ static DEF_METHOD(files_method_import) {
         return val_err("files.import: out of memory");
     j->work = work_cp;
     j->answer = answer_import;
-    return io_leaf_dispatch(j, "files.import");
+    return io_leaf_dispatch(j);
 }
 
 static const arg_decl_t files_import_args[] = {
@@ -262,7 +155,7 @@ static const arg_decl_t files_import_args[] = {
 };
 
 static const collection_desc_t files_images = {
-    .entry = &files_image_class,
+    .entry = &image_class,
     .by_index = {.get = files_images_get, .next = files_images_next},
     .name = "files_images",
     .doc = "The machine's configured disk images",
@@ -349,7 +242,7 @@ static DEF_METHOD(files_method_cp) {
         return val_err("files.cp: out of memory");
     j->flag = recursive;
     j->work = work_cp;
-    return io_leaf_dispatch(j, "files.cp");
+    return io_leaf_dispatch(j);
 }
 
 // `files.export_raw(src, dst)` — write a disk image referenced by a VFS
@@ -367,7 +260,7 @@ static DEF_METHOD(files_method_export_raw) {
     if (!j)
         return val_err("files.export_raw: out of memory");
     j->work = work_export_raw;
-    return io_leaf_dispatch(j, "files.export_raw");
+    return io_leaf_dispatch(j);
 }
 
 // `files.find_media(dir, [dst])` — search a directory for a recognised
@@ -383,30 +276,39 @@ static DEF_METHOD(files_method_find_media) {
     return val_bool(true);
 }
 
-// `files.hd_create(path, size)` — create a blank SCSI HD image.
-// size is a VK_NONE-kind slot, so the body discriminates between
-// VK_STRING (label/size string) and integer (byte count). The size
-// string that system_hd_create parses accepts model labels, human
-// sizes, and byte counts alike, so integers stringify cleanly.
-static DEF_METHOD(files_method_hd_create) {
-    char size_str[64];
-    if (argv[1].kind == VK_STRING) {
-        snprintf(size_str, sizeof(size_str), "%s", argv[1].s ? argv[1].s : "");
-    } else if (argv[1].kind == VK_INT) {
-        snprintf(size_str, sizeof(size_str), "%lld", (long long)argv[1].i);
-    } else if (argv[1].kind == VK_UINT) {
-        snprintf(size_str, sizeof(size_str), "%llu", (unsigned long long)argv[1].u);
-    } else {
-        return val_err("files.hd_create: size must be string or integer");
-    }
-    if (destination_attached(argv[0].s))
-        return val_err("files.hd_create: '%s' is attached to a device (E_BUSY)", argv[0].s);
-    io_leaf_t *j = io_leaf_new(argv[0].s, NULL);
+// `files.create(path, kind, size)` — a new blank image file of `kind`
+// (floppy, hd or profile) holding `size` data bytes: the size of the image
+// node it becomes (512 per sector, tags not counted).  `size` is a byte
+// count, or a string drive_catalog_parse_size reads: a drive model
+// ("HD20SC"), a human size ("40mb", snapped to a catalogue drive) or an
+// exact one ("800K", "20M", "21411840").  An I/O job; it never overwrites,
+// and inserts nothing (the drive's insert does that).
+static DEF_METHOD(files_method_create) {
+    const char *path = argv[0].s;
+    image_kind_t kind = image_kind_by_name(argv[1].s);
+    if (kind == IMAGE_KIND_NONE)
+        return val_err("files.create: kind '%s' is not floppy, hd or profile", argv[1].s ? argv[1].s : "");
+    uint64_t size = 0;
+    if (argv[2].kind == VK_STRING)
+        size = argv[2].s ? drive_catalog_parse_size(argv[2].s) : 0;
+    else if (argv[2].kind == VK_INT)
+        size = argv[2].i > 0 ? (uint64_t)argv[2].i : 0;
+    else if (argv[2].kind == VK_UINT)
+        size = argv[2].u;
+    else
+        return val_err("files.create: size must be a string or a byte count");
+    if (size == 0)
+        return val_err("files.create: invalid size (a drive model such as HD20SC, a size such as 40mb or 800K, "
+                       "or a byte count)");
+    if (destination_attached(path))
+        return val_err("files.create: '%s' is attached to a device (E_BUSY)", path);
+    io_leaf_t *j = io_leaf_new(path, NULL);
     if (!j)
-        return val_err("files.hd_create: out of memory");
-    snprintf(j->size_str, sizeof j->size_str, "%s", size_str);
-    j->work = work_hd_create;
-    return io_leaf_dispatch(j, "files.hd_create");
+        return val_err("files.create: out of memory");
+    j->kind = (int)kind;
+    j->size = size;
+    j->work = work_create;
+    return io_leaf_dispatch(j);
 }
 
 // Paths files.rm / files.mv must never destroy: the filesystem root and
@@ -483,55 +385,6 @@ static DEF_METHOD(files_method_mv) {
     return val_none();
 }
 
-// `files.fd_create(path, [high_density])` — create a blank (unformatted)
-// floppy image: 800 KB by default, 1.4 MB when high_density is true. Unlike
-// the `fd create` shell command this does NOT insert the disk into a drive —
-// the New Machine dialog persists the file and lets the user select it.
-static DEF_METHOD(files_method_fd_create) {
-    const char *path = argv[0].s;
-    if (!path || !*path)
-        return val_err("files.fd_create: empty path");
-    bool high_density = (argc >= 2 && argv[1].kind == VK_BOOL) ? argv[1].b : false;
-    io_leaf_t *j = io_leaf_new(path, NULL);
-    if (!j)
-        return val_err("files.fd_create: out of memory");
-    j->flag = high_density;
-    j->work = work_fd_create;
-    return io_leaf_dispatch(j, "files.fd_create");
-}
-
-// `files.profile_create(path, blocks)` — create a blank Lisa/XL ParaPort
-// ProFile image: a raw, all-zero file of `blocks` 532-byte blocks. Unlike
-// hd_create (which builds a 512-byte/block SCSI image), the ProFile is a
-// parallel-port disk with 532-byte blocks, a distinct on-disk format. `blocks`
-// is a VK_NONE slot accepting an integer or numeric string. Standard sizes:
-// 5 MB = 9728 blocks; 10 MB ≈ 19448 (the LOS-documented full Widget capacity).
-static DEF_METHOD(files_method_profile_create) {
-    const char *path = argv[0].s;
-    if (!path || !*path)
-        return val_err("files.profile_create: empty path");
-    unsigned long blocks;
-    if (argv[1].kind == VK_STRING) {
-        if (!argv[1].s)
-            return val_err("files.profile_create: missing block count");
-        blocks = strtoul(argv[1].s, NULL, 10);
-    } else if (argv[1].kind == VK_INT) {
-        blocks = (argv[1].i > 0) ? (unsigned long)argv[1].i : 0;
-    } else if (argv[1].kind == VK_UINT) {
-        blocks = (unsigned long)argv[1].u;
-    } else {
-        return val_err("files.profile_create: blocks must be an integer");
-    }
-    if (blocks == 0)
-        return val_err("files.profile_create: block count must be positive");
-    io_leaf_t *j = io_leaf_new(path, NULL);
-    if (!j)
-        return val_err("files.profile_create: out of memory");
-    j->blocks = (uint32_t)blocks;
-    j->work = work_profile_create;
-    return io_leaf_dispatch(j, "files.profile_create");
-}
-
 // `files.partmap(path)` — print the Apple Partition Map of an image.
 static DEF_METHOD(files_method_partmap) {
     const char *path = argv[0].s;
@@ -570,140 +423,34 @@ static DEF_METHOD(files_method_partmap) {
 
 // The filesystem a partition's volume header names, or NULL.
 static const char *partition_volume_kind(image_t *img, uint64_t size, const apm_partition_t *p) {
-    uint64_t at = p->start_block * APM_BLOCK_SIZE + 1024;
-    uint8_t hdr[2];
-    if (p->size_blocks * APM_BLOCK_SIZE < 1024 + sizeof(hdr) || at + sizeof(hdr) > size ||
-        image_read_bytes(img, at, hdr, sizeof(hdr)) != 0)
+    uint64_t at = p->start_block * APM_BLOCK_SIZE;
+    if (at >= size)
         return NULL;
-    switch (RD_BE16(hdr)) {
-    case HFS_SIG_BD:
-        return "HFS";
-    case HFS_SIG_HP:
-        return "HFS+";
-    case HFS_SIG_HX:
-        return "HFSX";
-    default:
-        return NULL;
-    }
-}
-
-// files.probe's lines for an APM disk's filesystem partitions.
-static void probe_report_partitions(image_t *img, uint64_t size) {
-    apm_table_t *table = image_apm_parse(img, NULL);
-    if (!table)
-        return;
-    for (uint32_t i = 0; i < table->n_partitions; i++) {
-        const apm_partition_t *p = &table->partitions[i];
-        if (p->fs_kind != APM_FS_HFS && p->fs_kind != APM_FS_UFS && p->fs_kind != APM_FS_UNKNOWN)
-            continue;
-        const char *vol = partition_volume_kind(img, size, p);
-        if (!vol && p->fs_kind == APM_FS_UNKNOWN)
-            continue; // an unrecognised partition with no volume we know
-        out_printf("partition %u: %s (%s)%s%s\n", (unsigned)p->index, p->name[0] ? p->name : "(unnamed)",
-                   p->type[0] ? p->type : "(unknown)", vol ? ", volume " : "", vol ? vol : "");
-    }
-    image_apm_free(table);
-}
-
-// `files.probe(path)` — identify the format of a disk image.
-// `files.image_error(path)` — why the file at `path` cannot be opened as a
-// disk image when it is a container image (UDIF, NDIF, QCOW2, MOOF) the emulator
-// cannot read, else "".  The upload says it instead of "not a valid Hard
-// Disk image" (the reason was only in the terminal).
-static DEF_METHOD(files_method_image_error) {
-    image_t *img = image_open_readonly(argv[0].s);
-    if (img) {
-        image_close(img);
-        return val_str("");
-    }
-    return val_str(image_open_error());
-}
-
-// `files.identify_floppy(path)` -- true when the image layer opens the file
-// as a floppy (400K/800K GCR, 720K/1440K MFM), whatever wraps it: the
-// Floppy Disk upload's test for a file its size does not identify (a MOOF).
-static DEF_METHOD(files_method_identify_floppy) {
-    image_t *img = image_open_readonly(argv[0].s);
-    bool fd = img && image_is_floppy(image_get_type(img));
-    image_close(img);
-    return val_bool(fd);
-}
-
-static DEF_METHOD(files_method_probe) {
-    const char *path = argv[0].s;
-    image_t *img = image_open_readonly(path);
-    if (!img) {
-        out_printf("cannot open image '%s'\n", path);
-        return val_bool(false);
-    }
-    uint64_t size = disk_size(img);
-    uint8_t block[512];
-    bool apm = false;
-    if (size >= 1024 && image_read_bytes(img, 512, block, sizeof(block)) == 0)
-        apm = image_apm_probe_magic(block);
-    // ISO 9660 by the same probe the VFS mounts with, so a disc reported as
-    // a hybrid here is one the VFS shows both sides of.
-    source_t *isrc = image_source(img);
-    bool iso = iso_probe_source(isrc, 0, size);
-    source_release(isrc);
-    // The volume header at 1024: 'BD' is HFS, 'H+' HFS Plus and 'HX' HFSX.
-    const char *hfs = NULL;
-    if (!apm && size >= 1024 + 512 && image_read_bytes(img, 1024, block, sizeof(block)) == 0) {
-        uint16_t sig = RD_BE16(block);
-        if (sig == HFS_SIG_BD)
-            hfs = "HFS";
-        else if (block[0] == 'H' && (block[1] == '+' || block[1] == 'X'))
-            hfs = "HFS+";
-    }
-    if (apm && iso)
-        out_printf("format: APM + ISO 9660 hybrid (%llu bytes)\n", (unsigned long long)size);
-    else if (apm)
-        out_printf("format: APM (%llu bytes)\n", (unsigned long long)size);
-    else if (hfs && iso)
-        out_printf("format: %s + ISO 9660 hybrid (bare, %llu bytes)\n", hfs, (unsigned long long)size);
-    else if (iso)
-        out_printf("format: ISO 9660 (%llu bytes)\n", (unsigned long long)size);
-    else if (hfs)
-        out_printf("format: %s (bare, %llu bytes)\n", hfs, (unsigned long long)size);
-    else
-        out_printf("format: unrecognised / raw (%llu bytes)\n", (unsigned long long)size);
-    // A partitioned disk's volumes: each partition the map names as a
-    // filesystem, and what its own header says it is (an HFS volume's
-    // MDB sits 1024 bytes into its partition, as on a bare disk).
-    if (apm)
-        probe_report_partitions(img, size);
-    // What the format registry peeled to reach the disk, and what it finds
-    // the disk to be.
-    if (img->format && strcmp(img->format, "raw") != 0)
-        out_printf("encoding: %s\n", img->format);
+    // The partition as far as the disk holds it.
+    uint64_t len = p->size_blocks * APM_BLOCK_SIZE;
+    if (len > size - at)
+        len = size - at;
     source_t *src = image_source(img);
-    const format_t *contents = format_contents(src, NULL);
+    volume_kind_t kind = volume_sniff_source(src, at, len).kind;
     source_release(src);
-    if (contents)
-        out_printf("contents: %s\n", contents->doc);
-    image_close(img);
-    return val_bool(true);
+    // A map inside a partition is no volume of its own.
+    return kind == VOL_APM ? NULL : volume_kind_label(kind);
 }
 
-// `files.partitions(path)` — the Mac OS volumes a hard disk image offers as
-// startup partitions, numbered as a machine sees the disk once it is
-// attached: a driverless disk or bare volume behind the GSDisk map and
-// driver (image_wrap), so its volume is partition 3 whatever the file's own
-// map says.  The number is what an Open Firmware path names (`@0:3`).
-static DEF_METHOD(files_method_partitions) {
-    const char *path = argv[0].s;
-    image_t *img = image_open_readonly(path);
-    if (!img)
-        return val_err("files.partitions: cannot open image '%s'", path);
-    // The same presentation attach gives the disk (system.c media_open).
-    if (image_wrap_volume(img) < 0) {
-        image_close(img);
-        return val_err("files.partitions: cannot wrap '%s'", path);
-    }
+// The Mac OS volumes `img` offers as startup partitions, numbered as a
+// machine sees the disk once it is attached: a driverless disk or bare
+// volume behind the GSDisk map and driver (image_wrap), so its volume is
+// partition 3 whatever the file's own map says.  The number is what an Open
+// Firmware path names (`@0:3`).  Wraps `img`: its other facts first.
+static value_t identify_volumes(image_t *img) {
     value_t *items = NULL;
     size_t len = 0, cap = 0;
+    // The same presentation attach gives the disk (system.c media_open).
+    if (image_wrap_volume(img) < 0)
+        return val_list(NULL, 0);
     uint64_t size = disk_size(img);
     apm_table_t *table = image_apm_parse(img, NULL);
+    source_t *src = table ? image_source(img) : NULL;
     for (uint32_t i = 0; table && i < table->n_partitions; i++) {
         const apm_partition_t *p = &table->partitions[i];
         if (p->fs_kind != APM_FS_HFS)
@@ -711,7 +458,7 @@ static DEF_METHOD(files_method_partitions) {
         const char *fs = partition_volume_kind(img, size, p);
         if (!fs)
             continue; // an Apple_HFS entry with no volume in it
-        hfs_volume_t *vol = hfs_open(img, p->start_block * APM_BLOCK_SIZE, p->size_blocks * APM_BLOCK_SIZE);
+        hfs_volume_t *vol = hfs_open_source(src, p->start_block * APM_BLOCK_SIZE, p->size_blocks * APM_BLOCK_SIZE);
         const char *vname = vol ? hfs_volume_name(vol) : NULL;
         value_map_builder_t *b = val_map_new();
         val_map_put(b, "partition", val_uint(4, p->index));
@@ -724,9 +471,112 @@ static DEF_METHOD(files_method_partitions) {
             hfs_close(vol);
         val_list_push(&items, &len, &cap, val_map_finish(b));
     }
+    source_release(src);
     image_apm_free(table);
-    image_close(img);
     return val_list(items, len);
+}
+
+// The bytes of the file at `path` (its data fork), or 0.
+static uint64_t identify_file_size(const char *path) {
+    int err = 0;
+    source_t *s = source_open_path(path, GS_FORK_DATA, &err);
+    uint64_t n = s ? source_size(s) : 0;
+    source_release(s);
+    return n;
+}
+
+// The floppy layouts' wire names (files.identify's `floppy`).
+static const char *identify_floppy_name(image_layout_t l) {
+    switch (l) {
+    case IMAGE_LAYOUT_GCR400:
+        return "gcr400";
+    case IMAGE_LAYOUT_GCR800:
+        return "gcr800";
+    case IMAGE_LAYOUT_MFM720:
+        return "mfm720";
+    case IMAGE_LAYOUT_MFM1440:
+        return "mfm1440";
+    default:
+        return "";
+    }
+}
+
+// `files.identify(path)` -- what a file is, as one map: whether the image
+// layer opens it (and why not), the archive it is, its wrapper layers, its
+// size and tags, the floppy layout its size implies, its partition map and
+// volumes, and which kinds of drive take it (image_kind_fits).  The one
+// answer to "what is this file", for any drive; answers before a machine
+// exists.  A file that is no image is a map with opens false, not an error.
+static DEF_METHOD(files_method_identify) {
+    const char *path = argv[0].s;
+    value_map_builder_t *b = val_map_new();
+    const char *arch = archive_identify_file(path);
+    uint64_t file_size = identify_file_size(path);
+    image_t *img = image_open_readonly(path);
+    char error[256];
+    snprintf(error, sizeof error, "%s", img ? "" : image_open_error());
+    // A raw ProFile file of 532-byte blocks need not be a whole number of
+    // 512-byte sectors: open it as one.
+    bool profile_open = false;
+    if (!img && file_size && file_size % (512 + 20) == 0) {
+        img = image_open_kind(path, &(image_open_opts_t){.kind = IMAGE_KIND_PROFILE}, NULL, 0);
+        profile_open = img != NULL;
+    }
+    image_facts_t f = {.opens = img && !profile_open};
+    val_map_put(b, "opens", val_bool(img != NULL));
+    val_map_put(b, "refusal", val_str(img ? "" : error)); // not "error": a map with one is a failure (result contract)
+    val_map_put(b, "archive", val_str(arch ? arch : ""));
+    val_map_put(b, "encoding", val_str(img && img->format ? img->format : ""));
+    val_map_put(b, "file_size", val_uint(8, file_size));
+    uint64_t size = img ? disk_size(img) : 0;
+    f.size = size;
+    val_map_put(b, "size", val_uint(8, size));
+    val_map_put(b, "sectors", val_uint(8, size / 512));
+    val_map_put(b, "tags", val_uint(4, img ? img->file_tag_bytes : 0));
+    val_map_put(b, "floppy", val_str(f.opens ? identify_floppy_name(image_layout(img)) : ""));
+    bool apm = false, hybrid = false;
+    if (f.opens) {
+        // The classifier the VFS mounts with, so a disc reported as a hybrid
+        // here is one the VFS shows both sides of.
+        source_t *src = image_source(img);
+        volume_sniff_t v = volume_sniff_source(src, 0, size);
+        f.iso = iso_probe_source(src, 0, size); // the probe the VFS mounts with
+        const format_t *contents = format_contents(src, NULL);
+        source_release(src);
+        f.disk_contents = contents && strcmp(contents->name, "disk") == 0;
+        apm = v.kind == VOL_APM;
+        hybrid = v.iso && (apm || volume_kind_is_hfs(v.kind));
+    }
+    // A ProFile's 532-byte layout: opened as one, a DiskCopy that unwraps to
+    // one, or a raw file of whole 532-byte blocks.
+    f.profile_layout = profile_open || (img && img->format && strstr(img->format, "lisaem")) ||
+                       (img && img->format && strcmp(img->format, "raw") == 0 && file_size % (512 + 20) == 0);
+    val_map_put(b, "map", val_str(apm ? "apm" : ""));
+    val_map_put(b, "hybrid", val_bool(hybrid));
+    // Which kinds take it, and the one an upload of no stated kind is filed
+    // as: a disc only when it holds ISO 9660 (a bare HFS or partitioned image
+    // is a hard disk, though a CD-ROM drive takes it too).
+    static const image_kind_t order[] = {IMAGE_KIND_FLOPPY, IMAGE_KIND_HD, IMAGE_KIND_CD, IMAGE_KIND_PROFILE};
+    value_t fits[4];
+    size_t nfits = 0;
+    bool fit[IMAGE_KIND_COUNT] = {0};
+    for (size_t i = 0; i < sizeof order / sizeof order[0]; i++)
+        if ((fit[order[i]] = image_kind_fits(order[i], &f)))
+            fits[nfits++] = val_str(image_kind_name(order[i]));
+    value_t *fl = nfits ? calloc(nfits, sizeof *fl) : NULL;
+    for (size_t i = 0; fl && i < nfits; i++)
+        fl[i] = fits[i];
+    val_map_put(b, "fits", val_list(fl, fl ? nfits : 0));
+    image_kind_t kind = fit[IMAGE_KIND_CD] && f.iso ? IMAGE_KIND_CD
+                        : fit[IMAGE_KIND_FLOPPY]    ? IMAGE_KIND_FLOPPY
+                        : fit[IMAGE_KIND_HD]        ? IMAGE_KIND_HD
+                        : fit[IMAGE_KIND_PROFILE]   ? IMAGE_KIND_PROFILE
+                                                    : IMAGE_KIND_NONE;
+    val_map_put(b, "kind", val_str(kind == IMAGE_KIND_NONE ? "" : image_kind_name(kind)));
+    // Last: the volumes wrap the image.
+    val_map_put(b, "volumes", f.opens ? identify_volumes(img) : val_list(NULL, 0));
+    image_close(img);
+    return val_map_finish(b);
 }
 
 // `files.path_exists(path)` — true if the path resolves in the shell VFS.
@@ -907,7 +757,7 @@ static value_t xfer_dispatch(const char *path, uint64_t offset, uint64_t len, bo
     j->cleanup = xfer_cleanup;
     j->work = write ? work_xfer_write : work_xfer_read;
     j->answer = write ? NULL : answer_xfer_read;
-    return io_leaf_dispatch(j, what);
+    return io_leaf_dispatch(j);
 }
 
 // `files.xfer_write(path, offset, len)` — write the window's first `len`
@@ -1250,7 +1100,7 @@ static value_t udif_dispatch(const char *a, const char *b, udif_job_t *u, int (*
     j->cleanup = udif_job_cleanup;
     j->work = work;
     j->answer = answer;
-    return io_leaf_dispatch(j, what);
+    return io_leaf_dispatch(j);
 }
 
 // An integer argument that may be absent (VK_NONE) or given as a string.
@@ -1332,7 +1182,7 @@ static DEF_METHOD(files_method_xfer_read_disk) {
     j->cleanup = xfer_cleanup;
     j->work = work_xfer_read_disk;
     j->answer = answer_xfer_read;
-    return io_leaf_dispatch(j, "files.xfer_read_disk");
+    return io_leaf_dispatch(j);
 }
 
 // The optional `level` argument: 0..9, or (absent) the codec's default.
@@ -1572,12 +1422,13 @@ static const arg_decl_t files_find_media_args[] = {
                                   .validation_flags = OBJ_ARG_OPTIONAL,
                                   .doc = "Optional path to copy match into"},
 };
-static const arg_decl_t files_hd_create_args[] = {
-    ARG_PATH("path", "Image output path"),
+static const arg_decl_t files_create_args[] = {
+    ARG_PATH("path", "New image file (it must not exist; a hard disk named .dmg is stored as UDIF)"),
+    {.name = "kind", .kind = VK_STRING, .doc = "floppy, hd or profile"},
     {.name = "size",
-                                   .kind = VK_NONE,
-                                   .validation_flags = OBJ_ARG_POLY,
-                                   .doc = "Size string (e.g. \"HD20SC\", \"40M\") or byte count"},
+                                                                                              .kind = VK_NONE,
+                                                                                              .validation_flags = OBJ_ARG_POLY,
+                                                                                              .doc = "Data bytes (512 per sector): a count, a drive model (\"HD20SC\"), or a size (\"800K\", \"40mb\")"},
 };
 static const arg_decl_t files_rm_args[] = {
     ARG_PATH("path", "Path to remove (recursive)"),
@@ -1585,22 +1436,6 @@ static const arg_decl_t files_rm_args[] = {
 static const arg_decl_t files_mv_args[] = {
     ARG_PATH("src", "Source path"),
     ARG_PATH("dst", "Destination path"),
-};
-static const value_t files_false = {.kind = VK_BOOL, .b = false};
-static const arg_decl_t files_fd_create_args[] = {
-    ARG_PATH("path", "Image output path"),
-    {.name = "high_density",
-                                   .kind = VK_BOOL,
-                                   .validation_flags = OBJ_ARG_OPTIONAL,
-                                   .default_value = &files_false,
-                                   .doc = "true = 1.4 MB, false = 800 KB"},
-};
-static const arg_decl_t files_profile_create_args[] = {
-    ARG_PATH("path", "Image output path"),
-    {.name = "blocks",
-                                   .kind = VK_NONE,
-                                   .validation_flags = OBJ_ARG_POLY,
-                                   .doc = "ProFile block count, a number or a numeric string (532-byte blocks; 5 MB = 9728)"},
 };
 static const arg_decl_t files_path_arg[] = {
     ARG_PATH("path", "Image path"),
@@ -1626,7 +1461,7 @@ static const arg_decl_t files_path_arg_optional[] = {
 // with no browser says so.
 static DEF_METHOD(files_method_download) {
     int rc = platform_download(argv[0].s);
-    if (rc == -2)
+    if (rc == PLATFORM_E_UNSUPPORTED)
         return val_err("download: not supported on this platform");
     return val_bool(rc == 0);
 }
@@ -1779,30 +1614,12 @@ static const member_t files_members[] = {
      .doc = "Find a recognised floppy/disk image in a directory",
      .method = {.args = files_find_media_args, .nargs = 2, .result = VK_BOOL, .fn = files_method_find_media}},
     {.kind = MK_METHOD,
-     .name = "hd_create",
-     .examples = EXAMPLES("files.hd_create \"/opfs/images/hd/new.img\" \"40M\"",
-     "files.hd_create \"/opfs/images/hd/hd20.img\" \"HD20SC\""),
-     .doc = "Create a blank SCSI HD image",
-     .method = {.ui_flags = MM_IO,
-                .args = files_hd_create_args,
-                .nargs = 2,
-                .result = VK_BOOL,
-                .fn = files_method_hd_create}},
-    {.kind = MK_METHOD,
-     .name = "fd_create",
-     .examples = EXAMPLES("files.fd_create \"/opfs/images/fd/blank.dsk\"",
-     "files.fd_create \"/opfs/images/fd/blank-hd.dsk\" true"),
-     .doc = "Create a blank floppy image (800 KB, or 1.4 MB when high_density)",
-     .method = {.ui_flags = MM_IO,
-                .args = files_fd_create_args,
-                .nargs = 2,
-                .result = VK_BOOL,
-                .fn = files_method_fd_create}},
-    {.kind = MK_METHOD,
-     .name = "profile_create",
-     .examples = EXAMPLES("files.profile_create \"/opfs/images/hd/profile.img\" 9728"),
-     .doc = "Create a blank Lisa/XL ProFile image (raw 532-byte/block zero file)",
-     .method = {.args = files_profile_create_args, .nargs = 2, .result = VK_BOOL, .fn = files_method_profile_create}},
+     .name = "create",
+     .examples = EXAMPLES("files.create \"/opfs/images/hd/new.dmg\" \"hd\" \"40M\"",
+     "files.create \"/opfs/images/fd/blank.dsk\" \"floppy\" \"800K\"", "files.create \"/opfs/images/hd/profile.image\" \"profile\" 4980736"),
+     .doc = "Create a blank image file of a kind and size (inserts nothing)",
+     .method =
+         {.ui_flags = MM_IO, .args = files_create_args, .nargs = 3, .result = VK_BOOL, .fn = files_method_create}},
     {.kind = MK_METHOD,
      .name = "rm",
      .examples = EXAMPLES("files.rm \"/opfs/images/hd/old.img\""),
@@ -1819,29 +1636,16 @@ static const member_t files_members[] = {
      .doc = "Print the Apple Partition Map of an image",
      .method = {.args = files_path_arg, .nargs = 1, .result = VK_BOOL, .fn = files_method_partmap}},
     {.kind = MK_METHOD,
-     .name = "partitions",
-     .examples = EXAMPLES("files.partitions \"/opfs/images/hd/system.img\""),
-     .doc = "The Mac OS volumes of a hard disk image, numbered as an attached disk's partitions",
-     .method = {.result_doc = "a list of {partition, name, filesystem, powerpc_booter} maps",
+     .name = "identify",
+     .examples = EXAMPLES("files.identify \"/opfs/upload/disk.img\""),
+     .doc = "What a file is: whether it opens as a disk image (and why not), its archive, wrapper layers, size, "
+            "tags, floppy layout, partition map, Mac OS volumes, and which kinds of drive take it", .method = {.result_doc =
+                    "{opens, refusal, archive, encoding, file_size, size, sectors, tags, floppy, map, hybrid, "
+                    "fits, kind, volumes}",
                 .args = files_path_arg,
                 .nargs = 1,
-                .result = VK_LIST,
-                .fn = files_method_partitions}},
-    {.kind = MK_METHOD,
-     .name = "image_error",
-     .examples = EXAMPLES("files.image_error \"/opfs/upload/disk.qcow2\""),
-     .doc = "Why a container image (UDIF, NDIF, QCOW2, MOOF) cannot be read, or \"\"",
-     .method = {.args = files_path_arg, .nargs = 1, .result = VK_STRING, .fn = files_method_image_error}},
-    {.kind = MK_METHOD,
-     .name = "identify_floppy",
-     .examples = EXAMPLES("files.identify_floppy \"/opfs/upload/game.moof\""),
-     .doc = "True if the file opens as a floppy disk image (any wrapper, MOOF included)",
-     .method = {.args = files_path_arg, .nargs = 1, .result = VK_BOOL, .fn = files_method_identify_floppy}},
-    {.kind = MK_METHOD,
-     .name = "probe",
-     .examples = EXAMPLES("files.probe \"/opfs/images/fd/disk.image\""),
-     .doc = "Identify the format of a disk image",
-     .method = {.args = files_path_arg, .nargs = 1, .result = VK_BOOL, .fn = files_method_probe}},
+                .result = VK_MAP,
+                .fn = files_method_identify}},
     {.kind = MK_METHOD,
      .name = "path_exists",
      .examples = EXAMPLES("files.path_exists \"/opfs/images/hd/system.img\""),
@@ -2225,7 +2029,7 @@ void files_init(void) {
     if (!g_files_object)
         return;
     object_set_label(g_files_object, "Files");
-    object_set_order(g_files_object, 30);
+    object_set_order(g_files_object, OBJ_ORDER_FILES);
     object_attach(object_root(), g_files_object);
     struct object *mounts = object_collection_new(&files_mounts, NULL, "mounts");
     if (mounts) {

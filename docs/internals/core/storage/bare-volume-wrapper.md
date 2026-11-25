@@ -40,7 +40,9 @@ checksum), [`gsdisk/gsdisk_drvr.s`](../../../../src/core/storage/gsdisk/gsdisk_d
 
 - **A bare volume** (`image_wrap_is_bare_volume`): the first three blocks show
   a volume header at 1024 (`BD` or `H+`), with neither `ER` at 0 nor `PM` at
-  512.
+  512. A bare HFSX volume (no classic Mac OS mounts it) and a bare MFS volume
+  (mounted from floppies only) are not wrapped; the volume classifier
+  (`volume_sniff`, `image_volume.c`) names them, and the wrapper declines.
 - **A driverless partitioned disk** (`image_wrap_find_driverless_hfs`): `PM`
   at 512; block 0 is not `ER`, or is a DDM with `sbDrvrCount 0`; the whole map
   parses (it must fit in the first 64 blocks, like the wrapper's own); no
@@ -148,7 +150,7 @@ starts `wrap_base` bytes into the image's storage (0 for a bare volume, the
 (`wrap_storage_size`). The restore (`mac_checkpoint_restore_images` in
 `src/machines/runtime/checkpoint_images.c`)
 re-wraps an image carrying the bit (re-running the same sniff, which finds the
-same partition) after its storage is restored, so the SCSI device that re-binds to it by name
+same partition) after its storage is restored, so the SCSI device that re-binds to it (by its position in the image list)
 sees the same disk. The order matters for a consolidated checkpoint opened where
 its image file is gone: the restore puts a zero-filled placeholder there, and a
 sniff before the blocks arrive finds no volume, which left the disk unwrapped

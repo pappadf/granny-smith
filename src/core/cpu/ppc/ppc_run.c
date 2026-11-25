@@ -725,3 +725,20 @@ void ppc_run(ppc_t *restrict p, uint32_t *instructions) {
 uint16_t ppc_pd_classify_word(uint32_t iw, uint32_t ipc, uint32_t page_lo, pd_entry_t *e) {
     return ppc_pd_classify(iw, ipc, page_lo, e);
 }
+
+// ============================================================================
+// The decode tree once more, for the translation tier's FP helper
+// (ppc_jit_fp): every leaf returns its nonzero T1 id -- declined -- except
+// the FP register-to-register ones (ppc_ops_fp.h), which run the
+// interpreter's bodies and return 0.
+// ============================================================================
+#include "ppc_pd_t1_classify.h" // every OP_ → return T1_<leaf>
+
+#include "ppc_ops_fp.h" // ...but these, after it: the interpreter's bodies
+
+#define PPC_DECODER_NAME        ppc_execute_fp
+#define PPC_DECODER_RETURN_TYPE int
+#define PPC_DECODER_ARGS        ppc_t *restrict p, uint32_t iw
+#define PPC_DECODER_PROLOGUE    (void)0
+#define PPC_DECODER_EPILOGUE    return 0
+#include "ppc_decode.h"

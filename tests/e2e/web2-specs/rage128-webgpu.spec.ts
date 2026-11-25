@@ -26,23 +26,20 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { gotoWeb2, stageOpfsFile } from "../helpers/web2-fs";
 import { gsCallInPage, gsEvalInPage } from "../helpers/web2-eval";
-import { BASE_ARGS, WEBGPU_ARGS, terminalRun } from "../helpers/voodoo2";
+import { BASE_ARGS, WEBGPU_ARGS, terminalRun } from "../helpers/tnt";
+import { DATA } from "../helpers/paths";
+import { uploadRomViaWelcome } from "../helpers/upload";
 
 test.use({ launchOptions: { args: [...BASE_ARGS, ...WEBGPU_ARGS] } });
 
-const DATA = path.resolve(__dirname, "../../data");
 const TNT_ROM = path.join(DATA, "roms", "pm7500-pm8500-pm9500-96cd923d.rom");
 const R128_PROM = path.join(DATA, "roms", "rage128-xclaimvr128-108-d0c84d42.prom");
 const STORED_ROM = "/opfs/images/rom/96cd923d-c241cd82bf90797a";
-const ROW = path.resolve(__dirname, "../../integration/rage128-3d/test.script");
+const ROW = path.resolve(__dirname, "../../integration/rage128-3d/test.lua");
 const DONE = "rage128-webgpu: the 3D row's drawing assertions hold on the GPU";
 
 async function upload(page: Page, file: string, toast: string): Promise<void> {
-  const [chooser] = await Promise.all([
-    page.waitForEvent("filechooser"),
-    page.getByRole("button", { name: "Load ROM..." }).click(),
-  ]);
-  await chooser.setFiles(file);
+  await uploadRomViaWelcome(page, file);
   await expect(page.locator(".toast .msg").filter({ hasText: toast })).toBeVisible({
     timeout: 60_000,
   });
@@ -58,35 +55,35 @@ async function upload(page: Page, file: string, toast: string): Promise<void> {
 // reaching row 100, Z test ALWAYS), then clears colour and Z with the row's helpers and
 // reads both sides of the filled rectangle back.
 const FILLS = `
-echo "section fills"
+print("section fills")
 setup3d()
-wr(0x1C90, $ZBUF)
+wr(0x1C90, ZBUF)
 wr(0x1C94, 64)
 wr(0x1C98, (7 << 4))
 wr(0x1C9C, 0x3)
-let F100 = 0x42C80000
-tri($F0, $F0, 0xFF0000FF, $F100, $F0, 0xFF0000FF, $F0, $F100, 0xFF0000FF, $F0_5)
+local F100 = 0x42C80000
+tri(F0, F0, 0xFF0000FF, F100, F0, 0xFF0000FF, F0, F100, 0xFF0000FF, F0_5)
 clear32(0x00336699)
 clearz16(0x1234)
-assert px(5, 5) == 0x00336699 "a 2D fill of a GPU colour surface"
-assert px(63, 63) == 0x00336699 "...over the whole rectangle"
-assert px(70, 5) == 0xFF0000FF "...and only it: the triangle beside it stays"
-assert (vram_rd($ZBUF + 5 * 1024 + 5 * 2) & 0xFFFF) == 0x1234 "a 2D fill of a GPU Z surface"
-assert (vram_rd($ZBUF + 5 * 1024 + 70 * 2) & 0xFFFF) == 0x7FFF "...and only it: the triangle's Z beside it stays"
+assert(px(5, 5) == 0x00336699, "a 2D fill of a GPU colour surface")
+assert(px(63, 63) == 0x00336699, "...over the whole rectangle")
+assert(px(70, 5) == 0xFF0000FF, "...and only it: the triangle beside it stays")
+assert((vram_rd(ZBUF + 5 * 1024 + 5 * 2) & 0xFFFF) == 0x1234, "a 2D fill of a GPU Z surface")
+assert((vram_rd(ZBUF + 5 * 1024 + 70 * 2) & 0xFFFF) == 0x7FFF, "...and only it: the triangle's Z beside it stays")
 wr(0x1C9C, 0)
 `;
 
 function composeScript(): string {
   const row = fs.readFileSync(ROW, "utf8");
-  const boot = row.indexOf('machine.boot model="pm9500"');
-  const dac = row.indexOf("# --- 13. The palette is the DAC table");
+  const boot = row.indexOf('machine.boot{model = "pm9500"');
+  const dac = row.indexOf("-- --- 13. The palette is the DAC table");
   if (boot < 0 || dac < 0) throw new Error("rage128-3d's layout moved: update the spec's cut points");
   // Each numbered section announces itself, so a failure or a stall
-  // names where it is.
+  // names where it is.  One chunk: FILLS uses the row's local helpers.
   const body = row
     .slice(row.indexOf("\n", boot) + 1, dac)
-    .replace(/^# --- (\d+\.[^\n-]*)/gm, (m, title: string) => `echo "section ${title.trim()}"\n${m}`);
-  return `${body}\n${FILLS}\necho "${DONE}"\n`;
+    .replace(/^-- --- (\d+\.[^\n-]*)/gm, (m, title: string) => `print("section ${title.trim()}")\n${m}`);
+  return `${body}\n${FILLS}\nprint("${DONE}")\n`;
 }
 
 test("the 3D engine's triangles drawn on the GPU read back as the walker drew them", async ({
@@ -121,10 +118,10 @@ test("the 3D engine's triangles drawn on the GPU read back as the walker drew th
   await page.locator('button.ptab[data-tab="terminal"]').click();
   await expect(page.locator(".console")).toBeVisible({ timeout: 15_000 });
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "r128gpu-"));
-  const scriptPath = path.join(tmp, "rage128-3d-gpu.script");
+  const scriptPath = path.join(tmp, "rage128-3d-gpu.lua");
   fs.writeFileSync(scriptPath, composeScript());
-  await stageOpfsFile(page, "/opfs/upload/rage128-3d-gpu.script", scriptPath);
-  await terminalRun(page, 'include "/opfs/upload/rage128-3d-gpu.script"');
+  await stageOpfsFile(page, "/opfs/upload/rage128-3d-gpu.lua", scriptPath);
+  await terminalRun(page, 'dofile("/opfs/upload/rage128-3d-gpu.lua")');
 
   let text = "";
   for (let attempt = 0; attempt < 480; attempt++) {
@@ -135,7 +132,7 @@ test("the 3D engine's triangles drawn on the GPU read back as the walker drew th
     }
     text = await page.locator(".console-output").innerText({ timeout: 5_000 });
     if (text.includes(DONE)) break;
-    if (/ASSERT FAILED|assert(ion)? failed|include: .* failed/.test(text)) break;
+    if (/rage128-3d-gpu\.lua:\d+:|assert(ion)? failed/.test(text)) break;
   }
   console.log(`[rage128-webgpu] console tail:\n${text.slice(-1500)}`);
   const stats = String(
@@ -147,7 +144,7 @@ test("the 3D engine's triangles drawn on the GPU read back as the walker drew th
   console.log(`[rage128-webgpu] ${stats}`);
   if (gpuLog.length) console.log(gpuLog.join("\n"));
   expect(text, text).toContain(DONE);
-  expect(text, text).not.toMatch(/ASSERT FAILED|assert(ion)? failed/);
+  expect(text, text).not.toMatch(/rage128-3d-gpu\.lua:\d+:|assert(ion)? failed/);
   // The GPU drew: triangles went through the takeover and the aperture
   // reads came back through readbacks, not the walker.
   expect(stats).toMatch(/ tris=[1-9]/);

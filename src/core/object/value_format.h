@@ -5,7 +5,8 @@
 // One renderer for the tagged union, in place of seven.
 //
 // Before this existed, `value_t` was re-rendered by seven per-kind switch
-// statements -- three in shell.c, three in expr.c, one in api.c -- and they
+// statements -- three in shell.c, three in the old expression evaluator, one
+// in api.c -- and they
 // had drifted in ways users could see: VFLAG_HEX honoured for VK_INT in one and
 // ignored in another, VK_BYTES capped at 64 in one and uncapped in the next,
 // and two JSON encoders whose comment promised they agreed "byte-for-byte"
@@ -19,24 +20,21 @@
 #define GS_OBJECT_VALUE_FORMAT_H
 
 #include "value.h"
+#include "vbuf.h" // vbuf_t, re-exported: the renderers write into one
 
+#include <stdbool.h>
 #include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-// A growable text buffer.  Zero-initialise, append, then free `p`.
-typedef struct {
-    char *p;
-    size_t len;
-    size_t cap;
-} vbuf_t;
+// `n` bytes of `s` JSON-escaped (json_escape.h), the body of a string
+// literal without its quotes: a length-bounded chunk of output text.
+void vbuf_append_json_escaped(vbuf_t *b, const char *s, size_t n);
 
-void vbuf_append(vbuf_t *b, const char *s, size_t n);
-void vbuf_append_str(vbuf_t *b, const char *s); // NUL-terminated; NULL appends nothing
-void vbuf_appendf(vbuf_t *b, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
-void vbuf_free(vbuf_t *b);
+// `s` as a quoted RFC 8259 string literal; NULL appends "".
+void vbuf_append_json_string(vbuf_t *b, const char *s);
 
 typedef enum {
     // Script interpolation, `${x}`: the value's plain text, unquoted, with

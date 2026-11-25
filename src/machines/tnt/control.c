@@ -49,9 +49,12 @@
 // Apple "Power Macintosh 7500 and 8500 Computers" Developer Note [Apple-doc].
 
 #include "display_timing.h"
+#include "regfile.h"
 #include "tnt.h"
 
 #include "card.h"
+#include "config_space.h"
+#include "display.h"
 #include "log.h"
 #include "pci.h"
 #include "ppc.h"
@@ -134,60 +137,12 @@ LOG_USE_CATEGORY_NAME("video");
 // {2,1,0}); this was a compile-time constant, pinning every TNT machine to
 // 640x480 whatever the guest asked for (#146).
 
-// The monitors the built-in port can present, by the 3-bit passive sense
-// code (display_timing.h): the ROM's extended walk reads the grounded lines
-// and picks the timing set.  Restricted to the eight passive codes, as the
-// PDM's list is: monitors Apple told apart by per-line strapping are not
-// modelled.  Grounding all three (sense 0) is what makes Open Firmware
-// program 1152x870.
-typedef struct control_monitor_kind {
-    const char *id; // config token ("hires", "twopage", ...)
-    const char *monitor; // its shared catalogue id (monitor_catalog.h)
-    uint8_t sense; // the 3-bit strap this monitor presents
-} control_monitor_kind_t;
-
-// "twopage" is sense 0, which the 21" Color and the 21" Two-Page displays
-// share; without the extended answers that tell them apart it is offered as
-// the one this port renders, the 21" Color.
-static const control_monitor_kind_t control_monitors[] = {
-    {"hires",    "13in_rgb",      0x6u},
-    {"twopage",  "21in_rgb",      0x0u},
-    {"portrait", "15in_portrait", 0x1u},
-    {"rubik",    "12in_rgb",      0x2u},
-    {"none",     "none",          0x7u},
-    {NULL,       NULL,            0   },
-};
-
-// hw_profile_t.builtin_video (machine_profile.h): two thin adapters over
-// control_monitors so the machine registry can publish and validate this
-// port without reaching into the family.
-static bool control_builtin_monitor_at(size_t i, const char **id, const char **monitor) {
-    size_t n = 0;
-    for (const control_monitor_kind_t *m = control_monitors; m->id; m++, n++) {
-        if (n == i) {
-            *id = m->id;
-            *monitor = m->monitor;
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool control_builtin_monitor_sense(const char *id, uint8_t *out_sense) {
-    for (const control_monitor_kind_t *m = control_monitors; m->id; m++) {
-        if (strcmp(m->id, id) == 0) {
-            *out_sense = m->sense;
-            return true;
-        }
-    }
-    return false;
-}
-
+// The built-in port's monitors are the Control kind's rows (control_monitors,
+// below), as the RBV's are its pseudo-slot card's.
 const builtin_video_desc_t tnt_builtin_video = {
     .detail = "Control",
-    .monitor_at = control_builtin_monitor_at,
-    .monitor_sense = control_builtin_monitor_sense,
     .default_monitor = "13in_rgb",
+    .slot_monitors = true,
 };
 
 static tnt_control_t *ctl(config_t *cfg) {
@@ -385,7 +340,7 @@ static void control_compose(config_t *cfg) {
     // 2592-stride read drew the old plane plus framebuffer bytes as a
     // junk cursor column.)
     uint32_t plane_stride = stride;
-    uint32_t x = (((uint32_t)c->rad_misc[0] << 8) | c->rad_misc[1]) + 1u; // hotspot bias
+    uint32_t x = RD_BE16(c->rad_misc) + 1u; // hotspot bias
     for (uint32_t y = 0; y < h; y++) {
         uint64_t poff = (uint64_t)base + (uint64_t)y * plane_stride;
         if (poff < 16u || poff + 8u > TNT_VRAM_SIZE)
@@ -410,7 +365,7 @@ static void control_compose(config_t *cfg) {
                 dst[0] = control_clut_match(c, pal[0], pal[1], pal[2]);
                 break;
             case 2: {
-                uint16_t v = (uint16_t)(((pal[0] >> 3) << 10) | ((pal[1] >> 3) << 5) | (pal[2] >> 3));
+                uint16_t v = display_pack555(pal[0], pal[1], pal[2]);
                 dst[0] = (uint8_t)(v >> 8);
                 dst[1] = (uint8_t)v;
                 break;
@@ -731,6 +686,13 @@ static display_t *control_pci_display(pci_device_t *dev) {
     return tnt_control_display((config_t *)dev->priv);
 }
 
+// The VRAM a power cycle loses (the bus default, pci_power_on).
+static size_t control_pci_vram(pci_device_t *dev, uint8_t **base) {
+    tnt_state_t *st = tnt_st((config_t *)dev->priv);
+    *base = st->vram;
+    return TNT_VRAM_SIZE;
+}
+
 static const char *control_pci_name(const pci_device_t *dev) {
     (void)dev;
     return "Control";
@@ -741,45 +703,75 @@ static void control_pci_teardown(pci_device_t *dev, config_t *cfg) {
     tnt_control_teardown(cfg);
 }
 
+// The guest physical address of the first displayed byte: the VRAM BAR's
+// base, plus the +$800000 half the usable framebuffer is in, plus the scan
+// start's place in the bank view vram_map decodes (the inverse of that map:
+// the 4 MB linear layout is the store itself; in the 2 MB modes bank 2 shows
+// through at +$600000).  Taken from the registers, not from `bits`, which
+// points at the composite while the hardware cursor is up.  0 while blanked.
+uint64_t tnt_control_fb_base(config_t *cfg) {
+    tnt_state_t *st = cfg ? tnt_st(cfg) : NULL;
+    if (!st || !st->vram || !st->display.bits || st->display.bits == st->blank || !st->control_dev ||
+        !pci_cfg_bar_enabled(st->control_dev, CONTROL_BAR_VRAM))
+        return 0;
+    const tnt_control_t *c = &st->control;
+    uint32_t store = control_scan_base(c);
+    uint32_t view = store; // bank 1, or the 4 MB linear layout
+    if (!(c->reg[CR_VRAM_ATTR] & 0x40u) && store >= 0x200000u)
+        view = 0x600000u + (store - 0x200000u); // bank 2 shows through
+    return (uint64_t)pci_cfg_bar_base(st->control_dev, CONTROL_BAR_VRAM) + 0x800000u + view;
+}
+
+static uint64_t control_pci_fb_base(pci_device_t *dev) {
+    return tnt_control_fb_base((config_t *)dev->priv);
+}
+
 static const pci_device_ops_t control_pci_ops = {
     .teardown = control_pci_teardown,
     .display = control_pci_display,
+    .fb_base = control_pci_fb_base,
+    .vram = control_pci_vram,
     .name = control_pci_name,
 };
 
 // The card kind.  Control is soldered down, so it attaches BUILTIN and is
 // instantiable only where a machine's slot table names it — it can never
 // be offered on a socket (pci_card_fits_socket).
-static pci_device_t *control_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
-    (void)slot_index;
+// The device's state is the machine's own (priv_size 0: `priv` is cfg).
+static int control_init(pci_device_t *dev, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     (void)rom;
     tnt_state_t *st = tnt_st(cfg);
-    pci_device_t *dev = calloc(1, sizeof(*dev));
-    if (!dev)
-        return NULL;
-    dev->ops = &control_pci_ops;
-    dev->decl = &control_decl;
     dev->priv = cfg;
-    pci_cfg_reset(dev);
     st->control_dev = dev;
     tnt_control_register_events(cfg);
     if (tnt_control_init(cfg, opts->sense) != 0) {
-        // The PCI layer logs and skips a NULL factory return, so the machine
+        // The PCI layer logs and skips a failed build, so the machine
         // comes up without built-in video rather than dereferencing NULL
         // framebuffers on the first scanout.
         st->control_dev = NULL;
-        free(dev);
-        return NULL;
+        return -1;
     }
     tnt_control_reset(cfg);
-    return dev;
+    return 0;
 }
 
-// Its stock monitor, as a card row: what the 9500's stand-in senses when no
-// card's monitor is there to borrow (the built-in port's own monitors are
-// tnt_builtin_video's).
-static const nubus_monitor_t control_stock_monitor[] = {
+// The monitors the built-in port can present, by the 3-bit passive sense
+// code (display_timing.h): the ROM's extended walk reads the grounded lines
+// and picks the timing set.  Restricted to the eight passive codes, as the
+// PDM's list is: monitors Apple told apart by per-line strapping are not
+// modelled.  Grounding all three (sense 0) is what makes Open Firmware
+// program 1152x870.  The ids are the port's tokens (what the legacy
+// monitor= argument names); the first is the stock monitor, which the 9500's
+// stand-in senses when no card's monitor is there to borrow.
+//
+// "twopage" is sense 0, which the 21" Color and the 21" Two-Page displays
+// share; without the extended answers that tell them apart it is offered as
+// the one this port renders, the 21" Color.
+static const nubus_monitor_t control_monitors[] = {
     {.id = "hires", .monitor = "13in_rgb", .width = 640, .height = 480, .sense_code = 0x6},
+    {.id = "twopage", .monitor = "21in_rgb", .width = 1152, .height = 870, .sense_code = 0x0},
+    {.id = "portrait", .monitor = "15in_portrait", .width = 640, .height = 870, .sense_code = 0x1},
+    {.id = "rubik", .monitor = "12in_rgb", .width = 512, .height = 384, .sense_code = 0x2},
     {0},
 };
 
@@ -788,49 +780,55 @@ const pci_card_kind_t tnt_control_kind = {
     .display_name = "Built-in video",
     .attach = PCI_ATTACH_BUILTIN,
     .card_class = "display",
-    .monitors = control_stock_monitor,
-    .factory = control_factory,
+    .monitors = control_monitors,
+    .ops = &control_pci_ops,
+    .decl = &control_decl,
+    .init = control_init,
 };
 
 // ============================================================
 // RaDACal (Grand Central +$1B000) — byte cells on $10 centres
 // ============================================================
 
+// The cursor-colour port (+$10) runs an R/G/B phase of its own over RaDACal's
+// one address register: an access borrows the address, and hands back where
+// the entry advance left it.
+static void crsr_seq_take(tnt_control_t *c) {
+    c->crsr_seq.widx = c->crsr_seq.ridx = ramdac_seq_addr(&c->rad);
+}
+
+static void crsr_seq_give(tnt_control_t *c) {
+    c->rad.widx = c->rad.ridx = ramdac_seq_addr(&c->crsr_seq);
+}
+
 // A cell read; the cursor and CLUT data ports step their RGB phase (and the
 // entry) unless it is an inspection (`peek`).
 static uint8_t rad_read(config_t *cfg, uint32_t offset, bool peek) {
     tnt_control_t *c = ctl(cfg);
+    uint8_t comp, idx;
     switch (offset & 0x30u) {
     case 0x00:
-        return c->rad_addr;
-    case 0x10: {
-        uint8_t v = c->crsr[c->rad_addr & 7u][c->crsr_phase];
-        if (!peek && ++c->crsr_phase == 3) {
-            c->crsr_phase = 0;
-            c->rad_addr++; // entry auto-advances, like the CLUT port
-        }
-        return v;
-    }
+        return ramdac_seq_addr(&c->rad);
+    case 0x10: // entry auto-advances, like the CLUT port
+        crsr_seq_take(c);
+        idx = ramdac_seq_read(&c->crsr_seq, peek, &comp);
+        crsr_seq_give(c);
+        return c->crsr[idx & 7u][comp];
     case 0x20:
-        switch (c->rad_addr) {
+        switch (ramdac_seq_addr(&c->rad)) {
         case 0x20:
             return c->rad_ctrl;
         case 0x21:
             return c->rad_bank;
         case 0x10:
         case 0x11:
-            return c->rad_misc[c->rad_addr & 1u];
+            return c->rad_misc[ramdac_seq_addr(&c->rad) & 1u];
         default:
-            return c->rad_reg[c->rad_addr];
+            return c->rad_reg[ramdac_seq_addr(&c->rad)];
         }
-    default: { // +$30: CLUT data, RGB phase auto-advances
-        uint8_t v = c->clut[c->rad_addr][c->rad_phase];
-        if (!peek && ++c->rad_phase == 3) {
-            c->rad_phase = 0;
-            c->rad_addr++;
-        }
-        return v;
-    }
+    default: // +$30: CLUT data, RGB phase auto-advances
+        idx = ramdac_seq_read(&c->rad, peek, &comp);
+        return c->clut[idx][comp];
     }
 }
 
@@ -844,24 +842,24 @@ uint8_t tnt_control_rad_peek(config_t *cfg, uint32_t offset) {
 
 void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
     tnt_control_t *c = ctl(cfg);
+    uint8_t addr = ramdac_seq_addr(&c->rad);
+    uint8_t idx;
     switch (offset & 0x30u) {
     case 0x00:
-        c->rad_addr = value;
-        c->rad_phase = 0;
-        c->crsr_phase = 0;
+        ramdac_seq_set_waddr(&c->rad, value);
+        ramdac_seq_set_waddr(&c->crsr_seq, value);
         break;
     case 0x10:
-        LOG(4, "Control: cursor data [%u.%u] = $%02X (pc=%08X)", c->rad_addr, c->crsr_phase, value,
-            ppc_get_pc(cfg->ppc));
-        c->crsr[c->rad_addr & 7u][c->crsr_phase] = value;
-        if (++c->crsr_phase == 3) {
-            c->crsr_phase = 0;
-            c->rad_addr++; // the driver streams all 8 entries in one burst
-        }
+        LOG(4, "Control: cursor data [%u.%u] = $%02X (pc=%08X)", addr, c->crsr_seq.phase, value, ppc_get_pc(cfg->ppc));
+        // The driver streams all 8 entries in one burst
+        crsr_seq_take(c);
+        if (ramdac_seq_write(&c->crsr_seq, value, &idx))
+            memcpy(c->crsr[idx & 7u], c->crsr_seq.pending, 3);
+        crsr_seq_give(c);
         break;
     case 0x20:
-        LOG(2, "Control: RaDACal misc[$%02X] = $%02X", c->rad_addr, value);
-        switch (c->rad_addr) {
+        LOG(2, "Control: RaDACal misc[$%02X] = $%02X", addr, value);
+        switch (addr) {
         case 0x20:
             c->rad_ctrl = value; // depth control — geometry follows
             tnt_control_update(cfg);
@@ -871,23 +869,20 @@ void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
             break;
         case 0x10:
         case 0x11:
-            c->rad_misc[c->rad_addr & 1u] = value;
+            c->rad_misc[addr & 1u] = value;
             break;
         default:
             // Indices with no modelled function still hold what was
             // written: MacTest Pro's Color Look Up Register test walks
             // a bit through misc $22 and reads each pattern back.
-            c->rad_reg[c->rad_addr] = value;
+            c->rad_reg[addr] = value;
             break;
         }
         break;
-    default: // +$30: CLUT data
-        c->clut[c->rad_addr][c->rad_phase] = value;
-        if (++c->rad_phase == 3) {
-            LOG(3, "Control: CLUT[$%02X] = %02X %02X %02X", c->rad_addr, c->clut[c->rad_addr][0],
-                c->clut[c->rad_addr][1], c->clut[c->rad_addr][2]);
-            c->rad_phase = 0;
-            c->rad_addr++;
+    default: // +$30: CLUT data, latched and stored on B
+        if (ramdac_seq_write(&c->rad, value, &idx)) {
+            memcpy(c->clut[idx], c->rad.pending, 3);
+            LOG(3, "Control: CLUT[$%02X] = %02X %02X %02X", idx, c->clut[idx][0], c->clut[idx][1], c->clut[idx][2]);
             control_refresh_clut(cfg);
         }
         break;
@@ -908,7 +903,7 @@ void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
 static uint8_t regs_read8(void *ctx, uint32_t offset) {
     // Byte lane of the LE register (lane j = value bits 8j+7:8j).
     config_t *cfg = (config_t *)ctx;
-    return (uint8_t)(control_reg_read(cfg, offset & ~3u) >> (8u * (offset & 3u)));
+    return le_lane8(control_reg_read(cfg, offset & ~3u), offset);
 }
 
 static uint16_t regs_read16(void *ctx, uint32_t offset) {
@@ -923,8 +918,8 @@ static void regs_write8(void *ctx, uint32_t offset, uint8_t value) {
     // Read-modify-write the byte lane so byte pokes of a register work.
     config_t *cfg = (config_t *)ctx;
     uint32_t reg = offset & ~3u;
-    uint32_t shift = 8u * (offset & 3u);
-    uint32_t v = (control_reg_read(cfg, reg) & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+    uint32_t v = control_reg_read(cfg, reg);
+    le_lane8_set(&v, offset, value);
     control_reg_write(cfg, reg, v);
 }
 
@@ -975,9 +970,8 @@ void tnt_control_reset(config_t *cfg) {
     // a stale VBL fires once into a disabled controller and goes quiet.
     memset(c->reg, 0, sizeof(c->reg));
     c->vbl_pending = 0;
-    c->rad_addr = 0;
-    c->rad_phase = 0;
-    c->crsr_phase = 0;
+    ramdac_seq_init(&c->rad, 0);
+    ramdac_seq_init(&c->crsr_seq, 0);
     c->rad_ctrl = 0;
     c->rad_bank = 0;
     memset(c->rad_misc, 0, sizeof(c->rad_misc));
@@ -992,13 +986,7 @@ static display_t *control_fb_resolve(void *owner) {
     return tnt_control_display((config_t *)owner);
 }
 static uint64_t control_fb_base(void *owner) {
-    // A byte offset into the 4 MB store, which is what CR_START_ADDR and the
-    // bank-select attribute add up to.
-    config_t *cfg = (config_t *)owner;
-    tnt_state_t *st = cfg ? tnt_st(cfg) : NULL;
-    if (!st || !st->display.bits || st->display.bits == st->blank || !st->vram)
-        return 0;
-    return (uint64_t)(st->display.bits - st->vram);
+    return tnt_control_fb_base((config_t *)owner);
 }
 
 int tnt_control_init(config_t *cfg, uint8_t sense) {

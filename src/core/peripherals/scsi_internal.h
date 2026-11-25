@@ -9,8 +9,10 @@
 
 #include "common.h"
 #include "image.h"
+#include "image_class.h"
 #include "memory.h"
 #include "scsi.h"
+#include "scsi_msgsession.h"
 #include "via.h"
 
 #include <stdbool.h>
@@ -374,7 +376,8 @@ struct scsi {
     struct object *bus_object; // scsi.bus child
     struct object *devices_object; // scsi.device collection
     struct object *device_objects[8]; // per-slot entry objects
-    struct object *image_objects[8]; // per-slot medium (image) nodes — device[N].image
+    struct object *image_objects[8]; // per-slot image nodes — device[N].image
+    image_node_t image_nodes[8]; // their data: this bus and the slot (image_class.h)
     // Per-slot back-link used as instance_data on each device entry
     // object so accessors can recover (scsi, slot) cheaply.
     scsi_device_link_t device_links[8];
@@ -425,6 +428,10 @@ struct scsi_5380 {
     bool dma_out_engine_started;
     uint8_t cdr_pipeline[3];
     int cdr_idx;
+    // The MESSAGE OUT the initiator is sending and the target's reply to it
+    // (scsi_msgsession.c, the conversation MESH and the 53C8xx hold too).
+    // Plain data, so a checkpoint between two message bytes keeps the bytes.
+    scsi_msgsession_t msg;
 
     // ---- NOT saved -------------------------------------------------------
     // Runtime pointers: re-bound by the machine after a restore.  Its DRQ

@@ -4,7 +4,6 @@
   import Table, { type TableColumn } from '@/components/common/Table.svelte';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import { opfs } from '@/bus/opfs';
-  import { gsEval, gsErrorText } from '@/bus/emulator';
   import { reconcileUiWithMachine } from '@/bus/boot';
   import { showNotification } from '@/state/toasts.svelte';
   import {
@@ -17,16 +16,16 @@
   import {
     checkpointCreatedToDate,
     describeMachine,
-    formatBytes,
     formatCheckpointLabel,
     formatLocalStamp,
   } from '@/lib/checkpointMeta';
+  import { formatSize } from '@/lib/format';
   import { getProfile } from '@/bus/profile';
   import type { CheckpointEntry } from '@/bus/types';
   import { saveBlob } from '@/bus/download';
-  import { saveCheckpoint } from '@/bus/checkpoint';
+  import { saveCheckpoint, loadCheckpointFrom } from '@/bus/checkpoint';
   import { getOrCreateMachine } from '@/lib/machineId';
-  import { sanitizeName } from '@/lib/archive';
+  import { sanitizeName } from '@/lib/fileName';
   import { machine } from '@/state/machine.svelte';
 
   let rows = $state<CheckpointEntry[]>([]);
@@ -108,15 +107,14 @@
       label: 'Size',
       width: 'var(--gs-checkpoints-col-size)',
       cmp: (a, b) => a.sizeBytes - b.sizeBytes,
-      text: (row) => formatBytes(row.sizeBytes),
+      text: (row) => formatSize(row.sizeBytes),
     },
   ];
 
   async function loadCheckpoint(row: CheckpointEntry) {
-    // gsEval never rejects: a transport failure is an {error} result too.
-    const ok = await gsEval('checkpoint.load', [`${row.path}/state.checkpoint`]);
+    const ok = await loadCheckpointFrom(row.path);
     if (ok !== true) {
-      showNotification(`Checkpoint load failed: ${gsErrorText(ok)}`, 'error');
+      showNotification(`Checkpoint load failed: ${ok}`, 'error');
       return;
     }
     await reconcileUiWithMachine('restore');

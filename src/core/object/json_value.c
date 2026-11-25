@@ -6,6 +6,8 @@
 
 #include "json_value.h"
 
+#include <errno.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -73,11 +75,7 @@ static bool buf_put_utf8(char **buf, size_t *len, size_t *cap, uint32_t cp) {
 static int32_t hex4(const char *p) {
     int32_t v = 0;
     for (int i = 0; i < 4; i++) {
-        char h = p[i];
-        int d = (h >= '0' && h <= '9')   ? h - '0'
-                : (h >= 'a' && h <= 'f') ? 10 + h - 'a'
-                : (h >= 'A' && h <= 'F') ? 10 + h - 'A'
-                                         : -1;
+        int d = hex_digit(p[i]); // also stops at the NUL of a short escape
         if (d < 0)
             return -1;
         v = (v << 4) | d;
@@ -178,15 +176,23 @@ static bool parse_number(json_reader_t *r, value_t *out) {
         q++;
     }
     char *end = NULL;
+    // Out-of-range numbers are refused rather than saturated: strtoll would
+    // turn 1e20-as-integer into INT64_MAX and strtod 1e999 into inf, both
+    // plausible-looking wrong values.
+    errno = 0;
     if (is_float) {
         double d = strtod(r->p, &end);
         if (end != q)
             return fail(r, "bad number");
+        if (errno == ERANGE || !isfinite(d))
+            return fail(r, "number out of range");
         *out = val_float(d);
     } else {
         long long ll = strtoll(r->p, &end, 10);
         if (end != q)
             return fail(r, "bad number");
+        if (errno == ERANGE)
+            return fail(r, "number out of range");
         *out = val_int((int64_t)ll);
     }
     r->p = q;

@@ -33,7 +33,7 @@ typedef struct rom_image {
 // cfg->build_opts, and each device reads its part while it is built.  Nothing
 // reaches a constructor through a global.
 
-// One card option (a PCI card's vram=, memory=, raster=, monitor=...).
+// One card option (a PCI card's vram=, memory=, raster=...).
 #define SLOT_OPTION_KEY_MAX   24
 #define SLOT_OPTION_VALUE_MAX 48
 typedef struct slot_option {
@@ -65,7 +65,8 @@ typedef struct slot_opts {
     // sets it before the card is built, and its block carries it.
     bool substitute;
     // The monitor on the card's video connector: one of the card kind's
-    // monitor rows (nubus_monitor_t.id), or "none".  The bus resolves it
+    // monitor rows (nubus_monitor_t.id), or "none" -- the one channel a
+    // monitor reaches a card through, on either bus.  The bus resolves it
     // before the card is built -- from the document's displays, else the
     // video mode's row, else the kind's first row -- so a card always reads
     // a definite monitor; a card without video leaves it "".
@@ -117,7 +118,7 @@ typedef struct machine_startup {
     int unit;
     unsigned type;
     // The partition to start up from, as the disk's partition map numbers
-    // it once attached (files.partitions); 0 names none -- the disk.  Only
+    // it once attached (files.identify volumes); 0 names none -- the disk.  Only
     // a family whose firmware boots a partition (the G3's Open Firmware
     // boot-device) reads it.
     int partition;
@@ -160,6 +161,10 @@ typedef struct machine_build_opts {
     // lines (compact Macs, the Lisa, Gossamer, the Network Server) reads
     // neither code.
     uint8_t builtin_sense;
+    // The built-in port's monitor, where the port's device is a card kind
+    // with monitor rows (a PCI machine's built-in video): the row's id, or
+    // "none"; "" leaves it to the device's default row.
+    char builtin_monitor[NUBUS_MONITOR_ID_MAX];
     bool builtin_connected;
     // The built-in port's startup video mode, when the document chose one:
     // the slot PRAM record the seeding step writes, and its slot.
@@ -187,6 +192,7 @@ static inline machine_build_opts_t machine_build_opts_default(void) {
     o.n_storage = 0;
     o.startup = (machine_startup_t){.none = false, .bus = "", .unit = 0, .type = 0};
     o.builtin_sense = MACHINE_SENSE_NONE;
+    o.builtin_monitor[0] = '\0';
     o.builtin_connected = false;
     o.builtin_startup.slot = 0;
     o.n_of_vars = 0;
@@ -210,6 +216,21 @@ static inline const slot_opts_t *machine_build_opts_slot(const machine_build_opt
             return &o->slots[i];
     }
     return NULL;
+}
+
+// The entry for `slot`, created empty when absent; NULL when the table is
+// full (MACHINE_SLOTS_MAX).
+static inline slot_opts_t *machine_build_opts_slot_get_or_add(machine_build_opts_t *o, int slot) {
+    for (int i = 0; i < o->n_slots; i++) {
+        if (o->slots[i].slot == slot)
+            return &o->slots[i];
+    }
+    if (o->n_slots >= MACHINE_SLOTS_MAX)
+        return NULL;
+    slot_opts_t *e = &o->slots[o->n_slots++];
+    memset(e, 0, sizeof(*e));
+    e->slot = slot;
+    return e;
 }
 
 // The value of option `key` in a slot entry, or NULL.

@@ -18,10 +18,11 @@ TEST_SRCS    := test.c
 TEST_HARNESS := none
 # The test supplies a recording checkpoint stream and its own link stubs;
 # from support/ it takes only the assert stub.
-STUBS        := assert
+STUBS        := assert checkpoint_strings
 EXTRA_SRCS   := ../../../../src/core/job/seam.c \
               ../../../../src/core/peripherals/scsi.c \
                 ../../../../src/core/peripherals/scsi_bus.c \
+                ../../../../src/core/peripherals/scsi_msgsession.c \
                 ../../../../src/core/event/event.c \
                 ../../../../src/core/peripherals/scsi_cdrom.c \
                 ../../../../src/core/peripherals/scsi_53c96.c \
@@ -30,10 +31,14 @@ EXTRA_SRCS   := ../../../../src/core/job/seam.c \
                 ../../../../src/core/object/value.c \
                 ../../../../src/core/object/meta.c \
                 ../../../../src/core/object/api.c \
-                ../../../../src/core/object/value_format.c
+                ../../../../src/core/object/json_value.c \
+                ../../../../src/core/object/value_format.c ../../../../src/core/vbuf.c
 EXTRA_SRCS += ../../../../src/core/storage/image_part.c
 USE_SOURCE_LAYER := 1
 EXTRA_SRCS += ../../../../src/core/storage/image_iso9660.c
 # The real image_t accessors; the rest of the image layer is faked here
 EXTRA_SRCS += ../../../../src/core/storage/image_access.c
+EXTRA_SRCS += ../../../../src/core/storage/image_class.c
+# The drive-to-image checkpoint reference the media controllers write
+EXTRA_SRCS += ../../../../src/core/storage/image_ref.c
 include ../../common.mk

@@ -35,34 +35,31 @@ void pci_bar_backing_iface(pci_device_t *dev, int bar, const memory_interface_t 
 void pci_cfg_reset(pci_device_t *dev) {
     (void)dev;
 }
-void pci_card_set_framebuffer_object(pci_device_t *dev, struct object *fb) {
-    (void)dev;
-    (void)fb;
-}
 uint64_t scheduler_cpu_cycles(struct scheduler *s) {
     (void)s;
     return 0;
 }
-bool platform_v2gpu_available(void) {
+bool platform_gpu_available(void) {
     return false;
 }
-bool platform_v2gpu_attach(void *ctrl, uint32_t bytes) {
+bool platform_gpu_attach(void *ctrl, uint32_t bytes) {
     (void)ctrl;
     (void)bytes;
     return false;
 }
-void platform_v2gpu_detach(void *ctrl) {
+void platform_gpu_detach(void *ctrl) {
     (void)ctrl;
 }
-void platform_v2gpu_notify(volatile uint32_t *addr) {
+void platform_wake(volatile uint32_t *addr) {
     (void)addr;
 }
-int platform_v2gpu_wait(volatile uint32_t *addr, uint32_t expected, uint32_t timeout_ms) {
+int platform_wait(volatile uint32_t *addr, uint32_t expected, uint32_t timeout_ms) {
     (void)addr;
     (void)expected;
     (void)timeout_ms;
     return -1;
 }
+void platform_gpu_keepalive(void) {}
 struct object *object_new(const class_desc_t *cls, void *data, const char *name) {
     (void)cls;
     (void)data;
@@ -72,6 +69,16 @@ struct object *object_new(const class_desc_t *cls, void *data, const char *name)
 void object_attach(struct object *parent, struct object *child) {
     (void)parent;
     (void)child;
+}
+struct object *object_attach_new(struct object *parent, const class_desc_t *cls, void *data, const char *name,
+                                 const char *label, int order) {
+    (void)parent;
+    (void)cls;
+    (void)data;
+    (void)name;
+    (void)label;
+    (void)order;
+    return NULL;
 }
 void *object_data(struct object *o) {
     (void)o;
@@ -89,6 +96,29 @@ void object_set_order(struct object *o, int order) {
     (void)o;
     (void)order;
 }
+// The pixel watch's entry cache (card.watch): no entries are made here.
+struct object *object_cache_at(object_cache_t *c, int index, void *data) {
+    (void)c;
+    (void)index;
+    (void)data;
+    return NULL;
+}
+void object_cache_set_parent(object_cache_t *c, struct object *parent) {
+    (void)c;
+    (void)parent;
+}
+void object_cache_sweep(object_cache_t *c, bool (*live)(struct object *entry, void *ud), void *ud) {
+    (void)c;
+    (void)live;
+    (void)ud;
+}
+void object_cache_clear(object_cache_t *c) {
+    (void)c;
+}
+int object_entry_index(struct object *entry) {
+    (void)entry;
+    return -1;
+}
 
 // --- The card's register face, as the bus sees it ---------------------------
 
@@ -105,7 +135,7 @@ static pci_device_t *seat_driving(uint32_t width, uint32_t height) {
     config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     slot_opts_t opts = {.slot = 1, .n_options = 1, .options = {{"raster", "sw"}}}; // no worker thread
-    pci_device_t *dev = voodoo2_kind.factory(0, &cfg, NULL, &opts);
+    pci_device_t *dev = pci_card_construct(&voodoo2_kind, NULL, 0, &cfg, NULL, &opts);
     ASSERT_TRUE(dev && s_bar_if);
     dev->ops->cfg_write(dev, 0x40, 0, 0x01); // initEnable: fbiInit writes on
     reg_write(R_FBIINIT1, 0x0001E000u); // outputs enabled; no reset, no blank
@@ -117,9 +147,7 @@ static pci_device_t *seat_driving(uint32_t width, uint32_t height) {
 static void unseat(pci_device_t *dev) {
     config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
-    if (dev->ops->teardown)
-        dev->ops->teardown(dev, &cfg);
-    free(dev); // the bus owns the wrapper
+    pci_device_free(dev, &cfg); // what the bus does with a device it built
 }
 
 // Taller than the raster: the height is not taken as programmed.

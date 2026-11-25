@@ -1,6 +1,7 @@
 # Floppy — the IWM/SWIM controller model (`floppy.c`)
 
-`src/core/peripherals/floppy.c` (with `floppy_gcr.c` and `floppy_swim.c`)
+`src/core/peripherals/floppy.c` (with `floppy_gcr.c` and `floppy_swim.c`;
+the 6-and-2 GCR codec under the track encoder is `src/core/storage/gcr.c`)
 models the Macintosh floppy controller in its IWM-only form (Mac Plus) and
 the SWIM's dual IWM/ISM form (SE/30 and the II family), together with the
 drives behind it. The controller-driven SWIM III and New Age chips have
@@ -47,4 +48,5 @@ renamed, deleted or replaced; inserting it again opens it afresh. A checkpoint
 taken while the disk was in still restores, since the restore reopens the
 image from the checkpoint's own image list. The Lisa's Sony drive is not a
 `floppy_t` and keeps an ejected diskette open for a faithful reinsert (its
-writes and page-label tags live only in that open image).
+writes and page-label tags, both in that image's delta, then come back with
+it).

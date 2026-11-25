@@ -35,13 +35,13 @@ tests/
 │   ├── suites/<name>/             #   One directory per suite
 │   └── support/                   #   Harnesses, stubs, header shims
 ├── bench/                          # CPU benchmark rows (BENCHMARKS.md)
-│   ├── lib/bench.script           #   Window, guard and state helpers
+│   ├── lib/bench.lua              #   Window, guard and state helpers
 │   ├── rows.json                  #   Row configuration and thresholds
-│   └── <row>.script               #   bench_boot() + bench_guard() per row
+│   └── <row>.lua                  #   bench_boot() + bench_guard() per row
 ├── integration/                    # Headless emulator integration tests
-│   ├── lib/                       #   Shared row/wait/golden library (include'd)
+│   ├── lib/                       #   Shared row/wait/golden library (dofile'd)
 │   ├── suite-<family>/            #   Per-machine suites (rows, goldens/)
-│   └── <name>/                    #   One directory per test (config.mk, test.script)
+│   └── <name>/                    #   One directory per test (config.mk, test.lua)
 └── e2e/                            # Browser Playwright E2E tests (web2 UI)
     ├── web2-specs/                #   Functional suite (playwright.web2.config.ts)
     ├── ui-prod-smoke/             #   Production-bundle boot smoke
@@ -92,7 +92,7 @@ switch.
 
 Integration tests exercise the full emulator in headless mode (native binary,
 no browser). Each test has a `config.mk` (ROM/disk paths, arguments) and a
-`test.script` (shell commands + expected-output checks).
+`test.lua` (a Lua script that drives the emulator and asserts).
 
 ### Running Integration Tests
 
@@ -157,7 +157,7 @@ Two rules suite rows must follow, both learned from real failures:
 
 - **Name every staging argument the row depends on.** `machine.boot`
   takes a complete document: `model` and `rom` are required (the harness
-  binds `--var ROM` to the test's configured ROM, so `rom="${$ROM}"` is
+  binds `--var ROM` to the test's configured ROM, so `rom = vars.ROM` is
   the idiom), and every omitted field resolves to the model's own
   default — never to what a previous row booted. A row that cares about
   the video card, vROM, or monitor sense still passes it explicitly so
@@ -173,9 +173,12 @@ Two rules suite rows must follow, both learned from real failures:
   capturing and when verifying, so menu/click choreography lands the
   same way in both. Screens that animate (a blinking "?" icon, a text
   caret) never settle at all — those rows use a fixed `run_ticks`
-  window and their goldens are animation-phase-sensitive by design. Shared
-harness functions live in `tests/integration/lib/mac.script`, pulled
-in with the shell's `include` statement. The library provides
+  window and their goldens are animation-phase-sensitive by design. Tests are Lua files (`test.lua`; `docs/internals/core/lua/lua.md` is the
+language's contract with the tree; `scripts/script-to-lua.py` converts a
+test written in the old `.script` language, should one turn up). Shared
+harness functions live in `tests/integration/lib/mac.lua`, pulled in with
+`local mac = dofile("../lib/mac.lua")` and called as `mac.wait_match(...)`.
+The library provides
 condition-based waits (`wait_match`, `wait_stable`, `wait_change`,
 `wait_global`, `wait_desktop` — a wait states its condition; ceilings are
 hang detectors), budgets that end early on their golden
@@ -203,12 +206,14 @@ was captured), `skip_test` for a test whose media is absent (the runner then pri
 `=== SKIP: <test> (<why>) ===` instead of PASS and records `SKIP` in
 `durations.jsonl`), guest-tick choreography (`run_ticks`, `click` and `double_click`, which
 press and release back to back and run until the guest has taken the click,
-`about_box`), the row harness (`row_on`/`row_end`/`suite_done`,
-milestone rows), addressing-mode asserts (`assert_addr`), and
-machine-read coverage records (`@@COV` lines).
+`about_box`), the row harness (`mac.row(label, function() … end)` runs a
+row under pcall, counts it and reports it; `mac.milestone` the same for a
+known gap; `mac.suite_done` the epilogue; `mac.wait_until(cond, step,
+ceiling, what)` is the one loop under every wait), addressing-mode asserts
+(`assert_addr`), and machine-read coverage records (`@@COV` lines).
 
 A second, machine-specific library sits beside it:
-`tests/integration/lib/ans.script`, for the Apple Network Servers. Those
+`tests/integration/lib/ans.lua`, for the Apple Network Servers. Those
 rows drive Open Firmware over the guest serial console rather than reading a
 screen, and two things about that machine are awkward exactly once and
 identical in every row — its console is the *monitor* until the firmware is
@@ -219,7 +224,7 @@ drops characters from an input burst, which the paced serial line avoids
 See the library's header; the reasoning is worth reading before writing a
 row against a machine that narrates instead of drawing.
 
-A third, `tests/integration/lib/gossamer.script`, holds the beige G3's
+A third, `tests/integration/lib/gossamer.lua`, holds the beige G3's
 Open Firmware entry (Command-Option-O-F on the keyboard, then `ttya io`)
 and the Mac OS 9.2.1 installer choreography the install rows share.
 
@@ -259,10 +264,10 @@ hardware (savedMode, RowWords, CLUT PBCR, the card's sister byte) and use the
 golden only to pin that the raster still scans out. Waive them explicitly, in
 the script, naming both files and the proof:
 
-```
-# golden-collision-ok: welcome-13in_rgb-640x480-1bpp.png welcome-13in_rgb-640x480-2bpp.png
-# - black-and-white splash, identical at both depths; the depth change is proven
-# by the savedMode/RowWords asserts above, not by the frame.
+```lua
+-- golden-collision-ok: welcome-13in_rgb-640x480-1bpp.png welcome-13in_rgb-640x480-2bpp.png
+-- - black-and-white splash, identical at both depths; the depth change is proven
+-- by the savedMode/RowWords asserts above, not by the frame.
 ```
 
 A waiver must name every file in the collision, so it cannot silently grow to
@@ -297,17 +302,17 @@ Instead of booting there again, the consumer restores the producer's
 checkpoint:
 
 - The producer's `config.mk` says `TEST_PROVIDES := <name>` and its script
-  calls `fixture_save("<name>")` at that point; the consumer says
-  `TEST_NEEDS := <name>` and calls `fixture_load("<name>")`, which returns
+  calls `mac.fixture_save("<name>")` at that point; the consumer says
+  `TEST_NEEDS := <name>` and calls `mac.fixture_load("<name>")`, which returns
   false when there is no fixture to load.
 - Only the aggregate `make test` provides fixtures.  It clears
   `build/integration/fixtures/`, makes each consumer wait for its producer
   (an order-only prerequisite), and passes the directory to every test as
-  `$FIXTURES`.  `scripts/order-tests.py` bin-packs a producer and its
+  `vars.FIXTURES`.  `scripts/order-tests.py` bin-packs a producer and its
   consumers as one item, so they always share a CI shard.
   `make test TESTS="a b"` runs a chosen set the same way.
 - A test run on its own (`make test-<name>`) gets no fixtures, so a consumer
-  always has its own way to the same state (`if !fixture_load(...) { ... }`).
+  always has its own way to the same state (`if not mac.fixture_load(...) then ... end`).
   That way must reach the fixture's state byte for byte, or the consumer's
   goldens would depend on how it ran.  A restored run is deterministic but
   is not always the straight run's timeline (`tnt-voodoo2-glide-sw`'s Quake
@@ -334,6 +339,10 @@ Valgrind is deliberately *not* a full sweep: at its 20–50× slowdown over
 billions of guest cycles, `test-valgrind` across every test cannot run to
 completion, and the throughput floors would fail by construction — hence
 `PERF_FLOORS=off` for those runs.
+`test-valgrind` is the aggregate `test` run with the binary wrapped (the
+same fixtures, skip report and summary), and `test-valgrind-<name>` is
+`test-<name>` wrapped; neither appends to `durations.jsonl`, whose times
+feed `test-weights.json`.
 
 ### CPU performance benchmarks
 
@@ -381,10 +390,11 @@ not flake — absorb legitimate ones with a reviewed
 
 ### Writing a New Integration Test
 
-1. Create `tests/integration/foo/` with `config.mk` and `test.script`.
+1. Create `tests/integration/foo/` with `config.mk` and `test.lua`.
 2. `config.mk` sets `TEST_ROM`, `TEST_ARGS`, `TEST_TIER`, and optionally
    `TEST_SETUP`/`TEST_RUNNER`.
-3. `test.script` contains shell commands sent to the headless emulator.
+3. `test.lua` is the Lua script the headless emulator runs
+   (`docs/internals/core/lua/lua.md`).
    A boot assertion belongs as a row in its machine's suite, not a new
    directory — new directories are for genuinely new mechanisms.
 4. Run: `make -C tests/integration test-foo`
@@ -453,7 +463,8 @@ live in the headless integration tests, not here.
    ```
    A spec whose point is pacing, or that feeds real-time media into the
    guest, keeps web2's default with `test.use({ gsSpeed: null })`, and goes
-   in the config's `SERIAL` list if it must not share the machine with
+   in `tests/e2e/serial-specs.json` (the config's `SERIAL` list, also read by
+   `scripts/e2e-shard.py`) if it must not share the machine with
    another running emulator (the `parallel` project runs
    `GS_E2E_WORKERS` specs at once; the default is 1).
 3. Drive through the shipped UI (dialog, drag-and-drop); read or call the

@@ -5,6 +5,7 @@
 // Machine profile registry plus the machine.* object-model surface.
 
 #include "machine.h"
+#include "drive_catalog.h"
 #include "machine_config.h"
 
 #include "adb.h"
@@ -16,6 +17,7 @@
 #include "machine_parts.h"
 #include "nubus.h"
 #include "object.h"
+#include "object_order.h"
 #include "out.h"
 #include "platform.h"
 #include "prom.h"
@@ -207,16 +209,14 @@ const struct scsi_cd_drive *machine_cd_drive_model(const hw_profile_t *p, const 
 }
 
 // A card bus's checkpoint part: the bus and its drives.
-static void card_scsi_part_save(void *obj, checkpoint_t *cp) {
-    scsi_checkpoint(obj, cp);
-}
+MACHINE_PART_SAVE(scsi_checkpoint, scsi_t)
 
 void machine_card_scsi_buses(struct config *cfg, checkpoint_t *cp) {
     for (const pci_slot_decl_t *d = cfg->machine->pci_slots; d && d->slot; d++) {
         // Only a socket: a soldered controller is wired to the board's own bus.
         if (d->kind != PCI_SLOT_SOCKET || d->slot >= CARD_SCSI_SLOTS)
             continue;
-        const pci_card_kind_t *kind = pci_slot_kind(cfg->pci, d->slot);
+        const pci_card_kind_t *kind = pci_seated_kind(cfg->pci, d->slot);
         pci_device_t *dev = pci_slot_device(cfg->pci, d->slot);
         if (!kind || !dev || !kind->attach_scsi_bus)
             continue;
@@ -227,7 +227,7 @@ void machine_card_scsi_buses(struct config *cfg, checkpoint_t *cp) {
         snprintf(name, sizeof names[0], "pci_%d", d->slot);
         machine_part_begin(cfg, cp, name);
         scsi_t *bus = machine_scsi_bus_init(cfg, cp, name);
-        machine_part(cfg, cp, name, card_scsi_part_save, bus);
+        machine_part(cfg, cp, name, scsi_checkpoint_part, bus);
         cfg->card_scsi[d->slot] = bus;
         kind->attach_scsi_bus(dev, bus);
         LOG(1, "%s: SCSI bus of the card in %s", name, d->label ? d->label : "the slot");
@@ -332,9 +332,9 @@ static DEF_GETTER(attr_catalog_models) {
 
 // The storage devices the running machine was built with, the positions an
 // image can be attached to: {bus, bus_label, unit, position, type, present,
-// media, filename}, type hd or cd as machine.attach_media takes them,
+// media, source}, type hd or cd as machine.attach_media takes them,
 // present when an image is in it, media the bay as machine.attach_media
-// answers it ({bus, id, label}: what machine.eject_media takes) and filename
+// answers it ({bus, id, label}: what machine.eject_media takes) and source
 // the source path of the image in it ("" when empty) -- so a page that did
 // not attach the media (a checkpoint restore) can tell what is where.
 static DEF_GETTER(attr_machine_storage) {
@@ -372,10 +372,10 @@ static DEF_GETTER(attr_machine_storage) {
         bool present = have_bay && sub->media_present && sub->media_present(cfg, bay.bus, bay.unit);
         val_map_put(m, "present", val_bool(present));
         image_t *img = present ? system_media_image(cfg, bay.bus, bay.unit) : NULL;
-        const char *filename = img ? image_get_filename(img) : NULL;
+        const char *source = img ? image_get_filename(img) : NULL;
         if (have_bay)
             val_map_put(m, "media", media_bay_value(&bay));
-        val_map_put(m, "filename", val_str(filename ? filename : ""));
+        val_map_put(m, "source", val_str(source ? source : ""));
         items[i] = val_map_finish(m);
     }
     return val_list(items, n);
@@ -412,7 +412,7 @@ static DEF_GETTER(attr_machine_ram) {
 // IPL from it, and neither was readable from anywhere: an investigation
 // could see a controller's own view through machine.<chip> and the CPU's
 // behaviour, with the step between them invisible.  The bit meanings are
-// per family (MAC030_GLUE_IRQ_* and the family equivalents), which is why
+// per family (M68K_BOARD_IRQ_* and the family equivalents), which is why
 // this is a bitmap and not an enum.
 static DEF_GETTER(attr_machine_irq) {
     config_t *cfg = system_running();
@@ -1048,7 +1048,7 @@ static const member_t machine_members[] = {
     {.kind = MK_ATTR,
      .name = "storage",
      .doc = "The storage devices the machine was built with: {bus, bus_label, unit, position, type, present, media, "
-            "filename}", .attr = {.type = VK_LIST, .get = attr_machine_storage, .set = NULL}},
+            "source}", .attr = {.type = VK_LIST, .get = attr_machine_storage, .set = NULL}},
     {.kind = MK_ATTR,
      .name = "irq",
      .doc = "Raw interrupt-source bitmap the family aggregates (bit meanings are per family)",
@@ -1152,7 +1152,7 @@ struct object *machine_object(void) {
     if (!s_machine_object) {
         s_machine_object = object_new(&machine_class, NULL, "machine");
         if (s_machine_object) {
-            object_set_order(s_machine_object, 0); // machine sorts first under the root
+            object_set_order(s_machine_object, OBJ_ORDER_MACHINE); // machine sorts first under the root
             object_set_domain(s_machine_object, OBJ_DOMAIN_MACHINE);
             object_attach(object_root(), s_machine_object);
         }
@@ -1174,6 +1174,28 @@ static DEF_GETTER(attr_catalog_nubus_cards) {
 
 static DEF_GETTER(attr_catalog_pci_cards) {
     return pci_cards_list();
+}
+
+// `catalog.hd_models` — the SCSI hard disk models a disk image is presented
+// as (the closest one by size): {label, vendor, product, revision, size}.
+static DEF_GETTER(attr_catalog_hd_models) {
+    int count = drive_catalog_count();
+    if (count <= 0)
+        return val_list(NULL, 0);
+    value_t *items = (value_t *)calloc((size_t)count, sizeof(value_t));
+    if (!items)
+        return val_err("catalog.hd_models: out of memory");
+    for (int i = 0; i < count; i++) {
+        const struct drive_model *md = drive_catalog_get(i);
+        value_map_builder_t *b = val_map_new();
+        val_map_put(b, "label", val_str(md ? md->label : ""));
+        val_map_put(b, "vendor", val_str(md ? md->vendor : ""));
+        val_map_put(b, "product", val_str(md ? md->product : ""));
+        val_map_put(b, "revision", val_str(md ? md->revision : ""));
+        val_map_put(b, "size", val_int(md ? (int64_t)md->size : 0));
+        items[i] = val_map_finish(b);
+    }
+    return val_list(items, (size_t)count);
 }
 
 static const member_t catalog_members[] = {
@@ -1199,13 +1221,18 @@ static const member_t catalog_members[] = {
      .doc = "The ids of all registered PCI card drivers",
      .flags = M_CAT_ADVANCED,
      .attr = {.type = VK_LIST, .get = attr_catalog_pci_cards, .set = NULL}},
+    {.kind = MK_ATTR,
+     .name = "hd_models",
+     .doc = "The SCSI hard disk models an attached image is presented as: [{label, vendor, product, revision, size}]",
+     .flags = M_CAT_ADVANCED,
+     .attr = {.type = VK_LIST, .get = attr_catalog_hd_models, .set = NULL}},
 };
 
 static const class_desc_t catalog_class = {
     .name = "catalog",
     .members = catalog_members,
     .n_members = sizeof(catalog_members) / sizeof(catalog_members[0]),
-    .doc = "What the emulator can build or fit: models, card drivers, option ROMs",
+    .doc = "What the emulator can build or fit: models, card drivers, option ROMs, hard disk models",
 };
 
 static struct object *s_catalog_object = NULL;
@@ -1213,12 +1240,9 @@ static struct object *s_catalog_object = NULL;
 void catalog_init(void) {
     if (s_catalog_object)
         return;
-    s_catalog_object = object_new(&catalog_class, NULL, "catalog");
+    s_catalog_object = object_attach_new(object_root(), &catalog_class, NULL, "catalog", "Catalog", OBJ_ORDER_CATALOG);
     if (!s_catalog_object)
         return;
-    object_set_label(s_catalog_object, "Catalog");
-    object_set_order(s_catalog_object, 70);
-    object_attach(object_root(), s_catalog_object);
     vrom_init(s_catalog_object); // catalog.vroms
     prom_init(s_catalog_object); // catalog.proms
 }

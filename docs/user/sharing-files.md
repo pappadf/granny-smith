@@ -16,6 +16,11 @@ It is available on every Macintosh model when **AppleTalk** is **Active**
 in the machine's configuration (the default). The Mac needs AppleShare
 client software, which System 7 and later include.
 
+The server is reached over LocalTalk (the serial port) on every model. On
+the Quadra 840AV and Centris/Quadra 660AV it is also reachable over the
+built-in Ethernet: choose **EtherTalk Built In** in the **Network**
+control panel, and the Chooser finds the server the same way.
+
 ### 1.1 Connecting from the Mac
 
 1. On the Mac, choose **Chooser** from the Apple menu.

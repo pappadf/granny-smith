@@ -20,19 +20,21 @@
 #include "debug_data.h"
 #include "debug_mac.h"
 #include "display.h"
-#include "expr.h"
 #include "fpu.h"
 #include "gs_assert.h"
+#include "gs_lua.h"
+#include "lisa_mmu.h"
 #include "log.h"
 #include "log_categories.h"
 #include "memory.h"
 #include "mmu.h"
 #include "nubus.h"
 #include "object.h"
+#include "object_order.h"
 #include "pci.h"
 #include "scheduler.h"
 #include "shell.h"
-#include "shell_var.h"
+#include "storage_util.h"
 #include "system.h"
 #include "system_internal.h"
 #include "value.h"
@@ -45,6 +47,7 @@ static const class_desc_t bp_collection_class;
 static const class_desc_t lp_collection_class;
 static const class_desc_t wp_collection_class;
 static const class_desc_t debug_mac_class;
+static bool debug_mac_world(void);
 static const class_desc_t debug_mac_globals_class;
 
 #include <ctype.h>
@@ -225,6 +228,74 @@ struct logpoint {
 };
 
 // ============================================================================
+// Id-keyed list walks
+// ============================================================================
+//
+// Every breakpoint and logpoint carries a sparse stable id (never recycled,
+// max-id-ever + 1 on add), which the indexed-child callbacks expose as the
+// "index" segment.  One set of walks serves both lists.  The logpoint list
+// holds two collections, the logpoints and the watchpoints (`stops`), which
+// share its id counter, so each walk takes a selector: DP_ANY, or the
+// `stops` value of one collection.  Breakpoints ignore it.
+
+#define DP_ANY -1
+
+// Selectors: whether entry p belongs to the walk's collection
+#define DP_BP_SELECTED(p, sel) ((void)(p), (void)(sel), true)
+#define DP_LP_SELECTED(p, sel) ((sel) == DP_ANY || (p)->stops == ((sel) != 0))
+
+// The walks over one list type:
+//   NAME_by_id      the live entry with this id, or NULL;
+//   NAME_next_id    the smallest live id strictly greater than prev_id (any
+//                   if prev_id < 0), or -1: a linear scan, as the list is in
+//                   add order, so next() yields ascending ids even after
+//                   entries were removed and re-added;
+//   NAME_unlink     unlink the entry with this id and return it (NULL if
+//                   none), matching the id, never the list position;
+//   NAME_free_where free every selected entry; returns how many.
+#define DP_LIST_OPS(NAME, type_t, SELECTED)                                                                            \
+    static type_t *NAME##_by_id(type_t *head, int id, int sel) {                                                       \
+        for (type_t *p = head; p; p = p->next)                                                                         \
+            if (p->id == id && SELECTED(p, sel))                                                                       \
+                return p;                                                                                              \
+        return NULL;                                                                                                   \
+    }                                                                                                                  \
+    static int NAME##_next_id(type_t *head, int prev_id, int sel) {                                                    \
+        int best = -1;                                                                                                 \
+        for (type_t *p = head; p; p = p->next)                                                                         \
+            if (p->id > prev_id && SELECTED(p, sel) && (best < 0 || p->id < best))                                     \
+                best = p->id;                                                                                          \
+        return best;                                                                                                   \
+    }                                                                                                                  \
+    static type_t *NAME##_unlink(type_t **pp, int id, int sel) {                                                       \
+        for (; *pp; pp = &(*pp)->next) {                                                                               \
+            type_t *p = *pp;                                                                                           \
+            if (p->id == id && SELECTED(p, sel)) {                                                                     \
+                *pp = p->next;                                                                                         \
+                return p;                                                                                              \
+            }                                                                                                          \
+        }                                                                                                              \
+        return NULL;                                                                                                   \
+    }                                                                                                                  \
+    static int NAME##_free_where(type_t **pp, int sel, void (*free_fn)(type_t *)) {                                    \
+        int count = 0;                                                                                                 \
+        while (*pp) {                                                                                                  \
+            type_t *p = *pp;                                                                                           \
+            if (!SELECTED(p, sel)) {                                                                                   \
+                pp = &p->next;                                                                                         \
+                continue;                                                                                              \
+            }                                                                                                          \
+            *pp = p->next;                                                                                             \
+            free_fn(p);                                                                                                \
+            count++;                                                                                                   \
+        }                                                                                                              \
+        return count;                                                                                                  \
+    }
+
+DP_LIST_OPS(bp_list, breakpoint_t, DP_BP_SELECTED)
+DP_LIST_OPS(lp_list, logpoint_t, DP_LP_SELECTED)
+
+// ============================================================================
 // Static Helpers
 // ============================================================================
 
@@ -319,92 +390,29 @@ static breakpoint_t *add_breakpoint(debug_t *debug, uint32_t addr, addr_space_t 
     return bp;
 }
 
-// `$name` resolver for debugger-side expression contexts: straight
-// through to the shell's scoped binding store (+ alias table).
-static value_t debug_shell_binding(void *ud, const char *name) {
-    (void)ud;
-    return shell_binding_get(name);
-}
-
-// Refuse a breakpoint condition that does not parse, before it is stored:
-// a syntax check only (expr_check), so adding or editing a breakpoint reads
-// and calls nothing.  VK_NONE when `expr` is well-formed, else VK_ERROR
-// naming the condition and what is wrong with it.
+// Refuse a breakpoint condition that does not compile, before it is stored:
+// compiling reads and calls nothing.  VK_NONE when `expr` is well-formed,
+// else VK_ERROR naming the condition and what is wrong with it.
 static value_t check_breakpoint_condition(const char *expr) {
-    value_t r = expr_check(expr, NULL);
-    if (!val_is_error(&r))
-        return r;
-    value_t e = val_err("invalid breakpoint condition '%s': %s", expr, r.err ? r.err : "syntax error");
-    value_free(&r);
-    return e;
+    return gs_lua_condition_check(expr);
 }
 
-// Evaluate a breakpoint condition expression using the full ${...}
-// expression grammar (see src/core/object/expr.c).  Supports anything
-// expr_eval supports — paths (cpu.pc, cpu.d0), method calls
-// (memory.peek.l(0x1201D420)), arithmetic/bitwise/comparison/logical
-// operators, ternary, etc.  Examples:
-//   cpu.pc == 0x40802A14
-//   cpu.d0 == 0
-//   memory.peek.l(0x1201D420) == 0xE000
-//   cpu.supervisor && cpu.pc >= 0x10000000
-//
-// A condition that does not parse is refused when it is set
-// (check_breakpoint_condition); one whose evaluation fails at the hit (a
-// path that does not resolve there, a type error) evaluates to true, so the
-// failure does not silently swallow hits.
+// Evaluate a breakpoint condition: a Lua expression in the shell spelling
+// (gs_lua.h) -- `machine.cpu.d0 == 0`, `$pc >= 0x10000000 && ...`,
+// `machine.memory.peek.l(0x1201D420) == 0xE000`.  Compiled once, run at each
+// hit; false, nil, 0 and none are false.  One whose evaluation fails at the
+// hit (a path that does not resolve there) is true, so the failure does not
+// silently swallow hits.  The text is copied first: the condition may remove
+// the breakpoint that owns it (debug.breakpoints.clear()).
 static bool eval_breakpoint_condition(const char *expr) {
     if (!expr || !*expr)
         return true;
-    while (*expr == ' ' || *expr == '\t')
-        expr++;
-    if (!*expr)
-        return true;
-
-    expr_ctx_t ctx = {
-        .root = object_root(),
-        .binding = debug_shell_binding, // $name → shell bindings/aliases
-        .binding_ud = NULL,
-    };
-
-    // Evaluate a private copy: the expression may remove the breakpoint
-    // that owns `expr` (e.g. debug.breakpoints.clear()).
     char *copy = strdup(expr);
     if (!copy)
         return true;
-    value_t v = expr_eval(copy, &ctx);
+    bool r = gs_lua_condition_eval(copy);
     free(copy);
-    bool result;
-    switch (v.kind) {
-    case VK_BOOL:
-        result = v.b;
-        break;
-    case VK_INT:
-        result = (v.i != 0);
-        break;
-    case VK_UINT:
-        result = (v.u != 0);
-        break;
-    case VK_FLOAT:
-        result = (v.f != 0.0);
-        break;
-    case VK_STRING:
-        result = (v.s && *v.s);
-        break;
-    case VK_NONE:
-        result = false;
-        break;
-    case VK_ERROR:
-        // Parse / resolution error — safer default is to fire so the
-        // user notices the typo rather than missing the breakpoint.
-        result = true;
-        break;
-    default:
-        result = true;
-        break;
-    }
-    value_free(&v);
-    return result;
+    return r;
 }
 
 // Set a logpoint at the specified address range (end_addr == addr for single address)
@@ -566,87 +574,35 @@ static logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t e
     return install_memory_logpoint(debug, addr, end_addr, space, kind, category, level, false);
 }
 
-// Expand a logpoint message template at fire time.
-// The message is a stored (raw) interpolating-string body: `${expr}`
-// splices any expression, `$name` splices a binding. The three
-// event-intrinsic values (`$value`, `$addr`, `$size`) live nowhere
-// else — there is no persistent object holding "the byte that just got
-// written to 0x4000" — so they are pushed as per-fire bindings, layered
-// in front of the shell's regular binding store.
-typedef struct {
-    uint32_t addr;
-    uint32_t value;
-    unsigned size;
-} lp_bindings_t;
-
-static value_t lp_binding(void *ud, const char *name) {
-    const lp_bindings_t *lp = (const lp_bindings_t *)ud;
-    if (strcmp(name, "value") == 0) {
-        // Mask the value to its declared width so 1/2-byte writes don't
-        // print as full 32-bit words.
-        int w = (lp->size == 1) ? 1 : (lp->size == 2) ? 2 : 4;
-        value_t v = val_uint((uint8_t)w, lp->value & access_width_mask(lp->size));
-        v.flags |= VFLAG_HEX;
-        return v;
-    }
-    if (strcmp(name, "addr") == 0) {
-        value_t v = val_uint(4, lp->addr);
-        v.flags |= VFLAG_HEX;
-        return v;
-    }
-    if (strcmp(name, "size") == 0)
-        return val_uint(1, lp->size);
-    // Everything else falls through to the shell's binding store
-    // (scoped `let` bindings, then the alias table as VK_REF).
-    return shell_binding_get(name);
-}
-
-// Render a logpoint's `message=` template.
-//
-// The template is stored raw and re-interpolated on every fire, so each hit
-// runs interp_walk -> expr_eval -> object_resolve with a malloc per `${...}`
-// body.  That looks like a performance defect, bad enough to make a write
-// logpoint on a hot page "effectively unusable".
-//
-// MEASURED before restructuring.
-// A Plus, a write logpoint over 0x0000-0xFFFF, 20M cycles, 71,650 fires in
-// every run, output discarded, best of three:
-//
-//     no message=            455 ms
-//     plain message=         468 ms   (+13 ms; no ${} so it short-circuits)
-//     two-expression ${}=    529 ms   (+61 ms over plain)
-//
-// So the re-parse costs about 0.85 us per fire, roughly 13% -- on top of a
-// path that already costs 6.4 us per fire for the slow-path routing the
-// logpoint itself forces.  The defect is real; the severity is not.  The
-// template is not what makes a hot-page logpoint expensive, and pre-splitting
-// it into a {literal, expr-body} chunk list would add cached state and its
-// invalidation to recover a small fraction of an already-slow debugging path.
-//
-// Deliberately not restructured.  If that changes, the number to beat is
-// above.
+// Render a logpoint's `message=` template: the shell spelling (`$value`,
+// `${machine.cpu.pc}`, `${value:08x}`) compiled to a Lua template the first
+// time it fires and cached by its text (gs.shell_template), so a hot
+// logpoint pays one call per fire, not a parse.
 static void format_logpoint_message(char *buf, size_t buf_size, const char *msg, uint32_t addr, uint32_t value,
                                     unsigned size) {
     if (!msg) {
         buf[0] = '\0';
         return;
     }
-    lp_bindings_t lp = {.addr = addr, .value = value, .size = size};
-    expr_ctx_t ctx = {
-        .root = object_root(),
-        .binding = lp_binding,
-        .binding_ud = &lp,
+    // The three event-intrinsic values live nowhere else -- there is no
+    // object holding "the byte that just got written to 0x4000" -- so they
+    // are per-fire bindings ahead of the globals.  The value is masked to
+    // its width so 1/2-byte writes don't read as full 32-bit words.
+    static const char *const names[] = {"value", "addr", "size"};
+    value_t vals[3] = {
+        val_uint(4, value & access_width_mask(size)),
+        val_uint(4, addr),
+        val_uint(1, size),
     };
-    // Interpolate a private copy: the template may remove the logpoint that
-    // owns `msg` (e.g. ${debug.logpoints.clear()}).
+    // A private copy: the template may remove the logpoint that owns `msg`
+    // (${debug.logpoints.clear()}).
     char *copy = strdup(msg);
     if (!copy) {
         buf[0] = '\0';
         return;
     }
-    value_t v = expr_interpolate_body(copy, &ctx);
+    value_t v = gs_lua_expand(copy, 3, names, vals);
     free(copy);
-
     const char *s = (v.kind == VK_STRING && v.s) ? v.s : (v.kind == VK_ERROR && v.err) ? v.err : "";
     size_t n = strlen(s);
     if (n >= buf_size)
@@ -710,7 +666,7 @@ void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, 
     // when streaming is on — the read is a debug-path memory access.
     const char *trap_name = "";
     char trap_buf[8];
-    if (vector == 0x028 && log_get_level(cat) >= 1)
+    if (vector == 0x028 && log_get_level(cat) >= 1 && debug_mac_naming_active())
         trap_name = debug_mac_atrap_name(memory_debug_read_uint16(faulting_pc), trap_buf, sizeof(trap_buf));
     LOG_WITH(cat, 1, "[EXC] vec=$%03X %s fmt=$%X rw=%s addr=$%08X pc=$%08X saved_pc=$%08X sr=$%04X vbr=$%08X%s", vector,
              trap_name, format_frame, rw ? "R" : "W", fault_addr, faulting_pc, saved_pc, sr, vbr,
@@ -793,6 +749,7 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
         return;
     uint32_t phys_addr = addr;
     bool phys_computed = false;
+    bool phys_valid = true; // false: the access has no physical address to compare (a Lisa I/O or ROM access)
     for (logpoint_t *lp = debug->mem_logpoints; lp; lp = lp->kind_next) {
         if (lp->disabled)
             continue;
@@ -806,7 +763,13 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
         if (lp->space == ADDR_SPACE_PHYSICAL) {
             if (!phys_computed) {
                 bool supervisor = current_access_is_supervisor();
-                if (g_mmu && g_mmu->enabled) {
+                if (g_lisa_mmu) {
+                    // The Lisa: main memory's physical address; its I/O and ROM
+                    // spaces have none (lisa_mmu.c, lisa_logpoint_notify).
+                    const char *space = NULL;
+                    phys_valid = lisa_mmu_translate(g_lisa_mmu, addr, supervisor, &phys_addr, &space) && space &&
+                                 strcmp(space, "ram") == 0;
+                } else if (g_mmu && g_mmu->enabled) {
                     phys_addr = mmu_translate_debug(g_mmu, addr, supervisor);
                 } else if (g_mem_logical_xlate && g_mem_logpoint_page_count &&
                            g_mem_logpoint_page_count[addr >> MEM_PAGE_SHIFT]) {
@@ -821,6 +784,8 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
                 }
                 phys_computed = true;
             }
+            if (!phys_valid)
+                continue;
             cmp_addr = phys_addr;
         } else {
             cmp_addr = addr;
@@ -862,7 +827,7 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
             format_logpoint_message(formatted, sizeof(formatted), lp->message, addr, value, size);
             LOG_WITH(category, level, "logpoint %s $%08X.%c value=$%0*X: %s", is_write ? "WRITE" : "READ", addr,
                      access_width_letter(size), (int)(size * 2), value, formatted);
-            lp = debug_logpoint_by_id(debug, id);
+            lp = lp_list_by_id(debug->logpoints, id, DP_ANY);
             if (!lp)
                 return;
         } else {
@@ -958,9 +923,26 @@ void debugger_disasm_pc(char *buf, size_t buf_size) {
     debugger_disasm(buf, buf_size, dif->get_pc(dif->ctx));
 }
 
+// True when the instruction at `pc` cannot even be fetched: on the Lisa, its
+// segment is not present (or out of limit) in the context the CPU uses now,
+// so the fetch takes a bus error and the operating system loads the segment
+// and returns to `pc` -- where the instruction then really executes.  A
+// breakpoint there means the latter.  (The Lisa's MMU makes no
+// instruction/data distinction, so its debug translation is exact for a
+// fetch; the other MMU kinds keep their behaviour.)
+static bool pc_fetch_faults(uint32_t pc) {
+    if (!g_lisa_mmu)
+        return false;
+    return !lisa_mmu_translate(g_lisa_mmu, pc, debug_cpu_is_supervisor(), NULL, NULL);
+}
+
 // Check the breakpoints at current_pc, the instruction about to execute.
 // A hit prints, counts, and arms the resume skip; returns true on a hit.
 static bool check_breakpoints(debug_t *debug, uint32_t current_pc) {
+    // An instruction whose fetch faults is not about to execute: no
+    // breakpoint is hit there, nor its condition evaluated or counted.
+    if (pc_fetch_faults(current_pc))
+        return false;
     breakpoint_t *bp = debug->breakpoints;
     while (bp != NULL) {
         // A disabled breakpoint is kept but ignored.
@@ -985,7 +967,7 @@ static bool check_breakpoints(debug_t *debug, uint32_t current_pc) {
             if (bp->condition) {
                 int id = bp->id;
                 bool pass = eval_breakpoint_condition(bp->condition);
-                bp = debug_breakpoint_by_id(debug, id);
+                bp = bp_list_by_id(debug->breakpoints, id, DP_ANY);
                 if (!bp)
                     break;
                 if (!pass) {
@@ -1083,7 +1065,7 @@ int debug_break_and_trace(void) {
                 char formatted[256];
                 format_logpoint_message(formatted, sizeof(formatted), lp->message, current_pc, 0, 0);
                 LOG_WITH(category, level, "logpoint $%08X: %s", current_pc, formatted);
-                lp = debug_logpoint_by_id(debug, id);
+                lp = lp_list_by_id(debug->logpoints, id, DP_ANY);
                 if (!lp)
                     break;
             } else {
@@ -1127,37 +1109,19 @@ static void free_breakpoint(breakpoint_t *bp) {
     free(bp);
 }
 
-// Delete breakpoint by sparse stable id. Walks the list
-// matching `bp->id` rather than the position-in-list — positions shift
-// when other entries are removed, ids do not.
+// Delete the breakpoint with this sparse stable id; false if none has it
 static bool delete_breakpoint_by_id(debug_t *debug, int id) {
-    breakpoint_t **pp = &debug->breakpoints;
-    while (*pp) {
-        if ((*pp)->id == id) {
-            breakpoint_t *bp = *pp;
-            *pp = bp->next;
-            free_breakpoint(bp);
-            index_breakpoints(debug);
-            return true;
-        }
-        pp = &(*pp)->next;
-    }
-    return false;
+    breakpoint_t *bp = bp_list_unlink(&debug->breakpoints, id, DP_ANY);
+    if (!bp)
+        return false;
+    free_breakpoint(bp);
+    index_breakpoints(debug);
+    return true;
 }
 
-// Delete all breakpoints
-// Returns the number of breakpoints deleted
+// Delete all breakpoints; returns the number deleted
 static int delete_all_breakpoints(debug_t *debug) {
-    int count = 0;
-    breakpoint_t *bp = debug->breakpoints;
-
-    while (bp != NULL) {
-        breakpoint_t *next = bp->next;
-        free_breakpoint(bp);
-        bp = next;
-        count++;
-    }
-    debug->breakpoints = NULL;
+    int count = bp_list_free_where(&debug->breakpoints, DP_ANY, free_breakpoint);
     index_breakpoints(debug);
     return count;
 }
@@ -1393,6 +1357,39 @@ static void framebuffer_row_to_rgba(const display_t *d, int y, uint8_t *out_rgba
     display_row_to_rgba(d, (uint32_t)y, out_rgba);
 }
 
+// Whether display d can be converted to RGBA by framebuffer_row_to_rgba:
+// it has a framebuffer, a pixel format the converter knows and, when
+// indexed, a CLUT.  Prints why not (`verb` names the PNG operation, "match"
+// or "save") and returns -1; 0 when it can.
+static int framebuffer_check_exportable(const display_t *d, const char *verb) {
+    if (!d || !d->bits) {
+        out_printf("Error: No active display.\n");
+        return -1;
+    }
+    switch (d->format) {
+    case PIXEL_1BPP_MSB:
+    case PIXEL_2BPP_MSB:
+    case PIXEL_4BPP_MSB:
+    case PIXEL_8BPP:
+    case PIXEL_16BPP_555:
+    case PIXEL_16BPP_565:
+    case PIXEL_32BPP_XRGB:
+        break;
+    default:
+        out_printf("Error: PNG %s: unsupported pixel format %d.\n", verb, (int)d->format);
+        return -1;
+    }
+    if ((d->format == PIXEL_2BPP_MSB || d->format == PIXEL_4BPP_MSB || d->format == PIXEL_8BPP) &&
+        (!d->clut || d->clut_len == 0)) {
+        out_printf("Error: PNG %s: indexed format with no CLUT.\n", verb);
+        return -1;
+    }
+    return 0;
+}
+
+// Largest PNG load_png_to_rgba reads.
+#define PNG_FILE_MAX (64u << 20)
+
 // Load a PNG file and decode it to packed RGBA (8 bits per channel, 4
 // bytes per pixel, no filter bytes).  Used by screen.match's
 // RGBA-vs-RGBA comparison path; works with any PNG color type that
@@ -1400,27 +1397,14 @@ static void framebuffer_row_to_rgba(const display_t *d, int y, uint8_t *out_rgba
 // might have produced (grayscale, RGB).  `out_rgba` must be at least
 // `expected_width * expected_height * 4` bytes.  Returns 0 / -1.
 static int load_png_to_rgba(const char *filename, int expected_width, int expected_height, uint8_t *out_rgba) {
-    FILE *fp = fopen(filename, "rb");
-    if (!fp) {
-        out_printf("Error: Cannot open '%s' for reading.\n", filename);
+    uint8_t *file_data = NULL;
+    size_t file_size = 0;
+    // A reference screenshot is a few MB at most
+    int rc = read_file(filename, PNG_FILE_MAX, &file_data, &file_size);
+    if (rc != 0) {
+        out_printf("Error: Cannot read '%s': %s.\n", filename, strerror(-rc));
         return -1;
     }
-    fseek(fp, 0, SEEK_END);
-    long file_size = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-    uint8_t *file_data = malloc(file_size);
-    if (!file_data) {
-        fclose(fp);
-        out_printf("Error: Out of memory.\n");
-        return -1;
-    }
-    if (fread(file_data, 1, file_size, fp) != (size_t)file_size) {
-        free(file_data);
-        fclose(fp);
-        out_printf("Error: Failed to read file.\n");
-        return -1;
-    }
-    fclose(fp);
 
     static const uint8_t png_sig[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
     if (file_size < 8 || memcmp(file_data, png_sig, 8) != 0) {
@@ -1579,28 +1563,8 @@ int debug_load_png_rgba(const char *filename, int width, int height, uint8_t *ou
 // Unused Block" figure lower down, with "Total Memory" -- an assertion the
 // row exists to make -- sitting between the two.
 int match_framebuffer_with_png(const display_t *d, const char *filename, const int *exclude_rects, int n_rects) {
-    if (!d || !d->bits) {
-        out_printf("Error: No active display.\n");
+    if (framebuffer_check_exportable(d, "match") < 0)
         return -1;
-    }
-    switch (d->format) {
-    case PIXEL_1BPP_MSB:
-    case PIXEL_2BPP_MSB:
-    case PIXEL_4BPP_MSB:
-    case PIXEL_8BPP:
-    case PIXEL_16BPP_555:
-    case PIXEL_16BPP_565:
-    case PIXEL_32BPP_XRGB:
-        break;
-    default:
-        out_printf("Error: PNG match: unsupported pixel format %d.\n", (int)d->format);
-        return -1;
-    }
-    if ((d->format == PIXEL_2BPP_MSB || d->format == PIXEL_4BPP_MSB || d->format == PIXEL_8BPP) &&
-        (!d->clut || d->clut_len == 0)) {
-        out_printf("Error: PNG match: indexed format with no CLUT.\n");
-        return -1;
-    }
 
     const size_t rgba_bytes = (size_t)d->width * (size_t)d->height * 4;
     uint8_t *fb_rgba = malloc(rgba_bytes);
@@ -1651,28 +1615,8 @@ int match_framebuffer_with_png(const display_t *d, const char *filename, const i
 // Emits an 8-bit RGBA truecolour PNG whatever the display's pixel format;
 // indexed formats are decoded through the display's CLUT.
 int save_framebuffer_as_png(const display_t *d, const char *filename) {
-    if (!d || !d->bits) {
-        out_printf("Error: No active display.\n");
+    if (framebuffer_check_exportable(d, "save") < 0)
         return -1;
-    }
-    switch (d->format) {
-    case PIXEL_1BPP_MSB:
-    case PIXEL_2BPP_MSB:
-    case PIXEL_4BPP_MSB:
-    case PIXEL_8BPP:
-    case PIXEL_16BPP_555:
-    case PIXEL_16BPP_565:
-    case PIXEL_32BPP_XRGB:
-        break;
-    default:
-        out_printf("Error: PNG save: unsupported pixel format %d.\n", (int)d->format);
-        return -1;
-    }
-    if ((d->format == PIXEL_2BPP_MSB || d->format == PIXEL_4BPP_MSB || d->format == PIXEL_8BPP) &&
-        (!d->clut || d->clut_len == 0)) {
-        out_printf("Error: PNG save: indexed format with no CLUT.\n");
-        return -1;
-    }
     const int width = (int)d->width;
     const int height = (int)d->height;
 
@@ -1807,42 +1751,24 @@ static void free_logpoint(logpoint_t *lp) {
     free(lp);
 }
 
-// Delete logpoint by sparse stable id. Same shape as
-// delete_breakpoint_by_id — match `lp->id`, not list position.
-static int delete_logpoint_by_id(debug_t *debug, int id) {
-    logpoint_t **pp = &debug->logpoints;
-    while (*pp) {
-        if ((*pp)->id == id) {
-            logpoint_t *lp = *pp;
-            *pp = lp->next;
-            free_logpoint(lp);
-            index_logpoints(debug);
-            return 0;
-        }
-        pp = &(*pp)->next;
-    }
-    return -1;
+// Delete the logpoint or watchpoint with this sparse stable id; false if
+// none has it
+static bool delete_logpoint_by_id(debug_t *debug, int id) {
+    logpoint_t *lp = lp_list_unlink(&debug->logpoints, id, DP_ANY);
+    if (!lp)
+        return false;
+    free_logpoint(lp);
+    index_logpoints(debug);
+    return true;
 }
 
-// Delete all logpoints; returns the number deleted (matches the
-// breakpoint counterpart so typed wrappers can report the count).
 // Remove every entry of one collection -- the logpoints (stops == false) or
-// the watchpoints (stops == true) -- and keep the other's.
+// the watchpoints (stops == true) -- and keep the other's.  Returns the
+// number deleted.
 static int delete_all_where(debug_t *debug, bool stops) {
-    int count = 0;
     if (!debug)
         return 0;
-    logpoint_t **pp = &debug->logpoints;
-    while (*pp) {
-        logpoint_t *lp = *pp;
-        if (lp->stops != stops) {
-            pp = &lp->next;
-            continue;
-        }
-        *pp = lp->next;
-        free_logpoint(lp);
-        count++;
-    }
+    int count = lp_list_free_where(&debug->logpoints, stops, free_logpoint);
     index_logpoints(debug);
     return count;
 }
@@ -1855,173 +1781,14 @@ static int delete_all_watchpoints(debug_t *debug) {
     return delete_all_where(debug, true);
 }
 
-// ============================================================================
-// Object-model accessors and id-based collection helpers
-// ============================================================================
-//
-// These implement the `debug.{breakpoints,logpoints}` indexed-child
-// surface declared in debug.h. Walks are O(N) over the linked list;
-// fanout is bounded by user-set entries (~tens) so this is fine.
-
-int debug_alloc_breakpoint_id(debug_t *debug) {
-    return debug ? debug->next_breakpoint_id++ : -1;
-}
-int debug_alloc_logpoint_id(debug_t *debug) {
-    return debug ? debug->next_logpoint_id++ : -1;
-}
-
-breakpoint_t *debug_breakpoint_by_id(debug_t *debug, int id) {
-    if (!debug)
-        return NULL;
-    for (breakpoint_t *bp = debug->breakpoints; bp; bp = bp->next)
-        if (bp->id == id)
-            return bp;
-    return NULL;
-}
-
-logpoint_t *debug_logpoint_by_id(debug_t *debug, int id) {
-    if (!debug)
-        return NULL;
-    for (logpoint_t *lp = debug->logpoints; lp; lp = lp->next)
-        if (lp->id == id)
-            return lp;
-    return NULL;
-}
-
-int debug_breakpoint_count(debug_t *debug) {
-    int n = 0;
-    if (!debug)
-        return 0;
-    for (breakpoint_t *bp = debug->breakpoints; bp; bp = bp->next)
-        n++;
-    return n;
-}
-
-// The two collections split one list: the logpoints are the entries that do
-// not stop, the watchpoints the ones that do.
-static int logpoint_count_where(debug_t *debug, bool stops) {
-    int n = 0;
-    if (!debug)
-        return 0;
-    for (logpoint_t *lp = debug->logpoints; lp; lp = lp->next)
-        if (lp->stops == stops)
-            n++;
-    return n;
-}
-
-int debug_logpoint_count(debug_t *debug) {
-    return logpoint_count_where(debug, false);
-}
-
-int debug_watchpoint_count(debug_t *debug) {
-    return logpoint_count_where(debug, true);
-}
-
-// next(prev) — return the smallest live id strictly greater than `prev`
-// (or any live id if `prev<0`). Linear scan because the list is in
-// add-order, not id order: callers iterating via next() get a stable
-// ascending sequence even when entries were removed and re-added.
-int debug_breakpoint_next_id(debug_t *debug, int prev_id) {
-    if (!debug)
-        return -1;
-    int best = -1;
-    for (breakpoint_t *bp = debug->breakpoints; bp; bp = bp->next) {
-        if (bp->id <= prev_id)
-            continue;
-        if (best < 0 || bp->id < best)
-            best = bp->id;
-    }
-    return best;
-}
-
-static int logpoint_next_id_where(debug_t *debug, int prev_id, bool stops) {
-    if (!debug)
-        return -1;
-    int best = -1;
-    for (logpoint_t *lp = debug->logpoints; lp; lp = lp->next) {
-        if (lp->stops != stops || lp->id <= prev_id)
-            continue;
-        if (best < 0 || lp->id < best)
-            best = lp->id;
-    }
-    return best;
-}
-
-int debug_logpoint_next_id(debug_t *debug, int prev_id) {
-    return logpoint_next_id_where(debug, prev_id, false);
-}
-
-int debug_watchpoint_next_id(debug_t *debug, int prev_id) {
-    return logpoint_next_id_where(debug, prev_id, true);
-}
-
-bool debug_remove_breakpoint(debug_t *debug, int id) {
-    if (!debug)
-        return false;
-    return delete_breakpoint_by_id(debug, id);
-}
-
-bool debug_remove_logpoint(debug_t *debug, int id) {
-    if (!debug)
-        return false;
-    return delete_logpoint_by_id(debug, id) == 0;
-}
-
-uint32_t breakpoint_get_addr(const breakpoint_t *bp) {
-    return bp ? bp->addr : 0;
-}
-addr_space_t breakpoint_get_space(const breakpoint_t *bp) {
-    return bp ? bp->space : ADDR_SPACE_LOGICAL;
-}
-const char *breakpoint_get_condition(const breakpoint_t *bp) {
-    return bp ? bp->condition : NULL;
-}
-uint32_t breakpoint_get_hit_count(const breakpoint_t *bp) {
-    return bp ? bp->hit_count : 0;
-}
-int breakpoint_get_id(const breakpoint_t *bp) {
-    return bp ? bp->id : -1;
-}
-struct object *breakpoint_get_entry_object(const breakpoint_t *bp) {
-    return bp ? bp->entry_object : NULL;
-}
-void breakpoint_set_condition(breakpoint_t *bp, const char *expr) {
+// Replace the condition string (NULL or empty clears it); takes a copy
+static void breakpoint_set_condition(breakpoint_t *bp, const char *expr) {
     if (!bp)
         return;
     char *copy = (expr && *expr) ? strdup(expr) : NULL;
     if (bp->condition)
         free(bp->condition);
     bp->condition = copy;
-}
-
-uint32_t logpoint_get_addr(const logpoint_t *lp) {
-    return lp ? lp->addr : 0;
-}
-uint32_t logpoint_get_end_addr(const logpoint_t *lp) {
-    return lp ? lp->end_addr : 0;
-}
-int logpoint_get_kind(const logpoint_t *lp) {
-    return lp ? lp->kind : 0;
-}
-int logpoint_get_level(const logpoint_t *lp) {
-    return lp ? lp->level : 0;
-}
-const char *logpoint_get_category_name(const logpoint_t *lp) {
-    if (!lp || !lp->category)
-        return NULL;
-    return log_category_name(lp->category);
-}
-const char *logpoint_get_message(const logpoint_t *lp) {
-    return lp ? lp->message : NULL;
-}
-uint32_t logpoint_get_hit_count(const logpoint_t *lp) {
-    return lp ? lp->hit_count : 0;
-}
-int logpoint_get_id(const logpoint_t *lp) {
-    return lp ? lp->id : -1;
-}
-struct object *logpoint_get_entry_object(const logpoint_t *lp) {
-    return lp ? lp->entry_object : NULL;
 }
 
 // ============================================================================
@@ -2041,7 +1808,7 @@ debug_t *debug_init(void) {
     // must not touch either.
     debug->object = object_new(&debug_class, debug, "debug");
     if (debug->object) {
-        object_set_order(debug->object, 40);
+        object_set_order(debug->object, OBJ_ORDER_DEBUG);
         debug->bp_collection_object = object_new(&bp_collection_class, debug, "breakpoints");
         if (debug->bp_collection_object)
             object_attach(debug->object, debug->bp_collection_object);
@@ -2056,6 +1823,7 @@ debug_t *debug_init(void) {
             object_set_label(debug->find_object, "Find");
             object_attach(debug->object, debug->find_object);
         }
+        g_debug_mac_world_fn = debug_mac_world; // the disassembler's trap names follow debug.mac.mode
         debug->mac_object = object_new(&debug_mac_class, debug, "mac");
         if (debug->mac_object) {
             object_attach(debug->object, debug->mac_object);
@@ -2091,41 +1859,13 @@ void debug_cleanup(debug_t *debug) {
     // Tear down object-tree nodes before any of the underlying storage
     // is freed (entry objects fired by object_delete reference the
     // breakpoint_t / logpoint_t state). Children first, then root.
-    if (debug->mac_globals_object) {
-        object_detach(debug->mac_globals_object);
-        object_delete(debug->mac_globals_object);
-        debug->mac_globals_object = NULL;
-    }
-    if (debug->find_object) {
-        object_detach(debug->find_object);
-        object_delete(debug->find_object);
-        debug->find_object = NULL;
-    }
-    if (debug->mac_object) {
-        object_detach(debug->mac_object);
-        object_delete(debug->mac_object);
-        debug->mac_object = NULL;
-    }
-    if (debug->lp_collection_object) {
-        object_detach(debug->lp_collection_object);
-        object_delete(debug->lp_collection_object);
-        debug->lp_collection_object = NULL;
-    }
-    if (debug->wp_collection_object) {
-        object_detach(debug->wp_collection_object);
-        object_delete(debug->wp_collection_object);
-        debug->wp_collection_object = NULL;
-    }
-    if (debug->bp_collection_object) {
-        object_detach(debug->bp_collection_object);
-        object_delete(debug->bp_collection_object);
-        debug->bp_collection_object = NULL;
-    }
-    if (debug->object) {
-        object_detach(debug->object);
-        object_delete(debug->object);
-        debug->object = NULL;
-    }
+    object_destroy(&debug->mac_globals_object);
+    object_destroy(&debug->find_object);
+    object_destroy(&debug->mac_object);
+    object_destroy(&debug->lp_collection_object);
+    object_destroy(&debug->wp_collection_object);
+    object_destroy(&debug->bp_collection_object);
+    object_destroy(&debug->object);
 
     // Free all breakpoints — via free_breakpoint() so the entry object
     // and condition string go with them (the same discipline every other
@@ -2362,7 +2102,7 @@ static DEF_GETTER(bp_attr_addr) {
     breakpoint_t *bp = bp_from(self);
     if (!bp)
         return val_err("breakpoint detached");
-    value_t v = val_uint(4, breakpoint_get_addr(bp));
+    value_t v = val_uint(4, bp->addr);
     v.flags |= VFLAG_HEX;
     return v;
 }
@@ -2371,14 +2111,14 @@ static DEF_GETTER(bp_attr_space) {
     breakpoint_t *bp = bp_from(self);
     if (!bp)
         return val_err("breakpoint detached");
-    return val_enum((int)breakpoint_get_space(bp), debug_space_values, DEBUG_SPACE_COUNT);
+    return val_enum((int)bp->space, debug_space_values, DEBUG_SPACE_COUNT);
 }
 
 static DEF_GETTER(bp_attr_condition) {
     breakpoint_t *bp = bp_from(self);
     if (!bp)
         return val_err("breakpoint detached");
-    const char *c = breakpoint_get_condition(bp);
+    const char *c = bp->condition;
     return val_str(c ? c : "");
 }
 
@@ -2426,14 +2166,14 @@ static DEF_GETTER(bp_attr_hit_count) {
     breakpoint_t *bp = bp_from(self);
     if (!bp)
         return val_err("breakpoint detached");
-    return val_uint(4, breakpoint_get_hit_count(bp));
+    return val_uint(4, bp->hit_count);
 }
 
 static DEF_GETTER(bp_attr_id) {
     breakpoint_t *bp = bp_from(self);
     if (!bp)
         return val_err("breakpoint detached");
-    return val_int(breakpoint_get_id(bp));
+    return val_int(bp->id);
 }
 
 static DEF_METHOD(bp_method_remove) {
@@ -2443,8 +2183,8 @@ static DEF_METHOD(bp_method_remove) {
     debug_t *debug = system_debug();
     if (!debug)
         return val_err("debugger not initialised");
-    int id = breakpoint_get_id(bp);
-    if (!debug_remove_breakpoint(debug, id))
+    int id = bp->id;
+    if (!delete_breakpoint_by_id(debug, id))
         return val_err("breakpoint #%d not found", id);
     return val_none();
 }
@@ -2505,7 +2245,7 @@ static DEF_GETTER(lpe_attr_addr) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("logpoint detached");
-    value_t v = val_uint(4, logpoint_get_addr(lp));
+    value_t v = val_uint(4, lp->addr);
     v.flags |= VFLAG_HEX;
     return v;
 }
@@ -2513,7 +2253,7 @@ static DEF_GETTER(lpe_attr_end_addr) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("logpoint detached");
-    value_t v = val_uint(4, logpoint_get_end_addr(lp));
+    value_t v = val_uint(4, lp->end_addr);
     v.flags |= VFLAG_HEX;
     return v;
 }
@@ -2524,7 +2264,7 @@ static DEF_GETTER(lpe_attr_kind) {
     // Indexed by enum logpoint_kind; an out-of-range kind is reported as
     // an error rather than shown as one of the known kinds.
     static const char *const names[] = {"pc", "write", "read", "rw"};
-    int idx = logpoint_get_kind(lp);
+    int idx = lp->kind;
     if (idx < 0 || idx >= (int)(sizeof(names) / sizeof(names[0])))
         return val_err("logpoint has unknown kind %d", idx);
     return val_enum(idx, names, (int)(sizeof(names) / sizeof(names[0])));
@@ -2533,33 +2273,33 @@ static DEF_GETTER(lpe_attr_level) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("logpoint detached");
-    return val_int(logpoint_get_level(lp));
+    return val_int(lp->level);
 }
 static DEF_GETTER(lpe_attr_category) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("logpoint detached");
-    const char *n = logpoint_get_category_name(lp);
+    const char *n = lp->category ? log_category_name(lp->category) : NULL;
     return val_str(n ? n : "");
 }
 static DEF_GETTER(lpe_attr_message) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("logpoint detached");
-    const char *s = logpoint_get_message(lp);
+    const char *s = lp->message;
     return val_str(s ? s : "");
 }
 static DEF_GETTER(lpe_attr_hit_count) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("logpoint detached");
-    return val_uint(4, logpoint_get_hit_count(lp));
+    return val_uint(4, lp->hit_count);
 }
 static DEF_GETTER(lpe_attr_id) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("logpoint detached");
-    return val_int(logpoint_get_id(lp));
+    return val_int(lp->id);
 }
 static DEF_METHOD(lpe_method_remove) {
     logpoint_t *lp = lp_from(self);
@@ -2568,8 +2308,8 @@ static DEF_METHOD(lpe_method_remove) {
     debug_t *debug = system_debug();
     if (!debug)
         return val_err("debugger not initialised");
-    int id = logpoint_get_id(lp);
-    if (!debug_remove_logpoint(debug, id))
+    int id = lp->id;
+    if (!delete_logpoint_by_id(debug, id))
         return val_err("logpoint #%d not found", id);
     return val_none();
 }
@@ -2728,19 +2468,24 @@ static struct object *lp_entries_get(struct object *self, int index);
 static int lp_entries_next(struct object *self, int prev_index);
 
 static struct object *bp_entries_get(struct object *self, int index) {
-    breakpoint_t *bp = debug_breakpoint_by_id(debug_from(self), index);
-    return bp ? breakpoint_get_entry_object(bp) : NULL;
+    debug_t *debug = debug_from(self);
+    breakpoint_t *bp = debug ? bp_list_by_id(debug->breakpoints, index, DP_ANY) : NULL;
+    return bp ? bp->entry_object : NULL;
 }
 static int bp_entries_next(struct object *self, int prev_index) {
-    return debug_breakpoint_next_id(debug_from(self), prev_index);
+    debug_t *debug = debug_from(self);
+    return debug ? bp_list_next_id(debug->breakpoints, prev_index, DP_ANY) : -1;
 }
 
+// The non-stopping entries only: a watchpoint's id is no logpoint child
 static struct object *lp_entries_get(struct object *self, int index) {
-    logpoint_t *lp = debug_logpoint_by_id(debug_from(self), index);
-    return lp ? logpoint_get_entry_object(lp) : NULL;
+    debug_t *debug = debug_from(self);
+    logpoint_t *lp = debug ? lp_list_by_id(debug->logpoints, index, false) : NULL;
+    return lp ? lp->entry_object : NULL;
 }
 static int lp_entries_next(struct object *self, int prev_index) {
-    return debug_logpoint_next_id(debug_from(self), prev_index);
+    debug_t *debug = debug_from(self);
+    return debug ? lp_list_next_id(debug->logpoints, prev_index, false) : -1;
 }
 
 static DEF_METHOD(bp_method_add) {
@@ -2777,7 +2522,7 @@ static DEF_METHOD(bp_method_add) {
         return val_err("breakpoints.add: allocation failed");
     if (cond)
         breakpoint_set_condition(bp, cond);
-    return val_obj(breakpoint_get_entry_object(bp));
+    return val_obj(bp->entry_object);
 }
 
 static DEF_METHOD(bp_method_clear) {
@@ -2899,7 +2644,7 @@ static DEF_METHOD(lp_method_add) {
         lp->value_filter_active = true;
         lp->value_filter = value_filter;
     }
-    return val_obj(logpoint_get_entry_object(lp));
+    return val_obj(lp->entry_object);
 }
 
 // "logical" — the default for every space= argument below.
@@ -2943,7 +2688,9 @@ static const arg_decl_t lp_add_args[] = {
     {.name = "message",
      .kind = VK_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_TEMPLATE,
-     .doc = "fire-time template; $value/$addr/$size bind per fire"},
+     .doc = "fire-time template; $value/$addr/$size bind per fire.  A whole \"...\" literal stays a template in "
+            "call form too (message=\"pc=${machine.cpu.pc}\"); a message built by an expression (\"a\" + \"b\") is "
+            "evaluated once, when added"},
     {.name = "level",
      .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
@@ -3036,11 +2783,13 @@ static const class_desc_t lp_collection_class = {
 // the stopping entries answer here, and debug.logpoints never lists them.
 
 static struct object *wp_entries_get(struct object *self, int index) {
-    logpoint_t *lp = debug_logpoint_by_id(debug_from(self), index);
-    return (lp && lp->stops) ? logpoint_get_entry_object(lp) : NULL;
+    debug_t *debug = debug_from(self);
+    logpoint_t *lp = debug ? lp_list_by_id(debug->logpoints, index, true) : NULL;
+    return lp ? lp->entry_object : NULL;
 }
 static int wp_entries_next(struct object *self, int prev_index) {
-    return debug_watchpoint_next_id(debug_from(self), prev_index);
+    debug_t *debug = debug_from(self);
+    return debug ? lp_list_next_id(debug->logpoints, prev_index, true) : -1;
 }
 
 // `debug.watchpoints.add addr=0x16A mode=write width=l` -- stops the machine
@@ -3097,7 +2846,7 @@ static DEF_METHOD(wp_method_add) {
     logpoint_t *lp = install_memory_logpoint(debug, addr, end_addr, space, kind, category, 0, true);
     if (!lp)
         return val_err("watchpoints.add: allocation failed");
-    return val_obj(logpoint_get_entry_object(lp));
+    return val_obj(lp->entry_object);
 }
 
 static DEF_METHOD(wp_method_clear) {
@@ -3221,12 +2970,19 @@ static DEF_METHOD(debug_method_disasm) {
     if (count > 256)
         count = 256;
 
+    // On a Lisa, `context` reads the instruction stream through that
+    // context's segments (debug_view_begin).
+    int prev_view;
+    value_t err;
+    if (!debug_view_begin(argc, argv, 2, false, &prev_view, &err))
+        return err;
     char buf[160];
     for (int i = 0; i < (int)count; i++) {
         int instr_len = debugger_disasm(buf, sizeof(buf), addr); // returns bytes
         out_printf("%s\n", buf);
         addr += (uint32_t)instr_len;
     }
+    debug_view_end(prev_view);
     return val_none();
 }
 
@@ -3238,7 +2994,12 @@ static const arg_decl_t debug_disasm_args[] = {
     {.name = "count",
      .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Number of instructions, when the first argument is an address"                                    },
+     .doc = "Number of instructions, when the first argument is an address"},
+    {.name = "context",
+     .kind = VK_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Lisa only: read the code through this MMU context's segments (0-3; 0 is the operating system's)",
+     .default_doc = "the CPU's current context"},
 };
 
 // Choose where a disassembly window starts so that `before` rows precede
@@ -3301,6 +3062,38 @@ bool debug_parse_space(int argc, const value_t *argv, int idx, bool *physical) {
         return true;
     }
     return false;
+}
+
+bool debug_view_begin(int argc, const value_t *argv, int idx, bool physical, int *prev, value_t *err) {
+    *prev = LISA_VIEW_CPU;
+    int ctx = LISA_CTX_CPU;
+    if (argc > idx && argv[idx].kind != VK_NONE) {
+        if (argv[idx].kind != VK_UINT && argv[idx].kind != VK_INT) {
+            *err = val_err("context must be a number, 0-3");
+            return false;
+        }
+        if (!g_lisa_mmu) {
+            *err = val_err("context: only the Lisa's segment MMU has contexts");
+            return false;
+        }
+        if (argv[idx].u > 3) {
+            *err = val_err("context must be 0-3 (0 is the operating system's)");
+            return false;
+        }
+        if (physical) {
+            *err = val_err("a physical read takes no context");
+            return false;
+        }
+        ctx = (int)argv[idx].u;
+    }
+    if (g_lisa_mmu)
+        *prev = lisa_mmu_debug_view_set(physical ? LISA_VIEW_PHYSICAL : ctx);
+    return true;
+}
+
+void debug_view_end(int prev) {
+    if (g_lisa_mmu)
+        lisa_mmu_debug_view_set(prev);
 }
 
 // Split one disassembled instruction (the cpu_debug_if_t `disasm` text) into
@@ -3479,9 +3272,10 @@ static const arg_decl_t debug_step_args[] = {
 static const member_t debug_members[] = {
     {.kind = MK_METHOD,
      .name = "disasm",
-     .examples = EXAMPLES("debug.disasm", "debug.disasm 8", "debug.disasm 0x40800000 20"),
+     .examples =
+         EXAMPLES("debug.disasm", "debug.disasm 8", "debug.disasm 0x40800000 20", "debug.disasm 0x20000 8 context=1"),
      .doc = "Disassemble forward from the PC, or from an address",
-     .method = {.args = debug_disasm_args, .nargs = 2, .result = VK_NONE, .fn = debug_method_disasm}},
+     .method = {.args = debug_disasm_args, .nargs = 3, .result = VK_NONE, .fn = debug_method_disasm}},
     {.kind = MK_METHOD,
      .name = "frame",
      .examples = EXAMPLES("debug.frame", "debug.frame count=8 before=3"),
@@ -3528,7 +3322,100 @@ static const class_desc_t debug_class = {
 // Lookup is a binary search over a name index (mac_global_find,
 // mac_globals_data.c).
 
+// debug.mac.mode: whether the Macintosh views (trap names, low-memory
+// globals) apply.  "auto" decides per machine (debug_mac_world).
+static const char *const mac_mode_names[] = {"auto", "on", "off", NULL};
+enum { MAC_MODE_AUTO, MAC_MODE_ON, MAC_MODE_OFF, MAC_MODE_COUNT };
+static int g_mac_mode = MAC_MODE_AUTO;
+
+// The emulator's g_debug_mac_world_fn (debug_mac.h).
+static bool debug_mac_world(void) {
+    if (g_mac_mode != MAC_MODE_AUTO)
+        return g_mac_mode == MAC_MODE_ON;
+    return !g_lisa_mmu || lisa_mmu_runs_macworks();
+}
+
+// Mac OS's low-memory globals and vector debug_mac_os_running reads
+#define MAC_ROMBASE    0x02AEu // ROMBase: the base of the ROM the system runs from
+#define MAC_SYSZONE    0x02A6u // SysZone: the system heap's zone
+#define MAC_APPLZONE   0x02AAu // ApplZone: the application heap's zone (above the system heap)
+#define MAC_LINEA_VECT 0x0028u // the line-A (A-trap) exception vector (VBR 0)
+
+// Whether the guest is running the Macintosh Operating System now (debug.h).
+// A Macintosh model is not enough: before Mac OS has started (the ROM's
+// tests) and under another system (A/UX, Xenix, the Lisa Office System) the
+// low-memory globals hold nothing of Mac OS's.  Two tests:
+//  - Mac OS sets ROMBase to the ROM it runs from, and a Macintosh ROM begins
+//    with its checksum, so the longword at ROMBase is the machine ROM's first
+//    (seen on the Plus, SE/30, Quadra 700 and Power Macintosh 6100).
+//  - On a 68K the line-A vector leads to Mac OS's trap dispatcher: in the ROM,
+//    or (System 7 on the SE/30) in the system heap, between SysZone and
+//    ApplZone.  A/UX keeps Mac OS's page 0 from the boot, ROMBase included,
+//    but takes the vector for its kernel, with both zones -1.  A PowerPC
+//    dispatches A-traps in its 68K emulator, so only the first test applies.
+// A Lisa runs Mac OS only under MacWorks, from a RAM copy of a Macintosh ROM
+// (lisa_mmu_runs_macworks).
+bool debug_mac_os_running(void) {
+    if (g_mac_mode != MAC_MODE_AUTO)
+        return g_mac_mode == MAC_MODE_ON;
+    if (g_lisa_mmu)
+        return lisa_mmu_runs_macworks();
+    memory_map_t *mem = system_memory();
+    const uint8_t *rom = mem ? memory_rom_bytes(mem) : NULL;
+    if (!rom || memory_rom_size(mem) < 4)
+        return false;
+    // The ROM's checksum, its first longword (big-endian)
+    uint32_t sum = (uint32_t)rom[0] << 24 | (uint32_t)rom[1] << 16 | (uint32_t)rom[2] << 8 | rom[3];
+    uint32_t base = memory_debug_read_uint32(debug_mac_xlate(MAC_ROMBASE));
+    // 0 is no ROMBase: at reset the ROM overlay answers at address 0
+    if (base == 0 || memory_debug_read_uint32(base) != sum)
+        return false;
+    config_t *m = system_running();
+    if (m && m->ppc)
+        return true;
+    // 24-bit pointers may carry flags in their high byte
+    uint32_t mask = base < 0x01000000u ? 0x00FFFFFFu : 0xFFFFFFFFu;
+    uint32_t line_a = memory_debug_read_uint32(debug_mac_xlate(MAC_LINEA_VECT)) & mask;
+    uint32_t sys_zone = memory_debug_read_uint32(debug_mac_xlate(MAC_SYSZONE)) & mask;
+    uint32_t appl_zone = memory_debug_read_uint32(debug_mac_xlate(MAC_APPLZONE)) & mask;
+    bool in_rom = line_a - (base & mask) < memory_rom_size(mem); // the ROM's dispatcher
+    bool in_sys_heap = sys_zone < appl_zone && line_a >= sys_zone && line_a < appl_zone; // a patched one
+    return in_rom || in_sys_heap;
+}
+
+// The refusal every debug.mac method gives where the Macintosh views do
+// not apply.
+static value_t mac_not_here(const char *who) {
+    return val_err("%s: this machine is not running the Macintosh system (a Lisa runs Macintosh software only under "
+                   "MacWorks), so Macintosh traps and globals do not apply; debug.mac.mode = \"on\" forces them",
+                   who);
+}
+
+static DEF_GETTER(mac_attr_mode_get) {
+    return val_enum(g_mac_mode, mac_mode_names, MAC_MODE_COUNT);
+}
+
+static DEF_SETTER(mac_attr_mode_set) {
+    if (in.kind != VK_ENUM || in.enm.idx < 0 || in.enm.idx >= MAC_MODE_COUNT) {
+        value_free(&in);
+        return val_err("debug.mac.mode: expected auto, on or off");
+    }
+    g_mac_mode = in.enm.idx;
+    value_free(&in);
+    return val_none();
+}
+
+static DEF_GETTER(mac_attr_active_get) {
+    return val_bool(debug_mac_world());
+}
+
+static DEF_GETTER(mac_attr_os_get) {
+    return val_bool(debug_mac_os_running());
+}
+
 static DEF_METHOD(method_mac_globals_read) {
+    if (!debug_mac_world())
+        return mac_not_here("debug.mac.globals.read");
     const mac_global_info_t *g = mac_global_find(argv[0].s);
     if (!g)
         return val_err("debug.mac.globals.read: unknown global '%s'", argv[0].s);
@@ -3571,6 +3458,8 @@ static DEF_METHOD(method_mac_globals_read) {
 }
 
 static DEF_METHOD(method_mac_globals_write) {
+    if (!debug_mac_world())
+        return mac_not_here("debug.mac.globals.write");
     const mac_global_info_t *g = mac_global_find(argv[0].s);
     if (!g)
         return val_err("debug.mac.globals.write: unknown global '%s'", argv[0].s);
@@ -3608,6 +3497,8 @@ static DEF_METHOD(method_mac_globals_write) {
 }
 
 static DEF_METHOD(method_mac_globals_address) {
+    if (!debug_mac_world())
+        return mac_not_here("debug.mac.globals.address");
     const mac_global_info_t *g = mac_global_find(argv[0].s);
     if (!g)
         return val_err("debug.mac.globals.address: unknown global '%s'", argv[0].s);
@@ -3690,6 +3581,8 @@ static const class_desc_t debug_mac_globals_class = {
 // in time; for now this covers the typed-bridge needs.
 
 static DEF_METHOD(method_mac_atrap) {
+    if (!debug_mac_world())
+        return mac_not_here("debug.mac.atrap");
     char buf[8];
     return val_str(debug_mac_atrap_name((uint16_t)argv[0].u, buf, sizeof(buf)));
 }
@@ -3699,6 +3592,19 @@ static const arg_decl_t mac_atrap_args[] = {
 };
 
 static const member_t debug_mac_members[] = {
+    {.kind = MK_ATTR,
+     .name = "mode",
+     .doc = "Whether the Macintosh views (trap names here and in the disassembly, low-memory globals) apply: auto "
+            "(every Macintosh, and a Lisa only while it runs MacWorks), on or off", .attr = {.type = VK_ENUM, .enum_values = mac_mode_names, .get = mac_attr_mode_get, .set = mac_attr_mode_set}},
+    {.kind = MK_ATTR,
+     .name = "active",
+     .doc = "True when the Macintosh views apply to this machine now (debug.mac.mode decides)",
+     .attr = {.type = VK_BOOL, .get = mac_attr_active_get, .set = NULL}},
+    {.kind = MK_ATTR,
+     .name = "os",
+     .doc = "True while the guest runs the Macintosh Operating System (ROMBase points at the machine's ROM and, on a "
+            "68K, the A-trap vector at Mac OS's dispatcher; on a Lisa, MacWorks): the machine watch's Mac OS detectors "
+            "apply only then", .attr = {.type = VK_BOOL, .get = mac_attr_os_get, .set = NULL}},
     {.kind = MK_METHOD,
      .name = "atrap",
      .examples = EXAMPLES("debug.mac.atrap 0xa9a0"),
@@ -3726,8 +3632,7 @@ static DEF_METHOD(screen_method_save) {
     const char *path = argv[0].s;
     if (!*path)
         return val_err("screen.save: empty path");
-    size_t n = strlen(path);
-    if (n < 4 || strcasecmp(path + n - 4, ".png") != 0)
+    if (!path_has_ext(path, ".png"))
         return val_err("screen.save: path must end in .png (got '%s')", path);
     const display_t *d = system_display_synced();
     if (!d || !d->bits)
@@ -3918,107 +3823,33 @@ static struct object *screen_source_lookup(struct object *self, const char *name
 static const arg_decl_t screen_save_args[] = {
     {.name = "path", .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = "Output PNG path (must end in .png)"},
 };
+// The four grouped, optional edges of one exclude region: `sfx` suffixes the
+// names ("", "2", "3"), `lead` starts the docs ("Exclude", "Second exclude")
+#define EXCLUDE_RECT_ARGS(sfx, lead)                                                                                   \
+    {.name = "top" sfx,                                                                                                \
+     .kind = VK_INT,                                                                                                   \
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,                                                           \
+     .doc = lead "-region top edge"},                                                                                  \
+        {.name = "left" sfx,                                                                                           \
+         .kind = VK_INT,                                                                                               \
+         .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,                                                       \
+         .doc = lead "-region left edge"},                                                                             \
+        {.name = "bottom" sfx,                                                                                         \
+         .kind = VK_INT,                                                                                               \
+         .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,                                                       \
+         .doc = lead "-region bottom edge"},                                                                           \
+    {                                                                                                                  \
+        .name = "right" sfx, .kind = VK_INT, .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,                   \
+        .doc = lead "-region right edge"                                                                               \
+    }
+
+// screen.match and screen.matches: a reference PNG and up to three exclude
+// regions (one table: the two methods take the same arguments)
 static const arg_decl_t screen_match_args[] = {
     {.name = "reference", .kind = VK_STRING, .doc = "Reference PNG path"},
-    {.name = "top",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Exclude-region top edge"},
-    {.name = "left",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Exclude-region left edge"},
-    {.name = "bottom",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Exclude-region bottom edge"},
-    {.name = "right",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Exclude-region right edge"},
-    {.name = "top2",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Second exclude-region top edge"},
-    {.name = "left2",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Second exclude-region left edge"},
-    {.name = "bottom2",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Second exclude-region bottom edge"},
-    {.name = "right2",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Second exclude-region right edge"},
-    {.name = "top3",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Third exclude-region top edge"},
-    {.name = "left3",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Third exclude-region left edge"},
-    {.name = "bottom3",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Third exclude-region bottom edge"},
-    {.name = "right3",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Third exclude-region right edge"},
-};
-static const arg_decl_t screen_matches_args[] = {
-    {.name = "reference", .kind = VK_STRING, .doc = "Reference PNG path"},
-    {.name = "top",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Exclude-region top edge"},
-    {.name = "left",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Exclude-region left edge"},
-    {.name = "bottom",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Exclude-region bottom edge"},
-    {.name = "right",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Exclude-region right edge"},
-    {.name = "top2",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Second exclude-region top edge"},
-    {.name = "left2",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Second exclude-region left edge"},
-    {.name = "bottom2",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Second exclude-region bottom edge"},
-    {.name = "right2",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Second exclude-region right edge"},
-    {.name = "top3",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Third exclude-region top edge"},
-    {.name = "left3",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Third exclude-region left edge"},
-    {.name = "bottom3",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Third exclude-region bottom edge"},
-    {.name = "right3",
-     .kind = VK_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Third exclude-region right edge"},
+    EXCLUDE_RECT_ARGS("", "Exclude"),
+    EXCLUDE_RECT_ARGS("2", "Second exclude"),
+    EXCLUDE_RECT_ARGS("3", "Third exclude"),
 };
 static const arg_decl_t screen_match_or_save_args[] = {
     {.name = "reference", .kind = VK_STRING, .doc = "Reference PNG path"},
@@ -4092,12 +3923,12 @@ static const member_t screen_members[] = {
      .name = "match",
      .flags = M_CAT_ADVANCED,
      .doc = "Compare the framebuffer against a reference PNG (true if identical); optional "
-            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_match_args, .nargs = 13, .result = VK_BOOL, .fn = screen_method_match}},
+            "(top, left, bottom, right) excludes a region from the compare", .method = {METHOD_ARGS(screen_match_args), .result = VK_BOOL, .fn = screen_method_match}},
     {.kind = MK_METHOD,
      .name = "matches",
      .flags = M_CAT_ADVANCED,
      .doc = "Non-fatal `match`: true/false without aborting, artifacts, or output (polling primitive); optional "
-            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_matches_args, .nargs = 13, .result = VK_BOOL, .fn = screen_method_matches}},
+            "(top, left, bottom, right) excludes a region from the compare", .method = {METHOD_ARGS(screen_match_args), .result = VK_BOOL, .fn = screen_method_matches}},
     {.kind = MK_METHOD,
      .name = "match_or_save",
      .flags = M_CAT_ADVANCED,
@@ -4137,7 +3968,7 @@ void screen_class_register(void) {
     s_screen_object = object_new(&screen_class, NULL, "screen");
     if (s_screen_object) {
         object_set_label(s_screen_object, "Screen");
-        object_set_order(s_screen_object, 120);
+        object_set_order(s_screen_object, OBJ_ORDER_SCREEN);
         object_attach(machine_object(), s_screen_object);
     }
 }

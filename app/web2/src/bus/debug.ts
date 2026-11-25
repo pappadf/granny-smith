@@ -11,6 +11,7 @@ import {
   gsOk,
   gsErrorText,
   isGsError,
+  isGsObject,
   pauseEmulator,
   resumeEmulator,
   isModuleReady,
@@ -129,7 +130,7 @@ export async function loadDebugFrame(
   // The frame is a native nested object (VK_MAP through the gsEval bridge) —
   // no inner JSON.parse.
   const parsed = await gsEval(`machine.${core}.frame`, args);
-  if (!parsed || typeof parsed !== 'object' || isGsError(parsed)) return null;
+  if (!isGsObject(parsed)) return null;
   const obj = parsed as {
     arch?: unknown;
     pc?: unknown;
@@ -231,13 +232,18 @@ export async function peekL(addr: number): Promise<number | null> {
 // explicitly: "logical" reads through the CPU's own translation on every
 // architecture (68K MMU, Lisa segment MMU, PowerPC), "physical" reads the
 // physical address.  The C side serialises VK_BYTES as "0x<hex>".
+// On the Lisa, `context` (0-3) reads a logical address through that MMU
+// context's segments; "physical" there is main memory by physical address.
 export async function peekBytes(
   addr: number,
   count: number,
   space: 'logical' | 'physical' = 'logical',
+  context?: number,
 ): Promise<Uint8Array | null> {
   if (!isModuleReady()) return null;
-  const r = await gsEval('machine.memory.peek.bytes', [addr >>> 0, count, space]);
+  const args: unknown[] = [addr >>> 0, count, space];
+  if (context !== undefined && space === 'logical') args.push(context);
+  const r = await gsEval('machine.memory.peek.bytes', args);
   if (typeof r !== 'string') return null;
   const hex = r.startsWith('0x') ? r.slice(2) : r;
   const bytes = hex.length / 2;
@@ -383,4 +389,10 @@ export async function restart(): Promise<void> {
   if (!isModuleReady()) return;
   await restartEmulator();
   bumpDebugRefresh();
+}
+
+// An auxiliary core's run state (`machine.<name>.state`), or null.
+export async function auxCoreState(name: string): Promise<string | null> {
+  const s = await gsEval(`machine.${name}.state`);
+  return typeof s === 'string' ? s : null;
 }

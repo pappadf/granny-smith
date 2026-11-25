@@ -11,7 +11,7 @@ does this image have?" and "give me the bytes of `/etc/motd` (or a resource
 fork) out of this volume" cheaply and deterministically.
 
 ```
-shell / web terminal     files.partmap | files.probe | files.ls | files.list | files.cat | files.cp
+shell / web terminal     files.partmap | files.identify | files.ls | files.list | files.cat | files.cp
         │                  web Filesystem tree → files.list (image descent)
         ▼
   VFS resolver  ───────  path normalise + descent + auto-mount cache   (src/core/vfs/vfs.c)
@@ -116,15 +116,17 @@ to an `apm_fs_kind`, case-insensitively:
 
 **Safety / robustness:**
 
-- `image_apm_probe_magic(block1)` is the cheap sniff used before committing to a
+- `image_apm_probe_magic(block1)` (defined in `image_volume.c`) is the cheap sniff used before committing to a
   full parse: signature `"PM"` plus a plausible `pmMapBlkCnt` in `1..256`.
 - The map length is capped at `APM_MAX_PARTITIONS = 256` to protect against a
   corrupt `pmMapBlkCnt` driving a huge allocation. Real Apple media never
   exceeds ~64 entries.
 - A per-entry signature mismatch or buffer exhaustion stops the walk and returns
   the **partial** table rather than rejecting the whole map.
-- `image_apm_parse` reads up to **257 blocks (~128 KB)** in a single
-  `disk_read_data`, capped to the image size so small fixtures still work.
+- `image_apm_parse_source` reads up to **257 blocks (~128 KB)** in a single
+  read, capped to the source size so small fixtures still work.
+  `image_apm_parse(img)` refuses an image whose geometry is not 512-byte blocks
+  (a Lisa ProFile's 532) and otherwise runs the same scan over `image_source(img)`.
 
 **Key types** (`image_apm.h`):
 
@@ -159,7 +161,8 @@ Extents Overflow walker.
 
 ### Opening a volume
 
-`hfs_open(image_t *img, uint64_t partition_byte_offset, uint64_t partition_byte_size)`:
+`hfs_open_source(source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size)`
+(an image's disk comes through `image_source(img)`):
 
 - `partition_byte_offset` is `0` for a bare floppy, or `start_block * 512` for an
   APM partition. `partition_byte_size` caps every read.
@@ -190,6 +193,14 @@ into `vol->records[]`. Lookups then scan that list; root directory is
 resource fork descriptors, and the 32-byte Finder info (16 `FInfo` + 16
 `FXInfo`).
 
+All four B-trees (HFS and HFS+ catalog and Extents Overflow) go through one
+walker, `hfs_btree_walk_leaves()`: it owns the forward-link cycle bound, the
+leaf-kind check and the record-offset table, and hands each record to the
+tree's parser. A record that is out of its node or that the parser rejects is
+dropped, counted (`hfs_malformed_records()`), and logged once per tree — e.g.
+"HFS+ catalog: 1 malformed record(s) skipped; the files they describe will not
+be found".
+
 ### Forks and the Extents Overflow file
 
 A `hfs_fork_t` carries the logical size, three inline extents, and the
@@ -209,7 +220,7 @@ typedef struct hfs_fork {
 1. **Inline extents** — the three extents from the catalog record are applied
    first (an `APPLY_EXTENT` helper reads the overlapping slice of each).
 2. **Extents Overflow (EO) file** — if the request spills past the inline
-   coverage, the reader chases EO records. At `hfs_open` time the EO file is
+   coverage, the reader chases EO records. At open time the EO file is
    loaded from `drXTFlSize`/`drXTExtRec` and its leaf chain is parsed into a flat
    sorted list `vol->xt_records[]`. Each EO leaf record is keyed by a 7-byte key
    `forkType(1) + fileNumber(4) + startBlock(2)` and supplies 3 more extents.
@@ -239,10 +250,12 @@ typedef struct hfs_fork {
   - **Outbound** (`fill_dirent`): `/` bytes in an HFS name surface through the
     VFS as `:` — so a file named `MacTest cx/ci` on disk lists as
     `MacTest cx:ci`.
-  - **Inbound** (`hfs_fold_byte`): catalog-name comparison folds `/` and `:` to
-    the same canonical byte (alongside the ASCII case fold), applied
-    symmetrically in both the B-tree comparison and the UTF-8 fallback. A path
-    component containing `:` therefore matches the on-disk name containing `/`.
+  - **Inbound** (`mac_name_eq`, `macroman.c`): name comparison folds `/` and `:` to
+    the same canonical byte, alongside the case fold (ASCII and the Latin-1
+    letters MacRoman shares, so `café` finds `CAFÉ`; diacriticals stay
+    significant), applied to both names. A path component containing `:`
+    therefore matches the on-disk name containing `/`. MFS shows and matches
+    names the same way (`mac_name_to_vfs`, `mac_name_eq`).
 
   There is no aliasing risk: `:` cannot legally appear in an on-disk HFS name, so
   the mapping is one-way unambiguous, and names without `/` are unaffected.
@@ -250,7 +263,7 @@ typedef struct hfs_fork {
 ### HFS API (`image_hfs.h`)
 
 ```c
-hfs_volume_t *hfs_open(image_t *img, uint64_t part_off, uint64_t part_size);
+hfs_volume_t *hfs_open_source(source_t *src, uint64_t part_off, uint64_t part_size);
 void          hfs_close(hfs_volume_t *vol);
 const char   *hfs_volume_name(const hfs_volume_t *vol);
 
@@ -271,10 +284,10 @@ int hfs_read_fork(hfs_volume_t *vol, const hfs_fork_t *fork,
   partitions inside an APM image, bare HFS+/HFSX volumes, and HFS+ embedded
   in a classic HFS wrapper (`drEmbedSigWord`).
 - Data fork, resource fork, and the 32-byte Finder info are all readable.
-- HFS and HFS+ share one handle: `hfs_open` sniffs the signature at volume
+- HFS and HFS+ share one handle: `hfs_open_source` sniffs the signature at volume
   offset 1024 (`BD`, `H+`, `HX`) and routes to the classic or the Plus parser
   (8 inline extents, UTF-16 names).
-- The walker reads through a byte source (`hfs_open_source`), so a volume
+- The walker reads through a byte source, so a volume
   may be a partition of a host image, a file inside another volume, or an
   archive member ([../vfs/namespace.md](../vfs/namespace.md)).
 - The catalog and EO files are themselves loaded via their *own* three inline
@@ -291,11 +304,11 @@ int hfs_read_fork(hfs_volume_t *vol, const hfs_fork_t *fork,
 **Source:** `src/core/storage/image_ufs.{c,h}`. Read-only UFS-1 walker targeting
 A/UX 3.0.x.
 
-- `ufs_open(img, partition_byte_offset, partition_byte_size)` reads the **BSD FFS
+- `ufs_open_source(src, partition_byte_offset, partition_byte_size)` reads the **BSD FFS
   superblock at offset 8192** (`UFS_SBOFF`) and validates `FS_MAGIC`
   (`0x011954`), big-endian only: A/UX writes big-endian on 68k, and
-  `ufs_probe` (the cheap pre-check, reading only the 4-byte magic) accepts
-  exactly what `ufs_open` can open.
+  `ufs_probe_source` (the cheap pre-check, reading only the 4-byte magic) accepts
+  exactly what `ufs_open_source` can open.
 - Targets the `Apple_UNIX_SVR2` APM entries a period A/UX install writes.
 - **Inode layout is 4.3BSD-Tahoe**: the 32-bit `di_size` lives at inode offset
   **12** (not 8) — Tahoe used `quad_t val[0]` for `di_rdev` and `val[1]` for
@@ -310,8 +323,8 @@ A/UX 3.0.x.
 ### UFS API (`image_ufs.h`)
 
 ```c
-bool          ufs_probe(image_t *img, uint64_t part_off, uint64_t part_size);
-ufs_volume_t *ufs_open (image_t *img, uint64_t part_off, uint64_t part_size);
+bool          ufs_probe_source(source_t *src, uint64_t part_off, uint64_t part_size);
+ufs_volume_t *ufs_open_source (source_t *src, uint64_t part_off, uint64_t part_size);
 void          ufs_close(ufs_volume_t *vol);
 
 int ufs_lookup(ufs_volume_t *vol, const char *const *components, size_t nc,
@@ -334,7 +347,7 @@ block at block 2 (`drSigWord` `0xD2D7`), the allocation block map packed
 the Finder kept those in its Desktop file -- so a bare MFS volume is a
 synthetic `partition1` whose root holds every file. Both forks and the 16
 bytes of Finder info (`flUsrWds`) are served; names are MacRoman shown as
-UTF-8 with `/` as `:`, as for HFS. The directory and the map are read at
+UTF-8 with `/` as `:` and matched as on HFS (`mac_name_to_vfs`, `mac_name_eq`). The directory and the map are read at
 open; a fork read walks its allocation chain and refuses a block met twice,
 so a corrupt map with a cycle in it is an error, never the same bytes again.
 
@@ -344,7 +357,10 @@ so a corrupt map with a cycle in it is an error, never the same bytes again.
 not HFS: the primary volume descriptor at sector 16 (`CD001`), directory
 records in both byte orders that never cross a sector. Names come from the
 best description on the disc -- Joliet (UCS-2, preferred), Rock Ridge `NM`
-entries, else the ISO name less its `;1`. Apple's extensions to ISO 9660
+entries, else the ISO name less its `;1`; a `/` in a Joliet or Rock Ridge
+name shows as `:`. A Joliet name can hold any character, so it is matched
+as an HFS name is (`mac_name_eq`: `été.txt` finds `ÉTÉ.txt`); plain ISO and
+Rock Ridge names are matched case-blind over ASCII only. Apple's extensions to ISO 9660
 are read too: the associated file (a directory-record flag) is its file's
 resource fork, and the `AA` system use entry -- or the original, length-less
 `BA` form, and after a CD-XA record on an XA disc -- is its type, creator and
@@ -431,7 +447,10 @@ it for a disk image:
   handles keep working, nothing new reaches it, and the last handle to close
   drops it.
 - On open it probes **APM first, then a bare HFS/HFS+, UFS, MFS or ISO 9660
-  volume** (the signature word at byte 1024, or the format's own probe). A bare
+  volume** by `volume_sniff_source` (`image_volume.c`), the classifier the
+  format registry's disk detector and `files.identify` use too, so a disk the
+  registry claims is one this open accepts (a UFS magic counts big-endian
+  only, as `ufs_open_source` reads it). A bare
   volume gets a synthetic `partition1` covering the whole image, so the rest
   of the code treats it uniformly. If nothing matches → `-ENOTDIR` ("not a
   recognised image").
@@ -465,7 +484,7 @@ Partition inspection (`src/core/storage/storage_class.c`):
 | Command | Effect |
 |---------|--------|
 | `files.partmap <path>` | Parse and print the partition map as a text table. |
-| `files.probe <path>` | Print the detected format without descending — APM, ISO 9660 (a primary volume descriptor at sector 16, by the probe the VFS mounts with), APM+ISO or bare HFS+ISO hybrid, bare HFS, or raw. On an APM disk, one line per filesystem partition (HFS, UFS, or one whose volume header is HFS/HFS+/HFSX), with the volume its header names. |
+| `files.identify <path>` | What the file is, without descending, by the classifier the VFS mounts with (`volume_sniff`): its partition map (`map`), whether it is an ISO 9660 + APM or bare HFS-family hybrid (`hybrid`), its Mac OS volumes as the attached disk numbers them (`volumes`), which kinds of drive take it (`fits`), and more (see `image_kind.md` §4). |
 | `files.mounts[n]` | The currently-cached auto-mounts, indexed by a never-reused mount serial: `path`, `format`, `partitions`, `refcount`, `busy`, `stale`. |
 | `files.mounts.find <path>` | The serial `n` of the mount caching `path`, or -1. |
 | `files.mounts[n].unmount` | Force-close a cached auto-mount. |
@@ -580,6 +599,8 @@ The web frontend runs these through the **Terminal console**
 | `src/core/vfs/image_vfs.{c,h}` | Auto-mount cache + image backend; in-image path parsing; partition routing |
 | `src/core/vfs/vfs_class.c` | Object-model `files.ls` / `files.cat` / `files.mkdir` bindings |
 | `src/core/storage/image_apm.{c,h}` | Pure APM parser |
+| `src/core/storage/image_volume.{c,h}` | `volume_sniff`: the one APM / HFS / HFS+ / HFSX / MFS / UFS / ISO 9660 classifier (registry detector, VFS open, `files.identify`, wrapper sniff, UDIF table name) |
+| `src/core/storage/mac_disk_layout.h` | DDM, APM entry and volume-header field offsets and signatures, shared by the parser, the wrapper and the classifier |
 | `src/core/storage/image_apm_io.c` | Image-backed APM entry point |
 | `src/core/storage/image_hfs.{c,h}` | HFS catalog + Extents Overflow walker, fork reader |
 | `src/core/storage/image_ufs.{c,h}` | UFS-1 superblock + inode walker, file reader |
@@ -591,4 +612,4 @@ The web frontend runs these through the **Terminal console**
 | `src/core/storage/image.{c,h}` | Underlying disk image + `disk_read_data` |
 
 See also: `docs/internals/core/storage/image.md` (image container & delta storage), `docs/internals/core/peripherals/scsi.md`
-(attaching images to the guest), and `docs/internals/core/shell/shell.md` (the object-model shell).
+(attaching images to the guest), and `docs/internals/core/lua/lua.md` (the terminal and the script language over the object model).

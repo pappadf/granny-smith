@@ -22,6 +22,7 @@
 
 #include "annotate_disasm.h"
 #include "coff.h"
+#include "storage_util.h"
 #include "symbols.h"
 
 #include <errno.h>
@@ -204,26 +205,6 @@ static int cd_disasm_section(const coff_t *cf, const coff_section_t *s, FILE *fp
 // Manifest writer
 // ===========================================================================
 
-static void cd_write_string_json(FILE *fp, const char *s) {
-    fputc('"', fp);
-    if (!s) {
-        fputc('"', fp);
-        return;
-    }
-    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
-        unsigned char c = *p;
-        if (c == '"' || c == '\\') {
-            fputc('\\', fp);
-            fputc(c, fp);
-        } else if (c < 0x20) {
-            fprintf(fp, "\\u%04x", c);
-        } else {
-            fputc(c, fp);
-        }
-    }
-    fputc('"', fp);
-}
-
 static int cd_write_manifest(const coff_t *cf, const char *vfs_path, const char *dst_dir, size_t file_size,
                              size_t n_kept_symbols) {
     char path[PATH_MAX];
@@ -235,7 +216,7 @@ static int cd_write_manifest(const coff_t *cf, const char *vfs_path, const char 
     fprintf(fp, "{\n  \"schema_version\": 1,\n  \"generator\": \"granny-smith re v1\",\n");
     fprintf(fp, "  \"format\": \"coff-m68k\",\n");
     fprintf(fp, "  \"source\": {\n    \"vfs_path\": ");
-    cd_write_string_json(fp, vfs_path);
+    json_fputs(fp, vfs_path);
     fprintf(fp, ",\n    \"file_size\": %zu,\n", file_size);
     fprintf(fp, "    \"magic\": \"0x%04x\",\n", coff_magic(cf));
     fprintf(fp, "    \"flags\": \"0x%04x\",\n", coff_flags(cf));
@@ -256,9 +237,9 @@ static int cd_write_manifest(const coff_t *cf, const char *vfs_path, const char 
         cd_format_flags(s->flags, flag_str, sizeof(flag_str));
         bool exec = (s->flags & COFF_STYP_TEXT) != 0;
         fprintf(fp, "    {\"index\": %zu, \"name\": ", i + 1);
-        cd_write_string_json(fp, s->name);
+        json_fputs(fp, s->name);
         fprintf(fp, ", \"vaddr\": \"0x%08x\", \"size\": %u, \"flags\": ", s->vaddr, s->size);
-        cd_write_string_json(fp, flag_str);
+        json_fputs(fp, flag_str);
         fprintf(fp, ", \"files\": {\"bin\": \"sections/%s\", \"disasm\": ", fs_name);
         if (exec) {
             fprintf(fp, "\"disasm/%s.s\"}}", fs_name);

@@ -20,6 +20,7 @@
 import { test, expect } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsText } from '../helpers/web2-fs';
+import { uploadRomViaWelcome } from '../helpers/upload';
 
 const IICX_ROM = path.resolve(__dirname, '../../data/roms/iix-iicx-se30-97221136.rom');
 const DUP = 'Install 1.img';
@@ -32,11 +33,7 @@ test('a floppy name present in both fd and fdhd does not freeze the dialog', asy
   await stageOpfsText(page, `/opfs/images/fdhd/${DUP}`, 'legacy copy');
   await stageOpfsText(page, `/opfs/images/fd/${DUP}`, 'current copy');
 
-  const [romChooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Load ROM...' }).click(),
-  ]);
-  await romChooser.setFiles(IICX_ROM);
+  await uploadRomViaWelcome(page, IICX_ROM);
 
   await page.getByRole('button', { name: 'New Machine...' }).click();
 

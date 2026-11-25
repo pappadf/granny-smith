@@ -609,7 +609,7 @@ change no report has carried yet, or events queued behind one (§10); on the
 quadrature mouse, motion counts still being played out, or a button level
 still inside its hold (§13).  A script that clicks
 can run until it reads false (`wait_mouse_taken` in
-`tests/integration/lib/mac.script`) instead of guessing a tick count.
+`tests/integration/lib/mac.lua`) instead of guessing a tick count.
 
 ### `mouse.move`
 

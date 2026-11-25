@@ -114,7 +114,7 @@ void object_root_reset(void) {
     // This path used to detach, release the Meta node and free() -- skipping
     // object_fire_invalidators and the destructor hook, both of which
     // object_delete runs.  The invalidator contract is the mechanism that
-    // makes a held node safe: shell_var.c's binding_store registers one on
+    // makes a held node safe: a holder of a VK_OBJECT registers one on
     // whatever VK_OBJECT it holds, and without the fire it keeps a `watched`
     // pointer into freed memory and is never marked stale, so the next read
     // dereferences it.  This was the one path that bypassed it.
@@ -217,6 +217,14 @@ void object_delete_tree(struct object *o) {
     // Now `o` has no owned children; tear `o` itself down via the shared path
     // (fires invalidators, releases meta, runs the destructor, frees).
     object_delete(o);
+}
+
+void object_destroy(struct object **slot) {
+    if (!slot || !*slot)
+        return;
+    // object_delete detaches, so no caller needs its own object_detach
+    object_delete_tree(*slot);
+    *slot = NULL;
 }
 
 void object_set_destructor(struct object *o, object_dtor_fn dtor) {
@@ -396,6 +404,19 @@ DEF_GETTER(obj_u64_field_get) {
     return obj_u64_at(object_data(self), m);
 }
 
+value_t obj_u32_at(const void *block, const member_t *m) {
+    if (!block)
+        return val_uint(4, 0);
+    size_t offset = (size_t)(uintptr_t)m->attr.user_data;
+    uint32_t v;
+    memcpy(&v, (const uint8_t *)block + offset, sizeof(v));
+    return val_uint(4, v);
+}
+
+DEF_GETTER(obj_u32_field_get) {
+    return obj_u32_at(object_data(self), m);
+}
+
 struct object *object_parent(struct object *o) {
     return o ? o->parent : NULL;
 }
@@ -493,6 +514,18 @@ void object_set_order(struct object *o, int order) {
         o->order = order;
 }
 
+struct object *object_attach_new(struct object *parent, const class_desc_t *cls, void *instance_data, const char *name,
+                                 const char *label, int order) {
+    struct object *o = object_new(cls, instance_data, name);
+    if (!o)
+        return NULL;
+    if (label)
+        object_set_label(o, label);
+    object_set_order(o, order);
+    object_attach(parent, o);
+    return o;
+}
+
 int object_order(struct object *o) {
     return o ? o->order : 0;
 }
@@ -579,6 +612,45 @@ void object_each_attached_ordered(struct object *o, void (*fn)(struct object *pa
     }
     for (size_t i = 0; i < n; i++)
         fn(o, buf[i], ud);
+}
+
+// The growing name list object_member_names builds
+typedef struct {
+    value_t *items;
+    size_t len;
+    size_t cap;
+    bool oom; // a push failed; the list must not be returned short
+} member_names_acc_t;
+
+// Append `name` (NULL is skipped), noting a failed push
+static void member_names_push(member_names_acc_t *acc, const char *name) {
+    if (name && !val_list_push(&acc->items, &acc->len, &acc->cap, val_str(name)))
+        acc->oom = true;
+}
+
+// object_each_attached_ordered visitor: collect the child's name
+static void member_names_collect(struct object *parent, struct object *child, void *ud) {
+    (void)parent;
+    member_names_push((member_names_acc_t *)ud, object_name(child));
+}
+
+value_t object_member_names(struct object *o, member_kind_t kind) {
+    member_names_acc_t acc = {0};
+    const class_desc_t *cls = o ? object_class(o) : NULL;
+    for (size_t i = 0; cls && i < cls->n_members; i++)
+        if (cls->members[i].kind == kind)
+            member_names_push(&acc, cls->members[i].name);
+    // Children also include the runtime-attached ones, in display order
+    if (o && kind == MK_CHILD)
+        object_each_attached_ordered(o, member_names_collect, &acc);
+    if (acc.oom) {
+        // A truncated schema reads as the complete one: error instead
+        for (size_t i = 0; i < acc.len; i++)
+            value_free(&acc.items[i]);
+        free(acc.items);
+        return val_err("out of memory");
+    }
+    return val_list(acc.items, acc.len);
 }
 
 const member_t *class_find_member(const class_desc_t *cls, const char *name) {
@@ -1790,7 +1862,7 @@ static validate_status_t validate_slot(const typed_slot_t *s, const value_t *in,
     // VK_ANY — and VK_NONE, its historical spelling on an argument slot —
     // is the "accept any kind" sentinel: the body sees the value as-is
     // and does its own discrimination. Used today for slots that
-    // legitimately accept multiple kinds (e.g. files.hd_create's size
+    // legitimately accept multiple kinds (e.g. files.create's size
     // arg, which takes either a string label or an integer count).
     if (s->kind == VK_NONE || s->kind == VK_ANY) {
         if ((s->flags & OBJ_ARG_NONEMPTY) && in->kind == VK_STRING) {
@@ -2132,29 +2204,33 @@ static void assert_return_matches(const typed_slot_t *slot, const value_t *out, 
 }
 #endif
 
+value_t object_attr_get(struct object *o, const member_t *m) {
+    if (!m || m->kind != MK_ATTR)
+        return val_err("not an attribute");
+    if (!m->attr.get)
+        return val_err("attribute '%s' has no getter", m->name);
+    value_t v = m->attr.get(o, m);
+    // Propagate display flags from the slot's presentation_flags
+    // (VFLAG_HEX/VFLAG_DEC/VFLAG_BIN/VFLAG_VOLATILE/VFLAG_SENSITIVE) onto the
+    // value so formatters see the intent without consulting the
+    // descriptor separately.
+    v.flags |= m->attr.presentation_flags;
+#ifndef NDEBUG
+    typed_slot_t slot;
+    slot_from_attr(&slot, m);
+    assert_return_matches(&slot, &v, "attr.get");
+#endif
+    return v;
+}
+
 static value_t node_get_here(node_t n) {
     if (!node_valid(n))
         return val_err("invalid node");
     if (!n.member)
         return val_obj(n.obj); // points at the object itself
     switch (n.member->kind) {
-    case MK_ATTR: {
-        if (!n.member->attr.get)
-            return val_err("attribute '%s' has no getter", n.member->name);
-        value_t v = n.member->attr.get(n.obj, n.member);
-        // Propagate display flags from the slot's presentation_flags
-        // (VFLAG_HEX/VFLAG_DEC/VFLAG_BIN/VFLAG_VOLATILE/VFLAG_SENSITIVE) onto the
-        // value so formatters see the intent without consulting the
-        // descriptor separately.
-        // and does not propagate (it controls writability, not display).
-        v.flags |= n.member->attr.presentation_flags;
-#ifndef NDEBUG
-        typed_slot_t slot;
-        slot_from_attr(&slot, n.member);
-        assert_return_matches(&slot, &v, "attr.get");
-#endif
-        return v;
-    }
+    case MK_ATTR:
+        return object_attr_get(n.obj, n.member);
     case MK_METHOD:
         return val_err("'%s' is a method; use a call form", n.member->name);
     case MK_CHILD: {
@@ -2256,94 +2332,22 @@ static value_t node_call_here(node_t n, int argc, const value_t *argv) {
     return out;
 }
 
-// === The seam ================================================================
+// === Gateways ==================================================================
 //
-// node_get / node_set / node_call are the only way to reach guest state,
-// and guest state belongs to the emulator thread.  A caller on any other
-// thread -- the interpreter on the job thread -- is handed over through
-// job_on_emulator (job/job.h) and waits; on the emulator thread the
-// call is direct.  Path resolution (object_resolve) walks the tree's
-// structure only and stays where the caller is.
-
-typedef struct {
-    node_t n;
-    int argc;
-    const value_t *argv;
-    value_t in;
-    value_t out;
-} node_marshal_t;
-
-static void marshal_get(void *p) {
-    node_marshal_t *m = (node_marshal_t *)p;
-    m->out = node_get_here(m->n);
-}
-
-static void marshal_set(void *p) {
-    node_marshal_t *m = (node_marshal_t *)p;
-    m->out = node_set_here(m->n, m->in);
-}
-
-static void marshal_call(void *p) {
-    node_marshal_t *m = (node_marshal_t *)p;
-    m->out = node_call_here(m->n, m->argc, m->argv);
-}
+// node_get / node_set / node_call are the only way to reach guest state.
+// Everything that calls them runs on the emulator thread -- a script's
+// task included (job/job.h) -- so they are direct calls.
 
 value_t node_get(node_t n) {
-    if (job_on_emulator_thread())
-        return node_get_here(n);
-    node_marshal_t m = {.n = n};
-    job_on_emulator(marshal_get, &m);
-    return m.out;
-}
-
-// Inline mode (job.h): a tree call on the emulator thread that opens a mode
-// is followed by the wait for it.  Weak: linked only where job.c is.
-uint32_t job_glue_mode_id(void) __attribute__((weak));
-void job_inline_after_call(uint32_t mode_before) __attribute__((weak));
-bool job_inline_enabled(void) __attribute__((weak));
-
-// The mode id before the call, tagged (top bit) when inline mode is on --
-// 0 is a legitimate id, so the tag says whether to wait at all.
-static inline uint32_t inline_mode_before(void) {
-    if (job_inline_enabled && job_inline_enabled() && job_glue_mode_id && job_inline_after_call)
-        return job_glue_mode_id() | 0x80000000u;
-    return 0;
-}
-
-static inline void inline_mode_after(uint32_t before) {
-    if (before & 0x80000000u)
-        job_inline_after_call(before & 0x7fffffffu);
+    return node_get_here(n);
 }
 
 value_t node_set(node_t n, value_t v) {
-    if (job_on_emulator_thread()) {
-        uint32_t before = inline_mode_before();
-        value_t r = node_set_here(n, v);
-        inline_mode_after(before);
-        return r;
-    }
-    node_marshal_t m = {.n = n, .in = v};
-    job_on_emulator(marshal_set, &m);
-    return m.out;
+    return node_set_here(n, v);
 }
 
 value_t node_call(node_t n, int argc, const value_t *argv) {
-    if (job_on_emulator_thread()) {
-        uint32_t before = inline_mode_before();
-        value_t r = node_call_here(n, argc, argv);
-        inline_mode_after(before);
-        return r;
-    }
-    node_marshal_t m = {.n = n, .argc = argc, .argv = argv};
-    job_on_emulator(marshal_call, &m);
-    // A leaf that answered later (an I/O job) and failed: the failure is
-    // the call's result, not the provisional value it returned at once.
-    char err[256];
-    if (job_call_take_failure(err, sizeof err)) {
-        value_free(&m.out);
-        return val_err("%s", err);
-    }
-    return m.out;
+    return node_call_here(n, argc, argv);
 }
 
 // Append the method's declared fixed-argument names to buf as a
@@ -2358,6 +2362,18 @@ static void format_declared_names(char *buf, size_t buf_size, const arg_decl_t *
             break;
         pos += (size_t)wrote;
     }
+}
+
+value_t node_call_named(node_t n, int argc, const value_t *argv, int named_n, const named_arg_t *named) {
+    // Positional only: the call validates its own arguments
+    if (!named)
+        return node_call(n, argc, argv);
+    if (named_n > OBJ_BIND_MAX_ARGS)
+        return val_err("too many named arguments (limit %d)", OBJ_BIND_MAX_ARGS);
+    value_t bound[OBJ_BIND_MAX_ARGS];
+    int bound_n = 0;
+    value_t err = node_bind_args(n, argc, argv, named_n, named, bound, &bound_n);
+    return val_is_error(&err) ? err : node_call(n, bound_n, bound);
 }
 
 value_t node_bind_args(node_t n, int pos_argc, const value_t *pos_argv, int named_n, const named_arg_t *named,

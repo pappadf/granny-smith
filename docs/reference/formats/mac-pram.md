@@ -437,7 +437,7 @@ The IIcx has **no built-in video at all**. All video on a IIcx comes
 from an Apple-supplied or third-party NuBus card installed in one of
 slots `$9..$E`. The IIcx model's slot default, which every IIcx
 integration test gets unless it picks another card (asserted in
-[tests/integration/boot-config](../../../tests/integration/boot-config/test.script)),
+[tests/integration/boot-config](../../../tests/integration/boot-config/test.lua)),
 is the **Apple Macintosh Display Card 8•24** (Apple
 codename "JMFB", declaration ROM `mdc-8-24-revb-d1629664.vrom`,
 [src/core/peripherals/nubus/cards/jmfb.c](../../../src/core/peripherals/nubus/cards/jmfb.c)).

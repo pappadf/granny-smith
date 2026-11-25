@@ -6,9 +6,12 @@
 // and memory-mapped I/O interface for the SE/30.
 
 #include "floppy_internal.h"
+
+#include "codec.h"
 #include "gs_assert.h"
 #include "log.h"
 #include "memory.h"
+#include "memory_iface_sized.h"
 #include "system.h"
 
 #include <assert.h>
@@ -32,40 +35,6 @@ const uint8_t ISM_SWITCH_PATTERN[4] = {1, 0, 1, 1};
 
 // Forward declarations
 static void swim_ism_reset(floppy_t *floppy);
-
-// ============================================================================
-// CRC-CCITT-16 Computation
-// ============================================================================
-
-// CRC-CCITT-16 (polynomial 0x1021, MSB first) byte table: entry i is the
-// CRC register after shifting i through a zero register, so one lookup
-// replaces the eight-step bit loop.
-static const uint16_t crc_ccitt_table[256] = {
-    0x0000, 0x1021, 0x2042, 0x3063, 0x4084, 0x50A5, 0x60C6, 0x70E7, 0x8108, 0x9129, 0xA14A, 0xB16B, 0xC18C, 0xD1AD,
-    0xE1CE, 0xF1EF, 0x1231, 0x0210, 0x3273, 0x2252, 0x52B5, 0x4294, 0x72F7, 0x62D6, 0x9339, 0x8318, 0xB37B, 0xA35A,
-    0xD3BD, 0xC39C, 0xF3FF, 0xE3DE, 0x2462, 0x3443, 0x0420, 0x1401, 0x64E6, 0x74C7, 0x44A4, 0x5485, 0xA56A, 0xB54B,
-    0x8528, 0x9509, 0xE5EE, 0xF5CF, 0xC5AC, 0xD58D, 0x3653, 0x2672, 0x1611, 0x0630, 0x76D7, 0x66F6, 0x5695, 0x46B4,
-    0xB75B, 0xA77A, 0x9719, 0x8738, 0xF7DF, 0xE7FE, 0xD79D, 0xC7BC, 0x48C4, 0x58E5, 0x6886, 0x78A7, 0x0840, 0x1861,
-    0x2802, 0x3823, 0xC9CC, 0xD9ED, 0xE98E, 0xF9AF, 0x8948, 0x9969, 0xA90A, 0xB92B, 0x5AF5, 0x4AD4, 0x7AB7, 0x6A96,
-    0x1A71, 0x0A50, 0x3A33, 0x2A12, 0xDBFD, 0xCBDC, 0xFBBF, 0xEB9E, 0x9B79, 0x8B58, 0xBB3B, 0xAB1A, 0x6CA6, 0x7C87,
-    0x4CE4, 0x5CC5, 0x2C22, 0x3C03, 0x0C60, 0x1C41, 0xEDAE, 0xFD8F, 0xCDEC, 0xDDCD, 0xAD2A, 0xBD0B, 0x8D68, 0x9D49,
-    0x7E97, 0x6EB6, 0x5ED5, 0x4EF4, 0x3E13, 0x2E32, 0x1E51, 0x0E70, 0xFF9F, 0xEFBE, 0xDFDD, 0xCFFC, 0xBF1B, 0xAF3A,
-    0x9F59, 0x8F78, 0x9188, 0x81A9, 0xB1CA, 0xA1EB, 0xD10C, 0xC12D, 0xF14E, 0xE16F, 0x1080, 0x00A1, 0x30C2, 0x20E3,
-    0x5004, 0x4025, 0x7046, 0x6067, 0x83B9, 0x9398, 0xA3FB, 0xB3DA, 0xC33D, 0xD31C, 0xE37F, 0xF35E, 0x02B1, 0x1290,
-    0x22F3, 0x32D2, 0x4235, 0x5214, 0x6277, 0x7256, 0xB5EA, 0xA5CB, 0x95A8, 0x8589, 0xF56E, 0xE54F, 0xD52C, 0xC50D,
-    0x34E2, 0x24C3, 0x14A0, 0x0481, 0x7466, 0x6447, 0x5424, 0x4405, 0xA7DB, 0xB7FA, 0x8799, 0x97B8, 0xE75F, 0xF77E,
-    0xC71D, 0xD73C, 0x26D3, 0x36F2, 0x0691, 0x16B0, 0x6657, 0x7676, 0x4615, 0x5634, 0xD94C, 0xC96D, 0xF90E, 0xE92F,
-    0x99C8, 0x89E9, 0xB98A, 0xA9AB, 0x5844, 0x4865, 0x7806, 0x6827, 0x18C0, 0x08E1, 0x3882, 0x28A3, 0xCB7D, 0xDB5C,
-    0xEB3F, 0xFB1E, 0x8BF9, 0x9BD8, 0xABBB, 0xBB9A, 0x4A75, 0x5A54, 0x6A37, 0x7A16, 0x0AF1, 0x1AD0, 0x2AB3, 0x3A92,
-    0xFD2E, 0xED0F, 0xDD6C, 0xCD4D, 0xBDAA, 0xAD8B, 0x9DE8, 0x8DC9, 0x7C26, 0x6C07, 0x5C64, 0x4C45, 0x3CA2, 0x2C83,
-    0x1CE0, 0x0CC1, 0xEF1F, 0xFF3E, 0xCF5D, 0xDF7C, 0xAF9B, 0xBFBA, 0x8FD9, 0x9FF8, 0x6E17, 0x7E36, 0x4E55, 0x5E74,
-    0x2E93, 0x3EB2, 0x0ED1, 0x1EF0,
-};
-
-// Updates CRC-CCITT-16 with one byte
-static uint16_t crc_ccitt_byte(uint16_t crc, uint8_t byte) {
-    return (uint16_t)((crc << 8) ^ crc_ccitt_table[((crc >> 8) ^ byte) & 0xFF]);
-}
 
 // ============================================================================
 // ISM FIFO Operations
@@ -100,9 +69,9 @@ static uint8_t ism_fifo_pop(floppy_t *floppy, bool *is_mark_out) {
     bool is_mark = floppy->ism_fifo_mark[0];
     // SWIM resets CRC to FFFF on each mark byte, then accumulates it
     if (is_mark)
-        floppy->ism_crc = CRC_INIT;
+        floppy->ism_crc = FLOPPY_MFM_CRC_INIT;
     // Update CRC with the byte being read by the ROM
-    floppy->ism_crc = crc_ccitt_byte(floppy->ism_crc, byte);
+    floppy->ism_crc = codec_crc16_xmodem_byte(floppy->ism_crc, byte);
     // Shift FIFO down: position 1 moves to position 0
     floppy->ism_fifo[0] = floppy->ism_fifo[1];
     floppy->ism_fifo_mark[0] = floppy->ism_fifo_mark[1];
@@ -474,6 +443,12 @@ static void ism_write_capture_flush(floppy_t *floppy) {
         LOG(2, "ISM write: invalid sector %d (max %d)", sector, sectors_per_track);
         return;
     }
+    // A write-protected disk takes no data field (the drive's sense says so;
+    // a guest that writes anyway lays nothing down).
+    if (!image_is_writable(img)) {
+        LOG(2, "ISM write: T=%d S=%d Sec=%d refused, the disk is write-protected", track, side, sector);
+        return;
+    }
 
     // MFM layout: block = (track * 2 + side) * sectors_per_track + (sector - 1)
     size_t block = (size_t)(track * 2 + side) * sectors_per_track + (sector - 1);
@@ -558,7 +533,7 @@ static void swim_ism_reset(floppy_t *floppy) {
     floppy->ism_fifo_count = 0;
     memset(floppy->ism_fifo, 0, sizeof(floppy->ism_fifo));
     memset(floppy->ism_fifo_mark, 0, sizeof(floppy->ism_fifo_mark));
-    floppy->ism_crc = CRC_INIT;
+    floppy->ism_crc = FLOPPY_MFM_CRC_INIT;
     floppy->mfm_buf_len = 0;
     floppy->mfm_buf_pos = 0;
     floppy->mfm_cur_sector = 1;
@@ -710,8 +685,8 @@ static uint8_t swim_ism_read(floppy_t *floppy, uint32_t offset, bool peek) {
             bool crc_ok = (crc == 0);
             for (int i = 0; i < floppy->ism_fifo_count && !crc_ok; i++) {
                 if (floppy->ism_fifo_mark[i])
-                    crc = CRC_INIT;
-                crc = crc_ccitt_byte(crc, floppy->ism_fifo[i]);
+                    crc = FLOPPY_MFM_CRC_INIT;
+                crc = codec_crc16_xmodem_byte(crc, floppy->ism_fifo[i]);
                 if (crc == 0)
                     crc_ok = true;
             }
@@ -875,9 +850,9 @@ static void swim_handle_fifo_clear(floppy_t *floppy, uint8_t old_mode) {
         floppy->ism_fifo_count = 0;
         memset(floppy->ism_fifo, 0, sizeof(floppy->ism_fifo));
         memset(floppy->ism_fifo_mark, 0, sizeof(floppy->ism_fifo_mark));
-        floppy->ism_crc = CRC_INIT;
+        floppy->ism_crc = FLOPPY_MFM_CRC_INIT;
         floppy->ism_error = 0;
-        LOG(6, "ISM: FIFO cleared, CRC reset to 0x%04X", CRC_INIT);
+        LOG(6, "ISM: FIFO cleared, CRC reset to 0x%04X", FLOPPY_MFM_CRC_INIT);
     }
 }
 
@@ -892,7 +867,7 @@ static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
                 floppy->ism_error |= ISM_ERR_OVERRUN;
         }
         ism_write_shifter_take(floppy);
-        floppy->ism_crc = crc_ccitt_byte(floppy->ism_crc, byte);
+        floppy->ism_crc = codec_crc16_xmodem_byte(floppy->ism_crc, byte);
         // Capture sector data during WRITE+ACTION
         if ((floppy->ism_mode & (ISM_MODE_WRITE | ISM_MODE_ACTION)) == (ISM_MODE_WRITE | ISM_MODE_ACTION)) {
             if (floppy->ism_write_state == 0) {
@@ -938,7 +913,7 @@ static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
                 floppy->ism_error |= ISM_ERR_OVERRUN;
         }
         ism_write_shifter_take(floppy);
-        floppy->ism_crc = crc_ccitt_byte(floppy->ism_crc, byte);
+        floppy->ism_crc = codec_crc16_xmodem_byte(floppy->ism_crc, byte);
         // Track $A1 mark bytes for write capture state machine
         if ((floppy->ism_mode & (ISM_MODE_WRITE | ISM_MODE_ACTION)) == (ISM_MODE_WRITE | ISM_MODE_ACTION)) {
             if (byte == 0xA1)
@@ -970,7 +945,7 @@ static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
             // the observable part: the field closes here and the next one
             // starts a fresh CRC.
             LOG(6, "ISM wCRC: CRC 0x%04X emitted, field closed", floppy->ism_crc);
-            floppy->ism_crc = CRC_INIT;
+            floppy->ism_crc = FLOPPY_MFM_CRC_INIT;
         } else {
             floppy->ism_iwm_config = byte;
             LOG(6, "ISM wIWMConfig: 0x%02X", byte);
@@ -1143,7 +1118,7 @@ void floppy_swim_write(floppy_t *floppy, unsigned reg, uint8_t byte) {
 //
 // `addr` here is a REGISTER INDEX (0-15), not a bus address.  Whoever owns the
 // window maps addresses onto it: the GLUE/MDU/MCU I/O tables via
-// MAC030_IO_STRIDE_512 (the chip's A0-A3 are wired to A9-A12), and the IIfx /
+// BOARD_IO_STRIDE_512 (the chip's A0-A3 are wired to A9-A12), and the IIfx /
 // Q900 IOP via swim_bypass_addr() (2-byte centres from +$20).  This file used
 // to bake the SE/30's `(addr >> 9) & 0x0F` in, which is why every register
 // aliased to index 0 through the IOP bypass.
@@ -1163,45 +1138,11 @@ static uint8_t swim_peek_uint8(void *ctx, uint32_t addr) {
 // than aborting, so any guest executing `move.w $D80000,d0`, buggy or hostile,
 // halted the emulator and surfaced in CI as an unexplained hang.  Log it and
 // return open bus, as grand_central.c does.
-static uint16_t swim_read_uint16(void *ctx, uint32_t addr) {
-    (void)ctx;
-    LOG(1, "SWIM: 16-bit access at 0x%08X is not decoded; reading open bus", addr);
-    return 0xFFFF;
-}
-
-static uint32_t swim_read_uint32(void *ctx, uint32_t addr) {
-    (void)ctx;
-    LOG(1, "SWIM: 32-bit access at 0x%08X is not decoded; reading open bus", addr);
-    return 0xFFFFFFFFu;
-}
-
-// The wide reads' open bus, without their log lines.
-static uint16_t swim_peek_uint16(void *ctx, uint32_t addr) {
-    (void)ctx;
-    (void)addr;
-    return 0xFFFF;
-}
-static uint32_t swim_peek_uint32(void *ctx, uint32_t addr) {
-    (void)ctx;
-    (void)addr;
-    return 0xFFFFFFFFu;
-}
+MEMORY_IFACE_OPEN_BUS_WIDE(swim_wide, "SWIM")
 
 // Memory interface handler for 8-bit writes
 static void swim_write_uint8(void *ctx, uint32_t addr, uint8_t value) {
     floppy_swim_write((floppy_t *)ctx, addr, value);
-}
-
-static void swim_write_uint16(void *ctx, uint32_t addr, uint16_t value) {
-    (void)ctx;
-    (void)value;
-    LOG(1, "SWIM: 16-bit write at 0x%08X is not decoded; dropped", addr);
-}
-
-static void swim_write_uint32(void *ctx, uint32_t addr, uint32_t value) {
-    (void)ctx;
-    (void)value;
-    LOG(1, "SWIM: 32-bit write at 0x%08X is not decoded; dropped", addr);
 }
 
 // ============================================================================
@@ -1222,6 +1163,14 @@ void floppy_swim_motor_spinup_callback(void *source, uint64_t data) {
     LOG(3, "Drive %d: Motor spin-up complete, now ready", drive_index);
 }
 
+// The SWIM's register window; every controller shares it
+static const memory_interface_t swim_iface = {
+    .read_uint8 = swim_read_uint8,
+    .peek_uint8 = swim_peek_uint8,
+    .write_uint8 = swim_write_uint8,
+    MEMORY_IFACE_OPEN_BUS_WIDE_FIELDS(swim_wide),
+};
+
 // Sets up SWIM memory interface callbacks and ISM initial state.
 // `map` is always NULL: every SWIM machine decodes its own window and reaches
 // the chip through floppy_get_memory_interface().  The parameter stays for
@@ -1230,20 +1179,12 @@ void floppy_swim_setup(floppy_t *floppy, memory_map_t *map) {
     // ISM initial state (chip powers up in IWM mode)
     floppy->in_ism_mode = false;
     floppy->ism_phase = 0xF0;
-    floppy->ism_crc = CRC_INIT;
+    floppy->ism_crc = FLOPPY_MFM_CRC_INIT;
     floppy->mfm_cur_sector = 1;
     floppy->mfm_cur_side = 0;
 
     // Set up memory interface
-    floppy->memory_interface.read_uint8 = &swim_read_uint8;
-    floppy->memory_interface.read_uint16 = &swim_read_uint16;
-    floppy->memory_interface.read_uint32 = &swim_read_uint32;
-    floppy->memory_interface.peek_uint8 = &swim_peek_uint8;
-    floppy->memory_interface.peek_uint16 = &swim_peek_uint16;
-    floppy->memory_interface.peek_uint32 = &swim_peek_uint32;
-    floppy->memory_interface.write_uint8 = &swim_write_uint8;
-    floppy->memory_interface.write_uint16 = &swim_write_uint16;
-    floppy->memory_interface.write_uint32 = &swim_write_uint32;
+    floppy->memory_interface = &swim_iface;
 
     (void)map;
 }
