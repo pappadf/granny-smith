@@ -112,7 +112,23 @@ complete stream, reusing that state — the UDIF writer compresses every
 chunk of an image through one encoder. `codec_enc_bound(id, len)` is output
 room that always suffices; a smaller buffer that turns out too small is
 `OVERFLOW`, never a truncated stream. `codec_encode` is the one-shot form.
-zlib, xz and GSRLE encode.
+zlib, xz and GSRLE encode. Level 0 (`CODEC_LEVEL_STORED`) is zlib's stored
+blocks: no compression, for a caller that cannot spend the time.
+
+**Streaming zlib.** One zlib stream can also be written across many calls
+(`codec_zstream_enc_*`), as ZMBV's frames need: the first chunk after `new`
+or `reset` opens with the zlib header, and every chunk is non-final DEFLATE
+blocks ended by a sync flush — an empty stored block, so the chunk ends on a
+byte boundary with `00 00 FF FF` and decodes in full once the chunks before
+it have (zlib's `inflate(Z_SYNC_FLUSH)` reads it so). Each chunk is
+tokenised alone: matches never reach back into an earlier chunk, so the
+encoder stays a one-shot pass and needs no sliding window. The stream has no
+final block and no Adler-32; it is cut, not ended. The level may change
+between chunks. `codec_zstream_dec_*` is the counterpart: a `CODEC_ZLIB`
+decoder whose memory input is pointed at one chunk per call and which stops,
+instead of reporting a truncated stream, when the chunk is used up at a
+block boundary; its ring carries over, so it also reads streams whose
+matches do reach back (zlib's).
 
 ### 1.3 One layout
 
@@ -163,6 +179,16 @@ framework they are written on is `lib/codec_internal.h`:
   which peeler's formats use too, so the libraries have one family of
   their own beside core's `RD_*`/`WR_*`.
 
+### 1.4 Media codecs
+
+Two codecs are not byte streams of the `codec_id_t` kind, and have APIs of
+their own beside `codec.h`:
+
+- **ZMBV** ([`codec_zmbv.h`](../../../src/codec/include/codec_zmbv.h)),
+  the DOSBox capture video codec, frame by frame: an encoder
+  (`codec_zmbv_enc_*`) and a decoder (`codec_zmbv_dec_*`) for 8 bpp
+  palettised, 15, 16 and 32 bpp (§3).
+
 ## 2. Key types & files
 
 | | |
@@ -185,6 +211,7 @@ framework they are written on is `lib/codec_internal.h`:
 | `lib/cpt.c` | Compact Pro's LZH and RLE |
 | `lib/dcmp.c`, `lib/dcmp3_tables.h` | System 7 compressed resources |
 | `lib/gsrle.c`, `lib/gsrle_enc.c` | the checkpoint file's run lengths, both ways |
+| `lib/zmbv.c`, `lib/zmbv_enc.c`, `include/codec_zmbv.h` | ZMBV video, both ways |
 | `lib/checksum.c` | every checksum |
 
 ## 3. Behaviour/algorithms
@@ -202,7 +229,31 @@ framework they are written on is `lib/codec_internal.h`:
   checked — and ignores what follows the last one that is not another
   member, as `gzip -d` does. The encoder is greedy LZ77 over hash chains (depth by level), each block
   written as dynamic Huffman, fixed Huffman or stored, whichever is
-  smallest; its dynamic codes are length-limited and complete.
+  smallest; its dynamic codes are length-limited and complete. The
+  streaming form (§1.2) writes the same blocks, never final, and a sync
+  flush after each chunk.
+- **ZMBV.** The bitstream of DOSBox's capture codec (`src/libs/zmbv/zmbv.cpp`
+  in DOSBox; FFmpeg's `libavcodec/zmbv.c` decodes it). Every frame is a
+  flag byte (bit 0 keyframe, bit 1 palette delta). A keyframe adds a
+  six-byte header — version 0.1, compression 1 (zlib), the pixel format (4
+  = 8 bpp, 5 = 15 bpp, 6 = 16 bpp, 8 = 32 bpp), the block width and height —
+  and starts a new zlib stream holding the 768-byte palette (8 bpp only) and
+  the whole frame. An inter frame continues that stream with one
+  sync-flushed chunk: the palette's XOR against the previous one (when bit 1
+  is set), two bytes per block (`dx << 1 | has_delta`, `dy << 1`) padded to a
+  multiple of four, then each flagged block's XOR against the previous frame
+  (blocks clipped at the right and bottom edges). The encoder never searches
+  for motion — every vector is zero — and keeps the previous frame itself.
+  It is given either the new frame or the XOR of the changed rows, with the
+  band of rows that may differ, and looks at nothing outside the band: a
+  capture that already holds an XOR band hands it over without a second
+  comparison. A frame with no changed block and no palette change is an
+  inter frame with an all-zero table: 10 bytes for 640×480 with 64×64
+  blocks at level 3. The caller decides which frames are keyframes (the
+  first always is); a frame that does not fit the output changes nothing,
+  so it can be retried. The decoder reads everything the encoder writes,
+  any in-range motion vector and the uncompressed variant (compression 0)
+  as well; vectors, deltas and sizes are checked against the frame.
 - **bzip2.** Per block: the symbol map, the selectors (move-to-front coded),
   the delta-coded code lengths of up to six canonical Huffman tables, then
   the run-length and move-to-front coded symbols, each Huffman code found
@@ -346,6 +397,17 @@ file's blocks, but keeps nothing of its own in one.)
   tests methods 3, 13 and 15 against streams built by encoders over the
   decoders' own tables and models (including the Arsenic arithmetic
   coder), and the Huffman pool's bounds.
+- `tests/unit/suites/codec_media` (ASan, UBSan, and again on wasm32)
+  covers the streaming zlib encoder — chunks of every kind of data, empty
+  ones included, at stored, 1, 3 and 9, each ending in the sync flush and
+  inflating to its own bytes through `codec_zstream_dec` and, natively,
+  the system zlib (`inflate(Z_SYNC_FLUSH)`); overflow, reset and truncation
+  — and ZMBV: every format at 512×342, 640×480 (the last block row 32
+  high), 100×70, 33×17 and 1×1, block sizes 64×64, 16×16 and 7×5, levels
+  stored to 9, from whole frames, XOR bands and whole-frame bands, with
+  palette changes, keyframes forced both ways and unchanged frames, every
+  decoded picture and palette compared; the decoder against every prefix
+  and a corruption at every byte of a short stream.
 - `tests/unit/suites/peeler` and `peeler_corpus` (and `make -C src/peeler
   test`, 38 real archives) decode every method through the containers;
   `zipgz.c` covers DEFLATE with a writer of its own (every block type,

@@ -19,7 +19,9 @@
 // container that checks or chains streams (zip's CRC, Compact Pro's two
 // stages, gzip's members) does it through the options below, not a type of
 // its own.  Every encoder has one shape too (codec_enc_*): a whole input to
-// one complete stream, with state reused across calls.
+// one complete stream, with state reused across calls.  One zlib stream can
+// also be written and read in sync-flushed chunks (codec_zstream_*), and
+// the media codecs have headers of their own (codec_zmbv.h).
 //
 //   id                  decode  encode  stream
 //   CODEC_COPY            x             stored bytes
@@ -259,6 +261,63 @@ void codec_enc_free(codec_enc_t *e);
 
 // One-shot: codec_enc_new, run, free.
 int64_t codec_encode(codec_id_t id, int level, const uint8_t *in, size_t len, uint8_t *out, size_t cap);
+
+// A level that compresses nothing: stored blocks only (zlib, and the
+// streaming zlib encoder below), for a caller that cannot spend the time.
+#define CODEC_LEVEL_STORED 0
+
+// === Streaming zlib ===
+//
+// One zlib stream (RFC 1950) carried across many chunks, as ZMBV's frames
+// carry theirs: the first chunk after codec_zstream_enc_new or _reset opens
+// with the zlib header, and every chunk is non-final DEFLATE blocks ended
+// by a sync flush -- an empty stored block, so the chunk ends on a byte
+// boundary with the bytes 00 00 FF FF.  Each chunk then decodes in full
+// once the earlier ones have (codec_zstream_dec_chunk, or zlib's inflate
+// with Z_SYNC_FLUSH).  Matches stay inside their chunk.  The stream has no
+// final block and no Adler-32: it is cut, not ended.
+
+typedef struct codec_zstream_enc codec_zstream_enc_t;
+
+// A streaming encoder for chunks of at most `max_len` bytes at `level`
+// (CODEC_LEVEL_STORED, or 1..9; < 0 the default, 6).  NULL with *err set
+// (CODEC_ERR_NOMEM).
+codec_zstream_enc_t *codec_zstream_enc_new(size_t max_len, int level, int *err);
+
+// Change the level from the next chunk on (any time: chunks are coded alone).
+void codec_zstream_enc_set_level(codec_zstream_enc_t *z, int level);
+
+// Start a new stream: the next chunk opens with a zlib header.
+void codec_zstream_enc_reset(codec_zstream_enc_t *z);
+
+// Bytes of output that always suffice for one chunk of `len` bytes.
+size_t codec_zstream_enc_bound(size_t len);
+
+// Compress `len` (<= max_len, may be 0) bytes into the stream: the chunk's
+// bytes into `out`.  Returns their count, CODEC_ERR_OVERFLOW when `cap` is
+// too small (the stream is then as it was), or CODEC_ERR_ARG.
+int64_t codec_zstream_enc_chunk(codec_zstream_enc_t *z, const uint8_t *in, size_t len, uint8_t *out, size_t cap);
+
+void codec_zstream_enc_free(codec_zstream_enc_t *z);
+
+typedef struct codec_zstream_dec codec_zstream_dec_t;
+
+// A decoder for such a stream, one chunk per call.  NULL with *err set.
+codec_zstream_dec_t *codec_zstream_dec_new(int *err);
+
+// Start a new stream: the next chunk opens with a zlib header.
+void codec_zstream_dec_reset(codec_zstream_dec_t *z);
+
+// Decode one whole chunk -- it must end at a block boundary, as a sync
+// flush leaves it -- into `out`: the bytes decoded, or a CODEC_ERR_* code
+// (CODEC_ERR_OVERFLOW when they exceed `cap`, CODEC_ERR_TRUNCATED for a
+// chunk cut inside a block).  After an error every chunk fails until reset.
+int64_t codec_zstream_dec_chunk(codec_zstream_dec_t *z, const uint8_t *in, size_t len, uint8_t *out, size_t cap);
+
+// Why the decoder failed, in a few words, or "".
+const char *codec_zstream_dec_message(const codec_zstream_dec_t *z);
+
+void codec_zstream_dec_free(codec_zstream_dec_t *z);
 
 // === Checksums ===
 
