@@ -173,13 +173,14 @@ Two rules suite rows must follow, both learned from real failures:
   capturing and when verifying, so menu/click choreography lands the
   same way in both. Screens that animate (a blinking "?" icon, a text
   caret) never settle at all — those rows use a fixed `run_ticks`
-  window and their goldens are animation-phase-sensitive by design. Tests are Lua files (`test.lua`; `docs/internals/core/lua/lua.md` is the
+  window and their goldens are animation-phase-sensitive by design.
+
+Tests are Lua files (`test.lua`; `docs/internals/core/lua/lua.md` is the
 language's contract with the tree; `scripts/script-to-lua.py` converts a
 test written in the old `.script` language, should one turn up). Shared
 harness functions live in `tests/integration/lib/mac.lua`, pulled in with
 `local mac = dofile("../lib/mac.lua")` and called as `mac.wait_match(...)`.
-The library provides
-condition-based waits (`wait_match`, `wait_stable`, `wait_change`,
+The library provides condition-based waits (`wait_match`, `wait_stable`, `wait_change`,
 `wait_global`, `wait_desktop` — a wait states its condition; ceilings are
 hang detectors), budgets that end early on their golden
 (`run_until_match`, `run_until_match_ex`: for the screens a stability
@@ -211,6 +212,23 @@ row under pcall, counts it and reports it; `mac.milestone` the same for a
 known gap; `mac.suite_done` the epilogue; `mac.wait_until(cond, step,
 ceiling, what)` is the one loop under every wait), addressing-mode asserts
 (`assert_addr`), and machine-read coverage records (`@@COV` lines).
+
+Most per-family suites are tables of one row shape — boot a model off a
+System, settle at the Finder, assert the identity, match the Finder golden,
+open the first Apple-menu item, match it, report — and the library holds
+that shape: `mac.about_row(t)` (the whole row), `mac.boot_finder(t)` (the
+boot, a named settle strategy and the identity asserts, for the rows that go
+on differently, such as a checkpoint round trip), `mac.boxflag()` (BoxFlag,
+`$0CB3`; on a PowerPC it first runs to the 68k emulator's user mode),
+`mac.check_about_at(ref, o)` (About exclusions by screen size or named
+layout), `mac.media_row(label, fn, ...)` (a row skipped, with its `skip:`
+line, when its media were not fetched) and `mac.with(defaults, t)` (a
+suite's common row fields, written once). The goldens stay string literals
+in the suite's own `test.lua`, where `scripts/check-goldens.py` reads them
+and their `golden-collision-ok:` waivers. A row's `settle` strategy is part
+of its `@@PERF` instruction count, so each suite keeps the one its baselines
+were taken with; changing it is a re-baseline (perf-baselines.json and, where
+the frame moves, the goldens), not a refactor.
 
 A second, machine-specific library sits beside it:
 `tests/integration/lib/ans.lua`, for the Apple Network Servers. Those

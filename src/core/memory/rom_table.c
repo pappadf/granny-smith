@@ -20,7 +20,13 @@
 
 // A ROM for a machine that is not emulated.
 static const char *const NONE[] = {NULL};
-static const char *const PLUS[] = {"plus", NULL};
+static const char *const PLUS[] = {"plus", "mac512ke", NULL};
+// The 64 KB ROM, both revisions of which ran in the 128K and the 512K.
+static const char *const MAC64K[] = {"mac128k", "mac512k", NULL};
+static const char *const MAC64K_512[] = {"mac512k", "mac128k", NULL};
+static const char *const SE[] = {"se", NULL};
+static const char *const SEFDHD[] = {"sefdhd", NULL};
+static const char *const CLASSIC[] = {"classic", NULL};
 // Universal ROM: same bytes for IIx, IIcx, SE/30. Listed in machine_register
 // order so the *first* entry serves as a UI default (for tests that don't pick
 // explicitly), but the API never auto-selects.
@@ -35,6 +41,12 @@ static const char *const IISI[] = {"iisi", NULL};
 static const char *const Q700_Q900[] = {"q700", "q900", NULL};
 // Dedicated Quadra 950 ("Zydeco") 1 MB ROM.
 static const char *const Q950[] = {"q950", NULL};
+// The djMEMC ("Wombat"/"WLCD") ROMs: the February 1993 Centris ROM and
+// the revision the Quadra 800 and the Quadra 610/650 shipped with.
+static const char *const WOMBAT_1993_02[] = {"c650", "c610", "q800", "q610", "q650", NULL};
+static const char *const WOMBAT_1993_10[] = {"q800", "q650", "q610", "c650", "c610", NULL};
+// The MEMCjr ("Primus"/"Optimus"/"Aladdin") ROM.
+static const char *const MEMCJR_1993_10[] = {"q605", "lc475", "lc575", NULL};
 // Quadra 840AV / Centris 660AV shared 2 MB "Cyclone/Tempest" ROM.
 static const char *const AV[] = {"q840av", "q660av", NULL};
 // Power Macintosh 6100/7100/8100 shared 4 MB "Boot PDM 601 1.0" ROM.
@@ -42,16 +54,23 @@ static const char *const PDM[] = {"pm6100", "pm7100", "pm8100", NULL};
 // The later "Boot PDM 601 1.1" ROM, listed for the 7100 only until it is
 // known which other models shipped it.
 static const char *const PM7100[] = {"pm7100", NULL};
+// Workgroup Server 9150 ROMs, one per speed (the board is the 8100's).
+static const char *const WGS9150_80[] = {"wgs9150", NULL};
+static const char *const WGS9150_120[] = {"wgs9150_120", NULL};
 // Power Macintosh 7500/8500/9500 shared 4 MB "Boot TNT 0.1" ROM (the same
-// image also serves the unemulated 7200).  Two revisions exist, differing
+// image also serves the 7200, whose Platinum board it identifies itself).  Two revisions exist, differing
 // only in the HWInit and Mac68KROM components.
-static const char *const TNT[] = {"pm7500", "pm8500", "pm9500", NULL};
+static const char *const TNT[] = {"pm7500", "pm8500", "pm9500", "pm7600", "pm7200", NULL};
 // Apple Network Server 500/700 ROMs.  TRAP: they share header sums with each
 // other (three are $962F6C13) and with the Power Macintosh 9500 v2 ROM
 // (2.26B6 is $9630C68B), and the production image carries the same version
 // string as the 9500 v2 ROM.  Only the full id — header sum plus the
 // ConfigInfo 64-bit sum — tells them apart.  Never identify one by version.
 static const char *const ANS[] = {"ans500", "ans700", NULL};
+// Power Macintosh 7300/7600/8600/9600 1997 ROM ($960E4BE9) and the later
+// 8600/9600-only revision ($960FC647).
+static const char *const TNT97[] = {"pm7300", "pm7600", "pm8600", "pm9600", NULL};
+static const char *const TNT97_V2[] = {"pm8600", "pm9600", NULL};
 // Power Macintosh G3 (beige, "Gossamer") 4 MB ROMs.  One board program
 // serves the desktop, mini tower and Server G3 (and the All-in-One, not
 // emulated yet); the revision is an image property, not a model one.
@@ -60,6 +79,14 @@ static const char *const G3[] = {"pmg3dt", "pmg3mt", NULL};
 // (docs/reference/machines/lisa/lisa.md §16), each two 8 KB byte-slice chips.
 static const char *const LISA[] = {"lisa", NULL};
 static const char *const MACXL[] = {"macxl", NULL};
+// The V8-family 512 KB ROMs, one model each.
+static const char *const LCII[] = {"lcii", NULL};
+static const char *const CLASSICII[] = {"classicii", NULL};
+static const char *const COLORCLASSIC[] = {"colorclassic", NULL};
+// The Sonora-family 1 MB ROMs: both LC III ROMs run the 25 and 33 MHz boards.
+static const char *const LCIII[] = {"lciii", "lciiip", NULL};
+// The $EDE66CBD ROM: the LC 520 family and the Color Classic II.
+static const char *const LC550[] = {"lc550", "colorclassicii", "lc520", NULL};
 
 // === The table ============================================================
 //
@@ -72,8 +99,8 @@ static const char *const MACXL[] = {"macxl", NULL};
 const rom_info_t rom_table[] = {
     // --- Mac 68k: the header sum at offset 0 ---
     // verified from images
-    {"Macintosh-512k ROM", NONE, "28ba4e50", 64 * 1024, 0, 0},
-    {"Macintosh-128k ROM", NONE, "28ba61ce", 64 * 1024, 0, 0},
+    {"Macintosh-512k ROM", MAC64K_512, "28ba4e50", 64 * 1024, 0, 0, "Rev 2"},
+    {"Macintosh-128k ROM", MAC64K, "28ba61ce", 64 * 1024, 0, 0, "Rev 1"},
     {"Macintosh Plus (Rev 2, Lonely Heifers)", PLUS, "4d1eeae1", 128 * 1024, 0, 0, "Rev 2"},
     {"Macintosh Plus (Rev 1, Lonely Hearts)", PLUS, "4d1eeee1", 128 * 1024, 0, 0, "Rev 1"},
     {"Macintosh Plus (Rev 3, Loud Harmonicas)", PLUS, "4d1f8172", 128 * 1024, 0, 0, "Rev 3"},
@@ -82,16 +109,16 @@ const rom_info_t rom_table[] = {
     {"Universal IIx/IIcx/SE/30 ROM", UNIVERSAL, "97221136", 256 * 1024, 0, 0},
     {"MacII (800k v2) ROM", NONE, "9779d2c4", 256 * 1024, 0, 0},
     {"MacII (800k v1) ROM", NONE, "97851db6", 256 * 1024, 0, 0},
-    {"Mac SE ROM", NONE, "b2e362a8", 256 * 1024, 0, 0},
-    {"Mac SE FDHD ROM", NONE, "b306e171", 256 * 1024, 0, 0},
-    {"Classic II ROM", NONE, "3193670e", 512 * 1024, 0, 0},
+    {"Mac SE ROM", SE, "b2e362a8", 256 * 1024, 0, 0},
+    {"Mac SE FDHD ROM", SEFDHD, "b306e171", 256 * 1024, 0, 0},
+    {"Classic II ROM", CLASSICII, "3193670e", 512 * 1024, 0, 0},
     {"Mac LC ROM", NONE, "350eacf0", 512 * 1024, 0, 0},
-    {"Mac LCII ROM", NONE, "35c28f5f", 512 * 1024, 0, 0},
+    {"Mac LCII ROM", LCII, "35c28f5f", 512 * 1024, 0, 0},
     {"Macintosh IIci ROM", IICI, "368cadfe", 512 * 1024, 0, 0},
     {"Macintosh IIsi ROM", IISI, "36b7fb6c", 512 * 1024, 0, 0},
     {"Macintosh IIfx ROM", IIFX, "4147dd77", 512 * 1024, 0, 0},
     // The Classic's header sum stops at 256 KB, where its built-in ROM disk starts.
-    {"Macintosh Classic ROM", NONE, "a49f9914", 512 * 1024, 256 * 1024, 0},
+    {"Macintosh Classic ROM", CLASSIC, "a49f9914", 512 * 1024, 256 * 1024, 0},
     {"Powerbook Duo 270 ROM", NONE, "0024d346", 1024 * 1024, 0, 0},
     {"Powerbook 280&280c ROM", NONE, "015621d7", 1024 * 1024, 0, 0},
     {"Performa 580 & 588 ROM", NONE, "064dc91d", 1024 * 1024, 0, 0},
@@ -100,15 +127,15 @@ const rom_info_t rom_table[] = {
     {"Quadra 700/900 ROM", Q700_Q900, "420dbff3", 1024 * 1024, 0, 0},
     {"MacIIvx & IIvi ROM", NONE, "4957eb49", 1024 * 1024, 0, 0},
     {"Powerbook 160 & 165c & 180 & 180c ROM", NONE, "e33b2724", 1024 * 1024, 0, 0},
-    {"LCIII (older) ROM", NONE, "ec904829", 1024 * 1024, 0, 0},
-    {"Mac LCIII ROM", NONE, "ecbbc41c", 1024 * 1024, 0, 0},
-    {"Color Classic ROM", NONE, "ecd99dc0", 1024 * 1024, 0, 0},
+    {"LCIII (older) ROM", LCIII, "ec904829", 1024 * 1024, 0, 0, "early"},
+    {"Mac LCIII ROM", LCIII, "ecbbc41c", 1024 * 1024, 0, 0, "later"},
+    {"Color Classic ROM", COLORCLASSIC, "ecd99dc0", 1024 * 1024, 0, 0},
     {"Powerbook 210,230,250 ROM", NONE, "ecfa989b", 1024 * 1024, 0, 0},
-    {"Color Classic II & LC 550 & Performa 275,550,560 & Macintosh TV ROM", NONE, "ede66cbd", 1024 * 1024, 0, 0},
-    {"Centris 610,650 ROM", NONE, "f1a6f343", 1024 * 1024, 0, 0},
-    {"Quadra 610,650,maybe 800 ROM", NONE, "f1acad13", 1024 * 1024, 0, 0},
+    {"Color Classic II & LC 550 & Performa 275,550,560 & Macintosh TV ROM", LC550, "ede66cbd", 1024 * 1024, 0, 0},
+    {"Centris 610,650 ROM", WOMBAT_1993_02, "f1a6f343", 1024 * 1024, 0, 0, "early"},
+    {"Quadra 610,650,800 ROM", WOMBAT_1993_10, "f1acad13", 1024 * 1024, 0, 0, "later"},
     {"Powerbook 150 ROM", NONE, "fda22562", 1024 * 1024, 0, 0},
-    {"Quadra 605 ROM", NONE, "ff7439ee", 1024 * 1024, 0, 0},
+    {"Quadra 605 ROM", MEMCJR_1993_10, "ff7439ee", 1024 * 1024, 0, 0},
     {"Powerbook 190cs ROM", NONE, "4d27039c", 2048 * 1024, 0, 0},
     {"Quadra 840AV/660AV ROM", AV, "5bf10fd1", 2048 * 1024, 0, 0},
     {"PowerBook 520&520c&540&540c ROM", NONE, "b6909089", 2048 * 1024, 0, 0},
@@ -132,8 +159,8 @@ const rom_info_t rom_table[] = {
      0, "Rev A"},
     {"PowerBook 1400cs ROM", NONE, "83a21950-b470fc5d287e39c1", 4096 * 1024, 0, 0},
     {"Powerbook 2300 & PB5x0 PPC Upgrade ROM", NONE, "83c54f75-c8b9658674ebb5ba", 4096 * 1024, 0, 0},
-    {"Power Mac 7300 & 7600 & 8600 & 9600 (v1) ROM", NONE, "960e4be9-949c2c56d07516b7", 4096 * 1024, 0, 0},
-    {"Power Mac 8600 & 9600 (v2) ROM", NONE, "960fc647-013bb98cd4ad16c4", 4096 * 1024, 0, 0},
+    {"Power Mac 7300 & 7600 & 8600 & 9600 (v1) ROM", TNT97, "960e4be9-949c2c56d07516b7", 4096 * 1024, 0, 0, "1997 v1"},
+    {"Power Mac 8600 & 9600 (v2) ROM", TNT97_V2, "960fc647-013bb98cd4ad16c4", 4096 * 1024, 0, 0, "1997 v2"},
     {"Apple Network Server 500/700 ROM (Open Firmware 2.26NT, Windows NT)", ANS, "962f6c13-50348b3d0126096b",
      4096 * 1024, 0, 0, "Win NT"},
     {"Apple Network Server 500/700 ROM (Open Firmware 1.1.20.1)", ANS, "962f6c13-c60da96de537f08a", 4096 * 1024, 0, 0,
@@ -144,10 +171,10 @@ const rom_info_t rom_table[] = {
     {"Apple Network Server 500/700 ROM (Open Firmware 2.26B6)", ANS, "9630c68b-a71fb907dd180b8a", 4096 * 1024, 0, 0,
      "2.26B6"},
     {"Power Macintosh 7500/8500/9500 ROM (v1)", TNT, "96cd923d-c241cd82bf90797a", 4096 * 1024, 0, 0, "v1"},
-    {"Workgroup Server 9150-120 ROM", NONE, "9b037f6f-d20052bd25d88bd6", 4096 * 1024, 0, 0},
+    {"Workgroup Server 9150-120 ROM", WGS9150_120, "9b037f6f-d20052bd25d88bd6", 4096 * 1024, 0, 0},
     {"Power Macintosh 7100 ROM (newer, Boot PDM 601 1.1)", PM7100, "9b7a3aad-ed510ac937721e25", 4096 * 1024, 0, 0,
      "v1.1"},
-    {"Workgroup Server 9150-80 ROM", NONE, "9c7c98f7-e9220fe5992ffdf2", 4096 * 1024, 0, 0},
+    {"Workgroup Server 9150-80 ROM", WGS9150_80, "9c7c98f7-e9220fe5992ffdf2", 4096 * 1024, 0, 0},
     {"Power Macintosh 6100/7100/8100 ROM", PDM, "9feb69b3-dedc602cfc3b9221", 4096 * 1024, 0, 0, "v1.0"},
     {"PowerBook G3 Wallstreet PDQ ROM", NONE, "b46ffb63-69e8e6201908f35f", 4096 * 1024, 0, 0},
     {"PowerBook G3 Wallstreet ROM", NONE, "cbb01212-833504c219032ad5", 4096 * 1024, 0, 0},

@@ -135,6 +135,8 @@ struct rbv {
     void (*blank_cb)(void *ctx, bool video_off);
     void *blank_ctx;
     void *mode_ctx;
+    void (*exp_cb)(void *ctx, uint8_t value); // RvExp writes (the V8's RAM decode)
+    void *exp_ctx;
     struct object *object; // machine.rbv; after the blob, never saved
 };
 
@@ -274,7 +276,9 @@ static void rbv_write_byte(void *device, uint32_t addr, uint8_t value) {
         // has driven it, so (like the IIcx VIA2 PB2 detector) we arm on the
         // first observed bit-high and only then fire on the falling edge.
         bool new_pwr_high = (value & RVDATAB_POWEROFF) != 0;
-        if (!rbv->power_armed && new_pwr_high) {
+        if (rbv->variant == RBV_VARIANT_V8) {
+            // The V8 lineage has no soft power-off bit here (Egret owns power).
+        } else if (!rbv->power_armed && new_pwr_high) {
             rbv->power_armed = true;
         } else if (rbv->power_armed && !new_pwr_high) {
             LOG(1, "RBV soft power-off (RvPowerOff = 0)");
@@ -286,8 +290,17 @@ static void rbv_write_byte(void *device, uint32_t addr, uint8_t value) {
     }
     case RV_EXP:
         rbv->reg_exp = value;
+        if (rbv->exp_cb)
+            rbv->exp_cb(rbv->exp_ctx, value);
         return;
     case RV_SINT:
+        // The V8 lineage clears its frame-interrupt latch (bit 6) on a write
+        // with bit 7 clear: its video drivers acknowledge the VBL that way.
+        if (rbv->variant == RBV_VARIANT_V8 && !(value & RVIFR_SETCLR) && (value & (1u << 6))) {
+            rbv->slot_pending &= (uint8_t) ~(1u << 6);
+            rbv_update_irq(rbv);
+            return;
+        }
         // Slot-interrupt status is driven by the cards, not the CPU; writes
         // are accepted (the OS pokes it during self-test) but do not latch.
         LOG(3, "write RvSInt = $%02X (accept-and-log)", value);
@@ -424,8 +437,13 @@ RBV_BYTE_ATTR(reg_senb)
 RBV_BYTE_ATTR(reg_monp)
 RBV_BYTE_ATTR(reg_datab)
 
+// The variant's display name.
+static const char *rbv_variant_name(rbv_variant_t v) {
+    return v == RBV_VARIANT_V8 ? "V8" : v == RBV_VARIANT_V8_IISI ? "V8/IIsi" : "RBV/IIci";
+}
+
 static DEF_GETTER(rbv_attr_variant) {
-    return val_str(((const rbv_t *)object_data(self))->variant == RBV_VARIANT_V8_IISI ? "V8/IIsi" : "RBV/IIci");
+    return val_str(rbv_variant_name(((const rbv_t *)object_data(self))->variant));
 }
 
 static const member_t rbv_members[] = {
@@ -469,7 +487,7 @@ rbv_t *rbv_init(rbv_variant_t variant, uint8_t sense3, checkpoint_t *cp) {
     if (!rbv)
         return NULL;
     rbv->variant = variant;
-    LOG(1, "RBV init (variant=%s)", variant == RBV_VARIANT_V8_IISI ? "V8/IIsi" : "RBV/IIci");
+    LOG(1, "RBV init (variant=%s)", rbv_variant_name(variant));
 
     // Reset defaults: cache enabled, power on, sound to internal speaker.
     // RvPowerOff (bit 2) idles high (= powered on); the detector arms on it.
@@ -562,6 +580,15 @@ void rbv_set_blank_callback(rbv_t *rbv, void (*cb)(void *ctx, bool video_off), v
 void rbv_set_mode_callback(rbv_t *rbv, void (*cb)(void *ctx, int depth_code), void *ctx) {
     rbv->mode_cb = cb;
     rbv->mode_ctx = ctx;
+}
+
+void rbv_set_exp_callback(rbv_t *rbv, void (*cb)(void *ctx, uint8_t value), void *ctx) {
+    rbv->exp_cb = cb;
+    rbv->exp_ctx = ctx;
+}
+
+uint8_t rbv_exp(rbv_t *rbv) {
+    return rbv->reg_exp;
 }
 
 // === Interrupt sources ======================================================

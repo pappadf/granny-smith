@@ -129,8 +129,9 @@ The CPU has to know *when* the next byte is ready:
 | Mirror writes         | Must be on **odd** CPU addresses (LDS)       |
 | `$5800drn`            | Address formation: R/W, DMA, register-number |
 
-Our Macintosh Plus registers the SCSI memory interface at `0x00500000`
-spanning 1 MB — see `plus.c`, not the chip model.  Where a controller
+The compact family (Plus, SE, SE FDHD, Classic) registers the SCSI memory
+interface at `0x00580000` spanning 512 KB (A19 is decoded, A18-A10 are not)
+— see `compact.c`, not the chip model.  Where a controller
 answers is the machine's decode, and every 5380 machine places
 `scsi_get_memory_interface()` itself; the Plus mapping used to be
 compiled into `scsi_5380_attach()` in `src/core`, which meant one

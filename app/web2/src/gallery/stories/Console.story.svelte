@@ -16,11 +16,11 @@
   m.push({ kind: 'job_start', job: 1 });
   m.push({ kind: 'output', text: '0x0040028E\n', job: 1 });
   m.push({ kind: 'job_end', job: 1 });
-  m.command('let n = 42 # the answer', [
-    { from: 0, to: 3, cls: 'decl' },
-    { from: 4, to: 5, cls: 'variable' },
-    { from: 8, to: 10, cls: 'number' },
-    { from: 11, to: 23, cls: 'comment' },
+  m.command('local n = 42 -- the answer', [
+    { from: 0, to: 5, cls: 'keyword' },
+    { from: 8, to: 9, cls: 'operator' },
+    { from: 10, to: 12, cls: 'number' },
+    { from: 13, to: 26, cls: 'comment' },
   ]);
   m.command('files.images', [
     { from: 0, to: 5, cls: 'object' },

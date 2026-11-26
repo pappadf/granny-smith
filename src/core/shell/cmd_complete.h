@@ -25,7 +25,7 @@ typedef enum {
     COMP_KIND_COLLECTION,
     COMP_KIND_ATTR, // an attribute, or an argument name (`name=`)
     COMP_KIND_METHOD,
-    COMP_KIND_ALIAS, // a `$name` binding or alias
+    COMP_KIND_ALIAS, // a `$name` alias
     COMP_KIND_KEYWORD,
 } comp_kind_t;
 

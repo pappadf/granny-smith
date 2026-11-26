@@ -2,14 +2,13 @@
 // Copyright (c) pappadf
 
 // commands.c
-// The command table (commands.h): built-in commands, `command NAME = PATH`
-// declarations, and the `shell.command` node.
+// The command table (commands.h): built-in commands, user commands
+// (shell.command.add), and the `shell.command` node.
 
 #include "commands.h"
 
 #include "status.h"
 #include "value.h"
-#include "job/job.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -199,7 +198,7 @@ void shell_command_each(shell_command_fn fn, void *ud) {
     for (size_t i = 0; i < N_BUILTIN; i++)
         if (!fn(k_builtin[i].name, k_builtin[i].target, true, ud))
             return;
-    // Copy under the lock: the callback may resolve paths or allocate.
+    // Iterate a copy: the callback may add or remove commands.
     size_t n = g_user_count;
     user_cmd_t *copy = n ? (user_cmd_t *)calloc(n, sizeof(*copy)) : NULL;
     for (size_t i = 0; copy && i < n; i++)
@@ -274,7 +273,7 @@ static const member_t shell_command_members[] = {
     {.kind = MK_METHOD,
      .name = "add",
      .examples = EXAMPLES("shell.command.add ll files.list"),
-     .doc = "Declare a user command (the same as `command NAME = PATH`)",
+     .doc = "Declare a user command: NAME runs the method at PATH",
      .method = {.args = command_add_args, .nargs = 2, .result = VK_NONE, .fn = method_command_add}      },
     {.kind = MK_METHOD,
      .name = "remove",

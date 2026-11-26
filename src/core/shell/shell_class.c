@@ -222,12 +222,12 @@ static DEF_METHOD(shell_method_lua) {
     return val_none();
 }
 
-// `shell.interrupt()` — stop the running scheduler and cancel any
-// running script loop at its next iteration check. Equivalent
+// `shell.interrupt()` — stop the running scheduler and cancel the
+// running script, which unwinds at its next cancel check. Equivalent
 // to the terminal's Ctrl-C path, exposed as a method so JS callers
 // route through `object_eval` like every other interaction.
 //
-// Scope: what it stops is the scheduler and script loops (the caller's
+// Scope: what it stops is the scheduler and scripts (the caller's
 // job and modes when a client asks).  A single long-running native method
 // that neither runs the scheduler nor polls for cancellation (a large
 // files.cp, say) is not interrupted; it finishes, and the interrupt takes

@@ -419,6 +419,7 @@ static void swim_ism_rig(floppy_t *f, image_t *img, uint8_t *disk, int track, in
     stub_write_count = 0;
     memset(disk, 0, stub_disk_size);
     f->type = FLOPPY_TYPE_SWIM;
+    f->n_drives = 1; // one cabled drive: a select past n_drives reaches no drive
     f->in_ism_mode = true;
     f->ism_mode = ISM_MODE_ISM_IWM;
     f->disk[0] = img;

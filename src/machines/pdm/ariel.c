@@ -21,7 +21,6 @@
 // mode-change, WaitVSync-gated CLUT streams, the V8-convention reduced-depth
 // palette window) this model serves.
 
-#include "display_timing.h"
 #include "pdm.h"
 
 #include "log.h"
@@ -103,61 +102,21 @@ const pdm_monitor_kind_t *pdm_monitor_lookup(const char *id) {
 // this.
 #define PDM_VIDEO_MAX_BYTES (640u * 870u * 2u)
 
-// Timing-set geometry per monitor code (Developer Note Table 3-10).  Codes
-// the PDM sense walk can never select (Vail-only 10/13) are still decoded —
-// the register accepts any code and the raster geometry is what the code
-// means everywhere the Sonora model appears.
+// Timing-set geometry per monitor code (Developer Note Table 3-10; the shared
+// Sonora table, runtime/ariel.c).  Codes the PDM sense walk can never select
+// (Vail-only 13) are still decoded -- the register accepts any code and the
+// raster geometry is what the code means everywhere the Sonora model appears
+// -- except the 560-wide 10, which this model has never timed.  $1F "none"
+// and unobserved codes select no timing set.
 static bool pdm_mode_geometry(uint8_t code, uint32_t *w, uint32_t *h) {
-    switch (code & 0x1Fu) {
-    case 1: // Portrait 640x870 75 Hz
-    case 2: // Rubik 12" 512x384 60.15 Hz
-    case 6: { // Hi-Res 13"/14" 640x480 66.67 Hz
-        // These three are the ordinary Apple sense codes and mean the same
-        // raster here as on every other part, so the geometry comes from the
-        // shared table instead of being spelled out again.
-        // The codes past 7 below are Sonora's OWN timing-set numbering --
-        // not sense codes, and not the same space as any other part's
-        // extended set (DAFB's 9 is PAL; this 9 is GoldFish) -- so they stay
-        // local.
-        const display_timing_t *t = display_timing_for_sense(code & 0x7u);
-        if (!t)
-            return false;
-        *w = t->width;
-        *h = t->height;
-        return true;
-    }
-    case 9: // GoldFish 16" 832x624 74.55 Hz
-        *w = 832;
-        *h = 624;
-        return true;
-    case 11: // VGA 640x480 59.94 Hz
-        *w = 640;
-        *h = 480;
-        return true;
-    case 13: // Hi-Res-400 640x400 (Vail timing set)
-        *w = 640;
-        *h = 400;
-        return true;
-    default: // $1F "none" and unobserved codes: no timing set selected
-        return false;
-    }
+    code &= 0x1Fu;
+    return code != 10 && ariel_mode_geometry(code, w, h);
 }
 
-// Sonora depth codes 0..4 (the zero-based mode index the driver writes).
+// Sonora depth codes 0..4 (the zero-based mode index the driver writes);
+// 5-7 read as 8 bpp.
 static pixel_format_t pdm_depth_format(uint8_t code) {
-    switch (code & 0x07u) {
-    case 0:
-        return PIXEL_1BPP_MSB;
-    case 1:
-        return PIXEL_2BPP_MSB;
-    case 2:
-        return PIXEL_4BPP_MSB;
-    case 4:
-        return PIXEL_16BPP_555;
-    case 3:
-    default:
-        return PIXEL_8BPP;
-    }
+    return ariel_depth_format(code, PIXEL_8BPP);
 }
 
 // Rebuild the depth-windowed palette view.  At reduced depth the hardware
@@ -173,11 +132,7 @@ static pixel_format_t pdm_depth_format(uint8_t code) {
 // picture is blue as luminance, not the RGB triple (which drew pure blue,
 // S1018-58).
 static void pdm_video_refresh_clut(pdm_state_t *st) {
-    pdm_amic_t *a = &st->amic;
     pdm_video_t *v = &st->video;
-    uint32_t bpp = display_bpp(v->display.format);
-    if (bpp > 8)
-        return; // direct format: CLUT bypassed
     bool mono = false;
     for (const pdm_monitor_kind_t *m = pdm_monitors; m->id; m++) {
         if (m->sense == v->sense) {
@@ -186,18 +141,7 @@ static void pdm_video_refresh_clut(pdm_state_t *st) {
             break;
         }
     }
-    uint32_t len = 1u << bpp;
-    uint32_t skip = 256u >> bpp;
-    for (uint32_t i = 0; i < len; i++) {
-        const uint8_t *e = a->clut[(skip - 1) + i * skip];
-        v->clut_view[i].r = mono ? e[2] : e[0];
-        v->clut_view[i].g = mono ? e[2] : e[1];
-        v->clut_view[i].b = e[2];
-        v->clut_view[i].a = 255;
-    }
-    v->display.clut = v->clut_view;
-    v->display.clut_len = len;
-    v->display.clut_dirty = true;
+    ariel_refresh_view(&st->amic.ariel, &v->display, v->clut_view, mono ? 2 : ARIEL_COLOUR);
 }
 
 // Re-derive the whole descriptor from the register file.  Called on init,
@@ -237,12 +181,7 @@ void pdm_video_update(config_t *cfg) {
     display_set_scanout(&v->display, blanked ? NULL : ram_native_pointer(cfg->memory_map, 0),
                         memory_ram_size(cfg->memory_map), base, stride, w, h, v->blank, PDM_VIDEO_MAX_BYTES);
 
-    if (f == PIXEL_16BPP_555) {
-        v->display.clut = NULL;
-        v->display.clut_len = 0;
-    } else {
-        pdm_video_refresh_clut(st);
-    }
+    pdm_video_refresh_clut(st); // no palette at 16 bpp
     v->display.shape_dirty = true;
     v->display.fb_dirty = true;
     v->display.clut_dirty = true;
@@ -363,57 +302,20 @@ void pdm_video_ctl_write(config_t *cfg, uint32_t off, uint8_t value) {
 // Ariel II CLUT/DAC ($50F24000)
 // ============================================================
 
-// A register read; a data read advances the RGB phase and address unless it
-// is an inspection (`peek`).
-static uint8_t ariel_read(config_t *cfg, uint32_t off, bool peek) {
-    pdm_amic_t *a = &pdm_st(cfg)->amic;
-    switch (off & 3) {
-    case 0:
-        return ramdac_seq_addr(&a->clut_seq);
-    case 1: { // data reads auto-advance the RGB phase / address
-        uint8_t comp;
-        uint8_t idx = ramdac_seq_read(&a->clut_seq, peek, &comp);
-        return a->clut[idx][comp];
-    }
-    case 2:
-        return (uint8_t)(a->clut_ctrl & 0x7Fu);
-    default:
-        return a->clut_key;
-    }
-}
-
+// The control register reads back its low seven bits.
 uint8_t pdm_ariel_read(config_t *cfg, uint32_t off) {
-    return ariel_read(cfg, off, false);
+    return ariel_read(&pdm_st(cfg)->amic.ariel, off, false, 0x7Fu);
 }
 
 uint8_t pdm_ariel_peek(config_t *cfg, uint32_t off) {
-    return ariel_read(cfg, off, true);
+    return ariel_read(&pdm_st(cfg)->amic.ariel, off, true, 0x7Fu);
 }
 
+// Control: the low 3 bits mirror the depth code; the driver always programs
+// VdColrReg in the same blanking window, which is where the presentation
+// follows the depth from.  Bit 3 = "master mode".
 void pdm_ariel_write(config_t *cfg, uint32_t off, uint8_t value) {
     pdm_state_t *st = pdm_st(cfg);
-    pdm_amic_t *a = &st->amic;
-    switch (off & 3) {
-    case 0:
-        ramdac_seq_set_waddr(&a->clut_seq, value); // address write resets the RGB byte index
-        break;
-    case 1: { // latched R, G, B; the entry is stored on B
-        uint8_t idx;
-        if (ramdac_seq_write(&a->clut_seq, value, &idx)) {
-            memcpy(a->clut[idx], a->clut_seq.pending, 3);
-            if (st->video.blank)
-                pdm_video_refresh_clut(st);
-        }
-        break;
-    }
-    case 2:
-        // Low 3 bits mirror the depth code; the driver always programs
-        // VdColrReg in the same blanking window, which is where the
-        // presentation follows the depth from.  Bit 3 = "master mode".
-        a->clut_ctrl = value;
-        break;
-    default:
-        a->clut_key = value;
-        break;
-    }
+    if (ariel_write(&st->amic.ariel, off, value) && st->video.blank)
+        pdm_video_refresh_clut(st);
 }

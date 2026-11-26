@@ -33,6 +33,7 @@
 #define GS_MACHINES_AV_H
 
 #include "checkpoint.h"
+#include "cpuid_page.h"
 #include "m68k_board.h" // shared core builder + IRQ resolver + fill_page
 #include "m68k_board_io.h" // the shared I/O dispatch engine, board-descriptor face
 #include "m68k_board_overlay.h"
@@ -167,7 +168,7 @@ typedef struct av_state {
     uint32_t muni_control;
 
     memory_interface_t io_interface; // registered at the $50F00000 island
-    memory_interface_t cpuid_interface; // $5FFFFFFC CPU-ID register page
+    cpuid_page_t cpuid; // $5FFFFFFC CPU-ID register page
 } av_state_t;
 
 // The one AV-family substrate; q840av/q660av bind this.

@@ -72,12 +72,13 @@ typedef struct board_io_range {
     board_io_xform_t xform; // offset transform
     uint16_t read_off, write_off; // sub-offsets for BOARD_IO_FIXED windows
     // Optional code hooks for windows a (device, offset) row can't express —
-    // bus-error windows, DMA engines, stateful shift registers.  When set,
-    // the engine calls them with the machine config + the FULL bus address
-    // (so a handler can report the faulting address) instead of routing to a
-    // device.  NULL on every GLUE/MDU row (those are pure device routes).
-    // Handler rows get the window-relative sub-offset the engine has ALREADY
-    // decoded, plus the raw bus address for fault reporting.
+    // DMA engines, stateful shift registers, faults a row decides itself.  When set,
+    // the engine calls them with the machine config, the window-relative
+    // sub-offset it has ALREADY decoded, and `addr`: the access's offset
+    // within the memory region the I/O interface is mapped at (not masked
+    // to the island) -- a handler reporting a fault adds the board_io's
+    // `window_base` to it for the bus address.  NULL on every GLUE/MDU row
+    // (those are pure device routes).
     //
     // They used to get `addr` alone, so each handler re-derived the offset by
     // hand -- and the AV family's island mirror mask ($0003FFFF), declared
@@ -99,9 +100,14 @@ typedef struct board_io_range {
     // positional initializers stay valid; flagged rows set `.esync = 1`.
     uint16_t esync;
     // 1 = this window signals a bus error instead of completing a cycle
-    // (the IIfx RPU probe and FMC windows).  There is no bus turnaround to
-    // charge, so `penalty` is legitimately 0 -- and saying so here is what
-    // lets board_io_validate insist that every OTHER window declares one.
+    // (the IIfx RPU probe and FMC windows, the MEMCjr's empty communication
+    // slot, Sonora's SONIC window).  The engine raises it itself, at the full
+    // bus address (window_base + addr), and a read returns `unmapped_read`;
+    // such a row names no device and no handlers.  There is no bus
+    // turnaround to charge, so `penalty` is legitimately 0 -- and saying so
+    // here is what lets board_io_validate insist that every OTHER window
+    // declares one.  A row that does declare one (Sonora's) is charged it
+    // before the fault.
     uint16_t berr;
     // An inspection of a handler row (memory_interface_t.peek_*): the value
     // read_fn would return, with none of its side effects.  Set on every

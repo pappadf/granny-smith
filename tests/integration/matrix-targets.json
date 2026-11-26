@@ -1253,6 +1253,643 @@
       "addr32": null,
       "suite": "suite-ans",
       "media_gated": true
+    },
+    {
+      "machine": "mac128k",
+      "system": "2.0",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "mac128k",
+      "system": "3.2",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "mac512k",
+      "system": "2.0.1",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "mac512k",
+      "system": "4.0",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "mac512ke",
+      "system": "3.2",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "mac512ke",
+      "system": "4.2",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "se",
+      "system": "6.0.8",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "se",
+      "system": "7.1",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "se",
+      "system": "7.5.3",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "sefdhd",
+      "system": "6.0.8",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "sefdhd",
+      "system": "7.1",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "classic",
+      "system": "6.0.3",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "classic",
+      "system": "6.0.8",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "classic",
+      "system": "7.1",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "classic",
+      "system": "7.5.3",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-compact"
+    },
+    {
+      "machine": "lcii",
+      "system": "7.0.1",
+      "card": "builtin",
+      "width": 640,
+      "height": 480,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-v8"
+    },
+    {
+      "machine": "lcii",
+      "system": "7.1",
+      "card": "builtin",
+      "width": 640,
+      "height": 480,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-v8"
+    },
+    {
+      "machine": "lcii",
+      "system": "7.5.3",
+      "card": "builtin",
+      "width": 640,
+      "height": 480,
+      "depth": 4,
+      "addr32": false,
+      "suite": "suite-v8"
+    },
+    {
+      "machine": "classicii",
+      "system": "7.0.1",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-v8"
+    },
+    {
+      "machine": "classicii",
+      "system": "7.1",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-v8"
+    },
+    {
+      "machine": "colorclassic",
+      "system": "7.5.3",
+      "card": "builtin",
+      "width": 512,
+      "height": 384,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-v8"
+    },
+    {
+      "machine": "colorclassic",
+      "system": "7.6",
+      "card": "builtin",
+      "width": 512,
+      "height": 384,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-v8"
+    },
+    {
+      "machine": "lcii",
+      "system": "7.0.1",
+      "card": "builtin",
+      "width": 512,
+      "height": 384,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-v8"
+    },
+    {
+      "machine": "pm7300",
+      "system": "8.1",
+      "card": "control",
+      "width": 640,
+      "height": 480,
+      "depth": 32,
+      "addr32": true,
+      "suite": "suite-tnt-1997"
+    },
+    {
+      "machine": "pm7600",
+      "system": "8.1",
+      "card": "control",
+      "width": 640,
+      "height": 480,
+      "depth": 32,
+      "addr32": true,
+      "suite": "suite-tnt-1997"
+    },
+    {
+      "machine": "pm8600",
+      "system": "8.1",
+      "card": "control",
+      "width": 640,
+      "height": 480,
+      "depth": 32,
+      "addr32": true,
+      "suite": "suite-tnt-1997"
+    },
+    {
+      "machine": "pm9600",
+      "system": "8.1",
+      "card": "mach64_gx",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-tnt-1997"
+    },
+    {
+      "machine": "pm7600",
+      "system": "7.6",
+      "card": "control",
+      "width": 640,
+      "height": 480,
+      "depth": 32,
+      "addr32": true,
+      "suite": "suite-tnt-1997"
+    },
+    {
+      "machine": "wgs9150",
+      "system": "7.5.3",
+      "card": "ariel",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-wgs9150"
+    },
+    {
+      "machine": "wgs9150",
+      "system": "7.6",
+      "card": "swim3",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-wgs9150"
+    },
+    {
+      "machine": "wgs9150",
+      "system": "7.6",
+      "card": "24ac",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-wgs9150"
+    },
+    {
+      "machine": "wgs9150_120",
+      "system": "7.6",
+      "card": "ariel",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-wgs9150"
+    },
+    {
+      "machine": "lciii",
+      "system": "7.5.3",
+      "card": "builtin",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-sonora"
+    },
+    {
+      "machine": "lciii",
+      "system": "7.6",
+      "card": "builtin",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-sonora"
+    },
+    {
+      "machine": "lciii",
+      "system": "7.6",
+      "card": "builtin",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-sonora"
+    },
+    {
+      "machine": "lciiip",
+      "system": "7.5.3",
+      "card": "builtin",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-sonora"
+    },
+    {
+      "machine": "lc520",
+      "system": "7.5.3",
+      "card": "builtin",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-sonora"
+    },
+    {
+      "machine": "lc550",
+      "system": "7.6",
+      "card": "builtin",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-sonora"
+    },
+    {
+      "machine": "colorclassicii",
+      "system": "7.5.3",
+      "card": "builtin",
+      "width": 512,
+      "height": 384,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-sonora"
+    },
+    {
+      "machine": "colorclassicii",
+      "system": "7.6",
+      "card": "builtin",
+      "width": 512,
+      "height": 384,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-sonora"
+    },
+    {
+      "machine": "lciii",
+      "system": "7.5.3",
+      "card": "builtin",
+      "width": 512,
+      "height": 384,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-sonora"
+    },
+    {
+      "machine": "q800",
+      "system": "7.5",
+      "card": "djmemc",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-djmemc",
+      "media_gated": true
+    },
+    {
+      "machine": "q800",
+      "system": "7.6",
+      "card": "djmemc",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-djmemc",
+      "media_gated": true
+    },
+    {
+      "machine": "c650",
+      "system": "7.1",
+      "card": "djmemc",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-djmemc",
+      "media_gated": true
+    },
+    {
+      "machine": "c610",
+      "system": "7.1",
+      "card": "djmemc",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-djmemc",
+      "media_gated": true
+    },
+    {
+      "machine": "q800",
+      "system": "7.1",
+      "card": "djmemc",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-djmemc",
+      "media_gated": true
+    },
+    {
+      "machine": "q650",
+      "system": "7.1",
+      "card": "djmemc",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-djmemc",
+      "media_gated": true
+    },
+    {
+      "machine": "q610",
+      "system": "7.1",
+      "card": "djmemc",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-djmemc",
+      "media_gated": true
+    },
+    {
+      "machine": "c610",
+      "system": "7.6",
+      "card": "djmemc",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-djmemc",
+      "media_gated": true
+    },
+    {
+      "machine": "q610",
+      "system": "7.6",
+      "card": "djmemc",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-djmemc",
+      "media_gated": true
+    },
+    {
+      "machine": "q650",
+      "system": "7.5.3",
+      "card": "djmemc",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-djmemc",
+      "media_gated": true
+    },
+    {
+      "machine": "pm7200",
+      "system": "7.5.3",
+      "card": "platinum",
+      "width": 640,
+      "height": 480,
+      "depth": 16,
+      "addr32": true,
+      "suite": "suite-pm7200"
+    },
+    {
+      "machine": "pm7200",
+      "system": "7.6",
+      "card": "platinum",
+      "width": 640,
+      "height": 480,
+      "depth": 16,
+      "addr32": true,
+      "suite": "suite-pm7200"
+    },
+    {
+      "machine": "pm7200",
+      "system": "8.1",
+      "card": "platinum",
+      "width": 640,
+      "height": 480,
+      "depth": 16,
+      "addr32": true,
+      "suite": "suite-pm7200"
+    },
+    {
+      "machine": "pm7200",
+      "system": "7.6",
+      "card": "swim3",
+      "width": 640,
+      "height": 480,
+      "depth": 16,
+      "addr32": true,
+      "suite": "suite-pm7200"
+    },
+    {
+      "machine": "q605",
+      "system": "7.1",
+      "card": "memcjr",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-memcjr",
+      "media_gated": true
+    },
+    {
+      "machine": "lc475",
+      "system": "7.1",
+      "card": "memcjr",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-memcjr",
+      "media_gated": true
+    },
+    {
+      "machine": "lc575",
+      "system": "7.1",
+      "card": "memcjr",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-memcjr",
+      "media_gated": true
+    },
+    {
+      "machine": "q605",
+      "system": "7.6",
+      "card": "memcjr",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-memcjr",
+      "media_gated": true
+    },
+    {
+      "machine": "lc575",
+      "system": "7.6",
+      "card": "memcjr",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-memcjr",
+      "media_gated": true
+    },
+    {
+      "machine": "lc475",
+      "system": "7.5",
+      "card": "memcjr",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-memcjr",
+      "media_gated": true
+    },
+    {
+      "machine": "q605",
+      "system": "7.5.3",
+      "card": "memcjr",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-memcjr",
+      "media_gated": true
     }
   ]
 }

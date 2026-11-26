@@ -53,6 +53,11 @@ extern const storage_device_decl_t mac_default_storage_hd0_cd3[];
 extern const storage_bay_decl_t mac_bays_hd0[];
 extern const storage_bay_decl_t mac_bays_hd0_cd3[];
 
+// RAM options of a board with 4 MB soldered and one 72-pin SIMM socket taking
+// 1, 2, 4, 8, 16 or 32 MB: 4 to 36 MB.  The Sonora boards (LC III, LC 520
+// family, Color Classic II) and the MEMCjr's LC 475 family.
+extern const uint32_t mac_ram_options_4mb_72pin_kb[];
+
 // A profile's CD-ROM drive (hw_profile_t.cdrom_drive) is one of Apple's drive
 // models, scsi_cd_drive_applecd_* in scsi.h: the drive the machine shipped
 // with, or the AppleCD SC Plus for a machine that shipped with none.
@@ -62,6 +67,11 @@ extern const storage_bay_decl_t mac_bays_hd0_cd3[];
 #define MAC_SCSI_UNITS    0x7Fu
 #define MAC_SCSI_RESERVED 0x80u
 #define MAC_SCSI_BUS(id_, label_, media_bus_, bays_, external_)                                                        \
+    MAC_SCSI_BUS_STARTUP(id_, label_, media_bus_, bays_, external_, true)
+
+// The same, saying whether the bus can hold the startup device: false on a
+// machine whose ROM keeps no startup-device record (the Plus).
+#define MAC_SCSI_BUS_STARTUP(id_, label_, media_bus_, bays_, external_, startup_ok_)                                   \
     {.id = (id_),                                                                                                      \
      .label = (label_),                                                                                                \
      .kind = STORAGE_KIND_SCSI,                                                                                        \
@@ -71,6 +81,16 @@ extern const storage_bay_decl_t mac_bays_hd0_cd3[];
      .external_connector = (external_),                                                                                \
      .bays = (bays_),                                                                                                  \
      .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD,                                                                       \
-     .startup_ok = true}
+     .startup_ok = (startup_ok_)}
+
+// A two-position floppy table: the internal drive and a second, optional
+// one of the same kind -- `second_label_` names it ("External floppy drive",
+// "Second internal floppy drive"); `default_none_` ships that position empty.
+#define MAC_FLOPPY_PAIR(kind_, second_label_, default_none_)                                                           \
+    {                                                                                                                  \
+        {.label = "Internal floppy drive", .kind = (kind_)},                                                           \
+        {.label = (second_label_), .kind = (kind_), .optional = true, .default_none = (default_none_)},                \
+        {0},                                                                                                           \
+}
 
 #endif // GS_MACHINES_RUNTIME_SLOT_TABLES_H

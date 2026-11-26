@@ -139,8 +139,8 @@ static void mfm_buf_emit(void *ctx, uint8_t byte, bool is_mark) {
 }
 
 static void mfm_build_sector(floppy_t *floppy) {
-    int drv = (floppy->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0;
-    image_t *img = floppy->disk[drv];
+    int drv = ISM_DRIVE_INDEX(floppy);
+    image_t *img = floppy_cabled_disk(floppy, drv);
     if (!img) {
         floppy->mfm_buf_len = 0;
         return;
@@ -221,7 +221,7 @@ static void mfm_build_sector(floppy_t *floppy) {
 
 // Advances to the next MFM sector and builds its buffer
 static void mfm_advance_sector(floppy_t *floppy) {
-    int drv = (floppy->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0;
+    int drv = ISM_DRIVE_INDEX(floppy);
     int sectors_per_track = ism_mfm_spt(floppy, drv);
 
     floppy->mfm_cur_sector++;
@@ -398,8 +398,8 @@ static void ism_write_capture_flush(floppy_t *floppy) {
         return;
     }
 
-    int drv = (floppy->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0;
-    image_t *img = floppy->disk[drv];
+    int drv = ISM_DRIVE_INDEX(floppy);
+    image_t *img = floppy_cabled_disk(floppy, drv);
     if (!img) {
         LOG(2, "ISM write: no disk in drive %d", drv);
         return;
@@ -671,7 +671,7 @@ static uint8_t swim_ism_read(floppy_t *floppy, uint32_t offset, bool peek) {
 
     case 15: { // rHandshake: derive from current state
         // DRIVE2 selects drive 1; DRIVE1 (or neither) selects drive 0.
-        int drv = (floppy->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0;
+        int drv = ISM_DRIVE_INDEX(floppy);
 
         uint8_t hdshk = 0;
 
@@ -806,8 +806,8 @@ static void swim_handle_action_set(floppy_t *floppy, uint8_t old_mode) {
         uint8_t buf_side = floppy->mfm_cur_side;
         uint8_t buf_track = floppy->mfm_cur_track;
         ism_latch_head(floppy);
-        int drv_idx = (floppy->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0;
-        floppy->mfm_cur_track = (uint8_t)floppy->drives[drv_idx].track;
+        const floppy_drive_t *d = floppy_cabled_drive(floppy, ISM_DRIVE_INDEX(floppy));
+        floppy->mfm_cur_track = d ? (uint8_t)d->track : 0;
         // The read buffer describes the old position; drop it if that moved.
         if (floppy->mfm_cur_side != buf_side || floppy->mfm_cur_track != buf_track)
             floppy->mfm_buf_len = 0;
@@ -822,8 +822,8 @@ static void swim_handle_action_set(floppy_t *floppy, uint8_t old_mode) {
             ism_latch_head(floppy);
             LOG(3, "ISM: ACTION set, side=%d (sel=%d setup=0x%02X)", floppy->mfm_cur_side, floppy->sel,
                 floppy->ism_setup);
-            int drv_idx = (floppy->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0;
-            int cur_trk = floppy->drives[drv_idx].track;
+            const floppy_drive_t *d = floppy_cabled_drive(floppy, ISM_DRIVE_INDEX(floppy));
+            int cur_trk = d ? d->track : 0;
             // Invalidate buffer only when side or track changed
             if (floppy->mfm_buf_len > 0 && (floppy->mfm_cur_side != buf_side || cur_trk != buf_track)) {
                 floppy->mfm_buf_len = 0;
@@ -1171,11 +1171,48 @@ static const memory_interface_t swim_iface = {
     MEMORY_IFACE_OPEN_BUS_WIDE_FIELDS(swim_wide),
 };
 
+// The same register file behind the compact boards' window (BBU: Guide 2e,
+// ch. 9): CPU A9-A12 on the chip's register select, the $200 stride of the
+// IWM it replaced -- floppy_map_stride_window.  Every access, the wide ones
+// included, reaches the chip's interface above at the decoded index; the
+// wide peeks are left to the memory layer, which composes them from bytes.
+#define SWIM_STRIDE_REG(addr) (((addr) >> 9) & 0x0F)
+static uint8_t swim_stride_read8(void *dev, uint32_t addr) {
+    return swim_read_uint8(dev, SWIM_STRIDE_REG(addr));
+}
+static uint8_t swim_stride_peek8(void *dev, uint32_t addr) {
+    return swim_peek_uint8(dev, SWIM_STRIDE_REG(addr));
+}
+static void swim_stride_write8(void *dev, uint32_t addr, uint8_t value) {
+    swim_write_uint8(dev, SWIM_STRIDE_REG(addr), value);
+}
+static uint16_t swim_stride_read16(void *dev, uint32_t addr) {
+    return swim_wide_read16(dev, SWIM_STRIDE_REG(addr));
+}
+static uint32_t swim_stride_read32(void *dev, uint32_t addr) {
+    return swim_wide_read32(dev, SWIM_STRIDE_REG(addr));
+}
+static void swim_stride_write16(void *dev, uint32_t addr, uint16_t value) {
+    swim_wide_write16(dev, SWIM_STRIDE_REG(addr), value);
+}
+static void swim_stride_write32(void *dev, uint32_t addr, uint32_t value) {
+    swim_wide_write32(dev, SWIM_STRIDE_REG(addr), value);
+}
+
+const memory_interface_t floppy_swim_stride_iface = {
+    .read_uint8 = swim_stride_read8,
+    .peek_uint8 = swim_stride_peek8,
+    .write_uint8 = swim_stride_write8,
+    .read_uint16 = swim_stride_read16,
+    .read_uint32 = swim_stride_read32,
+    .write_uint16 = swim_stride_write16,
+    .write_uint32 = swim_stride_write32,
+};
+
 // Sets up SWIM memory interface callbacks and ISM initial state.
-// `map` is always NULL: every SWIM machine decodes its own window and reaches
-// the chip through floppy_get_memory_interface().  The parameter stays for
-// signature symmetry with floppy_iwm_setup.
-void floppy_swim_setup(floppy_t *floppy, memory_map_t *map) {
+// Every SWIM machine decodes its own window: the compact boards through
+// floppy_map_stride_window, the rest through floppy_get_memory_interface().
+void floppy_swim_setup(floppy_t *floppy) {
     // ISM initial state (chip powers up in IWM mode)
     floppy->in_ism_mode = false;
     floppy->ism_phase = 0xF0;
@@ -1185,6 +1222,4 @@ void floppy_swim_setup(floppy_t *floppy, memory_map_t *map) {
 
     // Set up memory interface
     floppy->memory_interface = &swim_iface;
-
-    (void)map;
 }

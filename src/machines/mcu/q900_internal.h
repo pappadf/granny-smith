@@ -16,10 +16,9 @@
 #include "mcu.h"
 #include "nubus.h" // nubus_slot_decl_t, for the shared socket table below
 
-// VIA hooks (Caboose handshake on VIA1 PB + SR; sound-input selects on VIA2).
+// VIA1 hooks (the Caboose handshake on PB + SR); VIA2 is quadra040_via2_output.
 void q900_via1_output(void *context, uint8_t port, uint8_t output);
 void q900_via1_shift_out(void *context, uint8_t byte);
-void q900_via2_output(void *context, uint8_t port, uint8_t output);
 
 // SCC chip INT (ORs with the SCC IOP host INT onto the level-4 source).
 void q900_scc_irq(void *context, bool active);

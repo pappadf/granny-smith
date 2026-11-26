@@ -51,7 +51,7 @@ local mac = dofile("../lib/mac.lua")
 -- part of the pinned corpus, so a missing image is a failure to report.
 local disk = "../../data/systems/mklinux_dr3_76_single_169mb.img"
 
--- The 7500 needs its own ROM, so it cannot come through TEST_ROM/$ROM.  Same
+-- The 7500 needs its own ROM, so it cannot come through TEST_ROM/vars.ROM.  Same
 -- fixture suite-tnt uses: the 1995-08 TNT ROM v1.
 local tnt_rom = "../../data/roms/pm7500-pm8500-pm9500-96cd923d.rom"
 

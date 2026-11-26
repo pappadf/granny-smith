@@ -348,7 +348,7 @@ void root_uninstall(void) {
     // dereferences a cfg, so there is nothing about it to go stale.
     // Aliases (built-in and user) survive machine teardown: they store
     // path text and re-resolve per access, so a
-    // reference like `alias d = machine.floppy.drive[0]` tracks the
+    // reference like `shell.alias.add d machine.floppy.drive[0]` tracks the
     // *new* drive object after a reboot instead of being wiped.
     g_installed_cfg = NULL;
 }

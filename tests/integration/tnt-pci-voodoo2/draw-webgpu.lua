@@ -1,4 +1,4 @@
--- The drawing section under the WebGPU TAKEOVER — draw.script's cases
+-- The drawing section under the WebGPU TAKEOVER — draw.lua's cases
 -- replayed while the browser's GPU draws them, with the expectations the
 -- takeover makes. Run from the web2 e2e
 -- (tests/e2e/web2-specs/voodoo2-webgpu.spec.ts), which composes this
@@ -7,7 +7,7 @@
 -- — raster=webgpu falls back to the thread backend, which test.lua
 -- asserts).
 --
--- What is EXACT here, by construction, and asserted as in draw.script:
+-- What is EXACT here, by construction, and asserted as in draw.lua:
 --   - coverage: which pixels a triangle touches (the half-pixel shift
 --     makes the GPU's centre test the walker's integer test; the rows
 --     below count the 136 and 256 literally);
@@ -19,9 +19,9 @@
 --     them, so even their counters and the stipple register are exact.
 -- What is NOT: the statistics counters of GPU-drawn triangles (analytic
 -- approximations — voodoo2.md's divergence list), so the equalities
--- draw.script pins on fbiPixelsIn/Out/ZfuncFail are not asserted here.
+-- draw.lua pins on fbiPixelsIn/Out/ZfuncFail are not asserted here.
 --
--- Preconditions: $BAR, swap16/vreg_wr/vreg_rd/idle3 defined; the bring-up
+-- Preconditions: BAR, swap16/vreg_wr/vreg_rd/idle3 defined; the bring-up
 -- replayed; the card DRIVING the monitor with raster=webgpu.
 
 LFB = BAR + 0x400000
@@ -46,7 +46,7 @@ PO_START = stat(0x15C)
 assert(machine.pci.slot[1].card.regs.raster == "webgpu", "the takeover backend is installed")
 assert(machine.pci.slot[1].card.regs.gpu_engaged, "GPU mode engaged when the card took the monitor")
 
--- The same 640x480 stage as draw.script.
+-- The same 640x480 stage as draw.lua.
 vreg_wr(0x21C, vreg_rd(0x21C) & 0xFFFFFFBF)
 vreg_wr(0x20C, (480 << 16) | 639)
 vreg_wr(0x218, (vreg_rd(0x218) & 0xFFF007FF) | (150 << 11) | 0x400000)
@@ -334,7 +334,7 @@ vreg_wr(0x104, 0x00000000)
 -- --- Rotate-mode stipple: the walker FALLBACK, exact down to the counters. --
 -- A per-pixel register the GPU cannot honour: the translator reads
 -- the touched rows back, the walker draws, the rectangle goes up again.
--- So the counters and the stipple register move exactly as draw.script
+-- So the counters and the stipple register move exactly as draw.lua
 -- pins them — the fallback's own proof that it ran.
 vreg_wr(0x104, 0x00000000)
 vreg_wr(0x140, 0x80000001)

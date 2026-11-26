@@ -1659,7 +1659,7 @@ void scsi_delete(scsi_t *scsi) {
 
     // Drop the queued DRQ service event BEFORE anything else.  Its `source` is
     // this scsi_t, and every machine deletes SCSI before the scheduler
-    // (machine_teardown.c, plus.c, tnt.c, mcu.c), so a queued pulse outlives
+    // (machine_teardown.c, compact.c, tnt.c, mcu.c), so a queued pulse outlives
     // the free below and fires into released memory on the next tick.  The
     // 53C96 destructor has always done this; this one never did.
     scsi_cancel_drq_service(scsi);

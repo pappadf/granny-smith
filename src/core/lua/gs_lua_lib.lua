@@ -297,7 +297,6 @@ local function shell_expr(code)
     return t
   end)
 end
-gs.shell_expr = shell_expr
 
 local conditions = {}
 
@@ -417,7 +416,6 @@ local function dollar_rewrite(s)
     return (t:gsub("%$([%a_][%w_]*)", dollar))
   end)
 end
-gs.dollar_rewrite = dollar_rewrite
 
 -- The index of the bracket closing the one at `i` (strings skipped).
 local function close_bracket(s, i, open, close)

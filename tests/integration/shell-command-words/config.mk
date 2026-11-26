@@ -1,6 +1,6 @@
 # Integration test: commands -- bare words that run a method.
 #
-# The built-ins (ls, cd, pwd, run, …) run their methods; `command NAME = PATH`
+# The built-ins (ls, cd, pwd, run, …) run their methods; shell.command.add
 # declares one, refusing a target that is not a method and a name that is a
 # root path; a tree path wins over a command; help, completion and
 # highlighting follow the method a command runs.

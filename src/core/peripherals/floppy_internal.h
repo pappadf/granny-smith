@@ -72,8 +72,18 @@
 #define IWM_Q6(f)     (((f)->iwm_lines & IWM_LINE_Q6) != 0)
 #define IWM_Q7(f)     (((f)->iwm_lines & IWM_LINE_Q7) != 0)
 
-// Current drive index (0 or 1)
-#define DRIVE_INDEX(f) (IWM_SELECT(f) ? 1 : 0)
+// The drive a drive-enable line reaches: `line` 0 is /ENBL1, 1 is /ENBL2.
+// Normally drive 0 and drive 1, but a board may steer a line elsewhere or to
+// no drive at all (floppy_set_enbl_route): FLOPPY_NO_DRIVE, which every
+// caller treats as a drive select the machine does not cable.
+#define FLOPPY_NO_DRIVE NUM_DRIVES
+static inline int floppy_enbl_drive(const struct floppy *f, int line);
+
+// Current drive index (0 or 1, or FLOPPY_NO_DRIVE)
+#define DRIVE_INDEX(f) floppy_enbl_drive((f), IWM_SELECT(f) ? 1 : 0)
+// The drive the ISM mode register's DRIVE1/DRIVE2 enables select (DRIVE2
+// selects drive 1; DRIVE1, or neither, drive 0)
+#define ISM_DRIVE_INDEX(f) floppy_enbl_drive((f), ((f)->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0)
 
 // ============================================================================
 // IWM Mode Register Bits
@@ -293,7 +303,36 @@ struct floppy {
     // nor the object model may put a disk there.  Set from the profile at
     // every build, so not checkpointed.
     int n_drives;
+    // The spindle speed the board's disk-speed PWM commands, in rpm, for a
+    // drive with no speed control of its own (the 128K's and 512K's
+    // single-sided 400K drive); 0 = the drive regulates itself by track zone.
+    // Re-sent by the board every VBL, so not checkpointed.
+    double pwm_rpm;
+    // The drive each enable line reaches (floppy_enbl_drive): {0, 1} unless
+    // the board steers them.  Re-driven from the board's VIA on a restore,
+    // so not checkpointed.
+    int8_t enbl_route[2];
 };
+
+// See DRIVE_INDEX above.
+static inline int floppy_enbl_drive(const struct floppy *f, int line) {
+    int d = f->enbl_route[line & 1];
+    return (d < 0 || d >= NUM_DRIVES) ? FLOPPY_NO_DRIVE : d;
+}
+
+// The one "no drive" test for a drive select (DRIVE_INDEX, ISM_DRIVE_INDEX):
+// the drive `drv` names, or NULL when it reaches no drive -- FLOPPY_NO_DRIVE,
+// or a position past the drives the machine cables (n_drives).  Every path
+// that acts on the selected drive goes through this or floppy_cabled_disk,
+// so none can index drives[FLOPPY_NO_DRIVE].
+static inline floppy_drive_t *floppy_cabled_drive(struct floppy *f, int drv) {
+    return (drv >= 0 && drv < f->n_drives) ? &f->drives[drv] : NULL;
+}
+
+// The medium in the drive `drv` names: NULL with no disk, or no drive.
+static inline image_t *floppy_cabled_disk(const struct floppy *f, int drv) {
+    return (drv >= 0 && drv < f->n_drives) ? f->disk[drv] : NULL;
+}
 
 // Size of plain-data portion for checkpointing (excludes pointers at end)
 #define FLOPPY_CHECKPOINT_SIZE offsetof(floppy_t, disk)
@@ -318,7 +357,7 @@ size_t iwm_disk_image_offset(int track, int side, int num_sides);
 int iwm_image_num_sides(image_t *img);
 
 // Calculates TACH signal state (60 pulses per revolution)
-int iwm_tach_signal(struct scheduler *scheduler, floppy_drive_t *drive, const char **reason);
+int iwm_tach_signal(struct scheduler *scheduler, floppy_drive_t *drive, double pwm_rpm, const char **reason);
 
 // Returns a pointer to GCR data for the given drive/image/side, encoding on demand
 uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct scheduler *scheduler);
@@ -386,7 +425,9 @@ void floppy_iwm_write(floppy_t *floppy, uint32_t offset, uint8_t byte);
 // ============================================================================
 
 // Sets up SWIM memory interface callbacks and ISM initial state
-void floppy_swim_setup(floppy_t *floppy, memory_map_t *map);
+void floppy_swim_setup(floppy_t *floppy);
+// The SWIM behind the compact boards' $200-stride window (floppy_map_stride_window)
+extern const memory_interface_t floppy_swim_stride_iface;
 
 // Bus /RESET for the SWIM/ISM register file.
 void floppy_swim_bus_reset(floppy_t *floppy);

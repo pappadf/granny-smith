@@ -29,17 +29,6 @@ static const char *ident_end(const char *p, const char *end) {
     return p;
 }
 
-// Keyword `kw` at p with an identifier boundary after it: the position past
-// it, or NULL.
-static const char *kw_at(const char *p, const char *end, const char *kw) {
-    size_t n = strlen(kw);
-    if ((size_t)(end - p) < n || strncmp(p, kw, n) != 0)
-        return NULL;
-    if (p + n < end && script_ident_char(p[n]))
-        return NULL;
-    return p + n;
-}
-
 // A single `=` at p (not `==`).
 static bool single_eq(const char *p, const char *end) {
     return p < end && *p == '=' && !(p + 1 < end && p[1] == '=');
@@ -157,7 +146,7 @@ const char *script_arg_end(const char *p, const char *end, bool *open) {
         return end;
     }
     if (c == '$') {
-        // A binding path; its brackets may hold blanks.
+        // An alias path; its brackets may hold blanks.
         const char *e = script_path_end(p, end);
         if (!e) {
             if (open)
@@ -176,41 +165,17 @@ const char *script_arg_end(const char *p, const char *end, bool *open) {
 }
 
 const char *script_comment_start(const char *line, const char *end) {
-    return script_find_unquoted(line, end, '#');
+    script_quote_t q = {0};
+    for (const char *p = line; p < end; p++) {
+        if (!q.quote && !q.esc && (*p == '#' || (*p == '-' && p + 1 < end && p[1] == '-')) &&
+            (p == line || blank(p[-1])))
+            return p;
+        script_quote_step(&q, *p);
+    }
+    return NULL;
 }
 
 // === Classifier ===============================================================
-
-// A keyword statement: the keyword and what follows it.
-static void keyword_stmt(script_stmt_t *out, script_stmt_kind_t kind, const char *p, const char *after,
-                         const char *end) {
-    out->kind = kind;
-    out->head = p;
-    out->head_end = after;
-    out->rest = skip_ws(after, end);
-}
-
-// Mark the statement invalid with the parser's message.
-static void invalid(script_stmt_t *out, const char *msg) {
-    out->kind = SCRIPT_STMT_INVALID;
-    out->error = msg;
-}
-
-// `KW NAME = VALUE` (let, alias, command): fill name / eq / rest when the
-// shape holds.  True when it does.
-static bool decl_shape(script_stmt_t *out, const char *after, const char *end) {
-    const char *q = skip_ws(after, end);
-    if (q >= end || !script_ident_start(*q))
-        return false;
-    out->name = q;
-    out->name_end = ident_end(q, end);
-    const char *eq = skip_ws(out->name_end, end);
-    if (!single_eq(eq, end))
-        return false;
-    out->eq = eq;
-    out->rest = skip_ws(eq + 1, end);
-    return true;
-}
 
 void script_classify(const char *text, const char *end, script_stmt_t *out) {
     memset(out, 0, sizeof(*out));
@@ -222,111 +187,14 @@ void script_classify(const char *text, const char *end, script_stmt_t *out) {
     out->rest = p;
     if (p >= end)
         return; // SCRIPT_STMT_EMPTY
-    const char *after;
-
-    // Keywords with nothing after them.
-    if ((after = kw_at(p, end, "break")) || (after = kw_at(p, end, "continue"))) {
-        bool brk = p[0] == 'b';
-        keyword_stmt(out, brk ? SCRIPT_STMT_BREAK : SCRIPT_STMT_CONTINUE, p, after, end);
-        if (out->rest < end)
-            invalid(out, brk ? "break takes no arguments" : "continue takes no arguments");
-        return;
-    }
-    // Keywords taking an expression.
-    if ((after = kw_at(p, end, "return"))) {
-        keyword_stmt(out, SCRIPT_STMT_RETURN, p, after, end);
-        return;
-    }
-    if ((after = kw_at(p, end, "include"))) {
-        keyword_stmt(out, SCRIPT_STMT_INCLUDE, p, after, end);
-        if (out->rest >= end)
-            invalid(out, "include: missing path");
-        return;
-    }
-    if ((after = kw_at(p, end, "assert"))) {
-        keyword_stmt(out, SCRIPT_STMT_ASSERT, p, after, end);
-        if (out->rest >= end)
-            invalid(out, "assert: missing predicate");
-        return;
-    }
-    // Block forms: the keyword decides; the parser checks the header.
-    static const struct {
-        const char *kw;
-        script_stmt_kind_t kind;
-    } blocks[] = {
-        {"if",    SCRIPT_STMT_IF   },
-        {"elif",  SCRIPT_STMT_ELIF },
-        {"else",  SCRIPT_STMT_ELSE },
-        {"while", SCRIPT_STMT_WHILE},
-        {"for",   SCRIPT_STMT_FOR  },
-        {"def",   SCRIPT_STMT_DEF  },
-    };
-    for (size_t i = 0; i < sizeof(blocks) / sizeof(blocks[0]); i++) {
-        if ((after = kw_at(p, end, blocks[i].kw))) {
-            keyword_stmt(out, blocks[i].kind, p, after, end);
-            // `for NAME` and `def NAME`: the name being bound.
-            if ((blocks[i].kind == SCRIPT_STMT_FOR || blocks[i].kind == SCRIPT_STMT_DEF) && out->rest < end &&
-                script_ident_start(*out->rest)) {
-                out->name = out->rest;
-                out->name_end = ident_end(out->rest, end);
-            }
-            return;
-        }
-    }
-    // Declarations.  `let` and `alias` are reserved: any other shape after
-    // them is an error, never a path.
-    if ((after = kw_at(p, end, "let"))) {
-        keyword_stmt(out, SCRIPT_STMT_LET, p, after, end);
-        const char *q = out->rest;
-        if (q >= end || !script_ident_start(*q))
-            invalid(out, "let: expected a name");
-        else if (!decl_shape(out, after, end))
-            invalid(out, "let: expected '=' after name");
-        else if (out->rest >= end)
-            invalid(out, "let: missing expression");
-        return;
-    }
-    if ((after = kw_at(p, end, "alias"))) {
-        keyword_stmt(out, SCRIPT_STMT_ALIAS, p, after, end);
-        if (!decl_shape(out, after, end))
-            invalid(out, "alias: expected `alias NAME = PATH`");
-        else if (out->rest >= end)
-            invalid(out, "alias: missing path");
-        return;
-    }
-    // `command NAME = PATH`: a contextual keyword, not a reserved word (a
-    // member may be called `command`).  Only this exact shape with a path
-    // declares a command; anything else is read as a path statement.
-    if ((after = kw_at(p, end, "command"))) {
-        script_stmt_t d = {0};
-        if (decl_shape(&d, after, end) && d.rest < end) {
-            keyword_stmt(out, SCRIPT_STMT_COMMAND_DEF, p, after, end);
-            out->name = d.name;
-            out->name_end = d.name_end;
-            out->eq = d.eq;
-            out->rest = d.rest;
-            return;
-        }
-    }
-    // Reserved words that head nothing.
-    if ((after = kw_at(p, end, "in")) || (after = kw_at(p, end, "do"))) {
-        keyword_stmt(out, SCRIPT_STMT_INVALID, p, after, end);
-        invalid(out, p[0] == 'i' ? "'in' outside a for header" : "'do' is a reserved word");
-        return;
-    }
-    // Literals read as expressions, not as paths.
-    if (kw_at(p, end, "true") || kw_at(p, end, "false") || kw_at(p, end, "none")) {
-        out->kind = SCRIPT_STMT_EXPR;
-        return;
-    }
-
-    // A path or binding head: assignment, call form, bare path or command.
+    // A path or alias head: an assignment, a command (argument mode), or a
+    // Lua call when `(` follows the path directly.
     if ((*p == '$' && p + 1 < end && script_ident_start(p[1])) || script_ident_start(*p)) {
         const char *q = script_path_end(p, end);
         out->head = p;
         if (!q) {
             out->head_end = end;
-            invalid(out, "unbalanced '['");
+            out->kind = SCRIPT_STMT_INVALID;
             return;
         }
         out->head_end = q;
@@ -335,14 +203,9 @@ void script_classify(const char *text, const char *end, script_stmt_t *out) {
             out->kind = SCRIPT_STMT_ASSIGN;
             out->eq = rest;
             out->rest = skip_ws(rest + 1, end);
-            if (out->rest >= end)
-                invalid(out, "assignment: missing right-hand side");
             return;
         }
-        // A plain `$name` is a binding read; `PATH(` with no blank between
-        // is a call form.  Both are expressions.  (`PATH (x)` is a command
-        // with a parenthesised argument.)
-        if ((rest >= end && *p == '$' && q == ident_end(p + 1, end)) || (q < end && *q == '(')) {
+        if (q < end && *q == '(') {
             out->kind = SCRIPT_STMT_EXPR;
             return;
         }
@@ -350,50 +213,15 @@ void script_classify(const char *text, const char *end, script_stmt_t *out) {
         out->rest = rest;
         return;
     }
-    // Numbers, strings, parentheses, operators: an expression.
     out->kind = SCRIPT_STMT_EXPR;
 }
 
 // === Lines ====================================================================
 
-// True for the kinds whose statement opens a block.
-static bool block_kind(script_stmt_kind_t k) {
-    return k == SCRIPT_STMT_IF || k == SCRIPT_STMT_ELIF || k == SCRIPT_STMT_ELSE || k == SCRIPT_STMT_WHILE ||
-           k == SCRIPT_STMT_FOR || k == SCRIPT_STMT_DEF;
-}
-
 void script_line_split(const char *line, const char *end, script_line_t *out) {
     memset(out, 0, sizeof(*out));
     out->comment = script_comment_start(line, end);
-    // The statement text: the line without its comment and outer blanks.
-    const char *e = out->comment ? out->comment : end;
-    while (e > line && blank(e[-1]))
-        e--;
-    const char *p = skip_ws(line, e);
-    if (p < e && *p == '}') {
-        out->closer = p;
-        p = skip_ws(p + 1, e);
-    }
-    script_classify(p, e, &out->stmt);
-    script_classify(e, e, &out->body);
-    if (!block_kind(out->stmt.kind))
-        return;
-    const char *brace = script_find_unquoted(p, e, '{');
-    if (!brace)
-        return;
-    // The header ends at the brace.
-    script_classify(p, brace, &out->stmt);
-    out->open = brace;
-    const char *after = skip_ws(brace + 1, e);
-    if (after >= e)
-        return; // multi-line form: the body is on the lines that follow
-    // Inline form: one statement, then the line's last `}`.
-    const char *body_end = e;
-    if (e[-1] == '}' && e - 1 > brace) {
-        out->close = e - 1;
-        body_end = e - 1;
-    }
-    script_classify(after, body_end, &out->body);
+    script_classify(line, out->comment ? out->comment : end, &out->stmt);
 }
 
 // === Arguments ================================================================

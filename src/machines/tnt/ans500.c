@@ -92,6 +92,7 @@ static const tnt_board_desc_t ans500_board = {
     .bandit_count = 2,
     .kind = TNT_BOARD_SHINER,
     .has_mesh = false, // delta #4: MESH is gone; two 53C825As replace it
+    .has_chaos = true, // the display-bus bridge
     .has_gbus = true, // delta #6/#9: LCD, board registers, Ethernet PROM
     .has_parity = true, // delta #7: parity DRAM, and it selects 60 ns timing
     .l2_kb = 512u, // 512 KB cache DIMM (8500-compatible slot)

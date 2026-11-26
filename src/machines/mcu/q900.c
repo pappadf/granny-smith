@@ -77,17 +77,8 @@ void q900_via1_shift_out(void *context, uint8_t byte) {
 
 // VIA2 outputs: PB3/PB6 select the sound input source on the towers; DFAC
 // programming itself lives behind Caboose (WrDFAC, accept-and-log there).
-void q900_via2_output(void *context, uint8_t port, uint8_t output) {
-    (void)context;
-    (void)port;
-    (void)output;
-}
-
-// EASC interrupt → VIA2 CB1.
-static void q900_asc_irq(void *context, bool active) {
-    config_t *cfg = (config_t *)context;
-    via_input_c(cfg->via2, 1, 0, active ? 0 : 1);
-}
+// Nothing the model consumes (quadra040_via2_output).  The EASC interrupt is
+// quadra040's (VIA2 CB1).
 
 // The two 53C96 INT outputs wire-OR (active-low) onto VIA2 CB2:
 // don't drop the line while the other controller still requests.
@@ -129,13 +120,6 @@ static void q900_swim_iop_irq(void *context, bool active) {
     via_input_c(cfg->via2, 0, 1, active ? 0 : 1);
 }
 
-// SONIC INT → VIA2 PA0 (active-low) through the /SLOTIRQ aggregate.
-static void q900_sonic_irq(void *context, bool active) {
-    config_t *cfg = (config_t *)context;
-    mcu_slot_irq_source(cfg, 0, active);
-}
-
-// SONIC bus-master DMA: guest-physical accesses through the bus resolver.
 // ============================================================
 // Device construction (mcu_board_t.build_devices)
 // ============================================================
@@ -148,21 +132,15 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     // Model sense on VIA1 PA: the ROM's identify table matches
     // PA & $56 == $50 for the Q900 (InfoQuadra900: PA6=1, PA4=1, PA2=0,
     // PA1=0).  PA7 idles high (board default), PA0 is the diagnostic-mode
-    // strap and must idle HIGH for a normal boot (same as the Q700).
-    mcu_apply_via1_model_sense(cfg, desc);
-    // CA1 idles high (60 Hz tick reference edge); CA2 is the keyswitch
-    // "secure" sense — high = not in the secure position.
-    via_input_c(cfg->via1, 0, 0, 1);
+    // strap and must idle HIGH for a normal boot (same as the Q700).  The
+    // shared lines idle (VIA1 CA1 the 60 Hz tick reference, VIA2 PA the
+    // Ethernet/slot/video requests, CA1 /SLOTIRQ, CB1 sound); the tower adds
+    // VIA1 CA2, the keyswitch "secure" sense (high = not secure), and VIA2
+    // CA2 (SWIM IOP host INT) and CB2 (SCSI INT).
+    quadra040_idle_lines(cfg, desc->via1_pa_model | 1u);
     via_input_c(cfg->via1, 0, 1, 1);
-    via_input_c(cfg->via1, 1, 0, 1);
-
-    // VIA2 PA: Ethernet/slot/video requests, all active-low → idle high.
-    for (int bit = 0; bit < 8; bit++)
-        via_input(cfg->via2, 0, bit, 1);
-    via_input_c(cfg->via2, 0, 0, 1); // CA1 /SLOTIRQ idle
-    via_input_c(cfg->via2, 0, 1, 1); // CA2 SWIM IOP host INT idle
-    via_input_c(cfg->via2, 1, 0, 1); // CB1 sound idle
-    via_input_c(cfg->via2, 1, 1, 1); // CB2 SCSI INT idle
+    via_input_c(cfg->via2, 0, 1, 1);
+    via_input_c(cfg->via2, 1, 1, 1);
     // VIA2 PB keyswitch/power/speed senses (HardwarePrivateEqu.a): PB0
     // keyswitch shadow (0 = SECURE) idles ON, PB1 bus unlocked, PB2 soft
     // power (0 = off) idles ON, PB5 CPU speed sense (0 = 25 MHz).
@@ -182,7 +160,7 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     // Internal SCSI bus: carries the configured disks + CD through the
     // shared bus/target model; the internal 53C96 fronts it.
-    mcu_build_scsi0(cfg, cp, q900_scsi96_irq);
+    quadra040_build_scsi0(cfg, cp, q900_scsi96_irq);
 
     // External SCSI bus: electrically isolated second 53C96.  The profile
     // declares its bays (mac_scsi_slots_ext01); with nothing attached,
@@ -205,7 +183,7 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     scsi_53c96_attach_bus(st->scsi96_ext, cfg->scsi2);
 
     // SONIC Ethernet (20 MHz-class part on the Q900), the EASC and the SWIM.
-    mcu_build_sonic_asc_floppy(cfg, cp, q900_sonic_irq, q900_asc_irq);
+    quadra040_build_sonic_asc_floppy(cfg, cp, quadra040_sonic_irq, quadra040_asc_irq);
 
     // Caboose: the Egret-protocol system manager (RTC/PRAM/power/keyswitch;
     // the ROM drives it through the same EgretMgr dispatch it uses for
@@ -236,19 +214,15 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     if (mcu_build_dafb(cfg, cp) != 0)
         return -1;
 
-    // Bus-side physical resolver for the 040 walker: RAM at 0 through the
-    // full 1 GiB aperture, the 1 MiB ROM mirroring through its window.
-    st->bus_mmu = m68k_board_build_bus_mmu040(cfg, 0x40000000u, desc->common.rom_base, desc->common.rom_end);
-    if (!st->bus_mmu)
+    // Bus-side physical resolver for the 040 walker.
+    if (quadra040_build_bus_mmu(cfg) != 0)
         return -1;
 
     // Bind the I/O island (tower decode: IOP apertures + dual SCSI), then
     // hook the IOP host interfaces the shared table routes to.
-    mcu_io_bind(&st->io, cfg, desc, st->asc, cfg->floppy);
-    st->io.handle[BOARD_DEV_SCC_IOP] = st->scc_iop;
-    st->io.iface[BOARD_DEV_SCC_IOP] = iop_get_memory_interface(st->scc_iop);
-    st->io.handle[BOARD_DEV_SWIM_IOP] = st->swim_iop;
-    st->io.iface[BOARD_DEV_SWIM_IOP] = iop_get_memory_interface(st->swim_iop);
+    mcu_io_bind(cfg);
+    board_io_bind_dev(&st->q.io, BOARD_DEV_SCC_IOP, st->scc_iop, iop_get_memory_interface(st->scc_iop));
+    board_io_bind_dev(&st->q.io, BOARD_DEV_SWIM_IOP, st->swim_iop, iop_get_memory_interface(st->swim_iop));
     mcu_memory_layout(cfg);
 
     mcu_private_part(cfg, cp);
@@ -328,7 +302,7 @@ static const mcu_board_t q900_board = {
     .desc = &q900_board_desc,
     .via1_output = q900_via1_output,
     .via1_shift_out = q900_via1_shift_out,
-    .via2_output = q900_via2_output,
+    .via2_output = quadra040_via2_output,
     .build_devices = q900_build_devices,
     .scc_irq = q900_scc_irq, // SCC chip INT ORs with the SCC IOP host INT
 };

@@ -41,6 +41,13 @@ void sound_enable(sound_t *restrict sound, bool enabled);
 
 void sound_vbl(sound_t *restrict sound);
 
+// The MAIN sound buffer as guest RAM bytes -- `*words` big-endian words, each
+// word's high byte the sound sample and its low byte the disk-speed sample --
+// for a board that reads it for something else (the 128K/512K disk-speed
+// PWM).  Always the main buffer, whatever vSndPg2 selects for playback.  NULL
+// when the buffer is not in host RAM.
+const uint8_t *sound_main_buffer(const sound_t *sound, unsigned *words);
+
 // === Object-model accessors =================================================
 //
 // Read-only views over the sound subsystem, read by the `sound_surface_t`
