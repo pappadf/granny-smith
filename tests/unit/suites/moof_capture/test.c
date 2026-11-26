@@ -135,6 +135,32 @@ static uint32_t data_mark_of(const uint8_t *b, uint32_t n, int sec) {
     return 0;
 }
 
+// Turn (t, s)'s revolution so it starts `off` cells later: the same track
+// captured with the index somewhere else on it.
+static void rotate_track(moof_t *m, int t, int s, uint32_t off) {
+    uint32_t n;
+    uint8_t *b = track_bits(m, t, s, &n);
+    size_t bytes = (n + 7) / 8;
+    uint8_t *turned = calloc(1, bytes);
+    ASSERT_TRUE(turned != NULL);
+    for (uint32_t i = 0; i < n; i++)
+        bit_put(turned, i, bit_get(b, (i + off) % n));
+    memcpy(b, turned, bytes);
+    free(turned);
+}
+
+// Make sector `sec`'s address field on (t, s) claim another place: the
+// headers a duplicator can lay down that do not name their own track.
+static void readdress(moof_t *m, int t, int s, int sec, int claim_track, int claim_side, int claim_sector) {
+    uint32_t n;
+    uint8_t *b = track_bits(m, t, s, &n);
+    uint32_t at = addr_mark_of(b, n, sec);
+    uint8_t addr[GCR_ADDR_VALUES];
+    gcr_addr_encode(claim_track, claim_sector, claim_side, 0x22, addr);
+    for (int k = 0; k < GCR_ADDR_VALUES; k++)
+        bits_put(b, at + 24 + 8 * (uint32_t)k, gcr_encode6[addr[k]], 8);
+}
+
 // Restamp the header CRC after an edit.
 static void restamp(moof_t *m) {
     WR_LE32(m->file + 8, codec_crc32(0, m->file + MOOF_HEADER_SIZE, m->len - MOOF_HEADER_SIZE));
@@ -620,6 +646,204 @@ TEST(splice_refuses_to_cover_an_address_field) {
     free(nib);
 }
 
+// === The drive: a track buffer written as the guest writes, then ejected ===
+
+static floppy_drive_t g_drive;
+
+// Build (t, s) into the drive's buffer, as the guest's first touch does.
+static floppy_track_t *drive_load(image_t *img, int t, int s) {
+    floppy_track_t *trk = &g_drive.tracks[s][t];
+    trk->data = media_track(img, t, s, &trk->size);
+    trk->modified = false;
+    g_drive.track = t;
+    g_drive.write_hdr_start = -1;
+    return trk;
+}
+
+// The eject: flush what the guest wrote, drop the buffers.
+static void drive_eject(image_t *img) {
+    iwm_flush_modified_tracks(&g_drive, img, 0);
+    for (int s = 0; s < NUM_SIDES; s++)
+        for (int t = 0; t < NUM_TRACKS; t++)
+            free(g_drive.tracks[s][t].data);
+    memset(&g_drive, 0, sizeof g_drive);
+}
+
+// What the Sony driver writes over a sector once it has found its address
+// field: the data field, mark through bit-slip marks, at `at` on a looping
+// track of `n` bytes.  It marks the buffer written, as the data register does.
+static void guest_write_field(floppy_track_t *trk, size_t at, int sec, const uint8_t *tag, const uint8_t *data) {
+    uint8_t values[GCR_SECTOR_VALUES];
+    gcr_sector_nibblize(tag, data, false, values);
+    uint8_t field[DATA_FIELD_NIBS];
+    size_t o = 0;
+    field[o++] = 0xD5, field[o++] = 0xAA, field[o++] = 0xAD;
+    field[o++] = gcr_encode6[sec];
+    for (int v = 0; v < GCR_SECTOR_VALUES; v++)
+        field[o++] = gcr_encode6[values[v]];
+    field[o++] = 0xDE, field[o++] = 0xAA;
+    for (size_t k = 0; k < o; k++)
+        trk->data[(at + k) % trk->size] = field[k];
+    trk->modified = true;
+}
+
+// A capture's index can fall anywhere on a track: here inside sector 4's
+// data field, which then runs across the end of the buffer.  A guest write
+// to that sector (a data field only, as the Sony driver writes) reaches the
+// image at the eject, and the track rebuilt afterwards is the capture with
+// that field spliced in.
+#define WRAP_TRACK  10
+#define WRAP_SECTOR 4
+static void wrapped_capture(moof_t *m, uint32_t seed) {
+    moof_make(m, SECTORS_800K, seed);
+    uint32_t n;
+    uint8_t *b = track_bits(m, WRAP_TRACK, 0, &n);
+    rotate_track(m, WRAP_TRACK, 0, data_mark_of(b, n, WRAP_SECTOR) + 300 * 8);
+    restamp(m);
+}
+
+TEST(straddling_sector_write_survives_eject) {
+    moof_t m;
+    wrapped_capture(&m, 21);
+    image_t *img = open_moof(&m, "wrap.moof", true, false);
+    floppy_track_t *trk = drive_load(img, WRAP_TRACK, 0);
+    size_t clen = trk->size;
+    moof_sector_t sec[MOOF_MAX_SECTORS];
+    moof_scan_track(trk->data, clen, WRAP_TRACK, 0, sec, NULL);
+    for (int k = 0; k < 12; k++)
+        ASSERT_EQ_INT(MOOF_SECTOR_OK, sec[k].state);
+    ASSERT_TRUE(sec[WRAP_SECTOR].data_at < clen && sec[WRAP_SECTOR].data_end > clen); // across the index
+    uint64_t blk = block_of(WRAP_TRACK, 0, WRAP_SECTOR, 2);
+    uint8_t buf[512], got[512];
+    pattern(buf, 0x31);
+    guest_write_field(trk, sec[WRAP_SECTOR].data_at, WRAP_SECTOR, m.tags + blk * MOOF_TAG_BYTES, buf);
+    drive_eject(img);
+    ASSERT_EQ_INT(512, (int)disk_read_data(img, blk * 512, got, 512));
+    ASSERT_EQ_INT(0, memcmp(got, buf, 512));
+    // Reinserted: the capture's length, every sector there, the one written new.
+    size_t len;
+    uint8_t *again = media_track(img, WRAP_TRACK, 0, &len);
+    ASSERT_EQ_INT((int)clen, (int)len);
+    moof_scan_track(again, len, WRAP_TRACK, 0, sec, NULL);
+    uint64_t first = block_of(WRAP_TRACK, 0, 0, 2);
+    for (int k = 0; k < 12; k++) {
+        ASSERT_EQ_INT(MOOF_SECTOR_OK, sec[k].state);
+        ASSERT_EQ_INT(0, memcmp(sec[k].data, k == WRAP_SECTOR ? buf : m.data + (first + (uint64_t)k) * 512, 512));
+    }
+    free(again);
+    image_close(img);
+    moof_free(&m);
+}
+
+// The same sector written whole (address field, then data field), as a
+// format does, with the head crossing the index between the two: the
+// write-through still finds the sector it started.
+TEST(write_through_across_the_index) {
+    moof_t m;
+    wrapped_capture(&m, 22);
+    image_t *img = open_moof(&m, "wrapwt.moof", true, false);
+    floppy_track_t *trk = drive_load(img, WRAP_TRACK, 0);
+    moof_sector_t sec[MOOF_MAX_SECTORS];
+    moof_scan_track(trk->data, trk->size, WRAP_TRACK, 0, sec, NULL);
+    uint64_t blk = block_of(WRAP_TRACK, 0, WRAP_SECTOR, 2);
+    uint8_t buf[512], got[512];
+    pattern(buf, 0x47);
+    guest_write_field(trk, sec[WRAP_SECTOR].data_at, WRAP_SECTOR, m.tags + blk * MOOF_TAG_BYTES, buf);
+    // The address field went by before the index; the DE AA closing the
+    // data field has just been written after it.
+    g_drive.write_hdr_start = (int)sec[WRAP_SECTOR].addr_at;
+    g_drive.offset = (int)(sec[WRAP_SECTOR].data_end - trk->size);
+    iwm_write_through(&g_drive, img, 0, 0);
+    ASSERT_EQ_INT(-1, g_drive.write_hdr_start);
+    ASSERT_EQ_INT(512, (int)disk_read_data(img, blk * 512, got, 512));
+    ASSERT_EQ_INT(0, memcmp(got, buf, 512));
+    drive_eject(img);
+    image_close(img);
+    moof_free(&m);
+}
+
+// An eject writes back the sectors of the track it flushes, each once: not
+// one whose header names another track or side, and of two headers naming
+// the same sector, the copy the capture's scan takes (the first that reads),
+// which is what the image already holds.
+#define DUP_TRACK 5
+TEST(flush_writes_only_its_own_track_once) {
+    moof_t m;
+    moof_make(&m, SECTORS_800K, 24);
+    uint32_t n;
+    uint8_t *b = track_bits(&m, DUP_TRACK, 0, &n);
+    readdress(&m, DUP_TRACK, 0, 2, DUP_TRACK + 1, 0, 2); // sector 2 claims track 6
+    readdress(&m, DUP_TRACK, 0, 10, DUP_TRACK, 1, 10); // sector 10 claims side 1
+    // Sector 8, address and data field, claims to be sector 3: a decoy
+    // ahead of the real one (the interleave runs ... 2 8 3 9 ...).
+    bits_put(b, data_mark_of(b, n, 8) + 24, gcr_encode6[3], 8);
+    readdress(&m, DUP_TRACK, 0, 8, DUP_TRACK, 0, 3);
+    restamp(&m);
+    image_t *img = open_moof(&m, "dup.moof", true, false);
+    uint64_t s3 = block_of(DUP_TRACK, 0, 3, 2), s8 = block_of(DUP_TRACK, 0, 8, 2);
+    uint64_t foreign_track = block_of(DUP_TRACK + 1, 0, 2, 2), foreign_side = block_of(DUP_TRACK, 1, 10, 2);
+    ASSERT_EQ_INT(IMAGE_SECTOR_MISSING, image_sector_status(img, block_of(DUP_TRACK, 0, 2, 2)));
+    uint8_t got[512], buf[512];
+    ASSERT_EQ_INT(512, (int)disk_read_data(img, s3 * 512, got, 512));
+    ASSERT_EQ_INT(0, memcmp(got, m.data + s8 * 512, 512)); // the decoy is the capture's sector 3
+    // The guest writes sector 0; the eject flushes the whole track.
+    floppy_track_t *trk = drive_load(img, DUP_TRACK, 0);
+    moof_sector_t sec[MOOF_MAX_SECTORS];
+    moof_scan_track(trk->data, trk->size, DUP_TRACK, 0, sec, NULL);
+    uint64_t s0 = block_of(DUP_TRACK, 0, 0, 2);
+    pattern(buf, 0x6D);
+    guest_write_field(trk, sec[0].data_at, 0, m.tags + s0 * MOOF_TAG_BYTES, buf);
+    drive_eject(img);
+    ASSERT_EQ_INT(512, (int)disk_read_data(img, s0 * 512, got, 512));
+    ASSERT_EQ_INT(0, memcmp(got, buf, 512));
+    ASSERT_EQ_INT(512, (int)disk_read_data(img, foreign_track * 512, got, 512));
+    ASSERT_EQ_INT(0, memcmp(got, m.data + foreign_track * 512, 512)); // track 6 untouched
+    ASSERT_EQ_INT(512, (int)disk_read_data(img, foreign_side * 512, got, 512));
+    ASSERT_EQ_INT(0, memcmp(got, m.data + foreign_side * 512, 512)); // side 1 untouched
+    ASSERT_EQ_INT(512, (int)disk_read_data(img, s3 * 512, got, 512));
+    ASSERT_EQ_INT(0, memcmp(got, m.data + s8 * 512, 512)); // still the decoy
+    ASSERT_TRUE(!image_block_in_delta(img, foreign_track));
+    image_close(img);
+    moof_free(&m);
+}
+
+// An eject's flush of a captured track the guest wrote keeps the capture:
+// rewriting a sector with what it holds leaves the track the capture byte
+// for byte, and a real change splices just that sector, the signature on
+// another sector kept.
+TEST(eject_flush_keeps_the_capture) {
+    moof_t m;
+    moof_make(&m, SECTORS_800K, 25);
+    protect(&m);
+    image_t *img = open_moof(&m, "flushcap.moof", true, false);
+    size_t clen;
+    moof_sector_t sec[MOOF_MAX_SECTORS];
+    uint8_t *cap = capture_track(img, SIG_TRACK, 0, &clen, sec);
+    uint64_t blk = block_of(SIG_TRACK, 0, 1, 2);
+    floppy_track_t *trk = drive_load(img, SIG_TRACK, 0);
+    guest_write_field(trk, sec[1].data_at, 1, m.tags + blk * MOOF_TAG_BYTES, m.data + blk * 512);
+    drive_eject(img);
+    size_t len;
+    uint8_t *got = media_track(img, SIG_TRACK, 0, &len);
+    ASSERT_TRUE(len == clen && memcmp(got, cap, len) == 0);
+    free(got);
+    uint8_t buf[512];
+    pattern(buf, 0x7E);
+    trk = drive_load(img, SIG_TRACK, 0);
+    guest_write_field(trk, sec[1].data_at, 1, m.tags + blk * MOOF_TAG_BYTES, buf);
+    drive_eject(img);
+    got = media_track(img, SIG_TRACK, 0, &len);
+    ASSERT_EQ_INT((int)clen, (int)len);
+    ASSERT_EQ_INT(1, count_seq(got, len, SIG, 4));
+    moof_scan_track(got, len, SIG_TRACK, 0, sec, NULL);
+    ASSERT_EQ_INT(MOOF_SECTOR_OK, sec[1].state);
+    ASSERT_EQ_INT(0, memcmp(sec[1].data, buf, 512));
+    free(got);
+    free(cap);
+    image_close(img);
+    moof_free(&m);
+}
+
 int main(void) {
     strcpy(g_dir, "/tmp/gs-moof-capture-XXXXXX");
     ASSERT_TRUE(mkdtemp(g_dir) != NULL);
@@ -636,6 +860,10 @@ int main(void) {
     RUN(export_copies_unchanged_tracks);
     RUN(epilogue_less_field_keeps_its_neighbour);
     RUN(splice_refuses_to_cover_an_address_field);
+    RUN(straddling_sector_write_survives_eject);
+    RUN(write_through_across_the_index);
+    RUN(flush_writes_only_its_own_track_once);
+    RUN(eject_flush_keeps_the_capture);
     char cmd[128];
     snprintf(cmd, sizeof cmd, "rm -rf %s", g_dir);
     if (system(cmd) != 0)

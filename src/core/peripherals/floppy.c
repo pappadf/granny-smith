@@ -673,10 +673,10 @@ void floppy_iwm_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
         // a sector (see iwm_write_through).
         iwm_write_through(drive, floppy->disk[drv], drv, floppy->sel ? 1 : 0);
 
-        if ((size_t)drive->offset >= trk_len_w) {
+        // The tracked sector start survives the wrap: a sector may run
+        // across the index, and the write-through reads it as a loop.
+        if ((size_t)drive->offset >= trk_len_w)
             drive->offset = 0;
-            drive->write_hdr_start = -1; // a wrap invalidates the tracked start
-        }
     } else {
         // Write mode register.  On the SWIM this is also where the IWM->ISM
         // entry sequence is watched for.

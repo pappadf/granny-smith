@@ -729,7 +729,10 @@ const uint8_t *iwm_track_data_peek(const floppy_drive_t *drive, image_t *img, in
 // read: the old scan guard allowed 730 bytes from the mark while the worst
 // case here is 817 -- 10 header bytes, a data-mark search of up to 100, then
 // 4 + 16 + 680 + 3 + 4 -- so up to ~87 bytes past the end of the malloc'd
-// track buffer were read on every flush.
+// track buffer were read on every flush.  (The write-through is its one
+// caller now; the eject flush reads a track with moof_scan_track.)
+#define SECTOR_SPAN_MAX 820 // the most it reads from an address mark: 817
+
 static uint8_t *decode_sector(uint8_t *tag, uint8_t *data, uint8_t *src, const uint8_t *end, int *track_out,
                               int *side_out, int *sector_out) {
 #define NEED(n)                                                                                                        \
@@ -903,44 +906,63 @@ void iwm_write_through(floppy_drive_t *drive, image_t *img, int drive_index, int
     if (!img || !image_is_writable(img))
         return;
     floppy_track_t *t = &drive->tracks[side][drive->track];
-    if (!t->data || t->size == 0)
+    if (!t->data || t->size < 3)
         return;
 
+    // The buffer is one revolution, looping: a sector may start before the
+    // index and end after it, so every position here is taken modulo its
+    // length.
+    size_t n = t->size;
     int pos = drive->offset; // one past the byte just written
-    if (pos < 3 || (size_t)pos > t->size)
+    if (pos < 1 || (size_t)pos > n)
         return;
-
     const uint8_t *d = t->data;
+    size_t p = (size_t)pos;
+    uint8_t b3 = d[(p + n - 3) % n], b2 = d[(p + n - 2) % n], b1 = d[p - 1];
 
     // An address mark just passed: remember where this sector starts.
-    if (d[pos - 3] == 0xD5 && d[pos - 2] == 0xAA && d[pos - 1] == 0x96) {
-        drive->write_hdr_start = pos - 3;
+    if (b3 == 0xD5 && b2 == 0xAA && b1 == 0x96) {
+        drive->write_hdr_start = (int)((p + n - 3) % n);
         return;
     }
 
     // A field just ended.  If it is the data field of the sector we are
     // tracking, it is now complete.
-    if (!(d[pos - 2] == 0xDE && d[pos - 1] == 0xAA))
+    if (!(b2 == 0xDE && b1 == 0xAA))
         return;
     int start = drive->write_hdr_start;
-    if (start < 0 || start >= pos)
+    if (start < 0 || (size_t)start >= n)
         return;
+    // From the address mark to here, laid out in a line: past the index
+    // when the head crossed it in between.
+    size_t span = (p + n - (size_t)start) % n;
+    if (span == 0 || span > SECTOR_SPAN_MAX)
+        return;
+    uint8_t line[SECTOR_SPAN_MAX];
+    for (size_t k = 0; k < span; k++)
+        line[k] = d[((size_t)start + k) % n];
 
     uint8_t tag[12];
     uint8_t buf[512];
     int hdr_track = 0, hdr_side = 0, hdr_sector = 0;
-    if (!decode_sector(tag, buf, t->data + start, t->data + pos, &hdr_track, &hdr_side, &hdr_sector))
+    if (!decode_sector(tag, buf, line, line + span, &hdr_track, &hdr_side, &hdr_sector))
         return; // header field only, or a partial/corrupt sector: nothing to do
 
     drive->write_hdr_start = -1;
 
-    // hdr_side is checked against the medium, not NUM_SIDES: a single-sided
-    // image has no side-1 block, and iwm_disk_image_offset ignores the side
-    // there, so a side-1 header would overwrite side 0 of the same track.
+    // A sector is written where it lies: on this track and side.  A header
+    // naming another (a duplicator's, a protection's) would otherwise put
+    // this track's bytes into that one's sector.  hdr_side is also checked
+    // against the medium: a single-sided image has no side-1 block, and
+    // iwm_disk_image_offset ignores the side there, so a side-1 header would
+    // overwrite side 0 of the same track.
     int num_sides = iwm_image_num_sides(img);
-    if (hdr_track < 0 || hdr_track >= NUM_TRACKS || hdr_side < 0 || hdr_side >= num_sides || hdr_sector < 0 ||
-        hdr_sector >= iwm_sectors_per_track(hdr_track))
+    if (hdr_track != drive->track || hdr_side != side || hdr_side >= num_sides || hdr_sector < 0 ||
+        hdr_sector >= iwm_sectors_per_track(hdr_track)) {
+        LOG(4, "Drive %d: sector written on track %d side %d names track %d side %d sector %d: not written through",
+            drive_index, drive->track, side, hdr_track, hdr_side, hdr_sector);
         return;
+    }
     size_t off = iwm_disk_image_offset(hdr_track, hdr_side, num_sides) + (size_t)hdr_sector * 512u;
     if (off + 512 > disk_size(img))
         return;
@@ -978,55 +1000,43 @@ void iwm_flush_modified_tracks(floppy_drive_t *drive, image_t *img, int drive_in
                 continue;
             }
 
-            uint8_t *p = t->data;
-            uint8_t *end = t->data + t->size;
+            // A side the medium does not have holds no sector to write back
+            // (a 400K disk's side 1: its blocks are side 0's).
             int num_sides = iwm_image_num_sides(img);
+            if (side >= num_sides) {
+                LOG(4, "Drive %d: Skip flush track %d side %d - the disk has no side %d", drive_index, tr, side, side);
+                t->modified = false;
+                continue;
+            }
 
-            // decode_sector bounds every read against `end` and returns
-            // NULL on anything malformed, so the scan only has to find a
-            // plausible mark.  The old guard was `p + 730 < end`, ~87 bytes
-            // short of the decoder's 817-byte worst case.
-            while (p + 3 <= end) {
-                if (p[0] == 0xD5 && p[1] == 0xAA && p[2] == 0x96) {
-                    uint8_t tag[12];
-                    uint8_t buf[512];
-                    int hdr_track = 0, hdr_side = 0, hdr_sector = 0;
-                    uint8_t *next = decode_sector(tag, buf, p, end, &hdr_track, &hdr_side, &hdr_sector);
-                    if (!next) {
-                        // Guest-written bytes that do not form a sector: skip
-                        // and rescan.  Level 4 because a formatter in progress
-                        // produces these legitimately.
-                        LOG(4, "Drive %d: Skip undecodable sector at +%zu", drive_index, (size_t)(p - t->data));
-                        p++;
-                        continue;
-                    }
-
-                    // hdr_sector comes from a 6-bit GCR nibble the guest wrote,
-                    // so it is 0..63 while a track holds at most 12 sectors.
-                    // Unchecked, a header claiming sector 40 wrote 20 KB past
-                    // the start of its own track, into neighbouring tracks'
-                    // data -- arbitrary corruption of a mounted writable image
-                    // from one track write.
-                    // hdr_side likewise: see iwm_write_through.
-                    if (hdr_track >= 0 && hdr_track < NUM_TRACKS && hdr_side >= 0 && hdr_side < num_sides &&
-                        hdr_sector >= 0 && hdr_sector < iwm_sectors_per_track(hdr_track)) {
-                        size_t off = iwm_disk_image_offset(hdr_track, hdr_side, num_sides) + (size_t)hdr_sector * 512u;
-                        if (off + 512 <= disk_size(img)) {
-                            disk_write_data(img, off, buf, 512);
-                            // The 12 GCR tag bytes carry HFS/MFS scavenger
-                            // metadata; SWIM3 round-trips them and this path
-                            // used to decode them into a local and throw them
-                            // away.
-                            disk_write_tag(img, off / 512u, tag, sizeof tag);
-                            LOG(5, "Drive %d: Write sector track=%d side=%d sector=%d", drive_index, hdr_track,
-                                hdr_side, hdr_sector);
-                        }
-                    }
-
-                    p = (next > p) ? next : p + 1;
-                } else {
-                    p++;
+            // The track's sectors as the one sector scan finds them
+            // (moof_scan_track): the buffer loops, so a sector running across
+            // the index -- every captured track may have one -- is found like
+            // any other; only an address field naming this track and side
+            // counts, and of two naming the same sector, the first that
+            // reads: the copy a capture of this track gives the image.  The
+            // scan bounds every read and refuses a field with a byte that is
+            // no codeword or a failing checksum (gcr_sector_from_disk), so
+            // guest-written bytes that do not form a sector -- a formatter in
+            // progress, a protection pattern -- are skipped.
+            moof_sector_t sec[MOOF_MAX_SECTORS];
+            moof_scan_track(t->data, t->size, tr, side, sec, NULL);
+            size_t first = iwm_disk_image_offset(tr, side, num_sides);
+            for (int k = 0; k < iwm_sectors_per_track(tr); k++) {
+                // The data field repeats the sector number.
+                if (sec[k].state != MOOF_SECTOR_OK || gcr_decode6[t->data[(sec[k].data_at + 3) % t->size]] != k) {
+                    LOG(4, "Drive %d: track %d side %d sector %d does not read; not written", drive_index, tr, side, k);
+                    continue;
                 }
+                size_t off = first + (size_t)k * 512u;
+                if (off + 512 > disk_size(img))
+                    continue;
+                disk_write_data(img, off, sec[k].data, 512);
+                // The 12 GCR tag bytes carry HFS/MFS scavenger metadata; SWIM3
+                // round-trips them and this path used to decode them into a
+                // local and throw them away.
+                disk_write_tag(img, off / 512u, sec[k].tag, sizeof sec[k].tag);
+                LOG(5, "Drive %d: Write sector track=%d side=%d sector=%d", drive_index, tr, side, k);
             }
 
             LOG(4, "Drive %d: Track %d side %d flush complete", drive_index, tr, side);

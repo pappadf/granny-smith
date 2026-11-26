@@ -175,6 +175,19 @@ uint32_t image_capture_track_diff(const moof_sector_t sec[MOOF_MAX_SECTORS], int
     (void)in_delta;
     return 0;
 }
+// The sector scan (image_moof.c) finds nothing on these suites' tracks: the
+// eject flush, its one caller here, writes nothing back.
+void moof_scan_track(const uint8_t *rev, size_t n, int track, int side, moof_sector_t sec[MOOF_MAX_SECTORS],
+                     uint8_t *format_byte) {
+    (void)rev;
+    (void)n;
+    (void)track;
+    (void)side;
+    (void)format_byte;
+    memset(sec, 0, sizeof(moof_sector_t) * MOOF_MAX_SECTORS);
+    for (int k = 0; k < MOOF_MAX_SECTORS; k++)
+        sec[k].state = MOOF_SECTOR_MISSING;
+}
 bool image_block_in_delta(image_t *img, uint64_t block) {
     (void)img;
     (void)block;

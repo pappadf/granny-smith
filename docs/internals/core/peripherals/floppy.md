@@ -74,6 +74,23 @@ image from the checkpoint's own image list. The Lisa's Sony drive is not a
 writes and page-label tags, both in that image's delta, then come back with
 it).
 
+The write-back reads each modified buffer with the sector scan the MOOF
+importer and the capture use (`moof_scan_track`): as a loop, so a sector
+running across the buffer's end — a captured track can put one anywhere —
+is found like any other. Every sector it finds that reads (a valid data
+checksum, every byte a codeword, the data field repeating the sector
+number) is written to the image, those the guest did not touch with the
+contents they already had. Only an address field naming the track and side
+being flushed counts, and a sector number is written once: of two address
+fields naming it, the first copy that reads, as the scan of a capture takes
+it. So a header a duplicator laid down naming another track, or a decoy
+copy, never writes another track's sector or replaces the one the image
+holds. A side the medium does not have (a 400K disk's side 1) has nothing
+written back. The per-sector write-through as the guest writes a whole
+sector (`iwm_write_through`, a format) follows the same rules: the sector it
+completes may have started before the index, and it is written only when its
+header names the track and side under the head.
+
 ## Write protection
 
 `/WRTPRT` reads the image's writability. A disk opened read-only takes no
@@ -131,10 +148,11 @@ change or a restore; only bytes the guest wrote that never formed a sector
 
 The rule reads only the capture and the image's current contents, so a
 track is the same whatever path brought the image to its state: a guest
-write, the eject flush (which rewrites every decodable sector of a dirty
-track, with contents it already had), a quick or a consolidated checkpoint
-restore, a VFS write, a reinsert. The one input that is not content is the
-delta bit of a sector the capture could not read: a guest writing zeros there
+write, the eject flush (which rewrites the sectors of a dirty track that
+read, those the guest did not write with contents they already had), a
+quick or a consolidated checkpoint restore, a VFS write, a reinsert. The
+one input that is not content is the delta bit of a sector the capture could
+not read: a guest writing zeros there
 leaves the content as it was but would leave a readable sector on the real
 disk. A consolidated restore clears the delta bit of a block equal to its
 base, so after one such a sector reverts to the capture's unreadable field.
