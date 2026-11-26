@@ -64,16 +64,24 @@ function statusLabel(page: Page) {
 // state.checkpoint is durably in OPFS when this returns -- and keeps a
 // named, self-contained copy beside it.
 async function createCheckpoint(page: Page): Promise<void> {
-  await page.locator('button.ptab[data-tab="checkpoints"]').click();
+  const checkpointsTab = page.locator('button.ptab[data-tab="checkpoints"]');
+  await checkpointsTab.click();
   await page.getByRole('button', { name: 'Create Checkpoint' }).click();
   await expect(page.locator('.toast .msg').filter({ hasText: /Checkpoint '.*' created/ })).toBeVisible(
     { timeout: 30_000 },
   );
   // The view rescans OPFS after the snapshot — the machine's autosave row
   // and the created checkpoint must both be listed (pins CheckpointsView
-  // against real OPFS, not the mock).
-  await expect(page.locator('.checkpoints-view .tbody .tr')).toHaveCount(2, { timeout: 10_000 });
-  await expect(page.locator('.checkpoints-view .tbody .tr').filter({ hasText: /^\s*Autosave/ })).toHaveCount(1);
+  // against real OPFS, not the mock).  A slow save on a loaded runner can
+  // trip the page's 3 s stall detector, which switches the panel to the
+  // Terminal for its diagnostics; reopen the Checkpoints tab before each
+  // count so that switch doesn't hide the rows.
+  const rows = page.locator('.checkpoints-view .tbody .tr');
+  await expect(async () => {
+    await checkpointsTab.click();
+    await expect(rows).toHaveCount(2, { timeout: 2_000 });
+  }).toPass({ timeout: 20_000 });
+  await expect(rows.filter({ hasText: /^\s*Autosave/ })).toHaveCount(1);
 }
 
 // Reload the app and wait for the module bridge to come back.
