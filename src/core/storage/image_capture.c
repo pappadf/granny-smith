@@ -30,6 +30,8 @@ struct image_capture {
     moof_index_t ix; // pointers into `file`
     uint8_t *flux_bits[MOOF_TRACK_SLOTS]; // a flux track's bits, converted at build (NULL otherwise)
     uint32_t flux_nbits[MOOF_TRACK_SLOTS];
+    gcr_weak_run_t *weak[MOOF_TRACK_SLOTS]; // a track's weak runs (NULL for none)
+    uint32_t nweak[MOOF_TRACK_SLOTS];
     uint8_t *status; // a MOOF_SECTOR_* per sector, in image order
     uint32_t sectors;
     uint32_t crc;
@@ -74,6 +76,53 @@ size_t image_capture_track(const image_capture_t *cap, int track, int side, uint
     return n;
 }
 
+bool image_capture_weak_runs(const image_capture_t *cap, int track, int side, const gcr_weak_run_t **runs, size_t *n) {
+    *runs = NULL;
+    *n = 0;
+    if (!cap || track < 0 || track >= NUM_TRACKS || side < 0 || side >= cap->ix.sides)
+        return false;
+    int slot = track * 2 + side;
+    *runs = cap->weak[slot];
+    *n = cap->nweak[slot];
+    return *n != 0;
+}
+
+// The splitmix64 finaliser: every input bit moves every output bit.
+static uint64_t mix64(uint64_t z) {
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
+}
+
+// The noise seed of one draw of (track, side).
+static uint64_t weak_seed(const image_capture_t *cap, int track, int side, uint32_t draw) {
+    uint64_t where = mix64(((uint64_t)cap->crc << 32) | (uint32_t)(track * 2 + side));
+    return mix64(where ^ (0x5745414Bull << 32) ^ draw); // "WEAK"
+}
+
+size_t image_capture_weak_track(const image_capture_t *cap, int track, int side, uint32_t draw, uint8_t **nib) {
+    *nib = NULL;
+    const gcr_weak_run_t *runs = NULL;
+    size_t nruns = 0;
+    const uint8_t *bits = NULL;
+    uint32_t nbits = 0;
+    if (!image_capture_weak_runs(cap, track, side, &runs, &nruns) ||
+        !image_capture_bits(cap, track, side, &bits, &nbits))
+        return 0;
+    size_t room = (size_t)nbits / 8 + 2; // at most one disk byte per 8 cells, and one straddling the index
+    uint8_t *out = malloc(room);
+    if (!out)
+        return 0;
+    size_t n = gcr_frame_revolution_noisy(bits, nbits, runs, nruns, weak_seed(cap, track, side, draw - 1),
+                                          weak_seed(cap, track, side, draw), out, room);
+    if (!n) {
+        free(out);
+        return 0;
+    }
+    *nib = out;
+    return n;
+}
+
 uint32_t image_capture_track_diff(const moof_sector_t sec[MOOF_MAX_SECTORS], int nsec, const uint8_t *data,
                                   const uint8_t *tags, uint32_t in_delta) {
     uint32_t diff = 0;
@@ -95,8 +144,10 @@ uint32_t image_capture_track_diff(const moof_sector_t sec[MOOF_MAX_SECTORS], int
 static void capture_free(image_capture_t *cap) {
     if (!cap)
         return;
-    for (int i = 0; i < MOOF_TRACK_SLOTS; i++)
+    for (int i = 0; i < MOOF_TRACK_SLOTS; i++) {
         free(cap->flux_bits[i]);
+        free(cap->weak[i]);
+    }
     free(cap->status);
     free(cap->file);
     free(cap);
@@ -141,6 +192,18 @@ static image_capture_t *capture_build(source_t *src) {
                 // Converted once, kept: the store is immutable after this.
                 cap->flux_bits[slot] = owned;
                 cap->flux_nbits[slot] = nbits;
+            }
+            // The runs long enough to read as noise: almost always none.
+            size_t nw = gcr_zero_runs(bits, nbits, IMAGE_WEAK_MIN_RUN, NULL, 0);
+            if (nw) {
+                cap->weak[slot] = malloc(nw * sizeof(gcr_weak_run_t));
+                if (!cap->weak[slot]) {
+                    free(sec);
+                    capture_free(cap);
+                    return NULL;
+                }
+                cap->nweak[slot] = (uint32_t)gcr_zero_runs(bits, nbits, IMAGE_WEAK_MIN_RUN, cap->weak[slot], nw);
+                LOG(3, "capture '%s': track %d side %d has %zu weak run(s)", source_key(src), t, s, nw);
             }
             if ((size_t)nbits / 8 + 2 > longest)
                 longest = (size_t)nbits / 8 + 2;

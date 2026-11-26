@@ -15,14 +15,17 @@
 // drive holds only the reference and pays nothing.
 //
 // Once built the store is immutable: the file's bytes, its index, every
-// flux track already converted to bits, and what the capture held for each
-// sector (moof_scan_track: decoded, missing, or a bad data checksum).  It is
+// flux track already converted to bits, what the capture held for each
+// sector (moof_scan_track: decoded, missing, or a bad data checksum), and
+// each track's weak runs -- the stretches with no flux transition long
+// enough that a real drive reads noise there (gcr.h, "Weak bits").  It is
 // built on the emulator thread (image_capture); a .moof export takes a
 // reference there and reads it on the I/O worker.
 
 #ifndef GS_IMAGE_CAPTURE_H
 #define GS_IMAGE_CAPTURE_H
 
+#include "gcr.h"
 #include "image.h"
 #include "image_moof.h"
 
@@ -85,6 +88,29 @@ size_t image_capture_max_track_bytes(const image_capture_t *cap);
 // address field).
 size_t image_capture_track(const image_capture_t *cap, int track, int side, uint8_t **nib,
                            moof_sector_t sec[MOOF_MAX_SECTORS]);
+
+// The shortest zero run (cells with no flux transition) a track's bits must
+// hold for the GCR read path to read it as weak: noise, freshly drawn on
+// every revolution.  Every standard capture at hand has short runs -- up to
+// six cells, and one of ten -- on tracks that read correctly as captured;
+// deliberate weak areas run 16 cells and more.  12 leaves the first alone
+// and catches the second, each with margin.
+#define IMAGE_WEAK_MIN_RUN 12
+
+// The weak runs of (track, side): its zero runs of at least
+// IMAGE_WEAK_MIN_RUN cells (gcr_zero_runs), found once when the store is
+// built.  False, with *n 0, for a track with none -- almost every track of
+// almost every capture -- and one the capture does not hold.
+bool image_capture_weak_runs(const image_capture_t *cap, int track, int side, const gcr_weak_run_t **runs, size_t *n);
+
+// Draw `draw` of a weak track: one steady-state revolution of (track,
+// side) with its weak runs filled with noise (gcr_frame_revolution_noisy),
+// malloc'd into *nib, the revolution before it pre-rolled from draw - 1.
+// The noise is a pure function of the capture (image_capture_crc), the
+// track, the side and `draw`, so the same draw is the same bytes in any
+// process.  The byte count; 0 with *nib NULL for a track with no weak runs
+// or no memory.
+size_t image_capture_weak_track(const image_capture_t *cap, int track, int side, uint32_t draw, uint8_t **nib);
 
 // Which of a captured track's `nsec` sectors the image no longer holds as
 // the capture does: bit k set for sector k.  `data` / `tags` are the

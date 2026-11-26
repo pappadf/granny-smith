@@ -12,6 +12,7 @@
 #include "common.h"
 #include "format_registry.h"
 #include "gcr.h"
+#include "image_capture.h" // IMAGE_WEAK_MIN_RUN
 #include "image_moof.h"
 #include "test_assert.h"
 
@@ -390,6 +391,80 @@ TEST(moof_corpus_frames_steadily) {
         printf("  (no MOOF in the test corpus: nothing to check)\n");
 }
 
+// Every MOOF under `dir`, recursively: `fn` gets each file's bytes and path.
+static int corpus_walk(const char *dir, void (*fn)(const char *path, const uint8_t *f, size_t len)) {
+    DIR *d = opendir(dir);
+    if (!d)
+        return 0;
+    int files = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.')
+            continue;
+        char path[1024];
+        snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+        DIR *sub = opendir(path);
+        if (sub) {
+            closedir(sub);
+            files += corpus_walk(path, fn);
+            continue;
+        }
+        size_t nl = strlen(e->d_name);
+        if (nl < 5 || strcmp(e->d_name + nl - 5, ".moof") != 0)
+            continue;
+        FILE *fp = fopen(path, "rb");
+        ASSERT_TRUE(fp != NULL);
+        fseek(fp, 0, SEEK_END);
+        size_t len = (size_t)ftell(fp);
+        fseek(fp, 0, SEEK_SET);
+        uint8_t *f = malloc(len);
+        ASSERT_EQ_INT((int)len, (int)fread(f, 1, len, fp));
+        fclose(fp);
+        fn(path, f, len);
+        free(f);
+        files++;
+    }
+    closedir(d);
+    return files;
+}
+
+// No track of a capture in the corpus has a weak run: each is a title that
+// plays as captured, and a weak run reads as fresh noise on every
+// revolution.  The guard on IMAGE_WEAK_MIN_RUN -- a threshold lowered far
+// enough to catch a capture's short artefacts would start randomising
+// tracks that read correctly today.  (A capture with deliberate weak areas
+// added to the corpus is named here, with the tracks that carry them.)
+static void corpus_no_weak_runs(const char *path, const uint8_t *f, size_t len) {
+    moof_index_t ix;
+    ASSERT_EQ_INT(0, moof_index(f, len, &ix));
+    uint32_t longest = 0;
+    for (int t = 0; t < 80; t++)
+        for (int s = 0; s < ix.sides; s++) {
+            const uint8_t *bits;
+            uint8_t *owned = NULL;
+            uint32_t n = moof_track_bits(&ix, t, s, &bits, &owned);
+            if (!n)
+                continue;
+            gcr_weak_run_t r;
+            for (uint32_t min = longest + 1; gcr_zero_runs(bits, n, min, &r, 1); min = r.len + 1)
+                longest = r.len > longest ? r.len : longest; // the longest run on the disk
+            if (gcr_zero_runs(bits, n, IMAGE_WEAK_MIN_RUN, NULL, 0))
+                printf("  %s: track %d side %d has a weak run\n", path, t, s);
+            ASSERT_EQ_INT(0, (int)gcr_zero_runs(bits, n, IMAGE_WEAK_MIN_RUN, NULL, 0));
+            free(owned);
+        }
+    printf("  %s: longest zero run %u cells (weak from %d)\n", path, longest, IMAGE_WEAK_MIN_RUN);
+}
+
+TEST(moof_corpus_has_no_weak_runs) {
+    static const char *const dirs[] = {"../../../data", "tests/data"};
+    int files = 0;
+    for (size_t di = 0; di < sizeof dirs / sizeof dirs[0] && !files; di++)
+        files = corpus_walk(dirs[di], corpus_no_weak_runs);
+    if (!files)
+        printf("  (no MOOF in the test corpus: nothing to check)\n");
+}
+
 int main(void) {
     RUN(moof_round_trip_800k);
     RUN(moof_encode_golden);
@@ -400,6 +475,7 @@ int main(void) {
     RUN(moof_refuses_what_it_cannot_read);
     RUN(moof_unwraps_through_the_registry);
     RUN(moof_corpus_frames_steadily);
+    RUN(moof_corpus_has_no_weak_runs);
     fprintf(stderr, "All moof tests passed.\n");
     return 0;
 }
