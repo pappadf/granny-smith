@@ -214,10 +214,13 @@
       </div>
       {#if recorder.active}
         <div class="gs-statusbar__item sb-item sb-rec" title={recTitle} data-testid="recording">
-          <span class="rec-dot" aria-hidden="true"><Icon name="circle-filled" size="sm" /></span
-          ><span class="label rec-time">{formatRecordedTime(recorder.seconds)}</span><span
-            class="rec-size">{formatSize(recorder.bytes)}</span
+          <span class="rec-dot" aria-hidden="true">
+            <Icon name="circle-filled" size="sm" />
+          </span><span class="label rec-time">{formatRecordedTime(recorder.seconds)}</span><span
+            class="rec-size"
           >
+            {formatSize(recorder.bytes)}
+          </span>
           {#if recPaused}<span class="rec-paused">paused</span>{/if}
           {#if recorder.dropped > 0}<span class="rec-dropped">{recorder.dropped} dropped</span>{/if}
         </div>

@@ -47,8 +47,10 @@
       onclick={() => {
         a.action();
         if (!a.keep) dismissToast(toast.id);
-      }}>{a.label}</Button
+      }}
     >
+      {a.label}
+    </Button>
   {/each}
   <IconButton
     class="gs-toast__close close-btn"

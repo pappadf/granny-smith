@@ -65,20 +65,20 @@
         {#if audio === 'aac'}
           <Hint class="export-note export-audio">Sound: AAC, 48 kHz.</Hint>
         {:else if audio === 'opus'}
-          <Hint class="export-note export-audio"
-            >Sound: Opus, 48 kHz — this browser has no AAC encoder. Opus in MP4 plays in Chrome,
-            Edge, Firefox and current Safari.</Hint
-          >
+          <Hint class="export-note export-audio">
+            Sound: Opus, 48 kHz — this browser has no AAC encoder. Opus in MP4 plays in Chrome,
+            Edge, Firefox and current Safari.
+          </Hint>
         {:else}
-          <Hint class="export-note export-audio"
-            >Video only: this browser has no AAC or Opus encoder, so the sound is left out.</Hint
-          >
+          <Hint class="export-note export-audio">
+            Video only: this browser has no AAC or Opus encoder, so the sound is left out.
+          </Hint>
         {/if}
       {/if}
       {#if truncated}
-        <Hint class="export-note"
-          >This recording was not closed properly; the export ends at its last complete part.</Hint
-        >
+        <Hint class="export-note">
+          This recording was not closed properly; the export ends at its last complete part.
+        </Hint>
       {/if}
     {:else if mp4Export.phase === 'running'}
       <ProgressBar class="export-progress" value={fraction} label="Export progress" />
@@ -108,8 +108,10 @@
         size="lg"
         variant="primary"
         onclick={startExport}
-        disabled={mp4Export.phase !== 'choose'}>Export</Button
+        disabled={mp4Export.phase !== 'choose'}
       >
+        Export
+      </Button>
     {/if}
   {/snippet}
 </Modal>
