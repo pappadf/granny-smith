@@ -181,9 +181,9 @@
   {:else}
     {#each rows as r (r.id)}
       <ListRow class={rowClass} density="compact" mono oncontextmenu={(ev) => onRowContext(r, ev)}>
-        <span class="enable" data-state={r.enabled ? 'on' : 'off'}
-          ><Icon name={r.enabled ? 'circle-filled' : 'circle-outline'} size="xs" /></span
-        >
+        <span class="enable" data-state={r.enabled ? 'on' : 'off'}>
+          <Icon name={r.enabled ? 'circle-filled' : 'circle-outline'} size="xs" />
+        </span>
         {@render label(r)}
         {#if r.hits > 0}
           <span class="hits">{r.hits}×</span>

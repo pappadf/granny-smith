@@ -138,7 +138,6 @@ const SYNTAX = [
   ['alias', 'aliases'],
   ['object', 'object path segments'],
   ['operator', 'operators'],
-  ['decl', 'declarations (let, def)'],
   ['interp', 'interpolation (${…})'],
   ['keyword', 'statement keywords'],
   ['string', 'string literals'],

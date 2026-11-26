@@ -86,6 +86,14 @@ assert(not shell.needs_continuation("for i = 1, 3 do end"), "a closed block does
 assert(not shell.needs_continuation("files.ls /tmp"), "a command line never continues")
 assert(not shell.needs_continuation("y = = 1"), "a syntax error is not a continuation")
 
+-- === Completion =================================================================
+
+local function cands(line) return gs.str(shell.complete(line, #line).candidates) end
+assert(cands("if x then machine.cp") == "[machine.cpu.]", "a tree path inside a Lua line completes")
+assert(cands("print(machine.floppy.drive[0].ins") == "[machine.floppy.drive[0].insert]", "an indexed path inside a call")
+assert(cands('print("machine.cp') == "[]", "nothing inside a string")
+assert(cands("files.ls /tmp -- note") == "[]", "nothing inside a command line's comment")
+
 -- === Files: require and dofile resolve against the running file ===================
 
 local probe = require("lib.probe")

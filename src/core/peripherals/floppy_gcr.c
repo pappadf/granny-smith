@@ -213,7 +213,7 @@ int iwm_image_num_sides(image_t *img) {
 }
 
 // Calculates TACH signal state (60 pulses per revolution) based on current time and motor speed
-int iwm_tach_signal(struct scheduler *scheduler, floppy_drive_t *drive, const char **reason) {
+int iwm_tach_signal(struct scheduler *scheduler, floppy_drive_t *drive, double pwm_rpm, const char **reason) {
     // TACH produces 60 pulses per revolution; motor not spinning = no pulses
     // motoron is active-low: true = motor OFF, false = motor ON
     if (drive->motoron) {
@@ -223,10 +223,13 @@ int iwm_tach_signal(struct scheduler *scheduler, floppy_drive_t *drive, const ch
     }
 
     double now_ns = scheduler_time_ns(scheduler);
-    double ns_per_rev = (60.0 / (double)iwm_track_rpm(drive->track)) * 1e9;
+    // A PWM-driven spindle turns at the commanded speed, a self-regulating
+    // one at its track zone's
+    double rpm = pwm_rpm > 0 ? pwm_rpm : (double)iwm_track_rpm(drive->track);
+    double ns_per_rev = (60.0 / rpm) * 1e9;
 
     if (reason)
-        *reason = "calculated";
+        *reason = pwm_rpm > 0 ? "pwm" : "calculated";
     return floppy_index_signal(FLOPPY_INDEX_GCR_TACH, now_ns, ns_per_rev, 60);
 }
 

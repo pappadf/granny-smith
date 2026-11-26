@@ -392,16 +392,16 @@
   {#if !tree.loaded}
     <Hint class="hint" inset="view">Loading system tree…</Hint>
   {:else if root.length === 0}
-    <Hint class="hint" inset="view"
-      >No machine is running yet. Start one from the Welcome view.</Hint
-    >
+    <Hint class="hint" inset="view">
+      No machine is running yet. Start one from the Welcome view.
+    </Hint>
   {:else}
     <ul class="sys-tree" role="tree" tabindex="0" bind:this={listEl} onkeydown={onKey}>
       {#each flat as { row, depth } (row.key)}
         {#if row.kind === 'divider'}
-          <SectionHeading as="li" level="h4" rule class="group-divider" role="presentation"
-            >{row.label}</SectionHeading
-          >
+          <SectionHeading as="li" level="h4" rule class="group-divider" role="presentation">
+            {row.label}
+          </SectionHeading>
         {:else}
           {@const open = !!systemView.expanded[row.path]}
           {@const selected = selectedKey === row.key}
@@ -477,11 +477,12 @@
                         width="10"
                         height="10"
                         aria-label="read-only"
-                        ><title>read-only</title><path
+                      >
+                        <title>read-only</title><path
                           fill="currentColor"
                           d="M4 7V5a4 4 0 0 1 8 0v2h1v8H3V7h1zm2 0h4V5a2 2 0 0 0-4 0v2z"
-                        /></svg
-                      >
+                        />
+                      </svg>
                     {/if}
                   </span>
                 {/if}
@@ -512,8 +513,10 @@
         const p = confirming;
         confirming = null;
         if (p) proceed(p);
-      }}>{confirming?.method.verb ?? confirming?.method.name}</Button
+      }}
     >
+      {confirming?.method.verb ?? confirming?.method.name}
+    </Button>
   {/snippet}
 </Modal>
 
@@ -534,10 +537,9 @@
         {#each argsOf(form.method) as a, i (a.name)}
           <Field stacked help={a.doc || undefined}>
             {#snippet labelContent()}
-              <span class="arg-name"
-                >{a.name}{a.optional ? '' : ' *'}<span class="arg-type">{a.type?.kind ?? ''}</span
-                ></span
-              >
+              <span class="arg-name">
+                {a.name}{a.optional ? '' : ' *'}<span class="arg-type">{a.type?.kind ?? ''}</span>
+              </span>
             {/snippet}
             {#if a.type?.presentation === 'path'}
               <PathField
@@ -562,9 +564,9 @@
   {/if}
   {#snippet actions()}
     <Button size="lg" onclick={() => (form = null)}>Cancel</Button>
-    <Button size="lg" variant="primary" class="primary" onclick={() => void submitForm()}
-      >{form?.method.verb ?? form?.method.name}</Button
-    >
+    <Button size="lg" variant="primary" class="primary" onclick={() => void submitForm()}>
+      {form?.method.verb ?? form?.method.name}
+    </Button>
   {/snippet}
 </Modal>
 

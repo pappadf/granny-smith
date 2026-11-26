@@ -279,35 +279,6 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
         }
         return;
     }
-
-    case VK_REF: {
-        const char *r = v->ref ? v->ref : "";
-        if (mode_is_json(mode))
-            vbuf_append_json_string(out, r);
-        else
-            vbuf_append_str(out, r);
-        return;
-    }
-
-    case VK_RANGE: {
-        // api.c's encoder handled neither VK_REF nor VK_RANGE and had no
-        // default, so either emitted NOTHING -- a malformed document rather
-        // than a wrong one.  Latent today (object_eval takes a path, and ranges
-        // come only from expression evaluation), but it is the shape that
-        // makes an eighth kind break the bridge silently.
-        vbuf_t inner = {0};
-        if (v->range.step == 1 || v->range.step == 0)
-            vbuf_appendf(&inner, "%lld..%lld", (long long)v->range.start, (long long)v->range.stop);
-        else
-            vbuf_appendf(&inner, "%lld..%lld step %lld", (long long)v->range.start, (long long)v->range.stop,
-                         (long long)v->range.step);
-        if (mode_is_json(mode))
-            vbuf_append_json_string(out, inner.p ? inner.p : "");
-        else
-            vbuf_append(out, inner.p ? inner.p : "", inner.len);
-        vbuf_free(&inner);
-        return;
-    }
     }
 
     // No default above: the compiler flags a missing kind.  This is the

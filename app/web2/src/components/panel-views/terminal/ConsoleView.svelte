@@ -313,9 +313,9 @@
             {#snippet label(t)}{@render marked(t)}{/snippet}
           </ValueTree>
         {:else if e.kind === 'command' && e.spans && !find.active}
-          {#each highlightParts(e.text, e.spans) as p, i (i)}{#if p.cls}<span class="hl-{p.cls}"
-                >{p.text}</span
-              >{:else}{p.text}{/if}{/each}
+          {#each highlightParts(e.text, e.spans) as p, i (i)}{#if p.cls}<span class="hl-{p.cls}">
+                {p.text}
+              </span>{:else}{p.text}{/if}{/each}
         {:else}
           {@render marked(e.text)}
         {/if}

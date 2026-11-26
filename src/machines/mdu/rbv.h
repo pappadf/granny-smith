@@ -36,6 +36,13 @@ typedef struct rbv rbv_t;
 typedef enum rbv_variant {
     RBV_VARIANT_IICI = 0,
     RBV_VARIANT_V8_IISI = 1,
+    // The V8-lineage decoders of the low-cost 68030 boards (the LC II's V8,
+    // the Classic II's Eagle, the Color Classic's Spice): no soft power-off
+    // bit in register 0, the expansion register carries the RAM/VRAM decode
+    // (rbv_set_exp_callback), and a write to the slot-interrupt register
+    // clears the frame interrupt (the built-in video driver acknowledges its
+    // VBL by writing $40 there).
+    RBV_VARIANT_V8 = 2,
 } rbv_variant_t;
 
 // === Lifecycle ==============================================================
@@ -51,6 +58,9 @@ void rbv_delete(rbv_t *rbv);
 // the monitor-sense strap and the live interrupt sources driven by other chips.
 void rbv_reset(rbv_t *rbv);
 void rbv_checkpoint(rbv_t *rbv, checkpoint_t *cp);
+// The RBV's checkpoint part-save function (machine_parts.h), defined in
+// rbv_board.c and shared by the V8 family.
+void part_save_rbv(void *obj, checkpoint_t *cp);
 
 // === Wiring =================================================================
 
@@ -72,6 +82,13 @@ void rbv_set_power_off_callback(rbv_t *rbv, void (*cb)(void *ctx), void *ctx);
 void rbv_set_blank_callback(rbv_t *rbv, void (*cb)(void *ctx, bool video_off), void *ctx);
 
 void rbv_set_mode_callback(rbv_t *rbv, void (*cb)(void *ctx, int depth_code), void *ctx);
+
+// Expansion-register (register 1, $50F26001) write callback: fires on every write with
+// the new value.  The V8 family decodes its RAM bank sizes from it.
+void rbv_set_exp_callback(rbv_t *rbv, void (*cb)(void *ctx, uint8_t value), void *ctx);
+
+// The expansion register's current value.
+uint8_t rbv_exp(rbv_t *rbv);
 
 // === Interrupt sources ======================================================
 

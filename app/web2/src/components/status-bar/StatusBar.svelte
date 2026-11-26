@@ -198,17 +198,19 @@
       <!-- Fixed width (the widest label sizes it) so the indicators that
            follow never shift when the state changes. -->
       <div class="gs-statusbar__item sb-item sb-state" title="Machine state">
-        <span class="glyph"
-          >{#if barState === 'crashed'}<Icon name="error" size="sm" />{:else}<StatusDot
+        <span class="glyph">
+          {#if barState === 'crashed'}<Icon name="error" size="sm" />{:else}<StatusDot
               class="dot"
               state={barState}
-            />{/if}</span
-        ><span class="text"
-          ><span class="label">{shownLabel}</span>{#each stateSizers as s (s)}<span
+            />{/if}
+        </span><span class="text">
+          <span class="label">{shownLabel}</span>{#each stateSizers as s (s)}<span
               class="sizer"
-              aria-hidden="true">{s}</span
-            >{/each}</span
-        >
+              aria-hidden="true"
+            >
+              {s}
+            </span>{/each}
+        </span>
       </div>
       {#if recorder.active}
         <div class="gs-statusbar__item sb-item sb-rec" title={recTitle} data-testid="recording">
@@ -301,9 +303,9 @@
           onclick={reopenPrintedDocument}
           oncontextmenu={(ev) => printer.document && printerMenu(ev, printer.document.printer)}
         >
-          <Icon name="file" size="sm" /><span class="printer-label"
-            >{printer.document.title || printer.document.name}</span
-          >
+          <Icon name="file" size="sm" /><span class="printer-label">
+            {printer.document.title || printer.document.name}
+          </span>
         </button>
       {/if}
       {#if activity.current}
@@ -317,8 +319,10 @@
               class="gs-statusbar__button upload-cancel"
               title="Cancel"
               aria-label="Cancel {activity.verb.toLowerCase()}"
-              onclick={() => activity.cancel?.()}>&times;</button
+              onclick={() => activity.cancel?.()}
             >
+              &times;
+            </button>
           {/if}
         </div>
       {/if}

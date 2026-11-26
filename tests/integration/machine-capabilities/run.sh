@@ -273,6 +273,42 @@ assert_contains pm7500 '"freq":100000000' "pm7500 runs at 100 MHz"
 assert_contains pm8500 '"freq":120000000' "pm8500 runs at 120 MHz"
 assert_contains pm9500 '"freq":132000000' "pm9500 runs at 132 MHz"
 
+# The 1997 TNT machines: the 7500/8500/9500 boards with a 604e card (run
+# as the 604 core) at 200 MHz.  The same storage and floppy as their
+# predecessors; suite-tnt-1997 boots Mac OS 8.1 on all four.
+for m in pm7300 pm7600 pm8600 pm9600; do
+    assert_contains "$m" '"model":604' "$m is a PowerPC 604-class part"
+    assert_contains "$m" '"kind":"ppc_604"' "$m has the 604 split-BAT MMU"
+    assert_contains "$m" '"freq":200000000' "$m runs at 200 MHz"
+    assert_contains "$m" '"nubus":false' "$m has no NuBus"
+    assert_contains "$m" '{"id":"scsi","label":"Internal fast SCSI","kind":"scsi"' "$m has the internal MESH bus"
+    assert_contains "$m" '{"unit":3,"label":"ID 3 · CD-ROM bay","short":"ID 3"}' "$m has the CD-ROM bay at ID 3"
+    assert_contains "$m" '"storage":[{"bus":"scsi","unit":0,"type":"hd"},{"bus":"scsi2","unit":3,"type":"cd"}]' "$m opens with the hard disk and the CD-ROM drive"
+done
+
+# The Power Macintosh 7200: the Catalyst board -- a 90 MHz 601, Platinum
+# video on the built-in port, and the 53C94 as the one SCSI bus (internal
+# bays and the external connector), no MESH (suite-pm7200).
+assert_contains pm7200 '"model":601' "pm7200 is a PowerPC 601"
+assert_contains pm7200 '"freq":90000000' "pm7200 runs at 90 MHz"
+assert_contains pm7200 '"pci":true' "pm7200 has PCI"
+assert_contains pm7200 '"detail":"Platinum"' "pm7200's built-in video is Platinum"
+assert_contains pm7200 '{"id":"scsi","label":"SCSI","kind":"scsi"' "pm7200 has one SCSI bus"
+assert_absent pm7200 '"id":"scsi2"' "pm7200 has no second SCSI bus"
+assert_contains pm7200 '"storage":[{"bus":"scsi","unit":0,"type":"hd"},{"bus":"scsi","unit":3,"type":"cd"}]' "pm7200 opens with a hard disk at ID 0 and the CD-ROM drive at ID 3"
+
+# The Workgroup Server 9150: the 8100's board plus a fourth NuBus socket at
+# $A (suite-wgs9150 row wgs9150-24ac-slot-a runs a 24AC's driver there).
+for m in wgs9150 wgs9150_120; do
+    assert_contains "$m" '"model":601' "$m is a PowerPC 601"
+    assert_contains "$m" '"nubus":true' "$m has BART NuBus sockets"
+    assert_contains "$m" '{"id":"nubus_a","label":"NuBus slot A","detail":"Slot ID $A"' "$m declares socket \$A"
+    assert_contains "$m" '{"id":"nubus_c","label":"NuBus slot B","detail":"Slot ID $C"' "$m declares socket \$C"
+    assert_contains "$m" '"storage":[{"bus":"scsi","unit":0,"type":"hd"},{"bus":"scsi","unit":3,"type":"cd"}]' "$m opens with a hard disk at ID 0 and the CD-ROM drive at ID 3"
+done
+assert_contains wgs9150 '"freq":80000000' "wgs9150 runs at 80 MHz"
+assert_contains wgs9150_120 '"freq":120000000' "wgs9150_120 runs at 120 MHz"
+
 # The Apple Network Servers — the same TNT substrate with the Macintosh
 # removed.  Both are plain 604s and both advertise PCI; what distinguishes
 # them in the profile is the CPU clock, the shipping memory size and the
@@ -398,7 +434,7 @@ done
 
 # Every Macintosh has the AppleTalk option, default Active (D22); the Lisa
 # and the Macintosh XL do not.
-for m in plus se30 iicx iix iifx iici iisi q700 q900 q950 q840av q660av pm6100 pm7100 pm8100 pm7500 pm8500 pm9500 ans500 ans700 pmg3dt pmg3mt; do
+for m in plus se30 iicx iix iifx iici iisi q700 q900 q950 q840av q660av pm6100 pm7100 pm8100 pm7500 pm8500 pm9500 ans500 ans700 pmg3dt pmg3mt pm7300 pm7600 pm8600 pm9600 wgs9150 wgs9150_120 pm7200; do
     assert_contains "$m" '{"id":"appletalk","label":"AppleTalk","kind":"choice","values":[{"id":"active","label":"Active"},{"id":"inactive","label":"Inactive"}],"default":"active"}' "$m has the AppleTalk option"
 done
 for m in lisa macxl; do
@@ -416,6 +452,116 @@ done
 for m in iix iifx; do
     assert_contains "$m" '{"id":"fd1","label":"Second internal floppy drive","types":[{"id":"none","label":"None"},{"id":"hd","label":"SuperDrive (1.4 MB)"}],"default":"none"}' "$m's second internal bay ships empty"
 done
+
+# The compact 68000 models beside the Plus (src/machines/compact): no MMU, no
+# FPU, no NuBus, AppleTalk on every one; SCSI from the SE on, none on the
+# 128K, 512K and 512K enhanced; the floppy positions of each.
+for m in mac128k mac512k mac512ke se sefdhd classic; do
+    assert_contains "$m" '"cpu":{"model":68000,"address_bits":24,"fpu":false}' "$m has a 68000"
+    assert_contains "$m" '"mmu":{"present":false,"kind":"none"}' "$m has no MMU"
+    assert_contains "$m" '"nubus":false,"pci":false' "$m has no slots"
+    assert_contains "$m" '{"id":"appletalk","label":"AppleTalk","kind":"choice","values":[{"id":"active","label":"Active"},{"id":"inactive","label":"Inactive"}],"default":"active"}' "$m has the AppleTalk option"
+done
+for m in mac128k mac512k mac512ke; do
+    assert_contains "$m" '"storage":[]' "$m has no SCSI"
+done
+for m in se sefdhd classic; do
+    assert_contains "$m" '"storage":[{"id":"scsi","label":"SCSI","kind":"scsi"' "$m has SCSI"
+done
+assert_contains mac128k '"values":[{"id":"128","label":"128 KB"}],"default":"128"' "mac128k has 128 KB"
+assert_contains mac512k '"values":[{"id":"512","label":"512 KB"}],"default":"512"' "mac512k has 512 KB"
+for m in mac128k mac512k; do
+    assert_contains "$m" '{"id":"fd0","label":"Internal floppy drive","types":[{"id":"400k","label":"400K drive"}],"default":"400k"}' "$m has the 400K drive"
+done
+assert_contains mac512ke '{"id":"fd0","label":"Internal floppy drive","types":[{"id":"800k","label":"800K drive"}],"default":"800k"}' "mac512ke has the 800K drive"
+assert_contains se '{"id":"fd1","label":"Second internal floppy drive","types":[{"id":"none","label":"None"},{"id":"800k","label":"800K drive"}],"default":"800k"}' "se has two internal 800K drives"
+assert_contains sefdhd '{"id":"fd1","label":"Second internal floppy drive","types":[{"id":"none","label":"None"},{"id":"hd","label":"SuperDrive (1.4 MB)"}],"default":"hd"}' "sefdhd has two internal SuperDrives"
+assert_contains classic '{"id":"fd1","label":"External floppy drive","types":[{"id":"none","label":"None"},{"id":"hd","label":"SuperDrive (1.4 MB)"}],"default":"none"}' "classic's external floppy port ships empty"
+# The V8 family (LC II, Classic II, Color Classic): a 68030 with its PMMU,
+# no NuBus, built-in video, AppleTalk; the Classic II alone keeps an
+# external floppy port.
+for m in lcii classicii colorclassic; do
+    assert_contains "$m" '"cpu":{"model":68030,"address_bits":32,"fpu":false}' "$m has a 68030 and no FPU (the 68882 is an expansion option)"
+    assert_contains "$m" '"kind":"68030_pmmu"' "$m has the 68030 PMMU"
+    assert_contains "$m" '"nubus":false,"pci":false' "$m has no NuBus or PCI"
+    assert_contains "$m" '"freq":15667200' "$m runs at 15.6672 MHz"
+    assert_contains "$m" '{"id":"appletalk","label":"AppleTalk","kind":"choice","values":[{"id":"active","label":"Active"},{"id":"inactive","label":"Inactive"}],"default":"active"}' "$m has the AppleTalk option"
+    assert_contains "$m" '{"id":"10240","label":"10 MB"}],"default":"10240"' "$m tops out at the decoder's 10 MB"
+done
+assert_contains classicii '{"id":"fd1","label":"External floppy drive"' "classicii's external floppy port"
+assert_absent lcii '"id":"fd1"' "lcii has one floppy drive"
+assert_absent colorclassic '"id":"fd1"' "colorclassic has one floppy drive"
+
+# The Sonora boards of the V8 family (LC III, LC III+, LC 520, LC 550, Color
+# Classic II): a 68030 with its PMMU, no NuBus, built-in video, AppleTalk,
+# 4 MB soldered plus one 72-pin SIMM (36 MB at most), one floppy drive.
+for m in lciii lciiip lc520 lc550 colorclassicii; do
+    assert_contains "$m" '"cpu":{"model":68030,"address_bits":32,"fpu":false}' "$m has a 68030 and no FPU (an empty 68882 socket)"
+    assert_contains "$m" '"kind":"68030_pmmu"' "$m has the 68030 PMMU"
+    assert_contains "$m" '"nubus":false,"pci":false' "$m has no NuBus or PCI"
+    assert_contains "$m" '{"id":"appletalk","label":"AppleTalk","kind":"choice","values":[{"id":"active","label":"Active"},{"id":"inactive","label":"Inactive"}],"default":"active"}' "$m has the AppleTalk option"
+    assert_contains "$m" '{"id":"36864","label":"36 MB"}],"default":"8192"' "$m tops out at 36 MB"
+    assert_absent "$m" '"id":"fd1"' "$m has one floppy drive"
+done
+for m in lciii lc520; do assert_contains "$m" '"freq":25000000' "$m runs at 25 MHz"; done
+for m in lciiip lc550 colorclassicii; do assert_contains "$m" '"freq":33000000' "$m runs at 33 MHz"; done
+
+# The MEMC machines (src/machines/memc): a 68040 on every board, its FPU
+# absent on the Centris 610 (68LC040); three NuBus sockets C-E on the Wombat
+# boards, one adapter slot E on the WLCD ones; soldered RAM 8 MB (Wombat) or
+# 4 MB (WLCD) up to 136 / 68 MB; the clocks; the DAFB-compatible built-in
+# video.
+for m in c610 c650 q610 q650 q800; do
+    assert_contains "$m" '"mmu":{"present":true,"kind":"68040"}' "$m has the 68040 MMU"
+    assert_contains "$m" '"nubus":true,"pci":false' "$m is a NuBus machine"
+    assert_contains "$m" '"floppies":[{"id":"fd0","label":"Internal floppy drive","types":[{"id":"hd","label":"SuperDrive (1.4 MB)"}],"default":"hd"}]' "$m has one SuperDrive"
+    assert_contains "$m" '"storage":[{"id":"scsi","label":"SCSI","kind":"scsi"' "$m offers one SCSI bus"
+    assert_contains "$m" '{"id":"appletalk","label":"AppleTalk","kind":"choice","values":[{"id":"active","label":"Active"},{"id":"inactive","label":"Inactive"}],"default":"active"}' "$m has the AppleTalk option"
+    assert_contains "$m" '"builtin":{"id":"builtin","label":"Built-in video","detail":"MEMC (DAFB-compatible) + Antelope"' "$m's MEMC drives its built-in video"
+done
+assert_contains c610 '"cpu":{"model":68040,"address_bits":32,"fpu":false}' "c610 has a 68LC040 (no FPU)"
+for m in c650 q610 q650 q800; do
+    assert_contains "$m" '"cpu":{"model":68040,"address_bits":32,"fpu":true}' "$m has a 68040 with FPU"
+done
+for m in c650 q650 q800; do
+    assert_contains "$m" '"slots":[{"id":"nubus_c","label":"NuBus slot C"' "$m's first socket is C"
+    assert_contains "$m" '{"id":"nubus_e","label":"NuBus slot E"' "$m has socket E"
+    assert_contains "$m" '{"id":"8192","label":"8 MB"},' "$m's RAM opens at the soldered 8 MB"
+    assert_contains "$m" '{"id":"139264","label":"136 MB"}],"default":"16384"' "$m caps RAM at 136 MB"
+done
+for m in c610 q610; do
+    assert_contains "$m" '"slots":[{"id":"nubus_e","label":"Expansion slot E (NuBus adapter)"' "$m has the one adapter slot E"
+    assert_absent "$m" '"id":"nubus_c"' "$m has no NuBus socket C"
+    assert_contains "$m" '{"id":"4096","label":"4 MB"},' "$m's RAM opens at the soldered 4 MB"
+    assert_contains "$m" '{"id":"69632","label":"68 MB"}],"default":"8192"' "$m caps RAM at 68 MB"
+done
+assert_contains c610 '"freq":20000000' "c610 runs at 20 MHz"
+assert_contains c650 '"freq":25000000' "c650 runs at 25 MHz"
+assert_contains q610 '"freq":25000000' "q610 runs at 25 MHz"
+assert_contains q650 '"freq":33333333' "q650 runs at 33 MHz"
+assert_contains q800 '"freq":33333333' "q800 runs at 33 MHz"
+
+# The MEMCjr machines (src/machines/memc/memcjr.c): a 68040 with its FPU
+# absent on the LC 475 and Quadra 605 (68LC040); no NuBus (the LC PDS is not
+# modelled); 4 MB soldered plus one SIMM up to 36 MB; the LC 575's built-in
+# 14" display, the external monitors on the other two.
+for m in lc475 lc575 q605; do
+    assert_contains "$m" '"mmu":{"present":true,"kind":"68040"}' "$m has the 68040 MMU"
+    assert_contains "$m" '"nubus":false,"pci":false' "$m has no NuBus or PCI"
+    assert_contains "$m" '"floppies":[{"id":"fd0","label":"Internal floppy drive","types":[{"id":"hd","label":"SuperDrive (1.4 MB)"}],"default":"hd"}]' "$m has one SuperDrive"
+    assert_contains "$m" '"storage":[{"id":"scsi","label":"SCSI","kind":"scsi"' "$m offers one SCSI bus"
+    assert_contains "$m" '{"id":"appletalk","label":"AppleTalk","kind":"choice","values":[{"id":"active","label":"Active"},{"id":"inactive","label":"Inactive"}],"default":"active"}' "$m has the AppleTalk option"
+    assert_contains "$m" '{"id":"4096","label":"4 MB"},' "$m's RAM opens at the soldered 4 MB"
+    assert_contains "$m" '{"id":"36864","label":"36 MB"}],"default":"8192"' "$m tops out at 36 MB"
+done
+for m in lc475 q605; do
+    assert_contains "$m" '"cpu":{"model":68040,"address_bits":32,"fpu":false}' "$m has a 68LC040 (no FPU)"
+    assert_contains "$m" '"freq":25000000' "$m runs at 25 MHz"
+    assert_contains "$m" '"builtin":{"id":"builtin","label":"Built-in video","detail":"MEMCjr (DAFB-compatible) + Antelope"' "$m's MEMCjr drives its built-in video"
+done
+assert_contains lc575 '"cpu":{"model":68040,"address_bits":32,"fpu":false}' "lc575 has a 68LC040 (no FPU)"
+assert_contains lc575 '"freq":33333333' "lc575 runs at 33 MHz"
+assert_contains lc575 '"default_monitor":"builtin_14in_color"' "lc575's display is the built-in 14-inch"
 
 # The floor: every registered model carries at least one assertion above.
 models=$(grep -o '^{"id":"[a-z0-9]*"' "$OUT" | sed 's/^{"id":"\(.*\)"/\1/')

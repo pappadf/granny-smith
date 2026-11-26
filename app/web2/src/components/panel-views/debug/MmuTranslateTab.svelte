@@ -76,8 +76,10 @@
       <span class="presets">
         <Button
           class="preset-btn"
-          onclick={() => (debug.mmuTransAddr = debugFrame.current?.pc ?? 0)}>PC</Button
+          onclick={() => (debug.mmuTransAddr = debugFrame.current?.pc ?? 0)}
         >
+          PC
+        </Button>
       </span>
     {/if}
     {#if isLisa}
@@ -100,13 +102,13 @@
               <td>valid</td>
               <td>$<span class="hex">{fmtHex32(t.phys ?? 0)}</span></td>
               <td>{lisaSpaceLabel(t.space)}</td>
-              <td
-                >{t.access === 'ro'
+              <td>
+                {t.access === 'ro'
                   ? 'read-only'
                   : t.access === 'rw'
                     ? 'read-write'
-                    : (t.access ?? '')}</td
-              >
+                    : (t.access ?? '')}
+              </td>
             {:else}
               <td class="bad">{t ? 'not mapped (faults)' : '—'}</td>
               <td></td>
@@ -125,9 +127,9 @@
       </p>
     {:else}
       <p class="ok">
-        L:$<span class="hex">{fmtHex32(debug.mmuTransAddr)}</span> P:$<span class="hex"
-          >{fmtHex32(result.phys ?? 0)}</span
-        >
+        L:$<span class="hex">{fmtHex32(debug.mmuTransAddr)}</span> P:$<span class="hex">
+          {fmtHex32(result.phys ?? 0)}
+        </span>
         <Badge class="tag tag-pt" intent="info">{result.via.toUpperCase()}</Badge>
         {#if result.access}<Badge class="tag tag-acc" intent="neutral">{result.access}</Badge>{/if}
         {#if result.space}<Badge class="tag tag-tt" intent="success">{result.space}</Badge>{/if}

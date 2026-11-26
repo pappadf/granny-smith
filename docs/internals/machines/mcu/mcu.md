@@ -10,6 +10,15 @@ controller that defines the generation (like GLUE, MDU, OSS before it);
 the family also carries the JDB/Relayer datapath, the YANCC NuBus bridge,
 and the stand-alone DAFB video controller ([dafb.md](dafb.md)).
 
+The devices and plumbing this generation shares with the MEMC family
+(Centris/Quadra 610/650/800, LC 475/575, Quadra 605 —
+[../memc/memc.md](../memc/memc.md)) live in
+[quadra040.c](../../../../src/machines/mcu/quadra040.c) /
+[quadra040.h](../../../../src/machines/mcu/quadra040.h), and the YANCC
+register file in [yancc.c](../../../../src/machines/mcu/yancc.c) /
+[yancc.h](../../../../src/machines/mcu/yancc.h) (see "Shared 040 Quadra
+block" below).
+
 Machine pages: [q700.md](q700.md), [q900.md](q900.md), [q950.md](q950.md).
 Hardware reference: [mcu.md](../../../reference/machines/mcu/mcu.md) (family),
 [q700.md](../../../reference/machines/mcu/q700.md),
@@ -37,9 +46,11 @@ Evidence labels below follow the DAFB-family implementation reference:
   addresses, DRAM/ROM speed, refresh, page mode — the `orwell_cfg` word,
   with the bank starts latched when the matching latch address is poked).
   (Reference: [mcu.md](../../../reference/machines/mcu/mcu.md) §2.4–§2.7.)
-  The YANCC bridge file at `$50028000` is **accept-and-log with readback**:
-  64 longword slots latch writes and read back verbatim, and every first touch
-  is logged (`log.set board`).
+  The YANCC bridge file at `$50028000` is **accept-and-log with readback**
+  (`yancc.c`): 64 longword slots latch writes and read back verbatim, and
+  every first touch is logged (`log.set board`). Bits 7 (write-buffer
+  error) and 10 (its enable) together request level 7; `/RESET` clears the
+  file and drops the request.
 - **256 KiB I/O island at `$50000000`**, mirror mask `$3FFFF`, run on the
   shared board_io engine (reference: [mcu.md](../../../reference/machines/mcu/mcu.md)
   §3.2). Q700 decode: VIA1 `$0000`, VIA2 `$2000`, MAC
@@ -61,10 +72,36 @@ Evidence labels below follow the DAFB-family implementation reference:
 
 VIA2 port A carries the slot-level interrupt requests, all active-low:
 PA0 Ethernet (SONIC), PA1–PA5 NuBus slots $A–$E, PA6 built-in video
-(DAFB). `mcu_slot_irq_source` maintains the `slot_pa_mask` aggregate:
+(DAFB). `quadra040_slot_irq_source` maintains the `slot_pa_mask` aggregate:
 each source drives its PA input line, and CA1 (/SLOTIRQ) follows the OR
 of all sources. NuBus card /NMRQ lines route in via the substrate's
 `nubus_slot_irq` hook (slot $A → PA1 … $E → PA5).
+
+## Shared 040 Quadra block
+
+`quadra040_t` is the first member of `mcu_state_t` (and of the MEMC
+family's `memc_state_t`), so `quadra040_st(cfg)` reaches it whichever
+family runs. It holds the devices both generations carry — EASC, DAFB,
+the first 53C96, SONIC and the MAC-PROM bytes, the `/SLOTIRQ` mask, the
+YANCC/Kiwi `yancc_t`, the ROM overlay, the bus MMU and the I/O engine —
+and `quadra040.c` the code over them: the init prefix
+(`quadra040_build_core`: core, IRQ part, low-speed spine, VIAs) and suffix
+(`quadra040_build_finish`: NuBus, host regions, finish), the idle VIA
+lines, the SCSI / SONIC-EASC-SWIM / DAFB / bus-MMU builders, the island
+bind and the island, video (VRAM repeating through the 2 MB aperture) and
+overlay mappings, the shared half of `/RESET`, teardown, restore
+re-drives, the VBL and display hooks, the IRQ callbacks, the PROM / SONIC /
+YANCC island handler rows and the DAFB monitor table
+(`quadra040_monitor_*`). `M68K040_BOARD_COMMON(chipset, io)` is the
+descriptor `.common` block both families use (`MCU_BOARD_COMMON(io)` is
+it with `"MCU+DAFB"`).
+
+RAM banks are mapped by the shared `m68k_board_map_banks`
+(`runtime/m68k_board.c`): each populated bank mirrors from its start to the
+next bank above it or its 64 MB window. Before a remap the pages the last
+mapping reached (`ram_extent`, seeded to the Orwell's 316 MB reach at the
+layout and at the `/RESET` re-arm) are cleared, so a bank the ROM moves
+while sizing leaves no stale image, and the bus MMU's TLB is flushed.
 
 ## Checkpoint / save-state
 

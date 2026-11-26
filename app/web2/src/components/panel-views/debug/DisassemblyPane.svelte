@@ -211,9 +211,9 @@
   {#if machine.status === 'running'}
     <Hint class="hint" inset="pane">Pause the machine to see the disasm listing.</Hint>
   {:else if rows.length === 0}
-    <Hint class="hint" inset="pane"
-      >{debugFrame.loading ? 'Disassembling…' : 'No machine running.'}</Hint
-    >
+    <Hint class="hint" inset="pane">
+      {debugFrame.loading ? 'Disassembling…' : 'No machine running.'}
+    </Hint>
   {:else}
     {#each rows as row, i (row.addr * 100 + i)}
       {@const isPc = row.addr === pc}
@@ -226,12 +226,12 @@
         data-state={bpState(row.addr)}
         oncontextmenu={(ev) => onRowContext(row, ev)}
       >
-        <span class="marker"
-          >{#if isPc}<Icon name="debug-stackframe" size="md" />{:else if bpState(row.addr)}<Icon
+        <span class="marker">
+          {#if isPc}<Icon name="debug-stackframe" size="md" />{:else if bpState(row.addr)}<Icon
               name="circle-filled"
               size="xs"
-            />{/if}</span
-        >
+            />{/if}
+        </span>
         <!-- Address group is one grid cell so the mnem/ops columns
              stay aligned across rows even when addr-p / tag are
              absent. Without the wrapper, missing optional spans
@@ -241,8 +241,10 @@
           {#if addr.physical}<span class="addr-p">{addr.physical}</span>{/if}
           {#if addr.tag}<Badge
               class="tag tag-{addr.tag.toLowerCase()}"
-              intent={TAG_INTENT[addr.tag.toLowerCase()] ?? 'neutral'}>{addr.tag}</Badge
-            >{/if}
+              intent={TAG_INTENT[addr.tag.toLowerCase()] ?? 'neutral'}
+            >
+              {addr.tag}
+            </Badge>{/if}
         </span>
         <span class="mnem">{row.mnem}</span>
         <span class="ops">{row.ops}</span>

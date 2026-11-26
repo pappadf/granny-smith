@@ -183,6 +183,8 @@
     "suite-av-floppy": 96,
     "suite-av-floppy-boot": 31,
     "suite-av-sound": 217,
+    "suite-compact": 60,
+    "suite-memc": 60,
     "suite-gossamer": 166,
     "suite-iici": 159,
     "suite-iicx": 32,
@@ -190,11 +192,14 @@
     "suite-iisi": 35,
     "suite-iix": 28,
     "suite-lisa": 129,
+    "suite-memcjr": 33,
     "suite-pdm": 342,
     "suite-plus": 20,
     "suite-quadra": 122,
     "suite-se30": 39,
+    "suite-sonora": 35,
     "suite-tnt": 339,
+    "suite-v8": 30,
     "tnt-monitor": 23,
     "tnt-nvram-lifetime": 8,
     "tnt-pci-mach64": 12,
@@ -206,6 +211,9 @@
     "tnt-voodoo2-glide-sw": 285,
     "vfs-rsrc": 0,
     "vrom-identify": 0,
-    "watchpoints": 0
+    "watchpoints": 0,
+    "suite-tnt-1997": 240,
+    "suite-wgs9150": 95,
+    "suite-pm7200": 75
   }
 }

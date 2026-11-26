@@ -26,6 +26,7 @@ static const pdm_board_desc_t pm6100_board = {
     .bank_layout = PDM_BANKS_MOVABLE,
     .bank_count = 2,
     .wait_state_penalty = 2, // pinned by the pdm-rom-ladder L7 bus-ratio row
+    .first_nubus_slot = 0xB, // slot $B decoded (the PDS adapter's window), never a connector
 };
 
 const hw_profile_t machine_pm6100 = {

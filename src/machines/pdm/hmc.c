@@ -17,7 +17,8 @@
 //     extra bus cycles per access, so the measured delta yields the real
 //     machine's CPU:bus ratio.
 //   - the machine-ID register at $5FFFFFFC (byte-readable; a 32-bit read
-//     must NOT show the $A55A signature — the ROM's long-probe has to fail).
+//     must NOT show the $A55A signature — the ROM's long-probe has to fail),
+//     the shared CPU-ID page (cpuid_page.h) that pdm.c installs.
 //
 // Everything else (DRAM timing fields, refresh divider, L2 controls) is
 // store-and-readback: no L2 is modeled, which is fully self-consistent with
@@ -32,7 +33,6 @@
 #include "log.h"
 #include "page_fill.h"
 #include "ppc.h"
-#include "regfile.h"
 
 #include <string.h>
 
@@ -324,27 +324,4 @@ void pdm_hmc_write(config_t *cfg, uint32_t offset, uint8_t value) {
     } else {
         hmc_shift_in(cfg, value & 1u);
     }
-}
-
-// ============================================================
-// Machine-ID register page ($5FFFF000; the register is $5FFFFFFC)
-// ============================================================
-// Byte reads deliver $A55A30xx; wider reads must NOT show the signature
-// (the ROM's 32-bit probe has to fail before it falls back to bytes), so a
-// 32-bit read returns only the low half.  Writes are ignored.
-
-uint8_t pdm_id_read8(void *ctx, uint32_t offset) {
-    config_t *cfg = (config_t *)ctx;
-    if (offset >= 0xFFCu) {
-        uint32_t id = 0xA55A0000u | pdm_board(cfg)->machine_id;
-        return be_lane8(id, offset);
-    }
-    return 0;
-}
-
-uint32_t pdm_id_read32(void *ctx, uint32_t offset) {
-    config_t *cfg = (config_t *)ctx;
-    if (offset >= 0xFFCu)
-        return pdm_board(cfg)->machine_id; // no $A55A signature on long reads
-    return 0;
 }

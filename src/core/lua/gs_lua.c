@@ -659,18 +659,6 @@ static void push_value_ref(lua_State *L, const value_t *v) {
     case VK_ERROR:
         push_error_object(L, v->err);
         return;
-    case VK_REF:
-        push_node(L, v->ref ? v->ref : "", false);
-        return;
-    case VK_RANGE:
-        lua_createtable(L, 0, 3);
-        lua_pushinteger(L, (lua_Integer)v->range.start);
-        lua_setfield(L, -2, "start");
-        lua_pushinteger(L, (lua_Integer)v->range.stop);
-        lua_setfield(L, -2, "stop");
-        lua_pushinteger(L, (lua_Integer)v->range.step);
-        lua_setfield(L, -2, "step");
-        return;
     }
     lua_pushnil(L);
 }

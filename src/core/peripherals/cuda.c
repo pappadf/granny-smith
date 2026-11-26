@@ -225,10 +225,9 @@ struct cuda {
     bool fw240;
 
     // Fixed machine property (config, not guest state): whether the one-second
-    // tick may carry the RTC in the Mode3Clock RdTime form.  Enabled only for
-    // the PDM family, whose live guest clock needs a real seed; the AV Quadras
-    // keep the bare tick so their sound goldens stay on the wall-clock-agnostic
-    // path they were captured on.
+    // tick may carry the RTC in the Mode3Clock RdTime form.  Enabled on every
+    // machine: the AV Quadras' System 7.1 sends no RdTime at boot, only
+    // Wr1SecMode mode 3, and seeds lowmem Time from the ticks.
     bool mode3_clock;
 };
 

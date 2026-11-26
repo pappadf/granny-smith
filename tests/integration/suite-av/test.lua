@@ -253,6 +253,23 @@ end
 -- "Quadra 660AV" (with different case icons), which is the Gestalt machine name
 -- the strap nibble and System Enabler 088 between them decide.
 
+-- The PSC channel-0 pump (av.c) keeps a 10 us scheduler event alive only
+-- while the channel is armed, and a pump left re-arming caps every sprint at
+-- 10 us of guest time.  Each 7.1 boot below makes one odd-length SCSI read
+-- (the 53C96 leaves the odd byte in its FIFO for the driver and the SCSI
+-- Manager programs the channel one byte short to match); once the desktop is
+-- idle the pump must have stopped.
+local function pump_stopped()
+    for _, e in ipairs(scheduler.events) do
+        if e.source == "av" and e.event == "scsi_pump" then return false end
+    end
+    return true
+end
+
+local function check_pump_stopped(what)
+    mac.wait_until(pump_stopped, 1000000, 50000000, F"${what}: the SCSI pump event still re-arming at the idle desktop")
+end
+
 -- ---- q840av-71-hd-desktop ---------------------------------------------------
 -- The deliverable: System 7.1 + System Enabler 088 from the hard disk to the
 -- Finder desktop on a Quadra 840AV.  The enabler is not optional — its `gbly`
@@ -285,6 +302,7 @@ local function row_q840av_71_hd_desktop()
     -- know which box it is running on.
     mac.about_box()
     mac.check_about("goldens/q840av-7.1-640x480x8-hd-about.png")
+    check_pump_stopped("q840av-hd")
     mac.report_row("7.1", "civic", "hd-boot about")
     mac.report_perf("suite-av/q840av-71-hd-desktop", scheduler.instr_count)
 end
@@ -342,6 +360,7 @@ local function row_q660av_71_hd_desktop()
     -- know which box it is running on.
     mac.about_box()
     mac.check_about("goldens/q660av-7.1-640x480x8-hd-about.png")
+    check_pump_stopped("q660av-hd")
     mac.report_row("7.1", "civic", "hd-boot about")
     mac.report_perf("suite-av/q660av-71-hd-desktop", scheduler.instr_count)
 end
@@ -689,7 +708,7 @@ local function row_av_tts()
     assert(machine.dsp.state == "running", F"av-tts: DSP ${machine.dsp.state} after speech")
     assert(machine.dsp.emr == 0x8000, F"av-tts: emr=${machine.dsp.emr:04x} after speech — kernel died")
     assert(machine.sound.overruns == 0, F"av-tts: ${machine.sound.overruns} frame overruns")
-    mac.check_sound("goldens/av-tts.wav", 76320)
+    mac.check_sound("goldens/av-tts.wav", 76560)
     mac.report_perf("suite-av/av-tts", scheduler.instr_count)
 end
 

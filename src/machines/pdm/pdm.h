@@ -20,7 +20,9 @@
 #ifndef GS_MACHINES_PDM_H
 #define GS_MACHINES_PDM_H
 
+#include "ariel.h" // ariel_t, the Ariel CLUT/DAC
 #include "board_io.h" // board_io_t, the island decode engine
+#include "cpuid_page.h" // cpuid_page_t, the machine-ID page
 #include "display.h"
 #include "display_class.h"
 #include "display_ramdac.h"
@@ -59,6 +61,11 @@ typedef struct pdm_board_desc {
     // 8100 only: the discrete 53CF96 on the fast internal bus (SCSI bus 0,
     // register file at island +$11000, AMIC DMA channel B).
     bool has_fast_scsi;
+    // The lowest NuBus slot BART decodes and whose /NMRQ reaches AMIC's
+    // pseudo-VIA2 slot bank (through $E): $B on the 6100/7100/8100 (decoded,
+    // never a connector), $A on the Workgroup Server 9150, whose fourth
+    // connector there lands on the FAT AMIC's slot bank bit 1 (wgs9150.c).
+    uint8_t first_nubus_slot;
 } pdm_board_desc_t;
 
 // === HMC state (hmc.c) ======================================================
@@ -141,9 +148,7 @@ typedef struct pdm_amic {
     uint8_t vid_depth; // $50F28001
     uint8_t vid_sense; // $50F28002 (drive bits; sense readback stubbed)
     uint8_t vid_test; // $50F28003
-    ramdac_seq_t clut_seq; // Ariel's CLUT address and R/G/B phase
-    uint8_t clut_ctrl, clut_key;
-    uint8_t clut[256][3];
+    ariel_t ariel; // the Ariel CLUT/DAC (runtime/ariel.h): sequencer, control, key, table
     uint8_t snd_out_buf; // sound-out ping-pong: next buffer to complete (0/1)
     pdm_via2_t via2;
     // AWACS codec register shadows (write-only on hardware, loaded through
@@ -194,6 +199,30 @@ extern const builtin_video_desc_t pdm_builtin_video;
 // its single slot needs the optional PDS adapter, which carries the bridge.
 extern const struct nubus_slot_decl pdm_nubus_slots_cde[];
 
+// === The 8100's board, which the Workgroup Server 9150 is ==================
+// The Workgroup Server 9150 is the 8100's board in a tower case (wgs9150.c):
+// what the three profiles share is written once here.
+
+// 8 MB soldered + four SIMM pairs, carved into fixed-window banks of
+// {2,8,32} MB: every total the pairs make, up to 264 MB (pm8100.c).
+extern const uint32_t pm8100_ram_options_kb[];
+// The board facts: a 40 MHz bus, eight fixed-window SIMM banks, and the
+// discrete 53CF96 on the fast internal bus (island +$11000, DMA channel B).
+#define PDM_8100_BOARD_COMMON                                                                                          \
+    .bus_hz = 40000000u, .bank_layout = PDM_BANKS_FIXED, .bank_count = 8, .has_fast_scsi = true
+// The profile fields: a 601 with the 4 MB ROM, 32 MB of the 264 MB, the
+// 8100's SIMM totals, the SuperDrive, the Curio bus with its CD-ROM bay,
+// LocalTalk, the AppleCD 300i Plus, Ariel's built-in video and the PDM PRAM
+// and substrate.  A model file includes slot_tables.h and pram_defaults.h
+// for the names it expands to.
+#define PDM_8100_PROFILE_COMMON                                                                                        \
+    .cpu_model = CPU_MODEL_PPC601, .mmu_kind = MMU_PPC_601, .address_bits = 32, .ram_default = 0x2000000,              \
+    .ram_max = 0x10800000, .rom_size = 0x400000, .ram_options = pm8100_ram_options_kb,                                 \
+    .floppy_slots = mac_floppy_slots_1hd, .storage = mac_storage_scsi_cd_bay,                                          \
+    .default_storage = mac_default_storage_hd0_cd3, .appletalk = true,                                                 \
+    .cdrom_drive = &scsi_cd_drive_applecd_300i_plus, .builtin_video = &pdm_builtin_video, .pram = &pram_defaults_pdm,  \
+    .substrate = &pdm_substrate
+
 // === Video presentation state (ariel.c) =====================================
 // Everything here is DERIVED from the amic register file (vid_mode/vid_depth/
 // clut) and rebuilt on init, reset and checkpoint restore — never saved.
@@ -223,8 +252,8 @@ typedef struct pdm_bart_window {
 } pdm_bart_window_t;
 
 // Three connectors x (standard + super slot space), the PDS slot-$E window,
-// and the no-bridge register page.
-#define PDM_BART_WINDOWS 8
+// and the no-bridge register page — plus the 9150's slot $A pair.
+#define PDM_BART_WINDOWS 10
 
 typedef struct pdm_bart {
     uint8_t slow; // $F0000001 — wait-state bit (latch; the ROM never writes it)
@@ -258,7 +287,7 @@ typedef struct pdm_state {
 
     // Memory interfaces registered with the map
     memory_interface_t io_interface; // $50F00000..$50F4FFFF island
-    memory_interface_t id_interface; // $5FFFF000 machine-ID page
+    cpuid_page_t cpuid; // $5FFFF000 machine-ID page (cpuid_page.h)
     memory_interface_t wait_interface; // page-0 wait-state forwarder
     memory_interface_t bart_reg_interface; // $F0000000 BART register file
     // AMIC's island decode (amic.c): its range table bound to this machine's
@@ -280,6 +309,16 @@ static inline const pdm_board_desc_t *pdm_board(config_t *cfg) {
     return (const pdm_board_desc_t *)cfg->machine->board;
 }
 
+// The last NuBus slot with a decoded window and a slot-bank line: $E, the
+// PDS video pseudo-slot.
+#define PDM_LAST_NUBUS_SLOT 0x0E
+
+// The pseudo-VIA2 slot-bank bits the board's slot lines occupy (bit =
+// slot - 9, from first_nubus_slot through $E): $3C, or $3E with slot $A.
+static inline uint8_t pdm_slot_irq_bits(config_t *cfg) {
+    return (uint8_t)((0x3Fu << (pdm_board(cfg)->first_nubus_slot - 9u)) & 0x3Fu);
+}
+
 // === pdm.c ==================================================================
 
 extern const machine_substrate_t pdm_substrate;
@@ -293,9 +332,6 @@ void pdm_hmc_write(config_t *cfg, uint32_t offset, uint8_t value);
 // (Re)build the RAM decode per the current config code; also the cold-boot
 // power-on mapping when called with the reset config.
 void pdm_hmc_remap(config_t *cfg);
-// Machine-ID page handlers ($5FFFF000; the register itself is $5FFFFFFC)
-uint8_t pdm_id_read8(void *ctx, uint32_t offset);
-uint32_t pdm_id_read32(void *ctx, uint32_t offset);
 
 // === amic.c =================================================================
 

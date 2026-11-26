@@ -70,4 +70,6 @@ CORE_INCLUDES := $(CODEC_INCLUDES) \
                  -I$(MACHINES_DIR)/gossamer \
                  -I$(MACHINES_DIR)/oss \
                  -I$(MACHINES_DIR)/compact \
-                 -I$(MACHINES_DIR)/lisa
+                 -I$(MACHINES_DIR)/lisa \
+                 -I$(MACHINES_DIR)/v8 \
+                 -I$(MACHINES_DIR)/memc

@@ -271,8 +271,12 @@ describe('copy and paste helpers', () => {
     ({ id, kind, text, job }) as ConsoleEntry;
 
   it('Copy as commands: the command statements, one per line', () => {
-    const list = [e(1, 'command', 'let a = 1'), e(2, 'text', 'x', 5), e(3, 'command', 'echo $a')];
-    expect(commandsText(list)).toBe('let a = 1\necho $a');
+    const list = [
+      e(1, 'command', 'local a = 1'),
+      e(2, 'text', 'x', 5),
+      e(3, 'command', 'print(a)'),
+    ];
+    expect(commandsText(list)).toBe('local a = 1\nprint(a)');
   });
 
   it("Copy output: one job's text, value and error entries", () => {

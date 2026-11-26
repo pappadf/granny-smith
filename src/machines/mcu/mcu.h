@@ -27,6 +27,7 @@
 #include "m68k_board_io.h" // the shared I/O dispatch engine, board-descriptor face
 #include "m68k_board_overlay.h"
 #include "memory.h"
+#include "quadra040.h" // the device block and plumbing shared with the MEMC family
 #include "system_internal.h"
 
 #include <stdbool.h>
@@ -73,11 +74,6 @@ struct sonic;
 #define ORWELL_MAX_BANKS   4 // banks A..D
 #define ORWELL_BANK_WINDOW 0x04000000u // 64 MB decode window per bank
 
-// Same policy for the YANCC system-bus/NuBus bridge register file
-// ($50028000; the address is Apple-documented, the bit
-// layout is not, so writes latch and read back under a log).
-#define MCU_YANCC_REG_COUNT 64
-
 // The MCU-family board descriptor: per-machine hardware data consumed by the
 // shared substrate (parallel to m68k_board_desc_t).
 typedef struct mcu_board_desc {
@@ -86,7 +82,14 @@ typedef struct mcu_board_desc {
     m68k_board_desc_t common;
     uint32_t ram_onboard_size; // soldered RAM forming bank A (Q700: 4 MB; 0 = SIMM banks only)
     uint8_t ram_bank_count; // physical banks the board decodes (Q700: 2, towers: 4)
-    uint8_t via1_pa_model; // VIA1 PA model sense ($C0 Q700, $D0 Q900, $90 Q950)
+    // VIA1 PA model sense ($C0 Q700, $D0 Q900, $90 Q950): the MODEL SENSE
+    // BITS ONLY -- the ROM's identify table matches PA & $56, which does not
+    // include bit 0.  PA0 is the diagnostic-mode strap and is a separate
+    // fact: it idles HIGH for a normal boot, and driving it low sends the
+    // ROM into its serial test manager (an endless SCC poll at $40847BFx
+    // with no fault, observed during Q700 bring-up).  The boards raise it on
+    // top of this field (quadra040_idle_lines(cfg, via1_pa_model | 1)).
+    uint8_t via1_pa_model;
     uint8_t dafb_version; // DAFB_Test bits 11:9 (0 = Q700/Q900, 3 = Q950 "DAFB 3")
     bool has_ac842a; // AC842a RAMDAC (PCBR1 + x555 16-bit mode; Q950 only)
     // VRAM fitted, into the fixed 2 MiB CPU aperture every board decodes.
@@ -99,21 +102,9 @@ typedef struct mcu_board_desc {
     uint32_t dafb_vram_size;
 } mcu_board_desc_t;
 
-// The .common block every MCU board shares: MCU+DAFB, the 256 MB ROM window
-// at $40000000, the 256 KiB I/O island whose undecoded reads float high (see
-// m68k_board.h), and slots $1-$E bus-erroring (this board decodes below
-// $F9); only the island's decode table differs.
-#define MCU_BOARD_COMMON(io_ranges_)                                                                                   \
-    {                                                                                                                  \
-        .chipset = "MCU+DAFB",                                                                                         \
-        .rom_base = 0x40000000u,                                                                                       \
-        .rom_end = 0x50000000u,                                                                                        \
-        .io_ranges = (io_ranges_),                                                                                     \
-        .io_mirror_mask = 0x0003FFFFu,                                                                                 \
-        .io_unmapped_read = 0xFF,                                                                                      \
-        .bus_err_lo = 0xF1000000u,                                                                                     \
-        .bus_err_hi = NUBUS_BERR_HI,                                                                                   \
-    }
+// The .common block every MCU board shares (quadra040.h); only the island's
+// decode table differs.
+#define MCU_BOARD_COMMON(io_ranges_) M68K040_BOARD_COMMON("MCU+DAFB", io_ranges_)
 
 // Per-machine hooks + data, named by hw_profile_t.board.
 typedef struct mcu_board {
@@ -130,11 +121,7 @@ typedef struct mcu_board {
 
 // Unified MCU-family machine state.
 typedef struct mcu_state {
-    struct asc *asc; // EASC (ASC-compatible core); the adb and floppy are cfg->'s
-    struct dafb *dafb; // DAFB video
-    struct scsi_53c96 *scsi96; // NCR 53C96
-    struct sonic *sonic; // DP83932 SONIC Ethernet (no wire in v1)
-    uint8_t sonic_byte2; // high byte latched from an in-flight register write
+    quadra040_t q; // the shared 040 Quadra device block -- first, for quadra040_st()
 
     // --- Tower (Q900/Q950) devices — NULL on the Q700 ---
     struct egret *caboose; // Egret-protocol system manager ("Caboose" firmware)
@@ -144,11 +131,6 @@ typedef struct mcu_state {
     uint8_t scc_irq_or; // level-4 requesters: bit0 = SCC chip, bit1 = SCC IOP host INT
     uint8_t scsi_irq_or; // VIA2 CB2 requesters: bit0 = internal 53C96, bit1 = external
 
-    m68k_board_overlay_t overlay; // ROM-at-zero until the aperture is touched
-    struct mmu_state *bus_mmu; // bus-side resolver; 040 walker regs live on the CPU
-
-    board_io_t io; // device handles for the shared I/O engine
-
     // Orwell memory controller ($5000E000).  `orwell_cfg` is the 34-bit
     // shift-in register; `bank_start` holds the values latched from it.
     uint64_t orwell_cfg; // staged config bits (bit N = config bit N)
@@ -156,17 +138,7 @@ typedef struct mcu_state {
     uint32_t bank_size[ORWELL_MAX_BANKS]; // installed bytes in each bank (0 = empty socket)
     uint32_t bank_image_off[ORWELL_MAX_BANKS]; // where the bank lives in the flat RAM image
     int bank_count; // populated banks
-
-    // Accept-and-log YANCC bridge register file ($50028000).
-    uint32_t yancc_regs[MCU_YANCC_REG_COUNT];
-    uint64_t yancc_touched; // log-once bitmap, parallel to mcu_touched
-
-    // /SLOTIRQ aggregate: bit n set = the VIA2 PA n source is
-    // asserting (Ethernet 0, NuBus A-E 1-5, built-in video 6).  CA1 follows
-    // the OR of the mask.
-    uint8_t slot_pa_mask;
-
-    memory_interface_t io_interface; // registered at the $50000000 island
+    uint32_t ram_extent; // how far up the last bank mapping reached (the next remap clears below it)
 } mcu_state_t;
 
 // The MCU family's machine state (cfg->machine_context).
@@ -190,15 +162,9 @@ extern const board_io_range_t mcu_q700_io_ranges[];
 // second 53C96 windows at $F400/$F500.
 extern const board_io_range_t mcu_q900_io_ranges[];
 
-// Bind the family device set + board tables into the shared I/O engine.
-// Bind the MCU's I/O dispatcher.  Deliberately NOT a call through to
-// glue_io_bind, even though desc->common is now the same type it
-// takes: the two bind different device sets.  The GLUE version also binds BOARD_DEV_SCSI, and
-// neither this family's window table nor the AV's ever routes to that device
-// index -- both decode a 53C96 through their own windows instead -- so
-// delegating would install a handle nothing consults.  Merging these is a
-// question about device sets, not about the descriptor type.
-void mcu_io_bind(board_io_t *io, config_t *cfg, const mcu_board_desc_t *desc, void *asc, void *floppy);
+// Bind the I/O island: the shared device set (quadra040_io_bind) plus the
+// towers' second 53C96.  The IOP apertures are the tower build's to bind.
+void mcu_io_bind(config_t *cfg);
 
 // Install the family memory layout: I/O island, DAFB apertures, ROM-aperture
 // trigger device, and the armed overlay.  Called from a machine's
@@ -208,49 +174,14 @@ void mcu_memory_layout(config_t *cfg);
 // Overlay control (checkpoint restore / tests); layout arms it by default.
 void mcu_set_overlay(config_t *cfg, bool on);
 
-// Read the substrate-private checkpoint tail and re-drive derived IRQ lines;
-// each board's build_devices calls this at the end of its restore path.
-// Drive VIA1 port A to the board's model sense, then raise PA0.
-//
-// via1_pa_model carries the MODEL SENSE BITS ONLY -- the ROM's identify table
-// matches PA & $56, which does not include bit 0, and all three boards declare
-// the field with bit 0 clear ($C0 / $D0 / $90).  PA0 is the diagnostic-mode
-// strap and is a separate fact: it idles HIGH for a normal boot, and driving it
-// low sends the ROM into its serial test manager (an endless SCC poll at
-// $40847BFx with no fault, observed during Q700 bring-up).  Keeping the strap
-// out of the field is what lets the three boards declare the same kind of value.
-void mcu_apply_via1_model_sense(config_t *cfg, const mcu_board_desc_t *desc);
-
 // The family's own checkpoint part (overlay, Orwell, YANCC, the IRQ
 // aggregates): read it on a restore and re-drive the lines it derives,
 // then register it.  The last thing each board's build_devices does.
 void mcu_private_part(config_t *cfg, checkpoint_t *cp);
 
-// Drive one /SLOTIRQ source (VIA2 PA bit 0-6, `active` in source polarity):
-// sets the active-low PA input and re-resolves the CA1 aggregate.
-// Build the DAFB and everything that hangs off it, for every MCU board.
-// The Q700 and the towers differ in exactly ONE thing here -- the towers
-// have a second 53C96 whose DRQ feeds TurboSCSI channel 1 -- so that is the
-// only conditional.  Everything else that looked per-machine was not: the
-// two boards' DAFB IRQ callbacks were byte-identical, and the version /
-// AC842a setters were applied only on the tower path even though the Q700
-// has the same registers (DAFB 343S0128-01 is "Q700 and Q900; version
-// values 0, 1, or 2"; only the Q950 is DAFB II, version 3).  Applying them
-// from the descriptor unconditionally is what makes the Q700 honour its own
-// board data instead of coinciding with dafb_init()'s zeroed defaults.
+// Build the DAFB and everything that hangs off it, for every MCU board
+// (quadra040_build_dafb with the descriptor's version, AC842a and VRAM, and
+// the TurboSCSI DRQ readback wired to the 53C96s).
 int mcu_build_dafb(config_t *cfg, checkpoint_t *cp);
-
-// The internal SCSI bus (part "scsi", with the configured disks and CD) and
-// the 53C96 fronting it (part "scsi96"), its interrupt on `irq`.  The Q900
-// builds its external bus after this, before the SONIC.
-void mcu_build_scsi0(config_t *cfg, checkpoint_t *cp, void (*irq)(void *ctx, bool active));
-
-// The SONIC Ethernet (no wire; bus-master DMA through the guest-physical
-// port), the EASC (left channel to the internal speaker) and the SWIM floppy,
-// as parts "sonic", "asc" and "floppy", in that order.
-void mcu_build_sonic_asc_floppy(config_t *cfg, checkpoint_t *cp, void (*sonic_irq)(void *ctx, bool active),
-                                void (*asc_irq)(void *ctx, bool active));
-
-void mcu_slot_irq_source(config_t *cfg, int pa_bit, bool active);
 
 #endif // GS_MACHINES_MCU_H

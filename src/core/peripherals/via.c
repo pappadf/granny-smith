@@ -916,7 +916,7 @@ via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, uint8_t
     // condition the family default, and every II-family machine then had to
     // raise VIA2 PA3 back up because there the same pin is a NuBus slot
     // /NMRQ: leaving it low meant slot $C asserted an interrupt forever.
-    // plus.c now drives its own W/REQ line.
+    // compact.c now drives its own W/REQ line.
     //
     // The four CONTROL lines had the mirror-image bug: they came up at 0,
     // which for an active-low input reads as ASSERTED, so the SE/30, IIcx, IIx

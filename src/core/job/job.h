@@ -65,7 +65,6 @@ int job_cancel_client(uint32_t client);
 
 // The job whose task is running right now, NULL outside a step.
 job_t *job_current(void);
-uint32_t job_current_client(void);
 // The engine's cancel check (its instruction hook): the running job was
 // cancelled.
 bool job_current_cancelled(void);
@@ -121,7 +120,6 @@ bool job_call_take_failure(char *err, size_t cap);
 // when the task resumes, in place of the provisional value the leaf
 // returned at once.  False when `token` is not a job's call (a request's
 // deferral, answered with mailbox_result_complete).
-struct value;
 bool job_call_complete_value(uint32_t token, const struct value *v);
 bool job_call_take_answer(struct value *out); // false: none (out untouched)
 // The I/O job answering the deferred call (a cancel of the script cancels

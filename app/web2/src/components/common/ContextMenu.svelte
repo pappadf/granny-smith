@@ -218,14 +218,14 @@
         onmouseenter={() => (highlight = item.disabled ? -1 : i)}
       >
         {#if hasChecks}
-          <span class="gs-menu__check"
-            >{#if item.checked}<Icon name="check" size="md" />{/if}</span
-          >
+          <span class="gs-menu__check">
+            {#if item.checked}<Icon name="check" size="md" />{/if}
+          </span>
         {/if}
         {#if hasIcons}
-          <span class="gs-menu__icon"
-            >{#if item.icon}<Icon name={item.icon} size="md" />{/if}</span
-          >
+          <span class="gs-menu__icon">
+            {#if item.icon}<Icon name={item.icon} size="md" />{/if}
+          </span>
         {/if}
         <span class="gs-menu__label">{item.label}</span>
         {#if item.badge}<Badge intent={item.badgeIntent}>{item.badge}</Badge>{/if}

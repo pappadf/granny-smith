@@ -658,6 +658,258 @@ function M.have_media(path)
   return files.path_exists(path)
 end
 
+-- --- Finder + About rows (the per-family suites) -----------------------------
+--
+-- The row most family suites are made of: boot a model off a System, settle
+-- at the Finder, assert the identity (machine.id, ROM id, RAM, BoxFlag, the
+-- screen), match the Finder golden, open the first Apple-menu item (About
+-- the Finder / About This Macintosh / About This Computer), match it, and
+-- report the @@COV and @@PERF records.  A suite is then a table of literal
+-- row data: every golden stays a string literal in the suite's own test.lua,
+-- where scripts/check-goldens.py reads it (and its golden-collision-ok
+-- waivers stay there too).
+--
+-- The row's instruction count (@@PERF, perf-baselines.json) covers the whole
+-- row, so how a row settles is part of what it measures: each suite names
+-- the strategy it was baselined with (`settle` below), and changing one is
+-- a re-baseline, not a refactor.
+
+-- BoxFlag ($0CB3), read through the user-context window.  On a PowerPC the
+-- read first waits, in 1,000-instruction steps, for the 68k emulator to be
+-- in user mode (MSR[PR]) -- so it RUNS the machine there, and a row reads it
+-- at the same point of its timeline every time.  A second read straight
+-- after the first runs nothing.
+function M.boxflag()
+  if gs.try(function() return machine.cpu.msr end, nil) ~= nil then
+    while (machine.cpu.msr & 0x4000) == 0 do scheduler.run(1000) end
+  end
+  return machine.cpu.mmu.peek(0xCB3, 1)
+end
+
+-- Run row `label` (fn) through row() when the filter selects it and every
+-- path in `...` (disk images, ROMs) was fetched; otherwise say which was not
+-- (the media-gated skip: an uncovered target cell, not a failure).
+function M.media_row(label, fn, ...)
+  if not M.row_on(label) then return end
+  for _, m in ipairs({...}) do
+    if not M.have_media(m) then
+      echo("skip: " .. label .. " (" .. m .. " not fetched)")
+      return
+    end
+  end
+  M.row(label, fn)
+end
+
+-- About-window exclusions (top, left, bottom, right pairs) by layout name.
+-- "Largest Unused Block" and the System Software row's figure and bar move
+-- with boot-time heap use (the check_about rationale).  A layout defaults to
+-- the screen's WxH: the 640-wide desktop is check_about's; the 512-wide
+-- compact screens centre the window 64 pixels further left, and higher.
+--   "512x384 Disk Tools 7.6"  7.6 off the Disk Tools floppy puts the window
+--                             12 pixels higher on the 512x384 screen
+--   "whole"                   no exclusions: the compact Macs' About boxes
+--                             (before System 7, and on 512x342) are matched
+--                             whole
+--   "Mac OS 8.1"              8.1's About This Computer: its "Largest Unused
+--                             Block" and Mac OS row (the clock comes first)
+M.ABOUT_EXCL = {
+  ["640x480"] = {133, 440, 148, 490, 152, 250, 166, 490},
+  ["512x384"] = {122, 376, 136, 426, 140, 186, 154, 426},
+  ["512x342"] = {100, 376, 114, 426, 118, 186, 132, 426},
+  ["512x384 Disk Tools 7.6"] = {108, 376, 124, 426, 126, 186, 142, 426},
+  ["whole"] = {},
+  ["Mac OS 8.1"] = {0, 440, 20, 640, 182, 90, 197, 330, 202, 250, 219, 530},
+}
+
+-- System 7.5+'s menu-bar clock in the About window's match, by screen width.
+M.ABOUT_CLOCK = {[640] = {0, 440, 20, 640}, [512] = {0, 360, 20, 450}}
+
+-- Match the About window `ref` with the exclusions of layout `o.layout`
+-- (default: the screen's WxH), plus the menu-bar clock when `o.clock`.
+-- check_about / check_about_clock are this on a 640x480 desktop.
+function M.check_about_at(ref, o)
+  o = o or {}
+  if M.REGEN_MODE == "1" then
+    machine.screen.save(ref)
+    return
+  end
+  local w, h = machine.screen.width, machine.screen.height
+  local layout = o.layout or (w .. "x" .. h)
+  local e = M.ABOUT_EXCL[layout]
+  assert(e, "check_about_at: no About layout " .. layout)
+  local a = {table.unpack(e)}
+  if o.clock then
+    local c = M.ABOUT_CLOCK[w]
+    assert(c, "check_about_at: no menu-bar clock rectangle for a " .. w .. "-wide screen")
+    for _, v in ipairs(c) do a[#a + 1] = v end
+  end
+  machine.screen.match(ref, table.unpack(a))
+end
+
+-- check() or, with `rect` ({top, left, bottom, right}), check_ex().
+function M.check_rect(ref, rect)
+  if rect then M.check_ex(ref, rect[1], rect[2], rect[3], rect[4]) else M.check(ref) end
+end
+
+-- A copy of `defaults` with `t`'s fields over it: a suite's common row
+-- fields, written once.
+function M.with(defaults, t)
+  local r = {}
+  for k, v in pairs(defaults) do r[k] = v end
+  for k, v in pairs(t) do r[k] = v end
+  return r
+end
+
+-- The settle strategies the suites were baselined with.  `s` is
+-- {name, head = N, ...}; boot_finder runs `head` instructions first (when
+-- given), then the strategy proper:
+--   "stable"     wait_stable(s.ceiling)
+--   "desktop"    wait_desktop(s.ceiling), then wait_stable(s.stable) when
+--                given; s.at_head() (assertions) runs between head and it
+--   "curapname"  poll CurApName ($910, physical) for "Finder" every 20 M
+--                up to s.ceiling, then a fixed s.tail: for a desktop with a
+--                menu-bar clock, which never holds still
+--   "run"        the head budget alone
+local function settle_rest(s)
+  local kind = s[1]
+  if kind == "stable" then
+    M.wait_stable(s.ceiling)
+  elseif kind == "desktop" then
+    M.wait_desktop(s.ceiling)
+    if s.stable then M.wait_stable(s.stable) end
+  elseif kind == "curapname" then
+    M.wait_until(function()
+      return machine.memory.peek.l(0x910) == 0x0646696E and machine.memory.peek.w(0x914) == 0x6465
+    end, 20000000, s.ceiling, "the Finder never became the current application")
+    scheduler.run(s.tail)
+  elseif kind ~= "run" then
+    error("boot_finder: unknown settle strategy " .. tostring(kind))
+  end
+end
+
+-- Boot a model to the Finder and assert what it is.  Fields of `t`:
+--   label            the row (assertion messages)
+--   model, rom, ram  machine.boot's; `boot` adds further named arguments
+--                    (pci_card, slots, config)
+--   rtc              machine.rtc.time, set before the media go in
+--   fd / hd          the boot floppy (drive 0) / SCSI disk (ID 0)
+--   setup            fn() run after the media, before the first instruction
+--   keys, keys_for   ADB raw key codes held from power-on for keys_for
+--                    instructions (a startup key combination)
+--   settle           the strategy above, e.g. {"stable", head = 250000000,
+--                    ceiling = 1500000000}
+--   dismiss          {golden, x, y}: a startup alert, matched (outside
+--                    `finder_ex`) and clicked away, then settled again
+--                    (without the head)
+--   rom_id           machine.rom.id, asserted when given
+--   boot_drive       BootDrive, asserted when given
+--   dserr            assert DSErrCode is 0 (no system error at startup)
+--   box              BoxFlag, asserted when given (on a PowerPC this runs
+--                    the machine to 68k user mode, see boxflag)
+--   w, h, d          the screen geometry and depth, asserted when given
+--                    (REGEN echoes the depth instead of asserting it)
+-- machine.id, machine.ram and debug.mac.os are always asserted.
+function M.boot_finder(t)
+  local label = t.label
+  local doc = {model = t.model, ram = t.ram, rom = t.rom}
+  for k, v in pairs(t.boot or {}) do doc[k] = v end
+  machine.boot(doc)
+  if t.rtc then machine.rtc.time = t.rtc end
+  if t.fd then machine.floppy.drive[0].insert(t.fd) end
+  if t.hd then machine.scsi.attach_hd(t.hd, 0) end
+  if t.setup then t.setup() end
+  if t.keys then
+    for _, k in ipairs(t.keys) do machine.adb.keyboard.down(k) end
+    scheduler.run(t.keys_for)
+    for _, k in ipairs(t.keys) do machine.adb.keyboard.up(k) end
+  end
+  local s = t.settle
+  if s.head then scheduler.run(s.head) end
+  if s.at_head then s.at_head() end
+  settle_rest(s)
+  if t.dismiss then
+    M.check_rect(t.dismiss[1], t.finder_ex)
+    -- The alert comes up while the extensions load, before the cursor
+    -- task and Ticks are reliably running: fixed budgets, not tick waits
+    machine.adb.mouse.move(t.dismiss[2], t.dismiss[3], "global")
+    scheduler.run(5000000)
+    machine.adb.mouse.click(true)
+    scheduler.run(2000000)
+    machine.adb.mouse.click(false)
+    scheduler.run(10000000)
+    settle_rest(s)
+  end
+  assert(machine.id == t.model, F"${label}: machine.id ${machine.id}, want ${t.model}")
+  assert(machine.ram == t.ram, F"${label}: machine.ram ${machine.ram}, want ${t.ram}")
+  if t.rom_id then
+    assert(machine.rom.id == t.rom_id, F"${label}: rom.id ${machine.rom.id}, want ${t.rom_id}")
+  end
+  if t.boot_drive then
+    local bd = debug.mac.globals.read("BootDrive")
+    assert(bd == t.boot_drive, F"${label}: BootDrive ${bd:04x}, want ${t.boot_drive:04x}")
+  end
+  if t.dserr then
+    local e = debug.mac.globals.read("DSErrCode")
+    assert(e == 0, F"${label}: system error ${e:04x} during startup")
+  end
+  assert(debug.mac.os, F"${label}: the Finder is up but debug.mac.os is false")
+  if t.box then
+    local b = M.boxflag()
+    assert(b == t.box, F"${label}: BoxFlag ${b}, want ${t.box}")
+  end
+  if t.w then
+    assert(machine.screen.width == t.w and machine.screen.height == t.h,
+      F"${label}: screen ${machine.screen.width}x${machine.screen.height}, want ${t.w}x${t.h}")
+  end
+  if t.d then
+    if M.REGEN_MODE == "1" then echo(F"${label}: depth ${machine.screen.depth}") end
+    assert(M.REGEN_MODE == "1" or machine.screen.depth == t.d, F"${label}: depth ${machine.screen.depth}, want ${t.d}")
+  end
+end
+
+-- One Finder + About row: boot_finder(t), then (fields beyond boot_finder's)
+--   check            fn(): the row's own board facts (reads only, or runs
+--                    the row was baselined with)
+--   before_finder    fn(): guest actions before the Finder match (closing
+--                    a first-boot message)
+--   finder           the Finder golden, matched outside `finder_ex`
+--                    ({top, left, bottom, right}, the menu-bar clock) when
+--                    given
+--   after_finder     fn(): guest actions after it (a checkpoint round trip)
+--   quad             the quadrature-mouse About choreography (about_box_quad)
+--   about            the About golden, matched by check_about_at with
+--                    `clock` and `about_layout`
+--   mips             a host-throughput floor (mips_floor) over the row
+--   system, card, feature   the @@COV record (card defaults to
+--                    "builtin", feature to "fd-boot about" / "hd-boot about")
+--   suite            the @@PERF row is suite .. "/" .. label
+function M.about_row(t)
+  local t0 = scheduler.host_user_ns
+  M.boot_finder(t)
+  if t.check then t.check() end
+  if t.before_finder then t.before_finder() end
+  M.check_rect(t.finder, t.finder_ex)
+  if t.after_finder then t.after_finder() end
+  if t.quad then M.about_box_quad() else M.about_box() end
+  M.check_about_at(t.about, {clock = t.clock, layout = t.about_layout})
+  if t.mips then M.mips_floor(t.label, t0, t.mips) end
+  M.report_row(t.system, t.card or "builtin", t.feature or ((t.fd and "fd" or "hd") .. "-boot about"))
+  M.report_perf(t.suite .. "/" .. t.label, scheduler.instr_count)
+end
+
+-- The System 7.6 "Install 1" floppy through a PowerPC's SWIM3: build `model`
+-- with `ram` KB on `rom`, set the clock to `rtc`, insert the floppy `fd` and
+-- run through boot blocks, System and extensions to the Installer, matched
+-- against `golden` (the menu bar excluded).  The caller asserts identity.
+function M.boot_install1(model, ram, rom, rtc, fd, golden)
+  machine.boot{model = model, ram = ram, rom = rom}
+  machine.rtc.time = rtc
+  machine.floppy.drive[0].insert(fd)
+  assert(machine.floppy.drive[0].present, "boot floppy not in FD0")
+  M.run_until_match_ex(golden, 0, 440, 20, 640, 7600000000, 250000000)
+  M.check_ex(golden, 0, 440, 20, 640)
+end
+
 -- --- checkpoint fixtures (docs/guide/TESTING.md, "Checkpoint fixtures") ------
 -- A producer test (config.mk: TEST_PROVIDES := name) saves the machine at a
 -- point other tests start from; a consumer (TEST_NEEDS := name) loads it

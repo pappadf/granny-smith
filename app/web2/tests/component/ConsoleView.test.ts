@@ -180,7 +180,7 @@ describe('ConsoleView', () => {
   it('Copy as commands copies the clicked command; Copy output its job', async () => {
     const { container } = view();
     const m = con.model;
-    m.command('let a = 1');
+    m.command('local a = 1');
     job(5, [{ kind: 'output', job: 5, text: 'one\ntwo\n' }]);
     const cmd = await waitFor(() => {
       const e = container.querySelector('.entry.command');
@@ -189,7 +189,7 @@ describe('ConsoleView', () => {
     });
     await fireEvent.contextMenu(cmd);
     await fireEvent.click(await waitFor(() => findMenuItem('Copy as commands')));
-    await waitFor(() => expect(clip).toEqual(['let a = 1']));
+    await waitFor(() => expect(clip).toEqual(['local a = 1']));
 
     await fireEvent.contextMenu(container.querySelector('.entry.text') as HTMLElement);
     // An output line holds no command: nothing to copy as one (S1018-80).
