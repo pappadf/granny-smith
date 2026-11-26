@@ -548,7 +548,7 @@ static image_t *image_open_source(const char *name, source_t *data, source_t *rs
     // A capture that records its own write protection (the original disk's
     // tab) opens read-only unless the caller asked for writable explicitly.
     if (mode == OPEN_CREATE && geom.honour_media_lock && u.capture && moof_source_write_protected(u.capture)) {
-        LOG(1, "'%s': the capture records the disk as write-protected; opening it read-only", name);
+        LOG(0, "'%s': the capture records the disk as write-protected; opening it read-only", name);
         mode = OPEN_READONLY;
     }
 
@@ -1152,7 +1152,7 @@ image_export_t *image_export_begin(image_t *image, const char *dest_path, char *
                     !storage_block_in_delta(image->storage, b))
                     zeros++;
             if (zeros)
-                LOG(1, "export of '%s': %llu sector(s) its capture could not read are written as zeros",
+                LOG(0, "export of '%s': %llu sector(s) its capture could not read are written as zeros",
                     e->name ? e->name : "", (unsigned long long)zeros);
         }
     }

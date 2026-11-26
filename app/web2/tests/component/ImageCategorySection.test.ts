@@ -86,7 +86,7 @@ describe('ImageCategorySection — floppy drive choice', () => {
     await waitFor(() =>
       expect(mediaMock.insertFloppy).toHaveBeenCalledWith(
         '/opfs/images/fd/Disk_Tools.dsk',
-        true,
+        null,
         1,
       ),
     );

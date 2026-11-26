@@ -38,7 +38,7 @@ vi.mock('@/bus/profile', () => ({
 }));
 vi.mock('@/bus/media', () => ({
   detectFdDriveCount: vi.fn(async () => 2),
-  insertFloppy: vi.fn(async (_p: string, _w: boolean, n = 0) => ({
+  insertFloppy: vi.fn(async (_p: string, _w: boolean | null, n = 0) => ({
     ok: true,
     mount: { drive: n },
   })),
@@ -176,7 +176,7 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
     const stored = [...files.keys()].find((p) => p.startsWith('/opfs/images/fd/'));
     expect(stored).toBeDefined();
     expect(files.get(stored!)?.length).toBe(819200);
-    expect(media.insertFloppy).toHaveBeenCalledWith(stored, true, 0);
+    expect(media.insertFloppy).toHaveBeenCalledWith(stored, null, 0);
     expect(scratchLeft()).toEqual([]);
   });
 
@@ -198,7 +198,7 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
     // Stored under the file's name from the URL (S1018-48).
     const stored = [...files.keys()].find((p) => p.startsWith('/opfs/images/fd/'));
     expect(stored).toBe('/opfs/images/fd/sys.dsk');
-    expect(media.insertFloppy).toHaveBeenCalledWith(stored, true, 0);
+    expect(media.insertFloppy).toHaveBeenCalledWith(stored, null, 0);
     expect(scratchLeft()).toEqual([]);
   });
   it('a hard disk position the model lacks is said as fd1= says it, and its row fails', async () => {
@@ -304,7 +304,7 @@ describe('URL media: a zip member comes out through the core', () => {
     const stored = [...files.keys()].find((p) => p.startsWith('/opfs/images/fd/'));
     expect(stored).toBeDefined();
     expect(files.get(stored!)).toEqual(FLOPPY);
-    expect(media.insertFloppy).toHaveBeenCalledWith(stored, true, 0);
+    expect(media.insertFloppy).toHaveBeenCalledWith(stored, null, 0);
     expect(scratchLeft()).toEqual([]);
   });
 
@@ -337,7 +337,7 @@ describe('URL media without rom=: into the running machine, or said to be unused
     machine.status = 'running';
     served['sys.dsk'] = FLOPPY;
     expect(await processUrlMedia(new URLSearchParams('fd0=sys.dsk'))).toBe(false);
-    expect(media.insertFloppy).toHaveBeenCalledWith('/opfs/images/fd/sys.dsk', true, 0);
+    expect(media.insertFloppy).toHaveBeenCalledWith('/opfs/images/fd/sys.dsk', null, 0);
     expect(toastText()).not.toMatch(/not attached/);
   });
 
@@ -553,7 +553,7 @@ describe('URL media: blank: creates a blank disk, reused on reload', () => {
     const [path, , size] = createdOf('floppy')[0]?.args as [string, string, string];
     expect(path).toMatch(/^\/opfs\/images\/fd\/blank_800k_fd0_[0-9a-f]{8}\.dsk$/);
     expect(size).toBe('800K');
-    expect(media.insertFloppy).toHaveBeenCalledWith(path, true, 0);
+    expect(media.insertFloppy).toHaveBeenCalledWith(path, null, 0);
   });
 
   it('fd0=blank:500k is refused with its reason, and nothing is inserted', async () => {

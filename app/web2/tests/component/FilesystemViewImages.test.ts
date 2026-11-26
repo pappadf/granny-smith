@@ -520,7 +520,7 @@ describe('FilesystemView — media inside an image or archive', () => {
     await waitFor(() =>
       expect(mediaMock.insertFloppy).toHaveBeenCalledWith(
         '/opfs/disk.img/partition1/Install 1:2.img',
-        true,
+        null,
       ),
     );
   });

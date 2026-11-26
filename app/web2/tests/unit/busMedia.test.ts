@@ -126,6 +126,22 @@ describe('bus/media: one attach helper over the core verbs', () => {
     expect(await detectFdDriveCount()).toBe(1);
   });
 
+  it("inserts the disk as it is unless told otherwise: a locked original's capture stays locked", async () => {
+    q700();
+    bridge.reply('machine.floppy.drive[0].present', false);
+    bridge.reply('machine.floppy.drive[0].insert', true);
+    expect((await insertFloppy('/opfs/images/fd/a.moof', null, 0)).ok).toBe(true);
+    expect(bridge.calls.at(-1)).toEqual({
+      path: 'machine.floppy.drive[0].insert',
+      args: ['/opfs/images/fd/a.moof'],
+    });
+    await insertFloppy('/opfs/images/fd/a.moof', true, 0);
+    expect(bridge.calls.at(-1)).toEqual({
+      path: 'machine.floppy.drive[0].insert',
+      args: ['/opfs/images/fd/a.moof', true],
+    });
+  });
+
   it('an empty drive that refuses means the image could not be opened', async () => {
     q700();
     bridge.reply('machine.floppy.drive[0].present', false);
