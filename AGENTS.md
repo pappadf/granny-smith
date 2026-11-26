@@ -199,6 +199,7 @@ to not break this rule in the first place.
 **Debug tools:**
 - `tools/disasm/disasm` — standalone 68K disassembler for ROM images and binaries (see `.agents/skills/disasm-tool/`)
 - `build/headless/gs-headless` — headless emulator with TCP shell for interactive debugging (see `.agents/skills/headless-debug/`)
+- `recorder` — records the screen and sound to a lossless video file, headless (`--record=<path>.mkv`) or in the browser (see `.agents/skills/screen-recording/`)
 
 - Core code prints through the output sink (`out_printf` / `out_puts` / `out_write`, `src/core/out.h`), never `printf`: the text reaches the client whose request it is (a terminal line's output records, a page leaf's answer). `LOG(...)` lines and text printed outside any request land in the **Terminal console** (browser terminal panel), not the JS console
 - In E2E tests, artifacts (traces, screenshots) land in `tests/e2e/test-results/<test-name>-<project>/`
