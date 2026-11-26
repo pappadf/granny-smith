@@ -1,4 +1,4 @@
--- plus-moof-protection, quick-checkpoint step 1: a writable capture in
+-- plus-moof-track-content, quick-checkpoint step 1: a writable capture in
 -- drive 0, a quick checkpoint of it.
 machine.register("00000000000a0c10", "20261126T000000Z")
 machine.floppy.drive[0].insert(vars.QUICK, true)

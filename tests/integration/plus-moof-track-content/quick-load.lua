@@ -1,4 +1,4 @@
--- plus-moof-protection, quick-checkpoint step 2: the file now holds another
+-- plus-moof-track-content, quick-checkpoint step 2: the file now holds another
 -- capture with the same size and time stamp, so only the capture's
 -- fingerprint tells them apart.  A quick checkpoint depends on its base:
 -- refused.

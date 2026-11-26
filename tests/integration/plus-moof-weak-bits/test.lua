@@ -1,6 +1,6 @@
--- Plus + a weak-bit copy-protected MOOF capture (see config.mk).  run.sh
+-- Plus + a MOOF with a weak area (see config.mk).  run.sh
 -- makes the capture; the Plus boots from the plain one in drive 0 with the
--- protected one in drive 1.
+-- weak one in drive 1.
 
 local mac = dofile("../lib/mac.lua")
 
@@ -26,7 +26,7 @@ local ext = machine.floppy.drive[1]
 assert(ext.image.capture, "the weak MOOF's capture is kept")
 assert(not ext.image.writable, "INFO write-protects it")
 
--- === The guest stub: the protection's check ================================
+-- === The guest stub: reading the weak area fifteen times ===================
 --
 -- stub.s, assembled (bytes 0..$169; the data area after it is set here).
 local STUB = "267a0168200b6616203c00002edba31e2008670000a0264841fa0150208b41fa" ..

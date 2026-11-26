@@ -1,10 +1,10 @@
 | SPDX-License-Identifier: MIT
 | Copyright (c) pappadf
 |
-| Guest stub for the plus-moof-protection row: hook the Sony driver's
+| Guest stub for the plus-moof-track-content row: hook the Sony driver's
 | data-field read (JRdData, $022E), _Read one block, and scan the nibbles
-| the head delivers from where the driver left it -- what a disk's copy
-| protection does.  Position independent; loaded anywhere in RAM.
+| the head delivers from where the driver left it -- as software that
+| reads the raw track does.  Position independent; loaded anywhere in RAM.
 |
 | Reassemble (binutils-m68k-linux-gnu) and copy the bytes and the label
 | offsets into test.lua:

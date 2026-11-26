@@ -1013,7 +1013,7 @@ void iwm_write_through(floppy_drive_t *drive, image_t *img, int drive_index, int
     drive->write_hdr_start = -1;
 
     // A sector is written where it lies: on this track and side.  A header
-    // naming another (a duplicator's, a protection's) would otherwise put
+    // naming another (a duplicator's, a decoy) would otherwise put
     // this track's bytes into that one's sector.  hdr_side is also checked
     // against the medium: a single-sided image has no side-1 block, and
     // iwm_disk_image_offset ignores the side there, so a side-1 header would
@@ -1080,7 +1080,7 @@ void iwm_flush_modified_tracks(floppy_drive_t *drive, image_t *img, int drive_in
             // scan bounds every read and refuses a field with a byte that is
             // no codeword or a failing checksum (gcr_sector_from_disk), so
             // guest-written bytes that do not form a sector -- a formatter in
-            // progress, a protection pattern -- are skipped.
+            // progress, a non-sector pattern -- are skipped.
             moof_sector_t sec[MOOF_MAX_SECTORS];
             moof_scan_track(t->data, t->size, tr, side, sec, NULL);
             size_t first = iwm_disk_image_offset(tr, side, num_sides);

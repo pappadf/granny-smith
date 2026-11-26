@@ -1,13 +1,13 @@
 | SPDX-License-Identifier: MIT
 | Copyright (c) pappadf
 |
-| Guest stub for the plus-moof-weak-bits row: the check a weak-bit copy
-| protection makes.  It hooks the Sony driver's data-field read (JRdData,
+| Guest stub for the plus-moof-weak-bits row: a reader that needs a weak
+| area to read differently each time.  It hooks the Sony driver's data-field read (JRdData,
 | $022E) and _Reads one sector of the external drive's disk -- a sector
 | whose data field is a weak area -- once per read in [first, last).  On
 | each read the hook copies NIBS nibbles from where the driver left the
-| head (just past the sector's address field), with no timing, as the
-| protection does.  Each read is then scanned for records F6 AF xx yy 96
+| head (just past the sector's address field), with no timing, as such a
+| reader does.  Each read is then scanned for records F6 AF xx yy 96
 | F6, a record's number being (yy & 1) << 8 | xx; the distinct records of
 | each read are counted, and so are those of all reads together.  The
 | pass rule: the first read sees fewer than THRESH records, and all reads

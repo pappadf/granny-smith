@@ -3,8 +3,8 @@
 # Copyright (c) pappadf
 #
 # Turn a writer-made MOOF (a plain 800K disk laid down as a Mac formats it)
-# into one carrying the kinds of copy protection that live on the track
-# rather than in its sectors:
+# into one carrying content that lives on the track rather than in its
+# sectors:
 #
 #   - track SIG_TRACK, side 0, sector SIG_SECTOR: the last sync cell in
 #     front of the data mark becomes a $DE, so the stream reads
@@ -14,7 +14,7 @@
 #       B5 96 FA B5  DE AA  32 x $FF self-sync  D5 AA 96 B3 96 96 96 96
 #
 # Every sector of the disk still decodes, so it boots.  The header CRC is
-# recomputed.  Usage: make-protected-moof.py in.moof out.moof
+# recomputed.  Usage: make-track-content-moof.py in.moof out.moof
 
 import struct
 import sys

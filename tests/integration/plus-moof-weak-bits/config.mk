@@ -1,4 +1,4 @@
-# Integration test configuration: Plus + a weak-bit copy-protected MOOF
+# Integration test configuration: Plus + a MOOF with a weak area
 #
 # A MOOF carrying a weak area -- records separated by runs of 17 cells with
 # no flux transition, where a sector's data field was -- made at setup
@@ -8,9 +8,9 @@
 # disk.  The Plus boots from the plain MOOF with the weak one in the
 # external drive.
 #
-# At the Finder a small guest stub (stub.s) does what a weak-bit
-# protection check does: it hooks the Sony driver's data-field read
-# (JRdData, $022E), _Reads the weak sector fifteen times -- once per
+# At the Finder a small guest stub (stub.s) reads the weak area as
+# software that depends on it does: it hooks the Sony driver's data-field
+# read (JRdData, $022E), _Reads the weak sector fifteen times -- once per
 # revolution -- copying the nibbles after its address field each time,
 # counts the records each read sees and all of them together, and passes
 # only when the first read sees fewer than 70 % of them and all reads
@@ -23,7 +23,7 @@
 # gives the same digest of all fifteen.
 
 TEST_NAME := Plus weak-bit MOOF — a weak area reads differently every revolution
-TEST_DESC := A guest copy-protection check that needs the weak area's reads to differ passes, deterministically and across checkpoints
+TEST_DESC := A guest reader that needs the weak area's reads to differ sees them differ, deterministically and across checkpoints
 
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 

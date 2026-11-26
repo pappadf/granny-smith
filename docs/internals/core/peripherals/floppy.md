@@ -165,10 +165,9 @@ could not read — is accepted.
 A long run of cells with no flux transition reads differently on every
 revolution of a real drive: the read amplifier's gain climbs in the
 silence and, a few cells in, turns noise into transitions at random, so the
-IWM's framing after the run slips differently each time. Weak-bit copy
-protection reads such an area once per revolution and requires the reads
-to differ; a nibble copy, which writes the noise back as real data, reads
-the same every time.
+IWM's framing after the run slips differently each time, so software that
+reads such an area once per revolution sees the reads differ; a nibble copy,
+which writes the noise back as real data, reads the same every time.
 
 The capture store records each track's **weak runs** when it is built
 (`image_capture_weak_runs`): zero runs of at least `IMAGE_WEAK_MIN_RUN`

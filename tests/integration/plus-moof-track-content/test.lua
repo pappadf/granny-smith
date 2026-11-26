@@ -1,9 +1,9 @@
--- Plus + a copy-protected MOOF capture (see config.mk).  run.sh makes the
+-- Plus + a MOOF with content outside its sectors (see config.mk).  run.sh makes the
 -- capture and boots the Plus from it in drive 0.
 
 local mac = dofile("../lib/mac.lua")
 
--- What make-protected-moof.py put where (keep in step with it).
+-- What make-track-content-moof.py put where (keep in step with it).
 local SIG_TRACK, SIG_SECTOR = 40, 2
 local MARK_TRACK, MARK_SECTOR = 52, 1
 
@@ -50,7 +50,7 @@ mac.wait_until(function() return machine.memory.peek.l(0x910) == 0x0646696E end,
 mac.wait_stable(200000000)
 echo("booted")
 
--- === The guest stub: what a protection check does ========================
+-- === The guest stub: reading the raw track ===============================
 --
 -- stub.s, assembled (bytes 0..$E9; the data area after it starts zeroed).
 local STUB = "41fa00e820b8022e43fa004c21c9022e41fa00ee70132248429951c8fffc317c" ..
@@ -129,10 +129,10 @@ assert(debug.mac.globals.read("Ticks") > 0, "the Mac is still running")
 -- === The tracks stay the capture's ========================================
 --
 -- The boot has written the disk (the Finder's desktop file), so some tracks
--- are spliced; the two protected ones were only read and are the capture's.
+-- are spliced; the two edited ones were only read and are the capture's.
 local function same_tracks(when)
   local sig, mark = check_tracks(when)
-  assert(sig == sig0 and mark == mark0, F"${when}: the protected tracks are what they were")
+  assert(sig == sig0 and mark == mark0, F"${when}: the edited tracks are what they were")
 end
 same_tracks("after the boot")
 
@@ -162,21 +162,21 @@ ext.eject()
 
 -- Behind gzip, and inside a zip: the capture is the decoded source, or the
 -- archive member's, and stays readable for as long as the image is open.
-for _, path in ipairs({vars.MOOF .. ".gz", F"${vars.WORK_DIR}/protected.zip/protected.moof"}) do
+for _, path in ipairs({vars.MOOF .. ".gz", F"${vars.WORK_DIR}/content.zip/content.moof"}) do
   ext.insert(path, false)
   assert(ext.image.capture, F"${path}: the capture is kept")
   assert(ext.track_data(SIG_TRACK, 0) == sig0 and ext.track_data(MARK_TRACK, 1) == mark0,
-    F"${path}: the protected tracks are served")
+    F"${path}: the edited tracks are served")
   ext.eject()
 end
 
 -- Exported while mounted: the unchanged tracks are copied bit for bit, so
--- the export serves the same protected tracks.
+-- the export serves the same edited tracks.
 local out = F"${vars.WORK_DIR}/exported.moof"
 assert(drive.image.export(out), "export to .moof")
 ext.insert(out, false)
 assert(ext.track_data(SIG_TRACK, 0) == sig0 and ext.track_data(MARK_TRACK, 1) == mark0,
-  "the export keeps the protected tracks")
+  "the export keeps the edited tracks")
 
 -- A write-protected disk takes no raw writes: drive 1 selected, the IWM in
 -- write mode, bytes written to its data register (the IWM's registers at
@@ -220,5 +220,5 @@ assert(r.ran == 1 and r.rdres == 0, "the guest reads the restored disk")
 assert(r.found == 0, "and no signature: the capture is gone")
 scheduler.run(20000000)
 assert(debug.mac.globals.read("Ticks") > 0, "the Mac is still running")
-echo("protection-ok")
+echo("track-content-ok")
 quit()

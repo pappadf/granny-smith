@@ -212,7 +212,7 @@ static inline bool mark_at(const uint8_t *rev, size_t n, size_t at, uint8_t a, u
 // closes it -- right after the values on a standard field, wherever it falls
 // on another (AA is no codeword, so it cannot occur inside a field that
 // decodes).  Never past the next field's mark: a field with no DE AA of its
-// own (a bit-slip protection, a garbled field) would otherwise run on to the
+// own (a bit-slip field, a garbled field) would otherwise run on to the
 // one closing the next address field, and a rewrite of the sector would
 // take that address field with it.  Such a field ends where a standard one
 // does, or, if the next mark comes sooner, at the sync in front of it.

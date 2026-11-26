@@ -3,7 +3,7 @@
 # Copyright (c) pappadf
 #
 # Turn a writer-made MOOF (a plain 800K disk laid down as a Mac formats it)
-# into one carrying a weak-bit copy protection: on track WEAK_TRACK, side
+# into one carrying a weak area: on track WEAK_TRACK, side
 # WEAK_SIDE, sector WEAK_SECTOR's data field (its mark included) becomes a
 # weak area -- RECORDS records
 #

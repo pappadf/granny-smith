@@ -73,9 +73,8 @@ size_t gcr_frame_revolution(const uint8_t *bits, uint32_t nbits, uint8_t *out, s
 // revolution of a real drive: the read amplifier's gain climbs while it
 // hears nothing, and once a few cells have passed in silence it starts
 // turning noise into transitions -- at random, so the IWM's framing after
-// the run slips differently each time.  Protection checks rely on it (a
-// nibble copier writes the run back as real data, which reads the same
-// every time).  The model: inside a run, a cell more than GCR_WEAK_GRACE
+// the run slips differently each time (a nibble copier writes the run back
+// as real data, which reads the same every time).  The model: inside a run, a cell more than GCR_WEAK_GRACE
 // cells after the last transition (captured or invented) becomes a 1 with
 // probability GCR_WEAK_P_NUM / GCR_WEAK_P_DEN.
 
