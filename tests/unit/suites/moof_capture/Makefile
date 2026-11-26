@@ -5,7 +5,9 @@
 # down from the sectors; unreadable sectors; the write-protect flag; a
 # .moof export copying unchanged tracks through; and the drive's write-back
 # of a captured track at an eject (and the write-through), which must read
-# it as a loop and write only its own track's sectors, once each.
+# it as a loop and write only its own track's sectors, once each; and weak
+# bits -- a track with long runs of no flux transition is redrawn with fresh,
+# reproducible noise each time the head passes the index.
 #
 # Captures are made by the MOOF writer (moof_encode) and then edited bit by
 # bit the way protected disks differ from a formatter's output -- a $DE in

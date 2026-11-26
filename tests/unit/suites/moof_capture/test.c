@@ -844,6 +844,223 @@ TEST(eject_flush_keeps_the_capture) {
     moof_free(&m);
 }
 
+// === Weak bits ==============================================================
+
+// A weak area as a protected disk lays it down: on (WEAK_TRACK, WEAK_SIDE),
+// sector WEAK_SECTOR's data field (mark included) replaced by records
+// F6 AF xx yy 96 F6, each followed by 16 cells with no flux transition --
+// 17 with the last byte's own zero -- and sync to the end of the field.
+// The sector reads as missing; every other one as written.
+#define WEAK_TRACK  26
+#define WEAK_SIDE   1
+#define WEAK_SECTOR 0
+#define WEAK_CELLS  ((3 + 1 + GCR_SECTOR_VALUES + 2) * 8) // the field the records take the place of
+static int weaken(moof_t *m) {
+    uint32_t n;
+    uint8_t *b = track_bits(m, WEAK_TRACK, WEAK_SIDE, &n);
+    uint32_t at = data_mark_of(b, n, WEAK_SECTOR), end = at + WEAK_CELLS;
+    int records = 0;
+    for (; at + 64 <= end; at += 64, records++) {
+        const uint32_t rec[6] = {0xF6, 0xAF, gcr_encode6[records & 63], gcr_encode6[(records * 5 + 1) & 63],
+                                 0x96, 0xF6};
+        for (int k = 0; k < 6; k++)
+            bits_put(b, at + 8 * (uint32_t)k, rec[k], 8);
+        bits_put(b, at + 48, 0, 16);
+    }
+    for (; at + 10 <= end; at += 10)
+        bits_put(b, at, 0x3FC, 10); // self-sync to the end of the old field
+    restamp(m);
+    return records;
+}
+
+// A weak track, wherever the capture's index falls on it, is found once:
+// each record's run and nothing else on the disk.
+TEST(weak_runs_are_found) {
+    moof_t m;
+    moof_make(&m, SECTORS_800K, 31);
+    int records = weaken(&m);
+    ASSERT_TRUE(records > 80);
+    image_t *img = open_moof(&m, "weakruns.moof", true, false);
+    image_capture_t *cap = image_capture(img);
+    const gcr_weak_run_t *runs;
+    size_t n;
+    for (int t = 0; t < 80; t++)
+        for (int sd = 0; sd < 2; sd++) {
+            bool weak = image_capture_weak_runs(cap, t, sd, &runs, &n);
+            ASSERT_EQ_INT(t == WEAK_TRACK && sd == WEAK_SIDE, weak);
+        }
+    ASSERT_TRUE(image_capture_weak_runs(cap, WEAK_TRACK, WEAK_SIDE, &runs, &n));
+    ASSERT_EQ_INT(records, (int)n);
+    for (size_t i = 0; i < n; i++)
+        ASSERT_EQ_INT(17, (int)runs[i].len);
+    ASSERT_EQ_INT(IMAGE_SECTOR_MISSING, image_sector_status(img, block_of(WEAK_TRACK, WEAK_SIDE, WEAK_SECTOR, 2)));
+    uint32_t cut = runs[5].start + 8; // eight cells into a run
+    image_close(img);
+    // The index inside the area: the run it cuts is still one run.
+    uint32_t nb;
+    track_bits(&m, WEAK_TRACK, WEAK_SIDE, &nb);
+    rotate_track(&m, WEAK_TRACK, WEAK_SIDE, cut);
+    restamp(&m);
+    img = open_moof(&m, "weakwrap.moof", true, false);
+    ASSERT_TRUE(image_capture_weak_runs(image_capture(img), WEAK_TRACK, WEAK_SIDE, &runs, &n));
+    ASSERT_EQ_INT(records, (int)n);
+    int across = 0;
+    for (size_t i = 0; i < n; i++) {
+        ASSERT_EQ_INT(17, (int)runs[i].len);
+        across += runs[i].start + runs[i].len > nb;
+    }
+    ASSERT_EQ_INT(1, across);
+    image_close(img);
+    moof_free(&m);
+}
+
+// The drive's first touch of a weak track is a draw at the drive's
+// revolution; every index the guest's read passes takes the next draw,
+// different, and the same sequence gives the same bytes.  A track without
+// weak runs is the capture's, and passing its index changes nothing.
+TEST(weak_track_redrawn_at_the_index) {
+    moof_t m;
+    moof_make(&m, SECTORS_800K, 32);
+    weaken(&m);
+    image_t *img = open_moof(&m, "weakdraw.moof", true, false);
+    size_t clen;
+    uint8_t *clean = capture_track(img, WEAK_TRACK, WEAK_SIDE, &clen, NULL);
+    memset(&g_drive, 0, sizeof g_drive);
+    g_drive.track = WEAK_TRACK;
+    g_drive.revolution = 7;
+    floppy_track_t *trk = &g_drive.tracks[WEAK_SIDE][WEAK_TRACK];
+    ASSERT_TRUE(iwm_track_data(&g_drive, img, WEAK_SIDE, NULL) != NULL);
+    ASSERT_TRUE(trk->weak);
+    ASSERT_EQ_INT(7, (int)trk->draw);
+    ASSERT_EQ_INT(7, (int)g_drive.revolution);
+    uint8_t *want = NULL;
+    size_t wlen = image_capture_weak_track(image_capture(img), WEAK_TRACK, WEAK_SIDE, 7, &want);
+    ASSERT_TRUE(wlen == trk->size && memcmp(want, trk->data, wlen) == 0);
+    ASSERT_TRUE(wlen != clen || memcmp(clean, trk->data, clen) != 0); // noise, not the clean framing
+    free(want);
+    // Every sector but the weak one decodes from every draw.
+    uint8_t *draws[6];
+    size_t lens[6];
+    for (int d = 0; d < 6; d++) {
+        lens[d] = trk->size;
+        draws[d] = malloc(lens[d]);
+        memcpy(draws[d], trk->data, lens[d]);
+        moof_sector_t sec[MOOF_MAX_SECTORS];
+        moof_scan_track(trk->data, trk->size, WEAK_TRACK, WEAK_SIDE, sec, NULL);
+        for (int k = 0; k < 11; k++)
+            ASSERT_EQ_INT(k == WEAK_SECTOR ? MOOF_SECTOR_MISSING : MOOF_SECTOR_OK, sec[k].state);
+        g_drive.offset = 0;
+        ASSERT_TRUE(iwm_track_index(&g_drive, img, WEAK_SIDE) == trk->data);
+        ASSERT_EQ_INT(8 + d, (int)g_drive.revolution);
+        ASSERT_EQ_INT(8 + d, (int)trk->draw);
+    }
+    for (int d = 1; d < 6; d++)
+        ASSERT_TRUE(lens[d] != lens[d - 1] || memcmp(draws[d], draws[d - 1], lens[d]) != 0);
+    // A second drive (or the same one after a restore) running the same
+    // sequence: the same draws.
+    floppy_drive_t *again = calloc(1, sizeof *again);
+    again->track = WEAK_TRACK;
+    again->revolution = 7;
+    ASSERT_TRUE(iwm_track_data(again, img, WEAK_SIDE, NULL) != NULL);
+    for (int d = 0; d < 6; d++) {
+        floppy_track_t *t2 = &again->tracks[WEAK_SIDE][WEAK_TRACK];
+        ASSERT_TRUE(t2->size == lens[d] && memcmp(t2->data, draws[d], lens[d]) == 0);
+        iwm_track_index(again, img, WEAK_SIDE);
+    }
+    free(again->tracks[WEAK_SIDE][WEAK_TRACK].data);
+    free(again);
+    // A track with no weak runs: the capture's, untouched by the index.
+    g_drive.track = 3;
+    floppy_track_t *plain = &g_drive.tracks[0][3];
+    ASSERT_TRUE(iwm_track_data(&g_drive, img, 0, NULL) != NULL);
+    ASSERT_TRUE(!plain->weak);
+    uint8_t *before = plain->data;
+    uint32_t rev = g_drive.revolution;
+    ASSERT_TRUE(iwm_track_index(&g_drive, img, 0) == before);
+    ASSERT_EQ_INT((int)rev, (int)g_drive.revolution);
+    for (int d = 0; d < 6; d++)
+        free(draws[d]);
+    free(clean);
+    drive_eject(img);
+    image_close(img);
+    moof_free(&m);
+}
+
+// A checkpoint restore keeps the weak entry's draw (the prefix's `weak`
+// and `draw`) but not its buffer: the first touch rebuilds that draw, the
+// bytes the save had, whatever the revolution counter says now.  An
+// inspection (peek) of an unbuilt weak track sees the clean framing and
+// draws nothing.
+TEST(weak_draw_survives_a_restore) {
+    moof_t m;
+    moof_make(&m, SECTORS_800K, 33);
+    weaken(&m);
+    image_t *img = open_moof(&m, "weakrestore.moof", true, false);
+    memset(&g_drive, 0, sizeof g_drive);
+    g_drive.track = WEAK_TRACK;
+    floppy_track_t *trk = &g_drive.tracks[WEAK_SIDE][WEAK_TRACK];
+    size_t plen;
+    const uint8_t *peek = iwm_track_data_peek(&g_drive, img, WEAK_SIDE, &plen);
+    size_t clen;
+    uint8_t *clean = capture_track(img, WEAK_TRACK, WEAK_SIDE, &clen, NULL);
+    ASSERT_TRUE(peek && plen == clen && memcmp(peek, clean, clen) == 0);
+    ASSERT_TRUE(trk->data == NULL && !trk->weak && g_drive.revolution == 0);
+    iwm_track_data(&g_drive, img, WEAK_SIDE, NULL);
+    for (int d = 0; d < 3; d++)
+        iwm_track_index(&g_drive, img, WEAK_SIDE);
+    ASSERT_EQ_INT(3, (int)trk->draw);
+    size_t len = trk->size;
+    uint8_t *saved = malloc(len);
+    memcpy(saved, trk->data, len);
+    g_drive.offset = (int)len - 5;
+    // The restore: the buffer gone, the plain data kept; the head moved
+    // on to other weak tracks since (the counter is the drive's).
+    free(trk->data);
+    trk->data = NULL;
+    g_drive.revolution = 40;
+    ASSERT_TRUE(iwm_track_data(&g_drive, img, WEAK_SIDE, NULL) != NULL);
+    ASSERT_TRUE(trk->weak && trk->draw == 3);
+    ASSERT_TRUE(trk->size == len && memcmp(trk->data, saved, len) == 0);
+    ASSERT_EQ_INT((int)len - 5, g_drive.offset);
+    // The peek of a built weak track is its current draw.
+    peek = iwm_track_data_peek(&g_drive, img, WEAK_SIDE, &plen);
+    ASSERT_TRUE(peek == trk->data);
+    free(saved);
+    free(clean);
+    drive_eject(img);
+    image_close(img);
+    moof_free(&m);
+}
+
+// Only a track the capture serves as it is (rule 2) reads as weak: once a
+// sector of it changes, the spliced track is served without noise, and a
+// draw never changes what the content rule or the sector view see.
+TEST(spliced_weak_track_is_not_weak) {
+    moof_t m;
+    moof_make(&m, SECTORS_800K, 34);
+    weaken(&m);
+    image_t *img = open_moof(&m, "weaksplice.moof", true, false);
+    uint8_t buf[512];
+    pattern(buf, 0x52);
+    uint64_t blk = block_of(WEAK_TRACK, WEAK_SIDE, 4, 2);
+    ASSERT_EQ_INT(512, (int)disk_write_data(img, blk * 512, buf, 512));
+    memset(&g_drive, 0, sizeof g_drive);
+    g_drive.track = WEAK_TRACK;
+    floppy_track_t *trk = &g_drive.tracks[WEAK_SIDE][WEAK_TRACK];
+    ASSERT_TRUE(iwm_track_data(&g_drive, img, WEAK_SIDE, NULL) != NULL);
+    ASSERT_TRUE(!trk->weak);
+    size_t len;
+    uint8_t *want = media_track(img, WEAK_TRACK, WEAK_SIDE, &len);
+    ASSERT_TRUE(trk->size == len && memcmp(trk->data, want, len) == 0);
+    uint8_t *before = trk->data;
+    iwm_track_index(&g_drive, img, WEAK_SIDE);
+    ASSERT_TRUE(trk->data == before && g_drive.revolution == 0);
+    free(want);
+    drive_eject(img);
+    image_close(img);
+    moof_free(&m);
+}
+
 int main(void) {
     strcpy(g_dir, "/tmp/gs-moof-capture-XXXXXX");
     ASSERT_TRUE(mkdtemp(g_dir) != NULL);
@@ -864,6 +1081,10 @@ int main(void) {
     RUN(write_through_across_the_index);
     RUN(flush_writes_only_its_own_track_once);
     RUN(eject_flush_keeps_the_capture);
+    RUN(weak_runs_are_found);
+    RUN(weak_track_redrawn_at_the_index);
+    RUN(weak_draw_survives_a_restore);
+    RUN(spliced_weak_track_is_not_weak);
     char cmd[128];
     snprintf(cmd, sizeof cmd, "rm -rf %s", g_dir);
     if (system(cmd) != 0)

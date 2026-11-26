@@ -463,6 +463,16 @@ void floppy_update_iwm_lines(floppy_t *floppy, int offset) {
         floppy_disk_control(floppy);
 }
 
+// A guest read has carried the head past the end of the track buffer: back
+// to the index, where a weak track takes its next draw (iwm_track_index)
+// and may come back another length (*trk_len).  The buffer to read on from.
+static const uint8_t *iwm_read_index(floppy_t *floppy, floppy_drive_t *drive, image_t *disk, size_t *trk_len) {
+    drive->offset = 0;
+    const uint8_t *data = iwm_track_index(drive, disk, floppy->sel);
+    *trk_len = floppy_track_len(drive, floppy->sel, drive->track);
+    return data;
+}
+
 // A read of the IWM register at `offset`: the guest's, or an inspection's
 // (`peek`).  Every IWM access moves one of the state lines, and a guest read
 // stores that (an LSTRB rising edge also runs floppy_disk_control).  A peek
@@ -574,7 +584,7 @@ static uint8_t iwm_reg_read(floppy_t *floppy, uint32_t offset, bool peek) {
             for (size_t i = 0; i < trk_len; i++) {
                 uint8_t byte = data[drive->offset++];
                 if (drive->offset >= (int)trk_len)
-                    drive->offset = 0;
+                    data = iwm_read_index(floppy, drive, disk, &trk_len);
                 if (byte & 0x80) {
                     LOG(8, "Drive %d: Reading data track=%d side=%d offset=%d = 0x%02X", drv, drive->track, floppy->sel,
                         drive->offset, byte);
@@ -589,7 +599,7 @@ static uint8_t iwm_reg_read(floppy_t *floppy, uint32_t offset, bool peek) {
         // Non-latch mode: return raw bytes
         uint8_t ret = data[drive->offset++];
         if (drive->offset >= (int)trk_len)
-            drive->offset = 0;
+            iwm_read_index(floppy, drive, disk, &trk_len);
         LOG(8, "Drive %d: Reading data track=%d side=%d offset=%d = 0x%02X", drv, drive->track, floppy->sel,
             drive->offset, ret);
         return ret;
@@ -664,6 +674,7 @@ void floppy_iwm_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
             drive->offset - 1, byte);
 
         floppy_track_t *trk = &drive->tracks[floppy->sel][drive->track];
+        trk->weak = false; // written into: its last draw stays, with the guest's bytes
         if (!trk->modified) {
             trk->modified = true;
             LOG(5, "Drive %d: Track %d side %d marked dirty", drv, drive->track, floppy->sel);
@@ -870,6 +881,8 @@ void floppy_drive_drop_tracks(floppy_t *floppy, unsigned drive) {
             d->tracks[s][t].data = NULL;
             d->tracks[s][t].size = 0;
             d->tracks[s][t].modified = false;
+            d->tracks[s][t].weak = false;
+            d->tracks[s][t].draw = 0;
         }
     }
 }
@@ -1197,15 +1210,19 @@ floppy_t *floppy_init(floppy_type_t type, struct scheduler *scheduler, int n_dri
                     if (!tracks_ok) {
                         trk->size = 0;
                         trk->modified = false;
+                        trk->weak = false;
                         continue;
                     }
                     uint8_t has_data = 0;
                     system_read_checkpoint_data(checkpoint, &has_data, 1);
                     trk->size = 0; // the prefix's value is stale; a residue carries its own
                     if (!has_data) {
+                        // A weak entry is not saved: the first touch redraws
+                        // the saved draw (`weak`, `draw`), the same bytes.
                         trk->modified = false;
                         continue;
                     }
+                    trk->weak = false; // a residue holds guest writes: frozen
                     uint32_t size = 0;
                     system_read_checkpoint_data(checkpoint, &size, sizeof size, "floppy_residue");
                     size_t max = floppy_residue_max(floppy->disk[d], t, capture_changed[d]);

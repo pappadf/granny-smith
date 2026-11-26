@@ -386,6 +386,18 @@ static void encode_track(uint8_t *dst, size_t trk_length, int track, int side, c
 // reinsert.  The one exception: whether a sector the capture could not read
 // has been written at all, which the image's delta bitmap answers (a guest
 // writing zeros there leaves the content unchanged but the medium readable).
+//
+// Weak bits.  A track served by rule 2 whose bits hold weak runs
+// (image_capture_weak_runs: no flux transition for IMAGE_WEAK_MIN_RUN cells
+// or more) is what a real drive reads differently on every revolution.
+// The drive's cache entry is then `weak`: it holds one draw of the track
+// (image_capture_weak_track), and each time a guest read carries the head
+// past the index the drive's revolution counter advances and the entry is
+// redrawn (iwm_track_index).  The rule itself, the sector status and every
+// sector-level reader keep the noise-free framing, so a draw can never move
+// a track from rule 2 to rule 3.  Once the guest writes into a weak entry
+// it stops redrawing -- its last draw plus the guest's bytes, which the
+// write-through and the eject's flush read as they stand.
 
 // Disk bytes from an address field's D5 to the end of it: D5 AA 96, five
 // values, DE AA.
@@ -565,9 +577,13 @@ static bool track_splice(const uint8_t *nib, size_t n, const moof_sector_t *sec,
     return true;
 }
 
-int floppy_media_track(const floppy_media_t *m, int track, int side, uint8_t **out, size_t *len) {
+// floppy_media_track, and in *captured (may be NULL) whether the track is
+// the capture's own revolution (rule 2, from captured bits).
+static int media_track_ruled(const floppy_media_t *m, int track, int side, uint8_t **out, size_t *len, bool *captured) {
     *out = NULL;
     *len = 0;
+    if (captured)
+        *captured = false;
     if (!m || !m->valid || m->mfm || !m->img || track < 0 || track >= NUM_TRACKS || side < 0 || side >= NUM_SIDES)
         return -EINVAL;
     image_capture_t *cap = image_capture(m->img);
@@ -588,7 +604,8 @@ int floppy_media_track(const floppy_media_t *m, int track, int side, uint8_t **o
                 if (!nib)
                     return -ENOMEM;
                 memset(nib, 0xFF, n);
-            }
+            } else if (captured)
+                *captured = true;
             LOG(4, "floppy: track=%d side=%d: served from the capture (%zu bytes)", track, side, n);
             *out = nib;
             *len = n;
@@ -603,6 +620,23 @@ int floppy_media_track(const floppy_media_t *m, int track, int side, uint8_t **o
             diff);
     }
     return track_synthesise(track, side, &ts, out, len);
+}
+
+int floppy_media_track(const floppy_media_t *m, int track, int side, uint8_t **out, size_t *len) {
+    return media_track_ruled(m, track, side, out, len, NULL);
+}
+
+// Replace a weak entry's buffer with draw trk->draw of (track, side).
+// False, the buffer kept, when there is no draw to make (no memory).
+static bool weak_redraw(floppy_track_t *trk, image_t *img, int track, int side) {
+    uint8_t *nib = NULL;
+    size_t n = image_capture_weak_track(image_capture(img), track, side, trk->draw, &nib);
+    if (!n)
+        return false;
+    free(trk->data);
+    trk->data = nib;
+    trk->size = n;
+    return true;
 }
 
 // Returns a pointer to the GCR data for the specified drive/image/side, encoding on demand.
@@ -628,13 +662,26 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
         floppy_media_t m;
         uint8_t *buf = NULL;
         size_t len = 0;
-        if (!floppy_media_from_image(img, &m) || floppy_media_track(&m, drive->track, sel, &buf, &len) != 0) {
+        bool captured = false;
+        if (!floppy_media_from_image(img, &m) || media_track_ruled(&m, drive->track, sel, &buf, &len, &captured) != 0) {
             LOG(1, "Track build failed track=%d side=%d", drive->track, sel);
             return NULL;
         }
         track->data = buf;
         track->size = len;
         track->modified = false;
+        // A captured track with weak runs is served as one draw.  An entry
+        // a checkpoint restore left `weak` keeps the draw it was saved
+        // with, so the buffer is the one the save had; a new one takes the
+        // drive's revolution.
+        const gcr_weak_run_t *runs = NULL;
+        size_t nruns = 0;
+        bool weak = captured && image_capture_weak_runs(image_capture(img), drive->track, sel, &runs, &nruns);
+        if (weak && !track->weak)
+            track->draw = drive->revolution;
+        track->weak = weak && weak_redraw(track, img, drive->track, sel);
+        if (track->weak)
+            LOG(4, "floppy: track=%d side=%d: weak, draw %u (%zu bytes)", drive->track, sel, track->draw, track->size);
     }
 
     // The head's position is the drive's and the length the track's: tracks
@@ -648,6 +695,21 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
     if (drive->write_hdr_start >= (int)track->size)
         drive->write_hdr_start = -1;
 
+    return track->data;
+}
+
+uint8_t *iwm_track_index(floppy_drive_t *drive, image_t *img, int sel) {
+    floppy_track_t *track = &drive->tracks[sel][drive->track];
+    if (track->data && track->weak && img) {
+        // The next revolution: a fresh draw of the noise, reproducible from
+        // the counter alone.
+        drive->revolution++;
+        track->draw = drive->revolution;
+        if (!weak_redraw(track, img, drive->track, sel))
+            LOG(1, "floppy: track=%d side=%d: no memory for draw %u; the last one stays", drive->track, sel,
+                track->draw);
+        LOG(6, "floppy: track=%d side=%d: draw %u (%zu bytes)", drive->track, sel, track->draw, track->size);
+    }
     return track->data;
 }
 

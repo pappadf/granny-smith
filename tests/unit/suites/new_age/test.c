@@ -135,6 +135,22 @@ uint32_t image_capture_track_diff(const moof_sector_t sec[MOOF_MAX_SECTORS], int
     (void)in_delta;
     return 0;
 }
+bool image_capture_weak_runs(const image_capture_t *cap, int track, int side, const gcr_weak_run_t **runs, size_t *n) {
+    (void)cap;
+    (void)track;
+    (void)side;
+    *runs = NULL;
+    *n = 0;
+    return false;
+}
+size_t image_capture_weak_track(const image_capture_t *cap, int track, int side, uint32_t draw, uint8_t **nib) {
+    (void)cap;
+    (void)track;
+    (void)side;
+    (void)draw;
+    *nib = NULL;
+    return 0;
+}
 // The sector scan (image_moof.c) finds nothing on these suites' tracks: the
 // eject flush, its one caller here, writes nothing back.
 void moof_scan_track(const uint8_t *rev, size_t n, int track, int side, moof_sector_t sec[MOOF_MAX_SECTORS],
