@@ -107,7 +107,7 @@ struct dafb {
     // the $C0 bits are set and PCBR0 selects direct color.
     bool ac842a; // true = AC842a model (PCBR1 exists)
     uint8_t pcbr1;
-    // Antelope (the djMEMC boards' AT&T/Sierra CLUT/DAC): an AC842a whose
+    // Antelope (the MEMC boards' AT&T/Sierra CLUT/DAC): an AC842a whose
     // PCBR1 mfg/rev nibble is non-zero, which tells the driver its 16 bpp
     // CLUT is linear.  The nibble the part reports when set.
     uint8_t pcbr1_rev;

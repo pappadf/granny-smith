@@ -10,9 +10,9 @@ controller that defines the generation (like GLUE, MDU, OSS before it);
 the family also carries the JDB/Relayer datapath, the YANCC NuBus bridge,
 and the stand-alone DAFB video controller ([dafb.md](dafb.md)).
 
-The devices and plumbing this generation shares with the djMEMC family
+The devices and plumbing this generation shares with the MEMC family
 (Centris/Quadra 610/650/800, LC 475/575, Quadra 605 —
-[../djmemc/djmemc.md](../djmemc/djmemc.md)) live in
+[../memc/memc.md](../memc/memc.md)) live in
 [quadra040.c](../../../../src/machines/mcu/quadra040.c) /
 [quadra040.h](../../../../src/machines/mcu/quadra040.h), and the YANCC
 register file in [yancc.c](../../../../src/machines/mcu/yancc.c) /
@@ -79,8 +79,8 @@ of all sources. NuBus card /NMRQ lines route in via the substrate's
 
 ## Shared 040 Quadra block
 
-`quadra040_t` is the first member of `mcu_state_t` (and of the djMEMC
-family's `djmemc_state_t`), so `quadra040_st(cfg)` reaches it whichever
+`quadra040_t` is the first member of `mcu_state_t` (and of the MEMC
+family's `memc_state_t`), so `quadra040_st(cfg)` reaches it whichever
 family runs. It holds the devices both generations carry — EASC, DAFB,
 the first 53C96, SONIC and the MAC-PROM bytes, the `/SLOTIRQ` mask, the
 YANCC/Kiwi `yancc_t`, the ROM overlay, the bus MMU and the I/O engine —

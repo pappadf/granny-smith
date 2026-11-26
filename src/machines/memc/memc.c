@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// djmemc.c
-// The djMEMC family substrate (Centris 610/650, Quadra 610/650/800, and the
-// MEMCjr boards LC 475/575, Quadra 605) -- see djmemc.h.  Implements the
-// family lifecycle and the pieces of this generation: the djMEMC and MEMCjr
+// memc.c
+// The MEMC family substrate (Centris 610/650, Quadra 610/650/800, and the
+// MEMCjr boards LC 475/575, Quadra 605) -- see memc.h.  Implements the
+// family lifecycle and the pieces of this generation: the MEMC and MEMCjr
 // bank decodes and register files, the ROM-at-zero overlay, the CPU-ID
 // register, the Kiwi NuBus controller's register file, and the I/O island
 // decode tables run on the shared board_io engine.
 
-#include "djmemc.h"
+#include "memc.h"
 
 #include "config_seed.h"
 #include "cpuid_page.h"
@@ -36,17 +36,17 @@
 LOG_USE_CATEGORY_NAME("board");
 
 // One-level family: the profile's board IS the descriptor.
-static inline const djmemc_board_desc_t *djmemc_board(config_t *cfg) {
-    return (const djmemc_board_desc_t *)cfg->machine->board;
+static inline const memc_board_desc_t *memc_board(config_t *cfg) {
+    return (const memc_board_desc_t *)cfg->machine->board;
 }
 
 // ============================================================
 // RAM banks
 // ============================================================
 
-// The djMEMC: the soldered RAM as banks 0 and 1 (4 MB each), then each SIMM
+// The MEMC: the soldered RAM as banks 0 and 1 (4 MB each), then each SIMM
 // socket's one or two banks.
-static bool djmemc_chip_ram_banks(const djmemc_board_desc_t *desc, uint32_t ram, uint32_t size[DJMEMC_MAX_BANKS]) {
+static bool memc_chip_ram_banks(const memc_board_desc_t *desc, uint32_t ram, uint32_t size[MEMC_MAX_BANKS]) {
     // A SIMM, largest first: its bytes and how many 4/16 MB banks it fills.
     static const struct {
         uint32_t bytes, bank;
@@ -79,7 +79,7 @@ static bool djmemc_chip_ram_banks(const djmemc_board_desc_t *desc, uint32_t ram,
 // MEMCjr: the soldered bank 0, then the one SIMM socket's sides in banks 1
 // and 2.  The 1, 4 and 16 MB SIMMs are single-sided, the 2, 8 and 32 MB
 // ones two sides of half that.
-static bool memcjr_chip_ram_banks(const djmemc_board_desc_t *desc, uint32_t ram, uint32_t size[DJMEMC_MAX_BANKS]) {
+static bool memcjr_chip_ram_banks(const memc_board_desc_t *desc, uint32_t ram, uint32_t size[MEMC_MAX_BANKS]) {
     if (ram < desc->ram_onboard)
         return false;
     size[0] = desc->ram_onboard;
@@ -96,56 +96,56 @@ static bool memcjr_chip_ram_banks(const djmemc_board_desc_t *desc, uint32_t ram,
 }
 
 // The start address bank `b`'s configuration register places it at: the
-// djMEMC's 8-bit 4 MB field.
-static uint32_t djmemc_chip_bank_start(const djmemc_state_t *st, int b) {
-    return (st->memc_regs[(DJMEMC_REG_BANK0 >> 2) + b] & DJMEMC_BANK_START_MSK) * DJMEMC_BANK_UNIT;
+// MEMC's 8-bit 4 MB field.
+static uint32_t memc_chip_bank_start(const memc_state_t *st, int b) {
+    return (st->memc_regs[(MEMC_REG_BANK0 >> 2) + b] & MEMC_BANK_START_MSK) * MEMC_BANK_UNIT;
 }
 
 // The MEMCjr's: six register bits under the four the latch gave that bank,
 // in 1 MB units.
-static uint32_t memcjr_chip_bank_start(const djmemc_state_t *st, int b) {
-    uint32_t reg = st->memc_regs[(DJMEMC_REG_BANK0 >> 2) + b];
+static uint32_t memcjr_chip_bank_start(const memc_state_t *st, int b) {
+    uint32_t reg = st->memc_regs[(MEMC_REG_BANK0 >> 2) + b];
     uint32_t mb =
         ((uint32_t)(st->jr_bank_hi[b] & MEMCJR_LATCH_HI_MSK) << MEMCJR_LATCH_HI_SHIFT) | (reg & MEMCJR_BANK_LO_MSK);
     return mb * MEMCJR_BANK_UNIT;
 }
 
-// The djMEMC's power-up bank placement: bank n on the n-th 64 MB boundary,
+// The MEMC's power-up bank placement: bank n on the n-th 64 MB boundary,
 // the same split the ROM programs before it sizes, so whatever the ROM
 // touches before sizing finds bank 0 at zero.
-static void djmemc_chip_reset_regs(djmemc_state_t *st) {
-    for (int b = 0; b < DJMEMC_MAX_BANKS; b++)
-        st->memc_regs[(DJMEMC_REG_BANK0 >> 2) + b] = 0x100u + (uint32_t)b * 0x10u;
+static void memc_chip_reset_regs(memc_state_t *st) {
+    for (int b = 0; b < MEMC_MAX_BANKS; b++)
+        st->memc_regs[(MEMC_REG_BANK0 >> 2) + b] = 0x100u + (uint32_t)b * 0x10u;
 }
 
 // The MEMCjr's: 64 MB is 64 units -- the register's six bits clear, the
 // latch's n.
-static void memcjr_chip_reset_regs(djmemc_state_t *st) {
+static void memcjr_chip_reset_regs(memc_state_t *st) {
     for (int b = 0; b < MEMCJR_MAX_BANKS; b++)
         st->jr_bank_hi[b] = (uint8_t)b;
     st->memc_regs[MEMCJR_REG_LATCH >> 2] = 0xFFu;
 }
 
 // MEMCjr: a register read loads the latch with the register's bits 6-11.
-static void memcjr_latch_load(djmemc_state_t *st, uint32_t value) {
+static void memcjr_latch_load(memc_state_t *st, uint32_t value) {
     st->memc_regs[MEMCJR_REG_LATCH >> 2] = (value >> MEMCJR_LATCH_HI_SHIFT) & MEMCJR_LATCH_MSK;
 }
 
-// The djMEMC's register read: interleave register bits 9-11 are the chip's
+// The MEMC's register read: interleave register bits 9-11 are the chip's
 // version.  Version 0 is the part the ROM does not enable interleaving on,
 // which keeps the bank map linear (interleaving scrambles it, and is a
 // timing feature only).
-static uint32_t djmemc_chip_reg_value(djmemc_state_t *st, uint32_t idx, uint32_t lane) {
+static uint32_t memc_chip_reg_value(memc_state_t *st, uint32_t idx, uint32_t lane) {
     (void)lane;
     uint32_t v = st->memc_regs[idx];
-    if (idx == (DJMEMC_REG_INTERLEAVE >> 2))
+    if (idx == (MEMC_REG_INTERLEAVE >> 2))
         v &= ~0x0E00u;
     return v;
 }
 
 // The MEMCjr's: a register read hands its bits 6-11 to the latch (the read
 // completes on the low lane).
-static uint32_t memcjr_chip_reg_value(djmemc_state_t *st, uint32_t idx, uint32_t lane) {
+static uint32_t memcjr_chip_reg_value(memc_state_t *st, uint32_t idx, uint32_t lane) {
     uint32_t v = st->memc_regs[idx];
     if (idx != (MEMCJR_REG_LATCH >> 2) && lane == 3u)
         memcjr_latch_load(st, v);
@@ -154,63 +154,63 @@ static uint32_t memcjr_chip_reg_value(djmemc_state_t *st, uint32_t idx, uint32_t
 
 // MEMCjr: a bank register takes its high start bits from the latch as it
 // lands.
-static void memcjr_chip_bank_landed(djmemc_state_t *st, int b) {
+static void memcjr_chip_bank_landed(memc_state_t *st, int b) {
     st->jr_bank_hi[b] = (uint8_t)(st->memc_regs[MEMCJR_REG_LATCH >> 2] & MEMCJR_LATCH_HI_MSK);
 }
 
 // What differs between the two memory controllers.
-typedef struct djmemc_chip_ops {
-    const char *name; // "djMEMC" / "MEMCjr" (logs)
+typedef struct memc_chip_ops {
+    const char *name; // "MEMC" / "MEMCjr" (logs)
     uint32_t reg_count; // longwords the window decodes (a power of two; it repeats)
     int max_banks; // bank registers
-    bool (*ram_banks)(const djmemc_board_desc_t *desc, uint32_t ram, uint32_t size[DJMEMC_MAX_BANKS]);
-    uint32_t (*bank_start)(const djmemc_state_t *st, int b); // a bank's start address
-    void (*reset_regs)(djmemc_state_t *st); // power-up values over a zeroed file
-    uint32_t (*reg_value)(djmemc_state_t *st, uint32_t idx, uint32_t lane); // a read's value and side effects
-    void (*bank_landed)(djmemc_state_t *st, int b); // a bank register completed (NULL: nothing)
-} djmemc_chip_ops_t;
+    bool (*ram_banks)(const memc_board_desc_t *desc, uint32_t ram, uint32_t size[MEMC_MAX_BANKS]);
+    uint32_t (*bank_start)(const memc_state_t *st, int b); // a bank's start address
+    void (*reset_regs)(memc_state_t *st); // power-up values over a zeroed file
+    uint32_t (*reg_value)(memc_state_t *st, uint32_t idx, uint32_t lane); // a read's value and side effects
+    void (*bank_landed)(memc_state_t *st, int b); // a bank register completed (NULL: nothing)
+} memc_chip_ops_t;
 
-// The ops of each djmemc_chip_t.
-static const djmemc_chip_ops_t k_djmemc_chip_ops[] = {
-    [DJMEMC_CHIP_DJMEMC] = {"djMEMC", DJMEMC_REG_COUNT, DJMEMC_MAX_BANKS, djmemc_chip_ram_banks, djmemc_chip_bank_start,
-                            djmemc_chip_reset_regs, djmemc_chip_reg_value, NULL                   },
-    [DJMEMC_CHIP_MEMCJR] = {"MEMCjr", MEMCJR_REG_COUNT, MEMCJR_MAX_BANKS, memcjr_chip_ram_banks, memcjr_chip_bank_start,
-                            memcjr_chip_reset_regs, memcjr_chip_reg_value, memcjr_chip_bank_landed},
+// The ops of each memc_chip_t.
+static const memc_chip_ops_t k_memc_chip_ops[] = {
+    [MEMC_CHIP_MEMC] = {"MEMC",   MEMC_REG_COUNT,   MEMC_MAX_BANKS,   memc_chip_ram_banks,   memc_chip_bank_start,
+                        memc_chip_reset_regs,   memc_chip_reg_value,   NULL                   },
+    [MEMC_CHIP_MEMCJR] = {"MEMCjr", MEMCJR_REG_COUNT, MEMCJR_MAX_BANKS, memcjr_chip_ram_banks, memcjr_chip_bank_start,
+                        memcjr_chip_reset_regs, memcjr_chip_reg_value, memcjr_chip_bank_landed},
 };
 
 // The running board's memory-controller ops.
-static inline const djmemc_chip_ops_t *djmemc_ops(config_t *cfg) {
-    return &k_djmemc_chip_ops[djmemc_board(cfg)->chip];
+static inline const memc_chip_ops_t *memc_ops(config_t *cfg) {
+    return &k_memc_chip_ops[memc_board(cfg)->chip];
 }
 
-bool djmemc_ram_banks(const djmemc_board_desc_t *desc, uint32_t ram, uint32_t size[DJMEMC_MAX_BANKS]) {
-    for (int i = 0; i < DJMEMC_MAX_BANKS; i++)
+bool memc_ram_banks(const memc_board_desc_t *desc, uint32_t ram, uint32_t size[MEMC_MAX_BANKS]) {
+    for (int i = 0; i < MEMC_MAX_BANKS; i++)
         size[i] = 0;
-    return k_djmemc_chip_ops[desc->chip].ram_banks(desc, ram, size);
+    return k_memc_chip_ops[desc->chip].ram_banks(desc, ram, size);
 }
 
 // Work out the bank population and where each bank lives in the flat RAM
 // image (banks in order, packed).  A total that is no population of the
 // board is presented as one bank, for the ROM to judge.
-static void djmemc_bank_layout(config_t *cfg) {
-    djmemc_state_t *st = djmemc_st(cfg);
-    if (!djmemc_ram_banks(djmemc_board(cfg), cfg->ram_size, st->bank_size)) {
-        LOG(1, "%s: %u KB is no SIMM population of this board; one bank", djmemc_ops(cfg)->name, cfg->ram_size >> 10);
-        for (int b = 0; b < DJMEMC_MAX_BANKS; b++)
+static void memc_bank_layout(config_t *cfg) {
+    memc_state_t *st = memc_st(cfg);
+    if (!memc_ram_banks(memc_board(cfg), cfg->ram_size, st->bank_size)) {
+        LOG(1, "%s: %u KB is no SIMM population of this board; one bank", memc_ops(cfg)->name, cfg->ram_size >> 10);
+        for (int b = 0; b < MEMC_MAX_BANKS; b++)
             st->bank_size[b] = 0;
         st->bank_size[0] = cfg->ram_size;
     }
     uint32_t off = 0;
-    for (int b = 0; b < DJMEMC_MAX_BANKS; b++) {
+    for (int b = 0; b < MEMC_MAX_BANKS; b++) {
         st->bank_image_off[b] = off;
         off += st->bank_size[b];
         if (st->bank_size[b])
-            LOG(2, "djMEMC bank %d: %u MB at image offset $%08X", b, st->bank_size[b] >> 20, st->bank_image_off[b]);
+            LOG(2, "MEMC bank %d: %u MB at image offset $%08X", b, st->bank_size[b] >> 20, st->bank_image_off[b]);
     }
 }
 
 // The physical span the bank registers can place RAM in: ten 64 MB windows.
-#define DJMEMC_RAM_SPAN (DJMEMC_MAX_BANKS * DJMEMC_BANK_WINDOW)
+#define MEMC_RAM_SPAN (MEMC_MAX_BANKS * MEMC_BANK_WINDOW)
 
 // Apply the bank configuration registers to the page table
 // (m68k_board_map_banks): each populated bank mirrors through its span up to
@@ -220,48 +220,47 @@ static void djmemc_bank_layout(config_t *cfg) {
 // while the ROM overlay holds low memory: dropping it maps RAM (the AV
 // boards' rule, av_ymca_remap), so a bank write under the overlay takes
 // effect then.
-static void djmemc_map_ram(config_t *cfg) {
-    djmemc_state_t *st = djmemc_st(cfg);
+static void memc_map_ram(config_t *cfg) {
+    memc_state_t *st = memc_st(cfg);
     if (st->q.overlay.armed)
         return;
-    const djmemc_chip_ops_t *ops = djmemc_ops(cfg);
-    m68k_board_bank_t banks[DJMEMC_MAX_BANKS];
-    for (int b = 0; b < DJMEMC_MAX_BANKS; b++) {
+    const memc_chip_ops_t *ops = memc_ops(cfg);
+    m68k_board_bank_t banks[MEMC_MAX_BANKS];
+    for (int b = 0; b < MEMC_MAX_BANKS; b++) {
         // A bank the chip has no register for is empty.
         uint32_t start = b < ops->max_banks ? ops->bank_start(st, b) : 0;
         banks[b] = (m68k_board_bank_t){start, st->bank_size[b], st->bank_image_off[b]};
     }
-    m68k_board_map_banks(cfg, banks, DJMEMC_MAX_BANKS, DJMEMC_BANK_WINDOW, DJMEMC_RAM_SPAN, &st->ram_extent,
-                         st->q.bus_mmu);
+    m68k_board_map_banks(cfg, banks, MEMC_MAX_BANKS, MEMC_BANK_WINDOW, MEMC_RAM_SPAN, &st->ram_extent, st->q.bus_mmu);
 }
 
 // The register file's power-up state: zero, then the chip's bank placement,
 // and MemTop at $FF.
-static void djmemc_reset_regs(const djmemc_board_desc_t *desc, djmemc_state_t *st) {
+static void memc_reset_regs(const memc_board_desc_t *desc, memc_state_t *st) {
     memset(st->memc_regs, 0, sizeof st->memc_regs);
     memset(st->jr_bank_hi, 0, sizeof st->jr_bank_hi);
-    k_djmemc_chip_ops[desc->chip].reset_regs(st);
-    st->memc_regs[DJMEMC_REG_MEMTOP >> 2] = 0xFFu;
+    k_memc_chip_ops[desc->chip].reset_regs(st);
+    st->memc_regs[MEMC_REG_MEMTOP >> 2] = 0xFFu;
 }
 
 // ============================================================
-// djMEMC register window ($0E000)
+// MEMC register window ($0E000)
 // ============================================================
-// The register a window offset decodes to: the djMEMC repeats its sixteen
+// The register a window offset decodes to: the MEMC repeats its sixteen
 // longwords through $7F, the MEMCjr decodes thirty-two.
 
-uint8_t djmemc_reg_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+uint8_t memc_reg_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
     (void)addr;
-    const djmemc_chip_ops_t *ops = djmemc_ops(cfg);
+    const memc_chip_ops_t *ops = memc_ops(cfg);
     uint32_t idx = (win_off >> 2) & (ops->reg_count - 1);
-    uint32_t v = ops->reg_value(djmemc_st(cfg), idx, win_off & 3u);
+    uint32_t v = ops->reg_value(memc_st(cfg), idx, win_off & 3u);
     return be_lane8(v, win_off & 3u);
 }
 
-void djmemc_reg_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+void memc_reg_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
     (void)addr;
-    djmemc_state_t *st = djmemc_st(cfg);
-    const djmemc_chip_ops_t *ops = djmemc_ops(cfg);
+    memc_state_t *st = memc_st(cfg);
+    const memc_chip_ops_t *ops = memc_ops(cfg);
     uint32_t idx = (win_off >> 2) & (ops->reg_count - 1);
     be_lane8_set(&st->memc_regs[idx], win_off & 3u, value);
     // A bank register's start field is its low byte: the longword is
@@ -269,48 +268,48 @@ void djmemc_reg_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t va
     if ((win_off & 3u) != 3u)
         return;
     LOG(2, "%s $%02X = $%08X (pc=%08X)", ops->name, idx << 2, st->memc_regs[idx], cpu_get_pc(cfg->cpu));
-    int bank = (int)idx - (int)(DJMEMC_REG_BANK0 >> 2);
+    int bank = (int)idx - (int)(MEMC_REG_BANK0 >> 2);
     if (bank < 0 || bank >= ops->max_banks)
         return;
     if (ops->bank_landed)
         ops->bank_landed(st, bank);
-    djmemc_map_ram(cfg);
+    memc_map_ram(cfg);
 }
 
 // ============================================================
 // IOSB rows: configuration registers and VIA2's DREQ flag
 // ============================================================
 
-static uint8_t djmemc_iosb_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+static uint8_t memc_iosb_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
     (void)addr;
-    return iosb_reg_read(&djmemc_st(cfg)->iosb, win_off);
+    return iosb_reg_read(&memc_st(cfg)->iosb, win_off);
 }
 
 // ...and written.
-static void djmemc_iosb_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+static void memc_iosb_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
     (void)addr;
-    iosb_reg_write(&djmemc_st(cfg)->iosb, win_off, value);
+    iosb_reg_write(&memc_st(cfg)->iosb, win_off, value);
 }
 
 // VIA2's IFR register (one $200 register slot): the 6522's flags with the
 // 53C96 DREQ in bit 0.  Writes go straight to the 6522.
-static uint8_t djmemc_via2_ifr_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+static uint8_t memc_via2_ifr_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
     (void)win_off;
     (void)addr;
     const memory_interface_t *vi = via_get_memory_interface(cfg->via2);
     uint8_t ifr = vi->read_uint8(cfg->via2, IOSB_VIA2_IFR_OFF);
-    return iosb_via2_ifr(&djmemc_st(cfg)->iosb, ifr);
+    return iosb_via2_ifr(&memc_st(cfg)->iosb, ifr);
 }
 
 // The same, as an inspection: the 6522's flags without its read side effects.
-static uint8_t djmemc_via2_ifr_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
+static uint8_t memc_via2_ifr_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
     (void)win_off;
     (void)addr;
-    return iosb_via2_ifr(&djmemc_st(cfg)->iosb, via_get_ifr(cfg->via2));
+    return iosb_via2_ifr(&memc_st(cfg)->iosb, via_get_ifr(cfg->via2));
 }
 
 // A write to the IFR slot: the 6522's own.
-static void djmemc_via2_ifr_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+static void memc_via2_ifr_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
     (void)win_off;
     (void)addr;
     const memory_interface_t *vi = via_get_memory_interface(cfg->via2);
@@ -324,61 +323,59 @@ static void djmemc_via2_ifr_write(config_t *cfg, uint32_t win_off, uint32_t addr
 // (1993), Figure 2-4 "Addresses of I/O devices", p. 36.  Penalties follow
 // the Quadra 700's until the IOSB's wait states are measured.
 
-#define DJMEMC_VIA_IO_PENALTY  16
-#define DJMEMC_IO_PENALTY      2
-#define DJMEMC_SWIM_IO_PENALTY 5
+#define MEMC_VIA_IO_PENALTY  16
+#define MEMC_IO_PENALTY      2
+#define MEMC_SWIM_IO_PENALTY 5
 
 // The rows both islands decode: the IOSB's (or PrimeTime's) device windows,
 // the memory controller's registers (`memc_name`) and the I/O chip's own
 // (`iosb_name`).  VIA2's IFR slot comes before VIA2: the narrow row wins
 // (first match).
 //   base     end      device            penalty               xform              rd wr  rd_fn/wr_fn  name
-#define DJMEMC_ISLAND_ROWS(memc_name, iosb_name)                                                                         \
-    {0x00000, 0x02000, BOARD_DEV_VIA1, DJMEMC_VIA_IO_PENALTY, BOARD_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},   \
+#define MEMC_ISLAND_ROWS(memc_name, iosb_name)                                                                           \
+    {0x00000, 0x02000, BOARD_DEV_VIA1, MEMC_VIA_IO_PENALTY, BOARD_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},     \
         {0x03A00,                                                                                                        \
          0x03C00,                                                                                                        \
          0,                                                                                                              \
-         DJMEMC_VIA_IO_PENALTY,                                                                                          \
+         MEMC_VIA_IO_PENALTY,                                                                                            \
          BOARD_IO_NORMAL,                                                                                                \
          0,                                                                                                              \
          0,                                                                                                              \
-         djmemc_via2_ifr_read,                                                                                           \
-         djmemc_via2_ifr_write,                                                                                          \
+         memc_via2_ifr_read,                                                                                             \
+         memc_via2_ifr_write,                                                                                            \
          "via2_ifr",                                                                                                     \
          .esync = 1,                                                                                                     \
-         .peek_fn = djmemc_via2_ifr_peek},                                                                               \
-        {0x02000, 0x04000, BOARD_DEV_VIA2, DJMEMC_VIA_IO_PENALTY, BOARD_IO_MASK_A0, 0, 0, NULL,                          \
-         NULL,    "via2",  .esync = 1},                                                                                  \
-        {0x0C000, 0x0E000, BOARD_DEV_SCC, DJMEMC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scc"},                  \
-        {0x0E000, 0x10000, 0, DJMEMC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, djmemc_reg_read, djmemc_reg_write, memc_name},   \
-        {0x10000, 0x10100, BOARD_DEV_SCSI96, DJMEMC_IO_PENALTY, BOARD_IO_STRIDE_16, 0, 0,                                \
+         .peek_fn = memc_via2_ifr_peek},                                                                                 \
+        {0x02000, 0x04000, BOARD_DEV_VIA2, MEMC_VIA_IO_PENALTY, BOARD_IO_MASK_A0, 0, 0, NULL, NULL, "via2", .esync = 1}, \
+        {0x0C000, 0x0E000, BOARD_DEV_SCC, MEMC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scc"},                    \
+        {0x0E000, 0x10000, 0, MEMC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, memc_reg_read, memc_reg_write, memc_name},         \
+        {0x10000, 0x10100, BOARD_DEV_SCSI96, MEMC_IO_PENALTY, BOARD_IO_STRIDE_16, 0, 0,                                  \
          NULL,    NULL,    "scsi_53c96"}, /* The pseudo-DMA port: the SCSI Manager moves longwords through it. */        \
-        {0x10100,                                                                                                        \
-         0x10200,                                                                                                        \
-         BOARD_DEV_SCSI96,                                                                                               \
-         DJMEMC_IO_PENALTY,                                                                                              \
-         BOARD_IO_FIXED,                                                                                                 \
-         SCSI_53C96_PDMA_SUB,                                                                                            \
-         SCSI_53C96_PDMA_SUB,                                                                                            \
-         NULL,                                                                                                           \
-         NULL,                                                                                                           \
-         "scsi_pdma"},                                                                                                   \
-        {0x14000, 0x16000, BOARD_DEV_ASC, DJMEMC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "sound"},                \
-        {0x18000, 0x1A000, 0, DJMEMC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, djmemc_iosb_read, djmemc_iosb_write, iosb_name}, \
-    {                                                                                                                    \
-        0x1E000, 0x20000, BOARD_DEV_FLOPPY, DJMEMC_SWIM_IO_PENALTY, BOARD_IO_STRIDE_512, 0, 0, NULL, NULL, "swim2"       \
+        {                                                                                                                \
+            0x10100,                                                                                                     \
+            0x10200,                                                                                                     \
+            BOARD_DEV_SCSI96,                                                                                            \
+            MEMC_IO_PENALTY,                                                                                             \
+            BOARD_IO_FIXED,                                                                                              \
+            SCSI_53C96_PDMA_SUB,                                                                                         \
+            SCSI_53C96_PDMA_SUB,                                                                                         \
+            NULL,                                                                                                        \
+            NULL,                                                                                                        \
+            "scsi_pdma"},                                                                                                \
+        {0x14000, 0x16000, BOARD_DEV_ASC, MEMC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "sound"},                  \
+        {0x18000, 0x1A000, 0, MEMC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, memc_iosb_read, memc_iosb_write, iosb_name}, {     \
+        0x1E000, 0x20000, BOARD_DEV_FLOPPY, MEMC_SWIM_IO_PENALTY, BOARD_IO_STRIDE_512, 0, 0, NULL, NULL, "swim2"         \
     }
 
-// The djMEMC boards' island: the shared rows plus the SONIC, its MAC PROM
+// The MEMC boards' island: the shared rows plus the SONIC, its MAC PROM
 // and the Kiwi (quadra040's handler rows).
-const board_io_range_t djmemc_io_ranges[] = {
-    DJMEMC_ISLAND_ROWS("djmemc", "iosb"),
-    {0x08000, 0x0A000, 0, DJMEMC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, quadra040_prom_read, quadra040_prom_write,
-                        "enet_prom"},
-    {0x0A000, 0x0B100, 0, DJMEMC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, quadra040_sonic_read, quadra040_sonic_write,
-                        "sonic"},
-    {0x28000, 0x2A000, 0, DJMEMC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, quadra040_yancc_read, quadra040_yancc_write, "kiwi",
-                        .peek_fn = quadra040_yancc_peek},
+const board_io_range_t memc_io_ranges[] = {
+    MEMC_ISLAND_ROWS("memc", "iosb"),
+    {0x08000, 0x0A000, 0, MEMC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, quadra040_prom_read, quadra040_prom_write,
+                      "enet_prom"},
+    {0x0A000, 0x0B100, 0, MEMC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, quadra040_sonic_read, quadra040_sonic_write, "sonic"},
+    {0x28000, 0x2A000, 0, MEMC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, quadra040_yancc_read, quadra040_yancc_write, "kiwi",
+                      .peek_fn = quadra040_yancc_peek},
     {0}, // sentinel
 };
 
@@ -386,7 +383,7 @@ const board_io_range_t djmemc_io_ranges[] = {
 // the Kiwi, which these boards do not carry (Apple, Macintosh LC 475 and
 // Macintosh Quadra 605 Developer Note (1993), Figure 2-2, p. 27).
 const board_io_range_t memcjr_io_ranges[] = {
-    DJMEMC_ISLAND_ROWS("memcjr", "primetime"),
+    MEMC_ISLAND_ROWS("memcjr", "primetime"),
     // The communication slot's window (the LC 575's; the slot Apple's
     // Ethernet card puts its SONIC at): with no card fitted nothing answers
     // and the cycle bus-errors, which is how the ROM's probe finds the slot
@@ -402,9 +399,9 @@ const board_io_range_t memcjr_io_ranges[] = {
 
 // VIA1 outputs of the Cuda boards: PA5 = floppy head select; PB the Cuda
 // handshake (PB3 TREQ in, PB4 BYTEACK, PB5 TIP out).
-static void djmemc_cuda_via1_output(void *context, uint8_t port, uint8_t output) {
+static void memc_cuda_via1_output(void *context, uint8_t port, uint8_t output) {
     config_t *cfg = (config_t *)context;
-    djmemc_state_t *st = djmemc_st(cfg);
+    memc_state_t *st = memc_st(cfg);
     if (port == 0) {
         if (cfg->floppy)
             floppy_set_sel_signal(cfg->floppy, (output & 0x20) != 0);
@@ -414,13 +411,13 @@ static void djmemc_cuda_via1_output(void *context, uint8_t port, uint8_t output)
 }
 
 // VIA1 shift register out: a Cuda command byte.
-static void djmemc_cuda_via1_shift_out(void *context, uint8_t byte) {
-    djmemc_state_t *st = djmemc_st((config_t *)context);
+static void memc_cuda_via1_shift_out(void *context, uint8_t byte) {
+    memc_state_t *st = memc_st((config_t *)context);
     cuda_via1_shift_input(st ? st->cuda : NULL, byte);
 }
 
 // SCSI DREQ, as VIA2 IFR bit 0 presents it.
-static bool djmemc_scsi_dreq(void *context) {
+static bool memc_scsi_dreq(void *context) {
     return scsi_53c96_dreq((scsi_53c96_t *)context);
 }
 
@@ -434,7 +431,7 @@ static bool djmemc_scsi_dreq(void *context) {
 // first and the whole value after), so they go straight through.
 
 static uint32_t memcjr_video_read32(void *ctx, uint32_t addr) {
-    djmemc_state_t *st = djmemc_st((config_t *)ctx);
+    memc_state_t *st = memc_st((config_t *)ctx);
     uint32_t v = st->dafb_iface->read_uint32(st->q.dafb, addr);
     memcjr_latch_load(st, v);
     return v;
@@ -442,7 +439,7 @@ static uint32_t memcjr_video_read32(void *ctx, uint32_t addr) {
 
 // A word read: the low half of a register loads the latch.
 static uint16_t memcjr_video_read16(void *ctx, uint32_t addr) {
-    djmemc_state_t *st = djmemc_st((config_t *)ctx);
+    memc_state_t *st = memc_st((config_t *)ctx);
     uint16_t v = st->dafb_iface->read_uint16(st->q.dafb, addr);
     if (addr & 2u)
         memcjr_latch_load(st, v);
@@ -451,31 +448,31 @@ static uint16_t memcjr_video_read16(void *ctx, uint32_t addr) {
 
 // A byte read goes straight through.
 static uint8_t memcjr_video_read8(void *ctx, uint32_t addr) {
-    djmemc_state_t *st = djmemc_st((config_t *)ctx);
+    memc_state_t *st = memc_st((config_t *)ctx);
     return st->dafb_iface->read_uint8(st->q.dafb, addr);
 }
 
 // Writes carry the full value: straight through.
 static void memcjr_video_write8(void *ctx, uint32_t addr, uint8_t v) {
-    djmemc_state_t *st = djmemc_st((config_t *)ctx);
+    memc_state_t *st = memc_st((config_t *)ctx);
     st->dafb_iface->write_uint8(st->q.dafb, addr, v);
 }
 
 // A word write, straight through.
 static void memcjr_video_write16(void *ctx, uint32_t addr, uint16_t v) {
-    djmemc_state_t *st = djmemc_st((config_t *)ctx);
+    memc_state_t *st = memc_st((config_t *)ctx);
     st->dafb_iface->write_uint16(st->q.dafb, addr, v);
 }
 
 // A long write, straight through.
 static void memcjr_video_write32(void *ctx, uint32_t addr, uint32_t v) {
-    djmemc_state_t *st = djmemc_st((config_t *)ctx);
+    memc_state_t *st = memc_st((config_t *)ctx);
     st->dafb_iface->write_uint32(st->q.dafb, addr, v);
 }
 
 // An inspection: the controller's value, the latch untouched.
 static uint8_t memcjr_video_peek8(void *ctx, uint32_t addr) {
-    djmemc_state_t *st = djmemc_st((config_t *)ctx);
+    memc_state_t *st = memc_st((config_t *)ctx);
     return memory_iface_read8(st->dafb_iface, st->q.dafb, addr, true);
 }
 
@@ -493,19 +490,19 @@ static uint32_t memcjr_video_peek32(void *ctx, uint32_t addr) {
 // Memory layout
 // ============================================================
 
-static void djmemc_memory_layout(config_t *cfg) {
-    djmemc_state_t *st = djmemc_st(cfg);
-    const djmemc_board_desc_t *desc = djmemc_board(cfg);
+static void memc_memory_layout(config_t *cfg) {
+    memc_state_t *st = memc_st(cfg);
+    const memc_board_desc_t *desc = memc_board(cfg);
 
-    djmemc_bank_layout(cfg);
+    memc_bank_layout(cfg);
     // Nothing tracked yet: the first remap clears the controller's whole reach.
-    st->ram_extent = DJMEMC_RAM_SPAN;
+    st->ram_extent = MEMC_RAM_SPAN;
 
     // I/O island at $50000000.
     quadra040_map_island(cfg);
 
     // CPU-ID register page at $5FFFF000 (the register is its last long).
-    cpuid_page_install(&st->cpuid, cfg->memory_map, desc->cpuid ? desc->cpuid : DJMEMC_CPUID_VALUE);
+    cpuid_page_install(&st->cpuid, cfg->memory_map, desc->cpuid ? desc->cpuid : MEMC_CPUID_VALUE);
 
     // Video: the frame-buffer controller's registers at $F9800000 (through
     // the latch where the board reads them so), VRAM at $F9000000.
@@ -524,18 +521,18 @@ static void djmemc_memory_layout(config_t *cfg) {
         };
         quadra040_map_video(cfg, "MEMCjr video regs", &st->video_interface, cfg);
     } else {
-        quadra040_map_video(cfg, "djMEMC video regs", NULL, NULL);
+        quadra040_map_video(cfg, "MEMC video regs", NULL, NULL);
     }
 
     // The ROM-at-zero overlay: armed until the ROM aperture is touched.
-    quadra040_map_overlay(cfg, djmemc_map_ram, "djMEMC");
+    quadra040_map_overlay(cfg, memc_map_ram, "MEMC");
 }
 
 // ============================================================
 // Checkpoint: the substrate-private part
 // ============================================================
 
-#define DJMEMC_PRIVATE_CP_FIELDS(OP, cp, st)                                                                           \
+#define MEMC_PRIVATE_CP_FIELDS(OP, cp, st)                                                                             \
     CP_ARRAY(OP, cp, (st)->memc_regs);                                                                                 \
     CP_ARRAY(OP, cp, (st)->q.yancc.regs);                                                                              \
     CP_FIELD(OP, cp, (st)->q.yancc.touched);                                                                           \
@@ -545,20 +542,20 @@ static void djmemc_memory_layout(config_t *cfg) {
 
 // Saves the substrate-private part: the overlay flag, the register files,
 // the IRQ mask and SONIC latch, the IOSB.
-static void part_save_djmemc_private(void *obj, checkpoint_t *cp) {
-    djmemc_state_t *st = obj;
+static void part_save_memc_private(void *obj, checkpoint_t *cp) {
+    memc_state_t *st = obj;
     CP_FIELD(system_write_checkpoint_data, cp, st->q.overlay.armed);
-    DJMEMC_PRIVATE_CP_FIELDS(system_write_checkpoint_data, cp, st);
+    MEMC_PRIVATE_CP_FIELDS(system_write_checkpoint_data, cp, st);
     iosb_checkpoint(&st->iosb, cp);
 }
 
 // Reads the substrate-private part on a restore, then re-applies the bank map
 // (through the overlay) and re-drives the lines it derives.
-static void djmemc_restore_private(config_t *cfg, checkpoint_t *cp) {
-    djmemc_state_t *st = djmemc_st(cfg);
+static void memc_restore_private(config_t *cfg, checkpoint_t *cp) {
+    memc_state_t *st = memc_st(cfg);
     bool overlay = false;
     CP_FIELD(system_read_checkpoint_data, cp, overlay);
-    DJMEMC_PRIVATE_CP_FIELDS(system_read_checkpoint_data, cp, st);
+    MEMC_PRIVATE_CP_FIELDS(system_read_checkpoint_data, cp, st);
     iosb_restore(&st->iosb, cp);
     if (overlay)
         m68k_board_overlay_arm(&st->q.overlay);
@@ -571,10 +568,10 @@ static void djmemc_restore_private(config_t *cfg, checkpoint_t *cp) {
 // Device construction
 // ============================================================
 
-static int djmemc_build_devices(config_t *cfg, checkpoint_t *cp) {
-    djmemc_state_t *st = djmemc_st(cfg);
-    const djmemc_board_desc_t *desc = djmemc_board(cfg);
-    bool cuda = desc->adb == DJMEMC_ADB_CUDA;
+static int memc_build_devices(config_t *cfg, checkpoint_t *cp) {
+    memc_state_t *st = memc_st(cfg);
+    const memc_board_desc_t *desc = memc_board(cfg);
+    bool cuda = desc->adb == MEMC_ADB_CUDA;
 
     // The VIA ADB boards bit-bang the classic RTC on VIA1.
     if (!cuda)
@@ -583,7 +580,7 @@ static int djmemc_build_devices(config_t *cfg, checkpoint_t *cp) {
     // VIA1 port A: the identity straps, PA7 and PA0 (the diagnostic strap)
     // high -- see mcu.h on PA0; the VIA1/VIA2 lines idle.  The Cuda's TREQ
     // (VIA1 PB3) idles high.
-    quadra040_idle_lines(cfg, (uint8_t)((desc->via1_id & DJMEMC_VIA1_ID_MASK) | 0x81u));
+    quadra040_idle_lines(cfg, (uint8_t)((desc->via1_id & MEMC_VIA1_ID_MASK) | 0x81u));
     if (cuda)
         via_input(cfg->via1, 1, 3, 1);
 
@@ -609,7 +606,7 @@ static int djmemc_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     // The IOSB: its registers, and the DREQ it shows in VIA2's IFR.
     iosb_init(&st->iosb, cfg->machine->freq >= 30000000u);
-    iosb_set_dreq(&st->iosb, djmemc_scsi_dreq, st->q.scsi96);
+    iosb_set_dreq(&st->iosb, memc_scsi_dreq, st->q.scsi96);
 
     // The SONIC (where the board has one), the sound block and the SWIM II.
     quadra040_build_sonic_asc_floppy(cfg, cp, desc->has_sonic ? quadra040_sonic_irq : NULL, quadra040_asc_irq);
@@ -624,12 +621,12 @@ static int djmemc_build_devices(config_t *cfg, checkpoint_t *cp) {
         return -1;
 
     quadra040_io_bind(cfg);
-    djmemc_memory_layout(cfg);
+    memc_memory_layout(cfg);
 
-    machine_part_begin(cfg, cp, "djmemc");
+    machine_part_begin(cfg, cp, "memc");
     if (cp)
-        djmemc_restore_private(cfg, cp);
-    machine_part(cfg, cp, "djmemc", part_save_djmemc_private, st);
+        memc_restore_private(cfg, cp);
+    machine_part(cfg, cp, "memc", part_save_memc_private, st);
     return 0;
 }
 
@@ -640,26 +637,26 @@ static int djmemc_build_devices(config_t *cfg, checkpoint_t *cp) {
 // The family's MAC-address PROM: the Quadra 700's presentation (quadra040.c)
 // of 08:00:07:09:07:02 -- Apple's OUI, one past the Quadra 700's, so two
 // emulated Quadras on one network differ.
-static const uint8_t djmemc_mac_prom[8] = {0x10, 0x00, 0xE0, 0x90, 0xE0, 0x40, 0x00, 0x3F};
+static const uint8_t memc_mac_prom[8] = {0x10, 0x00, 0xE0, 0x90, 0xE0, 0x40, 0x00, 0x3F};
 
 // substrate.init: the shared core, the board's devices, the shared suffix.
-static int djmemc_init(config_t *cfg, checkpoint_t *cp) {
-    const djmemc_board_desc_t *desc = djmemc_board(cfg);
-    djmemc_state_t *st = calloc(1, sizeof(*st));
+static int memc_init(config_t *cfg, checkpoint_t *cp) {
+    const memc_board_desc_t *desc = memc_board(cfg);
+    memc_state_t *st = calloc(1, sizeof(*st));
     if (!st) {
         LOG(0, "Error: out of memory allocating the machine state for %s", cfg->machine->name);
         return -1;
     }
     cfg->machine_context = st;
-    djmemc_reset_regs(desc, st);
-    st->q.mac_prom = djmemc_mac_prom;
+    memc_reset_regs(desc, st);
+    st->q.mac_prom = memc_mac_prom;
     yancc_init(&st->q.yancc, "Kiwi", quadra040_yancc_irq, cfg);
 
-    bool cuda = desc->adb == DJMEMC_ADB_CUDA;
-    quadra040_build_core(cfg, cp, &desc->common, NULL, cuda ? djmemc_cuda_via1_output : quadra040_via1_output,
-                         cuda ? djmemc_cuda_via1_shift_out : NULL, quadra040_via2_output);
+    bool cuda = desc->adb == MEMC_ADB_CUDA;
+    quadra040_build_core(cfg, cp, &desc->common, NULL, cuda ? memc_cuda_via1_output : quadra040_via1_output,
+                         cuda ? memc_cuda_via1_shift_out : NULL, quadra040_via2_output);
 
-    if (djmemc_build_devices(cfg, cp) != 0)
+    if (memc_build_devices(cfg, cp) != 0)
         return -1;
 
     quadra040_build_finish(cfg, cp);
@@ -667,13 +664,13 @@ static int djmemc_init(config_t *cfg, checkpoint_t *cp) {
 }
 
 // substrate.bus_reset: the board's /RESET net.
-static void djmemc_bus_reset(config_t *cfg) {
-    djmemc_state_t *st = djmemc_st(cfg);
+static void memc_bus_reset(config_t *cfg) {
+    memc_state_t *st = memc_st(cfg);
     // The overlay re-arms with /RESET.  The frame-buffer controller is NOT
     // on the 040's reset (Apple's PrimaryInit resets it by hand on this
     // board), so its registers survive; the ROM reprograms them.
     quadra040_bus_reset(cfg, /*reset_video*/ false);
-    st->ram_extent = DJMEMC_RAM_SPAN; // the ROM at zero: the next remap clears the whole reach
+    st->ram_extent = MEMC_RAM_SPAN; // the ROM at zero: the next remap clears the whole reach
     // The Kiwi is on the NuBus /RESET: its register file clears, and an
     // error request pending at reset no longer holds level 7.  The memory
     // controller's bank registers are kept -- the RAM decode must survive a
@@ -684,8 +681,8 @@ static void djmemc_bus_reset(config_t *cfg) {
 }
 
 // substrate.teardown: the Cuda, the shared devices, the config_t-owned ones.
-static void djmemc_teardown(config_t *cfg) {
-    djmemc_state_t *st = djmemc_st(cfg);
+static void memc_teardown(config_t *cfg) {
+    memc_state_t *st = memc_st(cfg);
     if (st) {
         if (st->cuda) {
             cuda_delete(st->cuda);
@@ -698,8 +695,8 @@ static void djmemc_teardown(config_t *cfg) {
 
 // Power cycle: the video's VRAM and registers go with main RAM; the Cuda
 // stays powered, the host side of its handshake went down.
-static void djmemc_power_on(config_t *cfg) {
-    djmemc_state_t *st = djmemc_st(cfg);
+static void memc_power_on(config_t *cfg) {
+    memc_state_t *st = memc_st(cfg);
     if (st) {
         if (st->cuda)
             cuda_host_power_cycle(st->cuda);
@@ -712,7 +709,7 @@ static void djmemc_power_on(config_t *cfg) {
 // The WombatDAFB drives the DAFB's monitors (quadra040's table); the two
 // chips' descriptions differ only in the name.
 
-#define DJMEMC_BUILTIN_VIDEO(detail_)                                                                                  \
+#define MEMC_BUILTIN_VIDEO(detail_)                                                                                    \
     {                                                                                                                  \
         .detail = (detail_),                                                                                           \
         .monitor_at = quadra040_monitor_at,                                                                            \
@@ -721,15 +718,15 @@ static void djmemc_power_on(config_t *cfg) {
         .indexed_sense = true,                                                                                         \
     }
 
-const builtin_video_desc_t djmemc_builtin_video = DJMEMC_BUILTIN_VIDEO("djMEMC (DAFB-compatible) + Antelope");
+const builtin_video_desc_t memc_builtin_video = MEMC_BUILTIN_VIDEO("MEMC (DAFB-compatible) + Antelope");
 // The LC 475's and Quadra 605's: the same monitors on the MEMCjr's video.
-const builtin_video_desc_t memcjr_builtin_video = DJMEMC_BUILTIN_VIDEO("MEMCjr (DAFB-compatible) + Antelope");
+const builtin_video_desc_t memcjr_builtin_video = MEMC_BUILTIN_VIDEO("MEMCjr (DAFB-compatible) + Antelope");
 
-const machine_substrate_t djmemc_substrate = {
-    .init = djmemc_init,
-    .bus_reset = djmemc_bus_reset,
-    .power_on = djmemc_power_on,
-    .teardown = djmemc_teardown,
+const machine_substrate_t memc_substrate = {
+    .init = memc_init,
+    .bus_reset = memc_bus_reset,
+    .power_on = memc_power_on,
+    .teardown = memc_teardown,
     .seed = mac_seed_rtc_pram,
     .trigger_vbl = quadra040_trigger_vbl,
     .nubus_slot_irq = quadra040_nubus_slot_irq,

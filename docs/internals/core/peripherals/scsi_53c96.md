@@ -59,7 +59,7 @@ found the hard way during the System 7.1 HD-boot bring-up:
    FIFO.) The residual is moved into the FIFO, and the target allowed to
    advance, *before* the interrupt posts: the System 7.5 SCSI Manager
    records the bus phase at that interrupt and otherwise waits forever
-   for a phase change (seen on the djMEMC Quadras, whose longword BIOS
+   for a phase change (seen on the MEMC Quadras, whose longword BIOS
    drain leaves odd residuals). A board whose DMA engine drains the port
    (`scsi_53c96_set_bus_master`: PDM's AMIC, TNT's DBDMA)
    has no residual: every byte moves through DREQ/DACK.

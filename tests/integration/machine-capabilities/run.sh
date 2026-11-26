@@ -506,7 +506,7 @@ done
 for m in lciii lc520; do assert_contains "$m" '"freq":25000000' "$m runs at 25 MHz"; done
 for m in lciiip lc550 colorclassicii; do assert_contains "$m" '"freq":33000000' "$m runs at 33 MHz"; done
 
-# The djMEMC machines (src/machines/djmemc): a 68040 on every board, its FPU
+# The MEMC machines (src/machines/memc): a 68040 on every board, its FPU
 # absent on the Centris 610 (68LC040); three NuBus sockets C-E on the Wombat
 # boards, one adapter slot E on the WLCD ones; soldered RAM 8 MB (Wombat) or
 # 4 MB (WLCD) up to 136 / 68 MB; the clocks; the DAFB-compatible built-in
@@ -517,7 +517,7 @@ for m in c610 c650 q610 q650 q800; do
     assert_contains "$m" '"floppies":[{"id":"fd0","label":"Internal floppy drive","types":[{"id":"hd","label":"SuperDrive (1.4 MB)"}],"default":"hd"}]' "$m has one SuperDrive"
     assert_contains "$m" '"storage":[{"id":"scsi","label":"SCSI","kind":"scsi"' "$m offers one SCSI bus"
     assert_contains "$m" '{"id":"appletalk","label":"AppleTalk","kind":"choice","values":[{"id":"active","label":"Active"},{"id":"inactive","label":"Inactive"}],"default":"active"}' "$m has the AppleTalk option"
-    assert_contains "$m" '"builtin":{"id":"builtin","label":"Built-in video","detail":"djMEMC (DAFB-compatible) + Antelope"' "$m's djMEMC drives its built-in video"
+    assert_contains "$m" '"builtin":{"id":"builtin","label":"Built-in video","detail":"MEMC (DAFB-compatible) + Antelope"' "$m's MEMC drives its built-in video"
 done
 assert_contains c610 '"cpu":{"model":68040,"address_bits":32,"fpu":false}' "c610 has a 68LC040 (no FPU)"
 for m in c650 q610 q650 q800; do
@@ -541,7 +541,7 @@ assert_contains q610 '"freq":25000000' "q610 runs at 25 MHz"
 assert_contains q650 '"freq":33333333' "q650 runs at 33 MHz"
 assert_contains q800 '"freq":33333333' "q800 runs at 33 MHz"
 
-# The MEMCjr machines (src/machines/djmemc/memcjr.c): a 68040 with its FPU
+# The MEMCjr machines (src/machines/memc/memcjr.c): a 68040 with its FPU
 # absent on the LC 475 and Quadra 605 (68LC040); no NuBus (the LC PDS is not
 # modelled); 4 MB soldered plus one SIMM up to 36 MB; the LC 575's built-in
 # 14" display, the external monitors on the other two.

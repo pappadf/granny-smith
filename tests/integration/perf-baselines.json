@@ -452,47 +452,47 @@
       "instr": 212000000,
       "tolerance": 0.2
     },
-    "suite-djmemc/c610-71-hd": {
+    "suite-memc/c610-71-hd": {
       "instr": 383964123,
       "tolerance": 0.2
     },
-    "suite-djmemc/c610-76-fd": {
+    "suite-memc/c610-76-fd": {
       "instr": 494174471,
       "tolerance": 0.2
     },
-    "suite-djmemc/c650-71-hd": {
+    "suite-memc/c650-71-hd": {
       "instr": 430516609,
       "tolerance": 0.2
     },
-    "suite-djmemc/q610-71-hd": {
+    "suite-memc/q610-71-hd": {
       "instr": 430326069,
       "tolerance": 0.2
     },
-    "suite-djmemc/q610-76-hd": {
+    "suite-memc/q610-76-hd": {
       "instr": 700824049,
       "tolerance": 0.2
     },
-    "suite-djmemc/q650-71-hd": {
+    "suite-memc/q650-71-hd": {
       "instr": 500093171,
       "tolerance": 0.2
     },
-    "suite-djmemc/q650-753-hd": {
+    "suite-memc/q650-753-hd": {
       "instr": 569738646,
       "tolerance": 0.2
     },
-    "suite-djmemc/q800-71-hd": {
+    "suite-memc/q800-71-hd": {
       "instr": 500118819,
       "tolerance": 0.2
     },
-    "suite-djmemc/q800-75-hd": {
+    "suite-memc/q800-75-hd": {
       "instr": 633519941,
       "tolerance": 0.2
     },
-    "suite-djmemc/q800-76-fd": {
+    "suite-memc/q800-76-fd": {
       "instr": 658660650,
       "tolerance": 0.2
     },
-    "suite-djmemc/q800-checkpoint": {
+    "suite-memc/q800-checkpoint": {
       "instr": 652479010,
       "tolerance": 0.2
     },

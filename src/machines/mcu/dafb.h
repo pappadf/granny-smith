@@ -81,7 +81,7 @@ uint8_t dafb_monitor(const dafb_t *dafb);
 // (DAFBDriver.a @SetupACDC, Apple source).
 void dafb_set_version(dafb_t *dafb, uint8_t version);
 void dafb_set_ac842a(dafb_t *dafb, bool ac842a);
-// The Antelope CLUT/DAC of the djMEMC boards: an AC842a (set that too)
+// The Antelope CLUT/DAC of the MEMC boards: an AC842a (set that too)
 // whose PCBR1 mfg/rev nibble reads non-zero -- the driver's test for a
 // linear 16 bpp CLUT.
 void dafb_set_antelope(dafb_t *dafb, bool antelope);

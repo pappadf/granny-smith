@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // iosb.h
-// IOSB, the I/O subsystem and buffer of the djMEMC boards (Centris 610/650,
+// IOSB, the I/O subsystem and buffer of the MEMC boards (Centris 610/650,
 // Quadra 610/650/800) -- written as a board-independent piece so the later
 // boards built around the same I/O chip can reuse it.
 //
@@ -26,8 +26,8 @@
 //     The bits the ROM writes latch and read back; the revision field reads
 //     as the part the board carries.
 
-#ifndef GS_MACHINES_DJMEMC_IOSB_H
-#define GS_MACHINES_DJMEMC_IOSB_H
+#ifndef GS_MACHINES_MEMC_IOSB_H
+#define GS_MACHINES_MEMC_IOSB_H
 
 #include "checkpoint.h"
 
@@ -71,4 +71,4 @@ uint8_t iosb_via2_ifr(const iosb_t *iosb, uint8_t ifr);
 void iosb_checkpoint(const iosb_t *iosb, checkpoint_t *cp);
 void iosb_restore(iosb_t *iosb, checkpoint_t *cp);
 
-#endif // GS_MACHINES_DJMEMC_IOSB_H
+#endif // GS_MACHINES_MEMC_IOSB_H

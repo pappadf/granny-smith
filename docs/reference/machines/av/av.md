@@ -536,7 +536,7 @@ note's label is one of its known slips — the identification and the register m
 
 For completeness, the parts a Macintosh of this class might be expected to carry and these boards do not —
 each provably absent from the ROM's decoder record for every AV variant [3] (*observed*; §1.4): ASC, IWM and
-SWIM, a discrete VIA2 (6522), SONIC, the IOPs, the Orwell/djMEMC-class memory controllers, and parity support.
+SWIM, a discrete VIA2 (6522), SONIC, the IOPs, the Orwell/MEMC-class memory controllers, and parity support.
 The SCSI core answers the 53C96 register model rather than the 5380 of the compact machines
 ([53C96](../../hardware/scsi/ncr-53c96.md)), and there is no real-time-clock chip separate from the Cuda
 ([Cuda](cuda.md) §2.5).

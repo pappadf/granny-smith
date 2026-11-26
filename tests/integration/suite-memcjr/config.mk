@@ -1,6 +1,6 @@
 # Integration suite: the MEMCjr boards (LC 475, LC 575, Quadra 605)
 #
-# One daemon run; rows re-instantiate via machine.boot (the suite-djmemc
+# One daemon run; rows re-instantiate via machine.boot (the suite-memc
 # shape) and ../lib/mac.lua provides the harness (row filter, keep-going,
 # REGEN, condition-based waits).
 #
