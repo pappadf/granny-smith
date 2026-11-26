@@ -121,7 +121,7 @@ static void sonora_vctl_write(config_t *cfg, uint32_t win_off, uint32_t addr, ui
 // The $50F00000 island: the MDU's rows (mdu_io.h) -- the V8's island --
 // plus Sonora's extra registers ahead of the RBV-style row they sit inside
 // (first match wins) and the video control block at $28000.  Handler rows
-// name no device (0), as djmemc.c's do: Sonora's own registers are not the
+// name no device (0), as memc.c's do: Sonora's own registers are not the
 // pseudo-VIA2's.  $0A000 is where the decoder selects a SONIC Ethernet
 // controller: none of the modelled boards fits one, so nothing acknowledges
 // and the cycle times out (a .berr row, faulting at window_base -- the

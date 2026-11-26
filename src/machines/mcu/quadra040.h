@@ -4,8 +4,8 @@
 // quadra040.h
 // The device block and board plumbing every 68040 Quadra substrate built
 // around the Quadra 700's parts shares: the MCU family (Quadra 700/900/950,
-// mcu.h) and the djMEMC family (Centris/Quadra 610/650/800 and the MEMCjr
-// boards, djmemc/djmemc.h).  Both carry the same 53C96, SONIC and MAC
+// mcu.h) and the MEMC family (Centris/Quadra 610/650/800 and the MEMCjr
+// boards, memc/memc.h).  Both carry the same 53C96, SONIC and MAC
 // PROM, EASC, SWIM, DAFB-compatible video and YANCC-compatible NuBus
 // controller on the same 256 KiB I/O island, the same ROM-at-zero trip-wire
 // and the same /SLOTIRQ aggregate on VIA2 port A; what defines each family
@@ -54,7 +54,7 @@ struct sonic;
     }
 
 // The shared device block: the first member of mcu_state_t and
-// djmemc_state_t.
+// memc_state_t.
 typedef struct quadra040 {
     const m68k_board_desc_t *common; // the board's ROM window and island table
     struct asc *asc; // EASC (ASC-compatible core); the adb and floppy are cfg->'s
@@ -147,7 +147,7 @@ void quadra040_map_overlay(config_t *cfg, void (*map_ram)(config_t *cfg), const 
 // --- Lifecycle ---------------------------------------------------------------
 
 // The shared half of the board's /RESET: the overlay re-arms, the video
-// resets when `reset_video` (the MCU's DAFB is on the net, the djMEMC's is
+// resets when `reset_video` (the MCU's DAFB is on the net, the MEMC's is
 // not), the bus resolver goes back to off, the 53C96 resets.  The caller
 // adds its own parts, then system_reset_common_devices.
 void quadra040_bus_reset(config_t *cfg, bool reset_video);

@@ -6,8 +6,8 @@
 // $FF7439EE: the LC 475 ("Primus", LC-style low-profile case), the Quadra
 // 605 ("Aladdin", the same board in its own low-profile case) and the
 // LC 575 ("Optimus", the all-in-one case with a built-in 14" colour display
-// and a communication slot).  One substrate with the djMEMC boards
-// (djmemc.c); the models differ in data: CPU-ID, clock, FPU and display.
+// and a communication slot).  One substrate with the MEMC boards
+// (memc.c); the models differ in data: CPU-ID, clock, FPU and display.
 //
 // The ROM tells them apart by the CPU-ID register alone: $A55A2221 (LC 475),
 // $A55A2225 (Quadra 605), $A55A222E (LC 575); the low two bits name the clock
@@ -18,7 +18,7 @@
 // The LC PDS (and the LC 575's communication slot) is not modelled: no
 // card is offered for it, as on the LC III.
 
-#include "djmemc.h"
+#include "memc.h"
 
 #include "machine.h"
 #include "nubus.h"
@@ -40,9 +40,9 @@
 // A MEMCjr board: its CPU-ID; 4 MB soldered and one SIMM socket.
 #define MEMCJR_BOARD(cpuid_) {MEMCJR_DESC_COMMON, .cpuid = (cpuid_), .ram_onboard = 0x00400000u, .simm_slots = 1}
 
-static const djmemc_board_desc_t lc475_board = MEMCJR_BOARD(MEMCJR_CPUID_LC475);
-static const djmemc_board_desc_t q605_board = MEMCJR_BOARD(MEMCJR_CPUID_Q605);
-static const djmemc_board_desc_t lc575_board = MEMCJR_BOARD(MEMCJR_CPUID_LC575);
+static const memc_board_desc_t lc475_board = MEMCJR_BOARD(MEMCJR_CPUID_LC475);
+static const memc_board_desc_t q605_board = MEMCJR_BOARD(MEMCJR_CPUID_Q605);
+static const memc_board_desc_t lc575_board = MEMCJR_BOARD(MEMCJR_CPUID_LC575);
 
 // --- The LC 575's built-in display ---------------------------------------------
 // The 14" colour CRT is cabled with the 640 x 480 RGB sense code (6).
@@ -78,7 +78,7 @@ static const builtin_video_desc_t lc575_builtin_video = {
     .cpu_model = 68040, .mmu_kind = MMU_68040, .address_bits = 32, .rom_size = 0x100000,                               \
     .floppy_slots = mac_floppy_slots_1hd, .default_storage = mac_default_storage_hd0_cd3, .appletalk = true,           \
     .ram_default = 0x00800000u, .ram_max = MEMCJR_RAM_MAX, .ram_options = mac_ram_options_4mb_72pin_kb,                \
-    .cdrom_drive = &scsi_cd_drive_applecd_300i, .pram = &pram_defaults_iifx, .substrate = &djmemc_substrate
+    .cdrom_drive = &scsi_cd_drive_applecd_300i, .pram = &pram_defaults_iifx, .substrate = &memc_substrate
 
 const hw_profile_t machine_lc475 = {
     .name = "Macintosh LC 475",

@@ -3,10 +3,10 @@
 
 // yancc.h
 // The NuBus controller's register file of the 68040 Quadras: the Quadra
-// 700/900/950's YANCC and the djMEMC boards' Kiwi, which Apple made
+// 700/900/950's YANCC and the MEMC boards' Kiwi, which Apple made
 // software-compatible with it ("Kiwi IC", Centris 610/650/Quadra 800
 // Developer Note).  A board-independent chip piece, like the IOSB's
-// (djmemc/iosb.h): each board embeds a yancc_t and routes its island window
+// (memc/iosb.h): each board embeds a yancc_t and routes its island window
 // ($28000) to yancc_read / yancc_write.
 //
 // The register address is Apple-documented, its width and most bits are

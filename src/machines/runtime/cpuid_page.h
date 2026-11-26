@@ -9,7 +9,7 @@
 // writable, so writes are dropped and the write-then-readback probe sees the
 // constant.  The rest of the page reads `fill` (nothing drives the bus).
 //
-// The AV, djMEMC/MEMCjr, Sonora and PDM boards install it.  The PDM's
+// The AV, MEMC/MEMCjr, Sonora and PDM boards install it.  The PDM's
 // differences -- a zero fill, a long read that drops the signature -- are
 // fields here.
 

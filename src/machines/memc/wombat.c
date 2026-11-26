@@ -2,9 +2,9 @@
 // Copyright (c) pappadf
 
 // wombat.c
-// The five djMEMC machines (February-October 1993): the three-slot "Wombat"
+// The five MEMC machines (February-October 1993): the three-slot "Wombat"
 // boards -- Centris 650, Quadra 650, Quadra 800 -- and the PDS-only "WLCD"
-// boards -- Centris 610, Quadra 610.  One substrate (djmemc.c); the models
+// boards -- Centris 610, Quadra 610.  One substrate (memc.c); the models
 // differ only in data: clock, VIA1 identity straps, soldered RAM, SIMM
 // sockets, NuBus sockets and the FPU.  Every board is modelled with its
 // Ethernet populated: the ROM resets the SONIC unconditionally on all of
@@ -15,7 +15,7 @@
 // derives is Centris 650 = 24, Quadra 800 = 29, Quadra 650 = 30,
 // Centris 610 = 46, Quadra 610 = 47.
 
-#include "djmemc.h"
+#include "memc.h"
 
 #include "machine.h"
 #include "nubus.h"
@@ -44,7 +44,7 @@ static const nubus_slot_decl_t wlcd_nubus_slots[] = {
 
 // RAM: 8 MB soldered + four SIMM sockets (to 136 MB) on the Wombat boards,
 // 4 MB soldered + two sockets (to 68 MB) on the WLCD.  Each total is a
-// population djmemc_ram_banks decomposes.
+// population memc_ram_banks decomposes.
 static const uint32_t wombat_ram_options_kb[] = {8192, 12288, 16384, 24576, 32768, 40960, 73728, 139264, 0};
 static const uint32_t wlcd_ram_options_kb[] = {4096, 8192, 12288, 16384, 20480, 36864, 69632, 0};
 
@@ -53,34 +53,34 @@ static const uint32_t wlcd_ram_options_kb[] = {4096, 8192, 12288, 16384, 20480, 
 
 // --- Boards --------------------------------------------------------------------
 
-// A djMEMC board: its VIA1 identity straps (package and clock), soldered RAM
+// A MEMC board: its VIA1 identity straps (package and clock), soldered RAM
 // and SIMM sockets.
-#define DJMEMC_BOARD(via1_id_, onboard_, simms_)                                                                       \
-    {DJMEMC_DESC_COMMON, .via1_id = (via1_id_), .ram_onboard = (onboard_), .simm_slots = (simms_)}
+#define MEMC_BOARD(via1_id_, onboard_, simms_)                                                                         \
+    {MEMC_DESC_COMMON, .via1_id = (via1_id_), .ram_onboard = (onboard_), .simm_slots = (simms_)}
 // The WLCD boards: 4 MB soldered, two sockets.
-#define WLCD_BOARD(via1_id_) DJMEMC_BOARD(via1_id_, 0x00400000u, 2)
+#define WLCD_BOARD(via1_id_) MEMC_BOARD(via1_id_, 0x00400000u, 2)
 // The Wombat boards: 8 MB soldered, four sockets.
-#define WOMBAT_BOARD(via1_id_) DJMEMC_BOARD(via1_id_, 0x00800000u, 4)
+#define WOMBAT_BOARD(via1_id_) MEMC_BOARD(via1_id_, 0x00800000u, 4)
 
-static const djmemc_board_desc_t c610_board = WLCD_BOARD(0x40); // WLCD, 20 MHz
-static const djmemc_board_desc_t q610_board = WLCD_BOARD(0x44); // WLCD, 25 MHz
-static const djmemc_board_desc_t c650_board = WOMBAT_BOARD(0x46); // Lego package, 25 MHz
-static const djmemc_board_desc_t q650_board = WOMBAT_BOARD(0x52); // Lego package, 33 MHz
-static const djmemc_board_desc_t q800_board = WOMBAT_BOARD(0x12); // Frigidaire package, 33 MHz
+static const memc_board_desc_t c610_board = WLCD_BOARD(0x40); // WLCD, 20 MHz
+static const memc_board_desc_t q610_board = WLCD_BOARD(0x44); // WLCD, 25 MHz
+static const memc_board_desc_t c650_board = WOMBAT_BOARD(0x46); // Lego package, 25 MHz
+static const memc_board_desc_t q650_board = WOMBAT_BOARD(0x52); // Lego package, 33 MHz
+static const memc_board_desc_t q800_board = WOMBAT_BOARD(0x12); // Frigidaire package, 33 MHz
 
 // --- Profiles --------------------------------------------------------------------
 
-// The fields every djMEMC profile shares.
-#define DJMEMC_PROFILE_COMMON                                                                                          \
+// The fields every MEMC profile shares.
+#define MEMC_PROFILE_COMMON                                                                                            \
     .cpu_model = 68040, .mmu_kind = MMU_68040, .address_bits = 32, .rom_size = 0x100000,                               \
     .floppy_slots = mac_floppy_slots_1hd, .storage = mac_storage_scsi_cd_bay,                                          \
-    .default_storage = mac_default_storage_hd0_cd3, .appletalk = true, .builtin_video = &djmemc_builtin_video,         \
-    .cdrom_drive = &scsi_cd_drive_applecd_300i, .pram = &pram_defaults_iifx, .substrate = &djmemc_substrate
+    .default_storage = mac_default_storage_hd0_cd3, .appletalk = true, .builtin_video = &memc_builtin_video,           \
+    .cdrom_drive = &scsi_cd_drive_applecd_300i, .pram = &pram_defaults_iifx, .substrate = &memc_substrate
 
 const hw_profile_t machine_c610 = {
     .name = "Macintosh Centris 610",
     .id = "c610",
-    DJMEMC_PROFILE_COMMON,
+    MEMC_PROFILE_COMMON,
     .freq = 20000000,
     .fpu_absent = true, // 68LC040
     .ram_default = 0x00800000u,
@@ -93,7 +93,7 @@ const hw_profile_t machine_c610 = {
 const hw_profile_t machine_q610 = {
     .name = "Macintosh Quadra 610",
     .id = "q610",
-    DJMEMC_PROFILE_COMMON,
+    MEMC_PROFILE_COMMON,
     .freq = 25000000,
     .ram_default = 0x00800000u,
     .ram_max = WLCD_RAM_MAX,
@@ -105,7 +105,7 @@ const hw_profile_t machine_q610 = {
 const hw_profile_t machine_c650 = {
     .name = "Macintosh Centris 650",
     .id = "c650",
-    DJMEMC_PROFILE_COMMON,
+    MEMC_PROFILE_COMMON,
     .freq = 25000000,
     .ram_default = 0x01000000u,
     .ram_max = WOMBAT_RAM_MAX,
@@ -117,7 +117,7 @@ const hw_profile_t machine_c650 = {
 const hw_profile_t machine_q650 = {
     .name = "Macintosh Quadra 650",
     .id = "q650",
-    DJMEMC_PROFILE_COMMON,
+    MEMC_PROFILE_COMMON,
     .freq = 33333333,
     .ram_default = 0x01000000u,
     .ram_max = WOMBAT_RAM_MAX,
@@ -129,7 +129,7 @@ const hw_profile_t machine_q650 = {
 const hw_profile_t machine_q800 = {
     .name = "Macintosh Quadra 800",
     .id = "q800",
-    DJMEMC_PROFILE_COMMON,
+    MEMC_PROFILE_COMMON,
     .freq = 33333333,
     .ram_default = 0x01000000u,
     .ram_max = WOMBAT_RAM_MAX,

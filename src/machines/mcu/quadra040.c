@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // quadra040.c
-// The device block and board plumbing the MCU and djMEMC families share --
+// The device block and board plumbing the MCU and MEMC families share --
 // see quadra040.h.
 
 #include "quadra040.h"
@@ -171,7 +171,7 @@ int quadra040_build_dafb(config_t *cfg, checkpoint_t *cp, const quadra040_video_
     dafb_attach_objects(q->dafb); // machine.video{,.framebuffer}
 
     dafb_set_version(q->dafb, video->version); // 3 on the Q950 (DAFB 3)
-    dafb_set_ac842a(q->dafb, video->ac842a); // AC842a x555 (Q950; the djMEMC's Antelope answers it too)
+    dafb_set_ac842a(q->dafb, video->ac842a); // AC842a x555 (Q950; the MEMC's Antelope answers it too)
     dafb_set_antelope(q->dafb, video->antelope); // the Antelope's non-zero mfg/rev
 
     // TurboSCSI DRQ observation: channel 0 = internal, channel 1 the towers'
@@ -219,7 +219,7 @@ void quadra040_map_video(config_t *cfg, const char *regs_name, const memory_inte
     memory_map_add(cfg->memory_map, DAFB_REG_BASE, DAFB_REG_APERTURE, regs_name, (memory_interface_t *)regs_iface,
                    regs_ctx);
     // The VRAM decode spans the whole 2 MB aperture whatever is fitted, the
-    // installed VRAM repeating through it: the djMEMC's PrimaryInit reads
+    // installed VRAM repeating through it: the MEMC's PrimaryInit reads
     // the top of every possible VRAM size before it sizes (it must not
     // bus-error), and the repeat is what makes its write-then-compare sizing
     // find the fitted amount.  (The MCU boards fit the whole 2 MB.)
@@ -449,7 +449,7 @@ void quadra040_yancc_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8
 // passive 3-bit codes plus the GoldFish 16" on the extended probe, each
 // measured through a Q700/Q900 ROM boot ("dafb.c": only GoldFish produced a
 // new raster among the extended codes).  Code 7 with no extended answer is
-// an unplugged port.  The djMEMC's WombatDAFB drives the same set.
+// an unplugged port.  The MEMC's WombatDAFB drives the same set.
 
 // One monitor the DAFB drives: its catalogue id and its strap.
 typedef struct dafb_monitor {

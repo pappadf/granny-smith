@@ -1,4 +1,4 @@
--- djMEMC family suite: Centris 610/650, Quadra 610/650/800 ("Wombat" and
+-- MEMC family suite: Centris 610/650, Quadra 610/650/800 ("Wombat" and
 -- "WLCD").  Every row boots one model to the Finder and opens About This
 -- Macintosh, which names the model: the identity the ROM derives from the
 -- CPU-ID register ($A55A2BAD, shared) and the VIA1 straps (per model),
@@ -48,7 +48,7 @@ local rom_ids = {[rom_centris] = "f1a6f343", [rom_quadra] = "f1acad13"}
 -- current application and then a stability wait (the settle these rows'
 -- perf baselines were taken with), a 640x480 desktop.  `clock`: the System
 -- shows a menu-bar clock, so the goldens leave its corner out.
-local ROW = {suite = "suite-djmemc", card = "djmemc", rtc = 3000000000, w = 640, h = 480, mips = 3,
+local ROW = {suite = "suite-memc", card = "memc", rtc = 3000000000, w = 640, h = 480, mips = 3,
     settle = {"desktop", ceiling = 2000000000, stable = 600000000}}
 
 local function fill(t)
@@ -90,15 +90,15 @@ row{label = "q650-753-hd", model = "q650", rom = rom_quadra, ram = 24576, hd = h
     clock = true, finder = "goldens/q650-7.5.3-hd-finder.png", about = "goldens/q650-7.5.3-hd-about.png"}
 
 -- ---- q800-checkpoint ---------------------------------------------------------
--- The family's own checkpoint part (djMEMC bank registers, IOSB, Kiwi, the
+-- The family's own checkpoint part (MEMC bank registers, IOSB, Kiwi, the
 -- overlay) round-trips: save the booted Finder, wipe it with a fresh boot,
 -- load it back and re-match the same golden.
 mac.media_row("q800-checkpoint", function()
     mac.boot_finder(fill(mac.with(q800_75_hd, {label = "q800-checkpoint"})))
     mac.check_ex("goldens/q800-7.5-hd-finder.png", 0, 440, 20, 640)
-    assert(checkpoint.save(F"${vars.WORK_DIR}/suite-djmemc.gsc"), "q800-checkpoint: save failed")
+    assert(checkpoint.save(F"${vars.WORK_DIR}/suite-memc.gsc"), "q800-checkpoint: save failed")
     machine.boot{model = "q800", ram = 16384, rom = rom_quadra}
-    assert(checkpoint.load(F"${vars.WORK_DIR}/suite-djmemc.gsc"), "q800-checkpoint: load failed")
+    assert(checkpoint.load(F"${vars.WORK_DIR}/suite-memc.gsc"), "q800-checkpoint: load failed")
     scheduler.run(2000000)
     assert(mac.boxflag() == 29, "q800-checkpoint: BoxFlag lost across the restore")
     mac.check_ex("goldens/q800-7.5-hd-finder.png", 0, 440, 20, 640)
@@ -108,7 +108,7 @@ mac.media_row("q800-checkpoint", function()
     assert(debug.mac.globals.read("Ticks") > t0, "q800-checkpoint: Ticks stalled after the restore")
     mac.about_box()
     mac.check_about_clock("goldens/q800-7.5-hd-about.png")
-    mac.report_perf("suite-djmemc/q800-checkpoint", scheduler.instr_count)
+    mac.report_perf("suite-memc/q800-checkpoint", scheduler.instr_count)
 end, hd_75)
 
 mac.suite_done()

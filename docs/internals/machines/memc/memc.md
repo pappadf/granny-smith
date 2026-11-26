@@ -1,21 +1,24 @@
-# djMEMC family — Centris 610/650, Quadra 610/650/800, LC 475/575, Quadra 605
+# MEMC family — Centris 610/650, Quadra 610/650/800, LC 475/575, Quadra 605
 
-`src/machines/djmemc/djmemc.c` implements the five djMEMC machines and the
-three MEMCjr machines as one substrate (`djmemc_substrate`) with a per-model
-board descriptor (`djmemc_board_desc_t`, reached through
-`hw_profile_t.board`); `src/machines/djmemc/wombat.c` holds the djMEMC
-descriptors and profiles, `src/machines/djmemc/memcjr.c` the MEMCjr ones,
-and `src/machines/djmemc/iosb.c` the IOSB's register file (which the MEMCjr
+`src/machines/memc/memc.c` implements the five MEMC machines and the
+three MEMCjr machines as one substrate (`memc_substrate`) with a per-model
+board descriptor (`memc_board_desc_t`, reached through
+`hw_profile_t.board`); `src/machines/memc/wombat.c` holds the MEMC
+descriptors and profiles, `src/machines/memc/memcjr.c` the MEMCjr ones,
+and `src/machines/memc/iosb.c` the IOSB's register file (which the MEMCjr
 boards' PrimeTime shares). Hardware reference:
-[djmemc.md](../../../reference/machines/djmemc/djmemc.md) (family) and its
-machine pages ([c610.md](../../../reference/machines/djmemc/c610.md),
-[c650.md](../../../reference/machines/djmemc/c650.md),
-[q610.md](../../../reference/machines/djmemc/q610.md),
-[q650.md](../../../reference/machines/djmemc/q650.md),
-[q800.md](../../../reference/machines/djmemc/q800.md),
-[lc475.md](../../../reference/machines/djmemc/lc475.md),
-[lc575.md](../../../reference/machines/djmemc/lc575.md),
-[q605.md](../../../reference/machines/djmemc/q605.md)).
+[memc.md](../../../reference/machines/memc/memc.md) (family) and its
+machine pages ([c610.md](../../../reference/machines/memc/c610.md),
+[c650.md](../../../reference/machines/memc/c650.md),
+[q610.md](../../../reference/machines/memc/q610.md),
+[q650.md](../../../reference/machines/memc/q650.md),
+[q800.md](../../../reference/machines/memc/q800.md),
+[lc475.md](../../../reference/machines/memc/lc475.md),
+[lc575.md](../../../reference/machines/memc/lc575.md),
+[q605.md](../../../reference/machines/memc/q605.md)).
+
+"MEMC" and "MEMCjr" are the chip names Apple's developer notes use. The
+MEMC is also known as "djMEMC".
 
 ## 1. Responsibilities & design
 
@@ -32,13 +35,13 @@ and the "WLCD" (one PDS adapter slot) logic boards. What varies is data:
 
 The ROM tells the models apart by the CPU-ID register ($5FFFFFFC, $A55A2BAD
 on every member) and the VIA1 port-A straps PA6/PA4/PA2/PA1
-(`djmemc_board_desc_t.via1_id`). Both ROMs (`F1A6F343`, `F1ACAD13`) boot all
+(`memc_board_desc_t.via1_id`). Both ROMs (`F1A6F343`, `F1ACAD13`) boot all
 five models; the BoxFlag column is what each derives.
 
 The substrate reuses the Quadra 700's pieces where the hardware is
 software-compatible, through the MCU family's shared 040 Quadra block
 (`mcu/quadra040.c`, [../mcu/mcu.md](../mcu/mcu.md) "Shared 040 Quadra
-block"): `djmemc_state_t` opens with a `quadra040_t`, and the init prefix
+block"): `memc_state_t` opens with a `quadra040_t`, and the init prefix
 and suffix, the device builders, island bind and mappings, `/RESET`,
 teardown, IRQ wiring, the SONIC / MAC PROM / Kiwi handler rows and the
 monitor table are that file's. The DAFB model (`mcu/dafb.c`) serves the
@@ -46,26 +49,26 @@ built-in video, with `quadra040_video_t.ac842a` and `.antelope` making it
 the Wombat DAFB plus the Antelope CLUT/DAC (PCBR1's mfg/rev nibble reads
 non-zero); the Kiwi is a `yancc_t` (`mcu/yancc.c`) logging as "Kiwi". The
 shared `board_io` engine runs the I/O island at $50000000
-(`djmemc_io_ranges`); the rows both islands decode are one
-`DJMEMC_ISLAND_ROWS` list. The CPU-ID page is the shared
+(`memc_io_ranges`); the rows both islands decode are one
+`MEMC_ISLAND_ROWS` list. The CPU-ID page is the shared
 `runtime/cpuid_page.c`. The DAFB startup-mode table the MCU boards carry
-is not adopted: no djMEMC startup records are measured.
+is not adopted: no MEMC startup records are measured.
 
 The Centris 610's FPU is absent through `hw_profile_t.fpu_absent`, which
 `m68k_board_build_core` passes to `cpu_init_fpu`: every FPU instruction then
 takes the F-line trap and the System's software floating point runs.
 
-**The MEMCjr boards.** `djmemc_board_desc_t.chip` selects the memory
-controller (`DJMEMC_CHIP_DJMEMC`, the default, or `DJMEMC_CHIP_MEMCJR`),
-whose differences are one `djmemc_chip_ops_t` per chip in `djmemc.c`
+**The MEMCjr boards.** `memc_board_desc_t.chip` selects the memory
+controller (`MEMC_CHIP_MEMC`, the default, or `MEMC_CHIP_MEMCJR`),
+whose differences are one `memc_chip_ops_t` per chip in `memc.c`
 (register count, bank count, RAM-bank decomposition, bank start, power-up
 registers, read side effects, the bank-landed latch hook). The board
 features that came with it are descriptor fields of their own: `has_sonic`,
-`adb` (`DJMEMC_ADB_VIA` or `DJMEMC_ADB_CUDA`) and `video_latch`.
-`DJMEMC_DESC_COMMON` / `MEMCJR_DESC_COMMON` set them, with the chip and the
+`adb` (`MEMC_ADB_VIA` or `MEMC_ADB_CUDA`) and `video_latch`.
+`MEMC_DESC_COMMON` / `MEMCJR_DESC_COMMON` set them, with the chip and the
 VRAM size, for every board of each kind (`WLCD_BOARD`, `WOMBAT_BOARD`,
 `MEMCJR_BOARD`). `.cpuid` is the CPU-ID register's value (0 is the
-djMEMC's $A55A2BAD):
+MEMC's $A55A2BAD):
 
 | Model | id | board | clock | CPU | CPU-ID | BoxFlag |
 |---|---|---|---|---|---|---|
@@ -75,7 +78,7 @@ djMEMC's $A55A2BAD):
 
 The ROM (`FF7439EE`) finds them by the CPU-ID alone (bit 11 clear: no VIA
 supplement); its low two bits name the clock, from which the ROM picks the
-MEMCjr and PrimeTime timing. A MEMCjr board differs from a djMEMC one in:
+MEMCjr and PrimeTime timing. A MEMCjr board differs from a MEMC one in:
 
 - RAM: 4 MB soldered (bank 0) and one SIMM socket whose sides are banks 1
   and 2 (`memcjr_chip_ram_banks`; 1/4/16 MB single-sided, 2/8/32 MB
@@ -89,7 +92,7 @@ MEMCjr and PrimeTime timing. A MEMCjr board differs from a djMEMC one in:
   front the DAFB model);
   without it the video driver's save-and-restore of the horizontal timing
   around its line-compare probe writes back garbage. The register window
-  decodes 32 longwords instead of the djMEMC's 16.
+  decodes 32 longwords instead of the MEMC's 16.
 - The bank decode (`memcjr_chip_bank_start`): five bank registers in 1 MB units
   with a 10-bit start: the low six bits in the register, the high four from
   the latch as the register lands (recorded per bank, `jr_bank_hi`).
@@ -104,25 +107,25 @@ MEMCjr and PrimeTime timing. A MEMCjr board differs from a djMEMC one in:
   address itself.
 - The LC 575's display is built in (`lc575_builtin_video`, the 14" colour
   CRT with the 640x480 RGB sense code); the LC 475 and Quadra 605 take the
-  same external monitors as the djMEMC boards.
+  same external monitors as the MEMC boards.
 
 ## 2. Key types & files
 
 | Type / function | File | Purpose |
 |---|---|---|
-| `djmemc_board_desc_t` | `djmemc.h` | per-model data: chip, board features, identity straps, soldered RAM, sockets, VRAM |
-| `djmemc_state_t` | `djmemc.h` | the shared `quadra040_t` first, then the register files, IOSB, Cuda, CPU-ID page |
-| `djmemc_chip_ops_t` | `djmemc.c` | what the djMEMC and the MEMCjr do differently |
-| `djmemc_ram_banks` | `djmemc.c` | decomposes a RAM total into the chip's banks |
-| `djmemc_map_ram` | `djmemc.c` | applies the bank registers to the page table (`m68k_board_map_banks`) |
-| `djmemc_io_ranges` | `djmemc.c` | the I/O island decode table |
-| `memcjr_io_ranges` | `djmemc.c` | the MEMCjr boards' I/O island decode |
+| `memc_board_desc_t` | `memc.h` | per-model data: chip, board features, identity straps, soldered RAM, sockets, VRAM |
+| `memc_state_t` | `memc.h` | the shared `quadra040_t` first, then the register files, IOSB, Cuda, CPU-ID page |
+| `memc_chip_ops_t` | `memc.c` | what the MEMC and the MEMCjr do differently |
+| `memc_ram_banks` | `memc.c` | decomposes a RAM total into the chip's banks |
+| `memc_map_ram` | `memc.c` | applies the bank registers to the page table (`m68k_board_map_banks`) |
+| `memc_io_ranges` | `memc.c` | the I/O island decode table |
+| `memcjr_io_ranges` | `memc.c` | the MEMCjr boards' I/O island decode |
 | `iosb_t` | `iosb.h` | the IOSB configuration registers and VIA2's DREQ flag |
 | `quadra040_t` | `../mcu/quadra040.h` | the devices and plumbing shared with the MCU family |
 
 ## 3. Behaviour/algorithms
 
-**RAM banks.** The djMEMC has ten bank registers ($04-$28); each bank's start
+**RAM banks.** The MEMC has ten bank registers ($04-$28); each bank's start
 field counts 4 MB. A populated bank decodes from its start up to the next
 populated bank above it, or 64 MB, and mirrors its size through that span:
 the boot ROM sizes a bank by parking it on a 64 MB boundary and looking for
@@ -163,17 +166,17 @@ Nothing family-specific: the machine's devices appear under the usual
 
 ## 5. Checkpointing
 
-The `djmemc` part saves the overlay state, the djMEMC and Kiwi register
+The `memc` part saves the overlay state, the MEMC and Kiwi register
 files, the MEMCjr per-bank latch bits, the slot-IRQ mask, the SONIC byte
 latch and the IOSB; the MEMCjr boards' Cuda is its own `cuda` part; a restore
 re-applies the bank map through the overlay drop. The DAFB's monitor strap
-is its own identity part (`dafb.monitor`). `suite-djmemc`'s
+is its own identity part (`dafb.monitor`). `suite-memc`'s
 `q800-checkpoint` row round-trips a booted Finder, `suite-memcjr`'s
 `q605-checkpoint` the MEMCjr side.
 
 ## 6. Testing
 
-`tests/integration/suite-djmemc`: eleven rows booting all five models from
+`tests/integration/suite-memc`: eleven rows booting all five models from
 SCSI and floppy (System 7.1 with System Enabler 040, 7.5, 7.5.3, 7.6) to
 About This Macintosh, asserting machine id, ROM id and BoxFlag, plus the
 checkpoint row. `tests/integration/suite-memcjr`: seven rows booting the

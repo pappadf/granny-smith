@@ -27,7 +27,7 @@
 #include "m68k_board_io.h" // the shared I/O dispatch engine, board-descriptor face
 #include "m68k_board_overlay.h"
 #include "memory.h"
-#include "quadra040.h" // the device block and plumbing shared with the djMEMC family
+#include "quadra040.h" // the device block and plumbing shared with the MEMC family
 #include "system_internal.h"
 
 #include <stdbool.h>
