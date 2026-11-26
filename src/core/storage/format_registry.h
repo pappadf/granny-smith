@@ -71,6 +71,10 @@ typedef struct {
     // A DiskCopy 4.2 layer's container (a reference), for its tag section,
     // or NULL when there was none.
     source_t *dc42;
+    // A MOOF layer's input -- the bit-level capture itself (a reference) --
+    // for the image to keep beside its sector view (image_capture.h), or
+    // NULL when there was none.
+    source_t *capture;
     // The last peeler wrapper's container and format (a reference), so a
     // payload that is no namespace can be shown as that one-file wrapper.
     source_t *peeler_outer;

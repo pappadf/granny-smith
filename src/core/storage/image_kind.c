@@ -143,7 +143,8 @@ image_t *image_open_kind(const char *path, const image_open_opts_t *o, char *err
         return NULL;
     }
     const image_kind_desc_t *d = kind_desc(o->kind);
-    const image_geometry_t geom = d->geom;
+    image_geometry_t geom = d->geom;
+    geom.honour_media_lock = o->honour_media_lock;
     bool writable = o->writable && !d->read_only;
     image_t *img = NULL;
     if (!writable)

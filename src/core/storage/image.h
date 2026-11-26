@@ -52,6 +52,9 @@ uint64_t image_get_writes(const image_t *image);
 uint64_t image_get_read_errors(const image_t *image);
 // Tag bytes stored beside each 512-byte sector: 12 (GCR floppy), 20 (ProFile) or 0
 uint32_t image_get_tag_bytes(const image_t *image);
+// True when sector `block` is in the image's delta (written since its base,
+// as far as the storage's modification bitmap knows; storage.h)
+bool image_block_in_delta(image_t *image, uint64_t block);
 
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
 //

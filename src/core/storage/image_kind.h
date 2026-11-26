@@ -79,6 +79,10 @@ const char *image_delta_dir(const char *path);
 typedef struct image_open_opts {
     image_kind_t kind;
     bool writable; // guest writes land in a persistent delta; ignored for a CD
+    // Writable only: a medium that records its own write protection (a MOOF
+    // capture's INFO flag) opens read-only all the same -- what an insert
+    // asks when the user did not say writable= explicitly.
+    bool honour_media_lock;
     // Reopen this existing delta+journal stem (a quick checkpoint's restore)
     // instead of minting a fresh instance.  NULL for a fresh one.
     const char *instance;

@@ -79,6 +79,13 @@ struct image {
     uint32_t wrap_blocks;
     uint64_t wrap_base;
     uint64_t wrap_storage_size;
+
+    // A bit-level capture behind the sector view (image_capture.h): the
+    // MOOF source the format registry peeled (a reference), and the store
+    // parsed from it on first use.  NULL for every other image.
+    source_t *capture_src;
+    struct image_capture *capture;
+    bool capture_failed; // the store could not be built: served as sectors only
 };
 
 // Per-image geometry: the tags a sector carries.  The kind decides it; only
@@ -90,6 +97,12 @@ typedef struct image_geometry {
     // A floppy: 12 tag bytes per sector when the disk is a 400K/800K GCR one,
     // from a DiskCopy tag section or zeros; none for an MFM one.
     bool gcr_tags;
+    // Not geometry, but decided with it by the opener and carried down the
+    // same path: a medium that records its own write protection (a MOOF's
+    // INFO flag, the original disk's tab) opens read-only even when a
+    // writable instance is asked for.  image_open_kind sets it for an insert
+    // that did not say writable= explicitly.
+    bool honour_media_lock;
 } image_geometry_t;
 
 // Tag bytes per sector a 400K/800K GCR floppy carries.

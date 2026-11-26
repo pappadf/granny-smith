@@ -261,7 +261,10 @@ written in either case.
   refuses the write as a backstop. The Lisa FDC and the SWIM ISM write path
   check it too now.
 - **`insert` is writable by default** everywhere (§6); `writable=false` asks
-  for a write-protected disk.
+  for a write-protected disk.  A floppy insert that does not say `writable=`
+  keeps a medium's own write protection: a MOOF capture whose INFO records
+  it opens read-only (`image_open_opts_t.honour_media_lock`);
+  `writable=true` overrides it.
 - **Blank images** (`image_create_blank_kind(kind, blocks, instance)`) are
   writable images with no base: a delta where `image_delta_dir` puts it,
   unwritten blocks read as zeros, and a checkpoint entry with no name plus
@@ -358,6 +361,7 @@ exists only while an image is loaded.
 | `sectors` | uint | 512-byte sectors |
 | `tag_bytes` | uint | T: 0, 12 or 20 |
 | `writable` | bool | the guest may write it (false = write-protected) |
+| `capture` | bool | a bit-level capture (a MOOF) is kept beside the sectors; a GCR drive reads its tracks (`image_capture.h`) |
 | `delta` | string | instance stem; `""` when read-only |
 | `reads` / `writes` / `read_errors` | uint, volatile | I/O counters |
 | `export(path, [codec])` | → `true` or error | I/O job; §2.8 |
@@ -374,11 +378,12 @@ the index.
 
 Every device node carries `present` (an image is loaded) and
 `insert(path, [writable])` / `eject()` with the same result types; the
-`writable` default is `true` everywhere (§6), plus its own state:
+`writable` default is `true` everywhere (§6) -- for a floppy, unless the
+medium records its own write protection -- plus its own state:
 
 | Device node | Device-specific members |
 |---|---|
-| `machine.floppy.drive[N]` (Mac and Lisa alike) | `index`, `track`, `side`, `motor_on`, `format` (`gcr400`/`gcr800`/`mfm720`/`mfm1440`, current) |
+| `machine.floppy.drive[N]` (Mac and Lisa alike) | `index`, `track`, `side`, `motor_on`, `format` (`gcr400`/`gcr800`/`mfm720`/`mfm1440`, current); the Mac's also `track_data(track, [side])`: a GCR track's disk bytes as the head sees them (the drive's buffer, or what it would build now) |
 | `machine.<scsi bus>.device[N]` | `id`, `type`, `vendor`, `product`, `revision`, `block_size`, `read_only`, `info()`; `medium_present` → `present` |
 | `machine.ata.device[U]` (new, U = cell·2 + device) | `type` (`hd`/`atapi`/`none`) |
 | `machine.hd` (Lisa ProFile) | `pram_init/pram_save/pram_load`; `attach` → `insert`, `detach` → `eject`; `save` → `image.export` |

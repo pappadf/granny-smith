@@ -126,3 +126,86 @@ int floppy_disk_status_at(struct floppy *floppy, int drv, uint8_t lines, bool pe
 void floppy_disk_control(struct floppy *floppy) {
     (void)floppy;
 }
+
+// The capture store (image_capture.c) is the storage layer's: these suites'
+// media have none.
+#include "image_capture.h"
+
+bool image_has_capture(const image_t *img) {
+    (void)img;
+    return false;
+}
+image_capture_t *image_capture(image_t *img) {
+    (void)img;
+    return NULL;
+}
+image_sector_status_t image_sector_status(image_t *img, uint64_t block) {
+    (void)img;
+    (void)block;
+    return IMAGE_SECTOR_OK;
+}
+image_sector_status_t image_capture_sector_status(const image_capture_t *cap, uint64_t block) {
+    (void)cap;
+    (void)block;
+    return IMAGE_SECTOR_OK;
+}
+int image_capture_sides(const image_capture_t *cap) {
+    (void)cap;
+    return 0;
+}
+uint32_t image_capture_crc(const image_capture_t *cap) {
+    (void)cap;
+    return 0;
+}
+size_t image_capture_track(const image_capture_t *cap, int track, int side, uint8_t **nib,
+                           moof_sector_t sec[MOOF_MAX_SECTORS]) {
+    (void)cap;
+    (void)track;
+    (void)side;
+    (void)sec;
+    *nib = NULL;
+    return 0;
+}
+uint32_t image_capture_track_diff(const moof_sector_t sec[MOOF_MAX_SECTORS], int nsec, const uint8_t *data,
+                                  const uint8_t *tags, uint32_t in_delta) {
+    (void)sec;
+    (void)nsec;
+    (void)data;
+    (void)tags;
+    (void)in_delta;
+    return 0;
+}
+bool image_capture_weak_runs(const image_capture_t *cap, int track, int side, const gcr_weak_run_t **runs, size_t *n) {
+    (void)cap;
+    (void)track;
+    (void)side;
+    *runs = NULL;
+    *n = 0;
+    return false;
+}
+size_t image_capture_weak_track(const image_capture_t *cap, int track, int side, uint32_t draw, uint8_t **nib) {
+    (void)cap;
+    (void)track;
+    (void)side;
+    (void)draw;
+    *nib = NULL;
+    return 0;
+}
+// The sector scan (image_moof.c) finds nothing on these suites' tracks: the
+// eject flush, its one caller here, writes nothing back.
+void moof_scan_track(const uint8_t *rev, size_t n, int track, int side, moof_sector_t sec[MOOF_MAX_SECTORS],
+                     uint8_t *format_byte) {
+    (void)rev;
+    (void)n;
+    (void)track;
+    (void)side;
+    (void)format_byte;
+    memset(sec, 0, sizeof(moof_sector_t) * MOOF_MAX_SECTORS);
+    for (int k = 0; k < MOOF_MAX_SECTORS; k++)
+        sec[k].state = MOOF_SECTOR_MISSING;
+}
+bool image_block_in_delta(image_t *img, uint64_t block) {
+    (void)img;
+    (void)block;
+    return false;
+}

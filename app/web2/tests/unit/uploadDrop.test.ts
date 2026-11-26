@@ -157,7 +157,7 @@ describe('a drop of several files', () => {
       rom: '/opfs/images/rom/ROM1',
     });
     expect(media.insertFloppy).toHaveBeenCalledTimes(1);
-    expect(media.insertFloppy).toHaveBeenCalledWith('/opfs/images/fd/a.dsk', true);
+    expect(media.insertFloppy).toHaveBeenCalledWith('/opfs/images/fd/a.dsk', null);
   });
 
   it('boots nothing when the drop holds two ROMs', async () => {
@@ -189,7 +189,7 @@ describe('a single file', () => {
       machine.status = 'no-machine';
     }
     expect(toastText()).toContain('a.dsk added');
-    expect(media.insertFloppy).toHaveBeenCalledWith('/opfs/images/fd/a.dsk', true);
+    expect(media.insertFloppy).toHaveBeenCalledWith('/opfs/images/fd/a.dsk', null);
     expect(scratchLeft()).toEqual([]);
   });
 
@@ -273,7 +273,7 @@ describe('a drop of several files on an Images section', () => {
       '/opfs/images/fd/b.dsk',
     ]);
     expect(media.insertFloppy).toHaveBeenCalledTimes(1);
-    expect(media.insertFloppy).toHaveBeenCalledWith('/opfs/images/fd/a.dsk', true);
+    expect(media.insertFloppy).toHaveBeenCalledWith('/opfs/images/fd/a.dsk', null);
   });
 });
 

@@ -96,7 +96,9 @@
 #include "adb.h"
 
 #include "floppy.h"
+#include "floppy_geometry.h"
 #include "image.h"
+#include "image_capture.h"
 #include "log.h"
 #include "memory.h"
 #include "mmu.h"
@@ -204,6 +206,8 @@ LOG_USE_CATEGORY_NAME("iop_swim");
 #define MAC_ERR_OFFLINE -65 // offLinErr — drive empty
 #define MAC_ERR_IO      -36 // ioErr — generic I/O failure
 #define MAC_ERR_W_PR    -44 // wPrErr — write protected
+#define MAC_ERR_NO_DATA -71 // noDtaMkErr — no data mark found
+#define MAC_ERR_DCKSUM  -72 // badDCksum — bad data checksum
 
 // ADBMsg structure offsets within an XmtMsg / RcvMsg slot-3 payload
 #define ADBMSG_FLAGS     0
@@ -857,6 +861,12 @@ static int16_t swim_read_blocks(iop_t *iop, int floppy_idx, uint32_t block_numbe
     uint8_t *dst = swim_host_dma_ptr(host_addr, byte_count);
     if (!dst)
         return MAC_ERR_PARAM;
+    // A sector the disk's capture could not read fails as on the original
+    // disk (floppy_media_block_unreadable), whatever the sector view holds.
+    for (uint32_t i = 0; i < count; i++)
+        if (floppy_media_block_unreadable(img, (uint64_t)block_number + i))
+            return image_sector_status(img, (uint64_t)block_number + i) == IMAGE_SECTOR_BAD ? MAC_ERR_DCKSUM
+                                                                                            : MAC_ERR_NO_DATA;
     memory_host_written(dst, (uint32_t)byte_count); // IOP DMA over cached code
     size_t got = disk_read_data(img, byte_offset, dst, byte_count);
     if (got != byte_count)

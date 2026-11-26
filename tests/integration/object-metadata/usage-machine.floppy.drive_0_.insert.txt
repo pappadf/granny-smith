@@ -1,5 +1,5 @@
 machine.floppy.drive[0].insert <path> [writable]
   path      string, path  Host path or storage URI of the image to mount
-  writable  bool          Mount writable; false = write-protected (default true)
+  writable  bool          Mount writable; false = write-protected; omitted: writable, unless the disk records its own write protection (a MOOF capture's)
 
 Mount a disk image into this drive

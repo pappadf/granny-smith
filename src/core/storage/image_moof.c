@@ -61,32 +61,55 @@ bool moof_detect(const uint8_t *head, size_t len) {
     return head && len >= sizeof moof_magic && memcmp(head, moof_magic, sizeof moof_magic) == 0;
 }
 
-// Where the chunks the reader needs are: data offset and size, 0 when absent.
-typedef struct {
-    size_t info, tmap, trks, flux;
-    size_t trks_len;
-} moof_chunks_t;
-
 // Walk the chunk list from byte 12, skipping unknown chunks.
-static void moof_walk(const uint8_t *f, size_t len, moof_chunks_t *c) {
-    memset(c, 0, sizeof *c);
+static void moof_walk(const uint8_t *f, size_t len, moof_index_t *ix) {
     size_t off = MOOF_HEADER_SIZE;
     while (off + CHUNK_HDR <= len) {
         uint32_t id = RD_BE32(f + off), size = RD_LE32(f + off + 4);
         size_t data = off + CHUNK_HDR;
         if (size > len - data)
             size = (uint32_t)(len - data); // a truncated last chunk: what is there
-        if (id == 0x494E464F && !c->info && size >= INFO_SIZE) // 'INFO'
-            c->info = data;
-        else if (id == 0x544D4150 && !c->tmap && size >= TMAP_SIZE) // 'TMAP'
-            c->tmap = data;
-        else if (id == 0x54524B53 && !c->trks && size >= TRK_COUNT * TRK_SIZE) { // 'TRKS'
-            c->trks = data;
-            c->trks_len = size;
-        } else if (id == 0x464C5558 && !c->flux && size >= TMAP_SIZE) // 'FLUX'
-            c->flux = data;
+        if (id == 0x494E464F && !ix->info && size >= INFO_SIZE) // 'INFO'
+            ix->info = f + data;
+        else if (id == 0x544D4150 && !ix->tmap && size >= TMAP_SIZE) // 'TMAP'
+            ix->tmap = f + data;
+        else if (id == 0x54524B53 && !ix->trks && size >= TRK_COUNT * TRK_SIZE) // 'TRKS'
+            ix->trks = f + data;
+        else if (id == 0x464C5558 && !ix->flux_map && size >= TMAP_SIZE) // 'FLUX'
+            ix->flux_map = f + data;
+        else if (id == 0x4D455441 && !ix->meta) { // 'META'
+            ix->meta = f + data;
+            ix->meta_len = size;
+        }
         off = data + size;
     }
+}
+
+int moof_index(const uint8_t *f, size_t len, moof_index_t *ix) {
+    memset(ix, 0, sizeof *ix);
+    if (!moof_detect(f, len) || len < MOOF_HEADER_SIZE + CHUNK_HDR)
+        return -EINVAL;
+    ix->file = f;
+    ix->len = len;
+    uint32_t want_crc = RD_LE32(f + 8);
+    if (want_crc && codec_crc32(0, f + MOOF_HEADER_SIZE, len - MOOF_HEADER_SIZE) != want_crc)
+        ix->crc_mismatch = true; // the spec says warn, not refuse
+    moof_walk(f, len, ix);
+    if (!ix->info || !ix->tmap || !ix->trks)
+        return -EINVAL;
+    if (ix->info[0] < 1)
+        return -EINVAL; // INFO version
+    ix->disk_type = ix->info[1];
+    ix->write_protected = ix->info[2] == 1;
+    if (ix->disk_type != MOOF_DISK_SSDD_GCR && ix->disk_type != MOOF_DISK_DSDD_GCR)
+        return -ENOTSUP;
+    ix->timing = ix->info[4] ? ix->info[4] : GCR_TIMING;
+    ix->largest_track_blocks = RD_LE16(ix->info + 38);
+    // A FLUX map counts only when INFO says there is one (both flux fields set).
+    if (!(RD_LE16(ix->info + 40) && RD_LE16(ix->info + 42)))
+        ix->flux_map = NULL;
+    ix->sides = ix->disk_type == MOOF_DISK_DSDD_GCR ? 2 : 1;
+    return 0;
 }
 
 // Convert a flux track (A2R-style tick deltas, 125 ns per tick, 255 =
@@ -122,172 +145,211 @@ static uint32_t flux_to_bits(const uint8_t *flux, size_t n, uint8_t timing, uint
     return pos;
 }
 
-// Frame a looped bitstream into disk bytes the way the IWM does: shift bits
-// in MSB first, and a byte is complete once its top bit is set.  Two
-// revolutions, so a sector straddling the index is caught whole.  Returns
-// the byte count (at most `cap`).
-static size_t frame_nibbles(const uint8_t *bits, uint32_t nbits, uint8_t *out, size_t cap) {
-    uint32_t reg = 0, k = 0;
-    size_t n = 0;
-    for (uint64_t i = 0; i < 2ull * nbits && n < cap; i++) {
-        reg = (reg << 1) | ((bits[k >> 3] >> (7 - (k & 7))) & 1);
-        if (++k == nbits)
-            k = 0; // the track loops
-        if (reg & 0x80) {
-            out[n++] = (uint8_t)reg;
-            reg = 0;
-        }
+bool moof_track_is_flux(const moof_index_t *ix, int track, int side) {
+    if (!ix || !ix->flux_map || track < 0 || track >= NUM_TRACKS || side < 0 || side > 1)
+        return false;
+    return ix->flux_map[track * 2 + side] != TMAP_BLANK;
+}
+
+uint32_t moof_track_bits(const moof_index_t *ix, int track, int side, const uint8_t **bits, uint8_t **owned) {
+    *bits = NULL;
+    *owned = NULL;
+    if (!ix || !ix->file || track < 0 || track >= NUM_TRACKS || side < 0 || side >= ix->sides)
+        return 0;
+    int slot = track * 2 + side;
+    // FLUX wins over TMAP when both name a track.
+    bool is_flux = moof_track_is_flux(ix, track, side);
+    uint8_t idx = is_flux ? ix->flux_map[slot] : ix->tmap[slot];
+    if (idx == TMAP_BLANK || idx >= TRK_COUNT)
+        return 0;
+    const uint8_t *rec = ix->trks + (size_t)idx * TRK_SIZE;
+    uint64_t start = (uint64_t)RD_LE16(rec) * MOOF_BLOCK;
+    uint32_t count = RD_LE32(rec + 4); // bits, or flux bytes
+    uint64_t bytes = is_flux ? count : ((uint64_t)count + 7) / 8;
+    if (!count || start < FIRST_BLOCK * MOOF_BLOCK || start + bytes > ix->len)
+        return 0;
+    if (!is_flux) {
+        *bits = ix->file + start;
+        return count;
     }
+    uint32_t n = flux_to_bits(ix->file + start, (size_t)bytes, ix->timing, owned);
+    *bits = *owned;
     return n;
 }
 
-// Per-sector decode state while a track is scanned.
-typedef struct {
-    bool found; // a sector with this number was decoded
-    bool good; // and its checksum matched
-} sector_seen_t;
+size_t moof_frame_track(const uint8_t *bits, uint32_t nbits, uint8_t **out) {
+    *out = NULL;
+    if (!bits || !nbits)
+        return 0;
+    size_t cap = (size_t)nbits / 8 + 2; // at most one disk byte per 8 cells, and one straddling the index
+    uint8_t *nib = malloc(cap);
+    if (!nib)
+        return 0;
+    size_t n = gcr_frame_revolution(bits, nbits, nib, cap);
+    if (!n) {
+        free(nib);
+        return 0;
+    }
+    *out = nib;
+    return n;
+}
 
-// Find and decode every sector of track `track`, side `side` in the framed
-// disk bytes `nib`, storing them at `data` / `tags` (the track's first
-// sector).  Updates the format byte and the bad-checksum count.
-static void decode_track(const uint8_t *nib, size_t n, int track, int side, uint8_t *data, uint8_t *tags,
-                         sector_seen_t *seen, moof_disk_t *d) {
+// The nibble `i` places past `at` on a looping revolution of `n` bytes.
+static inline uint8_t nib_at(const uint8_t *rev, size_t n, size_t at) {
+    return rev[at % n];
+}
+
+// True when the three nibbles at `at` are `a b c`.
+static inline bool mark_at(const uint8_t *rev, size_t n, size_t at, uint8_t a, uint8_t b, uint8_t c) {
+    return nib_at(rev, n, at) == a && nib_at(rev, n, at + 1) == b && nib_at(rev, n, at + 2) == c;
+}
+
+// How far past a data mark its field may run before the scan stops looking
+// for the DE AA that closes it: a standard field is 709 nibbles.
+#define DATA_FIELD_SEARCH 1200
+
+// Where the data field whose mark is at `j` ends: past the DE AA that
+// closes it -- right after the values on a standard field, wherever it falls
+// on another (AA is no codeword, so it cannot occur inside a field that
+// decodes).  Never past the next field's mark: a field with no DE AA of its
+// own (a bit-slip field, a garbled field) would otherwise run on to the
+// one closing the next address field, and a rewrite of the sector would
+// take that address field with it.  Such a field ends where a standard one
+// does, or, if the next mark comes sooner, at the sync in front of it.
+static size_t data_field_end(const uint8_t *rev, size_t n, size_t j) {
+    size_t e = j + 4, standard = j + 4 + GCR_SECTOR_VALUES + 2;
+    for (; e < j + DATA_FIELD_SEARCH; e++) {
+        uint8_t a = nib_at(rev, n, e), b = nib_at(rev, n, e + 1);
+        if (a == 0xDE && b == 0xAA)
+            return e + 2;
+        if (a == 0xD5 && b == 0xAA)
+            break; // the next field's mark
+    }
+    if (e >= standard)
+        return standard;
+    while (e > j + 4 && nib_at(rev, n, e - 1) == 0xFF)
+        e--; // keep the next field's sync
+    return e;
+}
+
+void moof_scan_track(const uint8_t *rev, size_t n, int track, int side, moof_sector_t sec[MOOF_MAX_SECTORS],
+                     uint8_t *format_byte) {
     int nsec = zone_sectors(track);
-    uint8_t tag[MOOF_TAG_BYTES], sector_data[SECTOR_BYTES];
-    for (size_t i = 0; i + 8 <= n; i++) {
-        if (nib[i] != 0xD5 || nib[i + 1] != 0xAA || nib[i + 2] != 0x96)
+    memset(sec, 0, sizeof(moof_sector_t) * MOOF_MAX_SECTORS);
+    for (int k = 0; k < MOOF_MAX_SECTORS; k++) {
+        sec[k].state = MOOF_SECTOR_MISSING;
+        sec[k].data_at = sec[k].data_end = MOOF_NO_FIELD;
+    }
+    if (!rev || n < 16)
+        return;
+    uint8_t field[GCR_SECTOR_VALUES], addr[GCR_ADDR_VALUES];
+    uint8_t tag[MOOF_TAG_BYTES], data[SECTOR_BYTES];
+    for (size_t i = 0; i < n; i++) {
+        if (!mark_at(rev, n, i, 0xD5, 0xAA, 0x96))
             continue;
         // Address field: track, sector, side (+ track bit 6), format, checksum.
-        int trk, sec, sid;
+        for (int k = 0; k < GCR_ADDR_VALUES; k++)
+            addr[k] = nib_at(rev, n, i + 3 + (size_t)k);
+        int trk, s, sid;
         uint8_t fmt;
-        if (!gcr_addr_from_disk(nib + i + 3, &trk, &sec, &sid, &fmt))
+        if (!gcr_addr_from_disk(addr, &trk, &s, &sid, &fmt))
             continue;
-        if (trk != track || sid != side || sec >= nsec)
+        if (trk != track || sid != side || s >= nsec)
             continue; // not a sector of this track
+        moof_sector_t *o = &sec[s];
+        if (o->state == MOOF_SECTOR_OK)
+            continue; // a second address field for a sector already read
         // The data field follows within a few dozen bytes.
-        size_t j = i + 8, end = i + 8 + 64;
-        while (j + 3 <= n && j < end && !(nib[j] == 0xD5 && nib[j + 1] == 0xAA && nib[j + 2] == 0xAD))
+        size_t j = i + 8, end = i + 8 + 64, data_at = MOOF_NO_FIELD, data_end = MOOF_NO_FIELD;
+        while (j < end && !mark_at(rev, n, j, 0xD5, 0xAA, 0xAD))
             j++;
-        if (j >= end || j + 4 + GCR_SECTOR_VALUES > n)
+        int rc = -1;
+        if (j < end) {
+            data_at = j;
+            // Its 703 values follow the sector nibble.
+            for (int k = 0; k < GCR_SECTOR_VALUES; k++)
+                field[k] = nib_at(rev, n, j + 4 + (size_t)k);
+            rc = gcr_sector_from_disk(field, tag, data);
+            data_end = data_field_end(rev, n, j);
+        }
+        // Keep the first copy that reads, else the first with a bad
+        // checksum, else the first address field seen.
+        bool take = rc == 1 || (rc == 0 && o->state != MOOF_SECTOR_BAD) || (!o->addr);
+        if (!take)
             continue;
-        if (seen[sec].good)
-            continue; // the second revolution's copy
-        int rc = gcr_sector_from_disk(nib + j + 4, tag, sector_data);
-        if (rc < 0 || (seen[sec].found && rc == 0))
-            continue; // undecodable, or no better than the copy we have
-        memcpy(tags + (size_t)sec * MOOF_TAG_BYTES, tag, MOOF_TAG_BYTES);
-        memcpy(data + (size_t)sec * SECTOR_BYTES, sector_data, SECTOR_BYTES);
-        if (!d->format_byte)
-            d->format_byte = fmt;
-        seen[sec].found = true;
-        seen[sec].good = rc == 1;
-        i = j + SECTOR_NIBS; // past the data field
+        o->addr = true;
+        o->addr_at = (uint32_t)i;
+        o->data_at = (uint32_t)data_at;
+        o->data_end = (uint32_t)data_end;
+        if (rc >= 0) {
+            memcpy(o->tag, tag, MOOF_TAG_BYTES);
+            memcpy(o->data, data, SECTOR_BYTES);
+            o->state = rc == 1 ? MOOF_SECTOR_OK : MOOF_SECTOR_BAD;
+            if (format_byte && !*format_byte)
+                *format_byte = fmt;
+        }
     }
 }
 
 int moof_decode(const uint8_t *f, size_t len, moof_disk_t *out) {
     memset(out, 0, sizeof *out);
-    if (!moof_detect(f, len) || len < MOOF_HEADER_SIZE + CHUNK_HDR)
-        return -EINVAL;
-    uint32_t want_crc = RD_LE32(f + 8);
-    if (want_crc && codec_crc32(0, f + MOOF_HEADER_SIZE, len - MOOF_HEADER_SIZE) != want_crc)
-        out->crc_mismatch = true; // the spec says warn, not refuse
-    moof_chunks_t c;
-    moof_walk(f, len, &c);
-    if (!c.info || !c.tmap || !c.trks)
-        return -EINVAL;
-    const uint8_t *info = f + c.info;
-    if (info[0] < 1)
-        return -EINVAL; // INFO version
-    out->disk_type = info[1];
-    out->write_protected = info[2] == 1;
-    if (out->disk_type != MOOF_DISK_SSDD_GCR && out->disk_type != MOOF_DISK_DSDD_GCR)
-        return -ENOTSUP;
-    uint8_t timing = info[4] ? info[4] : GCR_TIMING;
-    // A FLUX map, when INFO says there is one (both flux fields set).
-    const uint8_t *flux_map = NULL;
-    if (RD_LE16(info + 40) && RD_LE16(info + 42) && c.flux)
-        flux_map = f + c.flux;
-    int sides = out->disk_type == MOOF_DISK_DSDD_GCR ? 2 : 1;
+    moof_index_t ix;
+    int rc = moof_index(f, len, &ix);
+    if (rc == -ENOTSUP) {
+        out->disk_type = ix.disk_type;
+        return rc;
+    }
+    if (rc)
+        return rc;
+    out->crc_mismatch = ix.crc_mismatch;
+    out->disk_type = ix.disk_type;
+    out->write_protected = ix.write_protected;
     uint32_t sectors = 0;
     for (int t = 0; t < NUM_TRACKS; t++)
-        sectors += (uint32_t)(zone_sectors(t) * sides);
+        sectors += (uint32_t)(zone_sectors(t) * ix.sides);
     out->sectors = sectors;
     out->data = calloc(sectors, SECTOR_BYTES);
     out->tags = calloc(sectors, MOOF_TAG_BYTES);
-    // Twice the longest track's bytes: two revolutions of at most one disk
-    // byte per 8 bits.
-    size_t nib_cap = 0;
-    uint8_t *nib = NULL;
     if (!out->data || !out->tags) {
         moof_disk_free(out);
         return -ENOMEM;
     }
-    const uint8_t *tmap = f + c.tmap;
-    const uint8_t *trk = f + c.trks;
+    moof_sector_t *sec = malloc(sizeof(moof_sector_t) * MOOF_MAX_SECTORS);
+    if (!sec) {
+        moof_disk_free(out);
+        return -ENOMEM;
+    }
     uint32_t sector = 0, decoded = 0;
-    int rc = 0;
-    for (int t = 0; t < NUM_TRACKS && rc == 0; t++) {
+    for (int t = 0; t < NUM_TRACKS; t++) {
         int nsec = zone_sectors(t);
-        for (int s = 0; s < sides; s++, sector += (uint32_t)nsec) {
-            sector_seen_t seen[12] = {0};
-            int slot = t * 2 + s;
-            // FLUX wins over TMAP when both name a track.
-            bool is_flux = flux_map && flux_map[slot] != TMAP_BLANK;
-            uint8_t idx = is_flux ? flux_map[slot] : tmap[slot];
-            if (idx != TMAP_BLANK && idx < TRK_COUNT) {
-                const uint8_t *rec = trk + (size_t)idx * TRK_SIZE;
-                uint64_t start = (uint64_t)RD_LE16(rec) * MOOF_BLOCK;
-                uint32_t count = RD_LE32(rec + 4); // bits, or flux bytes
-                uint64_t bytes = is_flux ? count : ((uint64_t)count + 7) / 8;
-                const uint8_t *bits = NULL;
-                uint8_t *owned = NULL;
-                uint32_t nbits = 0;
-                if (count && start >= FIRST_BLOCK * MOOF_BLOCK && start + bytes <= len) {
-                    if (is_flux) {
-                        nbits = flux_to_bits(f + start, (size_t)bytes, timing, &owned);
-                        bits = owned;
-                        out->flux_tracks++;
-                    } else {
-                        bits = f + start;
-                        nbits = count;
-                    }
-                }
-                if (bits && nbits) {
-                    size_t need = (size_t)nbits / 4 + 16; // two revolutions of bytes
-                    if (need > nib_cap) {
-                        uint8_t *nn = realloc(nib, need);
-                        if (!nn) {
-                            free(owned);
-                            rc = -ENOMEM;
-                            break;
-                        }
-                        nib = nn;
-                        nib_cap = need;
-                    }
-                    size_t n = frame_nibbles(bits, nbits, nib, nib_cap);
-                    decode_track(nib, n, t, s, out->data + (size_t)sector * SECTOR_BYTES,
-                                 out->tags + (size_t)sector * MOOF_TAG_BYTES, seen, out);
-                }
-                free(owned);
-            }
+        for (int s = 0; s < ix.sides; s++, sector += (uint32_t)nsec) {
+            const uint8_t *bits = NULL;
+            uint8_t *owned = NULL, *nib = NULL;
+            uint32_t nbits = moof_track_bits(&ix, t, s, &bits, &owned);
+            if (moof_track_is_flux(&ix, t, s) && nbits)
+                out->flux_tracks++;
+            // The track as the head sees it in steady state, scanned looping.
+            size_t n = moof_frame_track(bits, nbits, &nib);
+            moof_scan_track(nib, n, t, s, sec, &out->format_byte);
+            free(nib);
+            free(owned);
             for (int k = 0; k < nsec; k++) {
-                if (!seen[k].found)
+                if (sec[k].state == MOOF_SECTOR_MISSING) {
                     out->missing++;
-                else {
-                    decoded++;
-                    if (!seen[k].good)
-                        out->bad_checksum++;
+                    continue;
                 }
+                memcpy(out->tags + (size_t)(sector + (uint32_t)k) * MOOF_TAG_BYTES, sec[k].tag, MOOF_TAG_BYTES);
+                memcpy(out->data + (size_t)(sector + (uint32_t)k) * SECTOR_BYTES, sec[k].data, SECTOR_BYTES);
+                decoded++;
+                if (sec[k].state == MOOF_SECTOR_BAD)
+                    out->bad_checksum++;
             }
         }
     }
-    free(nib);
-    if (rc == 0 && decoded == 0)
-        rc = -EINVAL; // nothing on it reads as a Mac GCR disk
-    if (rc != 0) {
+    free(sec);
+    if (decoded == 0) {
         moof_disk_free(out);
-        return rc;
+        return -EINVAL; // nothing on it reads as a Mac GCR disk
     }
     return 0;
 }
@@ -391,17 +453,48 @@ static void encode_track(bitbuf_t *b, int track, int side, uint8_t format_byte, 
 
 int moof_encode(const uint8_t *data, uint32_t sectors, const uint8_t *tags, uint8_t format_byte, uint8_t **out,
                 size_t *out_len) {
+    return moof_encode_with(data, sectors, tags, format_byte, NULL, NULL, out, out_len);
+}
+
+// True when (track, side)'s bit is set in a keep mask.
+static bool keep_bit(const uint8_t *keep, int track, int side) {
+    int slot = track * 2 + side;
+    return keep && (keep[slot >> 3] >> (slot & 7)) & 1;
+}
+
+int moof_encode_with(const uint8_t *data, uint32_t sectors, const uint8_t *tags, uint8_t format_byte,
+                     const moof_index_t *src, const uint8_t keep[MOOF_TRACK_SLOTS / 8], uint8_t **out,
+                     size_t *out_len) {
     *out = NULL;
     *out_len = 0;
     int sides = sectors == 1600 ? 2 : sectors == 800 ? 1 : 0;
-    if (!data || !sides)
+    if (!data || !sides || (src && src->sides != sides))
         return -EINVAL;
+    if (!src)
+        keep = NULL; // nothing to keep tracks from
     if (!format_byte)
         format_byte = sides == 2 ? 0x22 : 0x02;
-    // Every track fits in 20 blocks (the outer zone's ~76,000 bits + slack).
+    // Every encoded track fits in 20 blocks (the outer zone's ~76,000 bits +
+    // slack); a kept one takes what its bits take.
     const uint32_t track_blocks_max = 20;
-    int ntracks = NUM_TRACKS * sides;
-    size_t cap = (size_t)FIRST_BLOCK * MOOF_BLOCK + (size_t)ntracks * track_blocks_max * MOOF_BLOCK;
+    size_t cap = (size_t)FIRST_BLOCK * MOOF_BLOCK;
+    for (int t = 0; t < NUM_TRACKS; t++)
+        for (int s = 0; s < sides; s++) {
+            size_t blocks = track_blocks_max;
+            if (keep_bit(keep, t, s)) {
+                const uint8_t *bits = NULL;
+                uint8_t *owned = NULL;
+                uint32_t nbits = moof_track_bits(src, t, s, &bits, &owned);
+                free(owned);
+                size_t need = ((size_t)nbits + MOOF_BLOCK * 8 - 1) / (MOOF_BLOCK * 8);
+                if (need > blocks)
+                    blocks = need;
+            }
+            cap += blocks * MOOF_BLOCK;
+        }
+    size_t meta_len = src && src->meta ? src->meta_len : 0;
+    if (meta_len)
+        cap += CHUNK_HDR + meta_len;
     uint8_t *f = calloc(1, cap);
     if (!f)
         return -ENOMEM;
@@ -410,11 +503,17 @@ int moof_encode(const uint8_t *data, uint32_t sectors, const uint8_t *tags, uint
     memcpy(f + INFO_AT, "INFO", 4);
     WR_LE32(f + INFO_AT + 4, INFO_SIZE);
     uint8_t *info = f + INFO_AT + CHUNK_HDR;
-    info[0] = 1; // INFO version
-    info[1] = sides == 2 ? MOOF_DISK_DSDD_GCR : MOOF_DISK_SSDD_GCR;
-    info[2] = 0; // not write protected
-    info[3] = 0; // no cross-track sync
-    info[4] = GCR_TIMING;
+    if (src) {
+        memcpy(info, src->info, INFO_SIZE); // the capture's description of the disk
+        WR_LE16(info + 40, 0); // no FLUX chunk: flux tracks are kept as bitstreams
+        WR_LE16(info + 42, 0);
+    } else {
+        info[0] = 1; // INFO version
+        info[1] = sides == 2 ? MOOF_DISK_DSDD_GCR : MOOF_DISK_SSDD_GCR;
+        info[2] = 0; // not write protected
+        info[3] = 0; // no cross-track sync
+        info[4] = GCR_TIMING;
+    }
     memset(info + 5, ' ', 32);
     memcpy(info + 5, "Granny Smith", 12); // creator, space padded
     memcpy(f + TMAP_AT, "TMAP", 4);
@@ -426,20 +525,36 @@ int moof_encode(const uint8_t *data, uint32_t sectors, const uint8_t *tags, uint
     uint32_t block = FIRST_BLOCK, largest = 0, sector = 0;
     int idx = 0;
     for (int t = 0; t < NUM_TRACKS; t++) {
-        for (int s = 0; s < sides; s++, idx++) {
-            bitbuf_t b = {f + (size_t)block * MOOF_BLOCK, 0, track_blocks_max * MOOF_BLOCK * 8};
-            encode_track(&b, t, s, format_byte, data + (size_t)sector * SECTOR_BYTES,
-                         tags ? tags + (size_t)sector * MOOF_TAG_BYTES : NULL);
-            sector += (uint32_t)zone_sectors(t);
-            if (b.bits > b.cap_bits) {
-                free(f);
-                return -EOVERFLOW; // cannot happen with the zone lengths above
+        for (int s = 0; s < sides; s++) {
+            uint8_t *at = f + (size_t)block * MOOF_BLOCK;
+            uint32_t nbits = 0;
+            if (keep_bit(keep, t, s)) {
+                // The captured track, bit for bit.
+                const uint8_t *bits = NULL;
+                uint8_t *owned = NULL;
+                nbits = moof_track_bits(src, t, s, &bits, &owned);
+                if (nbits)
+                    memcpy(at, bits, ((size_t)nbits + 7) / 8);
+                free(owned);
+            } else {
+                bitbuf_t b = {at, 0, track_blocks_max * MOOF_BLOCK * 8};
+                encode_track(&b, t, s, format_byte, data + (size_t)sector * SECTOR_BYTES,
+                             tags ? tags + (size_t)sector * MOOF_TAG_BYTES : NULL);
+                if (b.bits > b.cap_bits) {
+                    free(f);
+                    return -EOVERFLOW; // cannot happen with the zone lengths above
+                }
+                nbits = b.bits;
             }
-            uint32_t blocks = (b.bits + MOOF_BLOCK * 8 - 1) / (MOOF_BLOCK * 8);
+            sector += (uint32_t)zone_sectors(t);
+            if (!nbits)
+                continue; // a blank track kept blank: no record
+            uint32_t blocks = (nbits + MOOF_BLOCK * 8 - 1) / (MOOF_BLOCK * 8);
             tmap[t * 2 + s] = (uint8_t)idx;
             WR_LE16(trk + idx * TRK_SIZE, block);
             WR_LE16(trk + idx * TRK_SIZE + 2, blocks);
-            WR_LE32(trk + idx * TRK_SIZE + 4, b.bits);
+            WR_LE32(trk + idx * TRK_SIZE + 4, nbits);
+            idx++;
             block += blocks;
             if (blocks > largest)
                 largest = blocks;
@@ -448,6 +563,13 @@ int moof_encode(const uint8_t *data, uint32_t sectors, const uint8_t *tags, uint
     WR_LE16(info + 38, largest); // largest track, in blocks
     size_t len = (size_t)block * MOOF_BLOCK;
     WR_LE32(f + TRKS_AT + 4, (uint32_t)(len - (TRKS_AT + CHUNK_HDR)));
+    if (meta_len) {
+        // The capture's metadata, last.
+        memcpy(f + len, "META", 4);
+        WR_LE32(f + len + 4, (uint32_t)meta_len);
+        memcpy(f + len + CHUNK_HDR, src->meta, meta_len);
+        len += CHUNK_HDR + meta_len;
+    }
     WR_LE32(f + 8, codec_crc32(0, f + MOOF_HEADER_SIZE, len - MOOF_HEADER_SIZE));
     *out = f;
     *out_len = len;
@@ -507,4 +629,14 @@ source_t *moof_source_open(source_t *file, int *err) {
         *err = -ENOMEM;
     }
     return s;
+}
+
+bool moof_source_write_protected(source_t *file) {
+    uint8_t head[INFO_AT + CHUNK_HDR + INFO_SIZE];
+    if (!file || source_read_exact(file, 0, head, sizeof head) != 0 || !moof_detect(head, sizeof head))
+        return false;
+    // INFO is the first chunk, at its fixed place.
+    if (RD_BE32(head + INFO_AT) != 0x494E464F || RD_LE32(head + INFO_AT + 4) < INFO_SIZE)
+        return false;
+    return head[INFO_AT + CHUNK_HDR + 2] == 1;
 }

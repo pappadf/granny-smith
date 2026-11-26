@@ -610,7 +610,7 @@ static int lisa_media_eject(config_t *cfg, media_bus_t bus, int unit) {
 // object's instance_data is the config_t.
 
 static DEF_METHOD(lisa_fd_drive_insert) {
-    bool writable = (argc >= 2) ? argv[1].b : true;
+    int writable = (argc >= 2 && argv[1].kind == VK_BOOL) ? (argv[1].b ? 1 : 0) : FD_WRITABLE_DEFAULT;
     return val_bool(system_fd_insert(argv[0].s, 0, writable) == 0);
 }
 
@@ -674,8 +674,8 @@ static const arg_decl_t lisa_fd_insert_args[] = {
     {.name = "writable",
      .kind = VK_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &lisa_true,
-     .doc = "Mount writable; false = write-protected"},
+     .doc = "Mount writable; false = write-protected",
+     .default_doc = "writable, unless the disk records its own write protection (a MOOF capture's)"},
 };
 
 static const member_t lisa_fd_drive_members[] = {

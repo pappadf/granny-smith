@@ -139,6 +139,11 @@ status_t storage_read_blocks(storage_t *storage, uint64_t offset, void *buffer, 
 // Writes one block (block_size bytes) at the given byte offset.
 status_t storage_write_block(storage_t *storage, uint64_t offset, const void *buffer);
 
+// True when block `lba` is in the delta: written since the base, as far as
+// the in-memory modification bitmap knows (a consolidated restore clears
+// the bit of a block equal to its base).  False out of range.
+bool storage_block_in_delta(const storage_t *storage, uint64_t lba);
+
 // === Rollback ===
 
 // Replays the preimage journal: restores committed blocks in the delta,

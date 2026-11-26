@@ -292,7 +292,11 @@ bool system_fd_present(int drive);
 // Typed object-model entry points for disk operations. The typed
 // methods (floppy.drives[N].insert, scsi.attach_hd)
 // call these directly. Each returns 0 on success, negative on error.
-int system_fd_insert(const char *path, int drive, bool writable);
+// `writable` is FD_WRITABLE_DEFAULT, 0 or 1: the default mounts writable
+// unless the medium records its own write protection (a MOOF capture's
+// INFO flag); 0 and 1 are the user's explicit choice and override it.
+#define FD_WRITABLE_DEFAULT (-1)
+int system_fd_insert(const char *path, int drive, int writable);
 int system_hd_attach(const char *path, int scsi_id);
 int system_hd_attach_on(struct scsi *bus, const char *path, int scsi_id);
 
