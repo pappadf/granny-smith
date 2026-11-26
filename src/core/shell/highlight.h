@@ -15,8 +15,8 @@
 
 // Spans of `text` as a VK_LIST of {start, end, class} maps: UTF-8 byte
 // offsets, half-open, ordered and non-overlapping.  Classes: keyword,
-// decl, variable, alias, number, string, interp, operator, comment,
-// object, method, attribute, enum, unknown.  Text that does not lex gets no
+// variable, alias, number, string, interp, operator, comment, object,
+// method, attribute, enum, unknown.  Text that does not lex gets no
 // span; the call never fails.
 value_t shell_highlight(const char *text);
 

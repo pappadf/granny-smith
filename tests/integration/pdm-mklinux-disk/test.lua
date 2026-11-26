@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 local file_sized
 -- Integration test: build the disk MkLinux DR3 installs onto — one drive,
 -- both operating systems.

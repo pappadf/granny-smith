@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Quake III Arena's demo `four` on the G3 with a Rage 128 GL, timed.
 --
 -- The G3 of g3-rage128-macos921 with 256 MB, booting gs-test-data's

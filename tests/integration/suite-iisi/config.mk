@@ -1,7 +1,7 @@
 # Integration suite: Macintosh IIsi
 #
 # One daemon run; rows re-instantiate via machine.boot and share the
-# harness in ../lib/mac.script. Absorbs iisi-boot and iisi-boot-chime,
+# harness in ../lib/mac.lua. Absorbs iisi-boot and iisi-boot-chime,
 # and takes the re-hosted ADB keyboard test (on the IIsi, ADB runs
 # through the Egret transceiver rather than the Universal ROM's VIA path
 # the test used to exercise on the IIcx — a genuinely different

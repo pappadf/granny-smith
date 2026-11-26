@@ -1,9 +1,8 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- LaserWriter print over AppleTalk with the platen interpreter.
 --
 -- Boot System 6.0.8 on a Plus, enable the emulated LaserWriter, and drive the
 -- Chooser + Finder "Print Directory..." exactly as the gs-test-data capture was
--- produced (tmp/lab/step6.script).  The bridge feeds each PAP data payload to a
+-- produced (tmp/lab/step6.lua).  The bridge feeds each PAP data payload to a
 -- platen job, answers the driver's PostScript queries from the job's own
 -- output, and hands the finished PDF to the platform (--print-dir).  Assertions
 -- read the object model, not pixels.

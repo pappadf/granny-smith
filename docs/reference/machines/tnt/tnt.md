@@ -758,7 +758,8 @@ Catalyst arm: the 68k dispatch matches the swapped identifier halfword $3001 and
 Catalyst product record (gestalt 108), and the Open Firmware image — which has no `AAPL,7200`
 string at all (§2.6) — takes its Catalyst path and instantiates the `platinum` display node
 [4], [5]. Everything in §3, §4.3 and §5 applies to the 7200 verbatim; nothing in §2.3, §2.4 or
-the Hammerhead sections does. Its per-machine deltas belong on a Catalyst page set of its own.
+the Hammerhead sections does. Its per-machine deltas are on [pm7200.md](pm7200.md), and the part
+that replaces Hammerhead and Control is described on [platinum.md](platinum.md).
 
 ### 6.5 The 1997 follow-ons — 7300, 7600, 8600, 9600
 
@@ -786,8 +787,10 @@ machines even if the board carries the register-compatible superset part [5].
 The 7600, 8600 and 9600 have their own machine pages in this tree —
 [pm7600.md](pm7600.md), [pm8600.md](pm8600.md) and [pm9600.md](pm9600.md)
 (the last covering the 9600/200MP) — which carry this section's facts
-forward; the 7300, a Catalyst-platform machine rather than a Hammerhead
-one, remains covered by this section and §6.4.
+forward.  The 7300 is the 7600's board without the A/V panel — a Hammerhead machine, not a
+Catalyst one (Apple's 1997 developer note lists the 7500/100 as its previous model) — and its
+identity is the one software-visible difference: BoxID bit 15 strapped low, which the System's
+startup identification patch turns into BoxFlag $67, Gestalt 109 ([pm7300.md](pm7300.md) §1).
 
 ## 7. Open questions
 

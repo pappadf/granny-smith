@@ -83,8 +83,10 @@
           class="details-insert"
           icon="newline"
           title="Insert into the console (double-click, or Enter)"
-          onclick={() => onInsert(row)}>Insert</Button
+          onclick={() => onInsert(row)}
         >
+          Insert
+        </Button>
       </footer>
     {/if}
   </Callout>

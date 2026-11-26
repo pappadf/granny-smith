@@ -12,9 +12,9 @@ describe('pathToken', () => {
 
   it('replaces the token and puts the cursor after the insert', () => {
     expect(replaceTokenAt('mach', 4, 'machine.')).toEqual({ text: 'machine.', cursor: 8 });
-    expect(replaceTokenAt('let x = mac + 1', 11, 'machine.cpu.pc')).toEqual({
-      text: 'let x = machine.cpu.pc + 1',
-      cursor: 22,
+    expect(replaceTokenAt('local x = mac + 1', 13, 'machine.cpu.pc')).toEqual({
+      text: 'local x = machine.cpu.pc + 1',
+      cursor: 24,
     });
     expect(replaceTokenAt('log.category["sc', 16, 'log.category["scsi"].')).toEqual({
       text: 'log.category["scsi"].',

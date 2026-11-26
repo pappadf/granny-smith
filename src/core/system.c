@@ -4,7 +4,7 @@
 // system.c
 // Generic emulator lifecycle: creation, destruction, checkpointing, and
 // shared device coordination. Machine-specific init/teardown logic lives in
-// the machine's own source file (e.g., src/machines/plus.c) and is invoked
+// the machine's own source file (e.g., src/machines/compact/compact.c) and is invoked
 // through the hw_profile_t callback interface.
 
 #include "system_internal.h" // full config_t definition (includes system.h transitively)

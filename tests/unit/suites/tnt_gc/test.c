@@ -65,22 +65,6 @@ void tnt_awacs_write32(config_t *cfg, uint32_t offset, uint32_t value) {
     (void)value;
 }
 
-// --- the RaDACal block belongs to the Control video model (control.c);
-// the island dispatch references it, so stub it the same way ---
-uint8_t tnt_control_rad_read(config_t *cfg, uint32_t offset) {
-    (void)cfg;
-    (void)offset;
-    return 0;
-}
-uint8_t tnt_control_rad_peek(config_t *cfg, uint32_t offset) {
-    return tnt_control_rad_read(cfg, offset); // the stubs have no side effects to avoid
-}
-void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
-    (void)cfg;
-    (void)offset;
-    (void)value;
-}
-
 // --- the SCSI apertures belong to mesh.c / the shared 53C96 model;
 // the island dispatch references them, so stub them the same way ---
 // --- The PCI core (core/peripherals/pci/), which this suite does not link:

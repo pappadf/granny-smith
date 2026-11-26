@@ -111,6 +111,7 @@ struct scsi_53c96 {
     uint32_t xfer_residual; // bytes held back in the FIFO at INT time (odd = 1)
     uint8_t xfer_int_done; // completion INT already posted for this transfer
     uint8_t msg_skip; // ATN message bytes of a DMA select still to come through the aperture
+    bool bus_master; // a DMA engine, not the CPU, drains the aperture (no FIFO residual)
 
     struct scheduler *sched;
     struct scsi *bus; // bus/target model (NULL until attached)
@@ -431,7 +432,9 @@ static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
                     // Duff's-device blind drain reads (count-1) words then waits
                     // for this interrupt before pulling the odd byte.
                     c->xfer_mode = XFER_DATA_IN;
-                    c->xfer_residual = c->counter_live & 1u;
+                    // A DMA engine moves every byte through DREQ/DACK; only a
+                    // CPU draining words leaves an odd byte for the FIFO.
+                    c->xfer_residual = c->bus_master ? 0 : (c->counter_live & 1u);
                     c->xfer_int_done = 0;
                     c->status |= ST_TC;
                 } else {
@@ -537,11 +540,10 @@ static uint8_t reg_read_body(scsi_53c96_t *c, uint32_t reg, bool peek) {
     case R_FIFO:
         // During an active pseudo-DMA read the chip's FIFO holds the transfer
         // data, so a FIFO-register read pulls the next payload byte (and
-        // advances the DMA counter).  The ROM uses this for the trailing odd
-        // byte of an odd-length transfer — it drains whole words through the
-        // pseudo-DMA aperture, then reads the final byte here.  Without this,
-        // the counter never reaches zero and the completion interrupt never
-        // fires.
+        // advances the DMA counter).  Once the counted part has drained, the
+        // trailing odd byte of an odd-length transfer is in the FIFO proper
+        // (pdma_in_byte moves it there with the completion interrupt), and
+        // the ROM's read of it here takes the FIFO path below.
         if (c->xfer_mode == XFER_DATA_IN)
             return peek ? pdma_in_peek(c, 0) : pdma_in_byte(c);
         // A pop with the flags zero reads the bottom register, the same
@@ -786,25 +788,29 @@ static uint8_t pdma_in_byte(scsi_53c96_t *c) {
         c->counter_live--;
     c->xfer_counter = (uint16_t)c->counter_live;
     if (!c->xfer_int_done && c->counter_live == c->xfer_residual) {
-        // The counted transfer has moved all but the reserved FIFO residual:
-        // post the completion interrupt the ROM's drain loop waits for.  With
-        // a zero residual (even count) the transfer is fully done here; with a
-        // residual of one (odd count) the final byte stays live for the FIFO-
-        // register read that the driver issues after seeing this interrupt.
+        // The counted transfer has moved all but the FIFO residual.  On the
+        // chip the residual byte(s) are already off the bus -- the target
+        // handed them over before the counter ran out -- and sit in the FIFO
+        // for the driver's FIFO-register read; the target has meanwhile
+        // moved on (to STATUS, when this was its last data).  So drain the
+        // residual into the FIFO and let the bus advance BEFORE posting the
+        // interrupt: a driver that records the phase at the interrupt (the
+        // System 7.5 SCSI Manager does) must see the new one, or it waits
+        // for a second interrupt that never comes.
         c->xfer_int_done = 1;
         LOG(3, "pdma-in count done (residual=%u)", c->xfer_residual);
-        post_interrupt(c, IR_BUS_SERVICE);
-        if (c->xfer_residual == 0) {
-            scsi_external_data_in_complete(c->bus);
-            refresh_phase(c);
-            c->xfer_mode = XFER_IDLE;
+        for (uint32_t r = c->xfer_residual; r > 0; r--) {
+            uint8_t rb = 0;
+            if (!scsi_pop_data_in_byte(c->bus, &rb))
+                break;
+            fifo_push(c, rb);
         }
-    } else if (c->counter_live == 0) {
-        // Residual odd byte consumed (via the FIFO register read): finish the
-        // transfer without a second interrupt.
+        c->counter_live = 0;
+        c->xfer_counter = 0;
         scsi_external_data_in_complete(c->bus);
         refresh_phase(c);
         c->xfer_mode = XFER_IDLE;
+        post_interrupt(c, IR_BUS_SERVICE);
     }
     return b;
 }
@@ -826,12 +832,8 @@ static uint8_t pdma_in_peek(const scsi_53c96_t *c, unsigned n) {
             return b;
         if (counter > 0)
             counter--;
-        if (!int_done && counter == c->xfer_residual) {
-            int_done = true;
-            if (c->xfer_residual == 0)
-                return 0;
-        } else if (counter == 0)
-            return 0;
+        if (!int_done && counter == c->xfer_residual)
+            return 0; // the transfer ends here; any residual moved to the FIFO
     }
 }
 
@@ -911,6 +913,11 @@ uint8_t scsi_53c96_pdma_peek8(scsi_53c96_t *c) {
 void scsi_53c96_pdma_write8(scsi_53c96_t *c, uint8_t value) {
     if (c)
         pdma_out_byte(c, value);
+}
+
+void scsi_53c96_set_bus_master(scsi_53c96_t *c, bool bus_master) {
+    if (c)
+        c->bus_master = bus_master;
 }
 
 bool scsi_53c96_dreq(scsi_53c96_t *c) {

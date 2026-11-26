@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Quadra family suite — the pilot of the family-suite layout.
 --
 -- Row map (former directory → row; **bold** rows are new matrix cells):

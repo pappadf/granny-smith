@@ -170,7 +170,7 @@ static uint32_t hh_bank_base(const tnt_hammerhead_t *hh, unsigned k) {
 // space reads nothing (cleared pages read 0, which fails POST's pattern
 // compare -- the "empty banks must not echo" requirement the sizing loop
 // depends on).
-void tnt_hh_remap(config_t *cfg) {
+static void tnt_hh_remap(config_t *cfg) {
     tnt_hammerhead_t *hh = &tnt_st(cfg)->hh;
     uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
     for (uint32_t p = 0; p < (HH_DECODE_TOP >> MEM_PAGE_SHIFT); p++)
@@ -249,7 +249,7 @@ void tnt_hh_init(config_t *cfg) {
 // centre the register occupies the FIRST longword (byte lanes 0-3,
 // big-endian), and the attested byte registers are read at lane 0.  Bytes
 // beyond +3 of a centre read zero.
-uint8_t tnt_hh_read(config_t *cfg, uint32_t offset) {
+static uint8_t tnt_hh_read(config_t *cfg, uint32_t offset) {
     tnt_hammerhead_t *hh = &tnt_st(cfg)->hh;
     if (offset >= TNT_HH_REGS * 0x10u) {
         LOG(2, "read beyond the register file: +$%03X", offset);
@@ -267,7 +267,7 @@ uint8_t tnt_hh_read(config_t *cfg, uint32_t offset) {
     return b;
 }
 
-void tnt_hh_write(config_t *cfg, uint32_t offset, uint8_t value) {
+static void tnt_hh_write(config_t *cfg, uint32_t offset, uint8_t value) {
     tnt_hammerhead_t *hh = &tnt_st(cfg)->hh;
     if (offset >= TNT_HH_REGS * 0x10u) {
         LOG(2, "write beyond the register file: +$%03X = $%02X", offset, value);
@@ -302,3 +302,21 @@ void tnt_hh_write(config_t *cfg, uint32_t offset, uint8_t value) {
     if (offset >= HH_BANK_A(0) && offset < HH_BANK_REGS_END && lane == 0)
         tnt_hh_remap(cfg);
 }
+
+// Claim the DRAM decode at construction: the bank registers' power-on
+// bases (a restore re-applies the file's through board_restored).
+static int hh_map(config_t *cfg, checkpoint_t *cp) {
+    (void)cp;
+    tnt_hh_remap(cfg);
+    return 0;
+}
+
+// The family's memory controller (tnt.h).  Its power-on state is
+// tnt_hh_init, which every board runs, so a bus reset needs nothing more.
+const tnt_mc_ops_t tnt_hammerhead_mc = {
+    .name = "Hammerhead",
+    .read = tnt_hh_read,
+    .write = tnt_hh_write,
+    .map = hh_map,
+    .board_restored = tnt_hh_remap,
+};

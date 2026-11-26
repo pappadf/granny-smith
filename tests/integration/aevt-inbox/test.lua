@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Apple events, inbound — a guest application links to our host port and
 -- sends us an event, which we decode and answer.
 --

@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Restart-video conformance -- see config.mk.
 
 -- The booted machine, run for `budget`, must show a different frame after

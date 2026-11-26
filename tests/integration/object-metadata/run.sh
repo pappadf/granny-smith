@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Runs test.script, then compares each usage block it printed with its
+# Runs test.lua, then compares each usage block it printed with its
 # golden file (usage-<path>.txt).  REGEN=1 in TEST_VARS rewrites them.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p "$WORK_DIR"
 out="$WORK_DIR/out.log"
 # shellcheck disable=SC2086
-"$HEADLESS_BIN" rom="$ROM_PATH" model=iicx script=test.script --speed=turbo $TEST_VAR_ARGS > "$out" 2>&1 || {
+"$HEADLESS_BIN" rom="$ROM_PATH" model=iicx script=test.lua --speed=turbo $TEST_VAR_ARGS > "$out" 2>&1 || {
     cat "$out"
     exit 1
 }

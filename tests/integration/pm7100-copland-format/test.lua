@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: Power Macintosh 7100 — format Copland's target volume.
 --
 -- Phases 1-2 of the Copland install: boot the host environment, then
@@ -12,7 +11,7 @@
 -- uses, with two more devices on the Curio bus:
 --
 --   SCSI 0   system_7_5_0_77mb_mode32_24ac.img   the host we boot (read/write)
---   SCSI 1   $WORK_DIR/copland.img (HD230SC)     the blank target volume
+--   SCSI 1   vars.WORK_DIR/copland.img (HD230SC)     the blank target volume
 --   SCSI 3   the Mac OS 8 DDK 0.4 CD             Drive Setup 2.0d5c2 + Install Mac OS
 --
 -- What the phase has to establish, and what each assertion is for:

@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- See config.mk.
 
 local ROM = F"${vars.TEST_DATA}/roms/iix-iicx-se30-97221136.rom"

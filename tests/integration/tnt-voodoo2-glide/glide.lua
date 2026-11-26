@@ -1,11 +1,10 @@
--- Converted from glide.script by scripts/script-to-lua.py
-local mac = dofile("../lib/mac.lua") -- NOTE: no direct mac.script include (this file is included by another); the library runs once per chunk
+local mac = dofile("../lib/mac.lua") -- NOTE: no direct mac.lua include (this file is included by another); the library runs once per chunk
 -- The tnt-voodoo2-glide flow, as two functions: tnt-voodoo2-glide runs them
 -- back to back, tnt-voodoo2-glide-sw plays the second from a checkpoint.
 
 -- Boot Mac OS 8.1 with the Voodoo2 on backend `raster` and launch Quake 3Dfx
 -- from the Finder: on return the launch is in the guest's queue.
-function glide_to_launch(raster) -- global: included file
+function glide_to_launch(raster)
     -- The 8 MB board: the golden was captured on it (texture memory size
     -- changes where Glide places textures, so the command stream).
     machine.boot{model = "pm7500", ram = 65536, rom = vars.ROM, pci_card = "voodoo2", pci_option = F"raster=${raster},memory=8m"}
@@ -81,7 +80,7 @@ end
 
 -- From the launch: the driver's detection against the model, then the game,
 -- ending on the in-game frame `golden`; `perf_row` names the @@PERF record.
-function glide_play(golden, raster, perf_row) -- global: included file
+function glide_play(golden, raster, perf_row)
     -- Give the client its whole detection run: CFM prepares GlideLib2.x,
     -- MacCheckBoardsInSystem walks the Name Registry, and
     -- grSstQueryHardware drives the full bring-up and self-tests.

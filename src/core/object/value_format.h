@@ -5,7 +5,8 @@
 // One renderer for the tagged union, in place of seven.
 //
 // Before this existed, `value_t` was re-rendered by seven per-kind switch
-// statements -- three in shell.c, three in expr.c, one in api.c -- and they
+// statements -- three in shell.c, three in the old expression evaluator, one
+// in api.c -- and they
 // had drifted in ways users could see: VFLAG_HEX honoured for VK_INT in one and
 // ignored in another, VK_BYTES capped at 64 in one and uncapped in the next,
 // and two JSON encoders whose comment promised they agreed "byte-for-byte"

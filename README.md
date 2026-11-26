@@ -93,7 +93,7 @@ Keeping it simple means for users that the emulator runs in the browser with no 
 
 Disk images can be raw (`.dsk`, `.img`), UDIF (`.dmg`, read and written), QCOW2 (imported and staged, then converted on the fly), bare HFS volumes or driverless partitioned disks (such as many archive.org images), compressed (`.sit.hqx`), or packaged in `.zip` archives. They are decompressed transparently via the in-tree [peeler](src/peeler) library.
 
-Every subsystem is exposed through a self-describing object model, reachable from the built-in Terminal console (syntax highlighting, completion, signature hints, and a structural command browser) — breakpoints, watchpoints, logpoints, and MMU translation on every MMU kind.
+Every subsystem is exposed through a self-describing object model, reachable from the built-in Terminal console (syntax highlighting, completion, signature hints, and a structural command browser) and from Lua scripts — breakpoints, watchpoints, logpoints, and MMU translation on every MMU kind.
 
 For build, test, and contribution instructions, see [CONTRIBUTING.md](CONTRIBUTING.md). Architecture and design docs live in [docs/guide/ARCHITECTURE.md](docs/guide/ARCHITECTURE.md), and coding guidelines in [AGENTS.md](AGENTS.md).
 

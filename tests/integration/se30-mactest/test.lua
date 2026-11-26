@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: SE/30 MacTest Boot
 -- Boots SE/30 from MacTest SE/30 floppy disk (800K DiskCopy),
 -- IMPORTANT: DON'T ADD LONGPOINTS TOO EARLY IN THE SCRIPT

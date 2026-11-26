@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- MacTest Pro (PPC) CD v11.0 (12/15/98) on a Power Macintosh 6100: every
 -- test the Power Macintosh configuration offers must pass.
 --

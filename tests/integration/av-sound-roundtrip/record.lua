@@ -1,4 +1,3 @@
--- Converted from record.script by scripts/script-to-lua.py
 -- Drive the guest's own recorder through the shipped GUI, then dump what it
 -- plays back so compare.py can measure it against the input.
 --

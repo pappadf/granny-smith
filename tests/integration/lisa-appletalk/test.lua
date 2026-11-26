@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: Apple Lisa 2 — AppleTalk (LocalTalk) on Serial B.
 --
 -- Serial B is the Lisa's AppleBus port, and the machine plugs the SCC into the

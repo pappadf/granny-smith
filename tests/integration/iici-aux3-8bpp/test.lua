@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- IIci A/UX 3.0.1 HD boot at 8 bpp on the built-in RBV — expects the graphical
 -- login window, pixel-exact (an enforced row since #183 was fixed; see config.mk).
 --

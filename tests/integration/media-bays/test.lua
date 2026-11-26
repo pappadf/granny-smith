@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- hd= went to the default configuration's hard disk (front bay 2, id 2),
 -- cdrom= to its CD-ROM drive (front bay 0, id 0).
 assert(machine.scsi.device[2].type == "hd", "hd= in the default hard disk's place")

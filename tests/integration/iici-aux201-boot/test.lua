@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- IIci: A/UX 2.0.1 from an installed HD80SC.
 --
 -- The disk's Mac side has A/UX Startup as its Startup program, and A/UX

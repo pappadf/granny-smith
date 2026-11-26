@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- The tnt-voodoo2-glide launch played on the normative synchronous walker.
 --
 -- The row boots and launches Quake exactly as the sibling does (on the
@@ -23,7 +22,7 @@ dofile("../tnt-voodoo2-glide/glide.lua")
 
 local RASTER = vars.RASTER or "sw"
 
-img = F"${vars.WORK_DIR}/quake.img" -- global: used by an included file
+img = F"${vars.WORK_DIR}/quake.img"
 if mac.have_media(img) then
     glide_to_launch("thread")
     assert(checkpoint.save(F"${vars.WORK_DIR}/glide-launch.gsc"), "checkpoint at the Quake launch")

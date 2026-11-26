@@ -74,11 +74,11 @@ for spec in "${ROWS_ALL[@]}"; do
     fi
     dmg="$OUT/$name.dmg"
     if [ ! -f "$dmg" ]; then
-        cat >"$OUT/$name-convert.script" <<EOF
-assert files.convert("$raw", "$dmg") "convert failed"
-quit
+        cat >"$OUT/$name-convert.lua" <<EOF
+assert(files.convert("$raw", "$dmg"), "convert failed")
+quit()
 EOF
-        run_script "$romp" "$OUT/$name-convert.script" "$OUT/$name-convert.log"
+        run_script "$romp" "$OUT/$name-convert.lua" "$OUT/$name-convert.log"
     fi
 
     for kind in raw udif; do
@@ -86,21 +86,21 @@ EOF
         [ "$kind" = udif ] && img="$dmg"
         # The boot copies nothing: the base is opened read-only and the
         # writes go to a delta in the cache directory.
-        cat >"$OUT/$name-$kind.script" <<EOF
+        cat >"$OUT/$name-$kind.lua" <<EOF
 ${CACHE_MB:+files.cache.image_mb = $CACHE_MB}
-machine.boot model="$model" ram=$ram rom="$romp"
+machine.boot{model = "$model", ram = $ram, rom = "$romp"}
 machine.rtc.time = 3000000000
-machine.scsi.attach_hd "$img" 0
-scheduler.run $instr
-machine.screen.save "$OUT/$name-$kind.png"
-echo "image_misses=\${files.cache.image_misses} image_hits=\${files.cache.image_hits}"
-quit
+machine.scsi.attach_hd("$img", 0)
+scheduler.run($instr)
+machine.screen.save("$OUT/$name-$kind.png")
+print(F"image_misses=\${files.cache.image_misses} image_hits=\${files.cache.image_hits}")
+quit()
 EOF
         : >"$OUT/$name-$kind.times"
         for _ in $(seq "$RUNS"); do
             rm -rf "$OUT/cache"
             t0=$(now)
-            run_script "$romp" "$OUT/$name-$kind.script" "$OUT/$name-$kind.log"
+            run_script "$romp" "$OUT/$name-$kind.lua" "$OUT/$name-$kind.log"
             t1=$(now)
             echo "$t1 - $t0" | bc >>"$OUT/$name-$kind.times"
         done

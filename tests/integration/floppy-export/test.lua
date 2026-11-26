@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: machine.floppy.drive[N].image.export on a Plus.
 -- fd0 holds a raw 800K System 6.0.8 disk.  A raw export reproduces it; a
 -- DiskCopy 4.2 export adds the header and one 12-byte tag per sector:

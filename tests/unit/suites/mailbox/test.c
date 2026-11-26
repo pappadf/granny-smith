@@ -214,36 +214,50 @@ static int emitting_eval(const char *path, const char *args, char *out, size_t o
     return stub_eval(path, args, out, out_size);
 }
 
-// The job glue (job.h): scripts "run" by recording their text; a mode is a
-// flag per owner the test flips.
+// The job glue (job.h): a task "runs" its script by recording its text; a
+// few scripts are small state machines that make tree calls the way the
+// engine does (job_task_call_begin / _end) and suspend when told to.  A
+// mode is a flag per owner the test flips.
 static char g_last_script[256];
 static int g_scripts;
 static uint32_t g_mode_owner; // 0: no mode running
 static uint32_t g_mode_id;
 static int g_stops;
-int job_glue_run_source_threaded(const char *src);
-int job_glue_run_source_seam_io(const char *src);
-static void print_on_emulator(void *ud) {
-    (void)ud;
-    out_puts("two\n"); // the emulator thread, serving the job's call
+struct job_task {
+    char src[64];
+    int step;
+    uint32_t client_seen;
+};
+static bool task_waiting(job_task_t *t, int *rc);
+static bool task_leaf_io(job_task_t *t, int *rc);
+job_task_t *job_glue_task_new(const char *src) {
+    job_task_t *t = (job_task_t *)calloc(1, sizeof(*t));
+    snprintf(t->src, sizeof t->src, "%s", src);
+    return t;
 }
-int job_glue_run_source_printing(const char *src) {
-    (void)src;
-    out_printf("one %s\n", "\"quoted\""); // the job thread itself
-    job_on_emulator(print_on_emulator, NULL);
-    return 0;
+void job_glue_task_free(job_task_t *t) {
+    free(t);
 }
-int job_glue_run_source(const char *src, bool interactive) {
-    (void)interactive;
-    if (strcmp(src, "threaded") == 0)
-        return job_glue_run_source_threaded(src);
-    if (strcmp(src, "printing") == 0)
-        return job_glue_run_source_printing(src);
-    if (strcmp(src, "seam_io") == 0)
-        return job_glue_run_source_seam_io(src);
+static void print_in_call(void) {
+    out_puts("two\n"); // a leaf the task called, printing
+}
+bool job_glue_task_step(job_task_t *t, int *rc) {
+    if (strcmp(t->src, "waiting") == 0)
+        return task_waiting(t, rc);
+    if (strcmp(t->src, "leaf_io") == 0)
+        return task_leaf_io(t, rc);
+    if (strcmp(t->src, "printing") == 0) {
+        out_printf("one %s\n", "\"quoted\"");
+        job_call_mark_t mark = job_task_call_begin(true);
+        print_in_call();
+        job_task_call_end(mark);
+        *rc = 0;
+        return true;
+    }
     g_scripts++;
-    snprintf(g_last_script, sizeof g_last_script, "%s", src);
-    return strncmp(src, "fail", 4) == 0 ? -1 : 0;
+    snprintf(g_last_script, sizeof g_last_script, "%s", t->src);
+    *rc = strncmp(t->src, "fail", 4) == 0 ? -1 : 0;
+    return true;
 }
 bool job_glue_mode_waits(uint32_t client) {
     return g_mode_owner != 0 && g_mode_owner == client;
@@ -582,13 +596,23 @@ TEST(a_flood_of_log_events_leaves_half_the_ring_for_other_events) {
     ASSERT_TRUE(others >= 1);
 }
 
-TEST(a_script_without_a_job_thread_runs_inline_and_answers_the_prompt) {
+// A drain steps the active job once; finished jobs are answered with the
+// prompt, or an error.
+static void drain_until_results(int want) {
+    double deadline = wait_deadline();
+    while (g_scripts < want) {
+        mailbox_drain(&g_m, 0, NULL);
+        WAIT_TICK(deadline, "the jobs to run");
+    }
+    mailbox_drain(&g_m, 0, NULL);
+}
+
+TEST(a_script_runs_as_a_job_and_answers_the_prompt) {
     fresh();
-    ASSERT_TRUE(!job_thread_running());
     g_scripts = 0;
     ASSERT_TRUE(post_script(21, "echo hi"));
     ASSERT_TRUE(post_script(22, "fail me"));
-    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 2);
+    drain_until_results(2);
     ASSERT_EQ_INT(g_scripts, 2);
     ASSERT_TRUE(strcmp(g_last_script, "fail me") == 0);
     uint32_t id, ok;
@@ -628,88 +652,80 @@ TEST(cancel_and_mode_stop_are_answered_and_stop_only_the_owner) {
     ASSERT_TRUE(strcmp(json, "false") == 0);
 }
 
-// With a real job thread: the script's call reaches the emulator thread
-// through the drain, a call that starts a mode holds the job until the
-// mode ends, and a cancel unwinds it.
+// A task's tree call that starts a mode suspends the task until the mode
+// ends, the call made as the job's client; a cancel stops the mode and the
+// task unwinds when it resumes.
 static int g_calls_served;
-static void seam_probe(void *ud) {
-    g_calls_served++;
-    *(uint32_t *)ud = mailbox_current_client(&g_m);
-    // "scheduler.run": the leaf opens a mode owned by the caller.
-    g_mode_id++;
-    g_mode_owner = mailbox_current_client(&g_m);
-}
-static volatile int g_job_phase;
-int job_glue_run_source_threaded(const char *src) {
-    (void)src;
-    uint32_t client_seen = 0;
-    g_job_phase = 1;
-    job_on_emulator(seam_probe, &client_seen); // returns once the mode has ended
-    g_job_phase = client_seen == 2 ? 2 : -1;
-    if (job_current_cancelled())
-        return -1;
-    return 0;
+static int g_job_phase;
+static bool task_waiting(job_task_t *t, int *rc) {
+    if (t->step++ == 0) {
+        g_job_phase = 1;
+        job_call_mark_t mark = job_task_call_begin(true);
+        // "scheduler.run": the leaf opens a mode owned by the caller.
+        g_calls_served++;
+        t->client_seen = mailbox_current_client(&g_m);
+        g_mode_id++;
+        g_mode_owner = t->client_seen;
+        if (job_task_call_end(mark))
+            return false; // suspended until the mode ends
+    }
+    g_job_phase = t->client_seen == 2 ? 2 : -1;
+    *rc = job_current_cancelled() ? -1 : 0;
+    return true;
 }
 
-TEST(a_job_thread_calls_the_emulator_through_the_drain_and_waits_for_its_mode) {
+TEST(a_job_that_starts_a_mode_waits_for_it_and_a_cancel_ends_both) {
     fresh();
-    ASSERT_TRUE(job_thread_start(256u << 10));
     g_calls_served = 0;
     g_job_phase = 0;
     g_mode_owner = 0;
-    // The glue runs scripts inline in the other tests; here the job thread
-    // runs one that posts a call.  Swap the runner by script text.
-    ASSERT_TRUE(post_script(41, "threaded"));
-    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 0); // queued, no answer yet
-    // Wait for the job thread to post its call, then serve it.
-    double deadline = wait_deadline();
-    while (!job_layer_has_work())
-        WAIT_TICK(deadline, "the job thread to post its call");
-    mailbox_drain(&g_m, 0, NULL);
+    ASSERT_TRUE(post_script(41, "waiting"));
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 0); // started; it waits
     ASSERT_EQ_INT(g_calls_served, 1);
     ASSERT_EQ_INT(g_mode_owner, 2);
-    // The mode runs: the job stays held, no result.
-    usleep(2000);
-    mailbox_drain(&g_m, 0, NULL);
+    // The mode runs: the job stays suspended, no result.
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 0);
     ASSERT_EQ_INT(g_job_phase, 1);
-    // The mode ends: the next drain releases the job, which finishes.
+    // The mode ends: the next drain resumes the job, which finishes.
     g_mode_owner = 0;
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 1);
     uint32_t id = 0, ok = 0;
     char json[256];
-    deadline = wait_deadline();
-    while (take(&id, &ok, json, sizeof json) == 0) {
-        mailbox_drain(&g_m, 0, NULL);
-        WAIT_TICK(deadline, "job 41's result once its mode ended");
-    }
+    ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
     ASSERT_EQ_INT(id, 41);
     ASSERT_EQ_INT(ok, 1);
     ASSERT_EQ_INT(g_job_phase, 2);
-    // Cancel: a queued job finishes at once as cancelled, and stops the
-    // client's modes.
+    // Cancel a job waiting on its mode: the mode stops, the job unwinds as
+    // cancelled.
     g_stops = 0;
-    ASSERT_TRUE(post_script(42, "threaded"));
+    ASSERT_TRUE(post_script(42, "waiting"));
+    mailbox_drain(&g_m, 0, NULL);
+    ASSERT_EQ_INT(g_mode_owner, 2);
     post_ctl(GS_MBX_REQ_CANCEL, 43, 2, 42);
     mailbox_drain(&g_m, 0, NULL);
-    deadline = wait_deadline();
-    while (take(&id, &ok, json, sizeof json) == 0) {
-        mailbox_drain(&g_m, 0, NULL);
-        WAIT_TICK(deadline, "the first answer after cancelling job 42");
-    }
-    // The cancel's own answer and the job's come back; order depends on
-    // which the drain wrote first.
+    mailbox_drain(&g_m, 0, NULL);
+    ASSERT_EQ_INT(g_mode_owner, 0);
+    ASSERT_EQ_INT(g_stops, 1);
     uint32_t id2 = 0, ok2 = 0;
     char json2[256];
-    deadline = wait_deadline();
-    while (take(&id2, &ok2, json2, sizeof json2) == 0) {
-        mailbox_drain(&g_m, 0, NULL);
-        WAIT_TICK(deadline, "the second answer after cancelling job 42");
-    }
+    ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
+    ASSERT_EQ_INT(take(&id2, &ok2, json2, sizeof json2), 1);
     const char *job_json = id == 42 ? json : json2;
     uint32_t job_ok = id == 42 ? ok : ok2;
     ASSERT_TRUE((id == 42 && id2 == 43) || (id == 43 && id2 == 42));
     ASSERT_EQ_INT(job_ok, 0);
     ASSERT_TRUE(strstr(job_json, "cancelled") != NULL);
-    // A queued job started no mode, so the cancel stopped none.
+    // A queued job cancelled before it starts finishes at once and stops
+    // nothing.
+    g_stops = 0;
+    ASSERT_TRUE(post_script(44, "waiting"));
+    post_ctl(GS_MBX_REQ_CANCEL, 45, 2, 44);
+    mailbox_drain(&g_m, 0, NULL);
+    mailbox_drain(&g_m, 0, NULL);
+    ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
+    ASSERT_EQ_INT(take(&id2, &ok2, json2, sizeof json2), 1);
+    ASSERT_TRUE((id == 44 && id2 == 45) || (id == 45 && id2 == 44));
+    ASSERT_TRUE(strstr(id == 44 ? json : json2, "cancelled") != NULL);
     ASSERT_EQ_INT(g_stops, 0);
 }
 
@@ -718,15 +734,18 @@ TEST(the_in_process_client_posts_and_reads_like_the_page) {
     mailbox_client_t c;
     mailbox_client_init(&c, &g_m);
     uint32_t id1 = mailbox_client_script(&c, 3, "echo one", 8);
-    uint32_t id2 = mailbox_client_mode_stop(&c, 3, 0);
-    uint32_t id3 = mailbox_client_cancel(&c, 3, id1);
-    ASSERT_TRUE(id1 && id2 && id3 && id1 != id2 && id2 != id3);
-    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 3); // inline: all answered now
+    ASSERT_TRUE(id1 != 0);
+    // The job is queued and run by the same drain.
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 1);
     uint8_t buf[256];
     uint32_t len;
     ASSERT_EQ_INT(mailbox_client_take(&c, buf, sizeof buf, &len), GS_MBX_EVT_RESULT);
     ASSERT_EQ_INT(RD_LE32(buf + 4 * GS_MBX_RESULT_ID), id1);
     ASSERT_EQ_INT(RD_LE32(buf + 4 * GS_MBX_RESULT_OK), 1);
+    uint32_t id2 = mailbox_client_mode_stop(&c, 3, 0);
+    uint32_t id3 = mailbox_client_cancel(&c, 3, id1);
+    ASSERT_TRUE(id2 && id3 && id1 != id2 && id2 != id3);
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 2);
     ASSERT_EQ_INT(mailbox_client_take(&c, buf, sizeof buf, &len), GS_MBX_EVT_RESULT);
     ASSERT_EQ_INT(RD_LE32(buf + 4 * GS_MBX_RESULT_ID), id2);
     ASSERT_EQ_INT(mailbox_client_take(&c, buf, sizeof buf, &len), GS_MBX_EVT_RESULT);
@@ -1056,10 +1075,10 @@ TEST(an_io_leaf_answering_a_map_delivers_the_map) {
 
 // An I/O leaf whose work fails with a reason: the reason is the failure,
 // as is, whether the leaf deferred and the worker ran it, deferred with no
-// worker, or could not defer and worked there and then (a script on the
-// emulator thread, --jobs=inline).  The last two once lost it to "failed"
-// (the work's reason was copied onto itself) and the last added the leaf's
-// name, so inline and threaded scripts printed different errors.
+// worker, or could not defer and worked there and then.  The last two once
+// lost it to "failed" (the work's reason was copied onto itself) and the
+// last added the leaf's name, so the same failure printed different errors
+// by the path it took.
 #define LEAF_REASON "cannot create '/no/dir/out': No such file or directory"
 static int failing_work(io_leaf_t *j) {
     snprintf(j->err, sizeof j->err, "%s", LEAF_REASON);
@@ -1126,11 +1145,10 @@ TEST(a_failing_io_leaf_on_the_worker_says_why) {
     ASSERT_TRUE(strcmp(json, failing_leaf_json) == 0);
 }
 
-// A script's call of an I/O leaf through the seam (a job on the job thread,
-// the leaf on the emulator thread, its work on the worker): the call ends
-// with what the work produced -- a count it read, or its reason for failing
-// -- not the provisional value the leaf returned at once, so a threaded
-// script sees what an inline one does.
+// A task's call of an I/O leaf (the leaf on the emulator thread, its work on
+// the worker): the task suspends while the work runs and resumes with what
+// the work produced -- a count it read, or its reason for failing -- not the
+// provisional value the leaf returned at once.
 static int counting_work(io_leaf_t *j) {
     j->size = 42; // what the work found out
     return 0;
@@ -1138,48 +1156,59 @@ static int counting_work(io_leaf_t *j) {
 static value_t counting_answer(io_leaf_t *j) {
     return val_uint(4, (uint32_t)j->size);
 }
-static void call_counting_leaf(void *ud) {
+static value_t call_counting_leaf(void) {
     io_leaf_t *j = io_leaf_new(NULL, NULL);
     j->work = counting_work;
     j->answer = counting_answer;
-    *(value_t *)ud = io_leaf_dispatch(j);
+    return io_leaf_dispatch(j);
 }
-static void call_failing_leaf(void *ud) {
-    *(value_t *)ud = dispatch_failing(failing_work);
-}
-static volatile int g_seam_io_verdict; // 0 running, 1 as expected, -n the step that differed
-int job_glue_run_source_seam_io(const char *src) {
-    (void)src;
-    value_t provisional = {0}, answer = {0};
+static int g_leaf_io_verdict; // 0 running, 1 as expected, -n the step that differed
+static bool task_leaf_io(job_task_t *t, int *rc) {
     char err[256] = "";
-    job_on_emulator(call_counting_leaf, &provisional);
-    int verdict = 1;
-    if (provisional.kind != VK_UINT || provisional.u != 0)
-        verdict = -1; // the leaf answered at once, before its work
-    else if (job_call_take_failure(err, sizeof err))
-        verdict = -2;
-    else if (!job_call_take_answer(&answer) || answer.kind != VK_UINT || answer.u != 42)
-        verdict = -3;
-    value_free(&provisional);
-    value_free(&answer);
-    if (verdict == 1) {
-        job_on_emulator(call_failing_leaf, &provisional);
+    value_t answer = {0};
+    switch (t->step++) {
+    case 0: {
+        job_call_mark_t mark = job_task_call_begin(true);
+        value_t provisional = call_counting_leaf();
+        bool suspend = job_task_call_end(mark);
+        if (provisional.kind != VK_UINT || provisional.u != 0 || !suspend)
+            g_leaf_io_verdict = -1; // the leaf answered at once, before its work
         value_free(&provisional);
-        if (!job_call_take_failure(err, sizeof err) || strcmp(err, LEAF_REASON) != 0)
-            verdict = -4;
-        else if (job_call_take_answer(&answer))
-            verdict = -5; // a failure has no answer
+        if (suspend)
+            return false;
+        break;
     }
-    g_seam_io_verdict = verdict;
-    return 0;
+    case 1: {
+        if (job_call_take_failure(err, sizeof err))
+            g_leaf_io_verdict = -2;
+        else if (!job_call_take_answer(&answer) || answer.kind != VK_UINT || answer.u != 42)
+            g_leaf_io_verdict = -3;
+        value_free(&answer);
+        job_call_mark_t mark = job_task_call_begin(true);
+        value_t provisional = dispatch_failing(failing_work);
+        value_free(&provisional);
+        if (job_task_call_end(mark))
+            return false;
+        break;
+    }
+    case 2:
+        if (!job_call_take_failure(err, sizeof err) || strcmp(err, LEAF_REASON) != 0)
+            g_leaf_io_verdict = -4;
+        else if (job_call_take_answer(&answer))
+            g_leaf_io_verdict = -5; // a failure has no answer
+        else if (g_leaf_io_verdict == 0)
+            g_leaf_io_verdict = 1;
+        break;
+    }
+    *rc = 0;
+    return true;
 }
 
 TEST(a_scripts_io_leaf_call_ends_with_the_works_answer_or_reason) {
     fresh();
-    ASSERT_TRUE(job_thread_start(256u << 10));
     ASSERT_TRUE(io_worker_start(0));
-    g_seam_io_verdict = 0;
-    ASSERT_TRUE(post_script(111, "seam_io"));
+    g_leaf_io_verdict = 0;
+    ASSERT_TRUE(post_script(111, "leaf_io"));
     uint32_t id = 0, ok = 0;
     char json[256];
     double deadline = wait_deadline();
@@ -1189,7 +1218,7 @@ TEST(a_scripts_io_leaf_call_ends_with_the_works_answer_or_reason) {
     }
     ASSERT_EQ_INT(id, 111);
     ASSERT_EQ_INT(ok, 1);
-    ASSERT_EQ_INT(g_seam_io_verdict, 1);
+    ASSERT_EQ_INT(g_leaf_io_verdict, 1);
 }
 
 // The image layer io_leaf.c links against; the leaf above uses none of it.
@@ -1258,10 +1287,8 @@ TEST(cancelling_a_request_cancels_the_io_job_answering_it) {
 
 // A job that prints: its text arrives as EVT_LOG output records, in
 // order, before its result.
-int job_glue_run_source_printing(const char *src);
 TEST(a_jobs_output_arrives_as_output_records_before_its_result) {
     fresh();
-    ASSERT_TRUE(job_thread_start(256u << 10));
     ASSERT_TRUE(post_script(101, "printing"));
     uint32_t id = 0, ok = 0;
     char json[256];
@@ -1294,28 +1321,20 @@ TEST(a_jobs_output_arrives_as_output_records_before_its_result) {
     ASSERT_EQ_INT(results, 1);
     ASSERT_EQ_INT(id, 101);
     ASSERT_EQ_INT(ok, 1);
-    ASSERT_TRUE(strstr(outputs, "{\"event\":\"output\",\"id\":101,\"client\":2,\"text\":\"one \\\"quoted\\\"\\n\"}") !=
-                NULL);
-    ASSERT_TRUE(strstr(outputs, "two\\n") != NULL);
+    // The task's own text and what the leaf it called printed, in order.
+    ASSERT_TRUE(
+        strstr(outputs, "{\"event\":\"output\",\"id\":101,\"client\":2,\"text\":\"one \\\"quoted\\\"\\ntwo\\n\"}") !=
+        NULL);
 }
 
-// Two jobs that finish between drains are answered in the order they ran,
-// as the I/O worker reports its completions (work_queue.h is both FIFOs).
-TEST(jobs_finished_between_drains_are_answered_in_the_order_they_ran) {
+// Jobs run one at a time, in the order they were posted, and are answered
+// in that order.
+TEST(jobs_are_answered_in_the_order_they_ran) {
     fresh();
-    ASSERT_TRUE(job_thread_start(256u << 10));
     g_scripts = 0;
     ASSERT_TRUE(post_script(201, "echo first"));
     ASSERT_TRUE(post_script(202, "echo second"));
-    int base = g_notified;
-    mailbox_drain(&g_m, 0, NULL); // both handed to the job thread
-    // Both have run and been reported finished (each wakes the emulator).
-    double deadline = wait_deadline();
-    while (__atomic_load_n(&g_scripts, __ATOMIC_ACQUIRE) < 2 ||
-           __atomic_load_n(&g_notified, __ATOMIC_ACQUIRE) < base + 2)
-        WAIT_TICK(deadline, "both jobs to finish");
-    usleep(10000); // the second job's wake follows its push; let it land
-    mailbox_drain(&g_m, 0, NULL);
+    drain_until_results(2);
     uint32_t id, ok;
     char json[512];
     ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
@@ -1337,12 +1356,12 @@ int main(void) {
     RUN(an_event_is_published_at_once_and_ordered_before_the_result);
     RUN(an_event_with_no_room_is_dropped_and_counted_never_blocking);
     RUN(a_flood_of_log_events_leaves_half_the_ring_for_other_events);
-    RUN(a_script_without_a_job_thread_runs_inline_and_answers_the_prompt);
+    RUN(a_script_runs_as_a_job_and_answers_the_prompt);
     RUN(cancel_and_mode_stop_are_answered_and_stop_only_the_owner);
     RUN(the_in_process_client_posts_and_reads_like_the_page);
     RUN(a_deferred_leaf_answers_when_completed_not_when_served);
     RUN(a_deferred_result_at_the_limit_is_kept_and_one_over_is_an_error);
-    RUN(a_job_thread_calls_the_emulator_through_the_drain_and_waits_for_its_mode);
+    RUN(a_job_that_starts_a_mode_waits_for_it_and_a_cancel_ends_both);
     RUN(what_a_leaf_prints_travels_with_its_answer_when_captured);
     RUN(progress_of_a_deferred_leaf_reaches_the_client_as_evt_progress);
     RUN(a_transfer_buffer_ack_goes_to_its_job_until_the_job_releases_it);
@@ -1353,6 +1372,6 @@ int main(void) {
     RUN(a_failing_io_leaf_on_the_worker_says_why);
     RUN(a_scripts_io_leaf_call_ends_with_the_works_answer_or_reason);
     RUN(a_jobs_output_arrives_as_output_records_before_its_result);
-    RUN(jobs_finished_between_drains_are_answered_in_the_order_they_ran);
+    RUN(jobs_are_answered_in_the_order_they_ran);
     return 0;
 }

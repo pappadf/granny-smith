@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- IIcx + Display Card 8•24 GC — System 6.0.8 "Marathon" image, 8 bpp.
 --
 -- The video_mode seed writes the slot PRAM so the GC decl-ROM driver boots the

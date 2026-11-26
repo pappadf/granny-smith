@@ -1,11 +1,11 @@
 # Integration suite: the Quadra family (Q700 / Q900 / Q950)
 #
 # One daemon run; rows re-instantiate via machine.boot (the boot-matrix
-# pattern) and the shared library in ../lib/mac.script provides the
+# pattern) and the shared library in ../lib/mac.lua provides the
 # harness (row filter, keep-going, REGEN, condition-based waits).
 # Absorbs the former q700-boot-chime, q700-boot-finder, q700-boot-hd,
 # q900-boot-floppy, q900-boot-hd, and q950-boot-hd directories; their
-# unique assertions live on as rows (see test.script's row map).
+# unique assertions live on as rows (see test.lua's row map).
 #
 #   make test-suite-quadra
 #   make test-suite-quadra TEST_VARS="ROW=q700-chime"     one row only

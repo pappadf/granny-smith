@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: boot from roms.zip/plus.rom (see config.mk).  The runner
 -- cd's into this directory; WORK_DIR is absolute.
 

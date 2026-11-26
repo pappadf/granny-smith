@@ -20,8 +20,10 @@
 
 #include "gs_lua.h"
 
+#include "alias.h"
 #include "object.h"
 #include "out.h"
+#include "parse.h"
 #include "platform_hooks.h"
 #include "value.h"
 #include "value_format.h"
@@ -34,6 +36,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "gs_lua_lib.h" // gs_lua_lib_lua[]: the embedded library (bin2c)
 
@@ -42,6 +45,21 @@
 static lua_State *g_L; // the one state; made on first use
 static gs_lua_reporter_fn g_reporter; // where a failed chunk's report goes
 static volatile int g_interrupt; // gs_lua_interrupt() was called
+
+// The job layer (job/job.h).  Weak: a unit suite links the bridge without
+// it, and every tree call is then a plain call that never suspends.
+job_call_mark_t job_task_call_begin(bool can_suspend) __attribute__((weak));
+bool job_task_call_end(job_call_mark_t mark) __attribute__((weak));
+bool job_call_take_failure(char *err, size_t cap) __attribute__((weak));
+bool job_call_take_answer(value_t *out) __attribute__((weak));
+bool job_current_cancelled(void) __attribute__((weak));
+
+// The coroutine of the job task running now (NULL: none), and when its
+// time slice began.  Only that coroutine suspends: a coroutine a script
+// made itself yields to the script, never to the drain.
+static lua_State *g_task_co;
+static double g_slice_t0;
+#define SLICE_MS 4.0
 
 // Registry keys (their addresses): the `none` sentinel, the quit and
 // interrupt signals, the map-order side table.
@@ -200,6 +218,67 @@ static int push_path(lua_State *L, const char *path) {
     return 1;
 }
 
+// --- Tree calls that may suspend the task ------------------------------------
+
+// Whether a C function running on `L` may yield to the drain: it runs on the
+// task's own coroutine and nothing between it and the resume is a C call
+// without a continuation.
+static bool can_suspend(lua_State *L) {
+    return L == g_task_co && lua_isyieldable(L);
+}
+
+static job_call_mark_t call_begin(lua_State *L) {
+    if (job_task_call_begin)
+        return job_task_call_begin(can_suspend(L));
+    return (job_call_mark_t){0};
+}
+
+static bool call_end(job_call_mark_t mark) {
+    return job_task_call_end ? job_task_call_end(mark) : false;
+}
+
+static int raise_text(lua_State *L, const char *text);
+
+// After a tree call, whether or not the task suspended: a leaf that
+// answered later and failed raises its failure; one that succeeded replaces
+// the provisional value on top of the stack (when `has_value`) with its
+// answer.  A cancelled job unwinds here.
+static void take_deferred(lua_State *L, bool has_value) {
+    char err[256];
+    if (job_call_take_failure && job_call_take_failure(err, sizeof err))
+        raise_text(L, err);
+    value_t answer;
+    if (job_call_take_answer && job_call_take_answer(&answer)) {
+        if (has_value) {
+            lua_pop(L, 1);
+            push_value(L, &answer);
+        } else {
+            value_free(&answer);
+        }
+    }
+}
+
+static void raise_interrupt(lua_State *L);
+
+// The continuation of a call that suspended: one result (the provisional
+// value) on top.
+static int call_resumed_k(lua_State *L, int status, lua_KContext ctx) {
+    (void)status;
+    if (job_current_cancelled && job_current_cancelled())
+        raise_interrupt(L);
+    take_deferred(L, ctx != 0);
+    return ctx != 0 ? 1 : 0;
+}
+
+// Finish a tree call whose result (if `has_value`) is on top: suspend the
+// task when the call must be waited for, else take a deferred answer now.
+static int call_finish(lua_State *L, job_call_mark_t mark, bool has_value) {
+    if (call_end(mark))
+        return lua_yieldk(L, 0, has_value ? 1 : 0, call_resumed_k);
+    take_deferred(L, has_value);
+    return has_value ? 1 : 0;
+}
+
 // proxy[key]: the child path, resolved.  A string key that is not a member
 // may be a collection's key (`volumes["docs"]`): the bracket form is tried
 // before giving up.
@@ -272,11 +351,14 @@ static int node_newindex(lua_State *L) {
     value_t v;
     if (!to_slot_value(L, 3, n.member->attr.type, &v))
         return raise_text(L, lua_tostring(L, -1));
+    job_call_mark_t mark = call_begin(L);
     value_t r = node_set(n, v); // consumes v
-    if (val_is_error(&r))
+    if (val_is_error(&r)) {
+        call_end(mark);
         return raise_value(L, &r);
+    }
     value_free(&r);
-    return 0;
+    return call_finish(L, mark, false);
 }
 
 // True when the table at `idx` carries named arguments: non-empty, every
@@ -299,26 +381,77 @@ static bool table_is_named(lua_State *L, int idx) {
     return named;
 }
 
-// proxy(...): node_call with positional arguments and, when the last
-// argument is a table of string keys, those as the named arguments.
-static int node_call_mm(lua_State *L) {
-    gsl_node_t *nd = check_node(L, 1);
-    if (!nd->method) {
-        lua_pushfstring(L, "'%s' is not a method", nd->path);
-        return raise_text(L, lua_tostring(L, -1));
+// A tree value kept whole across a suspension (the command form prints it
+// with its presentation, which a Lua value would not keep).
+#define MT_VALUE "gs.value"
+
+static int value_gc(lua_State *L) {
+    value_t *v = (value_t *)luaL_checkudata(L, 1, MT_VALUE);
+    value_free(v);
+    memset(v, 0, sizeof *v);
+    return 0;
+}
+
+static void push_boxed(lua_State *L, value_t v) {
+    value_t *box = (value_t *)lua_newuserdatauv(L, sizeof *box, 0);
+    *box = v;
+    luaL_setmetatable(L, MT_VALUE);
+}
+
+// Print a tree value as the terminal prints one (shell.c), or as plain text
+// where the shell is not linked (a unit suite).
+void shell_print_value(const value_t *v) __attribute__((weak));
+static void print_tree_value(const value_t *v) {
+    if (shell_print_value) {
+        shell_print_value(v);
+        return;
     }
-    node_t n = object_resolve(object_root(), nd->path);
+    if (v->kind == VK_NONE)
+        return;
+    vbuf_t b = {0};
+    value_format(v, VFMT_TEXT, &b);
+    out_write(b.p ? b.p : "", b.len);
+    out_putc('\n');
+    vbuf_free(&b);
+}
+
+// The continuation of a printing call that suspended: the provisional value
+// boxed on top.
+static int show_resumed_k(lua_State *L, int status, lua_KContext ctx) {
+    (void)status;
+    (void)ctx;
+    if (job_current_cancelled && job_current_cancelled())
+        raise_interrupt(L);
+    char err[256];
+    if (job_call_take_failure && job_call_take_failure(err, sizeof err))
+        raise_text(L, err);
+    value_t answer;
+    if (job_call_take_answer && job_call_take_answer(&answer)) {
+        print_tree_value(&answer);
+        value_free(&answer);
+    } else {
+        print_tree_value((value_t *)luaL_checkudata(L, -1, MT_VALUE));
+    }
+    return 0;
+}
+
+// node_call on the method at `path` with the arguments at [first, top]:
+// positional, and, when the last is a table of string keys, those as the
+// named arguments.  `show` prints the result as the terminal does instead of
+// returning it.
+static int call_node(lua_State *L, const char *path, int first, bool show) {
+    node_t n = object_resolve(object_root(), path);
     if (!node_valid(n) || !n.member || n.member->kind != MK_METHOD) {
-        lua_pushfstring(L, "no such method '%s'", nd->path);
+        lua_pushfstring(L, "no such method '%s'", path);
         return raise_text(L, lua_tostring(L, -1));
     }
     int top = lua_gettop(L);
     int last = top;
     bool has_named =
-        top >= 2 && lua_type(L, top) == LUA_TTABLE && !luaL_testudata(L, top, MT_NODE) && table_is_named(L, top);
+        top >= first && lua_type(L, top) == LUA_TTABLE && !luaL_testudata(L, top, MT_NODE) && table_is_named(L, top);
     if (has_named)
         last = top - 1;
-    int pc = last - 1;
+    int pc = last - first + 1;
     if (pc > OBJ_BIND_MAX_ARGS)
         return raise_text(L, "too many arguments");
     value_t pos[OBJ_BIND_MAX_ARGS];
@@ -327,7 +460,7 @@ static int node_call_mm(lua_State *L) {
     bool ok = true;
     int i;
     for (i = 0; i < pc; i++) {
-        if (!to_slot_value(L, 2 + i, slot_kind(n, i), &pos[i])) {
+        if (!to_slot_value(L, first + i, slot_kind(n, i), &pos[i])) {
             ok = false;
             break;
         }
@@ -359,7 +492,9 @@ static int node_call_mm(lua_State *L) {
         }
     }
     value_t r;
+    job_call_mark_t mark = {0};
     if (ok) {
+        mark = call_begin(L);
         if (nn > 0) {
             value_t bound[OBJ_BIND_MAX_ARGS];
             int bc = 0;
@@ -378,8 +513,30 @@ static int node_call_mm(lua_State *L) {
         value_free(&named[k].value);
     if (!ok)
         return raise_text(L, lua_tostring(L, -1));
-    push_value(L, &r);
-    return 1;
+    if (val_is_error(&r)) {
+        call_end(mark);
+        take_deferred(L, false);
+        return raise_value(L, &r);
+    }
+    if (!show) {
+        push_value(L, &r);
+        return call_finish(L, mark, true);
+    }
+    push_boxed(L, r);
+    if (call_end(mark))
+        return lua_yieldk(L, 0, 0, show_resumed_k);
+    show_resumed_k(L, LUA_OK, 0);
+    return 0;
+}
+
+// proxy(...): call_node on the proxy's method.
+static int node_call_mm(lua_State *L) {
+    gsl_node_t *nd = check_node(L, 1);
+    if (!nd->method) {
+        lua_pushfstring(L, "'%s' is not a method", nd->path);
+        return raise_text(L, lua_tostring(L, -1));
+    }
+    return call_node(L, nd->path, 2, false);
 }
 
 // #proxy: the length of what the path reads (a collection's entries, a
@@ -501,18 +658,6 @@ static void push_value_ref(lua_State *L, const value_t *v) {
     }
     case VK_ERROR:
         push_error_object(L, v->err);
-        return;
-    case VK_REF:
-        push_node(L, v->ref ? v->ref : "", false);
-        return;
-    case VK_RANGE:
-        lua_createtable(L, 0, 3);
-        lua_pushinteger(L, (lua_Integer)v->range.start);
-        lua_setfield(L, -2, "start");
-        lua_pushinteger(L, (lua_Integer)v->range.stop);
-        lua_setfield(L, -2, "stop");
-        lua_pushinteger(L, (lua_Integer)v->range.step);
-        lua_setfield(L, -2, "step");
         return;
     }
     lua_pushnil(L);
@@ -999,29 +1144,55 @@ static int gs_searcher(lua_State *L) {
     return 1;
 }
 
-// dofile(path): relative to the running chunk's directory.
+// dofile(path): relative to the running chunk's directory.  Yieldable: a
+// task running a file through dofile suspends inside it like anywhere else
+// (the directory is popped by the continuation, on success or error).
+static int dofile_k(lua_State *L, int status, lua_KContext ctx) {
+    pop_dir();
+    if (status != LUA_OK && status != LUA_YIELD)
+        return lua_error(L); // the error object is on top
+    return lua_gettop(L) - (int)ctx;
+}
+
 static int gs_dofile(lua_State *L) {
     const char *rel = luaL_checkstring(L, 1);
     char path[OBJ_PATH_MAX * 2];
     resolve_path(rel, path, sizeof path);
     lua_settop(L, 0);
-    run_file_at(L, path, 0, LUA_MULTRET);
-    return lua_gettop(L);
+    if (luaL_loadfilex(L, path, "t") != LUA_OK)
+        return lua_error(L);
+    if (!push_dir(path))
+        return raise_text(L, "dofile: nesting too deep");
+    int status = lua_pcallk(L, 0, LUA_MULTRET, 0, 0, dofile_k);
+    return dofile_k(L, status, 0);
 }
 
 // --- Interrupts ---------------------------------------------------------------------
 
-bool job_current_cancelled(void) __attribute__((weak));
+static void raise_interrupt(lua_State *L) {
+    lua_rawgetp(L, LUA_REGISTRYINDEX, &K_INTERRUPT);
+    lua_error(L);
+}
 
-// The count hook: unwind when the script was interrupted or its job cancelled.
+static double now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1e3 + (double)ts.tv_nsec / 1e6;
+}
+
+// The count hook: unwind when the script was interrupted or its job
+// cancelled; hand the emulator thread back to the drain when the task's
+// time slice is spent.
 static void count_hook(lua_State *L, lua_Debug *ar) {
     (void)ar;
     bool cancelled = job_current_cancelled && job_current_cancelled();
-    if (!g_interrupt && !cancelled)
+    if (g_interrupt || cancelled) {
+        g_interrupt = 0;
+        raise_interrupt(L);
         return;
-    g_interrupt = 0;
-    lua_rawgetp(L, LUA_REGISTRYINDEX, &K_INTERRUPT);
-    lua_error(L);
+    }
+    if (L == g_task_co && lua_isyieldable(L) && now_ms() - g_slice_t0 >= SLICE_MS)
+        lua_yield(L, 0);
 }
 
 void gs_lua_interrupt(void) {
@@ -1084,6 +1255,9 @@ static int msgh(lua_State *L) {
     lua_pop(L, 1);
     const char *msg = luaL_tolstring(L, 1, NULL);
     luaL_traceback(L, L, msg, 1);
+    // As for a task (task_failed): a traceback only where a file's code ran.
+    if (!strstr(lua_tostring(L, -1), ".lua:"))
+        lua_pop(L, 1); // the message stays on top
     return 1;
 }
 
@@ -1099,15 +1273,160 @@ static const luaL_Reg node_mt[] = {
     {NULL,         NULL         },
 };
 
+// gs._alias(name): the path an alias names, or nil.
+static int gs_alias(lua_State *L) {
+    const char *name = luaL_checkstring(L, 1);
+    char path[OBJ_PATH_MAX];
+    if (alias_lookup_copy(name, path, sizeof path, NULL))
+        lua_pushstring(L, path);
+    else
+        lua_pushnil(L);
+    return 1;
+}
+
+// --- The command form's helpers (gs_lua_lib.lua: gs.shell_line) --------------
+
+// gs._kind(path): "method", "attr", "child" or "object" -- what `path` names
+// -- or nil when it does not resolve.
+static int gs_kind(lua_State *L) {
+    node_t n = object_resolve(object_root(), luaL_checkstring(L, 1));
+    if (!node_valid(n))
+        lua_pushnil(L);
+    else if (!n.member)
+        lua_pushstring(L, "object");
+    else if (n.member->kind == MK_METHOD)
+        lua_pushstring(L, "method");
+    else if (n.member->kind == MK_CHILD)
+        lua_pushstring(L, "child");
+    else
+        lua_pushstring(L, "attr");
+    return 1;
+}
+
+// gs._show(path): read `path` and print it as the terminal prints a value.
+static int gs_show(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+    node_t n = object_resolve(object_root(), path);
+    if (!node_valid(n)) {
+        lua_pushfstring(L, "unknown command or path '%s'", path);
+        return raise_text(L, lua_tostring(L, -1));
+    }
+    value_t v = node_get(n);
+    if (val_is_error(&v))
+        return raise_value(L, &v);
+    print_tree_value(&v);
+    value_free(&v);
+    return 0;
+}
+
+// gs._call_show(path, ...): call the method and print its result.
+static int gs_call_show(lua_State *L) {
+    luaL_checkstring(L, 1);
+    return call_node(L, lua_tostring(L, 1), 2, true);
+}
+
+// gs._literal(word): the number a bare word spells (`0x10`, `-3`, `1.5`),
+// or nil when it is not a clean numeric literal.
+static int gs_literal(lua_State *L) {
+    value_t v = parse_literal_whole_string(luaL_checkstring(L, 1), NULL, 0);
+    if (val_is_error(&v) || v.kind == VK_STRING || v.kind == VK_NONE) {
+        value_free(&v);
+        lua_pushnil(L);
+        return 1;
+    }
+    push_value(L, &v);
+    return 1;
+}
+
+// gs._template_slot(path, index, name): whether the argument (positional
+// `index`, 0-based, or named `name`) lands in a template-typed slot, whose
+// "..." text the subsystem keeps raw and expands later (a logpoint's
+// message).
+static int gs_template_slot(lua_State *L) {
+    node_t n = object_resolve(object_root(), luaL_checkstring(L, 1));
+    lua_Integer idx = luaL_optinteger(L, 2, -1);
+    const char *name = luaL_optstring(L, 3, NULL);
+    bool tmpl = false;
+    if (node_valid(n) && n.member && n.member->kind == MK_METHOD && n.member->method.args) {
+        const arg_decl_t *args = n.member->method.args;
+        int nargs = n.member->method.nargs;
+        int slot = -1;
+        if (name) {
+            for (int i = 0; i < nargs; i++)
+                if (strcmp(args[i].name, name) == 0)
+                    slot = i;
+        } else if (idx >= 0 && idx < nargs) {
+            slot = (int)idx;
+        } else if (idx >= 0 && nargs > 0 && (args[nargs - 1].validation_flags & OBJ_ARG_REST)) {
+            slot = nargs - 1;
+        }
+        tmpl = slot >= 0 && (args[slot].validation_flags & OBJ_ARG_TEMPLATE);
+    }
+    lua_pushboolean(L, tmpl);
+    return 1;
+}
+
+// gs._command(word): the method path a command word runs (`ls` ->
+// files.ls), or nil.  Weak: the command table is the shell's.
+bool shell_command_lookup(const char *word, node_t *out, char *target, size_t target_size) __attribute__((weak));
+static int gs_command(lua_State *L) {
+    char target[256];
+    if (shell_command_lookup && shell_command_lookup(luaL_checkstring(L, 1), NULL, target, sizeof target))
+        lua_pushstring(L, target);
+    else
+        lua_pushnil(L);
+    return 1;
+}
+
+// gs._print_values(...): each value printed as the terminal prints a tree
+// value (a proxy as its path's value), nil as nothing.
+static int gs_print_values(lua_State *L) {
+    int n = lua_gettop(L);
+    for (int i = 1; i <= n; i++) {
+        if (lua_isnil(L, i))
+            continue;
+        gsl_node_t *nd = test_node(L, i);
+        if (nd && !nd->method) {
+            node_t t = object_resolve(object_root(), nd->path);
+            value_t v = node_valid(t) ? node_get(t) : val_err("no such path '%s'", nd->path);
+            if (val_is_error(&v))
+                return raise_value(L, &v);
+            print_tree_value(&v);
+            value_free(&v);
+            continue;
+        }
+        value_t v;
+        if (!to_value(L, i, &v)) {
+            size_t len;
+            const char *s = luaL_tolstring(L, i, &len);
+            out_write(s, len);
+            out_putc('\n');
+            lua_pop(L, 2); // the text and to_value's message
+            continue;
+        }
+        print_tree_value(&v);
+        value_free(&v);
+    }
+    return 0;
+}
+
 static const luaL_Reg gs_funcs[] = {
-    {"bytes",   gs_bytes  },
-    {"node",    gs_node   },
-    {"fmt",     gs_fmt    },
-    {"path",    gs_path   },
-    {"list",    gs_list   },
-    {"map",     gs_map    },
-    {"is_node", gs_is_node},
-    {NULL,      NULL      },
+    {"_kind",          gs_kind         },
+    {"_show",          gs_show         },
+    {"_call_show",     gs_call_show    },
+    {"_literal",       gs_literal      },
+    {"_template_slot", gs_template_slot},
+    {"_command",       gs_command      },
+    {"_print_values",  gs_print_values },
+    {"_alias",         gs_alias        },
+    {"bytes",          gs_bytes        },
+    {"node",           gs_node         },
+    {"fmt",            gs_fmt          },
+    {"path",           gs_path         },
+    {"list",           gs_list         },
+    {"map",            gs_map          },
+    {"is_node",        gs_is_node      },
+    {NULL,             NULL            },
 };
 
 // Open the standard libraries a script may use: no io (host files go
@@ -1182,6 +1501,10 @@ static lua_State *make_state(void) {
     lua_setfield(L, -2, "__tostring");
     lua_pushcfunction(L, bytes_len);
     lua_setfield(L, -2, "__len");
+    lua_pop(L, 1);
+    luaL_newmetatable(L, MT_VALUE);
+    lua_pushcfunction(L, value_gc);
+    lua_setfield(L, -2, "__gc");
     lua_pop(L, 1);
     luaL_newmetatable(L, MT_MAP);
     lua_pushcfunction(L, map_pairs);
@@ -1347,4 +1670,264 @@ int gs_lua_run_source(const char *src, bool interactive) {
     }
     lua_settop(L, base);
     return r;
+}
+
+// --- Job tasks (job.h's glue) ------------------------------------------------------
+//
+// A job's task is a coroutine running the entry below on the job's source.
+// job_layer_service steps it: lua_resume runs it until it ends or yields --
+// after a tree call the job must wait for (call_finish), or when its time
+// slice is spent (count_hook).
+
+struct job_task {
+    lua_State *co;
+    int ref; // the coroutine, anchored in the registry
+    int ndirs; // the directory stack's depth when it began
+};
+
+static int task_entry_k(lua_State *L, int status, lua_KContext ctx) {
+    (void)L;
+    (void)status;
+    (void)ctx;
+    return 0;
+}
+
+// The task's body: the source (argument 1) as one terminal line -- a
+// command line or a Lua chunk (gs.shell_line, gs_lua_lib.lua).
+static int task_entry(lua_State *L) {
+    luaL_checkstring(L, 1);
+    lua_getglobal(L, "gs");
+    lua_getfield(L, -1, "shell_line");
+    lua_remove(L, -2);
+    lua_pushvalue(L, 1);
+    lua_callk(L, 1, 0, 0, task_entry_k);
+    return 0;
+}
+
+job_task_t *job_glue_task_new(const char *src) {
+    lua_State *L = state();
+    if (!L)
+        return NULL;
+    job_task_t *t = (job_task_t *)calloc(1, sizeof(*t));
+    if (!t)
+        return NULL;
+    t->co = lua_newthread(L);
+    t->ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    t->ndirs = g_ndirs;
+    lua_pushcfunction(t->co, task_entry);
+    lua_pushstring(t->co, src);
+    return t;
+}
+
+// Report a dead task's error (on top of its stack): its text and the
+// traceback of where it was raised.  Returns the task's rc: 0 for quit().
+static int task_failed(job_task_t *t) {
+    lua_State *co = t->co;
+    lua_rawgetp(co, LUA_REGISTRYINDEX, &K_QUIT);
+    bool quit = lua_rawequal(co, -1, -2);
+    lua_pop(co, 1);
+    if (quit)
+        return 0;
+    lua_State *L = g_L;
+    lua_rawgetp(co, LUA_REGISTRYINDEX, &K_INTERRUPT);
+    bool interrupted = lua_rawequal(co, -1, -2);
+    lua_pop(co, 1);
+    if (interrupted) {
+        lua_pushstring(L, "script interrupted");
+    } else {
+        // The traceback helps when a file's code failed; a line typed at
+        // the terminal (or the command form's own frames) reads better as
+        // its message alone.
+        const char *msg = luaL_tolstring(co, -1, NULL);
+        luaL_traceback(L, co, msg, 0);
+        if (!strstr(lua_tostring(L, -1), ".lua:")) {
+            lua_pop(L, 1);
+            lua_pushstring(L, msg);
+        }
+        lua_pop(co, 1);
+    }
+    report_error(L);
+    return -1;
+}
+
+bool job_glue_task_step(job_task_t *t, int *rc) {
+    lua_State *co = t->co;
+    lua_State *prev = g_task_co;
+    g_task_co = co;
+    g_slice_t0 = now_ms();
+    int nres = 0;
+    int nargs = lua_status(co) == LUA_OK ? 1 : 0; // the first resume passes the source
+    int st = lua_resume(co, NULL, nargs, &nres);
+    g_task_co = prev;
+    if (st == LUA_YIELD) {
+        lua_pop(co, nres);
+        return false;
+    }
+    if (st == LUA_OK) {
+        *rc = 0;
+    } else {
+        *rc = task_failed(t);
+    }
+    while (g_ndirs > t->ndirs)
+        pop_dir();
+    return true;
+}
+
+void job_glue_task_free(job_task_t *t) {
+    if (!t)
+        return;
+    if (g_L) {
+        lua_closethread(t->co, g_L);
+        luaL_unref(g_L, LUA_REGISTRYINDEX, t->ref);
+    }
+    while (g_ndirs > t->ndirs)
+        pop_dir();
+    free(t);
+}
+
+// --- Conditions and templates (the debugger's) ----------------------------------
+//
+// Run on the calling thread's main Lua stack with lua_pcall: not yieldable,
+// so a tree call inside one never suspends a task (job_task_call_begin is
+// told it cannot), and an error is caught here.
+
+// Call gs.<fn>(text) under pcall; leaves its results (or the error) on top.
+static int call_gs(lua_State *L, const char *fn, const char *text, int nres) {
+    lua_getglobal(L, "gs");
+    lua_getfield(L, -1, fn);
+    lua_remove(L, -2);
+    lua_pushstring(L, text);
+    return lua_pcall(L, 1, nres, 0);
+}
+
+value_t gs_lua_condition_check(const char *text) {
+    lua_State *L = state();
+    if (!L)
+        return val_err("invalid breakpoint condition '%s': no script engine", text);
+    int base = lua_gettop(L);
+    value_t r = val_none();
+    if (call_gs(L, "condition", text, 2) != LUA_OK)
+        r = val_err("invalid breakpoint condition '%s': %s", text, lua_tostring(L, -1));
+    else if (lua_isnil(L, -2)) {
+        // "condition:1: <message>" -> the message
+        const char *msg = lua_tostring(L, -1);
+        const char *colon = msg ? strstr(msg, ":1: ") : NULL;
+        r = val_err("invalid breakpoint condition '%s': %s", text, colon ? colon + 4 : (msg ? msg : "syntax error"));
+    }
+    lua_settop(L, base);
+    return r;
+}
+
+bool gs_lua_condition_eval(const char *text) {
+    lua_State *L = state();
+    if (!L)
+        return true;
+    int base = lua_gettop(L);
+    bool result = true; // an error does not swallow the hit
+    if (call_gs(L, "condition", text, 1) == LUA_OK && lua_isfunction(L, -1)) {
+        if (lua_pcall(L, 0, 1, 0) == LUA_OK) {
+            lua_getglobal(L, "gs");
+            lua_getfield(L, -1, "condition_true");
+            lua_remove(L, -2);
+            lua_insert(L, -2);
+            if (lua_pcall(L, 1, 1, 0) == LUA_OK)
+                result = lua_toboolean(L, -1);
+        }
+    }
+    lua_settop(L, base);
+    return result;
+}
+
+value_t gs_lua_expand(const char *text, int n, const char *const *names, const value_t *vals) {
+    lua_State *L = state();
+    if (!L)
+        return val_str(text);
+    int base = lua_gettop(L);
+    lua_getglobal(L, "gs");
+    lua_getfield(L, -1, "expand");
+    lua_remove(L, -2);
+    lua_pushstring(L, text);
+    lua_createtable(L, 0, n);
+    for (int i = 0; i < n; i++) {
+        push_value_ref(L, &vals[i]);
+        lua_setfield(L, -2, names[i]);
+    }
+    value_t r;
+    if (lua_pcall(L, 2, 1, 0) == LUA_OK) {
+        size_t len;
+        const char *s = lua_tolstring(L, -1, &len);
+        r = val_str(s ? s : "");
+    } else {
+        r = val_err("%s", lua_tostring(L, -1) ? lua_tostring(L, -1) : "template failed");
+    }
+    lua_settop(L, base);
+    return r;
+}
+
+// --- The terminal's forms, for the shell's methods -----------------------------
+
+// gs.<fn>(text) under pcall, read as a boolean (false on an error).
+static bool lib_bool(const char *fn, const char *text) {
+    lua_State *L = state();
+    if (!L)
+        return false;
+    int base = lua_gettop(L);
+    bool r = call_gs(L, fn, text, 1) == LUA_OK && lua_toboolean(L, -1);
+    lua_settop(L, base);
+    return r;
+}
+
+bool gs_lua_is_command_line(const char *text) {
+    lua_State *L = state();
+    if (!L)
+        return false;
+    int base = lua_gettop(L);
+    bool r = call_gs(L, "classify", text ? text : "", 1) == LUA_OK && lua_type(L, -1) == LUA_TSTRING &&
+             strcmp(lua_tostring(L, -1), "command") == 0;
+    lua_settop(L, base);
+    return r;
+}
+
+bool gs_lua_needs_continuation(const char *text) {
+    return lib_bool("needs_continuation", text ? text : "");
+}
+
+int gs_lua_run_line(const char *text) {
+    lua_State *L = state();
+    if (!L)
+        return -1;
+    int base = lua_gettop(L);
+    lua_pushcfunction(L, msgh);
+    lua_getglobal(L, "gs");
+    lua_getfield(L, -1, "shell_line");
+    lua_remove(L, -2);
+    lua_pushstring(L, text ? text : "");
+    int rc = lua_pcall(L, 1, 0, base + 1);
+    int r = finish_call(L, rc);
+    lua_settop(L, base);
+    return r < 0 ? -1 : 0;
+}
+
+value_t gs_lua_vars(void) {
+    lua_State *L = state();
+    value_t *items = NULL;
+    size_t len = 0, cap = 0;
+    if (L) {
+        int base = lua_gettop(L);
+        lua_getglobal(L, "vars");
+        if (lua_istable(L, -1)) {
+            lua_pushnil(L);
+            while (lua_next(L, -2)) {
+                if (lua_type(L, -2) == LUA_TSTRING) {
+                    const char *v = luaL_tolstring(L, -1, NULL);
+                    lua_pushfstring(L, "%s=%s", lua_tostring(L, -3), v);
+                    val_list_push(&items, &len, &cap, val_str(lua_tostring(L, -1)));
+                    lua_pop(L, 2);
+                }
+                lua_pop(L, 1);
+            }
+        }
+        lua_settop(L, base);
+    }
+    return val_list(items, len);
 }

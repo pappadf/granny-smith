@@ -77,10 +77,12 @@ static uint8_t via2_dev_ifr(config_t *cfg, bool peek) {
     pdm_state_t *st = pdm_st(cfg);
     pdm_via2_t *v2 = &st->amic.via2;
     // Slot flags: register reads active-low; internal any-slot aggregate
-    // works on the asserted (low) bits gated by the slot IER.
-    uint8_t slot_asserted = (uint8_t)(~v2->slot_ifr & 0x7Cu);
+    // works on the asserted (low) bits -- the board's slot lines (the 9150's
+    // FAT AMIC adds slot $A's at bit 1, "SLT4") and the bit-6 VBL -- gated
+    // by the slot IER, whose writable mask ($78) is the only enable.
+    uint8_t slot_asserted = (uint8_t)(~v2->slot_ifr & (pdm_slot_irq_bits(cfg) | 0x40u));
     uint8_t levels = v2->dev_levels;
-    if (slot_asserted & v2->slot_ier & 0x78u)
+    if (slot_asserted & v2->slot_ier)
         levels |= 0x02u; // ANY SLOT
     else
         levels &= ~0x02u;

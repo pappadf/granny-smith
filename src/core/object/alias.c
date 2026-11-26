@@ -12,7 +12,6 @@
 
 #include "alias.h"
 
-#include "job/job.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -80,7 +79,7 @@ static void free_entry(alias_entry_t *e) {
     e->path = NULL;
 }
 
-static status_t alias_register_builtin_impl(const char *name, const char *path, char *err_buf, size_t err_size) {
+status_t alias_register_builtin(const char *name, const char *path, char *err_buf, size_t err_size) {
     if (!path) {
         set_err(err_buf, err_size, "null path for alias '$%s'", name ? name : "?");
         return STATUS_E_INVAL;
@@ -100,9 +99,9 @@ static status_t alias_register_builtin_impl(const char *name, const char *path, 
         }
         // Replacing a user alias with a built-in is fine — built-ins
         // win when both are registered (the framework registers them
-        // before user aliases can be added). Log so a user who set
-        // `$x = some.path` and then a subsystem registered `$x` as a
-        // built-in to a different target can see what happened.
+        // before user aliases can be added). Log so a user who added
+        // `$x` with shell.alias.add and then a subsystem registered `$x`
+        // as a built-in to a different target can see what happened.
         LOG(1, "user alias '$%s' (→ %s) replaced by built-in (→ %s)", name, e->path ? e->path : "?", path);
         free_entry(e);
         e->name = strdup(name);
@@ -122,7 +121,7 @@ static status_t alias_register_builtin_impl(const char *name, const char *path, 
     return STATUS_OK;
 }
 
-static status_t alias_add_user_impl(const char *name, const char *path, char *err_buf, size_t err_size) {
+status_t alias_add_user(const char *name, const char *path, char *err_buf, size_t err_size) {
     if (!path) {
         set_err(err_buf, err_size, "null path for alias '$%s'", name ? name : "?");
         return STATUS_E_INVAL;
@@ -155,7 +154,7 @@ static status_t alias_add_user_impl(const char *name, const char *path, char *er
     return STATUS_OK;
 }
 
-static status_t alias_remove_user_impl(const char *name, char *err_buf, size_t err_size) {
+status_t alias_remove_user(const char *name, char *err_buf, size_t err_size) {
     int idx = find_index(name);
     if (idx < 0) {
         set_err(err_buf, err_size, "no such alias '%s'", name ? name : "(null)");
@@ -174,7 +173,7 @@ static status_t alias_remove_user_impl(const char *name, char *err_buf, size_t e
     return STATUS_OK;
 }
 
-static const char *alias_lookup_impl(const char *name, alias_kind_t *kind_out) {
+const char *alias_lookup(const char *name, alias_kind_t *kind_out) {
     int idx = find_index(name);
     if (idx < 0)
         return NULL;
@@ -183,7 +182,7 @@ static const char *alias_lookup_impl(const char *name, alias_kind_t *kind_out) {
     return g_table[idx].path;
 }
 
-static void alias_each_impl(alias_iter_fn fn, void *ud) {
+void alias_each(alias_iter_fn fn, void *ud) {
     if (!fn)
         return;
     for (size_t i = 0; i < g_count; i++) {
@@ -192,11 +191,11 @@ static void alias_each_impl(alias_iter_fn fn, void *ud) {
     }
 }
 
-static size_t alias_count_impl(void) {
+size_t alias_count(void) {
     return g_count;
 }
 
-static void alias_reset_impl(void) {
+void alias_reset(void) {
     for (size_t i = 0; i < g_count; i++)
         free_entry(&g_table[i]);
     free(g_table);
@@ -205,7 +204,7 @@ static void alias_reset_impl(void) {
     g_capacity = 0;
 }
 
-static void alias_clear_user_impl(void) {
+void alias_clear_user(void) {
     // Compact in place: copy survivors forward.
     size_t w = 0;
     for (size_t r = 0; r < g_count; r++) {
@@ -223,9 +222,7 @@ static void alias_clear_user_impl(void) {
     g_count = w;
 }
 
-// === The table lock (job/job.h): every public entry takes it for the one
-// operation; the interpreter on the job thread and the emulator thread
-// (breakpoint conditions, completion, shell.vars) both read here. =========
+// === Conveniences =============================================================
 
 void alias_register_builtin_or_log(const char *owner, const char *name, const char *path) {
     char err[160];
@@ -233,65 +230,10 @@ void alias_register_builtin_or_log(const char *owner, const char *name, const ch
         LOG(0, "%s: built-in alias '$%s' → '%s' rejected: %s", owner ? owner : "alias", name, path, err);
 }
 
-status_t alias_register_builtin(const char *name, const char *path, char *err_buf, size_t err_size) {
-    job_tables_lock();
-    status_t r = alias_register_builtin_impl(name, path, err_buf, err_size);
-    job_tables_unlock();
-    return r;
-}
-
-status_t alias_add_user(const char *name, const char *path, char *err_buf, size_t err_size) {
-    job_tables_lock();
-    status_t r = alias_add_user_impl(name, path, err_buf, err_size);
-    job_tables_unlock();
-    return r;
-}
-
-status_t alias_remove_user(const char *name, char *err_buf, size_t err_size) {
-    job_tables_lock();
-    status_t r = alias_remove_user_impl(name, err_buf, err_size);
-    job_tables_unlock();
-    return r;
-}
-
-const char *alias_lookup(const char *name, alias_kind_t *kind_out) {
-    job_tables_lock();
-    const char *r = alias_lookup_impl(name, kind_out);
-    job_tables_unlock();
-    return r;
-}
-
 bool alias_lookup_copy(const char *name, char *buf, size_t size, alias_kind_t *kind_out) {
-    job_tables_lock();
-    const char *r = alias_lookup_impl(name, kind_out);
+    const char *r = alias_lookup(name, kind_out);
     bool ok = r && buf && strlen(r) < size;
     if (ok)
         memcpy(buf, r, strlen(r) + 1);
-    job_tables_unlock();
     return ok;
-}
-
-void alias_each(alias_iter_fn fn, void *ud) {
-    job_tables_lock();
-    alias_each_impl(fn, ud);
-    job_tables_unlock();
-}
-
-size_t alias_count(void) {
-    job_tables_lock();
-    size_t r = alias_count_impl();
-    job_tables_unlock();
-    return r;
-}
-
-void alias_reset(void) {
-    job_tables_lock();
-    alias_reset_impl();
-    job_tables_unlock();
-}
-
-void alias_clear_user(void) {
-    job_tables_lock();
-    alias_clear_user_impl();
-    job_tables_unlock();
 }

@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- The Apple Accelerated PCI Graphics Card (ATI Mach64 GX, "Spinnaker")
 -- enumerating in socket A1 of a Power Macintosh 9500.
 --

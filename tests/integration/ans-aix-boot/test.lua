@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Booting AIX 4.1.5 for Apple Network Servers from the Install CD.
 --
 -- The row does not type a boot command.  It reproduces Apple's own

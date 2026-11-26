@@ -1,6 +1,5 @@
--- Converted from draw.script by scripts/script-to-lua.py
 -- The card DRAWS, driven entirely through the register file.  Included
--- by test.script after the bring-up replay.
+-- by test.lua after the bring-up replay.
 --
 -- THE FILL CONVENTION IS OURS: V2 §7.2 defers the triangle walk to an
 -- SST-1 Programming Guide nobody holds, so the pinned pixel values and
@@ -14,17 +13,17 @@
 -- round-trip identities, and the texture-layout offsets against the
 -- spec's own worked examples.
 
-LFB = BAR + 0x400000 -- global: included file
-function px(x, y) -- global: included file
+LFB = BAR + 0x400000
+function px(x, y)
     return swap16(machine.memory.peek.w(LFB + (y << 11) + (x << 1)))
 end
-function stat(off) -- global: included file
+function stat(off)
     return machine.pci.slot[1].card.regs.read(off)
 end
 -- The right triangle used throughout: A=(50,50) B=(50,66) C=(66,50) in
 -- 12.4 — legs of 16 pixels, area negative (clockwise per the spec's
 -- p.36 formula), exactly sum(1..16)=136 pixels under our convention.
-function tri1_vertices() -- global: included file
+function tri1_vertices()
     vreg_wr(0x008, 0x00000320)
     vreg_wr(0x00C, 0x00000320)
     vreg_wr(0x010, 0x00000320)
@@ -120,7 +119,7 @@ assert(px(65, 65) ~= 0x0000, "the far corner of the square was covered")
 -- fails, fbiZfuncFail counts all 120, and the framebuffer is untouched —
 -- "a blit that draws nothing looks exactly like a blit never issued"
 -- made assertable.
-BEFORE = px(55, 52) -- global: included file
+BEFORE = px(55, 52)
 vreg_wr(0x110, 0x00000610)
 vreg_wr(0x080, 0x00000000)
 idle3()
@@ -199,8 +198,8 @@ assert(px(55, 52) == 0x8000, "multitexture: red modulated by 50% grey is dark re
 -- read is NOT the identity.  This is the assertion that catches a
 -- reversed transform order, and it needs no golden.
 vreg_wr(0x104, 0x00000000)
-V = 0x12345678 -- global: included file
-A200 = LFB + (200 << 11) + (100 << 1) -- global: included file
+V = 0x12345678
+A200 = LFB + (200 << 11) + (100 << 1)
 vreg_wr(0x114, 0x00000000)
 machine.memory.poke.l(A200, V)
 assert(machine.memory.peek.l(A200) == V, "LFB round trip: plain/plain is the identity")
@@ -262,10 +261,10 @@ vreg_wr(0x064, 0x00000000)
 vreg_wr(0x068, 0x00000000)
 vreg_wr(0x080, 0x80000000)
 idle3()
-FIRST = px(52, 51) -- global: included file
+FIRST = px(52, 51)
 vreg_wr(0x080, 0x80000000)
 idle3()
-SECOND = px(52, 51) -- global: included file
+SECOND = px(52, 51)
 assert(FIRST ~= SECOND, "sub-pixel correction is applied per FIFO read — resend-less triangles drift")
 vreg_wr(0x104, 0x00000000)
 
@@ -285,8 +284,8 @@ tri1_vertices()
 vreg_wr(0x020, 0x000FF000)
 vreg_wr(0x040, 0x00000000)
 vreg_wr(0x060, 0x00000000)
-PO0 = stat(0x15C) -- global: included file
-PI0 = stat(0x14C) -- global: included file
+PO0 = stat(0x15C)
+PI0 = stat(0x14C)
 vreg_wr(0x080, 0x80000000)
 idle3()
 assert(stat(0x14C) == PI0 + 136, "stipple: every pixel of the triangle entered the pipeline")
@@ -299,7 +298,7 @@ vreg_wr(0x140, 0x00000000)
 -- Timing is analytic (voodoo2_raster.h): a triangle completes at issue
 -- and the scheduler does not advance, so the guest's instruction stream
 -- is backend-independent by construction.
-C0 = scheduler.cycles -- global: included file
+C0 = scheduler.cycles
 vreg_wr(0x080, 0x80000000)
 idle3()
 assert(scheduler.cycles == C0, "a triangle draw must not consume scheduled time")

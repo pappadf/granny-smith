@@ -23,18 +23,18 @@ int core_init(void) {
     //
     // 1. job_layer_init first: it latches this pthread as the emulator
     //    thread, for the job layer and for the thread-affinity guard
-    //    (MODE=debug/sanitize: any object_eval or shell entry from another
+    //    (MODE=debug/sanitize: a node gateway or shell entry from another
     //    thread then aborts).  Everything below runs on this thread, so a
     //    registration that hands work to the emulator thread already finds
     //    the latch set.
     // 2. log_context_install (the logger's PC/count decorations and trace
     //    capture) before anything that logs.
-    // 4. shell_init (binding store, completion provider) before the root is
-    //    populated, so an object_eval landing during init sees a live provider
-    //    and the `shell` node never exists without its interpreter state.
-    // 5. root_install_class before the singletons, so the root has its real
+    // 3. shell_init (the script error reporter, the completion provider)
+    //    before the root is populated, so a completion landing during init
+    //    sees a live provider.
+    // 4. root_install_class before the singletons, so the root has its real
     //    class (the top-level methods) before anything is attached to it.
-    // 6. The singletons in any order among themselves (each attaches only
+    // 5. The singletons in any order among themselves (each attaches only
     //    its own node), but before root_install, whose cfg-scoped stubs and
     //    install hooks (files.images, ...) hang off nodes they create.
     job_layer_init();
@@ -42,9 +42,8 @@ int core_init(void) {
     if (shell_init() != 0)
         return -1;
 
-    // Install the top-level object-root methods (assert, echo, cp,
-    // peeler, rom_probe, …) so JS callers (`gsEval`) and the typed
-    // path-form parser can reach them.
+    // Install the top-level object-root methods (help, echo, time, quit,
+    // …) so scripts, the terminal and JS callers (`gsEval`) can reach them.
     root_install_class();
 
     // Register process-singleton namespace objects that exist

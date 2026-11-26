@@ -31,11 +31,13 @@ device code the ROM reads) is physically the high nibble of **byte 4**.
 In this emulator the controller RAM is `lisa_fdc_t.ram[]`; the PRAM is
 `ram[192..255]` (offset `$180 >> 1 = 192`). It is **volatile** here (zeroed at
 init, not battery-backed), so an installed configuration is lost across launches
-unless saved. Use the shell methods to persist/restore it:
+unless saved. Use the shell methods to persist/restore it: `pram_save` writes
+the 64-byte PRAM to a file, `pram_load` restores it (call it before booting;
+the ROM reads PRAM at startup):
 
 ```
-profile.pram_save "<path>"   # write the 64-byte PRAM to a file
-profile.pram_load "<path>"   # restore it (call before booting; the ROM reads PRAM at startup)
+machine.hd.pram_save "<path>"
+machine.hd.pram_load "<path>"
 ```
 
 (backed by `lisa_fdc_pram_save` / `lisa_fdc_pram_load` in `src/machines/lisa/lisa_fdc.c`.)

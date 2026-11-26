@@ -20,7 +20,7 @@
 // There is no C entry point for a free-form line: every caller goes
 // through the object model -- `object_eval("shell.run", [line])`, a script
 // job, or the typed path form -- and the Shell class hands the line to
-// the v2 script interpreter (script.h).
+// the script engine (gs_lua.h: a command line or a Lua chunk).
 
 // The `shell` class (shell_class.c), attached by root_install.
 struct class_desc;
@@ -34,11 +34,12 @@ void shell_build_prompt(char *buf, size_t buf_size);
 
 // === Shell Lifecycle ===
 
-// The shell's own setup (binding store, completion provider).  Called by
+// The shell's own setup (the script engine's reporter, the completion
+// provider).  Called by
 // core_init (core_init.h), which platforms call; idempotent.
 int shell_init(void);
 
-// Attach the `shell` node and its children (functions, alias, command)
+// Attach the `shell` node and its children (alias, command)
 // under the object root as cfg-scoped stubs.  root_install calls it on
 // every install, like the other subsystems' install hooks.
 struct config;

@@ -2,13 +2,14 @@
 // Copyright (c) pappadf
 
 // m68k_board_overlay.c
-// The ROM-at-zero overlay of the 68030/040 boards, with its two policies.
+// The ROM-at-zero overlay of the 68000/030/040 boards, with its policies.
 // See m68k_board_overlay.h.
 
 #include "m68k_board_overlay.h"
 
 #include "cpu.h"
 #include "log.h"
+#include "mmu.h" // tlb_track_page
 #include "page_fill.h"
 #include "system.h"
 #include "system_internal.h"
@@ -20,14 +21,50 @@ static uint8_t *overlay_rom_data(const m68k_board_overlay_t *ov) {
     return ram_native_pointer(ov->cfg->memory_map, ov->cfg->ram_size);
 }
 
-// Point the aperture at direct ROM pages, mirroring the image across it.
-void m68k_board_overlay_fill_aperture(const m68k_board_overlay_t *ov) {
+// Both line-following policies: no trigger device, no aperture to fill
+static bool overlay_follows_line(const m68k_board_overlay_t *ov) {
+    return ov->policy != M68K_BOARD_OVERLAY_DROP_ON_ACCESS;
+}
+
+// FOLLOW_READS: point one page's READ side at `host`; the write side is left
+// alone, so with the overlay on a write to low memory still lands in RAM (the
+// decoder steers reads only, as on the II-family GLUE).
+static void overlay_map_read_page(uint32_t p, uint8_t *host) {
+    if (p >= g_page_count)
+        return;
+    uintptr_t adjusted = MEM_RAM_ENTRY((uintptr_t)host - ((uintptr_t)p << MEM_PAGE_SHIFT));
+    memory_page_set_host(p, host, g_page_table[p].writable);
+    if (g_supervisor_read)
+        g_supervisor_read[p] = adjusted;
+    if (g_user_read)
+        g_user_read[p] = adjusted;
+    tlb_track_page(p); // on the tracker like every fast-path entry (page_fill_68k)
+    memory_logpoint_guard_page(p);
+}
+
+// Direct ROM pages over [base, end), the image mirrored from base.
+static void overlay_fill_window(const m68k_board_overlay_t *ov, uint32_t base, uint32_t end) {
     uint32_t rom_pages = ov->cfg->machine->rom_size >> MEM_PAGE_SHIFT;
     uint8_t *rom_data = overlay_rom_data(ov);
-    uint32_t start_page = ov->rom_base >> MEM_PAGE_SHIFT;
-    uint32_t end_page = ov->rom_end >> MEM_PAGE_SHIFT;
+    uint32_t start_page = base >> MEM_PAGE_SHIFT;
+    uint32_t end_page = end >> MEM_PAGE_SHIFT;
     for (uint32_t p = start_page; p < end_page && p < g_page_count; p++)
         page_fill_68k(p, rom_data + (((p - start_page) % rom_pages) << MEM_PAGE_SHIFT), false);
+}
+
+// Route [base, end) through the trigger device, offsets relative to base.
+static void overlay_route_window(m68k_board_overlay_t *ov, uint32_t base, uint32_t end) {
+    uint32_t start_page = base >> MEM_PAGE_SHIFT;
+    uint32_t end_page = end >> MEM_PAGE_SHIFT;
+    for (uint32_t p = start_page; p < end_page && p < g_page_count; p++)
+        page_route_device(p, &ov->iface, ov, base);
+}
+
+// Point the aperture(s) at direct ROM pages, mirroring the image across each.
+void m68k_board_overlay_fill_aperture(const m68k_board_overlay_t *ov) {
+    overlay_fill_window(ov, ov->rom_base, ov->rom_end);
+    if (ov->rom_end2 > ov->rom_base2)
+        overlay_fill_window(ov, ov->rom_base2, ov->rom_end2);
 }
 
 // RAM at zero, aperture direct.  Idempotent.
@@ -35,14 +72,17 @@ void m68k_board_overlay_drop(m68k_board_overlay_t *ov) {
     if (!ov->armed)
         return;
     ov->armed = false;
-    if (ov->policy == M68K_BOARD_OVERLAY_FOLLOW_LINE) {
+    if (overlay_follows_line(ov)) {
         LOG(2, "%s overlay off: RAM at $00000000 (pc=%08X)", ov->name, cpu_get_pc(ov->cfg->cpu));
         ov->map_ram(ov->cfg);
-        return;
+    } else {
+        LOG(1, "%s overlay drop: RAM at $00000000, ROM direct in aperture (pc=%08X)", ov->name,
+            cpu_get_pc(ov->cfg->cpu));
+        ov->map_ram(ov->cfg);
+        m68k_board_overlay_fill_aperture(ov);
     }
-    LOG(1, "%s overlay drop: RAM at $00000000, ROM direct in aperture (pc=%08X)", ov->name, cpu_get_pc(ov->cfg->cpu));
-    ov->map_ram(ov->cfg);
-    m68k_board_overlay_fill_aperture(ov);
+    if (ov->on_change)
+        ov->on_change(ov->cfg, false);
 }
 
 void m68k_board_overlay_set_line(m68k_board_overlay_t *ov, bool on) {
@@ -61,20 +101,26 @@ void m68k_board_overlay_arm(m68k_board_overlay_t *ov) {
 
     ov->armed = true;
 
-    // ROM mapped read-only at zero.
-    for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++)
-        page_fill_68k(p, rom_data + (p << MEM_PAGE_SHIFT), false);
+    // ROM mapped read-only at zero -- or, steering reads only, ROM read and
+    // RAM written.
+    for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++) {
+        if (ov->policy == M68K_BOARD_OVERLAY_FOLLOW_READS)
+            overlay_map_read_page(p, rom_data + (p << MEM_PAGE_SHIFT));
+        else
+            page_fill_68k(p, rom_data + (p << MEM_PAGE_SHIFT), false);
+    }
 
-    // A line-following overlay has no trigger: the ROM window stays direct
-    if (ov->policy == M68K_BOARD_OVERLAY_FOLLOW_LINE)
-        return;
-
-    // Route the aperture through the trigger device: memory_map_add did the
-    // page plumbing once, and later arms re-point the pages by hand.
-    uint32_t start_page = ov->rom_base >> MEM_PAGE_SHIFT;
-    uint32_t end_page = ov->rom_end >> MEM_PAGE_SHIFT;
-    for (uint32_t p = start_page; p < end_page && p < g_page_count; p++)
-        page_route_device(p, &ov->iface, ov, ov->rom_base);
+    // A line-following overlay has no trigger: the ROM window stays direct.
+    // Otherwise route the aperture(s) through the trigger device:
+    // memory_map_add did the page plumbing once, and later arms re-point the
+    // pages by hand.
+    if (!overlay_follows_line(ov)) {
+        overlay_route_window(ov, ov->rom_base, ov->rom_end);
+        if (ov->rom_end2 > ov->rom_base2)
+            overlay_route_window(ov, ov->rom_base2, ov->rom_end2);
+    }
+    if (ov->on_change)
+        ov->on_change(ov->cfg, true);
 }
 
 // Trigger-device handlers: any access drops the overlay and completes from the
@@ -135,7 +181,10 @@ void m68k_board_overlay_init(m68k_board_overlay_t *ov, struct config *cfg, uint3
     ov->cfg = cfg;
     ov->rom_base = rom_base;
     ov->rom_end = rom_end;
+    ov->rom_base2 = 0;
+    ov->rom_end2 = 0;
     ov->map_ram = map_ram;
+    ov->on_change = NULL;
     ov->name = name;
     ov->policy = M68K_BOARD_OVERLAY_DROP_ON_ACCESS;
     ov->armed = false;
@@ -150,17 +199,39 @@ void m68k_board_overlay_init(m68k_board_overlay_t *ov, struct config *cfg, uint3
     ov->iface.write_uint32 = overlay_write32;
 }
 
-// RAM back at zero under a line-following overlay: the identity map of the
-// pages the overlay covered (ROM size from zero).
-static void overlay_map_ram_identity(struct config *cfg) {
+// RAM back at zero: the identity map of the pages the overlay covered (ROM
+// size from zero), wrapped into the installed RAM -- a no-op on every board
+// whose RAM is at least its ROM's size, and the 64 KB-ROM 128K's or a 2.5 MB
+// board's RAM images stay right regardless.
+void m68k_board_overlay_map_ram_identity(struct config *cfg) {
     uint32_t rom_pages = cfg->machine->rom_size >> MEM_PAGE_SHIFT;
     uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
     for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++)
-        page_fill_68k(p, ram_base + (p << MEM_PAGE_SHIFT), true);
+        page_fill_68k(p, ram_base + ((p << MEM_PAGE_SHIFT) % cfg->ram_size), true);
+}
+
+// The same for FOLLOW_READS: the read sides only.
+static void overlay_map_ram_identity_reads(struct config *cfg) {
+    uint32_t rom_pages = cfg->machine->rom_size >> MEM_PAGE_SHIFT;
+    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
+    for (uint32_t p = 0; p < rom_pages; p++)
+        overlay_map_read_page(p, ram_base + ((p << MEM_PAGE_SHIFT) % cfg->ram_size));
 }
 
 void m68k_board_overlay_init_line(m68k_board_overlay_t *ov, struct config *cfg, const char *name) {
     // No aperture: rom_base/rom_end stay 0 and the trigger interface unused
-    m68k_board_overlay_init(ov, cfg, 0, 0, overlay_map_ram_identity, name);
+    m68k_board_overlay_init(ov, cfg, 0, 0, m68k_board_overlay_map_ram_identity, name);
     ov->policy = M68K_BOARD_OVERLAY_FOLLOW_LINE;
+}
+
+void m68k_board_overlay_init_line_reads(m68k_board_overlay_t *ov, struct config *cfg, const char *name,
+                                        void (*on_change)(struct config *cfg, bool armed)) {
+    m68k_board_overlay_init(ov, cfg, 0, 0, overlay_map_ram_identity_reads, name);
+    ov->policy = M68K_BOARD_OVERLAY_FOLLOW_READS;
+    ov->on_change = on_change;
+}
+
+void m68k_board_overlay_set_alias(m68k_board_overlay_t *ov, uint32_t base2, uint32_t end2) {
+    ov->rom_base2 = base2;
+    ov->rom_end2 = end2;
 }

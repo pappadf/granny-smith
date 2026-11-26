@@ -7,7 +7,8 @@ Usage:
     script-to-lua.py IN.script [-o OUT.lua] [--lib PATH] [--report]
                                [--module | --no-module]
 
-The old language is documented in docs/internals/core/shell/shell.md; the
+The old language's reference document was removed
+with the language; git history keeps it.  The
 target is the Lua bridge (docs/internals/core/lua/lua.md): root children are
 globals, `gs.*` helpers, `F"..."` templates, `echo`, `quit`, `vars.NAME`, and
 the ported shared library `tests/integration/lib/mac.lua`, reached with

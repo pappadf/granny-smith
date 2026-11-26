@@ -1,5 +1,5 @@
 # Integration test: the tnt-voodoo2-glide launch on the NORMATIVE
-# synchronous walker, from a checkpoint of the launch (see test.script).
+# synchronous walker, from a checkpoint of the launch (see test.lua).
 #
 # The same media and the same flow as tnt-voodoo2-glide, from the same
 # saved launch: the sibling runs the build's default backend, the worker

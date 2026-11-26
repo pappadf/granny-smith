@@ -118,9 +118,9 @@
   {#if machine.status === 'running'}
     <Hint class="reg-hint" inset="block">Pause the machine to inspect register state.</Hint>
   {:else if !frame}
-    <Hint class="reg-hint" inset="block"
-      >{debugFrame.loading ? 'Reading registers…' : 'No machine running.'}</Hint
-    >
+    <Hint class="reg-hint" inset="block">
+      {debugFrame.loading ? 'Reading registers…' : 'No machine running.'}
+    </Hint>
   {:else}
     {#each groups as group (group.title)}
       <div class="reg-group">

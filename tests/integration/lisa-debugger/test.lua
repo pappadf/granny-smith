@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: the debugger on a running Lisa (see config.mk).
 --
 -- The Office System desktop runs processes in contexts 1-3 beside the

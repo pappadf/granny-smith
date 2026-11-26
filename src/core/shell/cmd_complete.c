@@ -2,16 +2,15 @@
 // Copyright (c) pappadf
 
 // cmd_complete.c
-// Tab completion engine.  The statement the cursor is in -- a line's own,
-// or an inline block's after its `{` -- is found and classified the way the
-// parser reads it (syntax.h).  At the head of a statement: keywords, root
-// members and command words, or the members of a mid-path partial; at an
-// argument of a command: candidates for the declared slot the word fills.
-// Inside a string or a parenthesised argument, nothing.
+// Tab completion engine.  The line the cursor is on is read the way it will
+// run (gs_lua_is_command_line).  A command line (syntax.h): at its head,
+// keywords, root members and command words, or the members of a mid-path
+// partial; at an argument, candidates for the declared slot the word fills;
+// inside a string or a parenthesised argument, nothing.  A Lua line: the
+// tree path (or `$alias`) under the cursor, as at a command line's head.
 
 #include "cmd_complete.h"
 #include "commands.h"
-#include "shell_var.h"
 #include "syntax.h"
 #include "job/job.h" // EMU_THREAD_CHECK
 
@@ -481,8 +480,8 @@ static void complete_path(const char *partial, struct completion *out) {
 
 // === Commands =================================================================
 //
-// Command words (commands.h) at the head of a statement: those whose target
-// is a method now, and which no root member or `def` function shadows.
+// Command words (commands.h) at the head of a line: those whose target is a
+// method now, and which no root member shadows.
 
 struct command_acc {
     const char *partial;
@@ -494,7 +493,7 @@ static bool command_cb(const char *name, const char *target, bool builtin, void 
     (void)builtin;
     struct command_acc *acc = (struct command_acc *)ud;
     node_t n;
-    if (shell_head_resolve(name, strlen(name), &n, NULL, NULL, 0) != SHELL_HEAD_COMMAND)
+    if (shell_head_resolve(name, strlen(name), &n, NULL, 0) != SHELL_HEAD_COMMAND)
         return true;
     // The name is the iteration's copy: keep a copy owned by the completion.
     const char *copy = comp_strdup(acc->out, name);
@@ -587,23 +586,12 @@ static void complete_method_arg(const member_t *m, int slot, const char *partial
 typedef struct {
     struct completion *out;
     const char *prefix; // without the leading '$'
-} binding_complete_ctx_t;
+} alias_complete_ctx_t;
 
-static bool binding_complete_var_cb(const char *name, const value_t *v, void *ud) {
-    (void)v;
-    binding_complete_ctx_t *cc = (binding_complete_ctx_t *)ud;
-    if (!name || (cc->prefix[0] && strncmp(name, cc->prefix, strlen(cc->prefix)) != 0))
-        return true;
-    char buf[128];
-    snprintf(buf, sizeof(buf), "$%s", name);
-    push_match(cc->out, comp_strdup(cc->out, buf), NULL);
-    return true;
-}
-
-static bool binding_complete_alias_cb(const char *name, const char *path, alias_kind_t kind, void *ud) {
+static bool alias_complete_cb(const char *name, const char *path, alias_kind_t kind, void *ud) {
     (void)path;
     (void)kind;
-    binding_complete_ctx_t *cc = (binding_complete_ctx_t *)ud;
+    alias_complete_ctx_t *cc = (alias_complete_ctx_t *)ud;
     if (cc->prefix[0] && strncmp(name, cc->prefix, strlen(cc->prefix)) != 0)
         return true;
     char buf[128];
@@ -612,14 +600,12 @@ static bool binding_complete_alias_cb(const char *name, const char *path, alias_
     return true;
 }
 
-static void complete_bindings(const char *prefix, struct completion *out) {
-    binding_complete_ctx_t cc = {.out = out, .prefix = prefix};
+static void complete_aliases(const char *prefix, struct completion *out) {
+    alias_complete_ctx_t cc = {.out = out, .prefix = prefix};
     set_detail(out, COMP_KIND_ALIAS, NULL);
-    // Scope bindings first (let / --var), then the alias table. The
-    // alias walk is prefix-filtered in its callback so the ~500-entry
+    // The alias table, prefix-filtered in its callback so the ~500-entry
     // mac-global table doesn't flood a bare `$`.
-    shell_var_each(binding_complete_var_cb, &cc);
-    alias_each(binding_complete_alias_cb, &cc);
+    alias_each(alias_complete_cb, &cc);
 }
 
 // === Statement position =====================================================
@@ -650,11 +636,11 @@ static bool copy_word(char *buf, size_t size, const char *s, const char *e) {
     return true;
 }
 
-// The head of a statement: `$` bindings, a mid-path partial's members, or
+// The head of a statement: `$` aliases, a mid-path partial's members, or
 // the statement keywords, root members and command words.
 static void complete_head(const char *partial, struct completion *out) {
     if (partial[0] == '$') {
-        complete_bindings(partial + 1, out);
+        complete_aliases(partial + 1, out);
         return;
     }
     if (strpbrk(partial, ".[")) {
@@ -708,13 +694,12 @@ static void complete_arguments(const char *line, const script_stmt_t *st, const 
         return;
     }
     if (partial[0] == '$') {
-        complete_bindings(partial + 1, out);
+        complete_aliases(partial + 1, out);
         return;
     }
 
-    // The head: a tree path, or a bare word read the way the interpreter
-    // reads it -- a command stands for the method it names; a `def`
-    // function has no declared arguments.
+    // The head: a tree path, or a command word, which stands for the method
+    // it names.
     if (*st->head == '$')
         return;
     char head[OBJ_PATH_MAX];
@@ -722,7 +707,7 @@ static void complete_arguments(const char *line, const script_stmt_t *st, const 
         return;
     node_t cmd = object_resolve(object_root(), head);
     if (!node_valid(cmd) && !strpbrk(head, ".[") &&
-        shell_word_resolve(head, strlen(head), &cmd, NULL, NULL, 0) != SHELL_HEAD_COMMAND)
+        shell_word_resolve(head, strlen(head), &cmd, NULL, 0) != SHELL_HEAD_COMMAND)
         cmd = (node_t){0};
     if (!node_valid(cmd) || !cmd.member || cmd.member->kind != MK_METHOD)
         return;
@@ -738,6 +723,60 @@ static void complete_arguments(const char *line, const script_stmt_t *st, const 
     out->ctx_arg_index = slot;
     out->ctx_arg_name = slot >= 0 ? m->method.args[slot].name : NULL;
     complete_method_arg(m, slot, partial, out);
+}
+
+// === Lua lines ===============================================================
+
+// Whether the line holding the cursor runs as a command line.  The text
+// typed so far is what is classified (a partial path classifies as Lua,
+// which completes the same way).  Weak: a unit suite links without the
+// script engine, and reads every line as a command line.
+bool gs_lua_is_command_line(const char *text) __attribute__((weak));
+static bool is_command_line(const char *line, const char *ls, const char *cur) {
+    if (!gs_lua_is_command_line)
+        return true;
+    (void)line;
+    size_t n = (size_t)(cur - ls);
+    char *text = (char *)malloc(n + 1);
+    if (!text)
+        return true;
+    memcpy(text, ls, n);
+    text[n] = '\0';
+    bool cmd = gs_lua_is_command_line(text);
+    free(text);
+    return cmd;
+}
+
+// A Lua line: complete the path (`machine.cpu.p`, `$p`) that ends at the
+// cursor, outside strings.  A word that is not a path gets nothing.
+static void complete_lua_word(const char *line, const char *ls, const char *cur, struct completion *out) {
+    // Inside a string literal: nothing.
+    script_quote_t q = {0};
+    for (const char *p = ls; p < cur; p++)
+        script_quote_step(&q, *p);
+    if (q.quote)
+        return;
+    // Back over the path: identifiers, `.`, a leading `$`, and `[N]` indices.
+    const char *w = cur;
+    while (w > ls && (script_ident_char(w[-1]) || w[-1] == '.' || w[-1] == '$' || w[-1] == '[' || w[-1] == ']'))
+        w--;
+    if (w > ls && w[-1] == ':')
+        return; // a method call on a Lua value (`s:fo`)
+    if (w == cur || (*w != '$' && !script_ident_start(*w)))
+        return;
+    if (w > ls && w[-1] == '.')
+        return; // a field of a Lua value (`t.x.y`), not the tree
+    out->start = (int)(w - line);
+    char partial[512];
+    if (!copy_word(partial, sizeof(partial), w, cur)) {
+        out->truncated = true;
+        return;
+    }
+    if (partial[0] == '$') {
+        complete_aliases(partial + 1, out);
+        return;
+    }
+    complete_head(partial, out);
 }
 
 // === Public entry point =====================================================
@@ -768,20 +807,23 @@ void shell_complete(const char *line, int cursor_pos, struct completion *out) {
     out->start = cursor_pos;
     out->end = cursor_pos;
 
-    // The source line holding the cursor, up to the cursor, split the way
-    // the parser reads it: the statement the cursor is in is the line's
-    // own, or an inline block's once past its `{`.
+    // The source line holding the cursor, up to the cursor.
     const char *ls = cur;
     while (ls > line && ls[-1] != '\n')
         ls--;
+    // A Lua line: the path under the cursor.
+    if (!is_command_line(line, ls, cur)) {
+        complete_lua_word(line, ls, cur, out);
+        return;
+    }
     script_line_t ln;
     script_line_split(ls, cur, &ln);
-    if (ln.comment || ln.close)
-        return; // in a comment, or past an inline block's `}`
-    const script_stmt_t *st = ln.open ? &ln.body : &ln.stmt;
+    if (ln.comment)
+        return; // in a comment
+    const script_stmt_t *st = &ln.stmt;
     if (st->kind == SCRIPT_STMT_EMPTY) {
-        // Nothing typed yet at a statement position.
-        if (cur > ls && !isspace((unsigned char)cur[-1]) && cur[-1] != '{')
+        // Nothing typed yet at the head.
+        if (cur > ls && !isspace((unsigned char)cur[-1]))
             return;
         complete_head("", out);
         return;
@@ -790,7 +832,7 @@ void shell_complete(const char *line, int cursor_pos, struct completion *out) {
     // The head word: where the cursor still is, it is completed as a head.
     const char *s = st->start;
     if (*s != '$' && !isalpha((unsigned char)*s) && *s != '_')
-        return; // an expression statement
+        return; // not a path head
     const char *he = script_path_end(s, cur);
     if (!he)
         return; // inside an index

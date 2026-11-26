@@ -37,13 +37,15 @@ struct floppy;
 typedef struct floppy floppy_t;
 
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
-// Initializes a floppy controller of the given type and maps it to memory.
+// Initializes a floppy controller of the given type.  It maps nothing: the
+// board places the chip's window (floppy_map_stride_window, or its own decode
+// over floppy_get_memory_interface).
 // `n_drives` is how many of the controller's FLOPPY_NUM_DRIVES the machine
 // cables (its profile's floppy_slots): the chip always has two drive
 // selects, but drives past n_drives are not in the object model and refuse an
 // insert.
-floppy_t *floppy_init(floppy_type_t type, memory_map_t *map, struct scheduler *scheduler, int n_drives,
-                      checkpoint_t *checkpoint, const image_list_t *images);
+floppy_t *floppy_init(floppy_type_t type, struct scheduler *scheduler, int n_drives, checkpoint_t *checkpoint,
+                      const image_list_t *images);
 
 // How many drives the controller was built with (or restored with).
 int floppy_drive_count(const floppy_t *floppy);
@@ -63,6 +65,19 @@ int floppy_insert(floppy_t *floppy, int drive, image_t *disk);
 bool floppy_is_inserted(floppy_t *floppy, int drive);
 // Sets the VIA-driven SEL signal for head selection
 void floppy_set_sel_signal(floppy_t *floppy, bool sel);
+
+// The spindle speed, in rpm, that the board's disk-speed PWM commands of a
+// drive without speed control of its own (the 128K/512K 400K drive): its
+// /TACH then follows it instead of the drive's track zone.  0 restores the
+// self-regulating drive.
+void floppy_set_pwm_rpm(floppy_t *floppy, double rpm);
+
+// Steer the controller's two drive-enable lines (/ENBL1, /ENBL2) to drive
+// positions: the drive index each reaches, or -1 for none.  The default is
+// /ENBL1 -> 0, /ENBL2 -> 1.  A board whose logic gates the enables with a
+// select line of its own (the SE's vDriveSel picks the lower or the upper
+// internal drive for /ENBL1) calls this whenever that line changes.
+void floppy_set_enbl_route(floppy_t *floppy, int enbl1_drive, int enbl2_drive);
 // The SWIM register file, addressed by INDEX (0-15).  Whoever owns the bus
 // window maps addresses onto the index -- the chip never sees an address.
 // Mirrors swim3_read / swim3_write.
@@ -71,8 +86,16 @@ uint8_t floppy_swim_read(floppy_t *floppy, unsigned reg);
 uint8_t floppy_swim_peek(floppy_t *floppy, unsigned reg);
 void floppy_swim_write(floppy_t *floppy, unsigned reg, uint8_t value);
 
-// Get the memory-mapped I/O interface for machine-level address decode
+// Get the memory-mapped I/O interface for machine-level address decode.  The
+// SWIM's is addressed by register index; the IWM's is its compact-board
+// window below (bus addresses, A9-A12 decoded).
 const memory_interface_t *floppy_get_memory_interface(floppy_t *floppy);
+
+// The 68000 compact boards' window (128K to Classic): `size` bytes from
+// `base`, CPU A9-A12 on the chip's register select -- a $200 stride -- and
+// the chip on the low byte lane (the IWM logs an even-address byte access).
+// For an IWM or SWIM controller only.
+void floppy_map_stride_window(floppy_t *floppy, memory_map_t *map, uint32_t base, uint32_t size);
 // Frees and clears a drive's cached GCR track buffers.  Call after writing to
 // the drive's image behind the controller's back (the IIfx/Q900 IOP block
 // path), so the next read re-encodes from the image rather than serving stale

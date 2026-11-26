@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Mac OS 9.2.1 install CD -> Finder on a beige Power Macintosh G3, twice.
 --
 -- C1  the CD on the MESH bus as a SCSI CD-ROM (id 3, the profile's CD bay):

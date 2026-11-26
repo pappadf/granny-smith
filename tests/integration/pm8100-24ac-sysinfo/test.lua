@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: Power Macintosh 8100 + Display Card 24AC (genuine video
 -- ROM) — System 7.5, floppy insert, and the Symantec "System Info" Display
 -- benchmark.

@@ -338,37 +338,33 @@ handing the page a handle or a buffer (the Voodoo2 and
 printer rings, camera and microphone rings): not an event about the
 machine.
 
-### Jobs: scripts off the emulator thread
+### Jobs: scripts as tasks on the emulator thread
 
 A terminal line is not a `shell.run` call any more. The page posts it as a
 `REQ_SCRIPT` record (`{id, client, deadline_ms, src_len} + src`) and the
-core queues it as a **job** for the one **job thread** (`src/core/job/job.h`),
-created at boot right after `READY`. The interpreter runs there, on its
-own stack, and touches nothing but its own memory: every read or write of
+core queues it as a **job** ([job.md](../internals/core/job/job.md)): a Lua
+coroutine running the line (a command line or a Lua chunk,
+[lua.md](../internals/core/lua/lua.md), "The terminal") that the emulator
+thread's drain resumes one step at a time. Its reads, writes and calls of
 the object tree (`node_get` / `node_set` / `node_call`, and the REPL's
-printing of a result) is handed to the emulator thread through the
-**seam**, `job_on_emulator()`, and served in the same drain that serves
-the page — at the next frame boundary while the machine runs, within a
-millisecond while it is stopped. A leaf that starts a *bounded* mode
-(`scheduler.run N`, `debug.step N`) holds the job until that mode ends, so
-`scheduler.run N` inside a script means "run N"; a bare `scheduler.run`
-from the terminal returns at once (the machine runs on; Ctrl-C stops it),
-while a headless script's bare `scheduler.run` waits for the machine to
-stop (`job_glue_unbounded_waits`). The job's answer is an `EVT_RESULT`
-carrying the shell's new prompt (what `shell.run` returned), or
-`{"error"}` when the script failed or was cancelled. A build without a
-job thread (headless today, the unit suites) runs the script inline in
-the drain, with the same interface.
+printing of a result) are plain C calls on that thread; the task suspends
+after a call that started a mode the client waits for, while an I/O
+leaf's answer is outstanding, and when its 4 ms time slice is spent, so a
+computing script leaves the machine running. A leaf that starts a
+*bounded* mode (`scheduler.run N`, `debug.step N`) holds the job until
+that mode ends, so `scheduler.run N` inside a script means "run N"; a bare
+`scheduler.run` from the terminal returns at once (the machine runs on;
+Ctrl-C stops it), while a headless script's bare `scheduler.run` waits for
+the machine to stop (`job_glue_mode_waits`). The job's answer is an
+`EVT_RESULT` carrying the shell's new prompt, or `{"error"}` when the
+script failed or was cancelled.
 
 Scripts are FIFO — one runs at a time per process; `REQ_EVAL` leaves from
-any client are served alongside. The scope stack, alias table and
-function table are shared behind one lock (`job_tables_lock`), taken per
-operation; function bodies are reference-counted, so a redefinition or
-removal from another client cannot free a body a job is executing.
+any client are served alongside.
 
 `REQ_CANCEL {id, client, target_id}` cancels a job of that client: a
-queued one finishes at once, a running one unwinds at its next statement
-(`E_CANCELLED` → `{"error":"cancelled"}`), and the mode it started, if
+queued one finishes at once, a running one unwinds at its next instruction-count hook
+(`{"error":"cancelled"}`), and the mode it started, if
 one is running, is stopped. `REQ_MODE_STOP {id, client, owner}` stops a
 running mode by owner (0: any); both answer `true` / `false`.
 
@@ -854,7 +850,7 @@ typed-dispatch and introspection surface.
   an auxiliary core listed in `capabilities.aux_cpus` has
   `machine.<name>.frame` (the AV DSP3210's `machine.dsp.frame`).
 - **`debug.disasm([addr], [count])`** — pretty-prints to stdout,
-  returns `VK_BOOL` (truthy for shell `assert ${…}` use). The web2
+  returns `VK_BOOL` (truthy for a script's `assert(debug.disasm(…))`). The web2
   Disasm pane uses `debug.frame` instead.
 - **`debug.breakpoints.add(addr [, condition])`** — set (a second add at
   the same address returns the existing entry);

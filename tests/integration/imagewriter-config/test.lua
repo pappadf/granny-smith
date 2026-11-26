@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- See config.mk.
 
 local PLUS = F"${vars.TEST_DATA}/roms/plus-v3-4d1f8172.rom"

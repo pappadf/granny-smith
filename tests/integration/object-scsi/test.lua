@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration: `scsi` object class.
 -- A SCSI HD image is attached at boot, so devices.N has at least one
 -- populated slot. We verify the path resolves, the bus phase enum

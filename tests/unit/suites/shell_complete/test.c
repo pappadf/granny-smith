@@ -10,8 +10,6 @@
 #include "cmd_complete.h"
 #include "commands.h"
 #include "object.h"
-#include "shell_funcs.h"
-#include "shell_var.h"
 #include "test_assert.h"
 #include "value.h"
 #include "vfs.h"
@@ -21,20 +19,6 @@
 #include <string.h>
 
 // === Stubs =====================================================================
-
-// No def functions here.
-script_func_t *shell_func_find(const char *name) {
-    (void)name;
-    return NULL;
-}
-void shell_func_release(script_func_t *f) {
-    (void)f;
-}
-
-void shell_var_each(shell_var_iter_fn fn, void *ud) {
-    (void)fn;
-    (void)ud;
-}
 
 struct vfs_dir {
     int pos;
@@ -189,24 +173,13 @@ TEST(test_command_word_completes_and_takes_its_methods_arguments) {
     shell_command_clear_user();
 }
 
-TEST(test_statement_positions_follow_the_parser) {
+// Positions in a command line (this suite links without the script engine,
+// which classifies Lua lines; shell-terminal covers those).
+TEST(test_command_line_positions) {
     build_tree();
-    // Inside an inline block the body is a statement of its own.
-    complete("if $x { to");
+    complete("to");
     ASSERT_TRUE(has("tool."));
-    ASSERT_EQ_INT(8, g_out.start);
-    complete("if $x { tool.load ");
-    ASSERT_TRUE(has("disk.img"));
-    ASSERT_TRUE(g_out.has_context && strcmp(g_out.ctx_method, "tool.load") == 0);
-    complete("} else { tool.co");
-    ASSERT_TRUE(has("tool.copy"));
-    // A later line of a block starts a statement.
-    complete("while true {\n  tool.lo");
-    ASSERT_TRUE(has("tool.load"));
-    ASSERT_EQ_INT(15, g_out.start);
-    // A block header's condition is an expression, not a head.
-    complete("if to");
-    ASSERT_EQ_INT(0, g_out.count);
+    ASSERT_EQ_INT(0, g_out.start);
     // `;` does not end a statement: the word after it is still an argument
     // of tool.load, which takes one.
     complete("tool.load a; to");
@@ -222,6 +195,11 @@ TEST(test_statement_positions_follow_the_parser) {
     ASSERT_EQ_INT(0, g_out.count);
     complete("tool.load x # to");
     ASSERT_EQ_INT(0, g_out.count);
+    complete("tool.load x -- to");
+    ASSERT_EQ_INT(0, g_out.count);
+    // A `#` inside a word is not a comment.
+    complete("tool.load a#b ");
+    ASSERT_TRUE(!has("tool."));
 }
 
 // Binding names resolve case-sensitively, so completion matches them the
@@ -282,7 +260,7 @@ TEST(test_dedup_and_bound_on_large_sets) {
 }
 
 int main(void) {
-    RUN(test_statement_positions_follow_the_parser);
+    RUN(test_command_line_positions);
     RUN(test_val_path_argument_gets_files);
     RUN(test_argument_named_path_without_flag_gets_none);
     RUN(test_flag_not_name_decides_per_slot);

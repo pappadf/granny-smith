@@ -160,8 +160,8 @@ data forks become regular files, and a file with a resource fork or
 non-trivial Finder info also gets an AppleDouble `._<name>` sidecar.
 Entry names are confined: none may escape `out_dir`.
 
-An unrecognised file's `archive` is an empty string, which scripts can
-test as a falsy `${...}`.
+An unrecognised file's `archive` is an empty string; a Lua script tests
+it with `== ""` (an empty string is true in Lua).
 
 Both are reachable everywhere the object model is: the interactive
 shell, headless scripts, the JavaScript bridge
@@ -187,9 +187,9 @@ true
 
 ### Script form
 
-```
-${files.identify("/tmp/myarchive.sit").archive}
-assert ${files.archive.extract("/tmp/myarchive.sit", "/tmp/out")}
+```lua
+print(files.identify("/tmp/myarchive.sit").archive)
+assert(files.archive.extract("/tmp/myarchive.sit", "/tmp/out"))
 ```
 
 ### Web drag-and-drop

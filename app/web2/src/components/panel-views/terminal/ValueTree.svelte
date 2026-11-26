@@ -43,13 +43,13 @@
   <a href="#{path}" class="obj-link" onclick={(ev) => onlink(ev, path)}>{@render text(path)}</a>
 {:else if shape.kind === 'list' || shape.kind === 'map'}
   <details class={top ? 'value-tree' : 'nested'} bind:open>
-    <summary class="gs-summary"
-      >{#if top && nl >= 0}{#if open}<span class="count">{count}</span>{:else}{@render label!(
+    <summary class="gs-summary">
+      {#if top && nl >= 0}{#if open}<span class="count">{count}</span>{:else}{@render label!(
             own!.slice(0, nl),
           )}<span class="count">{` … ${count}`}</span>{/if}{:else}{@render text(
           nestedText(value),
-        )}{/if}</summary
-    >
+        )}{/if}
+    </summary>
     <div class="kv">
       {#each shape.items as [k, x], i (i)}
         <div class="kv-row"><span class="kv-key">{k}</span><ValueTree value={x} {onlink} /></div>

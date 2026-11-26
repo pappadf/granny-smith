@@ -12,8 +12,6 @@
 //              strtod). A bare `42` without `.` or `e` parses to int.
 //   booleans:  true, false, on, off, yes, no
 //   strings:   "..." with backslash escapes (\n \t \r \\ \" \xHH \0)
-//              and `${...}` interpolation regions kept as literal
-//              characters (the expression evaluator handles them).
 //   bytes:     "hello":bytes  or  0xDEAD_BEEF:N (N, 1..16, read with the
 //              integer grammar above)
 //
@@ -22,8 +20,9 @@
 // truncated. An integer literal must end at a non-identifier character.
 //   enum tag:  bare identifier resolved against a caller-supplied table
 //
-// The parser does **not** resolve paths or aliases — that is the
-// expression parser's job.
+// The parser does **not** resolve paths or aliases: it reads the literal
+// text a method argument or an attribute write arrives as (the terminal's
+// bare words, a configuration value).
 
 #ifndef GS_OBJECT_PARSE_H
 #define GS_OBJECT_PARSE_H
@@ -43,60 +42,38 @@ struct parse_pos;
 // Longest numeric literal accepted; ample for a 64-bit `0b` literal.
 #define PARSE_NUMBER_MAX 79
 
-// Parse a single literal value starting at *p. On success, advances *p
-// past the literal and returns the parsed value. On failure, returns a
-// VK_ERROR with a descriptive message and leaves *p on the failing
-// position. Trailing whitespace is not consumed.
-//
-// `enum_table`/`n_enum` may be NULL/0; when supplied, a bare identifier
-// matching one of the entries parses as a VK_ENUM with that index.
-value_t parse_literal(const char **p, const char *const *enum_table, size_t n_enum);
-
 // Parse a complete literal occupying the whole string `s` (with any
 // surrounding whitespace). Returns VK_ERROR if any trailing characters
-// remain past the literal.
+// remain past the literal.  `enum_table`/`n_enum` may be NULL/0; when
+// supplied, a bare identifier matching one of the entries parses as a
+// VK_ENUM with that index.
 value_t parse_literal_whole_string(const char *s, const char *const *enum_table, size_t n_enum);
 
-// Parse just an integer literal. Convenience wrapper used by the
-// expression lexer; on success consumes the digits and any underscore
-// separators, applies the `u`/`i` suffix, and returns VK_UINT or VK_INT.
-// Returns VK_ERROR if the cursor is not on an integer literal.
+// Parse just an integer literal at *p: on success consumes the digits and
+// any underscore separators, applies the `u`/`i` suffix, and returns VK_UINT
+// or VK_INT.  Returns VK_ERROR if the cursor is not on an integer literal.
 value_t parse_integer_literal(const char **p);
-
-// Parse a quoted "..." string literal. On entry *p must point at the
-// opening quote. On success advances *p past the closing quote and
-// returns VK_STRING. The body is kept verbatim for the expression
-// evaluator to handle ${...} interpolation; only the standard escapes
-// are decoded.
-value_t parse_string_literal(const char **p);
-
-// Decode one \-escape at *p (which points at the '\'): \n \t \r \0 \\ \"
-// \' \xHH, and \$ when `allow_dollar` (interpolated strings, where `$`
-// starts a splice).  Advances *p past it and writes the byte to *out; false,
-// *p unmoved, on a malformed escape.  The one escape table for literals and
-// interpolation (expr.c).
-bool parse_decode_escape(const char **p, char *out, bool allow_dollar);
 
 // === Identifiers =============================================================
 
-// Longest identifier (binding, alias, function, parameter or member name) the
-// readers accept: every lexer that copies a name does so into a buffer of
+// Longest identifier (alias, command or member name) the readers accept:
+// every lexer that copies a name does so into a buffer of
 // OBJ_IDENT_MAX + 1 and fails on a longer one, and object_validate_name
 // refuses to bind one, so no name can be created that cannot be read back.
 #define OBJ_IDENT_MAX 63
 
 // === Keywords ================================================================
 
-// Reserved words may not be used as member names, alias names, or any
-// future user-bindable identifier. Members: boolean-literal spellings +
-// script-grammar keywords.
+// Reserved words may not be used as member, alias or command names: Lua's
+// reserved words (a script could not spell `a.end`), and `none`, a command
+// line's literal.
 //
 // Returns true if `name` collides with a reserved word.
 bool object_is_reserved_word(const char *name);
 
-// The shell's keywords, in table order, each with a one-line syntax: the
-// reserved words plus contextual ones (`command`, a keyword only in its
-// statement shape).  `is_statement`: it heads a statement.
+// The keywords (shell.keywords, completion), in table order, each with a
+// one-line syntax.  `is_statement`: it heads a Lua statement, so completion
+// offers it at the start of a line.
 size_t object_keyword_count(void);
 const char *object_keyword(size_t i);
 const char *object_keyword_syntax(size_t i);

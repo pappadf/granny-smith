@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Apple Network Server suite — what the machine puts on its monitor.
 --
 -- Row map:
@@ -22,7 +21,7 @@
 
 local mac = dofile("../lib/mac.lua")
 
--- The Mac OS row needs its own ROM, so it cannot come through TEST_ROM/$ROM.
+-- The Mac OS row needs its own ROM, so it cannot come through TEST_ROM/vars.ROM.
 -- 4 MB Apple Network Server 2.0 prototype ROM (stored checksum 0x49B2BE8F),
 -- reassembled from four per-lane chip dumps; the reassembly self-verifies the
 -- Apple checksum over the image's first 3 MiB.

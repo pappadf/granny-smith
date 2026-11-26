@@ -8,9 +8,6 @@
   .hl-keyword {
     color: var(--gs-syntax-keyword);
   }
-  .hl-decl {
-    color: var(--gs-syntax-decl);
-  }
   .hl-interp {
     color: var(--gs-syntax-interp);
   }

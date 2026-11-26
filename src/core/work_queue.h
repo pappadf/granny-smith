@@ -4,11 +4,10 @@
 // work_queue.h
 // One pthread FIFO worker: a thread that takes items off a queue in order,
 // runs each with the lock released, and files it on a done list in the
-// order it finished, then wakes whoever reports completions.  The shell's
-// job thread (job/job.c) and the I/O worker (io/io_worker.c) are two of
-// these; each keeps its own item type -- with a wq_item_t as its first
-// member -- and its own semantics (cancel, progress, the job seam), and may
-// keep more of its state under the queue's mutex.
+// order it finished, then wakes whoever reports completions.  The I/O
+// worker (io/io_worker.c) is one; it keeps its own item type -- with a
+// wq_item_t as its first member -- and its own semantics (cancel, progress),
+// and may keep more of its state under the queue's mutex.
 
 #ifndef WORK_QUEUE_H
 #define WORK_QUEUE_H
@@ -55,20 +54,8 @@ void wq_push(work_queue_t *q, wq_item_t *item);
 void wq_lock(work_queue_t *q);
 void wq_unlock(work_queue_t *q);
 
-// With the lock held: file `item` on the done list, after those already there.
-void wq_done_append_locked(work_queue_t *q, wq_item_t *item);
-
-// With the lock held: move every waiting item `match` accepts to the done
-// list, in queue order, calling `on_move` on each as it goes.  Returns how
-// many moved.
-int wq_cancel_waiting_locked(work_queue_t *q, bool (*match)(const wq_item_t *item, void *ctx),
-                             void (*on_move)(wq_item_t *item, void *ctx), void *ctx);
-
-// The oldest finished item, left on the list (NULL: none).  Takes the lock.
-wq_item_t *wq_done_peek(work_queue_t *q);
-
-// Remove the oldest finished item (the one wq_done_peek returned) and
-// return it.  Takes the lock.
+// Remove the oldest finished item and return it (NULL: none).  Takes the
+// lock.
 wq_item_t *wq_done_pop(work_queue_t *q);
 
 #endif // WORK_QUEUE_H

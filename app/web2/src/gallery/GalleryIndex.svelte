@@ -78,11 +78,11 @@
 <main class="gallery-index">
   <header class="bar">
     <h1>Granny Smith UI gallery</h1>
-    <label
-      >Skin <select bind:value={skin}>
+    <label>
+      Skin <select bind:value={skin}>
         {#each skins as s (s.id)}<option value={s.id}>{s.name}</option>{/each}
-      </select></label
-    >
+      </select>
+    </label>
     <label><input type="checkbox" bind:checked={reduced} /> Reduced motion</label>
     <nav>
       {#each ['stories', 'tokens', 'coverage'] as const as v (v)}
@@ -118,9 +118,9 @@
       <tbody>
         {#each shown as t (t.name)}
           <tr>
-            <td
-              >{#if swatch(t)}<span class="swatch" style:background="var({t.name})"></span>{/if}</td
-            >
+            <td>
+              {#if swatch(t)}<span class="swatch" style:background="var({t.name})"></span>{/if}
+            </td>
             <td><code>{t.name}</code></td>
             <td>{t.layer}</td>
             <td>{t.kind}</td>
@@ -148,11 +148,15 @@
               {#each c.stories as s (s)}
                 {#if storyNames.has(s)}<a
                     href={href(s, STORIES.find((x) => x.name === s)?.variants[0] ?? 'default')}
-                    >{s}</a
-                  >{:else if s === 'app-states'}<span>app-states screenshots</span
-                  >{:else if s === 'none'}<span>not screenshot (native)</span>{:else}<span
-                    class="missing">{s} (missing)</span
-                  >{/if}
+                  >
+                    {s}
+                  </a>{:else if s === 'app-states'}<span>
+                    app-states screenshots
+                  </span>{:else if s === 'none'}<span>not screenshot (native)</span>{:else}<span
+                    class="missing"
+                  >
+                    {s} (missing)
+                  </span>{/if}
               {/each}
             </td>
           </tr>

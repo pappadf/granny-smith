@@ -25,7 +25,7 @@ test("voodoo2_webgpu falls back to the thread backend, honestly, at creation", a
   // card's Rendering value, never a card of its own, so the tree lists the
   // Mach64, the Cirrus 54M30, the Voodoo2, the Rage 128, the QuickDraw 3D
   // Accelerator and the Symbios SCSI card alone.
-  expect(await terminalEval(page, 'len(catalog.profile("pm7500").cards)')).toBe("6");
+  expect(await terminalEval(page, '#catalog.profile("pm7500").cards')).toBe("6");
   expect(await terminalEval(page, "machine.pci.slot[1].card.regs.gpu_engaged")).toBe(
     "false",
   );

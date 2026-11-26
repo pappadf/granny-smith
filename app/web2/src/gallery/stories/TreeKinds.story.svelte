@@ -16,31 +16,31 @@
     </li>
     <li class="kind-attr">
       <TreeItem depth={1} density="compact" hover={false} kind="attr" selected>
-        {#snippet content()}<span class="name attr">model</span><span class="value"
-            >"Macintosh IIcx"</span
-          >{/snippet}
+        {#snippet content()}<span class="name attr">model</span><span class="value">
+            "Macintosh IIcx"
+          </span>{/snippet}
       </TreeItem>
     </li>
     <li class="kind-attr">
       <TreeItem depth={1} density="compact" hover={false} kind="attr">
-        {#snippet content()}<span class="name attr">sound</span><span class="value"
-            ><ValueEditor
+        {#snippet content()}<span class="name attr">sound</span><span class="value">
+            <ValueEditor
               type={{ kind: 'bool', width: 1, presentation: null, enum: null }}
               value="true"
               label="sound"
-            /></span
-          >{/snippet}
+            />
+          </span>{/snippet}
       </TreeItem>
     </li>
     <li class="kind-attr">
       <TreeItem depth={1} density="compact" hover={false} kind="attr">
-        {#snippet content()}<span class="name attr">ram</span><span class="value"
-            ><ValueEditor
+        {#snippet content()}<span class="name attr">ram</span><span class="value">
+            <ValueEditor
               type={{ kind: 'uint', width: 32, presentation: null, enum: null }}
               value="8388608"
               label="ram"
-            /></span
-          >{/snippet}
+            />
+          </span>{/snippet}
       </TreeItem>
     </li>
   </ul>
@@ -51,29 +51,33 @@
     <li>
       <TreeItem depth={0} kind="method" filter="match">
         {#snippet content()}<span class="gs-tree-item__label name method">objects</span><span
-            class="doc">List child objects</span
-          >{/snippet}
+            class="doc"
+          >
+            List child objects
+          </span>{/snippet}
       </TreeItem>
     </li>
     <li>
       <TreeItem depth={0} kind="attr" selected>
-        {#snippet content()}<span class="gs-tree-item__label name attr">pc</span><span class="doc"
-            >Program counter</span
-          >{/snippet}
+        {#snippet content()}<span class="gs-tree-item__label name attr">pc</span><span class="doc">
+            Program counter
+          </span>{/snippet}
       </TreeItem>
     </li>
     <li>
       <TreeItem depth={0} kind="alias" filter="dim">
-        {#snippet content()}<span class="gs-tree-item__label name alias">ls</span><span class="doc"
-            >files.ls</span
-          >{/snippet}
+        {#snippet content()}<span class="gs-tree-item__label name alias">ls</span><span class="doc">
+            files.ls
+          </span>{/snippet}
       </TreeItem>
     </li>
     <li>
       <TreeItem depth={0} kind="keyword">
-        {#snippet content()}<span class="gs-tree-item__label name keyword">let</span><span
-            class="doc">Declare a variable</span
-          >{/snippet}
+        {#snippet content()}<span class="gs-tree-item__label name keyword">local</span><span
+            class="doc"
+          >
+            Declare a local variable
+          </span>{/snippet}
       </TreeItem>
     </li>
   </ul>

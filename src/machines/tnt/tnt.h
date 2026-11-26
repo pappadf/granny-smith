@@ -141,6 +141,60 @@ typedef enum tnt_board_kind {
     TNT_BOARD_SHINER, // Apple Network Server 500/700 ("Shiner")
 } tnt_board_kind_t;
 
+// === Per-board chip ops =====================================================
+// The two places the Catalyst board (7200) departs from the rest of the
+// family, as two tables a board names instead of a flag tnt.c tests: the
+// memory controller at $F8000000 (Hammerhead, or Platinum) and the on-board
+// video with the RAMDAC behind Grand Central +$1B000 (Control's RaDACal, or
+// Platinum's DACula).  A NULL hook is a step that board has nothing for.
+struct tnt_state;
+
+// The memory controller at $F8000000 (hammerhead.c, platinum.c).
+typedef struct tnt_mc_ops {
+    const char *name; // the window's memory-map label
+    uint8_t (*read)(config_t *cfg, uint32_t offset); // window offsets 0..$7FF
+    void (*write)(config_t *cfg, uint32_t offset, uint8_t value);
+    // Claim the DRAM decode, and any aperture the part owns, once the fixed
+    // map is in place (construction; `cp` on a restore).  0 on success.
+    int (*map)(config_t *cfg, checkpoint_t *cp);
+    // Re-project the restored "tnt" checkpoint part onto the page table.
+    void (*board_restored)(config_t *cfg);
+    // Bus reset: power-on registers, right after Hammerhead's.
+    void (*reset)(config_t *cfg);
+} tnt_mc_ops_t;
+
+// The on-board video and its RAMDAC (control.c, platinum.c).
+typedef struct tnt_video_ops {
+    void (*register_events)(config_t *cfg); // event types, before the scheduler starts
+    // The RAMDAC's byte cells at Grand Central +$1B000; peek is the read
+    // without its RGB-phase step.
+    uint8_t (*dac_read)(config_t *cfg, uint32_t offset);
+    uint8_t (*dac_peek)(config_t *cfg, uint32_t offset);
+    void (*dac_write)(config_t *cfg, uint32_t offset, uint8_t value);
+    // Bus reset: power-on registers, after AWACS's (VRAM survives).
+    void (*reset)(config_t *cfg);
+    // Chip state the "tnt.av" part carries after Control's block and VRAM
+    // (NULL: none), written and read in that order.
+    void (*save)(struct tnt_state *st, checkpoint_t *cp);
+    void (*load)(struct tnt_state *st, checkpoint_t *cp);
+    // Rebuild the derived views (page table, display descriptor) from the
+    // restored "tnt.av" part.
+    void (*restored)(config_t *cfg);
+    void (*teardown)(config_t *cfg);
+    void (*host_vbl)(config_t *cfg); // the host frame: re-composite, mark the frame dirty
+    // substrate.display: the board's own raster, for video that is no slot
+    // device (NULL: Control is a PCI device and presents through the bus).
+    display_t *(*display)(config_t *cfg);
+} tnt_video_ops_t;
+
+// The family's usual pair: Hammerhead with Control (on the Network Servers,
+// whose video is a card, Control's block simply stays unbuilt).
+extern const tnt_mc_ops_t tnt_hammerhead_mc;
+extern const tnt_video_ops_t tnt_control_video;
+// The Catalyst board's one part that is both (platinum.c).
+extern const tnt_mc_ops_t tnt_platinum_mc;
+extern const tnt_video_ops_t tnt_platinum_video_ops;
+
 // === Per-model board descriptor =============================================
 typedef struct tnt_board_desc {
     // BoxID power-on value (little-endian bit numbering — the guest reads
@@ -181,6 +235,19 @@ typedef struct tnt_board_desc {
     // TwoSuppliesH — Board Register 1 bit 15, the redundant-PSU report and
     // the one register-level difference between a 700 and a 500 (§5.6).
 
+    // Chaos (343S1155), the display-bus bridge at $F0000000 that Control
+    // sits behind; every board but the 7200's.
+    bool has_chaos;
+
+    // === The Catalyst delta (Power Macintosh 7200) ===========================
+    // The memory controller and the on-board video (NULL: Hammerhead and
+    // Control).  The 7200 names Platinum (343S1184) for both: the memory
+    // controller and the video in one part, its VRAM aperture at $F1000000
+    // and the DACula RAMDAC behind Grand Central +$1B000 (platinum.c).
+    const tnt_mc_ops_t *mc;
+    const tnt_video_ops_t *video;
+    uint32_t vram_kb; // Platinum VRAM fitted: 1024 (soldered), 2048 or 4096
+
     // === The multiprocessor card (mp.c) =====================================
     // Processors on the card: 0/1 = the uniprocessor card, 2 = the Apple/
     // DayStar two-way card of the 9500/180MP (Hammerhead ArbConfig TwoCPU,
@@ -189,6 +256,58 @@ typedef struct tnt_board_desc {
     // The processors' PVR (0 = the core model's default part).
     uint32_t pvr;
 } tnt_board_desc_t;
+
+// === The Macintosh boards' straps ===========================================
+// BoxID, as software reads it (little-endian bit numbering -- the guest
+// reads the register with lwbrx), one bit per fact:
+//
+//   * bit 15 idles pulled HIGH on every board but the 7300's, whose low
+//     strap is what the System's identification patch reads (pm7300.c);
+//   * bit 14 = MESH present;
+//   * bit 13 SET = 7500: Open Firmware's model decode (OpenFW image $10592)
+//     reads BoxID as xw@>>11 into its machine word and picks "AAPL,7500"
+//     over "AAPL,8500" on it (an earlier "composite video" reading was
+//     wrong);
+//   * bit 11 SET = 8500, the 68k identification's one BoxID test (the
+//     shipping ROM's routine at $FFC14844); the 9500 is told apart by
+//     Hammerhead +$20 instead (below);
+//   * bit 8 is the factory-test strap, idling HIGH.  POST reads it
+//     ($FFF201FC, `lwbrx` + `andi. r6,r6,0x100`) on every boot whose NVRAM
+//     already carries POST's "RobG" log signature -- every boot but the
+//     first on a formatted store -- and CLEAR sends the machine into the
+//     ROM's Serial Test Manager (`>` on ttya, no timeout) before Open
+//     Firmware ever runs: no device tree, no BAR assignment, a black
+//     screen (#115).  The earlier reading of the strap as "set = test
+//     monitor" was made on ladder rows that always booted a virgin store,
+//     where POST takes the fresh-log path and never tests the bit.  The
+//     Network Server board (ans500.c) found the same law.
+//
+// The 1997 boards (7300/7600/8600/9600) "have the same machine ID values
+// as their earlier counterparts" (Apple, "Power Macintosh 7300, 7600, 8600,
+// and 9600 Computers" Developer Note, 1996, "Machine Identification"), so
+// each takes its predecessor's straps from here.
+#define TNT_BOXID_IDLE     0x8000u // bit 15: pulled high
+#define TNT_BOXID_MESH     0x4000u // bit 14: MESH present
+#define TNT_BOXID_OF_7500  0x2000u // bit 13: Open Firmware's 7500 pick
+#define TNT_BOXID_68K_8500 0x0800u // bit 11: the 68k routine's 8500
+#define TNT_BOXID_NO_TEST  0x0100u // bit 8: the factory-test strap, idling high
+#define TNT_BOXID_7500     (TNT_BOXID_IDLE | TNT_BOXID_MESH | TNT_BOXID_OF_7500 | TNT_BOXID_NO_TEST)
+#define TNT_BOXID_8500     (TNT_BOXID_IDLE | TNT_BOXID_MESH | TNT_BOXID_68K_8500 | TNT_BOXID_NO_TEST)
+#define TNT_BOXID_9500     (TNT_BOXID_IDLE | TNT_BOXID_MESH | TNT_BOXID_NO_TEST)
+// Hammerhead identity: the part identifier's first byte $39 selects the
+// ROM's TNT path (a $3001xxxx identifier is the 7200/Catalyst, platinum.c).
+// The +$20 register's top byte is Open Firmware's class selector
+// (m = (b>>5) | ((b>>1)&8): $80 -> 4 -> 7500/8500, $40 -> 2 -> 9500), and
+// its bit 30 is the 68k routine's 9500 test.  Without bit 31 a 7500/8500
+// gets compatible "AAPL,????" and Open Firmware never instantiates the
+// chaos/control display nodes (the boot never reaches video); set it on a
+// 9500 and OF classifies the box as a 7500/8500.
+#define TNT_HH_ID       0x39000000u
+#define TNT_HH_R20_7500 0x80000000u // the 7500/8500 class
+#define TNT_HH_R20_9500 0x40000000u // the 9500 class
+// The fields every Hammerhead Macintosh board shares: the TNT identifier,
+// MESH and the Chaos bridge.
+#define TNT_MAC_BOARD_COMMON .hh_id = TNT_HH_ID, .kind = TNT_BOARD_MAC, .has_mesh = true, .has_chaos = true
 
 // === Hammerhead state (hammerhead.c) ========================================
 // 128 x 32-bit registers on $10 centres, big-endian (processor bus — the
@@ -204,6 +323,45 @@ typedef struct tnt_hammerhead {
     uint32_t bank_size[TNT_HH_BANKS];
     uint32_t bank_host_off[TNT_HH_BANKS];
 } tnt_hammerhead_t;
+
+// === The on-board RAMDAC's palette (tnt_fb.c) ===============================
+// Control's RaDACal and Platinum's DACula are one design: a 256-entry CLUT
+// behind an R/G/B-phased data port, and an eight-entry hardware-cursor
+// palette behind a port of its own whose phase runs over the shared address
+// register.  Byte-wide throughout (alignment 1), so embedding it where the
+// three fields used to sit leaves both chips' checkpointed layouts as they
+// were.
+typedef struct tnt_dac_pal {
+    uint8_t clut[256][3];
+    uint8_t crsr[8][3];
+    ramdac_seq_t crsr_seq;
+} tnt_dac_pal_t;
+
+// === Platinum state (platinum.c) ============================================
+// 128 x 32-bit registers on $10 centres, big-endian on the processor bus
+// like Hammerhead's.  The DRAM bank registers and the display timing set
+// live in the one file.
+#define TNT_PLAT_REGS  128
+#define TNT_PLAT_BANKS 8 // two banks per DIMM slot, four slots
+
+typedef struct tnt_platinum {
+    uint32_t reg[TNT_PLAT_REGS];
+    uint8_t vbl_pending; // a retrace not yet acknowledged (line 30 held)
+    uint8_t vbl_armed; // the retrace event is pending in the scheduler
+    // DACula: the address register, the CLUT port's phase, the indexed
+    // ("d2") register file and the palette.
+    ramdac_seq_t dac;
+    uint8_t dac_reg[256];
+    // The CLUT, and the hardware cursor's eight-entry palette (the d1 port)
+    // with its R/G/B phase over the shared address register.
+    tnt_dac_pal_t pal;
+    // What each bank holds (bytes; 0 = no DRAM) and where its storage
+    // starts in host RAM.  Construction data, rebuilt from the profile.
+    uint32_t bank_size[TNT_PLAT_BANKS];
+    uint32_t bank_host_off[TNT_PLAT_BANKS];
+    // The monitor on the sense lines, as the lines it straps to ground.
+    uint8_t mon_grounded;
+} tnt_platinum_t;
 
 // === Bandit / Chaos state (bandit.c) ========================================
 // Per-bridge software-visible state: the config address latch and the two
@@ -305,9 +463,7 @@ typedef struct tnt_control {
     uint8_t rad_bank; // misc $21: VRAM bank select
     uint8_t rad_misc[2]; // misc $10/$11 (cursor, cleared on mode set)
     uint8_t rad_reg[256]; // every other misc index: latched, read back
-    uint8_t clut[256][3];
-    uint8_t crsr[8][3]; // cursor palette (+$10 port)
-    ramdac_seq_t crsr_seq; // the cursor port's phase (the index is rad's)
+    tnt_dac_pal_t pal; // the CLUT and the cursor palette (+$10 port; its phase, the index is rad's)
     // The pixel-clock synthesiser (Cuda I2C device $50, subaddresses 1..3):
     // divisor p0, multiplier p1, post-scale exponent p2.  Zero = unprogrammed.
     uint8_t clk[3];
@@ -355,6 +511,10 @@ typedef struct tnt_mp {
 // === Family state ===========================================================
 typedef struct tnt_state {
     tnt_hammerhead_t hh;
+    tnt_platinum_t plat; // the 7200's Platinum (zeroed and unread elsewhere)
+    // The board's chip ops (tnt_board_desc_t.mc/.video, defaults resolved).
+    const tnt_mc_ops_t *mc;
+    const tnt_video_ops_t *video;
     tnt_gc_t gc;
     tnt_bandit_t bridge[TNT_MAX_BRIDGES];
     int bridge_count;
@@ -373,9 +533,9 @@ typedef struct tnt_state {
     // derived views are rebuilt from the registers on restore.
     tnt_control_t control;
     // machine.video -- the framebuffer node every display source exposes
-    // (display_class.h).
-    display_fb_node_t control_fb_node;
-    struct object *control_video_node;
+    // (display_class.h), for whichever chip drives the on-board video.
+    display_fb_node_t fb_node;
+    struct object *video_node;
     pci_device_t *control_dev; // Control as a device on the Chaos bus (owned
                                // by the bus: its factory allocated it)
     mesh_t *mesh; // internal fast SCSI (core/peripherals/scsi_mesh.c)
@@ -420,6 +580,8 @@ typedef struct tnt_state {
     memory_interface_t chaos_probe_interface; // unclaimed Chaos window (logged)
     memory_interface_t control_regs_if; // Control BAR $14 (register block)
     memory_interface_t control_vram_if; // Control BAR $18 (VRAM aperture)
+    memory_interface_t plat_vram_if; // Platinum's $F1000000 aperture beyond the fitted VRAM
+    memory_interface_t plat_vhalf_if; // the 1 MB half bank seen through the 64-bit organisation
 } tnt_state_t;
 
 static inline tnt_state_t *tnt_st(config_t *cfg) {
@@ -445,11 +607,66 @@ extern const storage_device_decl_t tnt_default_storage[];
 extern const pci_slot_decl_t ans_pci_slots[];
 
 // Tables more than one model shares byte for byte (tnt.c): the one-Bandit
-// PCI topology (7500, 8500), the 8500/9500 DIMM totals and the Network
-// Servers' DIMM totals.
+// PCI topology (7500, 8500 and their 1997 successors), the six-slot
+// two-Bandit topology of the 9500 (and 9600), the Power Macintosh DIMM
+// totals and the Network Servers' DIMM totals.
 extern const pci_slot_decl_t tnt_pci_slots_1bandit[];
+extern const pci_slot_decl_t tnt_pci_slots_9500[];
 extern const uint32_t tnt_ram_options_kb[];
 extern const uint32_t ans_ram_options_kb[];
+
+// A Power Macintosh PCI socket: slot n, lettered `name_` (label and the
+// ROM's `slot-names` detail), filled n-th, at IDSEL `dev_` on `bus_` with its
+// strapped INTA-D lines on Grand Central external `irq_`; `card_` is the
+// factory card, NULL for none.
+#define TNT_MAC_SOCKET(n_, name_, bus_, dev_, irq_, card_)                                                             \
+    {.slot = (n_),                                                                                                     \
+     .kind = PCI_SLOT_SOCKET,                                                                                          \
+     .label = "PCI slot " name_,                                                                                       \
+     .detail = name_,                                                                                                  \
+     .default_card = (card_),                                                                                          \
+     .fill_order = (n_),                                                                                               \
+     .bus = (bus_),                                                                                                    \
+     .device = (dev_),                                                                                                 \
+     .int_line = (irq_)}
+
+// Bandit 1's three Macintosh sockets, A1/B1/C1: IDSEL 13/14/15 (the ROM's
+// own `slot-names` bitmask, $0000E000, on the bandit node) with their
+// strapped INTA-D lines on Grand Central externals 23/24/25 (Apple's 9500
+// external-interrupt table).  Every Power Macintosh board's table opens
+// with them; `a1_card_` is the factory card in A1, NULL for none.
+// clang-format off
+#define TNT_BANDIT1_SOCKETS(a1_card_)                                                                                  \
+    TNT_MAC_SOCKET(1, "A1", TNT_PCI_BUS_1, 13, 23, a1_card_),                                                          \
+    TNT_MAC_SOCKET(2, "B1", TNT_PCI_BUS_1, 14, 24, NULL),                                                              \
+    TNT_MAC_SOCKET(3, "C1", TNT_PCI_BUS_1, 15, 25, NULL)
+// clang-format on
+
+// The Power Macintosh boards' DIMM totals from 16 MB: the totals
+// Hammerhead's four-pair carve maps today (DIMMs of at most 64 MB); larger
+// and odd totals wait on the carve.  A list for initialisers, without its
+// terminating 0.
+#define TNT_RAM_TOTALS_KB                                                                                              \
+    16384, 24576, 32768, 40960, 49152, 57344, 65536, 73728, 81920, 90112, 98304, 106496, 114688, 122880, 131072,       \
+        139264, 147456, 155648, 163840, 172032, 180224, 188416, 196608, 204800, 212992, 221184, 229376, 237568,        \
+        245760, 262144, 270336, 278528, 286720, 294912, 303104, 311296, 327680, 335872, 344064, 360448, 393216,        \
+        401408, 409600, 425984, 458752, 524288
+
+// === The Macintosh profiles' shared fields ==================================
+// What every Power Macintosh TNT profile (pm7200 ... pm9600) carries
+// identically: a 32-bit bus, the 4 MB ROM, LocalTalk, the one internal
+// SuperDrive, the TNT substrate and its NVRAM check.  A model file includes
+// of_nvram.h and slot_tables.h for the names it expands to.
+#define TNT_MAC_PROFILE_COMMON                                                                                         \
+    .address_bits = 32, .rom_size = 0x400000, .appletalk = true, .floppy_slots = mac_floppy_slots_1hd,                 \
+    .substrate = &tnt_substrate, .of_nvram_check = of_nvram_check_tnt
+// The processor cards.  The 1997 boards' 604e cards (7300/7600/8600/9600)
+// run on the 604 core with its default PVR ($0004), not the 604e's
+// ($0009): POST times a 604e through HID1's PLL configuration, which the
+// core does not model on the 604 class; under a 604 PVR it takes the 1995
+// path.
+#define TNT_CPU_601 .cpu_model = CPU_MODEL_PPC601, .mmu_kind = MMU_PPC_601
+#define TNT_CPU_604 .cpu_model = CPU_MODEL_PPC604, .mmu_kind = MMU_PPC_604
 
 // The Network Servers' shared front backplane on fast/wide 0 (tnt.c), as
 // one storage_bus_decl_t initialiser; the second controller is the same
@@ -491,10 +708,9 @@ extern const builtin_video_desc_t ans_builtin_video;
 
 // === hammerhead.c ===========================================================
 
-void tnt_hh_init(config_t *cfg); // power-on register state + map claim
-uint8_t tnt_hh_read(config_t *cfg, uint32_t offset); // window offsets 0..$7FF
-void tnt_hh_write(config_t *cfg, uint32_t offset, uint8_t value);
-void tnt_hh_remap(config_t *cfg); // rebuild the DRAM decode from the bank registers
+// Power-on register state and the DIMM inventory.  Run on every board: the
+// register file is in the "tnt" checkpoint part whatever the controller.
+void tnt_hh_init(config_t *cfg);
 
 // === bandit.c ===============================================================
 
@@ -549,6 +765,14 @@ uint8_t tnt_mace_peek(config_t *cfg, uint32_t off); // no read-to-clear
 void tnt_mace_write(config_t *cfg, uint32_t off, uint8_t value);
 // Island access for the +$18000 block (byte registers on $10 centres).
 
+// === platinum.c =============================================================
+
+// The Catalyst board's Platinum: register window, DRAM decode, VRAM
+// aperture, DACula and the display it scans -- reached through
+// tnt_platinum_mc / tnt_platinum_video_ops (above).
+// The built-in port of a Platinum board (monitor= choices).
+extern const builtin_video_desc_t tnt_platinum_video;
+
 // === control.c ==============================================================
 
 // Control is a registered PCI card kind ("tnt_control", BUILTIN attach):
@@ -559,19 +783,57 @@ int tnt_control_init(config_t *cfg, uint8_t sense); // VRAM, display, BAR backin
 void tnt_control_reset(config_t *cfg); // power-on registers (VRAM survives)
 void tnt_control_update(config_t *cfg); // re-derive the display descriptor
 void tnt_control_teardown(config_t *cfg);
-// RaDACal byte cells (Grand Central +$1B000, $10 centres).
-uint8_t tnt_control_rad_read(config_t *cfg, uint32_t offset);
-// The same cell without the read's RGB-phase step (memory_interface_t.peek_*).
-uint8_t tnt_control_rad_peek(config_t *cfg, uint32_t offset);
-void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value);
 // The pixel-clock synthesiser on Cuda's I2C bus (cuda_attach_i2c_write).
 bool tnt_control_i2c_write(void *ctx, uint8_t slave, const uint8_t *data, int len);
-// Presentation: the primary display descriptor (NULL before init), and the
-// host-frame dirty mark (guest CPU writes bypass the renderer).
+// Presentation: the primary display descriptor (NULL before init).
 struct display *tnt_control_display(config_t *cfg);
 // Guest physical address of the first byte Control scans (its VRAM BAR), 0 while blanked.
 uint64_t tnt_control_fb_base(config_t *cfg);
-void tnt_control_host_vbl(config_t *cfg);
+
+// === tnt_fb.c ===============================================================
+// The half of the on-board video Control and Platinum share (tnt_fb.c).
+
+// The RAMDAC control register's hardware-cursor enable (RaDACal misc $20,
+// DACula index $20; bits 3:2 there are the depth).
+#define TNT_DAC_CURSOR_ON 0x02u
+// The retrace period while the raster is unprogrammed, and the band outside
+// which a computed period is a mode line caught half-written.
+#define TNT_VBL_FALLBACK_NS (1000000000ull / 60u)
+#define TNT_VBL_MIN_NS      4000000ull // 250 Hz
+#define TNT_VBL_MAX_NS      40000000ull // 25 Hz
+
+// The address (+$00), cursor-palette (+$10) and CLUT (+$30) ports; the
+// indexed register port (+$20) is the chip's own.  A read steps the data
+// ports' phase unless `peek`; a write returns true when it completed a CLUT
+// entry, storing its index in *clut_idx.
+uint8_t tnt_dac_port_read(ramdac_seq_t *addr, tnt_dac_pal_t *pal, uint32_t offset, bool peek);
+bool tnt_dac_port_write(ramdac_seq_t *addr, tnt_dac_pal_t *pal, uint32_t offset, uint8_t value, uint8_t *clut_idx);
+// The depth the control register's bits 3:2 select (8/16/32 bpp).
+uint32_t tnt_fb_bpp(uint8_t ctrl);
+pixel_format_t tnt_fb_format(uint8_t ctrl);
+// Point the display descriptor at the CLUT (8 bpp) or the per-channel DAC
+// table (direct colour) for the depth `ctrl` selects.
+void tnt_fb_refresh_clut(tnt_state_t *st, const tnt_dac_pal_t *pal, uint8_t ctrl);
+// Composite the hardware cursor (when `ctrl` enables it) over the scan that
+// starts `base` bytes into VRAM, of which `vram_size` bytes are fitted;
+// display.bits moves to the composite when it is drawn.  `cursor_x` is the
+// raw X register pair.
+void tnt_fb_compose(tnt_state_t *st, const tnt_dac_pal_t *pal, uint8_t ctrl, uint32_t cursor_x, uint64_t base,
+                    uint32_t vram_size);
+// The retrace period of an htotal x vtotal raster at `dot_hz` (nonzero), or
+// the nominal fallback when that falls outside the plausible band.
+uint64_t tnt_fb_period_ns(uint64_t htotal, uint64_t vtotal, uint64_t dot_hz);
+// The scan line (0..vtotal-1) the CPU clock puts a `frame_ns` raster at;
+// false while the machine has no clock.
+bool tnt_fb_scan_line(config_t *cfg, uint64_t frame_ns, uint32_t vtotal, uint32_t *line);
+// VRAM, the blank stub and the composite buffer (TNT_VRAM_SIZE each); -1,
+// logged and with nothing held, when out of memory.
+int tnt_fb_alloc(config_t *cfg, const char *chip);
+// machine.video over the chip's descriptor and scan-base reporters.
+void tnt_fb_attach_node(config_t *cfg, display_t *(*resolve)(void *owner), uint64_t (*base)(void *owner),
+                        const char *label);
+// Detach machine.video and free the three buffers.
+void tnt_fb_free(config_t *cfg);
 
 // === grand_central.c ========================================================
 

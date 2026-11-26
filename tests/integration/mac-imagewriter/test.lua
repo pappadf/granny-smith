@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- A Mac Plus prints the Finder's Print Directory to the virtual ImageWriter
 -- on the printer port.  See config.mk.  Screen coordinates are the Plus's
 -- 512x342 desktop.

@@ -56,7 +56,13 @@ found the hard way during the System 7.1 HD-boot bring-up:
    counter reaches `count & 1`, and the last byte is read from the FIFO
    register — not the aperture. (The ROM's Duff's-device drain reads 255
    words through the aperture, waits for INT, then `MOVE.B` from the
-   FIFO.)
+   FIFO.) The residual is moved into the FIFO, and the target allowed to
+   advance, *before* the interrupt posts: the System 7.5 SCSI Manager
+   records the bus phase at that interrupt and otherwise waits forever
+   for a phase change (seen on the djMEMC Quadras, whose longword BIOS
+   drain leaves odd residuals). A board whose DMA engine drains the port
+   (`scsi_53c96_set_bus_master`: PDM's AMIC, TNT's DBDMA)
+   has no residual: every byte moves through DREQ/DACK.
 2. **Command-phase Transfer Information.** The SCSI Manager selects
    without ATN, then issues non-DMA Transfer Info in COMMAND phase to
    feed the CDB from the FIFO.

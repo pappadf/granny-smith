@@ -22,14 +22,6 @@
 // The MDU $50Fxxxxx island uses an 18-bit ($40000) mirror.
 #define MDU_IO_MIRROR 0x0003FFFFUL
 
-#define MDU_VIA_IO_PENALTY  16
-#define MDU_SCC_IO_PENALTY  2
-#define MDU_SCSI_IO_PENALTY 2
-#define MDU_ASC_IO_PENALTY  2
-#define MDU_SWIM_IO_PENALTY 2
-#define MDU_RBV_IO_PENALTY  2
-#define MDU_VDAC_IO_PENALTY 2
-
 // The Bt450 VDAC ($24000) is fronted by direct accessors on the built-in RBV
 // video card, not a memory_interface_t — wrap them so the generic engine can
 // route to it like any other device (the engine only ever calls read/write
@@ -51,21 +43,22 @@ static const memory_interface_t mdu_vdac_iface = {
 
 // The canonical MDU $50Fxxxxx decode, expressed as data.  Like GLUE but: no
 // VIA2 window (the RBV replaces it), and two extra windows — the VDAC ($24000)
-// and the RBV control registers ($26000).  Gaps decode to nothing.
-//
-//   base     end      device            penalty              xform               rd  wr     name
+// and the RBV control registers ($26000).  Gaps decode to nothing.  The rows
+// are mdu_io.h's, which the V8 family's Sonora island extends.
+// clang-format off
 const board_io_range_t mdu_io_ranges_tbl[] = {
-    {0x00000, 0x02000, BOARD_DEV_VIA1, MDU_VIA_IO_PENALTY, BOARD_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},
-    {0x04000, 0x06000, BOARD_DEV_SCC, MDU_SCC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
-    {0x06000, 0x08000, BOARD_DEV_SCSI, MDU_SCSI_IO_PENALTY, BOARD_IO_FIXED, 0, 0x201, NULL, NULL, "scsi_drq"},
-    {0x10000, 0x12000, BOARD_DEV_SCSI, MDU_SCSI_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "scsi_reg"},
-    {0x12000, 0x14000, BOARD_DEV_SCSI, MDU_SCSI_IO_PENALTY, BOARD_IO_FIXED, 0, 0x201, NULL, NULL, "scsi_blind"},
-    {0x14000, 0x16000, BOARD_DEV_ASC, MDU_ASC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "asc"},
-    {0x16000, 0x18000, BOARD_DEV_FLOPPY, MDU_SWIM_IO_PENALTY, BOARD_IO_STRIDE_512, 0, 0, NULL, NULL, "swim"},
-    {0x24000, 0x26000, BOARD_DEV_VDAC, MDU_VDAC_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "vdac"},
-    {0x26000, 0x28000, BOARD_DEV_RBV, MDU_RBV_IO_PENALTY, BOARD_IO_NORMAL, 0, 0, NULL, NULL, "rbv"},
+    MDU_IO_ROW_VIA1,
+    MDU_IO_ROW_SCC,
+    MDU_IO_ROW_SCSI_DRQ,
+    MDU_IO_ROW_SCSI_REG,
+    MDU_IO_ROW_SCSI_BLIND,
+    MDU_IO_ROW_ASC,
+    MDU_IO_ROW_SWIM("swim"),
+    MDU_IO_ROW_VDAC("vdac"),
+    MDU_IO_ROW_RBV("rbv"),
     {0}, // sentinel: end == 0
 };
+// clang-format on
 
 const board_io_range_t *mdu_io_ranges(void) {
     return mdu_io_ranges_tbl;

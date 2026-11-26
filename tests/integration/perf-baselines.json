@@ -384,6 +384,118 @@
       "instr": 994156541,
       "tolerance": 0.2
     },
+    "suite-compact/classic-608-fd": {
+      "instr": 115500000,
+      "tolerance": 0.2
+    },
+    "suite-compact/classic-71-fd": {
+      "instr": 115000000,
+      "tolerance": 0.2
+    },
+    "suite-compact/classic-753-hd": {
+      "instr": 205000000,
+      "tolerance": 0.2
+    },
+    "suite-compact/classic-romdisk": {
+      "instr": 121000000,
+      "tolerance": 0.2
+    },
+    "suite-compact/m128k-20-fd": {
+      "instr": 113500000,
+      "tolerance": 0.2
+    },
+    "suite-compact/m128k-32-fd": {
+      "instr": 113500000,
+      "tolerance": 0.2
+    },
+    "suite-compact/m512k-20-fd": {
+      "instr": 113500000,
+      "tolerance": 0.2
+    },
+    "suite-compact/m512k-40-fd": {
+      "instr": 114000000,
+      "tolerance": 0.2
+    },
+    "suite-compact/m512ke-32-fd": {
+      "instr": 113500000,
+      "tolerance": 0.2
+    },
+    "suite-compact/m512ke-42-fd": {
+      "instr": 113500000,
+      "tolerance": 0.2
+    },
+    "suite-compact/se-608-fd": {
+      "instr": 115500000,
+      "tolerance": 0.2
+    },
+    "suite-compact/se-71-hd": {
+      "instr": 212000000,
+      "tolerance": 0.2
+    },
+    "suite-compact/se-753-hd": {
+      "instr": 205000000,
+      "tolerance": 0.2
+    },
+    "suite-compact/se-checkpoint": {
+      "instr": 120500000,
+      "tolerance": 0.2
+    },
+    "suite-compact/sefdhd-608-fd": {
+      "instr": 115500000,
+      "tolerance": 0.2
+    },
+    "suite-compact/sefdhd-71-fd": {
+      "instr": 115000000,
+      "tolerance": 0.2
+    },
+    "suite-compact/sefdhd-71-hd": {
+      "instr": 212000000,
+      "tolerance": 0.2
+    },
+    "suite-djmemc/c610-71-hd": {
+      "instr": 383964123,
+      "tolerance": 0.2
+    },
+    "suite-djmemc/c610-76-fd": {
+      "instr": 494174471,
+      "tolerance": 0.2
+    },
+    "suite-djmemc/c650-71-hd": {
+      "instr": 430516609,
+      "tolerance": 0.2
+    },
+    "suite-djmemc/q610-71-hd": {
+      "instr": 430326069,
+      "tolerance": 0.2
+    },
+    "suite-djmemc/q610-76-hd": {
+      "instr": 700824049,
+      "tolerance": 0.2
+    },
+    "suite-djmemc/q650-71-hd": {
+      "instr": 500093171,
+      "tolerance": 0.2
+    },
+    "suite-djmemc/q650-753-hd": {
+      "instr": 569738646,
+      "tolerance": 0.2
+    },
+    "suite-djmemc/q800-71-hd": {
+      "instr": 500118819,
+      "tolerance": 0.2
+    },
+    "suite-djmemc/q800-75-hd": {
+      "instr": 633519941,
+      "tolerance": 0.2
+    },
+    "suite-djmemc/q800-76-fd": {
+      "instr": 658660650,
+      "tolerance": 0.2
+    },
+    "suite-djmemc/q800-checkpoint": {
+      "instr": 652479010,
+      "tolerance": 0.2
+    },
     "suite-gossamer/g3dt-floppy": {
       "instr": 5790623876,
       "tolerance": 0.2
@@ -616,6 +728,38 @@
       "instr": 120000000,
       "tolerance": 0.2
     },
+    "suite-memcjr/lc475-71-hd": {
+      "instr": 367100147,
+      "tolerance": 0.2
+    },
+    "suite-memcjr/lc475-75-hd": {
+      "instr": 491376497,
+      "tolerance": 0.2
+    },
+    "suite-memcjr/lc575-71-hd": {
+      "instr": 433451008,
+      "tolerance": 0.2
+    },
+    "suite-memcjr/lc575-76-fd": {
+      "instr": 596225798,
+      "tolerance": 0.2
+    },
+    "suite-memcjr/q605-71-hd": {
+      "instr": 386582643,
+      "tolerance": 0.2
+    },
+    "suite-memcjr/q605-753-hd": {
+      "instr": 406422548,
+      "tolerance": 0.2
+    },
+    "suite-memcjr/q605-76-fd": {
+      "instr": 495707790,
+      "tolerance": 0.2
+    },
+    "suite-memcjr/q605-checkpoint": {
+      "instr": 401571128,
+      "tolerance": 0.2
+    },
     "suite-pdm/pdm-floppy-800k": {
       "instr": 1379983600,
       "tolerance": 0.2
@@ -792,16 +936,60 @@
       "instr": 4000000000,
       "tolerance": 0.2
     },
-    "suite-tnt/pm9500mp-76-hd": {
-      "instr": 4000000000,
-      "tolerance": 0.2
-    },
     "suite-tnt/pm9500-76-rage128": {
       "instr": 4504500000,
       "tolerance": 0.2
     },
+    "suite-tnt/pm9500mp-76-hd": {
+      "instr": 4000000000,
+      "tolerance": 0.2
+    },
     "suite-tnt/tnt-voodoo2-display": {
       "instr": 2540000000,
+      "tolerance": 0.2
+    },
+    "suite-tnt-1997/pm7300-81-hd": {
+      "instr": 3685500000,
+      "tolerance": 0.2
+    },
+    "suite-tnt-1997/pm7600-76-fd": {
+      "instr": 5500000000,
+      "tolerance": 0.2
+    },
+    "suite-tnt-1997/pm7600-76-hd": {
+      "instr": 4565000000,
+      "tolerance": 0.2
+    },
+    "suite-tnt-1997/pm7600-81-hd": {
+      "instr": 3684000000,
+      "tolerance": 0.2
+    },
+    "suite-tnt-1997/pm8600-81-hd": {
+      "instr": 3745500000,
+      "tolerance": 0.2
+    },
+    "suite-tnt-1997/pm9600-81-mach64": {
+      "instr": 3725000000,
+      "tolerance": 0.2
+    },
+    "suite-tnt-1997/pm9600-81-mach64-v2": {
+      "instr": 3724500000,
+      "tolerance": 0.2
+    },
+    "suite-wgs9150/wgs9150-120-76-hd": {
+      "instr": 2547975400,
+      "tolerance": 0.2
+    },
+    "suite-wgs9150/wgs9150-24ac-slot-a": {
+      "instr": 1589983600,
+      "tolerance": 0.2
+    },
+    "suite-wgs9150/wgs9150-753-hd": {
+      "instr": 1302483600,
+      "tolerance": 0.2
+    },
+    "suite-wgs9150/wgs9150-76-fd": {
+      "instr": 4249983600,
       "tolerance": 0.2
     },
     "tnt-beos/pm9500-beos": {
@@ -826,6 +1014,98 @@
     },
     "tnt-voodoo2-glide/thread": {
       "instr": 8177800000,
+      "tolerance": 0.2
+    },
+    "suite-pm7200/pm7200-753-hd": {
+      "instr": 769000000,
+      "tolerance": 0.2
+    },
+    "suite-pm7200/pm7200-76-fd": {
+      "instr": 2750000000,
+      "tolerance": 0.2
+    },
+    "suite-pm7200/pm7200-76-hd": {
+      "instr": 1614500000,
+      "tolerance": 0.2
+    },
+    "suite-pm7200/pm7200-81-hd": {
+      "instr": 2089000000,
+      "tolerance": 0.2
+    },
+    "suite-sonora/cc2-753-hd": {
+      "instr": 360132582,
+      "tolerance": 0.2
+    },
+    "suite-sonora/cc2-76-fd": {
+      "instr": 357719178,
+      "tolerance": 0.2
+    },
+    "suite-sonora/lc520-753-hd": {
+      "instr": 353635264,
+      "tolerance": 0.2
+    },
+    "suite-sonora/lc550-76-hd": {
+      "instr": 352637091,
+      "tolerance": 0.2
+    },
+    "suite-sonora/lciii-12in-checkpoint": {
+      "instr": 442397035,
+      "tolerance": 0.2
+    },
+    "suite-sonora/lciii-71-refused": {
+      "instr": 170786750,
+      "tolerance": 0.2
+    },
+    "suite-sonora/lciii-753-hd": {
+      "instr": 348402186,
+      "tolerance": 0.2
+    },
+    "suite-sonora/lciii-76-fd": {
+      "instr": 346284285,
+      "tolerance": 0.2
+    },
+    "suite-sonora/lciii-early-76-hd": {
+      "instr": 337356029,
+      "tolerance": 0.2
+    },
+    "suite-sonora/lciiip-753-hd": {
+      "instr": 353419306,
+      "tolerance": 0.2
+    },
+    "suite-v8/ccl-701-fd": {
+      "instr": 177534270,
+      "tolerance": 0.2
+    },
+    "suite-v8/ccl-753-hd": {
+      "instr": 344545549,
+      "tolerance": 0.2
+    },
+    "suite-v8/ccl-76-hd": {
+      "instr": 340504268,
+      "tolerance": 0.2
+    },
+    "suite-v8/clii-701-fd": {
+      "instr": 342589744,
+      "tolerance": 0.2
+    },
+    "suite-v8/clii-71-hd": {
+      "instr": 343284080,
+      "tolerance": 0.2
+    },
+    "suite-v8/lcii-12in-checkpoint": {
+      "instr": 408228002,
+      "tolerance": 0.2
+    },
+    "suite-v8/lcii-701-fd": {
+      "instr": 342646794,
+      "tolerance": 0.2
+    },
+    "suite-v8/lcii-71-hd": {
+      "instr": 343347720,
+      "tolerance": 0.2
+    },
+    "suite-v8/lcii-753-hd": {
+      "instr": 342578360,
       "tolerance": 0.2
     }
   }

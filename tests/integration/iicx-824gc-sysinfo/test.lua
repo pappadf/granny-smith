@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: IIcx + Display Card 8•24 GC — System 7.1 + System Info
 -- Display benchmark, accelerator ON.
 --

@@ -9,7 +9,7 @@ TEST_DESC := Creates blank 80MB image via hd create, boots 7.0.1 floppy, opens H
 TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 
-# Boot from floppy with 8 MB RAM; HD is created and attached in test.script
+# Boot from floppy with 8 MB RAM; HD is created and attached in test.lua
 TEST_ARGS := fd=$(TEST_DATA)/systems/System_7_0_1.image ram=8192
 
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended

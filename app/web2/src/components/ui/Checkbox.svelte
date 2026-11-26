@@ -34,9 +34,9 @@
     {disabled}
     onchange={(e) => onchange?.((e.target as HTMLInputElement).checked)}
   />
-  <span class="gs-check__label"
-    >{#if children}{@render children()}{:else}{label}{/if}</span
-  >
+  <span class="gs-check__label">
+    {#if children}{@render children()}{:else}{label}{/if}
+  </span>
 </label>
 
 <style>

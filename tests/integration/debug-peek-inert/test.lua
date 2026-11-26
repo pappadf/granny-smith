@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Debugger reads are side-effect-free (#159).  See config.mk.
 
 -- --- VIA: reading ORA clears CA1 (the Plus's VBL flag); a peek must not. ----

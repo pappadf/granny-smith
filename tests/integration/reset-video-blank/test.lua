@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Reset-video conformance -- see config.mk.
 
 local function warm(model, rom, budget, redraw)

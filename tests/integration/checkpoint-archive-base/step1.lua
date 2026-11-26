@@ -1,4 +1,3 @@
--- Converted from step1.script by scripts/script-to-lua.py
 -- Insert a floppy straight from the zip, save a consolidated checkpoint and
 -- load it back.
 local member = F"${vars.TEST_RESULTS_DIR}/floppies.zip/sys608.dsk"

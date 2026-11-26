@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: Apple HD SC Setup accepts an Apple-branded 230 MB drive.
 --
 -- The Copland D11E4 installer refuses any target volume under 230 MB, and it

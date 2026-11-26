@@ -22,11 +22,10 @@ value_t object_usage(const char *path);
 value_t object_usage_text(const char *path);
 
 // How the shell reads a word that is no path (the object layer cannot ask
-// the shell itself): a `def` function, or a command running the method
-// whose path it writes to `target`.  Usage of a function is a note; of a
-// command, the method's text with a note.  Installed by the shell; NULL
-// (the default) knows neither.
-typedef enum { USAGE_WORD_NONE, USAGE_WORD_FUNCTION, USAGE_WORD_COMMAND } usage_word_t;
+// the shell itself): a command running the method whose path it writes to
+// `target`.  Usage of a command is the method's text with a note.
+// Installed by the shell; NULL (the default) knows none.
+typedef enum { USAGE_WORD_NONE, USAGE_WORD_COMMAND } usage_word_t;
 void object_usage_set_word_resolver(usage_word_t (*resolve)(const char *word, char *target, size_t target_size));
 
 #endif // GS_OBJECT_USAGE_H

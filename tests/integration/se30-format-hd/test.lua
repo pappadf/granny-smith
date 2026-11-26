@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: SE/30 Format Blank HD
 -- Creates a blank 80 MB SCSI HD via hd create, attaches it,
 -- boots System 7.0.1 from floppy, opens Apple HD SC Setup,

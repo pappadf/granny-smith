@@ -58,10 +58,10 @@
       this list.
     </Hint>
   {:else}
-    <Hint as="p" class="cat-empty"
-      >Level: 0 is off, higher reports more. Every line shows in the Logs panel; tick
-      <strong>Terminal</strong> to print a category's lines there as well.</Hint
-    >
+    <Hint as="p" class="cat-empty">
+      Level: 0 is off, higher reports more. Every line shows in the Logs panel; tick
+      <strong>Terminal</strong> to print a category's lines there as well.
+    </Hint>
     <ul class="cat-list">
       {#each sortedCats as cat (cat)}
         <li class="cat-row">

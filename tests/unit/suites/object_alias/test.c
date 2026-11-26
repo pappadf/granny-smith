@@ -109,12 +109,11 @@ TEST(test_reserved_word_rejected) {
     ASSERT_TRUE(alias_add_user("true", "cpu.pc", err, sizeof(err)) != STATUS_OK);
     ASSERT_TRUE(strstr(err, "reserved") != NULL);
 
-    // Shell v2 statement keywords and the `none` literal are reserved.
-    ASSERT_TRUE(alias_add_user("def", "cpu.pc", err, sizeof(err)) != STATUS_OK);
+    // Lua's reserved words and the command line's `none` literal are reserved.
+    ASSERT_TRUE(alias_add_user("function", "cpu.pc", err, sizeof(err)) != STATUS_OK);
     ASSERT_TRUE(alias_add_user("none", "cpu.pc", err, sizeof(err)) != STATUS_OK);
 
-    // `on`/`yes` were demoted from reserved words (shell v2 §3.11) —
-    // they are ordinary identifiers again and alias fine.
+    // `on`/`yes` are not reserved: ordinary identifiers, and alias fine.
     ASSERT_TRUE(alias_add_user("on", "cpu.pc", err, sizeof(err)) == STATUS_OK);
     ASSERT_TRUE(alias_add_user("yes", "cpu.pc", err, sizeof(err)) == STATUS_OK);
 }

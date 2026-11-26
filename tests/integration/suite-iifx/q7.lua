@@ -1,4 +1,3 @@
--- Converted from q7.script by scripts/script-to-lua.py
 local mac = dofile("../lib/mac.lua")
 local sys_701 = "../../data/systems/System_7_0_1.image"
 local function probe(label, v)

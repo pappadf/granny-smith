@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- IIx: A/UX 1.1 from an installed HD80SC.
 --
 -- The disk's Mac side starts sash (the Standalone Shell) as its Startup

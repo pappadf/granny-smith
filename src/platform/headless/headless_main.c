@@ -29,10 +29,8 @@
 #include "prom.h"
 #include "rom.h"
 #include "scheduler.h"
-#include "script.h"
 #include "scsi.h"
 #include "shell.h"
-#include "shell_var.h"
 #include "storage_util.h"
 #include "system.h"
 #include "vrom.h"
@@ -232,7 +230,6 @@ static void print_usage(const char *program) {
     printf("                  an I/O job's progress as `@progress <json>`, and `@end ok|error` after each\n");
     printf("                  statement (for a client that parses)\n");
     printf("  --io=sync       No I/O worker: file work runs on the emulator thread (a bisecting aid)\n");
-    printf("  --jobs=inline   No job thread: scripts run on the emulator thread (a bisecting aid)\n");
     printf("\n");
     printf("Examples:\n");
     printf("  %s rom=plus.rom\n", program);
@@ -286,11 +283,10 @@ int platform_quit(void) {
 //
 // Headless is a client of its own mailbox (mailbox.h, "an in-process
 // client").  Every statement -- from the script file, stdin, the REPL or a
-// daemon connection -- is posted as a REQ_SCRIPT and runs as a job on the
-// job thread (job/job.h), exactly as a terminal line does in the browser;
-// this thread meanwhile does what the browser's tick does: one frame-unit
-// when the machine runs, then a drain, which serves the job's calls into
-// the object tree and delivers its result.  `scheduler.run N` inside a
+// daemon connection -- is posted as a REQ_SCRIPT and runs as a job
+// (job/job.h), exactly as a terminal line does in the browser; this thread
+// does what the browser's tick does: one frame-unit when the machine runs,
+// then a drain, which steps the job's task and delivers its result.  `scheduler.run N` inside a
 // script waits for N because the job waits for its mode; `scheduler.run`
 // returns at once and the machine runs on between statements.
 
@@ -301,7 +297,6 @@ static uint8_t g_mbx_region[GS_MBX_ALIGN + GS_MBX_CTRL_WORDS * 4u + 2 * HL_MBX_R
 static mailbox_client_t g_cli;
 static int g_framed = 0; // --framed: @event / @end lines on stdout
 static int g_io_sync = 0; // --io=sync: no I/O worker
-static int g_jobs_inline = 0; // --jobs=inline: no job thread; scripts run on the emulator thread
 static uint32_t g_foreground_job = 0; // the statement in flight (its request id)
 static uint32_t g_foreground_client = 0;
 
@@ -378,8 +373,8 @@ static bool cycle_budget_spent(void) {
 
 // One turn of the loop: a frame-unit if the machine runs, then the drain.
 // Returns whether anything happened (a frame ran or a request was served).
-// One frame, when the machine runs.  Also what inline mode (job.h) calls
-// while a script waits for the mode it started.
+// One frame, when the machine runs.  Also the frame runner (job.h) a tree
+// call that cannot suspend runs while it waits for the mode it started.
 static bool hl_run_frame(void) {
     scheduler_t *sched = system_scheduler();
     config_t *cfg = system_config();
@@ -390,7 +385,7 @@ static bool hl_run_frame(void) {
     return false;
 }
 
-static void hl_inline_frame(void) {
+static void hl_frame_runner(void) {
     if (!hl_run_frame())
         usleep(1000);
 }
@@ -606,7 +601,7 @@ int stmt_feed_line(stmt_asm_t *a, const char *line, size_t len) {
     a->len += len;
     a->buf[a->len++] = '\n';
     a->buf[a->len] = '\0';
-    return script_needs_continuation(a->buf) ? 0 : 1;
+    return gs_lua_needs_continuation(a->buf) ? 0 : 1;
 }
 
 // Empty the assembler for the next statement (keeps its buffer)
@@ -631,25 +626,25 @@ static const char *parse_arg(const char *arg, const char *key) {
     return NULL;
 }
 
-// Run a script file: one `include` statement as a job, so `include` paths
+// Run a script file: one `dofile` as a job, so `require` and `dofile` paths
 // inside it resolve relative to the file and diagnostics carry its name.
 // Returns the script's exit status: 0, or 1 when it failed.
 static int run_script_file(const char *filename) {
     printf("> running %s\n", filename);
     char stmt[4096];
     size_t o = 0;
-    o += (size_t)snprintf(stmt + o, sizeof stmt - o, "include \"");
-    for (const char *c = filename; *c && o + 3 < sizeof stmt; c++) {
+    o += (size_t)snprintf(stmt + o, sizeof stmt - o, "dofile(\"");
+    for (const char *c = filename; *c && o + 4 < sizeof stmt; c++) {
         if (*c == '"' || *c == '\\')
             stmt[o++] = '\\';
         stmt[o++] = *c;
     }
-    snprintf(stmt + o, sizeof stmt - o, "\"");
+    snprintf(stmt + o, sizeof stmt - o, "\")");
     int result = hl_run_statement(HL_CLIENT_STDIN, stmt);
     if (result != 0) {
-        // v2 scripts abort on the first error; a script that
-        // aborted never reaches its `quit`, so exit here instead of
-        // dropping into the interactive loop.
+        // A script aborts on the first error and never reaches its
+        // `quit`, so exit here instead of dropping into the interactive
+        // loop.
         g_quit_requested = 1;
         return 1;
     }
@@ -709,7 +704,7 @@ static int run_script_stdin(void) {
             exit_code = 1;
     }
     if (stmt.len) {
-        printf("error: incomplete block at end of input; not run\n");
+        printf("error: incomplete chunk at end of input; not run\n");
         exit_code = 1;
     }
     stmt_free(&stmt);
@@ -982,7 +977,8 @@ int main(int argc, char *argv[]) {
         }
 
         if (strcmp(arg, "--jobs=inline") == 0) {
-            g_jobs_inline = 1; // no job thread: scripts run on the emulator thread (a bisecting aid)
+            // Accepted and ignored: scripts always run on the emulator
+            // thread now (job/job.h); older bench drivers still pass it.
             continue;
         }
 
@@ -1192,17 +1188,15 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // The mailbox this process is a client of, and the job thread that runs
-    // its scripts (falls back to inline scripts if the thread cannot start).
+    // The mailbox this process is a client of.  Its scripts run as tasks
+    // the drain steps (job/job.h); a tree call that cannot suspend waits
+    // for its mode by running frames here.
     hl_mailbox_init();
-    if (g_jobs_inline)
-        job_inline_enable(hl_inline_frame);
-    else if (!job_thread_start(512u << 10))
-        fprintf(stderr, "headless: job thread could not be started; scripts run inline\n");
+    job_set_frame_runner(hl_frame_runner);
     if (!g_io_sync && !io_worker_start(256u << 10))
         fprintf(stderr, "headless: I/O worker could not be started; writes run inline\n");
 
-    // Apply --var definitions (after core_init, whose shell_init calls shell_var_init)
+    // Apply --var definitions (after core_init): `vars.NAME` in a script.
     for (int i = 0; i < var_count; i++) {
         // Split NAME=VALUE at first '=' (validated when parsed); the value is
         // used in place, so a long one is not cut short
@@ -1215,16 +1209,18 @@ int main(int argc, char *argv[]) {
         }
         memcpy(name, var_defs[i], name_len);
         name[name_len] = '\0';
-        // A name `$name` could not read back (too long, not an identifier,
-        // reserved) is a startup error, not a binding that silently never matches
-        char err[160];
-        gs_lua_var_set(name, eq + 1); // the Lua side of the same definition
-        int rc = shell_var_set(name, eq + 1, err, sizeof(err));
-        free(name);
-        if (rc < 0) {
-            fprintf(stderr, "Error: --var %s\n", err);
+        // A name `vars.NAME` could not spell is a startup error, not a
+        // variable that silently never matches.
+        bool ident = name_len > 0 && (isalpha((unsigned char)name[0]) || name[0] == '_');
+        for (size_t k = 1; ident && k < name_len; k++)
+            ident = isalnum((unsigned char)name[k]) || name[k] == '_';
+        if (!ident) {
+            fprintf(stderr, "Error: --var '%s' is not an identifier\n", name);
+            free(name);
             return 1;
         }
+        gs_lua_var_set(name, eq + 1);
+        free(name);
     }
 
     system_init();

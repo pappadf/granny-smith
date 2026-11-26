@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: IIx + Apple Macintosh II Video Card ("Toby", 630-0153)
 -- running Apple's declaration ROM, mac-ii-video-card-reva-729755f8.vrom
 -- (part 342-0008-A).

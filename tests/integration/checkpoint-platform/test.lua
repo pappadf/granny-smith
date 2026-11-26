@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- A registered machine checkpoints under <checkpoint dir>/<id>-<created>,
 -- and a writable image's delta lives there too.  The setup planted a delta
 -- and journal from a "previous session" in that directory: files no

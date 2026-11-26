@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Macintosh IIfx suite (see config.mk for the card and RAM rationale, and
 -- for why the 24/32-bit pair is not here yet).
 --

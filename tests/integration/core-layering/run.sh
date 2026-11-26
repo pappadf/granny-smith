@@ -124,8 +124,10 @@ while IFS= read -r hdr; do
         fi
     done
 done < <(find "$ROOT/src/machines" -mindepth 2 -name '*.h')
-MODELS='plus|se30|lisa|macxl|iix|iicx|iifx|iici|iisi|q700|q900|q950|q840av|q660av|pm6100|pm7100|pm8100|pm7500|pm8500|pm9500|ans500|ans700|pmg3dt|pmg3mt'
-# Every model the tree knows must be in that list, or the check goes blind.
+# Every model id, read from machine-profile-schema's golden: every model must
+# already add its line there, so this list cannot go stale by hand.
+MODELS=$(cut -f1 "$ROOT/tests/integration/machine-profile-schema/schema.expected" | sort -u | paste -sd'|')
+# Cross-check: every model the tree knows must be in that list, or the check goes blind.
 for p in "$ROOT"/src/machines/*/*.c; do
     id=$(grep -oE '^    \.id = "[a-z0-9]+",' "$p" | head -1 | sed 's/.*"\(.*\)".*/\1/' || true)
     [ -z "$id" ] && continue

@@ -205,11 +205,13 @@ TEST(test_reserved_word_check) {
     ASSERT_TRUE(object_validate_name("while", err, sizeof(err)) != STATUS_OK);
     ASSERT_TRUE(object_validate_name("if", err, sizeof(err)) != STATUS_OK);
     ASSERT_TRUE(object_validate_name("else", err, sizeof(err)) != STATUS_OK);
-    ASSERT_TRUE(object_validate_name("def", err, sizeof(err)) != STATUS_OK);
+    ASSERT_TRUE(object_validate_name("function", err, sizeof(err)) != STATUS_OK);
     ASSERT_TRUE(object_validate_name("none", err, sizeof(err)) != STATUS_OK);
-    ASSERT_TRUE(object_validate_name("assert", err, sizeof(err)) != STATUS_OK);
+    ASSERT_TRUE(object_validate_name("local", err, sizeof(err)) != STATUS_OK);
+    // `assert` is Lua's function, not a reserved word.
+    ASSERT_TRUE(object_validate_name("assert", err, sizeof(err)) == STATUS_OK);
 
-    // `on`/`yes` were demoted from reserved words (shell v2 §3.11).
+    // `on`/`yes` are not reserved words.
     ASSERT_TRUE(object_validate_name("on", err, sizeof(err)) == STATUS_OK);
     ASSERT_TRUE(object_validate_name("yes", err, sizeof(err)) == STATUS_OK);
 

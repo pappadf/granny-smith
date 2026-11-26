@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- PPC Toolbox program linking — discover a System 7 guest's linkable
 -- applications and open an Apple event session to one of them.
 --

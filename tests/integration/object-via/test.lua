@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- M7c integration: `via1` / `via2` object classes.
 -- SE/30 has both. The script just walks the tree and reads each
 -- attribute — the exact register values depend on boot timing, so

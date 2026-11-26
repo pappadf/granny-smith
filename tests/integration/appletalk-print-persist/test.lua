@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- The printer's lifetime, read through the classic LaserWriter driver's
 -- PatchPrep upload.  See config.mk for the legs.
 --

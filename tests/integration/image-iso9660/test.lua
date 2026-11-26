@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- An ISO 9660 disc (built at setup: a primary tree and a Joliet tree) is a
 -- bare volume: one synthetic partition holding the disc's files.
 local iso = F"${vars.WORK_DIR}/disc.iso"

@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: Power Macintosh 7100 — install Mac OS 8 D11E4 (Copland).
 --
 -- Phase 4-5 of the Copland install.  See config.mk for the phase map.
@@ -72,7 +71,7 @@ local function open_installer()
     mac.check_ex("installer-locked-cd.png", 0, 440, 20, 640)
     -- The intervening move is required, not cosmetic: a same-spot warp emits no
     -- ADB motion, so a second click at the same pixel has no fresh position
-    -- event to bind to and is dropped (../lib/mac.script, click()).
+    -- event to bind to and is dropped (../lib/mac.lua, click()).
     machine.adb.mouse.move(420, 290, "global")
     mac.run_ticks(10)
     mac.click(307, 355)

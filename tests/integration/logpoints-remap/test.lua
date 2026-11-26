@@ -1,7 +1,7 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Armed before the guest runs: the ROM overlay is on, so page 0 reads the
--- ROM.  The ROM drops the overlay (plus_map_read_page re-maps page 0's reads
--- to RAM) long before its VBL handler starts reading Ticks ($16A) to bump it.
+-- ROM.  The ROM drops the overlay (m68k_board_overlay.c re-maps page 0's
+-- reads to RAM) long before its VBL handler starts reading Ticks ($16A) to
+-- bump it.
 -- level=9 keeps it quiet: the assertions read the hit count, and the ROM's
 -- RAM test alone reads $168-$16D tens of thousands of times.
 debug.logpoints.add{addr = 0x16A, width = "l", mode = "read", level = 9, message = "ticks"}

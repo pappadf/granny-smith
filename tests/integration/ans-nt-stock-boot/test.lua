@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Cold boot of an installed Windows NT 4.0 on an Apple Network Server 500
 -- with the PRODUCTION ROM -- Open Firmware 1.1.22, the one every Network
 -- Server shipped with.  ans-nt-installed-boot is the same boot on the 2.26NT
@@ -21,7 +20,7 @@
 -- ROM's POST, its xcoff-loader laying out a big-endian XCOFF, and its client
 -- interface and device tree as the floppy's stage0 reads them before it
 -- switches the 604 and the bridges to little-endian.  The rungs, the disk and the goldens are
--- ans-nt-installed-boot's (lib/nt.script, nt_installed_boot_rungs):
+-- ans-nt-installed-boot's (lib/nt.lua, nt_installed_boot_rungs):
 --
 --   B1  the production firmware reaches `0 >` on ttya
 --   B2  the firmware is big-endian and little-endian? is false, as shipped

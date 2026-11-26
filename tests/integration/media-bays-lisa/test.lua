@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 assert(machine.hd.present, "hd= attached the ProFile")
 assert(files.images.count == 1, "the ProFile's image is the machine's, like every drive's")
 assert(files.images[0].kind == "profile", "and is a ProFile")

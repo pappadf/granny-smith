@@ -11,6 +11,7 @@
 #include "object.h"
 #include "shell_internal.h"
 #include "test_assert.h"
+#include "usage.h"
 #include "value.h"
 
 #include <stdio.h>
@@ -57,7 +58,6 @@ void shell_complete(const char *line, int cursor_pos, struct completion *out) {
 void completion_free(struct completion *c) {
     (void)c;
 }
-void shell_var_init(void) {}
 uint32_t cpu_get_pc(struct cpu *cpu) {
     (void)cpu;
     return 0;
@@ -65,7 +65,16 @@ uint32_t cpu_get_pc(struct cpu *cpu) {
 const char *system_machine_model_id(void) {
     return "";
 }
-// shell_init hands the Lua runner its error reporter (gs_lua.h, script.h).
+// shell_init hands the usage layer its command-word resolver (usage.h).
+bool shell_command_lookup(const char *word, node_t *out, char *target, size_t target_size) {
+    (void)word, (void)out, (void)target, (void)target_size;
+    return false;
+}
+void object_usage_set_word_resolver(usage_word_t (*resolve)(const char *word, char *target, size_t target_size)) {
+    (void)resolve;
+}
+
+// shell_init hands the Lua runner its error reporter (gs_lua.h, report.h).
 void script_report_error(const char *file, int line, const char *msg, const char *text) {
     (void)file, (void)line, (void)msg, (void)text;
 }

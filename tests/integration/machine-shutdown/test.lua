@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- machine.shutdown — switch the machine off for good.
 --
 -- The contract under test:

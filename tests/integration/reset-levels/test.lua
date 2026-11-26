@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Reset-level conformance -- see config.mk.
 --
 -- levels(model, ram_kb, rom, budget, ticks): `budget` instructions are enough

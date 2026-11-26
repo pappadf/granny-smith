@@ -1,12 +1,9 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Run a few thousand instructions so PC has actually moved.
 scheduler.run(50000)
 
 -- Object-model resolver checks. Hardware-constant attributes are
 -- pinned with assert; cpu.pc / cpu.d0 / cpu.a7 are bare-read because
--- their values depend on how far through boot we ran. The legacy
--- `eval <path>` form still works (it lives on as a JSON-printer);
--- we mix both forms below to exercise each.
+-- their values depend on how far through boot we ran.
 assert(machine.id == "plus", "expected Plus machine")
 assert(machine.freq == 7833600, "Plus runs at 7.83 MHz")
 assert(machine.memory.ram_size == 4194304, "Plus has 4 MiB RAM")
@@ -44,7 +41,7 @@ assert(machine.sound.enabled == false)
 machine.sound.enabled = true
 assert(machine.sound.enabled == true)
 
--- Legacy `eval` continues to work in parallel for the JSON shape.
+-- Bare reads of a leaf attribute.
 local _ = machine.id
 local _ = machine.cpu.pc
 

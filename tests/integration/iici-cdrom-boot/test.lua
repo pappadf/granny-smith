@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- IIci CD-ROM boot
 --
 -- Boot a Macintosh IIci from a read-only SCSI CD-ROM and nothing else — no hard

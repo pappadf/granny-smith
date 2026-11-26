@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Integration test: the image VFS refuses a file the emulator holds writable.
 -- The runner cd's into tests/integration/; WORK_DIR is absolute.
 

@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 -- Installing Windows NT 4.0 for PowerPC on an Apple Network Server 500.
 --
 -- Apple never shipped NT for this machine and Microsoft never shipped a HAL
@@ -62,7 +61,7 @@
 --                                  switches the machine itself)
 --
 -- and, not redistributable, from $GS_EXTRA_MEDIA_DIR/windows-nt-ppc-ans/
--- (the runner hands it to the script as $EXTRA_MEDIA):
+-- (the runner hands it to the script as vars.EXTRA_MEDIA):
 --
 --   nt4-ppc.iso                    Windows NT 4.0 Workstation for PowerPC,
 --                                  OEM 000-48303, MD5 ab37556d72818ed0...

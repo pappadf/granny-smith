@@ -21,7 +21,6 @@
 #include "gs_assert.h"
 #include "meta.h"
 #include "status.h"
-#include "job/job.h"
 
 // === Object representation ==================================================
 //
@@ -114,7 +113,7 @@ void object_root_reset(void) {
     // This path used to detach, release the Meta node and free() -- skipping
     // object_fire_invalidators and the destructor hook, both of which
     // object_delete runs.  The invalidator contract is the mechanism that
-    // makes a held node safe: shell_var.c's binding_store registers one on
+    // makes a held node safe: a holder of a VK_OBJECT registers one on
     // whatever VK_OBJECT it holds, and without the fire it keeps a `watched`
     // pointer into freed memory and is never marked stale, so the next read
     // dereferences it.  This was the one path that bypassed it.
@@ -260,71 +259,6 @@ void object_unregister_invalidator(struct object *o, node_invalidate_fn cb, void
         }
         link = &(*link)->next;
     }
-}
-
-// One watched object reference: the invalidator's user-data.
-struct object_watch_slot {
-    object_watch_t *owner;
-    struct object *obj; // NULL once fired (its registration is consumed)
-};
-
-// Invalidator for one slot: the object is being destroyed.
-static void watch_slot_gone(void *ud) {
-    struct object_watch_slot *s = (struct object_watch_slot *)ud;
-    s->obj = NULL;
-    s->owner->gone = true;
-}
-
-// Visit every object reference in v (list items and map values, at any
-// depth); count them, and fill `slots` when it is non-NULL.
-static size_t watch_collect(const value_t *v, struct object_watch_slot *slots, size_t n) {
-    if (v->kind == VK_OBJECT && v->obj) {
-        if (slots)
-            slots[n].obj = v->obj;
-        return n + 1;
-    }
-    if (v->kind == VK_LIST)
-        for (size_t i = 0; i < v->list.len; i++)
-            n = watch_collect(&v->list.items[i], slots, n);
-    else if (v->kind == VK_MAP)
-        for (size_t i = 0; i < v->map.len; i++)
-            n = watch_collect(&v->map.entries[i].val, slots, n);
-    return n;
-}
-
-bool object_watch_value(object_watch_t *w, const value_t *v) {
-    w->slots = NULL;
-    w->n = 0;
-    w->gone = false;
-    size_t n = v ? watch_collect(v, NULL, 0) : 0;
-    if (n == 0)
-        return true;
-    struct object_watch_slot *slots = (struct object_watch_slot *)calloc(n, sizeof(*slots));
-    if (!slots)
-        return false;
-    watch_collect(v, slots, 0);
-    // Slots are fully built before any is registered: a callback may run
-    // as soon as one is on its object's list
-    for (size_t i = 0; i < n; i++)
-        slots[i].owner = w;
-    w->slots = slots;
-    w->n = n;
-    for (size_t i = 0; i < n; i++)
-        object_register_invalidator(slots[i].obj, watch_slot_gone, &slots[i]);
-    return true;
-}
-
-void object_unwatch(object_watch_t *w) {
-    if (!w)
-        return;
-    // A fired slot is already off its (destroyed) object's list
-    for (size_t i = 0; i < w->n; i++)
-        if (w->slots[i].obj)
-            object_unregister_invalidator(w->slots[i].obj, watch_slot_gone, &w->slots[i]);
-    free(w->slots);
-    w->slots = NULL;
-    w->n = 0;
-    w->gone = false;
 }
 
 void object_fire_invalidators(struct object *o) {
@@ -2332,105 +2266,22 @@ static value_t node_call_here(node_t n, int argc, const value_t *argv) {
     return out;
 }
 
-// === The seam ================================================================
+// === Gateways ==================================================================
 //
-// node_get / node_set / node_call are the only way to reach guest state,
-// and guest state belongs to the emulator thread.  A caller on any other
-// thread -- the interpreter on the job thread -- is handed over through
-// job_on_emulator (job/job.h) and waits; on the emulator thread the
-// call is direct.  Path resolution (object_resolve) walks the tree's
-// structure only and stays where the caller is.
-
-typedef struct {
-    node_t n;
-    int argc;
-    const value_t *argv;
-    value_t in;
-    value_t out;
-} node_marshal_t;
-
-static void marshal_get(void *p) {
-    node_marshal_t *m = (node_marshal_t *)p;
-    m->out = node_get_here(m->n);
-}
-
-static void marshal_set(void *p) {
-    node_marshal_t *m = (node_marshal_t *)p;
-    m->out = node_set_here(m->n, m->in);
-}
-
-static void marshal_call(void *p) {
-    node_marshal_t *m = (node_marshal_t *)p;
-    m->out = node_call_here(m->n, m->argc, m->argv);
-}
+// node_get / node_set / node_call are the only way to reach guest state.
+// Everything that calls them runs on the emulator thread -- a script's
+// task included (job/job.h) -- so they are direct calls.
 
 value_t node_get(node_t n) {
-    if (job_on_emulator_thread())
-        return node_get_here(n);
-    node_marshal_t m = {.n = n};
-    job_on_emulator(marshal_get, &m);
-    return m.out;
-}
-
-// Inline mode (job.h): a tree call on the emulator thread that opens a mode
-// is followed by the wait for it.  Weak: linked only where job.c is.
-uint32_t job_glue_mode_id(void) __attribute__((weak));
-void job_inline_after_call(uint32_t mode_before) __attribute__((weak));
-bool job_inline_enabled(void) __attribute__((weak));
-
-// The mode id before the call, tagged (top bit) when inline mode is on --
-// 0 is a legitimate id, so the tag says whether to wait at all.
-static inline uint32_t inline_mode_before(void) {
-    if (job_inline_enabled && job_inline_enabled() && job_glue_mode_id && job_inline_after_call)
-        return job_glue_mode_id() | 0x80000000u;
-    return 0;
-}
-
-static inline void inline_mode_after(uint32_t before) {
-    if (before & 0x80000000u)
-        job_inline_after_call(before & 0x7fffffffu);
+    return node_get_here(n);
 }
 
 value_t node_set(node_t n, value_t v) {
-    if (job_on_emulator_thread()) {
-        uint32_t before = inline_mode_before();
-        value_t r = node_set_here(n, v);
-        inline_mode_after(before);
-        return r;
-    }
-    node_marshal_t m = {.n = n, .in = v};
-    job_on_emulator(marshal_set, &m);
-    return m.out;
+    return node_set_here(n, v);
 }
 
-// A deferred call's success answer (job.h).  Weak: linked only where job.c is.
-bool job_call_take_answer(value_t *out) __attribute__((weak));
-
 value_t node_call(node_t n, int argc, const value_t *argv) {
-    if (job_on_emulator_thread()) {
-        uint32_t before = inline_mode_before();
-        value_t r = node_call_here(n, argc, argv);
-        inline_mode_after(before);
-        return r;
-    }
-    node_marshal_t m = {.n = n, .argc = argc, .argv = argv};
-    job_on_emulator(marshal_call, &m);
-    // A leaf that answered later (an I/O job) and failed: the failure is
-    // the call's result, not the provisional value it returned at once.
-    char err[256];
-    if (job_call_take_failure(err, sizeof err)) {
-        value_free(&m.out);
-        return val_err("%s", err);
-    }
-    // ...and one that succeeded: its answer, which the work produced (bytes
-    // read, a handle, stats), is the call's result -- as the same leaf's is
-    // when it works there and then (--jobs=inline).
-    value_t answer;
-    if (job_call_take_answer && job_call_take_answer(&answer)) {
-        value_free(&m.out);
-        return answer;
-    }
-    return m.out;
+    return node_call_here(n, argc, argv);
 }
 
 // Append the method's declared fixed-argument names to buf as a

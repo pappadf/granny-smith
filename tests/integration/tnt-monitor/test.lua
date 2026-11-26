@@ -1,4 +1,3 @@
--- Converted from test.script by scripts/script-to-lua.py
 local mac = dofile("../lib/mac.lua")
 
 -- Run until the screen is `w` x `h`, in 40 M polls, up to the 720 M the ROM

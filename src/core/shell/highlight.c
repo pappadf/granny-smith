@@ -2,18 +2,16 @@
 // Copyright (c) pappadf
 
 // highlight.c
-// shell.highlight: syntax classes for a shell line or block, computed the
-// way the script parser reads it (docs/internals/core/shell/shell.md,
-// "Statements" and "Two parsing modes").  The parser's own classifier
-// (syntax.h) says what each statement is and where a line's block braces,
-// inline body and comment are; this file only colours the tokens:
+// shell.highlight: syntax classes for what the terminal holds -- one command
+// line, or a Lua chunk (docs/internals/core/lua/lua.md, "The terminal").
+// gs.classify decides which, as the line will run:
 //
-//   - a keyword form colours its keyword, its declared name and its
-//     expression (`let NAME = EXPR`, `for NAME in EXPR {`, …);
-//   - an assignment colours its target path and its right-hand side;
-//   - a command colours its head path (or command word) and its arguments,
-//     which are in argument mode (bare words are strings);
-//   - an expression statement is coloured as an expression.
+//   - a command line colours its head path (or command word) and its
+//     arguments, which are in argument mode (bare words are strings), or,
+//     for `PATH = VALUE`, its target and right-hand side;
+//   - a Lua chunk is lexed as Lua: keywords, numbers, strings, comments and
+//     operators, and a name that starts a tree path (`machine.cpu.pc`) is
+//     coloured as the path.
 //
 // Path segments are resolved against the live tree as they are read:
 // each resolved segment is an object, attribute or method; the first one
@@ -28,6 +26,7 @@
 
 #include "alias.h"
 #include "commands.h"
+#include "gs_lua.h"
 #include "object.h"
 #include "syntax.h"
 
@@ -108,8 +107,8 @@ static bool curly_close(const char *p) {
 // === Literals =================================================================
 
 // A number at p (0x…, 0b…, decimal, float with fraction / exponent); the
-// end, or p when there is none.  `1..5` is a range: the number stops
-// before the `..`.
+// end, or p when there is none.  `1..5` stops before the `..` (Lua's
+// concatenation).
 static const char *number_end(const char *p) {
     const char *q = p;
     if (q[0] == '0' && (q[1] == 'x' || q[1] == 'X')) {
@@ -351,7 +350,7 @@ static const char *path_rest(hl_t *h, const char *p, prefix_t *pf) {
 }
 
 // A path starting with an identifier at p.  An unresolved single word
-// followed by `(`, or naming a `def` function, is a call, not unknown.
+// followed by `(` is a call, not unknown.
 // Answers the end; `out` (optional) gets the resolved node when the whole
 // path resolved.
 static const char *path(hl_t *h, const char *p, node_t *out) {
@@ -360,17 +359,10 @@ static const char *path(hl_t *h, const char *p, node_t *out) {
     prefix_t pf = {.ok = true, .known = true};
     prefix_add(&pf, p, e, false);
     const char *cls = prefix_resolve(&pf);
-    if (!pf.ok) {
+    if (!pf.ok && *after == '(') {
         // An unresolved single word followed by `(` is a function call.
-        if (*after == '(') {
-            emit(h, p, e, "method");
-            return e;
-        }
-        if (*after != '.' && *after != '[' &&
-            shell_word_resolve(p, (size_t)(e - p), NULL, NULL, NULL, 0) == SHELL_HEAD_FUNCTION) {
-            emit(h, p, e, "method");
-            return e;
-        }
+        emit(h, p, e, "method");
+        return e;
     }
     emit(h, p, e, cls);
     const char *end = path_rest(h, e, &pf);
@@ -391,8 +383,7 @@ static const char *binding(hl_t *h, const char *p) {
     size_t n = (size_t)(e - s) < sizeof(name) - 1 ? (size_t)(e - s) : sizeof(name) - 1;
     memcpy(name, s, n);
     name[n] = '\0';
-    // The emulator thread highlights while the job thread may redefine
-    // aliases: work on a copy.
+    // A copy: resolving the path below may not keep the table's storage.
     char target[PREFIX_MAX];
     bool is_alias = alias_lookup_copy(name, target, sizeof(target), NULL);
     emit(h, p, e, is_alias ? "alias" : "variable");
@@ -435,7 +426,7 @@ static const char *expr_until(hl_t *h, const char *p, char close) {
             p = binding(h, p);
         } else if (script_ident_start(c)) {
             const char *e = ident_end(p);
-            if (word_is(p, e, "true") || word_is(p, e, "false") || word_is(p, e, "none") || word_is(p, e, "in")) {
+            if (word_is(p, e, "true") || word_is(p, e, "false") || word_is(p, e, "none")) {
                 emit(h, p, e, "keyword");
                 p = e;
             } else {
@@ -556,42 +547,6 @@ static void rhs(hl_t *h, const char *p, node_t target) {
     expr_until(h, p, '\0');
 }
 
-// A path where a declaration wants one (`alias`, `command`), else an
-// expression.
-static void path_or_expr(hl_t *h, const char *p) {
-    if (!at_end(h, p) && script_ident_start(*p))
-        path(h, p, NULL);
-    else
-        expr_until(h, p, '\0');
-}
-
-// `def NAME(P, …)`: the parameter list after the name.
-static void def_params(hl_t *h, const char *q) {
-    q = skip_ws(h, q);
-    if (at_end(h, q) || *q != '(')
-        return;
-    emit(h, q, q + 1, "operator");
-    q++;
-    for (;;) {
-        q = skip_ws(h, q);
-        if (at_end(h, q))
-            return;
-        if (script_ident_start(*q)) {
-            const char *pe = ident_end(q);
-            emit(h, q, pe, "variable");
-            q = pe;
-        } else if (*q == ',') {
-            emit(h, q, q + 1, "operator");
-            q++;
-        } else if (*q == ')') {
-            emit(h, q, q + 1, "operator");
-            return;
-        } else {
-            return;
-        }
-    }
-}
-
 // The head of a command statement, then its arguments.  A bare word may be
 // a command, which stands for the method it runs.
 static void command(hl_t *h, const script_stmt_t *c) {
@@ -603,7 +558,7 @@ static void command(hl_t *h, const script_stmt_t *c) {
     }
     if (ident_end(s) == e) {
         node_t cmd = {0};
-        if (shell_head_resolve(s, (size_t)(e - s), &cmd, NULL, NULL, 0) == SHELL_HEAD_COMMAND) {
+        if (shell_head_resolve(s, (size_t)(e - s), &cmd, NULL, 0) == SHELL_HEAD_COMMAND) {
             emit(h, s, e, "method");
             arguments(h, c->rest, cmd);
             return;
@@ -614,16 +569,6 @@ static void command(hl_t *h, const script_stmt_t *c) {
     arguments(h, c->rest, n);
 }
 
-// True when the statement's head is a reserved word (not a path).
-static bool keyword_head(const script_stmt_t *c) {
-    if (!c->head || ident_end(c->head) != c->head_end || c->head_end - c->head >= 16)
-        return false;
-    char w[16];
-    memcpy(w, c->head, (size_t)(c->head_end - c->head));
-    w[c->head_end - c->head] = '\0';
-    return object_is_reserved_word(w);
-}
-
 // Colour one classified statement.
 static void statement(hl_t *h, const script_stmt_t *c) {
     if (c->kind == SCRIPT_STMT_EMPTY)
@@ -631,20 +576,6 @@ static void statement(hl_t *h, const script_stmt_t *c) {
     const char *saved = h->limit;
     h->limit = c->end;
     switch (c->kind) {
-    case SCRIPT_STMT_LET:
-    case SCRIPT_STMT_ALIAS:
-    case SCRIPT_STMT_COMMAND_DEF:
-        emit(h, c->head, c->head_end, "decl");
-        emit(h, c->name, c->name_end,
-             c->kind == SCRIPT_STMT_LET     ? "variable"
-             : c->kind == SCRIPT_STMT_ALIAS ? "alias"
-                                            : "method");
-        emit(h, c->eq, c->eq + 1, "operator");
-        if (c->kind == SCRIPT_STMT_LET)
-            expr_until(h, c->rest, '\0');
-        else
-            path_or_expr(h, c->rest);
-        break;
     case SCRIPT_STMT_ASSIGN:
         if (*c->head == '$') {
             binding(h, c->head);
@@ -660,81 +591,148 @@ static void statement(hl_t *h, const script_stmt_t *c) {
     case SCRIPT_STMT_COMMAND:
         command(h, c);
         break;
-    case SCRIPT_STMT_DEF:
-        emit(h, c->head, c->head_end, "decl");
-        emit(h, c->name, c->name_end, "method");
-        def_params(h, c->name ? c->name_end : c->rest);
-        break;
-    case SCRIPT_STMT_FOR: {
-        emit(h, c->head, c->head_end, "keyword");
-        const char *q = c->rest;
-        if (c->name) {
-            emit(h, c->name, c->name_end, "variable");
-            q = skip_ws(h, c->name_end);
-        }
-        expr_until(h, q, '\0'); // colours `in` as a keyword
-        break;
-    }
-    case SCRIPT_STMT_INVALID:
-        if (!keyword_head(c)) {
-            // A path head the parser rejects (an unclosed `[`): an expression.
-            expr_until(h, c->start, '\0');
-            break;
-        }
-        // A keyword in a shape the parser rejects: its keyword, then what
-        // lexes after it.
-        {
-            bool is_alias = word_is(c->head, c->head_end, "alias");
-            bool decl = is_alias || word_is(c->head, c->head_end, "let");
-            emit(h, c->head, c->head_end, decl ? "decl" : "keyword");
-            emit(h, c->name, c->name_end, is_alias ? "alias" : "variable");
-            if (c->eq)
-                emit(h, c->eq, c->eq + 1, "operator");
-            expr_until(h, c->eq ? c->eq + 1 : c->name ? c->name_end : c->rest, '\0');
-        }
-        break;
+    case SCRIPT_STMT_INVALID: // an unclosed `[`: what lexes
     case SCRIPT_STMT_EXPR:
         expr_until(h, c->start, '\0');
         break;
-    default:
-        // if, elif, else, while, break, continue, return, assert, include.
-        emit(h, c->head, c->head_end, "keyword");
-        expr_until(h, c->rest, '\0');
+    case SCRIPT_STMT_EMPTY:
         break;
     }
     h->limit = saved;
 }
 
-// One line: a leading `}`, the statement (or a block form's header), its
-// `{`, an inline block's statement and `}`, and a comment -- the parts the
-// parser reads (script_line_split).
+// One command line: its statement and its comment (script_line_split).
 static void line(hl_t *h, const char *s, const char *e) {
     script_line_t ln;
     script_line_split(s, e, &ln);
     h->limit = e;
-    if (ln.closer)
-        emit(h, ln.closer, ln.closer + 1, "operator");
     statement(h, &ln.stmt);
-    if (ln.open) {
-        emit(h, ln.open, ln.open + 1, "operator");
-        statement(h, &ln.body);
-        if (ln.close)
-            emit(h, ln.close, ln.close + 1, "operator");
-    }
     if (ln.comment)
         emit(h, ln.comment, e, "comment");
 }
 
+// === Lua =========================================================================
+
+static const char *const LUA_KEYWORDS[] = {"and",      "break",  "do",   "else", "elseif", "end",   "false", "for",
+                                           "function", "goto",   "if",   "in",   "local",  "nil",   "not",   "or",
+                                           "repeat",   "return", "then", "true", "until",  "while", NULL};
+
+static bool lua_keyword(const char *s, const char *e) {
+    for (const char *const *k = LUA_KEYWORDS; *k; k++)
+        if (word_is(s, e, *k))
+            return true;
+    return false;
+}
+
+// A long bracket at p (`[[`, `[==[`): its level, or -1.
+static int long_level(const char *p) {
+    if (*p != '[')
+        return -1;
+    int n = 0;
+    p++;
+    while (*p == '=') {
+        n++;
+        p++;
+    }
+    return *p == '[' ? n : -1;
+}
+
+// The end of the long bracket opening at p with `level`, or the text's end.
+static const char *long_end(const char *p, int level) {
+    p += (size_t)level + 2;
+    for (; *p; p++) {
+        if (*p != ']')
+            continue;
+        const char *q = p + 1;
+        int n = 0;
+        while (*q == '=') {
+            n++;
+            q++;
+        }
+        if (n == level && *q == ']')
+            return q + 1;
+    }
+    return p;
+}
+
+// A Lua short string at p, to its closing quote or the end of the line.
+static const char *lua_string_end(const char *p) {
+    char quote = *p++;
+    while (*p && *p != '\n' && *p != quote) {
+        if (*p == '\\' && p[1])
+            p++;
+        p++;
+    }
+    return *p == quote ? p + 1 : p;
+}
+
+// Whether the name [s, e) is one of the root's children: what a tree path
+// starts with.  Any other name (a local, a global of the script's) gets no
+// class.
+static bool root_child(const char *s, const char *e) {
+    char name[128];
+    size_t n = (size_t)(e - s);
+    if (n >= sizeof name)
+        return false;
+    memcpy(name, s, n);
+    name[n] = '\0';
+    node_t nd = object_resolve(object_root(), name);
+    return node_valid(nd) && (!nd.member || nd.member->kind == MK_CHILD);
+}
+
+static void lua_code(hl_t *h, const char *p) {
+    h->limit = p + strlen(p);
+    char prev = '\0'; // the last significant character before p
+    while (*p) {
+        char c = *p;
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+            p++;
+            continue;
+        }
+        const char *e;
+        if (c == '-' && p[1] == '-') {
+            int lv = long_level(p + 2);
+            e = lv >= 0 ? long_end(p + 2, lv) : p + strcspn(p, "\n");
+            emit(h, p, e, "comment");
+        } else if (c == '"' || c == '\'') {
+            e = lua_string_end(p);
+            emit(h, p, e, "string");
+        } else if (long_level(p) >= 0) {
+            e = long_end(p, long_level(p));
+            emit(h, p, e, "string");
+        } else if (digit(c) || (c == '.' && digit(p[1]))) {
+            e = number_end(p);
+            if (e == p)
+                e = p + 1;
+            emit(h, p, e, "number");
+        } else if (c == '$' && script_ident_start(p[1])) {
+            e = binding(h, p);
+        } else if (script_ident_start(c)) {
+            e = ident_end(p);
+            if (lua_keyword(p, e))
+                emit(h, p, e, "keyword");
+            else if (prev != '.' && prev != ':' && root_child(p, e))
+                e = path(h, p, NULL);
+        } else if (strchr("+-*/%^#&~|<>=(){}[];:,.", c)) {
+            e = p + 1;
+            emit(h, p, e, "operator");
+        } else {
+            e = p + 1;
+        }
+        prev = e[-1];
+        p = e;
+    }
+}
+
 value_t shell_highlight(const char *text) {
     hl_t h = {.base = text ? text : ""};
-    const char *p = h.base;
-    for (;;) {
-        const char *eol = strchr(p, '\n');
-        const char *e = eol ? eol : p + strlen(p);
-        line(&h, p, e);
-        if (!eol)
-            break;
-        p = eol + 1;
+    if (gs_lua_is_command_line(h.base)) {
+        const char *e = h.base + strlen(h.base);
+        while (e > h.base && (e[-1] == '\n' || e[-1] == '\r'))
+            e--;
+        line(&h, h.base, e);
+    } else {
+        lua_code(&h, h.base);
     }
     return val_list(h.items, h.len);
 }

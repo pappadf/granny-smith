@@ -34,7 +34,10 @@ static bool buf_append_char(char **buf, size_t *len, size_t *cap, char c) {
     return true;
 }
 
-bool parse_decode_escape(const char **p, char *out, bool allow_dollar) {
+// Decode one \-escape at *p (which points at the '\'): \n \t \r \0 \\ \" \'
+// \xHH.  Advances *p past it and writes the byte to *out; false, *p
+// unmoved, on a malformed escape.
+static bool parse_decode_escape(const char **p, char *out) {
     if ((*p)[0] != '\\')
         return false;
     char c = (*p)[1];
@@ -56,12 +59,6 @@ bool parse_decode_escape(const char **p, char *out, bool allow_dollar) {
     case '\'':
         *out = c;
         break;
-    case '$':
-        // Only where `$` would otherwise start a splice
-        if (!allow_dollar)
-            return false;
-        *out = '$';
-        break;
     case 'x': {
         // \xHH
         int hi = hex_digit((*p)[2]), lo = hi < 0 ? -1 : hex_digit((*p)[3]);
@@ -78,7 +75,10 @@ bool parse_decode_escape(const char **p, char *out, bool allow_dollar) {
     return true;
 }
 
-value_t parse_string_literal(const char **p) {
+// A quoted "..." string literal; *p points at the opening quote.  On
+// success advances *p past the closing quote and returns VK_STRING with the
+// escapes decoded.
+static value_t parse_string_literal(const char **p) {
     if (!p || !*p || **p != '"')
         return val_err("expected '\"' to start string literal");
     const char *q = *p + 1;
@@ -87,7 +87,7 @@ value_t parse_string_literal(const char **p) {
     while (*q && *q != '"') {
         if (*q == '\\') {
             char c = 0;
-            if (!parse_decode_escape(&q, &c, false)) {
+            if (!parse_decode_escape(&q, &c)) {
                 free(buf);
                 return val_err("bad string escape");
             }
@@ -237,7 +237,7 @@ static value_t parse_float_literal(const char **p) {
                 has_digits = true;
             q++;
         }
-        if (*q == '.' && q[1] != '.') { // `..` is the range operator, not a decimal point
+        if (*q == '.' && q[1] != '.') { // `..` (concatenation) is not a decimal point
             has_dot = true;
             q++;
             while (isxdigit((unsigned char)*q) || *q == '_') {
@@ -262,7 +262,7 @@ static value_t parse_float_literal(const char **p) {
                 has_digits = true;
             q++;
         }
-        if (*q == '.' && q[1] != '.') { // `..` is the range operator, not a decimal point
+        if (*q == '.' && q[1] != '.') { // `..` (concatenation) is not a decimal point
             has_dot = true;
             q++;
             while (isdigit((unsigned char)*q) || *q == '_') {
@@ -318,7 +318,9 @@ static const char *match_keyword(const char *q, const char *kw) {
     return NULL;
 }
 
-value_t parse_literal(const char **p, const char *const *enum_table, size_t n_enum) {
+// A single literal at *p: advances *p past it, or returns VK_ERROR with *p
+// on the failing position.  Trailing whitespace is not consumed.
+static value_t parse_literal(const char **p, const char *const *enum_table, size_t n_enum) {
     if (!p || !*p)
         return val_err("null parser input");
     skip_ws(p);
@@ -365,7 +367,7 @@ value_t parse_literal(const char **p, const char *const *enum_table, size_t n_en
             const char *r = scan + 2;
             while (isxdigit((unsigned char)*r) || *r == '_' || *r == '.') {
                 if (*r == '.') {
-                    if (r[1] != '.') // `..` is the range operator
+                    if (r[1] != '.') // `..` (concatenation) is not a fraction
                         maybe_float = true;
                     break;
                 }
@@ -381,7 +383,7 @@ value_t parse_literal(const char **p, const char *const *enum_table, size_t n_en
             const char *r = scan;
             while (isdigit((unsigned char)*r) || *r == '_')
                 r++;
-            if (*r == '.' && r[1] != '.') // `..` is the range operator
+            if (*r == '.' && r[1] != '.') // `..` (concatenation) is not a fraction
                 maybe_float = true;
             else if (*r == 'e' || *r == 'E')
                 maybe_float = true;
@@ -436,7 +438,7 @@ value_t parse_literal(const char **p, const char *const *enum_table, size_t n_en
         char ident[OBJ_IDENT_MAX + 1];
         size_t i = 0;
         while (*q && (isalnum((unsigned char)*q) || *q == '_')) {
-            // Fail rather than truncate (see lex_read_ident in expr.c)
+            // Fail rather than truncate: a truncated name is another name
             if (i + 1 >= sizeof(ident))
                 return val_err("identifier too long (max %zu)", sizeof(ident) - 1);
             ident[i++] = *q;
@@ -486,11 +488,11 @@ value_t parse_literal_whole_string(const char *s, const char *const *enum_table,
 // The table sits here, in the lexical layer, so the literal parser can refuse
 // reserved words without depending on the object model.
 
-// The shell's keywords, each with its one-line syntax (shell.keywords); the
+// Lua's reserved words, each with its one-line syntax (shell.keywords); the
 // syntax sits next to the word so the two cannot drift.  One table for the
 // reserved-word check, shell.keywords and completion.
-//   reserved   may not name a member, alias or binding; a contextual
-//              keyword (`command`) is a keyword only in its statement shape
+//   reserved   may not name a member, alias or command (a script could
+//              not spell it as `a.b`)
 //   statement  heads a statement (offered at the start of a line)
 enum { KW_RESERVED = 1, KW_STATEMENT = 2 };
 static const struct {
@@ -498,30 +500,30 @@ static const struct {
     const char *syntax;
     unsigned flags;
 } KEYWORDS[] = {
-    // Literal spellings. `on`/`off`/`yes`/`no` are demoted from reserved
-    // words to bool-slot input coercions (validate_slot) — they are
-    // ordinary identifiers again.
-    {"true",     "true — the boolean literal",                                 KW_RESERVED               },
-    {"false",    "false — the boolean literal",                                KW_RESERVED               },
-    {"none",     "none — no value (an unset optional, an absent result)",      KW_RESERVED               },
-    // Statement keywords.
-    {"let",      "let <name> = <expr>",                                          KW_RESERVED | KW_STATEMENT},
-    {"alias",    "alias <name> = <path>",                                        KW_RESERVED | KW_STATEMENT},
-    {"command",  "command <name> = <path> — a bare word that runs the method", KW_STATEMENT              },
-    {"if",       "if <expr> { … }",                                            KW_RESERVED | KW_STATEMENT},
-    {"elif",     "} elif <expr> { … }",                                        KW_RESERVED | KW_STATEMENT},
-    {"else",     "} else { … }",                                               KW_RESERVED | KW_STATEMENT},
-    {"while",    "while <expr> { … }",                                         KW_RESERVED | KW_STATEMENT},
-    {"for",      "for <name> in <expr> { … }",                                 KW_RESERVED | KW_STATEMENT},
-    {"in",       "for <name> in <expr> { … }",                                 KW_RESERVED               },
-    {"break",    "break — leave the innermost loop",                           KW_RESERVED | KW_STATEMENT},
-    {"continue", "continue — next iteration of the innermost loop",            KW_RESERVED | KW_STATEMENT},
-    {"return",   "return [<expr>]",                                              KW_RESERVED | KW_STATEMENT},
-    {"def",      "def <name>(<param>, …) { … }",                             KW_RESERVED | KW_STATEMENT},
-    {"assert",   "assert <expr> [\"message\"]",                                  KW_RESERVED | KW_STATEMENT},
-    {"include",  "include <path> — run a script file here",                    KW_RESERVED | KW_STATEMENT},
-    // Held for a possible future post-test loop.
-    {"do",       "do — reserved",                                              KW_RESERVED               },
+    {"true",     "true — the boolean literal",                                                    KW_RESERVED               },
+    {"false",    "false — the boolean literal",                                                   KW_RESERVED               },
+    {"nil",      "nil — no value",                                                                KW_RESERVED               },
+    // A command line's literal for no value (`debug.breakpoints.add 0x10 none`).
+    {"none",     "none — no value, in a command line's arguments",                                KW_RESERVED               },
+    {"local",    "local <name> = <expr>",                                                           KW_RESERVED | KW_STATEMENT},
+    {"function", "function <name>(<param>, …) … end",                                           KW_RESERVED | KW_STATEMENT},
+    {"if",       "if <expr> then … [elseif <expr> then …] [else …] end",                      KW_RESERVED | KW_STATEMENT},
+    {"then",     "if <expr> then … end",                                                          KW_RESERVED               },
+    {"elseif",   "elseif <expr> then …",                                                          KW_RESERVED               },
+    {"else",     "else …",                                                                        KW_RESERVED               },
+    {"end",      "… end — closes a block",                                                      KW_RESERVED               },
+    {"while",    "while <expr> do … end",                                                         KW_RESERVED | KW_STATEMENT},
+    {"do",       "do … end",                                                                      KW_RESERVED | KW_STATEMENT},
+    {"for",      "for <name> = <from>, <to>[, <step>] do … end; for k, v in pairs(t) do … end", KW_RESERVED | KW_STATEMENT},
+    {"in",       "for <names> in <iterator> do … end",                                            KW_RESERVED               },
+    {"repeat",   "repeat … until <expr>",                                                         KW_RESERVED | KW_STATEMENT},
+    {"until",    "repeat … until <expr>",                                                         KW_RESERVED               },
+    {"break",    "break — leave the innermost loop",                                              KW_RESERVED | KW_STATEMENT},
+    {"goto",     "goto <label>",                                                                    KW_RESERVED | KW_STATEMENT},
+    {"return",   "return [<expr>, …]",                                                            KW_RESERVED | KW_STATEMENT},
+    {"and",      "<a> and <b>",                                                                     KW_RESERVED               },
+    {"or",       "<a> or <b>",                                                                      KW_RESERVED               },
+    {"not",      "not <a>",                                                                         KW_RESERVED               },
 };
 
 #define N_KEYWORDS (sizeof(KEYWORDS) / sizeof(KEYWORDS[0]))
