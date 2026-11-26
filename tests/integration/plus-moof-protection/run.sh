@@ -29,6 +29,9 @@ python3 -c 'import gzip, shutil, sys, zipfile
 shutil.copyfileobj(open(sys.argv[1], "rb"), gzip.open(sys.argv[1] + ".gz", "wb"))
 zipfile.ZipFile(sys.argv[2], "w", zipfile.ZIP_DEFLATED).write(sys.argv[1], "protected.moof")' \
     "$PROTECTED" "$WORK_DIR/protected.zip"
+# The quick-checkpoint steps' capture, kept aside: test.lua moves the MOOF
+# away and its consolidated restore leaves a placeholder at its path.
+cp "$PROTECTED" "$WORK_DIR/quick-protected.moof"
 
 cd "$SCRIPT_DIR"
 # shellcheck disable=SC2086 — TEST_VAR_ARGS is intentionally word-split
@@ -41,4 +44,32 @@ GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN \
     --var WORK_DIR="$WORK_DIR" \
     $TEST_VAR_ARGS \
     --speed=turbo 2>&1 | tee "$TEST_RESULTS_DIR/output.log"
-exit "${PIPESTATUS[0]}"
+rc="${PIPESTATUS[0]}"
+[ "$rc" -eq 0 ] || exit "$rc"
+
+# A quick checkpoint depends on its base file, so one whose capture changed
+# is refused -- even when the file's size and time stamp are the same, so
+# that only the capture's fingerprint tells them apart (the two MOOFs are
+# the same size: the protection is edited into the bits in place).
+QUICK="$WORK_DIR/quick.moof"
+quick() {
+    # shellcheck disable=SC2086 — TEST_VAR_ARGS is intentionally word-split
+    GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN \
+        rom="$ROM_PATH" \
+        script="$SCRIPT_DIR/$1" \
+        --checkpoint-dir="$WORK_DIR/cp-quick" \
+        --var QUICK="$QUICK" \
+        $TEST_VAR_ARGS \
+        --speed=turbo
+}
+cp "$WORK_DIR/quick-protected.moof" "$QUICK"
+touch -d "2001-02-03 04:05:06" "$QUICK"
+quick quick-save.lua
+cp "$PLAIN" "$QUICK"
+touch -d "2001-02-03 04:05:06" "$QUICK"
+out=$(quick quick-load.lua 2>&1) || { echo "$out"; exit 1; }
+echo "$out"
+echo "$out" | grep -q "capture is not the one the checkpoint was saved with" || {
+    echo "ERROR: the refusal did not name the changed capture"
+    exit 1
+}

@@ -150,9 +150,9 @@ The rule reads only the capture and the image's current contents, so a
 track is the same whatever path brought the image to its state: a guest
 write, the eject flush (which rewrites the sectors of a dirty track that
 read, those the guest did not write with contents they already had), a
-quick or a consolidated checkpoint restore, a VFS write, a reinsert. The
-one input that is not content is the delta bit of a sector the capture could
-not read: a guest writing zeros there
+quick or a consolidated checkpoint restore onto the same capture, a VFS
+write, a reinsert. The one input that is not content is the delta bit of a
+sector the capture could not read: a guest writing zeros there
 leaves the content as it was but would leave a readable sector on the real
 disk. A consolidated restore clears the delta bit of a block equal to its
 base, so after one such a sector reverts to the capture's unreadable field.
@@ -191,5 +191,14 @@ image. A restore bounds a residue's length, before allocating it, by the
 longest track the disk can have: the zone's length, or the capture's longest
 track, plus the 2% a splice may add. The image is reopened by name, so a
 checkpoint also records each drive's capture fingerprint (the MOOF header's
-CRC, or one computed when the file leaves it 0); a restore that reopens a
-different capture is refused. No captured bits go into a checkpoint.
+CRC, or one computed when the file leaves it 0). A quick checkpoint's disk is
+its base plus a delta, so a quick restore that reopens a different capture
+is refused. A consolidated one carries every block and restores whatever
+became of the file, logging the change: with the MOOF gone the recreated
+base has no capture, so the disk's tracks are laid down from the restored
+sectors (rule 1) and a sector the capture could not read reads as the zeros
+the image holds; onto another capture they are that capture's, by the same
+rule. Its residues come back as saved — each is a whole buffer, not a
+change to the capture, and holds guest writes the image does not have yet
+— bounded then by twice the zone's length, since the capture they were
+read from is not there to say. No captured bits go into a checkpoint.

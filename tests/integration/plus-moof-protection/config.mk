@@ -17,7 +17,10 @@
 # quick checkpoint restore, a second drive holding the same file, an eject,
 # the same capture gzipped and inside a zip, and a .moof export taken while
 # the disk is mounted; and a write-protected disk's track takes no raw IWM
-# writes.
+# writes.  Last, a consolidated checkpoint restores with the MOOF moved
+# away (the disk comes back as its sectors, and the guest reads it), and in
+# two more processes a quick checkpoint is refused once the file holds
+# another capture of the same size and time stamp.
 
 TEST_NAME := Plus copy-protected MOOF — the drive serves the captured tracks
 TEST_DESC := A guest hook on the Sony driver finds a track signature and an exact sync count that exist only in the bits

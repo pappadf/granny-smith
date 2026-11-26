@@ -935,12 +935,18 @@ static uint32_t floppy_capture_fingerprint(image_t *img) {
 
 // The longest track buffer `img` can give track `t`, which bounds a
 // restored residue: the zone's length, or the capture's longest track,
-// grown by the 2% a spliced sector may add (floppy_media_track).
-static size_t floppy_residue_max(image_t *img, int t) {
+// grown by the 2% a spliced sector may add (floppy_media_track).  When the
+// capture the residue was built from is not the image's (`other_capture`: a
+// consolidated restore after the file went or changed), its tracks' lengths
+// are not known; a revolution in 2 us cells is within a few percent of its
+// zone's length, so twice the zone's bounds any capture's.
+static size_t floppy_residue_max(image_t *img, int t, bool other_capture) {
     size_t max = iwm_track_length(t);
     size_t cap = image_capture_max_track_bytes(image_capture(img));
     if (cap > max)
         max = cap;
+    if (other_capture && max < 2 * iwm_track_length(t))
+        max = 2 * iwm_track_length(t);
     return max + max / 50 + 16;
 }
 
@@ -1140,20 +1146,40 @@ floppy_t *floppy_init(floppy_type_t type, struct scheduler *scheduler, int n_dri
                 floppy_notify_present(i, floppy->disk[i] != NULL);
         }
 
-        // The image is reopened by name, so a capture behind it must be the
-        // one the checkpoint was taken with: its tracks are what the drive
-        // served, and the residues below were written over them.
+        // A quick checkpoint's disk is its base plus the saved delta, so a
+        // capture behind it must be the one it was taken with: the captured
+        // tracks are what the drive served, and the sector view under the
+        // delta is that capture's.  A consolidated checkpoint carries every
+        // block and its restore recreates a missing base, so the disk comes
+        // back whatever happened to the file: with the capture gone (the
+        // recreated base has none) its tracks are laid down from the restored
+        // sectors, and onto another capture they are that capture's, by the
+        // same rule (floppy_media_track) -- either way not the tracks the
+        // drive served, which is logged.  The residues stay: each is a whole
+        // track buffer as the drive held it, not a change to the capture,
+        // and holds guest writes the image does not have yet (a sector the
+        // driver rewrote reaches the image at the eject's flush).
+        bool consolidated = checkpoint_get_kind(checkpoint) == CHECKPOINT_KIND_CONSOLIDATED;
+        bool capture_changed[NUM_DRIVES] = {false};
         for (int i = 0; i < NUM_DRIVES; i++) {
             uint32_t saved = 0;
             system_read_checkpoint_data(checkpoint, &saved, sizeof saved, "floppy_capture");
             uint32_t now = floppy_capture_fingerprint(floppy->disk[i]);
-            if (saved != now) {
+            if (saved == now)
+                continue;
+            capture_changed[i] = true;
+            if (consolidated) {
                 LOG(0,
                     "Drive %d: the disk's bit-level capture is not the one the checkpoint was saved with "
-                    "(CRC %08X, now %08X); refusing the restore",
+                    "(CRC %08X, now %08X); its tracks come from the restored sectors",
                     i, saved, now);
-                checkpoint_set_error(checkpoint);
+                continue;
             }
+            LOG(0,
+                "Drive %d: the disk's bit-level capture is not the one the checkpoint was saved with "
+                "(CRC %08X, now %08X); refusing the restore",
+                i, saved, now);
+            checkpoint_set_error(checkpoint);
         }
 
         // Restore GCR track buffers: the residues, each saved with its own
@@ -1182,7 +1208,7 @@ floppy_t *floppy_init(floppy_type_t type, struct scheduler *scheduler, int n_dri
                     }
                     uint32_t size = 0;
                     system_read_checkpoint_data(checkpoint, &size, sizeof size, "floppy_residue");
-                    size_t max = floppy_residue_max(floppy->disk[d], t);
+                    size_t max = floppy_residue_max(floppy->disk[d], t, capture_changed[d]);
                     if (size == 0 || size > max) {
                         LOG(1, "Drive %d: restored track %d side %d size %u, at most %zu", d, t, s, size, max);
                         checkpoint_set_error(checkpoint);

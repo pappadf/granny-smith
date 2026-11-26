@@ -195,5 +195,30 @@ ext.eject()
 
 -- The guest may still read its disk.
 scheduler.run(20000000)
+
+-- === A consolidated checkpoint outlives its file ===========================
+--
+-- It carries every block, and its restore recreates a missing base, so it
+-- restores with the MOOF moved away: the disk is the restored sectors (no
+-- capture is left to serve tracks from, so the signed track is laid down
+-- from them), and the guest reads it.
+local full = F"${vars.WORK_DIR}/outlive.checkpoint"
+assert(drive.image.export(F"${vars.WORK_DIR}/before.img"), "raw export before")
+assert(checkpoint.save(full), "consolidated checkpoint saved")
+files.mv(vars.MOOF, F"${vars.WORK_DIR}/away.moof")
+assert(not files.path_exists(vars.MOOF), "the MOOF moved away")
+assert(checkpoint.load(full), "a consolidated checkpoint restores with its MOOF gone")
+drive = machine.floppy.drive[0]
+assert(not drive.image.capture, "no capture behind the restored disk")
+assert(drive.image.export(F"${vars.WORK_DIR}/after.img"), "raw export after")
+assert(files.path_compare(F"${vars.WORK_DIR}/before.img", F"${vars.WORK_DIR}/after.img") == -1,
+  "the restored disk holds the sectors it had")
+assert(count(drive.track_data(SIG_TRACK, 0), SIG) == 0, "the signed track is laid down from its sectors")
+r = run_stub(1, block_of(SIG_TRACK, 0, SIG_SECTOR))
+echo(F"after the restore: ran=${r.ran} found=${r.found} read=${r.rdres}")
+assert(r.ran == 1 and r.rdres == 0, "the guest reads the restored disk")
+assert(r.found == 0, "and no signature: the capture is gone")
+scheduler.run(20000000)
+assert(debug.mac.globals.read("Ticks") > 0, "the Mac is still running")
 echo("protection-ok")
 quit()
