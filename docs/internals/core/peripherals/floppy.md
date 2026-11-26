@@ -111,8 +111,9 @@ read in a loop: one revolution, indexed by the drive's `offset`, which every
 data-register read advances (a read takes no emulated time, so the position
 is continuous from whoever read last — the ROM's address-field search to a
 guest routine reading on from there). The buffer is a cache: what it holds is
-a function of the image, rebuilt on the next touch after an eject, a format
-change or a restore; only bytes the guest wrote that never formed a sector
+a function of the image (and, on a weak track, of the draw — "Weak bits"
+below), rebuilt on the next touch after an eject, a format change or a
+restore; only bytes the guest wrote that never formed a sector
 (the residue) exist nowhere else.
 
 `floppy_media_track()` owns the rule for the bytes:
@@ -159,6 +160,54 @@ base, so after one such a sector reverts to the capture's unreadable field.
 That case — all-zero data and tags written to exactly the sectors a capture
 could not read — is accepted.
 
+### Weak bits
+
+A long run of cells with no flux transition reads differently on every
+revolution of a real drive: the read amplifier's gain climbs in the
+silence and, a few cells in, turns noise into transitions at random, so the
+IWM's framing after the run slips differently each time. Weak-bit copy
+protection reads such an area once per revolution and requires the reads
+to differ; a nibble copy, which writes the noise back as real data, reads
+the same every time.
+
+The capture store records each track's **weak runs** when it is built
+(`image_capture_weak_runs`): zero runs of at least `IMAGE_WEAK_MIN_RUN`
+(12) cells, found on the track as a loop, so a run the index cuts is one
+run. Standard captures carry short runs — up to six cells, and one of ten,
+on tracks that read correctly as captured — that must stay as they are;
+deliberate weak areas run 16 cells and more. The unit suites guard the
+threshold against every MOOF in the test corpus.
+
+A cache entry built by rule 2 (the capture as it is, from captured bits)
+for a track with weak runs is **weak**: it holds one *draw* of the track
+(`image_capture_weak_track`) — the captured bits with every weak run
+filled with noise, framed in steady state. Inside a run, a cell more than
+three cells after the last transition (captured or invented) becomes a 1
+with probability 0.3 (`gcr.h`, "Weak bits"). Each time a guest
+data-register read carries `offset` past the end of the buffer
+(`iwm_reg_read`, latch and non-latch), the drive's `revolution` counter
+advances and the entry is redrawn at the index (`iwm_track_index`); the
+first touch draws at the current count. The pre-rolled revolution of draw
+N is draw N − 1, so a read running on across the index sees one unbroken
+stream. A draw is a pure function of the capture's fingerprint, the track,
+the side and N, and the counter moves only on guest reads, so the same
+command sequence gives the same draws in any pacing mode. The model is
+revolution-granular: two reads of a weak area within one revolution read
+the same draw, which a real drive cannot be asked to do either.
+
+What does not change: the content rule's comparison and the sector status
+use the noise-free framing (a draw can never move a track from rule 2 to
+rule 3); a spliced or synthesised track is never weak; the sector-level
+controllers, the VFS and the `.moof` export (which copies the captured
+bits, weak runs included) see no noise; an inspection of an unbuilt track
+sees the noise-free framing and draws nothing. The time-based RDDATA sense
+bit indexes the current draw but never draws one. A guest write into a weak
+entry freezes it — its last draw plus the guest's bytes, which the
+write-through and the eject's flush read as they stand. The freeze is the
+write itself, not `modified`: the write-through clears `modified` as each
+sector reaches the image. A drive's counter carries on across disks;
+two drives holding the same capture draw independently.
+
 A sector the capture could not read, laid down from sectors (rules 1 and
 4), gets a failing data checksum, as does one the image cannot read; and the
 sector-level paths — `floppy_media_read_sector()` (SWIM3, New Age) and the
@@ -202,3 +251,9 @@ rule. Its residues come back as saved — each is a whole buffer, not a
 change to the capture, and holds guest writes the image does not have yet
 — bounded then by twice the zone's length, since the capture they were
 read from is not there to say. No captured bits go into a checkpoint.
+
+A weak entry is not a residue and is not saved. Each drive's `revolution`
+and each entry's `weak` flag and `draw` are plain data in the checkpointed
+prefix, and the first touch after a restore rebuilds the saved draw — not
+the current count's, which reads of another weak track may have moved — so
+the guest reads on from the same bytes at the same `offset`.

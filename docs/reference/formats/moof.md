@@ -248,8 +248,10 @@ ordinary disk; guest writes go to the image's delta. Missing sectors read as zer
 data-checksum failures. MFM and Twiggy MOOFs are refused. The image also keeps the MOOF itself, and the IWM/SWIM
 GCR read path serves each captured track — gaps and non-sector fields included — while the image's sectors are
 unchanged, with a rewritten sector's data field spliced in; a sector the capture could not read fails a read on
-every controller. INFO's write-protect flag opens the disk read-only unless the insert says otherwise. Bit timing
-and weak bits are not reproduced. `image.export` to a `.moof` name writes a bitstream MOOF (creator `Granny
+every controller. INFO's write-protect flag opens the disk read-only unless the insert says otherwise. Weak bits
+are reproduced on that path: a track's zero runs of 12 cells or more read as noise (after three silent cells, a
+1 with probability 0.3 per cell), drawn afresh, deterministically, each time the head passes the index; the
+sectors and exports keep the captured bits. Bit timing is not reproduced. `image.export` to a `.moof` name writes a bitstream MOOF (creator `Granny
 Smith`, 2:1 interleave, gaps sized to each zone's revolution at 394-590 rpm), copying an opened MOOF's unchanged
 tracks through bit for bit. See `docs/internals/core/storage/image.md` and
 `docs/internals/core/peripherals/floppy.md`.

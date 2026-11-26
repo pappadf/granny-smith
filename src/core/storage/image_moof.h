@@ -24,8 +24,11 @@
 // track's captured nibbles from it while the image's sectors still hold
 // what the capture decodes to, so what lies between and around the sectors
 // -- non-standard marks, fields that are not sectors, exact sync counts --
-// reaches the guest (floppy_media_track, floppy_gcr.c).  What depends on
-// when the bits arrive (bit timing, weak bits) is not reproduced.  400K and
+// reaches the guest (floppy_media_track, floppy_gcr.c).  Weak bits -- long
+// runs with no flux transition, which a drive reads as noise -- read as
+// fresh, reproducible noise on every revolution on that path
+// (image_capture_weak_runs).  What depends on when the bits arrive (bit
+// timing) is not reproduced.  400K and
 // 800K GCR disks decode; 1.44 MB MFM and Twiggy MOOFs are refused
 // (-ENOTSUP).
 //
