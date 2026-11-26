@@ -109,21 +109,28 @@ static uint32_t bits24(const uint8_t *b, uint32_t at) {
     return v;
 }
 
-// The cell where sector `sec`'s data mark (D5 AA AD) starts on a writer-made
-// track: after its address field, whose sector value is the fifth byte.
-static uint32_t data_mark_of(const uint8_t *b, uint32_t n, int sec) {
+// The cell where sector `sec`'s address mark (D5 AA 96) starts on a
+// writer-made track: the address field whose sector value is its fifth byte.
+static uint32_t addr_mark_of(const uint8_t *b, uint32_t n, int sec) {
     for (uint32_t i = 0; i + 48 < n; i++) {
         if (bits24(b, i) != 0xD5AA96)
             continue;
         uint32_t s = 0;
         for (int k = 0; k < 8; k++)
             s = s << 1 | (uint32_t)bit_get(b, i + 32 + (uint32_t)k);
-        if (gcr_decode6[s] != sec)
-            continue;
-        for (uint32_t j = i + 24; j + 24 < n; j++)
-            if (bits24(b, j) == 0xD5AAAD)
-                return j;
+        if (gcr_decode6[s] == sec)
+            return i;
     }
+    ASSERT_TRUE(0);
+    return 0;
+}
+
+// The cell where sector `sec`'s data mark (D5 AA AD) starts on a writer-made
+// track: after its address field.
+static uint32_t data_mark_of(const uint8_t *b, uint32_t n, int sec) {
+    for (uint32_t j = addr_mark_of(b, n, sec) + 24; j + 24 < n; j++)
+        if (bits24(b, j) == 0xD5AAAD)
+            return j;
     ASSERT_TRUE(0);
     return 0;
 }
@@ -536,6 +543,83 @@ TEST(export_copies_unchanged_tracks) {
     moof_free(&m);
 }
 
+// === Splicing a sector into a capture ======================================
+
+// Sector data no capture in the suite holds.
+static void pattern(uint8_t *buf, uint8_t seed) {
+    for (int i = 0; i < 512; i++)
+        buf[i] = (uint8_t)(i * 3 + seed);
+}
+
+// A data field with no DE AA after its values (a bit-slip protection, a
+// field the duplicator garbled): the scan must not run on to the DE AA that
+// closes the next sector's address field, or a write to the sector replaces
+// that address field too and the next sector vanishes from the track.
+#define SLIP_TRACK  5
+#define SLIP_SECTOR 3
+#define SLIP_NEXT   9 // the sector after it in the 2:1 interleave
+TEST(epilogue_less_field_keeps_its_neighbour) {
+    moof_t m;
+    moof_make(&m, SECTORS_800K, 23);
+    uint32_t n;
+    uint8_t *b = track_bits(&m, SLIP_TRACK, 0, &n);
+    bits_put(b, data_mark_of(b, n, SLIP_SECTOR) + (3 + 1 + GCR_SECTOR_VALUES + 1) * 8, 0xAB, 8); // DE AB
+    restamp(&m);
+    image_t *img = open_moof(&m, "slip.moof", true, false);
+    size_t clen;
+    moof_sector_t sec[MOOF_MAX_SECTORS];
+    uint8_t *cap = capture_track(img, SLIP_TRACK, 0, &clen, sec);
+    ASSERT_EQ_INT(MOOF_SECTOR_OK, sec[SLIP_SECTOR].state); // its values still read
+    ASSERT_TRUE(sec[SLIP_SECTOR].data_end <= sec[SLIP_NEXT].addr_at);
+    uint64_t blk = block_of(SLIP_TRACK, 0, SLIP_SECTOR, 2);
+    uint8_t buf[512];
+    pattern(buf, 0x5C);
+    ASSERT_EQ_INT(512, (int)disk_write_data(img, blk * 512, buf, 512));
+    size_t len;
+    uint8_t *trk = media_track(img, SLIP_TRACK, 0, &len);
+    static const uint8_t ADDR_MARK[3] = {0xD5, 0xAA, 0x96};
+    ASSERT_EQ_INT(12, count_seq(trk, len, ADDR_MARK, 3));
+    moof_scan_track(trk, len, SLIP_TRACK, 0, sec, NULL);
+    uint64_t first = block_of(SLIP_TRACK, 0, 0, 2);
+    for (int k = 0; k < 12; k++) {
+        ASSERT_EQ_INT(MOOF_SECTOR_OK, sec[k].state);
+        ASSERT_EQ_INT(0, memcmp(sec[k].data, k == SLIP_SECTOR ? buf : m.data + (first + (uint64_t)k) * 512, 512));
+    }
+    free(trk);
+    free(cap);
+    image_close(img);
+    moof_free(&m);
+}
+
+// The splice itself refuses a region with another address field in it,
+// whatever the scan said: the track is laid down from the sectors instead.
+TEST(splice_refuses_to_cover_an_address_field) {
+    track_sectors_t ts;
+    memset(&ts, 0, sizeof ts);
+    ts.nsec = 8;
+    ts.num_sides = 1;
+    size_t n = 6000;
+    uint8_t *nib = malloc(n);
+    ASSERT_TRUE(nib != NULL);
+    memset(nib, 0xFF, n);
+    moof_sector_t sec[MOOF_MAX_SECTORS];
+    memset(sec, 0, sizeof sec);
+    sec[3].addr = true;
+    sec[3].addr_at = 1000;
+    sec[3].data_at = 1016;
+    sec[3].data_end = 1016 + 709;
+    uint8_t *out = NULL;
+    size_t len = 0;
+    ASSERT_TRUE(track_splice(nib, n, sec, 1u << 3, 64, 0, &ts, &out, &len));
+    free(out);
+    // Another sector's address field inside the region.
+    nib[1600] = 0xD5, nib[1601] = 0xAA, nib[1602] = 0x96;
+    out = NULL;
+    ASSERT_TRUE(!track_splice(nib, n, sec, 1u << 3, 64, 0, &ts, &out, &len));
+    ASSERT_TRUE(out == NULL);
+    free(nib);
+}
+
 int main(void) {
     strcpy(g_dir, "/tmp/gs-moof-capture-XXXXXX");
     ASSERT_TRUE(mkdtemp(g_dir) != NULL);
@@ -550,6 +634,8 @@ int main(void) {
     RUN(splice_growth_and_wrap);
     RUN(track_length_is_the_buffers);
     RUN(export_copies_unchanged_tracks);
+    RUN(epilogue_less_field_keeps_its_neighbour);
+    RUN(splice_refuses_to_cover_an_address_field);
     char cmd[128];
     snprintf(cmd, sizeof cmd, "rm -rf %s", g_dir);
     if (system(cmd) != 0)

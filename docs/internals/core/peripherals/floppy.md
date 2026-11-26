@@ -120,10 +120,14 @@ change or a restore; only bytes the guest wrote that never formed a sector
    drive does when the driver rewrites a sector; the address field, the
    other fields and the gaps stay as captured. A replacement may grow the
    track (a short non-standard field replaced by a 709-byte one), within 2%
-   of the capture's length.
+   of the capture's length. A data field with no `DE AA` after its values
+   ends where a standard one would, or before the sync of the next field's
+   mark if that comes sooner (`moof_scan_track`): the replacement never
+   takes another field with it, and one that would cover an address field
+   is refused.
 4. **Otherwise** (every sector changed — a reformat; a changed sector with no
-   data field in the capture; growth past 2%): laid down from the sectors as
-   in 1.
+   data field in the capture; a replacement that would cover an address
+   field; growth past 2%): laid down from the sectors as in 1.
 
 The rule reads only the capture and the image's current contents, so a
 track is the same whatever path brought the image to its state: a guest

@@ -481,8 +481,10 @@ static int track_synthesise(int track, int side, const track_sectors_t *ts, uint
 // left there by the duplicator goes as on a real rewrite), then a standard
 // data field.  Everything else -- other sectors, gaps, the address field
 // itself -- stays as captured.  False when a sector has no data field to
-// replace, when two regions overlap, or when the result would outgrow the
-// capture by more than 2%: a track no drive could hold.
+// replace, when a region would take an address field with it (its own
+// sector's data field is not where the scan put its end), when two regions
+// overlap, or when the result would outgrow the capture by more than 2%: a
+// track no drive could hold.
 static bool track_splice(const uint8_t *nib, size_t n, const moof_sector_t *sec, uint32_t diff, int track, int side,
                          const track_sectors_t *ts, uint8_t **out, size_t *len) {
     struct {
@@ -505,6 +507,10 @@ static bool track_splice(const uint8_t *nib, size_t n, const moof_sector_t *sec,
             data_at -= n;
             end -= n;
         }
+        for (size_t p = start; p + 3 <= end; p++)
+            if (nib[p % n] == 0xD5 && nib[(p + 1) % n] == 0xAA && nib[(p + 2) % n] == 0x96)
+                return false; // another sector's address field
+
         // Keep the regions sorted by where they start.
         int at = nr++;
         while (at > 0 && r[at - 1].start > start) {

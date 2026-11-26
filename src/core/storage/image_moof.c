@@ -208,6 +208,30 @@ static inline bool mark_at(const uint8_t *rev, size_t n, size_t at, uint8_t a, u
 // for the DE AA that closes it: a standard field is 709 nibbles.
 #define DATA_FIELD_SEARCH 1200
 
+// Where the data field whose mark is at `j` ends: past the DE AA that
+// closes it -- right after the values on a standard field, wherever it falls
+// on another (AA is no codeword, so it cannot occur inside a field that
+// decodes).  Never past the next field's mark: a field with no DE AA of its
+// own (a bit-slip protection, a garbled field) would otherwise run on to the
+// one closing the next address field, and a rewrite of the sector would
+// take that address field with it.  Such a field ends where a standard one
+// does, or, if the next mark comes sooner, at the sync in front of it.
+static size_t data_field_end(const uint8_t *rev, size_t n, size_t j) {
+    size_t e = j + 4, standard = j + 4 + GCR_SECTOR_VALUES + 2;
+    for (; e < j + DATA_FIELD_SEARCH; e++) {
+        uint8_t a = nib_at(rev, n, e), b = nib_at(rev, n, e + 1);
+        if (a == 0xDE && b == 0xAA)
+            return e + 2;
+        if (a == 0xD5 && b == 0xAA)
+            break; // the next field's mark
+    }
+    if (e >= standard)
+        return standard;
+    while (e > j + 4 && nib_at(rev, n, e - 1) == 0xFF)
+        e--; // keep the next field's sync
+    return e;
+}
+
 void moof_scan_track(const uint8_t *rev, size_t n, int track, int side, moof_sector_t sec[MOOF_MAX_SECTORS],
                      uint8_t *format_byte) {
     int nsec = zone_sectors(track);
@@ -246,13 +270,7 @@ void moof_scan_track(const uint8_t *rev, size_t n, int track, int side, moof_sec
             for (int k = 0; k < GCR_SECTOR_VALUES; k++)
                 field[k] = nib_at(rev, n, j + 4 + (size_t)k);
             rc = gcr_sector_from_disk(field, tag, data);
-            // DE AA closes it: right after the values on a standard field,
-            // wherever it falls on another (AA is no codeword, so it cannot
-            // occur inside a field that decodes).
-            size_t e = j + 4;
-            while (e < j + DATA_FIELD_SEARCH && !(nib_at(rev, n, e) == 0xDE && nib_at(rev, n, e + 1) == 0xAA))
-                e++;
-            data_end = e < j + DATA_FIELD_SEARCH ? e + 2 : j + 4 + GCR_SECTOR_VALUES + 2;
+            data_end = data_field_end(rev, n, j);
         }
         // Keep the first copy that reads, else the first with a bad
         // checksum, else the first address field seen.

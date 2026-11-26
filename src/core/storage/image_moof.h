@@ -139,9 +139,10 @@ typedef struct {
 // that loops (a field may straddle the index).  For each sector, the first
 // copy that decodes wins, else the first with a bad checksum, else the
 // first address field seen.  The address fields' format byte goes to
-// *format_byte when that is still 0 (may be NULL).  The one sector scan the
-// importer (moof_decode), the capture store and the IWM's track builder
-// share, so they agree on what every sector is.
+// *format_byte when that is still 0 (may be NULL).  A data field ends at
+// the DE AA closing it, and never past the next field's mark.  The one
+// sector scan the importer (moof_decode), the capture store, the IWM's track
+// builder and its eject flush share, so they agree on what every sector is.
 void moof_scan_track(const uint8_t *rev, size_t n, int track, int side, moof_sector_t sec[MOOF_MAX_SECTORS],
                      uint8_t *format_byte);
 
