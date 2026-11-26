@@ -64,7 +64,7 @@ The emulated computer models have been tested with various combinations of the f
 
 - **Mac OS System 2 to 9.2.1**
 - **Mac OS X 10.0.3 and 10.1**
-- **A/UX 3.0.1**
+- **A/UX 1.x to 3.x**
 - **Lisa Office System 3.1**
 - **Lisa Xenix 3.0**
 - **Lisa MacWorks XL 3.0**
