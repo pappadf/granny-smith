@@ -178,6 +178,12 @@ In headless builds the `platform_audio_*` functions are no-op stubs — the
 capture sink sits ahead of the platform boundary, so headless tests exercise
 the exact frames the browser worklet would receive.
 
+A second sink sits beside the capture: `audio_out_set_record_sink` installs
+the screen recorder's while a recording runs, and every push reaches it with
+the stream's channel count and rate and the guest's volume; the recorder
+applies the volume itself and places the samples on emulated time
+([record.md](../record/record.md) §3.4).
+
 ---
 
 ## 5. Resampling & Filtering

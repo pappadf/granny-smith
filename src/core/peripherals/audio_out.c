@@ -53,9 +53,16 @@ static struct {
     size_t max_samples; // allocated capacity
 } s;
 
+// The recorder's sink (audio_out_set_record_sink), NULL when none.
+static audio_out_sink_t s_record_sink = NULL;
+
 // ============================================================================
 // Stream API
 // ============================================================================
+
+void audio_out_set_record_sink(audio_out_sink_t sink) {
+    s_record_sink = sink;
+}
 
 // Opens (or re-parameterizes) the host audio stream
 void audio_out_open(uint32_t src_rate_hz, int channels) {
@@ -124,6 +131,10 @@ void audio_out_push(const int16_t *frames, int nframes, int vol_0_7) {
         s.nsamples += add;
     }
 
+    // The recorder places the push on its own timeline, volume and all
+    if (s_record_sink)
+        s_record_sink(frames, nframes, s.channels ? s.channels : 1, s.rate, vol_0_7);
+
     platform_audio_push(frames, nframes, vol_0_7);
 }
 
@@ -186,8 +197,8 @@ int audio_wav_write(const char *path, const int16_t *samples, size_t nsamples, u
 
 // Loads a PCM int16 WAV file: walks RIFF chunks for `fmt ` and `data`.
 // Returns 0 on success with malloc'd *samples; -1 on error (message in errbuf).
-static int wav_read(const char *path, int16_t **samples, size_t *nsamples, uint32_t *rate, int *channels, char *errbuf,
-                    size_t errlen) {
+int audio_wav_read(const char *path, int16_t **samples, size_t *nsamples, uint32_t *rate, int *channels, char *errbuf,
+                   size_t errlen) {
     FILE *f = fopen(path, "rb");
     if (!f) {
         snprintf(errbuf, errlen, "cannot open '%s'", path);
@@ -345,7 +356,7 @@ value_t audio_out_match_value(const char *golden_wav) {
     uint32_t ref_rate = 0;
     int ref_channels = 0;
     char err[512];
-    if (wav_read(golden_wav, &ref, &ref_samples, &ref_rate, &ref_channels, err, sizeof(err)) < 0) {
+    if (audio_wav_read(golden_wav, &ref, &ref_samples, &ref_rate, &ref_channels, err, sizeof(err)) < 0) {
         out_printf("MATCH FAILED: Error loading reference WAV: %s\n", err);
         write_actual(golden_wav);
         return val_err("sound.match: cannot load reference '%s'", golden_wav);

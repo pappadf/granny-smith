@@ -3,7 +3,8 @@
 
 // deflate.c
 // DEFLATE (RFC 1951), zlib (RFC 1950) and gzip (RFC 1952) decoders.  See
-// codec.h.
+// codec.h.  codec_zstream_dec_* at the end decodes a zlib stream that
+// arrives in sync-flushed chunks (ZMBV's frames), one chunk per call.
 //
 // A DEFLATE stream is a run of blocks, each stored (a byte count and the
 // bytes), or Huffman-coded with the fixed codes or with codes defined at
@@ -92,6 +93,7 @@ typedef struct {
     uint64_t sum_at; // ring.total the sum covers
     uint64_t member_at; // ring.total where the current gzip member began
     bool magic_read; // the next member's 1F 8B has been read already
+    bool chunked; // codec_zstream_dec: the input is one sync-flushed chunk at a time
     uint32_t lit[LIT_TABLE];
     uint32_t dist[DIST_TABLE];
 } inf_t;
@@ -544,6 +546,10 @@ static int inf_fill(codec_dec_t *d) {
             break;
         }
         case S_BLOCK:
+            // A streamed chunk ends after its sync flush, on a byte boundary
+            // with nothing left: the chunk is done, the stream is not.
+            if (z->chunked && in->pos == in->len && in->nbits <= (int)in->over * 8)
+                goto chunk_end;
             rc = block_header(d, z);
             break;
         case S_STORED: {
@@ -612,6 +618,9 @@ more:
     if (z->wrap != W_RAW)
         sum_update(d, z);
     return CODEC_MORE;
+chunk_end:
+    sum_update(d, z);
+    return CODEC_END;
 }
 
 static int inf_init_common(codec_dec_t *d, inf_wrap_t wrap) {
@@ -639,3 +648,97 @@ static int gzip_init(codec_dec_t *d) {
 const codec_dec_ops_t codec_deflate_dec = INF_OPS(inf_init);
 const codec_dec_ops_t codec_zlib_dec = INF_OPS(zlib_init);
 const codec_dec_ops_t codec_gzip_dec = INF_OPS(gzip_init);
+
+// ============================================================================
+// The chunked zlib decoder
+// ============================================================================
+
+// A CODEC_ZLIB decoder fed one sync-flushed chunk at a time: each call
+// points its memory input at the chunk and runs it until the chunk is used
+// up at a block boundary.  The ring carries over, so a chunk may refer back
+// into earlier ones (the in-tree encoder's never do).
+struct codec_zstream_dec {
+    codec_dec_t *d;
+};
+
+// Back to the start of a new stream: zlib header next, empty history.
+static void zstream_dec_restart(codec_dec_t *d) {
+    inf_init_common(d, W_ZLIB);
+    ((inf_t *)d->st)->chunked = true;
+    d->ring.w = 0;
+    d->ring.total = d->ring.drained = 0;
+    d->status = 0;
+    d->msg[0] = '\0';
+}
+
+codec_zstream_dec_t *codec_zstream_dec_new(int *err) {
+    int e = 0;
+    if (!err)
+        err = &e;
+    codec_zstream_dec_t *z = calloc(1, sizeof(*z));
+    if (!z) {
+        *err = CODEC_ERR_NOMEM;
+        return NULL;
+    }
+    codec_dec_opts_t o = {.out_len = CODEC_LEN_UNKNOWN};
+    z->d = codec_dec_new(CODEC_ZLIB, &o, err);
+    if (!z->d) {
+        free(z);
+        return NULL;
+    }
+    zstream_dec_restart(z->d);
+    return z;
+}
+
+void codec_zstream_dec_reset(codec_zstream_dec_t *z) {
+    if (z)
+        zstream_dec_restart(z->d);
+}
+
+int64_t codec_zstream_dec_chunk(codec_zstream_dec_t *z, const uint8_t *in, size_t len, uint8_t *out, size_t cap) {
+    if (!z || (!in && len) || (!out && cap))
+        return CODEC_ERR_ARG;
+    codec_dec_t *d = z->d;
+    inf_t *st = d->st;
+    // A failed stream stays failed until it is reset.
+    if (d->status < 0)
+        return d->status;
+    // After a final block the stream is over: more data is not part of it.
+    if (st->state == S_DONE && len)
+        return d->status = codec_fail(d, CODEC_ERR_DATA, "zlib: data after the end of the stream");
+    // The chunk is the whole input for this run; the last one ended on a
+    // byte boundary with its bits used up, so the accumulator starts empty.
+    d->in.base += d->in.len;
+    d->in.p = in;
+    d->in.len = len;
+    d->in.pos = 0;
+    d->in.bits = 0;
+    d->in.nbits = 0;
+    d->in.over = 0;
+    d->in.eof = true;
+    d->status = 0;
+    size_t n = 0;
+    uint8_t spare;
+    int rc = codec_dec_run(d, out, cap, &n);
+    // A full buffer: the chunk fits exactly if nothing more comes out.
+    if (rc == 0) {
+        size_t more = 0;
+        rc = codec_dec_run(d, &spare, 1, &more);
+        if (more || rc == 0)
+            return d->status = codec_fail(d, CODEC_ERR_OVERFLOW, "zlib: the chunk decodes to more than the buffer");
+    }
+    if (rc < 0)
+        return rc;
+    return (int64_t)n;
+}
+
+const char *codec_zstream_dec_message(const codec_zstream_dec_t *z) {
+    return z ? codec_dec_message(z->d) : "no decoder";
+}
+
+void codec_zstream_dec_free(codec_zstream_dec_t *z) {
+    if (!z)
+        return;
+    codec_dec_free(z->d);
+    free(z);
+}

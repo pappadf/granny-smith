@@ -4,12 +4,27 @@
 
 export type ToastSeverity = 'info' | 'warning' | 'error';
 
+// A button on a toast (a finished recording's Download).  Running it
+// dismisses the toast unless `keep` is set.  A `disabled` one is shown
+// greyed with `title` saying why (Export MP4 where the browser cannot).
+export interface ToastAction {
+  label: string;
+  action: () => void;
+  keep?: boolean;
+  disabled?: boolean;
+  title?: string;
+}
+
 export interface Toast {
   id: number;
   msg: string;
   severity: ToastSeverity;
   createdAt: number;
+  actions?: ToastAction[];
 }
+
+// A toast with actions stays this long: long enough to reach for a button.
+const ACTION_TTL_MS = 30_000;
 
 const TTL_MS: Record<ToastSeverity, number> = {
   info: 10_000,
@@ -35,13 +50,18 @@ const timers = new Map<number, ReturnType<typeof setTimeout>>();
 // Trailing window of push timestamps to detect spam.
 let recentPushes: number[] = [];
 
-export function showNotification(msg: string, severity: ToastSeverity = 'info'): number {
+export function showNotification(
+  msg: string,
+  severity: ToastSeverity = 'info',
+  actions?: ToastAction[],
+): number {
   const now = Date.now();
   // Drop timestamps older than the spam window.
   recentPushes = recentPushes.filter((t) => now - t < SPAM_WINDOW_MS);
   recentPushes.push(now);
 
   const toast: Toast = { id: nextId++, msg, severity, createdAt: now };
+  if (actions?.length) toast.actions = actions;
 
   // Spam protection: if more than MAX_VISIBLE pushes happened inside the
   // trailing window, force the new toast into the queue even when active has
@@ -90,7 +110,8 @@ export function _resetForTests(): void {
 
 function scheduleDismiss(toast: Toast): void {
   clearTimer(toast.id);
-  const timer = setTimeout(() => dismissToast(toast.id), TTL_MS[toast.severity]);
+  const ttl = toast.actions?.length ? ACTION_TTL_MS : TTL_MS[toast.severity];
+  const timer = setTimeout(() => dismissToast(toast.id), ttl);
   timers.set(toast.id, timer);
 }
 

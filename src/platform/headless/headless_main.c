@@ -38,6 +38,7 @@
 #include "io/io_worker.h"
 #include "job/job.h"
 #include "mailbox/mailbox.h"
+#include "record/record.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -230,6 +231,8 @@ static void print_usage(const char *program) {
     printf("                  an I/O job's progress as `@progress <json>`, and `@end ok|error` after each\n");
     printf("                  statement (for a client that parses)\n");
     printf("  --io=sync       No I/O worker: file work runs on the emulator thread (a bisecting aid)\n");
+    printf("  --record=PATH   Record the screen and sound to PATH (.mkv) from the first frame (recorder.start)\n");
+    printf("  --recorder=inline  Code recordings on the emulator thread, not a recorder thread (byte-identical)\n");
     printf("\n");
     printf("Examples:\n");
     printf("  %s rom=plus.rom\n", program);
@@ -940,6 +943,8 @@ int main(int argc, char *argv[]) {
     const char *checkpoint_dir = NULL; // explicit --checkpoint-dir=
     const char *var_defs[HL_MAX_VARS] = {NULL}; // --var NAME=VALUE definitions
     int var_count = 0;
+    const char *record_path = NULL; // --record=: record from the first frame
+    int recorder_inline = 0; // --recorder=inline
 
     // Parse arguments
     for (int i = 1; i < argc; i++) {
@@ -979,6 +984,16 @@ int main(int argc, char *argv[]) {
         if (strcmp(arg, "--jobs=inline") == 0) {
             // Accepted and ignored: scripts always run on the emulator
             // thread now (job/job.h); older bench drivers still pass it.
+            continue;
+        }
+
+        if (strncmp(arg, "--record=", 9) == 0) {
+            record_path = arg + 9;
+            continue;
+        }
+
+        if (strcmp(arg, "--recorder=inline") == 0) {
+            recorder_inline = 1; // the coder on the emulator thread (the unit tier, debugging)
             continue;
         }
 
@@ -1193,6 +1208,10 @@ int main(int argc, char *argv[]) {
     // for its mode by running frames here.
     hl_mailbox_init();
     job_set_frame_runner(hl_frame_runner);
+    // Recordings: no real time to protect, so a full ring waits (and the
+    // output is a function of the guest alone); a recording needs a path
+    recorder_set_platform_defaults(true, NULL);
+    recorder_settings()->threaded = !recorder_inline;
     if (!g_io_sync && !io_worker_start(256u << 10))
         fprintf(stderr, "headless: I/O worker could not be started; writes run inline\n");
 
@@ -1468,6 +1487,15 @@ int main(int argc, char *argv[]) {
                 printf("Inserted FD[%d]: %s\n", i, fd_files[i]);
         } else {
             fprintf(stderr, "Warning: Cannot open floppy image: %s\n", fd_files[i]);
+        }
+    }
+
+    // --record: from the first frame, before any script runs the machine
+    if (record_path) {
+        char err[300];
+        if (recorder_start(record_path, err, sizeof err) < 0) {
+            fprintf(stderr, "Error: --record=%s: %s\n", record_path, err);
+            goto out;
         }
     }
 

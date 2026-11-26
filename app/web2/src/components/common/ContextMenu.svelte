@@ -7,7 +7,8 @@
   // A menu entry.  `checked` (true or false) makes it a checkable item with
   // a check mark column; `disabled` greys it out and skips it; `icon` and
   // `shortcut` sit before and after the label, and `badge` (a pill, tinted
-  // by `badgeIntent`) after it.
+  // by `badgeIntent`) after it.  `title` is its tooltip (why a disabled
+  // entry is disabled).
   export type ContextMenuItem =
     | {
         label: string;
@@ -15,6 +16,7 @@
         danger?: boolean;
         checked?: boolean;
         disabled?: boolean;
+        title?: string;
         icon?: IconName;
         shortcut?: string;
         badge?: string;
@@ -210,6 +212,7 @@
         role={item.checked === undefined ? 'menuitem' : 'menuitemcheckbox'}
         aria-checked={item.checked}
         aria-disabled={item.disabled || undefined}
+        title={item.title}
         tabindex="-1"
         onclick={() => activate(item)}
         onmouseenter={() => (highlight = item.disabled ? -1 : i)}

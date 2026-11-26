@@ -85,6 +85,7 @@
     X("singer", 0, "Singer audio codec on the AV machines")                                                            \
     /* Video */                                                                                                        \
     X("video", 0, "Display models, framebuffers and scanout")                                                          \
+    X("recorder", 0, "Screen recorder: capture, segments and the recorder thread")                                     \
     X("voodoo2", 0, "3dfx Voodoo2 accelerator")                                                                        \
     X("qd3d", 0, "QuickDraw 3D Accelerator Card")                                                                      \
     X("vdc", 0, "AV video display controller")                                                                         \

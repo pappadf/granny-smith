@@ -32,6 +32,12 @@ struct object;
 // produce byte-identical files (one's output is fed back through the other).
 int audio_wav_write(const char *path, const int16_t *samples, size_t nsamples, uint32_t rate, int channels);
 
+// Reads a PCM int16 WAV (what audio_wav_write writes): 0 with malloc'd
+// interleaved *samples (*nsamples of them), the rate and channel count; -1
+// with the reason in errbuf.  Shared with the recorder's reader (record_class.c).
+int audio_wav_read(const char *path, int16_t **samples, size_t *nsamples, uint32_t *rate, int *channels, char *errbuf,
+                   size_t errlen);
+
 void audio_out_open(uint32_t src_rate_hz, int channels);
 
 // Changes the source sample rate mid-stream (e.g. ascClockRate write).
@@ -41,6 +47,12 @@ void audio_out_set_rate(uint32_t src_rate_hz);
 // Pushes nframes interleaved int16 frames at the current source rate.
 // vol_0_7 is the guest's 3-bit volume; applied host-side (not captured).
 void audio_out_push(const int16_t *frames, int nframes, int vol_0_7);
+
+// A second sink beside the capture: called with every push, its channel
+// count, the stream's rate and the guest's volume (the screen recorder,
+// record.h).  NULL removes it.
+typedef void (*audio_out_sink_t)(const int16_t *frames, int nframes, int channels, uint32_t rate, int vol_0_7);
+void audio_out_set_record_sink(audio_out_sink_t sink);
 
 // Current stream parameters (0 / 0 before the first open).
 uint32_t audio_out_rate(void);

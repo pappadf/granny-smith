@@ -377,7 +377,9 @@ jobs:
         run: make ui2
 
       # After the WASM build: the printer test loads the interpreter module
-      # `make` produced (build/platen-<version>.js) and skips without it.
+      # `make` produced (build/platen-<version>.js) and skips without it; the
+      # MP4 export's tests load build/recdec.js the same way, and also need
+      # the headless build, the test ROM and ffmpeg, skipping without them.
       - name: Vitest
         working-directory: app/web2
         run: npm test

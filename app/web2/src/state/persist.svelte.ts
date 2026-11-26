@@ -5,7 +5,7 @@
 // View-state keys extend the original (skin + panelPos + panelSize)
 // with Debug sections, MMU subtab, Memory address/mode, Logs
 // autoscroll, Filesystem expansion, Images collapsed map, Checkpoints
-// sort, the microphone device and the Welcome page's recent machines. Each of those uses a `{v, data}`
+// sort, the microphone device, the recorder's options and the Welcome page's recent machines. Each of those uses a `{v, data}`
 // envelope so future migrations are tractable. Reads tolerate
 // missing/malformed values silently.
 
@@ -19,6 +19,7 @@ import { images } from './images.svelte';
 import { checkpoints, type CheckpointSortColumn, type SortDirection } from './checkpoints.svelte';
 import { microphone } from './microphone.svelte';
 import { recent } from './recent.svelte';
+import { recorder } from './recorder.svelte';
 import { parseRecent } from '@/lib/recentMachines';
 import type { ImageCategory } from '@/bus/types';
 import { KEYS, readLS, writeLS } from '@/lib/storage';
@@ -139,6 +140,14 @@ export function loadPersistedState(): void {
   const micDev = readEnvelope<string>(KEYS.micDevice);
   if (typeof micDev === 'string') microphone.deviceId = micDev;
 
+  // The screen recorder's options (the record button's menu).
+  const rec = readEnvelope<{ rate?: unknown; audio?: unknown }>(KEYS.recorderOptions);
+  if (rec) {
+    if (rec.rate === 'full' || rec.rate === 'half' || rec.rate === 'quarter')
+      recorder.rate = rec.rate;
+    if (typeof rec.audio === 'boolean') recorder.audio = rec.audio;
+  }
+
   // The Welcome page's Recent list; malformed entries are dropped.
   recent.entries = parseRecent(readEnvelope<unknown>(KEYS.recentMachines));
 }
@@ -177,5 +186,8 @@ export function startPersistEffects(): void {
   );
 
   $effect(() => writeEnvelope(KEYS.micDevice, microphone.deviceId));
+  $effect(() =>
+    writeEnvelope(KEYS.recorderOptions, { rate: recorder.rate, audio: recorder.audio }),
+  );
   $effect(() => writeEnvelope(KEYS.recentMachines, $state.snapshot(recent.entries)));
 }

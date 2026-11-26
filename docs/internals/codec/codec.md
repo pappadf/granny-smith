@@ -22,6 +22,7 @@ containers.
 | the UDIF writer (`udif_writer.c`) | the zlib encoder (or, opted into, the xz encoder), CRC-32 (and its zero-run form) |
 | the PNG reader and writer (`src/core/debug/debug.c`), the ImageWriter's page store (`iw_page.c`) and the PDF writer (`pdf_writer.c`) | zlib, both ways |
 | MOOF, AFP's append logs, BMAC, the Rage 128 CCE, the PCI option-ROM identity | CRC-32 |
+| the screen recorder (`src/core/record/`) | ZMBV and FLAC, both ways (with streaming zlib inside ZMBV) |
 
 The library is a sibling of peeler rather than part of it: peeler is an
 archive reader, while the codecs are services its archives, the image layer
@@ -112,7 +113,23 @@ complete stream, reusing that state — the UDIF writer compresses every
 chunk of an image through one encoder. `codec_enc_bound(id, len)` is output
 room that always suffices; a smaller buffer that turns out too small is
 `OVERFLOW`, never a truncated stream. `codec_encode` is the one-shot form.
-zlib, xz and GSRLE encode.
+zlib, xz and GSRLE encode. Level 0 (`CODEC_LEVEL_STORED`) is zlib's stored
+blocks: no compression, for a caller that cannot spend the time.
+
+**Streaming zlib.** One zlib stream can also be written across many calls
+(`codec_zstream_enc_*`), as ZMBV's frames need: the first chunk after `new`
+or `reset` opens with the zlib header, and every chunk is non-final DEFLATE
+blocks ended by a sync flush — an empty stored block, so the chunk ends on a
+byte boundary with `00 00 FF FF` and decodes in full once the chunks before
+it have (zlib's `inflate(Z_SYNC_FLUSH)` reads it so). Each chunk is
+tokenised alone: matches never reach back into an earlier chunk, so the
+encoder stays a one-shot pass and needs no sliding window. The stream has no
+final block and no Adler-32; it is cut, not ended. The level may change
+between chunks. `codec_zstream_dec_*` is the counterpart: a `CODEC_ZLIB`
+decoder whose memory input is pointed at one chunk per call and which stops,
+instead of reporting a truncated stream, when the chunk is used up at a
+block boundary; its ring carries over, so it also reads streams whose
+matches do reach back (zlib's).
 
 ### 1.3 One layout
 
@@ -163,6 +180,27 @@ framework they are written on is `lib/codec_internal.h`:
   which peeler's formats use too, so the libraries have one family of
   their own beside core's `RD_*`/`WR_*`.
 
+### 1.4 Media codecs
+
+Two codecs are not byte streams of the `codec_id_t` kind, and have APIs of
+their own beside `codec.h`:
+
+- **ZMBV** ([`codec_zmbv.h`](../../../src/codec/include/codec_zmbv.h)),
+  the DOSBox capture video codec, frame by frame: an encoder
+  (`codec_zmbv_enc_*`) and a decoder (`codec_zmbv_dec_*`) for 8 bpp
+  palettised, 15, 16 and 32 bpp (§3).
+- **FLAC** ([`codec_flac.h`](../../../src/codec/include/codec_flac.h)),
+  RFC 9639, as a streaming encoder for 16-bit mono and stereo
+  (`codec_flac_enc_*`: samples pushed as they come, one frame out per
+  4096) and a decoder for the subset it writes (`codec_flac_dec_*`).
+
+Both are for the screen recorder's lossless Matroska files
+([../core/record/record.md](../core/record/record.md)) and the tools that
+read them back. ZMBV is named after DOSBox, the program that defined it,
+only because the format is that program's: the files are written so that
+existing players (FFmpeg and what is built on it) read them as they are,
+and nothing else is taken from it.
+
 ## 2. Key types & files
 
 | | |
@@ -172,7 +210,7 @@ framework they are written on is `lib/codec_internal.h`:
 | `codec_check_t` | a stated checksum over the decoded bytes, verified at the end |
 | `codec_enc_t` | an encoder, its state reused across inputs (§1.2) |
 | `codec_id_t` | `COPY`, `DEFLATE`, `ZLIB`, `GZIP`, `ADC`, `BZIP2`, `LZFSE`, `XZ`, `LZMA_ALONE`, `RLE90`, `RLE90_BINHEX`, `BINHEX`, `SIT2`, `SIT3`, `SIT13`, `SIT15`, `CPT_RLE`, `CPT_LZH`, `DCMP`, `GSRLE` |
-| `codec_crc32`, `codec_crc32_zeros`, `codec_crc32_msb`, `codec_crc64`, `codec_adler32`, `codec_crc16_xmodem`, `codec_crc16_xmodem_byte`, `codec_crc16_arc` | CRC-32 (reflected; zero runs in O(log n); also the BMAC multicast hash), CRC-32 MSB-first (bzip2), CRC-64/XZ, Adler-32, CRC-16/XMODEM (BinHex, MacBinary; per byte for the SWIM ISM and the MFM field CRC), CRC-16/ARC (StuffIt); constant tables, slice-by-8 for the CRC-32s, callable from any thread |
+| `codec_crc32`, `codec_crc32_zeros`, `codec_crc32_msb`, `codec_crc64`, `codec_adler32`, `codec_crc16_xmodem`, `codec_crc16_xmodem_byte`, `codec_crc16_arc`, `codec_crc8_smbus`, `codec_crc16_umts` | CRC-32 (reflected; zero runs in O(log n); also the BMAC multicast hash), CRC-32 MSB-first (bzip2), CRC-64/XZ, Adler-32, CRC-16/XMODEM (BinHex, MacBinary; per byte for the SWIM ISM and the MFM field CRC), CRC-16/ARC (StuffIt), CRC-8/SMBUS and CRC-16/UMTS (FLAC's header and frame CRCs); constant tables, slice-by-8 for the CRC-32s, callable from any thread |
 
 | File | |
 |---|---|
@@ -185,6 +223,8 @@ framework they are written on is `lib/codec_internal.h`:
 | `lib/cpt.c` | Compact Pro's LZH and RLE |
 | `lib/dcmp.c`, `lib/dcmp3_tables.h` | System 7 compressed resources |
 | `lib/gsrle.c`, `lib/gsrle_enc.c` | the checkpoint file's run lengths, both ways |
+| `lib/zmbv.c`, `lib/zmbv_enc.c`, `include/codec_zmbv.h` | ZMBV video, both ways |
+| `lib/flac.c`, `lib/flac_enc.c`, `include/codec_flac.h` | FLAC audio, both ways (the decoder for the encoder's subset) |
 | `lib/checksum.c` | every checksum |
 
 ## 3. Behaviour/algorithms
@@ -202,7 +242,55 @@ framework they are written on is `lib/codec_internal.h`:
   checked — and ignores what follows the last one that is not another
   member, as `gzip -d` does. The encoder is greedy LZ77 over hash chains (depth by level), each block
   written as dynamic Huffman, fixed Huffman or stored, whichever is
-  smallest; its dynamic codes are length-limited and complete.
+  smallest; its dynamic codes are length-limited and complete. The
+  streaming form (§1.2) writes the same blocks, never final, and a sync
+  flush after each chunk.
+- **ZMBV.** The bitstream of DOSBox's capture codec (`src/libs/zmbv/zmbv.cpp`
+  in DOSBox; FFmpeg's `libavcodec/zmbv.c` decodes it). Every frame is a
+  flag byte (bit 0 keyframe, bit 1 palette delta). A keyframe adds a
+  six-byte header — version 0.1, compression 1 (zlib), the pixel format (4
+  = 8 bpp, 5 = 15 bpp, 6 = 16 bpp, 8 = 32 bpp), the block width and height —
+  and starts a new zlib stream holding the 768-byte palette (8 bpp only) and
+  the whole frame. An inter frame continues that stream with one
+  sync-flushed chunk: the palette's XOR against the previous one (when bit 1
+  is set), two bytes per block (`dx << 1 | has_delta`, `dy << 1`) padded to a
+  multiple of four, then each flagged block's XOR against the previous frame
+  (blocks clipped at the right and bottom edges). The encoder never searches
+  for motion — every vector is zero — and keeps the previous frame itself.
+  It is given either the new frame or the XOR of the changed rows, with the
+  band of rows that may differ, and looks at nothing outside the band: a
+  capture that already holds an XOR band hands it over without a second
+  comparison. A frame with no changed block and no palette change is an
+  inter frame with an all-zero table: 10 bytes for 640×480 with 64×64
+  blocks at level 3. The caller decides which frames are keyframes (the
+  first always is); a frame that does not fit the output changes nothing,
+  so it can be retried. The decoder reads everything the encoder writes,
+  any in-range motion vector and the uncompressed variant (compression 0)
+  as well; vectors, deltas and sizes are checked against the frame.
+- **FLAC encoding.** RFC 9639, 16-bit, mono or stereo, any rate up to
+  655,350 Hz, a fixed block size of 4096 (the last frame shorter). Each
+  channel of a frame is a `CONSTANT` subframe when every sample is the
+  same (13 bytes a block of mono silence), else the smaller of `VERBATIM` and
+  the `FIXED` predictors of order 0 to 4, whose residuals are Rice-coded in
+  2^p partitions (p up to 8, as the block allows), each partition's
+  parameter (4-bit, or 5-bit when one exceeds 14) chosen from its
+  magnitude by the usual estimate and p by the total. Low bits that are
+  zero in every sample of a channel go in the wasted-bits field, so 8-bit
+  audio carried in int16 costs what the bare 8-bit values do. Stereo codes
+  left/right, left/side, side/right and mid/side and keeps the smallest
+  pair. A frame header carries the frame number (UTF-8 coded), the block
+  size and the rate (by code, or 8 or 16 bits after the header) and a
+  CRC-8; the frame ends in a CRC-16. There is no LPC. STREAMINFO is fixed
+  before any audio: block size 4096 both ways and zero, "unknown", for the
+  frame sizes, the total and the MD5 (RFC 9639 §8.2), so nothing has to
+  be patched once the stream ends — a container's track header can hold
+  it from the start. Samples are pushed in any amounts; a full block is
+  coded on request, and a flush codes the short last one.
+- **FLAC decoding.** One frame at a time: `CONSTANT`, `VERBATIM` and
+  `FIXED` subframes, wasted bits, the four stereo assignments, 4- and
+  5-bit Rice parameters and escaped partitions, 16-bit mono or stereo;
+  `LPC` is `UNSUPPORTED`. Both CRCs are checked, every count is bounded
+  by the block and the input, and the predictor runs in 64 bits.
 - **bzip2.** Per block: the symbol map, the selectors (move-to-front coded),
   the delta-coded code lengths of up to six canonical Huffman tables, then
   the run-length and move-to-front coded symbols, each Huffman code found
@@ -346,6 +434,25 @@ file's blocks, but keeps nothing of its own in one.)
   tests methods 3, 13 and 15 against streams built by encoders over the
   decoders' own tables and models (including the Arsenic arithmetic
   coder), and the Huffman pool's bounds.
+- `tests/unit/suites/codec_media` (ASan, UBSan, and again on wasm32)
+  covers the streaming zlib encoder — chunks of every kind of data, empty
+  ones included, at stored, 1, 3 and 9, each ending in the sync flush and
+  inflating to its own bytes through `codec_zstream_dec` and, natively,
+  the system zlib (`inflate(Z_SYNC_FLUSH)`); overflow, reset and truncation
+  — and ZMBV: every format at 512×342, 640×480 (the last block row 32
+  high), 100×70, 33×17 and 1×1, block sizes 64×64, 16×16 and 7×5, levels
+  stored to 9, from whole frames, XOR bands and whole-frame bands, with
+  palette changes, keyframes forced both ways and unchanged frames, every
+  decoded picture and palette compared; the decoder against every prefix
+  and a corruption at every byte of a short stream, and (on wasm32) a
+  picture whose buffers would wrap a 32-bit `size_t` refused — and FLAC: silence
+  (a constant non-zero level), 8-bit audio in the top byte (which must
+  cost exactly what the bare 8-bit values do), full-scale noise and a sine
+  in mono, at lengths of whole blocks, 1, 100, 4095 and whole blocks plus
+  a short last one; stereo correlated, uncorrelated and identical
+  channels (the side channel taken where it pays); every way a header
+  states the rate; each frame's CRC-16 recomputed, every decoded sample
+  compared, a flipped bit and a cut frame refused; STREAMINFO's bytes.
 - `tests/unit/suites/peeler` and `peeler_corpus` (and `make -C src/peeler
   test`, 38 real archives) decode every method through the containers;
   `zipgz.c` covers DEFLATE with a writer of its own (every block type,
@@ -382,6 +489,9 @@ file's blocks, but keeps nothing of its own in one.)
 
 - [`../../reference/formats/udif.md`](../../reference/formats/udif.md) — the
   UDIF chunk types.
+- [`../../reference/formats/zmbv.md`](../../reference/formats/zmbv.md),
+  [`flac.md`](../../reference/formats/flac.md) — the ZMBV bitstream and the
+  FLAC subset the media codecs write and read.
 - [`../core/storage/image.md`](../core/storage/image.md) — the image layer
   and the UDIF writer.
 - [`../../guide/peeler.md`](../../guide/peeler.md) — peeler, the archive

@@ -199,6 +199,7 @@ to not break this rule in the first place.
 **Debug tools:**
 - `tools/disasm/disasm` — standalone 68K disassembler for ROM images and binaries (see `.agents/skills/disasm-tool/`)
 - `build/headless/gs-headless` — headless emulator with TCP shell for interactive debugging (see `.agents/skills/headless-debug/`)
+- `recorder` — records the screen and sound to a lossless video file, headless (`--record=<path>.mkv`) or in the browser (see `.agents/skills/screen-recording/`)
 
 - Core code prints through the output sink (`out_printf` / `out_puts` / `out_write`, `src/core/out.h`), never `printf`: the text reaches the client whose request it is (a terminal line's output records, a page leaf's answer). `LOG(...)` lines and text printed outside any request land in the **Terminal console** (browser terminal panel), not the JS console
 - In E2E tests, artifacts (traces, screenshots) land in `tests/e2e/test-results/<test-name>-<project>/`
@@ -277,7 +278,10 @@ simulated network are its siblings at the root:
   `machine.hd` (ProFile, `machine.hd.image`) and `machine.power`; the G3
   desktop adds `machine.ata.device[U].image`.)
 - **emulator services** (siblings of `machine`, in this fixed root order):
-  `scheduler`, `checkpoint`, `files` (host files, disk images and mounts:
+  `scheduler`, `checkpoint`, `recorder` (the screen and sound to a
+  lossless `.mkv` on the guest's clock: `recorder.start(path)` /
+  `recorder.stop()`; `docs/internals/core/record/record.md`), `files`
+  (host files, disk images and mounts:
   `files.ls`/`cp`/`create`/…, `files.images[N]`, `files.mounts[N]`,
   `files.archive`), `debug` (+ `.find`, `.mac`, `breakpoints`/`logpoints`/
   `watchpoints`), `log` (`log.set`, `log.levels`, `log.category["scsi"]`),

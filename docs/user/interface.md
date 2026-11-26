@@ -17,6 +17,7 @@ From left to right:
 | **Real · Faster · Max** | The speed mode — see §2. |
 | **Zoom out**, zoom level, **Zoom in** | Scale the screen, from 50 % to 300 % in steps of 10 %. You can also type a value into the zoom field. Until you choose a zoom, the screen is fitted to the display area (up to 200 %). |
 | **Save State** | Download the whole machine — memory, devices and disks — as one file you can open again later. See [Saving and resuming](saving-and-resuming.md). |
+| **Record** (●) | Its menu starts a recording of the screen and sound (**Start Recording**) and holds the options for the next one: the frame rate (**Full Rate (60 fps)**, **Half Rate (30 fps)**, **Quarter Rate (15 fps)**) and **Record Sound**. While recording it is a red stop button; click it to finish. See [Sound, camera and 3D](sound-and-video.md) §5. |
 | Camera, microphone | Shown only on machines with video and sound inputs (the AV Quadras). See [Sound, camera and 3D](sound-and-video.md). |
 | **Appearance** | Choose the look of the emulator (§5). |
 | **Screen Mode** | **Normal**, **Full Screen**, or **Full Screen, Hide Toolbar and Status Bar** (§6). |
@@ -68,6 +69,7 @@ it with `speed=` ([URL parameters](url-parameters.md) §4).
 | State | **Running**, **Paused**, **Stopped** or **Crashed**. |
 | Speed | How fast the machine runs compared with the original: **1×** is the original's speed. In Faster mode it is the processor's speed factor (for example **3×**); when your computer cannot keep up it drops below 1× (for example **0.5×**, see §2); in Max mode it is how much faster than real time everything is running (for example **12×**). |
 | MIPS | How fast your computer emulates this machine: emulated instructions, in millions, per second while the processor is awake. Time the processor spends asleep waiting for an interrupt (an idle Mac OS X, a STOP) is not counted, as the original would sleep too. It is your computer's rate, not the machine's: in Real mode the processor is held to the original's speed, so this says how fast it *could* go. An idle machine reads low because its short wake-ups cost more per instruction than steady work; the figure to compare computers or CPU engines by is a busy machine's. |
+| Recording | While recording: a red dot, the time recorded (the Mac's own time: it stands still, marked **paused**, while the machine is paused), the file's size, and how many frames were dropped because your computer could not keep up, when any were. |
 | **HD**, **FD**, **CD** | Hard disk, floppy and CD-ROM activity lights; shown only for drives the machine has. |
 | **CP** | Flashes on each automatic checkpoint (every ~15 seconds); hover to see when the last one was taken. |
 | **Caps Lock** (⇪) | The Mac's Caps Lock key. It follows your keyboard's Caps Lock; click it to latch Caps Lock on a keyboard without one. |

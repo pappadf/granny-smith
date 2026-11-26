@@ -29,7 +29,12 @@
     shutdownEmulator,
     saveCheckpoint,
     applySchedulerMode,
+    startRecording,
+    stopRecording,
+    setRecorderRate,
+    setRecorderAudio,
   } from '@/bus';
+  import { recorder, type RecorderRate } from '@/state/recorder.svelte';
   import IconButton from '../ui/IconButton.svelte';
   import SegmentedControl from '../ui/SegmentedControl.svelte';
   import Separator from '../ui/Separator.svelte';
@@ -247,6 +252,71 @@
     openContextMenu(items, r.left, r.bottom);
   }
 
+  // The record button: while recording, a red stop button; otherwise its
+  // menu starts a recording, with the options it starts with (fixed once it
+  // runs, so disabled then).  A right-click opens the menu either way.
+  let recBusy = $state(false);
+  const recIcon: IconName = $derived(recorder.active ? 'stop' : 'circle-filled');
+  const recTitle = $derived(
+    recorder.active
+      ? recorder.external
+        ? 'Stop recording (this card is recorded at half rate at most)'
+        : 'Stop recording'
+      : 'Record the screen and sound',
+  );
+  const RATES: Array<[RecorderRate, string]> = [
+    ['full', 'Full Rate (60 fps)'],
+    ['half', 'Half Rate (30 fps)'],
+    ['quarter', 'Quarter Rate (15 fps)'],
+  ];
+
+  async function runRecorder(fn: () => Promise<unknown>) {
+    recBusy = true;
+    try {
+      await fn();
+    } finally {
+      recBusy = false;
+    }
+  }
+
+  function recordItems(): ContextMenuItem[] {
+    return [
+      recorder.active
+        ? { label: 'Stop Recording', icon: 'stop', action: () => void runRecorder(stopRecording) }
+        : {
+            label: 'Start Recording',
+            icon: 'circle-filled',
+            disabled: !isLive,
+            action: () => void runRecorder(startRecording),
+          },
+      { sep: true },
+      ...RATES.map(([rate, label]) => ({
+        label,
+        checked: recorder.rate === rate,
+        disabled: recorder.active,
+        action: () => setRecorderRate(rate),
+      })),
+      { sep: true },
+      {
+        label: 'Record Sound',
+        checked: recorder.audio,
+        disabled: recorder.active,
+        action: () => setRecorderAudio(!recorder.audio),
+      },
+    ];
+  }
+
+  function onRecordMenu(ev: MouseEvent) {
+    ev.preventDefault();
+    const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+    openContextMenu(recordItems(), r.left, r.bottom);
+  }
+
+  function onRecordClick(ev: MouseEvent) {
+    if (recorder.active) void runRecorder(stopRecording);
+    else onRecordMenu(ev);
+  }
+
   function onZoomInput(e: Event) {
     const input = e.target as HTMLInputElement;
     const n = parseInt(input.value, 10);
@@ -339,6 +409,19 @@
           disabled: !isLive || saving,
           action: () => void onSave(),
         },
+        recorder.active
+          ? {
+              label: 'Stop Recording',
+              icon: 'stop',
+              disabled: recBusy,
+              action: () => void runRecorder(stopRecording),
+            }
+          : {
+              label: 'Start Recording',
+              icon: 'circle-filled',
+              disabled: !isLive || recBusy,
+              action: () => void runRecorder(startRecording),
+            },
       ];
       if (machine.videoIn)
         g.push({
@@ -469,6 +552,16 @@
         disabled={!isLive || saving}
         onclick={onSave}
       />
+      <IconButton
+        class="tbtn record-btn"
+        icon={recIcon}
+        label={recTitle}
+        data-recording={recorder.active ? '' : undefined}
+        aria-haspopup={recorder.active ? undefined : 'menu'}
+        disabled={recBusy || (!isLive && !recorder.active)}
+        onclick={onRecordClick}
+        oncontextmenu={onRecordMenu}
+      />
       {#if machine.videoIn}
         <IconButton
           class="tbtn"
@@ -553,6 +646,10 @@
   }
   .tg.actions {
     margin-left: var(--gs-space-1);
+  }
+  /* Recording: the stop button is red. */
+  .tg.actions :global(.record-btn[data-recording]) {
+    color: var(--gs-danger-solid);
   }
   .layout-controls {
     display: flex;

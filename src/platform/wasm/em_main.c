@@ -65,6 +65,7 @@
 #include "system.h"
 #include "vrom.h"
 #include "watch.h"
+#include "record/record.h"
 
 // ============================================================================
 // Forward Declarations
@@ -1034,12 +1035,40 @@ static void maybe_request_background_checkpoint(const char *reason, bool rate_li
     }
 }
 
+// A recording this page suspended when it was hidden, to resume when shown.
+static bool g_recording_hidden = false;
+
+// The page is hidden (or closing): a recording's file is finalised now, so
+// it is whole if the page never comes back.  Shown again: the recording
+// continues in the next segment.  A recording suspended from the terminal
+// stays suspended.
+static void recorder_visibility(bool hidden) {
+    char err[200];
+    if (hidden) {
+        if (recorder_active() && !recorder_suspended()) {
+            if (recorder_suspend(err, sizeof err) == 0)
+                g_recording_hidden = true;
+            else
+                printf("[recorder] finalising on hide failed: %s\n", err);
+        }
+        return;
+    }
+    if (!g_recording_hidden)
+        return;
+    g_recording_hidden = false;
+    if (recorder_suspended() && recorder_resume(err, sizeof err) < 0)
+        printf("[recorder] resuming failed: %s\n", err);
+}
+
 // Visibility change callback
 static EM_BOOL background_visibility_callback(int eventType, const EmscriptenVisibilityChangeEvent *event,
                                               void *userData) {
     (void)eventType;
     (void)userData;
-    if (!event || !event->hidden)
+    if (!event)
+        return EM_FALSE;
+    recorder_visibility(event->hidden);
+    if (!event->hidden)
         return EM_FALSE;
     maybe_request_background_checkpoint("visibilitychange", true);
     return EM_FALSE;

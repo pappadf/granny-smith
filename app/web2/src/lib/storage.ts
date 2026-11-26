@@ -21,6 +21,7 @@ export const KEYS = {
   checkpointsSort: 'gs-checkpoints-sort',
   micDevice: 'gs-mic-device',
   recentMachines: 'gs-recent-machines',
+  recorderOptions: 'gs-recorder-options',
   // Modules' own records.
   remoteAfp: 'gs-remote-afp', // bus/remoteAfp.ts settings (JSON)
   checkpointMachine: 'gs.checkpoint.machine', // lib/machineId.ts identity (JSON)

@@ -13,6 +13,18 @@
 // (the built-in codes, §3.2.6), or a stored block (§3.2.4).  Dynamic codes
 // are length-limited (15 bits, 7 for the code-length code) and always
 // complete, so strict decoders (zlib's) accept them.
+//
+// The streaming form (codec_zstream_enc_*) writes one zlib stream across
+// many calls, as a video codec that compresses frame after frame into one
+// stream needs (ZMBV): the first chunk after a reset carries the zlib
+// header, and every chunk is coded as non-final blocks followed by a sync
+// flush -- an empty stored block (RFC 1951 §3.2.4: 00 00 FF FF after the
+// three header bits and the alignment) -- so each chunk ends on a byte
+// boundary and decodes on its own once the ones before it have.  Matches
+// do not reach back into an earlier chunk: each chunk is tokenised alone,
+// which costs a little ratio and keeps the encoder a one-shot pass.  The
+// stream has no final block and no Adler-32 trailer; it ends where the
+// caller stops (or resets).
 
 #include "codec_internal.h"
 
@@ -516,6 +528,36 @@ static size_t token_bytes(const token_t *t) {
     return t->dist ? t->len : 1;
 }
 
+// The DEFLATE blocks for `len` (> 0) bytes of `in` at `level` (st sized for
+// them): stored at level 0, else tokenised and coded block by block; `last`
+// marks the final block.  Ends wherever the last block ends, mid-byte.
+static void deflate_blocks(zenc_t *st, deflate_bw_t *w, const uint8_t *in, size_t len, int level, bool last) {
+    if (level <= 0) {
+        write_stored(w, in, len, last);
+        return;
+    }
+    size_t nt = tokenise(st, in, len, chain_for(level));
+    size_t at = 0, from = 0;
+    while (at < nt || from == 0) {
+        size_t n = nt - at < DEFLATE_BLOCK_TOKENS ? nt - at : DEFLATE_BLOCK_TOKENS;
+        size_t bytes = 0;
+        for (size_t i = 0; i < n; i++)
+            bytes += token_bytes(&st->tok[at + i]);
+        write_block(w, st->tok + at, n, in + from, bytes, last && at + n == nt);
+        at += n;
+        from += bytes;
+        if (at >= nt)
+            break;
+    }
+}
+
+// The two-byte zlib header: CM=8 / CINFO=7 (32K window), FLEVEL=2, FCHECK
+// making the 16-bit value a multiple of 31.
+static void zlib_header(deflate_bw_t *w) {
+    put_bits(w, 0x78, 8);
+    put_bits(w, 0x9c, 8);
+}
+
 static long zlib_deflate(zenc_t *st, const uint8_t *in, size_t len, uint8_t *out, size_t cap, int level) {
     if (cap < 6)
         return -1;
@@ -527,26 +569,11 @@ static long zlib_deflate(zenc_t *st, const uint8_t *in, size_t len, uint8_t *out
         st = own;
     }
     deflate_bw_t w = {out, cap, 0, 0, 0};
-    // zlib header: CM=8 / CINFO=7 (32K window), FLEVEL=2, FCHECK making the
-    // 16-bit value a multiple of 31.
-    out[w.pos++] = 0x78;
-    out[w.pos++] = 0x9c;
+    zlib_header(&w);
     if (level <= 0 || len == 0) {
         write_stored(&w, in, len, true);
     } else {
-        size_t nt = tokenise(st, in, len, chain_for(level));
-        size_t at = 0, from = 0;
-        while (at < nt || from == 0) {
-            size_t n = nt - at < DEFLATE_BLOCK_TOKENS ? nt - at : DEFLATE_BLOCK_TOKENS;
-            size_t bytes = 0;
-            for (size_t i = 0; i < n; i++)
-                bytes += token_bytes(&st->tok[at + i]);
-            write_block(&w, st->tok + at, n, in + from, bytes, at + n == nt);
-            at += n;
-            from += bytes;
-            if (at >= nt)
-                break;
-        }
+        deflate_blocks(st, &w, in, len, level, true);
         align_byte(&w);
     }
     zenc_delete(own);
@@ -580,3 +607,80 @@ static void zenc_free(codec_enc_t *e) {
 }
 
 const codec_enc_ops_t codec_zlib_enc = {zenc_init, zenc_run, zenc_free, zenc_bound, 1};
+
+// ============================================================================
+// The streaming encoder
+// ============================================================================
+
+// One zlib stream written across calls: the LZ77 state for chunks of up to
+// max_len bytes, the level, and whether the header is out yet.
+struct codec_zstream_enc {
+    zenc_t *st; // NULL at level 0 until a coded level is set
+    size_t max_len;
+    int level; // CODEC_LEVEL_STORED (0) or 1..9
+    bool started; // the zlib header has been written
+};
+
+codec_zstream_enc_t *codec_zstream_enc_new(size_t max_len, int level, int *err) {
+    int e = 0;
+    if (!err)
+        err = &e;
+    codec_zstream_enc_t *z = calloc(1, sizeof(*z));
+    if (!z) {
+        *err = CODEC_ERR_NOMEM;
+        return NULL;
+    }
+    z->max_len = max_len;
+    // The LZ77 state is allocated up front, so a later level change cannot fail.
+    z->st = zenc_new(max_len);
+    if (!z->st) {
+        free(z);
+        *err = CODEC_ERR_NOMEM;
+        return NULL;
+    }
+    codec_zstream_enc_set_level(z, level);
+    *err = 0;
+    return z;
+}
+
+void codec_zstream_enc_set_level(codec_zstream_enc_t *z, int level) {
+    if (z)
+        z->level = level < 0 ? 6 : level > 9 ? 9 : level;
+}
+
+void codec_zstream_enc_reset(codec_zstream_enc_t *z) {
+    if (z)
+        z->started = false;
+}
+
+size_t codec_zstream_enc_bound(size_t len) {
+    // The one-shot bound, the header and the flush marker.
+    return zenc_bound(len) + 2 + 5;
+}
+
+int64_t codec_zstream_enc_chunk(codec_zstream_enc_t *z, const uint8_t *in, size_t len, uint8_t *out, size_t cap) {
+    static const uint8_t none = 0; // a valid source for the empty flush block
+    if (!z || (!in && len) || !out || len > z->max_len)
+        return CODEC_ERR_ARG;
+    deflate_bw_t w = {out, cap, 0, 0, 0};
+    // A new stream opens with its header; a continued one picks up on the
+    // byte boundary the last chunk's flush left.
+    if (!z->started)
+        zlib_header(&w);
+    if (len)
+        deflate_blocks(z->st, &w, in, len, z->level, false);
+    // The sync flush: an empty non-final stored block aligns to a byte and
+    // marks the chunk's end (00 00 FF FF).
+    write_stored(&w, &none, 0, false);
+    if (w.pos > cap)
+        return CODEC_ERR_OVERFLOW;
+    z->started = true;
+    return (int64_t)w.pos;
+}
+
+void codec_zstream_enc_free(codec_zstream_enc_t *z) {
+    if (!z)
+        return;
+    zenc_delete(z->st);
+    free(z);
+}

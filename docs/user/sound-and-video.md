@@ -67,3 +67,76 @@ provide it, or its graphics stop working, the page is replaced by a short
 explanation — for example **WebGL 2 is required** or **The browser’s
 graphics stopped working** — with what to try and a **Reload** button. See
 [Troubleshooting](troubleshooting.md) §1 for each message.
+
+## 5. Recording the screen and sound
+
+The **Record** button on the toolbar (●) records the Mac's screen and
+sound to a video file, exactly as the Mac drew them: nothing is lost to
+compression, and the recording follows the Mac's own clock, so it plays at
+the original's speed whatever the speed mode (§2 of
+[The interface](interface.md)). A paused machine records nothing; Max
+speed records the same video, only sooner.
+
+1. Click **Record**, choose the options if you want others than last
+   time — the frame rate (**Full Rate (60 fps)**, **Half Rate (30 fps)**,
+   **Quarter Rate (15 fps)**) and **Record Sound** — and click **Start
+   Recording**. The status bar shows a red dot, the time recorded and the
+   file's size.
+2. Click the red stop button to finish. A notice names the file, with
+   **Download** (saves it to your computer), **Export MP4…** (below) and
+   **Show in Files** (the Files tab, where every recording is kept, in
+   `/opfs/recordings/`).
+
+The file is a Matroska video (`.mkv`). It plays in VLC, mpv and ffplay,
+and YouTube takes Matroska uploads; browsers, QuickTime Player and phones do
+not play it.
+
+**Export MP4…** makes the version that plays everywhere: an `.mp4` with
+H.264 video and AAC sound, made by the browser itself from the recording.
+It is in the notice when a recording finishes, and in the Files tab on any
+`.mkv` (right-click it).
+
+1. Choose the size: the recording's own (a Plus at 512 × 342) or two,
+   three or four times that, with every Mac pixel a sharp square. At the
+   recording's own size a one-pixel coloured detail is slightly softened
+   (MP4 video stores colour at half resolution; black-and-white screens are
+   not affected). YouTube gives small videos its lowest quality, so for an
+   upload choose 2× to 4×, or upload the `.mkv` itself.
+2. Click **Export**. A bar shows the frames done; **Cancel export**
+   stops and removes the partial file, **Hide** lets it carry on while you
+   use the emulator (the machine keeps running, and you can record again).
+3. When it is done, a notice offers **Download**. The `.mp4` is kept
+   beside the recording in `/opfs/recordings/`. A recording that went on
+   in several files (**-2**, **-3**) gives one `.mp4` for each.
+
+What the export can do depends on the browser. Chrome and Edge on Windows
+and macOS, and Safari 26 or later, export picture and sound. Where the
+browser has no AAC encoder (Chrome and Edge on Linux) the sound is Opus,
+which plays in Chrome, Edge, Firefox and current Safari; where it has no
+sound encoder at all (Safari before 26) the MP4 has no sound, and the
+dialog says so. A browser that cannot encode H.264 at all shows **Export
+MP4…** greyed out; hover over it for the reason. There, and for a
+recording made with the headless emulator, ffmpeg does the same job; this
+command also scales up four times with square pixels:
+
+```bash
+ffmpeg -i plus.mkv -vf scale=iw*4:ih*4:flags=neighbor -c:v libx264 -crf 16 -pix_fmt yuv420p -c:a aac -b:a 160k -movflags +faststart plus.mp4
+```
+
+Good to know:
+
+- **Hiding the tab** (switching tabs, minimising, closing) finishes the
+  file at once, so it is complete even if the browser then closes the
+  tab. When you come back, the recording carries on in a new file named
+  with **-2**, **-3** and so on; **Download** saves all of them.
+- **A new screen size** the recording cannot hold (a larger resolution,
+  or thousands of colours after a recording started in 256), and starting
+  a different machine, also carry on in a new file.
+- **Dropped frames**: when your computer cannot keep up, a frame is
+  repeated instead, and the status bar counts it. The sound stays in
+  step. Half or quarter rate needs less.
+- **3D and GPU-drawn screens** (the Voodoo2 or Rage 128 with WebGPU
+  rendering) are recorded at half rate at most.
+- If the page shows that browser storage could not be opened, a
+  recording is lost when the page closes: download it first. A notice
+  says so when you start.
