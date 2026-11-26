@@ -7,6 +7,9 @@
 
 #include "gcr.h"
 
+#include <stdlib.h>
+#include <string.h>
+
 // The 64 disk bytes the 6-bit values 0x00-0x3F encode to.
 const uint8_t gcr_encode6[64] = {0x96, 0x97, 0x9A, 0x9B, 0x9D, 0x9E, 0x9F, 0xA6, 0xA7, 0xAB, 0xAC, 0xAD, 0xAE,
                                  0xAF, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE,
@@ -192,15 +195,21 @@ bool gcr_addr_from_disk(const uint8_t disk[GCR_ADDR_VALUES], int *track, int *se
 // Framing
 // ============================================================================
 
-size_t gcr_frame_revolution(const uint8_t *bits, uint32_t nbits, uint8_t *out, size_t cap) {
-    if (!bits || !out || nbits == 0)
-        return 0;
+// The cell at `k` of a bitstream, MSB first.
+static inline uint32_t bit_at(const uint8_t *bits, uint32_t k) {
+    return (bits[k >> 3] >> (7 - (k & 7))) & 1u;
+}
+
+// Frame one revolution in steady state: `pre` (nbits cells) is pre-rolled
+// to sync the shift register, then `bits` is framed and kept.
+static size_t frame_after(const uint8_t *pre, const uint8_t *bits, uint32_t nbits, uint8_t *out, size_t cap) {
     uint32_t reg = 0;
     size_t n = 0;
     // Revolution 1 only syncs the shift register; revolution 2 is kept.
     for (int rev = 0; rev < 2; rev++) {
+        const uint8_t *b = rev ? bits : pre;
         for (uint32_t k = 0; k < nbits; k++) {
-            reg = ((reg << 1) | ((bits[k >> 3] >> (7 - (k & 7))) & 1)) & 0xFF; // shift one cell in
+            reg = ((reg << 1) | bit_at(b, k)) & 0xFF; // shift one cell in
             if (!(reg & 0x80))
                 continue; // the byte is not complete yet
             if (rev == 1) {
@@ -211,5 +220,106 @@ size_t gcr_frame_revolution(const uint8_t *bits, uint32_t nbits, uint8_t *out, s
             reg = 0; // the latch takes the byte and the register restarts
         }
     }
+    return n;
+}
+
+size_t gcr_frame_revolution(const uint8_t *bits, uint32_t nbits, uint8_t *out, size_t cap) {
+    if (!bits || !out || nbits == 0)
+        return 0;
+    return frame_after(bits, bits, nbits, out, cap);
+}
+
+// ============================================================================
+// Weak bits
+// ============================================================================
+
+// Record a zero run of `len` cells at `start` when it is at least `min_len`.
+static void keep_run(gcr_weak_run_t *runs, size_t cap, size_t *n, uint32_t start, uint32_t len, uint32_t min_len) {
+    if (!len || len < min_len)
+        return;
+    if (*n < cap)
+        runs[*n] = (gcr_weak_run_t){.start = start, .len = len};
+    (*n)++;
+}
+
+size_t gcr_zero_runs(const uint8_t *bits, uint32_t nbits, uint32_t min_len, gcr_weak_run_t *runs, size_t cap) {
+    if (!bits || nbits == 0)
+        return 0;
+    size_t n = 0;
+    // The zeros the track starts with and those it ends with are one run,
+    // across the index.
+    uint32_t head = 0;
+    while (head < nbits && !bit_at(bits, head))
+        head++;
+    if (head == nbits) { // no transition at all: one run all round
+        keep_run(runs, cap, &n, 0, nbits, min_len);
+        return n;
+    }
+    uint32_t tail = 0;
+    while (!bit_at(bits, nbits - 1 - tail))
+        tail++;
+    if (!tail)
+        keep_run(runs, cap, &n, 0, head, min_len); // the track ends on a transition: this run starts it
+    // Between the first transition and the last.
+    uint32_t zeros = 0;
+    for (uint32_t k = head; k < nbits - tail; k++) {
+        if (!bit_at(bits, k)) {
+            zeros++;
+            continue;
+        }
+        if (zeros)
+            keep_run(runs, cap, &n, k - zeros, zeros, min_len);
+        zeros = 0;
+    }
+    if (tail)
+        keep_run(runs, cap, &n, nbits - tail, tail + head, min_len); // runs on across the index
+    return n;
+}
+
+// splitmix64: a small, fast generator whose whole state is one word.
+static uint64_t weak_rand(uint64_t *state) {
+    uint64_t z = (*state += 0x9E3779B97F4A7C15ull);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
+}
+
+void gcr_weak_fill(const uint8_t *bits, uint32_t nbits, const gcr_weak_run_t *runs, size_t nruns, uint64_t seed,
+                   uint8_t *out) {
+    memcpy(out, bits, ((size_t)nbits + 7) / 8);
+    // A draw below this is a 1: GCR_WEAK_P_NUM / GCR_WEAK_P_DEN of 2^32.
+    const uint64_t below = ((uint64_t)GCR_WEAK_P_NUM << 32) / GCR_WEAK_P_DEN;
+    uint64_t state = seed;
+    for (size_t r = 0; r < nruns; r++) {
+        uint32_t last = 0; // cells since the last transition, the one before the run
+        for (uint32_t i = 0; i < runs[r].len; i++) {
+            last++;
+            if (last <= GCR_WEAK_GRACE)
+                continue; // the amplifier is still quiet
+            if ((weak_rand(&state) >> 32) >= below)
+                continue; // no noise on this cell
+            uint32_t k = (uint32_t)(((uint64_t)runs[r].start + i) % nbits); // the run loops
+            out[k >> 3] |= (uint8_t)(0x80 >> (k & 7));
+            last = 0; // an invented transition starts the silence again
+        }
+    }
+}
+
+size_t gcr_frame_revolution_noisy(const uint8_t *bits, uint32_t nbits, const gcr_weak_run_t *runs, size_t nruns,
+                                  uint64_t pre_seed, uint64_t seed, uint8_t *out, size_t cap) {
+    if (!bits || !out || nbits == 0)
+        return 0;
+    if (!runs || !nruns)
+        return frame_after(bits, bits, nbits, out, cap);
+    size_t bytes = ((size_t)nbits + 7) / 8;
+    uint8_t *pre = malloc(bytes), *cur = malloc(bytes);
+    size_t n = 0;
+    if (pre && cur) {
+        gcr_weak_fill(bits, nbits, runs, nruns, pre_seed, pre);
+        gcr_weak_fill(bits, nbits, runs, nruns, seed, cur);
+        n = frame_after(pre, cur, nbits, out, cap);
+    }
+    free(pre);
+    free(cur);
     return n;
 }

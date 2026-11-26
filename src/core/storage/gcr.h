@@ -65,4 +65,56 @@ bool gcr_addr_from_disk(const uint8_t disk[GCR_ADDR_VALUES], int *track, int *se
 // (0 for an empty track or no room).
 size_t gcr_frame_revolution(const uint8_t *bits, uint32_t nbits, uint8_t *out, size_t cap);
 
+// ============================================================================
+// Weak bits
+// ============================================================================
+//
+// A long run of cells with no flux transition reads differently on every
+// revolution of a real drive: the read amplifier's gain climbs while it
+// hears nothing, and once a few cells have passed in silence it starts
+// turning noise into transitions -- at random, so the IWM's framing after
+// the run slips differently each time.  Protection checks rely on it (a
+// nibble copier writes the run back as real data, which reads the same
+// every time).  The model: inside a run, a cell more than GCR_WEAK_GRACE
+// cells after the last transition (captured or invented) becomes a 1 with
+// probability GCR_WEAK_P_NUM / GCR_WEAK_P_DEN.
+
+// Silent cells the amplifier lets pass before it invents a transition: a
+// run of up to three zeros is legal GCR.
+#define GCR_WEAK_GRACE 3
+// The chance per cell after that, as a fraction (30 %).
+#define GCR_WEAK_P_NUM 3
+#define GCR_WEAK_P_DEN 10
+
+// A run of cells with no flux transition on a looping track: `len` cells
+// from cell `start`.  A run that crosses the index has start + len > nbits
+// and continues at cell 0.
+typedef struct {
+    uint32_t start;
+    uint32_t len;
+} gcr_weak_run_t;
+
+// The zero runs of at least `min_len` cells on a looping bitstream, in
+// order of `start`, the run across the index (if any) found once.  Writes
+// at most `cap` (runs may be NULL with cap 0) and returns how many there
+// are, which may be more.
+size_t gcr_zero_runs(const uint8_t *bits, uint32_t nbits, uint32_t min_len, gcr_weak_run_t *runs, size_t cap);
+
+// gcr_frame_revolution over the bits with every run in `runs` filled with
+// noise as the model above describes, drawn from `seed`: the same seed
+// gives the same bytes.  The pre-rolled revolution is filled from
+// `pre_seed` -- the revolution the head passed over just before -- so the
+// framer reaches the index in the state that revolution left it in, and
+// a read that runs on across the index sees one unbroken stream.  With no
+// runs it is gcr_frame_revolution.  Returns the byte count, 0 for an
+// empty track, no room or no memory.
+size_t gcr_frame_revolution_noisy(const uint8_t *bits, uint32_t nbits, const gcr_weak_run_t *runs, size_t nruns,
+                                  uint64_t pre_seed, uint64_t seed, uint8_t *out, size_t cap);
+
+// The bits of a revolution with the runs filled from `seed`, as
+// gcr_frame_revolution_noisy frames them: `out` holds (nbits + 7) / 8
+// bytes.  For tests and inspection.
+void gcr_weak_fill(const uint8_t *bits, uint32_t nbits, const gcr_weak_run_t *runs, size_t nruns, uint64_t seed,
+                   uint8_t *out);
+
 #endif // GCR_H
