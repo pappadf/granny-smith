@@ -71,4 +71,10 @@
   .gs-disclosure[data-state='leaf'] {
     visibility: hidden;
   }
+  /* The glyph is swapped (spinner <-> chevron) when a load ends.  A press
+     that began on the old glyph would lose its click with it, so the glyph
+     takes no pointer events: the button itself is pressed and released. */
+  .gs-disclosure > :global(*) {
+    pointer-events: none;
+  }
 </style>
