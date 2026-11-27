@@ -41,6 +41,7 @@ typedef struct recorder_settings {
     uint32_t canvas_w, canvas_h; // 0: the screen's size at start ("auto")
     bool block; // wait for the recorder thread instead of dropping frames
     bool threaded; // code on a recorder thread (false: on the emulator thread)
+    bool ac_coupled; // record the sound AC-coupled, as it leaves the machine (false: the DAC's raw output)
 } recorder_settings_t;
 
 // === Lifecycle ===

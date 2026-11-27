@@ -25,8 +25,6 @@ struct object;
 
 // --- Stream (producer-facing wrapper over platform_audio_*) ---------------
 
-// Opens (or re-parameterizes) the host audio stream: source sample rate in Hz
-// and channel count (1 = mono, 2 = interleaved stereo).
 // Writes interleaved int16 samples as a canonical PCM WAV. 0 on success,
 // -1 on I/O error. Shared with the input-side capture in singer.c so both
 // produce byte-identical files (one's output is fed back through the other).
@@ -38,6 +36,9 @@ int audio_wav_write(const char *path, const int16_t *samples, size_t nsamples, u
 int audio_wav_read(const char *path, int16_t **samples, size_t *nsamples, uint32_t *rate, int *channels, char *errbuf,
                    size_t errlen);
 
+// Opens (or re-parameterizes) the host audio stream: source sample rate in Hz
+// and channel count (1 = mono, 2 = interleaved stereo).  Resets the host
+// stream's DC blocker.
 void audio_out_open(uint32_t src_rate_hz, int channels);
 
 // Changes the source sample rate mid-stream (e.g. ascClockRate write).
@@ -46,17 +47,70 @@ void audio_out_set_rate(uint32_t src_rate_hz);
 
 // Pushes nframes interleaved int16 frames at the current source rate.
 // vol_0_7 is the guest's 3-bit volume; applied host-side (not captured).
+// The capture records the frames as pushed; the host stream and the
+// recorder's sink get them AC-coupled (see the DC blocker below).
 void audio_out_push(const int16_t *frames, int nframes, int vol_0_7);
 
 // A second sink beside the capture: called with every push, its channel
 // count, the stream's rate and the guest's volume (the screen recorder,
-// record.h).  NULL removes it.
+// record.h).  NULL removes it.  With ac_coupled the sink gets the pushes
+// through a DC blocker of its own (audio_dc_block_t below), reset by this
+// call and running on from then -- across machine swaps and while the
+// recorder is suspended -- so one recording's segments join without a step;
+// without it, the producers' raw frames, as the capture sees them.
 typedef void (*audio_out_sink_t)(const int16_t *frames, int nframes, int channels, uint32_t rate, int vol_0_7);
-void audio_out_set_record_sink(audio_out_sink_t sink);
+void audio_out_set_record_sink(audio_out_sink_t sink, bool ac_coupled);
 
 // Current stream parameters (0 / 0 before the first open).
 uint32_t audio_out_rate(void);
 int audio_out_channels(void);
+
+// --- The AC-coupled output stage ---------------------------------------------
+//
+// A real Mac's sound output reaches the speaker and the jack through an
+// output capacitor, so a constant level is silent; the producers' DACs are
+// modelled without one (the Plus's PWM byte becomes (b - 128) << 8, and a
+// game that leaves the buffer idle far from 128 sits at a large constant
+// level).  The host stream and the recorder each pass the pushes through a
+// DC blocker of their own -- a first-order high-pass,
+//
+//   y[n] = x[n] - x[n-1] + a * y[n-1],   a = 1 - 2*pi*fc / fs,
+//
+// in fixed point (integer arithmetic only, so its output is bit-identical
+// on every host) with per-channel state.  The capture (machine.sound.capture
+// and match) stays the raw DAC output.
+
+// The cutoff: 15 Hz.  The time constant is 1 / (2*pi*15) = 10.6 ms, so a
+// level the guest leaves behind is gone (under half an LSB, even from full
+// scale) in about 0.12 s, while the response is down only 0.55 dB at 41 Hz
+// (a bass's low E) and 0.15 dB at 80 Hz -- the corner sits below anything these machines'
+// speakers, or most music they play, reach.  Lower (10 Hz) would let a
+// thump linger longer; higher (20 Hz and up) starts to bend the bottom
+// octave and tilts low square waves.
+#define AUDIO_DC_CUTOFF_HZ 15u
+
+// One DC blocker's state: a coefficient for the rate it last ran at and,
+// per channel, the previous input and output.
+typedef struct audio_dc_block {
+    uint32_t rate; // the rate k was computed for (0: none yet)
+    int32_t k; // 1 - a, Q30
+    int channels; // the channel count primed for (0: not primed)
+    int32_t x1[2]; // previous input sample, per channel
+    int64_t y1[2]; // previous output, Q16, per channel (unsaturated)
+} audio_dc_block_t;
+
+// Back to reset: the next frame primes the filter (x1 = that frame, y1 = 0),
+// so the output starts at 0 whatever level the stream is at -- no step.
+void audio_dc_block_reset(audio_dc_block_t *f);
+
+// Run nframes interleaved frames of `channels` (1 or 2) at `rate` Hz from
+// `in` to `out` (may be the same buffer; NULL advances the state only).  A
+// rate change recomputes the coefficient and keeps the state; a channel
+// count change primes afresh.
+void audio_dc_block_run(audio_dc_block_t *f, const int16_t *in, int16_t *out, int nframes, int channels, uint32_t rate);
+
+// The Q30 coefficient k = 1 - a for `rate` Hz at AUDIO_DC_CUTOFF_HZ.
+int32_t audio_dc_block_k(uint32_t rate);
 
 // --- Producer helpers --------------------------------------------------------
 

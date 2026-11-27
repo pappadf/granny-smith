@@ -10,6 +10,11 @@ be silent until then).
 There is no volume control in the emulator: use the Mac's own **Sound**
 control panel (levels 0–7) and your computer's volume.
 
+As on a real Mac, whose speaker is fed through a capacitor, a constant
+level is silent: a program that leaves the sound hardware at an offset
+makes no hum, and the sound does not thump as it starts. Recordings
+(§5) get the same sound.
+
 ## 2. Microphone and camera (Quadra 840AV, Centris/Quadra 660AV)
 
 The AV Macs have a sound input and a video input. Granny Smith can connect

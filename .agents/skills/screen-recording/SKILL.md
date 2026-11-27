@@ -101,6 +101,7 @@ active: set them before `start`.
 | `canvas` | `"auto"`, `"WxH"` | `auto` | The stored frame size. `auto` is the screen's size at start. A mode smaller than the canvas is centred on black; a mode larger than it starts a new segment. A `WxH` smaller than the screen is raised to the screen's size. |
 | `block` | boolean | headless `true`, browser `false` | When the recorder falls behind: `true` waits for it (nothing dropped, deterministic file), `false` repeats the previous frame and counts it in `dropped`. Can be changed while recording. |
 | `threaded` | boolean | `true` | Code on a recorder thread. `false` codes on the emulator thread (`--recorder=inline`); the file is byte-identical. |
+| `ac_coupled` | boolean | `true` | Record the sound AC-coupled, as it leaves the machine (a 15 Hz DC blocker, like the output capacitor: a constant level is silent). `false` (`--recorder=raw`) records the DAC's raw output, as `machine.sound.capture` takes it -- what `find` against a capture golden needs. |
 
 ### State (read-only)
 
@@ -123,6 +124,7 @@ active: set them before `start`.
 |---|---|
 | `--record=PATH` | `recorder.start(PATH)` after the machine and media are set up, before any script. |
 | `--recorder=inline` | `recorder.threaded = false`. |
+| `--recorder=raw` | `recorder.ac_coupled = false` (before `--record` starts). |
 
 ### Events
 
@@ -157,6 +159,8 @@ and returns:
 `frames`, `keyframes`, `width`, `height`, `bits`, `frame_period_ns`,
 `last_ms`, `duration_ms`, `video_bytes`, `audio` (boolean), `audio_rate`,
 `audio_channels`, `audio_packets`, `audio_frames`, `audio_bytes`,
+`audio_first`, `audio_last`, `audio_min`, `audio_max`, `audio_mean` (the
+sound's level: first and last sample, extremes, mean -- its DC),
 `decode_errors`, `truncated`, `size`, `crc32`.
 
 ```lua
@@ -234,10 +238,15 @@ every frame that is not dropped still decodes exactly.
 
 ## Pitfalls
 
-- **Options after start are refused.** `rate`, `audio`, `format` and
-  `canvas` must be set before `start`; with `--record=` the recording is
-  already running when the script begins, so use `recorder.start` in the
-  script for anything but the defaults.
+- **Options after start are refused.** `rate`, `audio`, `format`,
+  `canvas` and `ac_coupled` must be set before `start`; with `--record=` the
+  recording is already running when the script begins, so use
+  `recorder.start` in the script for anything but the defaults (or the
+  `--recorder=` flags, which apply before it).
+- **`find` against a capture needs a raw recording.** The recorded sound
+  is AC-coupled by default and no longer equals `machine.sound.capture`'s
+  raw DAC samples; set `recorder.ac_coupled = false` (or
+  `--recorder=raw`) for a recording a capture golden must be found in.
 - **Headless needs a path.** `recorder.start()` with no argument fails
   with "a path is required".
 - **`.mkv` only.** Any other extension is refused.
@@ -267,4 +276,5 @@ every frame that is not dropped still decodes exactly.
 | `tests/integration/recorder-machine-swap` | `checkpoint.load`, `machine.boot`, `machine.shutdown` while recording |
 | `tests/integration/recorder-suspend` | `suspend` / `resume` |
 | `tests/integration/recorder-monitor-response` | `snapshot` against a decoded frame |
-| `tests/integration/recorder-audio` | `find` against a sound capture |
+| `tests/integration/recorder-audio` | `find` against a sound capture (`--recorder=raw`) |
+| `tests/integration/recorder-ac-coupled` | The coupled sound: no DC, no step at a suspend/resume join; raw keeps the level |

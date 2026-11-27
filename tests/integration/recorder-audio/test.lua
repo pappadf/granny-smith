@@ -5,6 +5,7 @@
 -- Pinned before the first frame runs (--record started the recording).
 machine.rtc.time = 3000000000
 assert(recorder.active and recorder.audio, "--record records the sound")
+assert(not recorder.ac_coupled, "--recorder=raw records the DAC's output")
 
 -- Boot the 400K MFS floppy to the Finder desktop.
 scheduler.run(72000000)

@@ -194,6 +194,25 @@ resampler. A machine with no stream (rate 0) or `recorder.audio = false`
 records no audio track. The FLAC STREAMINFO is fixed before any audio
 exists (block size 4,096, unknown frame sizes, length and MD5).
 
+**AC coupling.** The sound is recorded as it leaves the machine: a real
+Mac's output reaches the speaker through a capacitor, so a constant level
+is silent, while the producers model the DAC alone — the Plus's PWM byte
+is (*b* − 128) << 8, and a game that leaves its buffer idle far from 128
+sits at a large constant level. With `recorder.ac_coupled` (the default)
+`audio_out` passes every push to the recorder's sink through a DC blocker
+of the recorder's own, the 15 Hz first-order high-pass of
+[sound.md](../peripherals/sound.md) §4a, in integer arithmetic (so the file
+is the same on every host), on the emulator thread ahead of the ring (so
+threaded and inline coding see the same samples). Its state is reset when
+the recording starts — primed on the first frame, so the recording starts
+at 0 whatever the level — and runs on from then: across machine swaps and
+checkpoint cuts, and through a suspend, where the pushes still reach the
+filter though the recorder drops them, so the segments of one recording
+join without a step (raw, the DAC's offset steps to zero and back at
+every join: an audible click). `recorder.ac_coupled = false` (headless `--recorder=raw`)
+records the DAC's raw output, as `machine.sound.capture` takes it: a
+capture golden is found sample for sample only in a raw recording.
+
 ### 3.5 Segments and new machines
 
 A segment's canvas (the screen's size at its start, or `recorder.canvas`
@@ -363,6 +382,7 @@ registered by `core_init`.
 | `canvas` | attr, rw | `"auto"` or `"WxH"`; fixed while recording |
 | `block` | attr, rw | Wait instead of dropping (headless default true, core/browser false); may change mid-recording |
 | `threaded` | attr, rw, advanced | Code on the recorder thread (false: inline); fixed while recording |
+| `ac_coupled` | attr, rw, advanced | Record the sound AC-coupled, as it leaves the machine (default true; false: the DAC's raw output, as the capture takes it); fixed while recording (§3.4) |
 | `active`, `path` | attr, ro | State; `path` is the current file, or the last one written |
 | `frames`, `seconds` | attr, ro | Output frames, every segment, and the emulated seconds they cover |
 | `bytes` | attr, ro | File bytes so far, every segment |
@@ -372,7 +392,7 @@ registered by `core_init`.
 | `resume()` | method, advanced | Continue a suspended recording in the next segment; returns its path. No-op when not suspended |
 | `suspended` | attr, ro, advanced | True while suspended |
 | `external` | attr, ro, advanced | True while the screen is presented by the GPU: taken at half rate at most (§3.1) |
-| `inspect(path)` | method, advanced | A recording read end to end: frames, keyframes, size, bits, frame period, video and audio bytes, audio rate, channels and sample frames, decode errors, truncation, the file's size and CRC-32 |
+| `inspect(path)` | method, advanced | A recording read end to end: frames, keyframes, size, bits, frame period, video and audio bytes, audio rate, channels and sample frames, the sound's level (`audio_first`, `audio_last`, `audio_min`, `audio_max`, `audio_mean`), decode errors, truncation, the file's size and CRC-32 |
 | `extract(path, out, [index], [count])` | method, advanced | A frame (`.png`; `index` counts from the end when negative, default the last) or the sound (`.wav`, from sample `index`, `count` of them) decoded in tree |
 | `find(path, wav, [volume])` | method, advanced | The sample frame at which a WAV's samples appear exactly in a recording's sound (a capture taken before the guest's volume is scaled by `volume` first), or -1 |
 | `snapshot(path)` | method, advanced | The screen now as a recording shows it: `screen.save`'s pixels through the monitor's curve, computed per pixel apart from the recorder |
@@ -389,12 +409,14 @@ time while frames are recorded), `segment` (a new file: `path` and
 
 **Headless.** `--record=<path>` starts a recording before the first frame
 (after the machine and media are set up, before any script);
-`--recorder=inline` makes `threaded` false.
+`--recorder=inline` makes `threaded` false; `--recorder=raw` makes
+`ac_coupled` false.
 
 ## 5. Checkpointing
 
 None: a recording is process state and is not checkpointed. A checkpoint
-load during a recording is a cut (§3.5).
+load during a recording is a cut (§3.5). The recorder's DC blocker is not
+checkpointed either: it starts from reset with the recording.
 
 ## 6. Testing
 
@@ -423,10 +445,22 @@ load during a recording is a cut (§3.5).
   exactly the earlier clusters' packets; a file whose muxer was never
   closed reads back up to its last complete cluster; a hand-made cluster
   timestamp of INT64_MAX wraps rather than overflowing.
+- `tests/unit/suites/audio_out`: the DC blocker (step response and its
+  time constant, no click at the prime, a level removed exactly, a 1 kHz
+  sine through at its level, the same output however the pushes are split
+  and a pinned checksum, stereo channels independent, a rate change that
+  keeps the state) and where it applies: the capture raw, the host stream
+  and the recorder's sink coupled with a state each.
 - `tests/integration/recorder-plus-boot` (unit tier): `--record` a Plus
   boot; the file's CRC-32 is a golden, its sound covers its frames, its
   last decoded frame matches the screen, the same boot coded inline is the
-  same bytes, and the boot beep lands at the sample its frame-unit puts it.
+  same bytes, and the boot beep (recorded raw) lands at the sample its
+  frame-unit puts it.
+- `tests/integration/recorder-ac-coupled` (unit tier): a Plus's PWM buffer
+  left at −23,296: the coupled recording starts at 0, steps to the level
+  and decays to 0, its mean a fraction of a percent of the level; the
+  segment after a suspend and resume starts where the first ended, silent;
+  inline is the same bytes; raw records the level itself.
 - `tests/integration/recorder-pause` (unit tier): odd run sizes with stops
   and host waits, at all three rates: frames = frame-units ÷ divisor
   exactly, and the files' frame periods.
@@ -473,8 +507,8 @@ load during a recording is a cut (§3.5).
   Kong 21", a decoded frame equals `recorder.snapshot` (screen.save through
   `crt_response`) and not screen.save.
 - `tests/integration/recorder-audio` (extended): plus-musicworks' session
-  recorded; its golden music window is found sample for sample in the
-  decoded FLAC, within the window of its emulated time.
+  recorded raw (`--recorder=raw`); its golden music window is found sample
+  for sample in the decoded FLAC, within the window of its emulated time.
 
 ## 7. Known debts
 

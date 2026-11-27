@@ -6,7 +6,9 @@
 # ring), so its CRC-32 is a golden; its last frame, decoded in tree, is the
 # screen at the same point.  The same boot recorded again with the coder
 # inline (recorder.threaded = false, as --recorder=inline) gives the same
-# bytes.  See docs/internals/core/record/record.md.
+# bytes.  The beep check records raw (recorder.ac_coupled = false), so the
+# capture is in the file sample for sample.  See
+# docs/internals/core/record/record.md.
 
 TEST_NAME := Recorder — Plus boot (golden file, inline = threaded)
 TEST_DESC := --record a Plus boot; the file's CRC is a golden, the last decoded frame is screen.save, inline coding is byte-identical

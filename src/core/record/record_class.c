@@ -122,6 +122,19 @@ static DEF_SETTER(rec_attr_threaded_set) {
     return val_none();
 }
 
+// `ac_coupled`: record the sound through the output capacitor's DC blocker.
+static DEF_GETTER(rec_attr_ac_coupled) {
+    return val_bool(recorder_settings()->ac_coupled);
+}
+
+// Set `ac_coupled` (refused while recording).
+static DEF_SETTER(rec_attr_ac_coupled_set) {
+    if (recorder_active())
+        return settings_locked("ac_coupled");
+    recorder_settings()->ac_coupled = in.b;
+    return val_none();
+}
+
 // `canvas`: "auto" or "WxH".
 static DEF_GETTER(rec_attr_canvas) {
     const recorder_settings_t *s = recorder_settings();
@@ -342,6 +355,9 @@ static DEF_METHOD(rec_method_inspect) {
     int16_t *pcm = malloc(CODEC_FLAC_BLOCK * 2 * sizeof(int16_t));
     uint64_t frames = 0, keys = 0, vbytes = 0, abytes = 0, asamples = 0, apackets = 0, bad = 0;
     int64_t last_ts = 0;
+    // The sound's level: its first and last samples, extremes and sum (every channel)
+    int32_t a_first = 0, a_last = 0, a_min = 0, a_max = 0;
+    int64_t a_sum = 0, a_n = 0;
     mkv_packet_t p;
     int rc;
     while (zd && pcm && (rc = mkv_read_packet(f.r, &p)) == 1) {
@@ -356,10 +372,21 @@ static DEF_METHOD(rec_method_inspect) {
             apackets++;
             abytes += p.len;
             int64_t n = fd ? codec_flac_dec_frame(fd, p.data, p.len, pcm, CODEC_FLAC_BLOCK, NULL) : -1;
-            if (n < 0)
+            if (n < 0) {
                 bad++;
-            else
-                asamples += (uint64_t)n;
+                continue;
+            }
+            int ch = codec_flac_dec_channels(fd) == 2 ? 2 : 1; // the buffer holds two at most
+            for (int64_t i = 0; i < n * ch; i++) {
+                int32_t v = pcm[i];
+                if (a_n++ == 0)
+                    a_first = a_min = a_max = v;
+                a_min = v < a_min ? v : a_min;
+                a_max = v > a_max ? v : a_max;
+                a_sum += v;
+                a_last = v;
+            }
+            asamples += (uint64_t)n;
         }
     }
     uint32_t crc = 0;
@@ -381,6 +408,12 @@ static DEF_METHOD(rec_method_inspect) {
     val_map_put(b, "audio_packets", val_uint(8, apackets));
     val_map_put(b, "audio_frames", val_uint(8, asamples));
     val_map_put(b, "audio_bytes", val_uint(8, abytes));
+    val_map_put(b, "audio_first", val_int(a_first));
+    val_map_put(b, "audio_last", val_int(a_last));
+    val_map_put(b, "audio_min", val_int(a_min));
+    val_map_put(b, "audio_max", val_int(a_max));
+    // The mean, rounded half away from zero: the recording's DC level
+    val_map_put(b, "audio_mean", val_int(a_n ? (a_sum + (a_sum < 0 ? -a_n / 2 : a_n / 2)) / a_n : 0));
     val_map_put(b, "decode_errors", val_uint(8, bad));
     val_map_put(b, "truncated", val_bool(mkv_read_truncated(f.r)));
     val_map_put(b, "size", val_uint(8, size));
@@ -746,6 +779,11 @@ static const member_t recorder_members[] = {
      .doc = "Record the sound too (when the machine has a stream); fixed while recording",
      .attr = {.type = VK_BOOL, .get = rec_attr_audio, .set = rec_attr_audio_set}},
     {.kind = MK_ATTR,
+     .name = "ac_coupled",
+     .flags = M_CAT_ADVANCED,
+     .doc = "Record the sound AC-coupled, as it leaves the machine (false: the raw DAC output); fixed while recording",
+     .attr = {.type = VK_BOOL, .get = rec_attr_ac_coupled, .set = rec_attr_ac_coupled_set}},
+    {.kind = MK_ATTR,
      .name = "format",
      .doc = "auto (indexed if the screen is, else direct colour) or rgb (32 bpp throughout); fixed while recording",
      .attr = {.type = VK_ENUM, .enum_values = k_format_names, .get = rec_attr_format, .set = rec_attr_format_set}},
@@ -810,7 +848,7 @@ static const member_t recorder_members[] = {
      .name = "inspect",
      .flags = M_CAT_ADVANCED,
      .examples = EXAMPLES("recorder.inspect \"/opfs/recordings/session.mkv\""),
-     .doc = "Read a recording end to end: frames, keyframes, sizes, sound, the file's CRC-32",
+     .doc = "Read a recording end to end: frames, keyframes, sizes, sound and its level, the file's CRC-32",
      .method = {.result_doc = "a map of the recording's figures",
                 METHOD_ARGS(rec_inspect_args),
                 .result = VK_MAP,

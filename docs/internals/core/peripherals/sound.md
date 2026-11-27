@@ -184,6 +184,49 @@ the stream's channel count and rate and the guest's volume; the recorder
 applies the volume itself and places the samples on emulated time
 ([record.md](../record/record.md) §3.4).
 
+### The AC-coupled output stage
+
+A real Mac's sound output is AC-coupled: the speaker and the jack are fed
+through an output capacitor, so a constant level is silent. The producers
+model the DAC alone, and their output can carry a large DC offset — the
+Plus's `(b - 128) << 8` of a buffer a game leaves idle at a byte far from
+128 is a constant of about −14,000 with a few dozen of signal on top. Left
+in, the offset thumps when the host stream starts or stops and clicks at
+every suspend/resume join of a recording.
+
+`audio_out` therefore passes what leaves the machine through a DC blocker,
+a first-order high-pass (`audio_dc_block_t`, `audio_out.h`):
+
+```
+y[n] = x[n] - x[n-1] + a*y[n-1],   a = 1 - k,   k = 2*pi*fc / fs
+```
+
+* **Fixed point.** `k` is Q30 (computed in integer arithmetic from the
+  rate), the state `y` Q16 in 64 bits, the product rounded to nearest, the
+  output rounded and saturated: the same bits on every host. A constant
+  input decays to exactly 0.
+* **Cutoff `fc` = 15 Hz** (`AUDIO_DC_CUTOFF_HZ`): a time constant of
+  10.6 ms, so a level the guest leaves behind is gone within about 0.12 s,
+  while 41 Hz is down 0.55 dB and 80 Hz 0.15 dB. Lower would let a thump
+  linger; higher starts to bend the bottom octave.
+* **Per channel**, mono or stereo. The first frame after a reset primes
+  the filter (`x1` = that frame, `y1` = 0), so a stream that starts at any
+  level starts at 0 — no step. A rate change (`audio_out_set_rate`)
+  recomputes `k` and keeps the state; another channel count primes afresh.
+
+Two states, one per destination: the **host stream's**, reset by
+`audio_out_open`, ahead of `platform_audio_push`; and the **recorder's**,
+reset when its sink is installed (a recording starts) and running on from
+then — across machine swaps, and while the recorder is suspended — so a
+recording's segments join without a step. The recorder's sink takes the
+raw frames instead when the recording was started with
+`recorder.ac_coupled = false`. The **capture** (`machine.sound.capture`,
+`machine.sound.match`) stays the raw DAC output, so every golden WAV is
+unchanged. The blocker's state is not checkpointed: it is host state, like
+the stream it feeds. One consequence for the host: a constant chunk is now
+"silent" (§9) only once the blocker has decayed to 0, about 0.12 s after
+the level was reached.
+
 ---
 
 ## 5. Resampling & Filtering
@@ -273,7 +316,7 @@ Additional protection:
 
 ## 9. Silence Handling
 
-* Detection: All samples in a chunk are identical (any DC level) → classified as silent.
+* Detection: All samples in a chunk are identical (any DC level) → classified as silent. The chunk is the AC-coupled one (§4a): a level the guest holds decays to 0 first.
 * All chunks (silent or not) are always written to the ring buffer. This maintains continuous sample flow for the worklet's resampler and LPF.
 * The consecutive silent push counter (worklet-side, driven by the push flag) is the signaling mechanism. It is:
   - Incremented on each silent push.

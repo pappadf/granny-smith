@@ -233,6 +233,7 @@ static void print_usage(const char *program) {
     printf("  --io=sync       No I/O worker: file work runs on the emulator thread (a bisecting aid)\n");
     printf("  --record=PATH   Record the screen and sound to PATH (.mkv) from the first frame (recorder.start)\n");
     printf("  --recorder=inline  Code recordings on the emulator thread, not a recorder thread (byte-identical)\n");
+    printf("  --recorder=raw  Record the DAC's raw sound, not the AC-coupled output (recorder.ac_coupled = false)\n");
     printf("\n");
     printf("Examples:\n");
     printf("  %s rom=plus.rom\n", program);
@@ -945,6 +946,7 @@ int main(int argc, char *argv[]) {
     int var_count = 0;
     const char *record_path = NULL; // --record=: record from the first frame
     int recorder_inline = 0; // --recorder=inline
+    int recorder_raw = 0; // --recorder=raw
 
     // Parse arguments
     for (int i = 1; i < argc; i++) {
@@ -994,6 +996,10 @@ int main(int argc, char *argv[]) {
 
         if (strcmp(arg, "--recorder=inline") == 0) {
             recorder_inline = 1; // the coder on the emulator thread (the unit tier, debugging)
+            continue;
+        }
+        if (strcmp(arg, "--recorder=raw") == 0) {
+            recorder_raw = 1; // the DAC's output, for matching a capture golden in the recording
             continue;
         }
 
@@ -1212,6 +1218,7 @@ int main(int argc, char *argv[]) {
     // output is a function of the guest alone); a recording needs a path
     recorder_set_platform_defaults(true, NULL);
     recorder_settings()->threaded = !recorder_inline;
+    recorder_settings()->ac_coupled = !recorder_raw;
     if (!g_io_sync && !io_worker_start(256u << 10))
         fprintf(stderr, "headless: I/O worker could not be started; writes run inline\n");
 

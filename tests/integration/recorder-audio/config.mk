@@ -5,13 +5,16 @@
 # The capture window plus-musicworks golden-matches (music.wav, taken before
 # the guest's volume) appears sample for sample in the recording's decoded
 # FLAC, at the place emulated time puts it: within the timeline's window of
-# the window's start time.  See docs/internals/core/record/record.md.
+# the window's start time.  --recorder=raw records the DAC's output, as the
+# capture takes it (recorder.ac_coupled = false): the AC-coupled sound a
+# recording has by default is not sample-exact against a capture.  See
+# docs/internals/core/record/record.md.
 
 TEST_NAME := Recorder — MusicWorks sound against the plus-musicworks golden
 TEST_DESC := Record the MusicWorks session; the golden music window is found exactly in the decoded FLAC, at its emulated time
 
 TEST_ROM := roms/plus-v3-4d1f8172.rom
-TEST_ARGS := fd=$(TEST_DATA)/apps/MusicWorks-0.42.image --record=$(WORK_DIR)/musicworks.mkv
+TEST_ARGS := fd=$(TEST_DATA)/apps/MusicWorks-0.42.image --record=$(WORK_DIR)/musicworks.mkv --recorder=raw
 
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := extended

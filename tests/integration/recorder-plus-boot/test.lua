@@ -27,8 +27,9 @@ assert(info.audio and info.audio_rate == 22255 and info.audio_channels == 1, "22
 -- The sound covers the video exactly: round(frames x period x rate)
 local want_audio = (frames * 16625103 * 22255 + 500000000) // 1000000000
 assert(info.audio_frames == want_audio, F"${info.audio_frames} sample frames, want ${want_audio}")
--- The golden: the whole file, byte for byte
-assert(info.crc32 == 0x2b1f4691, F"file CRC ${info.crc32:08x} is not the golden")
+-- The golden: the whole file, byte for byte (its sound AC-coupled; the same
+-- boot recorded with --recorder=raw is 0x2b1f4691)
+assert(info.crc32 == 0xcbbc33f4, F"file CRC ${info.crc32:08x} is not the golden")
 
 -- The last frame, decoded in tree, is the screen
 recorder.extract(paths[1], F"${vars.WORK_DIR}/last.png")
@@ -48,8 +49,11 @@ assert(diff == -1, F"inline and threaded recordings differ at byte ${diff}")
 -- The boot beep lands at its own time: the frame-units before the first
 -- sample pushed are held silence, and nothing more (suite-plus's plus-beep
 -- window: 1M instructions, 15112 frames)
+-- The recording is raw (recorder.ac_coupled = false) so the capture, the
+-- DAC's output, is in it sample for sample
 machine.boot{model = "plus", ram = 1024, rom = vars.ROM}
 local beep = F"${vars.WORK_DIR}/beep.mkv"
+recorder.ac_coupled = false
 recorder.start(beep)
 machine.sound.capture.start()
 while machine.sound.capture.frames == 0 do
@@ -62,6 +66,7 @@ machine.sound.capture.stop(wav)
 assert(machine.sound.capture.frames == 15112, F"the beep window is ${machine.sound.capture.frames} frames")
 local volume = machine.sound.volume
 recorder.stop()
+recorder.ac_coupled = true
 local at = recorder.find(beep, wav, volume)
 local want = (silent_units * 16625103 * 22255 + 500000000) // 1000000000
 echo(F"beep: first push after ${silent_units} silent frame-units; found at sample ${at}, want ${want} (volume ${volume})")

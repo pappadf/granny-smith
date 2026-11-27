@@ -55,6 +55,7 @@ static recorder_settings_t s_set = {
     .rgb = false,
     .block = false,
     .threaded = true,
+    .ac_coupled = true,
 };
 
 // Where a recording without a path goes (NULL: a path is required).
@@ -282,7 +283,7 @@ static bool segment_fits(uint32_t w, uint32_t h, uint32_t fmt, bool tables) {
 // Remove the hooks and free the emulator-thread state of a finished recording.
 static void teardown(void) {
     scheduler_set_frame_hook(NULL);
-    audio_out_set_record_sink(NULL);
+    audio_out_set_record_sink(NULL, false);
     free(R.shadow);
     R.shadow = NULL;
     R.have_mode = false;
@@ -632,7 +633,8 @@ int recorder_start(const char *path, char *err, size_t err_len) {
     }
     R.last_event_ms = host_time_ms();
     scheduler_set_frame_hook(frame_hook);
-    audio_out_set_record_sink(audio_hook);
+    // The sound as it leaves the machine (AC-coupled, from reset now), or the DAC's raw
+    audio_out_set_record_sink(audio_hook, s_set.ac_coupled);
     LOG(1, "recording to %s (rate 1/%u, %s, %s)", file, (unsigned)R.div, s_set.threaded ? "threaded" : "inline",
         s_set.block ? "blocking" : "dropping");
     rec_event("started", NULL);

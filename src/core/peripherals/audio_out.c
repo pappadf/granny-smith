@@ -4,8 +4,9 @@
 // audio_out.c
 // Single host-facing audio output stream + deterministic capture sink.
 // See audio_out.h for the design contract. Producers push int16 frames at
-// guest rate; this module forwards them to the platform sink and, while a
-// capture is active, records them pre-volume for golden-WAV test matching.
+// guest rate; this module forwards them to the platform sink through the
+// AC-coupled output stage (a DC blocker) and, while a capture is active,
+// records them raw and pre-volume for golden-WAV test matching.
 
 #include "audio_out.h"
 #include "common.h"
@@ -55,13 +56,97 @@ static struct {
 
 // The recorder's sink (audio_out_set_record_sink), NULL when none.
 static audio_out_sink_t s_record_sink = NULL;
+static bool s_record_ac = false; // the sink gets the AC-coupled signal
+
+// The two DC blockers: the host stream's (reset on open) and the
+// recorder's (reset when its sink is installed).
+static audio_dc_block_t s_host_dc, s_record_dc;
+
+// Scratch for a coupled push (grown to the largest push seen).
+static int16_t *s_scratch = NULL;
+static size_t s_scratch_cap = 0;
+
+// ============================================================================
+// DC blocker (the AC-coupled output stage)
+// ============================================================================
+
+// 2*pi * 2^30, rounded: the Q30 scale of k = 2*pi*fc/fs.
+#define DC_TWO_PI_Q30 6746518852ull
+
+// The Q30 coefficient k = 1 - a for `rate` Hz
+int32_t audio_dc_block_k(uint32_t rate) {
+    if (!rate)
+        return 0;
+    uint64_t k = (DC_TWO_PI_Q30 * AUDIO_DC_CUTOFF_HZ + rate / 2) / rate;
+    // A rate far below any chip's keeps the pole inside the unit circle and
+    // the state's products inside 64 bits (k <= 1/4)
+    if (k > (1u << 28))
+        k = 1u << 28;
+    return (int32_t)k;
+}
+
+void audio_dc_block_reset(audio_dc_block_t *f) {
+    memset(f, 0, sizeof(*f));
+}
+
+void audio_dc_block_run(audio_dc_block_t *f, const int16_t *in, int16_t *out, int nframes, int channels,
+                        uint32_t rate) {
+    if (!in || nframes <= 0)
+        return;
+    if (channels < 1)
+        channels = 1;
+    if (channels > 2)
+        channels = 2;
+    // A new rate: a new coefficient, the state carries on
+    if (rate != f->rate) {
+        f->rate = rate;
+        f->k = audio_dc_block_k(rate);
+    }
+    // First frame after a reset, or another channel count: prime on it
+    if (f->channels != channels) {
+        f->channels = channels;
+        for (int c = 0; c < channels; c++) {
+            f->x1[c] = in[c];
+            f->y1[c] = 0;
+        }
+    }
+    const int64_t k = f->k;
+    for (int i = 0; i < nframes; i++) {
+        for (int c = 0; c < channels; c++) {
+            int32_t x = in[i * channels + c];
+            int64_t y1 = f->y1[c];
+            // a * y1 = y1 - k * y1, the product rounded to nearest (Q30 -> Q16)
+            int64_t y = ((int64_t)(x - f->x1[c]) << 16) + y1 - ((k * y1 + (1 << 29)) >> 30);
+            f->x1[c] = x;
+            f->y1[c] = y;
+            // Q16 to a sample, rounded and saturated
+            if (out)
+                out[i * channels + c] = audio_sat16((int32_t)((y + 0x8000) >> 16));
+        }
+    }
+}
+
+// The scratch buffer, at least `n` samples; NULL when out of memory.
+static int16_t *scratch(size_t n) {
+    if (n > s_scratch_cap) {
+        int16_t *grown = (int16_t *)realloc(s_scratch, n * sizeof(int16_t));
+        if (!grown)
+            return NULL;
+        s_scratch = grown;
+        s_scratch_cap = n;
+    }
+    return s_scratch;
+}
 
 // ============================================================================
 // Stream API
 // ============================================================================
 
-void audio_out_set_record_sink(audio_out_sink_t sink) {
+void audio_out_set_record_sink(audio_out_sink_t sink, bool ac_coupled) {
     s_record_sink = sink;
+    s_record_ac = ac_coupled;
+    // A recording's coupling starts from reset
+    audio_dc_block_reset(&s_record_dc);
 }
 
 // Opens (or re-parameterizes) the host audio stream
@@ -82,6 +167,8 @@ void audio_out_open(uint32_t src_rate_hz, int channels) {
     }
     s.rate = src_rate_hz;
     s.channels = channels;
+    // The host stream starts again: so does its coupling (primed on the first push)
+    audio_dc_block_reset(&s_host_dc);
     platform_audio_open(src_rate_hz, channels);
     LOG(2, "open: rate=%u Hz channels=%d", src_rate_hz, channels);
 }
@@ -131,11 +218,25 @@ void audio_out_push(const int16_t *frames, int nframes, int vol_0_7) {
         s.nsamples += add;
     }
 
-    // The recorder places the push on its own timeline, volume and all
-    if (s_record_sink)
-        s_record_sink(frames, nframes, s.channels ? s.channels : 1, s.rate, vol_0_7);
+    // What leaves the machine is AC-coupled: the recorder's and the host's
+    // each through a DC blocker of its own (the capture above stays raw)
+    int ch = s.channels == 2 ? 2 : 1;
+    int16_t *tmp = scratch((size_t)nframes * (size_t)ch);
 
-    platform_audio_push(frames, nframes, vol_0_7);
+    // The recorder places the push on its own timeline, volume and all
+    if (s_record_sink) {
+        if (!s_record_ac) {
+            s_record_sink(frames, nframes, ch, s.rate, vol_0_7);
+        } else if (tmp) {
+            audio_dc_block_run(&s_record_dc, frames, tmp, nframes, ch, s.rate);
+            s_record_sink(tmp, nframes, ch, s.rate, vol_0_7);
+        }
+    }
+
+    if (!tmp)
+        return; // out of memory: the host misses one push rather than a raw one
+    audio_dc_block_run(&s_host_dc, frames, tmp, nframes, ch, s.rate);
+    platform_audio_push(tmp, nframes, vol_0_7);
 }
 
 uint32_t audio_out_rate(void) {
