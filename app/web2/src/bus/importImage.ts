@@ -142,19 +142,21 @@ export async function isGzipFile(blob: Blob): Promise<boolean> {
   return sniffContainer(new Uint8Array(await blob.slice(0, 2).arrayBuffer())) === 'gzip';
 }
 
-class ImportCancelled extends Error {}
+export class ImportCancelled extends Error {}
 
 // --- Windows of a source ------------------------------------------------------
 
 // A source read as transfer-window-sized pieces (the last one shorter).
-interface WindowReader {
+export interface WindowReader {
   next(): Promise<Uint8Array | null>;
   cancel(): void;
   read: number; // bytes taken so far
   total: number | null;
 }
 
-function windowsOf(src: ImportSource, size: number): WindowReader {
+// A reader that was cancelled throws ImportCancelled from next(): a cancelled
+// stream reads as ended, and an end must never be taken for the whole disk.
+export function windowsOf(src: ImportSource, size: number): WindowReader {
   if (src.kind === 'blob') {
     const blob = src.blob;
     const w: WindowReader = {
@@ -174,10 +176,12 @@ function windowsOf(src: ImportSource, size: number): WindowReader {
   const reader = src.stream.getReader();
   let carry: Uint8Array | null = null;
   let ended = false;
+  let stopped = false;
   const w: WindowReader = {
     read: 0,
     total: src.total,
     async next() {
+      if (stopped) throw new ImportCancelled();
       if (ended && !carry) return null;
       const out = new Uint8Array(size);
       let fill = 0;
@@ -197,10 +201,12 @@ function windowsOf(src: ImportSource, size: number): WindowReader {
         fill += n;
         carry = n === carry.length ? null : carry.subarray(n);
       }
+      if (stopped) throw new ImportCancelled();
       w.read += fill;
       return fill ? out.subarray(0, fill) : null;
     },
     cancel() {
+      stopped = true;
       reader.cancel().catch(() => undefined);
     },
   };
