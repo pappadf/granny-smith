@@ -28,6 +28,11 @@ struct object;
 // named children. Process-singleton, shared by adb.c (keyboard) and mouse.c.
 struct object *adb_bus_object(void);
 
+// What the node shows in a device list: its label and one-line doc, which
+// follow the active machine because the path does not ("ADB" only on a machine
+// with an ADB bus).  NULL takes the neutral default; the strings are borrowed.
+void adb_bus_describe(const char *label, const char *doc);
+
 // === Type Definitions ===
 
 // Opaque handle for the ADB transceiver + device state machine

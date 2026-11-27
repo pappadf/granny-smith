@@ -1232,6 +1232,14 @@ void system_swap_in(config_t *cfg, bool restored, const struct host_pacing *paci
     // SYSTEM tab shows "Macintosh IIcx" rather than the bare "machine"
     // segment.
     machine_set_active_label(cfg->machine->name);
+    // The keyboard-and-mouse node says what this machine has: ADB only where
+    // there is an ADB bus, else the substrate's own name for it (the Lisa's
+    // COPS) or the neutral default (a Plus).
+    const machine_substrate_t *substrate = cfg->machine->substrate;
+    if (cfg->adb)
+        adb_bus_describe("ADB", "Apple Desktop Bus: keyboard and mouse");
+    else
+        adb_bus_describe(substrate ? substrate->input_label : NULL, substrate ? substrate->input_doc : NULL);
 
     // The expansion buses' slot trees (machine.nubus.slot[N], machine.pci.
     // slot[N]) -- and with them machine.screen.source -- project this
@@ -1304,6 +1312,7 @@ bool system_shut_down(void) {
     memory_map_select(NULL);
     // The machine container shows the bare "machine" segment again.
     machine_set_active_label(NULL);
+    adb_bus_describe(NULL, NULL); // and the input node names no machine's wire
 
     LOG(1, "Machine shut down");
     event_emitf(GS_EVENT_STATE, "{\"event\":\"machine_shut_down\"}");

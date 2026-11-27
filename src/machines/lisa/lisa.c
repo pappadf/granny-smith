@@ -1480,6 +1480,9 @@ static const machine_substrate_t lisa_substrate = {
     // file name (60 bytes) arrives intact in LOS's desktop.
     .input_mouse_move = lisa_input_mouse_move,
     .input_mouse_button = lisa_input_mouse_button,
+    // A Lisa has no ADB: the device list names what its keys and mouse go through.
+    .input_label = "COPS",
+    .input_doc = "COPS microcontroller: keyboard and mouse",
     .media_attach = lisa_media_attach,
     .media_present = lisa_media_present,
     .media_eject = lisa_media_eject,

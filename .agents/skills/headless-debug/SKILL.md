@@ -330,6 +330,9 @@ machine.scsi.device[0]                      # vendor product image ...
 machine.scsi.bus.phase
 machine.via1                                # ifr ier acr pcr sr, .port_a/.port_b
 machine.rtc.pram.peek 0x10                  # peek poke dump snapshot restore
+# machine.adb is the keyboard-and-mouse path on EVERY machine (a Plus's VIA
+# keyboard, a Lisa's COPS); only its label says what the machine has
+# (machine.adb.meta.label: "ADB" | "COPS" | "Keyboard & Mouse").
 machine.adb.mouse.move 100 100
 machine.adb.mouse.click true                # press; the default is press too
 machine.adb.mouse.click false               # release

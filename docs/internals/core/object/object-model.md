@@ -140,6 +140,16 @@ table. Each `member_t` is one of three kinds:
   `type()` could only reach a machine that had an `adb_t` to borrow a
   source from; it is per-machine now (`host_input.c`). A container with no
   state of its own — `machine.adb` — can stay a singleton.
+
+  `machine.adb` is also the one node whose **path and label part ways by
+  machine**. The path is the machine-independent spelling of "the keyboard
+  and the mouse" and is `adb` on every model; a Plus and a Lisa have no ADB
+  bus, and a device list is read as what the machine contains. So the swap
+  step labels the node for the active machine (`adb_bus_describe`): "ADB"
+  where there is an ADB transceiver (`cfg->adb`), the substrate's
+  `input_label` where it gives one (the Lisa's "COPS"), and "Keyboard &
+  Mouse" otherwise — a Plus, or no machine at all. Its doc follows the same
+  rule.
 - **`MK_METHOD`** — a callable taking declared `arg_decl_t` parameters
   and returning a `value_t`. Each parameter declares its kind,
   optional `width`, optional `enum_values`, optional `default_value`
