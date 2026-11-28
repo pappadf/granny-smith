@@ -265,7 +265,9 @@ simulated network are its siblings at the root:
   `mmu.peek(addr, [size], [space])` the same way —
   `docs/internals/core/debug/debug_mmu.md`),
   `machine.memory`, `machine.rom`, `machine.via1`/`via2`,
-  `machine.scc`, `machine.rtc`, `machine.adb.keyboard` / `machine.adb.mouse`,
+  `machine.scc`, `machine.rtc`, `machine.adb.keyboard` / `machine.adb.mouse`
+  (the input path on every machine; the node is *labelled* ADB only where
+  there is an ADB bus — "COPS" on a Lisa, "Keyboard & Mouse" on a Plus),
   `machine.floppy.drive[N].image`, `machine.scsi.device[N].image` (one
   `image` node under every drive and in `files.images[N]`:
   `docs/internals/core/storage/image_kind.md` §3),

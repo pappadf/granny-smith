@@ -400,6 +400,14 @@ typedef struct machine_substrate {
     // was one constant, sized for ADB, until keyboard.type could reach a
     // Lisa at all.
     int key_queue_bytes;
+
+    // What a device list calls this machine's keyboard-and-mouse node
+    // (`machine.adb`, a path that is the same on every machine) when the
+    // machine has no ADB bus, and its one-line doc: the Lisa's COPS.  NULL
+    // takes the neutral "Keyboard & Mouse".  Not read on a machine with an
+    // ADB transceiver, whose node says ADB.
+    const char *input_label;
+    const char *input_doc;
 } machine_substrate_t;
 
 // Machine descriptor: static metadata for each emulated machine model.  The

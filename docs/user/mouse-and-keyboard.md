@@ -91,7 +91,12 @@ machine.adb.mouse.move 100 40 "global"     move the pointer to screen position 1
 machine.adb.mouse.click true               press the button (false releases it)
 ```
 
-These work on every Macintosh model, the Plus included. See [The terminal](terminal.md).
+These work on every model, the Plus and the Lisa included: `machine.adb` is
+the one path to the keyboard and the mouse whatever carries them. The System
+panel shows that node as **ADB** only on a machine that has an Apple Desktop
+Bus; on a Lisa it reads **COPS** (the microcontroller its keyboard and mouse
+go through), and on a Plus or earlier **Keyboard & Mouse**. See
+[The terminal](terminal.md).
 
 ## 5. Copy and paste
 

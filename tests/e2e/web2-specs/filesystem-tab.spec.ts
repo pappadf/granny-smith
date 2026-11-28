@@ -108,6 +108,33 @@ test('descend image, ctrl-multi-select, copy out, delete, copy again', async ({ 
   await expect(row(page, FILE_B)).toHaveCount(1);
 });
 
+// A branch's arrow turns into a spinner while its listing loads and back when
+// it ends. A press that began on one glyph and ended on the other lost its
+// click (the pressed element was gone), so a collapse clicked just as a reload
+// finished did nothing. The glyph takes no pointer events: a press anywhere
+// on the arrow lands on the button, which stays.
+test("a branch arrow's glyph does not take the press", async ({ page }) => {
+  await openFilesystemTab(page);
+  const twistie = row(page, 'images').first().locator('.twistie');
+  await expect(twistie).toBeVisible();
+  const hit = await twistie.evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) === el;
+  });
+  expect(hit).toBe(true);
+  // Press on the arrow, swap its glyph as a finished load does, release:
+  // the branch still opens.
+  const box = (await twistie.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await twistie.evaluate((el) => {
+    const glyph = el.firstElementChild!;
+    glyph.replaceWith(glyph.cloneNode(true));
+  });
+  await page.mouse.up();
+  await expect(row(page, 'fd')).toHaveCount(1);
+});
+
 test('shift-range multi-select drives a bulk copy out of an image', async ({ page }) => {
   await stageOpfsFile(page, FD, IMAGE_HOST);
   await openFilesystemTab(page);

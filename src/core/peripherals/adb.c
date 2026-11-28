@@ -1756,20 +1756,30 @@ bool adb_iop_transact(adb_t *adb, uint8_t cmd, const uint8_t *in_data, int in_da
 // is a namespace-only process-singleton (like the keyboard/mouse facades it
 // parents), created lazily under machine_object().
 //
-// The name is ADB but the contents are not: `keyboard.press` and `mouse.move`
-// route through the machine substrate, so on a Mac Plus they reach the VIA
-// shift-register keyboard and the quadrature mouse, and on a Lisa they reach
-// the COPS.  Neither machine has an ADB bus.  That mismatch is known and the
-// name is deliberate — it is the logical bus the user expects, not the wire
-// that happens to carry it, and the path is load-bearing (AGENTS.md's
-// canonical node list, ~1,588 references across the tests, the web UI and the
+// The path is `adb` on every machine but the contents are not ADB on every
+// machine: `keyboard.press` and `mouse.move` route through the machine
+// substrate, so on a Mac Plus they reach the VIA shift-register keyboard and
+// the quadrature mouse, and on a Lisa they reach the COPS.  Neither machine
+// has an ADB bus.  The path is deliberate -- it is the one machine-independent
+// spelling of "the input devices", and it is load-bearing (AGENTS.md's
+// canonical node list, ~1,800 references across the tests, the web UI and the
 // docs).  Renaming it to `machine.input` with an alias was considered and
-// refused.  Read this node as "input devices", not "ADB".
+// refused.
+//
+// What the node SHOWS is another matter: its label and doc are what a device
+// list prints, and a device list is read as what the machine contains.  So
+// they follow the active machine (adb_bus_describe, from the swap step): "ADB"
+// only where there is an ADB transceiver, the substrate's own name for its
+// keyboard-and-mouse hardware where it gives one (the Lisa's COPS), and the
+// neutral default below everywhere else -- including with no machine at all.
+#define INPUT_NODE_LABEL "Keyboard & Mouse"
+#define INPUT_NODE_DOC   "Keyboard and mouse (the path is `adb` on every machine, whatever carries them)"
+
 static const class_desc_t adb_class = {
     .name = "adb",
     .members = NULL,
     .n_members = 0,
-    .doc = "Apple Desktop Bus: keyboard and mouse",
+    .doc = INPUT_NODE_DOC,
 };
 
 static struct object *s_adb_object = NULL;
@@ -1778,10 +1788,20 @@ struct object *adb_bus_object(void) {
     if (!s_adb_object) {
         s_adb_object = object_new(&adb_class, NULL, "adb");
         if (s_adb_object) {
-            object_set_label(s_adb_object, "ADB");
+            object_set_label(s_adb_object, INPUT_NODE_LABEL);
             object_set_order(s_adb_object, OBJ_ORDER_ADB);
             object_attach(machine_object(), s_adb_object);
         }
     }
     return s_adb_object;
+}
+
+// Label and describe the node for the active machine (see above).  NULL takes
+// the neutral default; the strings are borrowed and must be static.
+void adb_bus_describe(const char *label, const char *doc) {
+    struct object *node = adb_bus_object();
+    if (!node)
+        return;
+    object_set_label(node, label ? label : INPUT_NODE_LABEL);
+    object_set_doc(node, doc ? doc : INPUT_NODE_DOC);
 }

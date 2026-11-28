@@ -110,6 +110,10 @@ void object_set_order(struct object *o, int order) {
     (void)o;
     (void)order;
 }
+void object_set_doc(struct object *o, const char *doc) {
+    (void)o;
+    (void)doc;
+}
 
 int system_input_key(const char *key, bool down) {
     (void)key;
