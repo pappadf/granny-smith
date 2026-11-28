@@ -406,13 +406,15 @@ bool ppc_mfspr(ppc_t *p, uint32_t iw) {
             return false;
         v = ppc_dec_now(p);
         break;
-    case 268: // TBL through mfspr rather than mftb (604/750)
+    case 268: // TBL through mfspr rather than mftb (604 only here)
     case 269: // TBU
         // The architected read is mftb (xo 371), but the 60x decodes the
         // mfspr form of the same TBR as the same read: IBM's OS/2 Warp
         // PowerPC Edition boot loader (December 1995, shipped for the
         // 604-based Power Series 830/850) reads the time base with
-        // `mfspr r3,269` / `mfspr r3,268` on every non-601 CPU, and ran there.
+        // `mfspr r3,269` / `mfspr r3,268`, and ran there.  The model gates
+        // it to the 604, like mftb (OP_MFTB is M604()); the 601 traps, and
+        // the 750 reads the TB through the RTC path (ppc_rtcu_now).
         if (!ppc_is_604(p))
             goto undefined;
         v = n == 268 ? (uint32_t)ppc_tb_now(p) : (uint32_t)(ppc_tb_now(p) >> 32);
