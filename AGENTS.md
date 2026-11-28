@@ -276,9 +276,12 @@ simulated network are its siblings at the root:
   declared slot, `empty` true and no `card` child when nothing is seated);
   the AV machines add
   `machine.dsp` (the DSP3210 aux core), `machine.videoin` and
-  `machine.audioin` (host camera/microphone source surfaces). (Lisa adds
-  `machine.hd` (ProFile, `machine.hd.image`) and `machine.power`; the G3
-  desktop adds `machine.ata.device[U].image`.)
+  `machine.audioin` (host camera/microphone source surfaces); the
+  dual-processor `pm9500mp` adds `machine.cpu1` (the second 604, a peer
+  core with the same register surface as `machine.cpu`, no `$` aliases) and
+  `machine.mp` (the card: `running`, `calls`, `entry`, `cpu1_instr`).
+  (Lisa adds `machine.hd` (ProFile, `machine.hd.image`) and `machine.power`;
+  the G3 desktop adds `machine.ata.device[U].image`.)
 - **emulator services** (siblings of `machine`, in this fixed root order):
   `scheduler`, `checkpoint`, `recorder` (the screen and sound to a
   lossless `.mkv` on the guest's clock: `recorder.start(path)` /
@@ -298,7 +301,7 @@ simulated network are its siblings at the root:
 Hardware paths are model-independent: `machine.scsi.device[0]` means the
 same on a Plus, a IIcx, and a Lisa. The `$reg` aliases (`$pc`, `$d0`, …)
 still resolve (now to `machine.cpu.*`). On the PowerPC machines (pm6100/
-pm7100/pm8100, the TNT pm7500/pm8500/pm9500 and the beige G3 pmg3dt/
+pm7100/pm8100, the TNT pm7500/pm8500/pm9500/pm9500mp and the beige G3 pmg3dt/
 pmg3mt) the aliases are the PPC
 set instead — `$pc $lr $ctr $cr
 $msr $xer $r0..$r31` — and `machine.cpu` exposes the PPC register file
@@ -306,7 +309,7 @@ $msr $xer $r0..$r31` — and `machine.cpu` exposes the PPC register file
 `rtcu/rtcl`, `mq`, `sdr1`, `sr0..15`, `bat0u..bat3l`, `dbat0u..dbat3l`,
 `tbu/tbl`, `fpscr`); the 68K-style `$d0`/`$a0` aliases don't exist there.
 The `dbat*`/`tbu`/`tbl` members are live on the 604 and 750 models (the
-TNT pm8500/pm9500, the G3 — there `rtcu/rtcl` read the timebase halves)
+TNT pm8500/pm9500/pm9500mp, the G3 — there `rtcu/rtcl` read the timebase halves)
 and inert on the 601.
 
 The browser frontend calls into the tree via `gsEval(path, args?)` (see

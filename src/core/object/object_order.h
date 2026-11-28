@@ -43,6 +43,7 @@ enum {
 // role's weight: no machine has two.
 enum {
     OBJ_ORDER_CPU = 10,
+    OBJ_ORDER_CPU_PEER = 11, // a second processor (the 9500/180MP's machine.cpu1)
     OBJ_ORDER_DSP = 15, // the AV boards' DSP3210
     OBJ_ORDER_MEMORY = 20,
     OBJ_ORDER_ROM = 30,

@@ -940,6 +940,10 @@
       "instr": 4504500000,
       "tolerance": 0.2
     },
+    "suite-tnt/pm9500mp-76-hd": {
+      "instr": 4000000000,
+      "tolerance": 0.2
+    },
     "suite-tnt/tnt-voodoo2-display": {
       "instr": 2540000000,
       "tolerance": 0.2
@@ -986,6 +990,14 @@
     },
     "suite-wgs9150/wgs9150-76-fd": {
       "instr": 4249983600,
+      "tolerance": 0.2
+    },
+    "tnt-beos/pm9500-beos": {
+      "instr": 10000000000,
+      "tolerance": 0.2
+    },
+    "tnt-beos/pm9500mp-beos": {
+      "instr": 11309000000,
       "tolerance": 0.2
     },
     "tnt-pci-scsi-card/finder": {

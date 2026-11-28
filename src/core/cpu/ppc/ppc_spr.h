@@ -77,8 +77,8 @@
     X(274,  "sprg2",  PLAIN, PLAIN, sprg[2], SPR_SJ, PPC_SPR_MALL) \
     X(275,  "sprg3",  PLAIN, PLAIN, sprg[3], SPR_SJ, PPC_SPR_MALL) \
     X(282,  "ear",    PLAIN, PLAIN, ear,     SPR_S,  PPC_SPR_MALL) \
-    X(284,  "tbl",    NO,    OWN,   none,    SPR_S,  PPC_SPR_M6XX) /* time base write encodings */ \
-    X(285,  "tbu",    NO,    OWN,   none,    SPR_S,  PPC_SPR_M6XX) \
+    X(284,  "tbl",    OWN,   OWN,   none,    SPR_S,  PPC_SPR_M6XX) /* TB write encodings; mfspr reads TB (BeOS) */ \
+    X(285,  "tbu",    OWN,   OWN,   none,    SPR_S,  PPC_SPR_M6XX) \
     X(287,  "pvr",    PLAIN, NO,    pvr,     SPR_S,  PPC_SPR_MALL) \
     X(528,  "ibat0u", OWN,   OWN,   batu[0], SPR_S,  PPC_SPR_MALL) /* 601 unified BATs / 604 IBATs */ \
     X(529,  "ibat0l", OWN,   OWN,   batl[0], SPR_S,  PPC_SPR_MALL) \
